@@ -80,7 +80,10 @@ pub(crate) fn draw(p: Painter, pr: Prompt, focused: bool) {
     let Ok(label) = CString::new(pr.label()) else { return };
     // No leading icon: the label alone carries it, and a chevron on a control that does not
     // navigate anywhere was reading as "more" rather than "skip".
+    // Its slot's only item, so index 0 — the pop is the control ROW's (`player_hud::row_pop`),
+    // shared with the transport discs this pill stands in for.
     Button::new(label.as_ptr(), theme::size::BODY, rect(pr))
+        .scale(crate::ui::player_hud::row_pop(0))
         .focused(focused)
         .draw(&Env::inert(), p);
 }

@@ -155,6 +155,16 @@ struct DetailView {
     // which arrive (and change) asynchronously — so the index the focus holds has to be carried
     // across a set change or it silently comes to mean a different button. See `hero_col`.
     hero_set: HeroSet,
+    /// How far each of the row's two DISCS is unfurled into its labelled capsule (0..1), indexed by
+    /// [`disc_verb`]'s slot: 0 the restart disc, 1 the watched toggle. Two springs and not one
+    /// because they stand side by side and the ring moving between them is one capsule closing while
+    /// the other opens — a single spring would make that a jump-cut through a shared value. See
+    /// [`disc_verb`] for why the labels exist at all, and `widgets::DISC_LABEL_LEAD` for the
+    /// geometry they drive.
+    disc_unfurl: [Spring; 2],
+    /// The action row's FOCUS POP — one spring per control, indexed the way [`hero_ctls`] orders
+    /// them. Four, the widest set the page can build (`Play, ▶|, Also available, ✓`).
+    ctl_pop: crate::ui::widgets::CtlPop<4>,
     // per-section focus memory (episodes/related/cast): leaving a row and coming back restores the
     // item you were on — paired with the frozen h-scrolls, a row "stays where it was" instead of
     // snapping to its start whenever focus moves elsewhere. Indexed by section id.
@@ -188,6 +198,8 @@ impl DetailView {
             cast: CardRow::new(),
             last_resume_ns: 0,
             hero_set: HeroSet::default(),
+            disc_unfurl: [Spring::at(0.0); 2],
+            ctl_pop: crate::ui::widgets::CtlPop::new(),
             saved_col: [0; 6],
             spin_ms: 0.0,
             // the app's own flat ground until an item keys it — byte-identical to the grey this page
@@ -504,6 +516,131 @@ fn alt_pill_w() -> f32 {
     Button::pill_w_full(ALT_LABEL.as_ptr(), theme::size::BODY, false, true)
 }
 
+/// The verbs the hero's DISCS unfurl to say while they hold focus.
+///
+/// A disc is the one kind of control in this row that cannot state its own job: the pill next to it
+/// carries "Resume", the *Also available* control carries its whole sentence, and a bare ✓ or ▶| is
+/// a shape nobody can read from a sofa. So on focus — the only moment a television can tell anybody
+/// anything — a disc opens into a capsule and says it (`widgets::DISC_LABEL_LEAD`). **Both** discs
+/// do; there is nothing special about the watch one.
+///
+/// **The verb NAMES ITS SUBJECT when the row has two of them.** On a started show the whole hero is
+/// about the ON-DECK EPISODE — the backdrop still, the blurb, and what Play and ▶| act on
+/// ([`hero_episode`]) — while the watched toggle writes the item the page is MOUNTED on, which is
+/// the show ([`on_ok`] takes `metadata::current()`, never the leaf). Two subjects on one row, and
+/// nothing on screen said so: the press that reads as "I have seen this episode" marks four hundred
+/// of them. So the word *Show* appears on the ODD ONE OUT, exactly when that gap is real. Everything
+/// else in the row acts on the subject the blurb has just named, which is why *Play from Start*
+/// needs no noun — it starts the very thing "Resume" beside it would resume.
+///
+/// **These are `item_menu`'s words, verbatim, and that is the point**: all three actions are also
+/// offered on the press-and-hold menus, and a control that said "Watched" here while a row said
+/// "Mark as Watched" would read as two verbs for one write. The agreement is asserted rather than
+/// trusted — see `the_unfurled_verbs_are_the_menus_own`. Each states the OUTCOME its press
+/// produces, not the state the item is in.
+const MARK_WATCHED_LABEL: &std::ffi::CStr = c"Mark as Watched";
+const MARK_UNWATCHED_LABEL: &std::ffi::CStr = c"Mark as Unwatched";
+const MARK_SHOW_WATCHED_LABEL: &std::ffi::CStr = c"Mark Show as Watched";
+const MARK_SHOW_UNWATCHED_LABEL: &std::ffi::CStr = c"Mark Show as Unwatched";
+const PLAY_FROM_START_LABEL: &std::ffi::CStr = c"Play from Start";
+
+/// A disc's slot in [`DetailView::disc_unfurl`] and the verb it unfurls to — `None` for the two
+/// PILLS, which say their word at rest and have nothing to reveal.
+///
+/// Slot order is the row's own: the restart disc always precedes the watched toggle, so a pair of
+/// springs indexed this way animates in the direction the eye travels. PURE, so the whole mapping
+/// is host-testable without a loaded item.
+fn disc_verb(ctl: HeroCtl, name_show: bool) -> Option<(usize, &'static std::ffi::CStr)> {
+    match (ctl, name_show) {
+        (HeroCtl::Restart, _) => Some((0, PLAY_FROM_START_LABEL)),
+        (HeroCtl::MarkWatched, false) => Some((1, MARK_WATCHED_LABEL)),
+        (HeroCtl::MarkWatched, true) => Some((1, MARK_SHOW_WATCHED_LABEL)),
+        (HeroCtl::MarkUnwatched, false) => Some((1, MARK_UNWATCHED_LABEL)),
+        (HeroCtl::MarkUnwatched, true) => Some((1, MARK_SHOW_UNWATCHED_LABEL)),
+        _ => None,
+    }
+}
+
+/// Where the watched toggle sits in `set` — it is always present, so this is `Some` for every set
+/// the row can be in. Keyed on the control's JOB rather than on either of its two faces, which is
+/// what lets [`hero_col`] carry the focus across a press that flips it.
+fn watch_index(set: HeroSet) -> Option<c_int> {
+    let (v, n) = hero_ctls(set);
+    v[..n].iter().position(|&c| is_watch_ctl(c)).map(|i| i as c_int)
+}
+
+/// Is `ctl` the watched toggle, wearing either face?
+fn is_watch_ctl(ctl: HeroCtl) -> bool {
+    matches!(ctl, HeroCtl::MarkWatched | HeroCtl::MarkUnwatched)
+}
+
+/// Does the toggle's subject differ from the one the rest of the hero is about? True exactly while
+/// the hero is showing an on-deck EPISODE — see [`disc_verb`] for why that is the whole question.
+fn watch_names_show() -> bool {
+    hero_episode().is_some()
+}
+
+/// Which unfurl slot the ring is on, if any — `None` whenever focus is on a pill or off the hero row
+/// entirely (`focus()` answers -1 below section 0), which is what closes both capsules when the page
+/// is scrolled away from under them.
+fn focused_disc_slot() -> Option<usize> {
+    disc_verb(ctl_at(hero_set(), focus())?, false).map(|(slot, _)| slot)
+}
+
+/// Both discs' drawn widths right now: the shared unfurl formula
+/// ([`widgets::CircleButton::cap_w`]) over each verb and its own spring, so the row's accumulation,
+/// the painter and the pointer all advance by the very same numbers at every phase of the animation.
+fn disc_caps() -> [f32; 2] {
+    let set = hero_set();
+    let (v, n) = hero_ctls(set);
+    let named = watch_names_show();
+    let mut lw = [0.0f32; 2];
+    for &c in &v[..n] {
+        if let Some((slot, label)) = disc_verb(c, named) {
+            lw[slot] = crate::text::text_width(label.as_ptr(), theme::size::BODY, 1);
+        }
+    }
+    disc_caps_at(set, hero_pill_w(), alt_pill_w(), view().disc_unfurl.map(|s| s.pos), lw)
+}
+
+/// …and the rule itself, PURE (the split every measured thing in this row takes — see
+/// [`hero_btn_rect_at`]): both discs' drawn widths, given the row's set, both pills, each disc's
+/// unfurl `e` and each verb's measured width. A slot the set does not contain passes `label_w = 0`,
+/// which collapses to the bare disc and costs the budget nothing.
+///
+/// **The unfurl is BUDGETED, and a verb that does not fit is not shown at all.** This row shares
+/// its band with the right-hand people column and must clear [`FACTS_R`]
+/// (`the_widest_action_row_clears_the_people_column`) — a bound the closed row has hundreds of
+/// pixels of room inside, and that the widest row the page can build (a resume point AND a second
+/// source, so four controls) spends much of. So a capsule may only open into what the CLOSED row
+/// leaves unspent, and when the whole verb will not fit there the disc stays a disc.
+///
+/// Dropping it whole rather than eliding it is the facts line's own ladder one block up
+/// ([`facts_fit`]), for the same reason: the point of the label is to teach a mark nobody can read,
+/// and *"Mark Show as Unwat…"* teaches less than the tick already did. Half a word is worth less
+/// than the shape it was meant to explain. The refusal is a state the WIDGET also has to survive —
+/// it keeps being handed a climbing focus spring — which is why `CircleButton` re-derives the
+/// unfurl from the frame rather than trusting that `e` (`CircleButton::cap_label_w`).
+///
+/// **The budget belongs to the PAIR, and the widest verb is what has to fit in it.** The two discs
+/// stand side by side and the ring moving between them has one capsule closing while the other
+/// opens, so for a stretch of that hand-off the row is paying for two. They are complementary
+/// drives on springs of one stiffness, so their sum never exceeds a single full one (a linear
+/// spring's states add: 1→0 alongside 0→1 keeps the total at 1, and a pair starting shut only ever
+/// climbs to it). The most the row can therefore owe at any instant is the WIDER verb's own extra —
+/// so that, and not each verb alone, is what the room must cover, and why both discs are refused
+/// together rather than one at a time.
+fn disc_caps_at(set: HeroSet, pill: f32, alt: f32, e: [f32; 2], label_w: [f32; 2]) -> [f32; 2] {
+    let (_, n) = hero_ctls(set);
+    let closed = HeroWidths { pill, alt, disc: [CD; 2] };
+    let last = hero_btn_rect_at(set, n as c_int - 1, 0.0, closed);
+    let budget = CircleButton::label_budget(CD, FACTS_R - (last.x + last.w));
+    if label_w[0].max(label_w[1]) > budget {
+        return [CD; 2];
+    }
+    [CircleButton::cap_w(CD, e[0], label_w[0]), CircleButton::cap_w(CD, e[1], label_w[1])]
+}
+
 /// The hero action-row control rect for index `i` at row top `y`.
 ///
 /// The row is DYNAMIC — the ↺ restart disc exists only while [`has_restart`], the *Also available*
@@ -515,31 +652,57 @@ fn alt_pill_w() -> f32 {
 /// of step whenever a resume point exists, which is precisely the state a pointer user is most
 /// likely to be in.
 fn hero_btn_rect(i: c_int, y: f32) -> Rect {
-    hero_btn_rect_at(hero_set(), i, y, hero_pill_w(), alt_pill_w())
+    hero_btn_rect_at(hero_set(), i, y, hero_widths())
+}
+
+/// Every measured width the row's accumulation needs, as one value.
+///
+/// It is a struct and not four arguments because THREE of the five controls are now variable —
+/// both pills follow their label, and each watch disc follows its own unfurl spring — and a walk
+/// taking them positionally is one transposed pair away from drawing the row at widths the pointer
+/// does not share.
+#[derive(Clone, Copy, Debug)]
+struct HeroWidths {
+    /// the Play/Resume pill, measured from the word it is currently carrying
+    pill: f32,
+    /// the *Also available* pill, including its disclosure chevron
+    alt: f32,
+    /// the two discs, in [`disc_verb`]'s slot order, each already unfurled ([`disc_caps`])
+    disc: [f32; 2],
+}
+
+/// The live widths. Separated from [`hero_btn_rect_at`] for the reason that function's doc gives:
+/// every one of these reaches SDL_ttf, and the host suite links none.
+fn hero_widths() -> HeroWidths {
+    HeroWidths { pill: hero_pill_w(), alt: alt_pill_w(), disc: disc_caps() }
 }
 /// The accumulation itself, PURE: the drawn frame of control `i` in `set`, given both pills'
 /// measured widths. One walk, so a variable-width control in the MIDDLE of the row (which the alt
 /// pill is) cannot put everything after it a fixed disc-pitch out of step.
 ///
-/// Both widths are ARGUMENTS on purpose: measuring one reaches SDL_ttf, and a host test that calls
+/// The widths are ARGUMENTS on purpose: measuring one reaches SDL_ttf, and a host test that calls
 /// into the TV's text stack fails to LINK on the dev Mac (the crate's Tier-1 limit). Parameterising
 /// them keeps the row's geometry host-testable at every pill width — "Play" and the wider "Resume",
-/// with and without the alt control — which is the case the fontless host could otherwise never see.
-fn hero_btn_rect_at(set: HeroSet, i: c_int, y: f32, pw: f32, alt_w: f32) -> Rect {
+/// with and without the alt control, and at every phase of a watch disc's unfurl — which is the
+/// case the fontless host could otherwise never see.
+fn hero_btn_rect_at(set: HeroSet, i: c_int, y: f32, cw: HeroWidths) -> Rect {
     let (v, n) = hero_ctls(set);
     let mut x = MARGIN_X;
-    let mut w = pw;
+    let mut w = cw.pill;
     for (k, c) in v[..n].iter().enumerate() {
         w = match c {
-            HeroCtl::Play => pw,
-            HeroCtl::Alt => alt_w,
-            _ => CD,
+            HeroCtl::Play => cw.pill,
+            HeroCtl::Alt => cw.alt,
+            HeroCtl::Restart => cw.disc[0],
+            HeroCtl::MarkWatched | HeroCtl::MarkUnwatched => cw.disc[1],
         };
         if k as c_int >= i {
             break;
         }
         x += w + CGAP;
     }
+    // Height is always the DISC: an unfurled control is a capsule that grew sideways, so only `w`
+    // ever leaves `CD` behind (`widgets::CircleButton::cap_w`).
     Rect::new(x, y, w, CD)
 }
 
@@ -751,7 +914,13 @@ fn has_restart() -> bool {
 }
 
 /// The loaded item's watch state, in the app's ONE watch-state vocabulary ([`PosterMark`]) — what
-/// decides whether the hero row ends in a *mark watched* disc, a *mark unwatched* disc, or BOTH.
+/// decides which FACE the hero's watched toggle wears, ✓ or −.
+///
+/// The row folds two of the three states together ([`hero_ctls`]: only `Watched` reads −), and the
+/// distinction it keeps is still load-bearing rather than vestigial: `InProgress` is what makes a
+/// finished-then-restarted item read ✓ instead of −, because the viewer is part-way through a
+/// re-watch and "not watched" is the honest answer to give a toggle. All three states survive here
+/// because the tile context menu, which offers BOTH verbs at once, resolves the same question.
 ///
 /// It is the same three states a poster wears and deliberately the same enum, but it is a second
 /// resolver rather than a call to [`crate::ui::widgets::poster_mark`]. The structural reason is
@@ -763,9 +932,10 @@ fn has_restart() -> bool {
 /// * **A CONTAINER mid-run.** A poster in a grid says nothing about a show three episodes into ten,
 ///   because "where its next episode stands" is not something a tile can state. Here the question
 ///   is which write verbs are reachable, and such a show can honestly be sent to either end — so it
-///   IS in the middle, and gets both discs.
+///   IS in the middle. (What the middle then GETS differs by surface: the menu lists both verbs, the
+///   hero's toggle reads ✓, because a list may name two destinations and a toggle is one thing.)
 /// * **The edges of the resume rule.** `resume` is [`hero_resume_ns`]'s answer, i.e. the resume the
-///   Play pill beside these discs would ACTUALLY apply, so a 4-second offset or a 95% tail is no
+///   Play pill beside this toggle would ACTUALLY apply, so a 4-second offset or a 95% tail is no
 ///   more "in the middle" here than it is a "Resume" up there — while a poster's bar is drawn from
 ///   a raw `viewOffset` and does mark them. This row promises what its presses deliver (the same
 ///   rule the ↺ disc and the pill's label already follow); a mark on artwork only describes.
@@ -775,7 +945,7 @@ fn has_restart() -> bool {
 /// doing. Pure, so the control set it produces is host-gradeable.
 ///
 /// **The tile context menu asks the same question and must give the same answer** — its state rows
-/// are this row's discs as words (`ui::item_menu::state_rows`), so a change to what counts as "in
+/// are this vocabulary as words (`ui::item_menu::state_rows`), so a change to what counts as "in
 /// the middle" here belongs in `widgets::row_watch_state` too, which is that menu's resolver over a
 /// catalog row and departs from `poster_mark` on exactly the container case this one does.
 ///
@@ -785,8 +955,9 @@ fn has_restart() -> bool {
 /// show's progress lives in `on_deck` and the seasons' `viewed_leaf_count`, and those keep the
 /// server's pre-press values until `refresh_view_state`'s re-read lands. Marking a show watched
 /// therefore changes nothing on screen for that window, and un-watching a finished one shows the
-/// part-watched PAIR for it before settling to the single disc. Self-correcting, and no verb is
-/// wrong while it lasts. Fixing it means teaching that function to carry a container's evidence too
+/// ✓ face on it for a beat before settling to −. Self-correcting, and no verb is wrong while it
+/// lasts — the toggle is offering the write the server still believes is available.
+/// Fixing it means teaching that function to carry a container's evidence too
 /// (clear `on_deck`, drive `viewed_leaf_count` to the end the write names) — which is a data-layer
 /// change three other surfaces on this page read, so it is deliberately not made from here.
 fn hero_watch_state(d: &metadata::Detail, resume: i64) -> PosterMark {
@@ -823,14 +994,15 @@ enum HeroCtl {
     Restart,
     /// the *Also available* pill, present only while a second pinned source holds this item
     Alt,
-    /// the ✓ disc — "mark as watched". Present unless the item already IS watched.
+    /// the ✓ face of the WATCHED TOGGLE — "mark as watched". The toggle is always present and
+    /// always last; this is the face it wears while the item is not watched, part-watched included.
     MarkWatched,
-    /// the − disc — "mark as unwatched". Present unless the item has never been started.
+    /// the − face of that same toggle — "mark as unwatched", worn once the item IS watched.
     MarkUnwatched,
 }
 
 /// Which of the conditional controls the row is showing: the two independent bits, plus the
-/// item's watch state, which is what decides the row's TAIL (one disc, or the part-watched pair).
+/// item's watch state, which is what decides which FACE the row's watched toggle wears.
 /// The row's whole shape is this struct, which is what lets a set CHANGE be compared (`hero_col`)
 /// rather than inferred.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -853,7 +1025,7 @@ fn hero_set() -> HeroSet {
 /// [`sections`] — no per-frame allocation on the draw path.
 ///
 /// **Order is the design's** (`Shared Sources.dc.html`, deliverable E): the play group, then *Also
-/// available*, then the watch-state discs last. The alt pill sits with the things you might do to
+/// available*, then the watched toggle last. The alt pill sits with the things you might do to
 /// the copy rather than with the things you do to your own view state.
 ///
 /// **There is no ⓘ *Track information* disc here, and its absence is a decision.** It shipped in
@@ -866,12 +1038,30 @@ fn hero_set() -> HeroSet {
 /// controls that DO something to the item. Do not re-add it here — a second door into one panel is
 /// how two surfaces come to disagree about when it is available.
 ///
-/// **The tail is one disc or TWO, and that is the design** (`CircleButton.d.ts`): each disc's glyph
-/// states the OUTCOME its press produces, so an item that is done offers only *mark unwatched* and
-/// one never started offers only *mark watched* — the button IS the circle, and a single disc that
-/// changed meaning without changing shape was the old row's real bug. A PART-WATCHED item is in
-/// neither state, and no single toggle can express both destinations, so it gets both discs: ✓ then
-/// −, the same order the two ends of the range read in. The state is [`hero_watch_state`]'s.
+/// **The tail is ONE control, always** — the watched TOGGLE (`Details Screen.dc.html`). Its glyph
+/// states the outcome its press produces: ✓ while the item is not watched, − once it is, and the
+/// press turns each into the other. The second action is therefore never missing, only one press
+/// away.
+///
+/// **This row briefly drew the two faces side by side for a PART-WATCHED item, and that was wrong.**
+/// The reasoning was that such an item is at neither end of the range so neither verb alone
+/// describes it — but the toggle does not describe the item, it owns the WATCHED FLAG, and that
+/// flag has exactly two states however far through the item you are. A part-watched item is *not
+/// watched*, so the toggle reads ✓. What being part-way through actually gives you is somewhere to
+/// start over from, and that is a different fact with its own control standing right beside this
+/// one — the ↺ disc, which is present under exactly the same condition (`has_restart`) and
+/// disappears when the item is watched because there is then no resume point left. The pair the row
+/// used to grow was that fact stated twice, once in the wrong vocabulary.
+///
+/// **The tile context menu still offers BOTH rows and is right to** (`item_menu::state_rows`). A
+/// menu is a list of available actions with no state of its own, so it can name both destinations
+/// at once; a toggle is one control that must read as the thing it currently is. Same
+/// [`hero_watch_state`] vocabulary underneath, two presentations of it — which is why the menu was
+/// deliberately left alone when this changed.
+///
+/// One further consequence, and it is what keeps the row honest: the toggle is the control that can
+/// DELETE the ↺ disc from under itself (marking watched clears the resume point), so the row can
+/// shrink under the very press that acted on it. [`hero_col`] is what re-lands the focus on it.
 fn hero_ctls(set: HeroSet) -> ([HeroCtl; 6], usize) {
     let mut v = [HeroCtl::Play; 6];
     let mut n = 1;
@@ -883,14 +1073,9 @@ fn hero_ctls(set: HeroSet) -> ([HeroCtl; 6], usize) {
         v[n] = HeroCtl::Alt;
         n += 1;
     }
-    if set.mark != PosterMark::Watched {
-        v[n] = HeroCtl::MarkWatched;
-        n += 1;
-    }
-    if set.mark != PosterMark::None {
-        v[n] = HeroCtl::MarkUnwatched;
-        n += 1;
-    }
+    // the watched toggle, wearing the face of the write it would perform
+    v[n] = if set.mark == PosterMark::Watched { HeroCtl::MarkUnwatched } else { HeroCtl::MarkWatched };
+    n += 1;
     (v, n)
 }
 
@@ -951,7 +1136,17 @@ fn hero_col() -> c_int {
         if now != v.hero_set {
             let was = ctl_at(v.hero_set, v.col);
             v.hero_set = now;
-            if let Some(i) = was.and_then(|c| index_of(now, c)) {
+            // …and the WATCHED TOGGLE is carried by its job, not by its face. It is the one control
+            // whose identity changes under its own press — ✓ becomes − — and the same press can
+            // delete the ↺ disc beside it (marking watched clears the resume point), so looking for
+            // `MarkWatched` in a set that now holds `MarkUnwatched` at a different index finds
+            // nothing and the focus falls to the clamp. That happens to land right today only
+            // because the toggle is last; saying it outright is what keeps it right if anything is
+            // ever appended after it.
+            let landed = was
+                .and_then(|c| index_of(now, c))
+                .or_else(|| was.filter(|c| is_watch_ctl(*c)).and_then(|_| watch_index(now)));
+            if let Some(i) = landed {
                 v.col = i;
             }
         }
@@ -1245,6 +1440,15 @@ fn reset_view_state(v: &mut DetailView) {
     v.column.scroll.jump(0.0);
     v.ep_hscroll.jump(0.0);
     v.tab_hscroll.jump(0.0);
+    // …and the watched toggle's unfurl, which is retained MOTION state exactly like the three
+    // above. Focus lands back on the Play pill here (`col = 0`), so leaving a page with the capsule
+    // open and opening another from it — a Related card, a cast member's film — would mount the new
+    // one with a full-width "Mark as Watched" standing in a row that has nothing focused on it, and
+    // then animate it shut. A jump, not a step: the capsule should never have been there to close.
+    v.disc_unfurl = [Spring::at(0.0); 2];
+    // …and the pop beside it, for that same reason: a page must not mount with a control already
+    // standing 7% proud of the row.
+    v.ctl_pop.reset();
     // Retained MOTION state, exactly like the scrolls above: a fresh strip's capsules must not glide
     // in from the season the previous item was parked on. Re-seating the whole component is the reset
     // (`TabStrip::new()` is the same const value the constructor uses), and the capsules' own landing
@@ -1739,6 +1943,13 @@ pub(crate) fn update(dt: f32) {
         .map(|d| tabs_layout(d))
         .unwrap_or(&[]);
     let tab_sel = metadata::current().map(|d| d.cur_season as c_int).unwrap_or(-1);
+    // Which disc the ring is on, resolved BEFORE `view()` is borrowed — same rule as the targets
+    // above, since `focus`/`hero_set` both reach `view()` themselves.
+    let disc_foc = focused_disc_slot();
+    // …and the whole row's, by control index rather than by disc slot: the pop is every control's,
+    // the unfurl only the discs'. `focus()` answers -1 off the hero row, which `try_from` turns into
+    // "nothing focused" and closes every pop.
+    let ctl_foc = usize::try_from(focus()).ok();
     let v = view();
     v.column.scroll.step(sct, K_SCROLL, dt);
     // the page ground dissolves toward the item's colours (the loaded envelope lands mid-visit, so
@@ -1758,6 +1969,18 @@ pub(crate) fn update(dt: f32) {
         let t = if i == ecol && i < en { crate::ui::widgets::CARD_FOCUS_SCALE } else { 1.0 };
         sp.step(t, 300.0, dt);
     }
+    // The discs' unfurl: the focused one opens, the other (and both, once the ring leaves the hero
+    // row entirely — `focus()` answers -1 off section 0) eases shut, so a disc losing focus animates
+    // its capsule closed instead of snapping back to a circle. Stepped every frame like the episode
+    // pops above; a `Spring` reports its own motion to `ui::idle`, so the page keeps presenting for
+    // exactly as long as one is moving.
+    for (slot, sp) in v.disc_unfurl.iter_mut().enumerate() {
+        let t = if disc_foc == Some(slot) { 1.0 } else { 0.0 };
+        sp.step(t, crate::ui::widgets::K_DISC_UNFURL, dt);
+    }
+    // The FOCUS POP the same way, and for the same reason the unfurl gets a spring each: the control
+    // being left has to keep animating after it has stopped being the focused one.
+    v.ctl_pop.step(ctl_foc, dt);
     v.ep_hscroll.step(hst, 240.0, dt);
     crate::ui::anim::probe("detail.epscroll", v.ep_hscroll.pos, v.ep_hscroll.vel, hst, dt);
     v.tab_hscroll.step(tst, 240.0, dt);
@@ -2817,45 +3040,72 @@ fn draw_ratings(p: Painter, x: f32, row_y: f32) {
 fn draw_buttons(p: Painter, env: &Env, y: f32) {
     // One shared control family (widgets::Button/CircleButton, all on the default
     // ControlStyle::Accent — the same as the info card): the focused control fills warm ACCENT with
-    // dark ink, the rest are solid dark discs. Play reuses the pill Button; the ↺ disc restarts a
-    // resumable item from 00:00; the ✓/− discs write watch state. The discs are placed by an
+    // dark ink, the rest are solid dark discs. Play reuses the pill Button; the ▶| disc restarts a
+    // resumable item from 00:00; the ✓/− toggle writes watch state. Both discs UNFURL their verb on
+    // focus (`disc_verb`), which is the only way either says what it does. They are placed by an
     // ACCUMULATED x, not per-control constants, because what sits between them comes and goes — see
     // `hero_btns`. That accumulation IS `hero_btn_rect`, which the pointer hit-test walks too, so no
     // control can be drawn in one place and clicked in another.
+    //
+    // The set and every measured width are resolved ONCE for the whole pass and walked from there
+    // (the discipline `tabs`/`amb` take in `draw`): each width is a `TTF_SizeUTF8`, and asking
+    // `hero_btn_rect` per control re-measured the entire row once per control — five controls
+    // paying for twenty-five. `hit_at` hoists the same pair for the same reason, and it is the one
+    // that matters most: it runs on every pointer MOTION event.
     let focus = focus();
     let restart = has_restart();
+    let set = hero_set();
+    let cw = hero_widths();
+    let rect = |i: c_int| hero_btn_rect_at(set, i, y, cw);
+    // The FOCUS POP, per control (`widgets::CtlPop`). It is a factor on the frame, applied by the
+    // widget about the control's centre, so it does NOT feed `hero_btn_rect_at` — the row's
+    // accumulation stays the resting one and the controls beside a popped one do not shuffle. The
+    // hit-test reads that same resting rect, which is the one thing to know here: the popped face
+    // strictly CONTAINS its resting rect, so every pixel that was clickable still is and only the
+    // ~2px halo the pop adds is not. That is the trade every popped tile in this app already makes
+    // (`home::focused_card_rect` leaves `press::scale()` out for the same reason).
+    let pop = |i: c_int| view().ctl_pop.scale(i.max(0) as usize);
 
     // The pill says what the press will DO. Home's hero says "Continue" — that row belongs to the
     // Continue Watching shelf, and the word is the shelf's. On an item page the control has a
-    // sibling: "Resume" and the ↺ disc beside it are a PAIR, read together, the way every reference
-    // client words it. The pill's width follows its label (`Button::pill_w`, the ONE pill width
+    // sibling: "Resume" and the ▶| disc beside it are a PAIR, read together, the way every reference
+    // client words it — and the disc now spells out its half ("Play from Start") when focused. The pill's width follows its label (`Button::pill_w`, the ONE pill width
     // formula, reached through `hero_pill_w` so the pointer measures the very same frame) — the
     // longer word gets its own air instead of being crammed into "Play"'s.
     let plabel = hero_pill_label();
 
-    Button::new(plabel.as_ptr(), theme::size::BODY, hero_btn_rect(BTN_PLAY, y))
+    Button::new(plabel.as_ptr(), theme::size::BODY, rect(BTN_PLAY))
         .icon(crate::ui::icons::Icon::Play)
         .focused(focus == BTN_PLAY)
+        .scale(pop(BTN_PLAY))
         .draw(env, p);
     if restart {
-        let r = hero_btn_rect(BTN_RESTART, y);
-        CircleButton::new(c"".as_ptr())
-            .icon(crate::ui::icons::Icon::Restart)
-            .at(r.x, r.y)
-            .focused(focus == BTN_RESTART)
-            .draw(env, p);
+        // **`Icon::Restart`, the `↺`, and NOT the menu row's `Icon::PlayStart`** — the one place in
+        // the app where those two marks for one action are drawn differently, and it is deliberate.
+        // This disc stands ~20px from the Play/Resume pill and is icon-ONLY at rest, so its glyph
+        // has to carry the whole "this is not that button" by itself; `play-start` is a play
+        // triangle with a leading bar, which against the pill's own triangle is a 3px stem seen
+        // from three metres. The menu row has the words *Play from Start* beside its glyph and
+        // nothing resembling a play mark near it, so it keeps the better icon. `icons::Restart`
+        // argues the split; it was reconciled the other way on 2026-08-21 and that was wrong.
+        //
+        // What the arrow does NOT say is WHAT it restarts — on a show page that is the on-deck
+        // episode, not the series — and that is answered where it always was, by the unfurled verb,
+        // in the words the menu already uses.
+        draw_disc(p, env, crate::ui::icons::Icon::Restart, HeroCtl::Restart, rect(BTN_RESTART), focus == BTN_RESTART, pop(BTN_RESTART));
     }
     // "Also available" — drawn ONLY while a second pinned source holds this item (`hero_ctls`), so
     // the 90% single-server library never pays a control for it. The trailing chevron is what says
     // the press opens a list rather than acting: it is the same disclosure mark a drill-in row
     // carries, and without it the pill reads as a fourth thing to DO to the film.
-    if let Some(i) = hero_index(HeroCtl::Alt) {
-        Button::new(ALT_LABEL.as_ptr(), theme::size::BODY, hero_btn_rect(i, y))
+    if let Some(i) = index_of(set, HeroCtl::Alt) {
+        Button::new(ALT_LABEL.as_ptr(), theme::size::BODY, rect(i))
             .trailing_icon(crate::ui::icons::Icon::ChevronDown)
             .focused(focus == i)
+            .scale(pop(i))
             .draw(env, p);
     }
-    // The watch-state discs, ONE or TWO of them (`hero_ctls`). Each **states the OUTCOME its press
+    // The watched TOGGLE — always exactly one (`hero_ctls`). It **states the OUTCOME its press
     // produces** rather than the state the item is in — the design system's rule for a control that
     // is already a circle (`CircleButton.d.ts`): the BARE check / minus, never the filled
     // check-circle / minus-circle a menu ROW carries, because the button is the circle and a disc
@@ -2865,19 +3115,40 @@ fn draw_buttons(p: Painter, env: &Env, y: f32) {
     // a watched-and-unfocused check `RESUME_FILL`, from when ONE disc had to carry both states; the
     // glyph carries the state now, and amber has since become the resume BAR's alone (`theme.rs`)
     // precisely so the two cannot be confused at a glance.
+    //
+    // …and it UNFURLS while it holds focus, into a capsule carrying the verb its press performs
+    // (`disc_verb`). The mark alone is the one thing in this row nobody can read: a pill says its
+    // word and a chevron says "this opens", but a bare ✓ over a backdrop is a shape.
     for (ctl, icon) in [
         (HeroCtl::MarkWatched, crate::ui::icons::Icon::Check),
         (HeroCtl::MarkUnwatched, crate::ui::icons::Icon::Minus),
     ] {
-        if let Some(i) = hero_index(ctl) {
-            let r = hero_btn_rect(i, y);
-            CircleButton::new(c"".as_ptr())
-                .icon(icon)
-                .at(r.x, r.y)
-                .focused(focus == i)
-                .draw(env, p);
-        }
+        let Some(i) = index_of(set, ctl) else { continue }; // one of the two faces, never both
+        draw_disc(p, env, icon, ctl, rect(i), focus == i, pop(i));
     }
+}
+
+/// One of the hero row's DISCS: the glyph, and the verb it unfurls to while focused.
+///
+/// Shared by the restart disc and the watched toggle because the two differ in exactly their icon
+/// and their verb, and in nothing else — the frame, the unfurl spring, the style and the focus rule
+/// are one behaviour. `frame`, never `at`: the row has already reserved this control's unfurled
+/// width, and a disc that kept its own 60 would draw its capsule clipped back to a circle
+/// (`CircleButton::frame`).
+fn draw_disc(
+    p: Painter,
+    env: &Env,
+    icon: crate::ui::icons::Icon,
+    ctl: HeroCtl,
+    r: Rect,
+    focused: bool,
+    scale: f32,
+) {
+    let mut b = CircleButton::new(c"".as_ptr()).icon(icon).frame(r).focused(focused).scale(scale);
+    if let Some((slot, label)) = disc_verb(ctl, watch_names_show()) {
+        b = b.label(label.as_ptr(), view().disc_unfurl[slot].pos);
+    }
+    b.draw(env, p);
 }
 
 /// Visibility (0..1) of the pinned compact title at scroll depth `scroll`: 1 while the first
@@ -3400,7 +3671,18 @@ pub(crate) fn focus_is_card() -> bool {
     if view().section == 2 {
         return view().ep_row == EpRow::Still;
     }
-    matches!(view().section, 3 | 4)
+    // The SEASON STRIP is a press surface, and it is the odd one in this list: everything else here
+    // is a tile. It is here for one reason — the hold is armed only where a press BEGINS (`app.rs`),
+    // so a tab that activated on the key-DOWN could never grow the context menu that marks a whole
+    // season watched (`open_season_menu`). Making it a press moves the tab's own activation to the
+    // RELEASE, which is what a tap should do anyway, and lets `press::tick`'s long latch cancel that
+    // activation so a HOLD opens the menu instead of also switching the season under it.
+    //
+    // It gets no press DIP, unlike every tile above: the strip's focus mark is a travelling capsule
+    // the pills share as their ground (`TabStrip`), and scaling one pill off a capsule that stays
+    // put would draw a ring around it rather than a press. The capsule arriving IS the tab's
+    // feedback; the popover's own appear spring is the hold's.
+    matches!(view().section, 1 | 3 | 4)
 }
 
 pub(crate) fn on_ok() -> bool {
@@ -3454,9 +3736,9 @@ pub(crate) fn on_ok() -> bool {
                 // The `guid` rides along because this page HAS it, and it is the guid OF `d.rk` —
                 // the same pair the page is mounted on. It is what makes the write follow the
                 // TITLE: a film both sources hold ends up watched on both (`crate::viewstate`).
-                // NB the verb stays the CONTROL's `w` from `watch_write` above and is NOT re-derived
-                // from `d.watched` here — a part-watched hero draws BOTH discs, so a bool cannot say
-                // which one was pressed.
+                // NB the verb stays the CONTROL's `w` from `watch_write` above and is NOT
+                // re-derived from `d.watched` here: `d` can have moved since the frame the user
+                // aimed at, and the FACE they aimed at is the promise that must be kept.
                 if let Some((sid, rk, guid)) =
                     metadata::current().map(|d| (d.sid, d.rk.clone(), d.guid.clone()))
                 {
@@ -3777,6 +4059,88 @@ pub(crate) fn focused_episode_rect() -> Option<Rect> {
     Some(Rect::new(x, top, EP_W, EP_H).scaled(sc))
 }
 
+
+// ---- the season strip's context-menu seam ----------------------------------------------------
+// The filmstrip's three functions above, for the tab row. A season is the one level of this show
+// with no marking surface of its own: an episode has its still's long press, the show has the
+// hero's toggle (and its poster's menu on every card screen), and the middle — "I have seen all of
+// season 3" — had nowhere to be said. It is also the level a user most often means: a show is 24
+// seasons of commitment to mark in one press, an episode is one of 400.
+
+/// The focused season tab's `(ratingKey, watch state)` — what the long-press menu is built from.
+///
+/// `None` unless the tab strip actually holds focus, and `None` while a season fetch is in flight,
+/// for [`focused_episode`]'s reason turned one row up: the strip keeps drawing and keeps focus
+/// through a switch, so an index into it during the fetch can name a season the user has already
+/// left.
+///
+/// The state is the SEASON's own counts, not the show's and not the loaded episodes': a season the
+/// user has never opened still knows how many of its leaves are viewed, because `includeMeta`
+/// brings `leafCount`/`viewedLeafCount` down with the season list itself.
+pub(crate) fn focused_season() -> Option<(String, PosterMark)> {
+    if metadata::season_loading() {
+        return None;
+    }
+    let v = view();
+    if v.section != 1 {
+        return None;
+    }
+    let s = metadata::current()?.seasons.get(v.col.max(0) as usize)?;
+    (!s.rk.is_empty()).then(|| (s.rk.clone(), season_watch_state(s)))
+}
+
+/// A season's watch state, in the app's ONE vocabulary ([`PosterMark`]).
+///
+/// PURE, and the season-scope twin of `hero_watch_state`/`ep_watch_state`. A container has no
+/// resume point of its own, so the three states are read off the leaf counts alone —
+/// [`metadata::Season::watched`] is the "all of them" end, and its `leaf_count > 0` guard is what
+/// stops a season the server sent no counts for reading as finished (`0 >= 0`).
+fn season_watch_state(s: &metadata::Season) -> PosterMark {
+    if s.watched() {
+        PosterMark::Watched
+    } else if s.viewed_leaf_count > 0 {
+        PosterMark::InProgress
+    } else {
+        PosterMark::None
+    }
+}
+
+/// The focused season pill's DRAWN rect, in screen space — what the popover anchors BESIDE.
+///
+/// Derived from the formulas `draw_tabs` walks (`tabs_layout` for the pill, the live h-scroll,
+/// `section_screen_top` for the band), never recorded, so the panel hangs off the pill the user is
+/// looking at. Unlike the filmstrip's, there is no pop spring to fold in: a tab marks focus with a
+/// travelling capsule, not a scale.
+pub(crate) fn focused_season_rect() -> Option<Rect> {
+    let v = view();
+    if v.section != 1 {
+        return None;
+    }
+    let d = metadata::current()?;
+    let i = v.col.max(0) as usize;
+    let lay = tabs_layout(d).get(i)?;
+    let top = section_screen_top(1)?;
+    let sx = view().tab_hscroll.pos;
+    let r = tab_pill_rect(lay, top);
+    Some(Rect::new(r.x - sx, r.y, r.w, r.h))
+}
+
+/// Re-draw the focused season pill ON TOP of the popover's dim — the cut-out
+/// [`crate::ui::popover::Opener`] takes, so the one thing the panel is ABOUT stays lit.
+///
+/// The whole STRIP is re-drawn rather than the one pill, for the filmstrip's reason: the pills
+/// share a travelling capsule (`TabStrip`), which is their ground, and lifting a pill out from
+/// over it would leave the highlight behind on the dimmed row.
+pub(crate) fn redraw_focused_season() {
+    crate::ui::guard(|| {
+        if view().section != 1 || metadata::current().is_none() {
+            return;
+        }
+        let Some(top) = section_screen_top(1) else { return };
+        draw_tabs(Painter::root().alpha(crate::ui::nav::page_alpha()).translate(0.0, top));
+    });
+}
+
 // ---- the Related shelf's context-menu seam --------------------------------------------------
 // The filmstrip's three functions above, for the shelf below it. They exist because a hold on a
 // Related tile used to do nothing at all: the shelf ARMED the same press every other card surface
@@ -3881,7 +4245,7 @@ pub(crate) fn redraw_focused_related() {
 /// Re-read the mounted item from the server after something changed its view state, KEEPING the
 /// season the user was browsing.
 ///
-/// Shared by the hero's watch-state discs and by the filmstrip's context menu, which mark different
+/// Shared by the hero's watched toggle and by the filmstrip's context menu, which mark different
 /// things watched — the whole show versus one of its episodes — but both need this page to be
 /// showing the truth afterwards (the tab ticks, the episode checks, the resume bars and the hero's
 /// own discs all read the refetched item).
@@ -5180,7 +5544,7 @@ mod tests {
     /// (`metadata::resume_ns`), not a raw `viewOffset > 0`.
     ///
     /// Asserted through [`hero_index`] rather than through a control COUNT, deliberately: the count
-    /// also moves with the watch-state tail (a part-watched item ends the row with two discs, not
+    /// also moves with the watched toggle (whose face changes but whose place does not, not
     /// one), so a bare number here would be graded by two independent rules and would have to be
     /// re-derived whenever either changed. `restart_and_the_watch_tail_are_independent` is where
     /// the two are checked together.
@@ -5218,10 +5582,11 @@ mod tests {
         mount(None, 0);
     }
 
-    /// The row's two conditional GROUPS are independent, and the count is their product: the ↺ disc
-    /// asks "would Play resume", the tail asks "what watch state is this in", and a part-watched
-    /// item answers yes to the first and *both discs* to the second. Four controls, which is the
-    /// widest an ordinary single-source page gets.
+    /// The row's two conditional groups are independent and answer DIFFERENT questions, which is
+    /// the whole reason a part-watched item does not grow a second watch control: the ↺ disc asks
+    /// "would Play resume" and the toggle asks "is the watched flag set". A part-watched item
+    /// answers yes to the first and *no* to the second — so it gets ↺ **and a ✓**, three controls,
+    /// the widest an ordinary single-source page gets.
     #[test]
     fn restart_and_the_watch_tail_are_independent() {
         let _serial = crate::testlock::serial();
@@ -5236,19 +5601,18 @@ mod tests {
         assert_eq!(hero_btns(), 2, "Play + −");
         assert_eq!(hero_action(1), HeroAction::MarkUnwatched, "a finished item offers only the way back");
 
-        // part-watched: ↺ AND both discs — the widest ordinary row
+        // part-watched: ↺ for the resume point, and the toggle still reads ✓ because the item is
+        // NOT watched. The two facts, each with its own control — the widest ordinary row.
         mount(Some(movie(1_800_000, 7_200_000)), 0);
-        assert_eq!(hero_btns(), 4, "Play + ↺ + ✓ + −");
+        assert_eq!(hero_btns(), 3, "Play + ↺ + ✓");
         assert_eq!(hero_action(1), HeroAction::Restart);
         assert_eq!(hero_action(2), HeroAction::MarkWatched);
-        assert_eq!(hero_action(3), HeroAction::MarkUnwatched);
 
-        // a show mid-run has no resume point of its own and still gets both discs, because the
-        // question the tail answers is about the SERIES, not about one leaf
+        // a show mid-run has no resume point of its own, so it is the toggle alone — and it reads
+        // ✓, because the question is whether the SERIES is watched and it is not
         mount(Some(show(0, 2_700_000)), 0);
-        assert_eq!(hero_btns(), 3, "Play + ✓ + −, with no ↺");
+        assert_eq!(hero_btns(), 2, "Play + ✓, with no ↺");
         assert_eq!(hero_action(1), HeroAction::MarkWatched);
-        assert_eq!(hero_action(2), HeroAction::MarkUnwatched);
 
         mount(None, 0);
     }
@@ -5258,12 +5622,13 @@ mod tests {
     /// and because the reason lives in `metadata::set_watched_local` rather than in the resolver.
     ///
     /// That function edits the matched item's own `watched` and `resume_ms`, which is the whole of
-    /// a leaf's evidence: a part-watched movie marked watched loses its resume point and its ✓
-    /// disc in the same instant. A SHOW's progress is not on the show — it is `on_deck` and the
-    /// seasons' `viewed_leaf_count`, which keep the server's pre-press values — so the tail keeps
-    /// reading `InProgress` until `refresh_view_state`'s re-read replaces the item. No verb is wrong
-    /// meanwhile (both ends stay reachable); the row simply does not move yet. Teach the data layer
-    /// to carry a container's evidence and THIS test is what should fail.
+    /// a leaf's evidence: a part-watched movie marked watched loses its resume point and its ↺ disc
+    /// in the same instant, and the toggle flips to −. A SHOW's progress is not on the show — it is
+    /// `on_deck` and the seasons' `viewed_leaf_count`, which keep the server's pre-press values —
+    /// so the row keeps reading `InProgress` until `refresh_view_state`'s re-read replaces the
+    /// item. The toggle is not WRONG meanwhile, it is merely stale: it still offers ✓, which is
+    /// what the server still believes. Teach the data layer to carry a container's evidence and
+    /// THIS test is what should fail.
     #[test]
     fn the_optimistic_flip_settles_a_leaf_at_once_and_a_container_a_round_trip_late() {
         let _serial = crate::testlock::serial();
@@ -5271,16 +5636,16 @@ mod tests {
 
         // LEAF: the press frame IS the settled frame
         mount(Some(movie(1_800_000, 7_200_000)), 0);
-        assert_eq!(hero_btns(), 4, "Play + ↺ + ✓ + −");
+        assert_eq!(hero_btns(), 3, "Play + ↺ + ✓");
         assert!(metadata::set_watched_local(ServerId::UNSET, "m1", true), "the flip found the item");
-        assert_eq!(hero_btns(), 2, "the resume point and the ✓ disc go together, at once");
+        assert_eq!(hero_btns(), 2, "the resume point goes, and the toggle flips, at once");
         assert_eq!(hero_action(1), HeroAction::MarkUnwatched);
 
         // CONTAINER: the same call, and the row does not move
         mount(Some(show(600_000, 2_700_000)), 0);
-        assert_eq!(hero_btns(), 4, "Play + ↺ + ✓ + −");
+        assert_eq!(hero_btns(), 3, "Play + ↺ + ✓");
         assert!(metadata::set_watched_local(ServerId::UNSET, "s1", true), "the flip found the show");
-        assert_eq!(hero_btns(), 4, "the evidence the tail reads is the server's, and it has not moved");
+        assert_eq!(hero_btns(), 3, "the evidence the row reads is the server's, and it has not moved");
 
         // …and the re-read is what settles it: no on-deck episode, no viewed leaves, watched
         metadata::set_current_for_test(Some(Detail {
@@ -5344,7 +5709,8 @@ mod tests {
     /// **What a press WRITES comes from the disc, not from the item.** The verb used to be derived
     /// (`if watched { Unwatched } else { Watched }`), which a part-watched item has no single answer
     /// for — and which meant a press acted on a fact that could have moved since the frame the user
-    /// was looking at. Each disc now names one verb, and the pair on a part-watched item names both.
+    /// was looking at. The toggle's FACE now names the verb, and the face is a fact about the item
+    /// that cannot change between the frame drawn and the press dispatched.
     #[test]
     fn each_watch_disc_writes_its_own_verb() {
         let _serial = crate::testlock::serial();
@@ -5356,14 +5722,13 @@ mod tests {
             assert_eq!(a.watch_write(), None, "{a:?} is not a view-state write");
         }
 
-        // through the row: a part-watched item reaches BOTH verbs without its state changing under
-        // the press, which is the whole point of the pair
-        mount(Some(movie(1_800_000, 7_200_000)), 0);
+        // …and through the row, where the toggle wears ONE face at a time and its write is that
+        // face's. A part-watched item is not watched, so the reachable verb is `Watched` — the
+        // other end is one press away, not one control away.
         let verb = |ctl| hero_index(ctl).map(|i| hero_action(i).watch_write());
+        mount(Some(movie(1_800_000, 7_200_000)), 0);
         assert_eq!(verb(HeroCtl::MarkWatched), Some(Some(Write::Watched)));
-        assert_eq!(verb(HeroCtl::MarkUnwatched), Some(Some(Write::Unwatched)));
-
-        // and the single-disc rows reach exactly the one that is not already true of the item
+        assert_eq!(verb(HeroCtl::MarkUnwatched), None, "part-watched is NOT watched: no − face");
         mount(Some(movie(0, 7_200_000)), 0);
         assert_eq!(verb(HeroCtl::MarkWatched), Some(Some(Write::Watched)));
         assert_eq!(verb(HeroCtl::MarkUnwatched), None, "an unstarted item has nothing to un-watch");
@@ -5375,8 +5740,8 @@ mod tests {
     }
 
     /// The index→action mapping, which is the whole reason the row can grow a control: with a
-    /// resume point index 1 is the restart disc and the watch discs have moved to 2 and 3; without
-    /// one, index 1 is the sole ✓ disc and there is no restart to reach.
+    /// resume point index 1 is the restart disc and the toggle has moved to 2; without one, index 1
+    /// is the toggle and there is no restart to reach.
     #[test]
     fn hero_indices_mean_different_actions_in_the_two_control_sets() {
         let _serial = crate::testlock::serial();
@@ -5389,17 +5754,17 @@ mod tests {
         mount(Some(movie(1_800_000, 7_200_000)), 0);
         assert_eq!(hero_action(0), HeroAction::Play);
         assert_eq!(hero_action(1), HeroAction::Restart);
-        assert_eq!(hero_action(2), HeroAction::MarkWatched, "the discs moved, and OK must follow them");
-        assert_eq!(hero_action(3), HeroAction::MarkUnwatched);
+        assert_eq!(hero_action(2), HeroAction::MarkWatched, "the toggle moved, and OK must follow it");
+        assert_eq!(hero_action(3), HeroAction::None, "and there is no index 3");
 
         mount(None, 0);
     }
 
-    /// The ✓ disc deletes ITSELF, and the control the focus is sitting on is that very disc: the
-    /// press marks the item watched, which clears the server's `viewOffset` (so the ↺ disc goes)
-    /// and moves the item out of the part-watched tail (so ✓ goes too, leaving only −). The row
-    /// goes 4 → 2 under a focus parked at index 2, and the control under it is not merely displaced
-    /// — it no longer exists, which is the case `index_of` cannot answer and the clamp must.
+    /// **The toggle rewrites the row under its own press, and the focus must follow it.** Marking
+    /// a part-watched item watched clears the server's `viewOffset`, so the ↺ disc beside it goes;
+    /// and the toggle itself changes FACE, ✓ becoming −. The row goes 3 → 2 under a focus parked at
+    /// index 2, and the control under it is not merely displaced — the `HeroCtl` it was is not in
+    /// the new set at all, which is the case `index_of` cannot answer and [`watch_index`] must.
     /// Anything else leaves focus past the end, where nothing draws focused and, since
     /// `hero_action` would answer `None`, every later OK is inert.
     #[test]
@@ -5407,19 +5772,19 @@ mod tests {
         let _serial = crate::testlock::serial();
 
         mount(Some(movie(1_800_000, 7_200_000)), 2);
-        assert_eq!(focus(), 2, "4-button row: focus sits on the ✓ disc");
+        assert_eq!(focus(), 2, "3-button row: focus sits on the toggle, wearing ✓");
         assert_eq!(hero_action(focus()), HeroAction::MarkWatched);
 
-        // the scrobble landed: watched, and no resume point any more, so the restart disc and the
-        // ✓ disc are both gone
+        // the scrobble landed: watched, and no resume point any more — so the ↺ disc is gone and
+        // the toggle has flipped to −, one index to the left of where the focus was parked
         metadata::set_current_for_test(Some(Detail { watched: true, ..movie(0, 7_200_000) }));
         assert_eq!(hero_btns(), 2);
-        assert_eq!(focus(), 1, "focus lands on the row's last control, not past the end");
-        assert_eq!(view().col, 1, "and the clamp is written back — it IS the state");
+        assert_eq!(focus(), 1, "focus follows the toggle, and does not sit past the end");
+        assert_eq!(view().col, 1, "and it is written back — it IS the state");
         assert_eq!(
             hero_action(view().col),
             HeroAction::MarkUnwatched,
-            "the one remaining disc, which is also the honest undo of the press that got here"
+            "still the toggle, now offering the honest undo of the press that got here"
         );
 
         mount(None, 0);
@@ -5532,7 +5897,7 @@ mod tests {
 
     /// **The gate, as the actions row sees it.** One source and the row is what it always was — no
     /// control, no index, no layout. A second source holding the film adds exactly one control, and
-    /// it lands BEFORE the watch-state discs, which stay at the end.
+    /// it lands BEFORE the watched toggle, which stays at the end.
     #[test]
     fn the_actions_row_grows_an_also_available_control_only_for_a_second_source() {
         let _serial = crate::testlock::serial();
@@ -5549,18 +5914,17 @@ mod tests {
         assert_eq!(hero_index(HeroCtl::MarkWatched), Some(2));
 
         // EVERY conditional control at once, which is the widest the row ever gets: the resume
-        // disc, the alt pill, then the part-watched PAIR
+        // disc, the alt pill, then the watched toggle
         mount(Some(movie(1_800_000, 7_200_000)), 0);
         alt_arm("m1");
-        assert_eq!(hero_btns(), 5);
+        assert_eq!(hero_btns(), 4);
         assert_eq!(hero_action(1), HeroAction::Restart);
         assert_eq!(hero_action(2), HeroAction::Alt);
         assert_eq!(hero_action(3), HeroAction::MarkWatched);
-        assert_eq!(hero_action(4), HeroAction::MarkUnwatched);
-        assert_eq!(hero_action(5), HeroAction::None, "and there is no index 5");
+        assert_eq!(hero_action(4), HeroAction::None, "and there is no index 4");
 
         alt_clear();
-        assert_eq!(hero_btns(), 4, "the control leaves with the copies that justified it");
+        assert_eq!(hero_btns(), 3, "the control leaves with the copies that justified it");
 
         // …and the NEGATIVE the gate is really about: a copy list that names only the source you
         // are already on adds nothing. That is also how "not pinned" reads from here — the store
@@ -5714,7 +6078,6 @@ mod tests {
                 HeroCtl::Restart,
                 HeroCtl::Alt,
                 HeroCtl::MarkWatched,
-                HeroCtl::MarkUnwatched,
             ]
         );
         // …and the ordinary set: one server, nothing started. Play, then the one watch disc.
@@ -5730,39 +6093,231 @@ mod tests {
     /// Every set the row can be in, as the PRODUCT of its three independent facts — the ↺ disc, the
     /// alt pill and the watch-state tail — rather than a hand-listed sample. The tail is the one
     /// that adds a SECOND control at the far end, so a walk that was right for a one-disc tail can
-    /// still be wrong for the pair, and a sample list would not have said so.
-    #[test]
-    fn the_actions_row_accumulates_around_a_variable_width_control() {
-        let (y, pw, alt_w) = (812.0f32, PW + 62.0, 340.0f32);
-        let sets = [false, true].into_iter().flat_map(|restart| {
+    /// still be wrong for another, and a sample list would not have said so.
+    /// Every `HeroSet` the row can be in, as the product of its three independent facts.
+    fn every_hero_set() -> impl Iterator<Item = HeroSet> {
+        [false, true].into_iter().flat_map(|restart| {
             [false, true].into_iter().flat_map(move |alt| {
                 [PosterMark::None, PosterMark::InProgress, PosterMark::Watched]
                     .into_iter()
                     .map(move |mark| HeroSet { restart, alt, mark })
             })
-        });
-        for set in sets {
+        })
+    }
+
+    /// The row's widths with the watched toggle CLOSED — what every geometry assertion that is not
+    /// about the unfurl wants, and what the row looked like before the unfurl existed.
+    fn closed_widths(pw: f32, alt_w: f32) -> HeroWidths {
+        HeroWidths { pill: pw, alt: alt_w, disc: [CD; 2] }
+    }
+
+    #[test]
+    fn the_actions_row_accumulates_around_a_variable_width_control() {
+        let (y, pw, alt_w) = (812.0f32, PW + 62.0, 340.0f32);
+        // Swept at THREE unfurl phases, not just at rest: a watch disc is a variable-width control
+        // too now, and mid-animation it is a width no constant in this file mentions. `0.37` is an
+        // arbitrary in-between — the point is that nothing downstream may assume the two endpoints.
+        for e in [0.0f32, 0.37, 1.0] {
+            let cw = HeroWidths {
+                pill: pw,
+                alt: alt_w,
+                disc: [CircleButton::cap_w(CD, e, 120.0), CircleButton::cap_w(CD, e, 160.0)],
+            };
+            for set in every_hero_set() {
+                let (_, n) = hero_ctls(set);
+                let mut prev = hero_btn_rect_at(set, 0, y, cw);
+                assert_eq!((prev.x, prev.w), (MARGIN_X, pw), "the play pill starts the row at its own width");
+                for i in 1..n as c_int {
+                    let r = hero_btn_rect_at(set, i, y, cw);
+                    assert_eq!(r.x, prev.x + prev.w + CGAP, "control {i} accumulates past its neighbour");
+                    assert_eq!(r.h, CD, "every control in the row stands the same height");
+                    assert!(!prev.contains(r.cx(), r.cy()) && !r.contains(prev.cx(), prev.cy()));
+                    prev = r;
+                }
+                // the alt control is the pill's width, not a disc's — the whole reason the walk exists
+                if let Some(i) = index_of(set, HeroCtl::Alt) {
+                    assert_eq!(hero_btn_rect_at(set, i, y, cw).w, alt_w);
+                }
+                // …and the watched toggle is the width its unfurl asked for, not a disc pitch —
+                // whichever of its two faces this set is wearing.
+                assert_eq!(
+                    hero_btn_rect_at(set, watch_index(set).unwrap(), y, cw).w,
+                    cw.disc[1],
+                    "the toggle at e={e} on {set:?}"
+                );
+                if let Some(i) = index_of(set, HeroCtl::Restart) {
+                    assert_eq!(hero_btn_rect_at(set, i, y, cw).w, cw.disc[0], "the ▶| disc at e={e}");
+                }
+                // …and a watch-state disc still ends the row, whichever tail this set has
+                assert_eq!(hero_btn_rect_at(set, n as c_int - 1, y, cw).x, prev.x);
+                let last = ctl_at(set, n as c_int - 1);
+                assert!(
+                    matches!(last, Some(HeroCtl::MarkWatched) | Some(HeroCtl::MarkUnwatched)),
+                    "the row ends on a watch disc, not on {last:?}"
+                );
+            }
+        }
+    }
+
+    /// **The unfurl can never push the row past the people column.** [`disc_caps_at`] is what
+    /// guarantees it, and this is the guarantee: over every set, every unfurl phase and a label
+    /// sweep that runs from trivially short to absurd, the row's right edge stays inside
+    /// [`FACTS_R`]. A disc that cannot afford its verb must report `CD` and stay a disc.
+    ///
+    /// The widths here are the same generous stand-ins the sibling tests use (the host links no
+    /// SDL_ttf), which is why the sweep matters more than any single number: the real question is
+    /// whether the RULE holds, not whether today's five strings happen to fit.
+    ///
+    /// The phases swept are the ones the springs can actually be in. They are complementary drives
+    /// of one stiffness, so their sum never exceeds one full capsule — see [`disc_caps_at`]. That
+    /// bound is the rule's premise, so this honours it rather than testing states the pair cannot
+    /// reach: the hand-off `(e, 1-e)` in both directions, and each disc alone.
+    #[test]
+    fn an_unfurling_disc_never_crosses_the_people_column() {
+        let (pw, alt_w) = (PW + 62.0, 340.0f32);
+        let mut ever_opened = false;
+        for set in every_hero_set() {
             let (_, n) = hero_ctls(set);
-            let mut prev = hero_btn_rect_at(set, 0, y, pw, alt_w);
-            assert_eq!((prev.x, prev.w), (MARGIN_X, pw), "the play pill starts the row at its own width");
-            for i in 1..n as c_int {
-                let r = hero_btn_rect_at(set, i, y, pw, alt_w);
-                assert_eq!(r.x, prev.x + prev.w + CGAP, "control {i} accumulates past its neighbour");
-                assert_eq!(r.h, CD, "every control in the row stands the same height");
-                assert!(!prev.contains(r.cx(), r.cy()) && !r.contains(prev.cx(), prev.cy()));
-                prev = r;
+            // trivially short, the real verbs paired as the row really pairs them, and two absurd
+            for lw in [[10.0f32, 12.0], [201.0, 316.0], [201.0, 233.0], [400.0, 400.0], [900.0, 40.0]] {
+                for e in every_unfurl_phase() {
+                    let disc = disc_caps_at(set, pw, alt_w, e, lw);
+                    let cw = HeroWidths { pill: pw, alt: alt_w, disc };
+                    let last = hero_btn_rect_at(set, n as c_int - 1, 0.0, cw);
+                    assert!(
+                        last.x + last.w <= FACTS_R,
+                        "{set:?} at e={e:?} labels={lw:?} ends at {} past {FACTS_R}",
+                        last.x + last.w
+                    );
+                    for w in disc {
+                        assert!(w >= CD, "a disc never draws narrower than itself");
+                        ever_opened |= w > CD;
+                    }
+                }
             }
-            // the alt control is the pill's width, not a disc's — the whole reason the walk exists
-            if let Some(i) = index_of(set, HeroCtl::Alt) {
-                assert_eq!(hero_btn_rect_at(set, i, y, pw, alt_w).w, alt_w);
+        }
+        assert!(ever_opened, "the sweep must actually exercise an OPEN capsule, not only refusals");
+    }
+
+    /// The unfurl phases the PAIR can actually be in — see [`disc_caps_at`]'s complementary-spring
+    /// argument, which is this sweep's premise.
+    fn every_unfurl_phase() -> impl Iterator<Item = [f32; 2]> {
+        [0.0f32, 0.25, 0.5, 0.75, 1.0]
+            .into_iter()
+            .flat_map(|e| [[e, 1.0 - e], [1.0 - e, e], [e, 0.0], [0.0, e]])
+    }
+
+    /// **Every verb this row can actually carry fits the widest row it can actually build.** The
+    /// sweep above proves the RULE (nothing crosses `FACTS_R`); this proves the rule is not
+    /// achieving that by refusing everything, which it would also pass. Real metrics are
+    /// unavailable here — the host links no SDL_ttf — so the verbs are stand-ins measured from the
+    /// shipped `appfont-bold` at `size::BODY`, and the pills are the generous ones the sibling
+    /// tests use. A verb that grows past this has to be re-checked on the device, not here.
+    #[test]
+    fn the_real_verbs_all_fit_the_widest_row() {
+        let (pw, alt_w) = (PW + 62.0, 340.0f32);
+        // measured 2026-08-21 from pkg/appfont-bold.ttf at 28px
+        const VERBS: [(&str, f32); 5] = [
+            ("Play from Start", 201.0),
+            ("Mark as Watched", 233.0),
+            ("Mark as Unwatched", 267.0),
+            ("Mark Show as Watched", 316.0),
+            ("Mark Show as Unwatched", 350.0),
+        ];
+        for (verb, lw) in VERBS {
+            for set in every_hero_set() {
+                // paired with the widest verb the OTHER slot can carry, since the budget is shared
+                let widest = VERBS.iter().map(|v| v.1).fold(0.0f32, f32::max);
+                let got = disc_caps_at(set, pw, alt_w, [1.0, 0.0], [lw, widest]);
+                assert!(got[0] > CD, "{verb:?} ({lw}px) must open on {set:?}, not be refused");
             }
-            // …and a watch-state disc still ends the row, whichever tail this set has
-            assert_eq!(hero_btn_rect_at(set, n as c_int - 1, y, pw, alt_w).x, prev.x);
-            let last = ctl_at(set, n as c_int - 1);
-            assert!(
-                matches!(last, Some(HeroCtl::MarkWatched) | Some(HeroCtl::MarkUnwatched)),
-                "the row ends on a watch disc, not on {last:?}"
-            );
+        }
+    }
+
+    /// The budget refuses whole verbs, never partial ones — the facts row's own ladder rule. A
+    /// label a few pixels too wide for the room collapses BOTH discs all the way back (the pair
+    /// shares one budget, so they are refused together — [`disc_caps_at`]).
+    #[test]
+    fn a_verb_that_does_not_fit_is_dropped_whole() {
+        let (pw, alt_w) = (PW + 62.0, 340.0f32);
+        let widest = HeroSet { restart: true, alt: true, mark: PosterMark::InProgress };
+        let (_, n) = hero_ctls(widest);
+        let closed = hero_btn_rect_at(widest, n as c_int - 1, 0.0, closed_widths(pw, alt_w));
+        let budget = CircleButton::label_budget(CD, FACTS_R - (closed.x + closed.w));
+        assert!(budget > 0.0, "the closed widest row must leave SOME room, else the rule is untestable");
+
+        let open = disc_caps_at(widest, pw, alt_w, [0.0, 1.0], [budget; 2]);
+        assert!(open[1] > CD, "a verb that exactly spends the budget opens");
+        let last =
+            hero_btn_rect_at(widest, n as c_int - 1, 0.0, HeroWidths { pill: pw, alt: alt_w, disc: open });
+        assert!(last.x + last.w <= FACTS_R, "…and spending the whole budget still clears the column");
+
+        assert_eq!(
+            disc_caps_at(widest, pw, alt_w, [0.0, 1.0], [budget + 3.0; 2]),
+            [CD; 2],
+            "a verb that does not fit leaves BOTH controls plain discs"
+        );
+    }
+
+    /// The unfurled verbs ARE the press-and-hold menu's — one vocabulary for one set of actions.
+    /// `item_menu` builds its rows from these same strings, and a control that said one thing while
+    /// a row beside it said another would read as two different actions.
+    ///
+    /// …and the SUBJECT-naming pair are those same words with one noun inserted, never a reworded
+    /// second vocabulary: the toggle names what it writes to, it does not rephrase the write.
+    #[test]
+    fn the_unfurled_verbs_are_the_menus_own() {
+        // The C strings the painter needs cannot BE the shared `&str` (a `CString` per frame is an
+        // allocation on the draw path), so the agreement is asserted instead of shared.
+        assert_eq!(MARK_WATCHED_LABEL.to_str().unwrap(), crate::ui::widgets::MARK_WATCHED_VERB);
+        assert_eq!(MARK_UNWATCHED_LABEL.to_str().unwrap(), crate::ui::widgets::MARK_UNWATCHED_VERB);
+        assert_eq!(PLAY_FROM_START_LABEL.to_str().unwrap(), crate::ui::widgets::PLAY_FROM_START_VERB);
+        for (plain, named) in [
+            (MARK_WATCHED_LABEL, MARK_SHOW_WATCHED_LABEL),
+            (MARK_UNWATCHED_LABEL, MARK_SHOW_UNWATCHED_LABEL),
+        ] {
+            let (p, w) = (plain.to_str().unwrap(), named.to_str().unwrap());
+            assert_eq!(w, p.replacen("Mark ", "Mark Show ", 1), "{w:?} is {p:?} naming its subject");
+        }
+    }
+
+    /// **Both discs carry a verb; neither pill does; the two never share a slot.** The slots index
+    /// the spring pair, so a collision would animate one control off the other's focus — and a
+    /// missing one would leave a disc mute, which is the whole thing this lane exists to fix.
+    ///
+    /// Plus the row-level rule the design turns on: **exactly one** watched toggle, always last, in
+    /// every set the page can build.
+    #[test]
+    fn the_row_offers_exactly_one_watched_toggle() {
+        assert_eq!(disc_verb(HeroCtl::Restart, false), Some((0, PLAY_FROM_START_LABEL)));
+        assert_eq!(disc_verb(HeroCtl::Restart, true), Some((0, PLAY_FROM_START_LABEL)),
+            "the restart disc acts on the subject the blurb just named, so it never takes a noun");
+        assert_eq!(disc_verb(HeroCtl::MarkWatched, false), Some((1, MARK_WATCHED_LABEL)));
+        assert_eq!(disc_verb(HeroCtl::MarkUnwatched, false), Some((1, MARK_UNWATCHED_LABEL)));
+        assert_eq!(disc_verb(HeroCtl::MarkWatched, true), Some((1, MARK_SHOW_WATCHED_LABEL)));
+        assert_eq!(disc_verb(HeroCtl::MarkUnwatched, true), Some((1, MARK_SHOW_UNWATCHED_LABEL)));
+        for c in [HeroCtl::Play, HeroCtl::Alt] {
+            for named in [false, true] {
+                assert_eq!(disc_verb(c, named), None, "{c:?} is a pill — it says its word at rest");
+            }
+        }
+        // no two controls of one set may share a spring slot
+        for set in every_hero_set() {
+            let (v, n) = hero_ctls(set);
+            let mut seen = [false; 2];
+            for &c in &v[..n] {
+                if let Some((slot, _)) = disc_verb(c, false) {
+                    assert!(!seen[slot], "{set:?}: two controls claim unfurl slot {slot}");
+                    seen[slot] = true;
+                }
+            }
+            let verbs = v[..n].iter().filter(|c| is_watch_ctl(**c)).count();
+            assert_eq!(verbs, 1, "{set:?} must offer exactly one watched toggle, not {verbs}");
+            assert_eq!(watch_index(set), Some(n as c_int - 1), "{set:?}: and it is the row's last");
+            // …wearing the face of the write it would perform. A PART-WATCHED item is not watched,
+            // so it reads ✓ — the case the row used to answer with both faces at once.
+            let want = if set.mark == PosterMark::Watched { HeroCtl::MarkUnwatched } else { HeroCtl::MarkWatched };
+            assert_eq!(ctl_at(set, n as c_int - 1), Some(want), "{set:?}");
         }
     }
 
@@ -5776,14 +6331,20 @@ mod tests {
     /// The pill widths are stand-ins (the host links no SDL_ttf), and generous ones: "Resume" at
     /// `PW + 62` is the wider of the two words the play pill ever carries, and 340 is well past
     /// what *Also available* measures at `size::BODY`.
+    ///
+    /// This is the CLOSED row. The unfurl's own half of the bound — that a disc opening into a
+    /// labelled capsule cannot cross the same line — is
+    /// `an_unfurling_watch_toggle_never_crosses_the_people_column`, and it is a separate test
+    /// because it is a separate rule: this one says the row FITS, that one says the animation may
+    /// only spend what this one leaves over.
     #[test]
     fn the_widest_action_row_clears_the_people_column() {
         let (y, pw, alt_w) = (812.0f32, PW + 62.0, 340.0f32);
         let widest = HeroSet { restart: true, alt: true, mark: PosterMark::InProgress };
         let (_, n) = hero_ctls(widest);
-        assert_eq!(n, 5, "every conditional control at once");
+        assert_eq!(n, 4, "every conditional control at once");
 
-        let last = hero_btn_rect_at(widest, n as c_int - 1, y, pw, alt_w);
+        let last = hero_btn_rect_at(widest, n as c_int - 1, y, closed_widths(pw, alt_w));
         assert!(
             last.x + last.w < FACTS_R,
             "the action row ends at {} and the people column starts at {FACTS_R}",
@@ -5897,8 +6458,40 @@ mod tests {
         }
     }
 
+    /// **An unfurled capsule is clickable across the word it grew to show.** The whole point of
+    /// `hero_btn_rect` taking the animated width is that the pointer grades against the shape on
+    /// screen: a hit-test still walking bare discs would leave the label a decoration you can read
+    /// and cannot press, and would answer NOTHING for most of the capsule the user is aiming at.
+    ///
+    /// Swept across the unfurl, not just at the ends: the mid-animation widths are where a second,
+    /// stale derivation of the row would diverge without ever being wrong at rest.
+    #[test]
+    fn a_pointer_lands_on_the_capsule_the_unfurl_drew() {
+        let (y, pw) = (812.0f32, PW + 62.0);
+        // a part-watched item, so the ↺ disc stands immediately BEFORE the toggle that opens
+        let set = HeroSet { restart: true, alt: false, mark: PosterMark::InProgress };
+        let i = watch_index(set).expect("every set has a toggle");
+        assert_eq!(ctl_at(set, i - 1), Some(HeroCtl::Restart), "the neighbour this test is about");
+        for e in [0.2f32, 0.6, 1.0] {
+            // the toggle opening while the ▶| disc beside it is shut — the phase a pointer meets
+            let disc = disc_caps_at(set, pw, 0.0, [0.0, e], [201.0, 267.0]);
+            let cw = HeroWidths { pill: pw, alt: 0.0, disc };
+            let (prev, cap) = (hero_btn_rect_at(set, i - 1, y, cw), hero_btn_rect_at(set, i, y, cw));
+            let cy = y + CD * 0.5;
+
+            assert!(cap.w > CD, "e={e}: the toggle really is a capsule");
+            assert!(cap.contains(cap.x + cap.w - 1.0, cy), "e={e}: its far edge answers for itself");
+            assert!(cap.contains(cap.x + 1.0, cy), "e={e}: …and so does the disc it grew out of");
+            assert!(!prev.contains(cap.x + 1.0, cy), "e={e}: the ↺ disc does not answer for it");
+            assert_eq!(cap.x, prev.x + prev.w + CGAP, "e={e}: it opens rightward off a fixed edge");
+            // the gutter between them belongs to neither control
+            let gutter = prev.x + prev.w + CGAP * 0.5;
+            assert!(!prev.contains(gutter, cy) && !cap.contains(gutter, cy), "e={e}");
+        }
+    }
+
     /// The hero action row, on a row whose control SET changes under the pointer. With a resume
-    /// point the ↺ disc takes index 1 and the watch discs slide past it, so a hit-test built on
+    /// point the ↺ disc takes index 1 and the toggle slides past it, so a hit-test built on
     /// per-control constants would answer one control out of step for exactly the items a pointer
     /// user is most likely to open. The invariant is therefore the ACCUMULATION `hero_btn_rect`
     /// performs — the pill at the margin, every later control one `CD + CGAP` past the last —
@@ -5915,18 +6508,18 @@ mod tests {
 
         // (item, control count, the pill width its label measures to). The widths stand in for
         // `hero_pill_w` — "Resume" is the wider word, and the row must accumulate off whichever it
-        // is rather than off a constant. All three watch states are here, because the part-watched
-        // one is the row that ends in TWO discs and the finished one is the row whose single tail
-        // disc is the OTHER glyph — same walk, three different lengths.
+        // is rather than off a constant. All three watch states are here: the part-watched one is
+        // the row that grows the ↺ disc, and the finished one is the row whose toggle wears the
+        // OTHER glyph — same walk, two different lengths.
         for (d, want, pw) in [
             (movie(0, 7_200_000), 2, PW),
             (Detail { watched: true, ..movie(0, 7_200_000) }, 2, PW),
-            (movie(1_800_000, 7_200_000), 4, PW + 62.0),
+            (movie(1_800_000, 7_200_000), 3, PW + 62.0),
         ] {
             mount(Some(d), 0);
             assert_eq!(hero_btns(), want, "the control set this case means to exercise");
             let set = hero_set();
-            let rect = |i: c_int| hero_btn_rect_at(set, i, y, pw, 0.0);
+            let rect = |i: c_int| hero_btn_rect_at(set, i, y, closed_widths(pw, 0.0));
 
             let pill = rect(BTN_PLAY);
             assert_eq!(pill.x, MARGIN_X, "the pill starts at the margin");
@@ -6764,11 +7357,14 @@ fn hit_at(mx: f32, my: f32) -> Option<(c_int, c_int, EpRow)> {
     // fade), which is exactly when a stray click is least intended.
     if hero_alpha(scroll, HERO_FADE) > HERO_HIT_MIN_A {
         let y = hero_layout(selected()).btn_y - scroll;
-        // the LIVE control set, not a constant: the row runs from TWO controls to five, and
-        // `hero_btn_rect` walks the same accumulation the painter did, so the watch-state discs at
-        // the end are clicked wherever this set happens to put them
-        for b in 0..hero_btns() {
-            if hero_btn_rect(b, y).contains(mx, my) {
+        // the LIVE control set, not a constant: the row runs from TWO controls to five, and this
+        // walks the same accumulation the painter did — off the same once-resolved set and widths
+        // (`draw_buttons`) — so the watched toggle at the end is clicked wherever this set
+        // happens to put them, and an UNFURLED one is clicked across the whole capsule it drew.
+        let set = hero_set();
+        let cw = hero_widths();
+        for b in 0..(hero_ctls(set).1 as c_int) {
+            if hero_btn_rect_at(set, b, y, cw).contains(mx, my) {
                 return Some((0, b, EpRow::Still));
             }
         }

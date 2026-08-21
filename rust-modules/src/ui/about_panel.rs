@@ -177,7 +177,11 @@ pub(crate) fn stack(b: Blocks) -> Stack {
     s.footer = y + G_FOOTER;
     y = s.footer + KeyHint::height();
 
-    s.h = y + PAD;
+    // …and the footer closes on ITS OWN pad, not the panel's: `KeyHint::pad_below` is `G_FOOTER`'s
+    // twin, so the line sits centred in the band the rule opens. `PAD` here made the panel exactly
+    // symmetric against its own frame and 24-over/48-under against the hairline, which is the edge
+    // this line is actually read from — the argument, with the ink numbers, is on `pad_below`.
+    s.h = y + KeyHint::pad_below();
     s
 }
 
@@ -332,6 +336,12 @@ pub(crate) fn draw() {
     rule(p, r, s.rule);
 
     let hint = KeyHint::new(c"Press", c"BACK", c"to return");
+    // RIGHT-aligned on the padding edge, as §1B and §1C are and as the design draws all three
+    // (§1A's footer row is `justify-content:flex-end`). It was centred for one revision, on the
+    // theory that a lone hint with no left-hand partner should not sit at a margin; the owner's
+    // answer was to keep it right, so the family has ONE footer alignment and this panel is not the
+    // exception to it. Do not re-derive the centred form — `KeyHint`'s own doc offers the
+    // arithmetic, and no caller wants it.
     hint.draw(p, r.x + r.w - PAD - hint.width(), r.y + s.footer + KeyHint::height() * 0.5);
 }
 
@@ -363,7 +373,16 @@ mod tests {
         assert_eq!(s.tagline, s.synopsis + b.synopsis + G_TAGLINE);
         assert_eq!(s.rule, s.tagline + b.tagline + G_RULE);
         assert_eq!(s.footer, s.rule + RULE_H + G_FOOTER);
-        assert_eq!(s.h, s.footer + KeyHint::height() + PAD);
+        assert_eq!(
+            s.h,
+            s.footer + KeyHint::height() + KeyHint::pad_below(),
+            "…and the footer closes on its OWN pad, the one that centres it under the rule"
+        );
+        assert_eq!(
+            s.h - (s.footer + KeyHint::height()),
+            s.footer - (s.rule + RULE_H),
+            "which is the same air the rule opens above it — the hint is centred in that band"
+        );
         // the whole point of the mock's shape: it fits, with room to spare
         assert!(s.h < max_panel_h(), "the reference item's panel is {} against a {} ceiling", s.h, max_panel_h());
     }
@@ -388,7 +407,7 @@ mod tests {
         assert_eq!(
             s.h,
             PAD + EYEBROW_LEAD + G_SYNOPSIS + b.synopsis + G_TAGLINE + b.tagline + G_RULE + RULE_H
-                + G_FOOTER + KeyHint::height() + PAD,
+                + G_FOOTER + KeyHint::height() + KeyHint::pad_below(),
             "the panel is exactly eyebrow · prose · tagline · rule · footer"
         );
     }

@@ -79,7 +79,7 @@ impl Action {
     ///
     /// The old shape was `MarkWatched(rk, watched)` where the bool was **what the item is NOW**, and
     /// `apply_item_action` inverted it at the press. That works for exactly as long as the menu emits
-    /// one row: with the part-watched PAIR both rows would carry the same bool, so one of them would
+    /// one row: with this menu's part-watched PAIR both rows would carry the same bool, so one would
     /// invert to its neighbour's write and silently do the opposite of its own label. Now the glyph
     /// the user aimed at IS the verb, and nothing downstream re-reads the item.
     pub(crate) fn watch_write(&self) -> Option<crate::viewstate::Write> {
@@ -189,6 +189,26 @@ pub(crate) fn open_episode(sid: crate::plex::ServerId, rk: &str, mark: PosterMar
         *addr_of_mut!(ITEM) = None;
     }
     present(build_episode(rk, mark), opener);
+}
+
+/// Open the menu for the DETAIL page's focused SEASON tab — the middle of the three grains this
+/// page can mark, and the one that had no surface at all.
+///
+/// An episode is marked from its still's long press, a show from the hero's toggle (and from its
+/// poster's menu on every card screen). "I have seen season 3" was expressible only by opening
+/// eleven episodes one at a time, which is the shape of a missing control rather than a workflow.
+///
+/// Same panel, same rows, and — like [`open_episode`] — **no navigation group**: the season's tab
+/// is selected by the very press that opened this, so there is nowhere for a nav row to go.
+///
+/// No [`ITEM`], for `open_episode`'s reason: a season is not a catalog row here, it is one of the
+/// loaded show's own children.
+pub(crate) fn open_season(sid: crate::plex::ServerId, rk: &str, mark: PosterMark, opener: Opener) {
+    unsafe {
+        *addr_of_mut!(SID) = sid; // the loaded show's server — the season is one of its own
+        *addr_of_mut!(ITEM) = None;
+    }
+    present(build_season(rk, mark), opener);
 }
 
 /// The server every [`Action`] from the open (or just-closed) menu names — see [`SID`]. Read by
@@ -317,13 +337,19 @@ const ACTS_PARALLEL: &str = "ACTS must stay one-to-one with the rows: a row with
 /// Start. ONE builder, because these are the rows the menu exists for and they must read identically
 /// wherever it is opened.
 ///
-/// **The tail is one row or TWO, and it is the detail hero's rule** (`detail::hero_ctls`), off the
-/// same three-state vocabulary ([`PosterMark`]) so the two surfaces cannot describe one item
+/// **The tail is one row or TWO**, off the same three-state vocabulary ([`PosterMark`]) the detail
+/// hero resolves (`detail::hero_watch_state`) so the two surfaces cannot describe one item
 /// differently: each row states the OUTCOME its press produces, so a finished item offers only *Mark
 /// as Unwatched* and one never started offers only *Mark as Watched*. A PART-WATCHED item is in
-/// neither state and no single toggle can express both destinations, so it gets both rows — the ✓
-/// then the −, the same order the two ends of the range read in and the same order the hero's discs
-/// sit in.
+/// neither state, and a LIST can name both destinations at once, so it gets both rows — the ✓ then
+/// the −, the same order the two ends of the range read in.
+///
+/// **The detail hero answers the same question with ONE control, and the difference is deliberate.**
+/// Its watched control is a TOGGLE wearing the face of the write it would perform
+/// (`detail::hero_ctls`), so a part-watched item reads ✓ there — it is not watched, and the other
+/// end is one press away rather than one control away. A menu has no state of its own and is free
+/// to list both; a toggle is one thing and must read as the thing it currently is. Same vocabulary,
+/// two presentations of it — so do NOT "fix" this row set to match the hero's.
 ///
 /// It was one row whose label and glyph FLIPPED on a `watched` bool. That is an exact toggle only
 /// while an item is at one end or the other; on the third state it had to pick an end and picked
@@ -340,15 +366,15 @@ const ACTS_PARALLEL: &str = "ACTS must stay one-to-one with the rows: a row with
 fn state_rows(sec: Section, acts: &mut Vec<Option<Action>>, rk: &str, mark: PosterMark, leaf: bool) -> Section {
     let mut sec = sec;
     if mark != PosterMark::Watched {
-        sec = sec.row(Row::new("Mark as Watched").licon(Icon::CheckCircleFill));
+        sec = sec.row(Row::new(crate::ui::widgets::MARK_WATCHED_VERB).licon(Icon::CheckCircleFill));
         acts.push(Some(Action::MarkWatched(rk.to_string())));
     }
     if mark != PosterMark::None {
-        sec = sec.row(Row::new("Mark as Unwatched").licon(Icon::MinusCircleFill));
+        sec = sec.row(Row::new(crate::ui::widgets::MARK_UNWATCHED_VERB).licon(Icon::MinusCircleFill));
         acts.push(Some(Action::MarkUnwatched(rk.to_string())));
     }
     if leaf {
-        sec = sec.row(Row::new("Play from Start").licon(Icon::PlayStart));
+        sec = sec.row(Row::new(crate::ui::widgets::PLAY_FROM_START_VERB).licon(Icon::PlayStart));
         acts.push(Some(Action::PlayFromStart(rk.to_string())));
     }
     sec
@@ -376,6 +402,24 @@ fn state_rows(sec: Section, acts: &mut Vec<Option<Action>>, rk: &str, mark: Post
 fn build_episode(rk: &str, mark: PosterMark) -> (Section, Vec<Option<Action>>) {
     let mut acts: Vec<Option<Action>> = Vec::new();
     let sec = state_rows(Section::new(""), &mut acts, rk, mark, true);
+    debug_assert_eq!(acts.len(), sec.rows.len(), "{ACTS_PARALLEL}");
+    (sec, acts)
+}
+
+/// The DETAIL page's season strip: [`build_episode`]'s row set with the one difference a season
+/// makes — **no "Play from Start"**.
+///
+/// That row means "play THIS item from 00:00", and a season is not a thing you play: the press
+/// would have to pick a leaf, which is a second decision the row does not state. Starting a season
+/// from its beginning is what the first episode's own tile does, exactly and visibly. So
+/// `leaf: false` — the same flag [`build`] passes for a show, for the same reason.
+///
+/// A season IS a container, so all three states are reachable and a part-watched one gets the PAIR
+/// ([`state_rows`]) — the menu's rule, deliberately not the hero toggle's; see `state_rows` for
+/// why the two surfaces answer one question differently.
+fn build_season(rk: &str, mark: PosterMark) -> (Section, Vec<Option<Action>>) {
+    let mut acts: Vec<Option<Action>> = Vec::new();
+    let sec = state_rows(Section::new(""), &mut acts, rk, mark, false);
     debug_assert_eq!(acts.len(), sec.rows.len(), "{ACTS_PARALLEL}");
     (sec, acts)
 }
@@ -656,7 +700,7 @@ mod tests {
 
     /// **The owner-reported gap, at both entry points.** An item in the MIDDLE is at neither end of
     /// the watch range, so no single toggle can express both destinations — it gets both rows, ✓
-    /// then −, the same order the detail hero's two discs sit in.
+    /// then −, the order the two ends of the range read in.
     ///
     /// The pair is asserted alongside its two neighbours in the same test on purpose: the property
     /// is not "there are two rows", it is that the row SET tracks the state, and a fixture that only

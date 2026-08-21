@@ -264,8 +264,11 @@ pub(crate) fn draw(p: Painter, focused: bool, btn: c_int, now: u32) {
     }
 
     let e = Env::inert();
+    // The focus pop is the CONTROL ROW's, not this card's: these two stand in the transport's own
+    // slot and share its cursor, so they share its springs (`player_hud::row_pop`).
     Button::new(CREDITS_LABEL.as_ptr(), theme::size::BODY, l.credits)
         .focused(focused && btn == BTN_CREDITS)
+        .scale(crate::ui::player_hud::row_pop(BTN_CREDITS))
         .draw(&e, p);
 
     // The primary IS the countdown — its fill sweeps left→right and, at the far edge, the episode
@@ -273,7 +276,9 @@ pub(crate) fn draw(p: Painter, focused: bool, btn: c_int, now: u32) {
     // is continuous; the label carries no seconds, because the pill's width is derived from its
     // label and a ticking numeral would resize the button and slide its centred text every second.
     let Ok(label) = CString::new(NEXT_LABEL) else { return };
-    let mut b = Button::new(label.as_ptr(), theme::size::BODY, l.next).focused(focused && btn == BTN_NEXT);
+    let mut b = Button::new(label.as_ptr(), theme::size::BODY, l.next)
+        .focused(focused && btn == BTN_NEXT)
+        .scale(crate::ui::player_hud::row_pop(BTN_NEXT));
     if armed() {
         // It animates from a CLOCK, so `ui::idle`'s spring instrumentation cannot see it — the trap
         // `Xfade::tick` and `Spinner::draw` both shipped frozen in. The player route bypasses the

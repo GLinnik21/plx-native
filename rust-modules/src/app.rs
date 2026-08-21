@@ -529,6 +529,85 @@ mod hud_visibility_tests {
         });
     }
 
+    /// **A LEFT/RIGHT press that finds the HUD hidden is spent RAISING it** — the rule
+    /// [`key_scrub`] is built around, and the one arm of that ladder no other test can reach (every
+    /// other branch of it drives the player's globals from inside the SDL loop).
+    ///
+    /// The pairing is the point: whatever the cursor is parked on, an invisible transport takes the
+    /// press for itself, and the SAME cursor acts normally the moment the transport is on screen.
+    /// Focus survives an auto-hide (`HudNav::HOME` is re-parked one block down in the loop), so
+    /// "hidden but focus == 1" is an ordinary state, not a corner.
+    #[test]
+    fn a_hidden_hud_spends_the_press_on_itself() {
+        for focus in [0, 1, 2] {
+            for seekable in [false, true] {
+                assert_eq!(
+                    scrub_press(false, focus, seekable),
+                    ScrubPress::Reveal,
+                    "hidden HUD, focus {focus}: the press raises it and moves nothing"
+                );
+            }
+        }
+        // …and visible, the same three cursors act — this is what the reveal DEFERS to, one press later
+        assert_eq!(scrub_press(true, 0, true), ScrubPress::Jump);
+        assert_eq!(scrub_press(true, 1, true), ScrubPress::Row);
+        assert_eq!(scrub_press(true, 2, true), ScrubPress::Tabs);
+        // the scrubber with nothing to move through is still not a Jump
+        assert_eq!(scrub_press(true, 0, false), ScrubPress::Nothing);
+        // …but the two indexed rows are navigable whether or not the item has a duration
+        assert_eq!(scrub_press(true, 1, false), ScrubPress::Row);
+        assert_eq!(scrub_press(true, 2, false), ScrubPress::Tabs);
+    }
+
+    /// **A transport hidden BY HAND is hidden**, and the press that follows must raise it like any
+    /// other — the hole [`HudState::note_fresh_press`] exists to close.
+    ///
+    /// UP-from-the-control-row hides the HUD without extending the linger, so for up to
+    /// `HUD_LINGER_MS` afterwards the TIMER still says "on screen" while nothing is drawn. The
+    /// dismissal is what tells them apart, and it is cleared at the top of every fresh press — so
+    /// an arm that re-derived visibility for itself got `true` and drove geometry the user could
+    /// not see. Three points of one loop iteration, in their real order.
+    #[test]
+    fn a_hand_hidden_hud_still_takes_the_press_that_wakes_it() {
+        with_state(PlaybackState::Playing, || {
+            let now = 10_000u32; // a literal tick, like every test here: the host links no SDL
+            let saved = hud_until(); // `extend_hud` never pulls a deadline IN — reset on the way out
+            let mut hud = HudState::IDLE;
+            extend_hud(now, HUD_LINGER_MS); // …the HUD is up, its linger running
+            assert!(now < hud_until(), "the linger IS still running — the case this is about");
+
+            hud.dismissed = true; // …UP from the control row: hidden, and the timer left alone
+            hud.nav.focus = 0;
+
+            hud.note_fresh_press(now); // …and a LEFT arrives
+            assert!(!hud.visible_at_press, "it was NOT on screen, whatever the timer says");
+            assert!(!hud.dismissed, "…and the press has un-dismissed it, as every key does");
+            assert_eq!(
+                scrub_press(hud.visible_at_press, hud.nav.focus, true),
+                ScrubPress::Reveal,
+                "so the press raises the transport instead of seeking behind it"
+            );
+
+            // …and the NEXT press, with the HUD genuinely up, is the one that hops
+            hud.note_fresh_press(now);
+            assert!(hud.visible_at_press);
+            assert_eq!(scrub_press(hud.visible_at_press, hud.nav.focus, true), ScrubPress::Jump);
+            set_hud(saved);
+        });
+    }
+
+    /// `disengage` is what ends a gesture, and it must end EVERY part of one. `reveal` outliving a
+    /// disengage would make the next tap release throw away a preview the user had really built:
+    /// the release arm reads `hold` then `reveal`, so a stale `reveal` silently outranks a real
+    /// tap commit. `commit_at` is the deliberate exception and stays untouched (see its doc).
+    #[test]
+    fn disengaging_ends_every_part_of_the_gesture() {
+        let mut s = Scrub { dir: -1, hold: true, reveal: true, commit_at: 4_242, ..Scrub::IDLE };
+        s.disengage();
+        assert_eq!((s.dir, s.hold, s.reveal), (0, false, false));
+        assert_eq!(s.commit_at, 4_242, "a pending tap commit is NOT this function's to cancel");
+    }
+
     /// An explicit dismiss (UP from the top row) still hides it while healthy — but must NOT be able
     /// to hide it while the pipeline is stalled, because that is the state the user needs to report
     /// and the read-out is pinned on screen there regardless.
@@ -1074,17 +1153,43 @@ struct Scrub {
     hold_since: u32, // when that hold engaged — the acceleration ramp is measured from here
     alive: u32,      // last held (0x101) event — for the lost-keyup safety commit
     commit_at: u32,  // tap released → commit at this tick (0 = none; a new press cancels)
+    /// This gesture began on a HIDDEN HUD, so its press was spent raising the transport
+    /// ([`ScrubPress::Reveal`]) rather than hopping. It is still a fully armed scrub — a user who
+    /// keeps holding gets the ordinary continuous rewind, and `hold` engaging clears this — but if
+    /// it turns out to have been a TAP, the release must throw the preview away instead of
+    /// committing it: the preview sits on the seed, i.e. exactly where playback already is, and
+    /// committing that is a full reopen+prime to no effect.
+    reveal: bool,
 }
 impl Scrub {
     /// No scrub in progress and no tap commit pending — where the loop starts.
     const IDLE: Scrub =
-        Scrub { t: 0, dir: 0, hold: false, hold_since: 0, alive: 0, commit_at: 0 };
-    /// End the gesture: no direction, no continuous hold. `commit_at` is deliberately NOT
-    /// cleared — four of the five call sites leave a pending tap commit alone, and the fifth
-    /// IS that commit and clears the field itself right after calling this.
+        Scrub { t: 0, dir: 0, hold: false, hold_since: 0, alive: 0, commit_at: 0, reveal: false };
+    /// Start a WHOLE gesture in `now`/`fwd` — every field, not the four a press happens to care
+    /// about.
+    ///
+    /// Two sites end a scrub without [`disengage`](Self::disengage) — the pointer drag's mouse-up
+    /// commit, and `key_scrub`'s own drag cancel — and `exit_player` never touches this at all, so
+    /// `hold`/`hold_since` can outlive the gesture that set them and even the playback session.
+    /// Arming only `dir`/`alive` on top of that leaves the per-frame advance reading a `hold_since`
+    /// from minutes ago: its acceleration ramp is measured from there, so the first frame of a
+    /// brand-new press runs at `SCRUB_MAX` and one tap slews the preview tens of seconds.
+    fn begin(&mut self, now: u32, fwd: bool) {
+        self.dir = if fwd { 1 } else { -1 };
+        self.hold = false;
+        self.hold_since = now;
+        self.t = now;
+        self.alive = now;
+        self.commit_at = 0; // more input → cancel a pending tap commit
+        self.reveal = false;
+    }
+    /// End the gesture: no direction, no continuous hold, and no reveal pending. `commit_at` is
+    /// deliberately NOT cleared — four of the five call sites leave a pending tap commit alone, and
+    /// the fifth IS that commit and clears the field itself right after calling this.
     fn disengage(&mut self) {
         self.dir = 0;
         self.hold = false;
+        self.reveal = false;
     }
 }
 /// The player HUD's focus cursor: WHICH row owns focus, plus the index WITHIN each of the
@@ -1126,6 +1231,19 @@ struct HudState {
     /// UP-from-the-top explicitly dismisses the HUD even while paused; any other player
     /// input clears it. Without this, paused() would force the HUD permanently visible.
     dismissed: bool,
+    /// Was the transport ON SCREEN when the key being handled arrived? Sampled by
+    /// [`begin_fresh_press`] at the top of every fresh press, and the ONLY honest answer to that
+    /// question by the time an arm runs.
+    ///
+    /// The arm cannot re-derive it, because the same function clears [`dismissed`] one line later —
+    /// and `dismissed` OUTRANKS the timer inside [`hud_visible`]. So a user who hid the transport
+    /// by hand (UP from the control row, which deliberately does not extend the timer) and pressed
+    /// again inside the remaining linger produced `hud_visible == true` for a HUD that was not on
+    /// screen: the press then drove geometry nobody could see — the very thing the two arms below
+    /// refuse to do. The pointer path has always sampled BEFORE re-arming for this reason (see the
+    /// click arm's `hud_vis`); this is the key path's version of that sample, taken once so the two
+    /// arms that need it cannot answer the question differently.
+    visible_at_press: bool,
     /// The last SEGMENT the control row offered. Sticky: it is never cleared back to None,
     /// so each segment raises the HUD exactly once per playback however often the row
     /// flickers.
@@ -1137,8 +1255,13 @@ struct HudState {
 }
 impl HudState {
     /// Focus at rest, nothing dismissed, no segment seen yet, discs in the control row.
-    const IDLE: HudState =
-        HudState { nav: HudNav::HOME, dismissed: false, last_offer: None, was_standin: false };
+    const IDLE: HudState = HudState {
+        nav: HudNav::HOME,
+        dismissed: false,
+        visible_at_press: false,
+        last_offer: None,
+        was_standin: false,
+    };
 
     /// A FRESH segment offer takes the control row: put the HUD ON SCREEN and, from rest, park the
     /// ring on the row's primary so a bare OK acts on the offer in one press instead of
@@ -1163,6 +1286,19 @@ impl HudState {
     /// ([`crate::ui::player_hud::ControlSlot::primary_btn`]) — item 0 for a Skip pill, the
     /// RIGHT-hand one for Up Next, where parking on item 0 would disarm the timer on the frame
     /// after it armed.
+    /// A fresh key has arrived: record what the transport LOOKED like to the user, then clear the
+    /// dismissal it may have been carrying.
+    ///
+    /// The two are one operation and the ORDER is the whole point — `dismissed` outranks the timer
+    /// inside [`hud_visible`], so sampling after the clear reports a hand-hidden transport as being
+    /// on screen (see [`visible_at_press`](Self::visible_at_press)). Written down as one function
+    /// rather than two lines in [`begin_fresh_press`] so that the order is a thing a test can hold
+    /// still, instead of a convention a later edit can quietly transpose.
+    fn note_fresh_press(&mut self, now: u32) {
+        self.visible_at_press = hud_visible(now, hud_until(), paused(), self.dismissed);
+        self.dismissed = false; // any fresh key un-dismisses the HUD (UP-hide re-sets it)
+    }
+
     fn raise_for_offer(&mut self, now: u32, primary: c_int) {
         extend_hud(now, HUD_LINGER_MS);
         self.dismissed = false;
@@ -2096,6 +2232,25 @@ fn open_tile_menu(
     true
 }
 
+/// The same popover on the DETAIL page's SEASON strip — the grain between the episode's own hold
+/// and the hero's show-wide toggle, and the one this page could not express at all.
+///
+/// Reports whether it opened, so the caller only flips the route when a menu is actually up: the
+/// strip may not hold focus, a show may have no seasons, and a season fetch in flight makes the
+/// row's contents a lie (`detail::focused_season`, which declines on all three).
+fn open_season_menu(route: &mut Route) -> bool {
+    let Some((rk, mark)) = crate::ui::detail::focused_season() else {
+        return false;
+    };
+    let opener = Opener {
+        rect: crate::ui::detail::focused_season_rect(),
+        redraw: crate::ui::detail::redraw_focused_season,
+    };
+    crate::ui::item_menu::open_season(crate::ui::detail::mounted_sid(), &rk, mark, opener);
+    *route = Route::ItemMenu { over: MenuHost::Detail };
+    true
+}
+
 /// The same popover on the DETAIL page's episode filmstrip — the owner-reported gap: a long
 /// press on an episode still did nothing, so there was nowhere to mark an episode watched.
 /// Reports whether it opened, so the caller only flips the route when a menu is actually up:
@@ -2308,7 +2463,14 @@ unsafe fn on_key_up(
         crate::ui::press::release(SDL_GetTicks());
     }
     if matches!(route, Route::Player { .. }) && scrubber.dir != 0 && isnav {
-        if scrubber.hold {
+        if scrubber.reveal {
+            // The press only raised the HUD (`Scrub::reveal`) and the preview never left the seed,
+            // so there is nothing to commit. Tested BEFORE `hold`, not after: a hold that engaged
+            // but has not travelled yet is still this case, and committing it would seek to where
+            // playback already is. The advance is what retires the flag, on real travel.
+            set_scrub(-1);
+            scrubber.disengage();
+        } else if scrubber.hold {
             log(&format!("scrub: keyup commit (held) {}s", scrub() / 1_000_000_000));
             commit_seek(scrub(), repause_at); // a held scrub → commit on release
             scrubber.disengage();
@@ -2347,6 +2509,13 @@ unsafe fn on_auto_repeat(
             scrubber.hold = true;
             scrubber.hold_since = n;
             scrubber.t = n;
+            // `reveal` is deliberately NOT cleared here. Engaging the hold is not the same event
+            // as the preview MOVING: this block also sets `scrubber.t = n`, so the advance's first
+            // pass computes `sdt ≈ 0` and travels nothing, and at ~10 s/s it takes ~100 ms before
+            // the preview has moved even a second. A firm tap that trips one hardware repeat and
+            // releases inside that window would otherwise commit a seek to the spot playback is
+            // already sitting on — a full reopen + prime and a visible stall, out of a press the
+            // reveal rule promises moves nothing. The advance clears it once there is real travel.
             log("scrub: hold engaged (0x101 repeat)");
         }
     }
@@ -2365,13 +2534,18 @@ unsafe fn on_auto_repeat(
 unsafe fn begin_fresh_press(
     key: Key,
     sym: c_uint,
+    now: u32,
     held: &mut HeldKey,
     hud: &mut HudState,
     ptr: &mut Pointer,
     ok_armed: &mut bool,
 ) {
     held.down_sym = sym;
-    hud.dismissed = false; // any fresh key un-dismisses the HUD (UP-hide re-sets it)
+    // What the user could SEE, and only then the un-dismiss — one operation, because the order is
+    // load-bearing (`HudState::note_fresh_press`). Taken for every key on every screen: it is one
+    // cheap predicate, and the alternative is each player arm remembering to ask first, which is
+    // exactly the ordering the pointer path had to be fixed for once already.
+    hud.note_fresh_press(now);
     // a fresh non-OK key (navigation / BACK) while a click is armed aborts the press —
     // spring the card back to rest WITHOUT activating (you "slid off" the control).
     if *ok_armed && !is_ok(sym) {
@@ -2691,7 +2865,9 @@ fn key_chapters(
 /// just reveals it (focused on the scrubber); pressing UP with nothing focusable above (the buttons
 /// row) hides the HUD again.
 fn key_player_updown(key: Key, now: u32, hud: &mut HudState, scrubber: &mut Scrub) {
-    let vis = hud_visible(now, hud_until(), paused(), hud.dismissed);
+    // the pre-press sample, not a fresh one: `begin_fresh_press` has already cleared `dismissed`,
+    // so re-asking would call a hand-hidden transport visible (`HudState::visible_at_press`)
+    let vis = hud.visible_at_press;
     let mut hide = false;
     if !vis {
         hud.nav.focus = 0; // reveal, on the scrubber
@@ -2849,7 +3025,10 @@ unsafe fn key_ok(
         return;
     }
     if matches!(*route, Route::Player { .. }) {
-        let vis = hud_visible(now, hud_until(), paused(), hud.dismissed);
+        // the pre-press sample, like the other two player arms — `begin_fresh_press` has already
+        // cleared `dismissed`, so re-asking calls a hand-hidden transport visible and this arm
+        // would open a panel from behind it (`HudState::visible_at_press`)
+        let vis = hud.visible_at_press;
         // A stand-in owns row 1 — activate it. Same value the draw used.
         if vis && hud.nav.focus == 1 && !ctrl.is_discs() {
             if activate_ctrl_row(mt, ctrl, route, play_from, refresh_hubs_at, &mut hud.nav, trail) {
@@ -3026,9 +3205,60 @@ unsafe fn key_play(
     extend_hud(now, HUD_LINGER_MS);
 }
 
+/// What a LEFT/RIGHT press on the player DOES — the decision alone, with nothing done yet.
+///
+/// It is a value rather than a ladder inside [`key_scrub`] because the interesting arm is the one
+/// that acts on nothing the user can see, and that arm is unreachable from a host test: the ladder
+/// lives inside the SDL event loop and every other branch reaches the player's globals. Deciding
+/// first and acting second is what makes the rule itself testable (`a_hidden_hud_spends_the_press`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ScrubPress {
+    /// The HUD is not on screen, so the press is spent RAISING it and the playhead does not move.
+    /// See [`key_scrub`] for why a control the user cannot see must not be driven blind.
+    Reveal,
+    /// the control row (Subtitles / Audio / More, or whichever stand-in owns it) — move its cursor
+    Row,
+    /// the bottom tabs (Info / Chapters) — move theirs
+    Tabs,
+    /// the scrubber: jump the preview by [`SCRUB_STEP_NS`]
+    Jump,
+    /// the scrubber, on something with no duration to move through — a live or still-loading item
+    Nothing,
+}
+
+/// `vis` is [`hud_visible`] sampled BEFORE this press re-arms the timer; `focus` is
+/// [`HudNav::focus`]; `seekable` is `dur() > 0`.
+fn scrub_press(vis: bool, focus: i32, seekable: bool) -> ScrubPress {
+    if !vis {
+        return ScrubPress::Reveal;
+    }
+    match focus {
+        1 => ScrubPress::Row,
+        2 => ScrubPress::Tabs,
+        _ if seekable => ScrubPress::Jump,
+        _ => ScrubPress::Nothing,
+    }
+}
+
 /// LEFT/RIGHT while playing: move the focused HUD row's cursor, or — on the scrubber — jump the
 /// scrub preview. A fresh press (0x001) is the fixed 10s jump; a held key's 0x101 repeats
 /// ([`on_auto_repeat`]) then engage the continuous scrub and the keyup commits.
+///
+/// **A press that finds the HUD hidden is spent RAISING it, and moves nothing.** The transport is
+/// on a 4.5 s timer over full-screen video, so "where am I" and "take me back ten seconds" are two
+/// different intentions and the remote has no way to tell them apart — the old ladder read every
+/// LEFT as the second, and a viewer glancing at the clock lost their place to it. It is the rule
+/// UP/DOWN has always had one arm over ([`key_player_updown`]) and the rule the CLICK path already
+/// enforced on this very band (`hud_vis` there is sampled before the click re-arms the timer,
+/// after "a click in the invisible timed-out scrub band committed a blind seek"); the key path was
+/// the last way in that still acted on geometry nobody could see.
+///
+/// **A HOLD is not a tap and keeps working.** The reveal still arms `dir` and seeds the preview, so
+/// a user who holds LEFT to rewind gets the HUD on screen and then the ordinary continuous scrub as
+/// the 0x101 repeats arrive — by which point the band they are dragging IS on screen. Only the
+/// discrete 10 s hop waits for a second press, which is what `Scrub::reveal` marks: without it the
+/// tap release would commit a seek to the seed, i.e. a full reopen+prime to the spot we are
+/// already sitting on.
 unsafe fn key_scrub(
     key: Key,
     now: u32,
@@ -3046,51 +3276,69 @@ unsafe fn key_scrub(
         set_scrub(-1);
     }
     let fwd = matches!(key, Key::Right { .. });
-    let vis = hud_visible(now, hud_until(), paused(), hud.dismissed);
+    // the pre-press sample — see `key_player_updown`'s note and `HudState::visible_at_press`
+    let act = scrub_press(hud.visible_at_press, hud.nav.focus, dur() > 0);
     extend_hud(now, HUD_LINGER_MS);
-    if !vis {
-        hud.nav.focus = 0; // first LEFT/RIGHT reveals the HUD on the scrubber
-    }
-    if hud.nav.focus == 1 {
-        // the row's occupant says how many items it has — no magic pin
-        hud.nav.btn = (hud.nav.btn + if fwd { 1 } else { -1 }).clamp(0, ctrl.items() - 1);
-    } else if hud.nav.focus == 2 {
-        let max_tab = if crate::ui::chapters_panel::has_chapters() { 1 } else { 0 };
-        hud.nav.tab = (hud.nav.tab + if fwd { 1 } else { -1 }).clamp(0, max_tab);
-    } else if dur() > 0 {
-        // scrubber focus, FRESH press (0x001): the fixed 10s jump. A held key's
-        // 0x101 repeats (handled above) then engage the continuous scrub; the
-        // keyup commits. Quick re-taps before scrubber.commit_at accumulate.
-        let cap = dur() - 3 * 1_000_000_000;
-        scrubber.commit_at = 0; // more input → cancel a pending tap commit
-        scrubber.alive = now;
-        if scrubber.dir == 0 && scrub() < 0 {
-            // Seed a new scrub at the INTENDED playhead (`intended_pos`). If a
-            // prior commit's seek is still landing, playpos() is stale (it still
-            // reports the pre-seek spot), so a quick re-press would jump back to
-            // where we started and resume there — interrupting the scrub. The
-            // divergence IS "a seek is in flight", so log it when the two
-            // disagree rather than re-deriving the condition here.
-            let seed = intended_pos();
-            let live = playpos();
-            if seed != live {
-                log(&format!("scrub: seed at in-flight target {}s (playpos {}s stale)",
-                    seed / 1_000_000_000, live / 1_000_000_000));
+    match act {
+        ScrubPress::Reveal => {
+            hud.nav.focus = 0; // the HUD comes up on the scrubber, ready for the press after this one
+            // …and the gesture is armed but not spent, so a user who keeps HOLDING gets the
+            // ordinary continuous scrub the moment the repeats arrive. Only on something with a
+            // duration: arming a scrub over an item there is nothing to move through would put a
+            // preview on a band that cannot answer for it.
+            if dur() > 0 {
+                scrubber.begin(now, fwd);
+                scrubber.reveal = true; // …but this press hops nothing; only a HOLD grows out of it
+                seed_scrub();
             }
-            set_scrub(seed);
         }
-        if !scrubber.hold {
-            let mut s = scrub().max(0) + if fwd { SCRUB_STEP_NS } else { -SCRUB_STEP_NS };
-            if s < 0 {
-                s = 0;
-            }
-            if cap > 0 && s > cap {
-                s = cap;
-            }
-            set_scrub(s);
+        ScrubPress::Row => {
+            // the row's occupant says how many items it has — no magic pin
+            hud.nav.btn = (hud.nav.btn + if fwd { 1 } else { -1 }).clamp(0, ctrl.items() - 1);
         }
-        scrubber.dir = if fwd { 1 } else { -1 };
+        ScrubPress::Tabs => {
+            let max_tab = if crate::ui::chapters_panel::has_chapters() { 1 } else { 0 };
+            hud.nav.tab = (hud.nav.tab + if fwd { 1 } else { -1 }).clamp(0, max_tab);
+        }
+        ScrubPress::Jump => {
+            // scrubber focus, FRESH press (0x001): the fixed 10s jump. A held key's
+            // 0x101 repeats (handled above) then engage the continuous scrub; the
+            // keyup commits. Quick re-taps before scrubber.commit_at accumulate.
+            let cap = dur() - 3 * 1_000_000_000;
+            scrubber.commit_at = 0; // more input → cancel a pending tap commit
+            scrubber.alive = now;
+            scrubber.reveal = false; // a visible press is a real gesture whatever raised the HUD
+            if scrubber.dir == 0 && scrub() < 0 {
+                seed_scrub();
+            }
+            if !scrubber.hold {
+                let mut s = scrub().max(0) + if fwd { SCRUB_STEP_NS } else { -SCRUB_STEP_NS };
+                if s < 0 {
+                    s = 0;
+                }
+                if cap > 0 && s > cap {
+                    s = cap;
+                }
+                set_scrub(s);
+            }
+            scrubber.dir = if fwd { 1 } else { -1 };
+        }
+        ScrubPress::Nothing => {}
     }
+}
+
+/// Seed a new scrub at the INTENDED playhead ([`intended_pos`]). If a prior commit's seek is still
+/// landing, `playpos()` is stale (it still reports the pre-seek spot), so a quick re-press would
+/// jump back to where we started and resume there — interrupting the scrub. The divergence IS "a
+/// seek is in flight", so log it when the two disagree rather than re-deriving the condition here.
+unsafe fn seed_scrub() {
+    let seed = intended_pos();
+    let live = playpos();
+    if seed != live {
+        log(&format!("scrub: seed at in-flight target {}s (playpos {}s stale)",
+            seed / 1_000_000_000, live / 1_000_000_000));
+    }
+    set_scrub(seed);
 }
 
 /// CH▲/CH▼ page the browse grid a screenful of rows per press.
@@ -4019,7 +4267,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     }
                     // From here down this IS a fresh press, whatever the driver stamped on it.
                     last_input = SDL_GetTicks();
-                    begin_fresh_press(key, sym, &mut held_key, &mut hud, &mut ptr, &mut ok_armed);
+                    begin_fresh_press(key, sym, last_input, &mut held_key, &mut hud, &mut ptr, &mut ok_armed);
 
                     // ---- the route-scoped arms, each of which `continue`s once it has taken the
                     // press. That makes the chain itself the priority statement: an earlier guard
@@ -4973,7 +5221,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 if sdt > 0.1 {
                     sdt = 0.1;
                 }
-                let mut s = scrub() + (scrubber.dir as f64 * speed as f64 * sdt as f64 * 1e9) as i64;
+                let was = scrub();
+                let mut s = was + (scrubber.dir as f64 * speed as f64 * sdt as f64 * 1e9) as i64;
                 let cap = dur() - 3 * 1_000_000_000;
                 if s < 0 {
                     s = 0;
@@ -4982,6 +5231,12 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     s = cap;
                 }
                 set_scrub(s);
+                // Real travel is what turns a reveal into a scrub — not the hold edge, which fires
+                // a beat earlier with nothing moved yet (`on_auto_repeat`). Once the preview has
+                // left the seed the release commits like any other held gesture.
+                if s != was {
+                    scrubber.reveal = false;
+                }
                 extend_hud(now, HUD_LINGER_MS);
                 scrubber.t = now;
                 // lost-keyup safety: commit if the 0x101 repeats stop without a keyup
@@ -5132,17 +5387,24 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     && match route {
                         // the grid, not the hero: the hero has no card to anchor a panel beside
                         Route::Home => crate::ui::home::snap_pos() >= 0.5 && open_item_menu(&mut route),
-                        // The detail page has TWO card surfaces and tries them in turn. Each
-                        // declines by section (`focused_episode` answers only on the filmstrip,
-                        // `focused_related` only on the Related shelf), so at most one can open and
-                        // the order between them is not a precedence — it is just an order.
+                        // The detail page has THREE hold surfaces and tries them in turn. Each
+                        // declines by section (`focused_season` answers only on the tab strip,
+                        // `focused_episode` only on the filmstrip, `focused_related` only on the
+                        // Related shelf), so at most one can open and the order between them is not
+                        // a precedence — it is just an order.
+                        //
+                        // The season strip is the newest and the reason is worth keeping: the page
+                        // can mark at three grains and only two of them had a door. An episode has
+                        // its still's hold and the show has the hero's toggle, so "I have seen
+                        // season 3" meant opening eleven menus — a missing control, not a workflow.
                         //
                         // The CAST shelf arms the same press and still falls through to the
                         // ordinary spring-back, deliberately: a headshot is a person, with no
                         // ratingKey and no watch state, so every row this menu builds would be
                         // absent and the panel would open empty.
                         Route::Detail => {
-                            open_episode_menu(&mut route)
+                            open_season_menu(&mut route)
+                                || open_episode_menu(&mut route)
                                 || open_tile_menu(
                                     &mut route,
                                     MenuHost::Related,
@@ -5634,6 +5896,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // than owning any motion of their own.
             if matches!(route, Route::Player { .. }) {
                 crate::ui::up_next::tick(ctrl, now);
+                // …and the transport discs' focus pop, for the reason its own doc gives: it must be
+                // stepped once per FRAME, and `draw_hud` does not run on every frame of this route.
+                crate::ui::player_hud::update(ctrl, hud.nav.focus, hud.nav.btn, dt);
             }
             let fd_pc0 = if framedrop_on { SDL_GetPerformanceCounter() } else { 0 };
             // Async play resolve: install the worker's plan and start the engine. Route-

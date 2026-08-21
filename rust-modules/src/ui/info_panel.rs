@@ -96,8 +96,16 @@ pub(crate) fn on_ok() -> InfoAction {
     }
 }
 
+/// The action column's FOCUS POP — one spring per button ([`crate::ui::widgets::CtlPop`]). Two, the
+/// whole of [`actions`].
+static mut CTL_POP: crate::ui::widgets::CtlPop<2> = crate::ui::widgets::CtlPop::new();
+
 pub(crate) fn update(dt: f32) {
     pop().update(dt);
+    // The card's focus walks the tabs above these buttons too, and `FOCUS` is the button index only
+    // while it is inside the column — outside it, every pop closes.
+    let f = usize::try_from(unsafe { addr_of!(FOCUS).read() }).ok().filter(|&i| i < actions().len());
+    unsafe { (*addr_of_mut!(CTL_POP)).step(f, dt) };
 }
 
 // ---- helpers ----
@@ -258,6 +266,7 @@ pub(crate) fn draw() {
             crate::ui::widgets::Button::new(cs.as_ptr(), theme::size::BODY, Rect::new(bx, by, bw, bh))
                 .icon(icon)
                 .focused(i as c_int == focus)
+                .scale(unsafe { addr_of!(CTL_POP).as_ref().unwrap().scale(i) })
                 .draw(&env, p);
         }
         by += bh + 16.0;

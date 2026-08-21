@@ -595,6 +595,35 @@ pub(crate) fn row_watch_state(m: &PmsMovie) -> PosterMark {
     poster_mark(m)
 }
 
+/// The app's **two watch-state verbs**, written down once.
+///
+/// Two surfaces offer this pair of writes — the press-and-hold card menu's state group
+/// ([`crate::ui::item_menu`]) and the detail hero's discs, which unfurl the verb on focus
+/// ([`crate::ui::detail`]'s `watch_label`) — and they are the same two actions on the same item.
+/// A menu row reading *Mark as Watched* beside a control reading *Watched* would read as two
+/// different writes, so both take the words from here. They sit beside [`row_watch_state`] because
+/// that function is the other half of the same vocabulary: it decides WHICH of these a surface may
+/// offer, and these are what it offers.
+///
+/// Each names the OUTCOME its press produces, never the state the item is in — which is what lets
+/// a part-watched item show both at once without either being a lie.
+pub(crate) const MARK_WATCHED_VERB: &str = "Mark as Watched";
+pub(crate) const MARK_UNWATCHED_VERB: &str = "Mark as Unwatched";
+
+/// …and the third verb the same two surfaces share: **play this from 00:00, ignoring the resume
+/// point.** The detail hero's disc and the card menu's row are one action, so they carry one WORD —
+/// this one. Before 2026-08-21 they did not even do that: the row said this and the disc said
+/// nothing at all, which is what the unfurl fixed.
+///
+/// **They deliberately carry two GLYPHS, and that is not the same mistake.** The row draws
+/// [`crate::ui::icons::Icon::PlayStart`], the hero disc draws `Icon::Restart` — because the disc is
+/// icon-only at rest and stands beside the Play pill, where a play-triangle-with-a-bar is that
+/// pill's own mark plus a 3px stem, while the row's glyph sits next to the words above and nothing
+/// resembling a play mark. The two were reconciled onto one glyph for a day and it was wrong;
+/// `Icon::Restart`'s doc is the argument. One action, one word, and the mark chosen per surface for
+/// what that surface has to tell apart.
+pub(crate) const PLAY_FROM_START_VERB: &str = "Play from Start";
+
 /// The **watched tick** on a poster, as fractions of the tile's DRAWN width: the tick's box, its
 /// corner inset, then the veil's box. Anchored on the design system's `ArtTile` — a 26px tick inset
 /// 12px under a 104px corner veil, on a 250-wide poster — and held as ratios rather than pixels so
@@ -681,6 +710,84 @@ const PERSON_GLYPH_RATIO: f32 = 0.44;
 
 /// The scale a focused card pops to (shared by every animated card row).
 pub(crate) const CARD_FOCUS_SCALE: f32 = 1.07;
+
+/// The scale a focused CONTROL face pops to — the design system's `--focus-scale-control`.
+///
+/// Every control face takes it: [`Button`], [`CircleButton`] and [`TransportButton`]. It is
+/// deliberately the generic tile's number and no larger — the FILL already carries focus here, so
+/// the pop is the second half of a signal rather than the whole of one, and a control that popped
+/// like a poster (1.09) would out-shout the artwork it sits on.
+///
+/// **A control inside a TRACK does not take it.** The top tab bar's pills and the profile chip are
+/// focused by their row's own motion — the capsule travelling, the chip unfurling — and a pill that
+/// also grew would be two answers to one question. The season strip's BARE pills are not in a track
+/// and do pop.
+///
+/// Written as its own constant rather than an alias of [`CARD_FOCUS_SCALE`] because the two are
+/// separate design decisions that happen to have landed on one number; either may move alone.
+pub(crate) const CTRL_FOCUS_SCALE: f32 = 1.07;
+
+/// One control ROW's focus pop — a spring per control, so the arriving face grows while the one
+/// being left behind shrinks.
+///
+/// A row rather than a widget owns this for the reason every animated row in this app does
+/// ([`crate::ui::card_row`]): the pop is a property of a control's place in a row, the widgets are
+/// immediate-mode and keep nothing between frames, and the leaving control still needs a value after
+/// it has stopped being the focused one. A single global spring cannot express that — it would have
+/// to snap the outgoing face to 1.0 the instant focus moved, which is the 4px jump this exists to
+/// avoid.
+///
+/// The spring is **underdamped** (`--ease-bounce`, the press release's own curve): the design system
+/// says the click and the control focus pop are the two things in the app that bounce, so they share
+/// `press`'s constants rather than restating them.
+///
+/// [`scale`](Self::scale) folds in [`press::scale`](crate::ui::press::scale) for the focused control
+/// only. The dip is a FACTOR on top of the focus scale — that is what makes a press read the same on
+/// a 1.07 capsule as on a 1.09 poster — and it belongs to the control being pressed, which is always
+/// the focused one.
+pub struct CtlPop<const N: usize> {
+    sp: [Spring; N],
+    focused: Option<usize>,
+}
+impl<const N: usize> CtlPop<N> {
+    pub const fn new() -> Self {
+        Self { sp: [Spring::at(1.0); N], focused: None }
+    }
+    /// Advance every control's spring toward its target for this frame. `focused` is the index of
+    /// the control holding focus, or `None` when the row has none at all (the page scrolled away
+    /// from it, a panel took over), which closes every pop.
+    pub fn step(&mut self, focused: Option<usize>, dt: f32) {
+        self.focused = focused;
+        for (i, sp) in self.sp.iter_mut().enumerate() {
+            let target = if focused == Some(i) { CTRL_FOCUS_SCALE } else { 1.0 };
+            sp.step_zeta(target, crate::ui::press::K_POP, crate::ui::press::ZETA_POP, dt);
+        }
+    }
+    /// Control `i`'s drawn scale this frame, press dip included. Out-of-range asks answer 1.0 rather
+    /// than panicking: a row whose control COUNT changes with the item (`detail::hero_ctls`) indexes
+    /// this by a position that can outrun `N` for a frame while the set is being rebuilt.
+    pub fn scale(&self, i: usize) -> f32 {
+        let s = self.sp.get(i).map(|sp| sp.pos).unwrap_or(1.0);
+        if self.focused == Some(i) {
+            s * crate::ui::press::scale()
+        } else {
+            s
+        }
+    }
+    /// Drop every pop to rest with no motion in between — for a page being torn down or re-mounted,
+    /// so the next mount does not open on a control already popped (`detail::reset_view_state`).
+    pub fn reset(&mut self) {
+        self.focused = None;
+        for sp in self.sp.iter_mut() {
+            sp.jump(1.0);
+        }
+    }
+}
+impl<const N: usize> Default for CtlPop<N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// Icon box as a fraction of a round control's diameter — the ONE ratio every disc glyph uses
 /// (transport CC/Audio buttons, CircleButton vector icons, the Continue-Watching play badge).
@@ -978,6 +1085,27 @@ impl<'a> KeyHint<'a> {
     pub(crate) const fn height() -> f32 {
         KEYCAP_H
     }
+
+    /// **The air a panel leaves BELOW this line, which is deliberately not that panel's own
+    /// padding.** One rung ([`theme::space::MD`]), matching the `space::MD` step every alert in the
+    /// family puts between its closing hairline and this line — so the hint sits centred in the band
+    /// the rule opens, instead of riding high in it.
+    ///
+    /// All three read-only alerts drew `PAD` 48 here, which is what the design states
+    /// (`Alert Views.dc.html`'s content div is `padding:48px` all round, and nothing follows the
+    /// footer row). Against the PANEL FRAME that is exactly symmetric — the eyebrow's cap top is 48
+    /// below the top edge and the key cap's ring is 48 above the bottom one. Against the HAIRLINE,
+    /// which is the edge the eye actually measures this line from, it is 24 over and 48 under.
+    ///
+    /// And it is worse than 2:1 on the ink, which is the number that settles it: the reserved band
+    /// is the CAP's 36px, while the words either side are `size::CAPTION` with a ~17px cap band
+    /// centred in it. Only the 1.5px keycap ring ever reaches the band's edges, so the READ line
+    /// runs 33.5px below the hairline and 56.5px above the panel's floor. Half the visible air is
+    /// under three words nobody is meant to look at twice.
+    pub(crate) const fn pad_below() -> f32 {
+        theme::space::MD
+    }
+
 
     /// Draw with the line's LEFT edge at `x`, its cap band vertically centred on `cy`. The prose
     /// sits on its own cap band (rule 3 — never a magic y), the cap on the same centre line.
@@ -1910,20 +2038,80 @@ pub(crate) fn redraw_profile_chip() {
 
 // ---- CircleButton: circular disc + centered glyph, same ControlStyle family as Button /
 // TransportButton (focused = ACCENT, idle = solid dark disc). The hero + detail +/i/> circles. ----
+
+/// The **UNFURL**: a focused disc grows rightward into a capsule carrying the verb its press
+/// performs — icon-only at rest, LABELLED on focus.
+///
+/// It exists because a disc is the one control that cannot say what it does. At ten feet a bare
+/// tick teaches nobody, and a television has no hover to hint with, so focus is the only moment the
+/// user can be told. Resting geometry is unchanged: at `e == 0` every number below cancels and the
+/// control is the same 60px disc it has always been, which is what lets the whole family opt in
+/// without a second widget beside it.
+///
+/// The open capsule is `LEAD + icon + GAP + label + TAIL` — deliberately asymmetric, the icon side
+/// tighter, because a round glyph reads as further from a capsule's end than a stem does. The
+/// glyph's own inset slides from the disc's centring to [`DISC_LABEL_LEAD`] across the unfurl, so
+/// both ENDS are exactly the shapes the design draws rather than only the open one.
+///
+/// Sibling of the profile chip's own unfurl (`chip_cap`), and the same two rules apply: the width
+/// is the ONE expression both the painter and the hit-test read ([`CircleButton::cap_w`]), and the
+/// label rides the TAIL of the widening so its glyphs land in a capsule that has already made room
+/// for them instead of smearing across the grow.
+///
+/// The two differ on ONE policy and deliberately: what happens when the word does not fit. The chip
+/// ELIDES to a fixed `CHIP_NAME_MAX` budget, because a profile name is user data of any length and
+/// a shortened name is still a name. A verb is not — half of "Mark as Unwatched" teaches less than
+/// the tick it was meant to explain — so a control with a hard bound to respect asks
+/// [`CircleButton::label_budget`] and shows the whole word or none of it
+/// (`detail::watch_cap_at`). Both are right for their content; neither is the default.
+const DISC_LABEL_LEAD: f32 = 26.0;
+const DISC_LABEL_GAP: f32 = 14.0;
+const DISC_LABEL_TAIL: f32 = 34.0;
+/// The unfurl's stiffness — deliberately [`K_CHIP`], the profile chip's own. The two are the same
+/// interaction (a focused control opening far enough to name itself) and a bar that settles at one
+/// rate over a hero row that settles at another reads as two systems rather than one.
+pub(crate) const K_DISC_UNFURL: f32 = K_CHIP;
+
 pub struct CircleButton {
     pub frame: Rect,
     pub glyph: *const c_char,
     pub icon: Option<crate::ui::icons::Icon>, // vector glyph; overrides the text glyph when set
     pub focused: bool,
     pub style: ControlStyle,
+    /// The FOCUS POP, as a factor on the frame — see [`CircleButton::scale`].
+    pub scale: f32,
+    /// The unfurled label and how far open it is (0..1) — see [`DISC_LABEL_LEAD`]. `None` is a
+    /// plain disc, which is what every caller that has not opted in still gets.
+    pub label: Option<(*const c_char, f32)>,
 }
 impl CircleButton {
     pub fn new(glyph: *const c_char) -> Self {
-        Self { frame: Rect::new(0.0, 0.0, 60.0, 60.0), glyph, icon: None, focused: false, style: ControlStyle::Accent }
+        Self {
+            frame: Rect::new(0.0, 0.0, 60.0, 60.0),
+            glyph,
+            icon: None,
+            focused: false,
+            style: ControlStyle::Accent,
+            scale: 1.0,
+            label: None,
+        }
     }
+    /// Move the disc, keeping its own diameter. Enough for a plain disc, and NOT enough for an
+    /// unfurled one — see [`frame`](Self::frame).
     pub fn at(mut self, x: f32, y: f32) -> Self {
         self.frame.x = x;
         self.frame.y = y;
+        self
+    }
+    /// Place AND size the control from a frame the caller already owns.
+    ///
+    /// The unfurl's width is [`cap_w`](Self::cap_w), which a row that accumulates its controls has
+    /// already had to compute — so it hands the whole rect over rather than an origin, and the
+    /// shape drawn is by construction the shape that row reserved and the pointer grades against.
+    /// [`at`](Self::at) would silently keep the bare 60, which draws a labelled capsule clipped to
+    /// a disc.
+    pub fn frame(mut self, r: Rect) -> Self {
+        self.frame = r;
         self
     }
     /// Render a vector icon centred on the disc instead of the text glyph (e.g. a real
@@ -1937,32 +2125,163 @@ impl CircleButton {
         self.focused = f;
         self
     }
+    /// The [FOCUS POP](CTRL_FOCUS_SCALE), about the control's centre — normally
+    /// [`CtlPop::scale`], which already folds the press dip in. `1.0` is the resting control, which
+    /// is what every caller that has not opted in still gets.
+    ///
+    /// It scales the PLATE and the glyph box. It does not scale the unfurled label's TYPE: text in
+    /// this app is sized off `theme::size`'s rungs and nothing may sit between them, so the word
+    /// keeps its `BODY` 28 through the pop and only its placement moves. At 1.07 on a 60px control
+    /// that is a two-pixel relative difference seen from three metres — the rung rule is worth more.
+    pub fn scale(mut self, s: f32) -> Self {
+        self.scale = s;
+        self
+    }
     pub fn style(mut self, s: ControlStyle) -> Self {
         self.style = s;
         self
     }
+    /// Give this disc the [UNFURL](DISC_LABEL_LEAD): `text` is the verb the press performs and `e`
+    /// (0..1) is how far open the capsule is — normally a focus spring, so the control reads as one
+    /// object opening rather than a label appearing beside it. `e == 0` draws the plain disc.
+    ///
+    /// The caller must size [`frame`](Self::frame)`.w` with [`cap_w`](Self::cap_w) at the same `e`:
+    /// the drawn shape and the graded shape are one expression (`chip_cap`'s rule), which is what
+    /// keeps a pointer clicking the capsule it can see. A frame that is NOT a capsule cancels the
+    /// unfurl outright, glyph included — see [`cap_label_w`](Self::cap_label_w) — so a row that
+    /// refused this control its room can keep passing `e` without drawing anything wrong.
+    ///
+    /// Three preconditions, none of which the builder can enforce:
+    /// * **It needs [`icon`](Self::icon).** The label is drawn beside the vector glyph; the
+    ///   text-glyph form has no run to sit next to, and silently ignores this.
+    /// * **The label is drawn at [`theme::size::BODY`]**, the one control-label rung — measure with
+    ///   the same size when sizing the frame, or the capsule and its word disagree.
+    /// * **It clips, and the clip has no stack** (`gfx::clip_clear` is a bare `glDisable`). Drawing
+    ///   an unfurled control INSIDE another scissor releases that outer clip for the rest of the
+    ///   frame. Every caller today is unclipped; a scrolling list that adopts this is not.
+    pub fn label(mut self, text: *const c_char, e: f32) -> Self {
+        self.label = Some((text, e));
+        self
+    }
+
+    /// The capsule width of a disc of diameter `d`, unfurled `e` (0..1) around a label measured
+    /// `label_w` wide. The LAYOUT companion to `draw`, and the only place the open geometry is
+    /// written down — a row accumulating this control's advance and the painter placing its glyphs
+    /// read the very same number, at every phase of the animation.
+    ///
+    /// `label_w <= 0` is "no label", which collapses to the bare disc whatever `e` says.
+    pub fn cap_w(d: f32, e: f32, label_w: f32) -> f32 {
+        if label_w <= 0.0 {
+            return d;
+        }
+        d + (Self::cap_open_w(d, label_w) - d) * e.clamp(0.0, 1.0)
+    }
+
+    /// The fully-open capsule — [`cap_w`](Self::cap_w) at `e == 1`, and the only place the open
+    /// geometry is spelled out.
+    fn cap_open_w(d: f32, label_w: f32) -> f32 {
+        DISC_LABEL_LEAD + (d * DISC_ICON_RATIO).round() + DISC_LABEL_GAP + label_w + DISC_LABEL_TAIL
+    }
+
+    /// The widest label a disc of diameter `d` may unfurl when its row can spare only `room`
+    /// beyond the bare disc — i.e. `cap_w(d, 1.0, label_budget(d, room)) - d == room`.
+    ///
+    /// The INVERSE of [`cap_w`](Self::cap_w), for a caller that has a fixed bound to respect and a
+    /// label to decide about (`detail::watch_cap_at`). Having it here rather than re-derived at
+    /// the call site is the same rule the width itself follows: the open geometry is written down
+    /// once, so a budget and the shape it is a budget FOR cannot drift apart. Can come back
+    /// negative, which means the disc cannot afford a label of any width at all.
+    pub(crate) fn label_budget(d: f32, room: f32) -> f32 {
+        room - (Self::cap_open_w(d, 0.0) - d)
+    }
+
+    /// The label width a capsule of DRAWN width `w` was sized for — the exact inverse of
+    /// [`cap_w`](Self::cap_w) at the same `e`, so the widget can recover what its caller measured
+    /// without being handed it a second time (two numbers that must agree are two numbers that can
+    /// disagree; this way the frame is the single statement of the geometry, as `chip_cap`'s rule
+    /// demands).
+    ///
+    /// `None` means **this frame is not a capsule**, and it is the widget's whole guard rather than
+    /// a convenience: `w <= d` is a caller that asked for a label and was given a bare disc — a row
+    /// that REFUSED the unfurl for want of room ([`label_budget`](Self::label_budget)), or a
+    /// measurement that came back 0 because the font never opened — while its focus spring keeps
+    /// climbing to 1. Answering with the arithmetic there returns a NEGATIVE label width, which
+    /// then reads as "acres of tail air" to the fade ramp and lights the word up at full alpha; and
+    /// the icon, slid by that same `e`, lands 26px into a 60px circle. Both are the disc drawn
+    /// wrong, from a state the caller declared by handing over the frame.
+    fn cap_label_w(d: f32, e: f32, w: f32) -> Option<f32> {
+        if e <= 0.01 || w <= d {
+            return None;
+        }
+        let lw = (w - d) / e - (Self::cap_open_w(d, 0.0) - d);
+        (lw > 0.0).then_some(lw)
+    }
 }
 impl View for CircleButton {
     fn draw(&self, _e: &Env, p: Painter) {
-        let r = self.frame;
+        let base = self.frame;
+        let r = base.scaled(self.scale);
         let (face, ink) = self.style.colors(self.focused);
-        let rad = r.w * 0.5;
-        // The resting card shadow, which every control in this family carries and this one did not:
-        // a disc over artwork nobody chose has the tile's problem, and `Button` had already been
-        // given the same constant for the same reason.
-        p.shadow(r, rad, theme::CARD_SHADOW_REST_BLUR, theme::CARD_SHADOW_REST_DY,
-                 theme::with_a(theme::CARD_SHADOW, theme::CARD_SHADOW_REST_A));
+        // The DISC is the frame's HEIGHT, not its width: an unfurled control is a capsule, and
+        // taking the radius and the glyph box off `w` would swell both as it opened. At rest the
+        // two are the same number, which is why every plain caller is unaffected.
+        let d = r.h;
+        let rad = d * 0.5;
+        // No drop shadow — the edge holds it. See `Button::draw` for the whole argument and for the
+        // measured case that used to justify one.
         control_rim(p, r, rad, face);
+        // Resolve the unfurl from the FRAME, before anything is placed by it: `cap_label_w` answers
+        // `None` for a frame that is not a capsule, and that verdict governs the GLYPH as well as
+        // the word. Sliding the icon off the caller's raw `e` was a real defect — a control whose
+        // row refused it the room still had a focus spring climbing to 1, and the check kicked 12px
+        // right inside a disc that never grew.
+        // …from the frame the CALLER sized (`cap_w`), not the popped one: the pop is a factor
+        // applied after the row's layout, so asking the base frame is how the widget recovers the
+        // label width its caller actually measured.
+        let unfurl = self
+            .label
+            .and_then(|(text, e)| Some((text, e.clamp(0.0, 1.0), Self::cap_label_w(base.h, e, base.w)?)));
+        let e = unfurl.map(|(_, e, _)| e).unwrap_or(0.0);
         if let Some(icon) = self.icon {
-            // vector glyph centred on the disc at the shared DISC_ICON_RATIO box, so every round
-            // control carries its icon at one ratio.
-            let d = (r.w * DISC_ICON_RATIO).round();
-            crate::ui::icons::draw(p, icon, Rect::new(r.cx() - d * 0.5, r.y + (r.h - d) * 0.5, d, d), ink);
+            // vector glyph at the shared DISC_ICON_RATIO box, so every round control carries its
+            // icon at one ratio — centred on the DISC, sliding to the open capsule's lead inset as
+            // the unfurl opens (see `DISC_LABEL_LEAD`).
+            let isz = (d * DISC_ICON_RATIO).round();
+            let closed_inset = (d - isz) * 0.5;
+            // the capsule's own air rides the pop with it, so a popped capsule is the same shape
+            // scaled and not a wider one wearing the original padding
+            let (lead, gap, tail) = (
+                DISC_LABEL_LEAD * self.scale,
+                DISC_LABEL_GAP * self.scale,
+                DISC_LABEL_TAIL * self.scale,
+            );
+            let ix = r.x + closed_inset + (lead - closed_inset) * e;
+            crate::ui::icons::draw(p, icon, Rect::new(ix, r.y + (r.h - isz) * 0.5, isz, isz), ink);
+            if let Some((text, _, label_w)) = unfurl {
+                // The label rides the TAIL of the widening, and the ramp is the GEOMETRY rather
+                // than a chosen fraction of it: it fades in exactly as fast as the capsule's tail
+                // air ([`DISC_LABEL_TAIL`]) opens up behind the last glyph. So the word is at zero
+                // the instant it would still be overhanging, and at full only once the capsule has
+                // the whole run plus its own end air — which is what stops a half-cut glyph being
+                // legible for a few frames of every focus move. A magic 0.55 could not do that: the
+                // crossover moves with the LABEL's width, and this row's two differ by 34px.
+                let tx = ix + isz + gap;
+                let a = (((r.x + r.w) - (tx + label_w * self.scale)) / tail).clamp(0.0, 1.0);
+                if a > 0.004 {
+                    let ty = crate::text::text_vcenter_y(theme::size::BODY, 1, r.y + d * 0.5);
+                    // …and the clip stays, as the backstop the ramp makes invisible: a caller whose
+                    // frame does not come from `cap_w` would otherwise paint a label out over the
+                    // page (the design's own `overflow:hidden`).
+                    p.clip(r);
+                    p.alpha(a).text(text, tx, ty, theme::size::BODY, ink, 0, 1);
+                    p.clip_clear();
+                }
+            }
         } else {
             // text glyph centred on the disc by its cap band (layout ≠ paint), not a hand-tuned y
             crate::ui::label::Label::new(self.glyph, crate::ui::theme::size::HEADLINE, ink)
                 .h(crate::ui::label::HAlign::Center)
-                .draw(p, r);
+                .draw(p, Rect::new(r.x, r.y, d, d));
         }
     }
 }
@@ -2396,6 +2715,14 @@ impl View for StatusOverlay<'_> {
             Label::new(r.as_ptr(), STATUS_REASON_SZ, theme::TEXT_TERTIARY).h(HAlign::Center).draw(p, band);
         }
         if let (Some(label), Some(f)) = (self.action, self.action_frame()) {
+            // **No [`CTRL_FOCUS_SCALE`] pop, deliberately.** Every other control face in the app
+            // takes one; this is the one surface where it would say nothing. A read-out's action is
+            // the ONLY focusable thing on the region it owns — `library::sync_readout_focus` lands
+            // the ring on it the moment the read-out appears and there is nowhere else for it to
+            // go — so the pop has no sibling to distinguish this control from and would resolve to
+            // a constant 1.07, i.e. a slightly larger button with no signal in it. The pop is a
+            // ROW's affordance; a lone control is a different question. Give it one the day a
+            // read-out offers two actions.
             Button::new(label.as_ptr(), STATUS_CAP_SZ, f).focused(self.focused).draw(e, p);
         }
     }
@@ -2408,20 +2735,27 @@ pub struct TransportButton {
     pub frame: Rect,
     pub which: i32,
     pub focused: bool,
+    /// The FOCUS POP, as a factor on the frame — see [`CircleButton::scale`], whose contract this
+    /// shares (these discs are that same face at 64px).
+    pub scale: f32,
 }
 impl TransportButton {
     pub fn new(which: i32, frame: Rect) -> Self {
-        Self { frame, which, focused: false }
+        Self { frame, which, focused: false, scale: 1.0 }
     }
     pub fn focused(mut self, f: bool) -> Self {
         self.focused = f;
+        self
+    }
+    pub fn scale(mut self, s: f32) -> Self {
+        self.scale = s;
         self
     }
 }
 impl View for TransportButton {
     fn draw(&self, _e: &Env, p: Painter) {
         use crate::ui::icons::Icon;
-        let r = self.frame;
+        let r = self.frame.scaled(self.scale);
         let (bg, ink) = if self.focused {
             (crate::ui::ACCENT, crate::ui::ACCENT_INK)
         } else {
@@ -4289,16 +4623,25 @@ pub enum ControlStyle {
 /// charged for its rectangle unioned with every other, and Home's action row unioned with a glass
 /// tab track priced at 3.8x the frame budget. A rim costs one extra fragment op on the perimeter.
 ///
-/// The weights are the container's, not the tile's: [`theme::GLASS_RIM`] .14 round the whole
-/// perimeter and the boost to [`theme::GLASS_RIM_LIGHT`] .28 on the side facing the light, weighted
-/// by the surface normal — so a disc's highlight sits on its crown and fades to nothing at its
-/// equator. One lamp, the one every card shadow in this app is already cast from.
+/// **The weights are the TILE's, plus the container's lamp**: [`theme::CARD_SHEEN`] .22 round the
+/// whole perimeter — a card's own edge, because a control face has a card's problem, it sits over
+/// artwork nobody chose — and the boost to [`theme::GLASS_RIM_LIGHT`] .28 on the side facing the
+/// light, weighted by the surface normal, so a disc's highlight sits on its crown and fades to
+/// nothing at its equator. One lamp, the one every card shadow in this app is already cast from.
+///
+/// The perimeter used to be [`theme::GLASS_RIM`] .14, the GLASS container's line, which was a
+/// category error by the design system's own rule: `tokens/glass.css` scopes that pair to a surface
+/// you read THROUGH and says in the same breath that every control is flat. A flat control wears the
+/// card constant. The crown stays the glass hairline because that is what it is — a specular line
+/// from the shared lamp, not a second perimeter — so the edge now runs .22 → .28 instead of
+/// .14 → .28, and this rim is the ONLY thing separating a control from its ground since the drop
+/// shadow went (`Button::draw`).
 ///
 /// Unconditional on focus, which is the point: the design's rule is that the card constants are not
 /// states and the FILL is what focus owns. On the focused near-white `ACCENT` face a white rim is
 /// invisible by construction, which is the sign it is an edge and not a fill.
 fn control_rim(p: Painter, r: Rect, rad: f32, face: [f32; 4]) {
-    p.rect_rimmed(r, rad, face, face, theme::GLASS_RIM, theme::GLASS_RIM_LIGHT[3] - theme::GLASS_RIM[3]);
+    p.rect_rimmed(r, rad, face, face, theme::CARD_SHEEN, theme::GLASS_RIM_LIGHT[3] - theme::CARD_SHEEN[3]);
 }
 
 impl ControlStyle {
@@ -4337,6 +4680,8 @@ pub struct Button {
     pub trailing: Option<crate::ui::icons::Icon>,
     pub focused: bool,
     pub style: ControlStyle,
+    /// The FOCUS POP, as a factor on the frame — see [`Button::scale`].
+    pub scale: f32,
     /// 0..1 left-to-right FILL sweep across the pill; None = an ordinary button.
     pub progress: Option<f32>,
 }
@@ -4352,7 +4697,28 @@ const BTN_KEYLINE_W: f32 = 1.5;
 
 impl Button {
     pub fn new(label: *const c_char, sz: c_int, frame: Rect) -> Self {
-        Self { frame, label, sz, icon: None, trailing: None, focused: false, style: ControlStyle::Accent, progress: None }
+        Self {
+            frame,
+            label,
+            sz,
+            icon: None,
+            trailing: None,
+            focused: false,
+            style: ControlStyle::Accent,
+            scale: 1.0,
+            progress: None,
+        }
+    }
+    /// The [FOCUS POP](CTRL_FOCUS_SCALE), about the capsule's centre — normally [`CtlPop::scale`],
+    /// which already folds the press dip in. `1.0` is the resting control.
+    ///
+    /// The pill's TYPE does not scale with it, for the reason [`CircleButton::scale`] gives: the
+    /// size ladder has no rung between 28 and 32 and text may not sit between rungs. So the plate
+    /// and its icon grow and the label keeps its measured width, which is also what keeps the
+    /// centred `[icon + gap + label]` run centred through the pop.
+    pub fn scale(mut self, s: f32) -> Self {
+        self.scale = s;
+        self
     }
     pub fn icon(mut self, i: crate::ui::icons::Icon) -> Self {
         self.icon = Some(i);
@@ -4414,9 +4780,10 @@ impl Button {
         self
     }
 
-    /// The pill's filled background, including the countdown sweep when one is set.
-    fn plate(&self, p: Painter, bg: [f32; 4]) {
-        let r = self.frame;
+    /// The pill's filled background, including the countdown sweep when one is set. Takes the rect
+    /// rather than reading `self.frame`, because the drawn plate is the POPPED one
+    /// ([`Button::scale`]) and the sweep has to ride it.
+    fn plate(&self, p: Painter, r: Rect, bg: [f32; 4]) {
         let rad = r.h * 0.5;
         if matches!(self.style, ControlStyle::Keyline) && !self.focused {
             // the knockout: stroke colour first, then the interior inset by it — the SDF has no
@@ -4443,15 +4810,21 @@ impl Button {
 }
 impl View for Button {
     fn draw(&self, _e: &Env, p: Painter) {
-        let r = self.frame;
+        let r = self.frame.scaled(self.scale);
         let (bg, ink) = self.style.colors(self.focused);
-        // Every control in this family carries the card system's RESTING shadow. Without it an
-        // ACCENT capsule over a white frame measures ~1.2:1 against its surround — the shape
-        // vanishes and only the dark label survives, floating. The discs and the shelves already
-        // solved this; the pills were the one control that hadn't.
-        p.shadow(r, r.h * 0.5, theme::CARD_SHADOW_REST_BLUR, theme::CARD_SHADOW_REST_DY,
-                 theme::with_a(theme::CARD_SHADOW, theme::CARD_SHADOW_REST_A));
-        self.plate(p, bg);
+        // **No drop shadow.** A control face is held by its EDGE ([`control_rim`], now the card's own
+        // .22 sheen rather than the glass container's .14 line) and by the focus pop, and the design
+        // system states the family that way: `Button`/`CircleButton` carry the 1px perimeter sheen
+        // plus the specular top hairline, and nothing under them.
+        //
+        // This did carry `CARD_SHADOW_REST`, on a measured argument worth keeping written down: an
+        // ACCENT capsule over a WHITE frame measures ~1.2:1 against its surround, so the plate
+        // disappears and only the dark label is left floating. The answer to that is the rim's own
+        // weight — the case is a near-white face on a near-white ground, where a 4px shadow at .34
+        // was never what separated them either. If it ever reads thin on real artwork, the lever is
+        // the rim, not a shadow coming back: two elevations for one control family is what the
+        // design system removed.
+        self.plate(p, r, bg);
         // center the [icon + gap + label] group in the pill; the label sits on the pill centre by
         // its cap band, so descenders (the g's in "From Beginning") don't drag the caps upward
         let ty = crate::text::text_vcenter_y(self.sz, 1, r.y + r.h * 0.5);
@@ -4793,6 +5166,115 @@ pub(crate) fn rating_group(p: Painter, x: f32, cy: f32, caption: &str, cells: &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **A control row's pop animates BOTH ways**, which is the whole reason it is an array of
+    /// springs and not one global scalar. Walking focus from control 0 to control 1 must leave 0
+    /// still shrinking while 1 grows — a single spring could only snap the outgoing face to rest,
+    /// which on a 60px disc is a visible 4px jump at the moment the eye is already on that control.
+    #[test]
+    fn a_control_leaving_focus_shrinks_while_its_neighbour_grows() {
+        let mut pop: CtlPop<2> = CtlPop::new();
+        for _ in 0..40 {
+            pop.step(Some(0), 1.0 / 60.0);
+        }
+        let settled = pop.scale(0);
+        assert!(
+            (settled - CTRL_FOCUS_SCALE).abs() < 0.005,
+            "a held focus settles ON the pop, not near it: {settled}"
+        );
+        assert_eq!(pop.scale(1), 1.0, "and its neighbour is at rest");
+
+        // focus moves — one frame later BOTH are in flight, neither at an endpoint
+        pop.step(Some(1), 1.0 / 60.0);
+        let (leaving, arriving) = (pop.scale(0), pop.scale(1));
+        assert!(leaving < settled && leaving > 1.0, "the leaving face is still shrinking: {leaving}");
+        assert!(arriving > 1.0, "…while the arriving one has already started: {arriving}");
+    }
+
+    /// The pop is UNDERdamped — it overshoots and rings, because the design system names exactly two
+    /// things in this app that bounce and this is one of them (`--ease-bounce`, shared with the
+    /// press release). A critically damped spring cannot, so this is what would catch a `step` that
+    /// quietly went back to `Spring::step`.
+    #[test]
+    fn the_pop_overshoots_the_way_a_click_does() {
+        let mut pop: CtlPop<1> = CtlPop::new();
+        let mut peak = 1.0f32;
+        for _ in 0..40 {
+            pop.step(Some(0), 1.0 / 60.0);
+            peak = peak.max(pop.scale(0));
+        }
+        assert!(peak > CTRL_FOCUS_SCALE, "an underdamped pop passes its target: peaked at {peak}");
+        assert!(peak < CTRL_FOCUS_SCALE * 1.05, "…but rings, it does not launch: {peak}");
+    }
+
+    /// Nothing focused closes every pop, and `reset` gets there with no motion at all — the two
+    /// halves a page teardown needs (`detail::reset_view_state`), so a re-mounted page never opens
+    /// with a control standing proud of its row.
+    #[test]
+    fn a_row_with_no_focus_settles_flat() {
+        let mut pop: CtlPop<3> = CtlPop::new();
+        for _ in 0..40 {
+            pop.step(Some(2), 1.0 / 60.0);
+        }
+        for _ in 0..60 {
+            pop.step(None, 1.0 / 60.0);
+        }
+        for i in 0..3 {
+            assert!((pop.scale(i) - 1.0).abs() < 0.005, "control {i} eased back to rest");
+        }
+        pop.step(Some(1), 1.0 / 60.0);
+        pop.reset();
+        for i in 0..3 {
+            assert_eq!(pop.scale(i), 1.0, "…and reset is exact, not nearly");
+        }
+    }
+
+    /// An out-of-range index answers 1.0 rather than panicking. `detail::hero_ctls` builds a row
+    /// whose LENGTH depends on the item (a resume point comes and goes, a second source comes and
+    /// goes), so a focus index can outrun the array for the frame between a set changing and
+    /// `hero_col` re-seating the focus on it.
+    #[test]
+    fn an_index_past_the_row_is_a_resting_control() {
+        let mut pop: CtlPop<2> = CtlPop::new();
+        pop.step(Some(7), 1.0 / 60.0);
+        assert_eq!(pop.scale(7), 1.0);
+        assert_eq!(pop.scale(0), 1.0, "and an out-of-range FOCUS pops nothing in range either");
+    }
+
+    /// The unfurl's three formulas are ONE formula asked three ways, and each way is load-bearing
+    /// somewhere the others are not: [`CircleButton::cap_w`] places the capsule, `cap_label_w`
+    /// recovers what it was sized for so the label's fade can be geometric rather than guessed, and
+    /// [`CircleButton::label_budget`] is what a row with a hard right edge asks before allowing any
+    /// of it (`detail::watch_cap_at`). They agree or the control paints a word past its own frame.
+    #[test]
+    fn the_unfurl_geometry_round_trips() {
+        let d = StatusOverlay::CTRL_H;
+        for label_w in [40.0f32, 120.0, 233.0, 267.0, 400.0] {
+            assert_eq!(CircleButton::cap_w(d, 0.0, label_w), d, "shut is the bare disc");
+            let open = CircleButton::cap_w(d, 1.0, label_w);
+            assert!(open > d + label_w, "an open capsule holds its label and then some");
+
+            for e in [0.05f32, 0.25, 0.5, 0.9, 1.0] {
+                let w = CircleButton::cap_w(d, e, label_w);
+                assert!(w >= d && w <= open, "the capsule stays between its two ends at e={e}");
+                let back = CircleButton::cap_label_w(d, e, w).expect("open enough to invert");
+                assert!((back - label_w).abs() < 0.01, "e={e}: recovered {back}, measured {label_w}");
+            }
+            // …and the budget is the same equation solved for the label: spending exactly it must
+            // land the open capsule exactly `room` past the bare disc.
+            let room = open - d;
+            let budget = CircleButton::label_budget(d, room);
+            assert!((budget - label_w).abs() < 0.01, "budget {budget} for a {label_w} label");
+        }
+        // a shut (or nearly shut) capsule carries no recoverable label — the range where the ramp
+        // has nothing to fade in anyway
+        assert_eq!(CircleButton::cap_label_w(d, 0.0, d), None);
+        // "no label" collapses whatever the unfurl says, so a caller cannot animate a bare disc wide
+        for e in [0.0f32, 0.5, 1.0] {
+            assert_eq!(CircleButton::cap_w(d, e, 0.0), d);
+            assert_eq!(CircleButton::cap_w(d, e, -5.0), d);
+        }
+    }
 
     /// The **destructive** face, both states, as the one sentence it is meant to say: *the colour
     /// belongs to the ACTION, the fill belongs to FOCUS.*
