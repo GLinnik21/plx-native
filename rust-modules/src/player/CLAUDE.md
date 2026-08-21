@@ -54,6 +54,10 @@ the seam or the Engine, so its presence in a signature keeps meaning something.
   **never** hand it to C++ `new`/`delete` (real object size is unknown). Methods returning a
   `std::string` use a hidden sret first-arg; read the `char*` at offset 0 (SSO) for short replies
   like `"Ok"`/`"BufferFull"`.
+- **Dolby Vision and Dolby Atmos have their own document: `docs/dolby-vision.md`.** The two
+  payload nodes, the ACB audio forward, the Profile 5 one-tick fix and the instrument traps live
+  there rather than here, because half of that record is about LG's binaries and the Dolby
+  specifications rather than about our engine.
 - **Starfish `Load` must be constructed with `uid = NULL`** (`SMP_ctor(g_smp, NULL)`), and in
   buffer-feed mode the app must **not** `LSRegister` its own `com.webos.media` client — either
   collides with the pipeline's uMS connection (CONN_FIND_ERR). See the comment in `load_thread`.

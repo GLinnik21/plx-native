@@ -349,6 +349,12 @@ used: **libcurl** (`net.rs`) does the plex.tv account/login TLS+DNS that the raw
   die at 2043 threads on `RLIMIT_AS` (the full AArch32 4 GB), 256 KB stacks at 3745 on
   `RLIMIT_NPROC` (3746)**, both EAGAIN, against the app's 31 threads at playback peak. Which limit
   binds depends on the stack size; that is why `task::spawn_small` uses 256 KB.
+- `docs/dolby-vision.md` — **Dolby Vision + Dolby Atmos, end to end**: what ships per profile, the
+  two Load-payload nodes and the binaries they were recovered from, the ACB Atmos forward and the
+  `SOUND_ERROR_019` rule it retired, the Profile 5 one-tick stutter with the six hypotheses that
+  were wrong first, the three instruments that were silent by construction, and what the Dolby
+  specifications do and do not require (with page citations). Read it before touching
+  `Dovi::presentation`, `with_dolby_hdr_info`, `with_immersive`, `acb_send_atmos` or `pts_nudge_ns`.
 - `docs/pms-api.md` — **verified** PMS REST reference (sections, hubs, metadata, image transcode,
   direct-play URLs, timeline). The authoritative spec for the data layer.
 - `docs/buffer-feed-plan.md` — historical design note for the buffer-feed pivot (partly outdated).
