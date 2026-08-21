@@ -24,7 +24,9 @@ Makefile's `TV` and `tools/`' `TV_HOST` both fall back to; `make TV=1.2.3.4 …`
 invocation, and a target that needs a TV with neither set fails saying so. The ssh password
 `alpine` IS still in the Makefile and that is deliberate — it is webosbrew's *published* dev-mode
 root password, identical on every rooted webOS TV, so it identifies nobody and removing it would
-break the loop for everyone. App id `com.beb.plxnative`.
+break the loop for everyone. App id `com.beb.plxnative` — and since 2026-08-21 a second
+install, `com.beb.plxnative.debug`, can sit beside it on the same set (`FLAVOR`, below;
+`docs/two-installs.md`).
 
 ## Build / deploy / run
 
@@ -44,9 +46,13 @@ full one-time setup + troubleshooting.
   firmware; bundling collapsed that into a single equality (`ffabi-assert.c` opens by asserting
   `LIBAVFORMAT_VERSION_MAJOR == 63`), and the vendored trees are gone — so anyone who went looking
   for them found `vendor/` holding nanosvg and nothing else.
-- `make deploy` — scp the binary + `appinfo.json` (+ fonts if missing) to the TV app dir.
-- `make run` — close any running instance, wipe `/tmp/plxnative-events.log`, launch, keep alive
-  `RUN_SECS` (default 18s), then `cat` the on-device event log back to your terminal.
+- `make deploy` — scp the binary + this flavour's `appinfo.json` + the fonts (UNCONDITIONALLY —
+  the old `test -f || scp` guard meant a changed font could never reach the TV) into that
+  install's app dir. Refuses if the flavour has never been installed, naming
+  `make FLAVOR=… install`, and refuses a dev build on the stable id (see `release-guard`).
+- `make run` — close any running instance, wipe this install's event log (`make -s print-eventlog`),
+  launch, keep alive `RUN_SECS` (default 18s), then `cat` the on-device event log back to your
+  terminal.
 - `make check` — the **host** unit suite (`cargo test --lib`, ~0.3s, no TV), preceded by `make
   lint`. Not a prerequisite of `all` — the cross-build must never depend on a host toolchain run.
   See the testing section for what it does and does not cover.
@@ -59,7 +65,7 @@ full one-time setup + troubleshooting.
   default profile ships it; a `--profile minimal` nightly does not).
 - `make test` — `deploy` then `run` (the normal iteration command).
 - `make kill` — close the app on the TV.
-- `make ipk` — repackage the installable `pkg/com.beb.plxnative_<version>_arm.ipk`. The version
+- `make ipk` — repackage the installable `pkg/<app id>_<version>_arm.ipk`. The version
   comes from `pkg/appinfo.json` (the single source; `ci/check-package.py` asserts the control
   file agrees), and the archive is **reproducible** — `ci/mkipk.py` normalises tar identity and
   the gzip header and writes the `ar` container itself. Two builds of one commit produce the same
@@ -85,6 +91,34 @@ full one-time setup + troubleshooting.
   the recipe (its module doc names the three ways a Mac bundle silently ships broken);
   `docs/macos-app.md` is the design note, and `docs/macos-app-readme.md` is what ships beside the
   zip for the recipient.
+- **`FLAVOR`** selects **WHICH INSTALL** every TV-facing target talks to. Two builds live on one
+  television: `stable` (`com.beb.plxnative` — the app users install, the id in every release,
+  manifest and channel listing) and `debug` (`com.beb.plxnative.debug` — the day-to-day developer
+  build beside it, with its own launcher tile, its own sign-in and its own runtime root).
+  **`FLAVOR ?= debug` in the tracked Makefile, and `stable` has to be TYPED.** That asymmetry is
+  the safety argument, not a preference: every command in this repo's muscle memory is spelled
+  `make deploy` / `make run` / `./tests/run.py` with no flavour, and each one used to overwrite the
+  only install there was — retyping one command is not comparable to destroying the install the
+  household watches with, possibly mid-film, with no undo. Tracked rather than a gitignored dotfile
+  because a fresh clone or worktree has none, so the dangerous default would be inherited invisibly
+  by exactly the checkouts nobody is watching. An unknown value is a parse-time `$(error)` rather
+  than a third registered app on the television. A flavour must be installed ONCE before `deploy`
+  can reach it — `make FLAVOR=debug install` builds its .ipk, `dev/install`s it and then deploys
+  into it (appinstalld replaces `applications/<id>/` WHOLESALE, so stopping at the install leaves
+  the packaged binary behind); `make FLAVOR=debug uninstall` removes one and refuses the stable id.
+  `deploy`/`ipk` on the stable id refuse a dev build unless `ALLOW_DEV_ON_STABLE=1`.
+  **FLAVOR is NOT a codegen input**, which is what makes it cheap: the app reads its id from the
+  INSTALL DIRECTORY at runtime (`paths::app_id`, via `/proc/self/exe`), so flipping it costs
+  nothing — no rebuild, no second `--target-dir`, no FFmpeg rebuild, one `pkg/plxnative`. Ask the
+  seven query targets for any of it (they compose — several goals on one command line print several
+  lines): `make -s print-flavor print-appid print-appdir print-rundir print-eventlog print-appport
+  print-tv FLAVOR=<f>`. `print-appport` is the newest and the least obvious: the capture listener's
+  TCP port MOVES with the flavour (8910 stable, 8911 flavoured), because two installs cannot both
+  bind one and both halves of that failure are silent — see the capture trigger below.
+  **Never `make -p`/`make -pn`**, which prints a recursive variable's UNEXPANDED
+  definition, so `TV` comes back as the literal
+  `$(strip $(shell cat .tv-host …))` and every ssh built from it fails against a live television.
+  Full account: **`docs/two-installs.md`**.
 - **`RELEASE=1`** drops **both** default cargo features: `devtools` (the on-screen counter — the
   feature is contracted to be draw-only) and `devtriggers` (the whole `/tmp` surface, the remote
   FIFO and the capture listener — see `rust-modules/src/dev.rs`). It must be on
@@ -355,6 +389,14 @@ used: **libcurl** (`net.rs`) does the plex.tv account/login TLS+DNS that the raw
   were wrong first, the three instruments that were silent by construction, and what the Dolby
   specifications do and do not require (with page citations). Read it before touching
   `Dovi::presentation`, `with_dolby_hdr_info`, `with_immersive`, `acb_send_atmos` or `pts_nudge_ns`.
+- `docs/two-installs.md` — **why two builds live on one television and what they do and do not
+  share**: the `FLAVOR` axis and its seven query targets, the identity model (the app id is the
+  install DIRECTORY's name, read from `/proc/self/exe`, so nothing about it reaches codegen), the
+  shared-resource inventory (separate: runtime root and everything in it, session file, plex.tv
+  device name, launcher tile, the Load payload's `option.appId` and the ACB id — still shared: the
+  jail template, the ONE video plane, `/media/developer`, `splash.png`, the `requiredMemory`
+  budget), the two name traps, and the ordered list of what only a television can settle. Read it
+  before adding anything per-install, and before assuming a log came from the install you meant.
 - `docs/pms-api.md` — **verified** PMS REST reference (sections, hubs, metadata, image transcode,
   direct-play URLs, timeline). The authoritative spec for the data layer.
 - `docs/buffer-feed-plan.md` — historical design note for the buffer-feed pivot (partly outdated).
@@ -399,8 +441,9 @@ used: **libcurl** (`net.rs`) does the plex.tv account/login TLS+DNS that the raw
   with a single `Load`. In-app Home/Settings are *overlays* and do **not** fire these — only a real OS
   app-switch does. Preserve the suspend/reload pairing if you touch playback or routing.
 - **Crash forensics:** the C tracer (`main.c`) logs the faulting PC + `/proc/self/maps` line, then
-  **re-raises to `SIG_DFL`** so the OS/crashd still captures a real backtrace. Two logs: `plxnative-events.log`
-  is truncated each launch; **`/tmp/plxnative-crash.log` is append-only and survives the relaunch** — read it
+  **re-raises to `SIG_DFL`** so the OS/crashd still captures a real backtrace. Two logs, both in the
+  install's runtime root (`/tmp`, or `/tmp/<app id>` for a flavoured install): `plxnative-events.log`
+  is truncated each launch; **`plxnative-crash.log` is append-only and survives the relaunch** — read it
   after a crash+restart. Note pmlog's wall clock is ~3h skewed on this TV, so correlate by **monotonic
   `SDL_GetTicks`** timestamps (and the SAM `exit_status`), not pmlog time.
 - **The app's own files are located at RUNTIME (`paths.rs`), never by literal.** webOS picks one
@@ -439,8 +482,20 @@ used: **libcurl** (`net.rs`) does the plex.tv account/login TLS+DNS that the raw
 >
 > ```sh
 > pgrep -fl "tests/run.py|capture-screen|make deploy" ; ps aux | grep -c "[s]sh .*$(cat .tv-host)"
-> ssh root@$(cat .tv-host) 'pidof plxnative || echo NONE'   # `ps` finds nothing on this busybox TV
+> for f in stable debug; do          # BOTH installs — see below for why once is not enough
+>   printf '%s: ' "$f"
+>   ssh root@$(cat .tv-host) "fuser $(make -s print-appdir FLAVOR=$f)/plxnative || echo NONE"
+> done                               # `ps` finds nothing on this busybox TV
 > ```
+>
+> `fuser` on the app directory's own binary, not `pidof plxnative`: both installs' binaries are
+> named `plxnative`, so a name-scoped test matches BOTH and returns two pids in an order busybox
+> does not promise. `fuser` is inode-scoped, so it answers about one install
+> (`docs/two-installs.md` §4.2) — **which is exactly why this one has to ask twice**, since the
+> question here is "is anybody else using the television", not "is my install alive". A single
+> `fuser` reports NONE while the OTHER install is mid-film or mid-release-verification, and with no
+> `FLAVOR` on the command line `print-appdir` answers `debug`, so the bare form silently never asks
+> about the app the household watches with at all.
 >
 > **When farming work out to several agents, the TV is the scheduling constraint, not a detail.**
 > Give device access to **at most one lane at a time** and say so in the other prompts; run the rest
@@ -567,9 +622,19 @@ any key it cannot resolve. Resolution happens once at load and writes `rk` back,
 downstream still reads `case["rk"]`. The full on-device suite is `./tests/run.py` (21 cases; `--fps` for
 the perf gates), and `make test` = `deploy` + `run`.
 
-- **Event log:** the app writes `/tmp/plxnative-events.log` on the TV (LS2/ACB/Starfish replies, feed
-  stats, seek/bind steps, key raw bytes, crash tracer). `make run` fetches it automatically; it's
-  the primary debugging surface. stderr goes to `/tmp/plxnative-stderr.log`.
+- **Event log:** the app writes `plxnative-events.log` in its runtime root on the TV (LS2/ACB/
+  Starfish replies, feed stats, seek/bind steps, key raw bytes, crash tracer) — `/tmp` for the
+  stable install, `/tmp/<app id>` for a flavoured one; `make -s print-eventlog FLAVOR=<f>` resolves
+  it. `make run` fetches it automatically; it's the primary debugging surface. stderr goes to
+  `plxnative-stderr.log` beside it. **Its FIRST line names the install** —
+  `install: id=… flavour=… runtime=… features=dev|release APPID_env=…` (with `appdir:` on the
+  next line, from `app_dir()`'s own provenance-carrying log), written before
+  anything can fail. It is the only witness that says which of two binaries *both named
+  `plxnative`* produced a log (`pidof` cannot tell them apart, and `pkg/plxnative` is a path every
+  configuration writes, so an md5 proves only "some flavour of some configuration"), so read it
+  before grading anything. `APPID_env=` is evidence rather than configuration: nothing off a desk
+  says whether SAM exports `APPID` to a native app on this firmware, and this answers it for free
+  on every run.
 - **A case's `run_secs` is a CAP, not a runtime.** `tests/run.py` launches via `make run-stream`
   (tail -F over ssh) and re-grades the log as each line arrives, ending the case the moment every
   assertion passes — so a *passing* case costs what it needs. A failing one burns the full
@@ -637,16 +702,25 @@ the perf gates), and `make test` = `deploy` + `run`.
   resume does not seed `playpos_ns` (only the transcode branch does), so the pre-roll would log a
   0 and a 0→600 step reads as 600s of "climb" in one second — a false PASS.
 - **`tests/run.py` always cleans the TV on exit** — pass, fail, Ctrl-C, `kill`, or crash: it closes
-  the app, clears every `/tmp/plxnative-*` trigger **including the injected PMS token**, and reaps
-  stray ssh clients. Only the three append-only `*.log` files survive. Nothing did this before
+  the app, clears every `plxnative-*` trigger in that install's runtime root **including the
+  injected PMS token**, and reaps stray ssh clients. Only the three append-only `*.log` files
+  survive. Nothing did this before
   2026-07-28 except the normal path, so an interrupted run left the app playing (scrobbling a
   resume point the next run then inherited) and a live per-server token in world-readable `/tmp`.
   The teardown is armed at the moment the harness commits to driving the TV, so `--list` and a
   no-match `--filter` still exit without closing an app you are watching.
 - **`ps | grep plxnative` finds NOTHING on this TV even while the app is running** — busybox `ps`
-  here shows neither the path nor the argv. Use **`pidof plxnative`** (or `fuser <the binary>`) for
-  liveness. A liveness check built on `ps` reads exactly like "the app is closed", which will
-  cheerfully confirm whatever you were hoping to prove.
+  here shows neither the path nor the argv. Use **`fuser $(make -s print-appdir)/plxnative`** for
+  liveness: it is INODE-scoped, so it answers about exactly ONE install — which is the right
+  question *here*, where you are asking whether the install you are driving is up, and so the bare
+  form (no `FLAVOR`, i.e. the flavour everything else in your session is using) is the correct
+  spelling. It is the mutex pre-flight above that has to run this once per flavour, because that
+  one asks the opposite question — is anybody *else* on the set. `pidof plxnative` is NAME-scoped,
+  and since the flavour split it matches BOTH installs: two binaries, one name. It returns two pids
+  in an order busybox does not promise, so it cannot say which install it found. When you need the
+  pid itself, resolve `readlink /proc/<pid>/exe` per pid. A liveness check built on `ps` reads
+  exactly like "the app is closed", which will cheerfully confirm whatever you were hoping to
+  prove.
 - **Screen capture:** `tools/capture-screen.sh [out.png] [DISPLAY|VIDEO|GRAPHIC]` grabs the panel
   output. `DISPLAY` = video plane + UI composited (use this); `VIDEO`-only failing with "no
   signal state" is itself a diagnostic that nothing is decoded on the video plane.
@@ -677,15 +751,31 @@ the perf gates), and `make test` = `deploy` + `run`.
   N ms — the file's content) with a pump/draw/swap/upload breakdown and adds `worstframe` to the
   heartbeat; `/tmp/plxnative-homeosc` sweeps the grid focus top↔bottom perpetually to reproduce
   scroll judder headlessly.
-- **Dev trigger files (read once at boot, on the TV).** There are ~40; this lists the ones worth
-  knowing by name. **The catalog is the source, not this list** — get the real one with
-  `grep -rhoE '/tmp/plxnative-[a-z0-9]+' rust-modules/src src | sort -u` (the literals live in
-  comments now, so this still finds all of them).
+- **Dev trigger files (read once at boot, in the install's RUNTIME ROOT).** There are ~40; this
+  lists the ones worth knowing by name. **The ROOT moved for flavoured installs and ONLY for
+  them:** the stable install keeps `/tmp` byte for byte, so every `/tmp/plxnative-*` path written
+  out below stays literally true for the app users get, while a flavoured install puts the SAME
+  names under `/tmp/<app id>` (`/tmp/com.beb.plxnative.debug/plxnative-library`). Nothing was
+  renamed — not the ~40 triggers, not the `plxnative-remote` FIFO, not the three logs, not
+  `dev::DIAG`; only the directory they sit in. `make -s print-rundir FLAVOR=<f>` is how a tool asks
+  rather than restating the rule, and the root is created **1777, mkdir THEN an explicit chmod**
+  (umask masks mkdir's mode) because root arms triggers there over ssh before the jailed app has
+  ever booted, and an owner-only mode locks one of the two out — a 0-byte event log, which every
+  tool here reports as "no line found", i.e. exactly like a total regression. Why any of it:
+  **`docs/two-installs.md`**.
+  **The catalog is the source, not this list** — get the real one with
+  `{ grep -rhoE '/tmp/plxnative-[a-z0-9]+' rust-modules/src src | sed 's|.*/||'; grep -rhoE 'dev::(flag|read)\("[a-z0-9]+"' rust-modules/src src | sed 's/.*("/plxnative-/;s/"$//'; } | sort -u`.
+  **Both halves are needed**: a path literal only ever appears in a COMMENT now, and four triggers
+  (`grid`, `h265`, `playidx`, `ptype`) are named nowhere but their `dev::flag`/`dev::read` call, so
+  the path grep alone silently under-reports. This line carried that grep alone and called it
+  complete.
   **Every read goes through `rust-modules/src/dev.rs`, gated on the `devtriggers` cargo feature —
   read that module's doc before adding a trigger, and never open a `/tmp` path directly.** Default
   builds are unchanged; `RELEASE=1` drops the feature, and then `dev::flag` is `false` and
   `dev::read` is `None` at COMPILE time, so a public binary opens nothing under `/tmp` but its own
-  logs (device-verified: no FIFO, no `:8910` listener). The same feature gates `Remote::open` and
+  logs (`capture::init` is compiled out, so there is no listener on ANY port — a compile-time fact;
+  device-verified on the stable install: no FIFO and nothing on `:8910`. This line used to assert
+  the device measurement alone, which could only ever have probed the one port it knew about). The same feature gates `Remote::open` and
   `capture::init` — those are structural surfaces with no path literal, which is also why
   `dev::any_trigger_present` (the whole-`/tmp` scan behind the picker suppression) lives there
   rather than being greppable. The harness is unaffected: `tests/run.py` builds with plain `make`.
@@ -695,7 +785,10 @@ the perf gates), and `make test` = `deploy` + `run`.
   suppresses the who's-watching picker, silently changing which screen you boot to. The
   **`tv-session` skill** drives all of this (clear → arm → launch → assert) and owns the
   screen-to-trigger recipes. Named highlights: `/tmp/plxnative-url` (override the streamed part
-  URL), `/tmp/sample.h264` (feed a local raw Annex-B sample instead of streaming),
+  URL), **`sample.h264` / `sample.h265`** (feed the player a local raw Annex-B sample instead of
+  streaming — the two names that predate the `plxnative-` prefix, and since the flavour split the
+  last two runtime surfaces to stop being pinned to a shared `/tmp`: they resolve through the
+  install's own root like everything else, `$(make -s print-rundir)/sample.h264`),
   `/tmp/plxnative-autoplay` (auto-press OK for headless capture), `/tmp/plxnative-autoseek` (empty =
   one seek to 140s; else a seek script: optional `gap=<ms>` + comma steps, absolute `120` or
   tap-relative `+10`/`-10` — rapid-burst seek testing), `/tmp/plxnative-ptype` (ACB playerType
@@ -751,18 +844,29 @@ the perf gates), and `make test` = `deploy` + `run`.
   picture to `ck:` tokens (hover is deliberately NOT forwarded — it used to park app focus on a
   tab pill so the next ENTER opened the library). The one real trigger here is
   `/tmp/plxnative-capture[=port]` (the in-app live UI capture stream:
-  the app's own GLES frames over TCP :8910 — **UI plane only**, the video overlay is invisible to
-  it, so the service capture stays the only way to see real playback. Two hello-selected wire
+  the app's own GLES frames over TCP — **:8910 for the stable install, :8911 for a flavoured one**
+  when the trigger names no port (`capture::default_port`; `make -s print-appport` is the same rule
+  for the shell, and is what `tools/tv-session.sh` hands `stream-screen.py --app-port`). Two
+  installs cannot both bind one port and neither side says so: the second `bind` writes one line
+  into a log nobody is tailing, and the operator then watches ONE install's picture while every key
+  they type goes into the OTHER's FIFO. **UI plane only**, the video overlay is invisible to it, so
+  the service capture stays the only way to see real playback. Two hello-selected wire
   modes, **MPEG1-in-TS** (default) and **JPEG/PXFR** (fallback); `stream-screen.py --source
   app|auto` consumes either and its page switches itself. Both encoders and the measured numbers
   are documented where they live — `capture.rs`'s module doc (slots, wire formats, fd ownership)
   and `ff.rs`'s `venc` section (the device-verified FFmpeg ABI offsets + the RGBA→NV12-NEON
   colorspace path). `make deploy` also ships the NDK's NEON libjpeg-turbo next to the binary
   best-effort, which JPEG mode dlopen's).
-  **Any `/tmp/plxnative-*` trigger (except the logs/`plxnative-profile`/`plxnative-anim`/
-  `plxnative-remote`/`plxnative-capture`/`plxnative-noidle`) marks the boot as
-  automated and suppresses the boot who's-watching picker**, and `/tmp/plxnative-token` beats the
-  stored session entirely — so headless runs always land on a deterministic Home.
+  **Any `plxnative-*` file in the install's runtime root marks the boot as automated and suppresses
+  the boot who's-watching picker** unless it is EXEMPT — and the exemption list is **`dev::DIAG` in
+  `rust-modules/src/dev.rs`, and only that**. This line used to transcribe it as the logs plus five
+  names, and the array had already grown well past that — the GPU-time log, the hardware-counter
+  pair, the GStreamer pair and the focus probe are exempt as well. A transcribed list, or a count,
+  rots here without anything failing, because nothing compiles this file. Read the array; its doc
+  comment carries the reasoning per entry, and it is the thing to extend when a new diagnostic must
+  not move the boot screen out from under the very session it was armed to watch.
+  `/tmp/plxnative-token` beats the stored session entirely — so headless runs always land on a
+  deterministic Home.
   `/tmp/plxnative-pickuser=<index>` forces the picker anyway and auto-picks that roster tile.
 - **The binary carries NO credentials** (no compiled PMS token, no demo URL). PMS access comes
   from the signed-in session (QR login) or, for automated runs only, `/tmp/plxnative-token` — which

@@ -689,6 +689,12 @@ discarding the two seconds around every step change. Scene throughout: Home, foc
 continuously (`plxnative-homeosc`), repaint-skipping disabled (`plxnative-noidle`), so every
 configuration saw the same moving underlay and presented continuously.
 
+> **The `/tmp/plxnative-…` paths in the recipe below predate the two-install split: they are the
+> STABLE install's runtime root.** A flavoured install puts the same names under `$(make -s
+> print-rundir FLAVOR=<f>)` — `/tmp/com.beb.plxnative.debug` at the tracked `FLAVOR ?= debug`
+> default — so armed as bare `/tmp/…` the sweep never reaches the install `make run` launches, and
+> the row reproduces as its own unloaded control. See `docs/two-installs.md`.
+
 **To reproduce any row.** Arm `/tmp/plxnative-token`, `/tmp/plxnative-noidle`,
 `/tmp/plxnative-homeosc`, and put a sweep in `/tmp/plxnative-glassload` — for example
 `hold=6;off,1x608x396@3,1x1920x1080@3` — then `make run RUN_SECS=128` and read the log with
@@ -913,6 +919,11 @@ can is the one above: continuous presents, and the frame-time distribution rathe
   would have to be answered before anything like this could ship.
 
 ### If somebody proposes this again
+
+> **The `/tmp/plxnative-…` paths below are the STABLE install's runtime root**, as in the section
+> above: a flavoured install puts the same names under `$(make -s print-rundir FLAVOR=<f>)` —
+> `/tmp/com.beb.plxnative.debug` at the tracked `FLAVOR ?= debug` default — so armed as bare
+> `/tmp/…` not one of them reaches the install `make run` launches. See `docs/two-installs.md`.
 
 Arm `/tmp/plxnative-navglass` and look at it — the code is still there, still trigger-gated, and
 `widgets::nav_scrim`'s doc points here. Then reproduce the table above before arguing from the
