@@ -2325,6 +2325,20 @@ pub(crate) fn ground_span() -> f32 {
 }
 static mut GROUND_AT: u32 = 0;
 
+/// **ONE latch and ONE rate counter, for the whole process — so this has exactly one caller.**
+///
+/// `GROUND_RGB` is a single `Option`, and `GROUND_AT` a single counter that admits a real readback
+/// once every [`GROUND_SAMPLE_EVERY`] calls. A second caller passing a different `r` therefore does
+/// two things, both silent: it halves the rate each caller actually gets, and every call it does
+/// take clobbers the other's answer with pixels from somewhere else on the screen. There is no
+/// per-caller state to key on and adding one would buy a second `glReadPixels` flush per frame,
+/// which is the cost this rate limit exists to avoid.
+///
+/// So the rule is that a BAND of surfaces solves once and shares the answer. The top bar is the
+/// case: the tab track samples, and the profile chip — a second surface of the same material,
+/// 800px to its left — takes the track's solved stops rather than reading its own ground
+/// (`ui::widgets`' `BarMaterial`). That is also what keeps the band one alpha; two solves over a
+/// non-uniform hero land on two densities and the seam is visible.
 pub(crate) fn sample_ground(r: [f32; 4], may_read: bool) -> Option<[f32; 3]> {
     unsafe {
         // A caller can refuse a FRESH reading while still wanting the last one — the route
