@@ -55,11 +55,19 @@ const GRID_TOP: f32 = 214.0;
 // short linear ramp instead of the knee read as a harsh bar shadow with a visible bottom edge.
 /// Row pitch: card + the focused under-label band (title + caption) before the next row.
 const PITCH: f32 = CARD_H + 96.0;
-use crate::ui::widgets::TOP_BAR_Y; // the shared top-bar chrome lives in widgets
 
 // ---- screen state (main-thread statics, same discipline as home.rs) -------------------------
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Area {
+    /// The shared top bar's PROFILE CHIP, at the margin left of the pills. Not this screen's
+    /// control — `widgets` owns its rect, its hit test and its unfurl — but this screen owns
+    /// whether its own focus is standing on it, which is the half that used to be missing: the chip
+    /// was drawn here and focusable only on Home.
+    ///
+    /// Reached the way it is on every screen that wears the bar: **LEFT off the first pill**, with
+    /// RIGHT walking back onto it. The chip is the bar's leftmost stop, so that is the only walk
+    /// the geometry admits; DOWN leaves the band exactly as it does from [`Area::Tabs`].
+    Chip,
     Tabs,
     Toolbar,
     Grid,
@@ -863,6 +871,33 @@ fn tab_focus() -> c_int {
     }
 }
 
+/// The band DOWN off the shared top bar lands in — the toolbar normally, the failure read-out when
+/// the chips it would otherwise land on are not drawn. One expression, because both stops on that
+/// bar ([`Area::Chip`] and [`Area::Tabs`]) leave it downward and a screen whose two halves of one
+/// control disagreed about where DOWN goes is the bug this whole change is about.
+fn below_top_bar() -> Area {
+    if toolbar_n() > 0 {
+        Area::Toolbar
+    } else {
+        Area::Status
+    }
+}
+
+/// **Where this screen's focus is on the SHARED top bar** — the one question `widgets` asks of
+/// every screen that wears it, so the strip's capsules and the profile chip's unfurl are animated
+/// in one place rather than three. A menu takes the bar's focus away entirely, which is what
+/// [`tab_focus`] already says for the pills.
+pub(crate) fn top_focus() -> crate::ui::widgets::TopFocus {
+    use crate::ui::widgets::TopFocus;
+    if area() == Area::Chip && !menu_open() {
+        return TopFocus::Chip;
+    }
+    match tab_focus() {
+        i if i >= 0 => TopFocus::Pill(i as usize),
+        _ => TopFocus::Away,
+    }
+}
+
 /// The pill focus LANDS on when it walks up into the tab row.
 fn own_pill() -> usize {
     // The pill that REPRESENTS this section, which for a borrowed library is its type's — and then
@@ -1216,7 +1251,7 @@ pub(crate) fn update(dt: f32) {
     // it tracks THIS section's pill, which `enter` already put on screen, so it holds still.
     // the VIEW section, so the strip travels to the pressed pill on the press frame while the grid
     // dissolves under it
-    crate::ui::widgets::tab_row_update(crate::browse::tab_of_section(view_section()) as c_int + 1, tab_focus(), dt);
+    crate::ui::widgets::tab_row_update(crate::browse::tab_of_section(view_section()) as c_int + 1, top_focus(), dt);
     if menu_open() {
         pop().update(dt);
         table().update(dt, table_rect().h - crate::ui::table::PAD_V);
@@ -1287,18 +1322,33 @@ pub(crate) fn move_focus(sym: c_uint) {
     }
     unsafe {
         match area() {
+            Area::Chip => {
+                // The bar's leftmost stop: LEFT has nowhere to go, RIGHT is the only way back into
+                // the pills, and DOWN leaves the band by exactly the rule the pills use — the same
+                // [`below_top_bar`] call, not a restatement of it, so the two exits cannot drift.
+                if sym == SDLK_RIGHT {
+                    AREA = Area::Tabs;
+                    TAB_F = 0;
+                } else if sym == SDLK_DOWN {
+                    AREA = below_top_bar();
+                }
+            }
             Area::Tabs => {
                 // Home + every section: the row scrolls the far pills into view, so focus may
                 // walk to the last one (it used to stop at a hard cap of 4 sections)
                 let n = crate::ui::widgets::tab_count();
-                if sym == SDLK_LEFT && TAB_F > 0 {
-                    TAB_F -= 1;
+                if sym == SDLK_LEFT {
+                    // …and off the FIRST pill, LEFT reaches the profile chip beside it — the same
+                    // walk Home has always had, now that the chip is a stop here too
+                    if TAB_F > 0 {
+                        TAB_F -= 1;
+                    } else {
+                        AREA = Area::Chip;
+                    }
                 } else if sym == SDLK_RIGHT && TAB_F + 1 < n {
                     TAB_F += 1;
                 } else if sym == SDLK_DOWN {
-                    // DOWN goes to the first band that is DRAWN — the toolbar normally, the failure
-                    // read-out when the chips it would land on are not there
-                    AREA = if toolbar_n() > 0 { Area::Toolbar } else { Area::Status };
+                    AREA = below_top_bar();
                 }
             }
             Area::Toolbar => {
@@ -1447,6 +1497,11 @@ pub(crate) fn on_ok() -> Action {
         return Action::None;
     }
     match area() {
+        // The chip's press is the SAME press on all three screens that wear the bar, so `app.rs`
+        // answers it once, ahead of this ladder (`key_ok`'s `TopFocus::Chip` arm) — the destination
+        // is the account menu wherever you are standing, unlike a pill, whose destination depends
+        // on the screen. This arm is therefore unreachable in practice and stays for totality.
+        Area::Chip => Action::None,
         Area::Tabs => tab_pill_action(unsafe { addr_of!(TAB_F).read() }),
         Area::Toolbar => {
             // matched on the CHIP, never on its index: the row is two chips long with one source
@@ -1494,7 +1549,9 @@ pub(crate) fn back() -> bool {
         unsafe { AREA = Area::Grid };
         return true;
     }
-    if area() != Area::Tabs {
+    // …and the CHIP counts as the tab bar for this rule: it is a stop on the same shared control,
+    // so a BACK from it is already "focus is up in the chrome" and the next one leaves.
+    if !matches!(area(), Area::Tabs | Area::Chip) {
         unsafe {
             AREA = Area::Tabs;
             TAB_F = own_pill(); // `flush` above has made the chrome and the store agree
@@ -2269,11 +2326,17 @@ pub(crate) fn draw() {
     // that was already fading out from under it — visible on the panel. `TOOL_Y + TOOL_H` is the
     // lowest thing this bar draws, which is exactly what the shared element wants.
     crate::ui::widgets::nav_scrim(p, TOOL_Y + TOOL_H, GRID_TOP, sc);
-    // the Library screen has no chip focus stop (its top-band focus is the tab row), so the chip
-    // never unfurls here — expand 0.
-    let cd = crate::ui::widgets::CHIP_D;
-    crate::ui::widgets::profile_chip(pk, Rect::new(MARGIN_X, TOP_BAR_Y, cd, cd), 0.0);
+    // the shared bar, both stops: the centred pills, and then the chip — which unfurls when THIS
+    // screen's focus is on it, where it used to be drawn with a hard-coded `expand: 0.0` because it
+    // could not be focused here at all.
+    //
+    // **The chip goes LAST, over the track**, and that order is load-bearing now that it unfurls on
+    // this screen: the focused chip grows the profile NAME to its right, far enough with a long
+    // name to reach the centred track, and drawn first it went under the track's own scrim. Home
+    // has always drawn it in this order for exactly that reason; this screen could get away with
+    // the other one only while the chip here was frozen shut.
     crate::ui::widgets::draw_tab_row(pk);
+    crate::ui::widgets::profile_chip(pk);
 
     // the focused index comes from `tool_f` — the same clamped authority `focused_chip` reads, so
     // the chip wearing the ring and the chip OK activates are one chip
@@ -2627,13 +2690,70 @@ mod tests {
         assert_eq!(focused_pill(), None, "a menu owns the frame; the row underneath is not focused");
         set_menu(Menu::None);
 
-        for a in [Area::Grid, Area::Toolbar, Area::Rail, Area::Status] {
+        // `Area::Chip` is in this list deliberately: the chip is a stop on the SAME shared bar, so
+        // it is the one band where "the top bar has focus" and "a pill has focus" differ — a chip
+        // that reported a pill would carry a highlight across to Home that nobody was standing on.
+        for a in [Area::Chip, Area::Grid, Area::Toolbar, Area::Rail, Area::Status] {
             unsafe { AREA = a };
             assert_eq!(focused_pill(), None, "focus is not on the tab row");
         }
 
         unsafe { AREA = area0; TAB_F = tab0 };
         set_menu(menu0);
+        clear();
+    }
+
+    /// **The profile chip is a real focus stop here too, and it is reached the way it is on every
+    /// screen that wears the shared bar.**
+    ///
+    /// The chip is drawn on Home, this screen and Search, and used to be activatable on Home alone
+    /// — the rect and the hit test are `widgets`' now, and what each screen still owns is where its
+    /// own focus is. The walk is the geometry's: the chip sits at the margin LEFT of the centred
+    /// pills, so ◀ off the first pill is the only approach and ▶ is the way back. DOWN leaves the
+    /// band by [`below_top_bar`], the same expression the pills use.
+    ///
+    /// Graded through [`top_focus`] — the value `widgets::tab_row_update` animates the bar from and
+    /// `app.rs` routes OK on — so "the chip is focused" cannot mean one thing to the unfurl and
+    /// another to the press. Takes `PEND` like its neighbours: it moves `AREA`/`TAB_F`.
+    #[test]
+    fn the_profile_chip_is_the_bars_leftmost_stop() {
+        use crate::ui::widgets::TopFocus;
+        let _g = PEND.lock().unwrap_or_else(|e| e.into_inner());
+        clear();
+        let (area0, tab0) = unsafe { (addr_of!(AREA).read(), addr_of!(TAB_F).read()) };
+        let menu0 = take_menu();
+        set_menu(Menu::None);
+
+        unsafe { AREA = Area::Tabs; TAB_F = 0 };
+        assert_eq!(top_focus(), TopFocus::Pill(0), "the row holds the FIRST pill");
+        move_focus(SDLK_LEFT);
+        assert_eq!(top_focus(), TopFocus::Chip, "◀ off the first pill reaches the chip");
+        for _ in 0..4 {
+            move_focus(SDLK_LEFT); // nothing further left: it must not wrap or underflow
+        }
+        assert_eq!(top_focus(), TopFocus::Chip, "the chip is the end of the row, not a step before one");
+
+        move_focus(SDLK_RIGHT);
+        assert_eq!(top_focus(), TopFocus::Pill(0), "▶ walks back onto the pill it left");
+
+        // DOWN out of the band, from BOTH stops, lands in the same place — the one thing that
+        // would read as the chip being a different control from the pills beside it.
+        unsafe { AREA = Area::Tabs };
+        move_focus(SDLK_DOWN);
+        let from_pills = area();
+        unsafe { AREA = Area::Chip };
+        move_focus(SDLK_DOWN);
+        assert!(area() == from_pills, "DOWN off the chip must land where DOWN off the pills lands");
+        assert_eq!(top_focus(), TopFocus::Away, "…and off the bar entirely — neither chip nor pill");
+
+        // A menu owns the frame, so the bar underneath holds nothing — the chip's half of the rule
+        // `focused_pill` already keeps for the pills.
+        unsafe { AREA = Area::Chip };
+        set_menu(Menu::Sort { built: 0 });
+        assert_eq!(top_focus(), TopFocus::Away, "a panel is up; the chip under it is not focused");
+
+        set_menu(menu0);
+        unsafe { AREA = area0; TAB_F = tab0 };
         clear();
     }
 
