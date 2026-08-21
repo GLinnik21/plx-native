@@ -368,9 +368,21 @@ fn push_detail(s: &mut String) {
     // filmstrip is per season, and this reads `None` while a season is still loading.
     s.push_str(" ep=");
     match crate::ui::detail::focused_episode() {
-        Some((rk, watched)) => {
+        Some((rk, mark)) => {
             push_rk(s, &rk);
-            let _ = write!(s, " epwatched={}", b(watched));
+            // THREE-valued, not a bool: the still's context menu builds its row set from this exact
+            // state (one write row at either end, BOTH in the middle), so a fingerprint that reduced
+            // it to watched/not could not tell a 2-row menu from a 3-row one. A `&'static str` tag
+            // chosen here, like every other enum this line carries.
+            let _ = write!(
+                s,
+                " epwatched={}",
+                match mark {
+                    crate::ui::widgets::PosterMark::None => "no",
+                    crate::ui::widgets::PosterMark::InProgress => "part",
+                    crate::ui::widgets::PosterMark::Watched => "yes",
+                }
+            );
         }
         None => s.push_str("- epwatched=-"),
     }

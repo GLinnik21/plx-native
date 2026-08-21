@@ -519,10 +519,16 @@ pub(crate) fn card(p: Painter, frame: Rect, art: Art, rad: f32, focused: bool, s
 /// is doing. Same answer as the still's resolver, on the same item.
 ///
 /// The three states are the app's ONE watch-state vocabulary, not the poster's alone: the detail
-/// hero's watch controls resolve into this same enum ([`crate::ui::detail`]'s `hero_watch_state`),
-/// so "what state is this item in" has one answer and one set of names wherever it is asked. The
-/// two resolvers are not the same function and differ in two places, both because a MARK describes
-/// while a CONTROL promises what its press delivers — see that function, which lists them.
+/// hero's watch controls ([`crate::ui::detail`]'s `hero_watch_state`) and the tile context menu's
+/// state rows ([`row_watch_state`], and `detail::ep_watch_state` for one episode of a loaded season)
+/// all resolve into this same enum, so "what state is this item in" has one answer and one set of
+/// names wherever it is asked.
+///
+/// There are four resolvers rather than one because the INPUTS differ — a catalog row, a loaded
+/// `metadata::Detail`, one `metadata::Episode` — and, in exactly one place, because the QUESTION
+/// does: a MARK describes while a CONTROL promises what its press delivers, so a container mid-run
+/// wears no mark ([`poster_mark`]) and still offers both write verbs ([`row_watch_state`],
+/// `hero_watch_state`). Each of the three names the other it departs from.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub(crate) enum PosterMark {
     /// never started — and the `Default`, because most of a server is here
@@ -538,7 +544,9 @@ pub(crate) enum PosterMark {
 /// a SHOW with one episode played is `!unwatched` but nowhere near done, and marking it watched is a
 /// statement the viewer can see is false. Partly-watched shows therefore land on [`PosterMark::None`]
 /// beside never-started ones; the true statement about a series mid-run is where its next episode
-/// stands, which a poster in a grid is not the place for.
+/// stands, which a poster in a grid is not the place for. **That is this function's rule and not the
+/// enum's** — a MENU asking which verbs are reachable gets a different answer for the same show, and
+/// asks [`row_watch_state`] instead.
 pub(crate) fn poster_mark(m: &PmsMovie) -> PosterMark {
     if m.resume_frac().is_some() {
         return PosterMark::InProgress;
@@ -548,6 +556,35 @@ pub(crate) fn poster_mark(m: &PmsMovie) -> PosterMark {
     } else {
         PosterMark::None
     }
+}
+
+/// The same three states asked as the **write-verb** question: which ends of the watch range can
+/// this row still be sent to — i.e. whether a menu offers *Mark as Watched*, *Mark as Unwatched*, or
+/// BOTH ([`crate::ui::item_menu`]'s state group).
+///
+/// It is [`poster_mark`] plus one rule, and the split is the same one the detail hero draws
+/// ([`crate::ui::detail`]'s `hero_watch_state`): **a mark DESCRIBES, a control PROMISES.** A poster
+/// says nothing about a show three episodes into ten, because "where its next episode stands" is not
+/// a statement a tile in a grid can make — so `poster_mark` sends a container mid-run to
+/// [`PosterMark::None`], beside the never-started. A menu is asking something else entirely, and for
+/// a show in the middle both verbs are reachable and both are true, so it is [`PosterMark::InProgress`]
+/// and gets the pair. Anything else and the two surfaces the owner reaches this item through — the
+/// hero's discs and the tile's menu — would disagree about one item.
+///
+/// The extra rule is exactly "**neither end**", which needs no `kind` test: for a leaf `unwatched`
+/// and `watched` are complements (`viewCount == 0` vs `> 0`), so only a CONTAINER can be neither, and
+/// a container that is neither is one with some leaves viewed and some not (`pms::parse_item`). The
+/// one other row that lands here is a container the server sent no leaf counts for, where both flags
+/// are false: that item's state is unknown, both verbs are legitimate, and neither LABEL claims a
+/// state — each names the outcome its press produces.
+///
+/// Leaves are delegated rather than re-derived, so the resume-point edge cases (`resume_frac`'s "at
+/// or past the end is finished, not in progress") stay in one place.
+pub(crate) fn row_watch_state(m: &PmsMovie) -> PosterMark {
+    if !m.unwatched && !m.watched {
+        return PosterMark::InProgress;
+    }
+    poster_mark(m)
 }
 
 /// The **watched tick** on a poster, as fractions of the tile's DRAWN width: the tick's box, its
@@ -4316,6 +4353,62 @@ mod tests {
         assert_eq!(poster_mark(&m), PosterMark::None);
         m.watched = true;
         assert_eq!(poster_mark(&m), PosterMark::Watched, "every leaf seen IS the disc");
+    }
+
+    // ── …and the same three states asked as the WRITE-VERB question ───────────────────────────
+    //
+    // `row_watch_state` is `poster_mark` plus one rule, and the one rule is the whole reason it
+    // exists: a mark DESCRIBES, a menu row PROMISES. These grade the difference and the sameness.
+
+    /// **The only place the two resolvers disagree** — and it is the case the owner reported: a
+    /// show in the middle wears no poster mark (a tile cannot say where a series stands) but is
+    /// reachable from a menu in BOTH directions, so it is `InProgress` here and gets both rows.
+    #[test]
+    fn a_container_mid_run_is_in_the_middle_for_a_menu_though_it_wears_no_mark() {
+        let mut m = PmsMovie::default();
+        m.kind = 1; // show
+        m.unwatched = false; // some episode has been played…
+        m.watched = false; // …but not all of them
+        assert_eq!(poster_mark(&m), PosterMark::None, "the tile still claims nothing");
+        assert_eq!(row_watch_state(&m), PosterMark::InProgress, "…but both verbs are reachable");
+        // and a SEASON is a container on the same terms — the rule is the flag pair, not the kind
+        m.kind = 2;
+        assert_eq!(row_watch_state(&m), PosterMark::InProgress);
+    }
+
+    /// The two ENDS are the same answer from both resolvers, on containers as much as leaves.
+    /// A container's `watched` is the strict `viewedLeafCount >= leafCount` (`pms::parse_item`), so
+    /// a finished show is genuinely finished and its menu offers only the way back — which is what
+    /// the shelf menu got wrong before, offering "Mark as Watched" on a show already done.
+    #[test]
+    fn the_two_ends_of_the_range_answer_the_same_either_way() {
+        let mut show = PmsMovie::default();
+        show.kind = 1;
+        for (unwatched, watched, want) in
+            [(true, false, PosterMark::None), (false, true, PosterMark::Watched)]
+        {
+            show.unwatched = unwatched;
+            show.watched = watched;
+            assert_eq!(row_watch_state(&show), want);
+            assert_eq!(poster_mark(&show), want, "an END is not where the two questions differ");
+        }
+    }
+
+    /// A LEAF is delegated whole, so every resume-point edge `poster_mark` keeps — an offset past
+    /// the end is finished, a row with no runtime cannot be in progress — holds for the menu too
+    /// without being restated. The flags are complements on a leaf, so the extra rule is unreachable
+    /// there by construction.
+    #[test]
+    fn a_leaf_asks_the_poster_and_gets_its_answer_unchanged() {
+        for m in [
+            row(false, 0),
+            row(true, 0),
+            row(false, 30 * 60 * 1000),
+            row(true, 30 * 60 * 1000),
+            row(true, 200 * 60 * 1000),
+        ] {
+            assert_eq!(row_watch_state(&m), poster_mark(&m), "a leaf must not answer twice");
+        }
     }
 
     // ── AmbientWash: the page GROUND's legibility contract ───────────────────────────────────
