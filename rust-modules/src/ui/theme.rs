@@ -874,19 +874,35 @@ pub const RATING_MUTED: [f32; 4] = COOL_400;
 /// Card corner radius (tiles/shelves — `CardRow`'s rounded rect + its baked focus glow follow it).
 pub const CARD_RING_RAD: f32 = 14.0;
 
-/// The corner of a full-page **ALERT panel** — the read-only glass sheet a block opens with OK
+/// **The ALERT PANEL corner** — the full-frame glass sheet a block opens with OK
 /// (`Alert Views.dc.html`), as opposed to the anchored menus a chip or a button drops. Those keep
-/// their own smaller corner (20/24): a menu hangs off a control and reads as part of it, while an
-/// alert owns the middle of the frame and is its own object.
+/// their own smaller corner (`item_menu` 20, `alt_sources` 20, `account_menu` 24, `glassload` 28):
+/// a menu hangs off a control and reads as part of it, while an alert owns the middle of the frame
+/// and is its own object.
 ///
-/// **32, and the design states both of the bounds it sits between.** It is one step over the design
-/// system's own `--radius-panel` 24, because an alert is the bigger and more separate surface. It
-/// was also tried at **60** — one whole `--control-h`, so the panel would read as round as the
-/// pills inside it — and *that* is the value that made the modal look like it came from somewhere
-/// else: at 14 on every tile ([`CARD_RING_RAD`]) and 18 on a `TableView` row pill, this product has
-/// a restrained corner vocabulary and a 60px arc leaves it. 32 stays inside that vocabulary while
-/// still reading as softer than a card, and it clears the 28px glass bevel so the chamfer runs
-/// inside the arc rather than across it.
+/// **32, in the design's own words** — quoted rather than paraphrased, because all four alert
+/// panels were built against this one paragraph and three of them re-derived it independently:
+///
+/// > "Panel corner is 32px, one step over `--radius-panel` 24. It was tried at 60 — one whole
+/// > `--control-h`, so the panel would read as round as the pills inside it — and that is the
+/// > value that made the modal look like it came from somewhere else: at 14px on every tile and
+/// > 18px on a `TableView` row pill, this page has a restrained corner vocabulary and a 60px arc
+/// > leaves it. 32 stays inside that vocabulary while still reading as softer than a card, and
+/// > clears the 28px glass bevel so the chamfer runs inside the arc."
+///
+/// The tile's 14 is [`CARD_RING_RAD`] and the row pill's 18 is `table::PILL_RAD`, so that sentence
+/// is checkable against this tree rather than only against the mock. Two consequences are
+/// load-bearing rather than decorative. The **bevel clause**: below the 28px glass bevel the
+/// chamfer would run OUTSIDE the corner arc and the rim would break at each corner. And the
+/// **padding clause**, which the design leaves implicit and the panels make explicit — every one of
+/// them pads 48, and 32 is the largest corner whose arc still clears a 48px pad, so the eyebrow's
+/// cap-top and the footer's keycap sit beside the curve rather than inside it. That is why a panel
+/// quotes its radius and its padding together.
+///
+/// Deliberately ONE token rather than a literal per panel: the alert panels are a FAMILY, and a
+/// corner that drifted between them is exactly the drift `theme.rs` exists to kill. It very nearly
+/// did — this shipped as four constants under four names (`ALERT_CORNER_RAD`, `ALERT_PANEL_RAD`,
+/// `ALERT_RAD`, `RADIUS_PANEL`) before the four panels were merged into one tree.
 pub const ALERT_PANEL_RAD: f32 = 32.0;
 
 // ── Card treatment (Home Screen.dc.html): every tile = a soft drop shadow that GROWS with the focus
