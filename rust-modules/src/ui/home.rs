@@ -1618,9 +1618,15 @@ pub(crate) fn home_draw() {
         let pk = Painter::root().alpha(crate::ui::nav::chrome_alpha());
         crate::ui::widgets::draw_tab_row(pk);
         // the chip goes on TOP of the tab track, not under it. Its focused capsule unfurls the
-        // profile name to its right, and with enough libraries the (centered) track now reaches
-        // far enough left to meet it — under the track, the name was painted over by the track's
-        // own scrim. Both are the same dark material, so an overlap reads as one band.
+        // profile name to its right, and under the track the name was painted over by the track's
+        // own scrim. The order also publishes before it reads: the chip wears the material this
+        // frame's track resolved (`widgets::BarMaterial`), so the band is one alpha rather than two
+        // solves over different hero artwork.
+        //
+        // "Both are the same dark material, so an overlap reads as one band" is what this said, and
+        // it stopped being true when the track became glass: two glass surfaces share ONE blur, so
+        // an overlap gets a second scrim and a second rim and no second blur. They cannot reach
+        // each other any more — `widgets::GLASS_TRACK_MAX` is solved for the clearance.
         crate::ui::widgets::profile_chip(pk);
     });
 }
