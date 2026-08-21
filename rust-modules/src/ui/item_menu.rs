@@ -33,6 +33,7 @@ use crate::ui::consts::*;
 use crate::ui::icons::Icon;
 use crate::ui::popover::{Opener, Popover};
 use crate::ui::table::{Row, Section, TableView};
+use crate::ui::widgets::PosterMark;
 use crate::ui::{theme, Rect};
 use std::os::raw::c_int;
 use std::ptr::{addr_of, addr_of_mut};
@@ -47,14 +48,37 @@ pub(crate) enum Action {
     GoToItem(String),
     /// open the SHOW page with that season selected (`season <= 0` = no season to select)
     GoToShow(String, c_int),
-    /// toggle the server-side view state of `rk`; the bool is what it is NOW (true = watched)
-    MarkWatched(String, bool),
+    /// `/:/scrobble` — the ✓ row. **The verb is the ROW's, never the item's state read back**:
+    /// there is no bool here to invert, because a part-watched item offers BOTH rows and has no
+    /// single "other end" to derive. See [`Action::watch_write`].
+    MarkWatched(String),
+    /// `/:/unscrobble` — the − row. Twin of [`Action::MarkWatched`].
+    MarkUnwatched(String),
     /// play this leaf ignoring its resume point
     PlayFromStart(String),
     /// hide this item from the Continue Watching deck — the server-side `removeFromContinueWatching`.
     /// **Keeps the resume point**: it is a hide, not a reset, so playing the item again picks up
     /// where it left off (see `plex::Client::remove_from_continue_watching`).
     RemoveFromDeck(String),
+}
+
+impl Action {
+    /// The view-state write this action performs, if it is one of the two that do — the item-menu
+    /// twin of `detail::HeroAction::watch_write`, and the reason this enum carries two variants
+    /// rather than one flag.
+    ///
+    /// The old shape was `MarkWatched(rk, watched)` where the bool was **what the item is NOW**, and
+    /// `apply_item_action` inverted it at the press. That works for exactly as long as the menu emits
+    /// one row: with the part-watched PAIR both rows would carry the same bool, so one of them would
+    /// invert to its neighbour's write and silently do the opposite of its own label. Now the glyph
+    /// the user aimed at IS the verb, and nothing downstream re-reads the item.
+    pub(crate) fn watch_write(&self) -> Option<crate::viewstate::Write> {
+        match self {
+            Action::MarkWatched(_) => Some(crate::viewstate::Write::Watched),
+            Action::MarkUnwatched(_) => Some(crate::viewstate::Write::Unwatched),
+            _ => None,
+        }
+    }
 }
 
 /// The panel's fixed width. Wide enough for "Mark as Unwatched" at the table's compact BODY size
@@ -149,12 +173,12 @@ pub(crate) fn open(m: &PmsMovie, from_deck: bool, opener: Opener) {
 ///
 /// No [`ITEM`] here: the detail page plays an episode through its own loaded season
 /// (`detail::play_episode_rk_from_start`), which is the one path that never needed a catalog row.
-pub(crate) fn open_episode(sid: crate::plex::ServerId, rk: &str, watched: bool, opener: Opener) {
+pub(crate) fn open_episode(sid: crate::plex::ServerId, rk: &str, mark: PosterMark, opener: Opener) {
     unsafe {
         *addr_of_mut!(SID) = sid; // the loaded show's server — the episode is one of its own
         *addr_of_mut!(ITEM) = None;
     }
-    present(build_episode(rk, watched), opener);
+    present(build_episode(rk, mark), opener);
 }
 
 /// The server every [`Action`] from the open (or just-closed) menu names — see [`SID`]. Read by
@@ -189,9 +213,10 @@ pub(crate) fn close() {
 }
 
 /// The rows, and the action each one commits. Order is the pinned design's:
-/// navigation (`Go to Episode` · `Go to Show`) — separator — state (`Mark as Watched` ·
+/// navigation (`Go to Episode` · `Go to Show`) — separator — state (the watch row or ROWS ·
 /// `Play from Start`), adapted per item kind (`PmsMovie::kind`: 0 movie / 1 show / 2 season /
-/// 3 episode).
+/// 3 episode). The state group is one row or two off [`state_rows`], so this list has no fixed
+/// length and every index into it is resolved through `ACTS` — see [`ACTS_PARALLEL`].
 fn build(m: &PmsMovie, from_deck: bool) -> (Section, Vec<Option<Action>>) {
     let mut sec = Section::new(""); // no header: the card behind the panel IS the title
     let mut acts: Vec<Option<Action>> = Vec::new();
@@ -231,12 +256,15 @@ fn build(m: &PmsMovie, from_deck: bool) -> (Section, Vec<Option<Action>>) {
     }
 
     // ---- state ----
-    // Watched state is EXACT for a leaf: `PmsMovie::unwatched` is `viewCount == 0` off the same
-    // container the shelf was built from. For a show/season it is only "no leaf watched yet", which
-    // cannot distinguish part-watched from fully-watched — so those keep the one-way "Mark as
-    // Watched" rather than claim a toggle they can't compute. (Follow-up: carry viewedLeafCount /
-    // leafCount on the catalog row and this becomes a toggle everywhere.)
-    let mut sec = state_rows(sec, &mut acts, &m.rk, leaf && !m.unwatched, leaf);
+    // The row set comes from the shared `widgets::row_watch_state`, over the catalog row this menu
+    // captured at `open` — so it is exact for a leaf (`viewCount`/`viewOffset` off the same container
+    // the shelf was built from) AND for a container, whose three states are already on the row as the
+    // `unwatched`/`watched` PAIR (`pms::parse_item`: a show is "neither" exactly while some of its
+    // leaves are viewed and some are not). This is the follow-up the comment here used to ask for —
+    // it said a show/season "cannot distinguish part-watched from fully-watched" and so kept a
+    // one-way row, which stopped being true when `PmsMovie::watched` gained its strict
+    // `viewedLeafCount >= leafCount` rule.
+    let mut sec = state_rows(sec, &mut acts, &m.rk, crate::ui::widgets::row_watch_state(m), leaf);
 
     // ---- and, only on a Continue Watching card, the row that takes it off the deck ----
     // Gated on the SHELF, not on the item: the action is meaningless anywhere else (nothing to
@@ -275,22 +303,40 @@ fn build(m: &PmsMovie, from_deck: bool) -> (Section, Vec<Option<Action>>) {
 const ACTS_PARALLEL: &str = "ACTS must stay one-to-one with the rows: a row without its action \
                              shifts every action below it, and the press performs its neighbour's";
 
-/// The state group every menu ends with: the watched toggle, then (for a leaf) Play from Start.
-/// ONE builder, because these are the rows the menu exists for and they must read identically
-/// wherever it is opened — the label flips on `watched`, so the row is an exact toggle rather than
-/// two rows the user has to pick between.
+/// The state group every menu ends with: the watch-state row (or ROWS), then (for a leaf) Play from
+/// Start. ONE builder, because these are the rows the menu exists for and they must read identically
+/// wherever it is opened.
 ///
-/// **The glyph flips with it**, and both are FILLED discs: [`Icon::CheckCircleFill`] when the press
-/// will mark watched, [`Icon::MinusCircleFill`] when it will take that away. A ticked circle beside
-/// "Mark as Unwatched" states the outcome backwards, which is the one thing a destructive-ish row
-/// must not do — and filled is what separates an ACTION from a STATE: this column carries a picker's
-/// bare tick or an action's glyph, while a switch says what it is set to in words at the far edge.
-fn state_rows(sec: Section, acts: &mut Vec<Option<Action>>, rk: &str, watched: bool, leaf: bool) -> Section {
-    let mut sec = sec.row(
-        Row::new(if watched { "Mark as Unwatched" } else { "Mark as Watched" })
-            .licon(if watched { Icon::MinusCircleFill } else { Icon::CheckCircleFill }),
-    );
-    acts.push(Some(Action::MarkWatched(rk.to_string(), watched)));
+/// **The tail is one row or TWO, and it is the detail hero's rule** (`detail::hero_ctls`), off the
+/// same three-state vocabulary ([`PosterMark`]) so the two surfaces cannot describe one item
+/// differently: each row states the OUTCOME its press produces, so a finished item offers only *Mark
+/// as Unwatched* and one never started offers only *Mark as Watched*. A PART-WATCHED item is in
+/// neither state and no single toggle can express both destinations, so it gets both rows — the ✓
+/// then the −, the same order the two ends of the range read in and the same order the hero's discs
+/// sit in.
+///
+/// It was one row whose label and glyph FLIPPED on a `watched` bool. That is an exact toggle only
+/// while an item is at one end or the other; on the third state it had to pick an end and picked
+/// "not watched", so the way back from a half-watched item was unreachable from the tile that
+/// offered every other action on it — the owner's report.
+///
+/// **Both glyphs are FILLED discs**: [`Icon::CheckCircleFill`] for the row that marks watched,
+/// [`Icon::MinusCircleFill`] for the one that takes it away. A ticked circle beside "Mark as
+/// Unwatched" states the outcome backwards, which is the one thing a destructive-ish row must not do
+/// — and filled is what separates an ACTION from a STATE: this column carries a picker's bare tick or
+/// an action's glyph, while a switch says what it is set to in words at the far edge. The hero's
+/// discs take the BARE glyph for the other half of that same rule (a control that IS a circle needs
+/// no drawn disc), and the two are deliberately not unified.
+fn state_rows(sec: Section, acts: &mut Vec<Option<Action>>, rk: &str, mark: PosterMark, leaf: bool) -> Section {
+    let mut sec = sec;
+    if mark != PosterMark::Watched {
+        sec = sec.row(Row::new("Mark as Watched").licon(Icon::CheckCircleFill));
+        acts.push(Some(Action::MarkWatched(rk.to_string())));
+    }
+    if mark != PosterMark::None {
+        sec = sec.row(Row::new("Mark as Unwatched").licon(Icon::MinusCircleFill));
+        acts.push(Some(Action::MarkUnwatched(rk.to_string())));
+    }
     if leaf {
         sec = sec.row(Row::new("Play from Start").licon(Icon::PlayStart));
         acts.push(Some(Action::PlayFromStart(rk.to_string())));
@@ -312,12 +358,14 @@ fn state_rows(sec: Section, acts: &mut Vec<Option<Action>>, rk: &str, watched: b
 /// is the way there, it raises `detail::take_open_request` instead of re-mounting in place, and
 /// `ui::trail` brings BACK to the season being browsed, on the episode it was opened from.
 ///
-/// `watched` is exact here — it comes off the episode's own `viewCount` in the loaded season — so
-/// the toggle is a true toggle, and with no nav group there is no separator either (`build`'s rule:
-/// the divider only exists when there is a group above it).
-fn build_episode(rk: &str, watched: bool) -> (Section, Vec<Option<Action>>) {
+/// `mark` is exact here — `detail::focused_episode` resolves it through the same `ep_state` that
+/// draws the still's own state line, so the tile and the menu opened on it cannot describe one
+/// episode two ways — and with no nav group there is no separator either (`build`'s rule: the divider
+/// only exists when there is a group above it). An episode is a LEAF, so all three states are
+/// reachable and a part-watched one gets the pair, exactly as a shelf card does.
+fn build_episode(rk: &str, mark: PosterMark) -> (Section, Vec<Option<Action>>) {
     let mut acts: Vec<Option<Action>> = Vec::new();
-    let sec = state_rows(Section::new(""), &mut acts, rk, watched, true);
+    let sec = state_rows(Section::new(""), &mut acts, rk, mark, true);
     debug_assert_eq!(acts.len(), sec.rows.len(), "{ACTS_PARALLEL}");
     (sec, acts)
 }
@@ -428,22 +476,50 @@ pub(crate) fn draw() {
 mod tests {
     use super::*;
 
-    fn item(kind: c_int, unwatched: bool) -> PmsMovie {
+    /// A catalog row of `kind` in a given watch state, with the flags a real `pms::parse_item`
+    /// would set — which is the part that matters here, since the menu's row set is now derived
+    /// from `unwatched`/`watched`/`resume_ms` together rather than from one of them.
+    ///
+    /// A LEAF in the middle is `viewCount == 0` with a live `viewOffset`; a CONTAINER in the middle
+    /// is "some leaves viewed, not all", i.e. NEITHER flag — the state a bool could not hold and the
+    /// reason this fixture takes a [`PosterMark`].
+    fn item(kind: c_int, mark: PosterMark) -> PmsMovie {
+        let leaf = kind == 0 || kind == 3;
         let mut m = PmsMovie::default();
         m.rk = "42".to_string();
         m.kind = kind;
-        m.unwatched = unwatched;
         m.show_rk = "7".to_string();
         m.season_index = 3;
+        m.dur_ns = 100 * 60 * 1000 * 1_000_000;
+        match mark {
+            PosterMark::None => m.unwatched = true,
+            PosterMark::Watched => m.watched = true,
+            PosterMark::InProgress if leaf => {
+                m.unwatched = true;
+                m.resume_ms = 30 * 60 * 1000;
+            }
+            PosterMark::InProgress => {} // a container: neither end
+        }
+        assert_eq!(crate::ui::widgets::row_watch_state(&m), mark, "the fixture must build the state it names");
         m
     }
     fn labels(sec: &Section) -> Vec<String> {
         sec.rows.iter().map(|r| if r.sep { "—".to_string() } else { r.label.clone() }).collect()
     }
+    /// The write each row commits, paired with its label — the projection every row-set assertion
+    /// below is really about, since a label and its verb living in two places is the bug this
+    /// module's `Action` split closed.
+    fn verbs(sec: &Section, acts: &[Option<Action>]) -> Vec<(String, Option<crate::viewstate::Write>)> {
+        labels(sec)
+            .into_iter()
+            .zip(acts.iter())
+            .map(|(l, a)| (l, a.as_ref().and_then(|a| a.watch_write())))
+            .collect()
+    }
 
     #[test]
     fn an_episode_offers_the_pinned_row_set_in_order() {
-        let (sec, acts) = build(&item(3, true), false);
+        let (sec, acts) = build(&item(3, PosterMark::None), false);
         assert_eq!(
             labels(&sec),
             ["Go to Episode", "Go to Show", "—", "Mark as Watched", "Play from Start"]
@@ -459,41 +535,49 @@ mod tests {
     }
 
     #[test]
-    fn a_watched_leaf_offers_the_reverse_toggle() {
-        let (sec, acts) = build(&item(0, false), false); // movie, viewCount >= 1
+    fn a_watched_leaf_offers_only_the_way_back() {
+        let (sec, acts) = build(&item(0, PosterMark::Watched), false); // movie, viewCount >= 1
         assert_eq!(labels(&sec), ["Go to Movie", "—", "Mark as Unwatched", "Play from Start"]);
-        match acts[2].as_ref().unwrap() {
-            Action::MarkWatched(_, watched) => assert!(*watched),
-            _ => panic!("row 2 must be the watched toggle"),
-        }
+        assert_eq!(
+            acts[2].as_ref().unwrap().watch_write(),
+            Some(crate::viewstate::Write::Unwatched),
+            "a finished item has one end left to be sent to"
+        );
         // a movie has no show, so no second navigation row
         assert!(!labels(&sec).contains(&"Go to Show".to_string()));
     }
 
+    /// A show or season never offers *Play from Start* — there is no single part to start — and
+    /// its watch state is the flag PAIR, not one flag: `!unwatched` alone means "some leaf was
+    /// watched", which is the middle of the range and not the end of it.
     #[test]
-    fn a_show_has_no_play_from_start_and_never_claims_a_toggle() {
-        // `unwatched == false` on a show only means "some leaf was watched" — not fully watched,
-        // so the row must stay the one-way "Mark as Watched".
-        let (sec, acts) = build(&item(1, false), false);
+    fn a_show_has_no_play_from_start_and_gets_the_pair_when_it_is_mid_run() {
+        let (sec, acts) = build(&item(1, PosterMark::InProgress), false);
+        assert_eq!(labels(&sec), ["Go to Show", "—", "Mark as Watched", "Mark as Unwatched"]);
+        assert_eq!(acts[2].as_ref().unwrap().watch_write(), Some(crate::viewstate::Write::Watched));
+        assert_eq!(acts[3].as_ref().unwrap().watch_write(), Some(crate::viewstate::Write::Unwatched));
+
+        // a show whose every leaf is seen is DONE, and offering to mark it watched again was the
+        // old row set's other wrong answer (it read `!unwatched`, which cannot tell the two apart)
+        let (sec, _) = build(&item(1, PosterMark::Watched), false);
+        assert_eq!(labels(&sec), ["Go to Show", "—", "Mark as Unwatched"]);
+        // …and one nobody has opened offers only the way forward
+        let (sec, _) = build(&item(1, PosterMark::None), false);
         assert_eq!(labels(&sec), ["Go to Show", "—", "Mark as Watched"]);
-        match acts[2].as_ref().unwrap() {
-            Action::MarkWatched(_, watched) => assert!(!*watched),
-            _ => panic!("row 2 must be the watched action"),
-        }
     }
 
     #[test]
     fn a_row_whose_target_is_missing_is_not_offered_at_all() {
         // an episode hub row that arrived without a grandparentRatingKey: no "Go to Show" — the row
         // would resolve to an empty rk, i.e. a blocking fetch for nothing and a blank page
-        let mut m = item(3, true);
+        let mut m = item(3, PosterMark::None);
         m.show_rk.clear();
         let (sec, acts) = build(&m, false);
         assert_eq!(labels(&sec), ["Go to Episode", "—", "Mark as Watched", "Play from Start"]);
         assert!(acts.iter().flatten().all(|a| !matches!(a, Action::GoToShow(..))));
         // and a SEASON with no parent has no navigation at all — so no leading separator either,
         // which would otherwise open the menu with a rule above its first row
-        let mut s = item(2, true);
+        let mut s = item(2, PosterMark::None);
         s.show_rk.clear();
         let (sec, _) = build(&s, false);
         assert_eq!(labels(&sec), ["Mark as Watched"]);
@@ -509,14 +593,14 @@ mod tests {
     #[test]
     fn the_remove_from_deck_row_exists_only_on_a_continue_watching_card() {
         // same card, both shelves — the ONLY difference is where it was focused
-        let (off_deck, acts_off) = build(&item(3, true), false);
+        let (off_deck, acts_off) = build(&item(3, PosterMark::None), false);
         assert_eq!(labels(&off_deck), ["Go to Episode", "Go to Show", "—", "Mark as Watched", "Play from Start"]);
         assert!(
             !acts_off.iter().flatten().any(|a| matches!(a, Action::RemoveFromDeck(_))),
             "a card off the deck must not offer to remove it from one"
         );
 
-        let (on_deck, acts_on) = build(&item(3, true), true);
+        let (on_deck, acts_on) = build(&item(3, PosterMark::None), true);
         assert_eq!(
             labels(&on_deck),
             ["Go to Episode", "Go to Show", "—", "Mark as Watched", "Play from Start", "Remove from Deck"],
@@ -526,8 +610,8 @@ mod tests {
             Action::RemoveFromDeck(rk) => assert_eq!(rk, "42", "…carrying the card's own ratingKey"),
             _ => panic!("the last row must be the deck removal"),
         }
-        // it is an ADDITION to the group, not a replacement — the watched toggle is still there
-        assert!(acts_on.iter().flatten().any(|a| matches!(a, Action::MarkWatched(..))));
+        // it is an ADDITION to the group, not a replacement — the watch-state row is still there
+        assert!(acts_on.iter().flatten().any(|a| matches!(a, Action::MarkWatched(_))));
     }
 
     /// The detail page's filmstrip menu: the state rows, no navigation group, and therefore no
@@ -536,20 +620,20 @@ mod tests {
     /// two builders' tails rather than by re-listing the labels here.
     #[test]
     fn the_filmstrip_menu_is_the_state_group_alone() {
-        let (sec, acts) = build_episode("42", false);
+        let (sec, acts) = build_episode("42", PosterMark::None);
         assert_eq!(labels(&sec), ["Mark as Watched", "Play from Start"]);
         assert!(acts.iter().all(|a| a.is_some()), "no separator, so every row acts");
         // the shelf menu's episode rows END with exactly these two, in this order
-        let (shelf, _) = build(&item(3, true), false);
+        let (shelf, _) = build(&item(3, PosterMark::None), false);
         assert_eq!(labels(&sec), labels(&shelf)[shelf.rows.len() - 2..]);
 
-        // a watched episode gets the reverse toggle, carrying its OWN rk (the menu captured its
+        // a watched episode gets the way back instead, carrying its OWN rk (the menu captured its
         // target at open time — nothing here may resolve through a live focus index)
-        let (sec, acts) = build_episode("77", true);
+        let (sec, acts) = build_episode("77", PosterMark::Watched);
         assert_eq!(labels(&sec), ["Mark as Unwatched", "Play from Start"]);
         match acts[0].as_ref().unwrap() {
-            Action::MarkWatched(rk, watched) => assert_eq!((rk.as_str(), *watched), ("77", true)),
-            _ => panic!("row 0 must be the watched toggle"),
+            Action::MarkUnwatched(rk) => assert_eq!(rk, "77"),
+            _ => panic!("row 0 must be the unwatched row"),
         }
         match acts[1].as_ref().unwrap() {
             Action::PlayFromStart(rk) => assert_eq!(rk, "77"),
@@ -560,6 +644,80 @@ mod tests {
         assert!(!acts.iter().flatten().any(|a| matches!(a, Action::GoToShow(..) | Action::GoToItem(_))));
     }
 
+    /// **The owner-reported gap, at both entry points.** An item in the MIDDLE is at neither end of
+    /// the watch range, so no single toggle can express both destinations — it gets both rows, ✓
+    /// then −, the same order the detail hero's two discs sit in.
+    ///
+    /// The pair is asserted alongside its two neighbours in the same test on purpose: the property
+    /// is not "there are two rows", it is that the row SET tracks the state, and a fixture that only
+    /// ever built the middle would pass with an unconditional pair.
+    #[test]
+    fn a_part_watched_item_offers_both_ends_of_the_range() {
+        // the shelf card (an episode with a live resume point)
+        let tail = |mark| {
+            let (sec, _) = build(&item(3, mark), false);
+            labels(&sec).split_off(3) // past "Go to Episode", "Go to Show", the separator
+        };
+        assert_eq!(tail(PosterMark::None), ["Mark as Watched", "Play from Start"]);
+        assert_eq!(tail(PosterMark::InProgress), ["Mark as Watched", "Mark as Unwatched", "Play from Start"]);
+        assert_eq!(tail(PosterMark::Watched), ["Mark as Unwatched", "Play from Start"]);
+
+        // …and the detail page's filmstrip, off the same builder, so the two cannot drift
+        let strip = |mark| {
+            let (sec, _) = build_episode("42", mark);
+            labels(&sec)
+        };
+        assert_eq!(strip(PosterMark::None), ["Mark as Watched", "Play from Start"]);
+        assert_eq!(strip(PosterMark::InProgress), ["Mark as Watched", "Mark as Unwatched", "Play from Start"]);
+        assert_eq!(strip(PosterMark::Watched), ["Mark as Unwatched", "Play from Start"]);
+    }
+
+    /// **A row performs the verb its own label names**, in every state and at both entry points —
+    /// which is the assertion the old shape could not make at all: the action carried what the item
+    /// WAS and `app.rs` inverted it, so "what this row does" lived in another file and, on the pair,
+    /// would have been the same bool twice — one row doing its neighbour's write.
+    #[test]
+    fn every_watch_row_performs_the_verb_its_label_names() {
+        use crate::viewstate::Write;
+        let want = |l: &str| match l {
+            "Mark as Watched" => Some(Write::Watched),
+            "Mark as Unwatched" => Some(Write::Unwatched),
+            _ => None, // navigation, the separator, Play from Start, Remove from Deck
+        };
+        for mark in [PosterMark::None, PosterMark::InProgress, PosterMark::Watched] {
+            for kind in [0, 1, 2, 3] {
+                for deck in [false, true] {
+                    let (sec, acts) = build(&item(kind, mark), deck);
+                    for (label, got) in verbs(&sec, &acts) {
+                        assert_eq!(got, want(&label), "{label:?} (kind {kind}, {mark:?})");
+                    }
+                }
+            }
+            let (sec, acts) = build_episode("42", mark);
+            for (label, got) in verbs(&sec, &acts) {
+                assert_eq!(got, want(&label), "{label:?} on the filmstrip ({mark:?})");
+            }
+        }
+    }
+
+    /// The pair is TWO ROWS and therefore two actions, and `ACTS` has to grow with it —
+    /// `ACTS_PARALLEL`'s failure is silent by construction (the press performs its neighbour's
+    /// action), and the conditional tail is exactly where a row gets added without one. The builders'
+    /// own `debug_assert` covers this for every case a test builds; this states it as the property.
+    #[test]
+    fn the_action_vector_grows_with_the_conditional_rows() {
+        for mark in [PosterMark::None, PosterMark::InProgress, PosterMark::Watched] {
+            for kind in [0, 1, 2, 3] {
+                for deck in [false, true] {
+                    let (sec, acts) = build(&item(kind, mark), deck);
+                    assert_eq!(acts.len(), sec.rows.len(), "kind {kind}, {mark:?}, deck {deck}");
+                }
+            }
+            let (sec, acts) = build_episode("42", mark);
+            assert_eq!(acts.len(), sec.rows.len(), "filmstrip, {mark:?}");
+        }
+    }
+
     /// This test and the next drive a live `TableView`, whose selection moves `Spring::jump` —
     /// which reports to `ui::idle`'s process-global dirty flag. Serial by obligation, not
     /// precaution (`xfade.rs`'s rule): run parallel, they intermittently failed OTHER modules'
@@ -568,7 +726,7 @@ mod tests {
     fn the_focus_walk_steps_over_the_separator_and_stops_at_the_ends() {
         let _g = crate::testlock::serial();
         let mut t = TableView::new();
-        let (sec, _) = build(&item(3, true), false);
+        let (sec, _) = build(&item(3, PosterMark::None), false);
         t.set_sections(vec![sec], 0, false);
         assert_eq!(t.sel, 0); // Go to Episode
         t.move_sel(1);
@@ -592,7 +750,7 @@ mod tests {
     fn a_selection_landed_on_the_separator_settles_onto_a_real_row() {
         let _g = crate::testlock::serial();
         let mut t = TableView::new();
-        let (sec, _) = build(&item(3, true), false);
+        let (sec, _) = build(&item(3, PosterMark::None), false);
         t.set_sections(vec![sec], 2, false); // index 2 IS the separator
         assert_eq!(t.sel, 3);
     }
@@ -610,7 +768,7 @@ mod tests {
     #[test]
     fn the_menu_carries_the_row_it_was_opened_on_and_the_episode_menu_carries_none() {
         let _g = crate::testlock::serial();
-        let mut m = item(0, true);
+        let mut m = item(0, PosterMark::None);
         m.sid = crate::plex::ServerId::from_raw(3);
         m.part = "/library/parts/42/file.mkv".to_string();
 
@@ -629,7 +787,7 @@ mod tests {
         close();
         assert!(super::item().is_some(), "the drain reads it a frame after the close, like `SID`");
 
-        open_episode(crate::plex::ServerId::from_raw(3), "77", false, crate::ui::popover::Opener::NONE);
+        open_episode(crate::plex::ServerId::from_raw(3), "77", PosterMark::None, crate::ui::popover::Opener::NONE);
         assert!(super::item().is_none(), "an episode menu plays through the loaded season, never a stale row");
         close();
     }
