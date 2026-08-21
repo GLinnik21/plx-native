@@ -3180,9 +3180,15 @@ pub(crate) fn on_ok() -> bool {
                 // button changes on this frame), writes on a worker, and calls `refresh_view_state`
                 // when the write lands. `Some("")` is "refresh the detail page, with no filmstrip
                 // position to protect" — the press was on the hero.
-                if let Some((sid, rk, watched)) = metadata::current().map(|d| (d.sid, d.rk.clone(), d.watched)) {
+                //
+                // The `guid` rides along because this page HAS it, and it is the guid OF `d.rk` —
+                // the same pair the page is mounted on. It is what makes the write follow the
+                // TITLE: a film both sources hold ends up watched on both (`crate::viewstate`).
+                if let Some((sid, rk, guid, watched)) =
+                    metadata::current().map(|d| (d.sid, d.rk.clone(), d.guid.clone(), d.watched))
+                {
                     let w = if watched { crate::viewstate::Write::Unwatched } else { crate::viewstate::Write::Watched };
-                    crate::viewstate::request(sid, &rk, w, Some(String::new()));
+                    crate::viewstate::request(sid, &rk, w, Some(String::new()), &guid);
                 }
                 return false;
             }

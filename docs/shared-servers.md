@@ -505,3 +505,44 @@ one is stored, and `install_pms` registers every granted server at boot, so the 
 holds more than one. What remains is the probe RACE and `activate_best` (step 4's second half) —
 addresses are ranked and identity-verified today, but still dialled in sequence rather than
 concurrently.
+
+## 11. Watch state follows the TITLE (2026-08-21)
+
+**The one place the app deliberately breaks per-server semantics.** Everything else in this document
+is built on view state being per-server, and it still is on the wire: two copies of one film on two
+servers are two items with two `viewCount`s and two `viewOffset`s, and §1's identity rule (every
+item-shaped integer is server-local and dense from 1) is exactly why they cannot be conflated. But
+"I have watched this" is a claim about a **title**, not about a file on a host — so a Mark as
+Watched now **fans out** to every registered source that holds the same item.
+
+It lives in `rust-modules/src/viewstate.rs`, which was already the single owner of view-state
+writes, and it reuses the resolve "Also available" was built on (`Client::find_by_guid`, one query
+per source, off the SDL thread).
+
+- **The identity is the `guid` (`plex://movie/…`), never the `ratingKey`.** §1 is not academic here:
+  both servers in this household hold a `ratingKey` 4, so a fan-out matched on the key marks a
+  different film watched on the other machine — confidently, and with a 200 back.
+- **The RESUME POSITION does not propagate. Only the watched flag.** This is the subtle half, and it
+  is the half `ui/alt_sources.rs` reasons out: an offset is about a file you are streaming from one
+  host, which is also why that panel NAVIGATES to the other copy rather than swapping it under you.
+  `unscrobble` is fanned out too — it is the other end of one control, and clearing the claim is
+  still a claim about the title — but no `viewOffset` is ever pushed anywhere.
+- **Remove from Continue Watching does NOT fan out.** The deck is a per-server surface; taking a
+  friend's item off *your* deck is not what that row promises.
+- **Resolved at WRITE time, on the worker.** Not off a detail page's earlier cross-source resolve:
+  the press can come from a Home / Library / Search card menu where none has ever run. A press that
+  carries a guid (the detail hero, which holds the guid OF the item it is mounted on) uses it; every
+  other press has one looked up from its own `(server, ratingKey)`, which costs one extra GET on a
+  thread that is not drawing anything.
+- **Best-effort per source, unconditional, and never fatal.** One asleep share costs one log line and
+  cannot fail or retry the write the user actually pressed. There is no setting — this app has no
+  preferences screen by design. A **one-source install pays nothing**: the source count is checked
+  before the guid lookup, so there is no query and no log line.
+- **The other copies flip on screen a round trip later, not on the press frame.** The optimistic edit
+  can only reach the `(sid, rk)` in hand, because the other keys are what the resolve *discovers*;
+  the fan-out reports them and the landing applies the same local edit to each, with the hub refetch
+  that already follows every write reconciling the rest.
+
+**Not verified on device.** The host suite grades the identity rule (which copies a fan-out writes,
+that the pressed copy is not written twice, that a deck removal does not propagate) and the landing's
+local edit; the two-server round trip itself needs a television and both servers awake.
