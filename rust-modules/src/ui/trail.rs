@@ -167,8 +167,11 @@ impl Trail {
     }
 
     /// BACK: leave the top page and hand back the one under it. `None` at the ROOT — which is what
-    /// keeps BACK at Home exiting the app, because `app.rs`'s BACK arm reaches its `running = false`
-    /// branch by never consulting the trail on Home at all.
+    /// keeps BACK at Home reaching THE DOOR, because `app.rs`'s BACK arm reaches its root branch by
+    /// never consulting the trail on Home at all. (That branch raises the exit alert now rather
+    /// than setting `running = false` outright — see `app.rs::back_at_root`. What this module
+    /// guarantees is unchanged and is the half that matters here: at the root there is nothing
+    /// left to pop, so the press falls through to whatever the app does with a root BACK.)
     ///
     /// Returns by VALUE. The clone is two `String`s once per BACK press, and it buys the caller the
     /// right to touch the trail again inside the re-entry it is about to run.
@@ -219,7 +222,7 @@ impl Trail {
     ///
     /// **[`Node::Home`] is a truncation, not a push.** Home is `stack[0]` and the one node BACK
     /// never leaves, so landing there means everything that was behind the user is spent — pushing
-    /// a second Home would put a BACK between them and exiting the app, which is the one place
+    /// a second Home would put an extra BACK between them and the door, which is the one place
     /// where a wrong trail is not merely a misnavigation (see [`Trail::back`]).
     ///
     /// It generalises an `ensure_detail(sid, rk)` that took the two halves of a detail page and
@@ -264,8 +267,10 @@ mod tests {
         Node::Person { sid, key: key.into(), guid: guid.into(), name: String::new(), thumb: String::new() }
     }
 
-    /// The executable form of "BACK at the Home root EXITS THE APP": the trail declines, and the arm
-    /// falls through to `running = false`. Nothing else in this module may make that untrue.
+    /// The executable form of "BACK at the Home root REACHES THE DOOR": the trail declines, and the
+    /// arm falls through to its root branch — which raises the exit alert (`app.rs::back_at_root`),
+    /// and used to quit outright. Either way this module's obligation is the same and nothing else
+    /// in it may make it untrue: at the root there is nothing to pop.
     #[test]
     fn a_fresh_trail_is_the_root_and_back_there_declines() {
         let mut t = Trail::new();
@@ -431,7 +436,7 @@ mod tests {
             assert_eq!(t.back(), Some(Node::Home), "…and one BACK off it is Home, as before");
         }
         // A boot trigger that mounts the Library without navigating: the trail is bare, so the
-        // return has to build the step it never took, or BACK would exit the app from the grid.
+        // return has to build the step it never took, or BACK would leave the app from the grid.
         let mut t = Trail::new();
         t.ensure(&Node::Library);
         assert_eq!(t.back(), Some(Node::Home));
@@ -445,9 +450,10 @@ mod tests {
         assert_eq!(t.stack.len(), 3, "a different person is a different page");
     }
 
-    /// **BACK at the Home root EXITS THE APP**, so a return to Home is a TRUNCATION and never a
-    /// push: a second `Node::Home` on the stack would put an extra BACK between the user and the
-    /// door, which is the one place a wrong trail is not merely a misnavigation.
+    /// **BACK at the Home root REACHES THE DOOR** (the exit alert, since 2026-08-21 — before that,
+    /// the exit itself), so a return to Home is a TRUNCATION and never a push: a second `Node::Home`
+    /// on the stack would put an extra BACK between the user and that door, which is the one place a
+    /// wrong trail is not merely a misnavigation.
     ///
     /// The other half of the same rule: playing a Continue Watching card off Home and stopping it
     /// must leave the user exactly one BACK from the door, whatever page they had been on before
@@ -459,7 +465,7 @@ mod tests {
         t.push(det("a"));
         t.ensure(&Node::Home);
         assert_eq!(t.stack, vec![Node::Home], "the history behind them is spent");
-        assert_eq!(t.back(), None, "…and BACK there is the app closing, not a pop");
+        assert_eq!(t.back(), None, "…and BACK there is the door, not a pop");
 
         // Idempotent, so an exit onto Home from Home cannot deepen it either.
         let mut t = Trail::new();

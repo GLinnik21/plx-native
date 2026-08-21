@@ -576,6 +576,31 @@ pub const TILE_MARK_SHADOW: [f32; 4] = with_a(BLACK, 0.60);
 /// Error/destructive signal ink — the wrong-PIN dot flash. Desaturated toward the palette's
 /// warm neutrals so it reads as a state, not an alarm.
 pub const DANGER: [f32; 4] = RED_400;
+/// How much [`DANGER`] a destructive control's IDLE plate carries — the design's 16%.
+///
+/// Named rather than written into [`CONTROL_DANGER_IDLE_FILL`] because it is the one number that
+/// decides whether the tint is a *hue* or an *alarm*: the plate has to read as tinted at ten feet
+/// and still not compete with the focused face, which is the whole fill. Retuning the destructive
+/// family is this line.
+pub const DANGER_IDLE_TINT: f32 = 0.16;
+/// The idle plate of a **destructive** control ([`ControlStyle::Danger`](crate::ui::widgets::ControlStyle::Danger)):
+/// the app's ordinary [`CONTROL_IDLE_FILL`] carrying [`DANGER_IDLE_TINT`] of [`DANGER`].
+///
+/// A derived token and not a palette stop, deliberately — the destructive plate IS the neutral one
+/// with a hue leaned into it, so retuning either the neutral or the danger stop moves this with
+/// them instead of leaving a third value behind. [`mix`] keeps the neutral's own `.92` alpha, which
+/// is what keeps the two idle plates the same MATERIAL and makes the hue the only difference
+/// between them.
+///
+/// The colour is a property of the ACTION and is worn while nothing is focused, so the label is
+/// named before the remote reaches it; the FILL is still a property of FOCUS
+/// ([`DANGER`] whole, under [`TEXT_PRIMARY`]). That split is what keeps a destructive control a
+/// PlxNative control rather than a red button borrowed from somewhere else.
+pub const CONTROL_DANGER_IDLE_FILL: [f32; 4] = mix(CONTROL_IDLE_FILL, DANGER, DANGER_IDLE_TINT);
+/// The label over [`CONTROL_DANGER_IDLE_FILL`] — the danger ink itself. The hue is stated twice on
+/// an idle destructive control (a tinted plate AND a tinted label) because at ten feet the plate
+/// alone is a shade of grey; the label is what names the action.
+pub const CONTROL_DANGER_IDLE_INK: [f32; 4] = DANGER;
 /// Dev counter's two human-visible buffer phases. The renderer holds each for 30 returned swaps,
 /// so motion is visible instead of red/green frames blending into yellow at panel refresh rate.
 pub const DIAG_FLIP_A: [f32; 4] = GREEN_400;
@@ -903,6 +928,13 @@ pub const CARD_RING_RAD: f32 = 14.0;
 /// corner that drifted between them is exactly the drift `theme.rs` exists to kill. It very nearly
 /// did — this shipped as four constants under four names (`ALERT_CORNER_RAD`, `ALERT_PANEL_RAD`,
 /// `ALERT_RAD`, `RADIUS_PANEL`) before the four panels were merged into one tree.
+///
+/// One independent corroboration is worth keeping, because it was derived from the app rather than
+/// from the mock and it agrees: the exit alert's two answers are fully-rounded capsules at
+/// [`StatusOverlay::CTRL_H`](crate::ui::widgets::StatusOverlay::CTRL_H)`/2` = 30, so 32 sits a hair
+/// OVER the pills it contains — enough that the sheet is unmistakably the outer shape, not enough
+/// for it to become one. That is the design's "as round as the pills inside it" objection to 60,
+/// measured on the one panel that actually holds pills.
 pub const ALERT_PANEL_RAD: f32 = 32.0;
 
 // ── Card treatment (Home Screen.dc.html): every tile = a soft drop shadow that GROWS with the focus
