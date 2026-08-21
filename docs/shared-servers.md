@@ -625,3 +625,43 @@ names land without changing the section table's SHAPE, and both surfaces were ke
 `sections_gen()` — so rows read "Films" long after "26 films" had arrived and an unnamed group drew
 no header at all. Both now watch `browse::source_list_gen()`, the shape plus the facts the rows
 state.
+
+### How the answer actually reaches Home — the join the section table cannot make
+
+Found in review, and it is the failure that would have made the whole screen look ornamental: **the
+answer has to govern Home on a boot where the friend's server is never enumerated at all.**
+
+`pms::feeds_home`'s standing rule is that *a library nobody has discovered is undecided, not
+unpinned* — §6's own bootstrap, and correct, because the pin is a decision about libraries and you
+cannot have decided against one that has never appeared. That was harmless while every granted
+library defaulted On. It stops being harmless the moment a friend's library defaults **Off**,
+because Home is the one screen that never enumerates: boot fetches the CURRENT server's sections and
+no others (`browse::ensure_sections`, deliberately — fanning out over the roster parks the SDL loop
+on one `connect(2)` per sleeping share), and the discovery pump runs from the Library, Search and
+first-run screens. So on the second and every later boot the share sat in the roster with **no row
+in the section table**, "undecided" applied, and a friend's shelves went back on the front door of
+somebody who had turned them off the night before — including the person who simply pressed *Start
+watching* on the defaults.
+
+Two halves close it, both in `browse.rs`, and both keyed on the machine id because that is the only
+name a record has:
+
+- **`RECORDED`** — the current profile's persisted answer, kept in memory from the read
+  `resolve_pins` already makes, and joined into `library_pins()` for every roster source the section
+  table does NOT hold. The record is on disk keyed by machine; that is exactly the join that was
+  missing. It is a snapshot rather than a per-call read because `library_pins` is reached from
+  Home's own pump, and `session.rs` forbids a per-frame file read.
+- **`pins::carry_forward`** — a record is written from the section table, and `set_pins_for`
+  replaces a profile's entry wholesale, so one switch flipped on a boot the share missed would
+  otherwise have erased the share's answer and let the ownership default back in. The merge grain is
+  the MACHINE: a server the table holds has just been answered about in full (a library it has since
+  lost is correctly dropped); one it does not hold has not been answered about at all.
+
+Both are graded on the host, with the negative case checked — `browse`'s
+`a_recorded_answer_reaches_home_before_that_servers_sections_do` and
+`a_flip_made_while_a_share_is_absent_does_not_erase_its_answer` both fail if either half is removed.
+
+A third, smaller ordering bug went with them: the stored-session boot called `install_pms` — whose
+section fetch resolves the Home selection — **before** `session::set_current`, so that resolve ran
+against the owner's record whoever was signed in. The switch path (`auth::take_ready`) already had
+the two the right way round; the boot path now matches it.

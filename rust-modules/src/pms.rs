@@ -946,6 +946,14 @@ fn feeds_home(sid: ServerId, pinned: &[ServerId], known: &[ServerId]) -> bool {
     // is exactly how the owner found it: "it appeared on the home screen only after I watched the
     // library."
     //
+    // **"Not enumerated" is no longer the same thing as "no answer", and that is what keeps this
+    // rule honest now a friend's library defaults OFF.** While every granted library defaulted On,
+    // undecided and pinned agreed and this cost nothing. They stopped agreeing when the first-run
+    // route landed, and Home never enumerates — so the recorded answer for a source with no rows
+    // in the section table is joined in by `browse::library_pins` and arrives here as an ordinary
+    // `known`/`pinned` entry. What is left undecided is a library nobody has ever been ASKED
+    // about, which is the case this rule was written for.
+    //
     // The whole-set emptiness check below is the same rule one level up (nothing discovered
     // anywhere yet) and is kept for the boot frame before any source has answered.
     pinned.is_empty() || pinned.contains(&sid) || !known.contains(&sid)

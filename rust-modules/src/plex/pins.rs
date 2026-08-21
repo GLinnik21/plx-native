@@ -113,6 +113,30 @@ pub(crate) fn record(user: &str, asked: bool, libs: &[LibRef<'_>], on: &[bool]) 
     out
 }
 
+/// Carry forward the answers this profile gave about servers the table cannot currently SEE.
+///
+/// [`record`] writes down what is on screen, and the section table holds only the sources that
+/// have ANSWERED — so a friend whose server was asleep when a switch was flipped would have their
+/// whole recorded answer replaced by silence, and the ownership default would come back for
+/// libraries the user had already decided about. `HomePins` is a whole-profile record and
+/// [`Session::set_pins_for`](super::session::Session::set_pins_for) replaces it wholesale, so the
+/// merge belongs here rather than being the store's problem.
+///
+/// **The grain is the MACHINE, not the library.** A server whose libraries the table holds has
+/// just been answered about in full — including one it has since lost, which is correctly dropped.
+/// A server it does not hold has not been answered about at all, and silence is not an answer.
+pub(crate) fn carry_forward(mut rec: HomePins, prev: Option<&HomePins>, libs: &[LibRef<'_>]) -> HomePins {
+    let Some(prev) = prev else { return rec };
+    let absent = |p: &&PinnedLib| {
+        // an entry with no machine can never be WRITTEN (see [`record`]), so it can never be
+        // carried either — and matching it against a table row's empty id would adopt a neighbour's
+        !p.machine_id.is_empty() && !libs.iter().any(|l| l.machine_id == p.machine_id)
+    };
+    rec.on.extend(prev.on.iter().filter(absent).cloned());
+    rec.off.extend(prev.off.iter().filter(absent).cloned());
+    rec
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -223,5 +247,33 @@ mod tests {
         assert_eq!(resolve(&libs, Some(&kid)), vec![true, false, false]);
         // and a third person who has never been asked gets the defaults, not either of theirs
         assert_eq!(resolve(&libs, None), vec![true, true, false]);
+    }
+
+    /// **An answer about a server that is not on screen is not withdrawn by writing a new one.**
+    ///
+    /// A record is written from the section TABLE, which holds only the sources that have answered
+    /// — so flipping one switch while a friend's server is asleep would otherwise replace their
+    /// whole recorded answer with silence, and silence resolves back to the ownership default.
+    #[test]
+    fn a_sleeping_servers_answer_survives_a_record_written_without_it() {
+        let full = record("u-7", true, &roster(), &[true, false, true]);
+
+        // the next boot sees only our own libraries; the share has not answered
+        let awake = vec![lib("mine", 1, true), lib("mine", 2, true)];
+        let written = carry_forward(record("u-7", true, &awake, &[true, true]), Some(&full), &awake);
+        assert_eq!(written.answer("theirs", 1), Some(true), "the absent server's answer is kept");
+        assert_eq!(written.answer("mine", 2), Some(true), "…and the present one's is the NEW answer");
+
+        // a library the present server has since LOST is dropped rather than carried: that server
+        // was answered about in full, and this is not a machine we are keeping silence for
+        let full2 = record("u-7", true, &roster(), &[true, true, true]);
+        let shrunk = vec![lib("mine", 1, true)];
+        let written = carry_forward(record("u-7", true, &shrunk, &[true]), Some(&full2), &shrunk);
+        assert_eq!(written.answer("mine", 2), None);
+        assert_eq!(written.answer("theirs", 1), Some(true));
+
+        // and with nothing recorded before, there is nothing to carry
+        let fresh = record("u-7", true, &awake, &[true, true]);
+        assert_eq!(carry_forward(fresh.clone(), None, &awake), fresh);
     }
 }

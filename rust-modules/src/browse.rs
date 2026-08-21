@@ -342,6 +342,10 @@ pub(crate) fn reset() {
         *addr_of_mut!(SOURCES) = Vec::new();
         *addr_of_mut!(SECTIONS) = Vec::new();
         *addr_of_mut!(STATES) = Vec::new();
+        // The Home selection belongs to ONE profile, and this runs on every `install_pms` — i.e.
+        // on the switch. Carrying it would let the previous person's answer govern the next
+        // person's Home for the frames before their own record is read (see [`RECORDED`]).
+        *addr_of_mut!(RECORDED) = None;
         // TABS is deliberately NOT cleared here, only invalidated. It is a memo, and the ONE thing
         // that decides whether the strip re-measures is [`tabs`] comparing the old row against the
         // new one — so emptying it in advance makes that comparison `[] != []`, which is false, and
@@ -826,6 +830,21 @@ pub(crate) fn tab_of_section(s: usize) -> usize {
 // NEW profile's record — which is exactly why the resolve is a whole-table function rather than a
 // per-row default applied once at append.
 
+/// **The current profile's persisted answer, as last read from disk** — the half of the selection
+/// the section table cannot express.
+///
+/// The table only ever holds the sources that have ANSWERED, and Home is the one screen whose boot
+/// enumerates a single server: `ensure_sections` fetches the CURRENT server's sections and no
+/// others. So on every boot after the first, a share sits in the roster with no row here at
+/// all — and `pms::feeds_home`'s "a library nobody has discovered is undecided, not unpinned" rule
+/// then puts a friend's shelves on the front door of somebody who turned them off last night.
+/// Their answer is on disk keyed by machine, which is exactly the join that settles it.
+///
+/// `None` means "nothing has been read yet", never "nothing was recorded" — the same distinction
+/// [`library_pins`] and `Session::home_pins` both turn on. Written by [`resolve_pins`] and
+/// [`record_pins`], cleared by [`reset`]; never read from the file per frame.
+static mut RECORDED: Option<crate::plex::session::HomePins> = None;
+
 /// One source's `machineIdentifier` as the registry knows it, `""` while nobody has learned it.
 fn machine_of(sid: ServerId) -> String {
     crate::plex::client_for(sid).map(|c| c.machine_id().to_string()).unwrap_or_default()
@@ -856,8 +875,13 @@ fn lib_refs() -> Vec<crate::plex::pins::LibRef<'static>> {
 fn resolve_pins() {
     let libs = lib_refs();
     let sess = crate::plex::session::peek();
-    let want = crate::plex::pins::resolve(&libs, sess.pins_for(&crate::plex::session::current_profile_key()));
+    let rec = sess.pins_for(&crate::plex::session::current_profile_key());
+    let want = crate::plex::pins::resolve(&libs, rec);
     unsafe {
+        // …and keep the record itself, because [`library_pins`] needs it for the sources this
+        // table does NOT hold and cannot afford to read the file (it runs off Home's per-frame
+        // pump). Cleared by [`reset`], so it can never outlive the profile that gave it.
+        *addr_of_mut!(RECORDED) = rec.cloned();
         let secs = &mut *addr_of_mut!(SECTIONS);
         for (i, on) in want.into_iter().enumerate() {
             if let Some(s) = secs.get_mut(i) {
@@ -877,15 +901,32 @@ pub(crate) fn record_pins(asked: bool) {
     let libs = lib_refs();
     let on: Vec<bool> = sections().iter().map(|s| s.pinned).collect();
     let user = crate::plex::session::current_profile_key();
-    let rec = crate::plex::pins::record(&user, asked, &libs, &on);
+    let fresh = crate::plex::pins::record(&user, asked, &libs, &on);
+    let mut written: Option<crate::plex::session::HomePins> = None;
     // Through `update`, never `save`: this owns ONE field of a file four other writers touch (the
     // roster worker, the profile switch, the sign-in save, the search-recents flush), and a
     // whole-file replace from a stale snapshot is how a lost update signs the device out.
     crate::plex::session::update(|s| {
+        // …and MERGE rather than replace, because this table is what has answered, not what
+        // exists: a friend's server asleep at the moment a switch is flipped must not have its
+        // recorded answer overwritten with silence (`plex::pins::carry_forward`).
+        let rec = crate::plex::pins::carry_forward(fresh.clone(), s.pins_for(&user), &libs);
         let mut next = s.clone();
         next.set_pins_for(&user, rec.clone());
+        written = Some(rec);
         Some(next)
     });
+    // Only what actually reached the file: `update` is a no-op on a session with no `client_id`,
+    // and adopting a record that was never written would make the snapshot disagree with disk.
+    //
+    // No `SECTIONS_GEN` bump here, deliberately — a caller that CHANGED something owes one
+    // ([`toggle_pin`] makes it, one line after this call). Writing alone cannot change what
+    // [`library_pins`] answers: the fresh record is the table's own state, and `carry_forward` can
+    // only put back entries [`RECORDED`] already held. A future caller that flips a row without
+    // going through `toggle_pin` owes the bump too, or Home does not re-merge.
+    if let Some(rec) = written {
+        unsafe { *addr_of_mut!(RECORDED) = Some(rec) };
+    }
 }
 
 /// **Has the first-run question been put to the profile now watching?** — the route's own gate,
@@ -926,23 +967,45 @@ pub(crate) fn toggle_pin(i: usize) -> bool {
     crate::ui::idle::invalidate();
     true
 }
-/// Every KNOWN library as `(source index, section key, pinned)` — the READ side of the pin store,
-/// and the ONE projection of it this module exports.
+/// Every library this profile has an ANSWER for as `(source index, section key, pinned)` — the
+/// READ side of the pin store, and the ONE projection of it this module exports.
 ///
 /// It replaced two narrower ones (`pinned_libraries`, `discovered_sources`) that `pms` folded into
 /// server sets separately — three loops resolving a source index to a registry slot, so a change to
 /// that mapping had to land in three places. Both are columns of this table.
 ///
-/// NB an EMPTY result means "no section has been discovered yet", NOT "nothing is pinned":
-/// [`is_last_pinned`] forbids unpinning the last library, so the pinned set is never legitimately
-/// empty once discovery has landed. `pms::feeds_home` is written around exactly that distinction.
+/// **Two sources of answer, and the second one is not an optimisation.** The section table for
+/// everything that has been enumerated, plus [`RECORDED`] for every roster source that has NOT —
+/// because Home never enumerates. Boot fetches the CURRENT server's sections and no others, and
+/// `browse::pump`/[`discover_pump`] run from the Library and Search screens; so on the second and
+/// every later boot a share sat here with no rows at all, `pms::feeds_home` read that as
+/// "undecided", and a friend's shelves went back on the front door of somebody who had turned them
+/// off. The recorded answer is keyed by machine, which is precisely the join that was missing.
+///
+/// NB an EMPTY result STILL means "nothing has been discovered or recorded yet", NOT "nothing is
+/// pinned": [`is_last_pinned`] forbids unpinning the last library, so the pinned set is never
+/// legitimately empty. `pms::feeds_home` is written around exactly that distinction.
 ///
 /// The section KEY is what an item carries (`librarySectionID`), so this is the join Home needs to
 /// honour a per-library pin: `/hubs` is a whole-SERVER request and answers with rows from every
 /// library on it, pinned or not. Without the key the finest gate available is "does this server
 /// feed Home at all", which is why unpinning one library of a two-library server changed nothing.
 pub(crate) fn library_pins() -> Vec<(usize, i64, bool)> {
-    sections().iter().map(|s| (s.src, s.key, s.pinned)).collect()
+    let mut out: Vec<(usize, i64, bool)> = sections().iter().map(|s| (s.src, s.key, s.pinned)).collect();
+    let Some(rec) = (unsafe { (*addr_of!(RECORDED)).as_ref() }) else { return out };
+    for (si, src) in sources().iter().enumerate() {
+        // A source with rows here has been enumerated and the table is the truth for it — including
+        // a library it has since lost. A nameless machine cannot be joined against a record at all.
+        if src.machine_id.is_empty() || sections().iter().any(|s| s.src == si) {
+            continue;
+        }
+        for (lib, on) in rec.on.iter().map(|l| (l, true)).chain(rec.off.iter().map(|l| (l, false))) {
+            if lib.machine_id == src.machine_id {
+                out.push((si, lib.key, on));
+            }
+        }
+    }
+    out
 }
 
 // ---- the Sources list's data, projected ------------------------------------------------------
@@ -2271,6 +2334,82 @@ mod tests {
         // sign-in and a `reset` all do
         seed_two_servers();
         assert_eq!((pinned(0), pinned(1), pinned(2)), (true, false, true), "the answer came back");
+        reset();
+    }
+
+    /// **The answer reaches Home before that server's libraries have been ENUMERATED.**
+    ///
+    /// Home is the one screen that never enumerates: boot fetches the CURRENT server's sections and
+    /// no others, and the discovery pump runs from the Library and Search screens. So on the second
+    /// and every later boot the share is in the roster with no row in the section table — and
+    /// `pms::feeds_home`'s "a library nobody has discovered is undecided, not unpinned" rule then
+    /// put a friend's shelves back on the front door of somebody who had turned them off the night
+    /// before. `library_pins` is the join, and the recorded answer is the other half of it.
+    #[test]
+    fn a_recorded_answer_reaches_home_before_that_servers_sections_do() {
+        let _g = crate::testlock::serial();
+        let t = TempPins::new("unenumerated");
+        t.watching("u-owner");
+        seed_two_servers();
+        record_pins(true); // `Start watching` on the defaults: ours On, the friend's Off
+
+        // the next boot: the roster is restored, our own sections are fetched, the share's are not
+        let boot = || {
+            seed_sources(vec![a_source("mac-mini", "", true), a_source("nas-home", "friend", true)]);
+            append_sections(0, vec![(1, "Movies".into(), SecKind::Movie), (2, "TV Shows".into(), SecKind::Show)]);
+        };
+        boot();
+        assert_eq!(sections().len(), 2, "the share has not answered — it contributes no rows");
+        let pins = library_pins();
+        assert!(
+            pins.contains(&(1, 1, false)),
+            "the friend's recorded Off is reported anyway, or Home reads it as undecided: {pins:?}"
+        );
+        assert_eq!(pins.len(), 3, "…and nothing else is invented: two enumerated rows plus the one record");
+
+        // the other direction, so this is a JOIN and not a blanket "a share is off"
+        t.watching("u-owner");
+        seed_two_servers();
+        assert!(toggle_pin(2));
+        record_pins(true);
+        boot();
+        assert!(library_pins().contains(&(1, 1, true)), "a recorded On reaches Home the same way");
+
+        // and a source the record cannot NAME is left undecided rather than joined by accident
+        seed_sources(vec![a_source("mac-mini", "", true), {
+            let mut s = a_source("nas-home", "friend", true);
+            s.machine_id = String::new();
+            s
+        }]);
+        append_sections(0, vec![(1, "Movies".into(), SecKind::Movie)]);
+        assert!(library_pins().iter().all(|&(si, _, _)| si == 0), "a nameless machine joins nothing");
+        reset();
+    }
+
+    /// **A flip made while a friend's server is asleep does not withdraw the answer about it.**
+    ///
+    /// `record_pins` writes the section TABLE, which holds only what has answered — and
+    /// `set_pins_for` replaces a profile's record wholesale. So without the merge, one switch
+    /// flipped on a boot the share missed erased the share's recorded answer, and the ownership
+    /// default came back for a library the user had already decided about.
+    #[test]
+    fn a_flip_made_while_a_share_is_absent_does_not_erase_its_answer() {
+        let _g = crate::testlock::serial();
+        let t = TempPins::new("merge");
+        t.watching("u-owner");
+        seed_two_servers();
+        assert!(toggle_pin(2), "the friend's library goes on Home");
+        assert_eq!((pinned(0), pinned(1), pinned(2)), (true, true, true));
+
+        // a boot the share missed entirely, on which one of our own is turned off
+        seed_sources(vec![a_source("mac-mini", "", true), a_source("nas-home", "friend", true)]);
+        append_sections(0, vec![(1, "Movies".into(), SecKind::Movie), (2, "TV Shows".into(), SecKind::Show)]);
+        assert!(toggle_pin(1));
+        assert!(library_pins().contains(&(1, 1, true)), "the absent share is still recorded On");
+
+        // …and the next boot on which it DOES answer finds both answers intact
+        seed_two_servers();
+        assert_eq!((pinned(0), pinned(1), pinned(2)), (true, false, true));
         reset();
     }
 
