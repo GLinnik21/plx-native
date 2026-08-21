@@ -2417,8 +2417,10 @@ unsafe fn key_onboarding(route: Route, sym: c_uint, wcode: c_uint, ok_armed: &mu
 /// Leave the first-run question for Home.
 ///
 /// The trail is RESET rather than pushed to: this route is the last of the onboarding gates and
-/// Home is the root behind it, so a BACK from Home must exit the app exactly as it does on any
-/// other boot — not walk back into a question that has already been answered. `enter` is what the
+/// Home is the root behind it, so a BACK from Home must reach the DOOR exactly as it does on any
+/// other boot — not walk back into a question that has already been answered. (The door is
+/// [`back_at_root`]'s exit alert now; what this reset guarantees is that Home is still the root
+/// when the press lands, which is what puts the user one BACK from it either way.) `enter` is what the
 /// route's own BACK and its `Start watching` both come through, which is why there is one exit and
 /// not two.
 fn enter_home_from_onboard(trail: &mut Trail) -> Route {
@@ -3100,8 +3102,8 @@ fn key_library_page(sym: c_uint, wcode: c_uint) {
 /// screen that is already half gone: the request is at most four frames old and nothing has changed
 /// yet, so it can still be un-asked. `nav_cancel` refuses once the swap has happened, and then this
 /// is an ordinary BACK on the NEW screen — the press is never dropped, only ever spent on exactly
-/// one of the two. (It matters most at Home's root, where "what BACK would otherwise do" is exit
-/// the app.)
+/// one of the two. (It matters most at Home's root, where "what BACK would otherwise do" is raise
+/// the exit alert — see [`back_at_root`].)
 fn key_back(
     mt: &crate::task::MainThread,
     route: &mut Route,
@@ -3154,13 +3156,66 @@ fn key_back(
     } else if g_snap() > 0.5 {
         set_snap(0.0);
     } else {
-        // Home is the ROOT and BACK there exits the app — deliberately NOT
+        // Home is the ROOT and BACK there LEAVES THE APP — deliberately NOT
         // trail-driven. The background-suspend arm drops to Home without
         // touching the trail, so route and trail can legitimately disagree;
         // keeping this branch blind to the trail is what stops that divergence
         // teleporting the user into a page they did not navigate to, and what
-        // keeps the true root exiting whatever the trail happens to hold.
+        // keeps the true root leaving whatever the trail happens to hold.
+        //
+        // What changed 2026-08-21 is only the LAST STEP: the press raises the
+        // exit alert (`ui::exit_alert`) and *Exit* is what sets `running`. The
+        // divergence argument above is untouched and is why this still does not
+        // consult the trail — the alert is the door, and this is still the one
+        // branch that reaches it. `running` stays a parameter because the
+        // BYPASS below is a real exit from here.
+        //
+        back_at_root(running);
+    }
+}
+
+/// **BACK at Home's root — the app's one door**, lifted out of [`key_back`]'s last `else` so a host
+/// test can press it.
+///
+/// It is one `if` and it is worth its own function for exactly one reason: this is the only place
+/// in the app that ends the process from a key, and the regression to guard is a future edit
+/// putting `*running = false` back where the alert now goes. `key_back` itself is unreachable from
+/// a unit test — its Player arm calls `exit_player`, which pulls the Starfish/ACB seam into the
+/// link — so without this split the one branch that matters most could only be graded by reading
+/// it.
+///
+/// `/tmp/plxnative-noexitconfirm` restores the one-press quit. Nothing in the tree needs it —
+/// `make kill`, `tests/run.py` and `tools/tv-session.sh` all close the app through SAM's
+/// `closeByAppId`, and no manifest case injects `back` at all — so it is a door left open for a
+/// script that closes the app by pressing BACK, not a dependency being served. Compiled out under
+/// `RELEASE=1`, so a public build always asks.
+fn back_at_root(running: &mut bool) {
+    if crate::ui::exit_alert::skip_confirm() {
         *running = false;
+    } else {
+        crate::ui::exit_alert::open();
+    }
+}
+
+/// The exit alert is modal: LEFT/RIGHT walk the two answers, OK commits the focused one, BACK
+/// cancels. Every other key is SWALLOWED — the arm `continue`s unconditionally at its call site, so
+/// nothing behind the sheet can be driven while it is up.
+///
+/// Only [`Choice::Exit`](crate::ui::exit_alert::Choice::Exit) sets `running`. BACK and *Cancel* are
+/// the same outcome by two routes, which is the point of the panel: the safe answer is both the
+/// default focus and what the dismiss key does.
+fn key_exit_alert(sym: c_uint, wcode: c_uint, running: &mut bool) {
+    use crate::ui::exit_alert::{self, Choice};
+    if is_ok(sym) {
+        if exit_alert::on_ok() == Choice::Exit {
+            *running = false;
+        }
+    } else if is_back(sym, wcode) {
+        exit_alert::close();
+    } else {
+        // LEFT/RIGHT only — `exit_alert::step` ignores everything else, so this is one call
+        // rather than a key test here and a second one there.
+        exit_alert::move_focus(sym as c_int);
     }
 }
 
@@ -3948,6 +4003,17 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     // below does deliberately. Keep it a chain — a `match` over the same routes
                     // compiles and keeps the suite green while silently reordering it, because
                     // exhaustiveness cannot see subsumption.
+                    // FIRST, and unconditionally: the exit alert outranks every route below,
+                    // because it is the one panel in the app whose question has to be answered
+                    // before anything else can happen. It is not a `Route` (see `ui::exit_alert`'s
+                    // module doc — it has exactly one host, Home's root), so it cannot take its
+                    // turn by being matched on like `Account`/`ItemMenu` do; it takes it by being
+                    // the top of the chain and `continue`ing on every key. That is also the whole
+                    // of its modality: with the arm here, nothing behind the sheet is reachable.
+                    if crate::ui::exit_alert::is_open() {
+                        key_exit_alert(sym, wcode, &mut running);
+                        continue;
+                    }
                     if matches!(route, Route::Login | Route::Profiles | Route::Onboard) {
                         if key_onboarding(route, sym, wcode, &mut ok_armed) {
                             route = enter_home_from_onboard(&mut trail);
@@ -4128,6 +4194,21 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     }
                 } else if et == SDL_MOUSEBUTTONDOWN {
                     last_input = SDL_GetTicks();
+                    // The exit alert's modality, pointer half — the twin of the key ladder's first
+                    // arm, and here for the reason `item_menu`'s arm sits above Home's: without it
+                    // a click that misses the sheet falls through onto the shelf behind it and
+                    // launches whatever card it landed on, from under a modal question.
+                    //
+                    // A MISS is not a dismissal (`exit_alert::click` reports `None`): "not either"
+                    // is not an answer to a yes/no question, which is the one place this panel
+                    // differs from every menu in the app.
+                    if crate::ui::exit_alert::is_open() {
+                        let (cx, cy) = ptr_xy(&ev);
+                        if crate::ui::exit_alert::click(cx, cy) == Some(crate::ui::exit_alert::Choice::Exit) {
+                            running = false;
+                        }
+                        continue;
+                    }
                     // …and the pointer's half of the same rule: the hit-tests below consult
                     // geometry (`icon_hit`, `scrub_hit`, the tab row) that a failure has erased from
                     // the frame. The key path's BACK exception has no pointer twin — there is no
@@ -5468,6 +5549,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // not a trail page, so every way off it carries its teardown to the fade floor, which
             // is where the panel is meant to come down and is also the half the poll never did —
             // it cleared `textinput`'s own flag and left `search::EDITING` set.)
+            // Self-gated on `is_open`, like its draw: the alert is not a route, so there is no
+            // route term to test it with — and it can only be up over Home, whose arm above has
+            // already run.
+            crate::ui::exit_alert::update(dt);
             if matches!(route, Route::Account { .. }) {
                 crate::ui::account_menu::update(dt);
             }
@@ -5778,6 +5863,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             // about (`Popover::scrim_lifting`).
                             crate::ui::account_menu::draw_scrim();
                             crate::ui::item_menu::draw_scrim();
+                            // The third member of that class, and the only one with no opener to
+                            // lift: the alert is about the APP, not about an element on the page,
+                            // so there is nothing behind it the panel is talking about.
+                            crate::ui::exit_alert::draw_scrim();
                         };
                         if let Some(reg) = crate::gfx::blur_direct_region() {
                             crate::gfx::blur_snapshot_direct(reg, &mut page);
@@ -5789,6 +5878,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         if matches!(route, Route::ItemMenu { .. }) {
                             crate::ui::item_menu::draw(); // press-and-hold card menu, over the live screen
                         }
+                        // …and the alert over all of it — self-gated, because it is modal state
+                        // rather than a route. Drawn AFTER the two popovers for the reason its
+                        // key arm is drawn first: nothing outranks it.
+                        crate::ui::exit_alert::draw();
                         // dev: the blurred route transition, then the load dial's glass surfaces.
                         // LAST on the non-player path, so the snapshot either takes is of the
                         // COMPLETE page — which is the honest source for a surface that sits on
@@ -6212,6 +6305,110 @@ mod key_layout_tests {
                 assert_eq!(state & 0x100, 0, "a synthetic edge must never look like auto-repeat");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod exit_alert_tests {
+    //! **BACK at Home's root asks before it quits.**
+    //!
+    //! These drive the real [`back_at_root`] and [`key_exit_alert`], not a re-derivation of them.
+    //! That is the whole point: `back_at_root` is the ONE place in the app that ends the process
+    //! from a key, and the regression they exist to catch is a future edit putting
+    //! `*running = false` back where the alert now goes. Grading the alert's own focus model alone
+    //! would not see that.
+    //!
+    //! What they deliberately CANNOT reach is [`key_back`] itself — its Player arm calls
+    //! `exit_player`, which pulls the Starfish/ACB seam into the link, so a test that calls it
+    //! fails at `ld` rather than at an assertion. The one link left un-graded is therefore the
+    //! single line where that function's last `else` calls this one, which is visible at the
+    //! branch and is what `tools/keytable.py` would characterise on a device.
+    //!
+    //! They touch two crate globals — the alert's popover and `ui::idle`'s dirty flag — so every
+    //! one takes `testlock::serial()` for its whole body and closes the alert on the way OUT, not
+    //! only on the way in.
+    use super::*;
+    use crate::ui::consts::{SDLK_DOWN, SDLK_ESCAPE, SDLK_LEFT, SDLK_RETURN, SDLK_RIGHT};
+    use crate::ui::exit_alert::{self, Choice};
+
+    /// A BACK press at Home's root, through the real arm. Returns whether the app is still running.
+    fn back_at_home_root() -> bool {
+        let mut running = true;
+        back_at_root(&mut running);
+        running
+    }
+
+    /// Press one key at the alert, through the real modal arm. Returns whether the app is still
+    /// running.
+    fn press(sym: c_uint) -> bool {
+        let mut running = true;
+        key_exit_alert(sym, 0, &mut running);
+        running
+    }
+
+    /// **The one that matters**: BACK at the root no longer ends the process by itself. It raises
+    /// the alert, on the SAFE answer, and `running` is untouched.
+    #[test]
+    fn back_at_home_root_asks_instead_of_quitting() {
+        let _g = crate::testlock::serial();
+        exit_alert::close();
+        let running = back_at_home_root();
+        assert!(
+            running,
+            "BACK at Home's root must not set running=false on its own \
+             (if this fails with the alert also closed, /tmp/plxnative-noexitconfirm is armed)"
+        );
+        assert!(exit_alert::is_open(), "…it raises the alert instead");
+        assert_eq!(exit_alert::focus(), Choice::Cancel, "which opens on the safe answer");
+        exit_alert::close();
+    }
+
+    /// The safe answer is reachable two ways and both leave the app running: the default focus
+    /// under OK, and BACK. A dismissed alert is fully down, so the next BACK asks again rather
+    /// than finding a panel already up.
+    #[test]
+    fn cancel_and_back_are_the_same_outcome_by_two_routes() {
+        let _g = crate::testlock::serial();
+        for dismiss in [SDLK_RETURN, SDLK_ESCAPE] {
+            exit_alert::close();
+            assert!(back_at_home_root());
+            assert!(press(dismiss), "neither way out of the alert quits");
+            assert!(!exit_alert::is_open(), "and both take the panel down");
+        }
+        exit_alert::close();
+    }
+
+    /// LEFT/RIGHT walk the pair through the real arm (the pure `step` is graded in the module's own
+    /// tests) and OK on *Exit* is the ONLY press in the app that ends it.
+    #[test]
+    fn only_ok_on_exit_quits() {
+        let _g = crate::testlock::serial();
+        exit_alert::close();
+        assert!(back_at_home_root());
+        assert!(press(SDLK_RIGHT), "moving the ring is not an answer");
+        assert_eq!(exit_alert::focus(), Choice::Exit);
+        assert!(press(SDLK_LEFT), "…and neither is moving it back");
+        assert_eq!(exit_alert::focus(), Choice::Cancel);
+        assert!(press(SDLK_RIGHT));
+        assert!(!press(SDLK_RETURN), "OK on Exit is what quits");
+        assert!(!exit_alert::is_open(), "and it takes the panel down with it");
+        exit_alert::close();
+    }
+
+    /// Everything else is SWALLOWED. The arm `continue`s on every key at its call site, so this
+    /// grades the half that is visible from here: an unrelated press changes neither the ring nor
+    /// `running`, and — the failure worth naming — cannot land the ring on the destructive answer.
+    #[test]
+    fn the_alert_swallows_the_rest_of_the_remote() {
+        let _g = crate::testlock::serial();
+        exit_alert::close();
+        assert!(back_at_home_root());
+        for sym in [SDLK_DOWN, 'x' as c_uint] {
+            assert!(press(sym), "an unrelated key is not an answer");
+            assert!(exit_alert::is_open(), "…and does not dismiss the question");
+            assert_eq!(exit_alert::focus(), Choice::Cancel, "…and never moves onto Exit");
+        }
+        exit_alert::close();
     }
 }
 

@@ -750,7 +750,12 @@ the perf gates), and `make test` = `deploy` + `run`.
 - Normal interactive flow: who's-watching picker (multi-user) → Home; D-pad/pointer to focus a
   card → **OK** opens the detail page → Play starts playback; OK toggles play/pause, LEFT/RIGHT
   scrub-seek, **BACK/Stop** returns. The strip's **last pill is Search** (a mark, not a word) — a
-  peer of Home and the Library, not a page stacked over them, so BACK from it returns to Home. Text
+  peer of Home and the Library, not a page stacked over them, so BACK from it returns to Home. BACK
+  at **Home's own root** is the end of that chain and raises the app's ONE decision alert
+  (`ui/exit_alert.rs`) — *Cancel* focused, *Exit* in the destructive control face — rather than
+  quitting on the press, which is what it did until 2026-08-21. Nothing automated depended on the
+  old behaviour (`make kill`, `tests/run.py` and `tools/tv-session.sh` all close through SAM's
+  `closeByAppId`), and `/tmp/plxnative-noexitconfirm` restores it for a script that wants it. Text
   entry is the **television's own keyboard**, raised by plain `SDL_StartTextInput` — the backend is
   in LG's Wayland driver, not the webOS extension API, which is why `SDL_webOS.h` looks like it has
   no keyboard. The field, the shelves and every trap in that seam are **`docs/search.md`**, whose
