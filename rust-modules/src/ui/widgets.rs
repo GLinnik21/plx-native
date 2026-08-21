@@ -1255,6 +1255,24 @@ pub(crate) fn profile_chip(p: Painter) {
     }
 }
 
+/// [`profile_chip`], re-drawn over the account menu's scrim — [`Opener`]'s contract, for the one
+/// popover in the app that hangs off a piece of shared CHROME rather than off a card.
+///
+/// It lives HERE, beside the chip itself, for the reason the chip does: the control is drawn
+/// verbatim by Home, the Library and Search, and the menu can now be opened from any of the three
+/// ([`crate::app`]'s `BarHost`). It was `home::redraw_profile_chip` while Home was the only screen
+/// whose chip could be pressed, which would have lifted the HOME chip's spring over whichever page
+/// the user was actually on — and there is only one chip, so there is only one lift.
+///
+/// On `nav::chrome_alpha` and not `page_alpha`, because that is the alpha the chip is drawn on: the
+/// top band holds still while pages swap under it. A lift on the wrong alpha would make the chip
+/// flicker through a route change that nothing else on the bar reacts to.
+///
+/// [`Opener`]: crate::ui::popover::Opener
+pub(crate) fn redraw_profile_chip() {
+    crate::ui::guard(|| profile_chip(Painter::root().alpha(crate::ui::nav::chrome_alpha())));
+}
+
 // ---- CircleButton: circular disc + centered glyph, same ControlStyle family as Button /
 // TransportButton (focused = ACCENT, idle = solid dark disc). The hero + detail +/i/> circles. ----
 pub struct CircleButton {

@@ -107,7 +107,7 @@ use crate::ui::widgets::Art;
 use crate::ui::{on_axis, Painter, Rect, Spring};
 use std::ffi::{CStr, CString};
 use std::os::raw::c_int;
-use std::ptr::addr_of_mut;
+use std::ptr::{addr_of, addr_of_mut};
 
 /// How many shelves there can ever be. The store emits [`crate::search::KINDS`] with the empty
 /// types omitted, so this is the ceiling and never the count.
@@ -360,8 +360,15 @@ fn focused_item(v: &View) -> Option<&'static Item> {
 /// surface is the only way to see them agree, and this annotation is otherwise unreachable on a
 /// machine with one server — which is every machine that can photograph it.
 fn owner_handle(v: &View) -> &'static str {
-    let Some(it) = focused_item(v) else { return "" };
-    // **The trigger WINS WHEN ARMED** — see [`dev_source`].
+    focused_item(v).map(handle_of).unwrap_or("")
+}
+
+/// One item's source handle. Split out of [`owner_handle`] because the caption is also rebuilt
+/// without a [`View`] in hand — [`redraw_focused_tile`] has the item itself and nothing else — and
+/// the annotation must read identically from both, trigger override included.
+///
+/// **The trigger WINS WHEN ARMED** — see [`dev_source`].
+fn handle_of(it: &Item) -> &'static str {
     dev_source().unwrap_or_else(|| crate::plex::server_facts(it.sid()).map(|f| f.handle.as_str()).unwrap_or(""))
 }
 
@@ -444,6 +451,10 @@ const OWNER_FLOOR: f32 = 0.02;
 // ---- draw --------------------------------------------------------------------------------------
 
 pub(crate) fn draw(p: Painter, v: &View) {
+    // Forget last frame's focused tile FIRST, and before the early return: a query that emptied the
+    // shelves, or focus moving back into the field, must leave [`FOCUS_TILE`] at `None` rather than
+    // at a rect naming a tile nothing draws any more.
+    unsafe { *addr_of_mut!(FOCUS_TILE) = None };
     let shelves = crate::search::shelves();
     if shelves.is_empty() {
         return;
@@ -538,14 +549,65 @@ fn draw_shelf(p: Painter, st: &Shelves, s: &Shelf, i: usize, v: &View, top: f32)
         // …and CUT to what is visible before it is recorded ([`hit_band`]): the paint is scissored
         // and over-painted above the field, so a rect taken straight from the layout claims ground
         // the tile does not hold.
-        |_, k, x, _| {
-            let r = Rect::new(x - row.scroll_x(), top + HEAD_TO_ROW - v.shift, sty.w, sty.h)
-                .scaled(row.scale(k));
-            if let Some(r) = hit_band(r, super::CHROME_BOTTOM) {
+        |_, k, x, focused| {
+            let base = Rect::new(x - row.scroll_x(), top + HEAD_TO_ROW - v.shift, sty.w, sty.h);
+            if focused {
+                // …and the FOCUSED tile's frame is kept whole and UNSCALED, beside the trimmed hit
+                // rect rather than instead of it. The two answer different questions: a hit rect is
+                // what can be pressed (so it is cut to what is visible), while this is what the
+                // context menu is anchored beside and re-drawn into over its scrim — which needs the
+                // tile's real frame, at the magnification the redraw will re-derive.
+                unsafe { *addr_of_mut!(FOCUS_TILE) = Some((i, k, base)) };
+            }
+            if let Some(r) = hit_band(base.scaled(row.scale(k)), super::CHROME_BOTTOM) {
                 super::note_tile_rect(i, k, r);
             }
         },
     );
+}
+
+/// The focused tile's shelf, column and UNSCALED frame, recorded by the draw above.
+///
+/// Recorded and not derived, for [`super::HIT_R`]'s reason: a shelf's horizontal offset is the
+/// scroll spring inside its own `CardRow` and the flow's is `View::shift`, so a derivation here is a
+/// second expression to keep in step with the paint by hand. Cleared at the top of every [`draw`],
+/// so a frame that drew no focused tile (focus is in the field, or the shelf is culled) leaves
+/// `None` rather than last frame's answer.
+static mut FOCUS_TILE: Option<(usize, usize, Rect)> = None;
+
+/// The focused result tile's rect at its focus magnification — what the item context menu anchors
+/// beside. `press::scale()` is left out for `home::focused_card_rect`'s reason.
+pub(crate) fn focused_tile_rect() -> Option<Rect> {
+    let (i, k, base) = unsafe { (*addr_of!(FOCUS_TILE))? };
+    Some(base.scaled(state().rows.get(i)?.scale(k)))
+}
+
+/// Re-draw the focused result tile ON TOP of a modal scrim — this screen's half of
+/// [`crate::ui::popover::Opener`].
+///
+/// Under the SAME scissor the shelves are drawn through, cut at the chrome rather than at
+/// `BAND_CLEAR`: a lifted tile is drawn after `draw_scroll_scrim`'s opaque band, so without a bound
+/// a half-scrolled poster would paint over the query capsule and the tab strip — the exact artefact
+/// [`hit_band`] records for the pointer. Set and cleared in one breath, as `Painter::clip`'s global
+/// GL state requires.
+pub(crate) fn redraw_focused_tile() {
+    let Some((i, k, base)) = (unsafe { *addr_of!(FOCUS_TILE) }) else { return };
+    let shelves = crate::search::shelves();
+    let Some(s) = shelves.get(i) else { return };
+    let Some(item) = s.items.get(k) else { return };
+    let st: &Shelves = state();
+    let Some(row) = st.rows.get(i) else { return };
+    let sty = style(s.kind);
+    let sc = row.scale(k) * crate::ui::press::scale();
+    let label = TileLabel::titled(item.title(), &subtitle(s.kind, item, handle_of(item)));
+    let resume = match item {
+        Item::Media(m) => m.resume_frac(),
+        Item::Tag(_) => None,
+    };
+    let p = Painter::root().alpha(crate::ui::nav::page_alpha());
+    p.clip(Rect::new(0.0, super::CHROME_BOTTOM, SCR_W, SCR_H - super::CHROME_BOTTOM));
+    card_row::draw_focused(p, tile_art(s.kind, item), base.scaled(sc), sc, &sty, resume, &label);
+    p.clip_clear();
 }
 
 /// The heading, flowed left→right from the shelf's own origin: the type's title, its count, and —

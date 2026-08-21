@@ -331,6 +331,36 @@ pub(crate) fn shelves() -> &'static [Shelf] {
     unsafe { &*addr_of!(SHELVES) }
 }
 
+/// Flip `(sid, rk)`'s watched state in the result set — the optimistic half of a view-state write,
+/// for the Search screen's own tiles. `pms::edit_item`'s twin, for `browse::set_watched_local`'s
+/// reason: that one reaches the HOME hubs alone, so a film marked watched from a search result's
+/// context menu kept its old mark until a refetch.
+///
+/// **Both stores, and no `rebuild`.** A source owns its rows and [`SHELVES`] is a projection of
+/// them ([`merge`]), so an edit to one alone would be undone by the next landing — but re-running
+/// the merge here would re-clone every row and log a line for a press that changed one boolean.
+/// Editing both by the same rule is the same result at the same cost as the walk itself.
+///
+/// Returns whether anything matched. **MAIN THREAD.**
+pub(crate) fn set_watched_local(sid: ServerId, rk: &str, on: bool) -> bool {
+    let mut hit = false;
+    let mut flip = |it: &mut Item| {
+        if let Item::Media(m) = it {
+            if crate::plex::same_item((m.sid, &m.rk), (sid, rk)) {
+                crate::pms::set_watched(m, on);
+                hit = true;
+            }
+        }
+    };
+    for it in unsafe { (&mut *addr_of_mut!(SRC)).iter_mut() }.flat_map(|s| s.items.iter_mut()).flatten() {
+        flip(it);
+    }
+    for it in unsafe { (&mut *addr_of_mut!(SHELVES)).iter_mut() }.flat_map(|s| s.items.iter_mut()) {
+        flip(it);
+    }
+    hit
+}
+
 // ---- fetch plumbing (debounce + generation + single-flight + mailbox + retry backoff) ----------
 
 /// How long the query must hold still before it is asked. `ui/detail.rs`'s `SEASON_SETTLE` is 0.2 s

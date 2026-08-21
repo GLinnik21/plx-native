@@ -443,6 +443,13 @@ const EP_TEXT_HL_PAD_X: f32 = theme::space::XS;
 /// within 0.2px of the panel's edge, so the rounding cannot bite into the kicker's first glyph the
 /// way it would have at the horizontal pad alone.
 const EP_TEXT_HL_PAD_Y: f32 = theme::space::SM;
+/// The filmstrip's alpha while a SEASON FETCH is in flight: the row keeps showing the previous
+/// season's episodes, dimmed, with a spinner over them — the switch is async, so a rapid tab hop
+/// never freezes the UI and never blanks the strip. Named because two places draw through it: the
+/// strip itself, and the lift of one cell over a context menu's scrim
+/// ([`redraw_focused_episode`]), which must not restore to full strength a tile that is dim
+/// precisely because it is stale.
+const EP_STALE_A: f32 = 0.35;
 // Related row (portrait posters) reuses the home shelf poster geometry (consts::CARD_*) so a poster
 // is one size app-wide (its texture request was already 250×375 → now drawn 1:1 sharp).
 const REL_W: f32 = CARD_W; // 250
@@ -1838,7 +1845,7 @@ impl Column for DetailView {
             // dimmed, with a spinner — the switch is async so rapid tab hops never freeze the UI
             2 => phase("dt.eps", || {
                 if metadata::season_loading() {
-                    draw_episodes(p.alpha(0.35));
+                    draw_episodes(p.alpha(EP_STALE_A));
                     crate::ui::widgets::Spinner::new(SCR_W * 0.5, EP_H * 0.5, 26.0)
                         .phase(self.spin_ms as u32)
                         .tint(theme::TEXT_PRIMARY)
@@ -2919,97 +2926,158 @@ fn draw_episodes(p: Painter) {
     // snapping — matches the chapters strip; fixes the "scatter" on LEFT/RIGHT)
     let sx = view().ep_hscroll.pos;
     let pe = p.translate(-sx, 0.0);
-    let dimc = theme::TEXT_TERTIARY;
     let ep_y = 0.0; // local origin (ScrollColumn pre-translates to this section's top)
     for (i, ep) in d.episodes.iter().enumerate() {
         let x = strip_x(i, EP_W + EP_GAP);
         if !on_axis(x - sx, EP_W, SCR_W, 0.0) {
             continue; // off-screen
         }
-        let focused = i as c_int == focus_col;
-        // …and whether it is the STILL that is focused. The metadata block below has its own mark, so
-        // the still keeps neither the pop nor the ring while focus is down there.
-        let still_focused = focused && erow == EpRow::Still;
-        // per-cell pop: the focused episode springs up (press dip folded in); a just-deselected one
-        // springs back down, so its scale + lifted shadow animate out instead of snapping. Episodes
-        // past the spring cap snap to the focus scale (no per-cell animation) rather than losing the
-        // focus cue entirely.
-        let base = view()
-            .ep_scale
-            .get(i)
-            .map(|s| s.pos)
-            .unwrap_or(if still_focused { crate::ui::widgets::CARD_FOCUS_SCALE } else { 1.0 });
-        let sc = if still_focused { base * press } else { base };
-        // the focused cell is always "popped" so a press dip (sc < 1) still scales it (the dip would
-        // otherwise be clamped away); a deselecting cell stays popped until its spring settles back.
-        let popped = still_focused || sc > 1.001;
-        let card = Rect::new(x, ep_y, EP_W, EP_H);
-        // episode still + focus ring + scale-pop (shared with the chapters strip)
-        crate::ui::widgets::draw_card(pe, card, d.sid, &ep.thumb, (640, 360), 12.0, popped, sc);
-        // Marks ON the still: the scrim, ONE state line on it, and the full-bleed progress bar. All
-        // three track the SCALED card while it is popped.
-        let cr = if popped { card.scaled(sc) } else { card };
-        let st = ep_state(ep);
-        // the scrim first, so the line reads over any frame; then the line; then the bar, which is the
-        // one mark that belongs to the card's own bottom edge rather than to the scrim above it
-        crate::ui::widgets::art_scrim(pe, cr, 12.0, EP_SCRIM_H, EP_SCRIM_A);
-        ep_state_line(pe, cr, &st);
-        if let Some(frac) = st.progress {
-            // the SHARED bar — literally the same call a Continue Watching card makes
-            crate::ui::widgets::progress_bar(pe, cr, 12.0, EP_BAR_H, frac);
-        }
-        // under-card metadata: kicker → title → full summary → air date + content rating. The summary
-        // flows off the ACTUAL title height (1 or 2 lines) — nothing is reserved, so a 1-line title
-        // doesn't leave a gap — and the fine-print date closes the block at the bottom. The block
-        // height tracks the tallest episode via ep_meta_h.
-        let ty = ep_y + EP_H + EP_META_TOP;
-        let titc = if focused { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY };
-        // the blurb steps a rung brighter on the focused tile, as the title does — the mock moves both
-        let sumc = if focused { theme::TEXT_SECONDARY } else { dimc };
-        let date = pretty_date(&ep.aired, 0); // formatted once — feeds both the layout and the draw
-        let (date_y, summary_y, meta_h) = ep_meta_layout(&ep.title, !date.is_empty(), &ep.summary);
-        // …and when it is the METADATA BLOCK that holds focus, its own translucent panel goes down
-        // first, wrapping this episode's measured content (`ep_text_hl`). The panel itself is the
-        // SHARED `widgets::text_block_highlight` — literally the same call the About footer's column
-        // highlight makes, so "this block of text is the thing you are on" is one object with one
-        // wash, one radius and one shadow. This screen supplies only the frame it hugs.
-        if focused && erow == EpRow::Text {
-            crate::ui::widgets::text_block_highlight(pe, ep_text_hl(x, ep_y, meta_h));
-        }
-        if let Ok(ec) = CString::new(format!("EPISODE {}", ep.index)) {
-            pe.text(ec.as_ptr(), x, ty, theme::size::CAPTION, dimc, 0, 1);
-        }
-        // title wraps to at most 2 lines (elided past that) — long titles used to run into the next card
-        TextView::new(&ep.title, theme::size::BODY, titc)
-            .bold()
-            .leading(EP_TITLE_LEAD)
-            .max_lines(2)
-            .draw(pe, Rect::new(x, ty + EP_TITLE_DY, EP_W, 0.0));
-        if !ep.summary.is_empty() {
-            TextView::new(&ep.summary, theme::size::CAPTION, sumc)
-                .leading(EP_SUMMARY_LEAD)
-                .max_lines(EP_SUMMARY_MAXLINES)
-                .draw(pe, Rect::new(x, ty + summary_y, EP_W, 0.0));
-        }
-        if !date.is_empty() {
-            if let Ok(dc) = CString::new(date) {
-                let w = pe.text(dc.as_ptr(), x, ty + date_y, theme::size::MICRO, dimc, 0, 0);
-                // the episode's own content rating, as a fine-print keyline chip after the date — the
-                // mock's `18+`. `keyline_chip`, not `badge`: this has to be the dimmest thing on the
-                // tile, and at badge's band and weight it outweighed the episode title above it.
-                if !ep.rating.is_empty() {
-                    let (ct, cb) = crate::text::text_cap_band(theme::size::MICRO, 0);
-                    crate::ui::widgets::keyline_chip(
-                        pe,
-                        x + w + theme::space::SM,
-                        ty + date_y + (ct + cb) * 0.5,
-                        &ep.rating,
-                        dimc,
-                    );
-                }
+        draw_episode_cell(pe, d, i, ep, focus_col, erow, press, ep_y);
+    }
+}
+
+/// ONE episode cell of the filmstrip: the still with its marks, and the metadata block under it.
+///
+/// A function rather than the body of [`draw_episodes`]' loop because the FOCUSED cell is drawn
+/// twice while its context menu is up — once in the strip, and once more over the modal scrim
+/// ([`redraw_focused_episode`]), so the tile the popover is anchored beside does not recede with the
+/// page behind it. One body, so the lifted copy is the drawn cell and not a second expression of it.
+///
+/// `pe` is the strip painter — already translated by `-ep_hscroll`, so `x` here is a CONTENT
+/// coordinate and `ep_y` the section-local origin, exactly as the loop had them.
+#[allow(clippy::too_many_arguments)]
+fn draw_episode_cell(
+    pe: Painter,
+    d: &metadata::Detail,
+    i: usize,
+    ep: &metadata::Episode,
+    focus_col: c_int,
+    erow: EpRow,
+    press: f32,
+    ep_y: f32,
+) {
+    let dimc = theme::TEXT_TERTIARY;
+    let x = strip_x(i, EP_W + EP_GAP);
+    let focused = i as c_int == focus_col;
+    // …and whether it is the STILL that is focused. The metadata block below has its own mark, so
+    // the still keeps neither the pop nor the ring while focus is down there.
+    let still_focused = focused && erow == EpRow::Still;
+    // per-cell pop: the focused episode springs up (press dip folded in); a just-deselected one
+    // springs back down, so its scale + lifted shadow animate out instead of snapping. Episodes
+    // past the spring cap snap to the focus scale (no per-cell animation) rather than losing the
+    // focus cue entirely.
+    let base = view()
+        .ep_scale
+        .get(i)
+        .map(|s| s.pos)
+        .unwrap_or(if still_focused { crate::ui::widgets::CARD_FOCUS_SCALE } else { 1.0 });
+    let sc = if still_focused { base * press } else { base };
+    // the focused cell is always "popped" so a press dip (sc < 1) still scales it (the dip would
+    // otherwise be clamped away); a deselecting cell stays popped until its spring settles back.
+    let popped = still_focused || sc > 1.001;
+    let card = Rect::new(x, ep_y, EP_W, EP_H);
+    // episode still + focus ring + scale-pop (shared with the chapters strip)
+    crate::ui::widgets::draw_card(pe, card, d.sid, &ep.thumb, (640, 360), 12.0, popped, sc);
+    // Marks ON the still: the scrim, ONE state line on it, and the full-bleed progress bar. All
+    // three track the SCALED card while it is popped.
+    let cr = if popped { card.scaled(sc) } else { card };
+    let st = ep_state(ep);
+    // the scrim first, so the line reads over any frame; then the line; then the bar, which is the
+    // one mark that belongs to the card's own bottom edge rather than to the scrim above it
+    crate::ui::widgets::art_scrim(pe, cr, 12.0, EP_SCRIM_H, EP_SCRIM_A);
+    ep_state_line(pe, cr, &st);
+    if let Some(frac) = st.progress {
+        // the SHARED bar — literally the same call a Continue Watching card makes
+        crate::ui::widgets::progress_bar(pe, cr, 12.0, EP_BAR_H, frac);
+    }
+    // under-card metadata: kicker → title → full summary → air date + content rating. The summary
+    // flows off the ACTUAL title height (1 or 2 lines) — nothing is reserved, so a 1-line title
+    // doesn't leave a gap — and the fine-print date closes the block at the bottom. The block
+    // height tracks the tallest episode via ep_meta_h.
+    let ty = ep_y + EP_H + EP_META_TOP;
+    let titc = if focused { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY };
+    // the blurb steps a rung brighter on the focused tile, as the title does — the mock moves both
+    let sumc = if focused { theme::TEXT_SECONDARY } else { dimc };
+    let date = pretty_date(&ep.aired, 0); // formatted once — feeds both the layout and the draw
+    let (date_y, summary_y, meta_h) = ep_meta_layout(&ep.title, !date.is_empty(), &ep.summary);
+    // …and when it is the METADATA BLOCK that holds focus, its own translucent panel goes down
+    // first, wrapping this episode's measured content (`ep_text_hl`). The panel itself is the
+    // SHARED `widgets::text_block_highlight` — literally the same call the About footer's column
+    // highlight makes, so "this block of text is the thing you are on" is one object with one
+    // wash, one radius and one shadow. This screen supplies only the frame it hugs.
+    if focused && erow == EpRow::Text {
+        crate::ui::widgets::text_block_highlight(pe, ep_text_hl(x, ep_y, meta_h));
+    }
+    if let Ok(ec) = CString::new(format!("EPISODE {}", ep.index)) {
+        pe.text(ec.as_ptr(), x, ty, theme::size::CAPTION, dimc, 0, 1);
+    }
+    // title wraps to at most 2 lines (elided past that) — long titles used to run into the next card
+    TextView::new(&ep.title, theme::size::BODY, titc)
+        .bold()
+        .leading(EP_TITLE_LEAD)
+        .max_lines(2)
+        .draw(pe, Rect::new(x, ty + EP_TITLE_DY, EP_W, 0.0));
+    if !ep.summary.is_empty() {
+        TextView::new(&ep.summary, theme::size::CAPTION, sumc)
+            .leading(EP_SUMMARY_LEAD)
+            .max_lines(EP_SUMMARY_MAXLINES)
+            .draw(pe, Rect::new(x, ty + summary_y, EP_W, 0.0));
+    }
+    if !date.is_empty() {
+        if let Ok(dc) = CString::new(date) {
+            let w = pe.text(dc.as_ptr(), x, ty + date_y, theme::size::MICRO, dimc, 0, 0);
+            // the episode's own content rating, as a fine-print keyline chip after the date — the
+            // mock's `18+`. `keyline_chip`, not `badge`: this has to be the dimmest thing on the
+            // tile, and at badge's band and weight it outweighed the episode title above it.
+            if !ep.rating.is_empty() {
+                let (ct, cb) = crate::text::text_cap_band(theme::size::MICRO, 0);
+                crate::ui::widgets::keyline_chip(
+                    pe,
+                    x + w + theme::space::SM,
+                    ty + date_y + (ct + cb) * 0.5,
+                    &ep.rating,
+                    dimc,
+                );
             }
         }
     }
+}
+
+/// Re-draw the focused episode cell ON TOP of a modal scrim — this page's half of
+/// [`crate::ui::popover::Opener`], handed to the item context menu when it opens over the
+/// filmstrip.
+///
+/// It rebuilds the two translates [`draw_episodes`] gets for free from the `ScrollColumn`
+/// (the section's screen top) and from the strip (`-ep_hscroll`), then runs the same
+/// [`draw_episode_cell`]. `section_screen_top` returning `None` — the filmstrip scrolled off, or no
+/// season loaded — means there is nothing to lift, and the scrim simply covers everything, which is
+/// the behaviour before this existed.
+///
+/// The whole CELL, not the still alone: the design's unit here is the tile plus its metadata block
+/// (`EpRow` makes them two focus rows of one thing), and lifting half of it would say the popover is
+/// about a picture rather than about an episode.
+///
+/// It carries the SEASON-SWITCH DIM too ([`EP_STALE_A`], the `p.alpha(0.35)` the strip is drawn
+/// through while a season fetch is in flight). A hold on the previous season's tiles is a reachable
+/// press — the row keeps drawing and keeps focus through the switch — and lifting one of them at
+/// full strength out of a strip that is dimmed precisely because it is STALE would make the one
+/// stale tile the brightest thing on the screen.
+pub(crate) fn redraw_focused_episode() {
+    crate::ui::guard(|| {
+        let Some(d) = metadata::current() else { return };
+        if view().section != 2 {
+            return;
+        }
+        let i = view().col.max(0) as usize;
+        let Some(ep) = d.episodes.get(i) else { return };
+        let Some(top) = section_screen_top(2) else { return };
+        let sx = view().ep_hscroll.pos;
+        let stale = if metadata::season_loading() { EP_STALE_A } else { 1.0 };
+        let pe = Painter::root()
+            .alpha(crate::ui::nav::page_alpha() * stale)
+            .translate(-sx, top);
+        draw_episode_cell(pe, d, i, ep, i as c_int, view().ep_row, crate::ui::press::scale(), 0.0);
+    });
 }
 
 /// The glyph at the head of an episode still's state line — or none at all.

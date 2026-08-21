@@ -207,6 +207,7 @@ use crate::log;
 /// The BACK trail's vocabulary — `Trail` is a run-loop local, `Node` its pages, `Spot` the place a
 /// detail page is restored to. See `ui/trail.rs`.
 use crate::ui::detail::Spot;
+use crate::ui::popover::Opener;
 use crate::ui::trail::{Node, Trail};
 /// The shared top strip's vocabulary: what a pill INDEX means. Every site that turns a pill into a
 /// destination `match`es on this, so a pill the app has not been taught about is a compile error
@@ -696,12 +697,31 @@ enum Overlay {
 /// The menu is a popover on a LIVE screen, not a page of its own — the card and its row keep
 /// drawing and animating behind it — so the route has to name the screen underneath, both to
 /// go on drawing/updating it and to know where the popover closes back to.
+///
+/// **Read it through [`page_of`], never by `matches!`ing a variant.** Every question this file asks
+/// about an `ItemMenu` — which page draws, which updates, which chrome it wears, what a navigation
+/// off it tears down — is the answer for the screen underneath, and each one used to name a host by
+/// hand. That is exactly what made adding a third host a five-site edit with silent failures at
+/// each: a page falling through to `home_draw`, a tab bar disappearing mid-hold.
+///
+/// **Every screen with card tiles is a host.** It was Home and the detail filmstrip alone, while
+/// the Library grid, Search's result shelves and the person page's filmography all ARM the same
+/// press (`press::begin` + `ok_armed`) — so a hold there dipped the card, latched long, and then
+/// did nothing at all. The three surfaces whose tiles carry no `(ratingKey, watched)` pair are
+/// deliberately still absent: the detail page's Related shelf and cast headshots, and Search's
+/// Cast & Crew / Collections rows, whose `Item::Tag` has no rating key to act on.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum MenuHost {
     /// a home shelf card
     Home,
     /// the detail page's episode filmstrip
     Detail,
+    /// the Library browse grid
+    Library,
+    /// a Search result shelf (media tiles only)
+    Search,
+    /// the person page's Movies / Shows shelves
+    Person,
 }
 impl MenuHost {
     /// the route the popover returns to when it closes
@@ -709,6 +729,9 @@ impl MenuHost {
         match self {
             MenuHost::Home => Route::Home,
             MenuHost::Detail => Route::Detail,
+            MenuHost::Library => Route::Library,
+            MenuHost::Search => Route::Search,
+            MenuHost::Person => Route::Person,
         }
     }
 }
@@ -752,6 +775,18 @@ impl BarHost {
         }
     }
 }
+/// [`MenuHost`] as the focus probe's own mirror of it. A free fn, not `MenuHost::probe`, for
+/// `node_route`'s reason: `focusprobe::Host` is another module's type and an inherent `impl` here
+/// would be a foreign one. Exhaustive, so a new host cannot fingerprint as the wrong screen.
+fn probe_host(h: MenuHost) -> crate::focusprobe::Host {
+    match h {
+        MenuHost::Home => crate::focusprobe::Host::Home,
+        MenuHost::Detail => crate::focusprobe::Host::Detail,
+        MenuHost::Library => crate::focusprobe::Host::Library,
+        MenuHost::Search => crate::focusprobe::Host::Search,
+        MenuHost::Person => crate::focusprobe::Host::Person,
+    }
+}
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Route {
     Login,    // plex.tv sign-in (QR) — shown when there's no usable session
@@ -786,10 +821,12 @@ enum Route {
 fn route_wears_tab_bar(r: Route) -> bool {
     match r {
         Route::Home | Route::Library | Route::Search => true,
-        // derived rather than answered `true`, so a `BarHost` that did not wear the bar could not
-        // make this line a lie
+        // Both popovers DERIVE the answer from the screen they are drawn ON, rather than
+        // answering `true` outright: a `BarHost` that did not wear the bar could not make this
+        // line a lie, and a menu over the Library wears the bar because the Library does — which
+        // is the only way this stays right as hosts are added on either side.
         Route::Account { over } => route_wears_tab_bar(over.route()),
-        Route::ItemMenu { over } => matches!(over, MenuHost::Home),
+        Route::ItemMenu { over } => route_wears_tab_bar(over.route()),
         Route::Login | Route::Profiles | Route::Detail | Route::Person | Route::Player { .. } => false,
     }
 }
@@ -1383,6 +1420,12 @@ fn push_detail(trail: &mut Trail, route: &mut Route, sid: crate::plex::ServerId,
 /// Over the DETAIL page there is nothing to do here any more — where that page was standing
 /// is `NavReq::spot`'s job now, recorded uniformly for every navigation off a detail page
 /// rather than by this one arm remembering to.
+///
+/// **And nothing over the Library, Search or the person page either**, which is the answer a new
+/// host wants by default: navigating out of the menu there is the same forward move the tile's own
+/// OK makes (`open_library_card`, `search::on_ok`, `open_person_card`), so `nav_open` stacks and
+/// BACK comes back to the grid or shelf the card is sitting on. Home is the exception BECAUSE it is
+/// the root, not because it is a menu host.
 fn menu_leave(trail: &mut Trail, host: MenuHost) {
     if matches!(host, MenuHost::Home) {
         trail.reset();
@@ -1864,8 +1907,34 @@ fn open_item_menu(route: &mut Route) -> bool {
     // the Remove-from-deck row only exists on a Continue Watching card — nothing else has a
     // deck to be removed from (see `item_menu::build`)
     let from_deck = crate::pms::hub_is_continue(crate::ui::home::row() as usize);
-    crate::ui::item_menu::open(m, from_deck, crate::ui::home::focused_card_rect());
+    let opener = Opener {
+        rect: crate::ui::home::focused_card_rect(),
+        redraw: crate::ui::home::redraw_focused_card,
+    };
+    crate::ui::item_menu::open(m, from_deck, opener);
     *route = Route::ItemMenu { over: MenuHost::Home };
+    true
+}
+
+/// The same popover on a card surface that is NOT Home: the Library grid, a Search result shelf and
+/// the person page's filmography, which all already arm the identical press.
+///
+/// One function for the three because they differ in exactly two values — the focused row and the
+/// [`Opener`] that draws it — and in nothing else. There is no `from_deck` on any of them: the
+/// Continue Watching deck is a HOME hub, and offering to remove a Library tile from it would be a
+/// row that appeared to work and changed nothing (`item_menu::build`'s own rule).
+fn open_tile_menu(
+    route: &mut Route,
+    host: MenuHost,
+    item: Option<&crate::pms::PmsMovie>,
+    opener: Opener,
+) -> bool {
+    let Some(m) = item else { return false };
+    if !crate::ui::item_menu::has_actions(m) {
+        return false;
+    }
+    crate::ui::item_menu::open(m, false, opener);
+    *route = Route::ItemMenu { over: host };
     true
 }
 
@@ -1881,12 +1950,11 @@ fn open_episode_menu(route: &mut Route) -> bool {
     if rk.is_empty() {
         return false;
     }
-    crate::ui::item_menu::open_episode(
-        crate::ui::detail::mounted_sid(),
-        &rk,
-        watched,
-        crate::ui::detail::focused_episode_rect(),
-    );
+    let opener = Opener {
+        rect: crate::ui::detail::focused_episode_rect(),
+        redraw: crate::ui::detail::redraw_focused_episode,
+    };
+    crate::ui::item_menu::open_episode(crate::ui::detail::mounted_sid(), &rk, watched, opener);
     *route = Route::ItemMenu { over: MenuHost::Detail };
     true
 }
@@ -1896,11 +1964,12 @@ fn open_episode_menu(route: &mut Route) -> bool {
 /// (the two paths for the profile menu had already drifted before those were unified).
 /// The menu itself only reports the choice; every route flip, server call and refresh is here.
 ///
-/// `host` is the screen the popover was over, and it genuinely changes what an action MEANS:
-/// on Home the item is a catalog row, so a play resolves through `pms::index_of_rk` and a
-/// scrobble only has to refresh the hubs; on the detail page the item is an episode of the
-/// loaded season, which the hub catalog usually does not contain at all, and the page itself
-/// has to re-read the state that just changed.
+/// `host` is the screen the popover was over, and it still changes what ONE action means: on the
+/// DETAIL page the item is an episode of the loaded season, so Play from Start goes through that
+/// page's own episode path and the page has to re-read the state a scrobble just changed. Every
+/// other host — Home, the Library grid, a Search shelf, a person's filmography — is a card row, and
+/// they are all the same arm now: the row rides in the menu (`item_menu::item`) instead of being
+/// looked up in the hub catalog, which only Home's cards are ever in.
 unsafe fn apply_item_action(
     mt: &crate::task::MainThread,
     act: crate::ui::item_menu::Action,
@@ -1991,10 +2060,19 @@ unsafe fn apply_item_action(
                 }
                 return;
             }
-            // Re-resolve the catalog row by rk rather than holding a borrow across the menu:
-            // a hub refetch can rebuild the catalog while the popover is open.
-            let i = crate::pms::index_of_rk(sid, &rk);
-            if let Some(mm) = (i >= 0).then(|| crate::pms::movie(i as usize)).flatten() {
+            // **The row the menu was opened ON, not a re-resolve by key.** This used to walk the
+            // HOME hub catalog (`pms::index_of_rk`), which is a lookup that only ever answers for a
+            // card that is on a Home shelf — so on the Library grid, a Search result or a person's
+            // filmography the arm found nothing and the press did nothing at all, silently. The
+            // popover is about ONE item and captured it at `open`; `item_menu::ITEM` is that
+            // capture, which is both the fix and the smaller claim (it also cannot be re-pointed by
+            // a hub refetch rebuilding the catalog under an open panel — the reason the old lookup
+            // deferred in the first place).
+            //
+            // The `rk` guard is what keeps the two in step: every other arm acts on the action's
+            // own key, so playing a row that does not carry it would be this dispatch disagreeing
+            // with itself.
+            if let Some(mm) = crate::ui::item_menu::item().filter(|m| m.rk == rk) {
                 play_item_now(mt, mm, true, HUD_LINGER_MS, route, played_from_detail, hud_nav);
             }
         }
@@ -4699,6 +4777,37 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         // other section, so a held OK on the Related/Cast shelves — which arm the
                         // same press — falls through to the ordinary spring-back, unchanged)
                         Route::Detail => open_episode_menu(&mut route),
+                        // …and the three other card surfaces, which armed this press already and
+                        // did nothing with it. Each declines by handing `None` — a grid page still
+                        // loading, focus in Search's field or on a `Tag` shelf, the person page's
+                        // header row — and the hold then falls through to the ordinary spring-back.
+                        Route::Library => open_tile_menu(
+                            &mut route,
+                            MenuHost::Library,
+                            crate::ui::library::focused_item(),
+                            Opener {
+                                rect: crate::ui::library::focused_card_rect(),
+                                redraw: crate::ui::library::redraw_focused_card,
+                            },
+                        ),
+                        Route::Search => open_tile_menu(
+                            &mut route,
+                            MenuHost::Search,
+                            crate::ui::search::focused_media(),
+                            Opener {
+                                rect: crate::ui::search::focused_tile_rect(),
+                                redraw: crate::ui::search::redraw_focused_tile,
+                            },
+                        ),
+                        Route::Person => open_tile_menu(
+                            &mut route,
+                            MenuHost::Person,
+                            crate::ui::person::focused_item(),
+                            Opener {
+                                rect: crate::ui::person::focused_tile_rect(),
+                                redraw: crate::ui::person::redraw_focused_tile,
+                            },
+                        ),
                         _ => false,
                     };
                 if held_menu {
@@ -5018,14 +5127,17 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     // (headless pad capture) exactly like OK on the remote
                     crate::ui::profiles::pick(idx);
                 }
+            // **`page_of`, not the bare route, for every screen below.** A popover is drawn on a
+            // LIVE screen — that is what makes it a popover and not a page — so the screen under it
+            // keeps updating, or every spring behind the panel freezes mid-pop and the page snaps
+            // back into motion when the menu closes. Spelling the hosts out here instead has bitten
+            // both popovers: the context menu's page had to stay live under it and only the detail
+            // arm ever said so (as a second `matches!` arm), and the Account popover kept HOME
+            // animating while the user stood on the Library. Asking `page_of` says it once, and is
+            // what lets a new `MenuHost` or `BarHost` land without editing five gates. The set is
+            // unchanged for the routes that existed before, since `page_of` maps Home, `Account
+            // over Home` and `ItemMenu over Home` to exactly this arm.
             } else if matches!(page_of(route), Route::Home) {
-                // Dispatched on `page_of`, not on a list of routes: a popover's page keeps updating
-                // behind it, which is the whole difference between a popover and a page — and
-                // spelling the hosts out here is how the Account popover came to keep HOME
-                // animating while standing on the Library. The set is unchanged for the routes that
-                // existed before, since `page_of` maps Home, `Account over Home` and `ItemMenu over
-                // Home` to exactly this arm.
-                //
                 // dev: sweep the grid focus top↔bottom to reproduce the vertical-scroll judder headlessly
                 if home_osc && now.wrapping_sub(home_osc_last) > 350 {
                     home_osc_last = now;
@@ -5040,15 +5152,17 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 });
                 underlay_moving |= moving;
             } else if matches!(page_of(route), Route::Library) {
-                // dev: libosc sweeps the browse-grid focus down↔up (the library_scroll FPS scene)
-                if lib_osc && now.wrapping_sub(lib_osc_last) > 350 {
+                // dev: libosc sweeps the browse-grid focus down↔up (the library_scroll FPS scene).
+                // Only while the PAGE holds focus, for `detail_osc`'s reason: the context-menu
+                // popover is modal, and sweeping focus under it walks the anchor out from under it.
+                if lib_osc && matches!(route, Route::Library) && now.wrapping_sub(lib_osc_last) > 350 {
                     lib_osc_last = now;
                     let sym = if (now / 3000) % 2 == 0 { SDLK_DOWN } else { SDLK_UP };
                     crate::ui::library::move_focus(sym);
                 }
                 // dev: libswitch cycles EVERY switch (tabs, sort menu, unwatched, filter) on a
                 // timer so the re-query + popover paths are FPS-gated too
-                if lib_switch && now.wrapping_sub(lib_switch_last) > 1400 {
+                if lib_switch && matches!(route, Route::Library) && now.wrapping_sub(lib_switch_last) > 1400 {
                     lib_switch_last = now;
                     crate::ui::library::switch_step(lib_switch_step);
                     lib_switch_step = lib_switch_step.wrapping_add(1);
@@ -5063,8 +5177,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             if matches!(page_of(route), Route::Search) {
                 // dev: searchosc sweeps the result shelves' focus down↔up (the fps:search-type
                 // scene). Same 350ms step / 3s reversal as homeosc and libosc, so the three read
-                // the same in a log and one settle predicate covers all of them.
-                if search_osc && now.wrapping_sub(search_osc_last) > 350 {
+                // the same in a log and one settle predicate covers all of them. Frozen under the
+                // context menu, for `detail_osc`'s reason.
+                if search_osc && matches!(route, Route::Search) && now.wrapping_sub(search_osc_last) > 350 {
                     search_osc_last = now;
                     let sym = if (now / 3000) % 2 == 0 { SDLK_DOWN } else { SDLK_UP };
                     crate::ui::search::move_focus(sym);
@@ -5091,10 +5206,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             if matches!(route, Route::ItemMenu { .. }) {
                 crate::ui::item_menu::update(dt);
             }
-            // The detail page keeps DRAWING under its own context-menu popover (that is what makes it
-            // a popover and not a page), so it keeps updating too — otherwise every spring behind the
-            // panel freezes mid-pop and the page snaps back into motion when the menu closes.
-            if matches!(route, Route::Detail | Route::ItemMenu { over: MenuHost::Detail }) {
+            if matches!(page_of(route), Route::Detail) {
                 // dev: plxnative-detailosc swings the scroll hero<->bottom so the FPS heartbeat samples the
                 // transition (the settled ends already hold 60). Only while the PAGE holds focus: the
                 // popover is modal, and sweeping focus under it would walk the anchor out from under it.
@@ -5104,7 +5216,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 }
                 crate::ui::detail::update(dt);
             }
-            if matches!(route, Route::Person) {
+            if matches!(page_of(route), Route::Person) {
                 // owns the `/library/people/{id}/media` pump — the shelves land here, and the
                 // retry backoff only ticks while the page is actually up
                 crate::ui::person::update(dt);
@@ -5326,12 +5438,17 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         // brighter than its own ground and green. That is the artefact the material
                         // was rejected for by eye, and it was this dispatch, not the material.
                         //
-                        // It dispatches on `page_of`, not on the route, for the same reason and one
-                        // altitude up: a POPOVER draws the page it stands on, and both of them can
-                        // stand on more than one (the item menu over Home or a detail page, the
-                        // account menu over any of the three that wear the top bar). Spelled out as
-                        // routes, this closure's `else` meant "Home", so the account popover drew
-                        // Home over the Library the moment the profile chip became pressable there.
+                        // **`page_of`, not the bare route** — the same reason one altitude up: a
+                        // POPOVER draws the page it stands on, and BOTH of them can stand on more
+                        // than one. Every screen stays live under its context menu (the popover is
+                        // anchored beside a tile that has to still be there to be beside, and its
+                        // scrim lifts that tile back out of the dim), and the account menu sits
+                        // over any of the three screens that wear the top bar. Spelled out as
+                        // routes, only the detail arm ever said so and this closure's `else` meant
+                        // "Home" — so the Library, Search and person page all fell through to
+                        // `home_draw` the moment they became menu hosts, and the account popover
+                        // drew Home over the Library the moment the profile chip became pressable
+                        // there.
                         let page_route = page_of(route);
                         let mut page = || {
                             if matches!(page_route, Route::Login) {
@@ -5339,8 +5456,6 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             } else if matches!(page_route, Route::Profiles) {
                                 crate::ui::profiles::draw();
                             } else if matches!(page_route, Route::Detail) {
-                                // the page stays live UNDER its context menu — the popover is anchored beside
-                                // the episode still it acts on, which has to still be there to be beside
                                 crate::ui::detail::draw();
                             } else if matches!(page_route, Route::Person) {
                                 crate::ui::person::draw();
@@ -5371,6 +5486,12 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             // one invariant, already false under `/tmp/plxnative-glassboth`. Each
                             // call self-gates on its own `is_open`, so there is no route test here:
                             // the closure states a rule rather than naming a screen.
+                            //
+                            // Each also LIFTS its own opener back out of the dim — the focused
+                            // tile, the profile chip — and that belongs here for the same reason
+                            // and one more: the un-dimmed copy has to be in the SNAPSHOT too, or
+                            // the panel's glass frosts a dimmed picture of the very card it is
+                            // about (`Popover::scrim_lifting`).
                             crate::ui::account_menu::draw_scrim();
                             crate::ui::item_menu::draw_scrim();
                         };
@@ -5487,7 +5608,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     Route::Home => crate::focusprobe::Screen::Home,
                     Route::Account { .. } => crate::focusprobe::Screen::Account,
                     Route::ItemMenu { over } => {
-                        crate::focusprobe::Screen::ItemMenu { over_detail: matches!(over, MenuHost::Detail) }
+                        crate::focusprobe::Screen::ItemMenu { over: probe_host(over) }
                     }
                     Route::Library => crate::focusprobe::Screen::Library,
                     Route::Detail => crate::focusprobe::Screen::Detail,
@@ -5705,6 +5826,43 @@ mod route_tests {
         for r in [Route::Detail, Route::Person, Route::Login, Route::Profiles,
                   Route::Player { overlay: Overlay::None }, Route::ItemMenu { over: MenuHost::Detail }] {
             assert!(BarHost::of(r).is_none(), "only the three bar screens carry the profile chip");
+        }
+    }
+
+    /// **Every menu host answers as its own screen, on all four route questions.**
+    ///
+    /// The menu had two hosts and now has five, and the way that goes wrong is silent: each of
+    /// these questions used to name `MenuHost::Detail` (or `Home`) in a `matches!`, so a new host
+    /// simply fell into the default arm — Search's popover would have drawn HOME behind it, and
+    /// the Library's would have lost its tab bar mid-hold. Each one is `page_of` now, and this is
+    /// what says so for every host at once rather than for the one a reviewer thought of.
+    #[test]
+    fn every_menu_host_answers_exactly_as_the_screen_underneath_it() {
+        for host in [
+            MenuHost::Home,
+            MenuHost::Detail,
+            MenuHost::Library,
+            MenuHost::Search,
+            MenuHost::Person,
+        ] {
+            let page = host.route();
+            let menu = Route::ItemMenu { over: host };
+            assert!(!matches!(page, Route::ItemMenu { .. }), "a host is a live PAGE, never another popover");
+            // `==`, not `assert_eq!`: `Route` has no `Debug` (it is a run-loop vocabulary, not a
+            // logged value — the heartbeat's `route=` word is built by its own `match`)
+            assert!(page_of(menu) == page, "the popover draws and updates the screen it sits on");
+            // the chrome question: a menu over the Library wears the tab bar because the Library
+            // does, and one over the detail page does not because that page does not
+            assert_eq!(
+                route_wears_tab_bar(menu),
+                route_wears_tab_bar(page),
+                "the popover must wear exactly the chrome of the page under it"
+            );
+            // …and the trail questions, which decide whether a navigation OUT of the menu empties
+            // the page a BACK is about to return to
+            assert_eq!(stays_on_trail(menu), stays_on_trail(page));
+            assert_eq!(forward_leave(menu).is_some(), forward_leave(page).is_some());
+            assert_eq!(leave_of(menu).is_some(), leave_of(page).is_some());
         }
     }
 

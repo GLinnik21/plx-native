@@ -54,7 +54,7 @@ use crate::ui::widgets::{AmbientWash, Art, Spinner, StatusKind, StatusOverlay};
 use crate::ui::{card_row::reveal, Column, Env, Painter, Rect, ScrollColumn, Spring, View};
 use std::ffi::CString;
 use std::os::raw::{c_int, c_uint};
-use std::ptr::addr_of_mut;
+use std::ptr::{addr_of, addr_of_mut};
 
 // ---- geometry (a measured flow; every Y below is derived, none is authored) -------------------
 
@@ -805,6 +805,10 @@ pub(crate) fn draw() {
     let p = Painter::root().alpha(crate::ui::nav::page_alpha());
     let sc = scene();
     let env = Env::inert();
+    // Forget last frame's focused tile before anything draws, and before the early return below:
+    // focus on the header, or a page with no shelves yet, must leave [`FOCUS_TILE`] empty rather
+    // than naming a tile this frame does not draw.
+    unsafe { *addr_of_mut!(FOCUS_TILE) = None };
     if crate::person::current().is_none() {
         return;
     }
@@ -919,6 +923,12 @@ fn draw_shelf(p: Painter, person: &Person, kind: usize, sc: &Scene) {
     // (`update` already freezes these rows' springs in that state, so the pop was correctly absent,
     // which is exactly what made the stray labels look deliberate.)
     let focus_col = if !sc.on_header && sc.focus_kind == kind { sc.col[kind] } else { -1 };
+    // Where this shelf's tile row lands on the PANEL — the `ScrollColumn` has already translated `p`
+    // to the block top, so the number is not otherwise recoverable from inside the strip. Only
+    // needed for the focused shelf, and only to record the focused tile's frame (see [`FOCUS_TILE`]).
+    let screen_top = (focus_col >= 0)
+        .then(|| focus_pos(person, sc).map(|pos| sc.column.child_top(sc, pos + 1) - sc.column.scroll.pos))
+        .flatten();
     let hy = -row.lift();
     #[allow(unused_variables)] // `tw` is used only when the count run exists
     let tw = Label::new(SHELF_TITLE[kind].as_ptr(), theme::size::HEADLINE, theme::TEXT_HEADING)
@@ -951,8 +961,57 @@ fn draw_shelf(p: Painter, person: &Person, kind: usize, sc: &Scene) {
             Some(m) => card_row::TileLabel::titled(&m.title, person.role(kind, i)),
             None => card_row::TileLabel::default(),
         },
-        |_, _, _, _| {},
+        // The focused tile's frame, in screen space and UNSCALED — what the press-and-hold context
+        // menu is anchored beside and re-drawn into over its scrim. Recorded rather than derived,
+        // for `search::HIT_R`'s reason: the horizontal offset is the scroll spring inside this
+        // shelf's own `CardRow`, which the caller cannot see.
+        |_, i, x, focused| {
+            if let (true, Some(top)) = (focused, screen_top) {
+                let r = Rect::new(x - row.scroll_x(), top + SHELF_LABEL_H, CARD_W, CARD_H);
+                unsafe { *addr_of_mut!(FOCUS_TILE) = Some((kind, i, r)) };
+            }
+        },
     );
+}
+
+/// The focused shelf tile's kind, column and UNSCALED screen frame, recorded by [`draw_shelf`].
+///
+/// Cleared at the top of every [`draw`], so a frame drawn with focus on the HEADER — or with no
+/// shelves at all — leaves `None` rather than the last tile that held it.
+static mut FOCUS_TILE: Option<(usize, usize, Rect)> = None;
+
+/// The focused tile's rect at its focus magnification — what the item context menu anchors beside.
+/// `press::scale()` is left out for `home::focused_card_rect`'s reason.
+pub(crate) fn focused_tile_rect() -> Option<Rect> {
+    let (kind, i, base) = unsafe { *addr_of!(FOCUS_TILE) }?;
+    Some(base.scaled(scene().shelves[kind].scale(i)))
+}
+
+/// Re-draw the focused tile ON TOP of a modal scrim — this screen's half of
+/// [`crate::ui::popover::Opener`].
+///
+/// The page has no clip of its own (the shelves are `on_axis`-culled, not scissored) and no chrome
+/// over them, so unlike Search this needs no bound: whatever the strip drew, this draws again in
+/// the same place.
+pub(crate) fn redraw_focused_tile() {
+    crate::ui::guard(|| {
+        let Some((kind, i, base)) = (unsafe { *addr_of!(FOCUS_TILE) }) else { return };
+        let Some(person) = crate::person::current() else { return };
+        let sc = scene();
+        let Some(m) = person.shelf(kind).get(i) else { return };
+        let s = sc.shelves[kind].scale(i) * crate::ui::press::scale();
+        let label = card_row::TileLabel::titled(&m.title, person.role(kind, i));
+        let p = Painter::root().alpha(crate::ui::nav::page_alpha());
+        card_row::draw_focused(
+            p,
+            Art::Poster(Some(m)),
+            base.scaled(s),
+            s,
+            &SHELF_STYLE,
+            m.resume_frac(),
+            &label,
+        );
+    });
 }
 
 /// What sits where the shelves go while there are none: a spinner until the one `/media` request

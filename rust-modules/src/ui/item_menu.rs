@@ -12,11 +12,17 @@
 //! interaction, and until it existed Go-to-Show, per-item Mark-as-Watched and Play-from-Start had
 //! nowhere to live (`docs/parity-gaps.md` §1.2/§1.3, §5a).
 //!
-//! **Two screens open it**, through two builders and one presenter: a home shelf card ([`open`]) and
-//! the detail page's episode filmstrip ([`open_episode`], the owner-reported gap — a long press on
-//! an episode still did nothing, so there was nowhere to mark an episode watched). The row SET
-//! differs because a navigation row that leads to the page you are standing on is not an action;
-//! everything else — the panel, the placement, the choreography, the state rows — is shared.
+//! **Every card surface opens it**, through two builders and one presenter. [`open`] serves the
+//! card rows — a home shelf, the Library browse grid, a Search result shelf, a person's filmography
+//! — and [`open_episode`] the detail page's episode filmstrip (the owner-reported gap: a long press
+//! on an episode still did nothing, so there was nowhere to mark an episode watched). The row SET
+//! differs only because a navigation row that leads to the page you are standing on is not an
+//! action; everything else — the panel, the placement, the choreography, the state rows — is shared.
+//!
+//! The three tile surfaces deliberately left out are the ones whose tiles carry no `(ratingKey,
+//! watched)` pair, which is what every row here is built from: the detail page's Related shelf and
+//! its cast headshots, and Search's Cast & Crew / Collections rows (`search::Item::Tag` has no
+//! rating key at all). A hold there keeps doing nothing.
 //!
 //! Like [`crate::ui::account_menu`], this module only **reports** the chosen [`Action`]; `app.rs`
 //! performs the routing, the server call and the hub refresh. It never mutates playback or PMS
@@ -25,7 +31,7 @@
 use crate::pms::PmsMovie;
 use crate::ui::consts::*;
 use crate::ui::icons::Icon;
-use crate::ui::popover::Popover;
+use crate::ui::popover::{Opener, Popover};
 use crate::ui::table::{Row, Section, TableView};
 use crate::ui::{theme, Rect};
 use std::os::raw::c_int;
@@ -71,8 +77,23 @@ static mut TABLE: TableView = TableView::new(); // main-thread only
 /// Parallel to the table's rows because the row SET varies by item kind — a movie has no
 /// "Go to Show", a show has no "Play from Start" — so a positional `match sel` would be a lie.
 static mut ACTS: Vec<Option<Action>> = Vec::new();
-/// The focused card's drawn rect at open time, in screen coords — what the panel anchors beside.
-static mut ANCHOR: Rect = Rect::new(0.0, 0.0, 0.0, 0.0);
+/// The element the menu was opened ON — its drawn rect (what the panel anchors beside) and how its
+/// own screen re-draws it above the modal scrim. Supplied by the host at [`open`]; see
+/// [`Opener`] for why the two halves are one value.
+static mut OPENER: Opener = Opener::NONE;
+/// **The item the menu is about**, captured at [`open`].
+///
+/// Every [`Action`] carries a `ratingKey` and [`SID`] says which server it means, which is enough to
+/// FETCH — but not enough to PLAY: `route::request_play_movie` needs the whole row (its part id,
+/// duration, resume offset, media flags), and the only way to get one back from a bare key used to
+/// be `pms::index_of_rk`, which walks the HOME hub catalog alone. A library, search or person tile
+/// is usually in no hub, so that lookup silently found nothing and "Play from Start" did nothing at
+/// all. Carrying the row is both the fix and the smaller claim: this popover is about ONE item, and
+/// it is the item that was on screen when the hold began, not whatever a key resolves to later.
+///
+/// Deliberately NOT cleared by [`close`], for [`SID`]'s reason — `on_ok` closes and then returns the
+/// action, so the drain reads this one frame later.
+static mut ITEM: Option<PmsMovie> = None;
 /// WHICH SERVER every [`Action`] above is about, captured when the menu opened.
 ///
 /// One popover is about ONE item, so the server belongs to the menu rather than to each variant —
@@ -111,19 +132,29 @@ pub(crate) fn has_actions(m: &PmsMovie) -> bool {
     !m.rk.is_empty()
 }
 
-/// Open the menu for `m`, anchored beside `anchor` (the focused card's drawn rect; `None` centres
-/// it, which is only reachable from the headless trigger).
-pub(crate) fn open(m: &PmsMovie, from_deck: bool, anchor: Option<Rect>) {
-    unsafe { *addr_of_mut!(SID) = m.sid }; // the ROW's server, not the current one
-    present(build(m, from_deck), anchor);
+/// Open the menu for `m`, anchored beside (and lifting) `opener` — the focused tile on whichever
+/// screen the hold happened on. An [`Opener`] with no rect centres the panel, which is what the
+/// headless trigger and a host with nothing focused get.
+pub(crate) fn open(m: &PmsMovie, from_deck: bool, opener: Opener) {
+    unsafe {
+        *addr_of_mut!(SID) = m.sid; // the ROW's server, not the current one
+        *addr_of_mut!(ITEM) = Some(m.clone()); // …and the row itself — see [`ITEM`]
+    }
+    present(build(m, from_deck), opener);
 }
 
 /// Open the menu for the DETAIL page's focused episode still — the owner-reported gap (a long press
 /// on an episode tile had no menu at all, so there was nowhere to mark one watched). Same panel,
 /// same choreography, a shorter row set: see [`build_episode`].
-pub(crate) fn open_episode(sid: crate::plex::ServerId, rk: &str, watched: bool, anchor: Option<Rect>) {
-    unsafe { *addr_of_mut!(SID) = sid }; // the loaded show's server — the episode is one of its own
-    present(build_episode(rk, watched), anchor);
+///
+/// No [`ITEM`] here: the detail page plays an episode through its own loaded season
+/// (`detail::play_episode_rk_from_start`), which is the one path that never needed a catalog row.
+pub(crate) fn open_episode(sid: crate::plex::ServerId, rk: &str, watched: bool, opener: Opener) {
+    unsafe {
+        *addr_of_mut!(SID) = sid; // the loaded show's server — the episode is one of its own
+        *addr_of_mut!(ITEM) = None;
+    }
+    present(build_episode(rk, watched), opener);
 }
 
 /// The server every [`Action`] from the open (or just-closed) menu names — see [`SID`]. Read by
@@ -132,13 +163,21 @@ pub(crate) fn item_sid() -> crate::plex::ServerId {
     unsafe { *addr_of!(SID) }
 }
 
-/// Put a built row set on screen beside `anchor`. Shared by both entry points so the panel's
+/// The catalog row the open (or just-closed) menu is about — see [`ITEM`]. `None` on the detail
+/// page's episode menu, which plays through the loaded season instead.
+pub(crate) fn item() -> Option<&'static PmsMovie> {
+    unsafe { (*addr_of!(ITEM)).as_ref() }
+}
+
+/// Put a built row set on screen beside `opener`. Shared by both entry points so the panel's
 /// choreography — anchor fallback, compact rows, selection reset, the appear spring — is written
 /// once and cannot drift between the screens the menu serves.
-fn present((rows, a): (Section, Vec<Option<Action>>), anchor: Option<Rect>) {
+fn present((rows, a): (Section, Vec<Option<Action>>), opener: Opener) {
     let fallback =
         Rect::new((SCR_W - CARD_W) * 0.5 - PANEL_W * 0.5, (SCR_H - CARD_H) * 0.5, CARD_W, CARD_H);
-    unsafe { addr_of_mut!(ANCHOR).write(anchor.unwrap_or(fallback)) };
+    // The fallback is resolved HERE, once, so `panel_rect` (asked three times a frame) is a pure
+    // read and the panel cannot drift if a host's rect stops resolving while the menu is up.
+    unsafe { *addr_of_mut!(OPENER) = Opener { rect: Some(opener.rect.unwrap_or(fallback)), ..opener } };
     *acts() = a;
     table().compact = true; // a short list of one-line actions — BODY labels, not menu-size HEADLINE
     table().set_sections(vec![rows], 0, false);
@@ -337,7 +376,8 @@ fn panel_at(a: Rect, content_h: f32) -> Rect {
 }
 
 fn panel_rect() -> Rect {
-    panel_at(unsafe { addr_of!(ANCHOR).read() }, table().measured_height())
+    let a = unsafe { (*addr_of!(OPENER)).rect }.unwrap_or(Rect::new(0.0, 0.0, CARD_W, CARD_H));
+    panel_at(a, table().measured_height())
 }
 
 pub(crate) fn update(dt: f32) {
@@ -358,9 +398,15 @@ pub(crate) fn update(dt: f32) {
 /// them), so nothing invalidates and the direct path never runs. That is three modules' behaviour
 /// holding one invariant up; arm `/tmp/plxnative-glassboth` and it is already false. Owning the
 /// scrim here costs one call and does not depend on any of it.
+///
+/// It also LIFTS the tile the menu was opened on back out of the dim ([`Opener`]). That tile is the
+/// panel's whole subject — the design's stated point is that "the card and the rest of the shelf
+/// stay where they are, visible behind it", which a scrim over the card itself quietly contradicts
+/// — and being inside the page closure is what puts the un-dimmed copy into the direct-blur
+/// snapshot too, so the panel's own glass never frosts a dimmed picture of its own card.
 pub(crate) fn draw_scrim() {
     if is_open() {
-        pop().scrim(SCRIM_A);
+        pop().scrim_lifting(SCRIM_A, unsafe { &*addr_of!(OPENER) });
     }
 }
 
@@ -549,6 +595,43 @@ mod tests {
         let (sec, _) = build(&item(3, true), false);
         t.set_sections(vec![sec], 2, false); // index 2 IS the separator
         assert_eq!(t.sel, 3);
+    }
+
+    /// **The menu carries the row it was opened on** — the fix for a Play-from-Start that resolved
+    /// its target through the HOME hub catalog and so silently did nothing on every other card
+    /// surface. Three properties, because they are the three ways the capture can be wrong: the row
+    /// is there after `open`, it SURVIVES the close (`on_ok` closes and then returns the action, so
+    /// the drain reads this a frame later, exactly as `SID` does), and the episode menu leaves it
+    /// empty rather than holding the last card's — the detail page plays through its loaded season
+    /// and must never fall back onto a stale row.
+    ///
+    /// Serial: `present` drives a live `TableView`, whose `Spring::jump` reports to `ui::idle`'s
+    /// process-global flag, and `open`/`close` move the popover's process-wide open count.
+    #[test]
+    fn the_menu_carries_the_row_it_was_opened_on_and_the_episode_menu_carries_none() {
+        let _g = crate::testlock::serial();
+        let mut m = item(0, true);
+        m.sid = crate::plex::ServerId::from_raw(3);
+        m.part = "/library/parts/42/file.mkv".to_string();
+
+        open(&m, false, crate::ui::popover::Opener::NONE);
+        // `super::item`, spelled out: this module's tests already have a local `item(kind, …)`
+        // fixture builder, which shadows the glob import
+        let carried = super::item().expect("the row the popover is about");
+        assert_eq!(carried.rk, "42");
+        assert_eq!(
+            carried.part,
+            "/library/parts/42/file.mkv",
+            "the WHOLE row — a key alone cannot start playback"
+        );
+        assert_eq!(item_sid(), crate::plex::ServerId::from_raw(3), "…on the row's own server");
+
+        close();
+        assert!(super::item().is_some(), "the drain reads it a frame after the close, like `SID`");
+
+        open_episode(crate::plex::ServerId::from_raw(3), "77", false, crate::ui::popover::Opener::NONE);
+        assert!(super::item().is_none(), "an episode menu plays through the loaded season, never a stale row");
+        close();
     }
 
     #[test]
