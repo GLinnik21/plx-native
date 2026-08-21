@@ -3149,10 +3149,6 @@ fn ep_state(ep: &metadata::Episode) -> EpState {
     }
 }
 
-/// Draw [`ep_state`]'s glyph-and-label line at the still's bottom-left, directly on the artwork —
-/// **no capsule behind it**; `widgets::art_scrim` (drawn first by the caller) is what makes that safe.
-/// `card` is the rect actually drawn, i.e. the SCALED one while the tile is popped, so the line rides
-/// the focus pop without resizing.
 /// One episode's watch state in the app's shared vocabulary ([`PosterMark`]) — what the filmstrip's
 /// context menu builds its rows from (`item_menu::state_rows`).
 ///
@@ -3172,6 +3168,10 @@ fn ep_watch_state(ep: &metadata::Episode) -> PosterMark {
     }
 }
 
+/// Draw [`ep_state`]'s glyph-and-label line at the still's bottom-left, directly on the artwork —
+/// **no capsule behind it**; `widgets::art_scrim` (drawn first by the caller) is what makes that safe.
+/// `card` is the rect actually drawn, i.e. the SCALED one while the tile is popped, so the line rides
+/// the focus pop without resizing.
 fn ep_state_line(p: Painter, card: Rect, st: &EpState) {
     let sz = theme::size::CAPTION;
     // the label's cap band sits on the line's baseline inset, so the glyph can centre on it
@@ -5822,6 +5822,64 @@ mod tests {
         assert_eq!(st.glyph, EpGlyph::Play);
         assert!(st.label.is_empty(), "no runtime, no claim about one");
         assert!(st.progress.is_none(), "and no bar to divide by a zero duration");
+    }
+
+    /// …and the same episode asked as the CONTEXT MENU's question. `ep_watch_state` is the only
+    /// input to `item_menu::build_episode`'s row set — one write row at either end of the range,
+    /// BOTH in the middle — so what it answers is literally which rows a hold on this still puts on
+    /// screen. Untested, the projection is exactly the kind of precedence that regresses silently:
+    /// it reads `progress` FIRST, so a finished-then-restarted episode reads as in the middle, and
+    /// an offset the server never cleared does not.
+    ///
+    /// It is a projection of [`ep_state`] and graded against it here rather than against a second
+    /// predicate, because the whole reason it exists is that the still's own state line and the menu
+    /// opened on that still cannot describe one episode two ways.
+    #[test]
+    fn an_episode_resolves_the_same_three_states_for_the_menu_opened_on_it() {
+        let ep = |dur_ms, resume_ms| Episode { dur_ms, resume_ms, ..Default::default() };
+        let watched = |mut e: Episode| {
+            e.watched = true;
+            e
+        };
+
+        // the three ordinary states, each the state the still's own glyph/bar already says
+        assert_eq!(ep_watch_state(&ep(48 * 60_000, 0)), PosterMark::None, "▶ = one row, the way forward");
+        assert_eq!(ep_watch_state(&watched(ep(48 * 60_000, 0))), PosterMark::Watched, "✓ = one row, the way back");
+        assert_eq!(
+            ep_watch_state(&ep(60 * 60_000, 15 * 60_000)),
+            PosterMark::InProgress,
+            "the bar = neither end, so the menu offers BOTH"
+        );
+
+        // PRECEDENCE, the same one the glyph keeps: PMS reports watched AND a live offset on a
+        // re-watch, and being part-way through it is what the viewer is doing — so it is the pair,
+        // not the single "Mark as Unwatched" the old `ep.watched` bool would have given.
+        assert_eq!(ep_watch_state(&watched(ep(60 * 60_000, 6 * 60_000))), PosterMark::InProgress);
+
+        // …but an offset AT or PAST the runtime is a finished episode, not one in the middle — the
+        // resume-point edge this page keeps once, inherited rather than restated
+        assert_eq!(ep_watch_state(&watched(ep(60 * 60_000, 60 * 60_000))), PosterMark::Watched);
+        assert_eq!(ep_watch_state(&ep(0, 30 * 60_000)), PosterMark::None, "no runtime, no middle");
+
+        // and every answer is the projection of the line the tile is drawing, on every one of them
+        for e in [
+            ep(48 * 60_000, 0),
+            watched(ep(48 * 60_000, 0)),
+            ep(60 * 60_000, 15 * 60_000),
+            watched(ep(60 * 60_000, 6 * 60_000)),
+            watched(ep(60 * 60_000, 60 * 60_000)),
+            ep(0, 30 * 60_000),
+        ] {
+            let st = ep_state(&e);
+            let want = if st.progress.is_some() {
+                PosterMark::InProgress
+            } else if st.glyph == EpGlyph::Watched {
+                PosterMark::Watched
+            } else {
+                PosterMark::None
+            };
+            assert_eq!(ep_watch_state(&e), want, "the menu must not answer a second time");
+        }
     }
 
     /// The state line and the progress bar are the two things pinned to a still's BOTTOM edge, and

@@ -213,9 +213,10 @@ pub(crate) fn close() {
 }
 
 /// The rows, and the action each one commits. Order is the pinned design's:
-/// navigation (`Go to Episode` · `Go to Show`) — separator — state (`Mark as Watched` ·
+/// navigation (`Go to Episode` · `Go to Show`) — separator — state (the watch row or ROWS ·
 /// `Play from Start`), adapted per item kind (`PmsMovie::kind`: 0 movie / 1 show / 2 season /
-/// 3 episode).
+/// 3 episode). The state group is one row or two off [`state_rows`], so this list has no fixed
+/// length and every index into it is resolved through `ACTS` — see [`ACTS_PARALLEL`].
 fn build(m: &PmsMovie, from_deck: bool) -> (Section, Vec<Option<Action>>) {
     let mut sec = Section::new(""); // no header: the card behind the panel IS the title
     let mut acts: Vec<Option<Action>> = Vec::new();
