@@ -6,9 +6,11 @@
 # TWO frame sources (--source, default auto):
 #
 #   app     — the app's OWN capture stream (crate::capture, enabled by touching
-#             /tmp/plxnative-capture on the TV before launch): the app GPU-downscales
-#             its GLES frames and pushes JPEGs over TCP :8910 (NEON libjpeg-turbo
-#             on-device: ~30fps at 960x540).
+#             `plxnative-capture` in that install's RUNTIME ROOT on the TV before
+#             launch — /tmp for the stable install, /tmp/<app id> for a flavoured one;
+#             see --runtime-dir): the app GPU-downscales its GLES frames and pushes
+#             JPEGs over TCP :8910 for the shipped install, :8911 for a flavoured one
+#             beside it (see --app-port; NEON libjpeg-turbo on-device: ~30fps at 960x540).
 #             UI PLANE ONLY — the hardware video overlay is invisible to it, so
 #             use it for UI/navigation work, not for watching playback.
 #   service — the one-shot AV-framework capture service looped
@@ -17,7 +19,7 @@
 #             webOS 4.5 build). Hard floor measured on 49SM9000PLA:
 #                 1920x1080 JPEG ~0.5 s/frame (~1.9 fps)
 #                 960x540   JPEG ~0.33 s/frame (~2.9 fps)
-#   auto    — app when TCP :8910 answers, else service; switches back to app
+#   auto    — app when that port answers, else service; switches back to app
 #             automatically when the port comes alive (checks every 5s).
 #
 # Wire modes (--codec, default mpeg): with a current app binary the app source is
@@ -29,7 +31,10 @@
 # capture feeds JPEG frames and the page flips to its pipelined long-poll pull
 # (/frame.jpg?after=<seq>; pull pacing keeps a slow uplink showing fewer frames,
 # never older ones). Plain /frame.jpg (no query) = the latest frame, for scripting.
-# The page switches automatically via /version ("<ver> <mode>").
+# The page switches automatically via /version, whose reply is
+# "<ver> <mode> app=<id> runtime=<dir>" — the first two fields POSITIONAL (both this
+# page and remote-dpad.py read them by index off a whitespace split), the install
+# fields key=value after them. Anything new goes at the end, in key=value form.
 #
 # Usage:
 #   ./stream-screen.py [--method DISPLAY|VIDEO|GRAPHIC] [--res 1920x1080|960x540|...]
@@ -46,17 +51,32 @@
 #                then open http://127.0.0.1:8909/ there (keeps the default bind).
 #     --fps    : cap the loop to at most N fps (default: unthrottled = as fast as
 #                the service returns, ~2-3 fps). Lower it to reduce TV/CPU load.
+#     --runtime-dir : the on-device RUNTIME ROOT of the install to drive — where its
+#                `plxnative-*` dev triggers, its logs and the remote FIFO live.
+#                Default: whatever `make -s print-rundir` answers, i.e. the Makefile's
+#                own FLAVOR, which is tracked as `debug` — so an unqualified run drives
+#                the developer install, and `make -s print-rundir FLAVOR=stable`
+#                (= /tmp) is how you name the one users install.
+#     --fifo   : the remote-control FIFO path outright, overriding --runtime-dir.
+#     --app-port : the app capture stream's TCP port. Default: `make -s print-appport`
+#                for whichever install --runtime-dir names — 8910 for the shipped app,
+#                8911 for a flavoured one, so the two never contend for one listener —
+#                or $TV_APP_PORT if set. Leave it alone and the picture and the keys stay
+#                on the SAME install; pin it by hand and they can drift apart in silence,
+#                because a port belonging to the other app answers just as readily as
+#                one belonging to no app at all.
 #     --open   : open the stream URL in the default browser on start (macOS `open`).
 #     --no-control : stream only; don't open the control channel to the TV.
 #
 # Remote control: the served page captures your keyboard (arrows, Enter=OK,
 # Backspace/Esc=Back, PgUp/PgDn=CH, P=Play/Pause, S=Stop) and shows clickable
 # buttons; each POSTs to /key, which a held SSH connection writes into the app's
-# on-device FIFO /tmp/plxnative-remote — the app (crate::remote) drains it each
-# frame and injects the key. Requires the plxnative app to be running (it creates
-# the FIFO at boot). External input injection can't reach the app: the wayland
-# compositor only reads a fixed evdev device set, and LG's keymanager luna API
-# injects into the web-app layer, not our SDL/wayland path — hence the in-app FIFO.
+# on-device FIFO — `plxnative-remote`, inside that install's runtime root (see
+# --runtime-dir) — and the app (crate::remote) drains it each frame and injects the
+# key. Requires the plxnative app to be running (it creates the FIFO at boot).
+# External input injection can't reach the app: the wayland compositor only reads a
+# fixed evdev device set, and LG's keymanager luna API injects into the web-app layer,
+# not our SDL/wayland path — hence the in-app FIFO.
 #
 # Environment overrides (same as capture-screen.sh):
 #     TV_HOST (default: the gitignored .tv-host)  TV_USER (root)  TV_PASS (alpine)
@@ -64,7 +84,7 @@
 # Auth: prefers an installed SSH key; falls back to `sshpass -p $TV_PASS` if present.
 # Stop with Ctrl-C. Requires: python3 (stdlib only), ssh; sshpass only if no key.
 #
-import argparse, base64, functools, hashlib, os, re, shutil, signal, socket, subprocess, sys, threading, time, webbrowser
+import argparse, base64, functools, hashlib, os, re, shlex, shutil, signal, socket, subprocess, sys, threading, time, webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 def _default_tv_host():
@@ -80,6 +100,85 @@ def _default_tv_host():
 TV_HOST = os.environ.get("TV_HOST") or _default_tv_host()
 TV_USER = os.environ.get("TV_USER", "root")
 TV_PASS = os.environ.get("TV_PASS", "alpine")
+
+REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir))
+
+
+# ---- which INSTALL this session drives ---------------------------------------
+# Two builds now live on one television — `com.beb.plxnative`, the one users install,
+# and `com.beb.plxnative.debug` beside it — and each keeps its `plxnative-*` dev
+# triggers, its three logs and the remote FIFO in its OWN runtime root: `/tmp` for the
+# stable install, `/tmp/<app id>` for a flavoured one. The Makefile owns that rule
+# (RUNDIR), so ASK it rather than restate it a fourth time.
+@functools.lru_cache(maxsize=None)
+def make_query(goals: tuple, flavour: str = "") -> tuple:
+    """`make -s print-<goal> …` in the repo; one line per goal, or () if make can't answer.
+
+    Several goals go in ONE invocation: the Makefile's PURE_QUERY guard is satisfied as
+    long as EVERY goal is a query (mix in a build target and the parse-time stamp block
+    fires), and one make start-up is cheaper than one per value.
+
+    NEVER `make -p`/`make -pn` for this. That prints a recursive variable's UNEXPANDED
+    DEFINITION, so TV comes back as the literal `$(strip $(shell cat .tv-host …))` and
+    every ssh built from it fails against a perfectly live television. These print-
+    targets are real echo recipes and cannot do that.
+    """
+    cmd = ["make", "-s", "-C", REPO_ROOT, *goals]
+    if flavour:
+        cmd.append("FLAVOR=" + flavour)
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return ()
+    lines = [ln.strip() for ln in r.stdout.splitlines() if ln.strip()]
+    return tuple(lines) if r.returncode == 0 and len(lines) == len(goals) else ()
+
+
+def resolve_install(runtime_dir: str = "", fifo: str = "") -> dict:
+    """{"appid", "root", "fifo", "port"} for the install this run drives.
+
+    Unqualified, that is whatever `make -s print-rundir` answers — the Makefile's own
+    FLAVOR, tracked as `debug`, so the day-to-day developer install is the default and
+    the one users have has to be asked for by name (--runtime-dir "$(make -s
+    print-rundir FLAVOR=stable)", i.e. /tmp).
+
+    "port" is the app's CAPTURE listener, and it travels with the install for the same
+    reason the runtime root does: two installs sharing one television cannot share one
+    listener, so `capture::default_port()` gives the shipped install 8910 and a flavoured
+    one 8911. It is asked for (`make -s print-appport`) rather than written down, because
+    a literal here would default the picture to one install while --runtime-dir sent every
+    keypress to the other — watching one app and driving the other, with nothing on either
+    side reporting anything wrong.
+    """
+    appid, root, port = "", "", ""
+    q = make_query(("print-appid", "print-rundir", "print-appport"))
+    if q:
+        appid, root, port = q
+    if runtime_dir:
+        runtime_dir = runtime_dir.rstrip("/") or "/"
+        if runtime_dir != root:
+            # An explicit root that is not the flavour make just answered for. The only
+            # other root the Makefile can produce is stable's — so ask for that triple
+            # too, because writing `com.beb.plxnative` here would be a fourth copy of a
+            # string that already lives in the Makefile, paths.rs and ci/flavor.py.
+            # Anything else is an install this repo did not build, and saying so beats
+            # guessing an id off the directory name.
+            st = make_query(("print-appid", "print-rundir", "print-appport"), "stable")
+            hit = bool(st) and st[1] == runtime_dir
+            appid = st[0] if hit else "?"
+            # The port moves with the id, so an unrecognised root loses it too: better a
+            # run that says it cannot name the port than one that quietly probes 8911.
+            port = st[2] if hit else ""
+        root = runtime_dir
+    # `plxnative-remote` is the app's own filename and did NOT move — only the
+    # directory holding it did (crate::remote still mkfifos exactly this name).
+    if root and not fifo:
+        fifo = os.path.join(root, "plxnative-remote")
+    if fifo and not root:
+        root = os.path.dirname(fifo)
+    return {"appid": appid or "?", "root": root or "?", "fifo": fifo,
+            "port": int(port) if port.isdigit() else 0}
+
 
 SSH_OPTS = [
     "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
@@ -612,11 +711,13 @@ def source_supervisor(hub: FrameHub, stats: dict, args, w, h, min_interval_ms, r
 
 
 # ---- remote control: write key tokens into the app's on-device FIFO ----------
-# The app (crate::remote) drains /tmp/plxnative-remote each frame and pushes each
-# token as a synthetic SDL key. We hold ONE persistent SSH connection running a
-# writer loop and feed it tokens on stdin — no per-key SSH handshake. The loop only
-# writes when the FIFO exists (app running) and time-boxes each write so a stale
-# FIFO with no reader can't wedge it.
+# The app (crate::remote) drains `plxnative-remote` — in ITS OWN runtime root, which is
+# /tmp for the stable install and /tmp/<app id> for a flavoured one — each frame, and
+# pushes each token as a synthetic SDL key. We hold ONE persistent SSH connection
+# running a writer loop and feed it tokens on stdin — no per-key SSH handshake. The
+# loop only writes when the FIFO exists (app running) and time-boxes each write so a
+# stale FIFO with no reader can't wedge it. See writer_loop() for the path and why it
+# is no longer a literal.
 VALID_KEYS = {
     "up", "down", "left", "right", "ok", "enter", "select", "back", "esc",
     "pageup", "chup", "pagedown", "chdown", "play", "pause", "stop",
@@ -646,24 +747,51 @@ def pull_reporter():
 
 def valid_token(tok: str) -> bool:
     return tok in VALID_KEYS or bool(CLICK_RE.match(tok))
-PAGE_VER = "v15"
-REMOTE_FIFO = "/tmp/plxnative-remote"
-_WRITER_LOOP = f'''
+PAGE_VER = "v16"
+
+
+def writer_loop(fifo: str) -> str:
+    """The held-SSH writer: one token per stdin line, into the app's FIFO.
+
+    The path is a PARAMETER because it moved. This was the literal
+    `/tmp/plxnative-remote` until two installs began sharing one television: a
+    flavoured install's FIFO is `/tmp/<app id>/plxnative-remote`, and a driver still
+    writing the stable path fails in the worst possible shape — `[ -p ]` finds nothing
+    and `continue` swallows the token silently, once per key, while /key has already
+    answered `sent` to the page. Keys that vanish with a success message are harder to
+    diagnose than keys that error. So the path is resolved once, from
+    `make -s print-rundir`, and printed in the banner and on the page.
+
+    Both guards stay, and neither is about the flavour split. `[ -p ]` because the app
+    mkfifos this at boot and a plain `>` against a missing path would leave a stray
+    REGULAR file that the app then never reads (and never replaces). The 1s kill
+    because a FIFO with no reader — a stale one, or the app mid-relaunch — blocks the
+    write inside open(2) indefinitely, which would wedge every later key behind it.
+
+    Deliberately NOT a mkdir: the root is shared by two uids that cannot be ordered
+    (root arms triggers over ssh before first boot; the jailed app writes its logs
+    there), so it has to be 1777, which the Makefile's BOOT_SH creates. A root-owned
+    0755 directory conjured here would lock the app out of its own event log, and a
+    0-byte event log reads as a total regression in every tool in this repo.
+    """
+    q = shlex.quote(fifo)
+    return f'''
 while IFS= read -r line; do
-  [ -p {REMOTE_FIFO} ] || continue
-  ( printf '%s\\n' "$line" > {REMOTE_FIFO} ) & W=$!
+  [ -p {q} ] || continue
+  ( printf '%s\\n' "$line" > {q} ) & W=$!
   ( sleep 1; kill $W 2>/dev/null ) 2>/dev/null &
 done
-'''
+'''.strip()
 
 class KeySink:
-    def __init__(self):
+    def __init__(self, fifo: str):
+        self.fifo = fifo
         self._lock = threading.Lock()
         self.proc = None
         self.ok = False
 
     def start(self):
-        cmd = build_ssh_cmd(_WRITER_LOOP.strip())
+        cmd = build_ssh_cmd(writer_loop(self.fifo))
         try:
             self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE,
                                          stdout=subprocess.DEVNULL,
@@ -706,7 +834,13 @@ class KeySink:
 
 
 # ---- local HTTP: MJPEG stream + control + single-frame + WS endpoints --------
-def make_handler(hub: FrameHub, sink, tshub: TsHub = None, jsmpeg_js: bytes = b""):
+def make_handler(hub: FrameHub, sink, tshub: TsHub = None, jsmpeg_js: bytes = b"",
+                 install: dict = None):
+    # `install` is what resolve_install() worked out: which of the two builds sharing
+    # this television this session is actually on the wire to. Nothing else served here
+    # says so — both binaries are called `plxnative` and both pages look identical — so
+    # /version and the page footer carry it.
+    install = install or {"appid": "?", "root": "?", "fifo": ""}
     class H(BaseHTTPRequestHandler):
         def log_message(self, *a):  # quiet
             pass
@@ -848,7 +982,10 @@ if(document.getElementById('remote')){
             # canvas — real video codec, ~30fps at a fraction of the JPEG bandwidth.
             # FALLBACK (mode=jpeg): the pipelined long-poll JPEG pull into the <img>
             # (legacy app, or during playback when the service capture is the source).
-            # The server's /version reply ("<ver> <mode>") drives the switch.
+            # The server's /version reply — "<ver> <mode> app=<id> runtime=<dir>", the
+            # first two fields POSITIONAL — drives the switch. Read `mode` by INDEX, never
+            # by searching the whole reply for `mpeg`: the trailing install fields carry a
+            # runtime PATH, so `--runtime-dir /tmp/mpeg-x` would otherwise force the canvas.
             pump_js = """
 <script src=/jsmpeg.js></script>
 <script>
@@ -932,8 +1069,12 @@ if(document.getElementById('remote')){
   for(let i=0;i<DEPTH;i++)(async()=>{await sleep(i*40);for(;;){try{await one();}catch(e){await sleep(700);}}})();
 })();
 </script>""".replace("{PAGE_VER}", PAGE_VER)
+            # The one place a person watching the picture can see WHICH install is
+            # being driven. Escaped because --runtime-dir is a command-line value.
+            inst_txt = (f"{TV_HOST} · {install['appid']} · runtime {install['root']}"
+                        .replace("&", "&amp;").replace("<", "&lt;"))
             html = f"""<!doctype html><meta charset=utf-8>
-<title>TV — {TV_HOST}</title>
+<title>TV — {TV_HOST} — {install['appid']}</title>
 <style>
  html,body{{margin:0;background:#0b0b0d;height:100%;font:14px system-ui,sans-serif;color:#ccc}}
  body{{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px}}
@@ -952,6 +1093,7 @@ if(document.getElementById('remote')){
 <div id=screen><img alt="waiting for first frame…"><canvas style="display:none"></canvas><div id=flash></div></div>
 {panel}
 <div class=hint>{kbdhelp} · <span id=stat></span></div>
+<div class=hint id=inst>{inst_txt}</div>
 {pump_js}
 {js}""".encode()
             self.send_response(200)
@@ -1015,9 +1157,15 @@ if(document.getElementById('remote')){
 
         def do_GET(self):
             if self.path.startswith("/version"):
-                # "<ver> <mode>": the page reloads on a ver change and switches its
-                # display (jsmpeg canvas vs JPEG pull img) on the mode token.
-                body = f"{PAGE_VER} {self._mode()}".encode()
+                # "<ver> <mode> app=<id> runtime=<dir>": the page reloads on a ver change
+                # and switches its display (jsmpeg canvas vs JPEG pull img) on the mode
+                # token. Those two are POSITIONAL — both this page and remote-dpad.py's
+                # read them by index off a whitespace split — so anything added goes
+                # after them, in key=value form. The install fields are here because two
+                # builds share one television and nothing else on the wire distinguishes
+                # them.
+                body = (f"{PAGE_VER} {self._mode()} "
+                        f"app={install['appid']} runtime={install['root']}").encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "text/plain")
                 self.send_header("Cache-Control", "no-store")
@@ -1054,7 +1202,8 @@ def main():
                          "(~10-19fps) on this SoC. Default 960x540.")
     ap.add_argument("--source", default="auto", choices=["auto", "app", "service"],
                     help="frame source: 'app' = the in-app stream (fast, UI plane only; "
-                         "needs /tmp/plxnative-capture on the TV), 'service' = the luna "
+                         "needs `plxnative-capture` in the install's runtime root on the "
+                         "TV, see --runtime-dir), 'service' = the luna "
                          "capture service (~3fps, sees the video plane), 'auto' (default) "
                          "= app when its port answers, else service, switching back "
                          "automatically.")
@@ -1063,14 +1212,26 @@ def main():
                          "jpeg = legacy PXFR JPEG pull")
     ap.add_argument("--kbps", type=int, default=2500,
                     help="mpeg video bitrate in kbps (default 2500)")
-    ap.add_argument("--app-port", type=int, default=int(os.environ.get("TV_APP_PORT", "8910")),
-                    help="the app capture stream's TCP port (default 8910 / $TV_APP_PORT)")
+    ap.add_argument("--app-port", type=int, default=None,
+                    help="the app capture stream's TCP port. Default: `make -s print-appport` "
+                         "for the install --runtime-dir names (8910 for the shipped one, "
+                         "8911 for a flavoured one beside it), or $TV_APP_PORT if set. The "
+                         "port belongs to the install, so leaving this alone is what keeps "
+                         "the picture and the keys pointed at the same app.")
     ap.add_argument("--port", type=int, default=8909)
     ap.add_argument("--host", default="127.0.0.1",
                     help="bind address. 127.0.0.1 (default) = this machine only; "
                          "0.0.0.0 = reachable from other hosts on the network "
                          "(UNAUTHENTICATED — only on a network you trust).")
     ap.add_argument("--fps", type=float, default=0.0, help="cap loop to N fps (0 = unthrottled)")
+    ap.add_argument("--runtime-dir", default=None, metavar="DIR",
+                    help="on-device runtime root of the install to drive — where its "
+                         "plxnative-* triggers, logs and the remote FIFO live. Default: "
+                         "`make -s print-rundir`, i.e. the Makefile's FLAVOR, tracked as "
+                         "debug. Use `make -s print-rundir FLAVOR=stable` (= /tmp) for the "
+                         "install users have.")
+    ap.add_argument("--fifo", default=None, metavar="PATH",
+                    help="the app's remote-control FIFO outright, overriding --runtime-dir")
     ap.add_argument("--open", action="store_true", help="open the URL in a browser")
     ap.add_argument("--control", dest="control", action="store_true", default=True,
                     help="serve a remote-control panel (keyboard + buttons) — default on")
@@ -1091,6 +1252,27 @@ def main():
             sys.exit("ERROR: --source app streams the UI plane only; --method VIDEO needs --source service")
         args.source = "service"  # the app source can't see the video plane
 
+    # Resolve BEFORE anything is started, so a run that cannot name its install fails
+    # here rather than by silently dropping every key into a path no app is reading.
+    inst = resolve_install(args.runtime_dir or "", args.fifo or "")
+    if args.control and not inst["fifo"]:
+        sys.exit("ERROR: cannot resolve the app's remote FIFO — `make -s print-rundir` "
+                 f"gave nothing in {REPO_ROOT}. Pass --runtime-dir or --fifo "
+                 "(or --no-control to stream without a key channel).")
+    # The capture port follows the install, in the same three-way order as every other
+    # setting here: an explicit flag, else the environment, else what make answers for the
+    # install just resolved. Unresolvable is a hard stop rather than a guessed 8910 — a
+    # wrong port here does not error, it connects to the OTHER install (or to nothing) and
+    # `auto` quietly demotes to the ~3fps service capture, which reads as "the app is
+    # broken". --source service never opens it, so only the app paths are gated.
+    if args.app_port is None:
+        env = os.environ.get("TV_APP_PORT", "").strip()
+        args.app_port = int(env) if env.isdigit() else inst["port"]
+    if args.source != "service" and not args.app_port:
+        sys.exit("ERROR: cannot resolve the app capture port — `make -s print-appport` gave "
+                 f"nothing in {REPO_ROOT} for this install. Pass --app-port (or "
+                 "--source service, which does not use it).")
+
     hub = FrameHub()
     tshub = TsHub() if args.codec == "mpeg" else None
     jsmpeg_js = b""
@@ -1110,11 +1292,11 @@ def main():
 
     sink = None
     if args.control:
-        sink = KeySink()
+        sink = KeySink(inst["fifo"])
         sink.start()
 
     httpd = ThreadingHTTPServer((args.host, args.port),
-                                make_handler(hub, sink, tshub, jsmpeg_js))
+                                make_handler(hub, sink, tshub, jsmpeg_js, inst))
     # For the printed URL: on a wildcard/LAN bind, resolve this machine's primary
     # LAN IP so the line is copy-pasteable from another host; else use the bind addr.
     disp_host = args.host
@@ -1129,10 +1311,16 @@ def main():
     url = f"http://{disp_host}:{args.port}/"
     print(f"Streaming TV {TV_HOST} [source={args.source}"
           f"{'' if not min_interval_ms else f', <= {args.fps:g} fps'}]  ->  {url}")
+    # The capture port is printed BESIDE the install it belongs to, because those two
+    # disagreeing is the failure with no error: the app is up, the log is healthy, and the
+    # stream is simply dialing a port the other install owns (or nobody does). Seen here,
+    # in the first lines of output, it costs a glance; unseen it reads as a broken app.
+    print(f"  install   : {inst['appid']} · runtime {inst['root']}"
+          + (f" · capture :{args.app_port}" if args.source != "service" else ""))
     print("  live view : " + url)
     print("  latest jpg: " + url + "frame.jpg")
     if sink and sink.ok:
-        print("  remote    : keyboard + on-screen buttons in the page (arrows/Enter/Backspace/…)")
+        print(f"  remote    : keyboard + on-screen buttons in the page -> {inst['fifo']}")
     elif args.control:
         print("  remote    : control channel unavailable (couldn't reach the TV)")
     if args.host in ("0.0.0.0", "::", ""):

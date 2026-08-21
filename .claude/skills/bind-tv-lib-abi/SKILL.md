@@ -136,7 +136,9 @@ off. Corrupting memory silently is far worse than losing a dev feature.
 
 ### 6. Verify on-device
 
-Build, deploy, and read `/tmp/plxnative-events.log` (the `tv-session` skill drives this).
+Build, deploy, and read the event log — `make -s print-eventlog FLAVOR=<f>`, since a flavoured
+install writes it under `/tmp/<app id>` rather than `/tmp` (the `tv-session` skill drives all of
+this, including the one-time `make FLAVOR=<f> install` a deploy cannot do for you).
 If it SIGSEGVs, hand off to the `crash-triage` skill — a PC inside a TV `.so` with a bad
 argument is the signature of exactly this class of bug.
 

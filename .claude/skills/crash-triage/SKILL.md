@@ -27,12 +27,31 @@ the repo did that arithmetic until `tools/crash-report.sh`.
 All paths are relative to the repo root. The TV address comes from the `Makefile`
 (override with `TV=…`); no addresses or credentials live in this skill.
 
+## First: which install crashed
+
+Two builds can be on this television — `com.beb.plxnative` (stable, what users install) and
+`com.beb.plxnative.debug` (the developer build beside it, and the Makefile's **default**). They
+have separate app directories, separate runtime roots and therefore **separate crash logs**, so
+triaging the wrong one produces a clean bill of health for an app that is dying. Ask the Makefile
+rather than typing a path:
+
+```bash
+make -s print-appid    FLAVOR=debug     # com.beb.plxnative.debug
+make -s print-appdir   FLAVOR=debug     # where the binary and the .so files are
+make -s print-rundir   FLAVOR=debug     # /tmp/com.beb.plxnative.debug   (stable: /tmp)
+make -s print-eventlog FLAVOR=debug
+```
+
+Not `make -p`/`make -pn`: that prints a recursive variable's UNEXPANDED DEFINITION, so `TV` comes
+back as the literal `$(strip $(shell cat .tv-host …))` and every ssh built from it fails — which
+reads as an unreachable television and sends you to `wake-tv` for a set that is already awake.
+
 ## Run this first
 
 ```bash
-tools/crash-report.sh            # evidence + symbolize the most recent crash
-tools/crash-report.sh --all      # every crash in the persistent log
-tools/crash-report.sh --collect  # evidence bundle only, no symbolization
+tools/crash-report.sh [--flavor <f>]  # evidence + symbolize the most recent crash
+tools/crash-report.sh --all           # every crash in the persistent log
+tools/crash-report.sh --collect       # evidence bundle only, no symbolization
 ```
 
 It checks reachability, compares the local and deployed binary md5, checks codegen,
@@ -46,7 +65,14 @@ and then dumps stderr, the SAM exit status and the crash-daemon reports.
    which reads exactly like a total regression. Wake it (`wake-tv` skill) and re-run
    before triaging anything.
 2. **Is the deployed binary the one you built?** A standby can truncate an scp mid-deploy.
-   The driver md5-compares; on mismatch, symbolized addresses are meaningless.
+   The driver md5-compares; on mismatch, symbolized addresses are meaningless. With two
+   installs the check is **necessary but no longer sufficient**: `pkg/plxnative` is a path
+   every flavour and both configurations write, so a MATCH proves the bytes and not the
+   install, and a MISMATCH is at least as likely to mean you are pointed at the other app as
+   at a bad scp. Settle it with the `install:` line, not by deploying — see the table below.
+   `pidof plxnative` cannot settle it either: both binaries carry that name, so on this
+   busybox set it returns two pids in an order nothing promises. Liveness is
+   `fuser $(make -s print-appdir FLAVOR=<f>)/plxnative`, which is inode-scoped.
 3. **Did it actually crash?** SAM keeps stale "running" state after a hard kill, so a
    launch can be a silent no-op relaunch. Check the SAM `exit_status` in the driver's
    output: a clean exit shows `exit_status: 0`; `768` is `exit(3)`; a signal death shows
@@ -54,11 +80,32 @@ and then dumps stderr, the SAM exit status and the crash-daemon reports.
 
 ## Read the right log
 
+All three live in the crashing install's **runtime root** — `/tmp` for stable, `/tmp/<app id>` for
+a flavoured install (`make -s print-rundir FLAVOR=<f>`). The file names are identical in both, so
+a path typed from memory reads the wrong app's log without erroring.
+
 | Log | Lifetime |
 |---|---|
-| `/tmp/plxnative-crash.log` | **append-only, survives the relaunch** — read this after a crash+restart |
-| `/tmp/plxnative-events.log` | truncated at every launch — after a relaunch it is already gone |
-| `/tmp/plxnative-stderr.log` | where Rust panics print |
+| `<rundir>/plxnative-crash.log` | **append-only, survives the relaunch** — read this after a crash+restart |
+| `<rundir>/plxnative-events.log` | truncated at every launch — after a relaunch it is already gone |
+| `<rundir>/plxnative-stderr.log` | where Rust panics print |
+
+**The event log's FIRST line names the install**, before anything can fail, and it is the only
+witness in the system that does:
+
+```
+install: id=com.beb.plxnative.debug flavour=debug runtime=/tmp/com.beb.plxnative.debug features=dev APPID_env=…
+appdir: /media/… (from current_exe)
+```
+
+`features=` is `dev` or `release`, which also settles "is this the shipped configuration?" without
+a hash.
+
+**The crash log is the one that survives, and it carries no `install:` line** — the tracer runs in
+C, before and independently of any of that. What it does carry is the `bin:` maps line, which is
+the full path of the faulting executable and therefore names the app directory, i.e. the id. Match
+it anchored (`/<id>/`) and it is as good a witness as the event log's; read it as a bare substring
+and it is worse than none, for the reason in the gotchas below.
 
 ## Route by signal
 
@@ -72,7 +119,7 @@ and then dumps stderr, the SAM exit status and the crash-daemon reports.
   (must be `0`) and the CPU arch tag (must be `v7`); a stale hand-built staticlib is the
   usual cause. No log will tell you this.
 - **SIGABRT / SIGTRAP (6 / 5)** — usually a **Rust panic** crossing the FFI boundary. The
-  PC is inside `abort()` and is worthless; the evidence is `/tmp/plxnative-stderr.log`.
+  PC is inside `abort()` and is worthless; the evidence is `<rundir>/plxnative-stderr.log`.
 - **No signal at all, app just gone** — not a caught crash. Check the SAM exit status, an
   OOM/memchute kill, or a deliberate close.
 
@@ -86,7 +133,7 @@ For **file:line**, rebuild with debug info:
 ```bash
 make DEBUG=1                       # C frames resolve immediately
 touch rust-modules/src/lib.rs && make DEBUG=1   # also force the Rust rebuild
-make deploy                        # then reproduce
+make FLAVOR=<f> deploy             # the SAME flavour you are triaging, then reproduce
 ```
 
 `make` does not track `RUSTFLAGS` changes, so the Rust staticlib will not rebuild on its
@@ -102,16 +149,29 @@ own — hence the `touch`. Verified output after that: `plex_run at rust-modules
 - **The crash daemon's reports** (`/var/log/reports/librdx/`) are the real backtraces and
   exist *because* the tracer re-raises. The driver lists them; pull one when the single
   frame isn't enough.
-- **Older notes say `/tmp/poc-*`.** The app was renamed; every path is `/tmp/plxnative-*` now.
+- **Older notes say `/tmp/poc-*`.** The app was renamed; the names are all `plxnative-*` now,
+  and they sit in the install's runtime root rather than always in `/tmp`.
+- **`com.beb.plxnative` is a PREFIX of `com.beb.plxnative.debug`.** Anything that picks a crash
+  block, a maps line or a log by app-directory path must anchor on a delimiter — match `/<id>/`,
+  never the bare id — or every stable-id filter silently accepts the debug install's evidence too
+  and you symbolize one app's addresses against the other's binary. `src/main.c`'s `bin:` matcher
+  documents the same trap one level down: it tests `/plxnative\n` and `/plxnative ` rather than a
+  bare substring, because the app directory is itself named `…com.beb.plxnative/` and a loose test
+  also matched libraries deployed beside the binary.
 - **A guard-page allocator exists** for memory-corruption hunts (`src/gpdebug.c`, never in
   the normal build) — reach for it when a SIGSEGV moves around between runs.
+- **`make FLAVOR=<f> uninstall` takes the crash history with it.** It `rm -rf`s that install's
+  whole runtime root, and the append-only crash log — the one artifact deliberately built to
+  outlive a relaunch — is inside it. Pull anything you still want off the TV first; there is no
+  copy anywhere else.
 
 ## Troubleshooting
 
 | Symptom | Fix |
 |---|---|
 | `TV … is unreachable` | Wake it (`wake-tv` skill). Re-run whatever failed *before* concluding anything. |
-| `MISMATCH` on the md5 | The TV isn't running your build. `make deploy` and reproduce. |
+| `MISMATCH` on the md5 | **Check the flavour before you deploy anything.** With two installs this is routinely "you are looking at the other app", not "the TV has a stale build" — and the old advice here, a bare `make deploy`, would then put your dev build on top of the STABLE install on this skill's own recommendation, destroying a working app to investigate a crash that was never in it. Read the `install:` line of the event log in the runtime root you fetched from, compare it with `make -s print-appid FLAVOR=<f>`, and only once they agree treat the mismatch as a stale or truncated deploy — then `make FLAVOR=<f> deploy` and reproduce. |
+| `<appdir> does not exist … not installed` from a deploy | That flavour has never been installed; scp cannot create an app. `make FLAVOR=<f> install` once (`tv-session` skill). |
 | Crash log empty but the app died | Not a caught signal — read the SAM exit status and stderr sections of the driver output. |
 | `?? ??:0` for an address in our binary | Release build without DWARF. Rebuild with `DEBUG=1` (see above). |
 | Every frame says "outside our binary" | The fault is in a TV library; the `at:` line names it. Treat as an ABI/argument bug. |

@@ -37,23 +37,37 @@ read from the gitignored `src/config.local.h` at runtime and never printed.
 ## The driver
 
 ```bash
-tools/tv-session.sh up [--screen <name>] [--stream[=PORT]] [--remote[=PORT]] [--no-token]
-tools/tv-session.sh status              # re-assert without disturbing the session
-tools/tv-session.sh key down down ok    # key tokens through the real handlers
-tools/tv-session.sh click 960 540       # authored 1920x1080 coords
-tools/tv-session.sh shot [out.png]      # panel capture (video plane included)
-tools/tv-session.sh log [regex]         # the on-device event log
-tools/tv-session.sh down                # hand the TV back
+tools/tv-session.sh up [--flavor <f>] [--screen <name>] [--stream[=PORT]] [--remote[=PORT]] [--no-token]
+tools/tv-session.sh status [--flavor <f>]   # re-assert without disturbing the session
+tools/tv-session.sh key down down ok        # key tokens through the real handlers
+tools/tv-session.sh click 960 540           # authored 1920x1080 coords
+tools/tv-session.sh shot [out.png]          # panel capture (video plane included)
+tools/tv-session.sh log [--flavor <f>] [regex]   # the on-device event log
+tools/tv-session.sh down [--flavor <f>]     # hand the TV back
 ```
 
-`up` asserts every step instead of assuming it: TV reachable (waking it if not) →
-deployed binary md5-matches your build (deploying and **re-verifying** if not, because a
-standby can truncate an scp mid-flight) → triggers cleared → requested triggers armed →
+`--flavor <f>` selects **which install** the command talks to, and every subcommand accepts it —
+each of them names an app id, an app directory or a runtime root, and none of those is a single
+value any more. Omitted, you get the Makefile's default, which is the **developer** install. Read
+*Which install* below before your first `up` on a television that has never had one; the flavour
+`up` brought a session up with is what `status` reports, so a session driven with the wrong one
+fails at the FIFO rather than doing something to the wrong app.
+
+`up` asserts every step instead of assuming it: TV reachable (waking it if not) → the
+requested flavour is installed (a deploy cannot create one; see below) → deployed binary
+md5-matches your build (deploying and **re-verifying** if not, because a standby can
+truncate an scp mid-flight) → triggers cleared → requested triggers armed →
 token injected → close-first relaunch → process alive → the route heartbeat says you are
 on the screen you asked for → the remote FIFO exists. A live view is one flag away.
 
 `--screen` accepts: `home` (default), `profiles`, `login`, `account`, `library[=N]`,
-`detail=<ratingKey>`, `person=<MOVIE ratingKey>`, `player=<ratingKey>`.
+`detail=<ratingKey>`, `person=<MOVIE ratingKey>`, `player=<ratingKey>`, `itemmenu`.
+(That is the script's whole `case`; `tools/tv-session.sh --help` is the other copy.)
+
+`itemmenu` is the press-and-hold card context menu, and it is the only boot path to it. The
+interactive gesture is a real ≥500 ms hold (`press::LONG_MS`), which no boot trigger can express,
+so `plxnative-itemmenu` snaps into the grid and holds the focused card for you. Driving it by hand
+instead means the FIFO's split halves — `okdown`, sleep past 500 ms, `okup` — never the `ok` tap.
 
 `person` is the odd one: the actor page has **no boot trigger of its own** — it is *reached*
 from a detail page's cast row, so the rk you pass is the **movie's**, and `up` arms the three
@@ -61,29 +75,134 @@ triggers that walk there (`detail=<rk>` + `detailsec=1` to drop focus onto Cast 
 `detailok` press). Pick a movie whose FIRST cast member has titles in more than one library if
 you want both the Movies and Shows shelves populated.
 
+## Which install — and the one step `up` cannot do for you
+
+Two builds live on this television. **stable** is `com.beb.plxnative`, the app the household
+watches with; **debug** is `com.beb.plxnative.debug`, the developer build beside it, with its own
+launcher tile (amber DEV bar), its own sign-in and its own runtime files. webOS keys the install
+directory, SAM's `launch`/`closeByAppId` and the LS2 role file on that id, so the two cannot touch
+each other. **`debug` is the default**, deliberately: deploying to `debug` when you meant `stable`
+costs you retyping one command, while the reverse destroys a working install — possibly mid-film —
+on the app somebody actually watches with. So `stable` has to be typed.
+
+**A flavour must be INSTALLED once before `deploy`, and therefore before `up`, can reach it:**
+
+```bash
+make FLAVOR=debug install       # builds its .ipk, installs it through appinstalld, deploys into it
+```
+
+`scp` cannot create an app. The app directory, SAM's registration, and the per-id LS2 role file
+that lets the app talk to `com.webos.media.*` are all written by the installer, and none of them
+exist until the package has been through it once. The target then deploys, deliberately —
+appinstalld replaces `applications/<id>/` **wholesale**, so stopping at the install would leave you
+looking at the packaged binary rather than the one you just built, which is this project's
+signature "plausible wrong data" failure. `make deploy` `test -d`s the app directory and fails
+naming that command instead of `mkdir -p`-ing a directory SAM knows nothing about;
+`make FLAVOR=debug uninstall` removes one (it refuses the stable id).
+
+Ask the Makefile rather than restating any of this — these are real recipes, free and
+side-effect-free:
+
+```bash
+make -s print-flavor   FLAVOR=debug     # debug
+make -s print-appid    FLAVOR=debug     # com.beb.plxnative.debug
+make -s print-appdir   FLAVOR=debug     # /media/developer/apps/usr/palm/applications/<id>
+make -s print-rundir   FLAVOR=debug     # /tmp/com.beb.plxnative.debug   (stable: /tmp)
+make -s print-eventlog FLAVOR=debug
+make -s print-tv                        # the TV address, expanded
+```
+
+**Never reach for `make -p`/`make -pn` to read one of these.** It prints a recursive variable's
+UNEXPANDED DEFINITION, so `TV` comes back as the literal `$(strip $(shell cat .tv-host …))` — every
+ssh built from it then fails, and the tool reports an unreachable television that is in fact awake
+and idle in front of you.
+
+### The runtime root moved, and only for a flavoured install
+
+The stable install keeps `/tmp` byte for byte, so every recipe and every `/tmp/plxnative-…` line
+below stays literally true for the app users get. A flavoured install puts its triggers, its
+`plxnative-remote` FIFO and its three `*.log` files in `/tmp/<app id>` instead. **Every name is
+unchanged — only the directory moved**, so read each `/tmp/plxnative-…` path here as
+`$(make -s print-rundir FLAVOR=…)/plxnative-…`.
+
+**Two payloads do not carry the prefix, and that rewrite rule silently misses them:**
+`sample.h264` and `sample.h265`, the raw Annex-B samples the player feeds instead of streaming.
+They moved into the runtime root with everything else — `$(make -s print-rundir FLAVOR=…)/sample.h264`,
+not a shared `/tmp/sample.h264` — and they are read through `dev::read_sample`, which resolves via
+`paths::in_runtime_dir` like every other dev read. A second consequence follows from the same
+missing prefix and is easy to want the other way round: `dev::any_trigger_present` matches on
+`plxnative-`, so **a sample does NOT mark the boot as automated** and does not suppress the
+who's-watching picker. Arm one on a multi-user account and you land on the picker, not on Home.
+
+The separator is a DOT, and that is structural rather than cosmetic. The **stable** install's
+runtime root *is* `/tmp`, and it treats every entry there whose name begins `plxnative-` as an
+armed trigger. So the flavour suffix has to stay outside that prefix namespace: a root named
+`/tmp/plxnative-debug` would sit in `/tmp` reading, to the *other* install, as a permanently armed
+trigger — silently suppressing the released app's who's-watching picker, with no line in any log.
+`com.beb.plxnative.debug` contains no `plxnative-`, so it cannot. The rule is the **prefix**, not
+avoiding a clash with some file that happens to exist: there is no `plxnative-debug` trigger, and
+the dot is what makes it not matter if one is ever added. (`docs/two-installs.md` §4.1 has the
+second, independent guard.)
+
+The root is created **`mkdir` then an explicit `chmod 1777`**, because a umask masks mkdir's mode
+and two uids write into it with no way to order them: `up` and the harness arm triggers there over
+ssh **as root** before the app has ever booted, while the app runs jailed under its own uid and
+creates its logs there. Owner-only locks one of them out, and a root-owned event log the jailed app
+cannot write stays 0 bytes — which every tool in this repo reports as "no line found", i.e. exactly
+like a total regression.
+
+### md5 proves the BYTES, not which install they are in
+
+`up` still md5-compares your `pkg/plxnative` against the copy in the app directory, and that check
+is worth having — but with two installs it answers a narrower question than it looks like it does.
+`pkg/plxnative` is a path that **every** flavour and **both** configurations write, so a match
+proves only "these are the bytes on my disk right now". It says nothing about which app produced
+the log you are about to read. `pidof plxnative` cannot close the gap either: both binaries are
+named `plxnative`, so on this busybox set it returns two pids in an order nothing promises. For
+liveness use `fuser $(make -s print-appdir FLAVOR=…)/plxnative`, which is inode-scoped and can only
+match one install. And anchor any path match on a delimiter — `com.beb.plxnative` is a **prefix**
+of `com.beb.plxnative.debug`, so match `/<id>/`, never the bare id.
+
+**The strong witness is the first line of the event log**, written before anything can fail:
+
+```
+install: id=com.beb.plxnative.debug flavour=debug runtime=/tmp/com.beb.plxnative.debug features=dev APPID_env=…
+appdir: /media/… (from current_exe)
+```
+
+It is the only thing in the system that names which install wrote a log (`features=` is `dev` or
+`release`). Read it whenever a result is surprising, and always before reporting a regression from
+a log you did not watch being produced.
+
 ## Triggers are boot state; the FIFO is live state
 
-Every `/tmp/plxnative-*` trigger is read **once at boot**, so it must be in place before
-the launch. Anything you want to do to a *running* app goes through the remote FIFO
-(`tv-session.sh key` / `click`).
+Every `plxnative-*` trigger in the install's runtime root is read **once at boot**, so it
+must be in place before the launch. Anything you want to do to a *running* app goes through
+the remote FIFO (`tv-session.sh key` / `click`).
 
 **Two traps that cost real time:**
 
 1. **A stale trigger silently changes what you are looking at.** `make run` clears only
    the event log — unlike `tests/run.py`, it does **not** clear triggers — so a by-hand
-   run inherits whatever the last session armed. `tv-session.sh up` glob-clears first.
+   run inherits whatever the last session armed. `tv-session.sh up` glob-clears first,
+   in the runtime root of the flavour it was given.
 2. **Any non-DIAG trigger also suppresses the who's-watching picker.** The app treats the
-   presence of any `/tmp/plxnative-*` file outside a 7-entry exemption list as "this is an
-   automated boot". The exempt ones are the three `*.log` files plus `plxnative-profile`,
-   `plxnative-anim`, `plxnative-remote` and `plxnative-capture` — which is why arming a
-   live view does not change the boot you are observing.
+   presence of any `plxnative-*` file in its runtime root, outside an exemption list, as
+   "this is an automated boot" — which is why arming a live view does not change the boot
+   you are observing. **The exempt list is `dev::DIAG` in `rust-modules/src/dev.rs`, and
+   only that**; it has grown past the three `*.log` files and the four names this skill
+   used to spell out, and a count written here rots without anything failing.
 
-**The catalog is the source, not a doc.** There are ~40 triggers today and `CLAUDE.md`
-highlights only the common ones. Get the real list with:
+**The catalog is the source, not a doc.** There are ~40 triggers worth knowing and
+`CLAUDE.md` highlights only the common ones. **Run the two-part catalog command from
+`CLAUDE.md`** (the "The catalog is the source, not this list" bullet) rather than any copy —
+it is deliberately not transcribed here, because it has already been transcribed once too often.
+What it gives you is the set of **names**, which is the same for both installs; the `/tmp`
+literals inside it are just where the stable install's root is.
 
-```bash
-grep -rhoE '/tmp/plxnative-[a-z0-9]+' rust-modules/src src | sort -u
-```
+Two halves are needed and a single grep is the trap: a path literal now only ever appears in a
+COMMENT, and four triggers (`grid`, `h265`, `playidx`, `ptype`) are named nowhere but their
+`dev::flag`/`dev::read` call, so grepping paths alone silently under-reports the catalog.
 
 Boot gate order, when you care which identity you land as: `plxnative-login` forces the QR
 screen → `plxnative-token` beats any stored session → a stored session (with the picker
@@ -93,8 +212,23 @@ for a multi-user account) → otherwise QR sign-in. Nothing is compiled into the
 
 | Source | Sees | Rate |
 |---|---|---|
-| In-app stream (`--stream`, port 8910 → browser) | **UI plane only** | see below |
+| In-app stream (`--stream`, browser on `:8909`) | **UI plane only** | see below |
 | `tools/tv-session.sh shot` / `capture-screen.sh` (luna service) | UI **+ the hardware video plane** | ~2–3fps |
+
+**Two ports, and they are not the same one.** `:8909` is the local page `stream-screen.py`
+serves you; the app's own capture listener on the TV is a second port that the page consumes.
+That listener is **8910 for the stable install and 8911 for a flavoured one** — two installs must
+not fight over one socket — and `make -s print-appport FLAVOR=…` is that rule for the shell
+(`capture::default_port` is the same rule in Rust; `ci/flavor.py --selftest` compares them).
+
+The split only bites when you arm the trigger **by hand**: an empty `plxnative-capture` takes the
+default for that install, so a debug install lands on 8911 and the page needs
+`--app-port 8911` (or `TV_APP_PORT=8911`) to find it. `tv-session.sh --stream` never has to be told:
+it writes the resolved number into the trigger content (`plxnative-capture=$APPPORT`, where
+`APPPORT` came from `make -s print-appport FLAVOR=$FLAVOR`) and hands the SAME variable to
+`stream-screen.py --app-port`, so the arm and the viewer cannot address different ports. The
+session is therefore on 8910 for `--flavor stable` and 8911 at the default — the port follows the
+flavour rather than being pinned to either.
 
 **Stream resolution is a speed lever, not cosmetics.** MPEG1 has no intra prediction, so
 encode cost tracks screen *detail* as much as size. Measured on the same home screen (a
@@ -190,23 +324,31 @@ the TV is signed in as whatever the automation chose.
   FPS suite reported `0 samples` on all five scenes for exactly this reason, which reads
   like a catastrophic regression. The driver wakes it first; if you are running something
   else by hand, wake it first (`wake-tv` skill).
-- **Standby wipes `/tmp`.** Triggers, the token, the FIFO and any helper script you left
-  there are gone after a sleep. Re-run `up`.
+- **A standby cycle is ASSUMED to clear `/tmp`, and nobody has checked** — see the `wake-tv`
+  skill, which carries the open question and the one-session probe that would settle it.
+  Either way the safe move after a sleep is the same: re-run `up`, which recreates the
+  runtime root 1777 and re-arms everything before it launches. Do not build a measurement
+  on triggers armed before a sleep. (The app directory is on flash and does survive; an
+  install is one-time.)
 - **SAM keeps stale "running" state**, so a launch without a close-first is a silent no-op
   relaunch, and `luna-send` must stay subscribed (`-i`) for the launch to take — which
   means the SSH session has to stay OPEN while it does. Backgrounding the launch and
   letting ssh return kills the subscriber: the old instance keeps running, so every check
   downstream passes while you are testing yesterday's build. The driver holds the session
   and then asserts the **pid changed**.
-- **Do not run the harness and a live session at once.** `tests/run.py` glob-clears
-  triggers and kills the app per case; a concurrent session produces bogus failures that
-  look like real regressions. Run `tv-session.sh down` (or just stop the streamer) first.
+- **Do not run the harness and a live session at once — two installs are not two
+  televisions.** `tests/run.py` glob-clears triggers and kills the app per case; a
+  concurrent session produces bogus failures that look like real regressions. The flavour
+  split separates the app directories and the runtime roots, and nothing else: one panel,
+  one video plane, one capture service, one set of luna calls. Run `tv-session.sh down`
+  (or just stop the streamer) first.
 - **`BACK` at the Home root raises the EXIT ALERT** (`ui::exit_alert`) — it no longer ends the
   session by itself, which it did until 2026-08-21. Two consequences for a driver: a stray `back`
   now leaves a modal question on screen, so the next `shot` captures the alert rather than the page
   you meant, and the way out is `back` again (or `ok`, which lands on *Cancel* — the default focus).
-  `right` then `ok` is what actually quits. `/tmp/plxnative-noexitconfirm` restores the one-press
-  exit for a script that wants it; `tv-session.sh down` still closes through SAM and is unaffected.
+  `right` then `ok` is what actually quits. `plxnative-noexitconfirm` (in the runtime root) restores
+  the one-press exit for a script that wants it; `tv-session.sh down` still closes through SAM and
+  is unaffected.
 - **Clicks need the jitter**, which the app's injection path already applies: a pointer
   click after D-pad use is swallowed unless enough motion accumulates first. Hover is
   deliberately *not* forwarded (it used to park focus on a tab pill so the next ENTER
@@ -226,6 +368,8 @@ the TV is signed in as whatever the automation chose.
 | Landed on the wrong screen | A stale trigger. Re-run `up` (it clears), or check `status`, which lists what is armed. |
 | Boot shows the QR sign-in screen | No token — `src/config.local.h` is missing/unreadable, or you passed `--no-token`. |
 | Picker appeared during an automated run | You armed only DIAG-exempt triggers. Add any other trigger, or use `--screen profiles` deliberately. |
-| `deploy did not land (md5 still differs)` | The TV likely slept mid-scp. Re-run `up`. |
+| `<appdir> does not exist … the <f> flavour is not installed` | The one thing a deploy cannot do. `make FLAVOR=<f> install` once, then re-run `up`. |
+| `deploy did not land (md5 still differs)` | The TV likely slept mid-scp. Re-run `up`. **Check the install first** — if the flavour was never installed, `up` says so in the line above and no amount of re-running fixes it. |
+| The log names an app id you did not ask for | You are reading the other install's log. The `install:` boot line is the witness; `make -s print-eventlog FLAVOR=<f>` is the path you meant. |
 | Stream shows a black rectangle during playback | Expected — the in-app stream cannot see the video plane. Use `shot`. |
 | Keys do nothing | The FIFO only exists while the app runs; check `status`. A key at the wrong route may also be a no-op by design. |
