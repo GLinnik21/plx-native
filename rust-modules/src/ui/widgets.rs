@@ -1271,12 +1271,23 @@ latched_flag!(
 ///
 /// The band's whole job is to be legible ground for the chrome standing on it, and at `frost = 0`
 /// the tab pills' [`theme::TEXT_TERTIARY`] labels would sit on whatever poster happened to be
-/// passing. 0.62 is between the bar's own [`theme::Material::UltraThin`] 0.28 and a popover's 0.72:
-/// a container you look PAST, but one carrying the app's only navigation.
+/// passing. The density wanted is between the bar's own [`theme::Material::UltraThin`] 0.28 and a
+/// popover's 0.72 — a container you look PAST, but one carrying the app's only navigation — and
+/// that is [`theme::Material::Regular`], the rung the ladder already puts there. It was written out
+/// as a bare `0.62`, which is the same weight to within two percent of alpha and a fourth
+/// un-tokenised density in a system whose whole point is that there are five.
+///
+/// **The frost and the sample radius come from DIFFERENT rungs here, and that is deliberate rather
+/// than a drift.** `Material` is meant to hand over both halves from one name ([`panel_material`]
+/// says so in as many words), and this surface breaks that on purpose: [`nav_glass_backdrop`]
+/// passes `UltraThin` so the backdrop takes the CHEAPEST fetch there is — the measurement had to be
+/// a floor, not a representative sample — while the frost is the weight the chrome actually needs
+/// to stand on. If this were ever unrefused the two would have to be reconciled to one name, and
+/// the cost re-measured at that name.
 ///
 /// It scales all three stops rather than replacing them, so the ramp keeps its knee — see
 /// [`nav_scrim_bands`].
-const NAV_GLASS_FROST: f32 = 0.62;
+const NAV_GLASS_FROST: f32 = theme::Material::Regular.frost();
 
 /// How far past the panel the band's geometry is pushed on its three off-screen sides.
 ///
@@ -1313,11 +1324,16 @@ fn nav_glass_on() -> bool {
 /// `docs/glass-hardware-budget.md`'s region law calls 45 fps at best.
 ///
 /// **On the television it measured 58, and that prediction is now retired** — the law was taken on
-/// the capture path and the DIRECT source path renders the page again at quarter scale, so the
-/// region term is charged at a sixteenth. The band was refused on what it actually costs (§11): the
-/// two screens hold a flawless 60 with nothing over 20.6 ms today, and the material puts 206 frames
-/// a run past 20 ms and every second's worst frame at ~26. The test below keeps the ARITHMETIC
-/// honest; the doc keeps the measurement.
+/// the capture path and the DIRECT source path renders the page again at quarter scale, which makes
+/// the region term about 4x cheaper (NOT a sixteenth: the chain's up pass is `region / 4` and is the
+/// largest thing that path writes — §11 has the pass table). What is left binding is the COMPOSITE,
+/// charged at the surface at full resolution and discounted by neither path, and this band's
+/// 1920 x 214 is 4.7x the largest area anything in that document ever measured. It is why the
+/// arithmetic below is kept as a test and NOT as the price: it counts the term that turned out not
+/// to decide. The band was refused on what it actually costs (§11): the two screens hold a flawless
+/// 60 with nothing over 20.6 ms today, and the material puts 206 frames a run past 20 ms and every
+/// second's worst frame at ~26. The test below keeps the ARITHMETIC honest; the doc keeps the
+/// measurement.
 fn nav_glass_rect(content_top: f32) -> Rect {
     let b = NAV_GLASS_BLEED;
     Rect::new(-b, -b, crate::ui::consts::SCR_W + 2.0 * b, content_top + b)
@@ -4225,7 +4241,8 @@ mod tests {
                 "{name}: {a} px^2 against a {} budget — the arithmetic that made this look \
                  hopeless before it was built. What refused it is the MEASUREMENT in \
                  docs/glass-hardware-budget.md §11, not this ratio; §11 also records that the \
-                 region law over-charges the direct source path about sevenfold.",
+                 direct source path makes the region term about 4x cheaper than the budget \
+                 assumes, and that what actually binds is the SURFACE's composite, not this.",
                 crate::gfx::GLASS_REGION_BUDGET,
             );
         }

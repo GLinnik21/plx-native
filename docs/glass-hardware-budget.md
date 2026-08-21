@@ -110,12 +110,21 @@ second was 56); 334,000 did not. Everything design can put on this screen sits o
 number or the other.
 
 **READ §11 BEFORE PRICING ANYTHING NEW OFF THIS TABLE.** Every row above was measured on the
-**capture** path — a full-resolution `glCopyTexSubImage2D` of the region plus two reductions — and
+**capture** path — a full-resolution `glCopyTexSubImage2D` of the region plus its reductions — and
 the **direct source** path has been the default since. It renders the page again into a
-quarter-scale target, so the region term is charged at `region / 16` and very nearly falls out. A
-2026-08-21 surface at 579,840 px² (§11) — nearly twice the budget, which this table calls 45 fps at
-best — measured **58**. The shape of the question is right and the numbers are a ceiling, not an
-estimate.
+quarter-scale target, which makes the region term **about 4x cheaper**, not free: read the chain out
+of `gfx.rs` and the capture path writes `region × 1.75` (a full-resolution copy, one reduction, two
+taps at half res) where the direct path writes `region × 7/16` (a scene render at `region/16`, two
+taps there, then an up pass at `region/4`). That 4x is the same figure `blur_direct_scale`'s own note
+gives — "4.5x cheaper gross, 5.8x net". A 2026-08-21 surface at 579,840 px² (§11) — nearly twice the
+budget, which this table calls 45 fps at best — measured **58**.
+
+**And the term this table never isolates is the one left binding.** Every row here varies the
+region; the SURFACE's own composite (`fs_glass` at full resolution over the surface, every presented
+frame, discounted by nothing) is measured only in §8, and only at ~87,000 px, where it is free. Once
+the region term is 4x cheaper the composite is what you have left, so on the direct path **index a
+new surface on its area first and its region second** — the reverse of the order this section was
+written in. §11 works one real surface through both terms.
 
 **Count is free; distance is not.** One 608x396 panel, two 292x396 and four 140x396 — same
 footprint, same region — all measured **45 fps exactly**. But the two-surface rows above are the
@@ -505,6 +514,11 @@ edge for the glass rim to have something to bend.
 1. **Compact glass is cheap glass.** Prefer a chunky panel to a long thin strip. A strip's cost is
    set by its *length* — 1148 + 176 = 1324 pixels of region across — not by its area. This is the
    same rule as "keep glass together" (§3.1) seen from inside one surface instead of between two.
+   **This rule was written on the capture path and the direct path WEAKENS it** — the region term is
+   now about 4x cheaper (§3.1's banner), so "not by its area" stops holding once the area is large.
+   The three rows above are all ~87,000 px of surface, which is the only area this section ever
+   measured; §11 measures one at 410,880 and the area is what binds there. Read this rule as "a long
+   thin strip pays for a region it does not cover", which is still true, and not as "area is free".
 2. **The shipped tab-bar glass is affordable exactly when the page under it is still.** Over a
    settled screen it is free; over a scrolling grid it costs 60 → 46 fps. That is a real design
    choice, not a bug: the bar is glass while you are reading, and expensive only while you scroll.
@@ -739,11 +753,17 @@ same dial in the same launch.
   only "it fits". Their true cost could be anything from nothing up to the full 7.8 ms, and the
   headroom they consume is invisible until something else is added. If a design stacks two such
   things, measure the pair; do not assume two free things are free together.
-* **The capture path against the direct path, on one surface.** §11 shows the region law
-  over-charging a real surface about sevenfold and attributes it to the direct source path's
-  quarter-scale re-render. Nothing forces the capture path at runtime, so the two could not be run
-  as legs of one A/B; the attribution is reasoning about what the two paths do, and only the
-  refutation itself is measured.
+* **The capture path against the direct path, on one surface.** §11 shows §3.1's region law badly
+  over-charging a real surface and attributes it to the direct source path's quarter-scale
+  re-render. Nothing forces the capture path at runtime, so the two could not be run as legs of one
+  A/B; the attribution is arithmetic over the chain in `gfx.rs` (`region × 1.75` against
+  `region × 7/16`), and only the refutation itself is measured. **The size of the discount is the
+  part to distrust** — this said "about sevenfold" while the chain says about four, because the
+  first reading counted the scene render and forgot the up pass. Count all three passes, or measure.
+* **The composite term at any size worth worrying about.** §8 measures it once, at ~87,000 px, where
+  it is free; §11 reasons about it at 410,880 and never isolates it. Nothing in this document
+  measures a large glass SURFACE with its backdrop refresh switched off, which is the one leg that
+  would settle it — and on the direct path that is now the term most likely to be binding.
 * **Anything about the player.** Every measurement here is on browsing screens. The player draws
   almost nothing, has no glass, and cannot have any (§4.4).
 * **Screens other than Home.** The library grid, the detail page and Search were not swept. The
@@ -775,16 +795,50 @@ on the Library and **1,920 x 336 = 645,120** on Search, against a `GLASS_REGION_
 — roughly twice over, which §3.2's table puts at **45 fps at best and more likely 36**. (Both
 figures are now a host test, `widgets`' `the_scroll_band_is_twice_the_glass_region_budget_on_both_screens`.)
 
-**Measured, it is 58 fps, not 45.** The region law over-charges this surface by a factor of about
-seven, and the reason matters more than the row: **§3's whole table was measured on the CAPTURE
-path** — `glCopyTexSubImage2D` of the region at full resolution, then two reductions — and the
-**direct source path** has been the default since. That path renders the page a second time into a
-quarter-scale target, so the snapshot's fragment cost scales with `region / 16` and the region term
-very nearly falls out of the bill. Treat §3.1's px²→fps table as **specific to the capture path**;
-it is still the right instrument for the shape of the question and the wrong one for the number.
-(The mechanism here is INFERRED from what the two paths do, not measured: there is no trigger that
-forces the capture path, so the two could not be A/B'd. What is measured is that the law's
-prediction does not hold.)
+**Measured, it is 58 fps, not 45.** The region law over-charges this surface badly, and the reason
+matters more than the row: **§3's whole table was measured on the CAPTURE path** —
+`glCopyTexSubImage2D` of the region at full resolution, then its reductions — and the **direct
+source path** has been the default since. That path renders the page a second time into a
+quarter-scale target. Treat §3.1's px²→fps table as **specific to the capture path**; it is still
+the right instrument for the shape of the question and the wrong one for the number.
+
+**But not by a factor of sixteen, and the difference decides the next design.** An earlier draft of
+this section said the region term "is charged at `region / 16` and very nearly falls out", reasoning
+from the scene render alone. Read the whole chain out of `gfx.rs` and that is one pass of three:
+
+| | capture path | direct path |
+|---|---|---|
+| origin | full-res copy of the region — `region` | scene render at 1/4 per axis — `region / 16` |
+| reduction | one, to half res — `region / 4` | none |
+| two Kawase taps | at half res — `2 × region / 4` | at quarter res — `2 × region / 16` |
+| up pass | none (`BLUR_UP_PASS` is `REDUCTIONS >= 2`) | always, to half res — `region / 4` |
+| **total** | **`region × 1.75`** | **`region × 7/16`** |
+
+**About 4x, not 16x** — the up pass alone is `region / 4` and is the largest thing the direct path
+writes. Four is also the number `blur_direct_scale`'s own note gives from the television ("4.5x
+cheaper gross and 5.8x cheaper net"), arrived at independently, which is the only corroboration
+available. (The path comparison is still INFERRED rather than A/B'd: no trigger forces the capture
+path, so the two could not be run as legs. What is measured is that §3.1's prediction does not hold.)
+
+### What to index on instead
+
+Discounting the region 4x does not make a surface free, and the term left standing is the one §3.1
+never varies: **the composite** — `fs_glass` over the surface itself, at full resolution, on every
+presented frame, discounted by nothing on either path. §8 is the only measurement of it, at ~87,000
+px, where it is free. This band is **410,880 px** on the Library (1920 x 214 on the panel), 4.7x the
+largest area §8 ever measured, and that is where the two frames went. Worked through, per frame:
+
+| term | control (tab track alone) | with the band | delta |
+|---|---|---|---|
+| direct source chain (`region × 7/16`) | 334,000 → 146,000 px | 579,840 → 254,000 px | +108,000 |
+| composite (surface, 1:1) | 87,000 px | 87,000 + 410,880 px | **+411,000** |
+
+**Four fifths of the added fragment work is the composite**, and it is the heavier shader of the two.
+So the pricing rule for a new surface on the direct path is **area first, region second** — the
+reverse of §3.1's order and of §8's rule 1, both of which were written when the region was 4x dearer
+and no surface bigger than 87,000 px had been tried. This is arithmetic over the shipped chain plus
+§8's own composite row, not a fresh measurement; what is measured is the 58 fps and the distribution
+below, and they are consistent with it.
 
 ### What it actually costs
 
@@ -864,7 +918,15 @@ Arm `/tmp/plxnative-navglass` and look at it — the code is still there, still 
 `widgets::nav_scrim`'s doc points here. Then reproduce the table above before arguing from the
 median: `plxnative-noidle` + `plxnative-library` + `plxnative-libosc` (+ `plxnative-navglass`),
 `make run RUN_SECS=30`, and separately `printf 17 > /tmp/plxnative-framedrop` for the distribution.
-**The number that decides it is `worstframe=`, not `fps=`.**
+
+**Take both numbers, and know which one each answers.** `worstframe=` is the EXPLANATION — it is
+where the two frames went, and it is what a median hides. `fps=`, and specifically its **minimum**,
+is what says a present was actually dropped. A draft of this line said worstframe alone decides,
+and the control leg in the table above refutes it: **worstframe reaches 20.6 ms there while `fps`
+never leaves 60**, because the swap chain is deep enough to absorb an occasional long iteration
+without missing a present. Deciding on worstframe alone would refuse changes that cost nothing.
+What made the case here is that BOTH moved together — the distribution shifted (13 frames past
+20 ms became 206) *and* fps fell 60 → 58 with its minimum 60 → 54.
 
 **The verdict is the owner's rule applied to a measurement: it lags, so it does not go in.** Not
 because it is unaffordable — it is far cheaper than this document predicted, and that correction is
