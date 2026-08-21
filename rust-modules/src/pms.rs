@@ -1283,6 +1283,13 @@ pub(crate) fn pump(dt: f32) {
 /// A source that has answered with `n` placeholder rows in one shelf (test fixture). Only the SHAPE
 /// is real — `project` would have dropped these rows for having no title/poster; what the tests
 /// using it assert is the landing/merge bookkeeping, which never looks inside a row.
+///
+/// Two fields ARE filled, and both because the hero pool reads them: `art`, since `merge` skips a
+/// row with no landscape artwork (it would make a blank billboard), and a distinct `rk` per row,
+/// since the pool dedups by item IDENTITY and n rows sharing the empty key are ONE film to it. A
+/// fixture of bare defaults therefore committed shelves with an EMPTY pool — a Home that has
+/// content but cannot page — and `ui::home`'s pager test needs somewhere to page to. A fixture
+/// that cannot express the app's ordinary state quietly limits what can be tested through it.
 #[cfg(test)]
 fn build_test(n: usize) -> SourceBuild {
     SourceBuild {
@@ -1290,7 +1297,9 @@ fn build_test(n: usize) -> SourceBuild {
         shelves: vec![Shelf {
             title: "Continue Watching".into(),
             hub_id: "home.continue".into(),
-            items: (0..n).map(|_| PmsMovie::default()).collect(),
+            items: (0..n)
+                .map(|i| PmsMovie { rk: (i + 1).to_string(), art: "/art".into(), ..PmsMovie::default() })
+                .collect(),
         }],
     }
 }

@@ -1315,13 +1315,9 @@ impl View for CircleButton {
         // The resting card shadow, which every control in this family carries and this one did not:
         // a disc over artwork nobody chose has the tile's problem, and `Button` had already been
         // given the same constant for the same reason.
-        //
-        // …unless there is no FACE to cast it — an idle `ControlStyle::Bare` is the mark alone.
-        if self.style.plated(self.focused) {
-            p.shadow(r, rad, theme::CARD_SHADOW_REST_BLUR, theme::CARD_SHADOW_REST_DY,
-                     theme::with_a(theme::CARD_SHADOW, theme::CARD_SHADOW_REST_A));
-            control_rim(p, r, rad, face);
-        }
+        p.shadow(r, rad, theme::CARD_SHADOW_REST_BLUR, theme::CARD_SHADOW_REST_DY,
+                 theme::with_a(theme::CARD_SHADOW, theme::CARD_SHADOW_REST_A));
+        control_rim(p, r, rad, face);
         if let Some(icon) = self.icon {
             // vector glyph centred on the disc at the shared DISC_ICON_RATIO box, so every round
             // control carries its icon at one ratio.
@@ -3480,21 +3476,6 @@ pub enum ControlStyle {
     /// idle plate reads as a hole in the picture. Focused it takes the standard Accent treatment,
     /// so focus reads identically across every control in the family.
     Keyline,
-    /// The **bare mark** — idle, no plate at all: the glyph alone in [`theme::TEXT_SECONDARY`],
-    /// with no fill, no rim and no shadow, so it reads as a mark set beside the buttons rather
-    /// than as a third button. Focused it takes the standard [`Accent`](ControlStyle::Accent)
-    /// treatment.
-    ///
-    /// This is not a new invention: it is the Library's A–Z rail as a STYLE, so the app has one
-    /// bare-mark idiom instead of a widget and a hand-drawn rail that happen to agree. The rail
-    /// paints idle letters as bare glyphs and puts an `ACCENT` disc under the focused one; a
-    /// control wearing this does exactly that, and additionally keeps the family's resting shadow
-    /// and rim on the FOCUSED face, so its focus reads identically to the pill and disc beside it.
-    ///
-    /// The GEOMETRY is unchanged between the two states — same frame, same icon box — so a bare
-    /// control's pointer target does not grow when it takes focus and a caller may go on using its
-    /// frame as the hit rect.
-    Bare,
 }
 /// A control's EDGE — the 1px perimeter the design system has always asked every control to wear
 /// and which none of them wore.
@@ -3529,22 +3510,7 @@ impl ControlStyle {
             ControlStyle::Custom { fill, ink } => (fill, ink),
             ControlStyle::Keyline if focused => (crate::ui::ACCENT, crate::ui::ACCENT_INK),
             ControlStyle::Keyline => (theme::PILL_KEYLINE_BG, theme::TEXT_HEADING),
-            ControlStyle::Bare if focused => (crate::ui::ACCENT, crate::ui::ACCENT_INK),
-            // the fill is never reached — [`ControlStyle::plated`] is false here and the draw
-            // paints no face at all — so it is spelled as the nothing it is rather than as a
-            // colour a later reader could start believing in
-            ControlStyle::Bare => (theme::with_a(crate::ui::ACCENT, 0.0), theme::TEXT_SECONDARY),
         }
-    }
-
-    /// Does this control paint a FACE at all — the plate, its rim, and the resting shadow under
-    /// it? True for everything except an idle [`Bare`](ControlStyle::Bare).
-    ///
-    /// A predicate rather than a transparent fill doing the job on its own, because the face is
-    /// three draws and only one of them is the fill: `control_rim` would still ring the shape and
-    /// `p.shadow` would still cast under it, and a shadow with no object over it is a smudge.
-    pub(crate) fn plated(self, focused: bool) -> bool {
-        !matches!(self, ControlStyle::Bare) || focused
     }
 }
 
@@ -3678,13 +3644,9 @@ impl View for Button {
         // ACCENT capsule over a white frame measures ~1.2:1 against its surround — the shape
         // vanishes and only the dark label survives, floating. The discs and the shelves already
         // solved this; the pills were the one control that hadn't.
-        // …and, as on `CircleButton`, only when there IS a face: an idle `ControlStyle::Bare`
-        // pill is its label alone.
-        if self.style.plated(self.focused) {
-            p.shadow(r, r.h * 0.5, theme::CARD_SHADOW_REST_BLUR, theme::CARD_SHADOW_REST_DY,
-                     theme::with_a(theme::CARD_SHADOW, theme::CARD_SHADOW_REST_A));
-            self.plate(p, bg);
-        }
+        p.shadow(r, r.h * 0.5, theme::CARD_SHADOW_REST_BLUR, theme::CARD_SHADOW_REST_DY,
+                 theme::with_a(theme::CARD_SHADOW, theme::CARD_SHADOW_REST_A));
+        self.plate(p, bg);
         // center the [icon + gap + label] group in the pill; the label sits on the pill centre by
         // its cap band, so descenders (the g's in "From Beginning") don't drag the caps upward
         let ty = crate::text::text_vcenter_y(self.sz, 1, r.y + r.h * 0.5);
@@ -4799,30 +4761,6 @@ mod tests {
                 r.x + r.w
             );
         }
-    }
-
-    /// **A bare control paints no face, and takes the family's face back the moment it is focused.**
-    ///
-    /// [`ControlStyle::Bare`]'s whole point is the idle state — the home hero's pager is a chevron
-    /// set beside the buttons, not a third button — and the failure mode is invisible from either
-    /// side alone: a plated idle is the disc the design removed, and an unplated FOCUS is a control
-    /// that stops saying where the remote is. The draw asks [`ControlStyle::plated`] for the shadow,
-    /// the rim and the fill together, so this one predicate is the whole rule.
-    #[test]
-    fn a_bare_control_is_a_mark_when_idle_and_a_disc_when_focused() {
-        assert!(!ControlStyle::Bare.plated(false), "idle: no disc, no rim, no shadow");
-        assert!(ControlStyle::Bare.plated(true), "focused: the family's own face, so focus reads alike");
-        for st in [ControlStyle::Accent, ControlStyle::Keyline] {
-            for f in [false, true] {
-                assert!(st.plated(f), "every other style is plated in both states");
-            }
-        }
-        // focused, it IS the Accent face — the A–Z rail's accent disc, not a third treatment
-        assert_eq!(ControlStyle::Bare.colors(true).0, ControlStyle::Accent.colors(true).0);
-        assert_eq!(ControlStyle::Bare.colors(true).1, ControlStyle::Accent.colors(true).1);
-        // and idle its ink is the rail's idle ink, over a fill nothing will ever paint
-        assert_eq!(ControlStyle::Bare.colors(false).1, theme::TEXT_SECONDARY);
-        assert_eq!(ControlStyle::Bare.colors(false).0[3], 0.0, "the unpainted fill is spelled as nothing");
     }
 
     /// A spread of pill widths. Deliberately wider than the device's (a real "TV" pill measures
