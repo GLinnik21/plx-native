@@ -8,6 +8,37 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicPtr, AtomicU32, 
 use std::sync::Mutex;
 use crate::stream::HttpStream;
 
+/// **The names the CONTAINER gives its audio and subtitle tracks**, each list in file order.
+///
+/// Published once by the demuxer when it opens a part ([`crate::ff`]), read by the in-player track
+/// menu. Both `Vec`s are dense — a track the file does not name contributes an EMPTY string rather
+/// than being skipped — because position is the whole join: the N-th entry is the N-th stream of
+/// that type, which is the ordinal `metadata::sub_render_ordinal` resolves a menu row to. Skipping
+/// unnamed tracks would silently shift every name after the first untagged one onto its neighbour,
+/// which is worse than showing none: a wrong name is indistinguishable from a right one.
+#[derive(Default)]
+pub(crate) struct TrackNames {
+    pub audio: Vec<String>,
+    pub subs: Vec<String>,
+}
+
+impl TrackNames {
+    /// `Default`, but callable from `Shared::new`, which is a `const fn`.
+    pub const fn new() -> Self {
+        Self { audio: Vec::new(), subs: Vec::new() }
+    }
+    /// The name of the `i`-th subtitle stream in file order, or `""` — `i` is what
+    /// `metadata::sub_render_ordinal` answers, and its `-1` (an external sidecar, which is not in
+    /// the container at all) can be passed straight in.
+    pub fn sub(&self, i: i32) -> &str {
+        usize::try_from(i).ok().and_then(|i| self.subs.get(i)).map(String::as_str).unwrap_or("")
+    }
+    /// The same for audio — `metadata::audio_render_ordinal`'s answer.
+    pub fn audio(&self, i: i32) -> &str {
+        usize::try_from(i).ok().and_then(|i| self.audio.get(i)).map(String::as_str).unwrap_or("")
+    }
+}
+
 /// one client-rendered subtitle cue (content-time ns). `track` is the 0-based subtitle-stream
 /// index it belongs to; the demuxer pushes cues for ALL text tracks and the render filters by
 /// the selected `desired_sub_idx`, so switching tracks is instant (no re-demux of the buffered
@@ -200,6 +231,18 @@ pub(crate) struct Shared {
     // client-rendered subtitles: selected track index (-1 = off) + the demuxed cues.
     // demux (D) pushes cues; main (M) reads the active one for the current playpos.
     pub desired_sub_idx: AtomicI32,
+    /// **The container's own per-track names, which PMS does not always send** (D -> M).
+    ///
+    /// `audio` and `subs`, each in FILE order, so position N is the N-th audio / subtitle stream of
+    /// the part — the ordinal `metadata::audio_render_ordinal` and `metadata::sub_render_ordinal`
+    /// already resolve a track-menu row to. Empty strings for a file that tags nothing, and an
+    /// empty Vec until a demuxer has opened.
+    ///
+    /// It exists because for an **MP4** part PMS sends no `Stream.title` at all, though the file
+    /// names every track (`"Полные Jaskier"`, `"Форс. iTunes"`). See `ff::stream_name`. So the
+    /// picker's rows are the only place this reaches, and only on DIRECT PLAY: a transcode is a
+    /// remux the server built, and its tags are whatever the server put there.
+    pub track_names: Mutex<TrackNames>,
     pub sub_cues: Mutex<Vec<SubCue>>,
     pub sub_bitmaps: Mutex<Vec<SubBitmap>>, // image-sub cues (selected track only)
 
@@ -359,6 +402,7 @@ impl Shared {
             demux_no_video: AtomicBool::new(false),
             load_failed: AtomicBool::new(false),
             desired_sub_idx: AtomicI32::new(-1),
+            track_names: Mutex::new(TrackNames::new()),
             sub_cues: Mutex::new(Vec::new()),
             sub_bitmaps: Mutex::new(Vec::new()),
             file_size: AtomicI64::new(0),
@@ -427,6 +471,11 @@ impl Shared {
         // and DO clear (the fresh demuxer re-populates them).
         self.sub_cues.lock().unwrap().clear();
         self.sub_bitmaps.lock().unwrap().clear();
+        // Cleared with them, and for the same reason: they describe the FILE the last demuxer had
+        // open. A reload-based seek re-opens the same part and re-publishes the same names, but a
+        // session that ends with a transcode reload would otherwise leave the direct-play file's
+        // names sitting under the server's own track list.
+        *self.track_names.lock().unwrap() = TrackNames::new();
         self.file_size.store(0, Ordering::Relaxed);
         self.duration_ns.store(0, Ordering::Relaxed);
         self.ended.store(false, Ordering::Relaxed);

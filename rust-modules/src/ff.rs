@@ -71,8 +71,29 @@ pub enum AVStream {}
 const OFF_STREAM_INDEX: usize = 4; // NB not 0 — FFmpeg 5.0 put `const AVClass *av_class` first
 const OFF_STREAM_CODECPAR: usize = 12;
 const OFF_STREAM_TIME_BASE: usize = 20;
+/// `AVStream.metadata` — the container's own per-track tags, which is where a track's NAME lives.
+///
+/// It is read for one reason and it is a data reason, not a rendering one: **PMS does not send the
+/// per-track title for an MP4.** Verified live 2026-08-22 against one server holding both — for a
+/// Matroska part PMS sends `Stream.title` (`"HDRezka Studio"`, `"Forced"`, `"SDH"`) and the track
+/// menu has always drawn it; for an MP4 part it sends no `title` key at all, though the file
+/// carries a `name` tag on every track (`"Полные Jaskier"`, `"Форс. iTunes"`, `"Full SDH"`).
+/// Matroska spells the tag `title` and MP4 spells it `name`, and Plex's parser maps only the first.
+/// So a nine-track MP4 arrives as six rows reading `Русский` and nothing else — the user cannot
+/// tell a forced signs track from a full translation, and no amount of care in the UI can invent
+/// the difference. `/library/streams/{id}` is 501 and `checkFiles=1` adds nothing; the file is the
+/// only source, and we are already holding it open.
+const OFF_STREAM_METADATA: usize = 72;
 /// `AVFormatContext.duration`, in AV_TIME_BASE units. By offset — see the struct's closing note.
 const OFF_FMT_DURATION: usize = 64;
+
+/// `AVDictionaryEntry` — two `char *`. Modelled rather than opaque because the whole point of the
+/// call is to read both halves; `ci/ffabi-assert.c` holds the layout.
+#[repr(C)]
+pub struct AVDictionaryEntry {
+    key: *const c_char,
+    value: *const c_char,
+}
 
 /// The only field this app reads past `AVFormatContext.streams`.
 #[inline]
@@ -391,6 +412,14 @@ crate::dynlib! {
     fn av_frame_make_writable(frame: *mut c_void) -> c_int;
     fn av_opt_set(obj: *mut c_void, name: *const c_char, val: *const c_char, search_flags: c_int) -> c_int;
     fn av_get_pix_fmt(name: *const c_char) -> c_int;
+    // Container tags. Borrowed, never freed: the entry belongs to the dictionary, which belongs to
+    // the AVStream, which `avformat_close_input` frees — so every read must copy before the close.
+    fn av_dict_get(
+        m: *const AVDictionary,
+        key: *const c_char,
+        prev: *const AVDictionaryEntry,
+        flags: c_int,
+    ) -> *const AVDictionaryEntry;
 }}
 crate::dynlib! {
     swscale: ["libswscale-plx.so.10"] {
@@ -493,6 +522,58 @@ unsafe fn dovi_conf(cp: *const AVCodecParameters) -> Option<AVDOVIDecoderConfigu
     None
 }
 #[inline]
+/// The container's own name for this track — `title` (Matroska and most formats), else `name`
+/// (MP4's per-track `udta` name box, which is what FFmpeg's mov demuxer exposes it as).
+///
+/// Deliberately NOT `handler_name`: MP4 sets it to a constant per media type (`"SubtitleHandler"`,
+/// `"SoundHandler"`), so it is the same string on every track and reading it would give the picker
+/// nine identical sub-lines instead of none — the failure it exists to fix, dressed as a fix.
+///
+/// The returned `String` is a COPY. The entry points into the stream's dictionary, which
+/// `avformat_close_input` frees.
+unsafe fn stream_name(s: *mut AVStream) -> String {
+    let dict = *((s as *const u8).add(OFF_STREAM_METADATA) as *const *const AVDictionary);
+    if dict.is_null() {
+        return String::new();
+    }
+    for key in [c"title", c"name"] {
+        let e = av_dict_get(dict, key.as_ptr(), std::ptr::null(), 0);
+        if e.is_null() || (*e).value.is_null() {
+            continue;
+        }
+        // `to_string_lossy` rather than a strict decode: these are user-authored tags off a
+        // stranger's file, and a mis-encoded byte must cost that character, not the whole name.
+        let v = std::ffi::CStr::from_ptr((*e).value).to_string_lossy().trim().to_string();
+        if !v.is_empty() {
+            return v;
+        }
+    }
+    String::new()
+}
+
+/// Every track's container name, by TYPE, in file order — the two lists
+/// `metadata::audio_render_ordinal` / `metadata::sub_render_ordinal` index into.
+///
+/// File order is the join, and it is the mapping this file already relies on twice
+/// (`nth_audio_stream`, and the subtitle enumeration that feeds `desired_sub_idx`). It is worth
+/// stating why that is sound rather than convenient: PMS lists a part's streams in container order
+/// too, and both ordinal helpers skip the SIDECAR streams that exist only on the server — which is
+/// exactly the set that is not in this file. So position N here and position N there name one
+/// track, and a file with no tags simply yields empty strings in the right slots.
+unsafe fn track_names(fmt: *mut AVFormatContext) -> (Vec<String>, Vec<String>) {
+    let (mut audio, mut subs) = (Vec::new(), Vec::new());
+    let streams = (*fmt).streams;
+    for i in 0..(*fmt).nb_streams {
+        let st = *streams.add(i as usize);
+        match (*stream_codecpar(st)).codec_type {
+            AVMEDIA_TYPE_AUDIO => audio.push(stream_name(st)),
+            AVMEDIA_TYPE_SUBTITLE => subs.push(stream_name(st)),
+            _ => {}
+        }
+    }
+    (audio, subs)
+}
+
 unsafe fn stream_index(s: *mut AVStream) -> c_int {
     *((s as *const u8).add(OFF_STREAM_INDEX) as *const c_int)
 }
@@ -1813,6 +1894,23 @@ pub(crate) fn demux(host: String, port: c_int, path: String, acodec: String, aq:
                 avformat_close_input(&mut fmt);
                 free_avio(avio);
                 break;
+            }
+            // The container's own track names, published before anything else can fail: the track
+            // menu is the only reader and it wants them whether or not this part turns out to have
+            // a video stream. See `stream_name` for why they are read at all — for an MP4 they are
+            // the ONLY place a track's identity exists, PMS having dropped it.
+            {
+                let (audio, subs) = track_names(fmt);
+                let named = audio.iter().chain(subs.iter()).filter(|n| !n.is_empty()).count();
+                if named > 0 {
+                    crate::player::log(&format!(
+                        "ff: container names {named}/{} tracks (a={} s={})",
+                        audio.len() + subs.len(),
+                        audio.len(),
+                        subs.len()
+                    ));
+                }
+                *SHARED.track_names.lock().unwrap() = crate::player::TrackNames { audio, subs };
             }
             let vi = av_find_best_stream(fmt, AVMEDIA_TYPE_VIDEO, -1, -1, std::ptr::null_mut(), 0);
             // native audio-track selection: feed the chosen Nth audio stream (SHARED.desired_
