@@ -3386,8 +3386,17 @@ pub(crate) fn on_ok() -> bool {
                 // "refresh the detail page, with no filmstrip position to protect" — the press was
                 // on the hero. NB the optimistic half reaches a LEAF's discs on this frame and a
                 // CONTAINER's only when the re-read lands — `hero_watch_state`'s doc says why.
-                if let Some((sid, rk)) = metadata::current().map(|d| (d.sid, d.rk.clone())) {
-                    crate::viewstate::request(sid, &rk, w, Some(String::new()));
+                //
+                // The `guid` rides along because this page HAS it, and it is the guid OF `d.rk` —
+                // the same pair the page is mounted on. It is what makes the write follow the
+                // TITLE: a film both sources hold ends up watched on both (`crate::viewstate`).
+                // NB the verb stays the CONTROL's `w` from `watch_write` above and is NOT re-derived
+                // from `d.watched` here — a part-watched hero draws BOTH discs, so a bool cannot say
+                // which one was pressed.
+                if let Some((sid, rk, guid)) =
+                    metadata::current().map(|d| (d.sid, d.rk.clone(), d.guid.clone()))
+                {
+                    crate::viewstate::request(sid, &rk, w, Some(String::new()), &guid);
                 }
                 return false;
             }
