@@ -423,10 +423,12 @@ fn push_player(s: &mut String, overlay: &str, hud: Hud, ctrl: ControlSlot) {
         b(crate::ui::up_next::armed())
     );
     // The panels: whether each is open, ITS HIGHLIGHTED ROW, and for the track menu the two tracks
-    // already committed. The row is what makes the four overlay arms characterizable at all — each
-    // has an UP/DOWN branch that moves a cursor and changes nothing else, so with only the open
-    // flags this line recorded a panel appearing and disappearing with a hole between. The four
-    // `sel()` readers were added for this and do nothing else.
+    // already committed. The row is what makes the overlay arms characterizable at all — each has
+    // an UP/DOWN branch that moves a cursor and changes nothing else, so with only the open flags
+    // this line recorded a panel appearing and disappearing with a hole between. The `sel()`
+    // readers were added for this and do nothing else. `tracks` is the detail page's
+    // Track-information panel, whose cursor is a PAGE rather than a row — same reasoning, and
+    // without it a paging press is invisible here (it moves nothing but that number).
     let _ = write!(
         s,
         " menu={} msel={} taudio={} tsub={} info={} isel={} infolast={} chap={} csel={} haschap={} more={} osel={}",
@@ -442,6 +444,12 @@ fn push_player(s: &mut String, overlay: &str, hud: Hud, ctrl: ControlSlot) {
         b(crate::ui::chapters_panel::has_chapters()),
         b(crate::ui::more_menu::is_open()),
         crate::ui::more_menu::sel()
+    );
+    let _ = write!(
+        s,
+        " tracks={} tpage={}",
+        b(crate::ui::tracks_panel::is_open()),
+        crate::ui::tracks_panel::sel()
     );
 }
 

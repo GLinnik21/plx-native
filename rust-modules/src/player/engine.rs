@@ -1145,7 +1145,7 @@ mod payload_tests {
     use crate::metadata::Dovi;
 
     fn p5() -> Dovi {
-        Dovi { present: true, profile: 5, bl_compat: 0, el_present: false }
+        Dovi { present: true, profile: 5, bl_compat: 0, el_present: false, ..Dovi::NONE }
     }
 
     /// **Every Load payload must carry the `appId` anchor**, because that string is what
@@ -1210,7 +1210,7 @@ mod payload_tests {
     /// `RELEASE=1` build compiles in and what every boot without `/tmp/plxnative-dv` does today.
     #[test]
     fn nothing_is_spliced_unless_the_stream_is_declared() {
-        let p7 = Dovi { present: true, profile: 7, bl_compat: 6, el_present: true };
+        let p7 = Dovi { present: true, profile: 7, bl_compat: 6, el_present: true, ..Dovi::NONE };
         for dv in [
             Dovi::NONE.presentation(true),
             p7.presentation(true),

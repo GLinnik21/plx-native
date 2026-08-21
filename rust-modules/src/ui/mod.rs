@@ -47,6 +47,7 @@ pub mod text_view;
 pub mod testpat; // dev-only SYNTHETIC GROUNDS — the page's picture replaced by a chosen pattern
 pub mod theme;
 pub mod track_menu;
+pub mod tracks_panel; // the detail page's "Track information" file inspector (Alert Views §1B)
 pub mod trail; // the BACK trail: which pages are behind the one on screen (app.rs pops it)
 pub mod up_next; // end-of-episode Up Next card + auto-advance countdown
 pub mod widgets;

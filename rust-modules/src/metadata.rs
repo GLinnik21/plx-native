@@ -90,13 +90,70 @@ pub(crate) struct Dovi {
     pub(crate) bl_compat: i64,
     /// `DOVIELPresent` — an enhancement layer is present (P7).
     pub(crate) el_present: bool,
+    // ---- DESCRIPTIVE ONLY, below. The four fields above answer the PLAYBACK question this struct
+    // exists for ("is the base layer a correct picture"); these three are read by
+    // `ui::tracks_panel` and by nothing else. They live here rather than on `Detail` so there is
+    // one home for "what the server said about Dolby Vision" — but do not reach for them in a
+    // decision without the live sweep `plex::Stream`'s DOVI comment records.
+    /// `DOVILevel` — the DV level (a bitrate/resolution tier); 0 = the server did not say.
+    pub(crate) level: i64,
+    /// `DOVIVersion`, DECOMPOSED — the server sends the dotted string `"1.0"`, and this holds it
+    /// as `(1, 0)`. Rendered back by [`Dovi::version_str`].
+    ///
+    /// **Why not a `String`:** this struct is `Copy` and rides `route::Session`, whose `IDLE` is a
+    /// `const`; more to the point `route::playback_preview_of` reads a `Dovi` **on the detail
+    /// page's per-frame draw path**, so a `String` field would put a heap allocation in a hot
+    /// frame — the same cost `ui::info_panel` refuses when it declines to clone `route::url()`.
+    /// A DV version is dotted-numeric by specification, so the decomposition is lossless for every
+    /// shape the field can take; anything unparseable lands as `(0, 0)` and draws no row at all.
+    pub(crate) version: (i64, i64),
+    /// `DOVIBLPresent` — the base layer is in the file.
+    pub(crate) bl_present: bool,
+    /// `DOVIRPUPresent` — the RPU (the dynamic metadata) is in the file.
+    pub(crate) rpu_present: bool,
 }
 
 impl Dovi {
     /// The all-zero record — "the server said nothing about Dolby Vision", which is also exactly
     /// what an ordinary SDR file produces. A `const` rather than [`Default::default`] because
     /// `route`'s idle `Session` is a `const` item and cannot call one.
-    pub(crate) const NONE: Dovi = Dovi { present: false, profile: 0, bl_compat: 0, el_present: false };
+    pub(crate) const NONE: Dovi = Dovi {
+        present: false,
+        profile: 0,
+        bl_compat: 0,
+        el_present: false,
+        level: 0,
+        version: (0, 0),
+        bl_present: false,
+        rpu_present: false,
+    };
+
+    /// [`Self::version`] back as the dotted string the server sent (`"1.0"`), or `None` when it
+    /// sent none. `None` and `Some("0.0")` are different answers and the panel draws only the
+    /// former's absence — a server that really reported version 0 would still get a row.
+    pub(crate) fn version_str(&self) -> Option<String> {
+        (self.version != (0, 0)).then(|| format!("{}.{}", self.version.0, self.version.1))
+    }
+
+    /// Parse `DOVIVersion`'s dotted string into [`Self::version`]'s pair. PURE, and deliberately
+    /// forgiving: a value this does not understand is `(0, 0)` — i.e. "the server said nothing" —
+    /// because a version string is a caption and must never be a parse failure that costs the
+    /// whole item.
+    pub(crate) fn parse_version(s: &str) -> (i64, i64) {
+        let s = s.trim();
+        if s.is_empty() {
+            return (0, 0);
+        }
+        let (a, b) = match s.split_once('.') {
+            // a trailing ".0.0" (a three-part version) keeps its first two components
+            Some((a, rest)) => (a, rest.split('.').next().unwrap_or("0")),
+            None => (s, "0"),
+        };
+        match (a.trim().parse::<i64>(), b.trim().parse::<i64>()) {
+            (Ok(a), Ok(b)) if a >= 0 && b >= 0 => (a, b),
+            _ => (0, 0),
+        }
+    }
 
     /// PURE: **true when the base layer on its own is not a picture we can put on the panel
     /// correctly** — i.e. when this bitstream, decoded as ordinary HEVC by a pipeline that was
@@ -323,6 +380,18 @@ pub(crate) struct Stream {
     pub(crate) codec: String,
     pub(crate) channels: i64,
     pub(crate) layout: String, // audioChannelLayout, e.g. "5.1(side)"
+    /// Per-STREAM bitrate in kbps (0 = the server did not say) — NOT the file's. It is what tells
+    /// seven same-language AC3 tracks apart in `ui::tracks_panel`, where language and codec alone
+    /// cannot.
+    pub(crate) bitrate: i64,
+    /// The codec profile, lower-case as PMS sends it. **On an audio track this is where Atmos
+    /// is** — `"dolby digital plus + dolby atmos"` (probed live 2026-08-21); on the video track it
+    /// is `"main 10"`. See [`Stream::has_atmos`].
+    pub(crate) profile: String,
+    /// Video track only: bits per component (10 for Main 10); 0 = not said.
+    pub(crate) bit_depth: i64,
+    /// Video track only: chroma subsampling as PMS spells it, e.g. `"4:2:0"`.
+    pub(crate) chroma: String,
     pub(crate) title: String,
     pub(crate) sdh: bool,
     pub(crate) ad: bool,
@@ -808,6 +877,23 @@ pub(crate) struct Detail {
     pub(crate) width: i64,               // stored frame size, not the resolution class (1918x802
     pub(crate) height: i64,              // is a 1080p scope movie) — badge off video_resolution
     pub(crate) bitrate: i64,             // kbps, whole-stream
+    // ---- the rest of the primary version's technical record, added for `ui::tracks_panel` and
+    // read by nothing else. Same caveat as the block above: this is version 0, not a best-of pick.
+    /// `Part[0].container`, falling back to `Media[0].container` — `"mp4"`, `"mkv"`, ….
+    pub(crate) container: String,
+    /// `Part[0].file` — the part's absolute path ON THE SERVER. Shown as the Track-information
+    /// panel's header line. Not a URL, not reachable from here, and the one field on `Detail` most
+    /// likely to be non-ASCII, so elide it by CHARACTER.
+    pub(crate) file: String,
+    /// `Part[0].size` in BYTES (0 = the server did not say).
+    pub(crate) size: i64,
+    /// `Media[0].aspectRatio` as a number — `2.35` (0.0 = not said).
+    pub(crate) aspect_ratio: f64,
+    /// The primary version's VIDEO track, whole. `vcodec`/`width`/`height`/`bitrate` above are the
+    /// Media-level summary the play path reads; this is the stream's own record, and the only
+    /// place its profile, bit depth, chroma and per-stream bitrate live. `None` for a show
+    /// container that never got an episode backfill, and for an audio-only part.
+    pub(crate) video: Option<Stream>,
     /// the video stream is HDR (PQ/HLG transfer or Dolby Vision) — with [`Self::hdr`] true AND
     /// the item facing a real RE-ENCODE (`route::Preview::Converts`, **not** merely "not
     /// direct-playable": a container-only remux copies the picture and keeps HDR10 intact) AND the
@@ -1110,6 +1196,13 @@ fn fetch_detail(sid: crate::plex::ServerId, rk: &str) -> Option<Detail> {
         width: 0,
         height: 0,
         bitrate: 0,
+        // …as are the five below, which `parse_streams` fills from that same primary version — so
+        // a show's borrowed technicals and its FILE column can never describe two different files.
+        container: String::new(),
+        file: String::new(),
+        size: 0,
+        aspect_ratio: 0.0,
+        video: None,
         hdr: false,
         dovi: Dovi::default(),
         art: it.art.clone(),
@@ -1206,10 +1299,29 @@ fn crew_credits(it: &crate::plex::Metadata) -> Vec<Cast> {
 /// the item would transcode on a server that cannot tone-map. [`Dovi`] is the finer-grained
 /// companion to that flag and answers a different question — not "is this HDR" but "can we show
 /// the base layer at all" (`route::video_direct_plays` gates direct play on it).
-fn convert_streams(streams: &[crate::plex::Stream]) -> (Vec<Stream>, Vec<Stream>, f64, bool, Dovi) {
+/// What one part's `Stream[]` reduces to — the return of [`convert_streams`].
+///
+/// A named struct rather than the 5-tuple it was, because the Track-information panel needed the
+/// VIDEO track itself and a sixth positional element is where a tuple stops being readable at the
+/// call site. Every field keeps the meaning it had.
+#[derive(Default)]
+pub(crate) struct Streams {
+    pub(crate) audio: Vec<Stream>,
+    pub(crate) subs: Vec<Stream>,
+    /// The part's video track, or `None` for an audio-only part. Carries the per-stream bitrate,
+    /// profile, bit depth and chroma that `fps`/`hdr`/`dovi` alone throw away.
+    pub(crate) video: Option<Stream>,
+    /// the video track's `frameRate` (0 = unknown) — feeds the Load esInfo
+    pub(crate) fps: f64,
+    pub(crate) hdr: bool,
+    pub(crate) dovi: Dovi,
+}
+
+fn convert_streams(streams: &[crate::plex::Stream]) -> Streams {
     let (mut audio, mut subs, mut fps) = (Vec::new(), Vec::new(), 0.0);
     let mut hdr = false;
     let mut dovi = Dovi::default();
+    let mut video: Option<Stream> = None;
     for s in streams {
         let st = Stream {
             id: s.id,
@@ -1219,6 +1331,10 @@ fn convert_streams(streams: &[crate::plex::Stream]) -> (Vec<Stream>, Vec<Stream>
             codec: s.codec.clone(),
             channels: s.channels,
             layout: s.audio_channel_layout.clone(),
+            bitrate: s.bitrate,
+            profile: s.profile.clone(),
+            bit_depth: s.bit_depth,
+            chroma: s.chroma_subsampling.clone(),
             sdh: s.hearing_impaired != 0,
             ad: s.audio_description != 0 || s.title.to_lowercase().contains("descri"),
             forced: s.forced != 0,
@@ -1257,7 +1373,19 @@ fn convert_streams(streams: &[crate::plex::Stream]) -> (Vec<Stream>, Vec<Stream>
                         profile: s.dovi_profile,
                         bl_compat: s.dovi_bl_compat_id,
                         el_present: s.dovi_el_present != 0,
+                        level: s.dovi_level,
+                        version: Dovi::parse_version(&s.dovi_version),
+                        bl_present: s.dovi_bl_present != 0,
+                        rpu_present: s.dovi_rpu_present != 0,
                     };
+                }
+                // The video track ITSELF, kept rather than reduced to `fps`/`hdr`/`dovi`. It is the
+                // only place the stream's own bitrate, profile, bit depth and chroma survive, and
+                // `ui::tracks_panel`'s VIDEO column is built from all four. Guarded like the DV
+                // record and for the same reason — a second `streamType: 1` stream (embedded cover
+                // art is the shape to expect) must not overwrite the real picture's technicals.
+                if video.is_none() {
+                    video = Some(st);
                 }
             }
             2 => audio.push(st),
@@ -1265,7 +1393,7 @@ fn convert_streams(streams: &[crate::plex::Stream]) -> (Vec<Stream>, Vec<Stream>
             _ => {}
         }
     }
-    (audio, subs, fps, hdr, dovi)
+    Streams { audio, subs, video, fps, hdr, dovi }
 }
 
 /// parse an item's Media[0].Part[0].Stream[] into d.audio / d.subs (the About footer), plus that
@@ -1278,15 +1406,26 @@ fn parse_streams(it: &crate::plex::Metadata, d: &mut Detail) {
         d.width = m.width;
         d.height = m.height;
         d.bitrate = m.bitrate;
+        d.container = m.container.clone();
+        d.aspect_ratio = m.aspect_ratio;
     }
     if let Some(p) = it.first_part() {
-        let (audio, subs, fps, hdr, dovi) = convert_streams(&p.stream);
-        d.audio = audio;
-        d.subs = subs;
-        d.hdr = hdr;
-        d.dovi = dovi;
-        if fps > 0.0 {
-            d.video_fps = fps;
+        d.file = p.file.clone();
+        d.size = p.size;
+        // The PART's container wins where it has one — a version can hold parts in different
+        // containers, and the part is the thing the panel is describing. `Media.container` is the
+        // fallback, already assigned above.
+        if !p.container.is_empty() {
+            d.container = p.container.clone();
+        }
+        let s = convert_streams(&p.stream);
+        d.audio = s.audio;
+        d.subs = s.subs;
+        d.video = s.video;
+        d.hdr = s.hdr;
+        d.dovi = s.dovi;
+        if s.fps > 0.0 {
+            d.video_fps = s.fps;
         }
     }
 }
@@ -1404,10 +1543,11 @@ pub(crate) fn fetch_playing_item(sid: crate::plex::ServerId, rk: &str) -> Option
     // here costs no request, and dropping it is what hid the Chapters tab on the episode path.
     let markers = it.as_ref().map(|it| convert_markers(&it.marker)).unwrap_or_default();
     let chapters = it.as_ref().map(|it| convert_chapters(&it.chapter)).unwrap_or_default();
-    let (audio, subs, video_fps, _hdr, dovi) = it
+    let st = it
         .as_ref()
         .and_then(|it| it.first_part().map(|p| convert_streams(&p.stream)))
         .unwrap_or_default();
+    let (audio, subs, video_fps, dovi) = (st.audio, st.subs, st.fps, st.dovi);
     // the frame size rides the same PRIMARY version the streams come from (route.rs's
     // direct-play gate tests it against the device bound — see the field doc)
     let (width, height) = it
@@ -2474,7 +2614,7 @@ mod tests {
     fn a_dolby_vision_record_is_not_erased_by_a_later_video_stream() {
         let p5 = video_stream(Some((5, 0, 0)));
         let cover = video_stream(None);
-        let (_, _, _, _, dovi) = convert_streams(&[p5, cover]);
+        let dovi = convert_streams(&[p5, cover]).dovi;
         assert!(dovi.present, "the P5 record must outlive a second video stream");
         assert_eq!(dovi.profile, 5);
         assert!(dovi.base_layer_unusable(), "and must still forbid a server-side COPY of it");
@@ -2492,7 +2632,8 @@ mod tests {
     /// record that refuses nothing.
     #[test]
     fn a_part_with_no_dolby_vision_reports_no_record() {
-        let (_, _, _, hdr, dovi) = convert_streams(&[video_stream(None)]);
+        let s = convert_streams(&[video_stream(None)]);
+        let (hdr, dovi) = (s.hdr, s.dovi);
         assert_eq!(dovi, Dovi::default());
         assert!(!dovi.base_layer_unusable());
         assert!(!hdr, "no DV and no PQ/HLG transfer is not HDR");

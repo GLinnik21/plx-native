@@ -4588,6 +4588,22 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                 crate::ui::detail::move_focus(SDLK_RIGHT as c_int);
                             }
                         }
+                        // dev: /tmp/plxnative-tracks[=<page>] opens the Track-information panel
+                        // over the page, at that 1-based page of its body. The panel is opened by
+                        // a hero DISC, so `detailcol`+`detailok` could in principle reach it — but
+                        // the disc's index moves with the control set (`hero_ctls`), so a recipe
+                        // written as "three RIGHTs" would land on a different control the moment
+                        // an item has no resume point or a second source. Naming the panel is the
+                        // stable form, and it is also what makes the SCROLL states capturable at
+                        // all: nothing else can page a body headlessly.
+                        if let Some(pg) = crate::dev::read("tracks") {
+                            if crate::ui::tracks_panel::is_available() {
+                                crate::ui::tracks_panel::open();
+                                crate::ui::tracks_panel::set_page(
+                                    pg.trim().parse::<c_int>().unwrap_or(1),
+                                );
+                            }
+                        }
                         // dev: /tmp/plxnative-detailok presses OK on whatever the two triggers
                         // above focused, WITHOUT the play path — the deterministic one-boot route
                         // to a section whose OK navigates rather than plays. Today that means the
