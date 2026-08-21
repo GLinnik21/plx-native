@@ -25,6 +25,7 @@
 #include <libavutil/frame.h>
 #include <libavutil/channel_layout.h>
 #include <libavutil/dovi_meta.h>
+#include <libavutil/dict.h>
 
 #define SAME(expr, want, what) _Static_assert((expr) == (want), what)
 
@@ -37,6 +38,15 @@ SAME(LIBAVUTIL_VERSION_MAJOR, 61, "bundled libavutil is not 61");
 SAME(offsetof(AVStream, index), 4, "OFF_STREAM_INDEX != 4");
 SAME(offsetof(AVStream, codecpar), 12, "OFF_STREAM_CODECPAR != 12");
 SAME(offsetof(AVStream, time_base), 20, "OFF_STREAM_TIME_BASE != 20");
+/* The container's per-track tags — where a track's NAME is, and the only place it is for an MP4
+   (PMS sends Stream.title for Matroska and nothing at all for MP4; see ff.rs's stream_name). The
+   int64 start_time/duration/nb_frames ahead of it are 8-ALIGNED on ARM EABI, so there is a 4-byte
+   pad after time_base that a 64-bit reading of the struct does not show — the same trap
+   AVFrame.pts carries below. */
+SAME(offsetof(AVStream, metadata), 72, "OFF_STREAM_METADATA != 72");
+SAME(offsetof(AVDictionaryEntry, key), 0, "AVDictionaryEntry.key moved");
+SAME(offsetof(AVDictionaryEntry, value), 4, "AVDictionaryEntry.value moved");
+SAME(sizeof(AVDictionaryEntry), 8, "AVDictionaryEntry is not two 32-bit pointers");
 
 /* --- AVFormatContext: modelled through `duration`. FFmpeg 5.0 deleted filename[1024], which is
        why duration is at +48 here and +1064 on the n3.3 televisions ship. --- */

@@ -21,6 +21,58 @@ use crate::task::MainThread;
 use shared::{Shared, SubBitmap, SubCue, Transport};
 /// one rect of an image-subtitle display set — the demuxer builds them, the HUD draws them
 pub(crate) use shared::SubRect;
+pub(crate) use shared::TrackNames;
+
+/// `/tmp/plxnative-tracknames[=<audio>;<subs>]` — **stand in for the container's own track names**,
+/// which nothing off-device can read.
+///
+/// It exists for the same reason `/tmp/plxnative-personbio` does, and the shape of the problem is
+/// identical: the data comes from a source no automated or host run can reach, so without a seed
+/// every headless look at the screen shows the degenerate state. Here the source is the DEMUXER —
+/// `ff::track_names` publishes these when it opens a part — and the desktop simulator has no
+/// demuxer at all (the bundled FFmpeg is ARM, and `player::ffi`'s host arm has no video path), so
+/// the picker there can only ever draw what PMS sent. Which, for the MP4 this exists to fix, is a
+/// column of identical language names.
+///
+/// Pipe-separated within a list, `;` between the two lists, audio first:
+/// `Дубляж|Original;Forced|Full`. Either side may be empty (`;Forced|Full` seeds subtitles alone).
+/// An EMPTY file seeds the real nine-track sample this was built against, because that is the shape
+/// that exercises the case: six same-language rows PMS reports identically, which no shorter list
+/// demonstrates.
+///
+/// **It seeds the real store and stubs nothing else** — the same `SHARED.track_names` the demuxer
+/// writes, read back through the same `ui::track_menu::track_name` precedence. So a seeded
+/// screenshot verifies the ROW, honestly; what it cannot verify is the FFI read that fills the
+/// store on a television. Compiled out of a release build with every other trigger (`dev::read` is
+/// a compile-time `None`), so a shipped binary cannot be made to show a name that is not the
+/// file's.
+pub(crate) fn seed_dev_track_names() {
+    let Some(spec) = crate::dev::read("tracknames") else { return };
+    // The real subtitle names of a nine-track MP4 whose PMS record carries none — the file this
+    // whole path was written against. Audio is left empty on purpose: one list is enough to
+    // demonstrate, and seeding audio too would hide the `audio_descriptor` fallback the real menu
+    // still uses for a track the container does not name.
+    const SAMPLE: &str = ";Форс. iTunes|Форс. Jaskier песни|Форс. Red Head Sound песни|Полные iTunes|Полные Jaskier|Полные stirloo|Full|Full SDH|Повнi iTunes";
+    let spec = spec.trim().to_string();
+    let spec = if spec.is_empty() { SAMPLE } else { spec.as_str() };
+    let list = |s: &str| -> Vec<String> {
+        if s.is_empty() {
+            Vec::new()
+        } else {
+            s.split('|').map(|p| p.trim().to_string()).collect()
+        }
+    };
+    // `split_once(';')`, so a name may not contain a `;` and everything after the first one is the
+    // subtitle list — a seed is a diagnostic, not a format, and the alternative is quoting rules.
+    let (a, sub) = spec.split_once(';').unwrap_or(("", spec));
+    let (audio, subs) = (list(a), list(sub));
+    crate::log(&format!(
+        "player: DEV track names seeded (a={} s={}) — /tmp/plxnative-tracknames",
+        audio.len(),
+        subs.len()
+    ));
+    *SHARED.track_names.lock().unwrap() = TrackNames { audio, subs };
+}
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_long};
 use std::panic::{catch_unwind, AssertUnwindSafe};

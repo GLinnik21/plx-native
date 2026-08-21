@@ -3636,6 +3636,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         // and so that if a frame ever looks wrong on the panel, ruling this feature out is one
         // `rm` rather than a redeploy.
         crate::ui::testpat::boot();
+        crate::player::seed_dev_track_names();
         if crate::dev::flag("noidle") {
             crate::ui::idle::set_enabled(false);
             log("idle: present gate DISABLED by /tmp/plxnative-noidle");
