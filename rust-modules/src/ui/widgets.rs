@@ -1102,6 +1102,32 @@ const CHIP_NAME_MAX: f32 = 320.0;
 /// for a hit test, which is exactly how a control drawn on three screens came to be clickable on
 /// one.
 pub(crate) const CHIP_FRAME: Rect = Rect::new(crate::ui::consts::MARGIN_X, TOP_BAR_Y, CHIP_D, CHIP_D);
+
+/// **The focused capsule's rect — the ONE expression, drawn and priced from the same place.**
+///
+/// [`profile_chip`] draws this and [`CHIP_CAP_MAX_R`] prices it, and until 2026-08-21 they were two
+/// arithmetics that happened to agree: the draw built the rect inline and the constant restated the
+/// same seven terms by hand, in a different file position, so a pad added to one would have left the
+/// other quietly describing a capsule nobody draws. That constant is what [`GLASS_TRACK_MAX`] is
+/// solved against, i.e. what keeps the band's two glass surfaces from touching — the design-system
+/// rule for a graded field applies with more force here than it does to a scrim: the drawn shape and
+/// the shape a test grades must be one expression, not two that agree.
+///
+/// `e` is the unfurl, 0..1; `name_w` the elided name's measured width ([`CHIP_NAME_MAX`] is its
+/// budget, so `chip_cap(1.0, CHIP_NAME_MAX)` is the widest capsule the control can ever draw).
+/// Only the WIDTH moves — the capsule grows rightward off a fixed left edge, which is why the band's
+/// blur region has a constant left edge whatever the chip is doing.
+const fn chip_cap(e: f32, name_w: f32) -> Rect {
+    let closed = CHIP_D + 2.0 * TAB_TRACK_PAD;
+    let open = closed + CHIP_NAME_GAP + name_w + CHIP_NAME_TAIL;
+    Rect::new(
+        CHIP_FRAME.x - TAB_TRACK_PAD,
+        CHIP_FRAME.y - TAB_TRACK_PAD,
+        closed + (open - closed) * e,
+        CHIP_D + 2.0 * TAB_TRACK_PAD,
+    )
+}
+
 /// The chip unfurl's stiffness — brisk, a touch stiffer than the hero slide.
 const K_CHIP: f32 = 300.0;
 /// How far the chip is into its focused face, 0..1. A static beside [`TAB_SCROLL`] and
@@ -1364,14 +1390,9 @@ pub(crate) fn profile_chip(p: Painter) {
     // widened from a bare disc surround to hold the name.
     let e = expand.clamp(0.0, 1.0);
     if e > 0.004 {
-        let closed = d + 2.0 * TAB_TRACK_PAD;
-        let open = closed + CHIP_NAME_GAP + name_w + CHIP_NAME_TAIL;
-        let cap = Rect::new(
-            r.x - TAB_TRACK_PAD,
-            r.y - TAB_TRACK_PAD,
-            closed + (open - closed) * e,
-            d + 2.0 * TAB_TRACK_PAD,
-        );
+        // The rect comes from [`chip_cap`] rather than being built here, because it is also what
+        // [`GLASS_TRACK_MAX`] is solved against — see there.
+        let cap = chip_cap(e, *name_w);
         // the tab track's own material, faded in with the unfurl — one pair of weights for both,
         // and now literally the same material: glass when the track resolved glass this frame,
         // the flat capsule when it did not.
@@ -2741,9 +2762,46 @@ static mut TAB_GLASS_STATE: GlassState = GlassState::new();
 /// first and it is the surface the ground question was posed about; the chip takes the answer. The
 /// band cannot be two densities because there is only one.
 ///
-/// Reset to `Flat` at the top of every [`draw_tab_row`], so a frame that returns early — the blur
-/// SOURCE pass, where the flat capsule is the right source pixel — leaves the chip on the flat
-/// material rather than on the previous frame's stops.
+/// # What option (a) COSTS, measured — the chip's ink is no longer solved for
+///
+/// This is the half the four bullets above do not price, and it is not small. `track_alpha_for` is
+/// not a look; it is a CONTRACT — it searches for the lightest scrim on which `theme::TEXT_READING`
+/// still clears `TRACK_INK_CONTRAST` over **the ground under `r`**. The chip is 800px outside `r`,
+/// so the density it now wears carries no promise about the pixels it is actually sitting on, and
+/// the unfurled capsule's whole content is a NAME.
+///
+/// Through this module's own `track_alpha_for`/`contrast` and `theme`'s tokens, for a neutral chip
+/// ground at L\* 92 with the track's worst tap at or below L\* 50 (where the solve rests on its
+/// floor, `theme::TAB_GLASS_TOP`'s .20):
+///
+/// | what the chip's name sits on | face | `TEXT_PRIMARY` contrast |
+/// |---|---|---|
+/// | the flat capsule this replaced (`TAB_TRACK_A_TOP` .72) | L\* 27.5 | **9.74:1** |
+/// | the band's face, solved for a dark track | L\* 75.4 | **1.86:1** |
+///
+/// At L\* 80 it is 2.54:1. Nothing in the app darkens the top band before this — `home`'s
+/// atmospheric ramp starts at `HERO_BASE_SCRIM_Y0` (367) and the hero wedge at `HERO_SCRIM_TOP`
+/// (162) — so those are raw backdrop pixels, and `gfx::sample_ground`'s own note records a census
+/// finding a MEDIAN 26.8 L\* span across five taps of the track alone, a third of heroes over 40.
+/// The band is half again as wide as the track.
+///
+/// **It is not settled, and the shape of the answer is not obvious**, which is why it is written
+/// down here rather than fixed in passing. Widening `r` to the band spreads the same five taps over
+/// ~1.4x the span with ~300px of it dead — on the narrowest strip that leaves the TRACK one tap,
+/// which trades this failure for its mirror image. Making the rect follow the unfurl re-solves the
+/// whole bar when focus lands on the chip. Keying `sample_ground` per caller costs far less than
+/// its doc used to claim (see there) but puts two densities on one line — which the lane's own
+/// geometry change makes less dangerous than it was, since `GLASS_TRACK_MAX` now guarantees the two
+/// can never be nearer than `BAND_AIR` and are usually ~300px apart. Settle it by LOOKING, with a
+/// ground that varies in luminance ACROSS the band: `pat:ramp`, `pat:edge`, `pat:orient`. Every
+/// pattern this was verified on (`flat:*`, `hbars`, `rainbow:70`) is uniform across x or uniform in
+/// L\*, and so is structurally unable to show it.
+///
+/// Reset to `Flat` at the top of every [`draw_tab_row`], so a frame that returns early leaves the
+/// chip on the flat material rather than on the previous frame's stops. The case that needs it is
+/// the POPOVER source pass, where the row draws its flat track and the chip must draw the flat
+/// capsule into the same snapshot; in the TRACK's own source pass [`profile_chip`] returns before
+/// drawing anything at all, so there the reset decides nothing.
 #[derive(Clone, Copy)]
 enum BarMaterial {
     /// the flat dark capsule: `flattabs`, a popover open, a strip past [`GLASS_TRACK_MAX`], a
@@ -3167,16 +3225,14 @@ const BAND_AIR: f32 = theme::space::SM;
 
 /// **Where the unfurled [`profile_chip`] capsule's right edge can reach, at its widest.**
 ///
-/// The capsule is the avatar wrapped in [`TAB_TRACK_PAD`] on every side, plus [`CHIP_NAME_GAP`],
-/// the name, and [`CHIP_NAME_TAIL`]; the name is elided to [`CHIP_NAME_MAX`], so this is arithmetic
-/// on constants and needs no font to evaluate — which is what makes the clearance below a host
-/// test rather than a device capture.
-const CHIP_CAP_MAX_R: f32 = crate::ui::consts::MARGIN_X - TAB_TRACK_PAD
-    + CHIP_D
-    + 2.0 * TAB_TRACK_PAD
-    + CHIP_NAME_GAP
-    + CHIP_NAME_MAX
-    + CHIP_NAME_TAIL;
+/// It is [`chip_cap`] at rest with a name at its budget — **the rect the control DRAWS**, not a
+/// hand-copy of the terms that build it. The name is elided to [`CHIP_NAME_MAX`] before it is
+/// measured, so this is arithmetic on constants and needs no font to evaluate, which is what makes
+/// the clearance below a host test rather than a device capture.
+const CHIP_CAP_MAX_R: f32 = {
+    let c = chip_cap(1.0, CHIP_NAME_MAX);
+    c.x + c.w
+};
 
 /// The widest a track may be and still wear glass — the design system's `--glass-track-max`.
 ///
@@ -4267,21 +4323,28 @@ mod tests {
     use super::*;
 
     /// The band's blurred region, in authored px^2, for a track `w` wide with the chip unfurled
-    /// beside it — `gfx::blur_region`'s arithmetic, restated where a test can read it.
+    /// beside it — through **`gfx`'s own `blur_region` and `blur_region_union`**, not a copy of them.
     ///
-    /// Both surfaces are grown [`crate::gfx::BLUR_MARGIN`] a side and then CLAMPED to the screen,
-    /// and the clamp is not a detail here: the capsule starts at x=82 and the top band at y=36, so
-    /// the union's left edge and its top both land on 0 and the band is 200 tall rather than 252.
-    /// Priced without the clamp the pair looks a third dearer than it is, which is the arithmetic
-    /// that would have moved the cap for no reason.
+    /// The copy is the thing to avoid here and there is a measurement to prove it: this test's
+    /// predecessor modelled the region inline and left the screen CLAMP out, which priced the tab
+    /// track at `(940+176) x 252` = 281k px^2 where the real region is `1116 x 200` = 223k — a 26%
+    /// over-estimate that sat under a passing assertion for as long as the limit existed, and the
+    /// reason the old limit read as if it had only ~7% of headroom when it had far more. Both
+    /// surfaces are grown `gfx::BLUR_MARGIN` a side and then clamped to the screen, so the capsule
+    /// at x=82 and the band at y=36 put the union's left edge and its top on 0 and make it 200 tall
+    /// rather than 252. That is `blur_region`'s business, and it is now asked rather than restated.
+    ///
+    /// The rects are the DRAWN ones: `chip_cap` at rest with a name at its budget, and the centred
+    /// track `draw_tab_row` builds. Only the chip's left edge reaches the union — the capsule grows
+    /// rightward and the clearance keeps its right edge inside the track's — so the pair prices the
+    /// same at every point of the unfurl, which is why one number can stand for the band.
     fn band_region(w: f32) -> f32 {
-        let m = crate::gfx::BLUR_MARGIN;
         let (h, y) = (TAB_PILL_H + 2.0 * TAB_TRACK_PAD, TOP_BAR_Y - TAB_TRACK_PAD);
-        let x0 = (crate::ui::consts::MARGIN_X - TAB_TRACK_PAD - m).max(0.0);
-        let x1 = ((crate::ui::consts::SCR_W - w) * 0.5 + w + m).min(crate::ui::consts::SCR_W);
-        let y0 = (y - m).max(0.0);
-        let y1 = (y + h + m).min(crate::ui::consts::SCR_H);
-        (x1 - x0) * (y1 - y0)
+        let track = crate::gfx::blur_region((crate::ui::consts::SCR_W - w) * 0.5, y, w, h);
+        let cap = chip_cap(1.0, CHIP_NAME_MAX);
+        let chip = crate::gfx::blur_region(cap.x, cap.y, cap.w, cap.h);
+        let u = crate::gfx::blur_region_union(track, chip);
+        u[2] * u[3]
     }
 
     /// **[`GLASS_TRACK_MAX`] is the budget, solved for width** — asserted rather than asserted-in-a-
@@ -4324,23 +4387,45 @@ mod tests {
     /// (33,38,26) once it contained itself). The capsule is bounded by [`CHIP_NAME_MAX`] and the
     /// track is centred, so the clearance is two constants and needs no font.
     ///
-    /// The second half is what stops [`GLASS_TRACK_MAX`] being quietly relaxed back: past the limit
-    /// the two capsules are in contact, which is the state the limit exists to forbid.
+    /// **Be clear about what each half can catch, because as long as [`GLASS_TRACK_MAX`] is SOLVED
+    /// for this both are identities.** That is the design working — the constant is the clearance,
+    /// so nothing is left to check — and it means the assertions only bite under an EDIT. The first
+    /// fires the moment the limit goes back to being a literal (it was `940.0` until 2026-08-21,
+    /// which leaves the widest capsule 42px inside the widest track). The second is the opposite
+    /// guard, and it is NOT "a wider track would be overlapped" — a track past the limit wears no
+    /// glass at all, so it can never be overlapped as glass. It pins the clearance TIGHT: within a
+    /// pixel of [`BAND_AIR`] and not an arbitrary gulf, so nobody buys safety here by quietly
+    /// spending the strip.
+    ///
+    /// The capsule side is the rect [`profile_chip`] actually draws ([`chip_cap`]), which is the
+    /// half that could have gone wrong on its own: [`CHIP_CAP_MAX_R`] hand-restated those seven
+    /// terms until it was made to ask for them.
     #[test]
     fn the_unfurled_chip_never_reaches_the_glass_track() {
         let track_x = |w: f32| (crate::ui::consts::SCR_W - w) * 0.5;
+        let cap = chip_cap(1.0, CHIP_NAME_MAX);
+        assert_eq!(cap.x + cap.w, CHIP_CAP_MAX_R, "priced and drawn are one expression");
         assert!(
-            CHIP_CAP_MAX_R + BAND_AIR <= track_x(GLASS_TRACK_MAX) + 0.01,
+            cap.x + cap.w + BAND_AIR <= track_x(GLASS_TRACK_MAX) + 0.01,
             "the widest capsule ends at {} and the widest glass track starts at {} — they must \
              clear each other by {}",
-            CHIP_CAP_MAX_R,
+            cap.x + cap.w,
             track_x(GLASS_TRACK_MAX),
             BAND_AIR,
         );
         assert!(
-            CHIP_CAP_MAX_R > track_x(GLASS_TRACK_MAX + 2.0 * BAND_AIR + 2.0),
-            "a track wider than the limit WOULD be overlapped — which is what the limit is for",
+            cap.x + cap.w + 2.0 * BAND_AIR + 1.0 > track_x(GLASS_TRACK_MAX),
+            "the clearance is {:.0}px where {BAND_AIR} was asked for — a limit that gives away \
+             more strip than the band needs is a cost nobody decided to pay",
+            track_x(GLASS_TRACK_MAX) - (cap.x + cap.w),
         );
+        // the capsule only ever grows RIGHTWARD off a fixed edge, which is what lets one number
+        // stand for the band at every point of the unfurl (see `band_region`).
+        for e in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            let c = chip_cap(e, CHIP_NAME_MAX);
+            assert_eq!((c.x, c.y, c.h), (cap.x, cap.y, cap.h), "only the width moves");
+            assert!(c.w <= cap.w + 0.01, "the rest capsule is the widest");
+        }
     }
 
     /// The unfurl fades the whole FACE, and the two rim weights are the half that matters.
@@ -5611,5 +5696,60 @@ mod tests {
                 "ground {lum}: α={a} lift={g} leaves the idle label at {c:.2}:1"
             );
         }
+    }
+    /// **The floor above is the TRACK's, over the track's own ground — and the band's other surface
+    /// has no equivalent.** A PINNED EXPOSURE, not a bug assertion: [`BarMaterial`]'s note is where
+    /// the decision and the three candidate fixes live.
+    ///
+    /// [`profile_chip`]'s capsule wears the face [`track_alpha_for`] solved against pixels ~800px
+    /// away, and the unfurled capsule's whole content is a name in [`theme::TEXT_PRIMARY`]. Where
+    /// the two grounds agree the shared face is exactly right, which is the arrangement's whole
+    /// argument; where they do not, the chip carries a promise nobody made about it. Nothing
+    /// darkens the top band before this — `home::HERO_BASE_SCRIM_Y0` is 367 and [`HERO_SCRIM_TOP`]
+    /// 162 — so both grounds are raw backdrop, and `gfx::sample_ground`'s census puts the MEDIAN
+    /// span at 26.8 L* across the track alone.
+    ///
+    /// Written as a test so the number cannot drift silently in EITHER direction: tightening the
+    /// exposure, or closing it, fails here and sends the next reader to the note.
+    #[test]
+    fn the_bands_face_carries_no_promise_about_the_chips_own_ground() {
+        // a neutral at a CIE lightness — the axis every measurement in this material is quoted in
+        let grey_at = |l: f32| {
+            let (mut lo, mut hi) = (0.0f32, 1.0f32);
+            for _ in 0..40 {
+                let m = 0.5 * (lo + hi);
+                if lstar([m, m, m, 1.0]) < l {
+                    lo = m
+                } else {
+                    hi = m
+                }
+            }
+            0.5 * (lo + hi)
+        };
+        // the drawn face, exactly as the test above builds it
+        let face_over = |g: f32, a: f32| {
+            let v = g * (1.0 - a) + track_lift([g, g, g], a) * a;
+            [v, v, v, 1.0]
+        };
+        let dark = grey_at(20.0);
+        let a = track_alpha_for([dark, dark, dark]);
+        assert_eq!(a, theme::TAB_GLASS_TOP[3], "a dark track rests the solve on its floor");
+        assert!(
+            contrast(theme::TEXT_READING, face_over(dark, a)) >= TRACK_INK_CONTRAST,
+            "the track's own ink is served — that is the contract this one is measured against"
+        );
+        // …and the same face, under the chip, over a bright corner of the same hero.
+        let bright = grey_at(92.0);
+        let chip = contrast(theme::TEXT_PRIMARY, face_over(bright, a));
+        assert!(
+            (1.7..2.1).contains(&chip),
+            "the chip's name over L*92 art with the track solved dark reads {chip:.2}:1 — if this \
+             moved, in either direction, re-read `BarMaterial`"
+        );
+        let was = {
+            let v = bright * (1.0 - theme::TAB_TRACK_A_TOP);
+            contrast(theme::TEXT_PRIMARY, [v, v, v, 1.0])
+        };
+        assert!(was > 9.0, "the flat capsule this replaced cleared every ground: {was:.2}:1");
     }
 }
