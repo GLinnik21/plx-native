@@ -4,9 +4,10 @@
 //! Apple TV's, not Plex's field list. One scroll flow, two states of one header:
 //!
 //! * an **asymmetric editorial band** across the top — a circular portrait on the left with a text
-//!   column beside it (name at HERO, a roles kicker, a Born/Died line, a 3-line bio with an inline
-//!   `MORE`), the two **centred on each other** — followed by plain **`Movies` / `Shows` shelves**
-//!   of ordinary poster cards on the shared [`CardRow`] strip, each heading carrying its count.
+//!   column beside it (name at HERO, a roles kicker, a Born/Died line, a 3-line bio that dissolves
+//!   into a right-pinned `MORE`), the two **centred on each other** — followed by plain **`Movies`
+//!   / `Shows` shelves** of ordinary poster cards on the shared [`CardRow`] strip, each heading
+//!   carrying its count.
 //! * the band **CONDENSES once focus drops into the shelves** (portrait 320→160, the name steps
 //!   HERO→TITLE, every other header line fades out) and expands again when focus returns. The
 //!   condense is editorial, not load-bearing: v2's side-by-side packing already fits the first
@@ -46,7 +47,7 @@ use crate::person::Person;
 use crate::pms::PmsMovie;
 use crate::ui::card_row::{self, CardRow, RowStyle};
 use crate::ui::consts::*;
-use crate::ui::label::{Label, VAlign};
+use crate::ui::label::{HAlign, Label, VAlign};
 use crate::ui::text_view::TextView;
 use crate::ui::theme;
 use crate::ui::widgets::{AmbientWash, Art, Spinner, StatusKind, StatusOverlay};
@@ -99,6 +100,17 @@ const SHELF_COUNT_GAP: f32 = theme::space::SM;
 const BIO_W: f32 = 1180.0;
 const BIO_LINES: usize = 3;
 const BIO_LEAD: f32 = 40.0;
+/// The bio's truncation mark, as a C literal — it is drawn every frame the bio is cut off, and the
+/// SAME pointer the reserved zone is measured from, so the gap and the mark can never end up being
+/// two different strings (`detail.rs`'s About card writes `c"MORE"` twice for want of one).
+const MORE: &std::ffi::CStr = c"MORE";
+/// Air between the point the bio's dissolving last line has vanished and the left edge of [`MORE`].
+/// **Re-derived for this rung, not copied.** detail's About card reserves 36 px beside a
+/// `size::CAPTION` synopsis — 1.5× its own type size — and the bio is a rung larger
+/// (`size::BODY`), where the same proportion is 42; `theme::space::LG` is the ladder rung nearest
+/// that. An inline gap comes off the space ladder here exactly as [`SHELF_COUNT_GAP`] does, never
+/// off a literal tuned against another screen's type size.
+const BIO_MORE_GAP: f32 = theme::space::LG;
 /// Block gap between the header and a shelf, and between shelves — detail.rs's `SECTION_GAP`.
 const SHELF_GAP: f32 = theme::space::XL;
 /// Shelf heading → poster row. Matches detail's Related row, so a shelf is paced identically on
@@ -350,14 +362,29 @@ fn header_flow(sc: &Scene) -> HeaderFlow {
 }
 
 /// The bio block, in ONE place so its measure and its draw cannot disagree: 3 lines of body text
-/// with the classic inline `… MORE` affordance, which `TextView` only paints when the cap actually
-/// hid words. The affordance is a truncation MARK, not a control — nothing on this page expands
-/// text in place. `a` fades it with the rest of the expanded header.
+/// that **dissolve into a right-pinned [`MORE`]** when the cap actually hid words. The affordance
+/// is a truncation MARK, not a control — nothing on this page expands text in place. `a` fades it
+/// with the rest of the expanded header.
+///
+/// **The reserve is all this view owns of the affordance; the mark itself is drawn by
+/// [`draw_header`].** That is `fade_last`'s shape, and it is the About card's — the last line is
+/// painted through the fade shader (`shaders/fs_text_fade.frag`) so it vanishes *before* the
+/// column's right edge, and the word is then pinned to that edge on the same cap band. It replaced
+/// an inline `.trailing("MORE", …)`, which hard-elided the last line with an ellipsis and floated
+/// the word at the text's own ragged end: one page of this app cut its prose off with `…`, the
+/// other let it fade, for the same reason and one rung apart.
 fn bio_view(bio: &str, a: f32) -> TextView<'_> {
     TextView::new(bio, theme::size::BODY, theme::with_a(theme::TEXT_SECONDARY, a))
         .leading(BIO_LEAD)
         .max_lines(BIO_LINES)
-        .trailing("MORE", theme::with_a(theme::TEXT_PRIMARY, a))
+        .fade_last(more_w() + BIO_MORE_GAP)
+}
+
+/// [`MORE`]'s drawn width at the bio's own rung and weight — `size::BODY` bold, NOT the About
+/// card's `size::CAPTION`. Only the reserve reads it: the mark is drawn right-ALIGNED on the
+/// column edge, so its own draw needs no width at all.
+fn more_w() -> f32 {
+    crate::text::text_width(MORE.as_ptr(), theme::size::BODY, 1)
 }
 
 /// Rebuild the header's cached text runs from the store — from [`update`], on the frame a store
@@ -856,7 +883,23 @@ fn draw_header(p: Painter, person: &Person, sc: &Scene) {
         // `header_flow` measured (same cache entry), and a width that moved with the condense would
         // re-wrap ~3 KB of prose on every frame of the animation. The column has room for it at
         // every portrait diameter — see `BIO_W`.
-        bio_view(&person.bio, ea).draw(p, Rect::new(col_x, by, BIO_W, 0.0));
+        let bio = bio_view(&person.bio, ea);
+        let bh = bio.draw(p, Rect::new(col_x, by, BIO_W, 0.0));
+        // MORE — quiet grey (the About card's ink; this is a mark, not a control, and the loudest
+        // thing in the band must stay the name), pinned to the bio COLUMN's right edge and sitting
+        // on the last line's own cap band, which is where the line just dissolved to meet it. Both
+        // halves of that placement are ASKED OF THE VIEW THAT DREW THE TEXT (`last_line_cap_y`, and
+        // `Label`'s own cap-band conversion) rather than restated here — the leading and the cap
+        // band are `bio`'s, not this block's. The gate shares `bio`'s memoised wrap, so `truncates`
+        // costs nothing beside the draw above. `ea` because the mark belongs to the expanded band
+        // and must condense out with it.
+        if bio.truncates(BIO_W) {
+            Label::new(MORE.as_ptr(), theme::size::BODY, theme::with_a(theme::TEXT_TERTIARY, ea))
+                .bold()
+                .h(HAlign::Right)
+                .v(VAlign::CapTop)
+                .draw(p, Rect::new(col_x, bio.last_line_cap_y(by, bh), BIO_W, 0.0));
+        }
     }
 }
 
