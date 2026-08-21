@@ -7,6 +7,7 @@ use std::os::raw::{c_char, c_int, c_uint, c_void};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::surface::{LOGICAL_H as SCR_H, LOGICAL_W as SCR_W};
+use crate::ui::overdraw::{gate, note_px, Class};
 
 // Per-frame counters for the frame-drop detector: how many card composites are actually issued
 // (`draw_tex_carded`), and how many of those are (partly) off-screen — to confirm the cull is tight.
@@ -42,6 +43,7 @@ const FS_AMBIENT: &CStr = glsl!("shaders/fs_ambient.frag");
 const FS_SHADOW: &CStr = glsl!("shaders/fs_shadow.frag");
 const VS_IMG: &CStr = glsl!("shaders/vs_img.vert");
 const FS_IMG: &CStr = glsl!("shaders/fs_img.frag");
+const FS_HERO: &CStr = glsl!("shaders/fs_hero.frag");
 const FS_BLUR: &CStr = glsl!("shaders/fs_blur.frag");
 const FS_GLASS: &CStr = glsl!("shaders/fs_glass.frag");
 const GL_VERTEX_SHADER: c_uint = 0x8B31;
@@ -160,6 +162,7 @@ pub(crate) fn clip_set(x: f32, y: f32, w: f32, h: f32) {
     let y_top = y.max(0.0);
     let x1 = (x + w).min(SCR_W);
     let y1 = (y + h).min(SCR_H);
+    crate::ui::overdraw::set_clip(Some([x0, y_top, x1.max(x0), y1.max(y_top)]));
     // Only the height is needed as an extent now — the x edges are rounded independently and
     // differenced, same as the y ones.
     let hi = (y1 - y_top).max(0.0);
@@ -211,6 +214,7 @@ pub(crate) fn clip_set(x: f32, y: f32, w: f32, h: f32) {
 /// bare `glDisable` in the middle of the scene draw would let the rest of the page spill across
 /// the tap targets' other content.
 pub(crate) fn clip_clear() {
+    crate::ui::overdraw::set_clip(None);
     unsafe {
         match CLIP_TARGET {
             Some((_, _, _, tw, th)) => glScissor(0, 0, tw, th),
@@ -291,6 +295,24 @@ static mut IL_RIMCOL: c_int = 0;
 static mut IL_CH: c_int = 0;
 static mut IL_SHINV: c_int = 0;
 static mut IL_SHCOL: c_int = 0;
+// ---- hero-ground program: the backdrop art with both scrim fields folded into it (fs_hero.frag).
+// Its own program because it is the SAME quad the art already draws, only carrying two more
+// closed-form fields — nothing else in the app wants them, and the card composite must not pay for
+// them. Off unless `ui::widgets::hero_ground` is armed; `HPROG == 0` falls the caller back to the
+// four-quad path, which is the shipped picture.
+static mut HPROG: c_uint = 0;
+/// Has [`init_hero`] already run? The link is LAZY — see that function for why.
+static mut HERO_TRIED: bool = false;
+static mut HL_RECT: c_int = 0;
+static mut HL_SCREEN: c_int = 0;
+static mut HL_TINT: c_int = 0;
+static mut HL_UVRECT: c_int = 0;
+static mut HL_TEX: c_int = 0;
+static mut HL_ORG: c_int = 0;
+static mut HL_INK: c_int = 0;
+static mut HL_RAMP: c_int = 0;
+static mut HL_RAMPA: c_int = 0;
+static mut HL_WEDGE: c_int = 0;
 
 /// The `#version` + compatibility preamble prepended to every shader, chosen by the DRIVER's GLSL
 /// version rather than by platform.
@@ -567,7 +589,7 @@ pub(crate) fn draw_rect(
     focus: f32,
     focus_rgb: f32,
 ) {
-    if culled(x, y, w, h) {
+    if culled(x, y, w, h) || gate(Class::Rect, x, y, w, h) {
         return;
     }
     unsafe {
@@ -599,7 +621,7 @@ pub(crate) fn draw_rect(
 /// the same fill pass — the no-texture (skeleton / chip disc) counterpart of [`draw_tex_stroked`].
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_rect_sheened(x: f32, y: f32, w: f32, h: f32, radius: f32, top: *const f32, bot: *const f32, rimw: f32, rimcol: *const f32, rimtop: f32) {
-    if culled(x, y, w, h) {
+    if culled(x, y, w, h) || gate(Class::Rect, x, y, w, h) {
         return;
     }
     unsafe {
@@ -625,7 +647,7 @@ pub(crate) fn draw_rect_sheened(x: f32, y: f32, w: f32, h: f32, radius: f32, top
 /// colour (see [`draw_grad4`]), so this is what keeps every ambient wash a ground that REPLACES what
 /// is under it rather than a translucent film over it.
 pub(crate) fn draw_ambient(x: f32, y: f32, w: f32, h: f32, dim: f32, tl: *const f32, tr: *const f32, br: *const f32, bl: *const f32) {
-    if culled(x, y, w, h) {
+    if culled(x, y, w, h) || gate(Class::Ambient, x, y, w, h) {
         return;
     }
     unsafe {
@@ -648,7 +670,7 @@ pub(crate) fn draw_ambient(x: f32, y: f32, w: f32, h: f32, dim: f32, tl: *const 
 /// `GL_SRC_ALPHA`/`GL_ONE_MINUS_SRC_ALPHA` set at init, so this composites over whatever is already
 /// on the panel — which is the whole point of having it beside the opaque wash.
 pub(crate) fn draw_grad4(x: f32, y: f32, w: f32, h: f32, tl: *const f32, tr: *const f32, br: *const f32, bl: *const f32) {
-    if culled(x, y, w, h) {
+    if culled(x, y, w, h) || gate(Class::Grad, x, y, w, h) {
         return;
     }
     unsafe {
@@ -663,7 +685,7 @@ pub(crate) fn draw_grad4(x: f32, y: f32, w: f32, h: f32, tl: *const f32, tr: *co
 }
 
 pub(crate) fn draw_rrect(x: f32, y: f32, w: f32, h: f32, rad_l: f32, rad_r: f32, col: *const f32) {
-    if culled(x, y, w, h) {
+    if culled(x, y, w, h) || gate(Class::Rect, x, y, w, h) {
         return;
     }
     unsafe {
@@ -687,7 +709,7 @@ pub(crate) fn draw_rrect(x: f32, y: f32, w: f32, h: f32, rad_l: f32, rad_r: f32,
 
 /// [`draw_rrect`] with the focus edge-sheen baked in (flat fill + `rimw`-px inset rim in `rimcol`).
 pub(crate) fn draw_rrect_sheened(x: f32, y: f32, w: f32, h: f32, rad_l: f32, rad_r: f32, col: *const f32, rimw: f32, rimcol: *const f32, rimtop: f32) {
-    if culled(x, y, w, h) {
+    if culled(x, y, w, h) || gate(Class::Rect, x, y, w, h) {
         return;
     }
     unsafe {
@@ -729,7 +751,7 @@ pub(crate) fn draw_shadow(x: f32, y: f32, w: f32, h: f32, radius: f32, blur: f32
     // disagreed along the region's edge. `draw_tex_core` has always culled its inflated quad; this
     // is the same rule, and the two paths handle the same object.
     let (qx, qy, qw, qh) = (x - b, y - b, w + 2.0 * b, h + 2.0 * b);
-    if culled(qx, qy, qw, qh) {
+    if culled(qx, qy, qw, qh) || gate(Class::Shadow, qx, qy, qw, qh) {
         return;
     }
     unsafe {
@@ -881,6 +903,86 @@ pub(crate) fn init_image() {
     }
 }
 
+/// Link the hero-ground program. A failure is not fatal and is not a hole in the picture: the
+/// caller keeps the four-quad path, which is what every build has always drawn.
+///
+/// **LAZY, called from [`draw_hero_ground`]'s first draw rather than from [`init_image`].** This
+/// program serves ONE experiment behind one dev trigger, and `devtriggers` is compiled out of a
+/// release build — so linking it at boot would compile and link a shader that build can never
+/// reach, on every launch, for a path that does not exist in it. Deferring it also means an
+/// ordinary dev boot that never arms the trigger pays nothing either.
+fn init_hero() {
+    unsafe {
+        HERO_TRIED = true;
+        HPROG = match link_program(VS_IMG.as_ptr(), FS_HERO.as_ptr()) {
+            Some(p) => p,
+            None => {
+                log("hero-ground prog link failed — the four-quad hero path stays");
+                return;
+            }
+        };
+        HL_RECT = glGetUniformLocation(HPROG, c"u_trect".as_ptr());
+        HL_SCREEN = glGetUniformLocation(HPROG, c"u_tscreen".as_ptr());
+        HL_TINT = glGetUniformLocation(HPROG, c"u_tint".as_ptr());
+        HL_UVRECT = glGetUniformLocation(HPROG, c"u_uvrect".as_ptr());
+        HL_TEX = glGetUniformLocation(HPROG, c"u_tex".as_ptr());
+        HL_ORG = glGetUniformLocation(HPROG, c"u_org".as_ptr());
+        HL_INK = glGetUniformLocation(HPROG, c"u_ink".as_ptr());
+        HL_RAMP = glGetUniformLocation(HPROG, c"u_ramp".as_ptr());
+        HL_RAMPA = glGetUniformLocation(HPROG, c"u_rampa".as_ptr());
+        HL_WEDGE = glGetUniformLocation(HPROG, c"u_wedge".as_ptr());
+        use_prog(HPROG);
+        glUniform2f(HL_SCREEN, SCR_W, SCR_H);
+        glUniform1i(HL_TEX, 0);
+    }
+}
+
+/// Is the hero-ground program usable? `false` means its link failed and the caller must draw the
+/// art and the scrims the way it always has.
+#[inline]
+pub(crate) fn hero_ground_ok() -> bool {
+    // Not `HPROG != 0`: the link has not been attempted until the first draw, so before that the
+    // honest answer is "nothing has refused it yet". A refusal latches through `HERO_TRIED`.
+    unsafe { HPROG != 0 || !HERO_TRIED }
+}
+
+/// Draw the hero ground: the art quad `(x,y,w,h)` with the atmospheric ramp and the corner wedge
+/// evaluated per fragment. `ramp` is `(y0, knee, alpha_at_knee, alpha_at_foot)` and `wedge` is
+/// `(peak, width, feather_top, feather_knee)`, both in authored pixels with the alphas already
+/// carrying the painter's cascade. See `fs_hero.frag` for the composite this replaces.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_hero_ground(tex: c_uint, x: f32, y: f32, w: f32, h: f32, tint: *const f32,
+    ink: *const f32, ramp: [f32; 4], wedge: [f32; 4]) {
+    if tex == 0 || culled(x, y, w, h) || gate(Class::Image, x, y, w, h) {
+        return;
+    }
+    unsafe {
+        if !HERO_TRIED {
+            init_hero();
+        }
+        if HPROG == 0 {
+            return;
+        }
+    }
+    // Reciprocals on the CPU: Midgard has no uniform pre-shader, so a divide written in the
+    // fragment shader is paid on every one of two million fragments (the same fold `draw_tex_impl`
+    // makes for the card composite's `shinv`).
+    let inv = |d: f32| if d.abs() > 0.001 { 1.0 / d } else { 0.0 };
+    unsafe {
+        use_prog(HPROG);
+        glUniform4fv(HL_TINT, 1, tint);
+        glUniform4fv(HL_INK, 1, ink);
+        glUniform4f(HL_UVRECT, 0.0, 0.0, 1.0, 1.0);
+        glUniform2f(HL_ORG, x + w * 0.5, y + h * 0.5);
+        glUniform4f(HL_RAMP, ramp[0], inv(ramp[1] - ramp[0]), ramp[1], inv(SCR_H - ramp[1]));
+        glUniform2f(HL_RAMPA, ramp[2], ramp[3] - ramp[2]);
+        glUniform4f(HL_WEDGE, wedge[0], inv(wedge[1]), wedge[2], inv(wedge[3] - wedge[2]));
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glUniform4f(HL_RECT, x, y, w, h);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    }
+}
+
 /// Snap a composited quad origin to a whole pixel — the contract for ALL 1:1-texel content
 /// (glyph strings in `text.rs`, icon masks in `ui/icons.rs`): such textures are rasterized at
 /// their exact draw size and sampled with GL_LINEAR, so a fractional origin bilinear-smears
@@ -941,9 +1043,9 @@ fn uv_rect_padded(w: f32, h: f32, qw: f32, qh: f32) -> [f32; 4] {
 /// measured against. [`draw_tex_impl`] folds a card's parameters into these; the blur backdrop
 /// supplies its own, because its UV window is a screen-space rect rather than a card.
 #[allow(clippy::too_many_arguments)]
-fn draw_tex_core(tex: c_uint, qx: f32, qy: f32, qw: f32, qh: f32, uv: [f32; 4], radius: f32, tint: *const f32,
+fn draw_tex_core(class: Class, tex: c_uint, qx: f32, qy: f32, qw: f32, qh: f32, uv: [f32; 4], radius: f32, tint: *const f32,
     rimw: f32, rimcol: *const f32, chw: f32, chh: f32, shinv: f32, shcol: *const f32) {
-    if tex == 0 || culled(qx, qy, qw, qh) {
+    if tex == 0 || culled(qx, qy, qw, qh) || gate(class, qx, qy, qw, qh) {
         return;
     }
     unsafe {
@@ -965,12 +1067,13 @@ fn draw_tex_core(tex: c_uint, qx: f32, qy: f32, qw: f32, qh: f32, uv: [f32; 4], 
 #[allow(clippy::too_many_arguments)]
 fn draw_tex_impl(tex: c_uint, x: f32, y: f32, w: f32, h: f32, radius: f32, tint: *const f32, rimw: f32, rimcol: *const f32,
     pad: f32, shblur: f32, shcol: *const f32) {
+    let class = if pad > 0.0 { Class::Card } else { Class::Image };
     let (qx, qy, qw, qh) = (x - pad, y - pad, w + 2.0 * pad, h + 2.0 * pad); // inflate for the penumbra
     // CPU-fold the uniform-only terms (Midgard has no uniform pre-shader): card half-size, the
     // quad→card UV rect (identity when pad==0), and the shadow's 0.5/blur normaliser.
     let uv = uv_rect_padded(w, h, qw, qh);
     let shinv = if shblur > 0.0 { 0.5 / shblur } else { 0.0 };
-    draw_tex_core(tex, qx, qy, qw, qh, uv, radius, tint, rimw, rimcol, w * 0.5, h * 0.5, shinv, shcol);
+    draw_tex_core(class, tex, qx, qy, qw, qh, uv, radius, tint, rimw, rimcol, w * 0.5, h * 0.5, shinv, shcol);
 }
 
 const NO_RIM: [f32; 4] = [0.0, 0.0, 0.0, 0.0]; // rim/shadow disabled: alpha 0 ⇒ shader skips it
@@ -2201,7 +2304,8 @@ fn blur_snapshot(reg: [f32; 4]) {
                 // NO_RIM, never a null pointer: `draw_tex_core` hands both colours straight to
                 // `glUniform4fv`, which dereferences them unconditionally — a null segfaults inside
                 // the driver with no Rust panic and no log line (caught by the simulator, 2026-08-16).
-                draw_tex_core(src, 0.0, 0.0, SCR_W, SCR_H, [0.0, 0.0, uv.0, uv.1], 0.0,
+                note_px(Class::Blur, (w as f64) * (h as f64));
+                draw_tex_core(Class::Blur, src, 0.0, 0.0, SCR_W, SCR_H, [0.0, 0.0, uv.0, uv.1], 0.0,
                     BLUR_PASS_TINT.as_ptr(), 0.0, NO_RIM.as_ptr(), 0.0, 0.0, 0.0, NO_RIM.as_ptr());
             });
         }
@@ -2222,6 +2326,7 @@ fn blur_snapshot(reg: [f32; 4]) {
                 glUniform4f(BL_UVRECT, 0.0, 0.0, tap_uv.0, tap_uv.1);
                 // Offsets stay in TEXELS of the texture, which the region does not change — the
                 // texture is the same size, only less of it is live.
+                note_px(Class::Blur, (tw as f64) * (th as f64));
                 glUniform2f(BL_TEXEL, taps / c.sw as f32, taps / c.sh as f32);
                 glBindTexture(GL_TEXTURE_2D, src);
                 glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
@@ -2242,6 +2347,7 @@ fn blur_snapshot(reg: [f32; 4]) {
             glClear(GL_COLOR_BUFFER_BIT);
             use_prog(BPROG);
             glUniform4f(BL_UVRECT, 0.0, 0.0, tap_uv.0, tap_uv.1);
+            note_px(Class::Blur, (r2w as f64) * (r2h as f64));
             glUniform2f(BL_TEXEL, BLUR_UP_TAP / c.mw as f32, BLUR_UP_TAP / c.mh as f32);
             glBindTexture(GL_TEXTURE_2D, c.a);
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
@@ -2653,6 +2759,7 @@ pub(crate) fn blur_snapshot_direct(reg: [f32; 4], draw_scene: &mut dyn FnMut()) 
                 use_prog(BPROG);
                 glUniform4f(BL_UVRECT, 0.0, 0.0, tap_uv.0, tap_uv.1);
                 let off = taps * tap_k;
+                note_px(Class::Blur, (tw as f64) * (th as f64));
                 glUniform2f(BL_TEXEL, off / c.sw as f32, off / c.sh as f32);
                 glBindTexture(GL_TEXTURE_2D, src);
                 glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
@@ -2670,6 +2777,7 @@ pub(crate) fn blur_snapshot_direct(reg: [f32; 4], draw_scene: &mut dyn FnMut()) 
             glClear(GL_COLOR_BUFFER_BIT);
             use_prog(BPROG);
             glUniform4f(BL_UVRECT, 0.0, 0.0, tap_uv.0, tap_uv.1);
+            note_px(Class::Blur, (r2w as f64) * (r2h as f64));
             glUniform2f(BL_TEXEL, BLUR_UP_TAP / c.mw as f32, BLUR_UP_TAP / c.mh as f32);
             glBindTexture(GL_TEXTURE_2D, c.a);
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
@@ -2735,6 +2843,13 @@ pub(crate) fn draw_blur_backdrop(x: f32, y: f32, w: f32, h: f32, rest: [f32; 4],
         // `false` is also the right picture: the caller falls back to its opaque ground, which is
         // what belongs under a blur anyway. See `BLUR_IN_PASS`.
         if BLUR_IN_PASS {
+            return false;
+        }
+        // DEV: a `drawmask=glass` leg removes the WHOLE surface — chain, composite and the region
+        // bookkeeping — rather than only the panel quad, so the leg it prices is "this glass is
+        // not here". `false` puts the caller on its opaque ground, exactly as a latched-off blur
+        // does.
+        if gate(Class::Glass, x, y, w, h) {
             return false;
         }
         // Declare what this surface needs BEFORE deciding whether to snapshot, so a frame's second

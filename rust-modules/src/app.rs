@@ -3889,6 +3889,27 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         if let Some(v) = crate::dev::read("navblur") {
             crate::ui::glassload::configure_navblur(&v);
         }
+        // dev: the two OVERDRAW surfaces (`ui::overdraw`, docs/backdrop-blur-profiling.md Part 5).
+        // `plxnative-overdraw` arms the CPU-side per-draw-class ledger — how much screen-visible
+        // quad area this app submits, per primitive family, per frame. It is not billed for the
+        // wayland compositor's work and is not `glFinish`-serialised, which is what the GPU's
+        // global FRAG_QUADS_RAST cannot say. `plxnative-drawmask=<classes>` REFUSES every draw of
+        // the named classes, so a whole-frame `frame.ui` A/B against the unmasked control prices
+        // that class as the frame sees it; `all` draws nothing and is therefore the compositor
+        // floor. A masked leg is a broken picture on purpose.
+        if crate::dev::flag("overdraw") {
+            crate::ui::overdraw::set_ledger(true);
+        }
+        if let Some(spec) = crate::dev::read("drawmask") {
+            crate::ui::overdraw::set_mask(&spec);
+        }
+        // dev: /tmp/plxnative-heroground — draw the hero's photograph and BOTH of its scrim fields
+        // in one pass instead of the art plus four blended gradient quads over it. Absent, the
+        // shipped four-quad path draws, which is what makes this an A/B on one binary.
+        if crate::dev::flag("heroground") {
+            crate::ui::widgets::set_hero_ground(true);
+            log("hero: one-pass ground ENABLED by /tmp/plxnative-heroground");
+        }
         // dev: /tmp/plxnative-glasshz=<presents-per-refresh> moves the shared dynamic-backdrop
         // cadence for the cost curve in `docs/backdrop-blur-profiling.md` — 1 is a refresh on every
         // present (60 Hz while the UI presents at 60) and is what ships, 3 is ~20 Hz, 4 is 15 Hz.
@@ -6286,6 +6307,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 // idle gate skipped would pace the profiler's once-per-N-frames log off frames
                 // that ran no phases at all.
                 crate::ui::profile::frame_end();
+                crate::ui::overdraw::frame_end();
                 // Same reason, same gate: the blur's region accounting is per DRAWN frame. It rolls
                 // "what every glass surface asked for this frame" into the region the next frame's
                 // first snapshot is taken at. Once that union is known, several surfaces share one
