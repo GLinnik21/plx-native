@@ -109,12 +109,15 @@ SAME(offsetof(AVPacketSideData, type), 8, "AVPacketSideData.type moved");
        field inserted in the middle would silently renumber every DV profile the app logs and
        gates on. AV_PKT_DATA_DOVI_CONF is a sequential enum member, so it moves the same way. --- */
 SAME(sizeof(AVDOVIDecoderConfigurationRecord), 9, "sizeof(AVDOVIDecoderConfigurationRecord) != 9");
+SAME(offsetof(AVDOVIDecoderConfigurationRecord, dv_version_major), 0, "DOVI dv_version_major moved");
+SAME(offsetof(AVDOVIDecoderConfigurationRecord, dv_version_minor), 1, "DOVI dv_version_minor moved");
 SAME(offsetof(AVDOVIDecoderConfigurationRecord, dv_profile), 2, "DOVI dv_profile moved");
 SAME(offsetof(AVDOVIDecoderConfigurationRecord, dv_level), 3, "DOVI dv_level moved");
 SAME(offsetof(AVDOVIDecoderConfigurationRecord, rpu_present_flag), 4, "DOVI rpu_present_flag moved");
 SAME(offsetof(AVDOVIDecoderConfigurationRecord, el_present_flag), 5, "DOVI el_present_flag moved");
 SAME(offsetof(AVDOVIDecoderConfigurationRecord, bl_present_flag), 6, "DOVI bl_present_flag moved");
 SAME(offsetof(AVDOVIDecoderConfigurationRecord, dv_bl_signal_compatibility_id), 7, "DOVI bl_signal_compatibility_id moved");
+SAME(offsetof(AVDOVIDecoderConfigurationRecord, dv_md_compression), 8, "DOVI dv_md_compression moved");
 SAME(AV_PKT_DATA_DOVI_CONF, 29, "AV_PKT_DATA_DOVI_CONF != 29 — the side-data enum shifted");
 
 /* --- AVSubtitle: avcodec_decode_subtitle2 writes into ff.rs's stack copy, so this size IS

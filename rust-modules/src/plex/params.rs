@@ -27,6 +27,28 @@ pub struct TranscodeSpec<'a> {
     /// isn't): copy video+audio into progressive MKV, no re-encode, keeps 4K/HDR.
     /// false = full re-encode to the profile's HEVC/AC3 target at up to 4K.
     pub remux: bool,
+    /// **The server must not COPY the video track — an encoder has to run.** Only meaningful on
+    /// the re-encode flavor (`remux == false`), where it swaps `directStream=1` for
+    /// `directStream=0` + `directStreamAudio=1`: video re-encoded, audio still copied when it can
+    /// be. Off for every ordinary transcode, where a copy is a free win.
+    ///
+    /// It exists because "we refused direct play" and "the server will re-encode" are NOT the same
+    /// statement, and the gap between them shipped a fix that fixed nothing. `directStream=1`
+    /// permits a stream copy, and PMS takes it whenever the source fits the caps the query carries
+    /// — resolution, bitrate, and the profile's own limitation axes (width/height/bitDepth).
+    /// **None of those axes can express Dolby Vision**, so a Profile 5 file refused by
+    /// `route::video_direct_plays` came back `Part.decision=transcode` with the VIDEO stream's own
+    /// decision `copy`: the identical IPT-PQ bitstream, one container down, the identical wrong
+    /// colours (measured against the dev PMS 2026-08-21 — `docs/pms-api.md` §"What the server
+    /// actually does with a Dolby Vision source").
+    ///
+    /// Setting it makes the ask honest, and the answer honest with it: a server that CAN convert
+    /// the file does, and a server that cannot says so (this PMS answers
+    /// `generalDecisionCode 2000` / *"File is unplayable. DoVi (Profile 5) color space is not
+    /// supported."*), which `route::refusal` turns into the player's read-out quoting that
+    /// sentence. Both beat a picture in the wrong colours with nothing on any surface to explain
+    /// it.
+    pub no_video_copy: bool,
     /// Source audio stream id to select (0 = server default).
     pub audio_stream_id: i64,
     /// Subtitle stream id to BURN (0 = none). Burn is Plex's decision for our profile —

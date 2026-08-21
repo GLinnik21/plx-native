@@ -109,10 +109,19 @@ impl Dovi {
     /// `bl_compat == 0` would refuse direct play for *every ordinary SDR file in the library*.
     /// `present` guards the outer question and a KNOWN `profile` guards the compat-id test, so a
     /// server that reports `DOVIPresent` and nothing else falls through to the existing gates
-    /// unchanged. That direction is deliberate: this predicate can only ever move an item onto the
-    /// server's re-encode path, and doing that on a guess would cost 4K and HDR10 on files that
-    /// were playing perfectly — the same misread-degrades-to-assumed rule
-    /// [`crate::route::video_direct_plays`] applies to an unknown frame size.
+    /// unchanged. That direction is deliberate, and the price of getting it wrong is higher than
+    /// it first looks: a true answer here does not merely reroute an item, it also withdraws the
+    /// server's permission to COPY the video
+    /// ([`crate::plex::TranscodeSpec::no_video_copy`] — without which the refusal accomplishes
+    /// nothing at all), and a server that cannot encode the result then refuses the playback
+    /// outright. So a false positive costs the film, not just its 4K and its HDR10. The same
+    /// misread-degrades-to-assumed rule [`crate::route::video_direct_plays`] applies to an unknown
+    /// frame size, applied to a field whose silence is indistinguishable from a legitimate zero.
+    ///
+    /// The one measured reassurance, and it is worth having before trusting the `profile > 0`
+    /// guard: every Dolby Vision stream on the dev server (34 of them, swept 2026-08-21) sends all
+    /// eight `DOVI*` keys together. No shape there reports a profile without also reporting a
+    /// compatibility id, which is the only combination that guard could misread.
     pub(crate) fn base_layer_unusable(&self) -> bool {
         if !self.present {
             return false;
@@ -1046,12 +1055,26 @@ fn convert_streams(streams: &[crate::plex::Stream]) -> (Vec<Stream>, Vec<Stream>
                 // dev server's one P5 item omits the field), so `dovi_present` is the only
                 // thing that makes it read as HDR — and the layering fields below are the only
                 // thing that makes it read as unplayable.
-                dovi = Dovi {
-                    present: s.dovi_present != 0,
-                    profile: s.dovi_profile,
-                    bl_compat: s.dovi_bl_compat_id,
-                    el_present: s.dovi_el_present != 0,
-                };
+                //
+                // Guarded on `dovi_present`, unlike the two assignments above it, and the
+                // difference is deliberate. `fps` and `hdr` take the LAST video stream in the
+                // part; a Dolby Vision record must instead SURVIVE one, because the direct-play
+                // gate reads it and losing it fails the wrong way — a second `streamType: 1`
+                // stream carrying no DOVI fields (embedded cover art is the shape to expect)
+                // would blank a Profile 5 record back to `Dovi::default()`, which refuses
+                // nothing, and the file would direct-play in the wrong colours again. No part on
+                // the dev server has two video streams today (all 540 leaves swept 2026-08-21),
+                // so this costs nothing and is not a change to any measured behaviour — it is the
+                // one assignment here whose failure is silent and wrong rather than silent and
+                // cosmetic.
+                if s.dovi_present != 0 {
+                    dovi = Dovi {
+                        present: true,
+                        profile: s.dovi_profile,
+                        bl_compat: s.dovi_bl_compat_id,
+                        el_present: s.dovi_el_present != 0,
+                    };
+                }
             }
             2 => audio.push(st),
             3 => subs.push(st),
@@ -2237,6 +2260,52 @@ mod rating_tests {
 mod tests {
     use super::*;
     use std::sync::atomic::Ordering;
+
+    // ---- convert_streams: the Dolby Vision record's survival ------------------------------
+
+    fn video_stream(dovi: Option<(i64, i64, i64)>) -> crate::plex::Stream {
+        let (present, profile, compat, el) = match dovi {
+            Some((profile, compat, el)) => (1, profile, compat, el),
+            None => (0, 0, 0, 0),
+        };
+        crate::plex::Stream {
+            stream_type: 1,
+            codec: "hevc".into(),
+            dovi_present: present,
+            dovi_profile: profile,
+            dovi_bl_compat_id: compat,
+            dovi_el_present: el,
+            ..Default::default()
+        }
+    }
+
+    /// **A Dolby Vision record must survive a second video stream that has none.** `fps` and `hdr`
+    /// take the LAST `streamType: 1` stream in the part and that is harmless for both; the DV
+    /// record is read by `route::video_direct_plays`, so blanking it back to the all-zero default
+    /// re-opens the direct-play gate and the file plays in the wrong colours — the exact bug the
+    /// gate exists for. No part on the dev server carries two video streams today (all 540 leaves
+    /// swept 2026-08-21), which is precisely why this is a test and not a measurement: embedded
+    /// cover art is an ordinary thing for a library to contain and nothing else here would notice.
+    #[test]
+    fn a_dolby_vision_record_is_not_erased_by_a_later_video_stream() {
+        let p5 = video_stream(Some((5, 0, 0)));
+        let cover = video_stream(None);
+        let (_, _, _, _, dovi) = convert_streams(&[p5, cover]);
+        assert!(dovi.present, "the P5 record must outlive a second video stream");
+        assert_eq!(dovi.profile, 5);
+        assert!(dovi.base_layer_unusable(), "and must still refuse direct play");
+    }
+
+    /// The ordinary single-video-stream shapes, so the guard above cannot be read as "any DV
+    /// record anywhere wins": a part with no Dolby Vision at all still produces the all-zero
+    /// record that refuses nothing.
+    #[test]
+    fn a_part_with_no_dolby_vision_reports_no_record() {
+        let (_, _, _, hdr, dovi) = convert_streams(&[video_stream(None)]);
+        assert_eq!(dovi, Dovi::default());
+        assert!(!dovi.base_layer_unusable());
+        assert!(!hdr, "no DV and no PQ/HLG transfer is not HDR");
+    }
 
     /// post through the REAL mailbox write, so the monotone guard is under test rather than
     /// bypassed (an unconditional store here would make the "older lands late" case vacuous)

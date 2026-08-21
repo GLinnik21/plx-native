@@ -52,6 +52,12 @@ struct Session {
     /// pair, this flag) via plex::TranscodeSpec — replaces the old stored offset-free TBASE query
     /// string.
     cur_remux: bool,
+    /// This playback asked the server for a re-encode it may NOT satisfy with a stream copy —
+    /// [`crate::plex::TranscodeSpec::no_video_copy`]. Stored for the same reason `cur_remux` is:
+    /// a seek and an audio-track switch rebuild the start.mkv query from scratch, and a rebuild
+    /// that dropped this would hand the server back the permission mid-playback, so the film
+    /// would carry on in the wrong colours from the first seek.
+    cur_no_video_copy: bool,
     /// ratingKey of the currently-playing item (movie or episode), so an audio-track
     /// switch can force a fresh transcode of the same item.
     cur_rk: String,
@@ -147,6 +153,7 @@ impl Session {
         tsession: String::new(),
         play_verdict: None,
         cur_remux: false,
+        cur_no_video_copy: false,
         cur_rk: String::new(),
         cur_sid: ServerId::UNSET,
         cur_audio_sid: 0,
@@ -360,6 +367,11 @@ pub(crate) fn set_stream_codecs(vc: &str, ac: &str) {
 pub(crate) fn is_remux() -> bool {
     session().cur_remux
 }
+/// Did this playback forbid the server a video stream COPY? Read by the seek and audio-switch
+/// rebuilds so the constraint survives them — see [`Session::cur_no_video_copy`].
+fn is_no_video_copy() -> bool {
+    session().cur_no_video_copy
+}
 pub(crate) fn source_vcodec() -> String {
     session().src_vcodec.clone()
 }
@@ -376,11 +388,20 @@ pub(crate) fn ctxline_cptr() -> *const c_char {
 /// This playback's universal-transcoder spec, rebuilt from the module state (rk + session are
 /// borrowed from the caller's locals; audio/subtitle ride the CURRENT selection) — so every
 /// (re)start of the item's transcode carries identical params.
-fn transcode_spec<'a>(rk: &'a str, session: &'a str, remux: bool, offset_secs: i64, aud: i64, sub: i64) -> crate::plex::TranscodeSpec<'a> {
+fn transcode_spec<'a>(
+    rk: &'a str,
+    session: &'a str,
+    remux: bool,
+    no_video_copy: bool,
+    offset_secs: i64,
+    aud: i64,
+    sub: i64,
+) -> crate::plex::TranscodeSpec<'a> {
     crate::plex::TranscodeSpec {
         rating_key: rk,
         session,
         remux,
+        no_video_copy,
         audio_stream_id: aud,
         subtitle_stream_id: sub,
         offset_secs,
@@ -504,7 +525,7 @@ pub(crate) fn transcode_seek(offset_secs: i64) -> Option<String> {
     // the old engine down — dropping its connection, and with it the old transcode.
     // /decision is just a query and doesn't cut the streaming connection.
     let session = sess();
-    let sp = transcode_spec(&rk, &session, is_remux(), offset_secs.max(0),
+    let sp = transcode_spec(&rk, &session, is_remux(), is_no_video_copy(), offset_secs.max(0),
                             cur_audio_sid(), cur_sub_sid());
     // same session, same output codecs — no payload rebuild here, so the body is unused
     let _ = c.transcode_decision(&sp);
@@ -873,6 +894,12 @@ pub(crate) struct Plan {
     pub fps: f64,
     pub audio_sid: i64,
     pub remux: bool,
+    /// This plan's transcode may not be satisfied by a video stream COPY — the flag rides all the
+    /// way to `plex::TranscodeSpec::no_video_copy`, and `apply_plan` stores it so a seek or an
+    /// audio switch rebuilds the same constraint. Set only where the refusal is about what the
+    /// pixels ARE (a Dolby Vision base layer we cannot display), never for a size or codec one:
+    /// those the server's own caps already express, and a copy that satisfies them is a free win.
+    pub no_video_copy: bool,
     /// demuxer stream ordinal to feed (direct-play, non-default track). None = leave as-is.
     pub feed_audio_ordinal: Option<i32>,
     /// the subtitle stream the server already had selected for this part (0 = none/off), so the
@@ -976,13 +1003,29 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveE
     // nothing.
     let dovi = plan.playing.as_ref().map(|p| p.dovi).unwrap_or_default();
     let video_dp = video_direct_plays(vcodec, src_w, src_h, dovi, crate::devcaps::caps());
+    // **Refusing direct play is only half of it.** The transcode query below grants the server
+    // `directStream=1` — permission to COPY the video rather than encode it — and PMS takes that
+    // permission whenever the source fits the caps the query carries. Those caps are resolution,
+    // bitrate and the profile's limitation axes, and **not one of them can say "Dolby Vision"**,
+    // so a refused Profile 5 file came back `Part.decision=transcode` with the video's own
+    // decision `copy`: the identical IPT-PQ bitstream, one container down, and the identical
+    // wrong colours the refusal was for (measured against the dev PMS 2026-08-21 — before this
+    // line existed, the whole gate above changed the container and nothing else). Withdrawing the
+    // permission is what makes the refusal mean something, and it is withdrawn ONLY here: a size
+    // or codec refusal is one the server's own caps already express, and a copy that satisfies
+    // them is a free win worth keeping.
+    let no_video_copy = dovi.base_layer_unusable();
     if let Some(why) = dovi.refusal() {
         // Worth a line of its own: from the outside this looks like a 4K HEVC file with a normal
         // audio track being sent to the transcoder for no reason, and the DOVI fields that
         // explain it are not in any other log line. `ff.rs` logs the demuxer's own reading of the
         // configuration record at open, which is the ground truth this decision only approximates.
+        // NB the server is allowed to answer that it cannot do it — this PMS refuses a Profile 5
+        // outright ("File is unplayable. DoVi (Profile 5) color space is not supported."), which
+        // `refusal` below turns into the player's read-out quoting that sentence. A read-out that
+        // names the reason beats a picture in the wrong colours with nothing to explain it.
         crate::player::log(&format!(
-            "route: dolby vision P{} (bl_compat={} el={}) — {why}, base layer is not self-displayable; transcoding",
+            "route: dolby vision P{} (bl_compat={} el={}) — {why}, base layer is not self-displayable; re-encoding (no copy)",
             dovi.profile, dovi.bl_compat, dovi.el_present as i32
         ));
     }
@@ -1100,8 +1143,9 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveE
     // and passes: without the gate a relay stalls, without the sid a friend's audio pick is PUT
     // to our own server, which answers 200 and changes nothing on theirs.
     plan.remux = remux;
+    plan.no_video_copy = no_video_copy;
     put_selection(env.sid, plan.part_id, env.audio_sid, env.sub_sid); // audio/subtitle selection drives the encode/remux + burn
-    let sp = transcode_spec(rk, &session, remux, -1, env.audio_sid, env.sub_sid);
+    let sp = transcode_spec(rk, &session, remux, no_video_copy, -1, env.audio_sid, env.sub_sid);
     if let Some(mc) = client.transcode_decision(&sp) {
         // The server has already answered, and it is allowed to answer NO. Stop here rather than
         // stream a `start.mkv` it has just said it cannot produce: the plan leaves with no URL —
@@ -1264,8 +1308,20 @@ fn pick_dp_subtitle(subs: &[crate::metadata::Stream]) -> Option<(i64, i32)> {
 /// and dropping the RPU costs only the dynamic metadata), Profile 5's does not (single-layer
 /// IPT-PQ, no fallback — it decodes cleanly and displays in visibly wrong colours), and Profile
 /// 7's is only half the picture. `Dovi::base_layer_unusable` is the rule and carries the
-/// never-convict-on-silence reasoning; refusing here sends the item down the transcode branch,
-/// where the server re-encodes it to something the panel can show.
+/// never-convict-on-silence reasoning.
+///
+/// **Refusing here is only half the work, and the other half is not in this function.** A refusal
+/// sends the item down the transcode branch — but that branch's query grants PMS `directStream=1`,
+/// permission to COPY the video rather than encode it, and the server takes it whenever the source
+/// fits the caps: resolution, bitrate, and the profile's own limitation axes. None of those can say
+/// "Dolby Vision", so a refused Profile 5 came back `Part.decision=transcode` with the video's own
+/// decision `copy` — the same bitstream, the same wrong colours, one container down. `build_stream`
+/// therefore also sets [`crate::plex::TranscodeSpec::no_video_copy`] on a DV refusal, and ONLY on a
+/// DV refusal; the measurement is in `docs/pms-api.md` §"What the server actually does with a Dolby
+/// Vision source". A server that cannot encode the result is then allowed to say so — this PMS
+/// answers general code 2000, *"File is unplayable. DoVi (Profile 5) color space is not
+/// supported."*, which [`refusal`] turns into the player's read-out. A read-out that names the
+/// reason is the honest end of that road; a picture in the wrong colours is not.
 ///
 /// Unknown dimensions (0) PASS: PMS omitting a Media attribute is not evidence of 4K, and
 /// failing open is yesterday's behavior for every file the server never measured — the same
@@ -1610,6 +1666,7 @@ fn apply_plan(plan: Plan, rk: &str) {
             // makes that true without a second clear anyone can forget.
             play_verdict: plan.verdict,
             cur_remux: plan.remux,
+            cur_no_video_copy: plan.no_video_copy,
             // The two halves of the playing item's identity, installed together and by the same
             // writer — a ratingKey means nothing without the server it is a key ON. Everything
             // after this point (the track PUT, a transcode seek, the retranscode, the stop, and
@@ -1686,7 +1743,8 @@ pub(crate) fn retranscode(offset_secs: i64) -> Option<String> {
     set_stream_codecs(crate::devcaps::caps().encode_vcodec(), "ac3");
     put_selection(cur_sid(), cur_part_id(), cur_audio_sid(), cur_sub_sid()); // drives the encode + burn
     let qsess = sess();
-    let sp = transcode_spec(&rk, &qsess, false, offset_secs.max(0), cur_audio_sid(), cur_sub_sid());
+    let sp =
+        transcode_spec(&rk, &qsess, false, is_no_video_copy(), offset_secs.max(0), cur_audio_sid(), cur_sub_sid());
     if let Some(mc) = c.transcode_decision(&sp) {
         apply_decision_codecs(&mc); // reload builds a fresh Load payload — match the real output
     }
@@ -2027,8 +2085,9 @@ mod tests {
         Dovi::default()
     }
     /// The four real shapes, spelled exactly as the dev server reports them (probed live
-    /// 2026-08-21 across all eight Dolby Vision items in the library — the numbers are not
-    /// invented, and `p7`'s `bl_compat: 6` in particular is why an `== 0` test is not enough).
+    /// 2026-08-21 by sweeping all 540 movies and episodes on the dev PMS: 28 carry Dolby Vision,
+    /// 8 movies and 20 episodes — the numbers are not invented, and `p7`'s `bl_compat: 6` in
+    /// particular is why an `== 0` test is not enough).
     fn p5() -> Dovi {
         Dovi { present: true, profile: 5, bl_compat: 0, el_present: false }
     }
@@ -2130,6 +2189,11 @@ mod tests {
     /// The detail page's preview must agree with what Play will do, or the facts row promises a
     /// direct play the route then refuses. A P5 item reads `Converts` — which is the honest
     /// answer, since a real re-encode is exactly what the server has to do to make it displayable.
+    ///
+    /// It is a client-side PREDICTION and stops there: `Preview` has no "this server cannot do it"
+    /// state, and on the dev PMS a Profile 5 conversion is exactly what comes back refused. The
+    /// page says what the route will ASK for; whether the server can answer is the read-out's
+    /// question, not this one's.
     #[test]
     fn the_preview_calls_a_profile_5_item_a_conversion() {
         let aac = [crate::metadata::Stream { codec: "aac".into(), ..Default::default() }];

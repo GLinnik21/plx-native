@@ -62,8 +62,14 @@ pkg/.build-config
 # Bundled FFmpeg: the upstream source tree and the build output. Both are DERIVED —
 # ci/build-ffmpeg.sh reproduces them from a sha256-pinned tarball — and the tree alone is
 # 30k files. The .ipk carries the four built .so; releases carry the tarball for LGPL.
-vendor/ffmpeg-build/
-vendor/ffmpeg-prefix/
+# **No trailing slash on these two, deliberately.** A pattern ending in `/` matches a DIRECTORY
+# and nothing else — so a worktree that reaches the shared build by SYMLINKING
+# `vendor/ffmpeg-prefix` at the main checkout (the cheap way to avoid a 2-minute, 280 MB rebuild
+# per agent) was NOT ignored, and one `git add -A` staged the link. What that commits is a
+# machine-specific absolute path that resolves to nothing on anyone else's disk, in a file nobody
+# reads twice. Slashless, both a real directory and a link to one are ignored.
+vendor/ffmpeg-build
+vendor/ffmpeg-prefix
 # A NESTED vendor/, which is not a thing anyone writes on purpose — it is what
 # `cp -R <repo>/vendor <worktree>/vendor` produces when the destination already exists,
 # and seeding parallel worktrees that way put 30,247 build-artefact files (280 MB, plus

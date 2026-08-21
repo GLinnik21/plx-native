@@ -410,9 +410,17 @@ labeled "synthetic" and secondary to the 8 authoritative real item shapes:
   as bare `H265`, which displays in visibly **wrong colours**, and nothing in this suite could
   notice: the codec assertion reads `avcodec_get_name`, and that answers `hevc` for a P5, a P7, a
   P8 and an ordinary SDR file alike. Since **2026-08-21** the route refuses both non-self-displayable
-  shapes (P5, and dual-layer P7) and sends them to the server to be re-encoded — see
-  `metadata::Dovi::base_layer_unusable` — and `ff.rs` logs what the demuxer actually found
-  (`ff: … dovi=P5 level=6 bl_compat=0 rpu=1 el=0 bl=1 …`) at every open. Cases asserting that
-  refusal, and the `decision: transcode` it produces, are worth adding against the two real items;
-  what still needs a human in front of the television is whether the panel engages Dolby Vision at
-  all on the P8 file that does direct-play.
+  shapes (P5, and dual-layer P7) — see `metadata::Dovi::base_layer_unusable` — and `ff.rs` logs what
+  the demuxer actually found (`ff: … dovi=P5 level=6 bl_compat=0 rpu=1 el=0 bl=1 …`) at every open.
+  **A case here must grade the OUTPUT, not the decision**, and that is the trap this gap now
+  carries in writing: measured against the dev PMS the same day, refusing direct play produced
+  `Part.decision=transcode` while the VIDEO stream's own decision was **`copy`** — the identical
+  IPT-PQ bitstream one container down, with `DOVIProfile: 5` still on it. A case asserting
+  `decision: transcode` would have passed over a completely unfixed bug. The route now also
+  withdraws the copy permission (`TranscodeSpec::no_video_copy`), and this PMS answers **general
+  code 2000 — "File is unplayable. DoVi (Profile 5) color space is not supported."** — so the P5
+  item's honest on-device expectation is the **failure read-out quoting that sentence**, not a
+  playing stream. The P7 does transcode for real (an enhancement layer is not copyable), which is
+  why a case built on the dual-layer item alone would also have looked clean. What still needs a
+  human in front of the television is whether the panel engages Dolby Vision at all on the P8 file
+  that does direct-play.
