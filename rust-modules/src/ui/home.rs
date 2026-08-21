@@ -13,7 +13,7 @@ use crate::ui::label::{Label, VAlign};
 use crate::ui::text_view::TextView;
 use crate::ui::theme;
 use crate::ui::widgets::{
-    AmbientWash, Art, Button, CircleButton, ControlStyle, PageDots, HERO_BASE_SCRIM_Y0,
+    AmbientWash, Art, Button, CircleButton, PageDots, HERO_BASE_SCRIM_Y0,
 };
 // `guard` was a private copy of this barrier living here; it is now the shared `ui::guard` (its
 // doc comment carries the FFI-unwind rationale + the GL-scissor repair the local copy was missing).
@@ -37,11 +37,17 @@ static mut hero_prev: c_int = -1; // outgoing pool index while sliding (-1 = idl
 static mut hero_slide: Spring = Spring::at(1.0); // slide progress 0→1
 static mut hero_dir: f32 = 1.0; // +1 = next (content slides left), -1 = prev
 static mut hero_auto: f32 = HERO_AUTO_S; // countdown to the next automatic flip
-static mut hero_fc: c_int = 0; // hero focus: -1 = profile chip, 0 = pill, 1 = info, 2 = chevron
-static mut hero_btns: [Rect; HERO_NBTN] = [Rect::new(0.0, 0.0, 0.0, 0.0); HERO_NBTN]; // pill / info / chevron
+static mut hero_fc: c_int = 0; // hero focus: -1 = profile chip, 0 = pill, 1 = info
+static mut hero_btns: [Rect; HERO_NBTN] = [Rect::new(0.0, 0.0, 0.0, 0.0); HERO_NBTN]; // pill / info
 const HERO_FLIP_CD: f32 = 0.35;
 const HERO_AUTO_S: f32 = 8.0; // idle seconds between automatic hero flips
-const HERO_NBTN: usize = 3;
+/// How many CONTROLS the hero action row holds — the Play/Continue pill and the info disc, and
+/// that is the whole of it. The pager chevron beside them is an INDICATOR, not a third button
+/// (see [`hero_actions`]): it is drawn, it is never focused and it has no hit rect, so it is not
+/// counted here. This number is the row's focus clamp ([`set_hero_focus`]), the edge test that
+/// decides when RIGHT pages instead of moving ([`home_hero_key`]) and the length of the pointer
+/// hit-target array — one fact, so removing the chevron from the row was one edit.
+const HERO_NBTN: usize = 2;
 /// The sliding text column's bottom-anchor line. The stack is a FIXED height whatever artwork
 /// lands: the reserved title band (`hero_logo::band_h` = 120) + kicker + 3-line synopsis tops out at
 /// y≈387 for every item ([`hero_stack_top`]). A logo taller than the band (up to
@@ -66,6 +72,21 @@ const HERO_ROW_Y: f32 = HERO_TEXT_BOTTOM + theme::space::MD;
 /// coincidence to be restated as a second 60: this screen draws both, and the status screen's Retry
 /// stands in for this very row (see [`draw_status`]).
 const HERO_CTRL_D: f32 = crate::ui::widgets::StatusOverlay::CTRL_H;
+/// The air between one element of the action row and the next, edge to edge. Hoisted out of
+/// [`hero_actions`] because the pager mark's padding is derived from it — the row has ONE rhythm,
+/// and a mark that sat on a second number would read as belonging to something else.
+const HERO_CTRL_GAP: f32 = 20.0;
+/// The pager mark's own size — the chevron drawn at exactly the box every DISC control in this row
+/// carries its glyph in (`HERO_CTRL_D` × [`widgets::DISC_ICON_RATIO`](crate::ui::widgets::DISC_ICON_RATIO)
+/// = 32), which is what makes it read as a peer of the controls without being one. It is the size
+/// the chevron has always been drawn at; what the correction removed is the 60px control BOX that
+/// used to sit around it, not the mark.
+const HERO_PAGER_D: f32 = HERO_CTRL_D * crate::ui::widgets::DISC_ICON_RATIO;
+/// Equal air on either side of the mark — the row's own [`HERO_CTRL_GAP`], so the gap between the
+/// info disc and the chevron's ink is the same gap as between the pill and the info disc. A
+/// control's padding is its plate's; a bare mark's is the space around the ink, and it is
+/// symmetric because there is no plate to hang it off.
+const HERO_PAGER_PAD: f32 = HERO_CTRL_GAP;
 const K_SLIDE: f32 = 130.0; // slide spring — a touch softer than the grid springs, reads cinematic
 /// The slide is over once its remaining travel is **sub-pixel**. Threshold in PIXELS, not in
 /// spring units: the old `pos > 0.995` cut retired the transition while the incoming layer still
@@ -74,8 +95,8 @@ const K_SLIDE: f32 = 130.0; // slide spring — a touch softer than the grid spr
 const HERO_SLIDE_REST_PX: f32 = 0.5;
 /// How many pool pages either side of the one on screen get their artwork warmed. ONE, and the
 /// number is a budget decision:
-///  * the carousel can only move one step at a time — the chevron, LEFT/RIGHT and the 8-second
-///    auto-flip all call [`hero_flip`]`(±1)` — so ±1 is COMPLETE coverage of "what can be on screen
+///  * the carousel can only move one step at a time — LEFT/RIGHT at the row's ends and the
+///    8-second auto-flip all call [`hero_flip`]`(±1)` — so ±1 is COMPLETE coverage of "what can be on screen
 ///    next"; depth 2 warms a page reachable only after another 8 s of sitting still, by which time
 ///    depth 1 has already warmed it;
 ///  * each page costs TWO of the store's 64 slots (the 1280×720 backdrop and the 600×240 clearLogo,
@@ -241,7 +262,12 @@ fn hero_index() -> usize {
 /// `hero_flip_cd` so a held edge-key (via the repeat path) flips a few times a second, not every
 /// frame — the same machine-gun guard the season tabs needed. Any flip (manual or automatic)
 /// restarts the idle auto-flip countdown.
-pub(crate) fn hero_flip(dir: c_int) {
+///
+/// Private again: every way the billboard pages is now this screen's own — the row's two edge keys
+/// ([`home_hero_key`]) and the idle countdown in [`home_update`]. It was `pub(crate)` for
+/// `app.rs`'s two chevron activations, the OK and the click-hold, and both are gone with the
+/// button.
+fn hero_flip(dir: c_int) {
     let n = crate::pms::hero_pool_len() as c_int;
     if n <= 1 {
         return;
@@ -333,7 +359,8 @@ fn dev_source() -> Option<&'static str> {
     SEEN.get_or_init(|| crate::dev::read("shared")).as_deref()
 }
 
-/// Hero action-row focus: -1 = the profile chip, 0 = Play/Continue pill, 1 = info, 2 = chevron.
+/// Hero action-row focus: -1 = the profile chip, 0 = Play/Continue pill, 1 = info. (The pager
+/// chevron beside them is an indicator and takes no focus — see [`hero_actions`].)
 /// Below -1 sit the CENTERED tab pills (the top band, left→right: chip, then pill i as `-(i+2)`):
 /// -2 = **Home**, -3 = the first section (Movies), -4 = the second (TV Shows), …
 ///
@@ -385,7 +412,8 @@ pub(crate) fn focus_is_card() -> bool {
 }
 
 /// Hero pointer hit-test against the action-row rects recorded at draw: returns the button index
-/// (0 pill / 1 info / 2 chevron) or -2 for a miss. `hover` moves the hero focus without acting.
+/// (0 pill / 1 info) or -2 for a miss. `hover` moves the hero focus without acting. The pager
+/// mark has no entry here: it is not selectable, so it is not clickable either.
 pub(crate) fn hero_button_at(mx: f32, my: f32) -> c_int {
     let btns = unsafe { addr_of!(hero_btns).read() };
     btns.iter().position(|r| r.contains(mx, my)).map(|i| i as c_int).unwrap_or(-2)
@@ -671,8 +699,8 @@ fn hero_logo_rk(m: &PmsMovie) -> &str {
 
 /// The pool pages a prefetch should warm around `cur`, nearest-and-FORWARD first (+1, −1, +2, −2 …),
 /// wrapped into a pool of `n`, with `cur` itself and duplicates dropped (a two-page pool makes +1
-/// and −1 the same page). Forward first because the chevron, RIGHT and the idle auto-flip all page
-/// forward, so with one key of budget per frame that is the page most likely to be seen next. Writes
+/// and −1 the same page). Forward first because RIGHT at the end of the row and the idle auto-flip
+/// both page forward, so with one key of budget per frame that is the page most likely to be seen next. Writes
 /// into `out`, returns how many it wrote — alloc-free on a per-frame path, and pure so the wrap and
 /// the de-dup are host-testable without a live pool.
 fn prefetch_order(cur: c_int, n: c_int, out: &mut [c_int; 2 * HERO_PREFETCH]) -> usize {
@@ -967,17 +995,17 @@ fn hero_content(hero: &PmsMovie, source: &str, p: Painter, dx: f32) {
     }
 }
 
-/// One hero item's action row — Play/Continue pill, info circle, chevron — at horizontal slide
-/// offset `dx`. It rides WITH its item, in the same phase as the text column and the backdrop art:
-/// the pill's label *is* the item's ("Continue" when the press would actually resume it, else
+/// One hero item's action row — Play/Continue pill, info circle, and the pager MARK — at horizontal
+/// slide offset `dx`. It rides WITH its item, in the same phase as the text column and the backdrop
+/// art: the pill's label *is* the item's ("Continue" when the press would actually resume it, else
 /// "Play"), and so is its width, so a row that stayed put would have to relabel and resize itself
 /// mid-flip — the one thing on screen contradicting the motion.
 ///
 /// The row sits at a FIXED y (the text column above is bottom-anchored, so the button-to-text air
-/// is one MD for every item). Pill + info + chevron are a real focus row (hero_fc), so LEFT/RIGHT
-/// walk buttons instead of paging; the chevron is the pager. The pill launches playback directly
-/// (the info circle is the road to the detail page). MD, not LG: the synopsis' leading box already
-/// carries ~7px of descender slack, and the bigger rung read as the button drifting from its text.
+/// is one MD for every item). The two CONTROLS are the focus row (hero_fc), so LEFT/RIGHT walk
+/// them instead of paging. The pill launches playback directly (the info circle is the road to the
+/// detail page). MD, not LG: the synopsis' leading box already carries ~7px of descender slack, and
+/// the bigger rung read as the button drifting from its text.
 ///
 /// `live` marks the INCOMING (real) row, the one whose rects become the pointer hit targets. They
 /// are recorded at the row's DRAWN position — the same draw-and-hit-must-agree rule the grid's
@@ -987,7 +1015,7 @@ fn hero_actions(hero: &PmsMovie, env: &Env, p: Painter, dx: f32, live: bool) {
     let tx = MARGIN_X;
     let pill_y = HERO_ROW_Y;
     let hf = hero_focus();
-    let (cd, cgap) = (HERO_CTRL_D, 20.0f32); // control diameter + inter-control gap
+    let (cd, cgap) = (HERO_CTRL_D, HERO_CTRL_GAP); // control diameter + inter-control gap
     // The label asks the function the PRESS applies — `app.rs`'s `play_item_now` starts this item
     // at `metadata::resume_ns`, which refuses an offset of 10s or less, or one past 95%. Keyed on
     // a raw `resume_ms > 0`, a four-second offset (or one the server left past the end) labelled
@@ -999,32 +1027,35 @@ fn hero_actions(hero: &PmsMovie, env: &Env, p: Painter, dx: f32, live: bool) {
     // local (painter-relative) frames, and the screen-space rects that mirror them
     let pill = Rect::new(tx, pill_y, pw, cd);
     let info = Rect::new(tx + pw + cgap, pill_y, cd, cd);
-    let chev = Rect::new(info.x + cd + cgap, pill_y, cd, cd);
+    // The pager MARK, vertically centred on the control row: whole pixels, because an icon mask is
+    // 1:1 texel content and a fractional box would soften the stroke (`icons::draw` snaps the
+    // ORIGIN; the size is ours to keep whole).
+    let pd = HERO_PAGER_D.round();
+    let mark = Rect::new(info.x + cd + HERO_PAGER_PAD, pill_y + (cd - pd) * 0.5, pd, pd);
     if live {
         // recorded BEFORE the cull: a live row carried off the panel must take its hit targets
         // with it, or a click would still land on a button that is no longer there.
-        let screen = [pill, info, chev].map(|r| Rect::new(r.x + dx, r.y, r.w, r.h));
+        let screen = [pill, info].map(|r| Rect::new(r.x + dx, r.y, r.w, r.h));
         unsafe { addr_of_mut!(hero_btns).write(screen) };
     }
-    if !on_axis(tx + dx, chev.x + cd - tx, SCR_W, 0.0) {
+    // measured to the mark's PADDED right edge — the row's real extent, so a paging row is culled
+    // at the moment the last thing drawn in it leaves the panel and not a control-box early
+    if !on_axis(tx + dx, mark.x + pd + HERO_PAGER_PAD - tx, SCR_W, 0.0) {
         return;
     }
     Button::new(plabel.as_ptr(), theme::size::BODY, pill).icon(Icon::Play).focused(hf == 0).draw(env, p);
     CircleButton::new(c"".as_ptr()).icon(Icon::Info).at(info.x, info.y).focused(hf == 1).draw(env, p);
-    // The pager is a **standalone mark**, not a third button: `ControlStyle::Bare` — idle it is the
-    // chevron alone, with no disc, no rim and no shadow under it, and focused it takes the same
-    // ACCENT disc every control in this row wears. That is the Library A–Z rail's idiom promoted to
-    // a style (`ControlStyle::Bare`'s own doc), so the app has ONE bare-mark treatment.
+    // The pager is an **INDICATOR, not a control**: it says the billboard pages, and that is all it
+    // does. It takes no focus (`HERO_NBTN` counts the two controls above it), it records no hit
+    // rect, and nothing in the app can activate it — pressing it was never the point, since RIGHT
+    // at the end of the row, LEFT at its start and the idle auto-flip already page the carousel.
     //
-    // Its FRAME is unchanged, which is the part worth keeping: `hero_btns[2]` above is this rect,
-    // so the pointer target does not shrink to the ink, and `hero_focus()` index 2 still addresses
-    // it — the D-pad row, `hero_flip` and the click-and-hold pager are all untouched.
-    CircleButton::new(c"".as_ptr())
-        .icon(Icon::Chevron)
-        .at(chev.x, chev.y)
-        .focused(hf == 2)
-        .style(ControlStyle::Bare)
-        .draw(env, p);
+    // So it wears no control geometry either. It is drawn at its NATURAL size (`HERO_PAGER_D` — the
+    // same box the info disc carries its glyph in) with equal air on either side, rather than as a
+    // glyph floating inside a 60px button box whose empty half pushed it away from the row. What
+    // ended here before was a disc-backed `CircleButton`, then a bare-styled one; both were still a
+    // button, which is the thing this is not.
+    crate::ui::icons::draw(p, Icon::Chevron, mark, theme::TEXT_SECONDARY);
 }
 
 impl View for Hero {
@@ -1651,7 +1682,7 @@ fn draw_status(env: &Env, p: Painter) {
     // zero-size rect at (0,0) would "contain" a click at exactly (0,0)
     let none = Rect::new(-1.0, -1.0, 0.0, 0.0);
     let btn = ov.action_frame().unwrap_or(none);
-    unsafe { addr_of_mut!(hero_btns).write([btn, none, none]) };
+    unsafe { addr_of_mut!(hero_btns).write([btn, none]) };
 }
 
 /// Does the status screen own this activation? Retry is Home's ONLY control while a read-out is
@@ -1684,11 +1715,13 @@ pub(crate) fn home_move_focus(sym: c_uint) {
     });
 }
 
-/// Hero-view horizontal key: LEFT/RIGHT walk the action-row focus (pill → info → chevron); RIGHT
-/// on the chevron pages the billboard forward and LEFT on the pill (the row's left end) pages it
-/// BACK — so holding either edge key keeps paging (the debounced `hero_flip` throttles it), the
-/// D-pad counterpart of holding a click on the chevron. app.rs calls this only while the snap is
-/// in hero view; non-arrow keys are no-ops. The chip (focus -1) has no horizontal neighbours.
+/// Hero-view horizontal key: LEFT/RIGHT walk the action-row focus (pill → info); RIGHT on the LAST
+/// control pages the billboard forward and LEFT on the pill (the row's left end) pages it BACK — so
+/// holding either edge key keeps paging (the debounced `hero_flip` throttles it). **This is the
+/// whole of paging by hand**, now that the chevron is an indicator rather than a button: the row's
+/// two ends are the pager, and `hero_auto` is the third way the billboard flips. app.rs calls this
+/// only while the snap is in hero view; non-arrow keys are no-ops. The chip (focus -1) has no
+/// horizontal neighbours.
 pub(crate) fn home_hero_key(sym: c_uint) {
     let f = hero_focus();
     match sym {
@@ -1876,6 +1909,60 @@ mod tests {
         set_hero_focus(999);
         assert_eq!(hero_focus(), HERO_NBTN as c_int - 1, "past the action row clamps to its end");
         set_hero_focus(saved);
+    }
+
+    /// **The pager chevron is an INDICATOR: not a focus stop, and the row's END is what pages.**
+    ///
+    /// The owner's correction (2026-08-21): "Chevron should not be even selectable. It just shows
+    /// that the page flips." It used to be `hero_fc == 2` — a third stop in this row, activatable
+    /// by OK and by a click, first as a disc and then as a bare mark. The correction is about the
+    /// CONTROL, not the drawing, and its two halves are invisible from either side alone: a focus
+    /// that still reached a third index would put the ACCENT face on a thing nothing can do, while
+    /// a RIGHT that merely stopped at the last control would leave the billboard with no forward
+    /// pager at all on the D-pad — the chevron *was* the forward one.
+    ///
+    /// So both are pinned here, against the real key path: no number of RIGHT presses reaches an
+    /// index past the info disc, and the press that would have gone there flips the billboard
+    /// instead while focus stays put. (LEFT off the pill is the same statement at the other end.)
+    #[test]
+    fn the_pager_is_not_a_focus_stop_and_the_rows_end_pages_instead() {
+        let _s = crate::testlock::serial(); // pms's hero pool + browse's pill table
+        let _g = FOCUS.lock().unwrap_or_else(|e| e.into_inner());
+        let saved = hero_focus();
+        crate::pms::seed_for_test(3, crate::pms::HubState::Ready);
+        assert!(crate::pms::hero_pool_len() > 1, "a pool with somewhere to page to");
+
+        // (1) the chevron is unreachable: RIGHT walks pill → info and then stops walking
+        set_hero_focus(0);
+        for press in 1..=8 {
+            home_hero_key(SDLK_RIGHT);
+            assert!(
+                hero_focus() <= HERO_NBTN as c_int - 1,
+                "RIGHT #{press} left focus on {} — past the row's last CONTROL",
+                hero_focus()
+            );
+        }
+        assert_eq!(hero_focus(), HERO_NBTN as c_int - 1, "…and it rests on the info disc");
+
+        // (2) …because that press pages the billboard instead. The cooldown is cleared first:
+        // `hero_flip` debounces a held key, and the walk above spent nothing on it.
+        unsafe { addr_of_mut!(hero_flip_cd).write(0.0) };
+        let before = hero_index();
+        home_hero_key(SDLK_RIGHT);
+        assert_ne!(hero_index(), before, "RIGHT at the row's end must page the billboard");
+        assert_eq!(hero_focus(), HERO_NBTN as c_int - 1, "…and must not move focus doing it");
+
+        // (3) the other end, unchanged: LEFT on the pill pages back
+        set_hero_focus(0);
+        unsafe { addr_of_mut!(hero_flip_cd).write(0.0) };
+        let before = hero_index();
+        home_hero_key(SDLK_LEFT);
+        assert_ne!(hero_index(), before, "LEFT on the pill pages back");
+        assert_eq!(hero_focus(), 0, "…and stays on the pill");
+
+        set_hero_focus(saved);
+        unsafe { addr_of_mut!(hero_flip_cd).write(0.0) };
+        crate::pms::reset();
     }
 
     /// **What Home reports to the SHARED top bar** — the one value `widgets::tab_row_update`

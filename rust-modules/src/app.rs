@@ -1150,8 +1150,8 @@ const HUD_LINGER_MS: u32 = 4500; // plain transport/nav input
 const HUD_MENU_MS: u32 = 8000; // a modal menu is up (track/chapter nav) — longer read time
 const HUD_HEADLESS_MS: u32 = 60_000; // autoplay/headless runs pin the HUD up for capture
 /// The Magic Remote POINTER, as one value: which input mode the remote is in, what the
-/// cursor is doing, and the three gestures that outlive a single event (a scrub drag, a
-/// wheel debounce, a click held on the hero chevron).
+/// cursor is doing, and the two gestures that outlive a single event (a scrub drag and the
+/// wheel's own debounce).
 ///
 /// `dpad_mode`/`cur_hidden`/`mot_accum` are one rule between them and are why this is a
 /// type: the first D-pad press hides the cursor and switches modes, and motion only switches
@@ -1166,10 +1166,6 @@ struct Pointer {
     last_motion: u32,  // last motion tick — playback hides an idle cursor off this
     drag: bool,        // a click is dragging the HUD scrub band
     last_wheel: u32,   // last wheel tick, for the wheel's own debounce
-    /// hero click-hold pager: set when a click lands on the chevron, cleared on button-up;
-    /// the per-frame pump keeps paging while it stays held (the pointer twin of holding
-    /// RIGHT). 0 = no click held.
-    hold_pager: u32,
 }
 impl Pointer {
     /// Pointer mode, cursor shown, nothing held or dragging — where the loop starts.
@@ -1182,7 +1178,6 @@ impl Pointer {
         last_motion: 0,
         drag: false,
         last_wheel: 0,
-        hold_pager: 0,
     };
 }
 
@@ -1797,7 +1792,7 @@ unsafe fn play_item_now(
 }
 
 /// The ONE home activation (OK key AND pointer click): `hf` is the hero action-row focus
-/// (0 pill / 1 info / 2 chevron, or a tab pill's packed negative) in hero view, `i32::MIN` for a
+/// (0 pill / 1 info, or a tab pill's packed negative) in hero view, `i32::MIN` for a
 /// grid card. **The chip (-1) never arrives here** — it is the shared bar's control and both input
 /// paths answer it above, in `chip_activate`.
 /// Pill / Continue-Watching tiles / episodes launch playback immediately (a show or season
@@ -1844,10 +1839,6 @@ unsafe fn home_activate(
                 nav_cancel(*route, nav);
             }
         }
-        return;
-    }
-    if hf == 2 {
-        crate::ui::home::hero_flip(1);
         return;
     }
     let m = if hero_view {
@@ -2546,7 +2537,7 @@ fn key_move_focus(key: Key, sym: c_uint, route: Route, now: u32, held: &mut Held
                 set_fr(0);
             }
         } else if matches!(key, Key::Left { alt: false } | Key::Right { alt: false }) {
-            crate::ui::home::home_hero_key(sym); // walk the action row; RIGHT on the chevron pages
+            crate::ui::home::home_hero_key(sym); // walk the action row; RIGHT at its end pages
         } else if matches!(key, Key::Up) {
             // hero view: UP focuses the profile chip (OK then opens the menu —
             // the chip is selectable, it no longer springs the menu unbidden)
@@ -2754,7 +2745,7 @@ unsafe fn key_ok(
         // instantly while the hero stays visible ~130ms, so a quick DOWN→OK
         // must still act on the hero shown, not the grid's card 0.
         if crate::ui::home::snap_pos() < 0.5 {
-            // hero (Play pill / chip / pills / chevron): activate immediately.
+            // hero (Play pill / info / chip / pills): activate immediately.
             let hf = crate::ui::home::hero_focus();
             home_activate(mt, hf, HUD_LINGER_MS, route, played_from_detail, trail, &mut hud.nav, nav);
         } else {
@@ -4006,15 +3997,14 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                 }
                             }
                         } else if crate::ui::home::snap_pos() < 0.5 {
-                            // hero visible: clicks act on the action row via the ONE activation;
-                            // holding the click on the chevron keeps paging (see the per-frame pump)
+                            // hero visible: clicks act on the action row via the ONE activation.
+                            // Only the two CONTROLS are hit-tested — the pager chevron beside them
+                            // is an indicator with no rect, so paging is the D-pad's and the
+                            // auto-flip's (this used to arm a click-hold pager here).
                             let b = crate::ui::home::hero_button_at(cx, cy);
                             if b >= 0 {
                                 crate::ui::home::set_hero_focus(b);
                                 home_activate(mt, b, HUD_LINGER_MS, &mut route, &mut played_from_detail, &mut trail, &mut hud.nav, &mut nav_pending);
-                                if b == 2 {
-                                    ptr.hold_pager = last_input;
-                                }
                             }
                         } else if crate::ui::home::home_card_click(cx, cy) {
                             // grid card: click = OK (play a Continue-Watching tile / open detail)
@@ -4136,7 +4126,6 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     // the pointer's twin of the OK key-up: without it the dip would sit there until
                     // press.rs's dropped-key-up ceiling fired. A no-op when no press is in flight.
                     crate::ui::press::release(last_input);
-                    ptr.hold_pager = 0; // releasing the click stops the hero click-hold pager
                     if ptr.drag {
                         ptr.drag = false;
                         if scrub() >= 0 {
@@ -4562,15 +4551,6 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 refresh_hubs_at = 0;
                 let nmov = crate::pms::refetch_hubs_reconcile();
                 log(&format!("home: hubs refreshed after playback ({nmov} items)"));
-            }
-            // hero click-hold pager: while the click stays down on the chevron, keep paging (the
-            // pointer twin of holding RIGHT; hero_flip's cooldown sets the pace).
-            if ptr.hold_pager != 0
-                && now.wrapping_sub(ptr.hold_pager) > 450
-                && matches!(route, Route::Home)
-                && crate::ui::home::snap_pos() < 0.5
-            {
-                crate::ui::home::hero_flip(1);
             }
             // lost-keyup safety: the remote streams 0x101 repeats (~50ms) while a key is physically down,
             // so once past the initial settle a stale heartbeat means the release keyup was dropped —
