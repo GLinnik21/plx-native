@@ -28,7 +28,7 @@ use crate::ui::label::HAlign;
 use crate::ui::text_view::TextView;
 use crate::ui::theme;
 use crate::ui::widgets::{
-    resolve_tex_wh_on, AmbientWash, Art, Button, CircleButton, ControlStyle, TabPill, TabStrip,
+    resolve_tex_wh_on, AmbientWash, Art, Button, CircleButton, PosterMark, TabPill, TabStrip,
     HERO_BASE_SCRIM_Y0,
 };
 use crate::ui::{hero_alpha, on_axis, Column, Env, Painter, Rect, ScrollColumn, Spring, View}; // View: Button/CircleButton::draw
@@ -185,7 +185,7 @@ impl DetailView {
             related: CardRow::new(),
             cast: CardRow::new(),
             last_resume_ns: 0,
-            hero_set: HeroSet { restart: false, alt: false },
+            hero_set: HeroSet::default(),
             saved_col: [0; 6],
             spin_ms: 0.0,
             // the app's own flat ground until an item keys it — byte-identical to the grey this page
@@ -202,9 +202,9 @@ fn view() -> &'static mut DetailView {
 // ---- the hero action row ----
 // Play/Resume pill (0), the restart disc (1, present ONLY while there is a resume point to ignore),
 // the "Also available" pill (present ONLY while a second pinned source holds this item), then the
-// watched toggle. An info disc would be a no-op on its own page, so the row stops there.
-// The set is DYNAMIC — TWO of the four controls come and go — so nothing may hard-code an index:
-// see `HeroCtl`/`hero_set`/`hero_btns`/`btn_watched`.
+// WATCH-STATE discs. An info disc would be a no-op on its own page, so the row stops there.
+// The set is DYNAMIC — everything after the pill comes and goes, and the tail is one disc or TWO —
+// so nothing may hard-code an index: see `HeroCtl`/`hero_set`/`hero_btns`/`hero_watch_state`.
 const BTN_PLAY: c_int = 0;
 const BTN_RESTART: c_int = 1;
 // Play pill MINIMUM width. The drawn width is `Button::pill_w`, measured from the label, and for
@@ -437,12 +437,10 @@ const EP_TEXT_HL_PAD_X: f32 = theme::space::XS;
 /// `block_h` needs NO allowance for the highlight and nothing in the flow below moves when one
 /// appears. Asserted by `the_episode_text_highlight_fits_the_block_the_flow_already_reserves`.
 ///
-/// It also buys the corner back: 16px down a `EP_TEXT_HL_RAD` arc has retreated to within 0.2px of the
-/// panel's edge, so the rounding cannot bite into the kicker's first glyph the way it would have at
-/// the horizontal pad alone.
+/// It also buys the corner back: 16px down a `widgets::TEXT_BLOCK_HL_RAD` arc has retreated to
+/// within 0.2px of the panel's edge, so the rounding cannot bite into the kicker's first glyph the
+/// way it would have at the horizontal pad alone.
 const EP_TEXT_HL_PAD_Y: f32 = theme::space::SM;
-/// Its corner radius — the About footer's, because it is the same object doing the same job.
-const EP_TEXT_HL_RAD: f32 = 18.0;
 // Related row (portrait posters) reuses the home shelf poster geometry (consts::CARD_*) so a poster
 // is one size app-wide (its texture request was already 250×375 → now drawn 1:1 sharp).
 const REL_W: f32 = CARD_W; // 250
@@ -492,8 +490,9 @@ fn alt_pill_w() -> f32 {
 /// The hero action-row control rect for index `i` at row top `y`.
 ///
 /// The row is DYNAMIC — the ↺ restart disc exists only while [`has_restart`], the *Also available*
-/// pill only while a second source holds the item — and two of its four controls are pills whose
-/// width follows their label, so positions are ACCUMULATED rather than per-control constants: the
+/// pill only while a second source holds the item, and the watch-state tail is one disc or two
+/// ([`hero_ctls`]) — and two of its five controls are pills whose width follows their label, so
+/// positions are ACCUMULATED rather than per-control constants: the
 /// row starts at the margin and every control is one `CGAP` past the last one's right edge. Walked
 /// by `draw_buttons` AND by the pointer hit-test — anything else would put the click a control out
 /// of step whenever a resume point exists, which is precisely the state a pointer user is most
@@ -734,9 +733,64 @@ fn has_restart() -> bool {
     hero_resume_ns() > 0
 }
 
+/// The loaded item's watch state, in the app's ONE watch-state vocabulary ([`PosterMark`]) — what
+/// decides whether the hero row ends in a *mark watched* disc, a *mark unwatched* disc, or BOTH.
+///
+/// It is the same three states a poster wears and deliberately the same enum, but it is a second
+/// resolver rather than a call to [`crate::ui::widgets::poster_mark`]. The structural reason is
+/// that the poster's reads a `PmsMovie` CATALOG ROW, and three of the four ways onto this page (the
+/// Library grid, a Related tile, the person page) never put one in the home catalog — the page
+/// would silently answer `None` for every item reached that way. It then answers differently in
+/// two places, and both are the two functions' questions genuinely differing:
+///
+/// * **A CONTAINER mid-run.** A poster in a grid says nothing about a show three episodes into ten,
+///   because "where its next episode stands" is not something a tile can state. Here the question
+///   is which write verbs are reachable, and such a show can honestly be sent to either end — so it
+///   IS in the middle, and gets both discs.
+/// * **The edges of the resume rule.** `resume` is [`hero_resume_ns`]'s answer, i.e. the resume the
+///   Play pill beside these discs would ACTUALLY apply, so a 4-second offset or a 95% tail is no
+///   more "in the middle" here than it is a "Resume" up there — while a poster's bar is drawn from
+///   a raw `viewOffset` and does mark them. This row promises what its presses deliver (the same
+///   rule the ↺ disc and the pill's label already follow); a mark on artwork only describes.
+///
+/// **`InProgress` outranks the watched flag**, exactly as the poster's does: PMS reports both on a
+/// finished-then-restarted item, and being part-way through the re-watch is what the viewer is
+/// doing. Pure, so the control set it produces is host-gradeable.
+///
+/// **KNOWN, on CONTAINERS only: the optimistic flip does not reach the evidence this reads**, so a
+/// show's tail settles a round trip late instead of on the press frame. `metadata::set_watched_local`
+/// edits the matched item's own `watched`/`resume_ms` — which is the whole answer for a leaf — but a
+/// show's progress lives in `on_deck` and the seasons' `viewed_leaf_count`, and those keep the
+/// server's pre-press values until `refresh_view_state`'s re-read lands. Marking a show watched
+/// therefore changes nothing on screen for that window, and un-watching a finished one shows the
+/// part-watched PAIR for it before settling to the single disc. Self-correcting, and no verb is
+/// wrong while it lasts. Fixing it means teaching that function to carry a container's evidence too
+/// (clear `on_deck`, drive `viewed_leaf_count` to the end the write names) — which is a data-layer
+/// change three other surfaces on this page read, so it is deliberately not made from here.
+fn hero_watch_state(d: &metadata::Detail, resume: i64) -> PosterMark {
+    // A container has no resume point of its own — a show mid-run is one whose leaves have been
+    // started and not finished, which is `show_started` minus the `watched` end of the range.
+    // (`show_started` is TRUE for a finished show too: it asks "has this been touched at all".)
+    let mid_run = d.is_show && show_started(d) && !d.watched;
+    if resume > 0 || mid_run {
+        PosterMark::InProgress
+    } else if d.watched {
+        PosterMark::Watched
+    } else {
+        PosterMark::None
+    }
+}
+
+/// [`hero_watch_state`] for the item actually loaded — `None` (nothing started) while the page is
+/// still fetching, which is the state that draws the single "mark as watched" disc, i.e. the row
+/// the page has always shown during that window.
+fn hero_mark() -> PosterMark {
+    metadata::current().map(|d| hero_watch_state(d, hero_resume_ns())).unwrap_or_default()
+}
+
 /// A control in the hero action row, named rather than numbered.
 ///
-/// The row's INDICES move — two of these four are conditional — so an index is only meaningful
+/// The row's INDICES move — four of these five are conditional — so an index is only meaningful
 /// next to the set that produced it. Everything that has to survive a set change (the focus, the
 /// press mapping, the accumulation the pointer walks) is expressed in terms of this instead.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -747,31 +801,43 @@ enum HeroCtl {
     Restart,
     /// the *Also available* pill, present only while a second pinned source holds this item
     Alt,
-    /// the watched toggle — always present, always last
-    Watched,
+    /// the ✓ disc — "mark as watched". Present unless the item already IS watched.
+    MarkWatched,
+    /// the − disc — "mark as unwatched". Present unless the item has never been started.
+    MarkUnwatched,
 }
 
-/// Which of the conditional controls the row is showing. The row's whole shape is these two bits,
-/// which is what lets a set CHANGE be compared (`hero_col`) rather than inferred.
+/// Which of the conditional controls the row is showing: the two independent bits, plus the
+/// item's watch state, which is what decides the row's TAIL (one disc, or the part-watched pair).
+/// The row's whole shape is this struct, which is what lets a set CHANGE be compared (`hero_col`)
+/// rather than inferred.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 struct HeroSet {
     restart: bool,
     alt: bool,
+    mark: PosterMark,
 }
 
 /// The live set, read from the loaded item and the resolved copy list.
 fn hero_set() -> HeroSet {
-    HeroSet { restart: has_restart(), alt: crate::ui::alt_sources::is_available() }
+    HeroSet { restart: has_restart(), alt: crate::ui::alt_sources::is_available(), mark: hero_mark() }
 }
 
 /// The row's controls, in drawn order, for a given set. A fixed stack array plus a live count, like
 /// [`sections`] — no per-frame allocation on the draw path.
 ///
 /// **Order is the design's** (`Shared Sources.dc.html`, deliverable E): the play group, then *Also
-/// available*, then the watched toggle last. The alt pill sits with the things you might do to the
-/// copy rather than with the things you do to your own view state.
-fn hero_ctls(set: HeroSet) -> ([HeroCtl; 4], usize) {
-    let mut v = [HeroCtl::Play; 4];
+/// available*, then the watch-state discs last. The alt pill sits with the things you might do to
+/// the copy rather than with the things you do to your own view state.
+///
+/// **The tail is one disc or TWO, and that is the design** (`CircleButton.d.ts`): each disc's glyph
+/// states the OUTCOME its press produces, so an item that is done offers only *mark unwatched* and
+/// one never started offers only *mark watched* — the button IS the circle, and a single disc that
+/// changed meaning without changing shape was the old row's real bug. A PART-WATCHED item is in
+/// neither state, and no single toggle can express both destinations, so it gets both discs: ✓ then
+/// −, the same order the two ends of the range read in. The state is [`hero_watch_state`]'s.
+fn hero_ctls(set: HeroSet) -> ([HeroCtl; 5], usize) {
+    let mut v = [HeroCtl::Play; 5];
     let mut n = 1;
     if set.restart {
         v[n] = HeroCtl::Restart;
@@ -781,8 +847,14 @@ fn hero_ctls(set: HeroSet) -> ([HeroCtl; 4], usize) {
         v[n] = HeroCtl::Alt;
         n += 1;
     }
-    v[n] = HeroCtl::Watched;
-    n += 1;
+    if set.mark != PosterMark::Watched {
+        v[n] = HeroCtl::MarkWatched;
+        n += 1;
+    }
+    if set.mark != PosterMark::None {
+        v[n] = HeroCtl::MarkUnwatched;
+        n += 1;
+    }
     (v, n)
 }
 
@@ -802,9 +874,12 @@ fn index_of(set: HeroSet, ctl: HeroCtl) -> Option<c_int> {
 fn hero_btns() -> c_int {
     hero_ctls(hero_set()).1 as c_int
 }
-/// index of the watched toggle — always last, so it shifts with everything that comes and goes
-fn btn_watched() -> c_int {
-    hero_btns() - 1
+/// Screen index of hero control `ctl` right now, or `None` while the row is not showing it — the
+/// live-set form of [`index_of`], which is what every draw and press site must use instead of a
+/// literal. (It replaced a `btn_watched()` that answered `hero_btns() - 1`: with the part-watched
+/// pair the row's last control is *mark unwatched*, so "last" stopped naming one control at all.)
+fn hero_index(ctl: HeroCtl) -> Option<c_int> {
+    index_of(hero_set(), ctl)
 }
 /// The hero row's focused index, resolved against the LIVE control set and written back — so the
 /// correction IS the state rather than something each reader has to remember.
@@ -813,12 +888,13 @@ fn btn_watched() -> c_int {
 /// not a stable way to name a control. Both directions bite, and both are reachable by hand:
 ///
 /// - It **grows**. `open_rk` deliberately clears `current()` for the whole 2-5 round-trip fetch, so
-///   during that window the row is two buttons and index 1 is the watched toggle. Press RIGHT there,
-///   let a part-watched item land, and index 1 has quietly become the restart disc — the next OK
-///   would start playback instead of toggling watched.
-/// - It **shrinks**. The watched toggle is the control that can delete the restart disc from under
-///   the focus, because scrobbling clears the server's `viewOffset`. Focus left at index 2 of a
-///   two-button row draws nothing focused and makes every later OK inert.
+///   during that window the row is two buttons and index 1 is the *mark watched* disc. Press RIGHT
+///   there, let a part-watched item land, and index 1 has quietly become the restart disc — the
+///   next OK would start playback instead of writing view state.
+/// - It **shrinks**. A watch-state disc is the control that can delete the restart disc from under
+///   the focus, because scrobbling clears the server's `viewOffset` — and it deletes ITSELF at the
+///   same time, since a part-watched item that becomes watched drops from two tail discs to one.
+///   Focus left at index 3 of a two-button row draws nothing focused and makes every later OK inert.
 ///
 /// So the focus follows its CONTROL, not its index: the index is resolved through the set it was
 /// taken in ([`ctl_at`]) and looked up again in the new one ([`index_of`]). The clamp then catches
@@ -856,17 +932,40 @@ enum HeroAction {
     Play,
     /// the same play, with the resume rule dropped
     Restart,
-    Watched,
+    /// `/:/scrobble` — the ✓ disc
+    MarkWatched,
+    /// `/:/unscrobble` — the − disc
+    MarkUnwatched,
     /// open the list of the OTHER sources holding this item (`ui::alt_sources`)
     Alt,
     None,
 }
+
+impl HeroAction {
+    /// The view-state write this action performs, if it is one of the two that do.
+    ///
+    /// **The verb comes from the CONTROL, never from the item's state**, which is the substantive
+    /// half of splitting the old single toggle in two: the press used to re-read `d.watched` and
+    /// derive `if watched { Unwatched } else { Watched }`, so what a press did depended on a fact
+    /// that could have changed since the frame the user looked at — and on a part-watched item
+    /// there is no single "other end" for it to derive at all. Now the glyph the user aimed at IS
+    /// the verb.
+    fn watch_write(self) -> Option<crate::viewstate::Write> {
+        match self {
+            HeroAction::MarkWatched => Some(crate::viewstate::Write::Watched),
+            HeroAction::MarkUnwatched => Some(crate::viewstate::Write::Unwatched),
+            _ => None,
+        }
+    }
+}
+
 fn hero_action(col: c_int) -> HeroAction {
     match ctl_at(hero_set(), col) {
         Some(HeroCtl::Play) => HeroAction::Play,
         Some(HeroCtl::Restart) => HeroAction::Restart,
         Some(HeroCtl::Alt) => HeroAction::Alt,
-        Some(HeroCtl::Watched) => HeroAction::Watched,
+        Some(HeroCtl::MarkWatched) => HeroAction::MarkWatched,
+        Some(HeroCtl::MarkUnwatched) => HeroAction::MarkUnwatched,
         None => HeroAction::None,
     }
 }
@@ -2667,13 +2766,13 @@ fn draw_ratings(p: Painter, x: f32, row_y: f32) {
 }
 
 fn draw_buttons(p: Painter, env: &Env, y: f32) {
-    // One shared control family (widgets::Button/CircleButton, default ControlStyle::Accent — the
-    // same as the info card): the focused control fills warm ACCENT with dark ink, the rest are
-    // solid dark discs. Play reuses the pill Button; the ↺ disc restarts a resumable item from
-    // 00:00; the check disc is the watched toggle (its glyph lights RESUME amber while the item is
-    // marked watched). The discs are placed by an ACCUMULATED x, not per-control constants, because
-    // the middle one comes and goes — see `hero_btns`. That accumulation IS `hero_btn_rect`, which
-    // the pointer hit-test walks too, so no control can be drawn in one place and clicked in another.
+    // One shared control family (widgets::Button/CircleButton, all on the default
+    // ControlStyle::Accent — the same as the info card): the focused control fills warm ACCENT with
+    // dark ink, the rest are solid dark discs. Play reuses the pill Button; the ↺ disc restarts a
+    // resumable item from 00:00; the ✓/− discs write watch state. The discs are placed by an
+    // ACCUMULATED x, not per-control constants, because what sits between them comes and goes — see
+    // `hero_btns`. That accumulation IS `hero_btn_rect`, which the pointer hit-test walks too, so no
+    // control can be drawn in one place and clicked in another.
     let focus = focus();
     let restart = has_restart();
 
@@ -2701,26 +2800,35 @@ fn draw_buttons(p: Painter, env: &Env, y: f32) {
     // the 90% single-server library never pays a control for it. The trailing chevron is what says
     // the press opens a list rather than acting: it is the same disclosure mark a drill-in row
     // carries, and without it the pill reads as a fourth thing to DO to the film.
-    if let Some(i) = index_of(hero_set(), HeroCtl::Alt) {
+    if let Some(i) = hero_index(HeroCtl::Alt) {
         Button::new(ALT_LABEL.as_ptr(), theme::size::BODY, hero_btn_rect(i, y))
             .trailing_icon(crate::ui::icons::Icon::ChevronDown)
             .focused(focus == i)
             .draw(env, p);
     }
-    let watched = metadata::current().map(|d| d.watched).unwrap_or(false);
-    let wf = focus == btn_watched();
-    let wstyle = if watched && !wf {
-        ControlStyle::Custom { fill: theme::CONTROL_IDLE_FILL, ink: theme::RESUME_FILL }
-    } else {
-        ControlStyle::Accent
-    };
-    let wr = hero_btn_rect(btn_watched(), y);
-    CircleButton::new(c"".as_ptr())
-        .icon(crate::ui::icons::Icon::Check)
-        .style(wstyle)
-        .at(wr.x, wr.y)
-        .focused(wf)
-        .draw(env, p);
+    // The watch-state discs, ONE or TWO of them (`hero_ctls`). Each **states the OUTCOME its press
+    // produces** rather than the state the item is in — the design system's rule for a control that
+    // is already a circle (`CircleButton.d.ts`): the BARE check / minus, never the filled
+    // check-circle / minus-circle a menu ROW carries, because the button is the circle and a disc
+    // inside a disc would be two circles saying one thing.
+    //
+    // Both are on the ordinary idle/accent style. There used to be an amber `Custom` arm that inked
+    // a watched-and-unfocused check `RESUME_FILL`, from when ONE disc had to carry both states; the
+    // glyph carries the state now, and amber has since become the resume BAR's alone (`theme.rs`)
+    // precisely so the two cannot be confused at a glance.
+    for (ctl, icon) in [
+        (HeroCtl::MarkWatched, crate::ui::icons::Icon::Check),
+        (HeroCtl::MarkUnwatched, crate::ui::icons::Icon::Minus),
+    ] {
+        if let Some(i) = hero_index(ctl) {
+            let r = hero_btn_rect(i, y);
+            CircleButton::new(c"".as_ptr())
+                .icon(icon)
+                .at(r.x, r.y)
+                .focused(focus == i)
+                .draw(env, p);
+        }
+    }
 }
 
 /// Visibility (0..1) of the pinned compact title at scroll depth `scroll`: 1 while the first
@@ -2867,11 +2975,12 @@ fn draw_episodes(p: Painter) {
         let date = pretty_date(&ep.aired, 0); // formatted once — feeds both the layout and the draw
         let (date_y, summary_y, meta_h) = ep_meta_layout(&ep.title, !date.is_empty(), &ep.summary);
         // …and when it is the METADATA BLOCK that holds focus, its own translucent panel goes down
-        // first, wrapping this episode's measured content (`ep_text_hl`). Same token, radius and
-        // hug-the-content rule as the About footer's column highlight — one idiom for "this block of
-        // text is the thing you are on", which is what OK here acts upon (that episode's own page).
+        // first, wrapping this episode's measured content (`ep_text_hl`). The panel itself is the
+        // SHARED `widgets::text_block_highlight` — literally the same call the About footer's column
+        // highlight makes, so "this block of text is the thing you are on" is one object with one
+        // wash, one radius and one shadow. This screen supplies only the frame it hugs.
         if focused && erow == EpRow::Text {
-            pe.rrect(ep_text_hl(x, ep_y, meta_h), EP_TEXT_HL_RAD, EP_TEXT_HL_RAD, theme::OVERLAY_FOCUS_SOFT);
+            crate::ui::widgets::text_block_highlight(pe, ep_text_hl(x, ep_y, meta_h));
         }
         if let Ok(ec) = CString::new(format!("EPISODE {}", ep.index)) {
             pe.text(ec.as_ptr(), x, ty, theme::size::CAPTION, dimc, 0, 1);
@@ -3167,8 +3276,12 @@ pub(crate) fn on_ok() -> bool {
             // the hero row's indices move with its control set, so resolve the press through the
             // one pure mapping (`hero_col` also corrects a focus the set shrank under)
             let action = hero_action(hero_col());
-            if action == HeroAction::Watched {
-                // Watched toggle. **The ITEM's server, not the current one** — `rk` is a key on
+            if let Some(w) = action.watch_write() {
+                // A watch-state disc. **The verb is the CONTROL's** (`HeroAction::watch_write`) —
+                // this arm used to read `d.watched` back and derive the opposite, which a
+                // part-watched item has no single answer for.
+                //
+                // **The ITEM's server, not the current one** — `rk` is a key on
                 // `d.sid` and on no other machine, and browsing a shared library no longer re-points
                 // `current`, so resolved from `client()` this posted a BORROWED item's ratingKey to
                 // OUR server. Both servers number from 1, so that is not a no-op: the friend's film
@@ -3176,12 +3289,12 @@ pub(crate) fn on_ok() -> bool {
                 //
                 // The scrobble, the page re-read and the hub refetch all used to run right here, on
                 // the SDL thread — three blocking round-trip chains off one keypress. `viewstate`
-                // owns all three now: it flips this page and the shelves optimistically (so the
-                // button changes on this frame), writes on a worker, and calls `refresh_view_state`
-                // when the write lands. `Some("")` is "refresh the detail page, with no filmstrip
-                // position to protect" — the press was on the hero.
-                if let Some((sid, rk, watched)) = metadata::current().map(|d| (d.sid, d.rk.clone(), d.watched)) {
-                    let w = if watched { crate::viewstate::Write::Unwatched } else { crate::viewstate::Write::Watched };
+                // owns all three now: it flips this page and the shelves optimistically, writes on a
+                // worker, and calls `refresh_view_state` when the write lands. `Some("")` is
+                // "refresh the detail page, with no filmstrip position to protect" — the press was
+                // on the hero. NB the optimistic half reaches a LEAF's discs on this frame and a
+                // CONTAINER's only when the re-read lands — `hero_watch_state`'s doc says why.
+                if let Some((sid, rk)) = metadata::current().map(|d| (d.sid, d.rk.clone())) {
                     crate::viewstate::request(sid, &rk, w, Some(String::new()));
                 }
                 return false;
@@ -3360,7 +3473,7 @@ pub(crate) fn take_alt_request() -> bool {
 /// one. The row scrolls with the hero, so this is the drawn frame — the panel must anchor to where
 /// the button IS, not to where it would be at the top of the page.
 pub(crate) fn alt_btn_rect() -> Option<Rect> {
-    let i = index_of(hero_set(), HeroCtl::Alt)?;
+    let i = hero_index(HeroCtl::Alt)?;
     let y = hero_layout(selected()).btn_y - view().column.scroll.pos;
     Some(hero_btn_rect(i, y))
 }
@@ -3471,10 +3584,10 @@ pub(crate) fn focused_episode_rect() -> Option<Rect> {
 /// Re-read the mounted item from the server after something changed its view state, KEEPING the
 /// season the user was browsing.
 ///
-/// Shared by the hero's watched toggle and by the filmstrip's context menu, which mark different
+/// Shared by the hero's watch-state discs and by the filmstrip's context menu, which mark different
 /// things watched — the whole show versus one of its episodes — but both need this page to be
 /// showing the truth afterwards (the tab ticks, the episode checks, the resume bars and the hero's
-/// own toggle all read the refetched item).
+/// own discs all read the refetched item).
 /// `keep_ep` is the episode this refresh is ABOUT, if any (the filmstrip menu passes the one it
 /// just toggled; the hero passes nothing) — see [`KEEP_EP`] for why the row would otherwise scroll
 /// itself away from the tile the user just acted on.
@@ -4012,8 +4125,9 @@ fn draw_about(p: Painter) {
             .sum::<f32>()
     };
 
-    // ---- focus highlight: a translucent rounded panel under the SELECTED block that WRAPS its
-    // content — the card is a fixed box; the three columns size to their measured height. ----
+    // ---- focus highlight: the shared `widgets::text_block_highlight` under the SELECTED block,
+    // wrapping its content — the card is a fixed box; the three columns size to their measured
+    // height. Same call the episode filmstrip's metadata row makes; only the frame differs. ----
     if view().section == 5 {
         const HL_TOP: f32 = 36.0; // pad above the column heading
         const HL_BOT: f32 = 24.0; // pad below the last content line
@@ -4025,7 +4139,7 @@ fn draw_about(p: Painter) {
             2 => Rect::new(lx - 26.0, col_y - HL_TOP, 560.0, lang_off + HL_TOP + HL_BOT),
             _ => Rect::new(ax - 26.0, col_y - HL_TOP, 560.0, access_off - 26.0 + HL_TOP + HL_BOT),
         };
-        p.rrect(hl, 18.0, 18.0, theme::OVERLAY_FOCUS_SOFT);
+        crate::ui::widgets::text_block_highlight(p, hl);
     }
 
     // ---- card: title, genres, summary — every run hard-bounded to the card's inner width (a
@@ -4759,79 +4873,252 @@ mod tests {
         }
     }
 
-    /// The restart disc exists exactly when the play beside it would resume — the pill's label, the
-    /// control count and the watched index all hang off that one predicate, and it is Plex's resume
-    /// RULE (`metadata::resume_ns`), not a raw `viewOffset > 0`.
+    /// The restart disc exists exactly when the play beside it would resume — the pill's label and
+    /// every index after it hang off that one predicate, and it is Plex's resume RULE
+    /// (`metadata::resume_ns`), not a raw `viewOffset > 0`.
+    ///
+    /// Asserted through [`hero_index`] rather than through a control COUNT, deliberately: the count
+    /// also moves with the watch-state tail (a part-watched item ends the row with two discs, not
+    /// one), so a bare number here would be graded by two independent rules and would have to be
+    /// re-derived whenever either changed. `restart_and_the_watch_tail_are_independent` is where
+    /// the two are checked together.
     #[test]
     fn restart_disc_tracks_the_resume_the_play_would_actually_apply() {
         let _serial = crate::testlock::serial();
+        // is the ↺ disc up, and at the one index it can occupy?
+        let restart = || hero_index(HeroCtl::Restart);
 
         mount(None, 0);
-        assert_eq!(hero_btns(), 2, "no item loaded: nothing to restart");
-        assert_eq!(btn_watched(), 1);
+        assert_eq!(restart(), None, "no item loaded: nothing to restart");
+        assert_eq!(hero_index(HeroCtl::MarkWatched), Some(1), "…and the row is Play + one disc");
 
         mount(Some(movie(0, 7_200_000)), 0);
-        assert_eq!(hero_btns(), 2, "unwatched movie: Play already starts at 0");
+        assert_eq!(restart(), None, "unwatched movie: Play already starts at 0");
 
         mount(Some(movie(1_800_000, 7_200_000)), 0);
-        assert_eq!(hero_btns(), 3, "part-watched movie: Play resumes, so restart is reachable");
-        assert_eq!(btn_watched(), 2, "the watched toggle stays LAST — it shifts, it is not displaced");
+        assert_eq!(restart(), Some(BTN_RESTART), "part-watched movie: Play resumes, so ↺ is reachable");
 
         // the two rule edges: a few seconds in is not a resume point, and neither is the 95% tail
         // (both resume_ns to 0, where "Resume" would be a lie and ↺ a second Play)
         mount(Some(movie(4_000, 7_200_000)), 0);
-        assert_eq!(hero_btns(), 2, "a 4s offset is below Plex's resume floor");
+        assert_eq!(restart(), None, "a 4s offset is below Plex's resume floor");
         mount(Some(movie(7_100_000, 7_200_000)), 0);
-        assert_eq!(hero_btns(), 2, "past the 95% mark the item plays from the start");
+        assert_eq!(restart(), None, "past the 95% mark the item plays from the start");
 
         // a show page's Play starts its ON-DECK episode, so the row reads THAT leaf
         mount(Some(show(0, 2_700_000)), 0);
-        assert_eq!(hero_btns(), 2, "show whose on-deck episode has not been started");
+        assert_eq!(restart(), None, "show whose on-deck episode has not been started");
         mount(Some(show(600_000, 2_700_000)), 0);
-        assert_eq!(hero_btns(), 3, "show whose on-deck episode is part-watched");
+        assert_eq!(restart(), Some(BTN_RESTART), "show whose on-deck episode is part-watched");
         view().section = 1;
         assert_eq!(focus(), -1, "focus() still reports -1 off the hero section");
 
         mount(None, 0);
     }
 
+    /// The row's two conditional GROUPS are independent, and the count is their product: the ↺ disc
+    /// asks "would Play resume", the tail asks "what watch state is this in", and a part-watched
+    /// item answers yes to the first and *both discs* to the second. Four controls, which is the
+    /// widest an ordinary single-source page gets.
+    #[test]
+    fn restart_and_the_watch_tail_are_independent() {
+        let _serial = crate::testlock::serial();
+
+        // never started: no resume to ignore, one disc to offer
+        mount(Some(movie(0, 7_200_000)), 0);
+        assert_eq!(hero_btns(), 2, "Play + ✓");
+        assert_eq!(hero_action(1), HeroAction::MarkWatched);
+
+        // watched, with no resume point: still two controls, but the tail disc is the other one
+        mount(Some(Detail { watched: true, ..movie(0, 7_200_000) }), 0);
+        assert_eq!(hero_btns(), 2, "Play + −");
+        assert_eq!(hero_action(1), HeroAction::MarkUnwatched, "a finished item offers only the way back");
+
+        // part-watched: ↺ AND both discs — the widest ordinary row
+        mount(Some(movie(1_800_000, 7_200_000)), 0);
+        assert_eq!(hero_btns(), 4, "Play + ↺ + ✓ + −");
+        assert_eq!(hero_action(1), HeroAction::Restart);
+        assert_eq!(hero_action(2), HeroAction::MarkWatched);
+        assert_eq!(hero_action(3), HeroAction::MarkUnwatched);
+
+        // a show mid-run has no resume point of its own and still gets both discs, because the
+        // question the tail answers is about the SERIES, not about one leaf
+        mount(Some(show(0, 2_700_000)), 0);
+        assert_eq!(hero_btns(), 3, "Play + ✓ + −, with no ↺");
+        assert_eq!(hero_action(1), HeroAction::MarkWatched);
+        assert_eq!(hero_action(2), HeroAction::MarkUnwatched);
+
+        mount(None, 0);
+    }
+
+    /// **The optimistic flip settles a LEAF's tail on the press frame and a CONTAINER's a round
+    /// trip late** — pinned because it is the one window in which this row is behind the press,
+    /// and because the reason lives in `metadata::set_watched_local` rather than in the resolver.
+    ///
+    /// That function edits the matched item's own `watched` and `resume_ms`, which is the whole of
+    /// a leaf's evidence: a part-watched movie marked watched loses its resume point and its ✓
+    /// disc in the same instant. A SHOW's progress is not on the show — it is `on_deck` and the
+    /// seasons' `viewed_leaf_count`, which keep the server's pre-press values — so the tail keeps
+    /// reading `InProgress` until `refresh_view_state`'s re-read replaces the item. No verb is wrong
+    /// meanwhile (both ends stay reachable); the row simply does not move yet. Teach the data layer
+    /// to carry a container's evidence and THIS test is what should fail.
+    #[test]
+    fn the_optimistic_flip_settles_a_leaf_at_once_and_a_container_a_round_trip_late() {
+        let _serial = crate::testlock::serial();
+        use crate::plex::ServerId;
+
+        // LEAF: the press frame IS the settled frame
+        mount(Some(movie(1_800_000, 7_200_000)), 0);
+        assert_eq!(hero_btns(), 4, "Play + ↺ + ✓ + −");
+        assert!(metadata::set_watched_local(ServerId::UNSET, "m1", true), "the flip found the item");
+        assert_eq!(hero_btns(), 2, "the resume point and the ✓ disc go together, at once");
+        assert_eq!(hero_action(1), HeroAction::MarkUnwatched);
+
+        // CONTAINER: the same call, and the row does not move
+        mount(Some(show(600_000, 2_700_000)), 0);
+        assert_eq!(hero_btns(), 4, "Play + ↺ + ✓ + −");
+        assert!(metadata::set_watched_local(ServerId::UNSET, "s1", true), "the flip found the show");
+        assert_eq!(hero_btns(), 4, "the evidence the tail reads is the server's, and it has not moved");
+
+        // …and the re-read is what settles it: no on-deck episode, no viewed leaves, watched
+        metadata::set_current_for_test(Some(Detail {
+            watched: true,
+            seasons: Vec::new(),
+            on_deck: None,
+            ..show(0, 2_700_000)
+        }));
+        assert_eq!(hero_btns(), 2, "Play + −");
+        assert_eq!(hero_action(1), HeroAction::MarkUnwatched);
+
+        mount(None, 0);
+    }
+
+    /// **The watch-state resolver's truth table** — the pure function the whole tail hangs off, and
+    /// the one place the leaf rule and the container rule are stated side by side. A leaf reads its
+    /// own resume position under Plex's rule; a container has none of its own, so it reads whether
+    /// its leaves have been started and not finished. Everything else in this lane (which discs are
+    /// drawn, which indices they take, which verb a press writes) is a consequence of this answer.
+    #[test]
+    fn the_watch_state_resolver_answers_leaf_and_container_by_their_own_rules() {
+        // ---- LEAVES: the resume the Play pill would apply, then the flag
+        let mark = |d: &Detail, resume| hero_watch_state(d, resume);
+        assert_eq!(mark(&movie(0, 7_200_000), 0), PosterMark::None, "never started");
+        assert_eq!(mark(&movie(1_800_000, 7_200_000), 1_800_000_000_000), PosterMark::InProgress);
+        assert_eq!(mark(&Detail { watched: true, ..movie(0, 7_200_000) }, 0), PosterMark::Watched);
+        // …and the precedence, on the one item PMS reports as BOTH: a finished film someone has
+        // started again is in the middle of that re-watch, which is what the viewer is doing
+        assert_eq!(
+            mark(&Detail { watched: true, ..movie(1_800_000, 7_200_000) }, 1_800_000_000_000),
+            PosterMark::InProgress,
+            "a re-watch in flight outranks the watched flag"
+        );
+        // the RULE's edges, which is why `resume` is `hero_resume_ns`'s answer and not a raw
+        // viewOffset: neither of these puts a "Resume" on the pill, so neither is in the middle
+        assert_eq!(mark(&movie(4_000, 7_200_000), 0), PosterMark::None, "4s in is not started");
+        assert_eq!(mark(&movie(7_100_000, 7_200_000), 0), PosterMark::None, "past 95% is finished");
+
+        // ---- CONTAINERS: no resume of their own, so `show_started` minus the watched end
+        let untouched = Detail { seasons: Vec::new(), on_deck: None, ..show(0, 2_700_000) };
+        assert_eq!(mark(&untouched, 0), PosterMark::None, "a show nobody has opened");
+        assert_eq!(
+            mark(&show(0, 2_700_000), 0),
+            PosterMark::InProgress,
+            "one watched leaf and the series is mid-run, with no resume point anywhere"
+        );
+        // `show_started` is TRUE for a FINISHED show too — it asks "touched at all" — so the
+        // watched flag is what has to reject it, or a finished series would never offer − alone
+        assert_eq!(
+            mark(&Detail { watched: true, ..show(0, 2_700_000) }, 0),
+            PosterMark::Watched,
+            "every leaf seen: finished, not mid-run"
+        );
+        assert_eq!(
+            mark(&Detail { watched: true, ..show(600_000, 2_700_000) }, 600_000_000_000),
+            PosterMark::InProgress,
+            "…until an episode of it is started again"
+        );
+    }
+
+    /// **What a press WRITES comes from the disc, not from the item.** The verb used to be derived
+    /// (`if watched { Unwatched } else { Watched }`), which a part-watched item has no single answer
+    /// for — and which meant a press acted on a fact that could have moved since the frame the user
+    /// was looking at. Each disc now names one verb, and the pair on a part-watched item names both.
+    #[test]
+    fn each_watch_disc_writes_its_own_verb() {
+        let _serial = crate::testlock::serial();
+        use crate::viewstate::Write;
+
+        assert_eq!(HeroAction::MarkWatched.watch_write(), Some(Write::Watched));
+        assert_eq!(HeroAction::MarkUnwatched.watch_write(), Some(Write::Unwatched));
+        for a in [HeroAction::Play, HeroAction::Restart, HeroAction::Alt, HeroAction::None] {
+            assert_eq!(a.watch_write(), None, "{a:?} is not a view-state write");
+        }
+
+        // through the row: a part-watched item reaches BOTH verbs without its state changing under
+        // the press, which is the whole point of the pair
+        mount(Some(movie(1_800_000, 7_200_000)), 0);
+        let verb = |ctl| hero_index(ctl).map(|i| hero_action(i).watch_write());
+        assert_eq!(verb(HeroCtl::MarkWatched), Some(Some(Write::Watched)));
+        assert_eq!(verb(HeroCtl::MarkUnwatched), Some(Some(Write::Unwatched)));
+
+        // and the single-disc rows reach exactly the one that is not already true of the item
+        mount(Some(movie(0, 7_200_000)), 0);
+        assert_eq!(verb(HeroCtl::MarkWatched), Some(Some(Write::Watched)));
+        assert_eq!(verb(HeroCtl::MarkUnwatched), None, "an unstarted item has nothing to un-watch");
+        mount(Some(Detail { watched: true, ..movie(0, 7_200_000) }), 0);
+        assert_eq!(verb(HeroCtl::MarkWatched), None, "a finished item is already there");
+        assert_eq!(verb(HeroCtl::MarkUnwatched), Some(Some(Write::Unwatched)));
+
+        mount(None, 0);
+    }
+
     /// The index→action mapping, which is the whole reason the row can grow a control: with a
-    /// resume point index 1 is the restart disc and the toggle has moved to 2; without one, index 1
-    /// is the toggle and there is no restart to reach.
+    /// resume point index 1 is the restart disc and the watch discs have moved to 2 and 3; without
+    /// one, index 1 is the sole ✓ disc and there is no restart to reach.
     #[test]
     fn hero_indices_mean_different_actions_in_the_two_control_sets() {
         let _serial = crate::testlock::serial();
 
         mount(Some(movie(0, 7_200_000)), 0);
         assert_eq!(hero_action(0), HeroAction::Play);
-        assert_eq!(hero_action(1), HeroAction::Watched, "no restart disc: index 1 is the toggle");
+        assert_eq!(hero_action(1), HeroAction::MarkWatched, "no restart disc: index 1 is the ✓ disc");
         assert_eq!(hero_action(2), HeroAction::None, "and there is no index 2");
 
         mount(Some(movie(1_800_000, 7_200_000)), 0);
         assert_eq!(hero_action(0), HeroAction::Play);
         assert_eq!(hero_action(1), HeroAction::Restart);
-        assert_eq!(hero_action(2), HeroAction::Watched, "the toggle moved, and OK must follow it");
+        assert_eq!(hero_action(2), HeroAction::MarkWatched, "the discs moved, and OK must follow them");
+        assert_eq!(hero_action(3), HeroAction::MarkUnwatched);
 
         mount(None, 0);
     }
 
-    /// The watched toggle can delete the control the focus is sitting on: scrobbling clears the
-    /// server's viewOffset, so the row goes 3 → 2 under a focus parked at index 2. The clamp must
-    /// bring it back to the toggle rather than leave it past the end — where nothing draws focused
-    /// and, since `hero_action` would answer `None`, every later OK is inert.
+    /// The ✓ disc deletes ITSELF, and the control the focus is sitting on is that very disc: the
+    /// press marks the item watched, which clears the server's `viewOffset` (so the ↺ disc goes)
+    /// and moves the item out of the part-watched tail (so ✓ goes too, leaving only −). The row
+    /// goes 4 → 2 under a focus parked at index 2, and the control under it is not merely displaced
+    /// — it no longer exists, which is the case `index_of` cannot answer and the clamp must.
+    /// Anything else leaves focus past the end, where nothing draws focused and, since
+    /// `hero_action` would answer `None`, every later OK is inert.
     #[test]
     fn hero_focus_is_clamped_when_the_control_set_shrinks_under_it() {
         let _serial = crate::testlock::serial();
 
         mount(Some(movie(1_800_000, 7_200_000)), 2);
-        assert_eq!(focus(), 2, "3-button row: focus sits on the watched toggle");
+        assert_eq!(focus(), 2, "4-button row: focus sits on the ✓ disc");
+        assert_eq!(hero_action(focus()), HeroAction::MarkWatched);
 
-        // the scrobble landed: watched, and no resume point any more, so the restart disc is gone
+        // the scrobble landed: watched, and no resume point any more, so the restart disc and the
+        // ✓ disc are both gone
         metadata::set_current_for_test(Some(Detail { watched: true, ..movie(0, 7_200_000) }));
         assert_eq!(hero_btns(), 2);
-        assert_eq!(focus(), 1, "focus lands back on the watched toggle, not past the end");
+        assert_eq!(focus(), 1, "focus lands on the row's last control, not past the end");
         assert_eq!(view().col, 1, "and the clamp is written back — it IS the state");
-        assert_eq!(hero_action(view().col), HeroAction::Watched);
+        assert_eq!(
+            hero_action(view().col),
+            HeroAction::MarkUnwatched,
+            "the one remaining disc, which is also the honest undo of the press that got here"
+        );
 
         mount(None, 0);
     }
@@ -4864,23 +5151,23 @@ mod tests {
     }
 
     /// The set can also GROW under a parked focus: `open_rk` clears `current()` for the whole fetch,
-    /// so a RIGHT pressed in that window lands on the watched toggle of a TWO-button row — and if
-    /// the item then arrives part-watched, index 1 has become the restart disc. Focus must travel
-    /// with its control, or that press plays the item instead of marking it watched.
+    /// so a RIGHT pressed in that window lands on the ✓ disc of a TWO-button row — and if the item
+    /// then arrives part-watched, index 1 has become the restart disc. Focus must travel with its
+    /// control, or that press plays the item instead of writing view state.
     #[test]
     fn hero_focus_follows_its_control_when_the_set_grows_under_it() {
         let _serial = crate::testlock::serial();
 
-        // mid-fetch: nothing loaded, so the row is Play + watched and RIGHT parks on the toggle
+        // mid-fetch: nothing loaded, so the row is Play + ✓ and RIGHT parks on the disc
         mount(None, 0);
         assert_eq!(focus(), 0);
         view().col = 1;
-        assert_eq!(hero_action(focus()), HeroAction::Watched, "index 1 is the toggle while the row is short");
+        assert_eq!(hero_action(focus()), HeroAction::MarkWatched, "index 1 is the ✓ disc while the row is short");
 
-        // the fetch lands, part-watched: the row grows a restart disc AT index 1
+        // the fetch lands, part-watched: the row grows a restart disc AT index 1 and a − disc after
         metadata::set_current_for_test(Some(movie(1_800_000, 7_200_000)));
-        assert_eq!(focus(), 2, "the focus moved with the toggle rather than staying on the index");
-        assert_eq!(hero_action(focus()), HeroAction::Watched, "so OK still means what the user aimed at");
+        assert_eq!(focus(), 2, "the focus moved with the disc rather than staying on the index");
+        assert_eq!(hero_action(focus()), HeroAction::MarkWatched, "so OK still means what the user aimed at");
 
         // Play never shifts — it is before the insertion point
         view().col = 0;
@@ -4943,33 +5230,35 @@ mod tests {
 
     /// **The gate, as the actions row sees it.** One source and the row is what it always was — no
     /// control, no index, no layout. A second source holding the film adds exactly one control, and
-    /// it lands BEFORE the watched toggle, which stays last.
+    /// it lands BEFORE the watch-state discs, which stay at the end.
     #[test]
     fn the_actions_row_grows_an_also_available_control_only_for_a_second_source() {
         let _serial = crate::testlock::serial();
 
         mount(Some(movie(0, 7_200_000)), 0);
-        assert_eq!(hero_btns(), 2, "one source: Play + the watched toggle, exactly as before");
-        assert_eq!(hero_action(1), HeroAction::Watched);
+        assert_eq!(hero_btns(), 2, "one source: Play + the ✓ disc, exactly as before");
+        assert_eq!(hero_action(1), HeroAction::MarkWatched);
 
         alt_arm("m1");
         assert_eq!(hero_btns(), 3, "a second source is one more control");
         assert_eq!(hero_action(0), HeroAction::Play);
-        assert_eq!(hero_action(1), HeroAction::Alt, "…and it sits with the play group, not after the toggle");
-        assert_eq!(hero_action(2), HeroAction::Watched, "the watched toggle is still the row's last control");
-        assert_eq!(btn_watched(), 2);
+        assert_eq!(hero_action(1), HeroAction::Alt, "…and it sits with the play group, not after the discs");
+        assert_eq!(hero_action(2), HeroAction::MarkWatched, "the watch disc still ends the row");
+        assert_eq!(hero_index(HeroCtl::MarkWatched), Some(2));
 
-        // both conditional controls at once: the resume disc, then the alt pill, then the toggle
+        // EVERY conditional control at once, which is the widest the row ever gets: the resume
+        // disc, the alt pill, then the part-watched PAIR
         mount(Some(movie(1_800_000, 7_200_000)), 0);
         alt_arm("m1");
-        assert_eq!(hero_btns(), 4);
+        assert_eq!(hero_btns(), 5);
         assert_eq!(hero_action(1), HeroAction::Restart);
         assert_eq!(hero_action(2), HeroAction::Alt);
-        assert_eq!(hero_action(3), HeroAction::Watched);
-        assert_eq!(hero_action(4), HeroAction::None, "and there is no index 4");
+        assert_eq!(hero_action(3), HeroAction::MarkWatched);
+        assert_eq!(hero_action(4), HeroAction::MarkUnwatched);
+        assert_eq!(hero_action(5), HeroAction::None, "and there is no index 5");
 
         alt_clear();
-        assert_eq!(hero_btns(), 3, "the control leaves with the copies that justified it");
+        assert_eq!(hero_btns(), 4, "the control leaves with the copies that justified it");
 
         // …and the NEGATIVE the gate is really about: a copy list that names only the source you
         // are already on adds nothing. That is also how "not pinned" reads from here — the store
@@ -5011,7 +5300,7 @@ mod tests {
         focus(); // spend the set change, so parking on the control below is deliberate
 
         // press OK on the control: it asks for the panel and commits nothing
-        let alt = index_of(hero_set(), HeroCtl::Alt).expect("the control is up");
+        let alt = hero_index(HeroCtl::Alt).expect("the control is up");
         view().col = alt;
         assert_eq!(hero_action(focus()), HeroAction::Alt);
         assert!(!on_ok(), "opening a list never starts playback");
@@ -5076,31 +5365,31 @@ mod tests {
         let _serial = crate::testlock::serial();
         alt_clear();
 
-        // parked on the watched toggle of a two-control row
+        // parked on the ✓ disc of a two-control row
         mount(Some(movie(0, 7_200_000)), 1);
-        assert_eq!(hero_action(focus()), HeroAction::Watched);
+        assert_eq!(hero_action(focus()), HeroAction::MarkWatched);
 
         // the copy list lands: the alt pill is inserted at index 1, under the focus
         alt_arm("m1");
-        assert_eq!(focus(), 2, "the focus followed the toggle rather than staying on index 1");
-        assert_eq!(hero_action(focus()), HeroAction::Watched, "so OK still means what it did a frame ago");
+        assert_eq!(focus(), 2, "the focus followed the disc rather than staying on index 1");
+        assert_eq!(hero_action(focus()), HeroAction::MarkWatched, "so OK still means what it did a frame ago");
 
         // …and it survives the list going away again
         alt_clear();
         assert_eq!(focus(), 1);
-        assert_eq!(hero_action(focus()), HeroAction::Watched);
+        assert_eq!(hero_action(focus()), HeroAction::MarkWatched);
 
         // a focus sitting ON the vanished control has no new index to travel to — the clamp puts it
         // on the row's last control rather than past the end, where every OK would be inert.
         // (`focus()` first, so the set change is already spent and parking on index 1 is a
-        // deliberate landing on the alt pill rather than the shift carrying the toggle there.)
+        // deliberate landing on the alt pill rather than the shift carrying the disc there.)
         alt_arm("m1");
         focus();
         view().col = 1;
         assert_eq!(hero_action(focus()), HeroAction::Alt);
         alt_clear();
         assert_eq!(focus(), 1);
-        assert_eq!(hero_action(focus()), HeroAction::Watched, "never an index the row does not have");
+        assert_eq!(hero_action(focus()), HeroAction::MarkWatched, "never an index the row does not have");
 
         mount(None, 0);
     }
@@ -5108,14 +5397,22 @@ mod tests {
     /// The row is ACCUMULATED, and with the alt pill it has a variable-width control in the middle
     /// — the exact case a fixed disc pitch gets wrong. Pure: both pill widths are passed in, since
     /// the host links no SDL_ttf (the split `hero_btn_rect_at` exists for).
+    ///
+    /// Every set the row can be in, as the PRODUCT of its three independent facts — the ↺ disc, the
+    /// alt pill and the watch-state tail — rather than a hand-listed sample. The tail is the one
+    /// that adds a SECOND control at the far end, so a walk that was right for a one-disc tail can
+    /// still be wrong for the pair, and a sample list would not have said so.
     #[test]
     fn the_actions_row_accumulates_around_a_variable_width_control() {
         let (y, pw, alt_w) = (812.0f32, PW + 62.0, 340.0f32);
-        for set in [
-            HeroSet { restart: false, alt: true },
-            HeroSet { restart: true, alt: true },
-            HeroSet { restart: true, alt: false },
-        ] {
+        let sets = [false, true].into_iter().flat_map(|restart| {
+            [false, true].into_iter().flat_map(move |alt| {
+                [PosterMark::None, PosterMark::InProgress, PosterMark::Watched]
+                    .into_iter()
+                    .map(move |mark| HeroSet { restart, alt, mark })
+            })
+        });
+        for set in sets {
             let (_, n) = hero_ctls(set);
             let mut prev = hero_btn_rect_at(set, 0, y, pw, alt_w);
             assert_eq!((prev.x, prev.w), (MARGIN_X, pw), "the play pill starts the row at its own width");
@@ -5130,9 +5427,39 @@ mod tests {
             if let Some(i) = index_of(set, HeroCtl::Alt) {
                 assert_eq!(hero_btn_rect_at(set, i, y, pw, alt_w).w, alt_w);
             }
-            // …and the toggle still ends the row
+            // …and a watch-state disc still ends the row, whichever tail this set has
             assert_eq!(hero_btn_rect_at(set, n as c_int - 1, y, pw, alt_w).x, prev.x);
+            let last = ctl_at(set, n as c_int - 1);
+            assert!(
+                matches!(last, Some(HeroCtl::MarkWatched) | Some(HeroCtl::MarkUnwatched)),
+                "the row ends on a watch disc, not on {last:?}"
+            );
         }
+    }
+
+    /// **The widest row the page can produce still clears the people column.** The part-watched
+    /// tail added a FIFTH control to a row that had four, and this row shares its band with the
+    /// right-hand people column — which is bottom-anchored on it (`people_bottom`) and grows
+    /// upward, so an overrun would not be a clipped button but two blocks of the hero written over
+    /// each other. `FACTS_R` is the left edge the facts line above already yields at, and the
+    /// action row is now measured against the same bound.
+    ///
+    /// The pill widths are stand-ins (the host links no SDL_ttf), and generous ones: "Resume" at
+    /// `PW + 62` is the wider of the two words the play pill ever carries, and 340 is well past
+    /// what *Also available* measures at `size::BODY`.
+    #[test]
+    fn the_widest_action_row_clears_the_people_column() {
+        let (y, pw, alt_w) = (812.0f32, PW + 62.0, 340.0f32);
+        let widest = HeroSet { restart: true, alt: true, mark: PosterMark::InProgress };
+        let (_, n) = hero_ctls(widest);
+        assert_eq!(n, 5, "every conditional control at once");
+
+        let last = hero_btn_rect_at(widest, n as c_int - 1, y, pw, alt_w);
+        assert!(
+            last.x + last.w < FACTS_R,
+            "the action row ends at {} and the people column starts at {FACTS_R}",
+            last.x + last.w
+        );
     }
 
     // ---- pointer hit-tests: the rects the pointer answers with must be the ones the painter drew.
@@ -5175,7 +5502,7 @@ mod tests {
     }
 
     /// The hero action row, on a row whose control SET changes under the pointer. With a resume
-    /// point the ↺ disc takes index 1 and the watched toggle slides to 2, so a hit-test built on
+    /// point the ↺ disc takes index 1 and the watch discs slide past it, so a hit-test built on
     /// per-control constants would answer one control out of step for exactly the items a pointer
     /// user is most likely to open. The invariant is therefore the ACCUMULATION `hero_btn_rect`
     /// performs — the pill at the margin, every later control one `CD + CGAP` past the last —
@@ -5192,10 +5519,14 @@ mod tests {
 
         // (item, control count, the pill width its label measures to). The widths stand in for
         // `hero_pill_w` — "Resume" is the wider word, and the row must accumulate off whichever it
-        // is rather than off a constant.
-        for (d, want, pw) in
-            [(movie(0, 7_200_000), 2, PW), (movie(1_800_000, 7_200_000), 3, PW + 62.0)]
-        {
+        // is rather than off a constant. All three watch states are here, because the part-watched
+        // one is the row that ends in TWO discs and the finished one is the row whose single tail
+        // disc is the OTHER glyph — same walk, three different lengths.
+        for (d, want, pw) in [
+            (movie(0, 7_200_000), 2, PW),
+            (Detail { watched: true, ..movie(0, 7_200_000) }, 2, PW),
+            (movie(1_800_000, 7_200_000), 4, PW + 62.0),
+        ] {
             mount(Some(d), 0);
             assert_eq!(hero_btns(), want, "the control set this case means to exercise");
             let set = hero_set();
@@ -5221,8 +5552,13 @@ mod tests {
                 assert!(!prev.contains(gutter, y + CD * 0.5) && !r.contains(gutter, y + CD * 0.5));
                 prev = r;
             }
-            // the watched toggle is always the row's LAST control — it shifts, it is not displaced
-            assert_eq!(rect(btn_watched()).x, prev.x, "the toggle ends the row");
+            // a watch-state disc is always the row's LAST control — the tail shifts, it is never
+            // displaced by what appears before it
+            assert_eq!(rect(hero_btns() - 1).x, prev.x, "a watch disc ends the row");
+            assert!(matches!(
+                hero_action(hero_btns() - 1),
+                HeroAction::MarkWatched | HeroAction::MarkUnwatched
+            ));
         }
 
         mount(None, 0);
@@ -5974,8 +6310,9 @@ fn hit_at(mx: f32, my: f32) -> Option<(c_int, c_int, EpRow)> {
     // fade), which is exactly when a stray click is least intended.
     if hero_alpha(scroll, HERO_FADE) > HERO_HIT_MIN_A {
         let y = hero_layout(selected()).btn_y - scroll;
-        // the LIVE control set, not a constant: `hero_btns()` is 3 only while the restart disc is
-        // up, and `hero_btn_rect` slides the watched toggle to match
+        // the LIVE control set, not a constant: the row runs from TWO controls to five, and
+        // `hero_btn_rect` walks the same accumulation the painter did, so the watch-state discs at
+        // the end are clicked wherever this set happens to put them
         for b in 0..hero_btns() {
             if hero_btn_rect(b, y).contains(mx, my) {
                 return Some((0, b, EpRow::Still));
