@@ -11,6 +11,12 @@
 #
 # It is a CI job, not a checklist item, for the reason the whole exercise exists: v0.2.1 was
 # published by hand, which skipped every gate, and a checklist would have been skipped with them.
+#
+# `com.beb.plxnative` is written out three times below and every one is deliberate, not a leftover
+# the FLAVOR work missed: a release is always the STABLE flavour, never `com.beb.plxnative.debug`
+# (docs/two-installs.md). The trailing `/` in the `applications/com.beb.plxnative/` payload path is
+# load-bearing for the flip side of the same fact — the stable id is a PREFIX of the debug id, so an
+# unanchored match would also walk a debug install's directory if one ever landed in an archive.
 set -uo pipefail
 cd "$(git rev-parse --show-toplevel)" || exit 2
 
@@ -98,5 +104,4 @@ open('data.tar.gz','wb').write(d[i+60:i+60+int(d[i+48:i+58])])" && tar xzf data.
   printf '\n%d passed, %d failed, %d to look at\n' "$PASS" "$FAIL" "$NOTE"
   [ "$FAIL" -eq 0 ] || exit 1
   exit 0
-fi
 fi

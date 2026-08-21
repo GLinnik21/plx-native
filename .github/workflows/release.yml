@@ -234,14 +234,28 @@ jobs:
           RUST_NIGHTLY: ${{ vars.RUST_NIGHTLY || 'nightly' }}
           # Drops the `devtools` cargo feature — no on-screen counter in a public build.
           RELEASE: "1"
+          # WHICH INSTALL. `FLAVOR ?= debug` in the Makefile — deliberately, so a developer's
+          # muscle-memory `make deploy` cannot overwrite the app users watch with — and CI is the
+          # one place that default is wrong. Without this the release job packages
+          # `com.beb.plxnative.debug`, `webosbrew-gen-manifest` writes that id INTO the manifest the
+          # Homebrew Channel resolves, and the sha256 cross-check below still passes because it
+          # compares the wrong artifact against its own manifest. It would finally die four jobs
+          # later on a missing `dist/ipk.sha256` (a flavoured package deliberately does not write
+          # that released asset name) — a loud failure naming a checksum rather than a flavour.
+          FLAVOR: stable
         run: |
           make -j"$(nproc)"
           make ipk
-          # Prove the flag actually took, rather than trusting that it did: the Makefile records
+          # Prove the flags actually took, rather than trusting that they did: the Makefile records
           # the configuration it built, and a stale/ignored RELEASE= is exactly the silent failure
           # the parse-time stamp exists to prevent.
           grep -q -- '--no-default-features' pkg/.build-config \
             || { echo "::error::RELEASE=1 did not take — pkg/.build-config says [$(cat pkg/.build-config)]"; exit 1; }
+          # ...and the same for the flavour, on the artifact's own name. `check-package.py` cannot
+          # catch this one: it derives the packaged id from the stage and SKIPs every stable-only
+          # assertion when that id is not stable, so a wrong-flavour package exits 0 there.
+          ls pkg/com.beb.plxnative_*_arm.ipk >/dev/null 2>&1 \
+            || { echo "::error::packaged the wrong flavour — pkg/ holds $(ls pkg/*.ipk 2>&1)"; exit 1; }
 
       - name: ELF + packaging assertions
         run: |

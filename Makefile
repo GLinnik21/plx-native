@@ -24,7 +24,14 @@
 # make run      — launch on TV, keep alive $(RUN_SECS)s, fetch event log
 # make test     — build + deploy + run
 # make kill     — close the app on the TV
-# make ipk      — repackage pkg/com.beb.plxnative_<version>_arm.ipk (version from appinfo.json)
+# make ipk      — repackage pkg/<app id>_<version>_arm.ipk (version from appinfo.json)
+# make install  — install THIS flavour on the TV from its own .ipk, then deploy into it
+# make uninstall— remove this flavour from the TV (refuses the stable id)
+#
+# FLAVOR selects WHICH INSTALL every TV-facing target talks to: `debug` (the default —
+# com.beb.plxnative.debug, its own tile, its own sign-in, its own /tmp root) or `stable`
+# (com.beb.plxnative, the app users install). See the FLAVOR block below for why the default is the
+# developer one. A flavour must be `make FLAVOR=… install`ed once before `deploy` can reach it.
 #
 # RELEASE=1 drops BOTH default cargo features: `devtools` (the on-screen counter) and
 # `devtriggers` (the /tmp trigger surface, the remote FIFO, the capture listener — see
@@ -45,8 +52,91 @@ TV       ?= $(strip $(shell cat .tv-host 2>/dev/null))
 TV_OR_DIE = $(if $(TV),$(TV),$(error no TV configured — put its IP in .tv-host, or pass TV=<ip>))
 SSH       = sshpass -p alpine ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 root@$(TV_OR_DIE)
 SCP       = sshpass -p alpine scp -O -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
-APPDIR    = /media/developer/apps/usr/palm/applications/com.beb.plxnative
 RUN_SECS ?= 18
+
+# --- WHICH INSTALL: the FLAVOR axis --------------------------------------------------------
+#
+# Two builds live on one television: `stable` is the app users get (`com.beb.plxnative`, the id in
+# every release, manifest and channel listing), and `debug` is the day-to-day developer build
+# beside it (`com.beb.plxnative.debug`) with its own launcher tile, its own sign-in and its own
+# runtime files. webOS keys everything — the install directory, SAM's launch/closeByAppId, the LS2
+# role file — on that id, so two ids are two apps that cannot touch each other.
+#
+# THE DEFAULT IS `debug`, IN THIS TRACKED FILE, and that is a deliberate asymmetry rather than a
+# preference. Every command in this repo's muscle memory, every skill recipe and every harness
+# invocation is spelled `make deploy` / `make run` / `./tests/run.py` with no flavour, and each one
+# used to overwrite the only install there was. The two mistakes are not comparable: deploying to
+# `debug` when you meant `stable` costs you retyping one command, while deploying to `stable` when
+# you meant `debug` destroys a working install — possibly mid-film, with no undo, on the app the
+# household actually watches with. So the safe one is what you get for free and the other has to be
+# asked for by name.
+#
+# Tracked rather than a gitignored `.app-flavor` dotfile (which is how `.tv-host` works, and was the
+# obvious thing to copy): a fresh clone, and especially a fresh worktree in an agent fleet, has no
+# dotfile — so the dangerous default would be inherited invisibly by exactly the checkouts nobody
+# is watching.
+#
+# The whitelist is not decoration. `make FLAVOR=stabel deploy` would otherwise mint a third
+# registered app called `com.beb.plxnative.stabel` on the television (LG's id charset accepts it,
+# so nothing downstream objects) and the symptom is a mystery tile on a TV rather than a message on
+# a terminal. `$(error)` at parse time costs one line.
+FLAVORS      = stable debug
+FLAVOR      ?= debug
+$(if $(filter $(FLAVOR),$(FLAVORS)),,$(error unknown FLAVOR "$(FLAVOR)" — one of: $(FLAVORS)))
+
+# The id users get. Also `paths::STABLE_APP_ID` in the Rust half and `STABLE_ID` in ci/flavor.py —
+# three copies of one string, each in a language that cannot see the others, and ci/flavor.py's
+# selftest is what keeps them in step.
+APPID_STABLE = com.beb.plxnative
+APPID        = $(if $(filter stable,$(FLAVOR)),$(APPID_STABLE),$(APPID_STABLE).$(FLAVOR))
+APPDIR       = /media/developer/apps/usr/palm/applications/$(APPID)
+
+# Where this install's runtime files live — the event log, the crash log, the `plxnative-*` dev
+# triggers and the remote FIFO. The app resolves this itself (`paths::resolve_runtime_dir`); this
+# is the same rule spelled for the shell, and `make print-rundir` is how every tool asks for it
+# instead of restating it a fourth time.
+#
+# The stable install keeps `/tmp` byte for byte, so every existing recipe, doc line and harness
+# glob stays true for the app users get. A flavoured install gets `/tmp/<app id>` — a DOT in the
+# name, never a hyphen, because `dev::any_trigger_present` scans the root for entries beginning
+# `plxnative-` and a sibling directory matching that prefix would silently suppress the OTHER
+# install's who's-watching picker.
+RUNDIR       = $(if $(filter stable,$(FLAVOR)),/tmp,/tmp/$(APPID))
+EVENTLOG     = $(RUNDIR)/plxnative-events.log
+
+# Machine-readable answers, so no tool has to restate any of the above. `make -s print-appdir
+# FLAVOR=debug` and every tool in tools/ and tests/ asks this way — which also means the flavour a
+# tool RESOLVED and the flavour it deploys, kills and launches with are one value, and cannot
+# disagree (closing install A while launching install B reproduces SAM's stale-running no-op and
+# then grades the wrong app's log).
+#
+# NOT `make -p`/`make -pn`, which is what these replace: that prints a RECURSIVE variable's
+# UNEXPANDED DEFINITION, so `TV` comes out as the literal `$(strip $(shell cat .tv-host …))` on any
+# checkout that uses `.tv-host` — the trap tools/tv-session.sh already documents. Real recipes
+# echoing real values cannot do that. See PURE_QUERY below for why they are also side-effect free.
+# The capture listener's TCP port for THIS install. Two installs cannot both bind one port, and
+# the failure is silent on both sides — the second bind fails with one line in a log nobody is
+# tailing, and the operator then watches one install's picture while every key they type goes into
+# the other install's FIFO. `capture::default_port` is the same rule in Rust; ci/flavor.py's
+# selftest compares them, and is what will object when a third flavour needs a real decision.
+APPPORT      = $(if $(filter stable,$(FLAVOR)),8910,8911)
+
+# The default goal, stated rather than inherited. Make takes the FIRST target in the file, and the
+# seven query targets below are the first ones now — so a bare `make` printed the flavour and
+# exited 0 without building anything. That is the worst shape this failure could take: `make &&
+# make deploy` succeeds end to end and ships whatever binary was already sitting in pkg/, which is
+# exactly the stale-binary trap the header-dependency rule further down exists to prevent. Pinning
+# it here also survives the next block that gets added above `all:`.
+.DEFAULT_GOAL := all
+
+QUERY_GOALS = print-flavor print-appid print-appdir print-rundir print-eventlog print-appport print-tv
+print-flavor:   ; @echo '$(FLAVOR)'
+print-appid:    ; @echo '$(APPID)'
+print-appdir:   ; @echo '$(APPDIR)'
+print-rundir:   ; @echo '$(RUNDIR)'
+print-eventlog: ; @echo '$(EVENTLOG)'
+print-appport:  ; @echo '$(APPPORT)'
+print-tv:       ; @echo '$(TV)'
 
 # --- webOS NDK toolchain -----------------------------------------------------
 WEBOS_SDK   ?= $(HOME)/webos-ndk/arm-webos-linux-gnueabi_sdk-buildroot
@@ -220,9 +310,31 @@ RUST_CFG       = features:$(RUST_FEATFLAGS)
 # binary, with the dev counter burned into a release build or vice versa.
 # (Consequence: a `make -n` that CHANGES the configuration really does delete the binary. The next
 # real build restores it; a dry run that does not switch configuration touches nothing.)
+#
+# ...and it is skipped for a PURE QUERY. `make -s print-appdir` and friends exist so tools stop
+# restating this file's values, but the block above runs at PARSE time, on every invocation,
+# whatever the goal — so asking a question would delete `pkg/plxnative`, the FFmpeg header sentinel
+# and the staged libraries whenever the asking invocation's configuration differed from the stamp.
+# That is not hypothetical: `tools/crash-report.sh` shells out to make for the TV address, and it
+# is the tool you run immediately after a crash, i.e. right after the RELEASE=1 build you were
+# testing. A ~2-minute FFmpeg rebuild as the side effect of asking a question is the wrong shape,
+# and worse, it would silently discard the very binary the crash is being symbolized against.
+#
+# The test is that EVERY goal builds nothing. A mixed `make print-appid deploy` still stamps,
+# because it really is going to build something.
+#
+# `release-guard` is in the list beside the queries for the same reason it is not one of them: it
+# is a check-only phony that produces no artifact, and it is exactly the target somebody runs to
+# SEE the refusal message the cut-release skill quotes. Without it, asking that question on a
+# different configuration deleted `pkg/plxnative`, the FFmpeg header sentinel and the staged
+# libraries — measured, by a reviewer, mid-review.
+SIDE_EFFECT_FREE = $(QUERY_GOALS) release-guard
+PURE_QUERY := $(if $(MAKECMDGOALS),$(if $(filter-out $(SIDE_EFFECT_FREE),$(MAKECMDGOALS)),,yes),)
+ifneq ($(PURE_QUERY),yes)
 ifneq ($(RUST_CFG),$(shell cat $(RUST_STAMP) 2>/dev/null))
   $(shell mkdir -p pkg && printf '%s' '$(RUST_CFG)' > $(RUST_STAMP) && rm -f pkg/plxnative \
           vendor/ffmpeg-prefix/include/libavformat/avformat.h pkg/lib*-plx.so.* pkg/.ffabi-ok)
+endif
 endif
 
 RUST_TARGET = arm-unknown-linux-gnueabi
@@ -362,9 +474,19 @@ TURBOJPEG_SO := $(firstword $(wildcard $(SYSROOT)/usr/lib/libturbojpeg.so.0.*))
 # refuses to play. It is also the reason THIRD-PARTY-NOTICES.md and licenses/ must travel with the
 # package — LGPL-2.1 §6 wants the notice and the licence text alongside the binary, and shipping
 # FFmpeg ourselves makes that our obligation rather than the television's.
-APP_FILES = pkg/plxnative pkg/appinfo.json pkg/icon.png pkg/largeIcon.png pkg/splash.png \
+#
+# THE THREE FLAVOUR-DEPENDENT ENTRIES ARE SOURCE PATHS ONLY. Everything here is staged with a plain
+# `cp … $(STAGE)/`, which preserves BASENAMES — and that is exactly what is wanted, because
+# `appinfo.json`'s own `icon`/`largeIcon` fields name `icon.png`/`largeIcon.png` and
+# ci/check-package.py grades the payload by basename. So the flavour lives in the directory a file
+# is read FROM and never in the name it is packaged UNDER. (A `pkg/appinfo.debug.json` would ship
+# under that name and fail an otherwise correct package.)
+APPINFO   = $(if $(filter stable,$(FLAVOR)),pkg/appinfo.json,pkg/.flavor/$(FLAVOR)/appinfo.json)
+ICONS     = $(if $(filter stable,$(FLAVOR)),pkg/icon.png pkg/largeIcon.png,pkg/dev/icon.png pkg/dev/largeIcon.png)
+APP_FILES = pkg/plxnative $(APPINFO) $(ICONS) pkg/splash.png \
             pkg/appfont.ttf pkg/appfont-bold.ttf pkg/OFL.txt THIRD-PARTY-NOTICES.md \
             $(FFMPEG_STAGED)
+
 # TRADEMARKS.md ships too: it carries the brand reservation and the Plex/LG non-affiliation
 # statement, which used to be appended to LICENSE. It was moved out because GitHub's `licensee`
 # matches LICENSE against known texts by SIMILARITY, and the appended thirty lines pushed the file
@@ -372,8 +494,35 @@ APP_FILES = pkg/plxnative pkg/appinfo.json pkg/icon.png pkg/largeIcon.png pkg/sp
 # terms in the one place most people look. Splitting the file must not un-ship the reservation.
 LICENSE_FILES = LICENSE TRADEMARKS.md $(wildcard licenses/*.txt)
 
-deploy: pkg/plxnative $(FFMPEG_STAGED)
-	@echo "deploying $(if $(RELEASE),RELEASE,dev) build ($(RUST_CFG))"
+# The derived descriptor for a flavoured install, written by the SAME transform that packages it
+# (ci/flavor.py, through ci/mkipk.py) so `make deploy`'s scp'd appinfo and the .ipk's staged one
+# cannot drift — one code path, asked twice. Gitignored: it derives from pkg/appinfo.json, which
+# stays the single source of the version and of every field that must NOT differ between flavours
+# (only `id` and `title` may, and ci/flavor.py's selftest asserts exactly that set).
+pkg/.flavor/$(FLAVOR)/appinfo.json: pkg/appinfo.json ci/flavor.py ci/mkipk.py
+	@mkdir -p $(dir $@)
+	python3 ci/mkipk.py --emit-appinfo $(FLAVOR) $@
+
+# WHICH INSTALL, and WHICH CONFIGURATION — both, every time, because both have been shipped wrong.
+#
+# `test -d`, not `mkdir -p`: a hand-made app directory gets no SAM registration and no
+# `/var/palm/ls2-dev/roles/pub/<id>.json`, so the app would launch and then be denied the LS2 calls
+# the ACB bind needs — a stuck pipeline rather than an error. A flavour has to be INSTALLED once
+# from its own package (`make FLAVOR=$(FLAVOR) install`), and failing here names that, instead of
+# failing three steps later as something else.
+deploy: pkg/plxnative $(FFMPEG_STAGED) $(APPINFO) release-guard
+	@echo "deploying $(if $(RELEASE),RELEASE,dev) build ($(RUST_CFG)) to $(APPID) [$(FLAVOR)]"
+	@$(SSH) 'test -d $(APPDIR)' || { \
+	  echo "$(APPDIR) does not exist on $(TV) — the $(FLAVOR) flavour is not installed."; \
+	  echo "install it once:  make FLAVOR=$(FLAVOR)$(if $(RELEASE), RELEASE=1,) install"; exit 1; }
+	# The descriptor and the directory it lands in must name the same app: `paths::app_id` reads
+	# the DIRECTORY, so a mismatch means the running binary and its own appinfo disagree about
+	# which install this is — and every id-keyed thing (SAM's launch, closeByAppId, the session
+	# file, the Load payload) then splits between the two answers. Packaging asserts this three
+	# times over; deploy is the path used a hundred times a day and had no equivalent, so it gets
+	# one for a `python3 -c`.
+	@python3 -c "import json,sys; got=json.load(open('$(APPINFO)'))['id']; \
+	  sys.exit(0) if got=='$(APPID)' else sys.exit('$(APPINFO) declares id=%s but deploys into $(APPID)' % got)"
 	# The bundled FFmpeg, under its SONAMEs — ff.rs dlopens these by absolute path from the app
 	# directory. ONE scp for all of them: each connection is a full SSH handshake to a television
 	# that is not fast, and this is ~2.1 MB on every deploy. Unconditional, like the fonts —
@@ -388,7 +537,7 @@ deploy: pkg/plxnative $(FFMPEG_STAGED)
 	$(SSH) 'cd $(APPDIR) && for f in lib*-plx.so.*; do case " $(FFMPEG_SONAMES) " in *" $$f "*) ;; *) rm -f "$$f";; esac; done'
 
 	$(SCP) pkg/plxnative root@$(TV):$(APPDIR)/plxnative.new
-	$(SCP) pkg/appinfo.json root@$(TV):$(APPDIR)/
+	$(SCP) $(APPINFO) root@$(TV):$(APPDIR)/appinfo.json
 	# Copy the fonts unconditionally: the old `test -f || scp` guard meant a CHANGED font could
 	# never reach the TV, so a font swap looked like it had no effect. They are ~300 KB.
 	$(SCP) pkg/appfont.ttf root@$(TV):$(APPDIR)/appfont.ttf
@@ -410,22 +559,36 @@ deploy: pkg/plxnative $(FFMPEG_STAGED)
 # event log: they are OUTPUTS the app creates, and a root-owned leftover is one the jailed app
 # cannot open — which disables the profiler with a single `Permission denied` line that is easy to
 # scroll past. Clearing an output is not disarming a trigger: `make run` deliberately preserves
-# `/tmp/plxnative-*` scene triggers, including `plxnative-profile` and `plxnative-hwcnt`, so a
+# `$(RUNDIR)/plxnative-*` scene triggers, including `plxnative-profile` and `plxnative-hwcnt`, so a
 # profiling run is armed once and repeated.
 #
 # Only `rm -f` the log — never pre-create it. The app runs jailed under its own uid
 # (not root), so a root-owned 644 file left in place is one the app cannot write: the
 # log stays 0 bytes and every assertion reads as a total regression. `tail -F` retries
 # until the app creates the file itself, which is exactly what -F is for.
-BOOT_SH = (luna-send -i "luna://com.webos.applicationManager/closeByAppId" "{\"id\":\"com.beb.plxnative\"}" >/dev/null 2>&1 & P=$$!; sleep 2; kill $$P 2>/dev/null); \
-	  fuser -k $(APPDIR)/plxnative 2>/dev/null; \
-	  rm -f /tmp/plxnative-events.log /tmp/plxnative-gputime.jsonl /tmp/plxnative-hwcnt.jsonl; \
-	  luna-send -i "luna://com.webos.applicationManager/launch" "{\"id\":\"com.beb.plxnative\"}" >/dev/null 2>&1 & LP=$$!;
+#
+# `fuser -k $(APPDIR)/plxnative` is INODE-scoped where `closeByAppId` is ID-scoped, and with two
+# installs that difference is the point: both binaries are named `plxnative`, so a name-based kill
+# (`pidof`, `killall`) would take down the OTHER install too. Keep it addressed by path.
+#
+# `mkdir -p` + `chmod 1777` on the runtime root before anything writes into it: two uids write here
+# and neither can be made to go second — this shell is root, the app is jailed under its own uid.
+# Whoever creates the directory sets its mode, and an owner-only mode locks the other out. A
+# root-owned root the app cannot write means a 0-byte event log, which every tool in this repo
+# reports as "no line found", i.e. exactly like a total regression. A no-op for the stable flavour,
+# whose root is `/tmp` itself (already 1777).
+CLOSE_SH = (luna-send -i "luna://com.webos.applicationManager/closeByAppId" "{\"id\":\"$(APPID)\"}" >/dev/null 2>&1 & P=$$!; sleep 2; kill $$P 2>/dev/null); \
+	  fuser -k $(APPDIR)/plxnative 2>/dev/null;
+BOOT_SH = $(CLOSE_SH) \
+	  mkdir -p $(RUNDIR) && chmod 1777 $(RUNDIR); \
+	  rm -f $(EVENTLOG) $(RUNDIR)/plxnative-gputime.jsonl $(RUNDIR)/plxnative-hwcnt.jsonl; \
+	  luna-send -i "luna://com.webos.applicationManager/launch" "{\"id\":\"$(APPID)\"}" >/dev/null 2>&1 & LP=$$!;
 
 run:
+	@echo "running $(APPID) [$(FLAVOR)] — log $(EVENTLOG)"
 	$(SSH) '$(BOOT_SH) \
 	  sleep $(RUN_SECS); kill $$LP 2>/dev/null; sleep 1; \
-	  cat /tmp/plxnative-events.log'
+	  cat $(EVENTLOG)'
 
 # Same launch, but stream the event log as it is written instead of sleeping a fixed
 # RUN_SECS and catting at the end. tests/run.py grades the stream line-by-line and closes
@@ -436,11 +599,10 @@ run:
 run-stream:
 	$(SSH) '$(BOOT_SH) \
 	  trap "kill $$LP 2>/dev/null" EXIT INT TERM HUP; \
-	  tail -F -n +1 /tmp/plxnative-events.log'
+	  tail -F -n +1 $(EVENTLOG)'
 
 kill:
-	$(SSH) '(luna-send -i "luna://com.webos.applicationManager/closeByAppId" "{\"id\":\"com.beb.plxnative\"}" >/dev/null 2>&1 & P=$$!; sleep 2; kill $$P 2>/dev/null); \
-	  fuser -k $(APPDIR)/plxnative 2>/dev/null; echo closed'
+	$(SSH) '$(CLOSE_SH) echo closed $(APPID)'
 
 clean:
 	rm -f src/*.o pkg/plxnative
@@ -471,6 +633,13 @@ test: deploy run
 # both clear the log on the TV), so this is only about not confusing yourself locally.
 check: lint
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" cargo +$(RUST_NIGHTLY) test --lib
+	@# The flavour transform, host-side and free. Its central assertion — that the STABLE transform
+	@# is the identity — is the mechanical guarantee that having a second app id cannot perturb the
+	@# released .ipk, whose sha256 every user's television verifies at install. That property is
+	@# worth checking on every host run rather than only in the release job, which is the one place
+	@# it would be too late to learn otherwise. It also cross-checks the three copies of the app id
+	@# (here, ci/flavor.py, rust-modules/src/paths.rs), which no compiler can.
+	python3 ci/flavor.py --selftest
 
 # `make lint` — the three clippy lints that catch a SHADOWED branch, the one bug class the unit
 # suite structurally cannot reach. `app.rs` shipped a duplicated `else if` whose empty body hid the
@@ -499,7 +668,11 @@ lint:
 # reads both out of the archive (webosbrew repogen/ipk_file.py), so a mismatch is a rejected
 # submission rather than a warning.
 IPK_VERSION := $(shell python3 -c "import json;print(json.load(open('pkg/appinfo.json'))['version'])")
-IPK         := pkg/com.beb.plxnative_$(IPK_VERSION)_arm.ipk
+IPK         := pkg/$(APPID)_$(IPK_VERSION)_arm.ipk
+# Where the payload is assembled. The DIRECTORY NAME is part of the package's identity — it is
+# what `paths::app_id` reads at runtime — so ci/mkipk.py and ci/check-package.py both assert it
+# equals the staged `appinfo.json`'s `id`.
+STAGE       := ipkroot/data/usr/palm/applications/$(APPID)
 
 # The .ipk is REPRODUCIBLE: same commit + same toolchain -> same sha256. That matters because the
 # manifest carries that hash and every user's TV verifies it at install time (there is no code
@@ -508,24 +681,89 @@ IPK         := pkg/com.beb.plxnative_$(IPK_VERSION)_arm.ipk
 #   - ci/mkipk.py normalises uid/gid/uname/gname/mtime/mode/order and the gzip header. `tar czf`
 #     was embedding `gleblinnik/staff` in every shipped archive.
 #   - `ar` gets D (deterministic): binutils' default embeds the builder's uid and a real mtime.
-ipk: pkg/plxnative
-	@echo "packaging $(if $(RELEASE),RELEASE,dev) build ($(RUST_CFG))"
-	rm -rf ipkroot/data/usr && mkdir -p ipkroot/data/usr/palm/applications/com.beb.plxnative/licenses
-	cp $(APP_FILES) ipkroot/data/usr/palm/applications/com.beb.plxnative/
-	cp $(LICENSE_FILES) ipkroot/data/usr/palm/applications/com.beb.plxnative/licenses/
+ipk: pkg/plxnative $(APPINFO) release-guard
+	@echo "packaging $(if $(RELEASE),RELEASE,dev) build ($(RUST_CFG)) as $(APPID) [$(FLAVOR)]"
+	rm -rf ipkroot/data/usr && mkdir -p $(STAGE)/licenses
+	cp $(APP_FILES) $(STAGE)/
+	cp $(LICENSE_FILES) $(STAGE)/licenses/
 	@# Strip the STAGED copy only, never pkg/plxnative. ~2.4 MB of .symtab+.strtab (30% of the
 	@# download, on a device whose app partition is 615 MB total and shared with every other app).
 	@# It must not be pkg/plxnative because tools/crash-report.sh symbolizes a crash PC against
 	@# that local binary AND md5-compares it to the on-TV copy to prove they are the same build —
 	@# stripping in place would break the identity check and lose function names from every
 	@# release crash report. Deploy ships the unstripped one by design; only the ipk is stripped.
-	$(TOOLPREFIX)strip --strip-unneeded ipkroot/data/usr/palm/applications/com.beb.plxnative/plxnative
-	rm -f pkg/com.beb.plxnative_*_arm.ipk
-	python3 ci/mkipk.py
+	$(TOOLPREFIX)strip --strip-unneeded $(STAGE)/plxnative
+	@# Only THIS flavour's artifact — packaging one must never delete the other's.
+	rm -f pkg/$(APPID)_*_arm.ipk
+	FLAVOR=$(FLAVOR) python3 ci/mkipk.py
 	@# Emitted from INSIDE pkg/ so the line carries the bare filename. With the `pkg/` prefix
 	@# in it, `shasum -a 256 -c ipk.sha256` fails for everyone who downloads the two release
 	@# assets side by side — which is every user, and is what shipped through v0.2.1.
-	cd pkg && $(SHA256SUM) $(notdir $(IPK)) | tee ipk.sha256
+	@# STABLE ONLY: `ipk.sha256` is a published RELEASE ASSET NAME, quoted verbatim in every
+	@# release note's verification command. A flavoured package writing it would replace the
+	@# checksum that describes the artifact users downloaded with one for a build they cannot get.
+	@if [ "$(FLAVOR)" = stable ]; then cd pkg && $(SHA256SUM) $(notdir $(IPK)) | tee ipk.sha256; \
+	 else $(SHA256SUM) $(IPK); fi
+	@# ...and the packaging gates run HERE, not only in CI. Every assertion in check-package.py was
+	@# written because something shipped broken, and until this line the machine that built the
+	@# package was the one machine that never ran them — the first sight of a failure was a push.
+	python3 ci/check-package.py
+
+# THE STABLE INSTALL IS ALWAYS A RELEASE BUILD, and that is a gate rather than a habit.
+#
+# `com.beb.plxnative` is the id users get. A dev-featured binary under it carries the whole
+# `/tmp` trigger surface, the world-writable `plxnative-remote` FIFO and the `:8910` capture
+# listener — the exact surface the `cut-release` skill's §2 exists to keep out of a shipped
+# artifact, seen from the other side. Before the flavour split this could only happen by
+# publishing by hand, which is how v0.2.1's defects got out; now it is one forgotten `RELEASE=1`
+# on a machine that also has a television, so it gets a mechanism.
+#
+# The escape hatch is named rather than absent, because there is one legitimate use — reproducing a
+# user's report against the shipped id with instrumentation on — and a gate with no hatch gets
+# deleted rather than respected.
+release-guard:
+	@if [ "$(FLAVOR)" = stable ] && [ -z "$(RELEASE)" ] && [ -z "$(ALLOW_DEV_ON_STABLE)" ]; then \
+	  echo "refusing to put a DEV build on $(APPID_STABLE) — that id is what users install."; \
+	  echo "  release build:      make FLAVOR=stable RELEASE=1 $(firstword $(MAKECMDGOALS))"; \
+	  echo "  developer install:  make $(firstword $(MAKECMDGOALS))          (FLAVOR=$(FLAVOR) is not the default)"; \
+	  echo "  really meant it:    make FLAVOR=stable ALLOW_DEV_ON_STABLE=1 $(firstword $(MAKECMDGOALS))"; \
+	  exit 1; fi
+
+# --- installing a flavour on the television ---------------------------------------------------
+#
+# `make deploy` scp's into an app directory that ALREADY EXISTS and is already registered. Creating
+# a second app is a different operation: SAM has to learn the id, and the LS2 role file that lets
+# the app talk to `com.webos.media.*` is written by the installer. So a flavour is installed once,
+# from its own .ipk, exactly the way a user installs the real one — which is also the only path
+# that exercises the package (`make deploy` never consults packageinfo.json, which is how a missing
+# one hid for months; see ci/mkipk.py).
+#
+# AND THEN IT DEPLOYS, deliberately. appinstalld replaces `applications/<id>/` WHOLESALE — the same
+# fact that keeps the session file outside it (paths.rs) — so an install wipes whatever was in
+# there and leaves the PACKAGED binary behind. Ending here would leave you looking at a build you
+# did not make, which is the "plausible wrong data" failure this repo cares most about.
+install: ipk
+	@echo "installing $(IPK) as $(APPID) on $(TV)"
+	$(SCP) $(IPK) root@$(TV):/tmp/
+	@# `script -qc` because luna-send needs a tty (see the webos-screen-capture note); `-i` keeps
+	@# the subscription open long enough for appinstalld to report, which is the only place a
+	@# failure is ever named.
+	$(SSH) 'script -qc "luna-send -i -a com.webos.appInstallService \
+	  luna://com.webos.appInstallService/dev/install \
+	  \"{\\\"id\\\":\\\"$(APPID)\\\",\\\"ipkUrl\\\":\\\"/tmp/$(notdir $(IPK))\\\",\\\"subscribe\\\":true}\"" /dev/null' | head -20
+	$(SSH) 'rm -f /tmp/$(notdir $(IPK))'
+	@$(MAKE) --no-print-directory deploy FLAVOR=$(FLAVOR) RELEASE=$(RELEASE) TV=$(TV)
+	@echo "installed and deployed $(APPID)"
+
+# Remove a flavour from the television. Refuses the stable id: uninstalling the app the household
+# watches with is not something a make target should make easy, and appinstalld gives no undo.
+uninstall:
+	@test "$(FLAVOR)" != stable || { echo "refusing to uninstall $(APPID_STABLE) — do that from the TV's own app list"; exit 1; }
+	$(SSH) 'script -qc "luna-send -i -a com.webos.appInstallService \
+	  luna://com.webos.appInstallService/dev/remove \
+	  \"{\\\"id\\\":\\\"$(APPID)\\\",\\\"subscribe\\\":true}\"" /dev/null' | head -20
+	$(SSH) 'rm -rf $(RUNDIR)' || true
+	@echo "removed $(APPID)"
 
 # tools/threadprobe.c — measures where pthread_create actually gives up on the TV (the question
 # behind rust-modules/src/task.rs). Standalone diagnostic: not linked into the app, not deployed
@@ -644,9 +882,15 @@ macapp-zip:
 
 # Retrieve whichever profiler JSONL the last run produced. Both are fetched best-effort because a
 # leg arms exactly one of the two modes, never both.
+# ...and out of THIS INSTALL's runtime root, which is where the app writes them
+# (`paths::in_runtime_dir`) and where BOOT_SH clears them. It was two `/tmp` literals: at the
+# default flavour the profiler wrote into `/tmp/<app id>/` while this reached for `/tmp/`, and
+# because both lines are `-` prefixed the miss was swallowed — so a profiling run that produced
+# exactly the data asked for reported "no profiler output on the TV".
 fetch-profile:
-	-$(SCP) root@$(TV):/tmp/plxnative-gputime.jsonl pkg/plxnative-gputime.jsonl
-	-$(SCP) root@$(TV):/tmp/plxnative-hwcnt.jsonl pkg/plxnative-hwcnt.jsonl
-	@ls -l pkg/plxnative-*.jsonl 2>/dev/null || echo "no profiler output on the TV"
+	-$(SCP) root@$(TV):$(RUNDIR)/plxnative-gputime.jsonl pkg/plxnative-gputime.jsonl
+	-$(SCP) root@$(TV):$(RUNDIR)/plxnative-hwcnt.jsonl pkg/plxnative-hwcnt.jsonl
+	@ls -l pkg/plxnative-*.jsonl 2>/dev/null || echo "no profiler output in $(RUNDIR) on the TV ($(APPID))"
 
-.PHONY: all setup-env deploy run run-stream kill check lint test ipk clean threadprobe sockprobe logmprobe mali-hwcnt-probe sim sim-run sim-shot sim-token sim-clean macapp macapp-zip fetch-profile
+.PHONY: all setup-env deploy run run-stream kill check lint test ipk clean threadprobe sockprobe logmprobe mali-hwcnt-probe sim sim-run sim-shot sim-token sim-clean macapp macapp-zip fetch-profile \
+        release-guard install uninstall $(QUERY_GOALS)

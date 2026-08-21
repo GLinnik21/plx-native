@@ -59,6 +59,10 @@ pkg/logmprobe
 .tv-tunnel.log
 .tv-remote-url
 pkg/.build-config
+# The derived per-flavour descriptor (ci/mkipk.py --emit-appinfo). Generated from the tracked
+# pkg/appinfo.json by ci/flavor.py on every deploy/package, so committing it would put the version
+# in a fifth file. NB `pkg/dev/` is the opposite — tracked artwork, cut by tools/mkicons.py.
+pkg/.flavor/
 
 # Bundled FFmpeg: the upstream source tree and the build output. Both are DERIVED —
 # ci/build-ffmpeg.sh reproduces them from a sha256-pinned tarball — and the tree alone is
