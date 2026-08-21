@@ -243,7 +243,65 @@ fn build_av_payload(video: &str, audio: &str, mw: i32, mh: i32) -> String {
             .replace(r#""audioOnly":false"#, r#""audioOnly":false,"adaptiveResolution":true"#);
         log(&format!("esInfo: videoFps {num}/{den} + adaptiveResolution (src {:.3})", crate::route::stream_fps()));
     }
-    p
+    with_dolby_hdr_info(&p, video, crate::route::stream_dovi().presentation_now())
+}
+
+/// The `contents.DolbyHdrInfo` node — **the whole of the Dolby Vision fix**, spliced into the
+/// Load payload for a direct play we have decided to declare.
+///
+/// PURE, so the splice is host-testable; the decision arrives as an argument and is the SAME value
+/// `route::build_stream` gated direct play on ([`crate::metadata::Dovi::presentation`]).
+///
+/// **Why this one node is the fix, from the television's own binaries** (decompiled 2026-08-21,
+/// webOS 4.10.2 `libpf`): `CustomPipeline::parseOptionStringSpi` builds the literal key
+/// `option.externalStreamingInfo.contents.DolbyHdrInfo`, asks `Options::checkKeyExistance` for it,
+/// and on a hit sets `hasDolbyHdrInfo` — unconditionally, before a single sub-field is read and
+/// with no platform gate. `getVideoCaps` then ends by adding `dolby-vision=TRUE` (plus
+/// `dolby-vision-profile` when `profileId != -1`) to the caps it was already building. Without the
+/// node, appsrc gets plain `video/x-h265` and nothing downstream can engage Dolby Vision. The
+/// pipeline has parsed this all along; we simply never sent it.
+///
+/// Three things that look like they should change and do not:
+/// - **the codec string stays `"H265"`.** `getVideoCaps` maps H265 to `video/x-h265` and that
+///   branch falls THROUGH into the Dolby Vision tail; there is no DVHE/DVH1 entry in its codec
+///   table (those literals belong to AdaptivePipeline's RFC-6381 parser, a different pipeline).
+///   LG's own Chromium client also reports `codec.video = "H265"` for a Dolby Vision stream. The
+///   `video == "H265"` guard below is therefore a consistency check, not a translation.
+/// - **`profileId` must be a JSON integer** (`getInt`). Quoting it would leave the `-1` sentinel.
+/// - **nothing declares platform support.** `libplayerAPIs::generateJsonPayloadForPlayer` injects
+///   `platformSupportDolbyVision` / `supportDolbyTVATMOS` itself from its configd cache, at the
+///   tree ROOT as siblings of `option`, and both already read true on this set. Sending our own
+///   would be a second opinion on a question the library answers for itself.
+///
+/// The anchor is `"provider":"plxnative"` — the last key of `contents` and, by the test below,
+/// present exactly once in `PAYLOAD_AV`. A `replace` that finds nothing is a silent no-node, which
+/// is why the miss is logged rather than assumed away.
+fn with_dolby_hdr_info(p: &str, video: &str, dv: crate::metadata::DvPresentation) -> String {
+    let Some(n) = dv.declared() else { return p.to_string() };
+    if video != "H265" {
+        // Unreachable by construction — `route` records the DV layering on the direct-play branch
+        // only, and that branch's payload codec is the file's own hevc — so this is the guard that
+        // says so out loud rather than declaring Dolby Vision over an H264 elementary stream. A
+        // malformed sourceInfo does not fail loudly; it wedges the sink.
+        log(&format!("dv: DolbyHdrInfo P{} NOT sent — payload video codec is {video}, not H265", n.profile_id));
+        return p.to_string();
+    }
+    let anchor = r#""provider":"plxnative""#;
+    if !p.contains(anchor) {
+        log("dv: payload has no provider anchor — DolbyHdrInfo NOT spliced");
+        return p.to_string();
+    }
+    let node = format!(
+        r#","DolbyHdrInfo":{{"trackType":"{}","encryptionType":"{}","profileId":{}}}"#,
+        n.track_type, n.encryption_type, n.profile_id
+    );
+    // ONE line, and it is the answer to "what did we actually send" — the only place the emitted
+    // values exist as fact rather than as intent.
+    log(&format!(
+        "dv: sourceInfo contents.DolbyHdrInfo profileId={} trackType={} encryptionType={} (codec {video})",
+        n.profile_id, n.track_type, n.encryption_type
+    ));
+    p.replace(anchor, &format!("{anchor}{node}"))
 }
 
 /// Create the exported window and splice its id into the Load payload — the webOS 5+ binding, in
@@ -1079,7 +1137,12 @@ pub(crate) fn feed_sample(mt: &MainThread, eng: &mut Engine) {
 
 #[cfg(test)]
 mod payload_tests {
-    use super::{PAYLOAD_AV, PAYLOAD_H265, PAYLOAD_V};
+    use super::{with_dolby_hdr_info, PAYLOAD_AV, PAYLOAD_H265, PAYLOAD_V};
+    use crate::metadata::Dovi;
+
+    fn p5() -> Dovi {
+        Dovi { present: true, profile: 5, bl_compat: 0, el_present: false }
+    }
 
     /// **Every Load payload must carry the `appId` anchor**, because that string is what
     /// `with_window_id` splices the webOS 5+ `option.windowId` onto — without it the decoded video
@@ -1096,5 +1159,70 @@ mod payload_tests {
         for (name, p) in [("PAYLOAD_V", PAYLOAD_V), ("PAYLOAD_AV", PAYLOAD_AV), ("PAYLOAD_H265", PAYLOAD_H265)] {
             assert!(p.contains(ANCHOR), "{name} lost the anchor — webOS 5+ video cannot bind");
         }
+    }
+
+    /// The Dolby Vision node's anchor, with the same reasoning as the one above: `provider` is the
+    /// LAST key of `contents`, which is where `DolbyHdrInfo` has to land — the pipeline reads it at
+    /// `option.externalStreamingInfo.contents.DolbyHdrInfo` and nowhere else. Exactly once, or a
+    /// `replace` would splice two nodes into one payload.
+    #[test]
+    fn the_av_payload_carries_exactly_one_dolby_hdr_info_anchor() {
+        assert_eq!(PAYLOAD_AV.matches(r#""provider":"plxnative""#).count(), 1);
+        // and it really is the last key of `contents` — the next character after it closes the
+        // object, so appending a key there stays INSIDE `contents`
+        assert!(PAYLOAD_AV.contains(r#""provider":"plxnative"},"streamQualityInfo""#));
+    }
+
+    /// **What we actually send for a Profile 5 direct play.** The three fields at the path the
+    /// television's own parser reads, `profileId` as a bare JSON integer (`getInt` — a quoted "5"
+    /// would leave the pipeline's -1 sentinel), and the whole node inside `contents`.
+    #[test]
+    fn a_declared_profile_5_splices_the_node_into_contents() {
+        // what `build_av_payload` hands it: the AV template with the codec already set to H265,
+        // which is what a native HEVC direct play — the only kind that can be Dolby Vision — sends
+        let base = PAYLOAD_AV.replace(r#""video":"H264""#, r#""video":"H265""#);
+        let out = with_dolby_hdr_info(&base, "H265", p5().presentation(true));
+        assert!(
+            out.contains(r#""provider":"plxnative","DolbyHdrInfo":{"trackType":"single","encryptionType":"clear","profileId":5}}"#),
+            "{out}"
+        );
+        // the trailing `}` above is `contents` closing: the node is the last key INSIDE it, not a
+        // sibling of `contents` in `externalStreamingInfo`
+        assert!(out.contains(r#""DolbyHdrInfo":{"trackType":"single","encryptionType":"clear","profileId":5}},"streamQualityInfo""#));
+        assert!(!out.contains(r#""profileId":"5""#), "getInt wants an integer, not a string");
+        // the codec string stays `H265` — `getVideoCaps` maps it to `video/x-h265` and falls
+        // THROUGH into its Dolby Vision tail; there is no DVHE/DVH1 entry in that table, and
+        // inventing one would describe a stream the pipeline has no decoder row for
+        assert!(out.contains(r#""video":"H265""#), "{out}");
+        assert!(!out.contains("DVHE") && !out.contains("dvh1"), "{out}");
+        // and NOTHING else moved: take the node back out and the payload is what came in
+        const NODE: &str = r#","DolbyHdrInfo":{"trackType":"single","encryptionType":"clear","profileId":5}"#;
+        assert_eq!(out.replace(NODE, ""), base);
+    }
+
+    /// The three ways the node is NOT sent, each of which must leave the payload byte-identical:
+    /// a file with no Dolby Vision, a Dolby Vision file we refuse (the dual-layer P7 — declaring a
+    /// layer we cannot feed is worse than refusing it), and the disarmed trigger, which is what a
+    /// `RELEASE=1` build compiles in and what every boot without `/tmp/plxnative-dv` does today.
+    #[test]
+    fn nothing_is_spliced_unless_the_stream_is_declared() {
+        let p7 = Dovi { present: true, profile: 7, bl_compat: 6, el_present: true };
+        for dv in [
+            Dovi::NONE.presentation(true),
+            p7.presentation(true),
+            p5().presentation(false),
+        ] {
+            assert_eq!(with_dolby_hdr_info(PAYLOAD_AV, "H265", dv), PAYLOAD_AV);
+        }
+    }
+
+    /// The consistency guard: a Dolby Vision declaration only ever rides an HEVC elementary
+    /// stream, so a payload built for H264 must not carry one. Unreachable by construction — the
+    /// route records the DV record on the direct-play branch, whose codec is the file's own hevc —
+    /// which is exactly why it is asserted rather than trusted: the `sourceInfo` envelope is
+    /// parsed before anything decodes, and a malformed one wedges the sink instead of failing.
+    #[test]
+    fn a_declaration_never_rides_a_non_hevc_payload() {
+        assert_eq!(with_dolby_hdr_info(PAYLOAD_AV, "H264", p5().presentation(true)), PAYLOAD_AV);
     }
 }

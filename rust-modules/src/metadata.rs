@@ -93,8 +93,29 @@ pub(crate) struct Dovi {
 }
 
 impl Dovi {
+    /// The all-zero record — "the server said nothing about Dolby Vision", which is also exactly
+    /// what an ordinary SDR file produces. A `const` rather than [`Default::default`] because
+    /// `route`'s idle `Session` is a `const` item and cannot call one.
+    pub(crate) const NONE: Dovi = Dovi { present: false, profile: 0, bl_compat: 0, el_present: false };
+
     /// PURE: **true when the base layer on its own is not a picture we can put on the panel
-    /// correctly**, i.e. when direct play would show the user wrong colours (or nothing).
+    /// correctly** — i.e. when this bitstream, decoded as ordinary HEVC by a pipeline that was
+    /// never TOLD it is Dolby Vision, shows the user wrong colours (or nothing).
+    ///
+    /// Note the "never told" clause: it is the whole question this predicate asks, and since
+    /// 2026-08-21 it is no longer the only thing we can do — [`Dovi::presentation`] can declare
+    /// the stream to the pipeline, and a declared Profile 5 is displayed correctly. What survives
+    /// unchanged is every path where the bitstream reaches a decoder with NO declaration attached,
+    /// and that is now this predicate's job:
+    ///
+    /// - the direct-play gate **when no node will be sent** (`presentation` is written in terms of
+    ///   this, so the two can never contradict each other), and
+    /// - the server's permission to **COPY** the video — a remux or a `directStream` transcode
+    ///   hands us the identical elementary stream one container down, and the Load payload built
+    ///   for that path declares nothing. `route::build_stream` reads it for both
+    ///   ([`crate::plex::TranscodeSpec::no_video_copy`] and the `remux` gate) and that is why a
+    ///   declared Profile 5 still refuses a copy: the declaration rides the DIRECT PLAY, not the
+    ///   file, so the same pixels arriving by another route are as wrong as they ever were.
     ///
     /// Two disqualifiers, and they are found by different fields:
     /// - **an enhancement layer** (`el_present`, Profile 7) — one elementary stream is all the
@@ -129,18 +150,147 @@ impl Dovi {
         self.el_present || self.profile == 5 || (self.profile > 0 && self.bl_compat == 0)
     }
 
-    /// The short reason, for the log line at the decision. `None` when the base layer is fine.
+    /// PURE: **how this stream will be presented** — the ONE predicate behind both halves of the
+    /// Dolby Vision decision, so they cannot drift apart. The direct-play gate
+    /// ([`crate::route::video_direct_plays`]) asks it whether to refuse; the Load payload
+    /// ([`crate::player::engine`]) asks the same value whether to emit a `DolbyHdrInfo` node. One
+    /// call, one answer, two consumers.
     ///
-    /// "cross-compatible" rather than "HDR10" deliberately: HDR10 (`bl_compat` 1) is merely the
-    /// common case, and an SDR (2) or HLG (4) base layer is equally displayable. What P5 lacks is
-    /// a base layer conformant to ANY ordinary transfer, which is what id 0 means.
-    pub(crate) fn refusal(&self) -> Option<&'static str> {
-        if !self.base_layer_unusable() {
-            return None;
+    /// `signal` is whether we are willing to DECLARE Dolby Vision to the pipeline at all
+    /// ([`dv_signal_armed`] — the `/tmp/plxnative-dv` trigger). It is a parameter rather than a
+    /// read inside this function so the whole rule stays pure and both settings are unit-testable.
+    ///
+    /// The four arms, and why each is where it is:
+    ///
+    /// - **not `present`** → [`DvPresentation::NotDv`]. No Dolby Vision, nothing to say, and
+    ///   nothing to refuse. This is every ordinary file in the library.
+    /// - **`el_present`** → refuse, always, `signal` or not. Profile 7 splits its picture across a
+    ///   base and an enhancement layer; the pipeline feeds ONE elementary stream and cannot
+    ///   interleave the other, so no payload key makes it displayable. (This is also the only
+    ///   thing that identifies a dual-layer file: the dev server's P7 reports `bl_compat = 6`.)
+    ///   It is deliberately checked BEFORE the declaration arm — which is what keeps the emitted
+    ///   node's `trackType` at `"single"` and, with `encryptionType` fixed at `"clear"`, makes the
+    ///   pipeline's `dv-dual-svp` secure-video-path flag unreachable. We cannot satisfy that flag.
+    /// - **no node will be sent** (`!signal`, or a profile the server never named) → fall back to
+    ///   exactly the pre-declaration rule: refuse iff [`base_layer_unusable`](Self::base_layer_unusable).
+    ///   That is what makes "keep the refusal for any case where we would not send the node" a
+    ///   property of the code rather than of a reviewer's memory. The `profile <= 0` half also
+    ///   preserves the never-convict-on-silence rule: a server that reports `DOVIPresent` and
+    ///   nothing else still falls through to `NotDv` and plays as it always has, because we cannot
+    ///   tell that silence from an SDR file, and `getInt` wants a real profile id anyway.
+    /// - otherwise → **declare it**, and direct play is then correct — including for Profile 5,
+    ///   whose refusal this inverts. The decompile of this TV's own `libpf` (2026-08-21) is the
+    ///   evidence: `CustomPipeline::parseOptionStringSpi` sets `hasDolbyHdrInfo` on the mere
+    ///   PRESENCE of the key, and `getVideoCaps` then adds `dolby-vision=TRUE` (+ the profile
+    ///   hint) to the `video/x-h265` caps it was already going to build. The codec string does not
+    ///   change; the node is the entire difference between an IPT-PQ stream shown in wrong colours
+    ///   and one the panel puts in Dolby Vision mode.
+    pub(crate) fn presentation(&self, signal: bool) -> DvPresentation {
+        if !self.present {
+            return DvPresentation::NotDv;
         }
-        Some(if self.el_present { "dual-layer" } else { "no cross-compatible base layer" })
+        if self.el_present {
+            return DvPresentation::Refuse("dual-layer");
+        }
+        if !signal || self.profile <= 0 {
+            return if self.base_layer_unusable() {
+                DvPresentation::Refuse("no cross-compatible base layer")
+            } else {
+                DvPresentation::NotDv
+            };
+        }
+        DvPresentation::Declare(DolbyHdrInfo {
+            profile_id: self.profile,
+            // Honest derivation, and unreachable as `"dual"` while the `el_present` arm above
+            // returns first — written this way so that the day an interleaver exists, the payload
+            // follows the refusal being relaxed instead of quietly lying about the track.
+            track_type: if self.el_present { "dual" } else { "single" },
+            // Never `"all"`: paired with `trackType: "dual"` that is what sets `dv-dual-svp`, the
+            // secure-video-path flag, which this app cannot satisfy.
+            encryption_type: "clear",
+        })
+    }
+
+    /// [`presentation`](Self::presentation) with the trigger read for you — the form both real
+    /// call sites use, so the gate and the payload are answered from one latched bool.
+    pub(crate) fn presentation_now(&self) -> DvPresentation {
+        self.presentation(dv_signal_armed())
     }
 }
+
+/// The `option.externalStreamingInfo.contents.DolbyHdrInfo` node of the Starfish Load payload:
+/// what we tell LG's pipeline about this stream's Dolby Vision.
+///
+/// The three fields are the ones the TV's own parser reads, at the paths and in the types the
+/// decompile proved (`Options::checkKeyExistance` for the node itself, then `getInt` for
+/// `profileId` and `getString` for the other two). `profileId` **must** be a JSON integer;
+/// omitting it leaves the pipeline's `-1` sentinel, which still yields `dolby-vision=TRUE` with
+/// only the profile hint missing — a legitimate fallback, not a failure.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct DolbyHdrInfo {
+    /// `DOVIProfile` as the server reported it. 5 (single-layer IPT-PQ) is the case this exists
+    /// for; 8.x declares fine too and gains the dynamic metadata its base layer alone lacks.
+    pub(crate) profile_id: i64,
+    /// `"single"` or `"dual"` — one elementary stream or a base + enhancement pair.
+    pub(crate) track_type: &'static str,
+    /// `"clear"`. See [`Dovi::presentation`] for why this is never `"all"`.
+    pub(crate) encryption_type: &'static str,
+}
+
+/// What [`Dovi::presentation`] decided: the single value the direct-play gate and the Load payload
+/// both read. Three states rather than a bool, because "there is no Dolby Vision here" and "there
+/// is, and we are declaring it" are the same answer to the GATE and opposite answers to the
+/// PAYLOAD — which is precisely the pair that used to be two predicates and could disagree.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum DvPresentation {
+    /// Not Dolby Vision, or not identifiably so. Play it as ordinary HEVC, declare nothing.
+    NotDv,
+    /// Direct play, with this node spliced into the Load payload.
+    Declare(DolbyHdrInfo),
+    /// Direct play is refused, with the short reason for the log line at the decision.
+    ///
+    /// "cross-compatible" rather than "HDR10" deliberately: HDR10 (`bl_compat` 1) is merely the
+    /// common case, and an SDR (2) or HLG (4) base layer is equally displayable. What Profile 5
+    /// lacks is a base layer conformant to ANY ordinary transfer, which is what id 0 means.
+    Refuse(&'static str),
+}
+
+impl DvPresentation {
+    /// Direct play is refused (and, at `build_stream`, the reason for the log line).
+    pub(crate) fn refusal(&self) -> Option<&'static str> {
+        match self {
+            Self::Refuse(why) => Some(why),
+            _ => None,
+        }
+    }
+    /// The node to splice into the Load payload, if any.
+    pub(crate) fn declared(&self) -> Option<DolbyHdrInfo> {
+        match self {
+            Self::Declare(d) => Some(*d),
+            _ => None,
+        }
+    }
+}
+
+crate::dev::latched_flag!(
+    /// `/tmp/plxnative-dv` — **declare Dolby Vision to the pipeline** (the `DolbyHdrInfo` node in
+    /// the Starfish Load payload, and with it direct play for a single-layer Profile 5).
+    ///
+    /// **Default OFF, and that is a deliberate choice for the first device run.** The payload is
+    /// the `sourceInfo` envelope, which the pipeline parses before anything decodes: a malformed
+    /// one does not fail loudly, it wedges the video sink (`player/CLAUDE.md` records a wrong
+    /// audio codec string doing exactly that through `audioSync`). Disarmed, every byte of the
+    /// payload is what shipped yesterday and Profile 5 keeps taking the re-encode path it takes
+    /// today — so a `RELEASE=1` build, where this whole surface is compiled out and [`crate::dev::flag`] is a
+    /// compile-time `false`, behaves exactly as the released one does. Flip the default here once
+    /// the node has been seen to put a correct picture on a real panel.
+    ///
+    /// Latched once per process rather than read per call, which is also what guarantees the gate
+    /// and the payload cannot disagree WITHIN a session: `tests/run.py` clears `/tmp/plxnative-*`
+    /// between cases, so an unlatched read could legitimately answer differently at the route
+    /// decision and at the Load a few frames later, and direct-play a Profile 5 with no node.
+    pub(crate) fn dv_signal_armed = "dv";
+);
 
 // `Default` is for TESTS: every field is a zero/empty that means "PMS did not say", so a fixture
 // can name the two or three fields its case is about instead of the fifteen it is not.
@@ -2293,7 +2443,14 @@ mod tests {
         let (_, _, _, _, dovi) = convert_streams(&[p5, cover]);
         assert!(dovi.present, "the P5 record must outlive a second video stream");
         assert_eq!(dovi.profile, 5);
-        assert!(dovi.base_layer_unusable(), "and must still refuse direct play");
+        assert!(dovi.base_layer_unusable(), "and must still forbid a server-side COPY of it");
+        // …and, undeclared, must still refuse direct play — the record surviving is what both of
+        // those turn on, so the cover-art stream must not be able to blank it
+        assert_eq!(
+            dovi.presentation(false),
+            crate::metadata::DvPresentation::Refuse("no cross-compatible base layer")
+        );
+        assert_eq!(dovi.presentation(true).declared().map(|n| n.profile_id), Some(5));
     }
 
     /// The ordinary single-video-stream shapes, so the guard above cannot be read as "any DV
