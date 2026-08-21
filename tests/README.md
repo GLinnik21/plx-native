@@ -424,3 +424,13 @@ labeled "synthetic" and secondary to the 8 authoritative real item shapes:
   why a case built on the dual-layer item alone would also have looked clean. What still needs a
   human in front of the television is whether the panel engages Dolby Vision at all on the P8 file
   that does direct-play.
+  **And since 2026-08-21 the P5 half of that refusal is CONDITIONAL, so read the paragraph above as
+  the behaviour with `/tmp/plxnative-dv` absent — which is what this suite runs and what a
+  `RELEASE=1` build compiles in.** Arming that trigger makes the Load payload declare the stream
+  (`contents.DolbyHdrInfo`, the node LG's own pipeline has parsed all along), and a declared
+  single-layer Profile 5 direct-plays *correctly* — so with it armed the P5 item's expectation is a
+  playing stream, one `dv: sourceInfo contents.DolbyHdrInfo …` line in the event log, and a picture
+  only a human can grade. The dual-layer P7 is refused either way. `metadata::Dovi::presentation` is
+  the single predicate behind both the gate and the node; `base_layer_unusable` is now specifically
+  the COPY question (a remux carries no declaration), which is why `no_video_copy` still rides a
+  declared P5 that ends up on the transcode branch for some other reason.
