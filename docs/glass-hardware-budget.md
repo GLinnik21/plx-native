@@ -109,6 +109,14 @@ layout — the dial prints `blur_config` on every run, and the numbers here are 
 second was 56); 334,000 did not. Everything design can put on this screen sits on one side of that
 number or the other.
 
+**READ §11 BEFORE PRICING ANYTHING NEW OFF THIS TABLE.** Every row above was measured on the
+**capture** path — a full-resolution `glCopyTexSubImage2D` of the region plus two reductions — and
+the **direct source** path has been the default since. It renders the page again into a
+quarter-scale target, so the region term is charged at `region / 16` and very nearly falls out. A
+2026-08-21 surface at 579,840 px² (§11) — nearly twice the budget, which this table calls 45 fps at
+best — measured **58**. The shape of the question is right and the numbers are a ceiling, not an
+estimate.
+
 **Count is free; distance is not.** One 608x396 panel, two 292x396 and four 140x396 — same
 footprint, same region — all measured **45 fps exactly**. But the two-surface rows above are the
 sharper lesson: two *identical* 300x300 panels cost **45 fps adjacent and 36 fps in opposite
@@ -731,6 +739,11 @@ same dial in the same launch.
   only "it fits". Their true cost could be anything from nothing up to the full 7.8 ms, and the
   headroom they consume is invisible until something else is added. If a design stacks two such
   things, measure the pair; do not assume two free things are free together.
+* **The capture path against the direct path, on one surface.** §11 shows the region law
+  over-charging a real surface about sevenfold and attributes it to the direct source path's
+  quarter-scale re-render. Nothing forces the capture path at runtime, so the two could not be run
+  as legs of one A/B; the attribution is reasoning about what the two paths do, and only the
+  refutation itself is measured.
 * **Anything about the player.** Every measurement here is on browsing screens. The player draws
   almost nothing, has no glass, and cannot have any (§4.4).
 * **Screens other than Home.** The library grid, the detail page and Search were not swept. The
@@ -739,3 +752,121 @@ same dial in the same launch.
 * **The real tab bar in its real position.** The transition prototype's capsule stands in for it at
   the true height and place but a fixed width, and it is composited *over* the page where the real
   strip is drawn *inside* it. The costs are representative; the exact pixels are not.
+
+---
+
+## 11. The scroll band as glass — built, measured, refused (2026-08-21)
+
+**The idea.** `widgets::nav_scrim` is the one grey fade in the app on a scrolling surface: an opaque
+`SURFACE_APP` floor from y=0 to the bottom of the top chrome, then a two-stop ramp out to where the
+caller's content begins. Two screens draw it — the Library grid (chrome to 186, content at 214) and
+Search (208 and 248). The obvious improvement is to make it a **frosted material** instead, so a
+poster scrolling under the bar blurs rather than dissolving into flat grey.
+
+It was built (`/tmp/plxnative-navglass`, `widgets::nav_scrim`'s glass path — the same three bands at
+`NAV_GLASS_FROST` 0.62 of their weight, over one `Glass::DYNAMIC_BACKDROP` surface), it works, and
+it does not ship. **The trigger stays off.**
+
+### What the arithmetic predicted, and why that prediction is WRONG
+
+Indexed on §3's region law this looked hopeless before it was built. The band is the full width of
+the panel, so grown `BLUR_MARGIN` 88 a side and clamped it prices at **1,920 x 302 = 579,840 px²**
+on the Library and **1,920 x 336 = 645,120** on Search, against a `GLASS_REGION_BUDGET` of 300,000
+— roughly twice over, which §3.2's table puts at **45 fps at best and more likely 36**. (Both
+figures are now a host test, `widgets`' `the_scroll_band_is_twice_the_glass_region_budget_on_both_screens`.)
+
+**Measured, it is 58 fps, not 45.** The region law over-charges this surface by a factor of about
+seven, and the reason matters more than the row: **§3's whole table was measured on the CAPTURE
+path** — `glCopyTexSubImage2D` of the region at full resolution, then two reductions — and the
+**direct source path** has been the default since. That path renders the page a second time into a
+quarter-scale target, so the snapshot's fragment cost scales with `region / 16` and the region term
+very nearly falls out of the bill. Treat §3.1's px²→fps table as **specific to the capture path**;
+it is still the right instrument for the shape of the question and the wrong one for the number.
+(The mechanism here is INFERRED from what the two paths do, not measured: there is no trigger that
+forces the capture path, so the two could not be A/B'd. What is measured is that the law's
+prediction does not hold.)
+
+### What it actually costs
+
+Scene: the real screens, `plxnative-noidle` armed so the app presents continuously (the fps scenes'
+oscillators settle between steps, so their `fps=` is a duty cycle and not a fill rate), both
+profilers disarmed, 30 s per leg, first 5 samples dropped. **Two independent runs of every leg**,
+which reproduced to within 0.1 fps of mean.
+
+| screen, moving | leg | fps median | fps mean | fps min | loop median |
+|---|---|---|---|---|---|
+| Library grid, `libosc` | control | **60**, 60 | 60.1, 60.1 | 60, 60 | 60, 60 |
+| Library grid, `libosc` | **glass** | **58**, 58 | 57.1, 57.0 | **54**, 54 | 58, 57.5 |
+| Search, `searchosc`, query `th` | control | **60**, 60 | 60.0, 60.1 | 60, 60 | 60, 60 |
+| Search, `searchosc`, query `th` | **glass** | **59**, 59 | 58.3, 58.2 | **55**, 55 | 58.5, 58 |
+
+**The control is a flawless 60.0 with a minimum of 60 in every leg**, which is what makes two frames
+per second a signal rather than noise: there is no spread on the other side of the comparison to
+hide in.
+
+**Where the two frames go — the frame-time distribution.** `/tmp/plxnative-framedrop=17` logs every
+frame over 17 ms with its phase breakdown, and takes no `glFinish`, so unlike `plxnative-profile` it
+does not move the pacing: its own legs reproduced the unarmed fps figures above exactly (60.0 / 58.0
+median). Library grid, 24 s a leg:
+
+| frames over 17 ms | control | glass |
+|---|---|---|
+| count | 272 (11.3/s) | 367 (15.3/s) |
+| median | 17.4 ms | **22.6 ms** |
+| p90 | 19.3 ms | **25.6 ms** |
+| **≥ 20 ms** | **13** | **206** |
+| **≥ 25 ms** | **3** | **120** |
+| ≥ 32 ms (a doubled vsync) | 2 | 5 |
+| mean `draw=` of those frames | 17.3 ms | **21.1 ms** |
+| heartbeat `worstframe=`, per second | 18.8 – 20.6 ms | **24.7 – 33.4 ms** |
+
+**That is the answer, and it is not the median.** The material adds about **3.8 ms to a heavy
+frame**, which the median frame absorbs and the heavy ones do not: frames past 20 ms go from 13 to
+206 in the same 24 seconds, past 25 ms from 3 to 120 — five a second — and **every single second's
+worst frame moves from ~19 ms to ~26 ms, with two seconds hitting 33 ms**, a whole dropped vsync.
+On a screen whose one job is a smooth scroll, and which today holds a hard 60 with nothing over
+20.6 ms, that is judder you have bought.
+
+### The existing fps scenes PASS, and quoting them would have been the mistake
+
+Run both ways (whole UI tier, 14 scenes, `plxnative-navglass` added to the two scroll scenes):
+
+| scene | control | glass | its gates |
+|---|---|---|---|
+| `fps:library-scroll` | fps median **56** (min 24, max 61), loop robust_min 60 | fps median **50** (min 24, max 57), loop robust_min 56 | `fps_floor` 25, `loop_floor` 50 |
+| `fps:search-type` | fps median **40** (min 18, max 61), loop robust_min 60 | fps median **35** (min 17, max 60), loop robust_min 57 | `fps_floor` 20, `loop_floor` 45 |
+
+**14 of 14 passed in both legs.** Nothing in the suite fails with the material on — and that is a
+statement about the suite, not about the material. Those floors were chosen as frozen-versus-running
+discriminators (the manifest notes say so: "a FROZEN animator reads ~0.5/s… 25 separates them by a
+wide margin"), and they sit at 45% of the healthy median precisely so a duty-cycled oscillator
+cannot flap them. **A gate with that much slack cannot answer "does this lag."** The instrument that
+can is the one above: continuous presents, and the frame-time distribution rather than a rate.
+
+### Two more things the build settled, both by looking
+
+* **On Search the material has almost nothing to show.** The band's height there is 208 px of
+  *chrome* — the tab strip and the query capsule — and the result shelves are scissored at
+  `CHROME_BOTTOM`, so the only live content behind the band is the 40 px between 208 and 248.
+  Photographed on the panel: the Library band frosts real posters, and the Search band is flat grey
+  with a veiled shelf heading at its bottom edge. Search would be paying the full bill for a blur of
+  the app's own ground.
+* **A blur cannot ramp, so it needs an edge somebody drew.** The grey treatment fades out over 28 px
+  (Library) or 40 (Search); the material cannot, because the surface has one blur radius and the
+  scrim over it is the only thing that can gradate. The prototype ends the blur at `content_top`
+  with `GlassRim::Standing`'s chamfer and lens. It reads acceptably, but it is a hard line across the
+  middle of a moving grid where today there is a fade, and it is a *second* design question that
+  would have to be answered before anything like this could ship.
+
+### If somebody proposes this again
+
+Arm `/tmp/plxnative-navglass` and look at it — the code is still there, still trigger-gated, and
+`widgets::nav_scrim`'s doc points here. Then reproduce the table above before arguing from the
+median: `plxnative-noidle` + `plxnative-library` + `plxnative-libosc` (+ `plxnative-navglass`),
+`make run RUN_SECS=30`, and separately `printf 17 > /tmp/plxnative-framedrop` for the distribution.
+**The number that decides it is `worstframe=`, not `fps=`.**
+
+**The verdict is the owner's rule applied to a measurement: it lags, so it does not go in.** Not
+because it is unaffordable — it is far cheaper than this document predicted, and that correction is
+the durable half of this section — but because the two screens it would live on currently hold a
+perfect 60 with no frame over 20.6 ms, and it spends that.

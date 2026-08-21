@@ -42,7 +42,7 @@ const COLS: usize = 6;
 const LGAP: f32 = (SCR_W - 2.0 * MARGIN_X - COLS as f32 * CARD_W) / (COLS as f32 - 1.0);
 const TOOL_Y: f32 = 134.0;
 const TOOL_H: f32 = 52.0;
-const GRID_TOP: f32 = 214.0;
+pub(crate) const GRID_TOP: f32 = 214.0;
 // The top-chrome scrim's own numbers used to live here — a knee at 188, its .40 alpha, and a 56px
 // scroll-linked appear. They are `widgets::nav_scrim`'s now, DERIVED from `GRID_TOP` rather than
 // spelled: the design system tokenises this treatment for every full-screen route that scrolls a

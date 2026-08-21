@@ -5606,6 +5606,12 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         if route_wears_tab_bar(route) {
                             crate::ui::widgets::tab_glass_prepare();
                         }
+                        // The scroll band's prototype material (`/tmp/plxnative-navglass`), on the
+                        // two routes that draw a `widgets::nav_scrim` at all. Self-gated on the
+                        // trigger, so a default build resolves nothing here.
+                        if matches!(page_of(route), Route::Library | Route::Search) {
+                            crate::ui::widgets::nav_glass_prepare();
+                        }
                         if matches!(route, Route::Account { .. }) {
                             crate::ui::account_menu::prepare_present(
                                 underlay_moving || crate::ui::idle::present_dirty(),
