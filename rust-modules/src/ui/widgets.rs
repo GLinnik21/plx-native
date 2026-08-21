@@ -641,6 +641,18 @@ pub(crate) const CARD_FOCUS_SCALE: f32 = 1.07;
 /// (transport CC/Audio buttons, CircleButton vector icons, the Continue-Watching play badge).
 pub(crate) const DISC_ICON_RATIO: f32 = 0.54;
 
+/// The air between one control of an ACTION ROW and the next, edge to edge — the sibling of
+/// [`StatusOverlay::CTRL_H`] on the other axis, and the second half of what makes the home hero's
+/// row and the detail hero's row one object rather than two that agree by inspection. Both wrote
+/// out a private `20.0` (`home::HERO_CTRL_GAP`, `detail::CGAP`), so the rhythm those rows are meant
+/// to share was a number two files happened to hold the same copy of.
+///
+/// Deliberately NOT a [`theme::space`] rung: that ladder is the gap between stacked BLOCKS in a
+/// page's vertical flow, and this is the air inside one horizontal control row, measured against
+/// the 60px control it separates. Adding a 20 to the ladder to launder it would put a rung on the
+/// scale that no block spacing may use, which is worse than an honest constant with a home.
+pub(crate) const CTRL_GAP: f32 = 20.0;
+
 /// A media card shared by the episode picker and the chapters strip so they resolve + animate
 /// identically: the thumbnail (at `res`, or a dark placeholder), a focus scale-pop about the centre +
 /// the focus treatment (soft drop-shadow + top sheen) when `focused` (the caller owns the `scale`

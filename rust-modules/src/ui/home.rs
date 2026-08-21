@@ -75,17 +75,33 @@ const HERO_CTRL_D: f32 = crate::ui::widgets::StatusOverlay::CTRL_H;
 /// The air between one element of the action row and the next, edge to edge. Hoisted out of
 /// [`hero_actions`] because the pager mark's padding is derived from it — the row has ONE rhythm,
 /// and a mark that sat on a second number would read as belonging to something else.
-const HERO_CTRL_GAP: f32 = 20.0;
+///
+/// The rhythm is the SHARED one, for the same reason [`HERO_CTRL_D`] is: the detail page draws this
+/// row too, so an alias here and a second literal there would be two rhythms in one app. Hoisting
+/// the literal named the fork; pointing it at [`widgets::CTRL_GAP`](crate::ui::widgets::CTRL_GAP)
+/// removes it.
+const HERO_CTRL_GAP: f32 = crate::ui::widgets::CTRL_GAP;
 /// The pager mark's own size — the chevron drawn at exactly the box every DISC control in this row
 /// carries its glyph in (`HERO_CTRL_D` × [`widgets::DISC_ICON_RATIO`](crate::ui::widgets::DISC_ICON_RATIO)
-/// = 32), which is what makes it read as a peer of the controls without being one. It is the size
-/// the chevron has always been drawn at; what the correction removed is the 60px control BOX that
-/// used to sit around it, not the mark.
+/// = 32.4, rounded to 32 at the draw by the same `.round()` `CircleButton` applies to its own glyph
+/// box, so the two land on the same whole number), which is what makes it read as a peer of the
+/// controls without being one. It is the size the chevron has always been drawn at; what the
+/// correction removed is the 60px control BOX that used to sit around it, not the mark.
 const HERO_PAGER_D: f32 = HERO_CTRL_D * crate::ui::widgets::DISC_ICON_RATIO;
-/// Equal air on either side of the mark — the row's own [`HERO_CTRL_GAP`], so the gap between the
-/// info disc and the chevron's ink is the same gap as between the pill and the info disc. A
-/// control's padding is its plate's; a bare mark's is the space around the ink, and it is
-/// symmetric because there is no plate to hang it off.
+/// The air beside the mark — the row's own [`HERO_CTRL_GAP`], applied to the mark's BOX on the left
+/// (where it is the visible stand-off from the info disc's plate) and again on the right as the
+/// row's trailing extent, which only [`hero_actions`]'s `on_axis` cull can see because nothing is
+/// drawn past it. Symmetric in the arithmetic because a bare mark has no plate to hang padding off,
+/// but the right half is a measurement rather than a gap the eye can check.
+///
+/// **Measured to the BOX, not to the ink**, and the distinction is worth stating because the two
+/// differ by a lot: a glyph is centred and INSET in its box — `chevron.svg` strokes the middle ⅜ of
+/// its viewBox, so at 32 the ink is 12px wide with 10px of empty box on each side, putting the
+/// visible disc-plate-to-chevron-ink gap at 30 rather than 20. What the row's elements therefore
+/// share is the frame each glyph is issued (the info disc's own Info mark is inset in its 60px plate
+/// the same way), which in a row of a pill, a disc and a bare mark is the only thing that CAN be
+/// made equal. Do not "correct" this to 10 to close the optical gap without looking at the panel:
+/// the mark would then sit closer to the disc than the disc does to the pill.
 const HERO_PAGER_PAD: f32 = HERO_CTRL_GAP;
 const K_SLIDE: f32 = 130.0; // slide spring — a touch softer than the grid springs, reads cinematic
 /// The slide is over once its remaining travel is **sub-pixel**. Threshold in PIXELS, not in
@@ -1051,8 +1067,9 @@ fn hero_actions(hero: &PmsMovie, env: &Env, p: Painter, dx: f32, live: bool) {
     // at the end of the row, LEFT at its start and the idle auto-flip already page the carousel.
     //
     // So it wears no control geometry either. It is drawn at its NATURAL size (`HERO_PAGER_D` — the
-    // same box the info disc carries its glyph in) with equal air on either side, rather than as a
-    // glyph floating inside a 60px button box whose empty half pushed it away from the row. What
+    // same box the info disc carries its glyph in), stood off the disc by the row's own gap
+    // (`HERO_PAGER_PAD`, measured to the box — see its doc), rather than as a glyph floating inside
+    // a 60px button box whose empty half pushed it 14px further right than the rhythm wanted. What
     // ended here before was a disc-backed `CircleButton`, then a bare-styled one; both were still a
     // button, which is the thing this is not.
     crate::ui::icons::draw(p, Icon::Chevron, mark, theme::TEXT_SECONDARY);
@@ -1924,6 +1941,14 @@ mod tests {
     /// So both are pinned here, against the real key path: no number of RIGHT presses reaches an
     /// index past the info disc, and the press that would have gone there flips the billboard
     /// instead while focus stays put. (LEFT off the pill is the same statement at the other end.)
+    ///
+    /// **The COUNT is pinned as a literal, and that is not belt-and-braces.** "The row's last
+    /// control pages" is true of a row of ANY length, so a version of this test phrased entirely in
+    /// `HERO_NBTN` grades the key path and nothing about the correction: with `HERO_NBTN` back at 3
+    /// and the chevron recording a hit rect again, the walk simply rests on 2, the edge key still
+    /// pages, and every assertion below still passes — the whole suite stayed green under exactly
+    /// that patch, which is how this test was first written. A test that moves WITH the number it
+    /// is about cannot see the number.
     #[test]
     fn the_pager_is_not_a_focus_stop_and_the_rows_end_pages_instead() {
         let _s = crate::testlock::serial(); // pms's hero pool + browse's pill table
@@ -1932,25 +1957,37 @@ mod tests {
         crate::pms::seed_for_test(3, crate::pms::HubState::Ready);
         assert!(crate::pms::hero_pool_len() > 1, "a pool with somewhere to page to");
 
+        // (0) **the COUNT, as literals.** Everything below is about "the row's last control", which
+        // is true of a row of any length — phrased in `HERO_NBTN` the whole test passes unchanged
+        // with the chevron back as stop 2 and a hit rect of its own (measured, suite green under
+        // exactly that patch). Two is the correction, so two is written down. `hero_btns` is
+        // `[Rect; HERO_NBTN]`, so this pins the pointer half as well — there is no third slot for a
+        // hit target to be recorded into, whatever a future `hero_actions` tries to write.
+        const LAST_CTRL: c_int = 1; // the info disc — the row's right-hand end
+        assert_eq!(HERO_NBTN, 2, "the hero row holds the Play pill and the info disc, and nothing else");
+        assert_eq!(unsafe { addr_of!(hero_btns).read() }.len(), 2, "…and so does the hit-target array");
+
         // (1) the chevron is unreachable: RIGHT walks pill → info and then stops walking
         set_hero_focus(0);
         for press in 1..=8 {
             home_hero_key(SDLK_RIGHT);
             assert!(
-                hero_focus() <= HERO_NBTN as c_int - 1,
+                hero_focus() <= LAST_CTRL,
                 "RIGHT #{press} left focus on {} — past the row's last CONTROL",
                 hero_focus()
             );
         }
-        assert_eq!(hero_focus(), HERO_NBTN as c_int - 1, "…and it rests on the info disc");
+        assert_eq!(hero_focus(), LAST_CTRL, "…and it rests on the info disc");
 
-        // (2) …because that press pages the billboard instead. The cooldown is cleared first:
-        // `hero_flip` debounces a held key, and the walk above spent nothing on it.
+        // (2) …because that press pages the billboard instead. The cooldown is cleared first
+        // because the walk above SPENT it: press #2 already landed on the row's end and flipped
+        // once, arming `hero_flip`'s debounce, and presses #3-8 were swallowed by it. Without this
+        // line the assertion below would be grading the cooldown rather than the edge key.
         unsafe { addr_of_mut!(hero_flip_cd).write(0.0) };
         let before = hero_index();
         home_hero_key(SDLK_RIGHT);
         assert_ne!(hero_index(), before, "RIGHT at the row's end must page the billboard");
-        assert_eq!(hero_focus(), HERO_NBTN as c_int - 1, "…and must not move focus doing it");
+        assert_eq!(hero_focus(), LAST_CTRL, "…and must not move focus doing it");
 
         // (3) the other end, unchanged: LEFT on the pill pages back
         set_hero_focus(0);

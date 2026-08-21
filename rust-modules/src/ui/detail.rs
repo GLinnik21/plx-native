@@ -211,8 +211,14 @@ const BTN_RESTART: c_int = 1;
 // "Play" that lands ~2px above this — so the detail Play pill is now pixel-identical to home's
 // rather than approximating it with a constant. The floor only guards a pathologically short label.
 const PW: f32 = 168.0;
-const CGAP: f32 = 20.0;
-const CD: f32 = 60.0; // circle button diameter
+// The hero row's inter-control air and its disc diameter, both the SHARED control-family numbers
+// rather than a second copy of them. `home.rs` draws this same row and already aliased the
+// diameter, so the two literals that used to sit here were the one place the two heroes could
+// silently drift apart — and `StatusOverlay::CTRL_H`'s own doc already claimed "the hero rowS'
+// pill/disc diameter, which `home.rs` aliases rather than restating", which a `60.0` here made
+// false.
+const CGAP: f32 = crate::ui::widgets::CTRL_GAP;
+const CD: f32 = crate::ui::widgets::StatusOverlay::CTRL_H; // circle button diameter
 /// The hero text column's width — the TITLE BAND, the synopsis wrap AND every fine-print line under
 /// it (the date/runtime pair, the "Directed by" credit) share it, so nothing in the block can grow
 /// past the right-aligned "Starring" line. The title band used to have its own narrower literal
