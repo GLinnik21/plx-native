@@ -386,6 +386,34 @@ pub struct Stream {
     /// PMS sends bools as `true` and as `"1"` depending on the endpoint.
     #[serde(rename = "DOVIPresent", default, deserialize_with = "de_i64")]
     pub dovi_present: i64,
+    // ---- Dolby Vision, beyond "present". These three decide whether the file's BASE LAYER is a
+    // correct picture on its own, which is the only question the buffer-feed pipeline can act on:
+    // we feed ONE elementary stream to a decoder that knows nothing about an RPU, so what the
+    // panel gets IS the base layer. `metadata::Dovi` is where they are read together, and its
+    // `base_layer_unusable` is the rule.
+    //
+    // The field names are NOT in docs/plex-openapi.json — its `stream` schema carries 29
+    // properties and not one DOVI among them, so the spec cannot settle them and neither can
+    // pms-api.md. These spellings were probed LIVE against the dev PMS 2026-08-21, on all eight
+    // Dolby Vision items in the library; the full set the server sends is `DOVIPresent`,
+    // `DOVIProfile`, `DOVILevel`, `DOVIVersion`, `DOVIBLPresent`, `DOVIELPresent`,
+    // `DOVIRPUPresent`, `DOVIBLCompatID`. Numbers arrive as JSON numbers and the flags as real
+    // JSON booleans (`DOVIELPresent: false`), which is why every one of them is [`de_i64`].
+    /// `DOVIProfile` — 5, 7, 8 … (0 = the server did not say). Profile is what names the
+    /// single-layer IPT-PQ case (5) that has no HDR10 fallback at all.
+    #[serde(rename = "DOVIProfile", default, deserialize_with = "de_i64")]
+    pub dovi_profile: i64,
+    /// `DOVIBLCompatID` — the base layer's cross-compatibility id: 0 = none (Profile 5, IPT-PQ,
+    /// displayable only by a DV-aware decoder), 1 = HDR10, 2 = SDR, 4 = HLG. Measured live:
+    /// every P8 item on the dev server sends 1, the P5 item sends 0, and the P7 item sends **6**
+    /// — so a `== 0` test alone does NOT catch Profile 7. See `DOVIELPresent`.
+    #[serde(rename = "DOVIBLCompatID", default, deserialize_with = "de_i64")]
+    pub dovi_bl_compat_id: i64,
+    /// `DOVIELPresent` — an enhancement layer rides in the file (Profile 7's dual layer). We feed
+    /// a single elementary stream and cannot interleave a second one, so this is disqualifying on
+    /// its own, and it is the ONLY field that identifies P7 (whose compat id is 6, not 0).
+    #[serde(rename = "DOVIELPresent", default, deserialize_with = "de_i64")]
+    pub dovi_el_present: i64,
     #[serde(default, deserialize_with = "de_i64")]
     pub channels: i64,
     #[serde(rename = "audioChannelLayout", default)]

@@ -970,7 +970,22 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveE
     // any AAC/AC3 track (nearly every file has one) direct-played straight onto the bounded
     // decoder. See `video_direct_plays` for the gate itself.
     let (src_w, src_h) = plan.playing.as_ref().map(|p| (p.width, p.height)).unwrap_or((0, 0));
-    let video_dp = video_direct_plays(vcodec, src_w, src_h, crate::devcaps::caps());
+    // The DV layering rides the same playing-item store as the frame size, for the same reason:
+    // it is the PLAYED LEAF's, not the detail page's (a show page's Detail describes whichever
+    // episode backfilled it). Absent store → default `Dovi`, which is all-zero and refuses
+    // nothing.
+    let dovi = plan.playing.as_ref().map(|p| p.dovi).unwrap_or_default();
+    let video_dp = video_direct_plays(vcodec, src_w, src_h, dovi, crate::devcaps::caps());
+    if let Some(why) = dovi.refusal() {
+        // Worth a line of its own: from the outside this looks like a 4K HEVC file with a normal
+        // audio track being sent to the transcoder for no reason, and the DOVI fields that
+        // explain it are not in any other log line. `ff.rs` logs the demuxer's own reading of the
+        // configuration record at open, which is the ground truth this decision only approximates.
+        crate::player::log(&format!(
+            "route: dolby vision P{} (bl_compat={} el={}) — {why}, base layer is not self-displayable; transcoding",
+            dovi.profile, dovi.bl_compat, dovi.el_present as i32
+        ));
+    }
     // MKV and MP4 both direct-play. MP4 once died after AU#0 (b1002de) because the mov demuxer's
     // random access needed seeks the then-unseekable AVIO could not serve; `ff.rs::seek_cb` has
     // reopened with a byte Range since, and mp4 was re-measured on-device 2026-08-11: sequential
@@ -1231,8 +1246,8 @@ fn pick_dp_subtitle(subs: &[crate::metadata::Stream]) -> Option<(i64, i32)> {
     Some((subs[i].id, ord))
 }
 
-/// PURE: the local direct-play VIDEO test — the codec and the source's stated frame size must
-/// BOTH clear the device's own decode table (`devcaps`).
+/// PURE: the local direct-play VIDEO test — the codec, the source's stated frame size and its
+/// Dolby Vision layering must ALL clear what this device and this pipeline can actually show.
 ///
 /// The codec half: h264 unconditionally (every webOS SoC decodes it), hevc only when the table
 /// lists the decoder — anything else the pipeline cannot feed at all. The resolution half is the
@@ -1242,13 +1257,29 @@ fn pick_dp_subtitle(subs: &[crate::metadata::Stream]) -> Option<(i64, i32)> {
 /// verbatim to a decoder whose table says 1920x1088 — the wrong-side failure devcaps' own doc
 /// names (issue #22's over-claim class), invisible on the dev TV, whose bound is 4096x2176.
 ///
+/// **The Dolby Vision half is the same shape of bug, found the same way, and it is NOT about the
+/// decoder.** Every profile's base layer is ordinary HEVC and every one of them decodes here — so
+/// a codec-name gate cannot see the difference, which is exactly why this one is needed. What
+/// differs is whether the base layer MEANS anything on its own: Profile 8.1's does (it is HDR10,
+/// and dropping the RPU costs only the dynamic metadata), Profile 5's does not (single-layer
+/// IPT-PQ, no fallback — it decodes cleanly and displays in visibly wrong colours), and Profile
+/// 7's is only half the picture. `Dovi::base_layer_unusable` is the rule and carries the
+/// never-convict-on-silence reasoning; refusing here sends the item down the transcode branch,
+/// where the server re-encodes it to something the panel can show.
+///
 /// Unknown dimensions (0) PASS: PMS omitting a Media attribute is not evidence of 4K, and
 /// failing open is yesterday's behavior for every file the server never measured — the same
-/// misread-degrades-to-assumed rule `devcaps::parse` applies.
-fn video_direct_plays(vcodec: &str, src_w: i64, src_h: i64, caps: &crate::devcaps::Caps) -> bool {
+/// misread-degrades-to-assumed rule `devcaps::parse` applies, and `Dovi` applies it too.
+fn video_direct_plays(
+    vcodec: &str,
+    src_w: i64,
+    src_h: i64,
+    dovi: crate::metadata::Dovi,
+    caps: &crate::devcaps::Caps,
+) -> bool {
     let codec_ok = vcodec == "h264" || (vcodec == "hevc" && caps.hevc);
     let (bw, bh) = caps.hevc_max;
-    codec_ok && src_w <= bw as i64 && src_h <= bh as i64
+    codec_ok && src_w <= bw as i64 && src_h <= bh as i64 && !dovi.base_layer_unusable()
 }
 
 /// The detail page's "how this plays" answer, BEFORE anything is played — the same three gates
@@ -1285,7 +1316,7 @@ pub(crate) fn playback_preview(d: &crate::metadata::Detail) -> Option<Preview> {
         Some(ep) => (ep.part.as_str(), ep.vcodec.as_str()),
         None => (d.part.as_str(), d.vcodec.as_str()),
     };
-    playback_preview_of(part, vcodec, d.width, d.height, &d.audio)
+    playback_preview_of(part, vcodec, d.width, d.height, d.dovi, &d.audio)
 }
 
 /// [`playback_preview`]'s pure core — the three-way answer from the fields it actually needs, so
@@ -1295,12 +1326,13 @@ pub(crate) fn playback_preview_of(
     vcodec: &str,
     width: i64,
     height: i64,
+    dovi: crate::metadata::Dovi,
     audio_streams: &[crate::metadata::Stream],
 ) -> Option<Preview> {
     if part.is_empty() {
         return None; // nothing playable loaded (a show still resolving its episode)
     }
-    let video = video_direct_plays(vcodec, width, height, crate::devcaps::caps());
+    let video = video_direct_plays(vcodec, width, height, dovi, crate::devcaps::caps());
     let audio = audio_streams.iter().any(|a| crate::plex::is_dp_audio(&a.codec));
     // Mirrors `build_stream`'s own ladder: the video gate decides whether an ENCODER runs at all,
     // and only once it has passed do the container and the audio decide between pulling the file
@@ -1986,6 +2018,136 @@ mod tests {
         assert_eq!(pick_dp_subtitle(&subs), None);
     }
 
+    // ---- video_direct_plays: the local codec + resolution + Dolby Vision direct-play gate ----
+
+    use crate::metadata::Dovi;
+
+    /// An ordinary non-DV file: every DOVI field absent, which is what PMS sends for one.
+    fn no_dv() -> Dovi {
+        Dovi::default()
+    }
+    /// The four real shapes, spelled exactly as the dev server reports them (probed live
+    /// 2026-08-21 across all eight Dolby Vision items in the library — the numbers are not
+    /// invented, and `p7`'s `bl_compat: 6` in particular is why an `== 0` test is not enough).
+    fn p5() -> Dovi {
+        Dovi { present: true, profile: 5, bl_compat: 0, el_present: false }
+    }
+    fn p7() -> Dovi {
+        Dovi { present: true, profile: 7, bl_compat: 6, el_present: true }
+    }
+    fn p8() -> Dovi {
+        Dovi { present: true, profile: 8, bl_compat: 1, el_present: false }
+    }
+
+    /// **The bug this gate exists for.** Profile 5 is single-layer IPT-PQ with no HDR10 fallback,
+    /// so feeding its base layer to an ordinary HEVC decoder produces a picture in visibly wrong
+    /// colours — and nothing else in the ladder can see that: the codec is `hevc` (fine), the
+    /// frame size clears the dev TV's bound (fine), the container is mp4, which has direct-played
+    /// since 2026-08-11 (fine). Every gate passes and the user gets a broken picture.
+    #[test]
+    fn a_profile_5_source_does_not_direct_play() {
+        let caps = crate::devcaps::Caps {
+            hevc: true,
+            hevc_max: (4096, 2176), // the dev TV's own bound — this must fail on SIZE grounds nowhere
+            vp9: false,
+            audio: "aac,ac3,eac3".into(),
+        };
+        // the live P5 item's own shape: 3840x1602 hevc, well inside the bound
+        assert!(!video_direct_plays("hevc", 3840, 1602, p5(), &caps), "IPT-PQ has no HDR10 base layer");
+        // and it is the DV fields doing it, not the size or the codec: the same file without them
+        // direct-plays, which is exactly the behaviour that shipped the wrong colours
+        assert!(video_direct_plays("hevc", 3840, 1602, no_dv(), &caps));
+    }
+
+    /// Profile 7 is dual-layer: the picture is split across a base and an enhancement layer, and
+    /// the pipeline feeds ONE elementary stream. Caught by `el_present` alone — the live P7 item
+    /// reports `bl_compat = 6`, so a compatibility-id test would wave it straight through.
+    #[test]
+    fn a_dual_layer_profile_7_source_does_not_direct_play() {
+        let caps =
+            crate::devcaps::Caps { hevc: true, hevc_max: (4096, 2176), vp9: false, audio: "eac3".into() };
+        assert!(!video_direct_plays("hevc", 3840, 2160, p7(), &caps));
+        assert_eq!(p7().refusal(), Some("dual-layer"));
+        assert_ne!(p7().bl_compat, 0, "the fixture must keep the trap it was built to hold");
+    }
+
+    /// **Profile 8.1 must be UNAFFECTED**, and so must every file with no DOVI record at all.
+    /// P8's base layer IS an HDR10 stream, so ignoring the RPU costs the dynamic metadata and
+    /// nothing else — the 21-case on-device suite includes a passing P8 case (`dp_hevc_eac3_dovi_p8`)
+    /// and this change must not move it.
+    #[test]
+    fn profile_8_and_plain_files_are_unaffected() {
+        let caps = crate::devcaps::Caps {
+            hevc: true,
+            hevc_max: (4096, 2176),
+            vp9: false,
+            audio: "aac,ac3,eac3".into(),
+        };
+        assert!(video_direct_plays("hevc", 3840, 2160, p8(), &caps), "HDR10-compatible base layer");
+        assert!(video_direct_plays("hevc", 3840, 2160, no_dv(), &caps));
+        assert!(video_direct_plays("h264", 1920, 1080, no_dv(), &caps));
+        assert_eq!(p8().refusal(), None);
+        assert_eq!(no_dv().refusal(), None);
+    }
+
+    /// **Silence must not convict.** Every field of `Dovi` is 0 both when the server omits it and
+    /// when the file simply is not Dolby Vision, so a bare `bl_compat == 0` test would refuse
+    /// direct play for the entire library. Two guards keep that from happening, and this drives
+    /// both: `present` gates the whole question, and a KNOWN profile gates the compat-id test.
+    /// The direction is deliberate — a false refusal costs 4K and HDR10 on a file that played
+    /// perfectly, and on a Pass-less server (issue #22) it costs playback outright.
+    #[test]
+    fn an_unreported_dolby_vision_record_refuses_nothing() {
+        // the shape every ordinary SDR file has: no DV at all, so bl_compat 0 means nothing
+        assert!(!Dovi::default().base_layer_unusable());
+        // `DOVIPresent` and nothing else — an older or quieter server. Not enough to convict.
+        let bare = Dovi { present: true, profile: 0, bl_compat: 0, el_present: false };
+        assert!(!bare.base_layer_unusable(), "a compat id of 0 read out of a silent field is not a 0");
+        // but an explicit enhancement layer is disqualifying even with no profile reported,
+        // because that field says what it says regardless of what sits beside it
+        let el_only = Dovi { present: true, profile: 0, bl_compat: 0, el_present: true };
+        assert!(el_only.base_layer_unusable());
+        // and `present: false` overrides everything — no DV means no DV, whatever noise follows
+        let contradictory = Dovi { present: false, profile: 5, bl_compat: 0, el_present: true };
+        assert!(!contradictory.base_layer_unusable());
+    }
+
+    /// The three profiles, through the predicate itself rather than the gate, including the
+    /// 8.2 (SDR base) and 8.4 (HLG base) variants: their base layers are ordinary displayable
+    /// pictures, so they direct-play like 8.1 and only the compat id tells them apart.
+    #[test]
+    fn base_layer_usability_by_profile() {
+        assert!(p5().base_layer_unusable());
+        assert!(p7().base_layer_unusable());
+        assert!(!p8().base_layer_unusable());
+        assert_eq!(p5().refusal(), Some("no cross-compatible base layer"));
+        for compat in [1, 2, 4] {
+            let d = Dovi { present: true, profile: 8, bl_compat: compat, el_present: false };
+            assert!(!d.base_layer_unusable(), "P8 with a cross-compatible base layer (id {compat})");
+        }
+    }
+
+    /// The detail page's preview must agree with what Play will do, or the facts row promises a
+    /// direct play the route then refuses. A P5 item reads `Converts` — which is the honest
+    /// answer, since a real re-encode is exactly what the server has to do to make it displayable.
+    #[test]
+    fn the_preview_calls_a_profile_5_item_a_conversion() {
+        let aac = [crate::metadata::Stream { codec: "aac".into(), ..Default::default() }];
+        let part = "/library/parts/1/2/movie.mp4";
+        assert_eq!(
+            playback_preview_of(part, "hevc", 1920, 1080, p5(), &aac),
+            Some(Preview::Converts),
+            "the server must re-encode it — a container remux would copy the same wrong pixels"
+        );
+        // the identical item without the DV record is a plain direct play, so the preview is
+        // reading the new field and not something else that happens to differ
+        assert_eq!(
+            playback_preview_of(part, "hevc", 1920, 1080, no_dv(), &aac),
+            Some(Preview::DirectPlay)
+        );
+        assert_eq!(playback_preview_of(part, "hevc", 1920, 1080, p8(), &aac), Some(Preview::DirectPlay));
+    }
+
     // ---- video_direct_plays: the local codec + resolution direct-play gate -------------------
 
     /// The RESOLUTION half of the gate (issue #22's over-claim class): the smart-DP branch never
@@ -2001,12 +2163,12 @@ mod tests {
             audio: "aac,ac3,eac3".into(),
         };
         // the codec agrees; the frame size must still refuse — on either codec
-        assert!(!video_direct_plays("h264", 3840, 2160, &caps));
-        assert!(!video_direct_plays("hevc", 3840, 2160, &caps));
+        assert!(!video_direct_plays("h264", 3840, 2160, no_dv(), &caps));
+        assert!(!video_direct_plays("hevc", 3840, 2160, no_dv(), &caps));
         // one axis over is over (per-axis bound, not an area heuristic)
-        assert!(!video_direct_plays("h264", 4096, 1080, &caps));
+        assert!(!video_direct_plays("h264", 4096, 1080, no_dv(), &caps));
         // within the bound plays, exactly at it included (1088 IS the table's number)
-        assert!(video_direct_plays("h264", 1920, 1088, &caps));
+        assert!(video_direct_plays("h264", 1920, 1088, no_dv(), &caps));
     }
 
     /// Unknown dimensions fail OPEN (0 = PMS never measured the file — not evidence of 4K, and
@@ -2015,9 +2177,9 @@ mod tests {
     fn unknown_dimensions_fail_open_and_the_codec_half_still_gates() {
         let caps =
             crate::devcaps::Caps { hevc: false, hevc_max: (1920, 1088), vp9: false, audio: "aac".into() };
-        assert!(video_direct_plays("h264", 0, 0, &caps));
-        assert!(!video_direct_plays("hevc", 1280, 720, &caps), "no decoder row, no direct play");
-        assert!(!video_direct_plays("av1", 1280, 720, &caps), "the pipeline cannot feed it at any size");
+        assert!(video_direct_plays("h264", 0, 0, no_dv(), &caps));
+        assert!(!video_direct_plays("hevc", 1280, 720, no_dv(), &caps), "no decoder row, no direct play");
+        assert!(!video_direct_plays("av1", 1280, 720, no_dv(), &caps), "the pipeline cannot feed it at any size");
     }
 
     #[test]

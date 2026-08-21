@@ -63,6 +63,76 @@ impl Cast {
     }
 }
 
+/// What PMS says about a video stream's **Dolby Vision** layering — read together, because the
+/// only question worth asking of them is a joint one: **is the base layer, alone, a correct
+/// picture?**
+///
+/// It has to be a joint question because the buffer-feed pipeline has no other option. We feed one
+/// elementary stream to a decoder that has never heard of an RPU, so whatever the base layer
+/// contains is exactly what reaches the panel. That is fine for **Profile 8.1**, whose base layer
+/// IS an HDR10 stream — ignoring the RPU costs the dynamic metadata and nothing else. It is not
+/// fine for **Profile 5**, which is single-layer IPT-PQ with no HDR10 fallback: decoded as
+/// ordinary HEVC it is not a dimmer picture but a WRONG one, with the washed, pink-green cast of
+/// IPT read as YCbCr. And it cannot work at all for **Profile 7**, whose picture is split across
+/// two layers we cannot interleave.
+///
+/// All zero is "the server said nothing", which is also what a non-DV stream produces — see
+/// [`Dovi::base_layer_unusable`] for why silence must never convict.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub(crate) struct Dovi {
+    /// `DOVIPresent` — the file carries Dolby Vision at all. Everything below is meaningless
+    /// without it, because a non-DV stream sends none of these fields and so reads as all-zero.
+    pub(crate) present: bool,
+    /// `DOVIProfile` — 5 / 7 / 8 …; 0 means the server did not say.
+    pub(crate) profile: i64,
+    /// `DOVIBLCompatID` — 0 none (P5) / 1 HDR10 / 2 SDR / 4 HLG. NB the dev server's P7 item
+    /// sends **6**, so this field alone does not identify a dual-layer file.
+    pub(crate) bl_compat: i64,
+    /// `DOVIELPresent` — an enhancement layer is present (P7).
+    pub(crate) el_present: bool,
+}
+
+impl Dovi {
+    /// PURE: **true when the base layer on its own is not a picture we can put on the panel
+    /// correctly**, i.e. when direct play would show the user wrong colours (or nothing).
+    ///
+    /// Two disqualifiers, and they are found by different fields:
+    /// - **an enhancement layer** (`el_present`, Profile 7) — one elementary stream is all the
+    ///   pipeline feeds, so the other layer simply never arrives. This is the only test that
+    ///   catches P7: measured live 2026-08-21, the dev server's P7 item reports `bl_compat = 6`,
+    ///   which sails through any `== 0` check.
+    /// - **no cross-compatible base layer** (Profile 5 / `bl_compat == 0`) — IPT-PQ, which an
+    ///   HEVC decoder will happily decode and a panel will happily show, incorrectly.
+    ///
+    /// **Silence must not convict, and that is the whole subtlety here.** Every field is 0 both
+    /// when the server omits it and when there is no Dolby Vision at all, so a bare
+    /// `bl_compat == 0` would refuse direct play for *every ordinary SDR file in the library*.
+    /// `present` guards the outer question and a KNOWN `profile` guards the compat-id test, so a
+    /// server that reports `DOVIPresent` and nothing else falls through to the existing gates
+    /// unchanged. That direction is deliberate: this predicate can only ever move an item onto the
+    /// server's re-encode path, and doing that on a guess would cost 4K and HDR10 on files that
+    /// were playing perfectly — the same misread-degrades-to-assumed rule
+    /// [`crate::route::video_direct_plays`] applies to an unknown frame size.
+    pub(crate) fn base_layer_unusable(&self) -> bool {
+        if !self.present {
+            return false;
+        }
+        self.el_present || self.profile == 5 || (self.profile > 0 && self.bl_compat == 0)
+    }
+
+    /// The short reason, for the log line at the decision. `None` when the base layer is fine.
+    ///
+    /// "cross-compatible" rather than "HDR10" deliberately: HDR10 (`bl_compat` 1) is merely the
+    /// common case, and an SDR (2) or HLG (4) base layer is equally displayable. What P5 lacks is
+    /// a base layer conformant to ANY ordinary transfer, which is what id 0 means.
+    pub(crate) fn refusal(&self) -> Option<&'static str> {
+        if !self.base_layer_unusable() {
+            return None;
+        }
+        Some(if self.el_present { "dual-layer" } else { "no cross-compatible base layer" })
+    }
+}
+
 // `Default` is for TESTS: every field is a zero/empty that means "PMS did not say", so a fixture
 // can name the two or three fields its case is about instead of the fifteen it is not.
 #[derive(Clone, Default)]
@@ -553,6 +623,12 @@ pub(crate) struct Detail {
     /// tone-mapping (a Plex Pass server feature; see docs/plex-pass-audit.md). Any weaker
     /// combination shows nothing.
     pub(crate) hdr: bool,
+    /// The video stream's Dolby Vision layering. [`Self::hdr`] answers "should the facts row warn
+    /// about tone mapping"; this answers the harder one the PLAY path needs — whether the base
+    /// layer alone is a correct picture, i.e. whether direct play is honest for this file. Read by
+    /// [`crate::route::playback_preview_of`] so the page's "how this plays" answer agrees with
+    /// what Play will actually do.
+    pub(crate) dovi: Dovi,
     pub(crate) art: String,
     pub(crate) thumb: String,
     /// The item's own `UltraBlurColors` corners (tl, tr, br, bl — the ring order
@@ -842,6 +918,7 @@ fn fetch_detail(sid: crate::plex::ServerId, rk: &str) -> Option<Detail> {
         height: 0,
         bitrate: 0,
         hdr: false,
+        dovi: Dovi::default(),
         art: it.art.clone(),
         thumb: it.thumb.clone(),
         blur: blur.unwrap_or_default(),
@@ -929,14 +1006,17 @@ fn crew_credits(it: &crate::plex::Metadata) -> Vec<Cast> {
     out
 }
 
-/// Convert a part's Stream[] into (audio, subs, video_fps, video_is_hdr) — the ONE
+/// Convert a part's Stream[] into (audio, subs, video_fps, video_is_hdr, dovi) — the ONE
 /// plex::Stream → Stream mapping (the detail parse and the playing-tracks store both use it).
 /// HDR is the video stream's transfer characteristic (PQ or HLG) or a Dolby Vision flag — the
 /// input to the facts row's "HDR → SDR without tone-mapping" warning, which only matters where
-/// the item would transcode on a server that cannot tone-map.
-fn convert_streams(streams: &[crate::plex::Stream]) -> (Vec<Stream>, Vec<Stream>, f64, bool) {
+/// the item would transcode on a server that cannot tone-map. [`Dovi`] is the finer-grained
+/// companion to that flag and answers a different question — not "is this HDR" but "can we show
+/// the base layer at all" (`route::video_direct_plays` gates direct play on it).
+fn convert_streams(streams: &[crate::plex::Stream]) -> (Vec<Stream>, Vec<Stream>, f64, bool, Dovi) {
     let (mut audio, mut subs, mut fps) = (Vec::new(), Vec::new(), 0.0);
     let mut hdr = false;
+    let mut dovi = Dovi::default();
     for s in streams {
         let st = Stream {
             id: s.id,
@@ -962,13 +1042,23 @@ fn convert_streams(streams: &[crate::plex::Stream]) -> (Vec<Stream>, Vec<Stream>
                 // PQ (HDR10) or HLG transfer, or Dolby Vision — the dev PMS sends
                 // colorTrc=smpte2084 on its HDR10 items (probed live 2026-08-11)
                 hdr = matches!(s.color_trc.as_str(), "smpte2084" | "arib-std-b67") || s.dovi_present != 0;
+                // NB a Profile 5 file sends NO colorTrc at all (verified live 2026-08-21: the
+                // dev server's one P5 item omits the field), so `dovi_present` is the only
+                // thing that makes it read as HDR — and the layering fields below are the only
+                // thing that makes it read as unplayable.
+                dovi = Dovi {
+                    present: s.dovi_present != 0,
+                    profile: s.dovi_profile,
+                    bl_compat: s.dovi_bl_compat_id,
+                    el_present: s.dovi_el_present != 0,
+                };
             }
             2 => audio.push(st),
             3 => subs.push(st),
             _ => {}
         }
     }
-    (audio, subs, fps, hdr)
+    (audio, subs, fps, hdr, dovi)
 }
 
 /// parse an item's Media[0].Part[0].Stream[] into d.audio / d.subs (the About footer), plus that
@@ -983,10 +1073,11 @@ fn parse_streams(it: &crate::plex::Metadata, d: &mut Detail) {
         d.bitrate = m.bitrate;
     }
     if let Some(p) = it.first_part() {
-        let (audio, subs, fps, hdr) = convert_streams(&p.stream);
+        let (audio, subs, fps, hdr, dovi) = convert_streams(&p.stream);
         d.audio = audio;
         d.subs = subs;
         d.hdr = hdr;
+        d.dovi = dovi;
         if fps > 0.0 {
             d.video_fps = fps;
         }
@@ -1023,6 +1114,11 @@ pub(crate) struct PlayingItem {
     /// class — docs/plex-pass-audit.md, closing section).
     pub(crate) width: i64,
     pub(crate) height: i64,
+    /// The played leaf's Dolby Vision layering — the direct-play gate's other refusal, beside the
+    /// frame size above and for the same reason: the smart-DP branch never asks PMS, so a file
+    /// whose base layer we cannot display correctly (Profile 5, or a dual-layer Profile 7) would
+    /// otherwise be fed to the decoder verbatim and shown in the wrong colours. See [`Dovi`].
+    pub(crate) dovi: Dovi,
     pub(crate) markers: Vec<Marker>, // intro / credits segments — the in-player Skip prompt
     pub(crate) chapters: Vec<Chapter>, // chapter boundaries — the in-player Chapters tab/strip
 }
@@ -1081,6 +1177,7 @@ pub(crate) fn cached_playing(sid: crate::plex::ServerId, rk: &str) -> Option<Pla
         video_fps: d.video_fps,
         width: d.width,
         height: d.height,
+        dovi: d.dovi,
         markers: d.markers.clone(),
         chapters: d.chapters.clone(),
     })
@@ -1100,7 +1197,7 @@ pub(crate) fn fetch_playing_item(sid: crate::plex::ServerId, rk: &str) -> Option
     // here costs no request, and dropping it is what hid the Chapters tab on the episode path.
     let markers = it.as_ref().map(|it| convert_markers(&it.marker)).unwrap_or_default();
     let chapters = it.as_ref().map(|it| convert_chapters(&it.chapter)).unwrap_or_default();
-    let (audio, subs, video_fps, _hdr) = it
+    let (audio, subs, video_fps, _hdr, dovi) = it
         .as_ref()
         .and_then(|it| it.first_part().map(|p| convert_streams(&p.stream)))
         .unwrap_or_default();
@@ -1110,7 +1207,7 @@ pub(crate) fn fetch_playing_item(sid: crate::plex::ServerId, rk: &str) -> Option
         .as_ref()
         .and_then(|it| it.primary_media().map(|m| (m.width, m.height)))
         .unwrap_or((0, 0));
-    Some(PlayingItem { sid, rk: rk.to_string(), audio, subs, video_fps, width, height, markers, chapters })
+    Some(PlayingItem { sid, rk: rk.to_string(), audio, subs, video_fps, width, height, dovi, markers, chapters })
 }
 
 /// Retire BOTH descriptions of the item that was playing, together.
