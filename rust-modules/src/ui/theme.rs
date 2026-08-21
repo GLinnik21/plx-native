@@ -899,3 +899,41 @@ pub const CARD_SHADOW_REST_BLUR: f32 = 11.0;
 pub const CARD_SHADOW_REST_DY: f32 = 4.0;
 /// Resting shadow ink alpha (unfocused); lerps up to [`CARD_SHADOW`]'s alpha on focus.
 pub const CARD_SHADOW_REST_A: f32 = 0.34;
+
+// ── The lift under a TRANSLUCENT panel — `widgets::text_block_highlight`'s 7% prose wash, the
+// detail page's About columns and its episode filmstrip's metadata row. ──
+//
+// **Why this is not the card triple above.** Two independent reasons, and both of them are about
+// being able to SEE THROUGH the thing casting the shadow.
+//
+// 1. A card hides whatever ink lands beneath it, so the card numbers were only ever tuned as a
+//    CONTACT — a tight 11px falloff at 0.34, read as the few px of it that escape past the tile's
+//    edge. Under a 7% wash the whole pool is on show, and at that weight and that tightness it
+//    reads as a drawn edge rather than as distance from the page. So this triple goes the other
+//    way: far wider, a third of the gradient, no boundary anywhere in it. (Note it is the GRADIENT
+//    that drops, not the ink — the alpha ends up slightly higher than the card's, see `_A`.)
+// 2. A 250x375 poster and a 560x400 prose panel are not the same object. The same falloff that
+//    disappears round a card's short arcs runs for hundreds of px along a straight edge here,
+//    which is precisely where the eye finds a line.
+//
+// (The FRAME the owner rejected on 2026-08-21 was a third thing again, and it was geometry, not
+// weight: `Painter::shadow`'s box cut leaves a full-strength band under the occluder's own rim.
+// `Painter::shadow_outside` cuts the rounded shape instead. These constants are what makes what is
+// left read as a lift; the cut is what stopped it reading as a box.)
+/// Penumbra (px) of the translucent panel's lift — **four times the card's**, and that ratio is the
+/// whole point. What makes a soft edge a SEEN one is the gradient, not the ink: the field peaks at
+/// half the alpha (the contact line, at the panel's own edge) and falls to nothing over this
+/// distance, so the card's 0.34-over-11px runs at ~0.015 alpha/px while this runs at ~0.005/px.
+/// Tuned by eye on the simulator against both call sites, at 44 and 60 px: everything from 44 up is
+/// edgeless, and past ~50 the pool stops hugging the panel and starts hazing the column NEXT to it.
+pub const TEXT_BLOCK_SHADOW_BLUR: f32 = 44.0;
+/// Downward offset (px) of the translucent panel's lift. Bigger than the card's resting 4, because
+/// the pool is the only cue that the panel is off the page: with no offset the ink rings the panel
+/// evenly, which is the shape of an outline rather than of a raised object.
+pub const TEXT_BLOCK_SHADOW_DY: f32 = 12.0;
+/// Ink alpha of the translucent panel's lift. A shade ABOVE the card's resting 0.34 rather than
+/// below it, which is the counter-intuitive half: spread over four times the distance the same ink
+/// is a third of the gradient, and 0.30 measured ~7 of 255 at the contact line on this page's
+/// ground — edgeless, and also back to having no altitude. The BLUR is what removes the edge; the
+/// alpha is what keeps the lift visible from a sofa.
+pub const TEXT_BLOCK_SHADOW_A: f32 = 0.45;
