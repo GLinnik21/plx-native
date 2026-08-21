@@ -27,9 +27,11 @@ use crate::ui::hero_logo::{self, HeroLogo, LogoRung};
 use crate::ui::label::HAlign;
 use crate::ui::text_view::TextView;
 use crate::ui::theme;
+// `dotted_run` lives in `widgets` now — the facts row and the bio panel's identity line are one
+// idiom two screens apart, and this file is where it was written first, not where it belongs.
 use crate::ui::widgets::{
-    resolve_tex_wh_on, AmbientWash, Art, Button, CircleButton, PosterMark, TabPill, TabStrip,
-    HERO_BASE_SCRIM_Y0,
+    dotted_run, resolve_tex_wh_on, AmbientWash, Art, Button, CircleButton, PosterMark, TabPill,
+    TabStrip, HERO_BASE_SCRIM_Y0,
 };
 use crate::ui::{hero_alpha, on_axis, Column, Env, Painter, Rect, ScrollColumn, Spring, View}; // View: Button/CircleButton::draw
 use std::ffi::CString;
@@ -2150,29 +2152,6 @@ fn draw_hero(p: Painter, env: &Env, m: Option<&PmsMovie>) {
     if let Some(d) = d {
         draw_people(p, d, ch.btn_y);
     }
-}
-
-/// Draw `parts` as one line joined by the row's **dimmed** `\u{b7}`, from `x`; returns the width.
-///
-/// The separator is its OWN run at [`theme::TEXT_SEPARATOR`] because a dot sharing the ink of the
-/// words either side JOINS them instead of punctuating them — both mocks set every separator to
-/// .45, and a single-colour string cannot express that. Empty parts are skipped, so a missing
-/// clause takes its dot with it instead of leaving a dangling one.
-fn dotted_run(p: Painter, parts: &[&str], x: f32, y: f32, sz: c_int, col: [f32; 4], pad: f32) -> f32 {
-    let mut bx = x;
-    for part in parts.iter().filter(|s| !s.is_empty()) {
-        if bx > x {
-            bx += pad;
-            if let Ok(dc) = CString::new("\u{b7}") {
-                bx += p.text(dc.as_ptr(), bx, y, sz, theme::TEXT_SEPARATOR, 0, 0);
-            }
-            bx += pad;
-        }
-        if let Ok(pc) = CString::new(*part) {
-            bx += p.text(pc.as_ptr(), bx, y, sz, col, 0, 0);
-        }
-    }
-    bx - x
 }
 
 /// The trailing SOURCE credit's words — `Shared by friend`, or **empty** for an item that lives on
