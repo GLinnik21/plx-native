@@ -213,9 +213,11 @@ impl Dovi {
     /// ([`crate::player::engine`]) asks the same value whether to emit a `DolbyHdrInfo` node. One
     /// call, one answer, two consumers.
     ///
-    /// `signal` is whether we are willing to DECLARE Dolby Vision to the pipeline at all
-    /// ([`dv_signal_armed`] — the `/tmp/plxnative-dv` trigger). It is a parameter rather than a
-    /// read inside this function so the whole rule stays pure and both settings are unit-testable.
+    /// `signal` is whether we are willing to declare Dolby Vision for a stream **whose base layer
+    /// we could not show without it** ([`dv_signal_armed`] — the `/tmp/plxnative-dv` trigger).
+    /// That is narrower than it once was: it used to gate every declaration, and now gates only
+    /// the one profile whose declaration is not yet free of cost. It stays a parameter rather than
+    /// a read inside this function so the whole rule stays pure and both settings are unit-testable.
     ///
     /// The four arms, and why each is where it is:
     ///
@@ -228,7 +230,9 @@ impl Dovi {
     ///   It is deliberately checked BEFORE the declaration arm — which is what keeps the emitted
     ///   node's `trackType` at `"single"` and, with `encryptionType` fixed at `"clear"`, makes the
     ///   pipeline's `dv-dual-svp` secure-video-path flag unreachable. We cannot satisfy that flag.
-    /// - **no node will be sent** (`!signal`, or a profile the server never named) → fall back to
+    /// - **no node will be sent** (a profile the server never named, or Profile 5 with the
+    ///   trigger unarmed — see the comment on `declare`, which is where the trigger's reach
+    ///   narrowed) → fall back to
     ///   exactly the pre-declaration rule: refuse iff [`base_layer_unusable`](Self::base_layer_unusable).
     ///   That is what makes "keep the refusal for any case where we would not send the node" a
     ///   property of the code rather than of a reviewer's memory. The `profile <= 0` half also
@@ -249,7 +253,26 @@ impl Dovi {
         if self.el_present {
             return DvPresentation::Refuse("dual-layer");
         }
-        if !signal || self.profile <= 0 {
+        // **Whether a node will be sent, and the trigger is no longer the whole answer.** A
+        // stream whose base layer is already a correct picture on its own declares
+        // UNCONDITIONALLY; only one whose base layer is not — Profile 5 — waits behind
+        // [`dv_signal_armed`]. The asymmetry is a MEASUREMENT, not a preference, and it is worth
+        // stating because the two look identical from here: both declare correctly, both put the
+        // panel in Dolby Vision mode, and both are the same three JSON keys. What separates them
+        // is that a declared **P5 hitches** on this set — it loses exactly two frames every ~40 s,
+        // because the display firmware's per-frame lookup misses (`Requested <pts> PTS can not be
+        // found in LUT Buffer`, 3.41/s in a clean run) and the write that would fill that buffer
+        // is never issued by LG's own `dualsequencer`. Nothing in this payload changes that. A
+        // declared **P8 measured 0 and 1 misses over 78 s** on two different films, which is what
+        // a cross-compatible base layer buys: when the dynamic metadata is late the picture falls
+        // back on an HDR10/HLG/SDR image that was already right. So P8.x — 33 of the dev server's
+        // 34 Dolby Vision streams — gains its dynamic metadata for free, and P5 stays behind the
+        // trigger until the hitch is understood or accepted.
+        //
+        // Written through [`base_layer_unusable`](Self::base_layer_unusable) rather than a bare
+        // `profile != 5` so the two can no more drift apart here than they can in the gate below.
+        let declare = signal || !self.base_layer_unusable();
+        if !declare || self.profile <= 0 {
             return if self.base_layer_unusable() {
                 DvPresentation::Refuse("no cross-compatible base layer")
             } else {

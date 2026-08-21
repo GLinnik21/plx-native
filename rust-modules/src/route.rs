@@ -2255,9 +2255,19 @@ mod tests {
         // A file with no Dolby Vision at all declares nothing however the trigger is set — the
         // node is a statement about the stream, not a mode the app is in.
         assert_eq!(no_dv().presentation(DECLARED).declared(), None);
-        // P8 armed DOES declare, and that is deliberate: its base layer is HDR10 either way, so
-        // the node costs nothing and adds the dynamic metadata the RPU carries.
-        assert_eq!(p8().presentation(DECLARED).declared().map(|n| n.profile_id), Some(8));
+        // P8 declares in BOTH settings, and that is deliberate: its base layer is HDR10 either
+        // way, so the node costs nothing and adds the dynamic metadata the RPU carries. The
+        // trigger reaches only the profile whose declaration is not yet free — P5, measured to
+        // lose two frames every ~40 s on this set. `SILENT` here is the half that would silently
+        // regress if the gate were ever rewritten as a bare `signal &&`.
+        for signal in [SILENT, DECLARED] {
+            assert_eq!(
+                p8().presentation(signal).declared().map(|n| n.profile_id),
+                Some(8),
+                "a cross-compatible base layer declares without the trigger: signal={signal}"
+            );
+        }
+        assert_eq!(p5().presentation(SILENT).declared(), None, "P5 stays behind the trigger");
     }
 
     /// **Silence must not convict.** Every field of `Dovi` is 0 both when the server omits it and
@@ -2319,9 +2329,14 @@ mod tests {
                 if dv.refusal().is_some() {
                     assert!(d.base_layer_unusable(), "a refusal must also withdraw the copy: {d:?}");
                 }
-                // the one that matters: a direct-played Dolby Vision stream is a DECLARED one
+                // **The one that matters, and it is now unconditional.** A direct-played Dolby
+                // Vision stream is a DECLARED one — in either trigger setting, for every shape.
+                // It reads as a strengthening and it is one: while the trigger gated every
+                // declaration this could only be asserted as `== signal`, which quietly permitted
+                // the wrong-colours pair for any profile the trigger happened to be off for. Now
+                // the only undeclared DV is refused DV, so the implication holds outright.
                 if plays && d.present && d.profile > 0 {
-                    assert_eq!(dv.declared().is_some(), signal, "{d:?} signal={signal}");
+                    assert!(dv.declared().is_some(), "{d:?} signal={signal}");
                 }
                 if let Some(n) = dv.declared() {
                     assert_eq!(n.profile_id, d.profile);
