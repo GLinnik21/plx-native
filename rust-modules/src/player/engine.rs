@@ -19,16 +19,44 @@ use std::sync::atomic::{AtomicI64, Ordering};
 
 // BUFFERSTREAM Load payloads (ss4s shape). Video-only for the local sample path;
 // video+AC3 for streaming. Copied VERBATIM from playback.c.
-const PAYLOAD_V: &str = r#"{"args":[{"mediaTransportType":"BUFFERSTREAM","option":{"appId":"com.beb.plxnative","externalStreamingInfo":{"contents":{"codec":{"video":"H264"},"esInfo":{"pauseAtDecodeTime":false,"ptsToDecode":0,"seperatedPTS":true},"format":"RAW","provider":"plxnative"},"streamQualityInfo":true,"audioSync":true,"restartStreaming":false,"bufferingCtrInfo":{"bufferMaxLevel":0,"bufferMinLevel":0,"preBufferByte":0,"qBufferLevelAudio":0,"qBufferLevelVideo":0,"srcBufferLevelAudio":{"minimum":1,"maximum":32768},"srcBufferLevelVideo":{"minimum":1,"maximum":8388608}}},"needAudio":false,"queryPosition":false,"lowDelayMode":true,"transmission":{"contentsType":"LIVE"},"adaptiveStreaming":{"audioOnly":false,"maxWidth":1920,"maxHeight":1080,"maxFrameRate":30}}}]}"#;
+//
+// `@APPID@` is substituted by `with_app_id` at the single choke point every variant passes
+// through. It is a PLACEHOLDER rather than the literal it used to be because two installs can now
+// sit on one television (`paths::app_id`), and a developer build announcing the SHIPPED app's id
+// would be a false statement to the media pipeline about which application it is.
+//
+// WHAT THIS FIELD IS ACTUALLY FOR IS NOT KNOWN HERE, and the distinction matters because the two
+// app ids this app sends travel different paths into different libraries:
+//
+//   * the ACB id (`acb_create` -> `AcbAPI_initialize`) has real evidence behind it. LG's own
+//     `libcbe` keys media metadata on `{"appId":…,"pipelineId":…}` — recovered from this
+//     television's binaries, `docs/dolby-vision.md` §3 — so the id reaches a subsystem that reads
+//     it. What it does with it there is still inferred, not traced.
+//   * `option.appId` in the Load payload, this key, has NOT been traced into `libpf` at all.
+//     `tools/fwcompat.py` is a symbol inventory and a JSON key path lives in `.rodata`, so no tool
+//     in this repository can answer it; `.claude/skills/decompile-tv-lib/` is the only route, and
+//     `docs/two-installs.md` §7 states the question rather than an answer.
+//
+// So: sending the true id is the conservative move on a field whose consumer is unknown, not a fix
+// for a mechanism anyone here has read. The failure it guards against — if it guards against one —
+// is a black video plane with working audio and no error line anywhere, which is why it is worth
+// making correct by construction rather than finding out on a television.
+//
+// A placeholder rather than `format!`-ing the constant: `with_window_id` splices `option.windowId`
+// onto this exact key, and deriving both from one source is what makes it impossible for the
+// anchor and the payload to drift apart. For the shipped app the composed bytes and the key order
+// are identical to what every release so far sent — asserted in the tests below, because the
+// webOS 5+ splice path is one this project's 4.5 dev set cannot exercise.
+const PAYLOAD_V: &str = r#"{"args":[{"mediaTransportType":"BUFFERSTREAM","option":{"appId":"@APPID@","externalStreamingInfo":{"contents":{"codec":{"video":"H264"},"esInfo":{"pauseAtDecodeTime":false,"ptsToDecode":0,"seperatedPTS":true},"format":"RAW","provider":"plxnative"},"streamQualityInfo":true,"audioSync":true,"restartStreaming":false,"bufferingCtrInfo":{"bufferMaxLevel":0,"bufferMinLevel":0,"preBufferByte":0,"qBufferLevelAudio":0,"qBufferLevelVideo":0,"srcBufferLevelAudio":{"minimum":1,"maximum":32768},"srcBufferLevelVideo":{"minimum":1,"maximum":8388608}}},"needAudio":false,"queryPosition":false,"lowDelayMode":true,"transmission":{"contentsType":"LIVE"},"adaptiveStreaming":{"audioOnly":false,"maxWidth":1920,"maxHeight":1080,"maxFrameRate":30}}}]}"#;
 // NB: pauseAtDecodeTime stays FALSE here. Kodi uses true, but only alongside its decode-time
 // trigger machinery (setTimeToDecode); with true and no trigger the decoder never starts
 // (verified on-device: Load+Play OK but zero frames decoded). The feed-ahead throttle
 // (MAX_FEED_AHEAD_NS in feed_stream) is the anti-stall mechanism; the other Kodi payload
 // flags are being re-introduced one at a time.
-const PAYLOAD_AV: &str = r#"{"args":[{"mediaTransportType":"BUFFERSTREAM","option":{"appId":"com.beb.plxnative","externalStreamingInfo":{"contents":{"codec":{"video":"H264","audio":"AC3"},"esInfo":{"pauseAtDecodeTime":false,"ptsToDecode":0,"seperatedPTS":true},"format":"RAW","provider":"plxnative"},"streamQualityInfo":true,"audioSync":true,"restartStreaming":false,"bufferingCtrInfo":{"bufferMaxLevel":0,"bufferMinLevel":0,"preBufferByte":0,"qBufferLevelAudio":0,"qBufferLevelVideo":0,"srcBufferLevelAudio":{"minimum":1,"maximum":1048576},"srcBufferLevelVideo":{"minimum":1,"maximum":8388608}}},"needAudio":true,"queryPosition":false,"lowDelayMode":false,"transmission":{"contentsType":"LIVE"},"adaptiveStreaming":{"audioOnly":false,"maxWidth":1920,"maxHeight":1080,"maxFrameRate":30}}}]}"#;
+const PAYLOAD_AV: &str = r#"{"args":[{"mediaTransportType":"BUFFERSTREAM","option":{"appId":"@APPID@","externalStreamingInfo":{"contents":{"codec":{"video":"H264","audio":"AC3"},"esInfo":{"pauseAtDecodeTime":false,"ptsToDecode":0,"seperatedPTS":true},"format":"RAW","provider":"plxnative"},"streamQualityInfo":true,"audioSync":true,"restartStreaming":false,"bufferingCtrInfo":{"bufferMaxLevel":0,"bufferMinLevel":0,"preBufferByte":0,"qBufferLevelAudio":0,"qBufferLevelVideo":0,"srcBufferLevelAudio":{"minimum":1,"maximum":1048576},"srcBufferLevelVideo":{"minimum":1,"maximum":8388608}}},"needAudio":true,"queryPosition":false,"lowDelayMode":false,"transmission":{"contentsType":"LIVE"},"adaptiveStreaming":{"audioOnly":false,"maxWidth":1920,"maxHeight":1080,"maxFrameRate":30}}}]}"#;
 // Phase 0 HEVC probe payload — identical to PAYLOAD_V but codec video "H265", to isolate
 // the single variable: does StarfishMediaAPIs BUFFERSTREAM decode HEVC on this panel?
-const PAYLOAD_H265: &str = r#"{"args":[{"mediaTransportType":"BUFFERSTREAM","option":{"appId":"com.beb.plxnative","externalStreamingInfo":{"contents":{"codec":{"video":"H265"},"esInfo":{"pauseAtDecodeTime":false,"ptsToDecode":0,"seperatedPTS":true},"format":"RAW","provider":"plxnative"},"streamQualityInfo":true,"audioSync":true,"restartStreaming":false,"bufferingCtrInfo":{"bufferMaxLevel":0,"bufferMinLevel":0,"preBufferByte":0,"qBufferLevelAudio":0,"qBufferLevelVideo":0,"srcBufferLevelAudio":{"minimum":1,"maximum":32768},"srcBufferLevelVideo":{"minimum":1,"maximum":8388608}}},"needAudio":false,"queryPosition":false,"lowDelayMode":true,"transmission":{"contentsType":"LIVE"},"adaptiveStreaming":{"audioOnly":false,"maxWidth":3840,"maxHeight":2160,"maxFrameRate":60}}}]}"#;
+const PAYLOAD_H265: &str = r#"{"args":[{"mediaTransportType":"BUFFERSTREAM","option":{"appId":"@APPID@","externalStreamingInfo":{"contents":{"codec":{"video":"H265"},"esInfo":{"pauseAtDecodeTime":false,"ptsToDecode":0,"seperatedPTS":true},"format":"RAW","provider":"plxnative"},"streamQualityInfo":true,"audioSync":true,"restartStreaming":false,"bufferingCtrInfo":{"bufferMaxLevel":0,"bufferMinLevel":0,"preBufferByte":0,"qBufferLevelAudio":0,"qBufferLevelVideo":0,"srcBufferLevelAudio":{"minimum":1,"maximum":32768},"srcBufferLevelVideo":{"minimum":1,"maximum":8388608}}},"needAudio":false,"queryPosition":false,"lowDelayMode":true,"transmission":{"contentsType":"LIVE"},"adaptiveStreaming":{"audioOnly":false,"maxWidth":3840,"maxHeight":2160,"maxFrameRate":60}}}]}"#;
 
 // ACCEPTED AUs — what the pipeline took. This is what `ui::stats` reports, because a count of
 // attempts reads as healthy throughput through a stall: a full sink retains the AU and it is
@@ -198,7 +226,20 @@ fn acb_init_acb(mt: &MainThread) {
     }
     let pt = PTYPE.load(Ordering::Relaxed);
     log(&format!("ptype={pt}"));
-    let app_c = std::env::var("APPID").ok().and_then(|s| std::ffi::CString::new(s).ok());
+    // Which app ACB is being initialized for. The third argument of `AcbAPI_initialize` is an app
+    // id — that much is certain, and both reference implementations pass one (Kodi's webOS port
+    // passes `getenv("APPID")`; see docs/distribution.md). What ACB does with it has not been
+    // decompiled here, so the rule is simply that it must be the install SAM actually launched —
+    // and with a developer build able to sit beside the shipped one, "the id compiled in" and
+    // "the id we were launched as" are no longer the same question.
+    //
+    // It used to be `env::var("APPID")` with a NULL fallback, which `starfish.c` then turned into
+    // the shipped app's literal id. That is a double fallback whose failure is invisible: on any
+    // launch where SAM did not export APPID, a developer install would announce itself as the
+    // shipped app. `paths::app_id` reads the install directory instead, which is the id webOS
+    // registered by definition. The environment is still logged, one line at boot, as the
+    // independent witness for whether SAM sets it at all on this firmware.
+    let app_c = std::ffi::CString::new(crate::paths::app_id()).ok();
     let app_ptr = app_c.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
     let acb = unsafe { ffi::acb_create(mt, app_ptr, pt) };
     ACB_OK.store(acb != 0, Ordering::Relaxed);
@@ -356,6 +397,24 @@ fn with_dolby_hdr_info(p: &str, video: &str, dv: crate::metadata::DvPresentation
     p.replace(anchor, &format!("{anchor}{node}"))
 }
 
+/// `"appId":"<this install's id>"` — the payload key, and the anchor `with_window_id` splices onto.
+///
+/// One expression, called from both places, so the two cannot disagree.
+fn app_id_key() -> String {
+    format!(r#""appId":"{}""#, crate::paths::app_id())
+}
+
+/// Substitute the `@APPID@` placeholder with the id of the install this process actually is.
+///
+/// Exactly once per payload, asserted at build time: a `replace` that matched twice would leave a
+/// second `appId` key for `with_window_id` to splice a duplicate `windowId` onto, and one that
+/// matched nothing would hand LG's JSON parser the placeholder as a literal app id. Both are
+/// silent — the pipeline reports no error for either — which is why this is graded in the host
+/// suite rather than left to be noticed on a television.
+fn with_app_id(p: &str) -> String {
+    p.replace("@APPID@", crate::paths::app_id())
+}
+
 /// Create the exported window and splice its id into the Load payload — the webOS 5+ binding, in
 /// one place.
 ///
@@ -372,7 +431,8 @@ fn with_dolby_hdr_info(p: &str, video: &str, dv: crate::metadata::DvPresentation
 /// 5 and swaps only the resource file; Kodi adds this key and nothing else).
 ///
 /// Inserted after `"appId":"…"` because that is a stable sibling inside `option` in every payload
-/// variant here. A no-op on every webOS 4.x set, where `vp_create_window` returns NULL.
+/// variant here — via [`app_id_key`], so the anchor cannot drift from what `with_app_id` composed.
+/// A no-op on every webOS 4.x set, where `vp_create_window` returns NULL.
 fn with_window_id(mt: &MainThread, p: &str) -> String {
     if ffi::vp_mode() != ffi::VP_EXPORTED {
         return p.to_string();
@@ -383,13 +443,13 @@ fn with_window_id(mt: &MainThread, p: &str) -> String {
         return p.to_string();
     }
     let id = unsafe { std::ffi::CStr::from_ptr(id) }.to_string_lossy();
-    let anchor = r#""appId":"com.beb.plxnative""#;
-    if !p.contains(anchor) {
+    let anchor = app_id_key();
+    if !p.contains(&anchor) {
         log("windowId: payload has no appId anchor — NOT spliced; video will not bind");
         return p.to_string();
     }
     log(&format!("vplane: exported windowId={id} spliced into the Load payload"));
-    p.replace(anchor, &format!(r#"{anchor},"windowId":"{id}""#))
+    p.replace(&anchor, &format!(r#"{anchor},"windowId":"{id}""#))
 }
 
 /// Plex decimal fps → (value, scale) rational for the Load esInfo. Broadcast rates map to their
@@ -442,14 +502,14 @@ pub(crate) fn start_bufferfeed(mt: &MainThread) -> bool {
     let mut sample: Option<Box<SampleBuf>> = None;
     let mut is_h265 = false;
     if url.is_empty() {
-        if let Some(data) = crate::dev::read_bytes_at("/tmp/sample.h264") {
+        if let Some(data) = crate::dev::read_sample("sample.h264") {
             let au = bf_split(&data, 0x09);
             log(&format!("bf_split h264: {} AUs in {} bytes", au.len(), data.len()));
             if au.len() < 2 {
                 return false;
             }
             sample = Some(Box::new(SampleBuf { data, au, next: 0, loops: 0 }));
-        } else if let Some(data) = crate::dev::read_bytes_at("/tmp/sample.h265") {
+        } else if let Some(data) = crate::dev::read_sample("sample.h265") {
             // Phase 0 probe: feed a local HEVC Annex-B sample to test native HEVC decode.
             let au = bf_split(&data, 0x46);
             log(&format!("bf_split h265: {} AUs in {} bytes", au.len(), data.len()));
@@ -509,7 +569,10 @@ pub(crate) fn start_bufferfeed(mt: &MainThread) -> bool {
     // rather than inside build_av_payload — three of the four variants are static strings that
     // never see the builder, and a binding that works only for streamed A/V would be the kind of
     // bug that reproduces on some content and not others.
-    let payload_c = std::ffi::CString::new(with_window_id(mt, payload_str)).unwrap();
+    // ...and the appId substitution happens here for the same reason, and BEFORE the splice —
+    // `with_window_id`'s anchor is the composed `"appId":"<id>"`, so the placeholder has to be
+    // gone by then.
+    let payload_c = std::ffi::CString::new(with_window_id(mt, &with_app_id(payload_str))).unwrap();
 
     // fd = -1 (CLOSED) so a teardown before/without http_open doesn't close(0)
     let mut hs = crate::stream::http_stream_boxed();
@@ -1251,7 +1314,8 @@ pub(crate) fn feed_audio_lane(mt: &MainThread, eng: &mut Engine) {
     }
 }
 
-/// feed the looped /tmp/sample.h264 validation sample (continuous PTS @ 23.976).
+/// feed the looped `sample.h264` validation sample from the install's runtime root
+/// (continuous PTS @ 23.976).
 pub(crate) fn feed_sample(mt: &MainThread, eng: &mut Engine) {
     let s = match &mut eng.source {
         Source::Sample(s) => s,
@@ -1288,21 +1352,46 @@ mod payload_tests {
         Dovi { present: true, profile: 5, bl_compat: 0, el_present: false, ..Dovi::NONE }
     }
 
-    /// **Every Load payload must carry the `appId` anchor**, because that string is what
-    /// `with_window_id` splices the webOS 5+ `option.windowId` onto — without it the decoded video
-    /// has nowhere to bind on every set from 5.0 up.
+    /// **Every Load payload must carry the `appId` placeholder, exactly once**, because that key
+    /// is what `with_window_id` splices the webOS 5+ `option.windowId` onto — without it the
+    /// decoded video has nowhere to bind on every set from 5.0 up — and because a second one would
+    /// splice a second `windowId`.
     ///
     /// This replaces a panel row that was proposed and rejected: the "not spliced — no anchor" arm
-    /// is UNREACHABLE at runtime (the anchor is a literal in all three constants and
-    /// `build_av_payload` never touches it), so a row reporting it would print the same constant on
-    /// a working and a broken television. The real risk is a payload edited a year from now that
-    /// drops the anchor — a build-time risk, caught at build time.
+    /// is UNREACHABLE at runtime (the placeholder is in all three constants and `build_av_payload`
+    /// never touches it), so a row reporting it would print the same constant on a working and a
+    /// broken television. The real risk is a payload edited a year from now that drops it — a
+    /// build-time risk, caught at build time. The placeholder is a strictly better witness than the
+    /// literal id it replaced: an id can be spelled correctly by accident, `@APPID@` cannot.
     #[test]
-    fn every_load_payload_carries_the_window_id_anchor() {
-        const ANCHOR: &str = r#""appId":"com.beb.plxnative""#;
+    fn every_load_payload_carries_the_app_id_placeholder_exactly_once() {
         for (name, p) in [("PAYLOAD_V", PAYLOAD_V), ("PAYLOAD_AV", PAYLOAD_AV), ("PAYLOAD_H265", PAYLOAD_H265)] {
-            assert!(p.contains(ANCHOR), "{name} lost the anchor — webOS 5+ video cannot bind");
+            assert_eq!(p.matches(r#""appId":"@APPID@""#).count(), 1,
+                       "{name} must carry the appId placeholder exactly once — webOS 5+ video binds on it");
         }
+    }
+
+    /// **The shipped app's payload must be byte-identical to what every release so far sent**, and
+    /// the splice anchor must be the composed key rather than a second spelling of it.
+    ///
+    /// This is the whole safety argument for making the id dynamic. The webOS 5+ `windowId` path
+    /// cannot be exercised on this project's 4.5 dev set (`vp_mode()` returns `VP_ACB` there and
+    /// `with_window_id` returns early), so its failure — a black video plane with working audio,
+    /// and no error line — would not be seen until somebody else's television. Pinning the
+    /// composed bytes here is the only gate available for it.
+    #[test]
+    fn the_shipped_app_composes_the_payload_it_always_did() {
+        let want = r#""appId":"com.beb.plxnative""#;
+        for (name, p) in [("PAYLOAD_V", PAYLOAD_V), ("PAYLOAD_AV", PAYLOAD_AV), ("PAYLOAD_H265", PAYLOAD_H265)] {
+            let composed = p.replace("@APPID@", crate::paths::STABLE_APP_ID);
+            assert!(composed.contains(want), "{name} no longer composes the shipped key");
+            // key ORDER too: `appId` stays the first key of `option`, where it has always been.
+            assert!(composed.contains(&format!(r#""option":{{{want},"#)), "{name} moved the appId key");
+        }
+        // And the anchor the splice looks for is the composed key, not a restatement of it.
+        assert_eq!(super::app_id_key(), format!(r#""appId":"{}""#, crate::paths::app_id()));
+        assert!(super::with_app_id(PAYLOAD_V).contains(&super::app_id_key()));
+        assert!(!super::with_app_id(PAYLOAD_V).contains("@APPID@"));
     }
 
     /// The Dolby Vision node's anchor, with the same reasoning as the one above: `provider` is the

@@ -65,7 +65,20 @@ pub(crate) const MODEL: &str = "LG webOS TV";
 /// The FRIENDLY name, which is what a user actually reads in plex.tv's device list and in the
 /// server's Now Playing. Names the app rather than a room, so it is true on every install and
 /// distinguishable from an official client sharing the same TV.
-pub(crate) const DEVICE_NAME: &str = "PlxNative (LG TV)";
+///
+/// **A flavoured install says so.** Two builds can sit on one television now
+/// ([`crate::paths::app_id`]) and they hold separate session files, so each mints its own
+/// `X-Plex-Client-Identifier` and each appears as its own authorized device. Without the suffix
+/// the account grows two entries spelled identically, and revoking "the one on the TV" is a
+/// coin flip. The shipped app's name is unchanged, which matters because it is already in every
+/// existing user's device list — a rename there would read as a new, unknown device.
+pub(crate) fn device_name() -> &'static str {
+    static NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    NAME.get_or_init(|| match crate::paths::flavour() {
+        None => "PlxNative (LG TV)".to_string(),
+        Some(f) => format!("PlxNative {f} (LG TV)"),
+    })
+}
 
 /// What this client offers the network. It plays; it is not a controller and not a server.
 pub(crate) const PROVIDES: &str = "player";
@@ -85,7 +98,7 @@ mod tests {
     /// `Plex for <platform>` is Plex's documented pattern for its OWN apps.
     #[test]
     fn identity_never_claims_to_be_plex() {
-        for s in [super::PRODUCT, super::DEVICE, super::DEVICE_NAME, super::MODEL, &super::user_agent()] {
+        for s in [super::PRODUCT, super::DEVICE, super::device_name(), super::MODEL, &super::user_agent()] {
             let low = s.to_ascii_lowercase();
             assert!(!low.starts_with("plex for"), "{s:?} uses Plex's own first-party naming pattern");
             assert!(!low.starts_with("plexfor"), "{s:?} uses Plex's own first-party naming pattern");
@@ -102,9 +115,22 @@ mod tests {
     /// The developer's own panel must not be reported as every user's hardware.
     #[test]
     fn no_specific_model_is_asserted() {
-        for s in [super::DEVICE, super::MODEL, super::DEVICE_NAME] {
+        for s in [super::DEVICE, super::MODEL, super::device_name()] {
             assert!(!s.contains("49SM9000"), "{s:?} names the author's television");
         }
+    }
+
+    /// The shipped app's device name must not move — it is already in every existing user's
+    /// authorized-device list, and a rename there reads as a new, unknown device. A flavoured
+    /// install must move, or the two separate sign-ins are indistinguishable in that list.
+    #[test]
+    fn only_a_flavoured_install_renames_the_device() {
+        let name = super::device_name();
+        match crate::paths::flavour() {
+            None => assert_eq!(name, "PlxNative (LG TV)"),
+            Some(f) => assert!(name.contains(f), "{name:?} does not name the {f} install"),
+        }
+        assert!(name.starts_with("PlxNative"));
     }
 
     /// On the host there is no `/var/run/nyx/os_info.json`, so this exercises exactly the

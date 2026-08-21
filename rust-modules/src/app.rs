@@ -3488,6 +3488,40 @@ fn key_exit_alert(sym: c_uint, wcode: c_uint, running: &mut bool) {
 #[no_mangle]
 pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
     install_panic_logger();
+    // WHICH INSTALL wrote this log. First line, before anything can fail.
+    //
+    // Two builds can sit on one television — the app users get, and a developer one beside it
+    // (`paths::app_id`) — and until this line nothing in the system said which of them produced a
+    // given log. The obvious witnesses do not work: both binaries are named `plxnative`, so
+    // `pidof` cannot tell them apart on this busybox set; `pkg/plxnative` is a path EVERY
+    // configuration writes, so an md5 against the local build proves only that some flavour of
+    // some configuration matches. That ambiguity is the "plausible wrong data" failure this
+    // project's testing section is built around: a harness that graded the other install's log
+    // would report a regression that is not there, or miss one that is.
+    //
+    // `APPID_env` is here for a second reason, and it is evidence rather than configuration.
+    // Nothing this project can read off a desk says whether SAM exports `APPID` to a native app on
+    // this firmware, or what it sets it to — and `engine::acb_init_acb` used to depend on it. It
+    // does not any more (the install directory is the authority), so this line turns an unanswered
+    // device question into something every single run answers for free.
+    log(&format!(
+        "install: id={} flavour={} runtime={} features={} APPID_env={}",
+        crate::paths::app_id(),
+        crate::paths::flavour().unwrap_or("-"),
+        crate::paths::runtime_dir().display(),
+        if crate::dev::ENABLED { "dev" } else { "release" },
+        std::env::var("APPID").unwrap_or_else(|_| "unset".into()),
+    ));
+    // ...and the app directory on the NEXT line, from `app_dir()` itself, which logs its own
+    // provenance (`from current_exe` / `PLXNATIVE_APP_DIR` / `macOS bundle`) — strictly more than
+    // repeating the path here would say. Forced now rather than left to whoever calls it first,
+    // so the two lines are adjacent and the pair is what a triage reader sees at the top.
+    //
+    // This ORDER is the reason `install:` does not carry an `appdir=` field: evaluating
+    // `app_dir()` inside the `format!` above would emit ITS line first, and every document that
+    // tells a human to read the first line to learn which install wrote a log would have been
+    // wrong by one line.
+    let _ = crate::paths::app_dir();
     // FIRST, before SDL and before anything can fail: which television is this. A report from
     // hardware nobody here owns is worth far more when its opening line names the firmware — see
     // `webos`'s module doc. Reads one file; cannot fail the boot.
