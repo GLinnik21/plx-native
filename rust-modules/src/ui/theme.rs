@@ -937,6 +937,37 @@ pub const CARD_RING_RAD: f32 = 14.0;
 /// measured on the one panel that actually holds pills.
 pub const ALERT_PANEL_RAD: f32 = 32.0;
 
+/// **The alert panels' HEAD ladder** — eyebrow → title → subtitle, in the design's own `margin-top`s
+/// (`Alert Views.dc.html` §1B and §1C, which spell the identical four numbers).
+///
+/// It is a module rather than four loose constants for the reason [`ALERT_PANEL_RAD`] is one token:
+/// the panels are a FAMILY, and this ladder had already drifted. §1B and §1A each named the pair
+/// locally and agreed by luck; §1C spelled it a third way — `cap_h(CAPTION) + space::SM` and
+/// `cap_h(TITLE) + space::SM` — which is not the same arithmetic at all. Measured on the simulator
+/// at 1920×1080, the person panel's eyebrow sat **26px** above its name where the track panel's sat
+/// 38, and its name **45px** above its identity line where the spec says 56. That is what "PERSON is
+/// too close to the name" was, and no amount of looking at one panel on its own would have found it:
+/// the bug is only visible as the difference between two sheets nobody sees side by side.
+///
+/// **A rung ladder is the wrong tool here and that is why the drift happened.** `space::SM` is 16 —
+/// the nearest rung to both 14 and 12 — so spelling this in rungs rounds two DIFFERENT gaps to one
+/// number and inverts them: a kicker belongs to the title under it and must sit tighter than the
+/// title sits to its own subtitle, which 14-then-12… does not do either. The design's own answer is
+/// that both are sub-rung and neither is the other: 14 over a 24px eyebrow band, 12 under a 44px
+/// title band. Those two BANDS are half the ladder, which is why the leads live here too — a caller
+/// that advanced by measured cap heights instead is exactly how §1C ended up 12px tight.
+pub mod alert {
+    /// `line-height: 1` on the eyebrow — a caps run has no descenders to clear.
+    pub const EYEBROW_LEAD: f32 = super::size::CAPTION as f32; // 24
+    /// The eyebrow's `margin-bottom`, as the title's `margin-top:14`.
+    pub const GAP_EYEBROW_TITLE: f32 = 14.0;
+    /// `1.1` — tight, because a panel's title is one line by construction.
+    pub const TITLE_LEAD: f32 = super::size::TITLE as f32 * 1.1; // 44
+    /// The title's `margin-bottom`, as the subtitle's `margin-top:12`. A subtitle here is §1B's file
+    /// path or §1C's dot-separated identity line.
+    pub const GAP_TITLE_SUB: f32 = 12.0;
+}
+
 // ── Card treatment (Home Screen.dc.html): every tile = a soft drop shadow that GROWS with the focus
 // pop + a 1px perimeter edge-sheen, both FOLDED into the tile's own draw pass (FS_IMG for textured
 // tiles, FS_SRC for skeleton/chip fills), replacing the old glow ring. Applies to circles too. ──

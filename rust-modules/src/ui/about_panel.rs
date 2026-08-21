@@ -1,21 +1,32 @@
 //! **About** — the detail page's About footer, read in full, as a glass alert panel.
 //!
 //! `Alert Views.dc.html` §1A. The About footer (detail section 5) is four columns; only the FIRST
-//! one, the card, opens anything. That is the design's rule and it is stated as a rule rather than
-//! as a layout accident: *"a block earns an alert only when the page truncates something worth
-//! reading in full."* The card truncates — its synopsis is capped at five `CAPTION` lines with a
-//! right-pinned MORE, and its title and genres are elided to the card frame. The other three do
-//! not, and each is refused for its own reason:
+//! one, the card, opens THIS panel. That is the design's rule and it is stated as a rule rather
+//! than as a layout accident: *"a block earns an alert only when the page truncates something
+//! worth reading in full."* The card truncates — its synopsis is capped at five `CAPTION` lines
+//! with a right-pinned MORE. The other three do not, and each is settled by name:
 //!
 //! * **Accessibility** is three fixed definitions of CC/SDH/AD that never change and are already
-//!   printed in full on the page.
-//! * **Information** is four facts the hero line already carries — so rather than get a panel of
-//!   their own they RIDE ALONG here, under the synopsis, which is why this panel has a facts grid
-//!   at all.
-//! * **Languages** — the audio list — belongs beside the bitrates in Track information (§1B), not
-//!   in a panel of its own.
+//!   printed in full on the page — no alert.
+//! * **Information** is *"four facts the detail screen already prints in full behind the panel, so
+//!   they stay there"* — no alert, and (see below) no copy of them in this one either.
+//! * **Languages** — the audio list — *"belongs beside the bitrates in Track information"* (§1B),
+//!   so that column opens §1B rather than a panel of its own. `crate::ui::tracks_panel`.
 //!
-//! Do not add an alert to columns 1–3 from this note. The absence is the design.
+//! Do not give columns 1 or 3 an alert from this note. The absence is the design.
+//!
+//! # It holds the PROSE and nothing else, and that is a correction
+//!
+//! This panel shipped with a title, a genre line and a four-column facts grid under the synopsis,
+//! on the earlier spec's reasoning that the Information facts *"ride along"* here rather than earn
+//! a panel. **Both halves were wrong on screen and the design now says so.** The facts sat in the
+//! panel while the page printed the same four, in the same order, in the Information column
+//! *directly behind it* — visible around the panel's own edge, which is how the duplication was
+//! spotted. The title and genres repeated the card the press came from, on the frame that card is
+//! still showing them.
+//!
+//! So §1A is now: eyebrow, synopsis, tagline, hairline, footer. Everything the reader came for and
+//! nothing they are already looking at. [`Blocks`] and [`Stack`] carry exactly those.
 //!
 //! # What it is made of
 //!
@@ -27,7 +38,7 @@
 //!
 //! # Two things about it that are decisions rather than defaults
 //!
-//! **The height is CONTENT-DRIVEN.** The mock hints 1120×520; 520 is a canvas placeholder and the
+//! **The height is CONTENT-DRIVEN.** The mock hints 1120×360; that is a canvas placeholder and the
 //! content div under it carries no height at all. A real PMS synopsis runs well past three lines,
 //! and the whole reason this panel exists is that the card CUT one — so a panel that cut it again
 //! at a different width would be pointless. The panel grows, and [`syn_lines`] is the last resort:
@@ -60,7 +71,7 @@ use std::ptr::{addr_of, addr_of_mut};
 const PANEL_W: f32 = 1120.0;
 /// The mock's padding, uniform on all four sides.
 const PAD: f32 = 48.0;
-/// The panel's inner content column — every run and the facts grid wrap to this.
+/// The panel's inner content column — every run wraps to this.
 pub(crate) const CONTENT_W: f32 = PANEL_W - 2.0 * PAD;
 /// The design system's `--glass-edge-clear`: the panel never comes closer than this to any screen
 /// edge. It is a property of the MATERIAL, not taste — a backdrop blur samples a window around its
@@ -75,82 +86,49 @@ const RISE: f32 = Popover::RISE;
 //
 // These are the mock's OWN margins and line heights, verbatim, and they are deliberately not
 // `theme::space` rungs. That ladder (XS 8 / SM 16 / MD 24 / LG 40 / XL 64) is the app's INTER-BLOCK
-// rhythm on a page; a panel's internal rhythm is finer than a page's and lands between rungs at the
-// top of it — 14px from an eyebrow to its title, 12px from the title to its subtitle — where no
-// rung sits and rounding to one would change the design rather than tokenise it. They are named
-// here, in one block, for the reason the rung ladder exists: one value per role, not a literal per
-// call site.
+// rhythm on a page; a panel's internal rhythm is finer than a page's and lands between rungs — the
+// tagline's 20 and the family's 14 and 12 (`theme::alert`) all sit where no rung does, and rounding
+// them to one would change the design rather than tokenise it. They are named here, in one block,
+// for the reason the rung ladder exists: one value per role, not a literal per call site. The two
+// this panel shares with §1B and §1C are named in `theme::alert` instead, because a value two
+// panels spend is a family token and drifted the moment it was not.
 //
 // Each gap belongs to the block BELOW it (CSS `margin-top`), which is what makes an absent block
 // cost nothing: drop the run and its gap goes with it, and the block after it keeps its own.
 
 /// `line-height: 1` on the eyebrow — a caps run has no descenders to clear.
-const EYEBROW_LEAD: f32 = 24.0; // size::CAPTION × 1
-/// `1.1` — tight, because the title is one line by construction.
-const TITLE_LEAD: f32 = 44.0; // size::TITLE × 1.1
-/// `1.32` on the two tertiary one-liners (genres, tagline).
+const EYEBROW_LEAD: f32 = theme::alert::EYEBROW_LEAD;
+/// `1.32` on the tertiary one-liner under the prose (the tagline).
 const FINE_LEAD: f32 = 32.0; // size::CAPTION × 1.32
 /// `1.5` — reading leading, and the loosest in the panel because the synopsis is the only run here
 /// anyone reads a paragraph of.
 const SYN_LEAD: f32 = 42.0; // size::BODY × 1.5
-/// `1.25` on both halves of a fact.
-const FACT_LABEL_LEAD: f32 = 30.0; // size::CAPTION × 1.25
-const FACT_VALUE_LEAD: f32 = 32.0; // size::LABEL × 1.25 (32.5, held to a whole pixel)
 
-const G_TITLE: f32 = 14.0;
-const G_GENRES: f32 = 12.0;
-const G_RULE_A: f32 = 28.0;
-const G_SYNOPSIS: f32 = 28.0;
+/// The eyebrow labels the prose directly now that no title stands between them, so it spends the
+/// spec's `margin-top:24` rather than the family's tighter eyebrow→TITLE step
+/// ([`theme::alert::GAP_EYEBROW_TITLE`], which §1B and §1C still take).
+const G_SYNOPSIS: f32 = 24.0;
 const G_TAGLINE: f32 = 20.0;
-const G_RULE_B: f32 = 32.0;
-const G_FACTS: f32 = 32.0;
-const G_RULE_C: f32 = 32.0;
+const G_RULE: f32 = 32.0;
 const G_FOOTER: f32 = 24.0;
 
 /// A hairline is one physical pixel of [`theme::HAIRLINE`] and occupies one pixel of flow.
 const RULE_H: f32 = 1.0;
-/// Between a fact's label and its value.
-const FACT_GAP_Y: f32 = 6.0;
-/// Between fact columns.
-const FACT_GAP_X: f32 = 32.0;
-
-/// The facts grid is **always four columns**, whatever the server sent.
-///
-/// `about_rows` yields between one and four facts — Released and Regions of Origin are both
-/// conditional, Rated is always present — and the design draws four. Sizing the grid to the count
-/// would make the same panel a different shape per item, so the columns are fixed and a short list
-/// simply leaves the right-hand ones empty. It also keeps the values in the same place on every
-/// page, which is the point of a grid.
-pub(crate) const FACT_COLS: usize = 4;
-
-/// One fact column's width.
-pub(crate) const fn fact_col_w() -> f32 {
-    (CONTENT_W - (FACT_COLS as f32 - 1.0) * FACT_GAP_X) / FACT_COLS as f32
-}
-
-/// Column `i`'s x offset from the content column's left edge.
-pub(crate) const fn fact_col_x(i: usize) -> f32 {
-    i as f32 * (fact_col_w() + FACT_GAP_X)
-}
 
 // ---- the pure layout -------------------------------------------------------------------------
 
-/// The measured extents of the four blocks whose height depends on the ITEM — everything that needs
+/// The measured extents of the two blocks whose height depends on the ITEM — everything that needs
 /// a font open, resolved by the caller so [`stack`] is arithmetic the host suite can grade without
 /// one.
 ///
 /// **0.0 means the block is ABSENT, not empty**, and the two are different: an absent block costs
 /// neither its own height nor the gap above it, so a film with no tagline does not sit over a
-/// reserved hole. Every field here is conditional in real data — episodes carry no tagline, a
-/// hand-added item can carry no genres, and a `/children`-borrowed show can carry no summary.
+/// reserved hole. Both fields are conditional in real data — episodes carry no tagline, and a
+/// `/children`-borrowed show can carry no summary.
 #[derive(Clone, Copy, Default, PartialEq, Debug)]
 pub(crate) struct Blocks {
-    pub(crate) genres: f32,
     pub(crate) synopsis: f32,
     pub(crate) tagline: f32,
-    /// The TALLEST of the four fact columns — the grid's rows stretch, so one two-line value
-    /// ("United States of America" wraps at this column width) sets the whole band.
-    pub(crate) facts: f32,
 }
 
 /// Where every block lands, panel-LOCAL (y = 0 is the panel's top edge), plus the panel's own outer
@@ -162,25 +140,20 @@ pub(crate) struct Blocks {
 #[derive(Clone, Copy, Default, PartialEq, Debug)]
 pub(crate) struct Stack {
     pub(crate) eyebrow: f32,
-    pub(crate) title: f32,
-    pub(crate) genres: f32,
-    pub(crate) rule_a: f32,
     pub(crate) synopsis: f32,
     pub(crate) tagline: f32,
-    pub(crate) rule_b: f32,
-    pub(crate) facts: f32,
-    pub(crate) rule_c: f32,
+    pub(crate) rule: f32,
     pub(crate) footer: f32,
     pub(crate) h: f32,
 }
 
 /// Resolve the ladder for one item's measured blocks.
 ///
-/// The two hairlines that BRACKET the facts grid come and go WITH it. With no facts at all the
-/// grid's leading rule would be a second hairline immediately under the closing one of the prose
-/// block — two rules with nothing between them, which reads as a mistake rather than as a section
-/// that happens to be empty. The trailing rule stays, because it is the footer's rule as much as
-/// the grid's.
+/// **The one hairline is the FOOTER's**, and it is unconditional. It closes the prose whatever the
+/// prose turned out to be — an item with no summary and no tagline still gets a rule over its
+/// footer rather than a keycap floating under an eyebrow. (The panel used to carry three rules
+/// bracketing a facts grid, with the grid's own two coming and going with it; with the grid gone
+/// there is one block to close and one rule to close it.)
 pub(crate) fn stack(b: Blocks) -> Stack {
     let mut s = Stack::default();
     let mut y = PAD;
@@ -188,34 +161,18 @@ pub(crate) fn stack(b: Blocks) -> Stack {
     s.eyebrow = y;
     y += EYEBROW_LEAD;
 
-    s.title = y + G_TITLE;
-    y = s.title + TITLE_LEAD;
-
-    if b.genres > 0.0 {
-        s.genres = y + G_GENRES;
-        y = s.genres + b.genres;
+    if b.synopsis > 0.0 {
+        s.synopsis = y + G_SYNOPSIS;
+        y = s.synopsis + b.synopsis;
     }
-
-    s.rule_a = y + G_RULE_A;
-    y = s.rule_a + RULE_H;
-
-    s.synopsis = y + G_SYNOPSIS;
-    y = s.synopsis + b.synopsis;
 
     if b.tagline > 0.0 {
         s.tagline = y + G_TAGLINE;
         y = s.tagline + b.tagline;
     }
 
-    if b.facts > 0.0 {
-        s.rule_b = y + G_RULE_B;
-        y = s.rule_b + RULE_H;
-        s.facts = y + G_FACTS;
-        y = s.facts + b.facts;
-    }
-
-    s.rule_c = y + G_RULE_C;
-    y = s.rule_c + RULE_H;
+    s.rule = y + G_RULE;
+    y = s.rule + RULE_H;
 
     s.footer = y + G_FOOTER;
     y = s.footer + KeyHint::height();
@@ -239,13 +196,17 @@ pub(crate) const fn max_panel_h() -> f32 {
 /// line is a better failure than none.
 ///
 /// `b.synopsis` is ignored (that is the number being solved for); pass the block set you will
-/// eventually draw, with the other three already measured.
+/// eventually draw, with the tagline already measured.
+///
+/// Solved from a ONE-LINE panel rather than from a synopsis-less one, because `synopsis: 0.0` means
+/// ABSENT to [`stack`] — it would take [`G_SYNOPSIS`] out of the ladder with it and hand the budget
+/// a gap that the drawn panel is going to spend. The floor falls out of the same expression: the
+/// first line is already in `one`, so a negative remainder still leaves it.
 pub(crate) fn syn_lines(b: Blocks) -> usize {
-    let fixed = stack(Blocks { synopsis: 0.0, ..b }).h;
-    let avail = max_panel_h() - fixed;
-    let n = (avail / SYN_LEAD).floor();
-    if n.is_finite() && n >= 1.0 {
-        n as usize
+    let one = stack(Blocks { synopsis: SYN_LEAD, ..b }).h;
+    let extra = ((max_panel_h() - one) / SYN_LEAD).floor();
+    if extra.is_finite() && extra > 0.0 {
+        1 + extra as usize
     } else {
         1
     }
@@ -253,9 +214,11 @@ pub(crate) fn syn_lines(b: Blocks) -> usize {
 
 /// The panel's rect on screen: CENTRED, both ways, and never inside the glass keep-out.
 ///
-/// The mock places it at `left:400 top:280` for a 1120×520 sheet on a 1920×1080 frame, which is
-/// dead centre on both axes — so centring is the rule and those two numbers are one instance of it.
-/// A content-driven height means the top is solved rather than authored.
+/// The mock places it at `left:400` on a 1920 frame, which is dead centre for a 1120 sheet — so
+/// centring is the rule and the mock's own left edge is one instance of it. Its TOP is not read
+/// off the canvas at all: the hinted height is a placeholder over a content div that carries none,
+/// and a content-driven height means the top is solved rather than authored. (The test below still
+/// checks the pair against a 520 sheet, because 400/280 is the arithmetic, not the artefact.)
 pub(crate) fn panel_rect(content_h: f32) -> Rect {
     let h = content_h.min(max_panel_h());
     Rect::new((SCR_W - PANEL_W) * 0.5, ((SCR_H - h) * 0.5).max(EDGE_CLEAR), PANEL_W, h)
@@ -331,23 +294,12 @@ pub(crate) fn draw() {
     let Some(d) = metadata::current() else {
         return;
     };
-    // The four facts come from the page's own per-item cache — the same strings the Information
-    // column draws, never a second derivation of them.
-    let info = crate::ui::detail::about_info(d);
-
-    // Every one-line run is a `max_lines(1)` `TextView`, which word-wraps and then ellipsizes what
-    // it could not place — so the ellipsis is the view's, not a second `text::elide` pass over the
-    // same string with the same budget. Only the eyebrow is safe by construction.
-    let genres = d.genres.join(", ");
 
     // ---- measure ----
-    // Everything except the synopsis first, because the synopsis's line budget is what is LEFT.
-    let facts_h = facts_height(info);
+    // The tagline first, because the synopsis's line budget is what is LEFT after it.
     let mut b = Blocks {
-        genres: if genres.is_empty() { 0.0 } else { FINE_LEAD },
         synopsis: 0.0,
         tagline: if d.tagline.is_empty() { 0.0 } else { FINE_LEAD },
-        facts: facts_h,
     };
     let syn = TextView::new(&d.summary, theme::size::BODY, theme::TEXT_READING)
         .leading(SYN_LEAD)
@@ -371,22 +323,13 @@ pub(crate) fn draw() {
     };
 
     run("ABOUT", s.eyebrow, theme::size::CAPTION, EYEBROW_LEAD, theme::TEXT_TERTIARY, true);
-    run(&d.title, s.title, theme::size::TITLE, TITLE_LEAD, theme::TEXT_PRIMARY, true);
-    if s.genres > 0.0 {
-        run(&genres, s.genres, theme::size::CAPTION, FINE_LEAD, theme::TEXT_TERTIARY, false);
-    }
-    rule(p, r, s.rule_a);
-    if b.synopsis > 0.0 {
+    if s.synopsis > 0.0 {
         syn.draw(p, Rect::new(cx, r.y + s.synopsis, CONTENT_W, 0.0));
     }
     if s.tagline > 0.0 {
         run(&d.tagline, s.tagline, theme::size::CAPTION, FINE_LEAD, theme::TEXT_TERTIARY, false);
     }
-    if s.facts > 0.0 {
-        rule(p, r, s.rule_b);
-        draw_facts(p, cx, r.y + s.facts, info);
-    }
-    rule(p, r, s.rule_c);
+    rule(p, r, s.rule);
 
     let hint = KeyHint::new(c"Press", c"BACK", c"to return");
     hint.draw(p, r.x + r.w - PAD - hint.width(), r.y + s.footer + KeyHint::height() * 0.5);
@@ -395,32 +338,6 @@ pub(crate) fn draw() {
 /// One full-width hairline across the content column.
 fn rule(p: Painter, r: Rect, y: f32) {
     p.rect(Rect::new(r.x + PAD, r.y + y, CONTENT_W, RULE_H), 0.0, theme::HAIRLINE, theme::HAIRLINE, 0.0);
-}
-
-/// The grid's band height — the tallest column, since the rows stretch.
-fn facts_height(info: &[(&'static str, String)]) -> f32 {
-    let mut h: f32 = 0.0;
-    for (_, value) in info.iter().take(FACT_COLS) {
-        h = h.max(FACT_LABEL_LEAD + FACT_GAP_Y + fact_value(value).measure_h(fact_col_w()));
-    }
-    h
-}
-
-/// A fact's VALUE as its view — built in one place so the measure and the draw cannot wrap it two
-/// different ways.
-fn fact_value(value: &str) -> TextView<'_> {
-    TextView::new(value, theme::size::LABEL, theme::TEXT_HEADING).bold().leading(FACT_VALUE_LEAD)
-}
-
-fn draw_facts(p: Painter, cx: f32, top: f32, info: &[(&'static str, String)]) {
-    for (i, (label, value)) in info.iter().take(FACT_COLS).enumerate() {
-        let x = cx + fact_col_x(i);
-        TextView::new(label, theme::size::CAPTION, theme::TEXT_TERTIARY)
-            .leading(FACT_LABEL_LEAD)
-            .max_lines(1)
-            .draw(p, Rect::new(x, top, fact_col_w(), 0.0));
-        fact_value(value).draw(p, Rect::new(x, top + FACT_LABEL_LEAD + FACT_GAP_Y, fact_col_w(), 0.0));
-    }
 }
 
 // ---- pointer ---------------------------------------------------------------------------------
@@ -435,44 +352,45 @@ pub(crate) fn click(_mx: f32, _my: f32) {
 mod tests {
     use super::*;
 
-    /// The four fact columns are EQUAL, gapped, and exactly fill the content column — the property
-    /// that makes a short fact list leave a hole on the right rather than a wider column on the
-    /// left. Graded on the arithmetic rather than on a screenshot, because a rounding error here is
-    /// a two-pixel drift nobody sees on a device and a ragged column the moment the panel width
-    /// moves.
-    #[test]
-    fn the_facts_grid_splits_the_content_column_into_four_equal_gapped_columns() {
-        let w = fact_col_w();
-        assert!(w > 0.0);
-        // every column is the same width, and consecutive columns are exactly FACT_GAP_X apart
-        for i in 1..FACT_COLS {
-            let gap = fact_col_x(i) - (fact_col_x(i - 1) + w);
-            assert!((gap - FACT_GAP_X).abs() < 0.001, "column {i} gap {gap} != {FACT_GAP_X}");
-        }
-        assert!(fact_col_x(0).abs() < 0.001, "column 0 starts at the content column's left edge");
-        let right = fact_col_x(FACT_COLS - 1) + w;
-        assert!((right - CONTENT_W).abs() < 0.001, "the last column ends flush at {CONTENT_W}, got {right}");
-    }
-
     /// The ladder in the mock's own order, with every block present: each block sits below the one
     /// above it by exactly its gap, and the panel's height closes with the bottom padding.
     #[test]
     fn the_stack_lays_the_mocks_ladder_out_in_order() {
-        let b = Blocks { genres: FINE_LEAD, synopsis: 3.0 * SYN_LEAD, tagline: FINE_LEAD, facts: 101.0 };
+        let b = Blocks { synopsis: 3.0 * SYN_LEAD, tagline: FINE_LEAD };
         let s = stack(b);
         assert_eq!(s.eyebrow, PAD, "the first block starts at the padding");
-        assert_eq!(s.title, s.eyebrow + EYEBROW_LEAD + G_TITLE);
-        assert_eq!(s.genres, s.title + TITLE_LEAD + G_GENRES);
-        assert_eq!(s.rule_a, s.genres + b.genres + G_RULE_A);
-        assert_eq!(s.synopsis, s.rule_a + RULE_H + G_SYNOPSIS);
+        assert_eq!(s.synopsis, s.eyebrow + EYEBROW_LEAD + G_SYNOPSIS);
         assert_eq!(s.tagline, s.synopsis + b.synopsis + G_TAGLINE);
-        assert_eq!(s.rule_b, s.tagline + b.tagline + G_RULE_B);
-        assert_eq!(s.facts, s.rule_b + RULE_H + G_FACTS);
-        assert_eq!(s.rule_c, s.facts + b.facts + G_RULE_C);
-        assert_eq!(s.footer, s.rule_c + RULE_H + G_FOOTER);
+        assert_eq!(s.rule, s.tagline + b.tagline + G_RULE);
+        assert_eq!(s.footer, s.rule + RULE_H + G_FOOTER);
         assert_eq!(s.h, s.footer + KeyHint::height() + PAD);
         // the whole point of the mock's shape: it fits, with room to spare
         assert!(s.h < max_panel_h(), "the reference item's panel is {} against a {} ceiling", s.h, max_panel_h());
+    }
+
+    /// **Nothing the page is already showing behind the panel is in it.** The panel is the prose,
+    /// so its ladder has one text block above the tagline and no second one — no title, no genre
+    /// line, and above all no copy of the four Information facts, which the detail page prints in
+    /// full in the column directly behind this sheet.
+    ///
+    /// Graded on the ladder's own arithmetic, which is the only place a re-added block could hide:
+    /// the eyebrow's next neighbour is the synopsis, and the panel's height is exactly what its
+    /// five steps add up to. A block spliced back in would have to move one of the two.
+    #[test]
+    fn the_panel_holds_the_prose_and_nothing_the_page_already_prints() {
+        let b = Blocks { synopsis: 3.0 * SYN_LEAD, tagline: FINE_LEAD };
+        let s = stack(b);
+        assert_eq!(
+            s.synopsis - s.eyebrow,
+            EYEBROW_LEAD + G_SYNOPSIS,
+            "the eyebrow labels the PROSE — nothing is placed between them"
+        );
+        assert_eq!(
+            s.h,
+            PAD + EYEBROW_LEAD + G_SYNOPSIS + b.synopsis + G_TAGLINE + b.tagline + G_RULE + RULE_H
+                + G_FOOTER + KeyHint::height() + PAD,
+            "the panel is exactly eyebrow · prose · tagline · rule · footer"
+        );
     }
 
     /// An ABSENT block costs neither its height nor the gap above it — a film with no tagline must
@@ -480,7 +398,7 @@ mod tests {
     /// reason each gap belongs to the block below it.
     #[test]
     fn an_absent_block_takes_its_gap_with_it() {
-        let full = Blocks { genres: FINE_LEAD, synopsis: SYN_LEAD, tagline: FINE_LEAD, facts: 60.0 };
+        let full = Blocks { synopsis: SYN_LEAD, tagline: FINE_LEAD };
 
         let no_tag = stack(Blocks { tagline: 0.0, ..full });
         assert_eq!(no_tag.tagline, 0.0, "an absent block is not placed");
@@ -489,26 +407,14 @@ mod tests {
             FINE_LEAD + G_TAGLINE,
             "dropping the tagline drops its own height AND its gap"
         );
-        assert_eq!(no_tag.rule_b, no_tag.synopsis + SYN_LEAD + G_RULE_B, "the rule keeps its own gap");
+        assert_eq!(no_tag.rule, no_tag.synopsis + SYN_LEAD + G_RULE, "the rule keeps its own gap");
 
-        let no_genres = stack(Blocks { genres: 0.0, ..full });
-        assert_eq!(no_genres.genres, 0.0);
-        assert_eq!(no_genres.rule_a, no_genres.title + TITLE_LEAD + G_RULE_A);
-        assert_eq!(stack(full).h - no_genres.h, FINE_LEAD + G_GENRES);
-    }
-
-    /// With no facts at all, BOTH the grid and the hairline that introduces it go — leaving one
-    /// rule before the footer instead of two with nothing between them. (`about_rows` always pushes
-    /// `Rated`, so this is the defensive case rather than the common one; it is graded because the
-    /// alternative failure is two abutting hairlines, which reads as a bug rather than as an empty
-    /// section.)
-    #[test]
-    fn no_facts_takes_the_grids_own_hairline_with_it() {
-        let s = stack(Blocks { genres: FINE_LEAD, synopsis: SYN_LEAD, tagline: 0.0, facts: 0.0 });
-        assert_eq!(s.facts, 0.0);
-        assert_eq!(s.rule_b, 0.0, "the grid's leading rule goes with the grid");
-        assert_eq!(s.rule_c, s.synopsis + SYN_LEAD + G_RULE_C, "one rule is left, and it closes the prose");
-        assert!(s.rule_c > 0.0 && s.footer > s.rule_c);
+        // …and the degenerate item — no summary AND no tagline — still closes with a rule over its
+        // footer rather than a keycap hanging under the eyebrow.
+        let bare = stack(Blocks::default());
+        assert_eq!((bare.synopsis, bare.tagline), (0.0, 0.0));
+        assert_eq!(bare.rule, PAD + EYEBROW_LEAD + G_RULE, "the footer's rule is unconditional");
+        assert!(bare.footer > bare.rule);
     }
 
     /// The synopsis budget spends what is LEFT and is never zero.
@@ -519,19 +425,61 @@ mod tests {
     /// cannot show none of it.
     #[test]
     fn the_synopsis_is_given_whatever_room_is_left_and_never_none() {
-        let base = Blocks { genres: FINE_LEAD, synopsis: 0.0, tagline: FINE_LEAD, facts: 101.0 };
+        let base = Blocks { synopsis: 0.0, tagline: FINE_LEAD };
         let n = syn_lines(base);
         assert!(n >= 3, "the reference item's ladder leaves room for a real paragraph, got {n}");
         // the budget is exactly what fits
         assert!(stack(Blocks { synopsis: n as f32 * SYN_LEAD, ..base }).h <= max_panel_h());
         assert!(stack(Blocks { synopsis: (n + 1) as f32 * SYN_LEAD, ..base }).h > max_panel_h());
 
-        // a taller facts band buys the synopsis fewer lines, monotonically
-        let taller = syn_lines(Blocks { facts: 101.0 + 4.0 * SYN_LEAD, ..base });
+        // a taller neighbouring block buys the synopsis fewer lines, monotonically
+        let taller = syn_lines(Blocks { tagline: FINE_LEAD + 4.0 * SYN_LEAD, ..base });
         assert!(taller < n, "growing another block must cost the synopsis lines: {taller} vs {n}");
 
         // and the floor holds even when the arithmetic says there is no room at all
-        assert_eq!(syn_lines(Blocks { facts: 10_000.0, ..base }), 1);
+        assert_eq!(syn_lines(Blocks { tagline: 10_000.0, ..base }), 1);
+    }
+
+    /// **What the panel costs the blur chain, pinned — because dropping the repeated blocks was
+    /// also the cheapest thing available for the frame-rate complaint that came with them.**
+    ///
+    /// A glass surface's price is its snapshot REGION: its own rect grown by `gfx::BLUR_MARGIN` on
+    /// every side, which the chain then reduces twice and up-filters. Removing the title, the genre
+    /// line, a hairline and the four-column facts grid took **300px** off the reference item's
+    /// panel (715 → 415), and because the region grows in one dimension only — the width is fixed
+    /// at [`PANEL_W`] — the whole of that comes off the region: **1.15M authored px² → 0.77M, a
+    /// third less.**
+    ///
+    /// Graded here rather than described, with the OLD number written down, because the failure
+    /// mode is silent and specific: a block spliced back into [`stack`] re-inflates the region with
+    /// nothing on screen to say so, and the cost lands on a television nobody here owns. The
+    /// ceiling is deliberately not `gfx::GLASS_REGION_BUDGET` (300k) — every alert in the family
+    /// charges past that, in the design's own words, because the budget prices a MOVING host and
+    /// the page under a modal is standing still. This grades the direction of travel instead.
+    ///
+    /// It says nothing about frames per second, and cannot: the region is authored geometry, the
+    /// frame rate is the SM9000's Mali, and the two are joined only by a measurement on the set.
+    #[test]
+    fn the_prose_only_panel_costs_the_blur_chain_a_third_less_region() {
+        // the reference item: a 3-line synopsis and a tagline
+        let b = Blocks { synopsis: 3.0 * SYN_LEAD, tagline: FINE_LEAD };
+        let r = panel_rect(stack(b).h);
+        let reg = crate::gfx::blur_region(r.x, r.y, r.w, r.h);
+        let area = reg[2] * reg[3];
+
+        // what the same item cost while the panel also carried a title, genres, a second hairline
+        // and the facts grid — 300px of ladder, all of it height, and still centred
+        let was = crate::gfx::blur_region(r.x, r.y - 150.0, r.w, r.h + 300.0);
+        let was_area = was[2] * was[3];
+
+        assert!(
+            area < was_area * 0.72,
+            "the prose-only panel should cost a third less region: {area} against {was_area}"
+        );
+        // …and the panel it is measuring is the real one, not an arithmetic slip: a 1120-wide sheet
+        // grown by the margin either side, still inside the frame.
+        assert_eq!(reg[2], PANEL_W + 2.0 * crate::gfx::BLUR_MARGIN);
+        assert!(reg[1] >= 0.0 && reg[1] + reg[3] <= crate::ui::consts::SCR_H);
     }
 
     /// The panel is centred both ways and never enters the glass keep-out — including when its
@@ -542,7 +490,7 @@ mod tests {
         assert_eq!(r.w, PANEL_W);
         assert_eq!(r.h, 520.0);
         assert!((r.x - 400.0).abs() < 0.001, "the mock's own left:400 falls out of centring, got {}", r.x);
-        assert!((r.y - 280.0).abs() < 0.001, "…and its top:280, got {}", r.y);
+        assert!((r.y - 280.0).abs() < 0.001, "…and a 520 sheet's own top, got {}", r.y);
 
         // a tall panel is clamped rather than allowed to run off the frame
         let tall = panel_rect(5_000.0);
