@@ -84,8 +84,11 @@ pub(crate) enum Screen {
     Profiles,
     /// the home hero + grid
     Home,
-    /// Home, with the top-left profile popover over it
-    Account,
+    /// the top-left profile popover, over whichever of the bar-wearing screens its chip was
+    /// pressed on
+    Account {
+        over: Host,
+    },
     /// the press-and-hold card menu, over whichever screen the hold happened on
     ItemMenu {
         over: Host,
@@ -101,13 +104,19 @@ pub(crate) enum Screen {
     },
 }
 
-/// Which live screen a [`Screen::ItemMenu`] popover is sitting on — the probe's mirror of `app.rs`'s
-/// private `MenuHost`, mapped by the same exhaustive `match` that maps `Route`.
+/// Which live screen a POPOVER is sitting on — the probe's mirror of `app.rs`'s private `MenuHost`
+/// and `BarHost`, mapped by the same exhaustive `match` that maps `Route`.
 ///
-/// A type and not a bool: the menu had exactly two hosts and the fingerprint spelled them
+/// A type and not a bool: the card menu had exactly two hosts and the fingerprint spelled them
 /// `over_detail: bool`, which stops being expressible the moment there is a third. Every host is a
 /// [`Screen`] in its own right, so the popover's line is the HOST's fields plus the panel's — see
 /// [`Host::screen`].
+///
+/// ONE type for both popovers, deliberately, even though [`Screen::Account`] can only ever name the
+/// three bar-wearing hosts while [`Screen::ItemMenu`] uses all five: the fact being recorded is the
+/// same fact — "which page is live under this panel" — and `app.rs` is where the narrowing already
+/// lives, in `BarHost` itself. A second three-variant enum here would be a second vocabulary for one
+/// question, and the `over=` word is what a reader joins on either way.
 #[derive(Clone, Copy)]
 pub(crate) enum Host {
     Home,
@@ -118,8 +127,9 @@ pub(crate) enum Host {
 }
 
 impl Host {
-    /// The word printed after `over=`. Anything reading a schema off a `route=itemmenu` line needs
-    /// it, because one route word now covers five different field sets.
+    /// The word printed after `over=`. Anything reading a schema off a `route=itemmenu` or
+    /// `route=account` line needs it, because one route word now covers several different field
+    /// sets.
     fn word(self) -> &'static str {
         match self {
             Host::Home => "home",
@@ -131,8 +141,9 @@ impl Host {
     }
     /// The host as the screen it is — the popover sits on a LIVE screen, so the host's own focus is
     /// still part of the state (the tile the menu is about is the one still focused behind it) and
-    /// its fields are exactly that screen's. Never [`Screen::ItemMenu`], which is what stops
-    /// [`push_fields`]' one level of recursion from being a loop.
+    /// its fields are exactly that screen's. Never [`Screen::ItemMenu`] and never
+    /// [`Screen::Account`], which is what stops [`push_fields`]' one level of recursion from being a
+    /// loop — a popover cannot be its own host.
     fn screen(self) -> Screen {
         match self {
             Host::Home => Screen::Home,
@@ -222,8 +233,15 @@ fn push_fields(s: &mut String, screen: Screen, hud: Hud, ctrl: ControlSlot) {
             let _ = write!(s, " avatar={}", b(crate::ui::profiles::focus_is_avatar()));
         }
         Screen::Home => push_home(s),
-        Screen::Account => {
-            push_home(s);
+        Screen::Account { over } => {
+            // The HOST is named, for [`Screen::ItemMenu`]'s reason one screen over: the profile chip
+            // is shared CHROME, so this popover stands on any of the three bar-wearing pages and
+            // `route=account` is one word for three different field sets. It printed Home's fields
+            // outright while Home was the only screen whose chip could be pressed — so an account
+            // menu opened from the Library fingerprinted as though the user were standing on Home,
+            // and a harness diffing two presses across it read the wrong screen's cursor.
+            let _ = write!(s, " over={}", over.word());
+            push_fields(s, over.screen(), hud, ctrl);
             let _ = write!(s, " acct={} asel={}", b(crate::ui::account_menu::is_open()), crate::ui::account_menu::sel());
         }
         Screen::ItemMenu { over } => {
@@ -492,7 +510,10 @@ mod tests {
             ("login", Screen::Login),
             ("profiles", Screen::Profiles),
             ("home", Screen::Home),
-            ("account", Screen::Account),
+            // one per bar-wearing HOST, for the `itemmenu` rows' reason below
+            ("account", Screen::Account { over: Host::Home }),
+            ("account", Screen::Account { over: Host::Library }),
+            ("account", Screen::Account { over: Host::Search }),
             // one per HOST — the popover's field set is its host's, so five hosts are five
             // different `route=itemmenu` lines and the grammar assertions have to see all of them
             ("itemmenu", Screen::ItemMenu { over: Host::Home }),

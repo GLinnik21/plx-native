@@ -787,6 +787,18 @@ fn probe_host(h: MenuHost) -> crate::focusprobe::Host {
         MenuHost::Person => crate::focusprobe::Host::Person,
     }
 }
+/// [`BarHost`] as the focus probe's mirror of it — [`probe_host`]'s twin, for the twin reason. The
+/// probe has ONE `Host` vocabulary for "which page is live under this panel", and this is the
+/// narrower popover's half of it: the three bar-wearing screens map onto three of its five, and the
+/// two the account menu can never stand on are unreachable from here BY TYPE rather than by
+/// comment.
+fn probe_bar_host(h: BarHost) -> crate::focusprobe::Host {
+    match h {
+        BarHost::Home => crate::focusprobe::Host::Home,
+        BarHost::Library => crate::focusprobe::Host::Library,
+        BarHost::Search => crate::focusprobe::Host::Search,
+    }
+}
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Route {
     Login,    // plex.tv sign-in (QR) — shown when there's no usable session
@@ -5606,7 +5618,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     Route::Login => crate::focusprobe::Screen::Login,
                     Route::Profiles => crate::focusprobe::Screen::Profiles,
                     Route::Home => crate::focusprobe::Screen::Home,
-                    Route::Account { .. } => crate::focusprobe::Screen::Account,
+                    Route::Account { over } => {
+                        crate::focusprobe::Screen::Account { over: probe_bar_host(over) }
+                    }
                     Route::ItemMenu { over } => {
                         crate::focusprobe::Screen::ItemMenu { over: probe_host(over) }
                     }
