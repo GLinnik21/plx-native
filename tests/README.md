@@ -276,7 +276,7 @@ Base playback (decision + codec + not-stuck), one case each:
 | `dp_h264_ac3_1080p` | `movie_h264_ac3_1080p` | H264 + AC3 direct-play, 1080p, embedded SRT |
 | `dp_hevc_eac3_4k_hdr10` | `episode_hevc_4k_hdr10_eac3` | HEVC 4K **HDR10** + E-AC3 direct-play, TV episode |
 | `dp_hevc_truehd_ac3_sibling` | `movie_hevc_4k_hdr10_truehd` | **smart direct-play** (TrueHD default → AC3 sibling), HEVC 4K |
-| `dp_hevc_eac3_dovi_p8` | `movie_hevc_4k_dovi_p8` | HEVC 4K **Dolby Vision P8** + E-AC3 direct-play |
+| `dp_hevc_eac3_dovi_p8` | `movie_hevc_4k_dovi_p8` | HEVC 4K **Dolby Vision P8** + E-AC3 direct-play. Grades that the stream **transports** (route, demux, bind, timeline, no error) — **not** that the panel engages Dolby Vision, which no assertion here can see. See the case's `_dovi_note` in `manifest.json` |
 | `dp_mp4_container` | `movie_hevc_aac_mp4` | HEVC + AAC, **mp4 container** direct-play (mov demuxer over HTTP, AAC→ADTS), sidecar subs |
 | `dp_h264_aac_episode` | `episode_h264_aac` | H264 + AAC direct-play, TV episode, no subs |
 | `dp_h264_ac3_many_audio` | `movie_h264_ac3_many_audio` | H264 + AC3 direct-play, 8 audio tracks (DTS/vorbis present) |
@@ -402,5 +402,17 @@ labeled "synthetic" and secondary to the 8 authoritative real item shapes:
 - **Audio:** FLAC, PCM/LPCM, MP3; a DTS-only file to force an audio-only transcode without
   depending on the many-audio movie's track ordering.
 - **Subtitles:** ASS/SSA, VobSub/dvd_subtitle; mov_text/tx3g soft-render.
-- **HDR:** HLG, HDR10+, Dolby Vision P5 (IPT, no HDR10 fallback — the only item carrying it is
-  mp4, which the container gate sends to the server anyway).
+- **HDR:** HLG, HDR10+. **Dolby Vision P5 and P7 are a different kind of gap — the items exist and
+  the missing thing is a CASE.** This entry used to read "the only item carrying [P5] is mp4, which
+  the container gate sends to the server anyway", and that was stale from **2026-08-11**, the day
+  `.mp4`/`.m4v` joined `.mkv` on the direct-play side (issue #22). For the ten days after it, a
+  Profile 5 file — single-layer IPT-PQ, no HDR10 base — direct-played and was described to Starfish
+  as bare `H265`, which displays in visibly **wrong colours**, and nothing in this suite could
+  notice: the codec assertion reads `avcodec_get_name`, and that answers `hevc` for a P5, a P7, a
+  P8 and an ordinary SDR file alike. Since **2026-08-21** the route refuses both non-self-displayable
+  shapes (P5, and dual-layer P7) and sends them to the server to be re-encoded — see
+  `metadata::Dovi::base_layer_unusable` — and `ff.rs` logs what the demuxer actually found
+  (`ff: … dovi=P5 level=6 bl_compat=0 rpu=1 el=0 bl=1 …`) at every open. Cases asserting that
+  refusal, and the `decision: transcode` it produces, are worth adding against the two real items;
+  what still needs a human in front of the television is whether the panel engages Dolby Vision at
+  all on the P8 file that does direct-play.

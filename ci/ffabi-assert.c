@@ -24,6 +24,7 @@
 #include <libavcodec/bsf.h>
 #include <libavutil/frame.h>
 #include <libavutil/channel_layout.h>
+#include <libavutil/dovi_meta.h>
 
 #define SAME(expr, want, what) _Static_assert((expr) == (want), what)
 
@@ -81,11 +82,40 @@ SAME(offsetof(AVCodecParameters, extradata_size), 16, "AVCodecParameters.extrada
 SAME(offsetof(AVCodecParameters, format), 28, "AVCodecParameters.format moved");
 SAME(offsetof(AVCodecParameters, width), 56, "AVCodecParameters.width moved");
 SAME(offsetof(AVCodecParameters, height), 60, "AVCodecParameters.height moved");
+/* The stream-level side-data list, walked for the Dolby Vision configuration record, and the
+   three colour fields logged beside it. All five were modelled in ff.rs long before anything
+   read them, which is exactly why they are asserted now rather than then. */
+SAME(offsetof(AVCodecParameters, coded_side_data), 20, "AVCodecParameters.coded_side_data moved");
+SAME(offsetof(AVCodecParameters, nb_coded_side_data), 24, "AVCodecParameters.nb_coded_side_data moved");
+SAME(offsetof(AVCodecParameters, color_primaries), 88, "AVCodecParameters.color_primaries moved");
+SAME(offsetof(AVCodecParameters, color_trc), 92, "AVCodecParameters.color_trc moved");
+SAME(offsetof(AVCodecParameters, color_space), 96, "AVCodecParameters.color_space moved");
 SAME(offsetof(AVCodecParameters, sample_rate), 136, "AVCodecParameters.sample_rate moved");
 /* FFmpeg 7 deleted the deprecated `channels` int; nb_channels inside ch_layout replaced it, and
    reading the old field on a hand-written model is a silent read of whatever now sits there. */
 SAME(offsetof(AVCodecParameters, ch_layout), 112, "AVCodecParameters.ch_layout moved");
 SAME(offsetof(AVChannelLayout, nb_channels), 4, "AVChannelLayout.nb_channels moved");
+
+/* --- AVPacketSideData: one entry of the list above. `size` is a size_t, so the whole struct is
+       12 bytes on 32-bit ARM and 24 on the 64-bit host — ff.rs spells that field `usize` so the
+       model is right on both. --- */
+SAME(sizeof(AVPacketSideData), 12, "sizeof(AVPacketSideData) != 12");
+SAME(offsetof(AVPacketSideData, data), 0, "AVPacketSideData.data moved");
+SAME(offsetof(AVPacketSideData, size), 4, "AVPacketSideData.size moved");
+SAME(offsetof(AVPacketSideData, type), 8, "AVPacketSideData.type moved");
+
+/* --- AVDOVIDecoderConfigurationRecord: nine plain uint8_t, no padding on any target. Asserted
+       anyway because the header says its size "is not a part of the public ABI", and because a
+       field inserted in the middle would silently renumber every DV profile the app logs and
+       gates on. AV_PKT_DATA_DOVI_CONF is a sequential enum member, so it moves the same way. --- */
+SAME(sizeof(AVDOVIDecoderConfigurationRecord), 9, "sizeof(AVDOVIDecoderConfigurationRecord) != 9");
+SAME(offsetof(AVDOVIDecoderConfigurationRecord, dv_profile), 2, "DOVI dv_profile moved");
+SAME(offsetof(AVDOVIDecoderConfigurationRecord, dv_level), 3, "DOVI dv_level moved");
+SAME(offsetof(AVDOVIDecoderConfigurationRecord, rpu_present_flag), 4, "DOVI rpu_present_flag moved");
+SAME(offsetof(AVDOVIDecoderConfigurationRecord, el_present_flag), 5, "DOVI el_present_flag moved");
+SAME(offsetof(AVDOVIDecoderConfigurationRecord, bl_present_flag), 6, "DOVI bl_present_flag moved");
+SAME(offsetof(AVDOVIDecoderConfigurationRecord, dv_bl_signal_compatibility_id), 7, "DOVI bl_signal_compatibility_id moved");
+SAME(AV_PKT_DATA_DOVI_CONF, 29, "AV_PKT_DATA_DOVI_CONF != 29 — the side-data enum shifted");
 
 /* --- AVSubtitle: avcodec_decode_subtitle2 writes into ff.rs's stack copy, so this size IS
        load-bearing. Unchanged from n3.3. --- */

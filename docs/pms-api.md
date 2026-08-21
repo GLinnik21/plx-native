@@ -354,6 +354,39 @@ Returns one `Metadata[0]` with everything from §2 **plus** `tagline`, `studio`,
 (streamType 1=video, 2=audio, 3=subtitle; `codec`, `language`, `languageCode`,
 `channels`, `displayTitle`).
 
+#### The Dolby Vision fields on a video stream (verified live 2026-08-21)
+
+**`docs/plex-openapi.json` does not model these.** Its `stream` schema carries 29 properties and
+not one `DOVI*` among them, so the spec cannot settle their spelling and neither could this file
+until now — they were read off the dev server directly, across all eight Dolby Vision items in the
+library. A `streamType: 1` stream on a DV file carries **eight**:
+
+```jsonc
+"DOVIPresent": true, "DOVIProfile": 8, "DOVILevel": 6, "DOVIVersion": "1.0",
+"DOVIBLPresent": true, "DOVIELPresent": false, "DOVIRPUPresent": true, "DOVIBLCompatID": 1
+```
+
+Numbers arrive as JSON numbers and the flags as **real JSON booleans**, so every one of them is
+read through `de_i64` (which accepts both). A non-DV stream sends **none** of them, which is why
+absence and a legitimate zero are indistinguishable field-by-field — see `metadata::Dovi`.
+
+Three are load-bearing for playback, because the buffer-feed pipeline feeds one elementary stream
+to a decoder that ignores the RPU, so the **base layer is what the panel gets**:
+
+| field | meaning | measured on this library |
+|---|---|---|
+| `DOVIProfile` | 5 = single-layer IPT-PQ (**no HDR10 fallback**), 7 = dual-layer, 8 = HDR10/SDR/HLG-compatible base | six P8 items, one P7, one P5 |
+| `DOVIBLCompatID` | base-layer cross-compatibility: 0 none, 1 HDR10, 2 SDR, 4 HLG | `1` on every P8, `0` on the P5 — and **`6` on the P7** |
+| `DOVIELPresent` | an enhancement layer rides in the file | `true` only on the P7 |
+
+**The P7's `DOVIBLCompatID` of 6 is the trap**: a "is it profile 5" test written as
+`DOVIBLCompatID == 0` waves every dual-layer file straight through. `DOVIELPresent` is the only
+field that identifies P7. Note also that the **P5 item sends no `colorTrc` at all**, so
+`DOVIPresent` is the only thing marking it as HDR.
+
+These are on the FULL item fetch only — `/library/sections/{id}/all` returns `Part[]` with no
+`Stream[]` array, so no DOVI field is reachable from a grid listing.
+
 ### Review scores — `Rating[]` + the flat pair (verified live 2026-07-29, PMS 1.43.2)
 
 An item carries its review scores **twice**, in two shapes:

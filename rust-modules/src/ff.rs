@@ -51,7 +51,6 @@ pub enum AVCodec {}
 pub enum AVCodecContext {} // opaque: we only pass the lib-allocated pointer to decode/free
 pub enum AVBitStreamFilter {}
 pub enum AVBufferRef {}
-pub enum AVPacketSideData {}
 // AVStream is opaque here: it is 712 bytes with a large "internal but ABI" block, so
 // rather than transcribe every field we read only the three we need at their verified
 // n3.3 offsets (index +0, time_base +40, codecpar +708). Phase A confirms the offsets.
@@ -113,6 +112,45 @@ pub struct AVPacket {
     pub time_base: AVRational,            // +72
 }
 
+/// `AVPacketSideData` — one entry of `AVCodecParameters::coded_side_data`. It was an opaque
+/// `enum` here for as long as nothing read it; the Dolby Vision configuration record is the first
+/// thing that does.
+///
+/// sizeof = 12 on 32-bit ARM, proven with `ci/ffabi-assert.c`. `size` is a `size_t`, so `usize`
+/// is the field's type on both the target and the host rather than a number that happens to match
+/// — the one place in this table where the Rust type carries the ABI instead of a comment.
+#[repr(C)]
+pub struct AVPacketSideData {
+    pub data: *mut u8,  // +0
+    pub size: usize,    // +4
+    pub type_: c_int,   // +8  (enum AVPacketSideDataType)
+}
+
+/// `AVDOVIDecoderConfigurationRecord` (libavutil/dovi_meta.h), the payload of an
+/// `AV_PKT_DATA_DOVI_CONF` side-data entry — what the mp4 `dvcC`/`dvvC` box and the Matroska
+/// `DolbyVisionConfiguration` block carry, handed over by BOTH bundled demuxers.
+///
+/// **Nine plain `uint8_t`, so this is the rare zero-risk read in this file**: no integers wider
+/// than a byte, no pointers, nothing to align and nothing to pad, on any target. Field order and
+/// count verified against the vendored FFmpeg 9.0 header, and each offset proven for 32-bit ARM
+/// in `ci/ffabi-assert.c` — which is cheap insurance rather than doubt, since the assertions cost
+/// nothing and the struct is public ABI that could gain a field at any major.
+///
+/// The upstream spelling is `AVDOVI…`, not `AVDovi…`, and the difference matters only to anyone
+/// grepping the header for it.
+#[repr(C)]
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct AVDOVIDecoderConfigurationRecord {
+    pub dv_version_major: u8,              // +0
+    pub dv_version_minor: u8,              // +1
+    pub dv_profile: u8,                    // +2
+    pub dv_level: u8,                      // +3
+    pub rpu_present_flag: u8,              // +4
+    pub el_present_flag: u8,               // +5
+    pub bl_present_flag: u8,               // +6
+    pub dv_bl_signal_compatibility_id: u8, // +7
+    pub dv_md_compression: u8,             // +8
+}
 
 // sizeof = 136
 #[repr(C)]
@@ -387,6 +425,11 @@ pub const AVERROR_EAGAIN: c_int = -11;
 pub const AV_NOPTS_VALUE: i64 = i64::MIN;
 pub const AV_TIME_BASE: i64 = 1_000_000;
 pub const NS_TB: AVRational = AVRational { num: 1, den: 1_000_000_000 };
+/// `AV_PKT_DATA_DOVI_CONF` — the side-data type tag whose payload is an
+/// [`AVDOVIDecoderConfigurationRecord`]. 29 in FFmpeg 9.0; asserted in `ci/ffabi-assert.c`
+/// because `AVPacketSideDataType` is an ordinary sequential enum and every value in it shifts
+/// when a member is inserted above.
+pub const AV_PKT_DATA_DOVI_CONF: c_int = 29;
 
 // ---- AVStream field accessors, at the constants above. Read by offset rather than modelled:
 // the struct is large, mostly internal, and only three fields are wanted. ----
@@ -397,6 +440,57 @@ unsafe fn stream_codecpar(s: *mut AVStream) -> *mut AVCodecParameters {
 #[inline]
 unsafe fn stream_time_base(s: *mut AVStream) -> AVRational {
     *((s as *const u8).add(OFF_STREAM_TIME_BASE) as *const AVRational)
+}
+
+/// PURE: read an [`AVDOVIDecoderConfigurationRecord`] out of the raw side-data bytes.
+///
+/// Split from the pointer walk in [`dovi_conf`] on purpose — this half is the only half worth
+/// testing, and it is testable precisely because it never touches FFmpeg. (A test that had to
+/// enter the library would take `dlopen`'s `None` branch on Darwin and pass without executing
+/// anything, which is the failure shape the root `CLAUDE.md` warns about by name.)
+///
+/// A SHORT buffer yields `None` rather than a partial record. FFmpeg allocates these with
+/// `av_dovi_alloc` and its own demuxers always write all nine bytes, so this cannot happen today
+/// — but the record is public ABI whose size "is not a part of the public ABI" by its own header's
+/// admission, and reading nine bytes out of a seven-byte allocation is a heap overread that would
+/// report a plausible profile number rather than crash. A longer buffer is fine and expected: a
+/// future FFmpeg may append fields, and the nine we read keep their meaning.
+fn parse_dovi_conf(bytes: &[u8]) -> Option<AVDOVIDecoderConfigurationRecord> {
+    if bytes.len() < 9 {
+        return None;
+    }
+    Some(AVDOVIDecoderConfigurationRecord {
+        dv_version_major: bytes[0],
+        dv_version_minor: bytes[1],
+        dv_profile: bytes[2],
+        dv_level: bytes[3],
+        rpu_present_flag: bytes[4],
+        el_present_flag: bytes[5],
+        bl_present_flag: bytes[6],
+        dv_bl_signal_compatibility_id: bytes[7],
+        dv_md_compression: bytes[8],
+    })
+}
+
+/// The Dolby Vision configuration record attached to this stream, if the demuxer found one.
+///
+/// `coded_side_data` is the STREAM-level side data (as opposed to `AVPacket::side_data`, which is
+/// per-packet), and both bundled demuxers populate it: `mov` from the `dvcC`/`dvvC` sample-entry
+/// box, `matroska` from the `DolbyVisionConfiguration` block-additions element. So this answers
+/// "what is this file really" for every container the app direct-plays, without decoding a frame.
+unsafe fn dovi_conf(cp: *const AVCodecParameters) -> Option<AVDOVIDecoderConfigurationRecord> {
+    let (list, n) = ((*cp).coded_side_data, (*cp).nb_coded_side_data);
+    if list.is_null() || n <= 0 {
+        return None;
+    }
+    for i in 0..n as usize {
+        let sd = &*list.add(i);
+        if sd.type_ != AV_PKT_DATA_DOVI_CONF || sd.data.is_null() {
+            continue;
+        }
+        return parse_dovi_conf(std::slice::from_raw_parts(sd.data, sd.size));
+    }
+    None
 }
 #[inline]
 unsafe fn stream_index(s: *mut AVStream) -> c_int {
@@ -1784,11 +1878,39 @@ pub(crate) fn demux(host: String, port: c_int, path: String, acodec: String, aq:
             SHARED.video_w.store((*vcp).width, Ordering::Relaxed);
             SHARED.video_h.store((*vcp).height, Ordering::Relaxed);
             let cname = std::ffi::CStr::from_ptr(avcodec_get_name((*vcp).codec_id)).to_string_lossy();
+            // WHAT THE STREAM ACTUALLY IS, not just what it is called. `codec=hevc` is the same
+            // four letters for an SDR file, an HDR10 file, a Dolby Vision Profile 8.1 file whose
+            // base layer is that same HDR10, and a Profile 5 file that will display in visibly
+            // wrong colours — `avcodec_get_name` cannot tell them apart and neither could this log
+            // line or any assertion built on it. These fields can. `trc`/`pri`/`spc` are the raw
+            // AVCOL_* enum values, logged as NUMBERS because naming them would mean binding three
+            // more FFmpeg symbols for a diagnostic: trc 16 = smpte2084 (PQ/HDR10), 18 = arib-std-b67
+            // (HLG), spc 9 = bt2020nc, pri 9 = bt2020, and **2 = UNSPECIFIED on all three** — which
+            // is what a Profile 5 file reads, since IPT-PQ signals no ordinary transfer at all.
+            // All three were declared in the offsets table above and read NOWHERE until now.
+            let dv = match dovi_conf(vcp) {
+                // `bl_compat` is the field that decides whether the base layer means anything on
+                // its own, so it is logged beside the profile rather than left to be inferred
+                // from it — 0 is Profile 5's "none", 1 the HDR10 of a Profile 8.1.
+                Some(d) => format!(
+                    " dovi=P{} level={} bl_compat={} rpu={} el={} bl={}",
+                    d.dv_profile,
+                    d.dv_level,
+                    d.dv_bl_signal_compatibility_id,
+                    d.rpu_present_flag,
+                    d.el_present_flag,
+                    d.bl_present_flag
+                ),
+                None => String::new(),
+            };
             crate::player::log(&format!(
-                "ff: v=#{vi} codec={cname} codec_id={} {}x{} a=#{ai} dur_ns={}",
+                "ff: v=#{vi} codec={cname} codec_id={} {}x{} trc={} pri={} spc={}{dv} a=#{ai} dur_ns={}",
                 (*vcp).codec_id,
                 (*vcp).width,
                 (*vcp).height,
+                (*vcp).color_trc,
+                (*vcp).color_primaries,
+                (*vcp).color_space,
                 SHARED.duration_ns.load(Ordering::Relaxed)
             ));
 
@@ -2071,6 +2193,89 @@ mod tests {
         let mut out = Vec::new();
         let key = unsafe { packet_to_annexb(buf.as_ptr(), buf.len(), 4, is_hevc, param, &mut out) };
         (key, out)
+    }
+
+    // -- parse_dovi_conf: the Dolby Vision configuration record ---------------------------
+    //
+    // The record is nine plain bytes, so these fixtures ARE the wire format — no builder, no
+    // FFmpeg. That is the point: `dovi_conf`'s pointer walk cannot be host-tested (dlopen returns
+    // None on Darwin, so a test naming it would pass without executing one line of it), but the
+    // parse is where a field could be transposed, and the parse is pure.
+
+    /// The nine bytes as the header lays them out, so a fixture reads like the spec table.
+    fn dovi_bytes(profile: u8, level: u8, rpu: u8, el: u8, bl: u8, compat: u8) -> Vec<u8> {
+        vec![1, 0, profile, level, rpu, el, bl, compat, 0]
+    }
+
+    /// **Profile 5** — single-layer IPT-PQ. `bl_compat = 0` ("none") is the field that says the
+    /// base layer is not displayable by a decoder that ignores the RPU, and it is the whole
+    /// reason this record is read at all.
+    #[test]
+    fn a_profile_5_record_parses_with_no_base_layer_compatibility() {
+        let d = parse_dovi_conf(&dovi_bytes(5, 6, 1, 0, 1, 0)).expect("nine bytes is a record");
+        assert_eq!(d.dv_profile, 5);
+        assert_eq!(d.dv_bl_signal_compatibility_id, 0);
+        assert_eq!(d.el_present_flag, 0);
+        assert_eq!(d.rpu_present_flag, 1);
+        assert_eq!(d.bl_present_flag, 1);
+        assert_eq!(d.dv_level, 6);
+        assert_eq!(d.dv_version_major, 1);
+    }
+
+    /// **Profile 7** — dual layer. The enhancement-layer flag is what identifies it; note the
+    /// compatibility id is 6 here (the value the dev server reports for its P7 item), so a reader
+    /// that only looked at `bl_compat == 0` would call this file fine.
+    #[test]
+    fn a_profile_7_record_parses_with_an_enhancement_layer() {
+        let d = parse_dovi_conf(&dovi_bytes(7, 6, 1, 1, 1, 6)).expect("nine bytes is a record");
+        assert_eq!(d.dv_profile, 7);
+        assert_eq!(d.el_present_flag, 1);
+        assert_eq!(d.dv_bl_signal_compatibility_id, 6, "NOT 0 — the trap this test exists to hold");
+    }
+
+    /// **Profile 8.1** — the base layer IS HDR10, which `bl_compat = 1` is exactly the statement
+    /// of. Nothing about this file should change behaviour anywhere.
+    #[test]
+    fn a_profile_8_1_record_parses_as_hdr10_compatible() {
+        let d = parse_dovi_conf(&dovi_bytes(8, 6, 1, 0, 1, 1)).expect("nine bytes is a record");
+        assert_eq!(d.dv_profile, 8);
+        assert_eq!(d.dv_bl_signal_compatibility_id, 1);
+        assert_eq!(d.el_present_flag, 0);
+    }
+
+    /// The ABSENT case, and the short one. A file with no Dolby Vision has no side-data entry at
+    /// all, which `dovi_conf` reports as `None` without ever reaching here; what this pins is the
+    /// other way in — a TRUNCATED payload must not be read as a partial record, because nine
+    /// bytes taken out of a seven-byte allocation is a heap overread that returns a plausible
+    /// profile number rather than crashing.
+    #[test]
+    fn a_short_record_is_not_a_partial_record() {
+        assert_eq!(parse_dovi_conf(&[]), None);
+        assert_eq!(parse_dovi_conf(&[1, 0, 5, 6, 1, 0, 1, 0]), None, "eight bytes is not nine");
+        // exactly nine is the boundary, and it is inclusive
+        assert!(parse_dovi_conf(&dovi_bytes(5, 6, 1, 0, 1, 0)).is_some());
+        // a LONGER payload is fine and expected — a future FFmpeg may append fields, and the
+        // nine we read keep their meaning
+        let mut long = dovi_bytes(8, 6, 1, 0, 1, 1);
+        long.extend_from_slice(&[0xAA; 7]);
+        assert_eq!(parse_dovi_conf(&long).map(|d| d.dv_profile), Some(8));
+    }
+
+    /// Every field at its own offset: nine distinct byte values in, nine distinct values out.
+    /// A transposition of any adjacent pair — the one mistake a hand-written record parse is
+    /// actually prone to — fails here and nowhere else.
+    #[test]
+    fn every_field_reads_from_its_own_byte() {
+        let d = parse_dovi_conf(&[10, 11, 12, 13, 14, 15, 16, 17, 18]).unwrap();
+        assert_eq!(d.dv_version_major, 10);
+        assert_eq!(d.dv_version_minor, 11);
+        assert_eq!(d.dv_profile, 12);
+        assert_eq!(d.dv_level, 13);
+        assert_eq!(d.rpu_present_flag, 14);
+        assert_eq!(d.el_present_flag, 15);
+        assert_eq!(d.bl_present_flag, 16);
+        assert_eq!(d.dv_bl_signal_compatibility_id, 17);
+        assert_eq!(d.dv_md_compression, 18);
     }
 
     // -- nal_end: the 32-bit bounds guard -------------------------------------------------
