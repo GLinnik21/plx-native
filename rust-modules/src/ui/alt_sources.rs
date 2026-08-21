@@ -135,7 +135,7 @@ const EDGE: f32 = theme::space::XL;
 /// The page recedes; it is not blanked, and the hero behind stays readable.
 const SCRIM_A: f32 = 0.45;
 /// How far the panel rises into place, matching those same chip menus.
-const RISE: f32 = 20.0;
+const RISE: f32 = Popover::RISE;
 
 /// The item the store describes, as the page's own mounted ratingKey. It does two jobs: with
 /// [`FOR_SID`] it is the mailbox key [`install`] matches a landing against (a guid resolve that

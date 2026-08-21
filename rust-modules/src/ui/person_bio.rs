@@ -62,7 +62,7 @@ const PANEL_H: f32 = 700.0;
 const PAD: f32 = 48.0;
 
 /// How far the sheet rises into place, matching every other popover in the app.
-const RISE: f32 = 20.0;
+const RISE: f32 = Popover::RISE;
 /// The page dim. See the module doc — this is heavier than the chip menus' 0.45 on purpose, and it
 /// is a named token rather than a tuned number.
 const SCRIM_A: f32 = theme::SCRIM_TEXT_A;
@@ -70,6 +70,12 @@ const SCRIM_A: f32 = theme::SCRIM_TEXT_A;
 /// Air between paragraphs of the biography. A block gap, one `space` rung — the paragraphs are
 /// separate thoughts, not separate blocks of the page.
 const PARA_GAP: f32 = theme::space::MD;
+/// The design's `trailing 40px spacer` under the last paragraph (§1C; §1B spends the same as its
+/// `padding-bottom:40`). It is air at the END OF THE TRAVEL, not padding: without it the last line
+/// rests flush on the viewport's clip, and the bottom feather is off by then — the block has
+/// stopped scrolling — so the final line of a biography was cut by a hard edge with nothing under
+/// it. That is the one page of this panel a reader always reaches.
+const BODY_TAIL: f32 = theme::space::LG;
 /// The bio's line pitch. `person.rs`'s header bio uses the same 40 at the same rung, so the prose
 /// is paced identically whether it is being previewed or read.
 const BIO_LEAD: f32 = 40.0;
@@ -91,14 +97,14 @@ const EYEBROW_TRACK: f32 = theme::size::CAPTION as f32 * 0.08;
 /// spelled this way, and why it is only worth it for a constant word.
 const EYEBROW: [&std::ffi::CStr; 6] = [c"P", c"E", c"R", c"S", c"O", c"N"];
 
-/// The footer's right-hand hint, as its three runs. `BACK` is drawn as a [`widgets::key_cap`] — the
-/// same cap the player's failure read-out wears, and for the same reason: a named physical button
-/// survives a photograph of a television in a way that the word "back" in a sentence does not.
+/// The footer's right-hand hint, as its three runs — assembled by the shared
+/// [`widgets::KeyHint`], which owns the cap, the gaps and the measure. This module used to lay the
+/// line out itself (three `text_width` calls, its own `HINT_GAP` and a bare `key_cap`), which was
+/// the same arithmetic the widget already does and the place a fourth copy of the design's `gap`
+/// would have drifted — it did drift, to 14 against the spec's 12.
 const HINT_PRE: &std::ffi::CStr = c"Press";
 const HINT_KEY: &std::ffi::CStr = c"BACK";
 const HINT_POST: &std::ffi::CStr = c"to return";
-/// Air either side of the keycap inside the hint.
-const HINT_GAP: f32 = 14.0;
 
 /// The dot-separated identity line's air either side of its separator — `detail.rs`'s facts row
 /// spends the same, and the two lines are the same idiom.
@@ -295,7 +301,7 @@ fn content_h(person: &Person) -> f32 {
         }
         h += para_view(para).measure_h(w);
     }
-    h
+    h + BODY_TAIL
 }
 
 /// **The paging arithmetic, pure**: how many pages `content_h` of prose makes in a `view_h`
@@ -348,7 +354,11 @@ fn scroll_for_page(page: usize) -> f32 {
 /// locale or a clock.
 pub(crate) fn meta_runs(roles: &str, born: &str, died: &str, birthplace: &str) -> Vec<String> {
     let mut v: Vec<String> = Vec::new();
-    for (label, value) in [("", roles), ("", born), ("Died ", died), ("", birthplace)] {
+    // `Born ` is the design's own wording (§1C: "Actor, Singer" · "Born 8 Jan 1987" · "London,
+    // England"), and it is not decoration: a bare date sitting between a role list and a city has
+    // nothing to say which date it is. Its sibling `Died ` was labelled from the start, which is
+    // what made the asymmetry easy to miss.
+    for (label, value) in [("", roles), ("Born ", born), ("Died ", died), ("", birthplace)] {
         let value = value.trim();
         if !value.is_empty() {
             v.push(format!("{label}{value}"));
@@ -539,18 +549,10 @@ fn draw_foot(p: Painter, person: &Person, c: Rect) {
             );
         }
     }
-    // …and the hint, right-anchored: measured first so the whole run ends on the content box's
-    // right edge, which is the same edge the rail and the hairlines end on.
-    let pre_w = crate::text::text_width(HINT_PRE.as_ptr(), sz, 0);
-    let key_w = widgets::key_cap_w(HINT_KEY);
-    let post_w = crate::text::text_width(HINT_POST.as_ptr(), sz, 0);
-    let total = pre_w + HINT_GAP + key_w + HINT_GAP + post_w;
-    let x = c.x + c.w - total;
-    let ty = crate::text::text_vcenter_y(sz, 0, cy);
-    p.text(HINT_PRE.as_ptr(), x, ty, sz, theme::TEXT_TERTIARY, 0, 0);
-    let kx = x + pre_w + HINT_GAP;
-    widgets::key_cap(p, kx, cy, HINT_KEY, theme::TEXT_SECONDARY);
-    p.text(HINT_POST.as_ptr(), kx + key_w + HINT_GAP, ty, sz, theme::TEXT_TERTIARY, 0, 0);
+    // …and the hint, right-anchored: the widget measures itself, so the whole run ends on the
+    // content box's right edge — the same edge the rail and the hairlines end on.
+    let hint = widgets::KeyHint::new(HINT_PRE, HINT_KEY, HINT_POST);
+    hint.draw(p, c.x + c.w - hint.width(), cy);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -617,13 +619,16 @@ mod tests {
     /// "Actor · · London", which is the bug this shape exists to make unrepresentable.
     #[test]
     fn the_meta_line_drops_a_missing_field_and_its_separator_with_it() {
-        // everything present, in flow order
+        // everything present, in flow order. BOTH dates carry their label — the design writes the
+        // line as "Actor, Singer" · "Born 8 Jan 1987" · "London, England" (§1C), and the birth
+        // date shipped bare here while its `Died ` sibling was labelled, which is an asymmetry
+        // that reads as an oversight rather than as a decision.
         assert_eq!(
             meta_runs("Actress, Singer", "8 January 1987", "", "Stockwell, London"),
-            vec!["Actress, Singer", "8 January 1987", "Stockwell, London"]
+            vec!["Actress, Singer", "Born 8 January 1987", "Stockwell, London"]
         );
         // no roles — the line starts on the date, with nothing in front of it
-        assert_eq!(meta_runs("", "8 January 1987", "", "London"), vec!["8 January 1987", "London"]);
+        assert_eq!(meta_runs("", "8 January 1987", "", "London"), vec!["Born 8 January 1987", "London"]);
         // no dates at all (plex.tv knows the person but not when) — roles and place still read
         assert_eq!(meta_runs("Director", "", "", "Leeds"), vec!["Director", "Leeds"]);
         // a death date but no birth date: the run is LABELLED, because a bare second date beside a

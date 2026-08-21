@@ -69,7 +69,7 @@ const EDGE_CLEAR: f32 = 68.0;
 /// The modal scrim's peak alpha — the mock's `scrimStill: 0.46`, shared by all four alerts.
 const SCRIM_A: f32 = 0.46;
 /// How far below its resting place the panel starts its entry slide.
-const RISE: f32 = 24.0;
+const RISE: f32 = Popover::RISE;
 
 // ---- the ladder ------------------------------------------------------------------------------
 //
