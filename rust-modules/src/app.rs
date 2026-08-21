@@ -836,6 +836,12 @@ fn probe_bar_host(h: BarHost) -> crate::focusprobe::Host {
 enum Route {
     Login,    // plex.tv sign-in (QR) — shown when there's no usable session
     Profiles, // "who's watching" Plex Home picker
+    /// **"What goes on your Home?"** (`ui::onboard`) — the third and last onboarding screen, and
+    /// the only one that is not about credentials: which of the granted sources merge into Home,
+    /// asked once PER PROFILE and only when the roster holds more than one. Between the picker and
+    /// Home, so a household member answers for themselves rather than inheriting the answer of
+    /// whoever set the television up.
+    Onboard,
     Home,
     /// `over` + the top-left profile menu popover (change profile / sign out). The chip is
     /// SHARED chrome, so the page underneath is whichever of the three wears the bar — see
@@ -872,7 +878,7 @@ fn route_wears_tab_bar(r: Route) -> bool {
         // is the only way this stays right as hosts are added on either side.
         Route::Account { over } => route_wears_tab_bar(over.route()),
         Route::ItemMenu { over } => route_wears_tab_bar(over.route()),
-        Route::Login | Route::Profiles | Route::Detail | Route::Person | Route::Player { .. } => false,
+        Route::Login | Route::Profiles | Route::Onboard | Route::Detail | Route::Person | Route::Player { .. } => false,
     }
 }
 /// The PAGE a trail node names — the ONE Node→[`Route`] mapping in the app. Both things
@@ -931,9 +937,9 @@ fn leave_of(r: Route) -> Option<fn()> {
         Route::Person => Some(crate::ui::person::leave as fn()),
         // Nothing loaded that outlives the page. Home and the Library keep their stores for
         // as long as the profile does (`browse.rs` is re-ENTERED, never re-queried — that is
-        // why `Node::Library` carries no payload), Login/Profiles are boot gates the app
+        // why `Node::Library` carries no payload), Login/Profiles/Onboard are boot gates the app
         // leaves once, and a player session is torn down by its own exit path.
-        Route::Home | Route::Library | Route::Login | Route::Profiles | Route::Player { .. } => None,
+        Route::Home | Route::Library | Route::Login | Route::Profiles | Route::Onboard | Route::Player { .. } => None,
         // Search DOES have one, and it is not a store: the television's keyboard must come
         // down with the page. Dismissing it at the press instead would drop the panel a
         // frame early, while the screen it belongs to is still on screen behind it.
@@ -972,9 +978,9 @@ fn stays_on_trail(r: Route) -> bool {
         // stays on the trail, but its teardown rides every exit — see the doc above
         Route::Search => false,
         // Boot gates the app leaves once, and a player session torn down by its own exit path.
-        // None of the three has a `leave_of` at all, so this answer is about being honest rather
+        // None of the four has a `leave_of` at all, so this answer is about being honest rather
         // than about having an effect.
-        Route::Login | Route::Profiles | Route::Player { .. } => false,
+        Route::Login | Route::Profiles | Route::Onboard | Route::Player { .. } => false,
         // Unreachable: `page_of` resolves a popover onto the screen it sits on. Listed rather than
         // swept into a `_`, exactly as `leave_of` above.
         Route::Account { .. } | Route::ItemMenu { .. } => false,
@@ -1461,10 +1467,10 @@ fn return_page(r: Route, detail: Option<Node>, person: Option<Node>) -> Node {
         Route::Person => person.unwrap_or(Node::Home),
         Route::Library => Node::Library,
         Route::Search => Node::Search,
-        // Home is the root and the honest answer for the three boot gates as well. `Player` is
+        // Home is the root and the honest answer for the four boot gates as well. `Player` is
         // unreachable — every caller is a launch, which is off the player route by definition —
         // and lands here rather than being a variant the compiler makes anyone think about.
-        Route::Home | Route::Login | Route::Profiles | Route::Player { .. } => Node::Home,
+        Route::Home | Route::Login | Route::Profiles | Route::Onboard | Route::Player { .. } => Node::Home,
         // …and the two popovers cannot reach this arm at all: `page_of` above resolved them.
         Route::Account { .. } | Route::ItemMenu { .. } => Node::Home,
     }
@@ -2382,9 +2388,17 @@ unsafe fn begin_fresh_press(
     }
 }
 
-/// Onboarding screens (login / who's-watching) own every fresh key — nothing is behind them, so
-/// route the key to the active screen and skip all other handlers.
-unsafe fn key_onboarding(route: Route, sym: c_uint, wcode: c_uint, ok_armed: &mut bool) {
+/// Onboarding screens (login / who's-watching / the Home-sources question) own every fresh key —
+/// nothing is behind them, so route the key to the active screen and skip all other handlers.
+///
+/// Returns `true` when the screen has finished with the flow and the caller should route Home.
+/// Only [`Route::Onboard`] ever answers so: the other two are driven by `auth`'s phase, which the
+/// per-frame block at the bottom of the loop reads, while this one is a question with an answer
+/// and no worker behind it.
+unsafe fn key_onboarding(route: Route, sym: c_uint, wcode: c_uint, ok_armed: &mut bool) -> bool {
+    if matches!(route, Route::Onboard) {
+        return matches!(crate::ui::onboard::key(sym, wcode), crate::ui::onboard::Action::Done);
+    }
     if matches!(route, Route::Profiles) {
         if is_ok(sym) && crate::ui::profiles::focus_is_avatar() {
             // press the roster avatar; the select commits on the spring-back
@@ -2397,6 +2411,22 @@ unsafe fn key_onboarding(route: Route, sym: c_uint, wcode: c_uint, ok_armed: &mu
     } else {
         crate::ui::login::key(sym, wcode);
     }
+    false
+}
+
+/// Leave the first-run question for Home.
+///
+/// The trail is RESET rather than pushed to: this route is the last of the onboarding gates and
+/// Home is the root behind it, so a BACK from Home must exit the app exactly as it does on any
+/// other boot — not walk back into a question that has already been answered. `enter` is what the
+/// route's own BACK and its `Start watching` both come through, which is why there is one exit and
+/// not two.
+fn enter_home_from_onboard(trail: &mut Trail) -> Route {
+    trail.reset();
+    // The selection just recorded is an input to Home's merge (`pms::feeds_home`), and the merge
+    // re-runs off `browse`'s section generation — which `record_pins`/`toggle_pin` have already
+    // bumped. Nothing to kick here; Home builds from the answer on its first frame.
+    Route::Home
 }
 
 /// The profile menu is modal — rows nav, OK commits, BACK closes back to `over`: the page the chip
@@ -3445,8 +3475,14 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 // can show IMMEDIATELY (and all it can show offline); this is what makes a share
                 // granted since the last sign-in ever appear at all. Non-destructive on failure.
                 crate::auth::refresh_roster_online();
+                // WHO is watching, before anything reads a per-profile store. It drives the Home
+                // profile chip, and it is also what `browse::resolve_pins` and
+                // `ui::search::recents` key on — `install_pms` below ends in the section fetch
+                // that resolves the Home selection, so set after it that resolve ran against the
+                // OWNER's record whoever was actually signed in. (`auth::take_ready`, the other
+                // way into Home, already sets it before its own `install_pms` for this reason.)
+                crate::plex::session::set_current(Some(session.user.clone()));
                 install_pms(&session.server.address, session.server.port as c_int, session.pms_token());
-                crate::plex::session::set_current(Some(session.user.clone())); // Home profile chip
                 log("boot: stored session — local server (offline-capable)");
                 BootTo::Home
             }
@@ -3610,7 +3646,28 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
 
         // Initial route from the boot gate: Login when we have no usable creds, Profiles for the
         // boot who's-watching picker, else Home.
+        //
+        // …and Home is intercepted by the first-run question when this profile has never been
+        // asked it and the roster holds more than one source (`ui::onboard`). It belongs HERE as
+        // well as on the login path, because a single-Plex-Home-user account never meets the
+        // picker at all: the two paths into Home are the picker's `take_ready` and this gate, and
+        // a question asked on only one of them is a question half the accounts never see.
+        // `install_pms` above has already registered the stored roster, so "more than one source"
+        // has a real answer by this line. An AUTOMATED boot is exempt for the reason the picker is
+        // — a harness run must land on a deterministic Home.
+        //
+        // dev: `/tmp/plxnative-firstrun` forces it — a screen that is by definition asked once is
+        // otherwise unreachable the moment you have answered it, and the two-source roster it
+        // needs comes from `/tmp/plxnative-servers`, which marks the boot automated. Both halves
+        // are why looking at this screen headlessly requires a trigger of its own.
+        let ask_first_run =
+            || crate::dev::flag("firstrun") || (!automated_boot() && crate::ui::onboard::asks());
         let mut route = match boot_to {
+            BootTo::Home if ask_first_run() => {
+                log("boot: asking which sources feed Home");
+                crate::ui::onboard::enter();
+                Route::Onboard
+            }
             BootTo::Home => Route::Home,
             BootTo::Login => Route::Login,
             BootTo::Profiles => Route::Profiles,
@@ -3891,8 +3948,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     // below does deliberately. Keep it a chain — a `match` over the same routes
                     // compiles and keeps the suite green while silently reordering it, because
                     // exhaustiveness cannot see subsumption.
-                    if matches!(route, Route::Login | Route::Profiles) {
-                        key_onboarding(route, sym, wcode, &mut ok_armed);
+                    if matches!(route, Route::Login | Route::Profiles | Route::Onboard) {
+                        if key_onboarding(route, sym, wcode, &mut ok_armed) {
+                            route = enter_home_from_onboard(&mut trail);
+                        }
                         continue;
                     }
                     if let Route::Account { over } = route {
@@ -4028,6 +4087,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     }
                     if matches!(route, Route::Profiles) {
                         crate::ui::profiles::pointer_focus(mx, my);
+                    } else if matches!(route, Route::Onboard) {
+                        crate::ui::onboard::pointer_focus(mx, my);
                     } else if matches!(route, Route::Account { .. }) {
                         crate::ui::account_menu::pointer_focus(mx, my);
                     } else if matches!(route, Route::Player { overlay: Overlay::More }) {
@@ -4300,6 +4361,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     } else if matches!(route, Route::Profiles) {
                         let (cx, cy) = ptr_xy(&ev);
                         crate::ui::profiles::click(cx, cy);
+                    } else if matches!(route, Route::Onboard) {
+                        let (cx, cy) = ptr_xy(&ev);
+                        if matches!(crate::ui::onboard::click(cx, cy), crate::ui::onboard::Action::Done) {
+                            route = enter_home_from_onboard(&mut trail);
+                        }
                     } else if matches!(route, Route::Login) {
                         // one actionable thing on the login screen (retry on error) — click = OK
                         crate::ui::login::key(SDLK_RETURN, 0);
@@ -5144,8 +5210,18 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     // be able to walk BACK into the previous one's pages. Reset at the CALL SITE
                     // because `install_pms` is a closure that cannot also hold `&mut trail`.
                     trail.reset();
-                    log("login: server installed — entering Home");
-                    route = Route::Home;
+                    // …and only NOW can the first-run question be asked: `install_pms` is what
+                    // registers the roster and discovers the current server's sections, so before
+                    // this line the answer to "more than one source" is always no. It is asked per
+                    // PROFILE, which is why it sits after the switch rather than after the sign-in.
+                    if crate::ui::onboard::asks() {
+                        log("login: server installed — asking which sources feed Home");
+                        crate::ui::onboard::enter();
+                        route = Route::Onboard;
+                    } else {
+                        log("login: server installed — entering Home");
+                        route = Route::Home;
+                    }
                 } else {
                     match crate::auth::phase() {
                         crate::auth::Phase::Profiles | crate::auth::Phase::Switching => {
@@ -5305,6 +5381,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
 
             if matches!(route, Route::Login) {
                 crate::ui::login::update(dt);
+            } else if matches!(route, Route::Onboard) {
+                crate::ui::onboard::update(dt);
             } else if matches!(route, Route::Profiles) {
                 crate::ui::profiles::update(dt);
                 if pick_user.is_some()
@@ -5657,6 +5735,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         let mut page = || {
                             if matches!(page_route, Route::Login) {
                                 crate::ui::login::draw();
+                            } else if matches!(page_route, Route::Onboard) {
+                                crate::ui::onboard::draw();
                             } else if matches!(page_route, Route::Profiles) {
                                 crate::ui::profiles::draw();
                             } else if matches!(page_route, Route::Detail) {
@@ -5781,6 +5861,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             let rn = match route {
                 Route::Login => "login",
                 Route::Profiles => "profiles",
+                Route::Onboard => "onboard",
                 Route::Account { .. } => "account",
                 Route::ItemMenu { .. } => "itemmenu",
                 Route::Library => "library",
@@ -5809,6 +5890,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 let screen = match route {
                     Route::Login => crate::focusprobe::Screen::Login,
                     Route::Profiles => crate::focusprobe::Screen::Profiles,
+                    Route::Onboard => crate::focusprobe::Screen::Onboard,
                     Route::Home => crate::focusprobe::Screen::Home,
                     Route::Account { over } => {
                         crate::focusprobe::Screen::Account { over: probe_bar_host(over) }
@@ -6029,7 +6111,7 @@ mod route_tests {
             assert!(BarHost::of(over.route()) == Some(over));
         }
         // a route with no chip on it opens no popover at all — the guard in `chip_activate`
-        for r in [Route::Detail, Route::Person, Route::Login, Route::Profiles,
+        for r in [Route::Detail, Route::Person, Route::Login, Route::Profiles, Route::Onboard,
                   Route::Player { overlay: Overlay::None }, Route::ItemMenu { over: MenuHost::Detail }] {
             assert!(BarHost::of(r).is_none(), "only the three bar screens carry the profile chip");
         }
@@ -6178,7 +6260,7 @@ mod player_return_tests {
         assert_eq!(page(Route::Detail), det(A, "7"), "the detail page's Play/Resume and filmstrip");
         // The three boot gates and the player itself are unreachable as launch origins; they must
         // still name a page, and Home is the one that is always there.
-        for r in [Route::Login, Route::Profiles, Route::Player { overlay: Overlay::None }] {
+        for r in [Route::Login, Route::Profiles, Route::Onboard, Route::Player { overlay: Overlay::None }] {
             assert_eq!(page(r), Node::Home);
         }
     }
