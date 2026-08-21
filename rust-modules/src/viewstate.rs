@@ -268,11 +268,14 @@ fn edit_local(sid: ServerId, rk: &str, w: Write) {
             let on = w == Write::Watched;
             // **Every store that can be DRAWING the item, not just the hub catalog.** The first two
             // lines were the whole edit while the context menu opened on Home and the detail page
-            // alone; it opens on the Library grid, a Search result and a person's filmography now,
-            // and each of those keeps its own rows (`pms::edit_item`'s own doc names the gap — "the
-            // item is on no shelf (a Library-grid or Related item): nothing to redraw"). Left at
-            // two, the press wrote correctly to the server and changed nothing on the screen the
-            // user was looking at until a refetch, which reads as the row having done nothing.
+            // alone; it opens on the Library grid, a Search result, a person's filmography and — since
+            // 2026-08-21 — the detail page's Related shelf, and each of those keeps its own rows.
+            // Left at two, the press wrote correctly to the server and changed nothing on the screen
+            // the user was looking at until a refetch, which reads as the row having done nothing.
+            //
+            // `metadata::set_watched_local` covers TWO of those surfaces, which is why the list below
+            // is five calls and not six: the detail page holds the loaded item, its season's episodes
+            // AND the Related tiles, and that one call walks all three.
             //
             // All five are no-ops where the item does not appear — a walk of an empty or unrelated
             // store — so a press from any one screen still costs about what it did.

@@ -705,17 +705,37 @@ enum Overlay {
 /// each: a page falling through to `home_draw`, a tab bar disappearing mid-hold.
 ///
 /// **Every screen with card tiles is a host.** It was Home and the detail filmstrip alone, while
-/// the Library grid, Search's result shelves and the person page's filmography all ARM the same
-/// press (`press::begin` + `ok_armed`) — so a hold there dipped the card, latched long, and then
-/// did nothing at all. The three surfaces whose tiles carry no `(ratingKey, watched)` pair are
-/// deliberately still absent: the detail page's Related shelf and cast headshots, and Search's
-/// Cast & Crew / Collections rows, whose `Item::Tag` has no rating key to act on.
+/// the Library grid, Search's result shelves, the person page's filmography and the detail page's
+/// Related shelf all ARM the same press (`press::begin` + `ok_armed`) — so a hold there dipped the
+/// card, latched long, and then did nothing at all.
+///
+/// The Related shelf was the last of those and was excluded one round longer than the rest, on the
+/// stated grounds that its tiles carried no `(ratingKey, watched)` pair to build rows from. That
+/// was true of the STRUCT and never of the data — `/related` returns the same wire DTO as every
+/// other listing — so the fix was upstream, in `metadata::Related`, and this became an ordinary
+/// host.
+///
+/// **What remains excluded is excluded for a reason that does not dissolve**: a tile that is a
+/// PERSON or a TAG has no ratingKey and no watch state, so every row this menu can build would be
+/// absent and a hold would open an empty panel. That is the detail page's cast headshots and
+/// Search's Cast & Crew / Collections rows (`search::Item::Tag` has no rating key at all). Do not
+/// add them a host; there is nothing for it to show.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum MenuHost {
     /// a home shelf card
     Home,
     /// the detail page's episode filmstrip
     Detail,
+    /// the detail page's RELATED shelf — the same page as [`MenuHost::Detail`] underneath, and a
+    /// deliberately separate host because the ACTION means something different there.
+    ///
+    /// `Detail` is the filmstrip, whose rk is a leaf of the season this page has loaded: its Play
+    /// from Start goes through `detail::play_episode_rk_from_start`, and its scrobble re-reads the
+    /// page. A Related tile is neither of those things — it is a DIFFERENT item, a card row exactly
+    /// like Home's or the Library grid's, and routing it through the filmstrip's arms would look
+    /// for it among the loaded episodes, not find it, and do nothing at all. Folding the two into
+    /// one variant is therefore the bug, not the simplification.
+    Related,
     /// the Library browse grid
     Library,
     /// a Search result shelf (media tiles only)
@@ -728,11 +748,23 @@ impl MenuHost {
     fn route(self) -> Route {
         match self {
             MenuHost::Home => Route::Home,
-            MenuHost::Detail => Route::Detail,
+            // both detail-page hosts close back onto the page they stand on
+            MenuHost::Detail | MenuHost::Related => Route::Detail,
             MenuHost::Library => Route::Library,
             MenuHost::Search => Route::Search,
             MenuHost::Person => Route::Person,
         }
+    }
+    /// Whether this host's item is **a leaf of the loaded season** — i.e. whether an action means
+    /// the detail page's own episode path rather than the shared card-row one.
+    ///
+    /// The question `apply_item_action` asks twice (Play from Start, and whether the page must
+    /// re-read itself after a scrobble), asked ONCE here so the two cannot drift apart. It was
+    /// `matches!(host, MenuHost::Detail)` written out at both sites, which was exactly right while
+    /// the filmstrip was the page's only menu — and silently wrong the moment a second one opened
+    /// on the same page over an item that is not an episode at all.
+    fn is_loaded_episode(self) -> bool {
+        matches!(self, MenuHost::Detail)
     }
 }
 /// Which screen a popover on the SHARED TOP BAR is sitting over — the three pages that wear the
@@ -781,7 +813,8 @@ impl BarHost {
 fn probe_host(h: MenuHost) -> crate::focusprobe::Host {
     match h {
         MenuHost::Home => crate::focusprobe::Host::Home,
-        MenuHost::Detail => crate::focusprobe::Host::Detail,
+        // both fingerprint as the detail page, because that is the page that is live under them
+        MenuHost::Detail | MenuHost::Related => crate::focusprobe::Host::Detail,
         MenuHost::Library => crate::focusprobe::Host::Library,
         MenuHost::Search => crate::focusprobe::Host::Search,
         MenuHost::Person => crate::focusprobe::Host::Person,
@@ -1919,13 +1952,18 @@ fn open_item_menu(route: &mut Route) -> bool {
     true
 }
 
-/// The same popover on a card surface that is NOT Home: the Library grid, a Search result shelf and
-/// the person page's filmography, which all already arm the identical press.
+/// The same popover on a card surface that is NOT Home: the Library grid, a Search result shelf,
+/// the person page's filmography and the detail page's RELATED shelf — all of which already arm the
+/// identical press.
 ///
-/// One function for the three because they differ in exactly two values — the focused row and the
+/// One function for the four because they differ in exactly two values — the focused row and the
 /// [`Opener`] that draws it — and in nothing else. There is no `from_deck` on any of them: the
 /// Continue Watching deck is a HOME hub, and offering to remove a Library tile from it would be a
 /// row that appeared to work and changed nothing (`item_menu::build`'s own rule).
+///
+/// The Related shelf joining this list rather than `open_episode_menu` is the whole shape of that
+/// fix: it sits on the detail page, but its tiles are OTHER items, so it is a card row like the
+/// other three and not a leaf of the loaded season (see [`MenuHost::Related`]).
 fn open_tile_menu(
     route: &mut Route,
     host: MenuHost,
@@ -2043,7 +2081,13 @@ unsafe fn apply_item_action(
             // panic here unwinds out of the SDL loop and kills the app. If a third write row
             // is ever added to this pattern without a verb, it does nothing instead.
             let Some(w) = a.watch_write() else { return };
-            let detail = matches!(host, MenuHost::Detail).then(|| rk.clone());
+            // Only the FILMSTRIP's host re-reads the page: its rk is an episode of the loaded
+            // season, so the tab ticks, the checks and the hero's own discs all change with it. A
+            // RELATED tile is a different item — the page it is drawn on says nothing about it, and
+            // asking for a refetch here would re-read the mounted show for a write that never
+            // touched it. The tile's own tick is flipped by `metadata::set_watched_local` instead,
+            // which walks the Related shelf for exactly this case.
+            let detail = host.is_loaded_episode().then(|| rk.clone());
             // NO GUID from here, and deliberately: a catalog row carries none, and the guid the
             // detail page is holding belongs to the SHOW when this rk is one of its episodes. A
             // guid that is merely close marks a DIFFERENT title watched on every other source, so
@@ -2073,7 +2117,10 @@ unsafe fn apply_item_action(
             // catalog usually doesn't hold at all (only the one Continue Watching is showing
             // ever does) — so it plays through the page's own episode path, the same one OK
             // on the still uses, with the resume dropped.
-            if matches!(host, MenuHost::Detail) {
+            // …the FILMSTRIP's host only. A Related tile is not among the loaded episodes, so this
+            // lookup would miss and the press would do nothing — it takes the card-row arm below,
+            // which plays the row the menu captured.
+            if host.is_loaded_episode() {
                 if crate::ui::detail::play_episode_rk_from_start(&rk) {
                     let resume = crate::ui::detail::last_resume_ns();
                     start_playback(mt, resume, true, HUD_LINGER_MS, route, played_from_detail, hud_nav);
@@ -4782,10 +4829,27 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     && match route {
                         // the grid, not the hero: the hero has no card to anchor a panel beside
                         Route::Home => crate::ui::home::snap_pos() >= 0.5 && open_item_menu(&mut route),
-                        // the detail page's episode filmstrip (`focused_episode` declines every
-                        // other section, so a held OK on the Related/Cast shelves — which arm the
-                        // same press — falls through to the ordinary spring-back, unchanged)
-                        Route::Detail => open_episode_menu(&mut route),
+                        // The detail page has TWO card surfaces and tries them in turn. Each
+                        // declines by section (`focused_episode` answers only on the filmstrip,
+                        // `focused_related` only on the Related shelf), so at most one can open and
+                        // the order between them is not a precedence — it is just an order.
+                        //
+                        // The CAST shelf arms the same press and still falls through to the
+                        // ordinary spring-back, deliberately: a headshot is a person, with no
+                        // ratingKey and no watch state, so every row this menu builds would be
+                        // absent and the panel would open empty.
+                        Route::Detail => {
+                            open_episode_menu(&mut route)
+                                || open_tile_menu(
+                                    &mut route,
+                                    MenuHost::Related,
+                                    crate::ui::detail::focused_related(),
+                                    Opener {
+                                        rect: crate::ui::detail::focused_related_rect(),
+                                        redraw: crate::ui::detail::redraw_focused_related,
+                                    },
+                                )
+                        }
                         // …and the three other card surfaces, which armed this press already and
                         // did nothing with it. Each declines by handing `None` — a grid page still
                         // loading, focus in Search's field or on a `Tag` shelf, the person page's
@@ -5842,16 +5906,21 @@ mod route_tests {
 
     /// **Every menu host answers as its own screen, on all four route questions.**
     ///
-    /// The menu had two hosts and now has five, and the way that goes wrong is silent: each of
+    /// The menu had two hosts and now has six, and the way that goes wrong is silent: each of
     /// these questions used to name `MenuHost::Detail` (or `Home`) in a `matches!`, so a new host
     /// simply fell into the default arm — Search's popover would have drawn HOME behind it, and
     /// the Library's would have lost its tab bar mid-hold. Each one is `page_of` now, and this is
     /// what says so for every host at once rather than for the one a reviewer thought of.
+    ///
+    /// [`MenuHost::Related`] is the case that shows why the list is worth keeping exhaustive: it is
+    /// the SECOND host whose page is the detail page, so it is the first one for which "which
+    /// screen is underneath" and "which host is this" stopped being the same question.
     #[test]
     fn every_menu_host_answers_exactly_as_the_screen_underneath_it() {
         for host in [
             MenuHost::Home,
             MenuHost::Detail,
+            MenuHost::Related,
             MenuHost::Library,
             MenuHost::Search,
             MenuHost::Person,

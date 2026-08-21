@@ -3235,8 +3235,18 @@ fn draw_related(p: Painter) {
         REL_W + REL_GAP,
         &RowStyle::HOME,
         SCR_W,
-        |i| Art::Thumb { sid: d.sid, key: &d.related[i].thumb, res: (250, 375) },
-        |_| None,
+        // `Art::Poster`, not `Art::Thumb` — and that ONE word is what puts the watched tick on this
+        // shelf. The disc is drawn inside `widgets::card`'s Poster arm, off the row's own
+        // `poster_mark`, so a `Thumb` (which carries a path and nothing else) can never wear it.
+        // Related was the only poster shelf in the app passing `Thumb`, because until the row
+        // became a real catalog row there was no `PmsMovie` behind it to ask.
+        |i| Art::Poster(d.related.get(i)),
+        // …and the resume BAR, the other half of the same three-state language. It was a hard-coded
+        // `None` for exactly as long as the data was absent. `resume_frac` (not a bare `viewOffset`)
+        // because it owns the "at or past the end is FINISHED, not in progress" rule — without which
+        // a completed item whose resume point the server never cleared draws a 100%-full bar AND
+        // loses the tick it should be wearing.
+        |i| d.related.get(i).and_then(|m| m.resume_frac()),
         |i| card_row::TileLabel::title(&d.related[i].title),
         |_, _, _, _| {},
     );
@@ -3681,6 +3691,107 @@ pub(crate) fn focused_episode_rect() -> Option<Rect> {
     // episodes past the spring cap are drawn at the focus scale without animating — same fallback
     let sc = view().ep_scale.get(i).map(|s| s.pos).unwrap_or(crate::ui::widgets::CARD_FOCUS_SCALE);
     Some(Rect::new(x, top, EP_W, EP_H).scaled(sc))
+}
+
+// ---- the Related shelf's context-menu seam --------------------------------------------------
+// The filmstrip's three functions above, for the shelf below it. They exist because a hold on a
+// Related tile used to do nothing at all: the shelf ARMED the same press every other card surface
+// does (`press::begin` + `ok_armed`), dipped the card, latched long — and then fell through to the
+// spring-back, because `focused_episode` declines every section but 2 and nothing else answered.
+//
+// The reason given at the time was that a Related row carried no `(ratingKey, watched)` pair to
+// build menu rows from, which was true of the STRUCT and never of the data (see
+// [`metadata::Related`]). With the row a real `PmsMovie` the whole card-surface path applies
+// unchanged — `item_menu::open`, not `open_episode`: this is a card row like Home's or the Library
+// grid's, not a leaf of the season this page has loaded.
+
+/// The focused Related row — `None` unless that shelf actually holds focus.
+///
+/// Handed to `app.rs`'s `open_tile_menu`, the same shared opener the Library grid, Search and the
+/// person page use, so the menu's row set, its choreography and its dispatch are theirs rather than
+/// a fourth copy.
+///
+/// **The row carries its own `sid`, and that is the whole server story.** A related item is a key
+/// on the server this page is mounted on; `fetch_related` stamped it (see [`metadata::Related`]),
+/// `item_menu::open` reads `m.sid` into its `SID`, and `apply_item_action` scrobbles against that.
+/// No call site here reaches for `plex::current_server()` — the documented way this exact class of
+/// bug happens is a borrowed ratingKey posted to OUR server, which marks an unrelated film watched
+/// because both servers number from 1.
+pub(crate) fn focused_related() -> Option<&'static PmsMovie> {
+    metadata::current()?.related.get(focused_related_col()?)
+}
+
+/// The focused Related poster's DRAWN rect, in screen space — what the popover anchors BESIDE.
+///
+/// DERIVED, never recorded, which is this file's rule for every focusable region (see the
+/// "one geometry source per focusable region" note above [`hero_pill_label`]): the same `strip_x`
+/// the painter advances by, the same live `CardRow` scroll, the same `section_screen_top` band, and
+/// the row's own per-cell scale spring. The person page RECORDS its equivalent, and says why — its
+/// shelf's scroll spring lives inside a `CardRow` the caller cannot see. Here `view().related` IS
+/// that `CardRow`, so there is nothing to record.
+///
+/// `press::scale()` is deliberately left out, exactly as [`focused_episode_rect`] leaves it out:
+/// opening the menu cancels the press, so by the frame the anchor is captured the tile is already
+/// springing back to its resting popped scale.
+pub(crate) fn focused_related_rect() -> Option<Rect> {
+    let i = focused_related_col()?;
+    Some(related_tile_rect(i)?.scaled(view().related.scale(i)))
+}
+
+/// The focused Related column, bounds-checked against the shelf that is actually loaded — `None`
+/// when the shelf does not hold focus, and `None` for a column past its end (a page can be
+/// re-mounted under a retained focus column, which is the same hazard `focused_episode` guards).
+fn focused_related_col() -> Option<usize> {
+    if view().section != 3 {
+        return None;
+    }
+    let i = view().col.max(0) as usize;
+    (i < n_items(3).max(0) as usize).then_some(i)
+}
+
+/// Related tile `i`'s UNSCALED screen rect — the ONE geometry source the anchor and the scrim lift
+/// both derive from, so the panel cannot hang off one rect while the lifted tile draws at another.
+///
+/// Unscaled deliberately: `card_row::draw_focused` takes the SCALED rect *and* the scale it was
+/// scaled by, and recovers the label's anchor as `rect.h / s`. Handing it an already-scaled rect
+/// with a different `s` (the press dip is in one and not the other) would draw the poster at the
+/// wrong size and drop its title at a y derived from an unscaled height that never existed.
+fn related_tile_rect(i: usize) -> Option<Rect> {
+    Some(related_tile_rect_at(i, section_screen_top(3)?, view().related.scroll_x()))
+}
+
+/// …and its ARITHMETIC, with the two live values passed in — **pure**, so the agreement between
+/// this, `card_row::strip`'s draw and `strip_at`'s hit-test is host-testable.
+///
+/// The split is not cosmetic. `section_screen_top` walks the `ScrollColumn` flow, which sums
+/// `block_h` over the present blocks, and `block_h(2)` measures an episode's title through
+/// `TextView` — i.e. through SDL_ttf. That is a native library the host suite has no link for, so a
+/// test that called the wrapper would not fail an assertion, it would fail to LINK (`CLAUDE.md`'s
+/// structural limit #1). Everything worth grading here is in this function; the wrapper is two
+/// lookups.
+fn related_tile_rect_at(i: usize, top: f32, scroll_x: f32) -> Rect {
+    Rect::new(strip_x(i, REL_W + REL_GAP) - scroll_x, top + REL_LABEL_H, REL_W, REL_H)
+}
+
+/// Re-draw the focused Related poster ON TOP of the modal scrim — this shelf's half of
+/// [`crate::ui::popover::Opener`], so the tile the panel hangs off does not recede with the page.
+///
+/// It runs `card_row::draw_focused` with the same art, the same resume fraction and the same
+/// `TileLabel` [`draw_related`] builds, at the rect [`focused_related_rect`] derives — the tile the
+/// shelf drew, not a second expression of it. The one difference from the strip's own pass is that
+/// `press::scale()` IS folded in here: this draws every frame the menu is open, and the dip is on
+/// its way out, so following it keeps the lifted copy identical to the cell underneath it.
+pub(crate) fn redraw_focused_related() {
+    crate::ui::guard(|| {
+        let Some(d) = metadata::current() else { return };
+        let Some(i) = focused_related_col() else { return };
+        let Some(base) = related_tile_rect(i) else { return };
+        let Some(m) = d.related.get(i) else { return };
+        let s = view().related.scale(i) * crate::ui::press::scale();
+        let label = card_row::TileLabel::title(&m.title);
+        let p = Painter::root().alpha(crate::ui::nav::page_alpha());
+        card_row::draw_focused(p, Art::Poster(Some(m)), base.scaled(s), s, &RowStyle::HOME, m.resume_frac(), &label);
+    });
 }
 
 /// Re-read the mounted item from the server after something changed its view state, KEEPING the
@@ -5579,6 +5690,73 @@ mod tests {
         }
     }
 
+    /// **The Related menu's anchor is the tile the pointer would hit, and the tile the strip drew.**
+    ///
+    /// Three formulas have to agree for the popover to hang off the right poster: `card_row::strip`
+    /// draws at `margin_x + i*pitch - scroll`, `strip_at` inverts it for the pointer, and
+    /// `related_tile_rect` re-derives it for the [`Opener`](crate::ui::popover::Opener). The first
+    /// two were already pinned against each other; this adds the third, which is the one a menu
+    /// that opens beside the WRONG card would come from — and it is silent, because the panel still
+    /// appears and the tile it lifts still looks like a tile.
+    ///
+    /// It also grades the two refusals, which matter more than they look: a menu opened on a shelf
+    /// that does not hold focus, or on a column past the end of the shelf that is actually loaded,
+    /// would anchor to a poster nobody is looking at. A page can be re-mounted under a retained
+    /// focus column (a Related jump reloads the page beneath it), so the out-of-range case is
+    /// reachable rather than theoretical.
+    #[test]
+    fn the_related_menus_anchor_is_the_tile_the_shelf_drew() {
+        // The strip draws tile `i` at `sty.margin_x + i*pitch`, translated by `-scroll_x`, in a band
+        // one heading below the section top — and the anchor must land on exactly that poster.
+        for &top in &[0.0f32, 240.0, 806.0] {
+            for &sx in &[0.0f32, 137.0, 900.0] {
+                for i in 0..6usize {
+                    let r = related_tile_rect_at(i, top, sx);
+                    // the same left edge `card_row::strip` advances by (`strip_x_matches_the_shared
+                    // _shelf_formula` above pins `strip_x` to the component's own formula)
+                    assert!((r.x - (strip_x(i, REL_W + REL_GAP) - sx)).abs() < 0.01, "the anchor's x is the drawn x");
+                    assert!((r.y - (top + REL_LABEL_H)).abs() < 0.01, "…in the band below the heading");
+                    assert_eq!((r.w, r.h), (REL_W, REL_H), "…at the poster's own size, UNSCALED");
+                    // …and the pointer's inverse agrees that a click in the middle of it is tile `i`,
+                    // so the menu, the focus and the click can never mean three different posters
+                    assert_eq!(strip_at(r.x + REL_W * 0.5, sx, 6, REL_W + REL_GAP, REL_W), Some(i));
+                }
+            }
+        }
+
+        // ---- and the two refusals, which decide whether a menu opens on a poster at all ----
+        let _serial = crate::testlock::serial();
+        let rel = |rk: &str| crate::metadata::Related { rk: rk.into(), ..Default::default() };
+        mount(
+            Some(Detail {
+                rk: "m1".into(),
+                related: vec![rel("r0"), rel("r1"), rel("r2")],
+                ..Default::default()
+            }),
+            0,
+        );
+
+        // focus elsewhere on the page is not focus on this shelf, whatever the column says — the
+        // filmstrip's own menu answers for section 2, and both must not answer at once
+        view().section = 2;
+        view().col = 1;
+        assert!(focused_related().is_none(), "the filmstrip's focus is not the Related shelf's");
+
+        view().section = 3;
+        for i in 0..3usize {
+            view().col = i as c_int;
+            assert_eq!(focused_related().map(|m| m.rk.as_str()), Some(["r0", "r1", "r2"][i]));
+        }
+
+        // A column past the loaded shelf opens nothing rather than anchoring off its end. Reachable
+        // rather than theoretical: the column is retained per section, and a Related jump reloads
+        // the page underneath it — so the shelf can get shorter while `col` stays where it was.
+        view().col = 7;
+        assert!(focused_related().is_none(), "no tile 7 to open a menu on");
+
+        mount(None, 0);
+    }
+
     /// strips. Both sides go through `strip_x`, so this pins the round trip at every horizontal
     /// scroll phase, including the gutter, which belongs to no tile at all.
     #[test]
@@ -6167,7 +6345,7 @@ mod tests {
     fn the_related_shelf_raises_the_same_open_request() {
         let _serial = crate::testlock::serial();
         let rel =
-            |rk: &str| crate::metadata::Related { rk: rk.into(), title: String::new(), thumb: String::new() };
+            |rk: &str| crate::metadata::Related { rk: rk.into(), ..Default::default() };
         mount(
             Some(Detail { rk: "m1".into(), related: vec![rel("r0"), rel("r1")], ..Default::default() }),
             0,
@@ -6205,7 +6383,7 @@ mod tests {
     fn an_open_request_does_not_outlive_its_page() {
         let _serial = crate::testlock::serial();
         let rel =
-            |rk: &str| crate::metadata::Related { rk: rk.into(), title: String::new(), thumb: String::new() };
+            |rk: &str| crate::metadata::Related { rk: rk.into(), ..Default::default() };
         mount(Some(Detail { rk: "m1".into(), related: vec![rel("r0")], ..Default::default() }), 0);
 
         let v = view();
@@ -6241,7 +6419,7 @@ mod tests {
         let _serial = crate::testlock::serial();
         let ep = |n: i64| Episode { rk: format!("e{n}"), index: n, ..Default::default() };
         let rel =
-            |rk: &str| crate::metadata::Related { rk: rk.into(), title: String::new(), thumb: String::new() };
+            |rk: &str| crate::metadata::Related { rk: rk.into(), ..Default::default() };
         let season = |i: i64| crate::metadata::Season {
             rk: format!("s{i}"),
             index: i,
@@ -6307,7 +6485,7 @@ mod tests {
     fn a_restored_spot_clamps_onto_an_item_whose_lists_shrank() {
         let _serial = crate::testlock::serial();
         let rel =
-            |rk: &str| crate::metadata::Related { rk: rk.into(), title: String::new(), thumb: String::new() };
+            |rk: &str| crate::metadata::Related { rk: rk.into(), ..Default::default() };
         let s = Spot { section: 3, col: 5, ..Default::default() };
 
         metadata::set_current_for_test(Some(Detail {
