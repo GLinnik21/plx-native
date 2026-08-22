@@ -489,8 +489,35 @@ pub(crate) fn start_bufferfeed(mt: &MainThread) -> bool {
     ATOT.store(0, Ordering::Relaxed);
     VATT.store(0, Ordering::Relaxed);
     AATT.store(0, Ordering::Relaxed);
-    // resolve the URL: route (a selected movie) wins, then /tmp/plxnative-url, then a local sample.
+    // resolve the URL, in precedence order: route (a selected movie) wins, then
+    // /tmp/plxnative-playurl (a URL + its declaration), then /tmp/plxnative-url (a URL
+    // alone), then a local sample.
     let mut url = crate::route::url();
+    if url.is_empty() {
+        // dev: /tmp/plxnative-playurl — a URL *and the Load declaration to play it with*, with no
+        // library item behind it. This is the player-PIPELINE test tier's entry (tests/README.md):
+        // `plxnative-url` below hands over a URL only, which leaves the payload describing
+        // whatever the route happened to hold — an empty string, i.e. H264 + "AC3" — so a 4K HEVC
+        // or a Dolby file could never be declared honestly without Plex. Read HERE rather than at
+        // the app.rs entry point because the declaration has to be in `route` before the payload
+        // is composed a few lines below, and because a reload (a seek that escalates) comes back
+        // through this same function and must re-apply it.
+        //
+        // `route::url()` still wins: a real selection is never overridden by a stale trigger.
+        match crate::dev::playurl() {
+            Some(Ok(p)) => {
+                url = p.url.clone();
+                crate::route::set_url(&url);
+                crate::route::set_stream_declaration(
+                    &p.vcodec, &p.acodec, p.fps, p.dovi.to_dovi(), p.atmos);
+            }
+            // Log and fall through rather than refuse: the next candidate may well be armed. The
+            // harness grades this as a failure anyway, because the `load:` line below will not say
+            // what the case expected.
+            Some(Err(e)) => log(&format!("playurl: unreadable spec ({e}) — ignored")),
+            None => {}
+        }
+    }
     if url.is_empty() {
         if let Some(t) = crate::dev::read("url") {
             if !t.is_empty() {
@@ -534,6 +561,9 @@ pub(crate) fn start_bufferfeed(mt: &MainThread) -> bool {
     let no_audio = crate::dev::flag("noaudio");
     crate::ff::set_feed_audio(!no_audio);
     let stream_payload;
+    // The LG-side audio name the payload ended up carrying, hoisted so the `load:` line below can
+    // report it. "-" is the video-only case, where there is no audio ES to name.
+    let mut audio_declared: &str = "-";
     let payload_str: &str = if stream {
         let hevc = crate::route::stream_vcodec() == "hevc";
         // Record what the payload ACTUALLY says, for the diagnostics read-out — including the
@@ -553,6 +583,7 @@ pub(crate) fn start_bufferfeed(mt: &MainThread) -> bool {
                 _ => "AC3",
             };
             SHARED.dg_load_a.store(match ac { "AC3 PLUS" => 2, "AAC" => 3, _ => 1 }, Ordering::Relaxed);
+            audio_declared = ac;
             // Sink envelope = the panel max (4K) regardless of codec; the pipeline reads the
             // true dims from the bitstream (SPS), so this is just a ceiling and is correct for a
             // 4K stream (HEVC transcode / HEVC direct-play) AND harmless for a 1080p H264 file.
@@ -573,6 +604,24 @@ pub(crate) fn start_bufferfeed(mt: &MainThread) -> bool {
     // `with_window_id`'s anchor is the composed `"appId":"<id>"`, so the placeholder has to be
     // gone by then.
     let payload_c = std::ffi::CString::new(with_window_id(mt, &with_app_id(payload_str))).unwrap();
+    if stream {
+        // What the payload ACTUALLY declared, once, in the event log. Not test scaffolding: until
+        // this line, the only answer to "what did we tell the television this stream was" lived in
+        // the on-screen diagnostics read-out (`dg_load_v`/`dg_load_a` above), i.e. nowhere a log
+        // could settle it — and the `"AC3 PLUS"` renaming a few lines up is exactly the kind of
+        // thing a log should be able to settle, since getting it wrong leaves the audio ES
+        // unconfigured and stalls the video sink through audioSync. Streamed only: the two static
+        // sample payloads declare nothing chosen and would be claiming a declaration they never
+        // consulted. Carries no URL and no token, and costs one line per playback.
+        let dv = crate::route::stream_dovi();
+        log(&format!(
+            "load: v={} a={:?} fps={:.3} dv=present:{} P{}/{} el:{} atmos:{}",
+            if crate::route::stream_vcodec() == "hevc" { "H265" } else { "H264" },
+            audio_declared,
+            crate::route::stream_fps(),
+            dv.present as i32, dv.profile, dv.bl_compat, dv.el_present as i32,
+            crate::route::stream_immersive() as i32));
+    }
 
     // fd = -1 (CLOSED) so a teardown before/without http_open doesn't close(0)
     let mut hs = crate::stream::http_stream_boxed();

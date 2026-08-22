@@ -4868,10 +4868,21 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // dev: /tmp/plxnative-autoplay auto-presses OK once
             if !auto_tried && !matches!(route, Route::Player { .. }) && now.wrapping_sub(t0) > 2000 {
                 auto_tried = true;
-                if crate::dev::flag("autoplay") {
-                    if crate::dev::flag("h265") {
-                        // Phase 0 HEVC probe: leave the URL empty so start_bufferfeed feeds
-                        // the local /tmp/sample.h265 through the H265 Load payload.
+                // dev: /tmp/plxnative-playurl is the player-PIPELINE tier's entry — a URL and
+                // its Load declaration, with no library item behind it — so it shares this
+                // autoplay ritual and skips the catalog lookup entirely. It stands on its own
+                // (arming it alone enters the player), because the tier's whole premise is a boot
+                // with no Plex session at all, which is a boot with no home grid to press OK on.
+                let playurl = crate::dev::flag("playurl");
+                if crate::dev::flag("autoplay") || playurl {
+                    // The `||` is load-bearing rather than stylistic: two `else if` arms with
+                    // identical bodies is `clippy::if_same_then_else`, one of the three named
+                    // lints `make lint` runs, and warnings are denied.
+                    if playurl || crate::dev::flag("h265") {
+                        // Leave the URL empty so start_bufferfeed reads the trigger — the H265
+                        // probe feeds the local /tmp/sample.h265 through the H265 Load payload,
+                        // and playurl feeds the URL its own spec names. Nothing is mounted and
+                        // nothing is fetched on either path.
                         crate::route::clear_url();
                     } else {
                         let pidx = crate::dev::read("playidx")
