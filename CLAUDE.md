@@ -617,10 +617,66 @@ FFI into the TV's own libraries. **`./tests/run.py` needs a gitignored `tests/ma
 — `manifest.json` holds only the installation-INDEPENDENT case definitions, and each case names the
 SHAPE of item it needs (`item: "movie_h264_ac3_1080p"`); the overlay maps that to a ratingKey on
 this server and supplies the PMS host, TV address and test user. Copy
-`tests/manifest.local.json.example` and fill it in; the runner refuses to start without it and names
-any key it cannot resolve. Resolution happens once at load and writes `rk` back, so everything
-downstream still reads `case["rk"]`. The full on-device suite is `./tests/run.py` (21 cases; `--fps` for
-the perf gates), and `make test` = `deploy` + `run`.
+`tests/manifest.local.json.example` and fill it in; the runner refuses to start without the FILE, and
+without `pms.host` / `tv` / `test_user.id`. **An `item` key it cannot resolve is a SKIP, not a
+death** (since 2026-08-22) — absent or left as the example's `<ratingKey>`, it skips the cases and
+fps scenes naming it, prints the reason in the summary and in `--list`, and runs the rest. The
+matrix is a SUPERSET of what any one library holds (it names 4K DoVi P8, TrueHD, PGS, AV1-with-no-
+DP-audio), so before that change the suite ran for exactly one library in the world; one ordinary
+h264/ac3 movie now gets a stranger five playback cases and 13 of 16 fps scenes. Consequence when
+reading a result: **the pass count is meaningless without the skip count beside it** — `16 passed`
+can mean sixteen of the shapes that installation happens to own. Resolution happens once at load and
+writes `rk` back for the resolvable ones, so everything downstream still reads `case["rk"]`; a
+skipped case has NO `rk` at all and is partitioned out in `main()` before anything subscripts it.
+`tests/test_harness.py` (in `make check`) pins that partition, because the maintainer's own overlay
+resolves every key and so never enters the path. The full on-device suite is `./tests/run.py`
+(21 cases; `--fps` for the perf gates), and `make test` = `deploy` + `run`.
+
+**Tier 2 is TWO SUITES on one television, and since 2026-08-22 the DEFAULT IS THE SYNTHETIC ONE.**
+A bare **`./tests/run.py`** now runs the 12-case SYNTHETIC tier (generated clips, no Plex); the
+21 library-backed cases everything above describes are **`./tests/run.py --server`**, and `--fps` /
+`--fps-player` imply `--server` because those scenes navigate a real signed-in Home. `--pipeline`
+still parses (it names the default); pairing it with `--server`/`--fps` is refused rather than
+silently resolved. The inversion is about what the obvious command should mean: the default has to
+be the thing that runs for everybody, needs no credentials, touches nobody's watch history, and
+answers "is the PLAYER broken" — charging a PMS, a token and a filled-in overlay for typing
+`./tests/run.py` meant most people could not type it at all. **Never ship on the default alone**
+(what it cannot see is three paragraphs down). The server tier is still the right shape for what it
+grades — SELECTION: `/decision`, direct-play vs transcode, track menus from PMS metadata, markers,
+resume, the `/:/timeline` reporter — which is also why it needs somebody's library.
+**The synthetic tier is the PLAYER PIPELINE, with no Plex anywhere.** A generated clip (`make fixtures-pipeline`, ~0.4 GB flat in
+`$FIXTURES_OUT/pipeline`) is served off the dev Mac by `tests/serve_fixtures.py` and played through
+**`/tmp/plxnative-playurl`**, one JSON object carrying the URL *and the Load payload declaration*.
+It needs a TV address and nothing else — no token, no ratingKey, no `manifest.local.json`, no
+sharing — so it is the only tier a stranger can run, and it is what separates "the player is
+broken" from "the library layer is broken" when a server case fails. **What it covers, precisely:**
+the player direct-plays exactly `{h264,hevc}` × `{aac,ac3,eac3}` in mkv/mp4/m4v (`route.rs`'s codec
+gate + `plex::DP_AUDIO_CODECS`) — 2 of the 19 video and 3 of the 19 audio codecs the television's
+own table (`/etc/umediaserver/device_codec_capability_config.json`, which `devcaps.rs` reads)
+claims to decode, everything else being a server transcode BY DESIGN since the Load payload has
+only `H264`/`H265` and `AC3`/`AC3 PLUS`/`AAC`. All six of those payload combinations are covered
+here, plus DV 8.1, both containers, in-place seek in each, and the FRAME-RATE axis added the same
+day (`pipe_h264_1080p5994` is the only fixture that reaches `fps_rational`'s 1001-denominator
+branch — device-verified `esInfo: videoFps 60000/1001` — and `pipe_hevc_4k_60fps` is 4K60 HEVC;
+every other fixture in both packs is 24p). Still uncovered: HLG, HDR10+, DV P5/P7, Atmos, the
+4096-wide edge and any refusal above it, and the transcode INPUT space (three server cases on one
+AV1 item stand in for 17 codecs). One of those is an app gap, not a test gap — `devcaps` ignores
+the table's `maxFrameRate`, so the profile sent to PMS bounds no frame rate at all. Three things about it
+are worth knowing before reading a result. **(1)** The declaration is the interesting half and the
+main false-PASS risk: `engine`'s `_ =>` arm maps an unrecognised audio codec to `"AC3"` and a
+non-`hevc` video codec to the H264 payload, so a trigger that was never read produces exactly the
+right payload for the AC-3 baseline case — which is why the matrix carries cases expecting
+`"AC3 PLUS"` and `"AAC"`, and why the engine now logs one `load: v=… a=… fps=… dv=… atmos=…` line
+per streamed playback (the only place an event log says what the app told the television the stream
+WAS, as opposed to what the demuxer found in it). **(2)** `python3 -m http.server` is DISQUALIFIED
+and the failure is silent: the AVIO seeks by reopening with `Range: bytes=N-`, `stream.rs` accepts
+any 2xx, and a server that ignores the header answers 200 from byte zero while the demuxer believes
+it is at N. `serve_fixtures.py` answers 206 or 416, never 200-with-a-Range, and the suite asserts
+the ranged-open COUNT off the server itself — the one assertion no log line can give. **(3)** It
+cannot prove that the declaration it feeds is the one a real item would produce: it writes those
+five `route` fields itself, so `metadata → plan → apply_plan` is bypassed and a regression there
+passes it green. It also reaches no resume, marker, Up Next, timeline, track-SELECTION or transcode
+path. Never run only this one before a release. `tests/README.md` has the tier table.
 
 - **Event log:** the app writes `plxnative-events.log` in its runtime root on the TV (LS2/ACB/
   Starfish replies, feed stats, seek/bind steps, key raw bytes, crash tracer) — `/tmp` for the
@@ -785,7 +841,11 @@ the perf gates), and `make test` = `deploy` + `run`.
   suppresses the who's-watching picker, silently changing which screen you boot to. The
   **`tv-session` skill** drives all of this (clear → arm → launch → assert) and owns the
   screen-to-trigger recipes. Named highlights: `/tmp/plxnative-url` (override the streamed part
-  URL), **`sample.h264` / `sample.h265`** (feed the player a local raw Annex-B sample instead of
+  URL) and **`/tmp/plxnative-playurl`** (the same, plus the LOAD DECLARATION — one JSON object,
+  `{"url":…,"vcodec":…,"acodec":…,"fps":…,"dovi":{…},"atmos":…}`, which is what the pipeline test
+  tier drives and the only way to declare HEVC / `"AC3 PLUS"` / Dolby for a stream no PMS chose;
+  it also ENTERS the player on its own from a boot with no session, since there is no home grid to
+  press OK on), **`sample.h264` / `sample.h265`** (feed the player a local raw Annex-B sample instead of
   streaming — the two names that predate the `plxnative-` prefix, and since the flavour split the
   last two runtime surfaces to stop being pinned to a shared `/tmp`: they resolve through the
   install's own root like everything else, `$(make -s print-rundir)/sample.h264`),

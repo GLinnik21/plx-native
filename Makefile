@@ -640,6 +640,12 @@ check: lint
 	@# it would be too late to learn otherwise. It also cross-checks the three copies of the app id
 	@# (here, ci/flavor.py, rust-modules/src/paths.rs), which no compiler can.
 	python3 ci/flavor.py --selftest
+	@# The harness's own host unit tests (tests/test_harness.py, stdlib unittest, ~0.05s). run.py
+	@# decides WHAT gets driven on the one television and had no test of any kind until 2026-08-22.
+	@# What it pins is the code path a full manifest.local.json never enters: an `item` key this
+	@# installation cannot resolve SKIPS the cases that need it instead of killing the run. A
+	@# regression there is invisible here and shows up as a stranger concluding the suite is broken.
+	python3 tests/test_harness.py
 
 # `make lint` — the three clippy lints that catch a SHADOWED branch, the one bug class the unit
 # suite structurally cannot reach. `app.rs` shipped a duplicated `else if` whose empty body hid the
@@ -880,6 +886,47 @@ macapp:
 macapp-zip:
 	MACAPP_TDIR=$(MACAPP_TDIR) ci/mkmacapp.py --zip
 
+# ---------------------------------------------------------------------------------------------
+# `make fixtures` — SYNTHESIZE THE TEST MEDIA. Host-side, and there is NO TELEVISION anywhere in
+# it: it is ffmpeg + lavfi on this Mac, writing into $(FIXTURES_OUT) (default ~/plxnative-fixtures,
+# OUTSIDE the repo — tests/fixtures/make_fixtures.py refuses an --out inside it, because media must
+# never be committed).
+#
+# What it is for: `./tests/run.py --server` grades the player against nine symbolic item SHAPES, and
+# tests/manifest.local.json maps each to a ratingKey on whatever PMS you own. That mapping is the
+# entire barrier to entry — the shapes include a TrueHD default with an AC-3 sibling, a Dolby
+# Vision 8.1 base layer, a PGS bitmap subtitle track and an eight-track audio file with English DTS
+# at ordinal 6, and two of those have no freely-licensed example anywhere. This builds all of them
+# from nothing, lays them out in two Plex-scannable trees, and writes a fixtures.json saying what
+# it PROVED about each file. tests/fixtures/README.md is the walkthrough, including the shapes it
+# cannot solve (the three marker_* cases) and why.
+#
+# Deliberately NOT a prerequisite of `all` or `check`, and never run by them: this writes ~2.5 GB
+# and takes ~20 minutes, which is not something a build should do because somebody typed `make`.
+# `fixtures-quick` builds the same shapes at ~20 s each in about a minute — structurally correct,
+# and NOT suite-valid, since every seek/resume/marker depth the suite asserts is deeper than that.
+FIXTURES_OUT ?= $(HOME)/plxnative-fixtures
+
+# $(FIXTURES_OUT) is QUOTED: it defaults under $(HOME), and a home directory with a space in it
+# would otherwise split into two arguments and fail as an unknown option.
+fixtures:
+	python3 tests/fixtures/make_fixtures.py --out "$(FIXTURES_OUT)" $(FIXTURES_ARGS)
+
+fixtures-quick:
+	python3 tests/fixtures/make_fixtures.py --quick --out "$(FIXTURES_OUT)" $(FIXTURES_ARGS)
+
+# ...and the PIPELINE tier's pack, which is a different thing for a different suite. `fixtures`
+# above builds media for the INTEGRATION suite: full-length, laid out in two Plex-scannable trees,
+# because those cases go through a PMS and every duration in them is a Plex constant (the ~90%
+# watched threshold that drops a seeded resume point, the marker windows, the Up Next tail).
+# `./tests/run.py` (the DEFAULT tier since 2026-08-22) needs none of that — it serves these files
+# off this machine over HTTP
+# and plays them through plxnative-playurl with no Plex anywhere — so the pack is short clips in a
+# FLAT directory, ~0.4 GB and a few minutes instead of ~3 GB and twenty. Same root, its own
+# subdirectory, which is also where the harness looks by default.
+fixtures-pipeline:
+	python3 tests/fixtures/make_fixtures.py --tier pipeline --out "$(FIXTURES_OUT)/pipeline" $(FIXTURES_ARGS)
+
 # Retrieve whichever profiler JSONL the last run produced. Both are fetched best-effort because a
 # leg arms exactly one of the two modes, never both.
 # ...and out of THIS INSTALL's runtime root, which is where the app writes them
@@ -892,5 +939,5 @@ fetch-profile:
 	-$(SCP) root@$(TV):$(RUNDIR)/plxnative-hwcnt.jsonl pkg/plxnative-hwcnt.jsonl
 	@ls -l pkg/plxnative-*.jsonl 2>/dev/null || echo "no profiler output in $(RUNDIR) on the TV ($(APPID))"
 
-.PHONY: all setup-env deploy run run-stream kill check lint test ipk clean threadprobe sockprobe logmprobe mali-hwcnt-probe sim sim-run sim-shot sim-token sim-clean macapp macapp-zip fetch-profile \
+.PHONY: all setup-env deploy run run-stream kill check lint test ipk clean threadprobe sockprobe logmprobe mali-hwcnt-probe sim sim-run sim-shot sim-token sim-clean macapp macapp-zip fixtures fixtures-quick fixtures-pipeline fetch-profile \
         release-guard install uninstall $(QUERY_GOALS)

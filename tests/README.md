@@ -1,11 +1,74 @@
 # On-device regression harness
 
-Headless regression tests for the native webOS Plex player. There is no host-side runtime
-(the code only runs on the TV), so every test drives the **real app on the real TV** via the
+Headless regression tests for the native webOS Plex player. Nothing on the host decodes a frame or
+talks to Starfish/ACB, so every test here drives the **real app on the real TV** via the
 `plxnative-*` dev triggers and asserts on the on-device event log (`plxnative-events.log`) — both
 of them inside that install's **runtime root**, which is `/tmp` for the stable install and
 `/tmp/<app id>` for a flavoured one. See *Which install it drives*, below: it decides every path
 on this page, and the default is the **debug** build.
+
+## Two tiers, and which one you want
+
+There are two on-device suites here and they grade different subjects. Running the wrong one is
+how a green run means nothing.
+
+| | **synthetic** — the DEFAULT | **server** (`--server`) |
+|---|---|---|
+| what it proves | **transport and decode**: raw-socket GET → `ff.rs` demux over the custom AVIO → the two-lane AU queues → the Starfish `Feed()` pump → the ACB bind, and the Load payload's codec/Dolby **declaration** | **selection**: plex.tv auth, `/decision`, direct-play vs transcode, the PlayQueue, track menus from PMS metadata, markers, resume, the `/:/timeline` reporter |
+| what it needs | a TV address and `make fixtures-pipeline` | a Plex server, a token, a `manifest.local.json`, and a library holding the shapes the matrix names |
+| media | generated clips, served off your Mac | real items on your PMS |
+| who can run it | **anyone** | whoever owns that library |
+| cost | ~0.4 GB, a few minutes to build; seconds per case | ~3 GB, ~20 minutes to build; ten to twenty minutes to run |
+
+```sh
+./tests/run.py                  # the synthetic tier — 12 cases, ~4 min, needs nothing
+./tests/run.py --server         # the library-backed 21, through the whole Plex chain
+```
+
+**The synthetic tier is the default**, and that inversion (2026-08-22) is about what a bare
+`./tests/run.py` should mean. The default has to be the thing that runs for everybody, needs no
+credentials, touches nobody's watch history, and answers *"is the player broken"* — which is asked
+far more often than *"is my library's metadata right"*. Charging a PMS, a token and a filled-in
+overlay for the obvious command meant most people could not type it at all. `--server` is the
+explicit opt-in; `--fps` / `--fps-player` imply it, because those scenes navigate a real signed-in
+Home and would otherwise grade a QR screen. `--pipeline` still parses — it names the default — but
+combining it with `--server`/`--fps` is refused rather than silently resolved.
+
+They are complements, not a ladder. The synthetic tier is what isolates *"the player is broken"*
+from *"the library layer is broken"* when a server case fails — and it is the only tier a stranger
+can run at all. **What it cannot prove, ever:** that the declaration it feeds is the one a real item
+would produce. It writes those five route fields itself, so the whole `metadata → plan → apply_plan`
+half is bypassed and a regression there passes it green. Nor does it reach resume, markers, Up Next,
+timeline reporting, subtitle or audio-track *selection*, or any transcode. **Never ship on the
+default alone.**
+
+### What the twelve synthetic cases actually cover
+
+The player direct-plays exactly `{h264, hevc}` × `{aac, ac3, eac3}` in `mkv`/`mp4`/`m4v` —
+`route.rs`'s codec gate and `plex::DP_AUDIO_CODECS`. That is **2 of the 19 video codecs and 3 of the
+19 audio codecs this television's own capability table
+(`/etc/umediaserver/device_codec_capability_config.json`) claims to decode**; everything else the
+panel can decode — VP9, MPEG-2, WMV, DivX, DTS, FLAC, Opus, PCM… — reaches it as a server transcode
+by design, because the Starfish `Load` payload has only the strings `H264`/`H265` and
+`AC3`/`AC3 PLUS`/`AAC`. The synthetic tier covers **all six** of those payload combinations:
+
+| | AC3 | AC3 PLUS | AAC |
+|---|---|---|---|
+| **H264** | `pipe_h264_ac3_1080p` | `pipe_audio_lane_eac3` | `pipe_audio_lane_aac`, `pipe_h264_aac_mp4` |
+| **H265** | `pipe_hevc_ac3_lane` | `pipe_hevc_eac3_4k_hdr10`, `pipe_hevc_4k_60fps` | `pipe_hevc_aac_mp4` |
+
+plus Dolby Vision 8.1 (`pipe_hevc_eac3_4k_dovi_p8`), both containers, in-place seek in each of
+them, and the **frame-rate axis**: `pipe_h264_1080p5994` is the only fixture in the repo that
+reaches `engine::fps_rational`'s 1001-denominator branch (`esInfo: videoFps 60000/1001`), and
+`pipe_hevc_4k_60fps` is 4K60 HEVC — the most demanding thing the device table claims. Every other
+fixture in both packs is 24p.
+
+Still uncovered, and worth knowing before quoting a green run: **HLG, HDR10+, DV P5/P7, Atmos**
+(the `atmos` declaration field exists and no case sets it), the **4096-wide edge** and any file
+that must be *refused* for exceeding it, and the whole **transcode input space** — three server
+cases on one AV1 item stand in for 17 video codecs. One of those is an app gap rather than a test
+gap: `devcaps` reads the table's width and height and explicitly ignores `maxFrameRate`, so the
+profile sent to PMS carries no frame-rate limitation at all.
 
 - `manifest.json` — the test matrix, and **installation-independent**: the triggers each case
   needs, the expected log signals, and the *shape* of the item it needs (`item`, a symbolic key
@@ -14,8 +77,14 @@ on this page, and the default is the **debug** build.
   key to a ratingKey on *your* server, and carries your `pms` host, `tv` address, `test_user`,
   which `flavour` to drive, and (optionally) the `shared_server` a two-source case needs.
   Copy it from `manifest.local.json.example` and fill it in; `run.py` merges it over the manifest
-  at load and refuses to run without it, naming any key it cannot resolve.
+  at load and refuses to run without it. An `item` key it cannot resolve is **not** fatal — see
+  *Running it against your own library*.
 - `run.py` — the runner (Python 3 stdlib only; macOS system `python3` is fine).
+- `fixtures/` — **`make_fixtures.py`, which SYNTHESIZES the media those `item` shapes name** (and
+  its own README). If your library has no TrueHD-default-with-AC-3-sibling, no Dolby Vision 8.1
+  and no PGS track — nobody's does by accident — this builds all nine shapes from ffmpeg/lavfi on
+  the host, no television involved, and tells you exactly what it proved about each file.
+  `make fixtures` / `make fixtures-quick`.
 - `README.md` — this file.
 
 The split is not just anonymisation. The symbolic key keeps "five cases deliberately share one
@@ -185,12 +254,60 @@ exemption list: it names a host *and* the token to trust it with, so like `plxna
 the boot automated and skips the who's-watching picker — a run that landed on the picker would grade
 the wrong screen.
 
+## Running it against your own library
+
+**The matrix is a superset of what any one library can exercise.** It was derived from a survey of
+the maintainer's server, so it names shapes — 4K Dolby Vision P8, a TrueHD default with an AC-3
+sibling, a PGS subtitle track, AV1 with no direct-playable audio — that most Plex libraries simply
+do not contain. Until 2026-08-22 that made the suite unrunnable by anyone else: a single
+unresolvable key called `_die_no_overlay` and killed all 21 cases, so the honest answer to "can I
+test my change?" was no.
+
+Now an `item` key the overlay cannot resolve — **absent, or left as the example's `<ratingKey>`
+placeholder** — skips the cases and fps scenes that need it and runs the rest:
+
+```
+  [SKIP] dp_hevc_eac3_dovi_p8  <- `items.movie_hevc_4k_dovi_p8` is still the template placeholder
+16 passed, 0 failed, 0 known-gap of 16, 5 skipped
+```
+
+Skips are printed in the summary and by `--list` (which is offline — it needs neither the TV nor
+the server, so you can see your own coverage before touching anything). **The pass count is never
+quotable without them**: `16 passed` means sixteen of the shapes you have, not sixteen of twenty-one.
+
+What that buys, concretely. One ordinary **h264/AC-3 1080p movie with embedded SRT** — the shape
+nearly every library has — is enough for `dp_h264_ac3_1080p`, `seek_inplace_h264`,
+`seek_rapid_h264`, `resume_directplay` and `subtitle_text_srt`, i.e. the direct-play open, both
+seek tiers and the soft-subtitle renderer. Adding `movie_in_home_catalog` (any movie reachable from
+Home's recently-added or on-deck row) brings the UI fps tier to 13 of 16 scenes. The rest of the
+matrix unlocks shape by shape as your library supplies them.
+
+Three things are worth knowing before you read a green run as a portable claim:
+
+- **A skipped case is coverage you did not get**, not a pass. The four `covers` tags on each case in
+  `manifest.json` say what a skip actually costs; losing `episode_hevc_4k_hdr10_eac3` alone takes
+  six cases with it, including the whole marker/up-next tier.
+- **Two shapes are not portable and never will be.** VC-1 has no free encoder anywhere, and Dolby
+  Vision profile 5 / dual-layer profile 7 cannot be authored with free tooling — see *Library gaps*.
+- **A mis-mapped item fails as a player bug.** The harness cannot tell "this ratingKey is the wrong
+  shape" from "the player regressed": map an mp4 to a case expecting mkv direct play and you get a
+  transcode assertion failure that reads exactly like a routing regression. When a case fails on a
+  fresh installation, confirm the item's shape in Plex before believing the failure.
+
+**Watch history:** every case clears the item's resume point (`/:/unscrobble`) before it runs and
+may seed a fake one. That is intentional and documented below, but it is destructive against a
+library you care about — which is what `test_user` is for.
+
 ## Prerequisites
 
 - The same toolchain the main dev loop needs: the webOS NDK (`make setup-env`), `sshpass`,
   and (for `--build`) the Rust nightly + `rust-src` (see the repo `Makefile` / `CLAUDE.md`).
-- `tests/manifest.local.json` present — `cp tests/manifest.local.json.example` and fill in every
-  `<placeholder>` (PMS host/port, TV address, `test_user`, and a ratingKey per `item` key). Its
+- `tests/manifest.local.json` present — `cp tests/manifest.local.json.example` and fill in the
+  PMS host/port, the TV address, `test_user`, and **as many `item` ratingKeys as your library can
+  actually supply**; leave the rest bracketed and the cases that need them are skipped (below).
+  If your library cannot supply them, **generate them**: `make fixtures` builds every shape from
+  ffmpeg and writes a `fixtures.json` keyed by the same symbolic names — see
+  `tests/fixtures/README.md`, including the three `marker_*` cases it cannot solve. Its
   `shared_server` block is optional; delete it unless a second server is shared with your account
   (see below). Its `flavour` key is optional too — see above; the fallback is the Makefile's own
   default.
@@ -465,13 +582,85 @@ per-op assertions from the `op`/`mode`. Track-menu row semantics: **audio tab** 
 metadata audio index (0-based, file order); **subtitles tab** row 0 = *Off*, row *r* = subtitle
 index *r−1*.
 
+## The synthetic tier (the default) — the player, with no Plex behind it
+
+```sh
+make fixtures-pipeline          # ~0.45 GB into $FIXTURES_OUT/pipeline; ~3 min, once
+./tests/run.py                  # runs them on the TV
+./tests/run.py --list           # offline: what would run, what is missing and why
+```
+
+Nothing else is required — no `manifest.local.json`, no PMS, no token, no ratingKey, no library, no
+sharing. The TV address comes from the overlay's `tv` if you have one, else from the gitignored
+`.tv-host`, else `--tv`. That is the whole configuration.
+
+**How it works.** `run.py` starts `serve_fixtures.py` on this machine, then arms
+`/tmp/plxnative-playurl` per case — one JSON object carrying the clip's URL **and the Load payload
+declaration to play it with**:
+
+```json
+{"url":"http://192.0.2.10:50605/pipe_hevc_eac3_4k_dovi_p8.mkv","vcodec":"hevc","acodec":"eac3",
+ "fps":23.976,"dovi":{"profile":8,"bl_compat":1,"el_present":false},"atmos":false}
+```
+
+The app enters the player straight from boot on that trigger alone — no home grid to press OK on,
+which matters because with no session there isn't one. Everything downstream is the same engine,
+byte for byte; only the *choosing* is bypassed.
+
+**Why the declaration is carried separately, and why it is the interesting half.** The Starfish
+`Load` payload takes its codecs from `route::stream_vcodec`/`stream_acodec` and its Dolby nodes from
+`stream_dovi`/`stream_immersive` — five fields written only by `route::apply_plan`, from a PMS
+decision. The older `plxnative-url` trigger hands over a URL and nothing else, so a URL-fed 4K HEVC
+file was declared to the television as whatever the route happened to hold: on a fresh boot, the
+empty string, which falls through the engine's `_ =>` arm to an H264 payload with `"AC3"` audio.
+The declaration is precisely what governs HEVC-vs-H264 payload selection, LG's `"AC3 PLUS"`
+renaming of E-AC-3, and both Dolby nodes — so a tier that cannot set it cannot test any of them.
+`plxnative-playurl` sets all five in one write (`route::set_stream_declaration`).
+
+That fallthrough is also the tier's main false-PASS risk, and the manifest is shaped against it: an
+unread trigger produces exactly the right payload for the AC-3 baseline case. So the matrix carries
+cases whose expected `load_audio` is `"AC3 PLUS"` and `"AAC"` — values the fallthrough cannot
+produce by accident — and the `load_decl` assertion grades the app's new `load:` event-log line.
+
+**Assertions.** `stream_path` (the demuxer opened *this* case's fixture, not something a stale
+trigger pointed it at), `load_decl` (above), `codec` and `audio_stream_index` (what the demuxer
+*found*, independent of what was *declared* — the two can only ever agree on the integration tier),
+`video_bound`, `pos_climb` (the 1 Hz heartbeat only; there is no `/:/timeline` fallback here and
+accepting its absence would make a broken assertion read as a pass), `no_error`, the seek
+assertions, and **`server_wire`** — the counters from the fixture server itself, which is the one
+assertion no log line can give: the pump logs its seek intent whether or not the demuxer ever
+reached the AVIO, so a counted `206` is the only proof the `Range` reopen actually happened.
+
+**`serve_fixtures.py`, and why not `python3 -m http.server`.** The demuxer seeks by closing the
+socket and reopening with `Range: bytes=<n>-`, and `stream.rs` accepts any 2xx. A server that
+ignores `Range` answers `200` with the file *from byte zero*; the AVIO believes it is positioned at
+`n`, and every byte after that is offset garbage — with no error anywhere, presenting as a corrupt
+bitstream or a hang. `SimpleHTTPRequestHandler` is exactly that server. Ours answers `206` or `416`
+and never `200`-with-a-`Range`, and `--selftest` proves the ranged body is the tail of the whole
+body.
+
+**The macOS trap, and it costs an afternoon every time.** The application firewall silently drops
+the TV's connections to an ad-hoc python listener — no refusal, no log line, the app's open just
+reads empty, and every assertion then fails as "no line found", which is what a total regression
+looks like. Accept the *allow incoming connections* prompt for this python **once, with a human at
+the keyboard**, before any headless run. If the server saw no request at all, `run.py` says so.
+
+**Skips.** A fixture the pack does not hold skips its cases with the reason named, exactly as an
+unresolvable `item` does on the integration tier — and so does a fixture generated *shorter* than
+the case seeks into it (checked with `ffprobe`), which would otherwise fail as though the player
+had regressed. As always: the pass count is meaningless without the skip count beside it.
+
 ## Library gaps — combos NO real item can cover
 
 The library survey found these have no exercising item; the harness can't test them with real
-media (see `library_gaps` in `manifest.json`). A small set of **synthetic** `ffmpeg` clips
-(10–30 s), served from the host (`python3 -m http.server`) and fed via the `plxnative-url` boot
-trigger, would close them deterministically — recommended as an optional supplement, kept clearly
-labeled "synthetic" and secondary to the 8 authoritative real item shapes:
+media (see `library_gaps` in `manifest.json`). **The pipeline tier above is the machinery for closing them** — synthetic
+clips, served from the host, fed by boot trigger — and a gap becomes a case by adding a shape to
+`make_fixtures.py` and an entry to `pipeline_cases`. Two corrections to how this paragraph used to
+read, both of which would send you down a dead end: the server is **`tests/serve_fixtures.py`**, not
+`python3 -m http.server`, which has no `Range` support and silently corrupts every seek; and the
+trigger is **`plxnative-playurl`**, not `plxnative-url`, because the latter carries no declaration
+and several of these gaps (HLG, HDR10+, 8-bit HEVC) are *about* what the payload declares. Still
+secondary to the real item shapes, and still to be labelled synthetic:
 
 - **Video:** VP9, MPEG-2, VC-1, MPEG-4-ASP; **8-bit HEVC** (every HEVC is Main10); **4K H.264**
   (all 4K is HEVC/AV1); interlaced. (These would exercise the transcode-fallback path from the
