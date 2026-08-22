@@ -344,10 +344,61 @@ the television decodes (`_AUDIO_DecodedInfoCb_AC3: eac3 : 1, ATMOS : 1, channelN
 
 ---
 
+## 6a. The panel confirms it — and it will tell you so itself (2026-08-22)
+
+**Settled: the television enters its own Dolby Vision picture mode on this app's declaration.** Every
+document in this repo, and v0.4.0's release note twice over, had carefully declined to claim this —
+the evidence stopped at the pipeline accepting the declaration, which is a different claim from the
+panel acting on it, and the assumed way to close the gap was a human photographing the set's info
+screen.
+
+It does not need a photograph. `com.webos.settingsservice` reports the panel's CURRENT dynamic-range
+state as a free side-effect of a settings read, in the `dimension` envelope rather than in
+`settings`:
+
+```sh
+ssh root@$(cat .tv-host) 'script -qc "luna-send -n 1 -f \
+  luna://com.webos.settingsservice/getSystemSettings \
+  {\"category\":\"picture\",\"keys\":[\"pictureMode\"]}" /dev/null'
+```
+
+```json
+"dimension": { "input": "default", "_3dStatus": "2d", "dynamicRange": "dolbyHdr" },
+"settings":  { "pictureMode": "dolbyHdrCinemaBright" }
+```
+
+`luna-send` needs a tty here, hence `script -qc` — the same wrapper the capture recipes use. The
+`keys` argument is required but irrelevant: `dynamicRange` rides in `dimension` whatever you ask for.
+Note the errorKey/`returnValue:false` on a set with no Dolby picture modes is not a failure of the read —
+`dimension` is still populated.
+
+Measured on the dev set (49SM9000PLA, webOS 4.10.2), one launch per row, `plxnative-play=<rk>`:
+
+| content | what the app declared | pipeline `hdrType` | `dynamicRange` | `pictureMode` |
+| --- | --- | --- | --- | --- |
+| nothing playing | — | — | `sdr` | `normal` |
+| **DV Profile 5** | `DolbyHdrInfo profileId=5 trackType=single`, direct play | `DolbyVision` | **`dolbyHdr`** | **`dolbyHdrCinemaBright`** |
+| **DV Profile 8** (bl_compat=1) | `DolbyHdrInfo profileId=8 trackType=single`, direct play | `DolbyVision` | **`dolbyHdr`** | **`dolbyHdrCinemaBright`** |
+| **DV Profile 7** (bl_compat=6, el=1) | *refused* — "dual-layer, base layer is not self-displayable; re-encoding (no copy)" | `HDR10` | `hdr` | `hdrVivid` |
+
+Three distinct panel states, each the one the app asked for. That makes this a test of the whole
+chain rather than of Dolby Vision alone: **the Profile 7 refusal is confirmed by the same reading**,
+landing on HDR10 exactly as §1 says it should, which no amount of reading our own log could have
+shown. A log line proves what we sent; `dimension.dynamicRange` proves what the panel did with it.
+
+**Why this belongs beside §5's silent instruments.** §5 is about instruments that cannot see the
+thing they are pointed at. This is the opposite failure and worth naming as its own: an instrument
+that existed the whole time, answered the question in one call, and was never asked — while the
+open item stayed open for want of somebody with a camera. Before concluding that a claim needs a
+human at the panel, check whether the platform already publishes it.
+
 ## 7. Open
 
 - **Profile 7.** One film on the dev server. Would need to know whether `gst_dvbin_pipeline_dovi_dual`
-  can be fed from a single appsrc, or whether a second one can be created — unexamined.
+  can be fed from a single appsrc, or whether a second one can be created — unexamined. The REFUSAL
+  path is no longer open: §6a confirms it lands on HDR10 at the panel, which is the intended
+  outcome, so what remains is only whether Profile 7 could ever be played as DV rather than whether
+  declining it works.
 - **Profile 9's gate/payload disagreement.** `presentation` declares it, `with_dolby_hdr_info`'s
   H265 guard silently drops the node. Costs nothing today (SDR-compatible base layer) and no such
   asset exists here, but the "gate and payload can never disagree" test does not cover it.
