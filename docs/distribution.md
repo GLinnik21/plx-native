@@ -11,6 +11,10 @@ where that pass changed the answer it is marked **[corrected]**.
 
 ## Bottom line
 
+**Per-item status against LG's App Self Checklist — what passes, what fails and what nobody has
+run — is `docs/lg-self-checklist.md`.** This file answers whether we can submit at all; that one
+answers what a QA pass would find.
+
 | Question | Answer |
 | --- | --- |
 | Ship via **webOS Homebrew Channel**? | **Yes** — it is a real, current, native-app-friendly path. ~1 day of packaging work plus the licence fixes below. |
