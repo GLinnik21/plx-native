@@ -240,6 +240,45 @@ pub(crate) const CTRL_Y: f32 = BTN_Y;
 pub(crate) const CTRL_RIGHT: f32 = SCR_W - 80.0;
 /// how many control discs the row holds: Subtitles, Audio, More
 const BTN_N: i32 = 3;
+
+/// The CONTROL ROW's focus pop — one spring per item ([`crate::ui::widgets::CtlPop`]), so the
+/// control being left shrinks while the arriving one grows instead of both snapping.
+///
+/// **One array for all three slot occupants**, not one per module. The transport discs, the Skip
+/// pill and the Up Next pair are the same row at the same right edge, only ever one at a time, and
+/// the cursor walking them is `hud_nav.btn` for all three ([`ControlSlot::items`]) — so the pop is a
+/// property of that row and not of whichever module happens to draw it this frame. `BTN_N` 3 is the
+/// widest occupant. `up_next` and `skip_pill` read theirs through [`row_pop`].
+///
+/// A static because the HUD keeps no view struct: it is drawn entirely from the caller's arguments,
+/// which is right for everything else it does and leaves this the one piece of retained motion state
+/// on the route.
+static mut ROW_POP: crate::ui::widgets::CtlPop<{ BTN_N as usize }> =
+    crate::ui::widgets::CtlPop::new();
+
+/// Step the control row's focus pop — once per frame, from `app.rs`'s update phase.
+///
+/// **Not from [`draw_hud`]**, though that is where every other number this row draws comes from: a
+/// spring advanced inside a draw advances once per DRAW, and this row is not drawn on every frame of
+/// the route (a failure read-out owns the frame, the Info card and the Chapters strip take the
+/// transport away). The pop would then run at a rate that depended on which overlay was open.
+///
+/// `focus == 1` is the control column; anything else closes every pop. The index is bounded by the
+/// CURRENT occupant's item count, so a stale `btn` left over from a wider slot cannot pop a control
+/// the narrower one does not have.
+pub(crate) fn update(slot: ControlSlot, focus: i32, btn: i32, dt: f32) {
+    let f = (focus == 1)
+        .then(|| usize::try_from(btn).ok())
+        .flatten()
+        .filter(|&i| i < slot.items().max(0) as usize);
+    unsafe { (*std::ptr::addr_of_mut!(ROW_POP)).step(f, dt) };
+}
+
+/// Control `i`'s focus pop this frame — the read half of [`ROW_POP`], for the two stand-ins that
+/// draw into this row from their own modules (`up_next`, `skip_pill`).
+pub(crate) fn row_pop(i: c_int) -> f32 {
+    unsafe { std::ptr::addr_of!(ROW_POP).as_ref().unwrap().scale(i.max(0) as usize) }
+}
 /// Index of the `…` overflow disc within the row — the LAST one. Exported because `app.rs` routes
 /// its OK and its click, and a second literal `2` over there is exactly the drift `ControlSlot`
 /// was introduced to stop.
@@ -774,6 +813,7 @@ pub(crate) fn draw_hud(slot: ControlSlot, busy: Busy, focus: i32, btn: i32, tab:
             for i in 0..BTN_N {
                 TransportButton::new(i, Rect::new(btn_x(i), BTN_Y, BTN_S, BTN_S))
                     .focused(focus == 1 && btn == i)
+                    .scale(row_pop(i))
                     .draw(&e, p);
             }
         }

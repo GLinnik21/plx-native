@@ -63,6 +63,345 @@ impl Cast {
     }
 }
 
+/// What PMS says about a video stream's **Dolby Vision** layering — read together, because the
+/// only question worth asking of them is a joint one: **is the base layer, alone, a correct
+/// picture?**
+///
+/// It has to be a joint question because the buffer-feed pipeline has no other option. We feed one
+/// elementary stream to a decoder that has never heard of an RPU, so whatever the base layer
+/// contains is exactly what reaches the panel. That is fine for **Profile 8.1**, whose base layer
+/// IS an HDR10 stream — ignoring the RPU costs the dynamic metadata and nothing else. It is not
+/// fine for **Profile 5**, which is single-layer IPT-PQ with no HDR10 fallback: decoded as
+/// ordinary HEVC it is not a dimmer picture but a WRONG one, with the washed, pink-green cast of
+/// IPT read as YCbCr. And it cannot work at all for **Profile 7**, whose picture is split across
+/// two layers we cannot interleave.
+///
+/// All zero is "the server said nothing", which is also what a non-DV stream produces — see
+/// [`Dovi::base_layer_unusable`] for why silence must never convict.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub(crate) struct Dovi {
+    /// `DOVIPresent` — the file carries Dolby Vision at all. Everything below is meaningless
+    /// without it, because a non-DV stream sends none of these fields and so reads as all-zero.
+    pub(crate) present: bool,
+    /// `DOVIProfile` — 5 / 7 / 8 …; 0 means the server did not say.
+    pub(crate) profile: i64,
+    /// `DOVIBLCompatID` — 0 none (P5) / 1 HDR10 / 2 SDR / 4 HLG. NB the dev server's P7 item
+    /// sends **6**, so this field alone does not identify a dual-layer file.
+    pub(crate) bl_compat: i64,
+    /// `DOVIELPresent` — an enhancement layer is present (P7).
+    pub(crate) el_present: bool,
+    // ---- DESCRIPTIVE ONLY, below. The four fields above answer the PLAYBACK question this struct
+    // exists for ("is the base layer a correct picture"); these three are read by
+    // `ui::tracks_panel` and by nothing else. They live here rather than on `Detail` so there is
+    // one home for "what the server said about Dolby Vision" — but do not reach for them in a
+    // decision without the live sweep `plex::Stream`'s DOVI comment records.
+    /// `DOVILevel` — the DV level (a bitrate/resolution tier); 0 = the server did not say.
+    pub(crate) level: i64,
+    /// `DOVIVersion`, DECOMPOSED — the server sends the dotted string `"1.0"`, and this holds it
+    /// as `(1, 0)`. Rendered back by [`Dovi::version_str`].
+    ///
+    /// **Why not a `String`:** this struct is `Copy` and rides `route::Session`, whose `IDLE` is a
+    /// `const`; more to the point `route::playback_preview_of` reads a `Dovi` **on the detail
+    /// page's per-frame draw path**, so a `String` field would put a heap allocation in a hot
+    /// frame — the same cost `ui::info_panel` refuses when it declines to clone `route::url()`.
+    /// A DV version is dotted-numeric by specification, so the decomposition is lossless for every
+    /// shape the field can take; anything unparseable lands as `(0, 0)` and draws no row at all.
+    pub(crate) version: (i64, i64),
+    /// `DOVIBLPresent` — the base layer is in the file.
+    pub(crate) bl_present: bool,
+    /// `DOVIRPUPresent` — the RPU (the dynamic metadata) is in the file.
+    pub(crate) rpu_present: bool,
+}
+
+impl Dovi {
+    /// The all-zero record — "the server said nothing about Dolby Vision", which is also exactly
+    /// what an ordinary SDR file produces. A `const` rather than [`Default::default`] because
+    /// `route`'s idle `Session` is a `const` item and cannot call one.
+    pub(crate) const NONE: Dovi = Dovi {
+        present: false,
+        profile: 0,
+        bl_compat: 0,
+        el_present: false,
+        level: 0,
+        version: (0, 0),
+        bl_present: false,
+        rpu_present: false,
+    };
+
+    /// [`Self::version`] back as the dotted string the server sent (`"1.0"`), or `None` when it
+    /// sent none. `None` and `Some("0.0")` are different answers and the panel draws only the
+    /// former's absence — a server that really reported version 0 would still get a row.
+    pub(crate) fn version_str(&self) -> Option<String> {
+        (self.version != (0, 0)).then(|| format!("{}.{}", self.version.0, self.version.1))
+    }
+
+    /// Parse `DOVIVersion`'s dotted string into [`Self::version`]'s pair. PURE, and deliberately
+    /// forgiving: a value this does not understand is `(0, 0)` — i.e. "the server said nothing" —
+    /// because a version string is a caption and must never be a parse failure that costs the
+    /// whole item.
+    pub(crate) fn parse_version(s: &str) -> (i64, i64) {
+        let s = s.trim();
+        if s.is_empty() {
+            return (0, 0);
+        }
+        let (a, b) = match s.split_once('.') {
+            // a trailing ".0.0" (a three-part version) keeps its first two components
+            Some((a, rest)) => (a, rest.split('.').next().unwrap_or("0")),
+            None => (s, "0"),
+        };
+        match (a.trim().parse::<i64>(), b.trim().parse::<i64>()) {
+            (Ok(a), Ok(b)) if a >= 0 && b >= 0 => (a, b),
+            _ => (0, 0),
+        }
+    }
+
+    /// PURE: **true when the base layer on its own is not a picture we can put on the panel
+    /// correctly** — i.e. when this bitstream, decoded as ordinary HEVC by a pipeline that was
+    /// never TOLD it is Dolby Vision, shows the user wrong colours (or nothing).
+    ///
+    /// Note the "never told" clause: it is the whole question this predicate asks, and since
+    /// 2026-08-21 it is no longer the only thing we can do — [`Dovi::presentation`] can declare
+    /// the stream to the pipeline, and a declared Profile 5 is displayed correctly. What survives
+    /// unchanged is every path where the bitstream reaches a decoder with NO declaration attached,
+    /// and that is now this predicate's job:
+    ///
+    /// - the direct-play gate **when no node will be sent** (`presentation` is written in terms of
+    ///   this, so the two can never contradict each other), and
+    /// - the server's permission to **COPY** the video — a remux or a `directStream` transcode
+    ///   hands us the identical elementary stream one container down, and the Load payload built
+    ///   for that path declares nothing. `route::build_stream` reads it for both
+    ///   ([`crate::plex::TranscodeSpec::no_video_copy`] and the `remux` gate) and that is why a
+    ///   declared Profile 5 still refuses a copy: the declaration rides the DIRECT PLAY, not the
+    ///   file, so the same pixels arriving by another route are as wrong as they ever were.
+    ///
+    /// Two disqualifiers, and they are found by different fields:
+    /// - **an enhancement layer** (`el_present`, Profile 7) — one elementary stream is all the
+    ///   pipeline feeds, so the other layer simply never arrives. This is the only test that
+    ///   catches P7: measured live 2026-08-21, the dev server's P7 item reports `bl_compat = 6`,
+    ///   which sails through any `== 0` check.
+    /// - **no cross-compatible base layer** (Profile 5 / `bl_compat == 0`) — IPT-PQ, which an
+    ///   HEVC decoder will happily decode and a panel will happily show, incorrectly.
+    ///
+    /// **Silence must not convict, and that is the whole subtlety here.** Every field is 0 both
+    /// when the server omits it and when there is no Dolby Vision at all, so a bare
+    /// `bl_compat == 0` would refuse direct play for *every ordinary SDR file in the library*.
+    /// `present` guards the outer question and a KNOWN `profile` guards the compat-id test, so a
+    /// server that reports `DOVIPresent` and nothing else falls through to the existing gates
+    /// unchanged. That direction is deliberate, and the price of getting it wrong is higher than
+    /// it first looks: a true answer here does not merely reroute an item, it also withdraws the
+    /// server's permission to COPY the video
+    /// ([`crate::plex::TranscodeSpec::no_video_copy`] — without which the refusal accomplishes
+    /// nothing at all), and a server that cannot encode the result then refuses the playback
+    /// outright. So a false positive costs the film, not just its 4K and its HDR10. The same
+    /// misread-degrades-to-assumed rule [`crate::route::video_direct_plays`] applies to an unknown
+    /// frame size, applied to a field whose silence is indistinguishable from a legitimate zero.
+    ///
+    /// The one measured reassurance, and it is worth having before trusting the `profile > 0`
+    /// guard: every Dolby Vision stream on the dev server (34 of them, swept 2026-08-21) sends all
+    /// eight `DOVI*` keys together. No shape there reports a profile without also reporting a
+    /// compatibility id, which is the only combination that guard could misread.
+    pub(crate) fn base_layer_unusable(&self) -> bool {
+        if !self.present {
+            return false;
+        }
+        self.el_present || self.profile == 5 || (self.profile > 0 && self.bl_compat == 0)
+    }
+
+    /// PURE: **how this stream will be presented** — the ONE predicate behind both halves of the
+    /// Dolby Vision decision, so they cannot drift apart. The direct-play gate
+    /// ([`crate::route::video_direct_plays`]) asks it whether to refuse; the Load payload
+    /// ([`crate::player::engine`]) asks the same value whether to emit a `DolbyHdrInfo` node. One
+    /// call, one answer, two consumers.
+    ///
+    /// `signal` is whether we are willing to declare Dolby Vision for a stream **whose base layer
+    /// we could not show without it** — i.e. Profile 5. It is TRUE in every shipping configuration
+    /// now; `/tmp/plxnative-nodv` ([`dv_withheld`]) is the only thing that clears it, and it exists
+    /// to bisect, not to protect. It stays a parameter rather than a read inside this function so
+    /// the whole rule stays pure and both settings are unit-testable.
+    ///
+    /// The four arms, and why each is where it is:
+    ///
+    /// - **not `present`** → [`DvPresentation::NotDv`]. No Dolby Vision, nothing to say, and
+    ///   nothing to refuse. This is every ordinary file in the library.
+    /// - **`el_present`** → refuse, always, `signal` or not. Profile 7 splits its picture across a
+    ///   base and an enhancement layer; the pipeline feeds ONE elementary stream and cannot
+    ///   interleave the other, so no payload key makes it displayable. (This is also the only
+    ///   thing that identifies a dual-layer file: the dev server's P7 reports `bl_compat = 6`.)
+    ///   It is deliberately checked BEFORE the declaration arm — which is what keeps the emitted
+    ///   node's `trackType` at `"single"` and, with `encryptionType` fixed at `"clear"`, makes the
+    ///   pipeline's `dv-dual-svp` secure-video-path flag unreachable. We cannot satisfy that flag.
+    /// - **no node will be sent** (a profile the server never named, or Profile 5 with the
+    ///   trigger unarmed — see the comment on `declare`, which is where the trigger's reach
+    ///   narrowed) → fall back to
+    ///   exactly the pre-declaration rule: refuse iff [`base_layer_unusable`](Self::base_layer_unusable).
+    ///   That is what makes "keep the refusal for any case where we would not send the node" a
+    ///   property of the code rather than of a reviewer's memory. The `profile <= 0` half also
+    ///   preserves the never-convict-on-silence rule: a server that reports `DOVIPresent` and
+    ///   nothing else still falls through to `NotDv` and plays as it always has, because we cannot
+    ///   tell that silence from an SDR file, and `getInt` wants a real profile id anyway.
+    /// - otherwise → **declare it**, and direct play is then correct — including for Profile 5,
+    ///   whose refusal this inverts. The decompile of this TV's own `libpf` (2026-08-21) is the
+    ///   evidence: `CustomPipeline::parseOptionStringSpi` sets `hasDolbyHdrInfo` on the mere
+    ///   PRESENCE of the key, and `getVideoCaps` then adds `dolby-vision=TRUE` (+ the profile
+    ///   hint) to the `video/x-h265` caps it was already going to build. The codec string does not
+    ///   change; the node is the entire difference between an IPT-PQ stream shown in wrong colours
+    ///   and one the panel puts in Dolby Vision mode.
+    pub(crate) fn presentation(&self, signal: bool) -> DvPresentation {
+        if !self.present {
+            return DvPresentation::NotDv;
+        }
+        if self.el_present {
+            return DvPresentation::Refuse("dual-layer");
+        }
+        // **Whether a node will be sent, and the trigger is no longer the whole answer.** A
+        // stream whose base layer is already a correct picture on its own declares
+        // UNCONDITIONALLY; only one whose base layer is not — Profile 5 — waits behind
+        // [`dv_withheld`]. **Both arms now declare in every shipping configuration**, and the
+        // distinction survives only as a bisect and as the record of why it was ever needed.
+        //
+        // It was needed because a declared **P5 hitched** and a declared P8 did not: P5's display-
+        // management lookup missed for 2 frames in every 12 (`Requested <pts> PTS can not be found
+        // in LUT Buffer`), while a cross-compatible base layer masks the same fault — when the
+        // dynamic metadata is late, an HDR10/HLG/SDR image that was already right is what shows.
+        // That fault was **one 90 kHz tick** in the LUT key and is fixed
+        // ([`crate::player::engine`]'s `pts_nudge_ns`): 3 misses in 90 s on the shipped default,
+        // against 160 in 45 s before. So the asymmetry that put P5 behind a trigger is gone, and
+        // with it the trigger's opt-in polarity.
+        //
+        // Written through [`base_layer_unusable`](Self::base_layer_unusable) rather than a bare
+        // `profile != 5` so the two can no more drift apart here than they can in the gate below.
+        let declare = signal || !self.base_layer_unusable();
+        if !declare || self.profile <= 0 {
+            return if self.base_layer_unusable() {
+                DvPresentation::Refuse("no cross-compatible base layer")
+            } else {
+                DvPresentation::NotDv
+            };
+        }
+        DvPresentation::Declare(DolbyHdrInfo {
+            profile_id: self.profile,
+            // Honest derivation, and unreachable as `"dual"` while the `el_present` arm above
+            // returns first — written this way so that the day an interleaver exists, the payload
+            // follows the refusal being relaxed instead of quietly lying about the track.
+            track_type: if self.el_present { "dual" } else { "single" },
+            // Never `"all"`: paired with `trackType: "dual"` that is what sets `dv-dual-svp`, the
+            // secure-video-path flag, which this app cannot satisfy.
+            encryption_type: "clear",
+        })
+    }
+
+    /// [`presentation`](Self::presentation) with the trigger read for you — the form both real
+    /// call sites use, so the gate and the payload are answered from one latched bool.
+    pub(crate) fn presentation_now(&self) -> DvPresentation {
+        self.presentation(!dv_withheld())
+    }
+}
+
+/// The `option.externalStreamingInfo.contents.DolbyHdrInfo` node of the Starfish Load payload:
+/// what we tell LG's pipeline about this stream's Dolby Vision.
+///
+/// The three fields are the ones the TV's own parser reads, at the paths and in the types the
+/// decompile proved (`Options::checkKeyExistance` for the node itself, then `getInt` for
+/// `profileId` and `getString` for the other two). `profileId` **must** be a JSON integer;
+/// omitting it leaves the pipeline's `-1` sentinel, which still yields `dolby-vision=TRUE` with
+/// only the profile hint missing — a legitimate fallback, not a failure.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct DolbyHdrInfo {
+    /// `DOVIProfile` as the server reported it. 5 (single-layer IPT-PQ) is the case this exists
+    /// for; 8.x declares fine too and gains the dynamic metadata its base layer alone lacks.
+    pub(crate) profile_id: i64,
+    /// `"single"` or `"dual"` — one elementary stream or a base + enhancement pair.
+    pub(crate) track_type: &'static str,
+    /// `"clear"`. See [`Dovi::presentation`] for why this is never `"all"`.
+    pub(crate) encryption_type: &'static str,
+}
+
+/// What [`Dovi::presentation`] decided: the single value the direct-play gate and the Load payload
+/// both read. Three states rather than a bool, because "there is no Dolby Vision here" and "there
+/// is, and we are declaring it" are the same answer to the GATE and opposite answers to the
+/// PAYLOAD — which is precisely the pair that used to be two predicates and could disagree.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum DvPresentation {
+    /// Not Dolby Vision, or not identifiably so. Play it as ordinary HEVC, declare nothing.
+    NotDv,
+    /// Direct play, with this node spliced into the Load payload.
+    Declare(DolbyHdrInfo),
+    /// Direct play is refused, with the short reason for the log line at the decision.
+    ///
+    /// "cross-compatible" rather than "HDR10" deliberately: HDR10 (`bl_compat` 1) is merely the
+    /// common case, and an SDR (2) or HLG (4) base layer is equally displayable. What Profile 5
+    /// lacks is a base layer conformant to ANY ordinary transfer, which is what id 0 means.
+    Refuse(&'static str),
+}
+
+impl DvPresentation {
+    /// Direct play is refused (and, at `build_stream`, the reason for the log line).
+    pub(crate) fn refusal(&self) -> Option<&'static str> {
+        match self {
+            Self::Refuse(why) => Some(why),
+            _ => None,
+        }
+    }
+    /// The node to splice into the Load payload, if any.
+    pub(crate) fn declared(&self) -> Option<DolbyHdrInfo> {
+        match self {
+            Self::Declare(d) => Some(*d),
+            _ => None,
+        }
+    }
+}
+
+crate::dev::latched_flag!(
+    /// `/tmp/plxnative-dvnonode` — with `-dv` also armed, keep the Dolby Vision **direct play**
+    /// but send **no** `DolbyHdrInfo` node. Diagnostic only, and it exists for one question the
+    /// trigger surface could not otherwise ask.
+    ///
+    /// The two things that changed together the day Profile 5 first direct-played are the
+    /// DECLARATION and the 4K HEVC direct play of a file that had never been fed before. Every
+    /// other combination is reachable by choosing a title — a Profile 8 direct-plays with the node
+    /// or without it, because its gate does not depend on the trigger — but the P5 file has only
+    /// two states, "declared and direct-played" and "refused", since [`Dovi::presentation`]
+    /// answers both halves from one value. This is the missing cell: the same bytes, the same
+    /// path, the declaration alone removed.
+    ///
+    /// Applied at the payload ([`crate::player::engine`]), NEVER at the gate — suppressing the
+    /// node at the gate would send the file to the transcoder and measure a different pipeline.
+    /// Note the resulting picture is expected to be WRONG (an IPT-PQ stream shown as ordinary
+    /// HDR); this knob is for judging cadence, not colour.
+    pub(crate) fn dv_node_suppressed = "dvnonode";
+);
+
+crate::dev::latched_flag!(
+    /// `/tmp/plxnative-nodv` — **withhold the Dolby Vision declaration**, for a bisect. The
+    /// polarity is inverted from what it was, and the inversion is the point.
+    ///
+    /// This was `/tmp/plxnative-dv`, an opt-IN, default off, with a note in this doc saying to
+    /// flip the default "once the node has been seen to put a correct picture on a real panel".
+    /// The reason for the caution was real — the payload is the `sourceInfo` envelope, which the
+    /// pipeline parses before anything decodes, and a malformed one does not fail loudly, it
+    /// wedges the video sink. The condition has now been met, twice over and on the last profile
+    /// that had not met it:
+    ///
+    /// - **the picture is correct** — Profile 5 direct-played, photographed, with the set's own
+    ///   "Dolby Vision / Dolby Atmos" read-out on screen;
+    /// - **and its one measured defect is fixed.** A declared P5 used to lose the display-
+    ///   management lookup for 2 frames in 12 (a ~2 Hz tone pulse); that was one 90 kHz tick in
+    ///   the LUT key and is gone — 3 misses in 90 s on the shipped default, against 160 in 45 s.
+    ///   See `player::engine::pts_nudge_ns`.
+    ///
+    /// So every Dolby Vision stream the pipeline can feed is now declared by default, and this
+    /// knob only takes it away. Note what it does NOT do: withholding the declaration re-imposes
+    /// the old refusal on Profile 5 (`base_layer_unusable`), so this bisects "declared vs
+    /// transcoded", not "declared vs direct-played-undeclared". [`dv_node_suppressed`]
+    /// (`/tmp/plxnative-dvnonode`) is the finer instrument for that, and is why both exist.
+    ///
+    /// Latched once per process rather than read per call, which is what guarantees the gate and
+    /// the payload cannot disagree WITHIN a session: `tests/run.py` clears `/tmp/plxnative-*`
+    /// between cases, so an unlatched read could legitimately answer differently at the route
+    /// decision and at the Load a few frames later, and direct-play a Profile 5 with no node.
+    pub(crate) fn dv_withheld = "nodv";
+);
+
 // `Default` is for TESTS: every field is a zero/empty that means "PMS did not say", so a fixture
 // can name the two or three fields its case is about instead of the fifteen it is not.
 #[derive(Clone, Default)]
@@ -74,6 +413,18 @@ pub(crate) struct Stream {
     pub(crate) codec: String,
     pub(crate) channels: i64,
     pub(crate) layout: String, // audioChannelLayout, e.g. "5.1(side)"
+    /// Per-STREAM bitrate in kbps (0 = the server did not say) — NOT the file's. It is what tells
+    /// seven same-language AC3 tracks apart in `ui::tracks_panel`, where language and codec alone
+    /// cannot.
+    pub(crate) bitrate: i64,
+    /// The codec profile, lower-case as PMS sends it. **On an audio track this is where Atmos
+    /// is** — `"dolby digital plus + dolby atmos"` (probed live 2026-08-21); on the video track it
+    /// is `"main 10"`. See [`Stream::has_atmos`].
+    pub(crate) profile: String,
+    /// Video track only: bits per component (10 for Main 10); 0 = not said.
+    pub(crate) bit_depth: i64,
+    /// Video track only: chroma subsampling as PMS spells it, e.g. `"4:2:0"`.
+    pub(crate) chroma: String,
     pub(crate) title: String,
     pub(crate) sdh: bool,
     pub(crate) ad: bool,
@@ -91,6 +442,33 @@ pub(crate) struct Stream {
     /// it names a DIFFERENT stream, and never as a reason to transcode. Read its doc before using
     /// this flag anywhere else.
     pub(crate) selected: bool,
+}
+
+impl Stream {
+    /// Does this audio track carry **Dolby Atmos**?
+    ///
+    /// **The answer is in `profile`, and only there** — probed live against the dev server
+    /// 2026-08-21. The Atmos track on the P5 test item sends
+    /// `profile: "dolby digital plus + dolby atmos"` while its `audioChannelLayout` is the
+    /// ordinary `"5.1(side)"` and its `title` is `null`. A client that looked at the layout, the
+    /// title or the channel count would badge nothing, forever and silently. (PMS *also* composes
+    /// it into `displayTitle`, but that is a pre-formatted user string in the server's own words;
+    /// the profile is the structured field.) Dolby's own AC-4 spec §3.1.1.1 says the same thing
+    /// from the other end — *"It is not possible to derive whether content is branded as Dolby
+    /// Atmos by inspecting the channel configuration."*
+    ///
+    /// Two consumers, and they are why this lives here rather than in the panel that first needed
+    /// it: the track menu's `EAC3 5.1 + Atmos` detail line, and the Load payload's
+    /// `contents.immersive` node ([`crate::route::stream_immersive`]) — one is a caption and the
+    /// other is a statement to the television's pipeline, so the predicate has to be the data
+    /// layer's, not a screen's.
+    ///
+    /// Deliberately a substring test rather than an equality: the field is a human-readable
+    /// composition and the codec half of it varies (`"dolby digital plus + dolby atmos"` here,
+    /// but TrueHD and AC-4 compose the same way). "atmos" is the part that means Atmos.
+    pub(crate) fn has_atmos(&self) -> bool {
+        self.profile.to_ascii_lowercase().contains("atmos")
+    }
 }
 
 #[derive(Default)]
@@ -145,11 +523,32 @@ impl Season {
     }
 }
 
-pub(crate) struct Related {
-    pub(crate) rk: String,
-    pub(crate) title: String,
-    pub(crate) thumb: String,
-}
+/// A tile of the Related shelf — the **shared catalog row**, not a private three-field struct.
+///
+/// It used to be `{ rk, title, thumb }`: the poster art and nothing about the item. That shortfall
+/// was load-bearing in two visible ways. The shelf could draw no watched tick and no resume bar,
+/// while every other poster surface in the app draws both; and the press-and-hold context menu had
+/// nothing to build rows from, so a hold on a Related tile did nothing at all — the owner-reported
+/// gap — while the same hold on Home, the Library grid, Search and a person's filmography opened a
+/// menu.
+///
+/// **The data was never missing.** `/related`'s rows are the SAME wire DTO every other listing
+/// parses, carrying `viewCount`, `viewOffset`, `duration`, `type` and `Media[0].Part[0]`;
+/// `fetch_related` simply copied three fields out and dropped the rest. So the fix is not to widen
+/// this struct field by field but to stop having one: [`crate::pms::parse_item`] is the ONE
+/// `plex::Metadata` → row mapping that the hub catalog, the Library grid and the person page
+/// already share, and it owns rules a re-derivation gets wrong. The sharpest is that a related
+/// **SHOW** is watched on `viewedLeafCount >= leafCount` and never on `viewCount > 0`, so a series
+/// you are three episodes into is neither watched nor unwatched — which is exactly the state whose
+/// menu must offer BOTH write verbs (`ui::widgets::row_watch_state`).
+///
+/// Carrying `sid` is the second thing this buys, and it is a correctness property rather than a
+/// convenience: a related item is a key on the server THIS PAGE is mounted on, and both servers
+/// number their ratingKeys from 1 (`docs/shared-servers.md` §2). `fetch_related` stamps each row
+/// with the sid it fetched from, so every downstream use — the art request, the context menu's
+/// `SID`, the scrobble — addresses the right machine BY CONSTRUCTION rather than by a comment
+/// asking the next caller to remember `plex::current_server()` is the wrong answer here.
+pub(crate) type Related = crate::pms::PmsMovie;
 
 /// Clone because the playing-item store keeps the played leaf's OWN chapters (see [`PlayingItem`]) —
 /// on the detail-page play path they are cloned from the already-loaded `Detail` rather than refetched.
@@ -508,6 +907,19 @@ pub(crate) struct Detail {
     pub(crate) year: i64,
     pub(crate) rating: String, // contentRating
     pub(crate) summary: String,
+    /// The marketing one-liner (`tagline`) — *"Everyone deserves the chance to fly."*
+    ///
+    /// **Atmosphere, never content**, which is why it is drawn only in the About alert
+    /// ([`crate::ui::about_panel`]) under the synopsis and nowhere on the page itself: it says
+    /// nothing a viewer needs in order to decide, so it earns a line only where there is room to
+    /// read the whole record. Empty for most items and for every episode — absence is the ordinary
+    /// case, and the panel drops the line AND its gap rather than reserving a hole.
+    ///
+    /// It arrives on the SINGLE-key `/library/metadata/{rk}` fetch, which asks for no field
+    /// exclusions. Both of the other reads in `plex/library.rs` pass
+    /// `excludeFields=summary,tagline` — the batched `metadata_many` and the section listing — so
+    /// anything derived from THOSE has never seen it and never will.
+    pub(crate) tagline: String,
     pub(crate) aired: String,
     pub(crate) dur_ms: i64,
     pub(crate) resume_ms: i64, // viewOffset (0 = not partially watched) — the resume position
@@ -525,6 +937,23 @@ pub(crate) struct Detail {
     pub(crate) width: i64,               // stored frame size, not the resolution class (1918x802
     pub(crate) height: i64,              // is a 1080p scope movie) — badge off video_resolution
     pub(crate) bitrate: i64,             // kbps, whole-stream
+    // ---- the rest of the primary version's technical record, added for `ui::tracks_panel` and
+    // read by nothing else. Same caveat as the block above: this is version 0, not a best-of pick.
+    /// `Part[0].container`, falling back to `Media[0].container` — `"mp4"`, `"mkv"`, ….
+    pub(crate) container: String,
+    /// `Part[0].file` — the part's absolute path ON THE SERVER. Shown as the Track-information
+    /// panel's header line. Not a URL, not reachable from here, and the one field on `Detail` most
+    /// likely to be non-ASCII, so elide it by CHARACTER.
+    pub(crate) file: String,
+    /// `Part[0].size` in BYTES (0 = the server did not say).
+    pub(crate) size: i64,
+    /// `Media[0].aspectRatio` as a number — `2.35` (0.0 = not said).
+    pub(crate) aspect_ratio: f64,
+    /// The primary version's VIDEO track, whole. `vcodec`/`width`/`height`/`bitrate` above are the
+    /// Media-level summary the play path reads; this is the stream's own record, and the only
+    /// place its profile, bit depth, chroma and per-stream bitrate live. `None` for a show
+    /// container that never got an episode backfill, and for an audio-only part.
+    pub(crate) video: Option<Stream>,
     /// the video stream is HDR (PQ/HLG transfer or Dolby Vision) — with [`Self::hdr`] true AND
     /// the item facing a real RE-ENCODE (`route::Preview::Converts`, **not** merely "not
     /// direct-playable": a container-only remux copies the picture and keeps HDR10 intact) AND the
@@ -532,6 +961,12 @@ pub(crate) struct Detail {
     /// tone-mapping (a Plex Pass server feature; see docs/plex-pass-audit.md). Any weaker
     /// combination shows nothing.
     pub(crate) hdr: bool,
+    /// The video stream's Dolby Vision layering. [`Self::hdr`] answers "should the facts row warn
+    /// about tone mapping"; this answers the harder one the PLAY path needs — whether the base
+    /// layer alone is a correct picture, i.e. whether direct play is honest for this file. Read by
+    /// [`crate::route::playback_preview_of`] so the page's "how this plays" answer agrees with
+    /// what Play will actually do.
+    pub(crate) dovi: Dovi,
     pub(crate) art: String,
     pub(crate) thumb: String,
     /// The item's own `UltraBlurColors` corners (tl, tr, br, bl — the ring order
@@ -608,13 +1043,19 @@ pub(crate) fn install_for_test(d: Option<Detail>) {
 /// and the filmstrip's checks would sit unchanged for as long as the item's server takes to answer —
 /// which on a share is seconds, and reads as the press having missed.
 ///
-/// Two things can be about the item, and both are updated:
+/// THREE things can be about the item, and all three are updated:
 /// * **the loaded item itself** — a movie, or the show whose hero toggle was pressed;
 /// * **one EPISODE of the loaded season** — the filmstrip's context menu, whose rk is a leaf of the
 ///   show `CURRENT` holds. Its season's `viewedLeafCount` moves with it, because the season tab's
 ///   tick is derived from that count ([`Season::watched`]) and a tick that disagreed with the
 ///   episode row beneath it is precisely the "two surfaces describing one item two ways" this page
 ///   already refuses elsewhere.
+/// * **a tile of the RELATED shelf** — a different item entirely, which is what makes it the odd
+///   one out: it is matched on its OWN `sid` (each row carries one, see [`Related`]) rather than on
+///   the page's, and it is checked unconditionally rather than as one arm of a chain. Since
+///   2026-08-21 that shelf's tiles have a context menu of their own, so this page can mark a third
+///   item watched — and without this pass the tile it was pressed on kept its old tick and resume
+///   bar until a refetch, which reads as the row having done nothing.
 ///
 /// `resume_ms` is cleared with the flag for the same reason `pms::set_watched` clears it: the
 /// still's own resolver (`ui::detail::ep_state`) reads progress ahead of the watched mark, so an
@@ -624,6 +1065,25 @@ pub(crate) fn install_for_test(d: Option<Detail>) {
 pub(crate) fn set_watched_local(sid: crate::plex::ServerId, rk: &str, on: bool) -> bool {
     unsafe {
         let Some(d) = (*addr_of_mut!(CURRENT)).as_mut() else { return false };
+        // The RELATED shelf first, and unconditionally — it is the one store here whose rows are
+        // OTHER items, so it is neither the loaded item nor one of its episodes and must not be
+        // reached through either of their early returns below. A related tile is also the one the
+        // press most often came FROM (its context menu is why this page can mark a third item
+        // watched at all), and left out, the tile kept its old tick and bar until a refetch.
+        //
+        // Not `else`-chained with the two arms under it for a subtler reason as well: the same
+        // title can legitimately be BOTH the loaded item and a row of some other page's shelf, and
+        // a hub that lists an item alongside itself is not something this function should trust
+        // itself to rule out.
+        let mut hit = false;
+        for m in d.related.iter_mut() {
+            if crate::plex::same_item((m.sid, &m.rk), (sid, rk)) {
+                // the shared three-field flip (`watched`/`unwatched`/`resume_ms` move together, or
+                // the tile wears the progress bar it had before and shows no tick at all)
+                crate::pms::set_watched(m, on);
+                hit = true;
+            }
+        }
         if crate::plex::same_item((d.sid, &d.rk), (sid, rk)) {
             d.watched = on;
             d.resume_ms = 0;
@@ -631,10 +1091,14 @@ pub(crate) fn set_watched_local(sid: crate::plex::ServerId, rk: &str, on: bool) 
         }
         // An episode is only ever a leaf of the loaded show, so it is matched on the PAGE's server —
         // `Episode` carries no `sid` of its own precisely because it cannot come from anywhere else.
+        // Both misses below return `hit` rather than `false`: the Related pass above may already
+        // have changed this page, and reporting "nothing here was about that item" after editing a
+        // tile would be this function contradicting itself. (`viewstate` only logs the verdict, but
+        // a false negative is the kind that goes unnoticed until something starts trusting it.)
         if d.sid != sid {
-            return false;
+            return hit;
         }
-        let Some(i) = d.episodes.iter().position(|e| e.rk == rk) else { return false };
+        let Some(i) = d.episodes.iter().position(|e| e.rk == rk) else { return hit };
         let was = d.episodes[i].watched;
         d.episodes[i].watched = on;
         d.episodes[i].resume_ms = 0;
@@ -772,6 +1236,7 @@ fn fetch_detail(sid: crate::plex::ServerId, rk: &str) -> Option<Detail> {
         year: it.year,
         rating: it.content_rating.clone(),
         summary: it.summary.clone(),
+        tagline: it.tagline.clone(),
         aired: it.originally_available_at.clone(),
         dur_ms: it.duration,
         resume_ms: it.view_offset,
@@ -791,7 +1256,15 @@ fn fetch_detail(sid: crate::plex::ServerId, rk: &str) -> Option<Detail> {
         width: 0,
         height: 0,
         bitrate: 0,
+        // …as are the five below, which `parse_streams` fills from that same primary version — so
+        // a show's borrowed technicals and its FILE column can never describe two different files.
+        container: String::new(),
+        file: String::new(),
+        size: 0,
+        aspect_ratio: 0.0,
+        video: None,
         hdr: false,
+        dovi: Dovi::default(),
         art: it.art.clone(),
         thumb: it.thumb.clone(),
         blur: blur.unwrap_or_default(),
@@ -879,14 +1352,36 @@ fn crew_credits(it: &crate::plex::Metadata) -> Vec<Cast> {
     out
 }
 
-/// Convert a part's Stream[] into (audio, subs, video_fps, video_is_hdr) — the ONE
+/// Convert a part's Stream[] into (audio, subs, video_fps, video_is_hdr, dovi) — the ONE
 /// plex::Stream → Stream mapping (the detail parse and the playing-tracks store both use it).
 /// HDR is the video stream's transfer characteristic (PQ or HLG) or a Dolby Vision flag — the
 /// input to the facts row's "HDR → SDR without tone-mapping" warning, which only matters where
-/// the item would transcode on a server that cannot tone-map.
-fn convert_streams(streams: &[crate::plex::Stream]) -> (Vec<Stream>, Vec<Stream>, f64, bool) {
+/// the item would transcode on a server that cannot tone-map. [`Dovi`] is the finer-grained
+/// companion to that flag and answers a different question — not "is this HDR" but "can we show
+/// the base layer at all" (`route::video_direct_plays` gates direct play on it).
+/// What one part's `Stream[]` reduces to — the return of [`convert_streams`].
+///
+/// A named struct rather than the 5-tuple it was, because the Track-information panel needed the
+/// VIDEO track itself and a sixth positional element is where a tuple stops being readable at the
+/// call site. Every field keeps the meaning it had.
+#[derive(Default)]
+pub(crate) struct Streams {
+    pub(crate) audio: Vec<Stream>,
+    pub(crate) subs: Vec<Stream>,
+    /// The part's video track, or `None` for an audio-only part. Carries the per-stream bitrate,
+    /// profile, bit depth and chroma that `fps`/`hdr`/`dovi` alone throw away.
+    pub(crate) video: Option<Stream>,
+    /// the video track's `frameRate` (0 = unknown) — feeds the Load esInfo
+    pub(crate) fps: f64,
+    pub(crate) hdr: bool,
+    pub(crate) dovi: Dovi,
+}
+
+fn convert_streams(streams: &[crate::plex::Stream]) -> Streams {
     let (mut audio, mut subs, mut fps) = (Vec::new(), Vec::new(), 0.0);
     let mut hdr = false;
+    let mut dovi = Dovi::default();
+    let mut video: Option<Stream> = None;
     for s in streams {
         let st = Stream {
             id: s.id,
@@ -896,6 +1391,10 @@ fn convert_streams(streams: &[crate::plex::Stream]) -> (Vec<Stream>, Vec<Stream>
             codec: s.codec.clone(),
             channels: s.channels,
             layout: s.audio_channel_layout.clone(),
+            bitrate: s.bitrate,
+            profile: s.profile.clone(),
+            bit_depth: s.bit_depth,
+            chroma: s.chroma_subsampling.clone(),
             sdh: s.hearing_impaired != 0,
             ad: s.audio_description != 0 || s.title.to_lowercase().contains("descri"),
             forced: s.forced != 0,
@@ -912,13 +1411,49 @@ fn convert_streams(streams: &[crate::plex::Stream]) -> (Vec<Stream>, Vec<Stream>
                 // PQ (HDR10) or HLG transfer, or Dolby Vision — the dev PMS sends
                 // colorTrc=smpte2084 on its HDR10 items (probed live 2026-08-11)
                 hdr = matches!(s.color_trc.as_str(), "smpte2084" | "arib-std-b67") || s.dovi_present != 0;
+                // NB a Profile 5 file sends NO colorTrc at all (verified live 2026-08-21: the
+                // dev server's one P5 item omits the field), so `dovi_present` is the only
+                // thing that makes it read as HDR — and the layering fields below are the only
+                // thing that makes it read as unplayable.
+                //
+                // Guarded on `dovi_present`, unlike the two assignments above it, and the
+                // difference is deliberate. `fps` and `hdr` take the LAST video stream in the
+                // part; a Dolby Vision record must instead SURVIVE one, because the direct-play
+                // gate reads it and losing it fails the wrong way — a second `streamType: 1`
+                // stream carrying no DOVI fields (embedded cover art is the shape to expect)
+                // would blank a Profile 5 record back to `Dovi::default()`, which refuses
+                // nothing, and the file would direct-play in the wrong colours again. No part on
+                // the dev server has two video streams today (all 540 leaves swept 2026-08-21),
+                // so this costs nothing and is not a change to any measured behaviour — it is the
+                // one assignment here whose failure is silent and wrong rather than silent and
+                // cosmetic.
+                if s.dovi_present != 0 {
+                    dovi = Dovi {
+                        present: true,
+                        profile: s.dovi_profile,
+                        bl_compat: s.dovi_bl_compat_id,
+                        el_present: s.dovi_el_present != 0,
+                        level: s.dovi_level,
+                        version: Dovi::parse_version(&s.dovi_version),
+                        bl_present: s.dovi_bl_present != 0,
+                        rpu_present: s.dovi_rpu_present != 0,
+                    };
+                }
+                // The video track ITSELF, kept rather than reduced to `fps`/`hdr`/`dovi`. It is the
+                // only place the stream's own bitrate, profile, bit depth and chroma survive, and
+                // `ui::tracks_panel`'s VIDEO column is built from all four. Guarded like the DV
+                // record and for the same reason — a second `streamType: 1` stream (embedded cover
+                // art is the shape to expect) must not overwrite the real picture's technicals.
+                if video.is_none() {
+                    video = Some(st);
+                }
             }
             2 => audio.push(st),
             3 => subs.push(st),
             _ => {}
         }
     }
-    (audio, subs, fps, hdr)
+    Streams { audio, subs, video, fps, hdr, dovi }
 }
 
 /// parse an item's Media[0].Part[0].Stream[] into d.audio / d.subs (the About footer), plus that
@@ -931,14 +1466,26 @@ fn parse_streams(it: &crate::plex::Metadata, d: &mut Detail) {
         d.width = m.width;
         d.height = m.height;
         d.bitrate = m.bitrate;
+        d.container = m.container.clone();
+        d.aspect_ratio = m.aspect_ratio;
     }
     if let Some(p) = it.first_part() {
-        let (audio, subs, fps, hdr) = convert_streams(&p.stream);
-        d.audio = audio;
-        d.subs = subs;
-        d.hdr = hdr;
-        if fps > 0.0 {
-            d.video_fps = fps;
+        d.file = p.file.clone();
+        d.size = p.size;
+        // The PART's container wins where it has one — a version can hold parts in different
+        // containers, and the part is the thing the panel is describing. `Media.container` is the
+        // fallback, already assigned above.
+        if !p.container.is_empty() {
+            d.container = p.container.clone();
+        }
+        let s = convert_streams(&p.stream);
+        d.audio = s.audio;
+        d.subs = s.subs;
+        d.video = s.video;
+        d.hdr = s.hdr;
+        d.dovi = s.dovi;
+        if s.fps > 0.0 {
+            d.video_fps = s.fps;
         }
     }
 }
@@ -973,6 +1520,11 @@ pub(crate) struct PlayingItem {
     /// class — docs/plex-pass-audit.md, closing section).
     pub(crate) width: i64,
     pub(crate) height: i64,
+    /// The played leaf's Dolby Vision layering — the direct-play gate's other refusal, beside the
+    /// frame size above and for the same reason: the smart-DP branch never asks PMS, so a file
+    /// whose base layer we cannot display correctly (Profile 5, or a dual-layer Profile 7) would
+    /// otherwise be fed to the decoder verbatim and shown in the wrong colours. See [`Dovi`].
+    pub(crate) dovi: Dovi,
     pub(crate) markers: Vec<Marker>, // intro / credits segments — the in-player Skip prompt
     pub(crate) chapters: Vec<Chapter>, // chapter boundaries — the in-player Chapters tab/strip
 }
@@ -1031,6 +1583,7 @@ pub(crate) fn cached_playing(sid: crate::plex::ServerId, rk: &str) -> Option<Pla
         video_fps: d.video_fps,
         width: d.width,
         height: d.height,
+        dovi: d.dovi,
         markers: d.markers.clone(),
         chapters: d.chapters.clone(),
     })
@@ -1050,17 +1603,18 @@ pub(crate) fn fetch_playing_item(sid: crate::plex::ServerId, rk: &str) -> Option
     // here costs no request, and dropping it is what hid the Chapters tab on the episode path.
     let markers = it.as_ref().map(|it| convert_markers(&it.marker)).unwrap_or_default();
     let chapters = it.as_ref().map(|it| convert_chapters(&it.chapter)).unwrap_or_default();
-    let (audio, subs, video_fps, _hdr) = it
+    let st = it
         .as_ref()
         .and_then(|it| it.first_part().map(|p| convert_streams(&p.stream)))
         .unwrap_or_default();
+    let (audio, subs, video_fps, dovi) = (st.audio, st.subs, st.fps, st.dovi);
     // the frame size rides the same PRIMARY version the streams come from (route.rs's
     // direct-play gate tests it against the device bound — see the field doc)
     let (width, height) = it
         .as_ref()
         .and_then(|it| it.primary_media().map(|m| (m.width, m.height)))
         .unwrap_or((0, 0));
-    Some(PlayingItem { sid, rk: rk.to_string(), audio, subs, video_fps, width, height, markers, chapters })
+    Some(PlayingItem { sid, rk: rk.to_string(), audio, subs, video_fps, width, height, dovi, markers, chapters })
 }
 
 /// Retire BOTH descriptions of the item that was playing, together.
@@ -1219,6 +1773,22 @@ fn fetch_related(sid: crate::plex::ServerId, rk: &str) -> Vec<Related> {
             return Vec::new();
         }
     };
+    related_rows(&mc, sid)
+}
+
+/// Related tiles this shelf holds at most. PMS answers `/related` with several titled hubs and we
+/// concatenate them, so without a cap a well-connected film can carry a hundred rows into a strip
+/// that shows six.
+const RELATED_MAX: usize = 20;
+
+/// `/related`'s response → the shelf's rows. **PURE**, split out of [`fetch_related`] so the three
+/// things that can be wrong here are host-testable: which fields survive the copy, the de-duplication
+/// across hubs, and the cap.
+///
+/// De-duplication is across the WHOLE response and not per hub, which is the point of it: PMS's
+/// related hubs overlap heavily ("Similar Movies" and "More with <actor>" routinely name the same
+/// film), and a flattened strip that listed it twice would put two tiles of one title side by side.
+fn related_rows(mc: &crate::plex::MediaContainer, sid: crate::plex::ServerId) -> Vec<Related> {
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for h in &mc.hub {
@@ -1226,12 +1796,13 @@ fn fetch_related(sid: crate::plex::ServerId, rk: &str) -> Vec<Related> {
             if x.rating_key.is_empty() || !seen.insert(x.rating_key.clone()) {
                 continue;
             }
-            out.push(Related {
-                rk: x.rating_key.clone(),
-                title: x.title.clone(),
-                thumb: x.thumb.clone(),
-            });
-            if out.len() >= 20 {
+            // THE shared row mapping, not a three-field copy — see [`Related`]. `sid` is the
+            // server this response came from, passed in and never looked up: `fetch_related` runs
+            // on the detail worker, and the house rule (`pms::parse_item`'s own doc) is that a
+            // worker reads no statics, because "the current server" can change while a fetch is in
+            // flight and the rows in hand belong to the machine that was asked.
+            out.push(crate::pms::parse_item(x, sid));
+            if out.len() >= RELATED_MAX {
                 return out;
             }
         }
@@ -2074,6 +2645,60 @@ mod tests {
     use super::*;
     use std::sync::atomic::Ordering;
 
+    // ---- convert_streams: the Dolby Vision record's survival ------------------------------
+
+    fn video_stream(dovi: Option<(i64, i64, i64)>) -> crate::plex::Stream {
+        let (present, profile, compat, el) = match dovi {
+            Some((profile, compat, el)) => (1, profile, compat, el),
+            None => (0, 0, 0, 0),
+        };
+        crate::plex::Stream {
+            stream_type: 1,
+            codec: "hevc".into(),
+            dovi_present: present,
+            dovi_profile: profile,
+            dovi_bl_compat_id: compat,
+            dovi_el_present: el,
+            ..Default::default()
+        }
+    }
+
+    /// **A Dolby Vision record must survive a second video stream that has none.** `fps` and `hdr`
+    /// take the LAST `streamType: 1` stream in the part and that is harmless for both; the DV
+    /// record is read by `route::video_direct_plays`, so blanking it back to the all-zero default
+    /// re-opens the direct-play gate and the file plays in the wrong colours — the exact bug the
+    /// gate exists for. No part on the dev server carries two video streams today (all 540 leaves
+    /// swept 2026-08-21), which is precisely why this is a test and not a measurement: embedded
+    /// cover art is an ordinary thing for a library to contain and nothing else here would notice.
+    #[test]
+    fn a_dolby_vision_record_is_not_erased_by_a_later_video_stream() {
+        let p5 = video_stream(Some((5, 0, 0)));
+        let cover = video_stream(None);
+        let dovi = convert_streams(&[p5, cover]).dovi;
+        assert!(dovi.present, "the P5 record must outlive a second video stream");
+        assert_eq!(dovi.profile, 5);
+        assert!(dovi.base_layer_unusable(), "and must still forbid a server-side COPY of it");
+        // …and, undeclared, must still refuse direct play — the record surviving is what both of
+        // those turn on, so the cover-art stream must not be able to blank it
+        assert_eq!(
+            dovi.presentation(false),
+            crate::metadata::DvPresentation::Refuse("no cross-compatible base layer")
+        );
+        assert_eq!(dovi.presentation(true).declared().map(|n| n.profile_id), Some(5));
+    }
+
+    /// The ordinary single-video-stream shapes, so the guard above cannot be read as "any DV
+    /// record anywhere wins": a part with no Dolby Vision at all still produces the all-zero
+    /// record that refuses nothing.
+    #[test]
+    fn a_part_with_no_dolby_vision_reports_no_record() {
+        let s = convert_streams(&[video_stream(None)]);
+        let (hdr, dovi) = (s.hdr, s.dovi);
+        assert_eq!(dovi, Dovi::default());
+        assert!(!dovi.base_layer_unusable());
+        assert!(!hdr, "no DV and no PQ/HLG transfer is not HDR");
+    }
+
     /// post through the REAL mailbox write, so the monotone guard is under test rather than
     /// bypassed (an unconditional store here would make the "older lands late" case vacuous)
     fn landing(gen: u32, rk: &str) {
@@ -2109,6 +2734,98 @@ mod tests {
         assert_eq!(m.library_section_title, "Film Club", "the library names the row, not the machine");
         assert_eq!(m.duration, 7_020_000);
         assert_eq!(m.media.first().map(|x| x.video_resolution.as_str()), Some("1080"));
+    }
+
+    /// **The Related shelf's rows carry the watch state that was on the wire all along.**
+    ///
+    /// The reported bug — a long press on a Related tile doing nothing — was explained by "a Related
+    /// row has no `(ratingKey, watched)` pair to build menu rows from", and that was true of the
+    /// old three-field struct while being false of the response. This is the test that keeps the two
+    /// from drifting apart again: it feeds `/related`'s REAL shape and asserts the fields the shelf's
+    /// tick, its resume bar and its context menu are each built from.
+    ///
+    /// Three details are deliberately in the fixture rather than idealised away:
+    /// * `viewOffset`/`duration` arrive as JSON **strings**, which PMS really does (see
+    ///   `plex/CLAUDE.md` — a non-lenient adapter fails the WHOLE container, not one field);
+    /// * `viewCount` is **absent** on an unwatched row rather than `0`;
+    /// * the show is **part-watched** (`viewedLeafCount < leafCount`), the state that is neither
+    ///   watched nor unwatched and the one a `viewCount > 0` shortcut gets wrong.
+    #[test]
+    fn related_rows_carry_the_watch_state_the_wire_already_had() {
+        let body = r#"{"MediaContainer":{"Hub":[{"title":"Similar Movies","Metadata":[
+            {"ratingKey":"11","type":"movie","title":"finished","duration":"7020000","viewCount":2,
+             "Media":[{"Part":[{"key":"/library/parts/11/file.mkv"}]}]},
+            {"ratingKey":"12","type":"movie","title":"halfway","duration":"7020000","viewOffset":"3510000"},
+            {"ratingKey":"13","type":"movie","title":"never started","duration":7020000},
+            {"ratingKey":"14","type":"show","title":"three in","leafCount":10,"viewedLeafCount":3}
+        ]}]}}"#;
+        let mc = serde_json::from_str::<crate::plex::Envelope>(body).expect("parses").media_container;
+        let rows = related_rows(&mc, SRV_B);
+        assert_eq!(rows.len(), 4, "every hub row with a key becomes a tile");
+
+        // …and every row is stamped with the server it was FETCHED from. A related item is a key on
+        // the page's own server, and both servers number from 1, so this is the field that keeps the
+        // art request, the menu's SID and the scrobble off the wrong machine.
+        assert!(rows.iter().all(|m| m.sid == SRV_B), "the row's server is the one that answered");
+
+        // finished: the tick, and no bar (`resume_frac` is None with no viewOffset)
+        assert!(rows[0].watched && !rows[0].unwatched);
+        assert_eq!(rows[0].resume_frac(), None);
+        assert_eq!(rows[0].part, "/library/parts/11/file.mkv", "Play from Start needs the part id");
+
+        // halfway: the bar, at the fraction the wire's STRING-encoded numbers give
+        assert!(!rows[1].watched && rows[1].unwatched, "a resume point is not a view count");
+        assert_eq!(rows[1].resume_frac(), Some(0.5), "the amber bar's fraction, off duration + viewOffset");
+
+        // never started: neither mark — and `viewCount` was absent, not zero
+        assert!(!rows[2].watched && rows[2].unwatched);
+        assert_eq!(rows[2].resume_frac(), None);
+
+        // the part-watched SHOW: NEITHER flag, which is the state the menu turns into both verbs
+        assert_eq!(rows[3].kind, 1, "the item KIND decides the menu's leaf/container rule");
+        assert!(!rows[3].watched, "3 of 10 leaves is not done");
+        assert!(!rows[3].unwatched, "…and it is not untouched either");
+    }
+
+    /// The two bounds on the shelf, which are one function's job and were easy to lose in the move
+    /// to the shared row mapping.
+    ///
+    /// **De-duplication is across the whole response, not per hub** — PMS's related hubs overlap
+    /// heavily, so the same film is routinely in two of them and a flattened strip would draw it
+    /// twice side by side. **The cap counts kept rows**, so a response padded with duplicates cannot
+    /// spend the budget on tiles that were never added.
+    #[test]
+    fn related_rows_dedupe_across_hubs_and_cap_the_shelf() {
+        let hub = |keys: &[i32]| {
+            let rows: Vec<String> = keys
+                .iter()
+                .map(|k| format!(r#"{{"ratingKey":"{k}","type":"movie","title":"t{k}"}}"#))
+                .collect();
+            format!(r#"{{"Metadata":[{}]}}"#, rows.join(","))
+        };
+        // the same three keys in two hubs, plus one the second hub alone has
+        let body = format!(
+            r#"{{"MediaContainer":{{"Hub":[{},{}]}}}}"#,
+            hub(&[1, 2, 3]),
+            hub(&[2, 3, 4])
+        );
+        let mc = serde_json::from_str::<crate::plex::Envelope>(&body).expect("parses").media_container;
+        let rows = related_rows(&mc, SRV_A);
+        let keys: Vec<&str> = rows.iter().map(|m| m.rk.as_str()).collect();
+        assert_eq!(keys, ["1", "2", "3", "4"], "one tile per title, in first-seen order");
+
+        // a row PMS sent no key for is not a tile — it addresses nothing
+        let body = r#"{"MediaContainer":{"Hub":[{"Metadata":[{"type":"movie","title":"keyless"}]}]}}"#;
+        let mc = serde_json::from_str::<crate::plex::Envelope>(body).expect("parses").media_container;
+        assert!(related_rows(&mc, SRV_A).is_empty(), "no ratingKey, no tile");
+
+        // the cap, counted in KEPT rows: 30 distinct keys, each repeated twice
+        let many: Vec<i32> = (0..30).collect();
+        let body = format!(r#"{{"MediaContainer":{{"Hub":[{},{}]}}}}"#, hub(&many), hub(&many));
+        let mc = serde_json::from_str::<crate::plex::Envelope>(&body).expect("parses").media_container;
+        let rows = related_rows(&mc, SRV_A);
+        assert_eq!(rows.len(), RELATED_MAX, "the shelf is capped");
+        assert_eq!(rows.last().map(|m| m.rk.as_str()), Some("19"), "…at the 20th DISTINCT title");
     }
 
     /// A server that answers "I do not have it" contributes no row — and is not confused with one
@@ -2441,6 +3158,69 @@ mod tests {
         assert_eq!(current().unwrap().seasons[1].viewed_leaf_count, 0, "never a negative remainder");
 
         assert!(!set_watched_local(SRV_A, "not-here", true), "an rk on neither the item nor its row");
+        clear();
+    }
+
+    /// The THIRD store this page holds, and the one the two arms above cannot reach: a **Related
+    /// tile**, which is a different item entirely.
+    ///
+    /// Since 2026-08-21 that shelf has a context menu, so the detail page can mark an item that is
+    /// neither the loaded one nor a leaf of it. Without this pass the press wrote correctly to the
+    /// server and the tile under the user's thumb kept its old tick and its old resume bar until a
+    /// refetch — which reads as the row having done nothing, the exact failure the optimistic edit
+    /// exists to prevent.
+    ///
+    /// Three properties, and each is a way the walk can be written wrong:
+    /// * it must run BEFORE (and outside) the loaded-item / episode arms, both of which return
+    ///   early — chained under either one, a Related hit on a page whose own rk did not match would
+    ///   never be reached;
+    /// * it must match on the ROW's `sid`, not the page's. Both servers number their ratingKeys
+    ///   from 1, so a bare-key walk would flip a tile because a *share's* item happened to share its
+    ///   number (`docs/shared-servers.md` §2);
+    /// * and the verdict must survive the arms below it, or the function reports "nothing here was
+    ///   about that item" having just edited a tile.
+    #[test]
+    fn an_optimistic_watch_flip_reaches_the_related_shelf_the_menu_was_opened_on() {
+        let _serial = crate::testlock::serial();
+        let rel = |sid, rk: &str| Related {
+            sid,
+            rk: rk.into(),
+            dur_ns: 7_020_000 * 1_000_000,
+            resume_ms: 3_510_000,
+            unwatched: true,
+            ..Default::default()
+        };
+        // a SHOW page, so the loaded item and its episodes are both populated and both must be left
+        // exactly as they were by a press on a tile that is neither
+        set_current_for_test(Some(Detail {
+            sid: SRV_A,
+            rk: "show".into(),
+            is_show: true,
+            episodes: vec![Episode { rk: "e1".into(), ..Default::default() }],
+            related: vec![rel(SRV_A, "r0"), rel(SRV_A, "r1")],
+            ..Default::default()
+        }));
+
+        // …and the tile is reached even though the page's own rk did not match and the rk is on no
+        // episode — the two arms that both return early
+        assert!(set_watched_local(SRV_A, "r1", true), "the Related tile is a hit, not a miss");
+        let d = current().unwrap();
+        assert!(d.related[1].watched && !d.related[1].unwatched, "the tick the menu just promised");
+        assert_eq!(d.related[1].resume_ms, 0, "…and the bar it was wearing, or the tile shows both");
+        assert!(d.related[0].resume_frac().is_some(), "no other tile moved");
+        assert!(!d.watched, "the page's own item is not what was pressed");
+        assert!(!d.episodes[0].watched, "…nor is any episode of it");
+
+        // the way back, from the second row a part-watched tile offers
+        assert!(set_watched_local(SRV_A, "r1", false));
+        let d = current().unwrap();
+        assert!(d.related[1].unwatched && !d.related[1].watched);
+
+        // A SHARE's `r0` is a different film that happens to carry the same number. The row's own
+        // `sid` is what keeps the press off it — a bare-key walk would flip the tile here.
+        assert!(!set_watched_local(SRV_B, "r0", true), "another server's key names nothing on this shelf");
+        assert!(current().unwrap().related[0].resume_frac().is_some(), "…and the tile is untouched");
+
         clear();
     }
 

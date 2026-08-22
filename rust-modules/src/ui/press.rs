@@ -29,6 +29,16 @@ const K_DOWN: f32 = 620.0;
 const K_UP: f32 = 340.0;
 /// Spring-back damping ratio (`< 1` ⇒ overshoots/rings = the tvOS click pop).
 const ZETA_UP: f32 = 0.55;
+/// The CONTROL FOCUS POP's spring — [`widgets::CtlPop`](crate::ui::widgets::CtlPop) — which is
+/// deliberately this module's release spring and not one of its own.
+///
+/// The design system names exactly two things in the app that bounce: the press release, and a
+/// control face arriving at focus (`tokens/motion.css`, `--ease-bounce`). Two underdamped springs
+/// tuned separately would be two rates for one gesture — the pop and the click land on the same
+/// object, often within a few hundred milliseconds of each other — so the pop borrows the numbers
+/// rather than restating them, and moving the click moves both.
+pub(crate) const K_POP: f32 = K_UP;
+pub(crate) const ZETA_POP: f32 = ZETA_UP;
 /// Minimum time the dip is shown before the release bounce may start, so even a flash-quick tap still
 /// registers a visible press-in (the design holds the dip a fixed 120 ms; we enforce a floor).
 const MIN_DIP_MS: u32 = 90;

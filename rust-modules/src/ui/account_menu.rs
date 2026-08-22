@@ -1,7 +1,13 @@
-//! The Home **profile menu** — a small popover opened from the top-left profile chip, on the SAME
+//! The **profile menu** — a small popover opened from the top-left profile chip, on the SAME
 //! animated [`TableView`] as the in-player subtitle/audio menu. Switch Plex Home profile ("Change
 //! profile" → who's-watching), "Sign out", or "Sign in". The menu only reports the chosen action
 //! via [`on_ok`]; `app.rs` performs the routing.
+//!
+//! It is a popover on **whichever of the three screens wears the shared top bar** — Home, the
+//! Library or Search — because the chip is a stop on all three. That page keeps drawing and
+//! animating underneath and a dismissal returns to it; `app.rs`'s `Route::Account { over: BarHost }`
+//! is what carries it. This module was "the HOME profile menu" while Home was the only screen whose
+//! chip could be pressed.
 //!
 //! **The rows are a function of the account state, and that state is the persisted session** —
 //! `Session::account`, read fresh at each [`open`]. It used to be `session::current().is_some()`,
@@ -36,9 +42,9 @@ pub enum Action {
 /// case, where naming an account we do not have would be the same lie in reverse).
 const HEADER_FALLBACK: &str = "Account";
 
-/// The first production user of dynamic widget glass: Home stays at presentation rate while its
-/// dirty blurred backdrop is refreshed on the shared [`Glass`] cadence — every CHANGED present, so
-/// a settled menu still takes no snapshots at all.
+/// The first production user of dynamic widget glass: the HOST PAGE stays at presentation rate
+/// while this panel's dirty blurred backdrop is refreshed on the shared [`Glass`] cadence — every
+/// CHANGED present, so a settled menu still takes no snapshots at all.
 static mut POP: Popover = Popover::with_glass(Glass::DYNAMIC_BACKDROP);
 static mut TABLE: TableView = TableView::new(); // main-thread only
 /// The ordered rows captured at [`open`] — the ONE place row order lives, so [`on_ok`]'s index
@@ -178,8 +184,12 @@ pub fn update(dt: f32) {
     table().update(dt, ph - 40.0);
 }
 
-/// Resolve the backdrop cadence before Home draws. The snapshot itself is deliberately deferred
-/// until [`draw`], where the panel sits after every underlay pixel in draw order.
+/// Resolve the backdrop cadence before the HOST PAGE draws. The snapshot itself is deliberately
+/// deferred until [`draw`], where the panel sits after every underlay pixel in draw order.
+///
+/// `underlay_changed` is the motion of that page — `app.rs` scopes each of the three bar screens'
+/// updates ([`crate::ui::idle::scoped_motion`]) so this panel's own appear spring cannot pass for
+/// movement in the page behind it.
 pub fn prepare_present(underlay_changed: bool) {
     if is_open() {
         pop().prepare_present(underlay_changed);
@@ -201,11 +211,26 @@ const SCRIM_A: f32 = 0.5;
 /// a scrim drawn later, with the panel, is in the visible frame but not in the snapshot, and the
 /// frosted ground then reads BRIGHTER than the dimmed page around it. `app.rs` calls this at the
 /// end of the page closure, which puts it on the direct path and the capture path alike.
+///
+/// It also LIFTS this menu's opener — the profile chip — back out of the dim. The chip is what the
+/// panel unfurls from and the only thing on screen the panel is about, so dimming it under its own
+/// menu is the same bug the focused card had. Only the DRAW half of the [`Opener`] is used: this
+/// panel's placement is its own (it hangs under the top bar), not a function of the chip's rect.
+///
+/// [`Opener`]: crate::ui::popover::Opener
 pub fn draw_scrim() {
     if is_open() {
-        pop().scrim(SCRIM_A);
+        pop().scrim_lifting(SCRIM_A, &OPENER);
     }
 }
+
+/// This menu's opener: the top-left profile chip, which `ui::widgets` draws (it owns the chip's
+/// rect and its unfurl spring). A `const` even though the menu now has THREE hosts — `Route::
+/// Account { over }` is any of the bar-wearing pages with this popover over it — because the chip
+/// is the same shared control on all three, at the same rect, so the lift does not vary with the
+/// page underneath.
+const OPENER: crate::ui::popover::Opener =
+    crate::ui::popover::Opener::drawn(crate::ui::widgets::redraw_profile_chip);
 
 pub fn draw() {
     if !is_open() {

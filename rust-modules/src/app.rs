@@ -207,6 +207,7 @@ use crate::log;
 /// The BACK trail's vocabulary — `Trail` is a run-loop local, `Node` its pages, `Spot` the place a
 /// detail page is restored to. See `ui/trail.rs`.
 use crate::ui::detail::Spot;
+use crate::ui::popover::Opener;
 use crate::ui::trail::{Node, Trail};
 /// The shared top strip's vocabulary: what a pill INDEX means. Every site that turns a pill into a
 /// destination `match`es on this, so a pill the app has not been taught about is a compile error
@@ -485,9 +486,10 @@ fn hud_visible(now: u32, until: u32, is_paused: bool, dismissed: bool) -> bool {
     ((now < until || is_paused) && !dismissed) || crate::player::loading()
 }
 
-/// The transport's visibility predicate. Almost nothing else in this file is host-testable — it is
-/// the SDL event loop — but this pair is pure enough to pin, and the bug it encodes cost the
-/// diagnostics overlay its whole reason for existing.
+/// The transport's visibility predicate, and the one state transition that has to OUTRANK it —
+/// a fresh control-row offer. Almost nothing else in this file is host-testable — it is the SDL
+/// event loop — but these two are, and between them they encode the bugs that cost the diagnostics
+/// overlay its whole reason for existing and the Up Next tile its auto-advance.
 #[cfg(test)]
 mod hud_visibility_tests {
     use super::*;
@@ -527,6 +529,85 @@ mod hud_visibility_tests {
         });
     }
 
+    /// **A LEFT/RIGHT press that finds the HUD hidden is spent RAISING it** — the rule
+    /// [`key_scrub`] is built around, and the one arm of that ladder no other test can reach (every
+    /// other branch of it drives the player's globals from inside the SDL loop).
+    ///
+    /// The pairing is the point: whatever the cursor is parked on, an invisible transport takes the
+    /// press for itself, and the SAME cursor acts normally the moment the transport is on screen.
+    /// Focus survives an auto-hide (`HudNav::HOME` is re-parked one block down in the loop), so
+    /// "hidden but focus == 1" is an ordinary state, not a corner.
+    #[test]
+    fn a_hidden_hud_spends_the_press_on_itself() {
+        for focus in [0, 1, 2] {
+            for seekable in [false, true] {
+                assert_eq!(
+                    scrub_press(false, focus, seekable),
+                    ScrubPress::Reveal,
+                    "hidden HUD, focus {focus}: the press raises it and moves nothing"
+                );
+            }
+        }
+        // …and visible, the same three cursors act — this is what the reveal DEFERS to, one press later
+        assert_eq!(scrub_press(true, 0, true), ScrubPress::Jump);
+        assert_eq!(scrub_press(true, 1, true), ScrubPress::Row);
+        assert_eq!(scrub_press(true, 2, true), ScrubPress::Tabs);
+        // the scrubber with nothing to move through is still not a Jump
+        assert_eq!(scrub_press(true, 0, false), ScrubPress::Nothing);
+        // …but the two indexed rows are navigable whether or not the item has a duration
+        assert_eq!(scrub_press(true, 1, false), ScrubPress::Row);
+        assert_eq!(scrub_press(true, 2, false), ScrubPress::Tabs);
+    }
+
+    /// **A transport hidden BY HAND is hidden**, and the press that follows must raise it like any
+    /// other — the hole [`HudState::note_fresh_press`] exists to close.
+    ///
+    /// UP-from-the-control-row hides the HUD without extending the linger, so for up to
+    /// `HUD_LINGER_MS` afterwards the TIMER still says "on screen" while nothing is drawn. The
+    /// dismissal is what tells them apart, and it is cleared at the top of every fresh press — so
+    /// an arm that re-derived visibility for itself got `true` and drove geometry the user could
+    /// not see. Three points of one loop iteration, in their real order.
+    #[test]
+    fn a_hand_hidden_hud_still_takes_the_press_that_wakes_it() {
+        with_state(PlaybackState::Playing, || {
+            let now = 10_000u32; // a literal tick, like every test here: the host links no SDL
+            let saved = hud_until(); // `extend_hud` never pulls a deadline IN — reset on the way out
+            let mut hud = HudState::IDLE;
+            extend_hud(now, HUD_LINGER_MS); // …the HUD is up, its linger running
+            assert!(now < hud_until(), "the linger IS still running — the case this is about");
+
+            hud.dismissed = true; // …UP from the control row: hidden, and the timer left alone
+            hud.nav.focus = 0;
+
+            hud.note_fresh_press(now); // …and a LEFT arrives
+            assert!(!hud.visible_at_press, "it was NOT on screen, whatever the timer says");
+            assert!(!hud.dismissed, "…and the press has un-dismissed it, as every key does");
+            assert_eq!(
+                scrub_press(hud.visible_at_press, hud.nav.focus, true),
+                ScrubPress::Reveal,
+                "so the press raises the transport instead of seeking behind it"
+            );
+
+            // …and the NEXT press, with the HUD genuinely up, is the one that hops
+            hud.note_fresh_press(now);
+            assert!(hud.visible_at_press);
+            assert_eq!(scrub_press(hud.visible_at_press, hud.nav.focus, true), ScrubPress::Jump);
+            set_hud(saved);
+        });
+    }
+
+    /// `disengage` is what ends a gesture, and it must end EVERY part of one. `reveal` outliving a
+    /// disengage would make the next tap release throw away a preview the user had really built:
+    /// the release arm reads `hold` then `reveal`, so a stale `reveal` silently outranks a real
+    /// tap commit. `commit_at` is the deliberate exception and stays untouched (see its doc).
+    #[test]
+    fn disengaging_ends_every_part_of_the_gesture() {
+        let mut s = Scrub { dir: -1, hold: true, reveal: true, commit_at: 4_242, ..Scrub::IDLE };
+        s.disengage();
+        assert_eq!((s.dir, s.hold, s.reveal), (0, false, false));
+        assert_eq!(s.commit_at, 4_242, "a pending tap commit is NOT this function's to cancel");
+    }
+
     /// An explicit dismiss (UP from the top row) still hides it while healthy — but must NOT be able
     /// to hide it while the pipeline is stalled, because that is the state the user needs to report
     /// and the read-out is pinned on screen there regardless.
@@ -537,6 +618,70 @@ mod hud_visibility_tests {
         });
         with_state(PlaybackState::Buffering, || {
             assert!(hud_visible(500, 1_000, false, true), "a stall outranks the dismiss");
+        });
+    }
+
+    /// THE Up Next regression: the credits offer has to reach the panel even when the user hid the
+    /// transport BY HAND earlier in the episode.
+    ///
+    /// Three points of one loop iteration are compressed here, in their real order, because the
+    /// failure lived in their COMPOSITION and not in any one of them: the offer edge raises the
+    /// HUD, the auto-hide re-park a few lines below reads `hud_visible`, and the NEXT frame's
+    /// steady-state cancel rule reads the ring. Raising the TIMER alone satisfied the first and
+    /// lost the other two — `dismissed` outranks the timer, so `draw_hud` was never called, the
+    /// invisible HUD's ring was reset the same frame, and `up_next::countdown_may_run` then read
+    /// that as the user walking away and latched the countdown off for the whole segment. The tile
+    /// appeared only if the HUD was raised by hand, with its auto-advance already dead.
+    ///
+    /// The on-device case (`marker_credits_up_next`) cannot see this: it never hides the HUD.
+    #[test]
+    fn a_fresh_offer_reaches_the_panel_through_an_earlier_up_hide() {
+        with_state(PlaybackState::Playing, || {
+            let saved = hud_until();
+            let now = 10_000u32;
+            set_hud(0); // the linger long expired…
+            // …and UP-from-the-control-row on top of it: dismissed, ring back on the scrubber
+            let mut hud = HudState { dismissed: true, ..HudState::IDLE };
+            assert!(
+                !hud_visible(now, hud_until(), false, hud.dismissed),
+                "the state the credits marker arrives into"
+            );
+
+            hud.raise_for_offer(now, crate::ui::up_next::PRIMARY_BTN);
+
+            assert!(
+                hud_visible(now, hud_until(), false, hud.dismissed),
+                "a countdown behind a HUD nobody drew is a cut to the next episode out of nowhere"
+            );
+            assert_eq!(hud.nav.focus, 1, "on the control row, so the auto-hide re-park leaves it");
+            assert!(
+                crate::ui::up_next::countdown_may_run(true, hud.nav.focus == 1, hud.nav.btn),
+                "…and RESTING on the primary, which is what the next frame's cancel rule asks"
+            );
+            set_hud(saved);
+        });
+    }
+
+    /// The resting-position clause, the other half of the same call: an offer never takes the ring
+    /// off a control the user chose. It still puts the transport on screen — the segment is worth
+    /// seeing either way — but for Up Next this is also how being busy elsewhere DECLINES the
+    /// countdown, since the cancel rule reads the ring as a steady state rather than as an edge.
+    #[test]
+    fn an_offer_leaves_a_user_who_walked_off_the_scrubber_where_they_are() {
+        with_state(PlaybackState::Playing, || {
+            let saved = hud_until();
+            let now = 10_000u32;
+            set_hud(0);
+            // parked on the Chapters tab, which is only reachable by pressing DOWN twice
+            let mut hud = HudState { nav: HudNav { focus: 2, btn: 0, tab: 1 }, ..HudState::IDLE };
+            hud.raise_for_offer(now, crate::ui::up_next::PRIMARY_BTN);
+            assert!(hud_visible(now, hud_until(), false, hud.dismissed), "the offer is still shown");
+            assert_eq!((hud.nav.focus, hud.nav.tab), (2, 1), "their spot is theirs");
+            assert!(
+                !crate::ui::up_next::countdown_may_run(true, hud.nav.focus == 1, hud.nav.btn),
+                "engaging the transport is not consent to be pulled into the next episode"
+            );
+            set_hud(saved);
         });
     }
 }
@@ -631,28 +776,156 @@ enum Overlay {
 /// The menu is a popover on a LIVE screen, not a page of its own — the card and its row keep
 /// drawing and animating behind it — so the route has to name the screen underneath, both to
 /// go on drawing/updating it and to know where the popover closes back to.
+///
+/// **Read it through [`page_of`], never by `matches!`ing a variant.** Every question this file asks
+/// about an `ItemMenu` — which page draws, which updates, which chrome it wears, what a navigation
+/// off it tears down — is the answer for the screen underneath, and each one used to name a host by
+/// hand. That is exactly what made adding a third host a five-site edit with silent failures at
+/// each: a page falling through to `home_draw`, a tab bar disappearing mid-hold.
+///
+/// **Every screen with card tiles is a host.** It was Home and the detail filmstrip alone, while
+/// the Library grid, Search's result shelves, the person page's filmography and the detail page's
+/// Related shelf all ARM the same press (`press::begin` + `ok_armed`) — so a hold there dipped the
+/// card, latched long, and then did nothing at all.
+///
+/// The Related shelf was the last of those and was excluded one round longer than the rest, on the
+/// stated grounds that its tiles carried no `(ratingKey, watched)` pair to build rows from. That
+/// was true of the STRUCT and never of the data — `/related` returns the same wire DTO as every
+/// other listing — so the fix was upstream, in `metadata::Related`, and this became an ordinary
+/// host.
+///
+/// **What remains excluded is excluded for a reason that does not dissolve**: a tile that is a
+/// PERSON or a TAG has no ratingKey and no watch state, so every row this menu can build would be
+/// absent and a hold would open an empty panel. That is the detail page's cast headshots and
+/// Search's Cast & Crew / Collections rows (`search::Item::Tag` has no rating key at all). Do not
+/// add them a host; there is nothing for it to show.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum MenuHost {
     /// a home shelf card
     Home,
     /// the detail page's episode filmstrip
     Detail,
+    /// the detail page's RELATED shelf — the same page as [`MenuHost::Detail`] underneath, and a
+    /// deliberately separate host because the ACTION means something different there.
+    ///
+    /// `Detail` is the filmstrip, whose rk is a leaf of the season this page has loaded: its Play
+    /// from Start goes through `detail::play_episode_rk_from_start`, and its scrobble re-reads the
+    /// page. A Related tile is neither of those things — it is a DIFFERENT item, a card row exactly
+    /// like Home's or the Library grid's, and routing it through the filmstrip's arms would look
+    /// for it among the loaded episodes, not find it, and do nothing at all. Folding the two into
+    /// one variant is therefore the bug, not the simplification.
+    Related,
+    /// the Library browse grid
+    Library,
+    /// a Search result shelf (media tiles only)
+    Search,
+    /// the person page's Movies / Shows shelves
+    Person,
 }
 impl MenuHost {
     /// the route the popover returns to when it closes
     fn route(self) -> Route {
         match self {
             MenuHost::Home => Route::Home,
-            MenuHost::Detail => Route::Detail,
+            // both detail-page hosts close back onto the page they stand on
+            MenuHost::Detail | MenuHost::Related => Route::Detail,
+            MenuHost::Library => Route::Library,
+            MenuHost::Search => Route::Search,
+            MenuHost::Person => Route::Person,
         }
+    }
+    /// Whether this host's item is **a leaf of the loaded season** — i.e. whether an action means
+    /// the detail page's own episode path rather than the shared card-row one.
+    ///
+    /// The question `apply_item_action` asks twice (Play from Start, and whether the page must
+    /// re-read itself after a scrobble), asked ONCE here so the two cannot drift apart. It was
+    /// `matches!(host, MenuHost::Detail)` written out at both sites, which was exactly right while
+    /// the filmstrip was the page's only menu — and silently wrong the moment a second one opened
+    /// on the same page over an item that is not an episode at all.
+    fn is_loaded_episode(self) -> bool {
+        matches!(self, MenuHost::Detail)
+    }
+}
+/// Which screen a popover on the SHARED TOP BAR is sitting over — the three pages that wear the
+/// bar, and so the three the profile chip can be pressed from.
+///
+/// [`MenuHost`]'s twin, and it exists for the same reason: the profile menu is a popover on a LIVE
+/// screen, so the route has to name the screen underneath — both to go on drawing and updating it
+/// and to know where the popover closes back to.
+///
+/// [`Route::Account`] was a UNIT variant while Home was the only screen whose chip could be
+/// pressed, and every one of the dozen-odd places that read it therefore said Home outright: the
+/// page under the panel ([`page_of`]), the dismissal's destination ([`key_account`] and the pointer
+/// arm), the update arm that keeps the underlay animating. Making the chip a stop on all three
+/// screens without this would have swapped the page under the popover to Home on the press frame —
+/// a hard cut, no transition — and then dropped the user on Home when they dismissed it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BarHost {
+    Home,
+    Library,
+    Search,
+}
+impl BarHost {
+    /// the route the popover returns to when it closes
+    fn route(self) -> Route {
+        match self {
+            BarHost::Home => Route::Home,
+            BarHost::Library => Route::Library,
+            BarHost::Search => Route::Search,
+        }
+    }
+    /// The bar-wearing page `r` is, if it is one — the list that decides where the chip can be
+    /// pressed at all, so both halves of its activation (the key and the pointer) read it here
+    /// instead of spelling three routes each.
+    fn of(r: Route) -> Option<Self> {
+        match r {
+            Route::Home => Some(BarHost::Home),
+            Route::Library => Some(BarHost::Library),
+            Route::Search => Some(BarHost::Search),
+            _ => None,
+        }
+    }
+}
+/// [`MenuHost`] as the focus probe's own mirror of it. A free fn, not `MenuHost::probe`, for
+/// `node_route`'s reason: `focusprobe::Host` is another module's type and an inherent `impl` here
+/// would be a foreign one. Exhaustive, so a new host cannot fingerprint as the wrong screen.
+fn probe_host(h: MenuHost) -> crate::focusprobe::Host {
+    match h {
+        MenuHost::Home => crate::focusprobe::Host::Home,
+        // both fingerprint as the detail page, because that is the page that is live under them
+        MenuHost::Detail | MenuHost::Related => crate::focusprobe::Host::Detail,
+        MenuHost::Library => crate::focusprobe::Host::Library,
+        MenuHost::Search => crate::focusprobe::Host::Search,
+        MenuHost::Person => crate::focusprobe::Host::Person,
+    }
+}
+/// [`BarHost`] as the focus probe's mirror of it — [`probe_host`]'s twin, for the twin reason. The
+/// probe has ONE `Host` vocabulary for "which page is live under this panel", and this is the
+/// narrower popover's half of it: the three bar-wearing screens map onto three of its five, and the
+/// two the account menu can never stand on are unreachable from here BY TYPE rather than by
+/// comment.
+fn probe_bar_host(h: BarHost) -> crate::focusprobe::Host {
+    match h {
+        BarHost::Home => crate::focusprobe::Host::Home,
+        BarHost::Library => crate::focusprobe::Host::Library,
+        BarHost::Search => crate::focusprobe::Host::Search,
     }
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Route {
     Login,    // plex.tv sign-in (QR) — shown when there's no usable session
     Profiles, // "who's watching" Plex Home picker
+    /// **"What goes on your Home?"** (`ui::onboard`) — the third and last onboarding screen, and
+    /// the only one that is not about credentials: which of the granted sources merge into Home,
+    /// asked once PER PROFILE and only when the roster holds more than one. Between the picker and
+    /// Home, so a household member answers for themselves rather than inheriting the answer of
+    /// whoever set the television up.
+    Onboard,
     Home,
-    Account,  // Home + the top-left profile menu popover (change profile / sign out)
+    /// `over` + the top-left profile menu popover (change profile / sign out). The chip is
+    /// SHARED chrome, so the page underneath is whichever of the three wears the bar — see
+    /// [`BarHost`].
+    Account { over: BarHost },
     /// `over` + the press-and-hold context menu popover (ui/item_menu.rs)
     ItemMenu { over: MenuHost },
     Library,  // the browse grid (ui/library.rs); its sort/filter menus are internal state
@@ -671,15 +944,20 @@ enum Route {
 
 /// Which routes draw the shared top tab bar — the ONE test behind `ui::nav`'s
 /// continuous-chrome rule. Exhaustive for the same reason `Nav::wears_tab_bar` is: a new
-/// screen must not be able to answer this by accident. (`Account`/`ItemMenu over Home` draw
-/// Home underneath, so the bar is on screen there too; Detail and Person do not have one,
+/// screen must not be able to answer this by accident. (Both popovers draw a live page
+/// underneath — `Account` one of the three bar screens, `ItemMenu over Home` Home — so the bar
+/// is on screen there too; Detail and Person do not have one,
 /// which is what makes every transition to or from them fade the bar with the page.)
 fn route_wears_tab_bar(r: Route) -> bool {
     match r {
         Route::Home | Route::Library | Route::Search => true,
-        Route::Account => true,
-        Route::ItemMenu { over } => matches!(over, MenuHost::Home),
-        Route::Login | Route::Profiles | Route::Detail | Route::Person | Route::Player { .. } => false,
+        // Both popovers DERIVE the answer from the screen they are drawn ON, rather than
+        // answering `true` outright: a `BarHost` that did not wear the bar could not make this
+        // line a lie, and a menu over the Library wears the bar because the Library does — which
+        // is the only way this stays right as hosts are added on either side.
+        Route::Account { over } => route_wears_tab_bar(over.route()),
+        Route::ItemMenu { over } => route_wears_tab_bar(over.route()),
+        Route::Login | Route::Profiles | Route::Onboard | Route::Detail | Route::Person | Route::Player { .. } => false,
     }
 }
 /// The PAGE a trail node names — the ONE Node→[`Route`] mapping in the app. Both things
@@ -707,13 +985,17 @@ fn node_route(n: &Node) -> Route {
 fn node_wears_tab_bar(n: &Node) -> bool {
     route_wears_tab_bar(node_route(n))
 }
-/// The PAGE a route draws. An `ItemMenu` is a popover on a LIVE screen and `Account` is one
-/// over Home, so the page being left by a navigation out of either is the screen underneath
-/// — which is what both the teardown and the spot below have to be asked about.
+/// The PAGE a route draws. Both popovers sit on a LIVE screen — an `ItemMenu` on the one holding
+/// the card, an `Account` on whichever of the three wears the shared top bar — so the page being
+/// left by a navigation out of either is the screen underneath, which is what both the teardown and
+/// the spot below have to be asked about.
+///
+/// It is also what the DRAW and the UPDATE ask: a popover's page keeps painting and keeps
+/// animating behind it, which is the whole difference between a popover and a page.
 fn page_of(r: Route) -> Route {
     match r {
         Route::ItemMenu { over } => over.route(),
-        Route::Account => Route::Home,
+        Route::Account { over } => over.route(),
         other => other,
     }
 }
@@ -734,9 +1016,9 @@ fn leave_of(r: Route) -> Option<fn()> {
         Route::Person => Some(crate::ui::person::leave as fn()),
         // Nothing loaded that outlives the page. Home and the Library keep their stores for
         // as long as the profile does (`browse.rs` is re-ENTERED, never re-queried — that is
-        // why `Node::Library` carries no payload), Login/Profiles are boot gates the app
+        // why `Node::Library` carries no payload), Login/Profiles/Onboard are boot gates the app
         // leaves once, and a player session is torn down by its own exit path.
-        Route::Home | Route::Library | Route::Login | Route::Profiles | Route::Player { .. } => None,
+        Route::Home | Route::Library | Route::Login | Route::Profiles | Route::Onboard | Route::Player { .. } => None,
         // Search DOES have one, and it is not a store: the television's keyboard must come
         // down with the page. Dismissing it at the press instead would drop the panel a
         // frame early, while the screen it belongs to is still on screen behind it.
@@ -744,7 +1026,7 @@ fn leave_of(r: Route) -> Option<fn()> {
         // Unreachable: `page_of` has already resolved a popover onto the screen it sits on,
         // so neither of these ever arrives here. Listed rather than swept into a `_` so the
         // exhaustiveness above is real.
-        Route::Account | Route::ItemMenu { .. } => None,
+        Route::Account { .. } | Route::ItemMenu { .. } => None,
     }
 }
 /// Does this page STAY MOUNTED behind a forward navigation — is it a page the BACK trail can put
@@ -775,12 +1057,12 @@ fn stays_on_trail(r: Route) -> bool {
         // stays on the trail, but its teardown rides every exit — see the doc above
         Route::Search => false,
         // Boot gates the app leaves once, and a player session torn down by its own exit path.
-        // None of the three has a `leave_of` at all, so this answer is about being honest rather
+        // None of the four has a `leave_of` at all, so this answer is about being honest rather
         // than about having an effect.
-        Route::Login | Route::Profiles | Route::Player { .. } => false,
+        Route::Login | Route::Profiles | Route::Onboard | Route::Player { .. } => false,
         // Unreachable: `page_of` resolves a popover onto the screen it sits on. Listed rather than
         // swept into a `_`, exactly as `leave_of` above.
-        Route::Account | Route::ItemMenu { .. } => false,
+        Route::Account { .. } | Route::ItemMenu { .. } => false,
     }
 }
 /// The teardown a FORWARD navigation off `cur` carries — [`stays_on_trail`] and [`leave_of`]
@@ -871,17 +1153,43 @@ struct Scrub {
     hold_since: u32, // when that hold engaged — the acceleration ramp is measured from here
     alive: u32,      // last held (0x101) event — for the lost-keyup safety commit
     commit_at: u32,  // tap released → commit at this tick (0 = none; a new press cancels)
+    /// This gesture began on a HIDDEN HUD, so its press was spent raising the transport
+    /// ([`ScrubPress::Reveal`]) rather than hopping. It is still a fully armed scrub — a user who
+    /// keeps holding gets the ordinary continuous rewind, and `hold` engaging clears this — but if
+    /// it turns out to have been a TAP, the release must throw the preview away instead of
+    /// committing it: the preview sits on the seed, i.e. exactly where playback already is, and
+    /// committing that is a full reopen+prime to no effect.
+    reveal: bool,
 }
 impl Scrub {
     /// No scrub in progress and no tap commit pending — where the loop starts.
     const IDLE: Scrub =
-        Scrub { t: 0, dir: 0, hold: false, hold_since: 0, alive: 0, commit_at: 0 };
-    /// End the gesture: no direction, no continuous hold. `commit_at` is deliberately NOT
-    /// cleared — four of the five call sites leave a pending tap commit alone, and the fifth
-    /// IS that commit and clears the field itself right after calling this.
+        Scrub { t: 0, dir: 0, hold: false, hold_since: 0, alive: 0, commit_at: 0, reveal: false };
+    /// Start a WHOLE gesture in `now`/`fwd` — every field, not the four a press happens to care
+    /// about.
+    ///
+    /// Two sites end a scrub without [`disengage`](Self::disengage) — the pointer drag's mouse-up
+    /// commit, and `key_scrub`'s own drag cancel — and `exit_player` never touches this at all, so
+    /// `hold`/`hold_since` can outlive the gesture that set them and even the playback session.
+    /// Arming only `dir`/`alive` on top of that leaves the per-frame advance reading a `hold_since`
+    /// from minutes ago: its acceleration ramp is measured from there, so the first frame of a
+    /// brand-new press runs at `SCRUB_MAX` and one tap slews the preview tens of seconds.
+    fn begin(&mut self, now: u32, fwd: bool) {
+        self.dir = if fwd { 1 } else { -1 };
+        self.hold = false;
+        self.hold_since = now;
+        self.t = now;
+        self.alive = now;
+        self.commit_at = 0; // more input → cancel a pending tap commit
+        self.reveal = false;
+    }
+    /// End the gesture: no direction, no continuous hold, and no reveal pending. `commit_at` is
+    /// deliberately NOT cleared — four of the five call sites leave a pending tap commit alone, and
+    /// the fifth IS that commit and clears the field itself right after calling this.
     fn disengage(&mut self) {
         self.dir = 0;
         self.hold = false;
+        self.reveal = false;
     }
 }
 /// The player HUD's focus cursor: WHICH row owns focus, plus the index WITHIN each of the
@@ -923,6 +1231,19 @@ struct HudState {
     /// UP-from-the-top explicitly dismisses the HUD even while paused; any other player
     /// input clears it. Without this, paused() would force the HUD permanently visible.
     dismissed: bool,
+    /// Was the transport ON SCREEN when the key being handled arrived? Sampled by
+    /// [`begin_fresh_press`] at the top of every fresh press, and the ONLY honest answer to that
+    /// question by the time an arm runs.
+    ///
+    /// The arm cannot re-derive it, because the same function clears [`dismissed`] one line later —
+    /// and `dismissed` OUTRANKS the timer inside [`hud_visible`]. So a user who hid the transport
+    /// by hand (UP from the control row, which deliberately does not extend the timer) and pressed
+    /// again inside the remaining linger produced `hud_visible == true` for a HUD that was not on
+    /// screen: the press then drove geometry nobody could see — the very thing the two arms below
+    /// refuse to do. The pointer path has always sampled BEFORE re-arming for this reason (see the
+    /// click arm's `hud_vis`); this is the key path's version of that sample, taken once so the two
+    /// arms that need it cannot answer the question differently.
+    visible_at_press: bool,
     /// The last SEGMENT the control row offered. Sticky: it is never cleared back to None,
     /// so each segment raises the HUD exactly once per playback however often the row
     /// flickers.
@@ -934,8 +1255,58 @@ struct HudState {
 }
 impl HudState {
     /// Focus at rest, nothing dismissed, no segment seen yet, discs in the control row.
-    const IDLE: HudState =
-        HudState { nav: HudNav::HOME, dismissed: false, last_offer: None, was_standin: false };
+    const IDLE: HudState = HudState {
+        nav: HudNav::HOME,
+        dismissed: false,
+        visible_at_press: false,
+        last_offer: None,
+        was_standin: false,
+    };
+
+    /// A FRESH segment offer takes the control row: put the HUD ON SCREEN and, from rest, park the
+    /// ring on the row's primary so a bare OK acts on the offer in one press instead of
+    /// raise-HUD → navigate → OK.
+    ///
+    /// **Clearing the dismissal is half of "on screen", and leaving it out was the bug.**
+    /// [`extend_hud`] moves only the TIMER, and `dismissed` outranks the timer outright inside
+    /// [`hud_visible`] — so a user who UP-hid the transport mid-episode and then touched nothing
+    /// carried that dismissal into the credits, and the Up Next tile was offered to a HUD that
+    /// `draw_hud` was never called for. Being invisible it then lost its ring to the auto-hide
+    /// re-park at the bottom of the same block, which the NEXT frame's steady-state cancel rule
+    /// ([`crate::ui::up_next::countdown_may_run`]) read as the user walking away — latching the
+    /// countdown off for the whole segment. The tile appeared only if the HUD was raised by hand,
+    /// with its auto-advance already dead: exactly as reported. A dismissal is a "not now" that any
+    /// key clears; a segment beginning is that same kind of event, arriving from the player instead
+    /// of the remote, and it must clear it too — which is also what makes an offer behave the same
+    /// whether the HUD auto-hid or was hidden on purpose.
+    ///
+    /// Parking is only ever from REST: a user who walked to the Subtitles disc or an Info tab keeps
+    /// their spot (and for Up Next thereby declines the countdown — the same one rule, read as a
+    /// steady state one block below). `primary` is the occupant's own
+    /// ([`crate::ui::player_hud::ControlSlot::primary_btn`]) — item 0 for a Skip pill, the
+    /// RIGHT-hand one for Up Next, where parking on item 0 would disarm the timer on the frame
+    /// after it armed.
+    /// A fresh key has arrived: record what the transport LOOKED like to the user, then clear the
+    /// dismissal it may have been carrying.
+    ///
+    /// The two are one operation and the ORDER is the whole point — `dismissed` outranks the timer
+    /// inside [`hud_visible`], so sampling after the clear reports a hand-hidden transport as being
+    /// on screen (see [`visible_at_press`](Self::visible_at_press)). Written down as one function
+    /// rather than two lines in [`begin_fresh_press`] so that the order is a thing a test can hold
+    /// still, instead of a convention a later edit can quietly transpose.
+    fn note_fresh_press(&mut self, now: u32) {
+        self.visible_at_press = hud_visible(now, hud_until(), paused(), self.dismissed);
+        self.dismissed = false; // any fresh key un-dismisses the HUD (UP-hide re-sets it)
+    }
+
+    fn raise_for_offer(&mut self, now: u32, primary: c_int) {
+        extend_hud(now, HUD_LINGER_MS);
+        self.dismissed = false;
+        if self.nav.focus == 0 {
+            self.nav.focus = 1;
+            self.nav.btn = primary;
+        }
+    }
 }
 // scrub tuning: a press jumps SCRUB_STEP_NS; holding engages a continuous scrub ramping
 // SCRUB_BASE→SCRUB_MAX (playback-seconds per real-second).
@@ -954,8 +1325,8 @@ const HUD_LINGER_MS: u32 = 4500; // plain transport/nav input
 const HUD_MENU_MS: u32 = 8000; // a modal menu is up (track/chapter nav) — longer read time
 const HUD_HEADLESS_MS: u32 = 60_000; // autoplay/headless runs pin the HUD up for capture
 /// The Magic Remote POINTER, as one value: which input mode the remote is in, what the
-/// cursor is doing, and the three gestures that outlive a single event (a scrub drag, a
-/// wheel debounce, a click held on the hero chevron).
+/// cursor is doing, and the two gestures that outlive a single event (a scrub drag and the
+/// wheel's own debounce).
 ///
 /// `dpad_mode`/`cur_hidden`/`mot_accum` are one rule between them and are why this is a
 /// type: the first D-pad press hides the cursor and switches modes, and motion only switches
@@ -970,10 +1341,6 @@ struct Pointer {
     last_motion: u32,  // last motion tick — playback hides an idle cursor off this
     drag: bool,        // a click is dragging the HUD scrub band
     last_wheel: u32,   // last wheel tick, for the wheel's own debounce
-    /// hero click-hold pager: set when a click lands on the chevron, cleared on button-up;
-    /// the per-frame pump keeps paging while it stays held (the pointer twin of holding
-    /// RIGHT). 0 = no click held.
-    hold_pager: u32,
 }
 impl Pointer {
     /// Pointer mode, cursor shown, nothing held or dragging — where the loop starts.
@@ -986,7 +1353,6 @@ impl Pointer {
         last_motion: 0,
         drag: false,
         last_wheel: 0,
-        hold_pager: 0,
     };
 }
 
@@ -1008,7 +1374,7 @@ enum Modal {
 }
 fn modal_of(r: Route) -> Modal {
     match r {
-        Route::Account => Modal::Account,
+        Route::Account { .. } => Modal::Account,
         Route::ItemMenu { .. } => Modal::ItemMenu,
         Route::Player { overlay: Overlay::Menu } => Modal::Menu,
         Route::Player { overlay: Overlay::Info } => Modal::Info,
@@ -1192,6 +1558,96 @@ fn to_detail(sid: crate::plex::ServerId, rk: &str) -> Node {
     Node::Detail { sid, rk: rk.to_string(), spot: Spot::default() }
 }
 
+/// Where a playback session RETURNS TO, as handed to [`start_playback`].
+///
+/// **This replaced a `from_detail: bool`, and the bool was a bug rather than a simplification.**
+/// It answered one question — "was this launched from the detail page?" — and `exit_player` turned
+/// it back into `if played_from_detail { Route::Detail } else { Route::Home }`, so every OTHER
+/// screen that can start playback dropped the user on Home when they pressed BACK. That was
+/// invisible while the two launch sites were the detail page and a Home card, and stopped being
+/// invisible the moment the card context menu opened on the detail page's RELATED shelf: one page
+/// then had two *Play from Start* rows, the filmstrip's returning to the page and the shelf's
+/// returning to Home. The Library grid, Search and the person page had the same defect the whole
+/// time and nobody had complained.
+///
+/// A [`Node`] rather than a `Route` because a route names a KIND of page and BACK has to land on
+/// the RIGHT one: `Route::Detail` cannot say which item, and the played leaf's own detail is
+/// mounted under the session by then, so re-deriving the page at exit reads the wrong item by
+/// construction. The node is captured on the press frame, before any of that moves.
+#[derive(Clone, Debug, PartialEq)]
+enum Origin {
+    /// A fresh launch: Stop/BACK/EOS lands on this page.
+    From(Node),
+    /// Keep whatever the live session already returns to. Two callers, and both would be WRONG to
+    /// re-capture: `play_up_next`'s auto-advance starts a new item while the player is already up
+    /// (so "the page on screen" is the player, and the user chose nothing), and a PLAY key that
+    /// resumes a session the app-switch lifecycle suspended is resuming the same session from a
+    /// route that has been forced to Home in the meantime.
+    Unchanged,
+}
+
+/// The page a launch from route `r` returns to — the PURE half of [`origin_here`], with the two
+/// stacking screens' identities passed in.
+///
+/// Split out because it is the whole of the decision and none of it is reachable from a host test
+/// otherwise: every launch site is inside the SDL event loop. `detail`/`person` are `None` when
+/// that screen has nothing mounted, which falls back to Home — a return target must always name a
+/// page, and Home is the one page that is always there.
+///
+/// [`page_of`] first, so a launch from a popover returns to the page the popover was drawn ON: the
+/// item context menu's *Play from Start* is dispatched with the route already flipped back to its
+/// host, but the account menu and a future panel need not be, and asking `page_of` costs nothing.
+fn return_page(r: Route, detail: Option<Node>, person: Option<Node>) -> Node {
+    match page_of(r) {
+        Route::Detail => detail.unwrap_or(Node::Home),
+        Route::Person => person.unwrap_or(Node::Home),
+        Route::Library => Node::Library,
+        Route::Search => Node::Search,
+        // Home is the root and the honest answer for the four boot gates as well. `Player` is
+        // unreachable — every caller is a launch, which is off the player route by definition —
+        // and lands here rather than being a variant the compiler makes anyone think about.
+        Route::Home | Route::Login | Route::Profiles | Route::Onboard | Route::Player { .. } => Node::Home,
+        // …and the two popovers cannot reach this arm at all: `page_of` above resolved them.
+        Route::Account { .. } | Route::ItemMenu { .. } => Node::Home,
+    }
+}
+
+/// The page on screen NOW, as an [`Origin`] — [`return_page`] fed from the live stores.
+///
+/// The detail node carries the page's [`Spot`], so a return is a RESTORE (the Related tile the user
+/// pressed on is still the focused one) rather than a fresh arrival at the hero. An empty mounted
+/// rk means the page never mounted, which is not a page anyone can be returned to.
+fn origin_here(r: Route) -> Origin {
+    let rk = crate::ui::detail::mounted_rk();
+    let detail = (!rk.is_empty()).then(|| Node::Detail {
+        sid: crate::ui::detail::mounted_sid(),
+        rk,
+        spot: crate::ui::detail::spot(),
+    });
+    let person = crate::person::current().map(|p| Node::Person {
+        sid: p.sid,
+        key: p.key.clone(),
+        guid: p.guid.clone(),
+        name: p.name.clone(),
+        thumb: p.thumb.clone(),
+    });
+    Origin::From(return_page(r, detail, person))
+}
+
+/// Record where the session that is STARTING returns to.
+///
+/// One line, named because the `Unchanged` half is the whole of the auto-advance rule and is
+/// otherwise unreachable from a test: `play_up_next` starts a new item while the player is already
+/// up, so re-capturing "the page on screen" would rewrite the user's return target to the player
+/// itself — and after two or three episodes the only honest answer to "where did I come from" would
+/// have been thrown away. Applied only on a session that actually entered, so a refused start
+/// leaves the live session's target alone as well.
+fn set_origin(play_from: &mut Node, from: Origin) {
+    if let Origin::From(n) = from {
+        *play_from = n;
+    }
+}
+
 /// Open the focused Library card's detail page — the ONE library-card activation
 /// (OK-press commit AND pointer click). Library cards are movies/shows, so activation is
 /// always the detail page (playback then starts from there).
@@ -1236,6 +1692,12 @@ fn push_detail(trail: &mut Trail, route: &mut Route, sid: crate::plex::ServerId,
 /// Over the DETAIL page there is nothing to do here any more — where that page was standing
 /// is `NavReq::spot`'s job now, recorded uniformly for every navigation off a detail page
 /// rather than by this one arm remembering to.
+///
+/// **And nothing over the Library, Search or the person page either**, which is the answer a new
+/// host wants by default: navigating out of the menu there is the same forward move the tile's own
+/// OK makes (`open_library_card`, `search::on_ok`, `open_person_card`), so `nav_open` stacks and
+/// BACK comes back to the grid or shelf the card is sitting on. Home is the exception BECAUSE it is
+/// the root, not because it is a menu host.
 fn menu_leave(trail: &mut Trail, host: MenuHost) {
     if matches!(host, MenuHost::Home) {
         trail.reset();
@@ -1330,10 +1792,10 @@ static PENDING_RESUME_NS: std::sync::atomic::AtomicI64 = std::sync::atomic::Atom
 fn start_playback(
     mt: &crate::task::MainThread,
     resume_ns: i64,
-    from_detail: bool,
+    from: Origin,
     hud_ms: u32,
     route: &mut Route,
-    played_from_detail: &mut bool,
+    play_from: &mut Node,
     hud_nav: &mut HudNav,
 ) {
     // A resolve in flight means the route statics are NOT installed yet. Applying the
@@ -1357,7 +1819,7 @@ fn start_playback(
         crate::player::start_bufferfeed(mt)
     };
     if entering {
-        *played_from_detail = from_detail;
+        set_origin(play_from, from);
         *route = Route::Player { overlay: Overlay::None };
     }
     // A NEW session starts on the scrubber. The cursor is per-session state that nothing
@@ -1402,49 +1864,69 @@ fn close_player_overlays() {
     crate::ui::up_next::cancel(); // disarm the auto-advance countdown
 }
 
+/// Returning to a detail page after an EPISODE lands on its SHOW at the episode that played, not
+/// on the episode's own page. Reports whether it mounted anything.
+///
+/// The play paths load the played LEAF's detail (that is where the HUD caption and Info card come
+/// from), so an exit that only flipped the route stranded the user on an episode hero page — even
+/// when they had started from the show page, and even after an auto-advance chain had moved them
+/// several episodes along. `detail_rk` is already the "Go to Show" target.
+///
+/// **Gated on the page actually BEING that show**, which the `played_from_detail` bool could not
+/// express: a *Play from Start* on a Related tile is an item the page says nothing about, and if
+/// it happens to be an episode then revealing its show here would navigate the user to a page they
+/// never asked for instead of back to the one they were standing on.
+fn reveal_played_episode(from: &Node) -> bool {
+    let Node::Detail { sid, rk, .. } = from else { return false };
+    // The played leaf's own server — `metadata::playing()` is the store the playback was resolved
+    // from, so it names the machine the show is on. `plex::current_server()` would be the wrong
+    // answer for anything played off a share.
+    let psid = crate::metadata::playing()
+        .map(|p| p.sid)
+        .unwrap_or_else(crate::plex::current_server);
+    let Some((show_rk, season)) = crate::metadata::now_playing()
+        .filter(|n| n.is_episode && !n.detail_rk.is_empty())
+        .map(|n| (n.detail_rk.clone(), n.season))
+    else {
+        return false;
+    };
+    if !crate::plex::same_item((psid, &show_rk), (*sid, rk)) {
+        return false;
+    }
+    crate::ui::detail::open_show_at_episode(psid, &show_rk, season, &crate::route::cur_rk());
+    true
+}
+
 /// The ONE leave-playback ritual (Stop key, BACK, EOS): close the overlays, stop the
-/// engine, return to the origin route, and arm the deferred hub refresh so Continue
-/// Watching reflects the session that just ended. A new exit path that skips this quietly
-/// re-introduces the stale-CW bug.
+/// engine, put the page the session was LAUNCHED FROM back on screen, and arm the deferred
+/// hub refresh so Continue Watching reflects the session that just ended. A new exit path
+/// that skips this quietly re-introduces the stale-CW bug.
+///
+/// `from` is [`Origin`]'s payload — the page that was mounted when playback started. Re-entry is
+/// [`enter_node`], the same ritual every BACK pop and every forward `Nav::Open` uses, so a player
+/// exit cannot mount a page in a way nothing else does.
 fn exit_player(
     mt: &crate::task::MainThread,
     route: &mut Route,
-    played_from_detail: bool,
+    play_from: &Node,
     refresh_hubs_at: &mut u32,
     trail: &mut Trail,
 ) {
     crate::route::cancel_play(); // BACK during a load: supersede, drop the landing
     close_player_overlays();
     crate::player::stop_bufferfeed(mt);
-    *route = if played_from_detail { Route::Detail } else { Route::Home };
-    // Returning to a detail page after an EPISODE lands on its SHOW, not on the episode.
-    // The play paths load the played leaf's detail (that is where the HUD caption and Info
-    // card come from), so backing out used to strand the user on an episode hero page —
-    // even when they had started from the show page, and even after an auto-advance chain
-    // had moved them several episodes along. `detail_rk` is already the "Go to Show" target.
-    if played_from_detail {
-        // The played leaf's own server — `metadata::playing()` is the store the playback
-        // was resolved from, so it names the machine the show is on. `plex::current_server()`
-        // would be the wrong answer for anything played off a share.
-        let sid = crate::metadata::playing()
-            .map(|p| p.sid)
-            .unwrap_or_else(crate::plex::current_server);
-        if let Some((show_rk, season)) = crate::metadata::now_playing()
-            .filter(|n| n.is_episode && !n.detail_rk.is_empty())
-            .map(|n| (n.detail_rk.clone(), n.season))
-        {
-            crate::ui::detail::open_show_at_episode(sid, &show_rk, season, &crate::route::cur_rk());
-        }
-        // The player is NOT a trail node — it returns to the page it was started from, and
-        // that page may be one nothing ever pushed (a dev trigger, or `home_activate`
-        // opening a page under the hood purely to fire its Play). Read AFTER the reveal
-        // above, so an auto-advance chain names the SHOW rather than the leaf it ended on.
-        trail.ensure_detail(crate::ui::detail::mounted_sid(), &crate::ui::detail::mounted_rk());
+    if reveal_played_episode(play_from) {
+        // …the reveal IS the mount, so `enter_node`'s would be a second, competing one.
+        *route = Route::Detail;
     } else {
-        // …and a session that did not come from a page lands on Home, which IS the root:
-        // whatever the trail was describing is behind the user now.
-        trail.reset();
+        enter_node(play_from, route);
     }
+    // The player is NOT a trail node — it returns to the page it was started from, and that page
+    // may be one nothing ever pushed (a dev trigger, or `home_activate` opening a detail page
+    // under the hood purely to fire its Play). `ensure` makes the trail agree with where we
+    // landed: a no-op in the ordinary case (the page IS still the top, because playing never
+    // moved the trail), the root for a return to Home, a push otherwise.
+    trail.ensure(play_from);
     *refresh_hubs_at = unsafe { SDL_GetTicks() }.wrapping_add(800).max(1);
 }
 
@@ -1454,15 +1936,15 @@ fn exit_player(
 fn finish_playback(
     mt: &crate::task::MainThread,
     route: &mut Route,
-    played_from_detail: &mut bool,
+    play_from: &mut Node,
     refresh_hubs_at: &mut u32,
     hud_nav: &mut HudNav,
     trail: &mut Trail,
 ) {
-    if play_up_next(mt, HUD_LINGER_MS, route, played_from_detail, hud_nav) {
+    if play_up_next(mt, HUD_LINGER_MS, route, play_from, hud_nav) {
         return;
     }
-    exit_player(mt, route, *played_from_detail, refresh_hubs_at, trail);
+    exit_player(mt, route, play_from, refresh_hubs_at, trail);
     hud_nav.focus = 0;
 }
 
@@ -1474,7 +1956,7 @@ fn activate_ctrl_row(
     mt: &crate::task::MainThread,
     slot: crate::ui::player_hud::ControlSlot,
     route: &mut Route,
-    played_from_detail: &mut bool,
+    play_from: &mut Node,
     refresh_hubs_at: &mut u32,
     hud_nav: &mut HudNav,
     trail: &mut Trail,
@@ -1490,7 +1972,7 @@ fn activate_ctrl_row(
         // being caught out.
         ControlSlot::UpNext(_) => {
             if hud_nav.btn == crate::ui::up_next::BTN_NEXT {
-                play_up_next(mt, HUD_LINGER_MS, route, played_from_detail, hud_nav)
+                play_up_next(mt, HUD_LINGER_MS, route, play_from, hud_nav)
             } else {
                 crate::ui::up_next::cancel();
                 false
@@ -1508,7 +1990,7 @@ fn activate_ctrl_row(
             }
             // a `final` credits segment: skipping it IS finishing the item
             SkipAction::Finish => {
-                finish_playback(mt, route, played_from_detail, refresh_hubs_at, hud_nav, trail);
+                finish_playback(mt, route, play_from, refresh_hubs_at, hud_nav, trail);
                 true
             }
         },
@@ -1530,7 +2012,7 @@ fn play_up_next(
     mt: &crate::task::MainThread,
     hud_ms: u32,
     route: &mut Route,
-    played_from_detail: &mut bool,
+    play_from: &mut Node,
     hud_nav: &mut HudNav,
 ) -> bool {
     // clone off the `&'static` store BEFORE anything can replace it (see up_next::take)
@@ -1548,7 +2030,7 @@ fn play_up_next(
     let sid = crate::metadata::playing().map(|p| p.sid).unwrap_or_else(crate::plex::current_server);
     crate::metadata::retire_playing();
     crate::metadata::request_detail(sid, &rk);
-    start_playback(mt, resume, *played_from_detail, hud_ms, route, played_from_detail, hud_nav);
+    start_playback(mt, resume, Origin::Unchanged, hud_ms, route, play_from, hud_nav);
     true
 }
 
@@ -1562,9 +2044,10 @@ unsafe fn play_item_now(
     mt: &crate::task::MainThread,
     mm: &crate::pms::PmsMovie,
     from_start: bool,
+    from: Origin,
     hud_ms: u32,
     route: &mut Route,
-    played_from_detail: &mut bool,
+    play_from: &mut Node,
     hud_nav: &mut HudNav,
 ) {
     if mm.rk.is_empty() {
@@ -1586,16 +2069,18 @@ unsafe fn play_item_now(
     start_playback(
         mt,
         if from_start { 0 } else { crate::metadata::resume_ns(mm.resume_ms, mm.dur_ns / 1_000_000) },
-        false,
+        from,
         hud_ms,
         route,
-        played_from_detail,
+        play_from,
         hud_nav,
     );
 }
 
 /// The ONE home activation (OK key AND pointer click): `hf` is the hero action-row focus
-/// (-1 chip / 0 pill / 1 info / 2 chevron) in hero view, `i32::MIN` for a grid card.
+/// (0 pill / 1 info, or a tab pill's packed negative) in hero view, `i32::MIN` for a
+/// grid card. **The chip (-1) never arrives here** — it is the shared bar's control and both input
+/// paths answer it above, in `chip_activate`.
 /// Pill / Continue-Watching tiles / episodes launch playback immediately (a show or season
 /// opens its page under the hood and fires its Play, which resolves the right episode +
 /// resume); the info circle and ordinary grid cards open the detail page.
@@ -1604,7 +2089,7 @@ unsafe fn home_activate(
     hf: c_int,
     hud_ms: u32,
     route: &mut Route,
-    played_from_detail: &mut bool,
+    play_from: &mut Node,
     trail: &mut Trail,
     hud_nav: &mut HudNav,
     nav: &mut Option<NavReq>,
@@ -1623,11 +2108,6 @@ unsafe fn home_activate(
         return;
     }
     let hero_view = hf != c_int::MIN;
-    if hf == -1 {
-        crate::ui::account_menu::open();
-        *route = Route::Account;
-        return;
-    }
     // a tab pill in the top band. (The grid-card sentinel is rejected by hero_pill_index
     // itself — see its doc comment.)
     if let Some(pill) = crate::ui::home::hero_pill_index(hf) {
@@ -1647,10 +2127,6 @@ unsafe fn home_activate(
         }
         return;
     }
-    if hf == 2 {
-        crate::ui::home::hero_flip(1);
-        return;
-    }
     let m = if hero_view {
         crate::ui::home::hero_item()
     } else {
@@ -1666,7 +2142,7 @@ unsafe fn home_activate(
             && (crate::pms::hub_is_continue(crate::ui::home::row().max(0) as usize) || mm.kind == 3));
     if want_play {
         match mm.kind {
-            0 | 3 => play_item_now(mt, mm, false, hud_ms, route, played_from_detail, hud_nav),
+            0 | 3 => play_item_now(mt, mm, false, origin_here(*route), hud_ms, route, play_from, hud_nav),
             _ => {
                 // show / season: open its page (blocking) and fire its Play — but only
                 // once the load actually landed on the expected item (a failed fetch
@@ -1684,7 +2160,7 @@ unsafe fn home_activate(
                     .map(|d| crate::plex::same_item((d.sid, &d.rk), (sid, &expect)))
                     .unwrap_or(false);
                 if loaded && crate::ui::detail::on_ok() {
-                    start_playback(mt, crate::ui::detail::last_resume_ns(), false, hud_ms, route, played_from_detail, hud_nav);
+                    start_playback(mt, crate::ui::detail::last_resume_ns(), origin_here(*route), hud_ms, route, play_from, hud_nav);
                 } else {
                     // nothing playable / load failed — land on the page, through the
                     // transition. `season: None`: the mount already happened above (this
@@ -1720,8 +2196,58 @@ fn open_item_menu(route: &mut Route) -> bool {
     // the Remove-from-deck row only exists on a Continue Watching card — nothing else has a
     // deck to be removed from (see `item_menu::build`)
     let from_deck = crate::pms::hub_is_continue(crate::ui::home::row() as usize);
-    crate::ui::item_menu::open(m, from_deck, crate::ui::home::focused_card_rect());
+    let opener = Opener {
+        rect: crate::ui::home::focused_card_rect(),
+        redraw: crate::ui::home::redraw_focused_card,
+    };
+    crate::ui::item_menu::open(m, from_deck, opener);
     *route = Route::ItemMenu { over: MenuHost::Home };
+    true
+}
+
+/// The same popover on a card surface that is NOT Home: the Library grid, a Search result shelf,
+/// the person page's filmography and the detail page's RELATED shelf — all of which already arm the
+/// identical press.
+///
+/// One function for the four because they differ in exactly two values — the focused row and the
+/// [`Opener`] that draws it — and in nothing else. There is no `from_deck` on any of them: the
+/// Continue Watching deck is a HOME hub, and offering to remove a Library tile from it would be a
+/// row that appeared to work and changed nothing (`item_menu::build`'s own rule).
+///
+/// The Related shelf joining this list rather than `open_episode_menu` is the whole shape of that
+/// fix: it sits on the detail page, but its tiles are OTHER items, so it is a card row like the
+/// other three and not a leaf of the loaded season (see [`MenuHost::Related`]).
+fn open_tile_menu(
+    route: &mut Route,
+    host: MenuHost,
+    item: Option<&crate::pms::PmsMovie>,
+    opener: Opener,
+) -> bool {
+    let Some(m) = item else { return false };
+    if !crate::ui::item_menu::has_actions(m) {
+        return false;
+    }
+    crate::ui::item_menu::open(m, false, opener);
+    *route = Route::ItemMenu { over: host };
+    true
+}
+
+/// The same popover on the DETAIL page's SEASON strip — the grain between the episode's own hold
+/// and the hero's show-wide toggle, and the one this page could not express at all.
+///
+/// Reports whether it opened, so the caller only flips the route when a menu is actually up: the
+/// strip may not hold focus, a show may have no seasons, and a season fetch in flight makes the
+/// row's contents a lie (`detail::focused_season`, which declines on all three).
+fn open_season_menu(route: &mut Route) -> bool {
+    let Some((rk, mark)) = crate::ui::detail::focused_season() else {
+        return false;
+    };
+    let opener = Opener {
+        rect: crate::ui::detail::focused_season_rect(),
+        redraw: crate::ui::detail::redraw_focused_season,
+    };
+    crate::ui::item_menu::open_season(crate::ui::detail::mounted_sid(), &rk, mark, opener);
+    *route = Route::ItemMenu { over: MenuHost::Detail };
     true
 }
 
@@ -1731,18 +2257,17 @@ fn open_item_menu(route: &mut Route) -> bool {
 /// the filmstrip may not hold focus, and a season fetch in flight makes the row's contents a
 /// lie (see `detail::focused_episode`).
 fn open_episode_menu(route: &mut Route) -> bool {
-    let Some((rk, watched)) = crate::ui::detail::focused_episode() else {
+    let Some((rk, mark)) = crate::ui::detail::focused_episode() else {
         return false;
     };
     if rk.is_empty() {
         return false;
     }
-    crate::ui::item_menu::open_episode(
-        crate::ui::detail::mounted_sid(),
-        &rk,
-        watched,
-        crate::ui::detail::focused_episode_rect(),
-    );
+    let opener = Opener {
+        rect: crate::ui::detail::focused_episode_rect(),
+        redraw: crate::ui::detail::redraw_focused_episode,
+    };
+    crate::ui::item_menu::open_episode(crate::ui::detail::mounted_sid(), &rk, mark, opener);
     *route = Route::ItemMenu { over: MenuHost::Detail };
     true
 }
@@ -1752,17 +2277,21 @@ fn open_episode_menu(route: &mut Route) -> bool {
 /// (the two paths for the profile menu had already drifted before those were unified).
 /// The menu itself only reports the choice; every route flip, server call and refresh is here.
 ///
-/// `host` is the screen the popover was over, and it genuinely changes what an action MEANS:
-/// on Home the item is a catalog row, so a play resolves through `pms::index_of_rk` and a
-/// scrobble only has to refresh the hubs; on the detail page the item is an episode of the
-/// loaded season, which the hub catalog usually does not contain at all, and the page itself
-/// has to re-read the state that just changed.
+/// `host` is the screen the popover was over, and it still changes what ONE action means — but the
+/// question is [`MenuHost::is_loaded_episode`], not "is this the detail page". Only
+/// [`MenuHost::Detail`], the episode filmstrip, holds an item that is a leaf of the loaded season:
+/// its Play from Start goes through that page's own episode path and its scrobble makes the page
+/// re-read itself. Every other host — Home, the Library grid, a Search shelf, a person's
+/// filmography, and the detail page's own RELATED shelf, which stands on that page while its tiles
+/// are OTHER items — is a card row, and they are all the same arm: the row rides in the menu
+/// (`item_menu::item`) instead of being looked up in the hub catalog, which only Home's cards are
+/// ever in.
 unsafe fn apply_item_action(
     mt: &crate::task::MainThread,
     act: crate::ui::item_menu::Action,
     host: MenuHost,
     route: &mut Route,
-    played_from_detail: &mut bool,
+    play_from: &mut Node,
     trail: &mut Trail,
     hud_nav: &mut HudNav,
     nav: &mut Option<NavReq>,
@@ -1779,7 +2308,8 @@ unsafe fn apply_item_action(
     // is the belt to that braces, since the menu is data-driven off the hub rows.
     let rk_of = |a: &Action| match a {
         Action::GoToItem(rk)
-        | Action::MarkWatched(rk, _)
+        | Action::MarkWatched(rk)
+        | Action::MarkUnwatched(rk)
         | Action::PlayFromStart(rk)
         | Action::RemoveFromDeck(rk) => rk.clone(),
         Action::GoToShow(rk, _) => rk.clone(),
@@ -1801,24 +2331,43 @@ unsafe fn apply_item_action(
             // where the stall is behind a screen that is already at alpha 0
             nav_open(*route, to_detail(sid, &show_rk), (season > 0).then_some(season), nav);
         }
-        Action::MarkWatched(rk, watched) => {
-            // Same ritual as the detail page's watched toggle, and now the same CODE: flip
-            // every surface that describes the item at once, write on a worker, refetch the
-            // hubs when the write lands so Continue Watching reflects it (a watched episode
-            // leaves the shelf; its successor takes the slot).
-            //
-            // All three used to run inline, on this thread, justified as "~100ms LAN and
-            // deliberately so". That priced one server on one LAN; with a share registered
-            // the item's server is routinely remote or asleep, and the same press parked the
-            // whole UI for seconds — see `crate::viewstate`, which is where the reasoning,
-            // the ordering rules and the `client_for(sid)`-never-`client()` note now live.
-            //
-            // When the popover was over the DETAIL page, that page is the surface the user is
-            // watching, so it is re-read too — the rk rides along so the filmstrip lands back
-            // on the episode that changed (`detail::KEEP_EP`).
-            let w = if watched { crate::viewstate::Write::Unwatched } else { crate::viewstate::Write::Watched };
-            let detail = matches!(host, MenuHost::Detail).then(|| rk.clone());
-            crate::viewstate::request(sid, &rk, w, detail);
+        // The two watch-state rows, and they are TWO because a part-watched item offers both:
+        // `Action::watch_write` reads the verb off the ROW the user aimed at. It used to be one
+        // variant carrying what the item was NOW, inverted here — which with a pair of rows would
+        // give both of them the same bool and make one do the opposite of its own label.
+        //
+        // Otherwise the same ritual as the detail page's watch discs, and the same CODE: flip every
+        // surface that describes the item at once, write on a worker, refetch the hubs when the
+        // write lands so Continue Watching reflects it (a watched episode leaves the shelf; its
+        // successor takes the slot).
+        //
+        // All three used to run inline, on this thread, justified as "~100ms LAN and deliberately
+        // so". That priced one server on one LAN; with a share registered the item's server is
+        // routinely remote or asleep, and the same press parked the whole UI for seconds — see
+        // `crate::viewstate`, which is where the reasoning, the ordering rules and the
+        // `client_for(sid)`-never-`client()` note now live.
+        //
+        // When the popover was over the DETAIL page, that page is the surface the user is watching,
+        // so it is re-read too — the rk rides along so the filmstrip lands back on the episode that
+        // changed (`detail::KEEP_EP`).
+        ref a @ (Action::MarkWatched(ref rk) | Action::MarkUnwatched(ref rk)) => {
+            // Unreachable by construction — this arm matches exactly the two variants
+            // `watch_write` answers for — and a `return` rather than an `expect` because a
+            // panic here unwinds out of the SDL loop and kills the app. If a third write row
+            // is ever added to this pattern without a verb, it does nothing instead.
+            let Some(w) = a.watch_write() else { return };
+            // Only the FILMSTRIP's host re-reads the page: its rk is an episode of the loaded
+            // season, so the tab ticks, the checks and the hero's own discs all change with it. A
+            // RELATED tile is a different item — the page it is drawn on says nothing about it, and
+            // asking for a refetch here would re-read the mounted show for a write that never
+            // touched it. The tile's own tick is flipped by `metadata::set_watched_local` instead,
+            // which walks the Related shelf for exactly this case.
+            let detail = host.is_loaded_episode().then(|| rk.clone());
+            // NO GUID from here, and deliberately: a catalog row carries none, and the guid the
+            // detail page is holding belongs to the SHOW when this rk is one of its episodes. A
+            // guid that is merely close marks a DIFFERENT title watched on every other source, so
+            // `viewstate` looks the right one up from `(sid, rk)` on its own worker instead.
+            crate::viewstate::request(sid, rk, w, detail, "");
         }
         Action::RemoveFromDeck(rk) => {
             // A HIDE, not a reset: the server keeps the item's `viewOffset`, so the card leaves
@@ -1833,25 +2382,40 @@ unsafe fn apply_item_action(
             // would come back still listing the item (see `pms::project`).
             //
             // No detail refresh: this row exists only on a Continue Watching card.
-            crate::viewstate::request(sid, &rk, crate::viewstate::Write::RemoveFromDeck, None);
+            // No guid, and it would be ignored if there were one: a deck removal does not follow
+            // the title across sources (`viewstate::Write::propagates`) — your Continue Watching
+            // row is yours, and hiding a friend's item from it is not a claim about their deck.
+            crate::viewstate::request(sid, &rk, crate::viewstate::Write::RemoveFromDeck, None, "");
         }
         Action::PlayFromStart(rk) => {
             // On the detail page the target is an episode of the LOADED SEASON, which the hub
             // catalog usually doesn't hold at all (only the one Continue Watching is showing
             // ever does) — so it plays through the page's own episode path, the same one OK
             // on the still uses, with the resume dropped.
-            if matches!(host, MenuHost::Detail) {
+            // …the FILMSTRIP's host only. A Related tile is not among the loaded episodes, so this
+            // lookup would miss and the press would do nothing — it takes the card-row arm below,
+            // which plays the row the menu captured.
+            if host.is_loaded_episode() {
                 if crate::ui::detail::play_episode_rk_from_start(&rk) {
                     let resume = crate::ui::detail::last_resume_ns();
-                    start_playback(mt, resume, true, HUD_LINGER_MS, route, played_from_detail, hud_nav);
+                    start_playback(mt, resume, origin_here(*route), HUD_LINGER_MS, route, play_from, hud_nav);
                 }
                 return;
             }
-            // Re-resolve the catalog row by rk rather than holding a borrow across the menu:
-            // a hub refetch can rebuild the catalog while the popover is open.
-            let i = crate::pms::index_of_rk(sid, &rk);
-            if let Some(mm) = (i >= 0).then(|| crate::pms::movie(i as usize)).flatten() {
-                play_item_now(mt, mm, true, HUD_LINGER_MS, route, played_from_detail, hud_nav);
+            // **The row the menu was opened ON, not a re-resolve by key.** This used to walk the
+            // HOME hub catalog (`pms::index_of_rk`), which is a lookup that only ever answers for a
+            // card that is on a Home shelf — so on the Library grid, a Search result or a person's
+            // filmography the arm found nothing and the press did nothing at all, silently. The
+            // popover is about ONE item and captured it at `open`; `item_menu::ITEM` is that
+            // capture, which is both the fix and the smaller claim (it also cannot be re-pointed by
+            // a hub refetch rebuilding the catalog under an open panel — the reason the old lookup
+            // deferred in the first place).
+            //
+            // The `rk` guard is what keeps the two in step: every other arm acts on the action's
+            // own key, so playing a row that does not carry it would be this dispatch disagreeing
+            // with itself.
+            if let Some(mm) = crate::ui::item_menu::item().filter(|m| m.rk == rk) {
+                play_item_now(mt, mm, true, origin_here(*route), HUD_LINGER_MS, route, play_from, hud_nav);
             }
         }
     }
@@ -1899,7 +2463,14 @@ unsafe fn on_key_up(
         crate::ui::press::release(SDL_GetTicks());
     }
     if matches!(route, Route::Player { .. }) && scrubber.dir != 0 && isnav {
-        if scrubber.hold {
+        if scrubber.reveal {
+            // The press only raised the HUD (`Scrub::reveal`) and the preview never left the seed,
+            // so there is nothing to commit. Tested BEFORE `hold`, not after: a hold that engaged
+            // but has not travelled yet is still this case, and committing it would seek to where
+            // playback already is. The advance is what retires the flag, on real travel.
+            set_scrub(-1);
+            scrubber.disengage();
+        } else if scrubber.hold {
             log(&format!("scrub: keyup commit (held) {}s", scrub() / 1_000_000_000));
             commit_seek(scrub(), repause_at); // a held scrub → commit on release
             scrubber.disengage();
@@ -1938,6 +2509,13 @@ unsafe fn on_auto_repeat(
             scrubber.hold = true;
             scrubber.hold_since = n;
             scrubber.t = n;
+            // `reveal` is deliberately NOT cleared here. Engaging the hold is not the same event
+            // as the preview MOVING: this block also sets `scrubber.t = n`, so the advance's first
+            // pass computes `sdt ≈ 0` and travels nothing, and at ~10 s/s it takes ~100 ms before
+            // the preview has moved even a second. A firm tap that trips one hardware repeat and
+            // releases inside that window would otherwise commit a seek to the spot playback is
+            // already sitting on — a full reopen + prime and a visible stall, out of a press the
+            // reveal rule promises moves nothing. The advance clears it once there is real travel.
             log("scrub: hold engaged (0x101 repeat)");
         }
     }
@@ -1956,13 +2534,18 @@ unsafe fn on_auto_repeat(
 unsafe fn begin_fresh_press(
     key: Key,
     sym: c_uint,
+    now: u32,
     held: &mut HeldKey,
     hud: &mut HudState,
     ptr: &mut Pointer,
     ok_armed: &mut bool,
 ) {
     held.down_sym = sym;
-    hud.dismissed = false; // any fresh key un-dismisses the HUD (UP-hide re-sets it)
+    // What the user could SEE, and only then the un-dismiss — one operation, because the order is
+    // load-bearing (`HudState::note_fresh_press`). Taken for every key on every screen: it is one
+    // cheap predicate, and the alternative is each player arm remembering to ask first, which is
+    // exactly the ordering the pointer path had to be fixed for once already.
+    hud.note_fresh_press(now);
     // a fresh non-OK key (navigation / BACK) while a click is armed aborts the press —
     // spring the card back to rest WITHOUT activating (you "slid off" the control).
     if *ok_armed && !is_ok(sym) {
@@ -1979,9 +2562,17 @@ unsafe fn begin_fresh_press(
     }
 }
 
-/// Onboarding screens (login / who's-watching) own every fresh key — nothing is behind them, so
-/// route the key to the active screen and skip all other handlers.
-unsafe fn key_onboarding(route: Route, sym: c_uint, wcode: c_uint, ok_armed: &mut bool) {
+/// Onboarding screens (login / who's-watching / the Home-sources question) own every fresh key —
+/// nothing is behind them, so route the key to the active screen and skip all other handlers.
+///
+/// Returns `true` when the screen has finished with the flow and the caller should route Home.
+/// Only [`Route::Onboard`] ever answers so: the other two are driven by `auth`'s phase, which the
+/// per-frame block at the bottom of the loop reads, while this one is a question with an answer
+/// and no worker behind it.
+unsafe fn key_onboarding(route: Route, sym: c_uint, wcode: c_uint, ok_armed: &mut bool) -> bool {
+    if matches!(route, Route::Onboard) {
+        return matches!(crate::ui::onboard::key(sym, wcode), crate::ui::onboard::Action::Done);
+    }
     if matches!(route, Route::Profiles) {
         if is_ok(sym) && crate::ui::profiles::focus_is_avatar() {
             // press the roster avatar; the select commits on the spring-back
@@ -1994,14 +2585,33 @@ unsafe fn key_onboarding(route: Route, sym: c_uint, wcode: c_uint, ok_armed: &mu
     } else {
         crate::ui::login::key(sym, wcode);
     }
+    false
 }
 
-/// The Home profile menu is modal — rows nav, OK commits, BACK closes to Home.
-fn key_account(sym: c_uint, wcode: c_uint, route: &mut Route) {
+/// Leave the first-run question for Home.
+///
+/// The trail is RESET rather than pushed to: this route is the last of the onboarding gates and
+/// Home is the root behind it, so a BACK from Home must reach the DOOR exactly as it does on any
+/// other boot — not walk back into a question that has already been answered. (The door is
+/// [`back_at_root`]'s exit alert now; what this reset guarantees is that Home is still the root
+/// when the press lands, which is what puts the user one BACK from it either way.) `enter` is what the
+/// route's own BACK and its `Start watching` both come through, which is why there is one exit and
+/// not two.
+fn enter_home_from_onboard(trail: &mut Trail) -> Route {
+    trail.reset();
+    // The selection just recorded is an input to Home's merge (`pms::feeds_home`), and the merge
+    // re-runs off `browse`'s section generation — which `record_pins`/`toggle_pin` have already
+    // bumped. Nothing to kick here; Home builds from the answer on its first frame.
+    Route::Home
+}
+
+/// The profile menu is modal — rows nav, OK commits, BACK closes back to `over`: the page the chip
+/// was pressed on, which is any of the three that wear the shared top bar.
+fn key_account(over: BarHost, sym: c_uint, wcode: c_uint, route: &mut Route) {
     if is_ok(sym) {
         match crate::ui::account_menu::on_ok() {
             crate::ui::account_menu::Action::ChangeProfile => {
-                crate::auth::start_switch();
+                crate::auth::start_switch(crate::auth::Picker::ChangeProfile);
                 crate::ui::profiles::enter();
                 *route = Route::Profiles;
             }
@@ -2013,11 +2623,13 @@ fn key_account(sym: c_uint, wcode: c_uint, route: &mut Route) {
                 crate::auth::sign_out();
                 *route = Route::Login;
             }
-            crate::ui::account_menu::Action::None => *route = Route::Home,
+            // …and a dismissal returns to the PAGE the popover is standing on, not to Home. It
+            // said Home outright while Home was the only screen whose chip could be pressed.
+            crate::ui::account_menu::Action::None => *route = over.route(),
         }
     } else if is_back(sym, wcode) {
         crate::ui::account_menu::close();
-        *route = Route::Home;
+        *route = over.route();
     } else {
         crate::ui::account_menu::move_focus(sym as c_int);
     }
@@ -2032,7 +2644,7 @@ unsafe fn key_item_menu(
     wcode: c_uint,
     now: u32,
     route: &mut Route,
-    played_from_detail: &mut bool,
+    play_from: &mut Node,
     trail: &mut Trail,
     hud_nav: &mut HudNav,
     nav: &mut Option<NavReq>,
@@ -2041,7 +2653,7 @@ unsafe fn key_item_menu(
     if is_ok(sym) {
         let act = crate::ui::item_menu::on_ok();
         *route = over.route(); // the dispatch overrides this when it navigates/plays
-        apply_item_action(mt, act, over, route, played_from_detail, trail, hud_nav, nav);
+        apply_item_action(mt, act, over, route, play_from, trail, hud_nav, nav);
         held.sym = 0; // an async route flip must not repeat a held key into the next screen
     } else if is_back(sym, wcode) {
         crate::ui::item_menu::close();
@@ -2076,13 +2688,13 @@ fn key_player_failed(
     sym: c_uint,
     wcode: c_uint,
     route: &mut Route,
-    played_from_detail: bool,
+    play_from: &Node,
     refresh_hubs_at: &mut u32,
     trail: &mut Trail,
 ) {
     if is_back(sym, wcode) {
         if matches!(modal_of(*route), Modal::None) {
-            exit_player(mt, route, played_from_detail, refresh_hubs_at, trail);
+            exit_player(mt, route, play_from, refresh_hubs_at, trail);
         } else {
             close_player_overlays();
             *route = Route::Player { overlay: Overlay::None };
@@ -2131,7 +2743,7 @@ fn key_info_panel(
     wcode: c_uint,
     now: u32,
     route: &mut Route,
-    played_from_detail: bool,
+    play_from: &Node,
     refresh_hubs_at: &mut u32,
     trail: &mut Trail,
     hud_nav: &mut HudNav,
@@ -2176,7 +2788,7 @@ fn key_info_panel(
                     let sid = crate::metadata::playing()
                         .map(|p| p.sid)
                         .unwrap_or_else(crate::plex::current_server);
-                    exit_player(mt, route, played_from_detail, refresh_hubs_at, trail);
+                    exit_player(mt, route, play_from, refresh_hubs_at, trail);
                     crate::ui::detail::open_rk(sid, &rk);
                     // A LANDING, not a navigation, so the trail is made to agree
                     // rather than pushed blindly: the exit above has usually
@@ -2185,7 +2797,7 @@ fn key_info_panel(
                     // also strictly better than the flag it replaces — a
                     // Library → detail → play → "Go to Show" now returns to the
                     // Library instead of to Home.
-                    trail.ensure_detail(sid, &rk);
+                    trail.ensure(&to_detail(sid, &rk));
                     *route = Route::Detail;
                 }
             }
@@ -2253,7 +2865,9 @@ fn key_chapters(
 /// just reveals it (focused on the scrubber); pressing UP with nothing focusable above (the buttons
 /// row) hides the HUD again.
 fn key_player_updown(key: Key, now: u32, hud: &mut HudState, scrubber: &mut Scrub) {
-    let vis = hud_visible(now, hud_until(), paused(), hud.dismissed);
+    // the pre-press sample, not a fresh one: `begin_fresh_press` has already cleared `dismissed`,
+    // so re-asking would call a hand-hidden transport visible (`HudState::visible_at_press`)
+    let vis = hud.visible_at_press;
     let mut hide = false;
     if !vis {
         hud.nav.focus = 0; // reveal, on the scrubber
@@ -2309,7 +2923,7 @@ fn key_move_focus(key: Key, sym: c_uint, route: Route, now: u32, held: &mut Held
                 set_fr(0);
             }
         } else if matches!(key, Key::Left { alt: false } | Key::Right { alt: false }) {
-            crate::ui::home::home_hero_key(sym); // walk the action row; RIGHT on the chevron pages
+            crate::ui::home::home_hero_key(sym); // walk the action row; RIGHT at its end pages
         } else if matches!(key, Key::Up) {
             // hero view: UP focuses the profile chip (OK then opens the menu —
             // the chip is selectable, it no longer springs the menu unbidden)
@@ -2323,6 +2937,71 @@ fn key_move_focus(key: Key, sym: c_uint, route: Route, now: u32, held: &mut Held
     held.arm(sym, now);
 }
 
+/// **Where the SHARED top bar's focus is, for the route that is up.** The bar is one control across
+/// Home, the Library and Search, so the question is asked once here rather than three times — and
+/// every other route has no bar at all, which is what `TopFocus::Away` says.
+///
+/// It exists because of the CHIP. A pill's press leads somewhere that depends on the screen you are
+/// standing on (Home's own pill is a no-op, the Library's is a tab switch), so each screen still
+/// performs its own; the chip's press is the account menu wherever you are, so it is answered once,
+/// in [`chip_activate`], off this one answer.
+fn top_focus(route: Route) -> crate::ui::widgets::TopFocus {
+    use crate::ui::widgets::TopFocus;
+    match route {
+        Route::Home => crate::ui::home::top_focus(),
+        Route::Library => crate::ui::library::top_focus(),
+        Route::Search => crate::ui::search::top_focus(),
+        _ => TopFocus::Away,
+    }
+}
+
+/// The profile chip's activation, shared by the OK key and the pointer click — the top bar is one
+/// control on three screens and this is the one thing it does.
+///
+/// It deliberately does NOT go through `home_activate`'s `trail.reset()` the way Home's chip press
+/// used to: the account menu is a POPOVER over whatever page is showing, not a navigation, and on
+/// the Library or Search a reset would throw away history the user is still standing on. (At Home
+/// the reset was a no-op anyway — arriving at Home is itself the trail's reset, so the stack there
+/// is already just the root.)
+///
+/// The popover therefore records the page it OPENED ON ([`BarHost`]), which is what keeps that
+/// sentence true: `Route::Account` used to be a unit variant meaning "Home, plus the panel", so a
+/// press on the Library's chip swapped the page underneath to Home on the press frame and dropped
+/// the user there when they dismissed it. A route with no chip on it opens nothing.
+fn chip_activate(route: &mut Route) {
+    let Some(over) = BarHost::of(*route) else { return };
+    // On Search, the television's own keyboard may still be up — it is a SYSTEM panel, so a modal
+    // of ours neither covers nor suppresses it, and the page under a popover keeps updating, so its
+    // characters would go on landing in the field behind the menu. Only the pointer can reach the
+    // chip from inside the field (the D-pad leaves it through `leave_field`, which commits), so
+    // this is that path's half of the same rule.
+    if matches!(over, BarHost::Search) {
+        crate::ui::search::end_editing();
+    }
+    crate::ui::account_menu::open();
+    *route = Route::Account { over };
+}
+
+/// Did this click land on the profile chip of a screen that is WEARING the shared bar? The pointer
+/// twin of [`chip_activate`]'s key path, and the route test is the whole of what makes it safe:
+/// `widgets::CHIP_FRAME` is a constant (the chip never moves), so nothing else bounds it to the
+/// screens that actually draw one.
+fn chip_clicked(route: Route, ev: &[u8]) -> bool {
+    if BarHost::of(route).is_none() {
+        return false;
+    }
+    // A screen's own modal owns the frame, and the Library's sort/filter panel is INTERNAL state
+    // rather than a route, so nothing above this can see it: without the test, a click on the
+    // avatar with that panel up would open the account popover over a menu still standing behind
+    // it. The key path needs no equivalent — `library::top_focus` already declines while a menu is
+    // open, so the chip is not the focused thing to press.
+    if matches!(route, Route::Library) && crate::ui::library::menu_open() {
+        return false;
+    }
+    let (mx, my) = ptr_xy(ev);
+    crate::ui::widgets::profile_chip_at(mx, my)
+}
+
 /// OK, on every screen that has not already `continue`d above.
 unsafe fn key_ok(
     mt: &crate::task::MainThread,
@@ -2334,15 +3013,25 @@ unsafe fn key_ok(
     held: &mut HeldKey,
     trail: &mut Trail,
     nav: &mut Option<NavReq>,
-    played_from_detail: &mut bool,
+    play_from: &mut Node,
     refresh_hubs_at: &mut u32,
     ok_armed: &mut bool,
 ) {
+    // The shared top bar's PROFILE CHIP, ahead of the per-route ladder below: it is one control on
+    // three screens and its destination never depends on which of them you are standing on, which
+    // is exactly why each screen used to draw it and only Home could press it.
+    if matches!(top_focus(*route), crate::ui::widgets::TopFocus::Chip) {
+        chip_activate(route);
+        return;
+    }
     if matches!(*route, Route::Player { .. }) {
-        let vis = hud_visible(now, hud_until(), paused(), hud.dismissed);
+        // the pre-press sample, like the other two player arms — `begin_fresh_press` has already
+        // cleared `dismissed`, so re-asking calls a hand-hidden transport visible and this arm
+        // would open a panel from behind it (`HudState::visible_at_press`)
+        let vis = hud.visible_at_press;
         // A stand-in owns row 1 — activate it. Same value the draw used.
         if vis && hud.nav.focus == 1 && !ctrl.is_discs() {
-            if activate_ctrl_row(mt, ctrl, route, played_from_detail, refresh_hubs_at, &mut hud.nav, trail) {
+            if activate_ctrl_row(mt, ctrl, route, play_from, refresh_hubs_at, &mut hud.nav, trail) {
                 held.sym = 0; // async route flip: don't repeat a held key into the next screen
             }
         } else if vis && hud.nav.focus == 1 {
@@ -2378,9 +3067,10 @@ unsafe fn key_ok(
         // A result tile takes the tvOS press (dip now, commit on the spring-back
         // — `ok_armed` runs `on_ok` then); the field and the recents rows commit
         // immediately inside the screen.
-        let spill = crate::ui::search::focused_pill();
-        if spill >= 0 {
-            match crate::ui::widgets::pill_at(spill as usize) {
+        // the pill under the ring, off the same one answer `tab_row_update` animates the bar from
+        // (the CHIP half of it was already spent above, in `key_ok`'s own opening arm)
+        if let crate::ui::widgets::TopFocus::Pill(spill) = top_focus(*route) {
+            match crate::ui::widgets::pill_at(spill) {
                 // the screen we are already on — a deliberate no-op, as Home's
                 // own pill is on Home
                 Pill::Search => {}
@@ -2423,19 +3113,28 @@ unsafe fn key_ok(
             start_playback(
                 mt,
                 crate::ui::detail::last_resume_ns(),
-                true, // Stop/BACK/EOS returns to this detail page
+                origin_here(*route), // Stop/BACK/EOS returns to this detail page
                 HUD_LINGER_MS,
                 route,
-                played_from_detail,
+                play_from,
                 &mut hud.nav,
             );
         }
     } else if matches!(*route, Route::Person) {
-        // every focusable thing on the person page is a poster card → the
+        // every focusABLE thing on the person page is a poster card → the
         // same tvOS press as home's grid, committed on the spring-back
         if crate::ui::person::focus_is_card() {
             crate::ui::press::begin(SDL_GetTicks());
             *ok_armed = true;
+        } else {
+            // …and the HEADER, which is a focus row carrying no card: OK there
+            // opens the bio alert when there is more biography than the band
+            // shows. No press is armed, because a tvOS dip needs something to
+            // dip — nothing in the band draws `press::scale()` — and waiting
+            // for a spring-back nobody can see would only add latency.
+            // `header_ok` owns both tests (are we on the header, is the bio
+            // actually truncated) and answers false when it did nothing.
+            crate::ui::person::header_ok();
         }
     } else {
         // home: dispatch through the ONE activation (shared with pointer
@@ -2444,9 +3143,9 @@ unsafe fn key_ok(
         // instantly while the hero stays visible ~130ms, so a quick DOWN→OK
         // must still act on the hero shown, not the grid's card 0.
         if crate::ui::home::snap_pos() < 0.5 {
-            // hero (Play pill / chip / pills / chevron): activate immediately.
+            // hero (Play pill / info / chip / pills): activate immediately.
             let hf = crate::ui::home::hero_focus();
-            home_activate(mt, hf, HUD_LINGER_MS, route, played_from_detail, trail, &mut hud.nav, nav);
+            home_activate(mt, hf, HUD_LINGER_MS, route, play_from, trail, &mut hud.nav, nav);
         } else {
             // grid card: tvOS press — dip the focused card now, activate on the
             // spring-back (committed from the per-frame loop). Nav cancels, so the
@@ -2477,15 +3176,20 @@ unsafe fn key_play(
     now: u32,
     bg_was_playing: bool,
     route: &mut Route,
-    played_from_detail: &mut bool,
+    play_from: &mut Node,
     ptr: &mut Pointer,
 ) {
     if !matches!(*route, Route::Player { .. }) {
         if crate::player::start_bufferfeed(mt) {
-            // resuming a suspended session (bg_was_playing) keeps its origin;
-            // a fresh play derives it from the current route. Guards the tiny
-            // bg→fg window where route is still Home but the session came from detail.
-            *played_from_detail = if bg_was_playing { *played_from_detail } else { matches!(*route, Route::Detail) };
+            // Resuming a suspended session (bg_was_playing) KEEPS its origin; a fresh play
+            // derives it from the page on screen. Guards the tiny bg→fg window in which the
+            // lifecycle arm has already forced the route to Home while the session it suspended
+            // came from somewhere else entirely.
+            if !bg_was_playing {
+                if let Origin::From(n) = origin_here(*route) {
+                    *play_from = n;
+                }
+            }
             *route = Route::Player { overlay: Overlay::None };
         }
         set_paused(false);
@@ -2501,9 +3205,60 @@ unsafe fn key_play(
     extend_hud(now, HUD_LINGER_MS);
 }
 
+/// What a LEFT/RIGHT press on the player DOES — the decision alone, with nothing done yet.
+///
+/// It is a value rather than a ladder inside [`key_scrub`] because the interesting arm is the one
+/// that acts on nothing the user can see, and that arm is unreachable from a host test: the ladder
+/// lives inside the SDL event loop and every other branch reaches the player's globals. Deciding
+/// first and acting second is what makes the rule itself testable (`a_hidden_hud_spends_the_press`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ScrubPress {
+    /// The HUD is not on screen, so the press is spent RAISING it and the playhead does not move.
+    /// See [`key_scrub`] for why a control the user cannot see must not be driven blind.
+    Reveal,
+    /// the control row (Subtitles / Audio / More, or whichever stand-in owns it) — move its cursor
+    Row,
+    /// the bottom tabs (Info / Chapters) — move theirs
+    Tabs,
+    /// the scrubber: jump the preview by [`SCRUB_STEP_NS`]
+    Jump,
+    /// the scrubber, on something with no duration to move through — a live or still-loading item
+    Nothing,
+}
+
+/// `vis` is [`hud_visible`] sampled BEFORE this press re-arms the timer; `focus` is
+/// [`HudNav::focus`]; `seekable` is `dur() > 0`.
+fn scrub_press(vis: bool, focus: i32, seekable: bool) -> ScrubPress {
+    if !vis {
+        return ScrubPress::Reveal;
+    }
+    match focus {
+        1 => ScrubPress::Row,
+        2 => ScrubPress::Tabs,
+        _ if seekable => ScrubPress::Jump,
+        _ => ScrubPress::Nothing,
+    }
+}
+
 /// LEFT/RIGHT while playing: move the focused HUD row's cursor, or — on the scrubber — jump the
 /// scrub preview. A fresh press (0x001) is the fixed 10s jump; a held key's 0x101 repeats
 /// ([`on_auto_repeat`]) then engage the continuous scrub and the keyup commits.
+///
+/// **A press that finds the HUD hidden is spent RAISING it, and moves nothing.** The transport is
+/// on a 4.5 s timer over full-screen video, so "where am I" and "take me back ten seconds" are two
+/// different intentions and the remote has no way to tell them apart — the old ladder read every
+/// LEFT as the second, and a viewer glancing at the clock lost their place to it. It is the rule
+/// UP/DOWN has always had one arm over ([`key_player_updown`]) and the rule the CLICK path already
+/// enforced on this very band (`hud_vis` there is sampled before the click re-arms the timer,
+/// after "a click in the invisible timed-out scrub band committed a blind seek"); the key path was
+/// the last way in that still acted on geometry nobody could see.
+///
+/// **A HOLD is not a tap and keeps working.** The reveal still arms `dir` and seeds the preview, so
+/// a user who holds LEFT to rewind gets the HUD on screen and then the ordinary continuous scrub as
+/// the 0x101 repeats arrive — by which point the band they are dragging IS on screen. Only the
+/// discrete 10 s hop waits for a second press, which is what `Scrub::reveal` marks: without it the
+/// tap release would commit a seek to the seed, i.e. a full reopen+prime to the spot we are
+/// already sitting on.
 unsafe fn key_scrub(
     key: Key,
     now: u32,
@@ -2521,51 +3276,69 @@ unsafe fn key_scrub(
         set_scrub(-1);
     }
     let fwd = matches!(key, Key::Right { .. });
-    let vis = hud_visible(now, hud_until(), paused(), hud.dismissed);
+    // the pre-press sample — see `key_player_updown`'s note and `HudState::visible_at_press`
+    let act = scrub_press(hud.visible_at_press, hud.nav.focus, dur() > 0);
     extend_hud(now, HUD_LINGER_MS);
-    if !vis {
-        hud.nav.focus = 0; // first LEFT/RIGHT reveals the HUD on the scrubber
-    }
-    if hud.nav.focus == 1 {
-        // the row's occupant says how many items it has — no magic pin
-        hud.nav.btn = (hud.nav.btn + if fwd { 1 } else { -1 }).clamp(0, ctrl.items() - 1);
-    } else if hud.nav.focus == 2 {
-        let max_tab = if crate::ui::chapters_panel::has_chapters() { 1 } else { 0 };
-        hud.nav.tab = (hud.nav.tab + if fwd { 1 } else { -1 }).clamp(0, max_tab);
-    } else if dur() > 0 {
-        // scrubber focus, FRESH press (0x001): the fixed 10s jump. A held key's
-        // 0x101 repeats (handled above) then engage the continuous scrub; the
-        // keyup commits. Quick re-taps before scrubber.commit_at accumulate.
-        let cap = dur() - 3 * 1_000_000_000;
-        scrubber.commit_at = 0; // more input → cancel a pending tap commit
-        scrubber.alive = now;
-        if scrubber.dir == 0 && scrub() < 0 {
-            // Seed a new scrub at the INTENDED playhead (`intended_pos`). If a
-            // prior commit's seek is still landing, playpos() is stale (it still
-            // reports the pre-seek spot), so a quick re-press would jump back to
-            // where we started and resume there — interrupting the scrub. The
-            // divergence IS "a seek is in flight", so log it when the two
-            // disagree rather than re-deriving the condition here.
-            let seed = intended_pos();
-            let live = playpos();
-            if seed != live {
-                log(&format!("scrub: seed at in-flight target {}s (playpos {}s stale)",
-                    seed / 1_000_000_000, live / 1_000_000_000));
+    match act {
+        ScrubPress::Reveal => {
+            hud.nav.focus = 0; // the HUD comes up on the scrubber, ready for the press after this one
+            // …and the gesture is armed but not spent, so a user who keeps HOLDING gets the
+            // ordinary continuous scrub the moment the repeats arrive. Only on something with a
+            // duration: arming a scrub over an item there is nothing to move through would put a
+            // preview on a band that cannot answer for it.
+            if dur() > 0 {
+                scrubber.begin(now, fwd);
+                scrubber.reveal = true; // …but this press hops nothing; only a HOLD grows out of it
+                seed_scrub();
             }
-            set_scrub(seed);
         }
-        if !scrubber.hold {
-            let mut s = scrub().max(0) + if fwd { SCRUB_STEP_NS } else { -SCRUB_STEP_NS };
-            if s < 0 {
-                s = 0;
-            }
-            if cap > 0 && s > cap {
-                s = cap;
-            }
-            set_scrub(s);
+        ScrubPress::Row => {
+            // the row's occupant says how many items it has — no magic pin
+            hud.nav.btn = (hud.nav.btn + if fwd { 1 } else { -1 }).clamp(0, ctrl.items() - 1);
         }
-        scrubber.dir = if fwd { 1 } else { -1 };
+        ScrubPress::Tabs => {
+            let max_tab = if crate::ui::chapters_panel::has_chapters() { 1 } else { 0 };
+            hud.nav.tab = (hud.nav.tab + if fwd { 1 } else { -1 }).clamp(0, max_tab);
+        }
+        ScrubPress::Jump => {
+            // scrubber focus, FRESH press (0x001): the fixed 10s jump. A held key's
+            // 0x101 repeats (handled above) then engage the continuous scrub; the
+            // keyup commits. Quick re-taps before scrubber.commit_at accumulate.
+            let cap = dur() - 3 * 1_000_000_000;
+            scrubber.commit_at = 0; // more input → cancel a pending tap commit
+            scrubber.alive = now;
+            scrubber.reveal = false; // a visible press is a real gesture whatever raised the HUD
+            if scrubber.dir == 0 && scrub() < 0 {
+                seed_scrub();
+            }
+            if !scrubber.hold {
+                let mut s = scrub().max(0) + if fwd { SCRUB_STEP_NS } else { -SCRUB_STEP_NS };
+                if s < 0 {
+                    s = 0;
+                }
+                if cap > 0 && s > cap {
+                    s = cap;
+                }
+                set_scrub(s);
+            }
+            scrubber.dir = if fwd { 1 } else { -1 };
+        }
+        ScrubPress::Nothing => {}
     }
+}
+
+/// Seed a new scrub at the INTENDED playhead ([`intended_pos`]). If a prior commit's seek is still
+/// landing, `playpos()` is stale (it still reports the pre-seek spot), so a quick re-press would
+/// jump back to where we started and resume there — interrupting the scrub. The divergence IS "a
+/// seek is in flight", so log it when the two disagree rather than re-deriving the condition here.
+unsafe fn seed_scrub() {
+    let seed = intended_pos();
+    let live = playpos();
+    if seed != live {
+        log(&format!("scrub: seed at in-flight target {}s (playpos {}s stale)",
+            seed / 1_000_000_000, live / 1_000_000_000));
+    }
+    set_scrub(seed);
 }
 
 /// CH▲/CH▼ page the browse grid a screenful of rows per press.
@@ -2586,20 +3359,20 @@ fn key_library_page(sym: c_uint, wcode: c_uint) {
 /// screen that is already half gone: the request is at most four frames old and nothing has changed
 /// yet, so it can still be un-asked. `nav_cancel` refuses once the swap has happened, and then this
 /// is an ordinary BACK on the NEW screen — the press is never dropped, only ever spent on exactly
-/// one of the two. (It matters most at Home's root, where "what BACK would otherwise do" is exit
-/// the app.)
+/// one of the two. (It matters most at Home's root, where "what BACK would otherwise do" is raise
+/// the exit alert — see [`back_at_root`].)
 fn key_back(
     mt: &crate::task::MainThread,
     route: &mut Route,
     nav: &mut Option<NavReq>,
     trail: &mut Trail,
-    played_from_detail: bool,
+    play_from: &Node,
     refresh_hubs_at: &mut u32,
     running: &mut bool,
 ) {
     if nav_cancel(*route, nav) {
     } else if matches!(*route, Route::Player { .. }) {
-        exit_player(mt, route, played_from_detail, refresh_hubs_at, trail);
+        exit_player(mt, route, play_from, refresh_hubs_at, trail);
     } else if matches!(*route, Route::Detail | Route::Person) {
         // The two stacking screens, through the page transition. All three
         // halves of the pop — the outgoing page's teardown, the trail move and
@@ -2610,11 +3383,20 @@ fn key_back(
         // (does the page underneath wear the tab bar?) happens here.
         //
         // …but a panel the SCREEN has open takes the press first and the page
-        // stays: `detail::back()` is `library::back()`'s shape one screen over
-        // ("Also available" is part of the detail page, so leaving the page
-        // must not be the way to close it). It answers false on Person, which
-        // has no panel of its own.
-        if !crate::ui::detail::back() {
+        // stays: `back()` is `library::back()`'s shape one screen over ("Also
+        // available" is part of the detail page, so leaving the page must not
+        // be the way to close it).
+        //
+        // EACH ROUTE ANSWERS FOR ITS OWN PANELS. This was a bare
+        // `detail::back()` across both arms, resting on it answering false on
+        // Person — which was true only while Person had no panel of its own,
+        // and stopped being true when the bio alert landed. A page-owned modal
+        // BACK cannot close is a screen the user is stuck on.
+        let panel_took_it = match *route {
+            Route::Person => crate::ui::person::back(),
+            _ => crate::ui::detail::back(),
+        };
+        if !panel_took_it {
             nav_back(*route, trail, nav);
         }
     } else if matches!(*route, Route::Search) {
@@ -2640,19 +3422,106 @@ fn key_back(
     } else if g_snap() > 0.5 {
         set_snap(0.0);
     } else {
-        // Home is the ROOT and BACK there exits the app — deliberately NOT
+        // Home is the ROOT and BACK there LEAVES THE APP — deliberately NOT
         // trail-driven. The background-suspend arm drops to Home without
         // touching the trail, so route and trail can legitimately disagree;
         // keeping this branch blind to the trail is what stops that divergence
         // teleporting the user into a page they did not navigate to, and what
-        // keeps the true root exiting whatever the trail happens to hold.
+        // keeps the true root leaving whatever the trail happens to hold.
+        //
+        // What changed 2026-08-21 is only the LAST STEP: the press raises the
+        // exit alert (`ui::exit_alert`) and *Exit* is what sets `running`. The
+        // divergence argument above is untouched and is why this still does not
+        // consult the trail — the alert is the door, and this is still the one
+        // branch that reaches it. `running` stays a parameter because the
+        // BYPASS below is a real exit from here.
+        //
+        back_at_root(running);
+    }
+}
+
+/// **BACK at Home's root — the app's one door**, lifted out of [`key_back`]'s last `else` so a host
+/// test can press it.
+///
+/// It is one `if` and it is worth its own function for exactly one reason: this is the only place
+/// in the app that ends the process from a key, and the regression to guard is a future edit
+/// putting `*running = false` back where the alert now goes. `key_back` itself is unreachable from
+/// a unit test — its Player arm calls `exit_player`, which pulls the Starfish/ACB seam into the
+/// link — so without this split the one branch that matters most could only be graded by reading
+/// it.
+///
+/// `/tmp/plxnative-noexitconfirm` restores the one-press quit. Nothing in the tree needs it —
+/// `make kill`, `tests/run.py` and `tools/tv-session.sh` all close the app through SAM's
+/// `closeByAppId`, and no manifest case injects `back` at all — so it is a door left open for a
+/// script that closes the app by pressing BACK, not a dependency being served. Compiled out under
+/// `RELEASE=1`, so a public build always asks.
+fn back_at_root(running: &mut bool) {
+    if crate::ui::exit_alert::skip_confirm() {
         *running = false;
+    } else {
+        crate::ui::exit_alert::open();
+    }
+}
+
+/// The exit alert is modal: LEFT/RIGHT walk the two answers, OK commits the focused one, BACK
+/// cancels. Every other key is SWALLOWED — the arm `continue`s unconditionally at its call site, so
+/// nothing behind the sheet can be driven while it is up.
+///
+/// Only [`Choice::Exit`](crate::ui::exit_alert::Choice::Exit) sets `running`. BACK and *Cancel* are
+/// the same outcome by two routes, which is the point of the panel: the safe answer is both the
+/// default focus and what the dismiss key does.
+fn key_exit_alert(sym: c_uint, wcode: c_uint, running: &mut bool) {
+    use crate::ui::exit_alert::{self, Choice};
+    if is_ok(sym) {
+        if exit_alert::on_ok() == Choice::Exit {
+            *running = false;
+        }
+    } else if is_back(sym, wcode) {
+        exit_alert::close();
+    } else {
+        // LEFT/RIGHT only — `exit_alert::step` ignores everything else, so this is one call
+        // rather than a key test here and a second one there.
+        exit_alert::move_focus(sym as c_int);
     }
 }
 
 #[no_mangle]
 pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
     install_panic_logger();
+    // WHICH INSTALL wrote this log. First line, before anything can fail.
+    //
+    // Two builds can sit on one television — the app users get, and a developer one beside it
+    // (`paths::app_id`) — and until this line nothing in the system said which of them produced a
+    // given log. The obvious witnesses do not work: both binaries are named `plxnative`, so
+    // `pidof` cannot tell them apart on this busybox set; `pkg/plxnative` is a path EVERY
+    // configuration writes, so an md5 against the local build proves only that some flavour of
+    // some configuration matches. That ambiguity is the "plausible wrong data" failure this
+    // project's testing section is built around: a harness that graded the other install's log
+    // would report a regression that is not there, or miss one that is.
+    //
+    // `APPID_env` is here for a second reason, and it is evidence rather than configuration.
+    // Nothing this project can read off a desk says whether SAM exports `APPID` to a native app on
+    // this firmware, or what it sets it to — and `engine::acb_init_acb` used to depend on it. It
+    // does not any more (the install directory is the authority), so this line turns an unanswered
+    // device question into something every single run answers for free.
+    log(&format!(
+        "install: id={} flavour={} runtime={} features={} APPID_env={}",
+        crate::paths::app_id(),
+        crate::paths::flavour().unwrap_or("-"),
+        crate::paths::runtime_dir().display(),
+        if crate::dev::ENABLED { "dev" } else { "release" },
+        std::env::var("APPID").unwrap_or_else(|_| "unset".into()),
+    ));
+    // ...and the app directory on the NEXT line, from `app_dir()` itself, which logs its own
+    // provenance (`from current_exe` / `PLXNATIVE_APP_DIR` / `macOS bundle`) — strictly more than
+    // repeating the path here would say. Forced now rather than left to whoever calls it first,
+    // so the two lines are adjacent and the pair is what a triage reader sees at the top.
+    //
+    // This ORDER is the reason `install:` does not carry an `appdir=` field: evaluating
+    // `app_dir()` inside the `format!` above would emit ITS line first, and every document that
+    // tells a human to read the first line to learn which install wrote a log would have been
+    // wrong by one line.
+    let _ = crate::paths::app_dir();
     // FIRST, before SDL and before anything can fail: which television is this. A report from
     // hardware nobody here owns is worth far more when its opening line names the firmware — see
     // `webos`'s module doc. Reads one file; cannot fail the boot.
@@ -2662,6 +3531,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
     // (issue #22's bug class; docs/plex-pass-audit.md's closing section). Same contract as
     // above: one file read, cannot fail the boot, falls back to the profile that always shipped.
     crate::devcaps::probe();
+    // If armed, hand LG's own media pipeline its logging configuration BEFORE anything can create
+    // a player. libpf reads these four environment variables inside `PlayerFactory::create`, and
+    // its GStreamer is lazily initialised, so this is early enough and a later arming would be
+    // read by nobody. It is the only instrument that can see inside the closed Dolby Vision chain.
+    crate::dev::arm_gst_logging();
     // THE main-thread token, minted once — this function IS the SDL main thread. Everything that
     // touches the ACB/Starfish seam or the Engine slot takes it by reference, and `&MainThread` is
     // !Send, so `task::spawn` rejects any closure that captured one. See `task::MainThread`.
@@ -2940,7 +3814,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 // take_ready once a profile is picked — done now they'd be thrown out on a switch.
                 crate::plex::install(&session.server.address, session.server.port as i32, session.pms_token());
                 crate::plex::session::set_current(Some(session.user.clone()));
-                crate::auth::start_switch(); // seeds the persisted roster + refreshes it online
+                // seeds the persisted roster + refreshes it online. `Picker::Boot` is what makes
+                // BACK out of this picker refuse to reinstate a PIN-protected profile — nobody has
+                // identified themselves yet, so there is no "carry on as me" to fall back on.
+                crate::auth::start_switch(crate::auth::Picker::Boot);
                 log("boot: stored session — who's watching");
                 BootTo::Profiles
             } else {
@@ -2958,8 +3835,14 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 // can show IMMEDIATELY (and all it can show offline); this is what makes a share
                 // granted since the last sign-in ever appear at all. Non-destructive on failure.
                 crate::auth::refresh_roster_online();
+                // WHO is watching, before anything reads a per-profile store. It drives the Home
+                // profile chip, and it is also what `browse::resolve_pins` and
+                // `ui::search::recents` key on — `install_pms` below ends in the section fetch
+                // that resolves the Home selection, so set after it that resolve ran against the
+                // OWNER's record whoever was actually signed in. (`auth::take_ready`, the other
+                // way into Home, already sets it before its own `install_pms` for this reason.)
+                crate::plex::session::set_current(Some(session.user.clone()));
                 install_pms(&session.server.address, session.server.port as c_int, session.pms_token());
-                crate::plex::session::set_current(Some(session.user.clone())); // Home profile chip
                 log("boot: stored session — local server (offline-capable)");
                 BootTo::Home
             }
@@ -3006,6 +3889,27 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         if let Some(v) = crate::dev::read("navblur") {
             crate::ui::glassload::configure_navblur(&v);
         }
+        // dev: the two OVERDRAW surfaces (`ui::overdraw`, docs/backdrop-blur-profiling.md Part 5).
+        // `plxnative-overdraw` arms the CPU-side per-draw-class ledger — how much screen-visible
+        // quad area this app submits, per primitive family, per frame. It is not billed for the
+        // wayland compositor's work and is not `glFinish`-serialised, which is what the GPU's
+        // global FRAG_QUADS_RAST cannot say. `plxnative-drawmask=<classes>` REFUSES every draw of
+        // the named classes, so a whole-frame `frame.ui` A/B against the unmasked control prices
+        // that class as the frame sees it; `all` draws nothing and is therefore the compositor
+        // floor. A masked leg is a broken picture on purpose.
+        if crate::dev::flag("overdraw") {
+            crate::ui::overdraw::set_ledger(true);
+        }
+        if let Some(spec) = crate::dev::read("drawmask") {
+            crate::ui::overdraw::set_mask(&spec);
+        }
+        // dev: /tmp/plxnative-heroground — draw the hero's photograph and BOTH of its scrim fields
+        // in one pass instead of the art plus four blended gradient quads over it. Absent, the
+        // shipped four-quad path draws, which is what makes this an A/B on one binary.
+        if crate::dev::flag("heroground") {
+            crate::ui::widgets::set_hero_ground(true);
+            log("hero: one-pass ground ENABLED by /tmp/plxnative-heroground");
+        }
         // dev: /tmp/plxnative-glasshz=<presents-per-refresh> moves the shared dynamic-backdrop
         // cadence for the cost curve in `docs/backdrop-blur-profiling.md` — 1 is a refresh on every
         // present (60 Hz while the UI presents at 60) and is what ships, 3 is ~20 Hz, 4 is 15 Hz.
@@ -3035,6 +3939,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         // and so that if a frame ever looks wrong on the panel, ruling this feature out is one
         // `rm` rather than a redeploy.
         crate::ui::testpat::boot();
+        crate::player::seed_dev_track_names();
         if crate::dev::flag("noidle") {
             crate::ui::idle::set_enabled(false);
             log("idle: present gate DISABLED by /tmp/plxnative-noidle");
@@ -3123,7 +4028,28 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
 
         // Initial route from the boot gate: Login when we have no usable creds, Profiles for the
         // boot who's-watching picker, else Home.
+        //
+        // …and Home is intercepted by the first-run question when this profile has never been
+        // asked it and the roster holds more than one source (`ui::onboard`). It belongs HERE as
+        // well as on the login path, because a single-Plex-Home-user account never meets the
+        // picker at all: the two paths into Home are the picker's `take_ready` and this gate, and
+        // a question asked on only one of them is a question half the accounts never see.
+        // `install_pms` above has already registered the stored roster, so "more than one source"
+        // has a real answer by this line. An AUTOMATED boot is exempt for the reason the picker is
+        // — a harness run must land on a deterministic Home.
+        //
+        // dev: `/tmp/plxnative-firstrun` forces it — a screen that is by definition asked once is
+        // otherwise unreachable the moment you have answered it, and the two-source roster it
+        // needs comes from `/tmp/plxnative-servers`, which marks the boot automated. Both halves
+        // are why looking at this screen headlessly requires a trigger of its own.
+        let ask_first_run =
+            || crate::dev::flag("firstrun") || (!automated_boot() && crate::ui::onboard::asks());
         let mut route = match boot_to {
+            BootTo::Home if ask_first_run() => {
+                log("boot: asking which sources feed Home");
+                crate::ui::onboard::enter();
+                Route::Onboard
+            }
             BootTo::Home => Route::Home,
             BootTo::Login => Route::Login,
             BootTo::Profiles => Route::Profiles,
@@ -3131,26 +4057,27 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         // dev: /tmp/plxnative-acct auto-opens the profile menu (headless capture of the popover).
         if crate::dev::flag("acct") && matches!(route, Route::Home) {
             crate::ui::account_menu::open();
-            route = Route::Account;
+            route = Route::Account { over: BarHost::Home };
         }
-        // Return target for playback started from a detail page: Stop/BACK/EOS from such a session
-        // returns to that detail page, else home. Kept OUTSIDE Route (like bg_was_playing keeps the
-        // suspended session) — it's navigation history, not the current node, and Route makes
-        // Detail/Player exclusive so it can't be encoded there.
-        let mut played_from_detail = false;
+        // The page the live playback session was LAUNCHED FROM — where Stop/BACK/EOS returns to.
+        // Kept OUTSIDE Route (like bg_was_playing keeps the suspended session): it is navigation
+        // history, not the current node, and Route makes every page and Player exclusive so it
+        // could not be encoded there. Captured per `start_playback` through `Origin` — see that
+        // type for why this is a `Node` and not the `from_detail: bool` it replaced.
+        let mut play_from = Node::Home;
         // The BACK trail (`ui::trail`): the pages behind the one on screen, top = current. It
         // replaces the `opened_from_library` / `opened_from_person` pair, which were a precedence
         // ladder with one slot per screen KIND and so could not describe a detail page standing on
         // another detail page — the episode filmstrip's text row and the Related shelf both do that,
         // and BACK from such a page fell through to Home. A run-loop LOCAL, exactly like the
-        // booleans it replaces and like `played_from_detail` beside it: navigation history belongs
+        // booleans it replaces and like `play_from` beside it: navigation history belongs
         // to the loop that navigates.
         //
-        // `played_from_detail` deliberately does NOT fold into it. It answers a different question —
-        // where does THIS SESSION return to — and is written per `start_playback` call, including
-        // the deliberate `false` where `home_activate` opens a detail page under the hood just to
-        // fire its Play. The app-switch path depends on that independence (the background arm drops
-        // to Home without touching either).
+        // `play_from` deliberately does NOT fold into it. It answers a different question — where
+        // does THIS SESSION return to — and is written per `start_playback` call from the route on
+        // screen at the press, which is why `home_activate` opening a detail page under the hood
+        // just to fire its Play still returns to Home: the user never left it. The app-switch path
+        // depends on that independence (the background arm drops to Home without touching either).
         let mut trail = crate::ui::trail::Trail::new();
         // The route change the page cross-fade is carrying, applied at its floor. `None` whenever
         // no transition is in flight — which is every path that deliberately keeps today's hard cut
@@ -3395,7 +4322,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     }
                     // From here down this IS a fresh press, whatever the driver stamped on it.
                     last_input = SDL_GetTicks();
-                    begin_fresh_press(key, sym, &mut held_key, &mut hud, &mut ptr, &mut ok_armed);
+                    begin_fresh_press(key, sym, last_input, &mut held_key, &mut hud, &mut ptr, &mut ok_armed);
 
                     // ---- the route-scoped arms, each of which `continue`s once it has taken the
                     // press. That makes the chain itself the priority statement: an earlier guard
@@ -3403,17 +4330,30 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     // below does deliberately. Keep it a chain — a `match` over the same routes
                     // compiles and keeps the suite green while silently reordering it, because
                     // exhaustiveness cannot see subsumption.
-                    if matches!(route, Route::Login | Route::Profiles) {
-                        key_onboarding(route, sym, wcode, &mut ok_armed);
+                    // FIRST, and unconditionally: the exit alert outranks every route below,
+                    // because it is the one panel in the app whose question has to be answered
+                    // before anything else can happen. It is not a `Route` (see `ui::exit_alert`'s
+                    // module doc — it has exactly one host, Home's root), so it cannot take its
+                    // turn by being matched on like `Account`/`ItemMenu` do; it takes it by being
+                    // the top of the chain and `continue`ing on every key. That is also the whole
+                    // of its modality: with the arm here, nothing behind the sheet is reachable.
+                    if crate::ui::exit_alert::is_open() {
+                        key_exit_alert(sym, wcode, &mut running);
                         continue;
                     }
-                    if matches!(route, Route::Account) {
-                        key_account(sym, wcode, &mut route);
+                    if matches!(route, Route::Login | Route::Profiles | Route::Onboard) {
+                        if key_onboarding(route, sym, wcode, &mut ok_armed) {
+                            route = enter_home_from_onboard(&mut trail);
+                        }
+                        continue;
+                    }
+                    if let Route::Account { over } = route {
+                        key_account(over, sym, wcode, &mut route);
                         continue;
                     }
                     if let Route::ItemMenu { over } = route {
                         key_item_menu(mt, over, sym, wcode, last_input, &mut route,
-                            &mut played_from_detail, &mut trail, &mut hud.nav, &mut nav_pending,
+                            &mut play_from, &mut trail, &mut hud.nav, &mut nav_pending,
                             &mut held_key);
                         continue;
                     }
@@ -3421,7 +4361,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     // the frame it `continue`s on every key, so the Menu / More / Info / Chapters
                     // arms below do not run at all. Deliberate — see `key_player_failed`.
                     if matches!(route, Route::Player { .. }) && crate::ui::player_hud::transport_hidden() {
-                        key_player_failed(mt, sym, wcode, &mut route, played_from_detail,
+                        key_player_failed(mt, sym, wcode, &mut route, &play_from,
                             &mut refresh_hubs_at, &mut trail);
                         continue;
                     }
@@ -3434,7 +4374,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         continue;
                     }
                     if matches!(route, Route::Player { overlay: Overlay::Info }) {
-                        key_info_panel(mt, sym, wcode, last_input, &mut route, played_from_detail,
+                        key_info_panel(mt, sym, wcode, last_input, &mut route, &play_from,
                             &mut refresh_hubs_at, &mut trail, &mut hud.nav, &mut held_key);
                         continue;
                     }
@@ -3493,16 +4433,16 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         // this by construction. Settling it needs a `key` line off the television.
                     } else if matches!(key, Key::Ok) {
                         key_ok(mt, ctrl, last_input, &mut route, &mut hud, &mut ptr, &mut held_key,
-                            &mut trail, &mut nav_pending, &mut played_from_detail,
+                            &mut trail, &mut nav_pending, &mut play_from,
                             &mut refresh_hubs_at, &mut ok_armed);
                     } else if matches!(key, Key::Pause) {
                         key_pause(mt, route, last_input);
                     } else if matches!(key, Key::Play) {
-                        key_play(mt, last_input, bg_was_playing, &mut route, &mut played_from_detail,
+                        key_play(mt, last_input, bg_was_playing, &mut route, &mut play_from,
                             &mut ptr);
                     } else if matches!(route, Route::Player { .. }) && matches!(key, Key::Stop) {
                         // Stop — the whole arm is the one ritual, already named.
-                        exit_player(mt, &mut route, played_from_detail, &mut refresh_hubs_at, &mut trail);
+                        exit_player(mt, &mut route, &play_from, &mut refresh_hubs_at, &mut trail);
                     } else if matches!(route, Route::Player { .. }) && matches!(key, Key::Left { .. } | Key::Right { .. }) {
                         key_scrub(key, last_input, ctrl, &mut hud, &mut ptr, &mut scrubber);
                     } else if matches!(route, Route::Library)
@@ -3510,7 +4450,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     {
                         key_library_page(sym, wcode);
                     } else if matches!(key, Key::Back) {
-                        key_back(mt, &mut route, &mut nav_pending, &mut trail, played_from_detail,
+                        key_back(mt, &mut route, &mut nav_pending, &mut trail, &play_from,
                             &mut refresh_hubs_at, &mut running);
                     }
                 } else if et == SDL_MOUSEMOTION {
@@ -3540,7 +4480,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     }
                     if matches!(route, Route::Profiles) {
                         crate::ui::profiles::pointer_focus(mx, my);
-                    } else if matches!(route, Route::Account) {
+                    } else if matches!(route, Route::Onboard) {
+                        crate::ui::onboard::pointer_focus(mx, my);
+                    } else if matches!(route, Route::Account { .. }) {
                         crate::ui::account_menu::pointer_focus(mx, my);
                     } else if matches!(route, Route::Player { overlay: Overlay::More }) {
                         crate::ui::more_menu::pointer_focus(mx, my);
@@ -3579,6 +4521,21 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     }
                 } else if et == SDL_MOUSEBUTTONDOWN {
                     last_input = SDL_GetTicks();
+                    // The exit alert's modality, pointer half — the twin of the key ladder's first
+                    // arm, and here for the reason `item_menu`'s arm sits above Home's: without it
+                    // a click that misses the sheet falls through onto the shelf behind it and
+                    // launches whatever card it landed on, from under a modal question.
+                    //
+                    // A MISS is not a dismissal (`exit_alert::click` reports `None`): "not either"
+                    // is not an answer to a yes/no question, which is the one place this panel
+                    // differs from every menu in the app.
+                    if crate::ui::exit_alert::is_open() {
+                        let (cx, cy) = ptr_xy(&ev);
+                        if crate::ui::exit_alert::click(cx, cy) == Some(crate::ui::exit_alert::Choice::Exit) {
+                            running = false;
+                        }
+                        continue;
+                    }
                     // …and the pointer's half of the same rule: the hit-tests below consult
                     // geometry (`icon_hit`, `scrub_hit`, the tab row) that a failure has erased from
                     // the frame. The key path's BACK exception has no pointer twin — there is no
@@ -3631,7 +4588,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             _ if ctrl_click.is_some() => {
                                 hud.nav.focus = 1;
                                 hud.nav.btn = ctrl_click.unwrap_or(0);
-                                activate_ctrl_row(mt, ctrl, &mut route, &mut played_from_detail, &mut refresh_hubs_at, &mut hud.nav, &mut trail);
+                                activate_ctrl_row(mt, ctrl, &mut route, &mut play_from, &mut refresh_hubs_at, &mut hud.nav, &mut trail);
                             }
                             _ => {
                                 // shared HUD geometry: player_hud owns the button rects + scrub
@@ -3669,12 +4626,15 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             }
                         }
                         extend_hud(last_input, HUD_LINGER_MS);
+                    } else if chip_clicked(route, &ev) {
+                        // the shared bar's profile chip, on whichever of the three screens is up —
+                        // the pointer twin of `key_ok`'s own `TopFocus::Chip` arm. It sits ahead of
+                        // all three so none of them has to carry a copy of the rule (Home did, and
+                        // that is why the other two had a chip nothing could press).
+                        chip_activate(&mut route);
                     } else if matches!(route, Route::Home) {
                         let (cx, cy) = ptr_xy(&ev);
-                        if crate::ui::home::profile_chip_click(cx, cy) {
-                            crate::ui::account_menu::open(); // top-left avatar → profile menu
-                            route = Route::Account;
-                        } else if let Some(i) = crate::ui::widgets::tab_pill_at(cx, cy) {
+                        if let Some(i) = crate::ui::widgets::tab_pill_at(cx, cy) {
                             // the centered tab pills work from BOTH hero and grid views
                             match crate::ui::widgets::pill_at(i) {
                                 Pill::Search => nav_to(route, Nav::Search, &mut nav_pending),
@@ -3690,19 +4650,18 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                 }
                             }
                         } else if crate::ui::home::snap_pos() < 0.5 {
-                            // hero visible: clicks act on the action row via the ONE activation;
-                            // holding the click on the chevron keeps paging (see the per-frame pump)
+                            // hero visible: clicks act on the action row via the ONE activation.
+                            // Only the two CONTROLS are hit-tested — the pager chevron beside them
+                            // is an indicator with no rect, so paging is the D-pad's and the
+                            // auto-flip's (this used to arm a click-hold pager here).
                             let b = crate::ui::home::hero_button_at(cx, cy);
                             if b >= 0 {
                                 crate::ui::home::set_hero_focus(b);
-                                home_activate(mt, b, HUD_LINGER_MS, &mut route, &mut played_from_detail, &mut trail, &mut hud.nav, &mut nav_pending);
-                                if b == 2 {
-                                    ptr.hold_pager = last_input;
-                                }
+                                home_activate(mt, b, HUD_LINGER_MS, &mut route, &mut play_from, &mut trail, &mut hud.nav, &mut nav_pending);
                             }
                         } else if crate::ui::home::home_card_click(cx, cy) {
                             // grid card: click = OK (play a Continue-Watching tile / open detail)
-                            home_activate(mt, c_int::MIN, HUD_LINGER_MS, &mut route, &mut played_from_detail, &mut trail, &mut hud.nav, &mut nav_pending);
+                            home_activate(mt, c_int::MIN, HUD_LINGER_MS, &mut route, &mut play_from, &mut trail, &mut hud.nav, &mut nav_pending);
                         }
                     } else if matches!(route, Route::Search) {
                         let (cx, cy) = ptr_xy(&ev);
@@ -3759,10 +4718,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                 start_playback(
                                     mt,
                                     crate::ui::detail::last_resume_ns(),
-                                    true, // Stop/BACK/EOS returns to this detail page
+                                    origin_here(route), // Stop/BACK/EOS returns to this detail page
                                     HUD_LINGER_MS,
                                     &mut route,
-                                    &mut played_from_detail,
+                                    &mut play_from,
                                     &mut hud.nav,
                                 );
                             }
@@ -3772,12 +4731,12 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         if matches!(crate::ui::person::click(cx, cy), crate::ui::person::Action::Card) {
                             open_person_card(route, &mut nav_pending);
                         }
-                    } else if matches!(route, Route::Account) {
+                    } else if let Route::Account { over } = route {
                         let (cx, cy) = ptr_xy(&ev);
                         // a click on a row commits it; anywhere else dismisses the popover
                         match crate::ui::account_menu::click(cx, cy) {
                             crate::ui::account_menu::Action::ChangeProfile => {
-                                crate::auth::start_switch();
+                                crate::auth::start_switch(crate::auth::Picker::ChangeProfile);
                                 crate::ui::profiles::enter();
                                 route = Route::Profiles;
                             }
@@ -3790,8 +4749,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                 route = Route::Login;
                             }
                             crate::ui::account_menu::Action::None => {
+                                // back to the PAGE the popover is on — the pointer's twin of
+                                // `key_account`'s BACK arm
                                 crate::ui::account_menu::close();
-                                route = Route::Home;
+                                route = over.route();
                             }
                         }
                     } else if let Route::ItemMenu { over } = route {
@@ -3804,10 +4765,15 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         // same completeness as `Modal::Account`, not because this arm reads it.)
                         let act = crate::ui::item_menu::click(cx, cy);
                         route = over.route();
-                        apply_item_action(mt, act, over, &mut route, &mut played_from_detail, &mut trail, &mut hud.nav, &mut nav_pending);
+                        apply_item_action(mt, act, over, &mut route, &mut play_from, &mut trail, &mut hud.nav, &mut nav_pending);
                     } else if matches!(route, Route::Profiles) {
                         let (cx, cy) = ptr_xy(&ev);
                         crate::ui::profiles::click(cx, cy);
+                    } else if matches!(route, Route::Onboard) {
+                        let (cx, cy) = ptr_xy(&ev);
+                        if matches!(crate::ui::onboard::click(cx, cy), crate::ui::onboard::Action::Done) {
+                            route = enter_home_from_onboard(&mut trail);
+                        }
                     } else if matches!(route, Route::Login) {
                         // one actionable thing on the login screen (retry on error) — click = OK
                         crate::ui::login::key(SDLK_RETURN, 0);
@@ -3818,7 +4784,6 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     // the pointer's twin of the OK key-up: without it the dip would sit there until
                     // press.rs's dropped-key-up ceiling fired. A no-op when no press is in flight.
                     crate::ui::press::release(last_input);
-                    ptr.hold_pager = 0; // releasing the click stops the hero click-hold pager
                     if ptr.drag {
                         ptr.drag = false;
                         if scrub() >= 0 {
@@ -3889,8 +4854,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             crate::metadata::load_detail_now(pmm.sid, &pmm.rk);
                         }
                     }
-                    let fd = matches!(route, Route::Detail);
-                    start_playback(mt, 0, fd, HUD_HEADLESS_MS, &mut route, &mut played_from_detail, &mut hud.nav);
+                    start_playback(mt, 0, origin_here(route), HUD_HEADLESS_MS, &mut route, &mut play_from, &mut hud.nav);
                 }
             }
             if !grid_tried && now.wrapping_sub(t0) > 400 {
@@ -4014,6 +4978,21 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                 crate::ui::detail::move_focus(SDLK_RIGHT as c_int);
                             }
                         }
+                        // dev: /tmp/plxnative-tracks[=<page>] opens the Track-information panel
+                        // over the page, at that 1-based page of its body. `detailsec`+`detailcol`
+                        // +`detailok` can reach it by hand now that it opens from the About
+                        // footer's Languages column, which is a FIXED index (section 5, col 2) —
+                        // unlike the hero disc it used to hang off, whose index moved with the
+                        // control set. This stays because it is still the only way to capture a
+                        // SCROLL state: nothing else can page a body headlessly.
+                        if let Some(pg) = crate::dev::read("tracks") {
+                            if crate::ui::tracks_panel::is_available() {
+                                crate::ui::tracks_panel::open();
+                                crate::ui::tracks_panel::set_page(
+                                    pg.trim().parse::<c_int>().unwrap_or(1),
+                                );
+                            }
+                        }
                         // dev: /tmp/plxnative-detailok presses OK on whatever the two triggers
                         // above focused, WITHOUT the play path — the deterministic one-boot route
                         // to a section whose OK navigates rather than plays. Today that means the
@@ -4025,14 +5004,13 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         }
                         // dev: /tmp/plxnative-detailplay activates the focused control (headless play test)
                         if crate::dev::flag("detailplay") && crate::ui::detail::on_ok() {
-                            let fd = matches!(route, Route::Detail);
                             start_playback(
                                 mt,
                                 crate::ui::detail::last_resume_ns(),
-                                fd,
+                                origin_here(route),
                                 HUD_HEADLESS_MS,
                                 &mut route,
-                                &mut played_from_detail,
+                                &mut play_from,
                                 &mut hud.nav,
                             );
                         }
@@ -4086,8 +5064,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                     "",
                                 );
                                 let resume = crate::metadata::resume_ns(resume_ms, dur_ms);
-                                let fd = matches!(route, Route::Detail);
-                                start_playback(mt, resume, fd, HUD_HEADLESS_MS, &mut route, &mut played_from_detail, &mut hud.nav);
+                                start_playback(mt, resume, origin_here(route), HUD_HEADLESS_MS, &mut route, &mut play_from, &mut hud.nav);
                             }
                         }
                     }
@@ -4222,13 +5199,13 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // show has another episode queued, else leave the player (back to the detail page or
             // home, whichever is behind), instead of freezing on the last frame.
             if matches!(route, Route::Player { .. }) && crate::player::ended() {
-                finish_playback(mt, &mut route, &mut played_from_detail, &mut refresh_hubs_at, &mut hud.nav, &mut trail);
+                finish_playback(mt, &mut route, &mut play_from, &mut refresh_hubs_at, &mut hud.nav, &mut trail);
                 held_key.sym = 0; // async route flip: don't repeat a still-held key into detail/home
             }
             // Up Next countdown elapsed → start the queued episode on its own. Beside the EOS
             // handoff so the whole auto-advance chain reads in one place.
             if matches!(route, Route::Player { .. }) && crate::ui::up_next::expired(now) {
-                if !play_up_next(mt, HUD_LINGER_MS, &mut route, &mut played_from_detail, &mut hud.nav) {
+                if !play_up_next(mt, HUD_LINGER_MS, &mut route, &mut play_from, &mut hud.nav) {
                     crate::ui::up_next::cancel(); // nothing queued after all — don't re-fire
                 }
                 held_key.sym = 0;
@@ -4244,15 +5221,6 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 refresh_hubs_at = 0;
                 let nmov = crate::pms::refetch_hubs_reconcile();
                 log(&format!("home: hubs refreshed after playback ({nmov} items)"));
-            }
-            // hero click-hold pager: while the click stays down on the chevron, keep paging (the
-            // pointer twin of holding RIGHT; hero_flip's cooldown sets the pace).
-            if ptr.hold_pager != 0
-                && now.wrapping_sub(ptr.hold_pager) > 450
-                && matches!(route, Route::Home)
-                && crate::ui::home::snap_pos() < 0.5
-            {
-                crate::ui::home::hero_flip(1);
             }
             // lost-keyup safety: the remote streams 0x101 repeats (~50ms) while a key is physically down,
             // so once past the initial settle a stale heartbeat means the release keyup was dropped —
@@ -4308,7 +5276,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 if sdt > 0.1 {
                     sdt = 0.1;
                 }
-                let mut s = scrub() + (scrubber.dir as f64 * speed as f64 * sdt as f64 * 1e9) as i64;
+                let was = scrub();
+                let mut s = was + (scrubber.dir as f64 * speed as f64 * sdt as f64 * 1e9) as i64;
                 let cap = dur() - 3 * 1_000_000_000;
                 if s < 0 {
                     s = 0;
@@ -4317,6 +5286,12 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     s = cap;
                 }
                 set_scrub(s);
+                // Real travel is what turns a reveal into a scrub — not the hold edge, which fires
+                // a beat earlier with nothing moved yet (`on_auto_repeat`). Once the preview has
+                // left the seed the release commits like any other held gesture.
+                if s != was {
+                    scrubber.reveal = false;
+                }
                 extend_hud(now, HUD_LINGER_MS);
                 scrubber.t = now;
                 // lost-keyup safety: commit if the 0x101 repeats stop without a keyup
@@ -4357,20 +5332,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     if let Some((kind, start)) = offer {
                         log(&format!("marker offer: {kind:?} at {}s", start / 1000));
                     }
-                    // A segment beginning raises the HUD and offers the row, so a bare OK acts on it
-                    // in one press instead of raise-HUD → navigate → OK. Only from the RESTING
-                    // position though: a user who deliberately walked to the Subtitles button or the
-                    // Info tab keeps their spot. (The previous version claimed this in a comment and
-                    // then claimed focus unconditionally.)
-                    extend_hud(now, HUD_LINGER_MS);
-                    if hud.nav.focus == 0 {
-                        hud.nav.focus = 1;
-                        // …on the row's PRIMARY, which is item 0 for a Skip pill and the RIGHT-hand
-                        // one for Up Next. Not cosmetic there: the countdown's cancel rule is a
-                        // steady state, so parking on Watch Credits would disarm the timer on the
-                        // frame after it armed and the tile would never count down at all.
-                        hud.nav.btn = ctrl.primary_btn();
-                    }
+                    // A segment beginning puts the HUD ON SCREEN and offers the row — the timer,
+                    // the DISMISSAL and the ring in one act, because raising the timer alone left
+                    // the tile behind a transport nobody drew. `HudState::raise_for_offer` is where
+                    // that rule, its resting-position clause and the bug are written down.
+                    hud.raise_for_offer(now, ctrl.primary_btn());
                 } else if crate::ui::player_hud::standin_left_the_ring(hud.was_standin, ctrl, hud.nav.focus == 1) {
                     // The stand-in went away under the focus ring. Without this the row swaps back
                     // to the discs with focus still on it and `btn` still 0, so the next OK opened
@@ -4381,25 +5347,37 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     hud.nav = HudNav::HOME;
                 }
                 hud.was_standin = !ctrl.is_discs();
-                // While the countdown runs, hold the HUD up — a timer nobody can see is a cut to
-                // the next episode out of nowhere. `hud.dismissed` has to clear with it, not just
-                // the timer: a user who UP-hid the HUD and then touched nothing until the credits
-                // still carries the dismissal, which BEATS `extend_hud` inside `hud_visible`, so
-                // the countdown would run behind a tile `draw_hud` never draws and the next
-                // episode would start out of nowhere. Whether they may re-dismiss it is the
-                // cancel's business, one line below — a dismissed HUD is focus off the row.
-                //
-                // …and that cancel is `up_next::countdown_may_run`, the ONE rule, applied here
-                // rather than at each key arm because every way of taking hold of the row (arrows,
-                // a click, walking away to the tabs) ends up as a cursor position by the time this
-                // frame draws. Reading it as a steady state is what makes that true.
-                if crate::ui::up_next::armed() {
-                    if crate::ui::up_next::countdown_may_run(hud.nav.focus == 1, hud.nav.btn) {
-                        hud.dismissed = false;
-                        extend_hud(now, HUD_LINGER_MS);
-                    } else {
-                        crate::ui::up_next::cancel();
-                    }
+            }
+            // While the countdown runs, hold the HUD up — a timer nobody can see is a cut to the
+            // next episode out of nowhere. `hud.dismissed` has to clear with it, not just the
+            // timer: a user who UP-hid the HUD and then touched nothing until the credits still
+            // carries the dismissal, which BEATS `extend_hud` inside `hud_visible`, so the
+            // countdown would run behind a tile `draw_hud` never draws. Whether they may
+            // re-dismiss it is the cancel's business, one line below — a dismissed HUD is focus
+            // off the row.
+            //
+            // …and that cancel is `up_next::countdown_may_run`, the ONE rule, applied here rather
+            // than at each key arm because every way of taking hold of the row (arrows, a click,
+            // walking away to the tabs, opening a panel) ends up as a cursor position and a route
+            // by the time this frame draws. Reading it as a steady state is what makes that true.
+            //
+            // Outside the `Overlay::None` gate above, deliberately: an overlay is the one way of
+            // taking hold of the transport that never moves the ring, and `draw_hud` draws the
+            // control row only for the BARE transport — so gated with the edges above, this block
+            // simply did not run for a tile that was already counting down when the Info card
+            // opened, and it cut to the next episode from behind a panel. The route is the rule's
+            // third input rather than a condition here, so there is still exactly one place that
+            // decides.
+            if matches!(route, Route::Player { .. }) && crate::ui::up_next::armed() {
+                if crate::ui::up_next::countdown_may_run(
+                    matches!(route, Route::Player { overlay: Overlay::None }),
+                    hud.nav.focus == 1,
+                    hud.nav.btn,
+                ) {
+                    hud.dismissed = false;
+                    extend_hud(now, HUD_LINGER_MS);
+                } else {
+                    crate::ui::up_next::cancel();
                 }
             }
             // when the HUD auto-hides, park focus back on the scrubber so the next reveal is clean
@@ -4443,7 +5421,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             let (_, press_moving) = crate::ui::idle::scoped_motion(|| {
                 crate::ui::press::tick(now, dt);
             });
-            let mut home_underlay_moving = press_moving;
+            // The motion of whatever page is UNDER a popover — Home, the Library or Search, since
+            // the profile chip is a stop on all three. It was `home_underlay_moving` while only Home
+            // could be underneath. The account popover's glass re-snapshots off this.
+            let mut underlay_moving = press_moving;
             if ok_armed {
                 // PRESS-AND-HOLD → the item context menu, on the latch `press::tick` has always set
                 // and nothing ever read (`LONG_MS`, `is_long`). It fires while the key is still DOWN,
@@ -4461,10 +5442,65 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     && match route {
                         // the grid, not the hero: the hero has no card to anchor a panel beside
                         Route::Home => crate::ui::home::snap_pos() >= 0.5 && open_item_menu(&mut route),
-                        // the detail page's episode filmstrip (`focused_episode` declines every
-                        // other section, so a held OK on the Related/Cast shelves — which arm the
-                        // same press — falls through to the ordinary spring-back, unchanged)
-                        Route::Detail => open_episode_menu(&mut route),
+                        // The detail page has THREE hold surfaces and tries them in turn. Each
+                        // declines by section (`focused_season` answers only on the tab strip,
+                        // `focused_episode` only on the filmstrip, `focused_related` only on the
+                        // Related shelf), so at most one can open and the order between them is not
+                        // a precedence — it is just an order.
+                        //
+                        // The season strip is the newest and the reason is worth keeping: the page
+                        // can mark at three grains and only two of them had a door. An episode has
+                        // its still's hold and the show has the hero's toggle, so "I have seen
+                        // season 3" meant opening eleven menus — a missing control, not a workflow.
+                        //
+                        // The CAST shelf arms the same press and still falls through to the
+                        // ordinary spring-back, deliberately: a headshot is a person, with no
+                        // ratingKey and no watch state, so every row this menu builds would be
+                        // absent and the panel would open empty.
+                        Route::Detail => {
+                            open_season_menu(&mut route)
+                                || open_episode_menu(&mut route)
+                                || open_tile_menu(
+                                    &mut route,
+                                    MenuHost::Related,
+                                    crate::ui::detail::focused_related(),
+                                    Opener {
+                                        rect: crate::ui::detail::focused_related_rect(),
+                                        redraw: crate::ui::detail::redraw_focused_related,
+                                    },
+                                )
+                        }
+                        // …and the three other card surfaces, which armed this press already and
+                        // did nothing with it. Each declines by handing `None` — a grid page still
+                        // loading, focus in Search's field or on a `Tag` shelf, the person page's
+                        // header row — and the hold then falls through to the ordinary spring-back.
+                        Route::Library => open_tile_menu(
+                            &mut route,
+                            MenuHost::Library,
+                            crate::ui::library::focused_item(),
+                            Opener {
+                                rect: crate::ui::library::focused_card_rect(),
+                                redraw: crate::ui::library::redraw_focused_card,
+                            },
+                        ),
+                        Route::Search => open_tile_menu(
+                            &mut route,
+                            MenuHost::Search,
+                            crate::ui::search::focused_media(),
+                            Opener {
+                                rect: crate::ui::search::focused_tile_rect(),
+                                redraw: crate::ui::search::redraw_focused_tile,
+                            },
+                        ),
+                        Route::Person => open_tile_menu(
+                            &mut route,
+                            MenuHost::Person,
+                            crate::ui::person::focused_item(),
+                            Opener {
+                                rect: crate::ui::person::focused_tile_rect(),
+                                redraw: crate::ui::person::redraw_focused_tile,
+                            },
+                        ),
                         _ => false,
                     };
                 if held_menu {
@@ -4473,13 +5509,18 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 } else if crate::ui::press::take_commit(now) {
                     ok_armed = false;
                     match route {
-                        Route::Home | Route::Account => {
-                            home_activate(mt, c_int::MIN, HUD_LINGER_MS, &mut route, &mut played_from_detail, &mut trail, &mut hud.nav, &mut nav_pending);
+                        // `Account { over: Home }` and not every `Account`: the popover can stand on
+                        // three pages now, and a press armed on a Library card must not commit as a
+                        // HOME activation because a panel happened to open over it. (Reaching either
+                        // is near-impossible — a nav key cancels the press — but the arm has to say
+                        // which page it means.)
+                        Route::Home | Route::Account { over: BarHost::Home } => {
+                            home_activate(mt, c_int::MIN, HUD_LINGER_MS, &mut route, &mut play_from, &mut trail, &mut hud.nav, &mut nav_pending);
                         }
                         Route::Library => open_library_card(route, &mut nav_pending),
                         Route::Detail => {
                             if crate::ui::detail::on_ok() {
-                                start_playback(mt, crate::ui::detail::last_resume_ns(), true, HUD_LINGER_MS, &mut route, &mut played_from_detail, &mut hud.nav);
+                                start_playback(mt, crate::ui::detail::last_resume_ns(), origin_here(route), HUD_LINGER_MS, &mut route, &mut play_from, &mut hud.nav);
                             }
                         }
                         Route::Person => {
@@ -4606,8 +5647,18 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     // be able to walk BACK into the previous one's pages. Reset at the CALL SITE
                     // because `install_pms` is a closure that cannot also hold `&mut trail`.
                     trail.reset();
-                    log("login: server installed — entering Home");
-                    route = Route::Home;
+                    // …and only NOW can the first-run question be asked: `install_pms` is what
+                    // registers the roster and discovers the current server's sections, so before
+                    // this line the answer to "more than one source" is always no. It is asked per
+                    // PROFILE, which is why it sits after the switch rather than after the sign-in.
+                    if crate::ui::onboard::asks() {
+                        log("login: server installed — asking which sources feed Home");
+                        crate::ui::onboard::enter();
+                        route = Route::Onboard;
+                    } else {
+                        log("login: server installed — entering Home");
+                        route = Route::Home;
+                    }
                 } else {
                     match crate::auth::phase() {
                         crate::auth::Phase::Profiles | crate::auth::Phase::Switching => {
@@ -4629,10 +5680,12 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 let want = crate::ui::glassload::wants_account();
                 if want && route == Route::Home {
                     crate::ui::account_menu::open();
-                    route = Route::Account;
-                } else if !want && route == Route::Account {
-                    crate::ui::account_menu::close();
-                    route = Route::Home;
+                    route = Route::Account { over: BarHost::Home };
+                } else if !want {
+                    if let Route::Account { over } = route {
+                        crate::ui::account_menu::close();
+                        route = over.route();
+                    }
                 }
             }
             // dev: navosc bounces the route Home↔Library through the real request path (the
@@ -4765,6 +5818,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
 
             if matches!(route, Route::Login) {
                 crate::ui::login::update(dt);
+            } else if matches!(route, Route::Onboard) {
+                crate::ui::onboard::update(dt);
             } else if matches!(route, Route::Profiles) {
                 crate::ui::profiles::update(dt);
                 if pick_user.is_some()
@@ -4777,7 +5832,17 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     // (headless pad capture) exactly like OK on the remote
                     crate::ui::profiles::pick(idx);
                 }
-            } else if matches!(route, Route::Home | Route::Account | Route::ItemMenu { over: MenuHost::Home }) {
+            // **`page_of`, not the bare route, for every screen below.** A popover is drawn on a
+            // LIVE screen — that is what makes it a popover and not a page — so the screen under it
+            // keeps updating, or every spring behind the panel freezes mid-pop and the page snaps
+            // back into motion when the menu closes. Spelling the hosts out here instead has bitten
+            // both popovers: the context menu's page had to stay live under it and only the detail
+            // arm ever said so (as a second `matches!` arm), and the Account popover kept HOME
+            // animating while the user stood on the Library. Asking `page_of` says it once, and is
+            // what lets a new `MenuHost` or `BarHost` land without editing five gates. The set is
+            // unchanged for the routes that existed before, since `page_of` maps Home, `Account
+            // over Home` and `ItemMenu over Home` to exactly this arm.
+            } else if matches!(page_of(route), Route::Home) {
                 // dev: sweep the grid focus top↔bottom to reproduce the vertical-scroll judder headlessly
                 if home_osc && now.wrapping_sub(home_osc_last) > 350 {
                     home_osc_last = now;
@@ -4790,38 +5855,49 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 let (_, moving) = crate::ui::idle::scoped_motion(|| {
                     crate::ui::home::home_update(dt);
                 });
-                home_underlay_moving |= moving;
-            } else if matches!(route, Route::Library) {
-                // dev: libosc sweeps the browse-grid focus down↔up (the library_scroll FPS scene)
-                if lib_osc && now.wrapping_sub(lib_osc_last) > 350 {
+                underlay_moving |= moving;
+            } else if matches!(page_of(route), Route::Library) {
+                // dev: libosc sweeps the browse-grid focus down↔up (the library_scroll FPS scene).
+                // Only while the PAGE holds focus, for `detail_osc`'s reason: the context-menu
+                // popover is modal, and sweeping focus under it walks the anchor out from under it.
+                if lib_osc && matches!(route, Route::Library) && now.wrapping_sub(lib_osc_last) > 350 {
                     lib_osc_last = now;
                     let sym = if (now / 3000) % 2 == 0 { SDLK_DOWN } else { SDLK_UP };
                     crate::ui::library::move_focus(sym);
                 }
                 // dev: libswitch cycles EVERY switch (tabs, sort menu, unwatched, filter) on a
                 // timer so the re-query + popover paths are FPS-gated too
-                if lib_switch && now.wrapping_sub(lib_switch_last) > 1400 {
+                if lib_switch && matches!(route, Route::Library) && now.wrapping_sub(lib_switch_last) > 1400 {
                     lib_switch_last = now;
                     crate::ui::library::switch_step(lib_switch_step);
                     lib_switch_step = lib_switch_step.wrapping_add(1);
                 }
-                crate::ui::library::update(dt);
+                // scoped like Home's above, because this page can be the one UNDER the account
+                // popover now and its glass backdrop is refreshed off the underlay's motion
+                let (_, moving) = crate::ui::idle::scoped_motion(|| {
+                    crate::ui::library::update(dt);
+                });
+                underlay_moving |= moving;
             }
-            if matches!(route, Route::Search) {
+            if matches!(page_of(route), Route::Search) {
                 // dev: searchosc sweeps the result shelves' focus down↔up (the fps:search-type
                 // scene). Same 350ms step / 3s reversal as homeosc and libosc, so the three read
-                // the same in a log and one settle predicate covers all of them.
-                if search_osc && now.wrapping_sub(search_osc_last) > 350 {
+                // the same in a log and one settle predicate covers all of them. Frozen under the
+                // context menu, for `detail_osc`'s reason.
+                if search_osc && matches!(route, Route::Search) && now.wrapping_sub(search_osc_last) > 350 {
                     search_osc_last = now;
                     let sym = if (now / 3000) % 2 == 0 { SDLK_DOWN } else { SDLK_UP };
                     crate::ui::search::move_focus(sym);
                 }
-                crate::ui::widgets::tab_row_update(
-                    crate::ui::search::selected_pill(),
-                    crate::ui::search::focused_pill(),
-                    dt,
-                );
-                crate::ui::search::update(dt);
+                let (_, moving) = crate::ui::idle::scoped_motion(|| {
+                    crate::ui::widgets::tab_row_update(
+                        crate::ui::search::selected_pill(),
+                        crate::ui::search::top_focus(),
+                        dt,
+                    );
+                    crate::ui::search::update(dt);
+                });
+                underlay_moving |= moving;
             }
             // (The television's keyboard used to be dismissed HERE, by an `else` that called
             // `textinput::stop()` on every frame of every other route — because `search::leave`
@@ -4829,16 +5905,17 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // not a trail page, so every way off it carries its teardown to the fade floor, which
             // is where the panel is meant to come down and is also the half the poll never did —
             // it cleared `textinput`'s own flag and left `search::EDITING` set.)
-            if matches!(route, Route::Account) {
+            // Self-gated on `is_open`, like its draw: the alert is not a route, so there is no
+            // route term to test it with — and it can only be up over Home, whose arm above has
+            // already run.
+            crate::ui::exit_alert::update(dt);
+            if matches!(route, Route::Account { .. }) {
                 crate::ui::account_menu::update(dt);
             }
             if matches!(route, Route::ItemMenu { .. }) {
                 crate::ui::item_menu::update(dt);
             }
-            // The detail page keeps DRAWING under its own context-menu popover (that is what makes it
-            // a popover and not a page), so it keeps updating too — otherwise every spring behind the
-            // panel freezes mid-pop and the page snaps back into motion when the menu closes.
-            if matches!(route, Route::Detail | Route::ItemMenu { over: MenuHost::Detail }) {
+            if matches!(page_of(route), Route::Detail) {
                 // dev: plxnative-detailosc swings the scroll hero<->bottom so the FPS heartbeat samples the
                 // transition (the settled ends already hold 60). Only while the PAGE holds focus: the
                 // popover is modal, and sweeping focus under it would walk the anchor out from under it.
@@ -4848,7 +5925,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 }
                 crate::ui::detail::update(dt);
             }
-            if matches!(route, Route::Person) {
+            if matches!(page_of(route), Route::Person) {
                 // owns the `/library/people/{id}/media` pump — the shelves land here, and the
                 // retry backoff only ticks while the page is actually up
                 crate::ui::person::update(dt);
@@ -4874,6 +5951,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // than owning any motion of their own.
             if matches!(route, Route::Player { .. }) {
                 crate::ui::up_next::tick(ctrl, now);
+                // …and the transport discs' focus pop, for the reason its own doc gives: it must be
+                // stepped once per FRAME, and `draw_hud` does not run on every frame of this route.
+                crate::ui::player_hud::update(ctrl, hud.nav.focus, hud.nav.btn, dt);
             }
             let fd_pc0 = if framedrop_on { SDL_GetPerformanceCounter() } else { 0 };
             // Async play resolve: install the worker's plan and start the engine. Route-
@@ -5048,9 +6128,33 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         if route_wears_tab_bar(route) {
                             crate::ui::widgets::tab_glass_prepare();
                         }
-                        if matches!(route, Route::Account) {
+                        // The scroll band's prototype material (`/tmp/plxnative-navglass`), on the
+                        // two routes that draw a `widgets::nav_scrim` at all. Self-gated on the
+                        // trigger, so a default build resolves nothing here.
+                        //
+                        // **This list is a duplicate of `nav_scrim`'s CALLER set** — `library::draw`
+                        // and `search::draw`, and nothing else — and unlike `route_wears_tab_bar`
+                        // above it a `matches!` cannot be exhaustive about it, so a third screen
+                        // that adopts the shared scrim would draw a glass surface nobody prepared:
+                        // no `blur_invalidate`, so the band frosts a snapshot one refresh stale.
+                        // `grep -rn nav_scrim rust-modules/src` is the check. Only reachable with
+                        // the trigger armed, which is why it is a comment and not a guard.
+                        if matches!(page_of(route), Route::Library | Route::Search) {
+                            crate::ui::widgets::nav_glass_prepare();
+                        }
+                        if matches!(route, Route::Account { .. }) {
                             crate::ui::account_menu::prepare_present(
-                                home_underlay_moving || crate::ui::idle::present_dirty(),
+                                underlay_moving || crate::ui::idle::present_dirty(),
+                            );
+                        }
+                        // The person page's bio alert, the other refreshing backdrop in the app.
+                        // It needs the cadence resolved for the reason its own `POP` records: a
+                        // CACHED snapshot would be taken on the frame it opened, with its scrim
+                        // still ramping through zero, and would frost an undimmed page for the
+                        // rest of the session.
+                        if matches!(route, Route::Person) {
+                            crate::ui::person_bio::prepare_present(
+                                underlay_moving || crate::ui::idle::present_dirty(),
                             );
                         }
                         // THE PAGE, named once because it is drawn TWICE: the direct source path
@@ -5069,20 +6173,33 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         // "glass" track (72,77,59). A track whose whole job is to DARKEN was 1.6x
                         // brighter than its own ground and green. That is the artefact the material
                         // was rejected for by eye, and it was this dispatch, not the material.
+                        //
+                        // **`page_of`, not the bare route** — the same reason one altitude up: a
+                        // POPOVER draws the page it stands on, and BOTH of them can stand on more
+                        // than one. Every screen stays live under its context menu (the popover is
+                        // anchored beside a tile that has to still be there to be beside, and its
+                        // scrim lifts that tile back out of the dim), and the account menu sits
+                        // over any of the three screens that wear the top bar. Spelled out as
+                        // routes, only the detail arm ever said so and this closure's `else` meant
+                        // "Home" — so the Library, Search and person page all fell through to
+                        // `home_draw` the moment they became menu hosts, and the account popover
+                        // drew Home over the Library the moment the profile chip became pressable
+                        // there.
+                        let page_route = page_of(route);
                         let mut page = || {
-                            if matches!(route, Route::Login) {
+                            if matches!(page_route, Route::Login) {
                                 crate::ui::login::draw();
-                            } else if matches!(route, Route::Profiles) {
+                            } else if matches!(page_route, Route::Onboard) {
+                                crate::ui::onboard::draw();
+                            } else if matches!(page_route, Route::Profiles) {
                                 crate::ui::profiles::draw();
-                            } else if matches!(route, Route::Detail | Route::ItemMenu { over: MenuHost::Detail }) {
-                                // the page stays live UNDER its context menu — the popover is anchored beside
-                                // the episode still it acts on, which has to still be there to be beside
+                            } else if matches!(page_route, Route::Detail) {
                                 crate::ui::detail::draw();
-                            } else if matches!(route, Route::Person) {
+                            } else if matches!(page_route, Route::Person) {
                                 crate::ui::person::draw();
-                            } else if matches!(route, Route::Library) {
+                            } else if matches!(page_route, Route::Library) {
                                 crate::ui::library::draw();
-                            } else if matches!(route, Route::Search) {
+                            } else if matches!(page_route, Route::Search) {
                                 crate::ui::search::draw();
                             } else {
                                 crate::ui::home::home_draw();
@@ -5107,19 +6224,33 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             // one invariant, already false under `/tmp/plxnative-glassboth`. Each
                             // call self-gates on its own `is_open`, so there is no route test here:
                             // the closure states a rule rather than naming a screen.
+                            //
+                            // Each also LIFTS its own opener back out of the dim — the focused
+                            // tile, the profile chip — and that belongs here for the same reason
+                            // and one more: the un-dimmed copy has to be in the SNAPSHOT too, or
+                            // the panel's glass frosts a dimmed picture of the very card it is
+                            // about (`Popover::scrim_lifting`).
                             crate::ui::account_menu::draw_scrim();
                             crate::ui::item_menu::draw_scrim();
+                            // The third member of that class, and the only one with no opener to
+                            // lift: the alert is about the APP, not about an element on the page,
+                            // so there is nothing behind it the panel is talking about.
+                            crate::ui::exit_alert::draw_scrim();
                         };
                         if let Some(reg) = crate::gfx::blur_direct_region() {
                             crate::gfx::blur_snapshot_direct(reg, &mut page);
                         }
                         crate::ui::profile::phase("main.ui", || page());
-                        if matches!(route, Route::Account) {
-                            crate::ui::account_menu::draw(); // profile popover over Home
+                        if matches!(route, Route::Account { .. }) {
+                            crate::ui::account_menu::draw(); // profile popover, over the page it opened on
                         }
                         if matches!(route, Route::ItemMenu { .. }) {
                             crate::ui::item_menu::draw(); // press-and-hold card menu, over the live screen
                         }
+                        // …and the alert over all of it — self-gated, because it is modal state
+                        // rather than a route. Drawn AFTER the two popovers for the reason its
+                        // key arm is drawn first: nothing outranks it.
+                        crate::ui::exit_alert::draw();
                         // dev: the blurred route transition, then the load dial's glass surfaces.
                         // LAST on the non-player path, so the snapshot either takes is of the
                         // COMPLETE page — which is the honest source for a surface that sits on
@@ -5176,6 +6307,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 // idle gate skipped would pace the profiler's once-per-N-frames log off frames
                 // that ran no phases at all.
                 crate::ui::profile::frame_end();
+                crate::ui::overdraw::frame_end();
                 // Same reason, same gate: the blur's region accounting is per DRAWN frame. It rolls
                 // "what every glass surface asked for this frame" into the region the next frame's
                 // first snapshot is taken at. Once that union is known, several surfaces share one
@@ -5192,7 +6324,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             let rn = match route {
                 Route::Login => "login",
                 Route::Profiles => "profiles",
-                Route::Account => "account",
+                Route::Onboard => "onboard",
+                Route::Account { .. } => "account",
                 Route::ItemMenu { .. } => "itemmenu",
                 Route::Library => "library",
                 Route::Detail => "detail",
@@ -5220,10 +6353,13 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 let screen = match route {
                     Route::Login => crate::focusprobe::Screen::Login,
                     Route::Profiles => crate::focusprobe::Screen::Profiles,
+                    Route::Onboard => crate::focusprobe::Screen::Onboard,
                     Route::Home => crate::focusprobe::Screen::Home,
-                    Route::Account => crate::focusprobe::Screen::Account,
+                    Route::Account { over } => {
+                        crate::focusprobe::Screen::Account { over: probe_bar_host(over) }
+                    }
                     Route::ItemMenu { over } => {
-                        crate::focusprobe::Screen::ItemMenu { over_detail: matches!(over, MenuHost::Detail) }
+                        crate::focusprobe::Screen::ItemMenu { over: probe_host(over) }
                     }
                     Route::Library => crate::focusprobe::Screen::Library,
                     Route::Detail => crate::focusprobe::Screen::Detail,
@@ -5308,6 +6444,24 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 } else {
                     String::new()
                 };
+                // `vtick=<n> vgap=<n>ms` — the media pipeline's own `FRAMEREADY` cadence, the only
+                // field on this line that comes from the VIDEO plane's side of the house. Every
+                // other number here describes the graphics plane: `fps=` counts our GL swaps and
+                // `worstframe=` times our own draw, and both sit at a healthy 60 / sub-millisecond
+                // through playback that visibly stutters, because the decoded picture is
+                // composited by the television on a surface we never touch.
+                //
+                // **It is not a frame rate** — `player::vplane_take` says why, and the healthy
+                // reading is 5 / 201 on every stream. Read it as liveness: `vtick=0` is a pipeline
+                // that has stopped, and a steady 5 / 201 under a stutter report is the pipeline
+                // saying the fault is not in anything this process can reach. Drained here, so it
+                // must be taken every heartbeat while playing or the worst gap accumulates.
+                let vp = if crate::player::is_playing() {
+                    let (vtick, vgap) = crate::player::vplane_take();
+                    format!(" vtick={vtick} vgap={vgap}ms")
+                } else {
+                    String::new()
+                };
                 // `fps=<n>` — frames actually SWAPPED this second, which is what `ui::idle` moves,
                 // and the only field here that is a frame rate. `loop=` counts LOOP iterations: it
                 // is the app's liveness signal and `pos=` is anchored to it, so it must not read 0
@@ -5332,10 +6486,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     String::new()
                 };
                 if framedrop_on {
-                    log(&format!("loop={loop_shown} route={rn}{ov}{pos} fps={pres}{ld} worstframe={fd_worst:.1}ms{SIM_TAG}"));
+                    log(&format!("loop={loop_shown} route={rn}{ov}{pos}{vp} fps={pres}{ld} worstframe={fd_worst:.1}ms{SIM_TAG}"));
                     fd_worst = 0.0;
                 } else {
-                    log(&format!("loop={loop_shown} route={rn}{ov}{pos} fps={pres}{ld}{SIM_TAG}"));
+                    log(&format!("loop={loop_shown} route={rn}{ov}{pos}{vp} fps={pres}{ld}{SIM_TAG}"));
                 }
             }
         }
@@ -5407,7 +6561,83 @@ mod route_tests {
         assert!(stays_on_trail(menu));
         assert!(forward_leave(menu).is_none(), "the detail page under the menu stays mounted");
         assert!(leave_of(menu).is_some(), "…and a BACK off it still closes that page");
-        assert!(forward_leave(Route::Account).is_none(), "Account is a popover over Home");
+        assert!(
+            forward_leave(Route::Account { over: BarHost::Home }).is_none(),
+            "the Home under the profile menu stays mounted too"
+        );
+    }
+
+    /// **The profile popover stands on the page it was opened from — on all three, not on Home.**
+    ///
+    /// The chip is a stop on every screen that wears the shared top bar, so `Route::Account` carries
+    /// the page underneath exactly as `ItemMenu` does. It was a UNIT variant while Home was the only
+    /// screen that could press it, and the dozen places that read it therefore said Home outright:
+    /// the page drawn under the panel, the arm that keeps that page's springs stepping, and where a
+    /// dismissal lands. Left that way, pressing the Library's chip would have cut to Home under the
+    /// popover and then stranded the user there.
+    ///
+    /// Graded through [`page_of`], because that is the one answer all three of those readers take —
+    /// the draw dispatch, the update arm and [`leave_of`]/[`stays_on_trail`].
+    #[test]
+    fn the_profile_popover_stands_on_the_page_it_was_opened_from() {
+        for over in [BarHost::Home, BarHost::Library, BarHost::Search] {
+            let pop = Route::Account { over };
+            assert!(page_of(pop) == over.route(), "the page under the panel is the one it opened on");
+            assert!(route_wears_tab_bar(pop), "every host of this popover wears the bar");
+            // it answers for that page in both halves of the teardown rule, exactly as the item
+            // menu answers for the screen its card is on
+            assert_eq!(stays_on_trail(pop), stays_on_trail(over.route()));
+            assert_eq!(forward_leave(pop).is_some(), forward_leave(over.route()).is_some());
+            // and the page it opens ON is the page it closes BACK to
+            assert!(BarHost::of(over.route()) == Some(over));
+        }
+        // a route with no chip on it opens no popover at all — the guard in `chip_activate`
+        for r in [Route::Detail, Route::Person, Route::Login, Route::Profiles, Route::Onboard,
+                  Route::Player { overlay: Overlay::None }, Route::ItemMenu { over: MenuHost::Detail }] {
+            assert!(BarHost::of(r).is_none(), "only the three bar screens carry the profile chip");
+        }
+    }
+
+    /// **Every menu host answers as its own screen, on all four route questions.**
+    ///
+    /// The menu had two hosts and now has six, and the way that goes wrong is silent: each of
+    /// these questions used to name `MenuHost::Detail` (or `Home`) in a `matches!`, so a new host
+    /// simply fell into the default arm — Search's popover would have drawn HOME behind it, and
+    /// the Library's would have lost its tab bar mid-hold. Each one is `page_of` now, and this is
+    /// what says so for every host at once rather than for the one a reviewer thought of.
+    ///
+    /// [`MenuHost::Related`] is the case that shows why the list is worth keeping exhaustive: it is
+    /// the SECOND host whose page is the detail page, so it is the first one for which "which
+    /// screen is underneath" and "which host is this" stopped being the same question.
+    #[test]
+    fn every_menu_host_answers_exactly_as_the_screen_underneath_it() {
+        for host in [
+            MenuHost::Home,
+            MenuHost::Detail,
+            MenuHost::Related,
+            MenuHost::Library,
+            MenuHost::Search,
+            MenuHost::Person,
+        ] {
+            let page = host.route();
+            let menu = Route::ItemMenu { over: host };
+            assert!(!matches!(page, Route::ItemMenu { .. }), "a host is a live PAGE, never another popover");
+            // `==`, not `assert_eq!`: `Route` has no `Debug` (it is a run-loop vocabulary, not a
+            // logged value — the heartbeat's `route=` word is built by its own `match`)
+            assert!(page_of(menu) == page, "the popover draws and updates the screen it sits on");
+            // the chrome question: a menu over the Library wears the tab bar because the Library
+            // does, and one over the detail page does not because that page does not
+            assert_eq!(
+                route_wears_tab_bar(menu),
+                route_wears_tab_bar(page),
+                "the popover must wear exactly the chrome of the page under it"
+            );
+            // …and the trail questions, which decide whether a navigation OUT of the menu empties
+            // the page a BACK is about to return to
+            assert_eq!(stays_on_trail(menu), stays_on_trail(page));
+            assert_eq!(forward_leave(menu).is_some(), forward_leave(page).is_some());
+            assert_eq!(leave_of(menu).is_some(), leave_of(page).is_some());
+        }
     }
 
     /// The coupling that keeps [`stays_on_trail`] honest. It claims to be exactly the set of pages
@@ -5463,5 +6693,236 @@ mod key_layout_tests {
                 assert_eq!(state & 0x100, 0, "a synthetic edge must never look like auto-repeat");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod exit_alert_tests {
+    //! **BACK at Home's root asks before it quits.**
+    //!
+    //! These drive the real [`back_at_root`] and [`key_exit_alert`], not a re-derivation of them.
+    //! That is the whole point: `back_at_root` is the ONE place in the app that ends the process
+    //! from a key, and the regression they exist to catch is a future edit putting
+    //! `*running = false` back where the alert now goes. Grading the alert's own focus model alone
+    //! would not see that.
+    //!
+    //! What they deliberately CANNOT reach is [`key_back`] itself — its Player arm calls
+    //! `exit_player`, which pulls the Starfish/ACB seam into the link, so a test that calls it
+    //! fails at `ld` rather than at an assertion. The one link left un-graded is therefore the
+    //! single line where that function's last `else` calls this one, which is visible at the
+    //! branch and is what `tools/keytable.py` would characterise on a device.
+    //!
+    //! They touch two crate globals — the alert's popover and `ui::idle`'s dirty flag — so every
+    //! one takes `testlock::serial()` for its whole body and closes the alert on the way OUT, not
+    //! only on the way in.
+    use super::*;
+    use crate::ui::consts::{SDLK_DOWN, SDLK_ESCAPE, SDLK_LEFT, SDLK_RETURN, SDLK_RIGHT};
+    use crate::ui::exit_alert::{self, Choice};
+
+    /// A BACK press at Home's root, through the real arm. Returns whether the app is still running.
+    fn back_at_home_root() -> bool {
+        let mut running = true;
+        back_at_root(&mut running);
+        running
+    }
+
+    /// Press one key at the alert, through the real modal arm. Returns whether the app is still
+    /// running.
+    fn press(sym: c_uint) -> bool {
+        let mut running = true;
+        key_exit_alert(sym, 0, &mut running);
+        running
+    }
+
+    /// **The one that matters**: BACK at the root no longer ends the process by itself. It raises
+    /// the alert, on the SAFE answer, and `running` is untouched.
+    #[test]
+    fn back_at_home_root_asks_instead_of_quitting() {
+        let _g = crate::testlock::serial();
+        exit_alert::close();
+        let running = back_at_home_root();
+        assert!(
+            running,
+            "BACK at Home's root must not set running=false on its own \
+             (if this fails with the alert also closed, /tmp/plxnative-noexitconfirm is armed)"
+        );
+        assert!(exit_alert::is_open(), "…it raises the alert instead");
+        assert_eq!(exit_alert::focus(), Choice::Cancel, "which opens on the safe answer");
+        exit_alert::close();
+    }
+
+    /// The safe answer is reachable two ways and both leave the app running: the default focus
+    /// under OK, and BACK. A dismissed alert is fully down, so the next BACK asks again rather
+    /// than finding a panel already up.
+    #[test]
+    fn cancel_and_back_are_the_same_outcome_by_two_routes() {
+        let _g = crate::testlock::serial();
+        for dismiss in [SDLK_RETURN, SDLK_ESCAPE] {
+            exit_alert::close();
+            assert!(back_at_home_root());
+            assert!(press(dismiss), "neither way out of the alert quits");
+            assert!(!exit_alert::is_open(), "and both take the panel down");
+        }
+        exit_alert::close();
+    }
+
+    /// LEFT/RIGHT walk the pair through the real arm (the pure `step` is graded in the module's own
+    /// tests) and OK on *Exit* is the ONLY press in the app that ends it.
+    #[test]
+    fn only_ok_on_exit_quits() {
+        let _g = crate::testlock::serial();
+        exit_alert::close();
+        assert!(back_at_home_root());
+        assert!(press(SDLK_RIGHT), "moving the ring is not an answer");
+        assert_eq!(exit_alert::focus(), Choice::Exit);
+        assert!(press(SDLK_LEFT), "…and neither is moving it back");
+        assert_eq!(exit_alert::focus(), Choice::Cancel);
+        assert!(press(SDLK_RIGHT));
+        assert!(!press(SDLK_RETURN), "OK on Exit is what quits");
+        assert!(!exit_alert::is_open(), "and it takes the panel down with it");
+        exit_alert::close();
+    }
+
+    /// Everything else is SWALLOWED. The arm `continue`s on every key at its call site, so this
+    /// grades the half that is visible from here: an unrelated press changes neither the ring nor
+    /// `running`, and — the failure worth naming — cannot land the ring on the destructive answer.
+    #[test]
+    fn the_alert_swallows_the_rest_of_the_remote() {
+        let _g = crate::testlock::serial();
+        exit_alert::close();
+        assert!(back_at_home_root());
+        for sym in [SDLK_DOWN, 'x' as c_uint] {
+            assert!(press(sym), "an unrelated key is not an answer");
+            assert!(exit_alert::is_open(), "…and does not dismiss the question");
+            assert_eq!(exit_alert::focus(), Choice::Cancel, "…and never moves onto Exit");
+        }
+        exit_alert::close();
+    }
+}
+
+#[cfg(test)]
+mod player_return_tests {
+    //! **Where playback returns to.** Pure, parallel, and touching no global: every launch site and
+    //! the exit ritual itself live inside the SDL event loop where no host test can reach them, so
+    //! the decision they share is lifted into [`return_page`] / [`set_origin`] and graded here.
+    //!
+    //! What these deliberately cannot say is whether the page LOOKS restored — that is
+    //! `detail.rs`'s `Spot` tests plus a device capture — nor whether each call site passes the
+    //! right `Origin`, which is a reading of `app.rs` and a press on a television.
+    use super::*;
+    use crate::plex::ServerId;
+
+    const A: ServerId = ServerId::from_raw(0);
+    const B: ServerId = ServerId::from_raw(1);
+
+    fn det(sid: ServerId, rk: &str) -> Node {
+        Node::Detail { sid, rk: rk.to_string(), spot: Spot::default() }
+    }
+    fn person(key: &str) -> Node {
+        Node::Person {
+            sid: A,
+            key: key.into(),
+            guid: String::new(),
+            name: String::new(),
+            thumb: String::new(),
+        }
+    }
+    /// The live stores as a test sees them: a detail page on `A` showing item 7, and a person page.
+    fn page(r: Route) -> Node {
+        return_page(r, Some(det(A, "7")), Some(person("9")))
+    }
+
+    /// The rule, over every screen playback can be started from: **you come back to the page you
+    /// were standing on.** Home is the one that was already right; the other four were all landing
+    /// on Home, because the origin was a `from_detail: bool` and everything that was not the detail
+    /// page fell into its `else`.
+    #[test]
+    fn a_session_returns_to_the_screen_it_was_launched_from() {
+        assert_eq!(page(Route::Home), Node::Home);
+        assert_eq!(page(Route::Library), Node::Library, "a Library-grid card menu's Play");
+        assert_eq!(page(Route::Search), Node::Search, "a Search result shelf's Play");
+        assert_eq!(page(Route::Person), person("9"), "a person page's filmography");
+        assert_eq!(page(Route::Detail), det(A, "7"), "the detail page's Play/Resume and filmstrip");
+        // The three boot gates and the player itself are unreachable as launch origins; they must
+        // still name a page, and Home is the one that is always there.
+        for r in [Route::Login, Route::Profiles, Route::Onboard, Route::Player { overlay: Overlay::None }] {
+            assert_eq!(page(r), Node::Home);
+        }
+    }
+
+    /// **The reported bug.** A long press on a RELATED tile opens the card menu over the detail
+    /// page, and its *Play from Start* is dispatched with the route already flipped back to the
+    /// host — so both detail-page hosts must answer with that page, and not with Home.
+    ///
+    /// Both, because the two menus stand on ONE page: the filmstrip's Play returned to it and the
+    /// Related shelf's did not, which is a single detail page with two Play rows that go to
+    /// different screens.
+    #[test]
+    fn a_card_menu_returns_to_the_page_it_was_opened_over() {
+        for over in [MenuHost::Detail, MenuHost::Related] {
+            assert_eq!(page(Route::ItemMenu { over }), det(A, "7"), "both hosts stand on the page");
+        }
+        assert_eq!(page(Route::ItemMenu { over: MenuHost::Home }), Node::Home);
+        assert_eq!(page(Route::ItemMenu { over: MenuHost::Library }), Node::Library);
+        assert_eq!(page(Route::ItemMenu { over: MenuHost::Search }), Node::Search);
+        assert_eq!(page(Route::ItemMenu { over: MenuHost::Person }), person("9"));
+        // …and the account popover resolves the same way, through `page_of`.
+        assert_eq!(page(Route::Account { over: BarHost::Library }), Node::Library);
+        assert_eq!(page(Route::Account { over: BarHost::Search }), Node::Search);
+        assert_eq!(page(Route::Account { over: BarHost::Home }), Node::Home);
+    }
+
+    /// A detail return names the SAME ITEM that was mounted — the whole reason the origin is a
+    /// `Node` and not a `Route`. `Route::Detail` cannot say which page, and by the time BACK is
+    /// pressed the PLAYED leaf's own detail is what is loaded, so re-deriving the target at the
+    /// exit reads the wrong item by construction.
+    ///
+    /// The server is part of that identity for `Node`'s own reason: with a share registered, item 7
+    /// exists on both machines and is two different films.
+    #[test]
+    fn a_detail_return_names_the_item_that_was_mounted() {
+        assert_eq!(return_page(Route::Detail, Some(det(A, "7")), None), det(A, "7"));
+        assert_ne!(return_page(Route::Detail, Some(det(B, "7")), None), det(A, "7"));
+        assert!(!det(A, "7").same_page(&det(A, "8")), "a different item is a different page");
+        assert!(!det(A, "7").same_page(&det(B, "7")), "…and so is the share's copy of 7");
+    }
+
+    /// A page that never mounted is not a page anyone can be returned to. `origin_here` passes
+    /// `None` for an empty mounted rk (and for a person page with nothing loaded), and the fallback
+    /// is Home rather than a `Node::Detail` with an empty key — which would put a blank page on the
+    /// trail and re-fetch nothing on the way back.
+    #[test]
+    fn a_screen_with_nothing_mounted_falls_back_to_home() {
+        assert_eq!(return_page(Route::Detail, None, None), Node::Home);
+        assert_eq!(return_page(Route::Person, None, None), Node::Home);
+        assert_eq!(return_page(Route::ItemMenu { over: MenuHost::Related }, None, None), Node::Home);
+    }
+
+    /// **Up Next must not rewrite the return route.** An auto-advance starts a NEW item while the
+    /// player is already up: the user chose nothing, and the page on screen is the player itself.
+    /// `Origin::Unchanged` is what keeps the chain pointing at the page they actually came from,
+    /// however many episodes it runs for.
+    #[test]
+    fn auto_advance_keeps_the_page_the_user_came_from() {
+        let mut from = det(A, "7");
+        for _ in 0..4 {
+            set_origin(&mut from, Origin::Unchanged); // episode → episode → episode → …
+        }
+        assert_eq!(from, det(A, "7"), "four auto-advances later, still the show page");
+        // …and a fresh launch DOES take the page it was launched from.
+        set_origin(&mut from, Origin::From(Node::Library));
+        assert_eq!(from, Node::Library);
+    }
+
+    /// The route each return lands on, through the ONE `Node`→`Route` mapping the trail already
+    /// owns. `exit_player` re-enters via `enter_node`, so this is what the heartbeat reports after
+    /// a BACK — and the Home row is the no-op the fix is careful to keep.
+    #[test]
+    fn the_route_after_back_is_the_page_the_node_names() {
+        assert!(matches!(node_route(&Node::Home), Route::Home));
+        assert!(matches!(node_route(&Node::Library), Route::Library));
+        assert!(matches!(node_route(&Node::Search), Route::Search));
+        assert!(matches!(node_route(&det(A, "7")), Route::Detail), "the reported bug, as a route");
+        assert!(matches!(node_route(&person("9")), Route::Person));
     }
 }

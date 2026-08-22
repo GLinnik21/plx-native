@@ -237,12 +237,42 @@ pub(crate) fn is_image_sub_codec(codec: &str) -> bool {
     )
 }
 
+/// **The one name a track row shows, from the two places a name can come from.**
+///
+/// `pms` is `Stream.title` — what the server parsed out of the container — and `container` is what
+/// OUR demuxer read out of the same file (`player::TrackNames`, published by `ff.rs`). They are the
+/// same tag seen twice, so they do not disagree in practice; the order matters for a different
+/// reason. PMS's copy exists **before playback starts** and survives a transcode, while the
+/// demuxer's only exists on direct play and only once the file is open — so the server's answer is
+/// preferred when it has one, and the file's is what fills the hole when it does not.
+///
+/// That hole is the whole point: **for an MP4 part PMS sends no `title` at all.** Matroska spells
+/// the tag `title` and MP4 spells it `name`, and Plex's parser maps only the first (verified live
+/// against one server holding both). So the six Russian tracks of a nine-track MP4 arrive with
+/// nothing to tell them apart, while the file itself says `Форс. iTunes`, `Полные Jaskier`,
+/// `Полные stirloo`.
+///
+/// **A name equal to the language is discarded**, from either source, because a row already says
+/// its language in the label above: a sub-line reading `English` under `English` spends the row's
+/// second line to repeat it. `eq_ignore_ascii_case` is deliberately ASCII-only and stays that way —
+/// it is a cheap guard against `English`/`english`, not a Unicode fold, and the case it must not
+/// get wrong is the one where the two differ.
+fn track_name(pms: &str, container: &str, lang: &str) -> String {
+    for cand in [pms.trim(), container.trim()] {
+        if !cand.is_empty() && !cand.eq_ignore_ascii_case(lang) {
+            return cand.to_string();
+        }
+    }
+    String::new()
+}
+
 fn build_audio() -> Section {
     let mut sec = Section::new("Audio");
     let d = match tracks() {
         Some(t) => t,
         None => return sec,
     };
+    let names = crate::player::SHARED.track_names.lock().unwrap();
     for (i, s) in d.audio.iter().enumerate() {
         let lang = if s.lang.is_empty() { "Unknown" } else { s.lang.as_str() };
         let label = if s.default { format!("Original: {lang}") } else { lang.to_string() };
@@ -250,11 +280,12 @@ fn build_audio() -> Section {
         // a per-track descriptor so sibling tracks in the same language are distinguishable
         // (e.g. two Russian tracks: "Дубляж" vs "AC-3 5.1"). Prefer the stream title, else the
         // codec + channel layout.
-        let sub = if !s.title.is_empty() && !s.title.eq_ignore_ascii_case(lang) {
-            s.title.clone()
-        } else {
-            audio_descriptor(s)
-        };
+        let name = track_name(
+            &s.title,
+            names.audio(crate::metadata::audio_ordinal(&d.audio, i)),
+            lang,
+        );
+        let sub = if name.is_empty() { audio_descriptor(s) } else { name };
         if !sub.is_empty() {
             row = row.detail(sub);
         }
@@ -302,6 +333,7 @@ fn build_subs() -> Section {
     let mut sec = Section::new("Subtitles");
     sec = sec.row(Row::new("Off").checked(active_sub() < 0));
     if let Some(t) = tracks() {
+        let names = crate::player::SHARED.track_names.lock().unwrap();
         for i in visible_subs() {
             let s = match t.subs.get(i) {
                 Some(s) => s,
@@ -309,8 +341,9 @@ fn build_subs() -> Section {
             };
             let lang = if s.lang.is_empty() { "Unknown" } else { s.lang.as_str() };
             let mut row = Row::new(lang.to_string()).checked(i as c_int == active_sub());
-            if !s.title.is_empty() && !s.title.eq_ignore_ascii_case(lang) {
-                row = row.detail(s.title.clone());
+            let name = track_name(&s.title, names.sub(crate::metadata::sub_render_ordinal(&t.subs, i)), lang);
+            if !name.is_empty() {
+                row = row.detail(name);
             }
             if s.forced {
                 row = row.badge(Badge::Forced);
@@ -372,4 +405,86 @@ pub(crate) fn draw() {
     p.rect(r, 28.0, theme::PANEL_TOP, theme::PANEL_BOT, 0.0);
 
     table().draw(p, r);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::player::TrackNames;
+
+    /// **The case this exists for, in the server's own words.** Verified live 2026-08-22 against
+    /// one PMS holding both containers: for the MP4 part of *Wicked* the server sends nine subtitle
+    /// streams whose every semantic field is identical — same `codec`, `bitrate` 0, no `title`, no
+    /// forced or SDH flag — so six of them arrive as the bare word `Русский` and the picker cannot
+    /// tell a forced signs track from a full translation. The file names all nine.
+    ///
+    /// Graded as the property that matters rather than as six string comparisons: **no two rows of
+    /// one language read the same.** A regression that dropped the container name, or preferred the
+    /// language over it, collapses this set back to one distinct value and the assertion says so.
+    #[test]
+    fn an_mp4s_container_names_tell_apart_the_tracks_pms_reports_identically() {
+        // exactly what the wire carries for every one of them: a language and nothing else
+        let pms_title = "";
+        let lang = "Русский";
+        // …and exactly what the container carries, in file order
+        let container = [
+            "Форс. iTunes",
+            "Форс. Jaskier песни",
+            "Форс. Red Head Sound песни",
+            "Полные iTunes",
+            "Полные Jaskier",
+            "Полные stirloo",
+        ];
+        let rows: Vec<String> = container.iter().map(|c| track_name(pms_title, c, lang)).collect();
+        assert_eq!(rows, container, "each row shows its own track's name");
+        let distinct: std::collections::HashSet<&String> = rows.iter().collect();
+        assert_eq!(distinct.len(), rows.len(), "no two rows of one language may read the same");
+    }
+
+    /// The MKV control case, from the same server: PMS DOES parse Matroska's `title`, so the
+    /// server's answer is used and the demuxer is not consulted — which is what keeps this working
+    /// before playback has opened a file, and through a transcode, where there is no file to read.
+    #[test]
+    fn the_servers_own_title_wins_when_it_has_one() {
+        assert_eq!(track_name("HDRezka Studio", "", "Русский"), "HDRezka Studio");
+        // …and it still wins when the demuxer also has one: the same tag, one source of truth
+        assert_eq!(track_name("Forced", "Forced", "Русский"), "Forced");
+    }
+
+    /// A name that only repeats the row's own label is not a name — the row already says `English`
+    /// in the label above, and a sub-line saying it again spends the row's second line to do it.
+    /// Both sources are filtered, and the fallback continues past a rejected one rather than
+    /// stopping: a server echoing the language must not mask a container that says something.
+    #[test]
+    fn a_name_that_only_repeats_the_language_is_not_shown() {
+        assert_eq!(track_name("English", "", "English"), "");
+        assert_eq!(track_name("english", "", "English"), "", "the guard is case-insensitive");
+        assert_eq!(track_name("", "", "English"), "");
+        assert_eq!(
+            track_name("English", "Full SDH", "English"),
+            "Full SDH",
+            "a useless PMS title falls through to the container's"
+        );
+        assert_eq!(track_name("  ", " Full ", "English"), "Full", "both sides are trimmed");
+    }
+
+    /// **Position is the join, so an unnamed track must occupy a slot rather than be skipped.**
+    /// `TrackNames` is dense by contract; this pins the reader's half of it — the N-th entry, an
+    /// out-of-range index and the `-1` that `sub_render_ordinal` answers for an external sidecar
+    /// all resolve without panicking, and the sidecar gets no name rather than its neighbour's.
+    #[test]
+    fn a_track_index_resolves_by_position_and_an_absent_one_is_empty_not_a_neighbour() {
+        let n = TrackNames {
+            audio: vec!["Дубляж".into(), String::new(), "Original".into()],
+            subs: vec!["Forced".into(), "Full".into()],
+        };
+        assert_eq!(n.audio(0), "Дубляж");
+        assert_eq!(n.audio(1), "", "an untagged track holds its slot");
+        assert_eq!(n.audio(2), "Original", "…so the one after it is still its own");
+        assert_eq!(n.sub(1), "Full");
+        assert_eq!(n.sub(-1), "", "an external sidecar is not in the container at all");
+        assert_eq!(n.sub(9), "", "past the end is empty, not a panic");
+        // the empty store — every read before a demuxer has opened, and every read on the host
+        assert_eq!(TrackNames::new().sub(0), "");
+    }
 }

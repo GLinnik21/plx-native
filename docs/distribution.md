@@ -1029,6 +1029,69 @@ be committed, tagged and pushed by hand, which is the sequence this exists to re
 
 ---
 
+## 7b. A release is always `com.beb.plxnative` — and a flavoured artifact must never become one
+
+Since 2026-08-21 this tree can package two ids. `com.beb.plxnative` is the app users install: it is
+the id in every manifest, every channel listing, every release asset name and every `ipk.sha256`.
+`com.beb.plxnative.debug` is the developer build that lives beside it on one television, and it has
+no release, no published hash and no listing — ever. `docs/two-installs.md` is the full account;
+what matters here is that the packaging path knows the difference and says so.
+
+`make ipk` defaults to `FLAVOR=debug`, so **the release build has to name the flavour**:
+
+```sh
+make FLAVOR=stable RELEASE=1 ipk      # the only combination that produces a shippable artifact
+```
+
+Four mechanisms keep the two apart, and the reason for four is that each covers a hole the
+others do not:
+
+- **`release-guard`** refuses `deploy`/`ipk` on `FLAVOR=stable` without `RELEASE=1`, and names
+  `ALLOW_DEV_ON_STABLE=1` as the deliberate hatch. Before the flavour split, shipping a dev build
+  under the released id could only happen by publishing by hand — which is how v0.2.1's defects got
+  out; now it is one forgotten `RELEASE=1` on a machine that also has a television, so it gets a
+  mechanism rather than a rule.
+- **`ci/check-package.py` grades the same thing on the packaged BYTES**, which is the half that
+  survives somebody reaching for the hatch and forgetting: the stable package must not contain the
+  `plxnative-noidle` dev witness. It also derives the packaged id from the staged
+  `applications/<dir>` name rather than from the tracked `pkg/appinfo.json`, because assuming the
+  stable id would make every path below it grade a debug package **vacuously** — an empty `rglob`
+  prints nothing, fails nothing, and reports success.
+- **The stable descriptor transform is asserted to be the IDENTITY** (`ci/flavor.py --selftest`, run
+  by `make check`). Nothing about the second id may perturb the released artifact's bytes; if it
+  did, the sha256 in every published manifest would be wrong, and that hash is the entire integrity
+  story here because nothing is code-signed.
+- **`make ipk` writes `pkg/ipk.sha256` only for `stable`.** That filename is a released asset name;
+  a flavoured package writing it would replace the hash a release note's own verification command
+  tells people to check.
+
+Installing and removing the second app on the television is `appInstallService`'s dev pair — the
+same route a Dev Mode user's tooling takes, and the reason `make deploy` alone cannot create an
+app (SAM has to learn the id, and the LS2 role file that permits `com.webos.media.*` is written by
+the installer, §3.5):
+
+```sh
+make FLAVOR=debug install     # ipk -> dev/install -> deploy into it
+make FLAVOR=debug uninstall   # dev/remove; refuses the stable id
+```
+
+which are these — wrapped by the Makefile in `script -qc "…" /dev/null`, because `luna-send`
+needs a tty over plain ssh, and given `-i` because the subscription is the only place
+`appinstalld` ever names a failure:
+
+```sh
+luna-send -i -a com.webos.appInstallService luna://com.webos.appInstallService/dev/install \
+  '{"id":"com.beb.plxnative.debug","ipkUrl":"/tmp/com.beb.plxnative.debug_<version>_arm.ipk","subscribe":true}'
+luna-send -i -a com.webos.appInstallService luna://com.webos.appInstallService/dev/remove \
+  '{"id":"com.beb.plxnative.debug","subscribe":true}'
+```
+
+`install` **deploys afterwards, deliberately**: `appinstalld` replaces `applications/<id>/`
+wholesale, so stopping at the install leaves the packaged binary behind and you are looking at a
+build you did not make.
+
+---
+
 ## 8. Release CI (built 2026-08-01)
 
 `.github/workflows/{ci,release}.yml` + `.github/actions/webos-ndk` + `ci/`.
@@ -1287,6 +1350,54 @@ LG's "the splash screen should not be black" line is not enforced — **Apple TV
 The master arrives at 1672×941, so the script resamples (LANCZOS, 1.148×). Measured cost: none
 detectable — 1 px 10–90 % edge transition and full contrast on both sides, because the art is
 vector-derived with hard edges. It refuses a master that is not 16:9 rather than letterboxing.
+
+### 10.3 The badged tile — the second install's artwork (2026-08-21, not yet seen on a panel)
+
+A developer build now lives beside the released app on one television (`docs/two-installs.md`), and
+the two tiles sit side by side in the launcher. `pkg/dev/icon.png` and `pkg/dev/largeIcon.png` are
+tracked, cut from the SAME master by the same script:
+
+```sh
+python3 tools/mkicons.py assets/logo-master.png --out-dir=pkg/dev --sizes=80,130 --badge=DEV
+```
+
+The badge is a **full-bleed bottom bar** — amber (`theme::RESUME_FILL` over `AMBER_950` ink, the
+design system's own filled-control pair, so it is on-brand while being the one thing on the tile
+that could not be mistaken for the release artwork). Both halves of "full-bleed bottom bar" are
+load-bearing rather than taste:
+
+- **It must not touch pixel (1,1).** `iconColor` paints the launcher tile *behind* the icon, and
+  `ci/check-package.py` asserts it agrees with the icon's own corner pixel within 2 levels — the
+  gate §10 exists to describe, added because a gold tile shipped under a black icon for months and
+  was invisible in every file, since the defect only exists once the system composites. A corner
+  ribbon or dot would move that pixel by ~240 levels and fail the check; a bottom bar leaves the
+  corner alone, so **one `iconColor` stays correct for both flavours and the badge needs no
+  descriptor change at all**. That is why the flavour transform moves only `id` and `title`. It is
+  enforced, not merely documented: `check-package.py` runs the same pixel-(1,1)-within-2-levels test
+  a second time against `pkg/dev/largeIcon.png`, so a badge that creeps into the corner fails the
+  package rather than shipping a hard-edged rectangle in a differently-coloured tile.
+- **A bar, not a whole-tile tint.** Tinting means moving `iconColor` in lockstep — or reproducing
+  exactly the defect above — and it stops looking like the product.
+- **Rasterized natively at each size**, never scaled from one master: at 80 px the bar is 18 px and
+  the glyphs about 10, and a 4x downsample of either is a smear where a stroke drawn at 80 is a
+  stroke. Same reasoning as §10's `--band` height floor.
+- The ink colour is **derived** from the fill by WCAG relative luminance rather than fixed, so a
+  different `--badge-fill` cannot silently produce grey-on-grey — a tile nobody can read, which is
+  not an error anywhere.
+
+`mkicons.py` now **rejects unknown flags** instead of ignoring them, and that is the point of the
+change rather than tidiness: the old parser filtered out everything starting with `--` and read the
+four options it knew, so a typo (`--outdir=pkg/dev`) silently wrote the BADGED set over
+`pkg/icon.png`, `pkg/largeIcon.png` and `pkg/icon160.png` — the last of which `release.yml`
+publishes as a raw.githubusercontent URL for the channel listing. One mistyped letter and the
+artwork everyone sees before installing carries a DEV bar.
+
+The flavoured `.ipk` stages `pkg/dev/icon.png` over the basename `icon.png`, so `appinfo.json`'s
+icon fields and `ci/check-package.py`'s by-basename payload grading are unchanged: **the flavour
+lives in the directory a file is read from, never in the name it is packaged under.**
+
+Unverified: nobody has looked at the two tiles on a panel yet — legibility of the bar at the 115x115
+box the launcher actually draws into is `docs/two-installs.md` §6.5.
 
 ---
 

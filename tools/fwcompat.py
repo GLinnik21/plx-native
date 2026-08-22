@@ -295,8 +295,17 @@ def cmd_inventory(args, db):
         cells = []
         for name in args.inventory:
             hits = sorted(k for k in fw.index if k.startswith(name))
-            # Prefer the fully-versioned real name; it carries the version we care about.
-            real = max(hits, key=len) if hits else None
+            # Prefer the fully-versioned real name — it carries the version we care about — but
+            # among SIBLINGS of the library asked for, not among everything sharing its prefix.
+            # `max(hits, key=len)` alone answers `libpf` with `libpf-miracastplugin.so.1.0.0`,
+            # because that name is longer than `libpf-1.0.so.1`: a plugin, silently charted in
+            # place of the media pipeline. Prefer the SHORTEST stem (the library itself, not a
+            # `-something` sibling) and only then the longest version suffix on that stem.
+            if hits:
+                stem = min((k.split(".so")[0] for k in hits), key=len)
+                real = max((k for k in hits if k.split(".so")[0] == stem), key=len)
+            else:
+                real = None
             cells.append(f"{real or '-':<24}")
         print(f"{fw.release:<9} " + " ".join(cells))
     return 0

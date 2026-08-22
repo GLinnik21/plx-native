@@ -167,8 +167,11 @@ impl Trail {
     }
 
     /// BACK: leave the top page and hand back the one under it. `None` at the ROOT — which is what
-    /// keeps BACK at Home exiting the app, because `app.rs`'s BACK arm reaches its `running = false`
-    /// branch by never consulting the trail on Home at all.
+    /// keeps BACK at Home reaching THE DOOR, because `app.rs`'s BACK arm reaches its root branch by
+    /// never consulting the trail on Home at all. (That branch raises the exit alert now rather
+    /// than setting `running = false` outright — see `app.rs::back_at_root`. What this module
+    /// guarantees is unchanged and is the half that matters here: at the root there is nothing
+    /// left to pop, so the press falls through to whatever the app does with a root BACK.)
     ///
     /// Returns by VALUE. The clone is two `String`s once per BACK press, and it buys the caller the
     /// right to touch the trail again inside the re-entry it is about to run.
@@ -208,17 +211,33 @@ impl Trail {
         }
     }
 
-    /// Make the trail agree with a detail page we landed on WITHOUT navigating — the player exit and
-    /// the Info card's jump-to-detail, neither of which is a trail node. Idempotent: no push when
-    /// the top already names `(sid, rk)`, so an exit back onto the page playback started from does
-    /// not double it. The server is part of that test for the reason [`Node`]'s doc gives — with a
-    /// share registered, "the top already names this rk" can be true of the wrong page.
-    pub(crate) fn ensure_detail(&mut self, sid: ServerId, rk: &str) {
-        let want = Node::Detail { sid, rk: rk.to_string(), spot: Spot::default() };
-        if self.stack.last().map(|t| t.same_page(&want)).unwrap_or(false) {
+    /// Make the trail agree with a page we landed on WITHOUT navigating — the player exit and the
+    /// Info card's jump-to-detail, neither of which is a trail node.
+    ///
+    /// Idempotent: no push when the top already names the same page, so an exit back onto the page
+    /// playback started from does not double it — which is the ORDINARY case, since playing never
+    /// moved the trail. Identity is [`Node::same_page`], so the server is part of the test for the
+    /// reason [`Node`]'s doc gives: with a share registered, "the top already names this rk" can be
+    /// true of the wrong page.
+    ///
+    /// **[`Node::Home`] is a truncation, not a push.** Home is `stack[0]` and the one node BACK
+    /// never leaves, so landing there means everything that was behind the user is spent — pushing
+    /// a second Home would put an extra BACK between them and the door, which is the one place
+    /// where a wrong trail is not merely a misnavigation (see [`Trail::back`]).
+    ///
+    /// It generalises an `ensure_detail(sid, rk)` that took the two halves of a detail page and
+    /// could express no other kind. That was exactly enough while playback returned to a detail
+    /// page or to Home and to nothing else; it is the trail half of the same defect `app.rs`'s
+    /// `Origin` fixes on the route side.
+    pub(crate) fn ensure(&mut self, n: &Node) {
+        if matches!(n, Node::Home) {
+            self.reset();
             return;
         }
-        self.push(want);
+        if self.stack.last().map(|t| t.same_page(n)).unwrap_or(false) {
+            return;
+        }
+        self.push(n.clone());
     }
 }
 
@@ -248,8 +267,10 @@ mod tests {
         Node::Person { sid, key: key.into(), guid: guid.into(), name: String::new(), thumb: String::new() }
     }
 
-    /// The executable form of "BACK at the Home root EXITS THE APP": the trail declines, and the arm
-    /// falls through to `running = false`. Nothing else in this module may make that untrue.
+    /// The executable form of "BACK at the Home root REACHES THE DOOR": the trail declines, and the
+    /// arm falls through to its root branch — which raises the exit alert (`app.rs::back_at_root`),
+    /// and used to quit outright. Either way this module's obligation is the same and nothing else
+    /// in it may make it untrue: at the root there is nothing to pop.
     #[test]
     fn a_fresh_trail_is_the_root_and_back_there_declines() {
         let mut t = Trail::new();
@@ -380,26 +401,78 @@ mod tests {
         assert_eq!(t.stack.last(), Some(&Node::Detail { sid: A, rk: "a".into(), spot: s }));
     }
 
-    /// The player exit and the Info card's jump both LAND on a detail page without navigating to it.
+    /// The player exit and the Info card's jump both LAND on a page without navigating to it.
     /// Landing back on the page playback started from must not double it; landing on a different one
     /// must push.
     #[test]
-    fn ensure_detail_is_idempotent_for_the_page_already_on_top() {
+    fn ensure_is_idempotent_for_the_page_already_on_top() {
         let mut t = Trail::new();
         t.push(det("a"));
-        t.ensure_detail(A, "a");
-        t.ensure_detail(A, "a");
+        t.ensure(&det_on(A, "a"));
+        t.ensure(&det_on(A, "a"));
         assert_eq!(t.stack.len(), 2, "the page playback started from is already the top");
 
-        t.ensure_detail(A, "b");
+        t.ensure(&det_on(A, "b"));
         assert_eq!(t.stack.len(), 3);
         assert_eq!(t.back(), Some(det("a")));
 
         // …and over a non-Detail top it always pushes: there is nothing there to be the same page.
         let mut t = Trail::new();
         t.push(person("p1"));
-        t.ensure_detail(A, "a");
+        t.ensure(&det_on(A, "a"));
         assert_eq!(t.back(), Some(person("p1")));
+    }
+
+    /// [`Trail::ensure`] over the OTHER pages playback can now return to. Each is a no-op in the
+    /// ordinary case, because playing never moved the trail — the page is still the top — and a
+    /// push only when something put the app on a page nothing navigated to (a dev trigger boot).
+    #[test]
+    fn ensure_lands_every_kind_of_page_the_player_can_return_to() {
+        for (top, want) in [(Node::Library, Node::Library), (Node::Search, Node::Search)] {
+            let mut t = Trail::new();
+            t.push(top);
+            t.ensure(&want);
+            assert_eq!(t.stack.len(), 2, "the page is already the top — nothing to push");
+            assert_eq!(t.back(), Some(Node::Home), "…and one BACK off it is Home, as before");
+        }
+        // A boot trigger that mounts the Library without navigating: the trail is bare, so the
+        // return has to build the step it never took, or BACK would leave the app from the grid.
+        let mut t = Trail::new();
+        t.ensure(&Node::Library);
+        assert_eq!(t.back(), Some(Node::Home));
+
+        // The person page, matched through the same identity rule as everywhere else.
+        let mut t = Trail::new();
+        t.push(person("p1"));
+        t.ensure(&person("p1"));
+        assert_eq!(t.stack.len(), 2);
+        t.ensure(&person("p2"));
+        assert_eq!(t.stack.len(), 3, "a different person is a different page");
+    }
+
+    /// **BACK at the Home root REACHES THE DOOR** (the exit alert, since 2026-08-21 — before that,
+    /// the exit itself), so a return to Home is a TRUNCATION and never a push: a second `Node::Home`
+    /// on the stack would put an extra BACK between the user and that door, which is the one place a
+    /// wrong trail is not merely a misnavigation.
+    ///
+    /// The other half of the same rule: playing a Continue Watching card off Home and stopping it
+    /// must leave the user exactly one BACK from the door, whatever page they had been on before
+    /// they came back to Home.
+    #[test]
+    fn a_return_to_home_leaves_exactly_one_back_between_the_user_and_the_door() {
+        let mut t = Trail::new();
+        t.push(Node::Library);
+        t.push(det("a"));
+        t.ensure(&Node::Home);
+        assert_eq!(t.stack, vec![Node::Home], "the history behind them is spent");
+        assert_eq!(t.back(), None, "…and BACK there is the door, not a pop");
+
+        // Idempotent, so an exit onto Home from Home cannot deepen it either.
+        let mut t = Trail::new();
+        t.ensure(&Node::Home);
+        t.ensure(&Node::Home);
+        assert_eq!(t.stack, vec![Node::Home]);
+        assert_eq!(t.back(), None);
     }
 
     /// The reported shape of the shared-server bug, as a value: browse the SHARE, open its item 42,
@@ -418,11 +491,11 @@ mod tests {
         assert_eq!(t.stack.len(), 3, "two pages, not one");
         assert_eq!(t.back(), Some(ours), "BACK returns to OUR 42, the page it was opened from");
 
-        // …and the same rule through `ensure_detail`: landing on the share's 42 while ours is the
+        // …and the same rule through `ensure`: landing on the share's 42 while ours is the
         // top must PUSH, not read as "already here" and leave the trail describing the wrong page.
         let mut t = Trail::new();
         t.push(det_on(A, "42"));
-        t.ensure_detail(B, "42");
+        t.ensure(&det_on(B, "42"));
         assert_eq!(t.stack.len(), 3);
         assert_eq!(t.back(), Some(det_on(A, "42")));
     }
@@ -449,7 +522,7 @@ mod tests {
     }
 
     /// `same_page` is about the PAGE, not about the node's other state: a detail page scrolled
-    /// somewhere else is the same page (which is what makes `ensure_detail` idempotent after a
+    /// somewhere else is the same page (which is what makes `ensure` idempotent after a
     /// player exit), and two different KINDS of page never match.
     #[test]
     fn same_page_ignores_the_place_and_never_crosses_kinds() {

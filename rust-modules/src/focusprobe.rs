@@ -82,13 +82,18 @@ use crate::ui::player_hud::ControlSlot;
 pub(crate) enum Screen {
     Login,
     Profiles,
+    /// the first-run "what goes on your Home?" route (`ui::onboard`)
+    Onboard,
     /// the home hero + grid
     Home,
-    /// Home, with the top-left profile popover over it
-    Account,
-    /// the press-and-hold card menu over the shelf (`false`) or the episode filmstrip (`true`)
+    /// the top-left profile popover, over whichever of the bar-wearing screens its chip was
+    /// pressed on
+    Account {
+        over: Host,
+    },
+    /// the press-and-hold card menu, over whichever screen the hold happened on
     ItemMenu {
-        over_detail: bool,
+        over: Host,
     },
     Library,
     Detail,
@@ -99,6 +104,57 @@ pub(crate) enum Screen {
     Player {
         overlay: &'static str,
     },
+}
+
+/// Which live screen a POPOVER is sitting on — the probe's mirror of `app.rs`'s private `MenuHost`
+/// and `BarHost`, mapped by the same exhaustive `match` that maps `Route`.
+///
+/// A type and not a bool: the card menu had exactly two hosts and the fingerprint spelled them
+/// `over_detail: bool`, which stops being expressible the moment there is a third. Every host is a
+/// [`Screen`] in its own right, so the popover's line is the HOST's fields plus the panel's — see
+/// [`Host::screen`].
+///
+/// ONE type for both popovers, deliberately, even though [`Screen::Account`] can only ever name the
+/// three bar-wearing hosts while [`Screen::ItemMenu`] uses all five: the fact being recorded is the
+/// same fact — "which page is live under this panel" — and `app.rs` is where the narrowing already
+/// lives, in `BarHost` itself. A second three-variant enum here would be a second vocabulary for one
+/// question, and the `over=` word is what a reader joins on either way.
+#[derive(Clone, Copy)]
+pub(crate) enum Host {
+    Home,
+    Detail,
+    Library,
+    Search,
+    Person,
+}
+
+impl Host {
+    /// The word printed after `over=`. Anything reading a schema off a `route=itemmenu` or
+    /// `route=account` line needs it, because one route word now covers several different field
+    /// sets.
+    fn word(self) -> &'static str {
+        match self {
+            Host::Home => "home",
+            Host::Detail => "detail",
+            Host::Library => "library",
+            Host::Search => "search",
+            Host::Person => "person",
+        }
+    }
+    /// The host as the screen it is — the popover sits on a LIVE screen, so the host's own focus is
+    /// still part of the state (the tile the menu is about is the one still focused behind it) and
+    /// its fields are exactly that screen's. Never [`Screen::ItemMenu`] and never
+    /// [`Screen::Account`], which is what stops [`push_fields`]' one level of recursion from being a
+    /// loop — a popover cannot be its own host.
+    fn screen(self) -> Screen {
+        match self {
+            Host::Home => Screen::Home,
+            Host::Detail => Screen::Detail,
+            Host::Library => Screen::Library,
+            Host::Search => Screen::Search,
+            Host::Person => Screen::Person,
+        }
+    }
 }
 
 /// The player HUD's focus cursor, plus whether the transport is on screen at all.
@@ -153,6 +209,18 @@ fn fingerprint(route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot) -> Stri
     let mut s = String::with_capacity(192);
     s.push_str("focus route=");
     s.push_str(route);
+    push_fields(&mut s, screen, hud, ctrl);
+    // The tvOS click, which is route-agnostic: an OK over a card arms a press and the activation
+    // commits from the per-frame loop on the spring-back, so "a press is in flight" is a state the
+    // ladder put the app into and a state the NEXT key cancels.
+    let _ = write!(s, " press={}", b(crate::ui::press::is_active()));
+    s
+}
+
+/// One screen's own fields. Split out of [`fingerprint`] so [`Screen::ItemMenu`] can spend it on its
+/// HOST — the popover's line is the host's state plus the panel's, and there is no other way to say
+/// that without five copies of the host arms.
+fn push_fields(s: &mut String, screen: Screen, hud: Hud, ctrl: ControlSlot) {
     match screen {
         Screen::Login => {
             // `login.rs` holds no focus state of its own — the screen is a projection of the auth
@@ -166,25 +234,36 @@ fn fingerprint(route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot) -> Stri
             // another, and cannot see a keypad move at all.
             let _ = write!(s, " avatar={}", b(crate::ui::profiles::focus_is_avatar()));
         }
-        Screen::Home => push_home(&mut s),
-        Screen::Account => {
-            push_home(&mut s);
+        Screen::Onboard => {
+            // Two focus stops and a row cursor — the whole of what a press can move here. The list
+            // flag and the selection are read together because `TableView::list_focused` gates the
+            // pill AND the ink: a fingerprint carrying only `sel` could not tell a focused row
+            // from the same row with focus parked on the action beside it.
+            let (in_list, sel) = crate::ui::onboard::probe_fields();
+            let _ = write!(s, " list={} row={sel}", b(in_list));
+        }
+        Screen::Home => push_home(s),
+        Screen::Account { over } => {
+            // The HOST is named, for [`Screen::ItemMenu`]'s reason one screen over: the profile chip
+            // is shared CHROME, so this popover stands on any of the three bar-wearing pages and
+            // `route=account` is one word for three different field sets. It printed Home's fields
+            // outright while Home was the only screen whose chip could be pressed — so an account
+            // menu opened from the Library fingerprinted as though the user were standing on Home,
+            // and a harness diffing two presses across it read the wrong screen's cursor.
+            let _ = write!(s, " over={}", over.word());
+            push_fields(s, over.screen(), hud, ctrl);
             let _ = write!(s, " acct={} asel={}", b(crate::ui::account_menu::is_open()), crate::ui::account_menu::sel());
         }
-        Screen::ItemMenu { over_detail } => {
-            // The HOST is named on the line, because `route=itemmenu` is one word for two different
+        Screen::ItemMenu { over } => {
+            // The HOST is named on the line, because `route=itemmenu` is one word for FIVE different
             // field sets: the popover sits on a LIVE screen, so the host's own focus is still part
-            // of the state (the card the menu is about is the one still focused behind it), and the
-            // two hosts have nothing in common to print. Anything reading a schema off this line
-            // needs `over=` as well as `route=`.
-            s.push_str(if over_detail { " over=detail" } else { " over=home" });
-            if over_detail {
-                push_detail(&mut s);
-            } else {
-                push_home(&mut s);
-            }
+            // of the state (the tile the menu is about is the one still focused behind it), and no
+            // two hosts have the same fields to print. Anything reading a schema off this line needs
+            // `over=` as well as `route=`.
+            let _ = write!(s, " over={}", over.word());
+            push_fields(s, over.screen(), hud, ctrl);
             let _ = write!(s, " imenu={} isel={} imsid=", b(crate::ui::item_menu::is_open()), crate::ui::item_menu::sel());
-            push_sid(&mut s, crate::ui::item_menu::item_sid());
+            push_sid(s, crate::ui::item_menu::item_sid());
         }
         Screen::Library => {
             let pill = crate::ui::library::focused_pill().map(|p| p as i64).unwrap_or(-1);
@@ -195,12 +274,12 @@ fn fingerprint(route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot) -> Stri
                 b(crate::ui::library::focus_is_card()),
                 b(crate::ui::library::menu_open())
             );
-            push_item(&mut s, crate::ui::library::focused_item());
+            push_item(s, crate::ui::library::focused_item());
         }
-        Screen::Detail => push_detail(&mut s),
+        Screen::Detail => push_detail(s),
         Screen::Person => {
             let _ = write!(s, " card={}", b(crate::ui::person::focus_is_card()));
-            push_item(&mut s, crate::ui::person::focused_item());
+            push_item(s, crate::ui::person::focused_item());
         }
         Screen::Search => {
             // The whole state machine, from the snapshot the screen's own regions already draw off
@@ -218,19 +297,21 @@ fn fingerprint(route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot) -> Stri
                 v.row,
                 v.col,
                 v.recent,
-                crate::ui::search::focused_pill(),
+                // the pill under the ring, from the SHARED bar's one answer. Still `pill=<int>` and
+                // still -1 off the strip: `zone=` on this same line already tells the chip apart
+                // from focus being off the bar, and `tests/keytable.json` is a recorded device
+                // golden — renaming a field there costs a TV run to regenerate, for no new fact.
+                match crate::ui::search::top_focus() {
+                    crate::ui::widgets::TopFocus::Pill(i) => i as i64,
+                    _ => -1,
+                },
                 b(crate::ui::search::focus_is_card()),
                 crate::ui::search::below(),
                 crate::ui::search::clear_index()
             );
         }
-        Screen::Player { overlay } => push_player(&mut s, overlay, hud, ctrl),
+        Screen::Player { overlay } => push_player(s, overlay, hud, ctrl),
     }
-    // The tvOS click, which is route-agnostic: an OK over a card arms a press and the activation
-    // commits from the per-frame loop on the spring-back, so "a press is in flight" is a state the
-    // ladder put the app into and a state the NEXT key cancels.
-    let _ = write!(s, " press={}", b(crate::ui::press::is_active()));
-    s
 }
 
 /// Home's hero band and grid, which are one screen with two focus models.
@@ -297,9 +378,21 @@ fn push_detail(s: &mut String) {
     // filmstrip is per season, and this reads `None` while a season is still loading.
     s.push_str(" ep=");
     match crate::ui::detail::focused_episode() {
-        Some((rk, watched)) => {
+        Some((rk, mark)) => {
             push_rk(s, &rk);
-            let _ = write!(s, " epwatched={}", b(watched));
+            // THREE-valued, not a bool: the still's context menu builds its row set from this exact
+            // state (one write row at either end, BOTH in the middle), so a fingerprint that reduced
+            // it to watched/not could not tell a 2-row menu from a 3-row one. A `&'static str` tag
+            // chosen here, like every other enum this line carries.
+            let _ = write!(
+                s,
+                " epwatched={}",
+                match mark {
+                    crate::ui::widgets::PosterMark::None => "no",
+                    crate::ui::widgets::PosterMark::InProgress => "part",
+                    crate::ui::widgets::PosterMark::Watched => "yes",
+                }
+            );
         }
         None => s.push_str("- epwatched=-"),
     }
@@ -330,10 +423,12 @@ fn push_player(s: &mut String, overlay: &str, hud: Hud, ctrl: ControlSlot) {
         b(crate::ui::up_next::armed())
     );
     // The panels: whether each is open, ITS HIGHLIGHTED ROW, and for the track menu the two tracks
-    // already committed. The row is what makes the four overlay arms characterizable at all — each
-    // has an UP/DOWN branch that moves a cursor and changes nothing else, so with only the open
-    // flags this line recorded a panel appearing and disappearing with a hole between. The four
-    // `sel()` readers were added for this and do nothing else.
+    // already committed. The row is what makes the overlay arms characterizable at all — each has
+    // an UP/DOWN branch that moves a cursor and changes nothing else, so with only the open flags
+    // this line recorded a panel appearing and disappearing with a hole between. The `sel()`
+    // readers were added for this and do nothing else. `tracks` is the detail page's
+    // Track-information panel, whose cursor is a PAGE rather than a row — same reasoning, and
+    // without it a paging press is invisible here (it moves nothing but that number).
     let _ = write!(
         s,
         " menu={} msel={} taudio={} tsub={} info={} isel={} infolast={} chap={} csel={} haschap={} more={} osel={}",
@@ -349,6 +444,12 @@ fn push_player(s: &mut String, overlay: &str, hud: Hud, ctrl: ControlSlot) {
         b(crate::ui::chapters_panel::has_chapters()),
         b(crate::ui::more_menu::is_open()),
         crate::ui::more_menu::sel()
+    );
+    let _ = write!(
+        s,
+        " tracks={} tpage={}",
+        b(crate::ui::tracks_panel::is_open()),
+        crate::ui::tracks_panel::sel()
     );
 }
 
@@ -438,10 +539,19 @@ mod tests {
         vec![
             ("login", Screen::Login),
             ("profiles", Screen::Profiles),
+            ("onboard", Screen::Onboard),
             ("home", Screen::Home),
-            ("account", Screen::Account),
-            ("itemmenu", Screen::ItemMenu { over_detail: false }),
-            ("itemmenu", Screen::ItemMenu { over_detail: true }),
+            // one per bar-wearing HOST, for the `itemmenu` rows' reason below
+            ("account", Screen::Account { over: Host::Home }),
+            ("account", Screen::Account { over: Host::Library }),
+            ("account", Screen::Account { over: Host::Search }),
+            // one per HOST — the popover's field set is its host's, so five hosts are five
+            // different `route=itemmenu` lines and the grammar assertions have to see all of them
+            ("itemmenu", Screen::ItemMenu { over: Host::Home }),
+            ("itemmenu", Screen::ItemMenu { over: Host::Detail }),
+            ("itemmenu", Screen::ItemMenu { over: Host::Library }),
+            ("itemmenu", Screen::ItemMenu { over: Host::Search }),
+            ("itemmenu", Screen::ItemMenu { over: Host::Person }),
             ("library", Screen::Library),
             ("detail", Screen::Detail),
             ("person", Screen::Person),

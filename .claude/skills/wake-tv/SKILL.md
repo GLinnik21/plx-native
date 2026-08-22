@@ -44,13 +44,35 @@ no `wakeonlan` binary on a stock Mac) and working SSH auth to the TV.
 
 - **A deploy can die mid-scp** when the TV sleeps under it. After any interrupted
   `make deploy`, md5-compare before trusting the binary:
-  `md5 -q pkg/plxnative` vs `ssh root@TV 'md5sum .../plxnative'`.
+  `md5 -q pkg/plxnative` vs `ssh root@TV "md5sum $(make -s print-appdir FLAVOR=<f>)/plxnative"`.
+  Spell the app directory that way rather than eliding it: there are two installs on this
+  television — `com.beb.plxnative` and `com.beb.plxnative.debug`, the latter being what an
+  unflavoured `make deploy` targets — and a hand-typed path compares the wrong one without
+  erroring. (`make -s print-*` is a real recipe and side-effect free; **never `make -p`**, which
+  prints unexpanded definitions and hands you the literal `$(strip $(shell cat .tv-host …))`.)
 - **Standby kills reverse SSH tunnels** (`ssh -R`) and can leave the TV-side
   dropbear holding the stale listen port — the next `-R` fails with
   "remote port forwarding failed". Kill the stale per-connection dropbear on the
   TV (`netstat -tlnp | grep <port>` → kill that pid), then reconnect.
-- **Standby closes the app**, so the capture stream port (:8910), the remote FIFO,
+- **Standby closes the app**, so the capture stream port (`:8910` for the stable install,
+  `:8911` for a flavoured one — `make -s print-appport FLAVOR=…`), the remote FIFO,
   and any luna-send `-i` launch subscription are gone — relaunch the app after waking.
+  **UNVERIFIED — does a standby cycle wipe `/tmp`?** Nothing in this repository observes it
+  either way, and it matters more since the runtime root moved: a flavoured install keeps its
+  whole root there (`/tmp/<app id>`: triggers, FIFO, logs), and the stable install keeps its
+  triggers and all three logs directly in `/tmp`. A wipe would also contradict what three places
+  promise about `plxnative-crash.log` being append-only and surviving a relaunch (`CLAUDE.md`,
+  `crash-triage`, `docs/two-installs.md` §3.1) — though "survives the relaunch" and "survives a
+  power cycle" are different claims, and only the first has ever been exercised.
+  *Settled by:* before going to standby, note `md5sum` and size of `<rundir>/plxnative-crash.log`
+  and `touch <rundir>/plxnative-standbyprobe`; wake, then `ls -la <rundir>`. The crash log
+  unchanged and the probe file still present settles it as "not wiped"; either one gone settles
+  the opposite. One session, no playback needed.
+  Either way you do not need to re-install — the app directory is on flash, not `/tmp` — and
+  `tools/tv-session.sh up` recreates the root `1777` and re-arms triggers before every session,
+  so the practical procedure is the same under both answers. (The root is mkdir-then-chmod,
+  because a umask masks mkdir's mode and the app writes there jailed under its own uid while the
+  harness arms triggers there as root.)
 - **SSH auth: key first, `sshpass` fallback.** This machine authenticates with an
   installed key, which is why the driver uses `BatchMode=yes`. The `Makefile`'s
   `sshpass` path is the fallback for a machine without the key — both work; the key
@@ -72,3 +94,4 @@ no `wakeonlan` binary on a stock Mac) and working SSH auth to the TV.
 | `Permission denied (publickey,password)` | You're on a machine whose key isn't on the TV. Add your pubkey to `/home/root/.ssh/authorized_keys` from a trusted machine (or rely on the Makefile's `sshpass` fallback). |
 | `no MAC for the magic packet` | First run against a sleeping TV with no cache. Wake it by hand once and run `wake-tv.sh status` to learn+cache the MAC, or set `TV_MAC=` explicitly once. |
 | Wake works but `make deploy` still fails | The deploy raced the wake-up services; retry the deploy, then md5-compare (see Gotchas). |
+| `make deploy` says the app directory does not exist | Not a wake problem at all. That flavour has never been installed and scp cannot create an app — `make FLAVOR=<f> install` once (`tv-session` skill). |

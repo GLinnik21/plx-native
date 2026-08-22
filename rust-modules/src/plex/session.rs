@@ -78,6 +78,21 @@ fn auth_paths() -> Vec<std::path::PathBuf> {
     }
 }
 
+/// Point this module's file at `p`, or back at the real search order with `None`.
+///
+/// `pub(crate)` because the writing half is no longer only this module's business: `browse`'s
+/// per-profile Home selection round-trips through this file, and grading THAT end to end is the
+/// only way to catch the shape of bug it exists to prevent (one profile's answer overwriting
+/// another's), which no in-memory fixture can see.
+///
+/// The caller owes the same discipline `tests::TempSession` documents: hold
+/// [`crate::testlock::serial`] for the whole test, because this is a crate global and several
+/// modules reach `session::load` indirectly.
+#[cfg(test)]
+pub(crate) fn redirect_for_test(p: Option<std::path::PathBuf>) {
+    *TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()) = p;
+}
+
 /// The full persisted session. Empty fields mean "not logged in yet" for that stage.
 #[derive(Serialize, Deserialize, Default, Clone)]
 pub struct Session {
@@ -108,15 +123,25 @@ pub struct Session {
     /// a feature nobody has used yet.
     #[serde(default, deserialize_with = "de_soft_vec")]
     pub sources: Vec<SourceRef>,
-    /// Which libraries the user chose to see **on Home**. Browsing is governed by the grant, not
-    /// by this: pinning is the only *setting* of the three states a source has (granted / pinned /
-    /// reachable — `docs/shared-servers.md` §6).
+    /// Which libraries each PROFILE chose to see **on Home**. Browsing is governed by the grant,
+    /// not by this: pinning is the only *setting* of the three states a source has (granted /
+    /// pinned / reachable — `docs/shared-servers.md` §6).
     ///
-    /// **Empty means "never chosen", not "none pinned"** — the same trap `home_users` documents.
-    /// A reader that finds it empty must fall back to its own default (our own server's
-    /// libraries), never draw an empty Home.
+    /// **Keyed by profile, and that is the whole point of the shape** — the same lesson
+    /// [`Session::recent_searches`] beside it records, learned the same way. It was a bare
+    /// `Vec<PinnedLib>` hanging off the `Session`, which is one per INSTALL: a household where one
+    /// person wants a friend's films on their front door and another does not could not express it,
+    /// and switching profile left the previous person's shelves in place. The owner's ruling
+    /// (2026-08-21) is explicit — "it is separate for each profile" — and a shared television is
+    /// exactly where that matters.
+    ///
+    /// **An absent entry means "never asked", not "nothing pinned"** — the same trap `home_users`
+    /// documents, and why [`HomePins`] records both sides of the answer rather than one list.
+    ///
+    /// Soft-parsed (see [`de_soft_vec`]) like every list in this struct: one hand-edited entry
+    /// costs that entry, never the credentials.
     #[serde(default, deserialize_with = "de_soft_vec")]
-    pub pinned: Vec<PinnedLib>,
+    pub home_pins: Vec<HomePins>,
     /// The search terms actually searched, most recent first — what the Search screen's
     /// empty-query state offers back (`crate::ui::search::recents` owns the cap, the
     /// de-duplication and the ordering; this is only where they rest).
@@ -234,7 +259,7 @@ impl SourceRef {
     }
 }
 
-/// One library the user pinned to Home, named the only way a library CAN be named across two
+/// One library the user answered about, named the only way a library CAN be named across two
 /// servers: the server's machine id plus that server's own section key. Section keys are
 /// server-local integers starting at 1 — both servers in the measured pair have a section `1`
 /// (`docs/shared-servers.md` §2), so a bare key identifies nothing.
@@ -243,6 +268,55 @@ impl SourceRef {
 pub struct PinnedLib {
     pub machine_id: String,
     pub key: i64,
+}
+
+/// **One profile's answer to "what goes on your Home?"** — the first-run route's record
+/// (`Shared Sources.dc.html` deliverable F), and what the Library's Sources panel writes back
+/// every time a switch is flipped.
+///
+/// **Both sides are recorded, and that is the field this type exists for.** A single "these are
+/// pinned" list cannot tell *turned off* from *not answered about*, and the two must not be one
+/// value: libraries arrive over time — a share whose server was slow to answer, a library the
+/// owner created last week — and one that lands after the question was put has to fall on its own
+/// DEFAULT (yours On, a friend's Off), not silently Off because it was absent from a list written
+/// before it existed. That is also exactly what makes the design's "a share arriving later does
+/// not reopen this screen" honest: it appears, unpinned, and the user finds it in the Sources
+/// panel rather than being asked again.
+#[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq, Eq)]
+#[serde(default)]
+pub struct HomePins {
+    /// The Plex Home user's `uuid`, or **empty for the account owner** with no Home selection —
+    /// the same convention [`RecentSearches`] uses, and for the same reason: `uuid` and not `id`,
+    /// because it is the identity that survives a roster refetch. A profile is keyed by something
+    /// durable, never by its position in the roster, which reshuffles.
+    pub user: String,
+    /// The first-run question has been PUT to this profile. Separate from the two lists because a
+    /// profile can be asked and answer with the defaults untouched, which writes nothing new —
+    /// and being asked twice is precisely what a first-run screen must never do.
+    pub asked: bool,
+    /// libraries this profile turned ON …
+    pub on: Vec<PinnedLib>,
+    /// … and the ones it turned OFF. See the type doc: absent from both is "never answered for".
+    pub off: Vec<PinnedLib>,
+}
+
+impl HomePins {
+    /// This profile's recorded answer for one library: `Some(on)`, or `None` when the question was
+    /// never put about *this* library and the caller owes it a default.
+    pub fn answer(&self, machine_id: &str, key: i64) -> Option<bool> {
+        let names = |v: &Vec<PinnedLib>| v.iter().any(|p| p.machine_id == machine_id && p.key == key);
+        if machine_id.is_empty() {
+            // An unknown machine id must not match the entries that have none either — the same
+            // guard [`Session::source`] carries, and the same failure it avoids: one library
+            // answering for every library on every server nobody has identified yet.
+            return None;
+        }
+        match (names(&self.on), names(&self.off)) {
+            (true, _) => Some(true),
+            (false, true) => Some(false),
+            (false, false) => None,
+        }
+    }
 }
 
 /// The last-selected Plex Home user. `token` is the per-user token PMS scopes watch state by — it
@@ -335,6 +409,38 @@ impl Session {
         self.home_users.iter().find(|u| u.uuid == self.user.uuid).map(|u| u.admin).unwrap_or(false)
     }
 
+    /// **Is the profile this session would resume as behind a PIN?**
+    ///
+    /// The other flag on the same roster row as [`Session::active_profile_is_admin`], read for the
+    /// one question the boot who's-watching picker has to answer: may BACK out of it silently
+    /// reinstate what is on disk? A PIN-protected profile is one plex.tv validates a code for on
+    /// every switch (`auth::submit_pin` → `AccountClient::switch_user`), so resuming it without
+    /// one hands out precisely the session the PIN exists to gate — see [`crate::auth::cancel`].
+    ///
+    /// It answers the OPPOSITE way to `active_profile_is_admin` when the roster cannot say, and
+    /// for the same reason: on each question, "we cannot prove it" must land on the side whose
+    /// wrong answer costs nothing. There it is somebody else's credentials, so an unknown uuid is
+    /// not the owner; here it is a bypassed PIN, so an unknown uuid is treated as protected. The
+    /// cost of being wrong is one profile pick — the picker is still fully usable, and its
+    /// *Sign out* pill is reachable with the roster empty.
+    ///
+    /// **An EMPTY uuid answers TRUE**, and it is the case worth spelling out, because it reads as
+    /// the harmless one ("no profile chosen, so no PIN to be behind") and is the opposite. A
+    /// sign-in ABANDONED at the who's-watching picker persists exactly that shape: `auth`'s
+    /// `login_thread` saves the account token, the server and the roster the moment they exist —
+    /// deliberately, so that walking away does not cost the whole sign-in — and no profile has been
+    /// picked. Such a session's [`Session::pms_token`] falls back to the OWNER's server token, and
+    /// the next boot raises a picker over it (the gate needs a roster of more than one user, which
+    /// that file has). So "no profile chosen" is not "no PIN": it is *nobody has said who they
+    /// are*, and the picker is that question — which is why it belongs on the same side as an
+    /// unknown uuid rather than opposite it.
+    pub fn active_profile_is_protected(&self) -> bool {
+        if self.user.uuid.is_empty() {
+            return true; // see above — nobody has said who they are
+        }
+        self.home_users.iter().find(|u| u.uuid == self.user.uuid).map(|u| u.protected).unwrap_or(true)
+    }
+
     /// One source by `machineIdentifier` — the only key that identifies a server.
     pub fn source(&self, machine_id: &str) -> Option<&SourceRef> {
         if machine_id.is_empty() {
@@ -350,10 +456,21 @@ impl Session {
     pub fn shared_sources(&self) -> impl Iterator<Item = &SourceRef> {
         self.sources.iter().filter(|s| !s.owned)
     }
-    /// Has the user pinned this library to Home? See [`Session::pinned`] on why an EMPTY list is
-    /// "never chosen" and must not be read as "nothing is pinned".
-    pub fn is_pinned(&self, machine_id: &str, key: i64) -> bool {
-        self.pinned.iter().any(|p| p.machine_id == machine_id && p.key == key)
+    /// One profile's Home selection, or `None` for a profile that has never been asked. The
+    /// difference is load-bearing — see [`Session::home_pins`].
+    pub fn pins_for(&self, user: &str) -> Option<&HomePins> {
+        self.home_pins.iter().find(|p| p.user == user)
+    }
+
+    /// Replace one profile's answer, leaving every OTHER profile's alone. A method rather than a
+    /// field assignment at the call site for [`Session::set_recents_for`]'s reason: the writer
+    /// holds a whole `Session`, and the obvious `Session { home_pins: mine, ..s }` would silently
+    /// delete everybody else's selection.
+    pub fn set_pins_for(&mut self, user: &str, pins: HomePins) {
+        match self.home_pins.iter_mut().find(|p| p.user == user) {
+            Some(slot) => *slot = pins,
+            None => self.home_pins.push(pins),
+        }
     }
 
     /// One profile's search terms — empty for a profile that has never searched, which is the same
@@ -691,7 +808,9 @@ mod tests {
                "address":"192.168.0.10","port":32400,"token":"tok-own"},
               {"machine_id":"bbbb2222","name":"nas-home","shared_by":"friend","owned":false,
                "address":"203.0.113.9","port":31234,"token":"tok-share"}],
-            "pinned":[{"machine_id":"bbbb2222","key":1}]}"#
+            "home_pins":[{"user":"u-7","asked":true,
+                          "on":[{"machine_id":"bbbb2222","key":1}],
+                          "off":[{"machine_id":"aaaa1111","key":1}]}]}"#
     }
 
     /// The roster survives a write/read cycle intact — including the two facts that make a share
@@ -713,10 +832,14 @@ mod tests {
         assert!(!share.owned && share.usable());
         assert_eq!(s.shared_sources().count(), 1);
 
-        assert!(s.is_pinned("bbbb2222", 1));
+        let mine = s.pins_for("u-7").expect("the Home selection is keyed by PROFILE");
+        assert!(mine.asked);
+        assert_eq!(mine.answer("bbbb2222", 1), Some(true));
         // section keys are server-local: both servers have a section 1, so the key alone matches
         // nothing on its own
-        assert!(!s.is_pinned("aaaa1111", 1), "a pin names a server AND a key");
+        assert_eq!(mine.answer("aaaa1111", 1), Some(false), "an answer names a server AND a key");
+        assert_eq!(mine.answer("bbbb2222", 9), None, "a library nobody was asked about");
+        assert!(s.pins_for("u-9").is_none(), "another profile has an answer of its own, or none");
         assert!(s.source("").is_none() && s.source("nope").is_none());
 
         // and the token is not printable by accident — `describe` is the only formatter there is
@@ -737,13 +860,13 @@ mod tests {
             "sources":[{"machine_id":"aaaa1111","port":{"oops":true}},
                        {"machine_id":"bbbb2222","name":"nas-home","owned":false,
                         "address":"203.0.113.9","port":31234,"token":"tok-share"}],
-            "pinned":"not a list"}"#;
+            "home_pins":"not a list"}"#;
         let s: Session = serde_json::from_str(mixed).expect("a bad entry must not fail the file");
         assert_eq!(s.account_token, "acct", "the credentials are still here");
         assert!(s.can_go_local(), "and the device can still stream");
         assert_eq!(s.sources.len(), 1, "the malformed entry dropped, the good one landed");
         assert_eq!(s.sources[0].machine_id, "bbbb2222");
-        assert!(s.pinned.is_empty(), "a string where a list belongs is no list, not an error");
+        assert!(s.home_pins.is_empty(), "a string where a list belongs is no list, not an error");
 
         // the whole field as an explicit null, and the whole field missing (every session file
         // written before this landed) — both are simply a session with no roster yet
@@ -752,7 +875,7 @@ mod tests {
             r#"{"client_id":"c","server":{"address":"192.168.0.10","port":32400,"token":"t"}}"#,
         ] {
             let s: Session = serde_json::from_str(json).expect("null and absent both parse");
-            assert!(s.sources.is_empty() && s.pinned.is_empty());
+            assert!(s.sources.is_empty() && s.home_pins.is_empty());
             assert!(s.can_go_local(), "the primary server is what boot runs on, roster or not");
         }
     }
@@ -912,6 +1035,55 @@ mod tests {
         assert!(!home("u-nobody").active_profile_is_admin());
     }
 
+    /// **The stored profile's PIN flag — what the boot picker's BACK is gated on.** The escalation
+    /// it exists to close: the adult profile carries the PIN, the app is signed in as them, a child
+    /// boots it, and BACK out of the who's-watching picker reinstated that session with no code
+    /// entered at all (`auth::cancel`).
+    ///
+    /// The two "the roster cannot say" answers deliberately disagree with the test above's. An
+    /// unknown uuid is NOT the owner, because that question's wrong answer is somebody else's
+    /// credentials; the same uuid IS treated as protected, because this question's wrong answer is
+    /// a bypassed PIN and being wrong the other way costs one profile pick.
+    #[test]
+    fn a_stored_profile_behind_a_pin_is_reported_as_protected() {
+        let home = |uuid: &str| Session {
+            client_id: "cid".into(),
+            account_token: "acct".into(),
+            user: UserRef { uuid: uuid.into(), ..Default::default() },
+            home_users: vec![
+                HomeUserRef {
+                    uuid: "u-owner".into(),
+                    title: "Gleb".into(),
+                    admin: true,
+                    protected: true,
+                    ..Default::default()
+                },
+                HomeUserRef { uuid: "u-kid".into(), title: "Kid".into(), ..Default::default() },
+            ],
+            ..Default::default()
+        };
+        assert!(home("u-owner").active_profile_is_protected(), "the adult tile carries the PIN");
+        assert!(!home("u-kid").active_profile_is_protected(), "a managed profile with no PIN");
+
+        // **A session that names NO profile answers protected too**, which is the half that reads
+        // as harmless and is not: it is what a sign-in abandoned at the picker leaves on disk (the
+        // account token, the server and the roster are persisted the moment they exist; the pick
+        // never happened), and `pms_token()` on it is the OWNER's server token. The very next boot
+        // raises a picker over that file — a roster of >1 is exactly what it has — so answering
+        // "not protected" here put the owner's credentials behind BACK by a second road.
+        let mut abandoned = home("u-owner");
+        abandoned.user = UserRef::default();
+        assert!(abandoned.active_profile_is_protected(), "no profile chosen is not 'no PIN to be behind'");
+        let solo = Session { client_id: "cid".into(), account_token: "acct".into(), ..Default::default() };
+        assert!(solo.active_profile_is_protected());
+
+        // …and a uuid the roster does not name is treated as protected.
+        let mut unknown = home("u-owner");
+        unknown.home_users.clear();
+        assert!(unknown.active_profile_is_protected());
+        assert!(home("u-nobody").active_profile_is_protected());
+    }
+
     // ---- The FILE half: one writer at a time, and a whole file or none of it -------------------
     //
     // Everything below drives the real `save`/`peek`/`update` against a real file, so it needs a
@@ -934,7 +1106,7 @@ mod tests {
                 std::env::temp_dir().join(format!("plxnative-session-{}-{tag}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir); // a previous run that died mid-test
             std::fs::create_dir_all(&dir).expect("a writable temp dir");
-            *TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()) = Some(dir.join("auth.json"));
+            super::redirect_for_test(Some(dir.join("auth.json")));
             TempSession { dir }
         }
         fn file(&self) -> std::path::PathBuf {
@@ -947,7 +1119,7 @@ mod tests {
 
     impl Drop for TempSession {
         fn drop(&mut self) {
-            *TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            super::redirect_for_test(None);
             let _ = std::fs::remove_dir_all(&self.dir);
         }
     }

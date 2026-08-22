@@ -144,11 +144,19 @@ pub mod size {
     /// labels. Nothing that must be *read* renders smaller.
     pub const CAPTION: c_int = 24;
     /// Fine print — deliberately below the couch floor (explicit design direction, 2026-07-12,
-    /// re-tuned on-device 16 → 20 → 22: "bigger, but smaller than the meta line"): the small
-    /// info/synopsis text under the home/detail hero's title block, and the episode row's air
-    /// date. De-emphasis is the point — atmosphere copy beside an outsized title, not content
-    /// someone must read; labels the eye needs to catch (the SxEy kicker, meta lines) stay on
-    /// the regular rungs.
+    /// re-tuned on-device 16 → 20 → 22: "bigger, but smaller than the meta line"). De-emphasis is
+    /// the point — atmosphere copy beside an outsized title, not content someone must read; labels
+    /// the eye needs to catch (the SxEy kicker, meta lines) stay on the regular rungs.
+    ///
+    /// **NEITHER HERO'S SYNOPSIS IS ON THIS RUNG ANY MORE**, and this doc went on saying "the small
+    /// info/synopsis text under the home/detail hero's title block" for both of the releases in
+    /// which that was false of one of them and then of neither. Detail's blurb moved to `LABEL`/36
+    /// in `aa598bf2`, home's followed when the two were made one block
+    /// ([`crate::ui::hero_synopsis`], which holds the argument): a hero blurb is the longest run of
+    /// prose on its page, so it is READING copy and the recorded "smaller than the meta line"
+    /// directive is satisfied at `LABEL` 26 under a `BODY` 28 meta line. What is left here is the
+    /// episode row's air date, the rating-row provider captions, the Library's note line, the
+    /// player HUD's key capsule and the Source chip's handle — one-line labels, every one of them.
     pub const MICRO: c_int = 22;
 }
 
@@ -568,6 +576,31 @@ pub const TILE_MARK_SHADOW: [f32; 4] = with_a(BLACK, 0.60);
 /// Error/destructive signal ink — the wrong-PIN dot flash. Desaturated toward the palette's
 /// warm neutrals so it reads as a state, not an alarm.
 pub const DANGER: [f32; 4] = RED_400;
+/// How much [`DANGER`] a destructive control's IDLE plate carries — the design's 16%.
+///
+/// Named rather than written into [`CONTROL_DANGER_IDLE_FILL`] because it is the one number that
+/// decides whether the tint is a *hue* or an *alarm*: the plate has to read as tinted at ten feet
+/// and still not compete with the focused face, which is the whole fill. Retuning the destructive
+/// family is this line.
+pub const DANGER_IDLE_TINT: f32 = 0.16;
+/// The idle plate of a **destructive** control ([`ControlStyle::Danger`](crate::ui::widgets::ControlStyle::Danger)):
+/// the app's ordinary [`CONTROL_IDLE_FILL`] carrying [`DANGER_IDLE_TINT`] of [`DANGER`].
+///
+/// A derived token and not a palette stop, deliberately — the destructive plate IS the neutral one
+/// with a hue leaned into it, so retuning either the neutral or the danger stop moves this with
+/// them instead of leaving a third value behind. [`mix`] keeps the neutral's own `.92` alpha, which
+/// is what keeps the two idle plates the same MATERIAL and makes the hue the only difference
+/// between them.
+///
+/// The colour is a property of the ACTION and is worn while nothing is focused, so the label is
+/// named before the remote reaches it; the FILL is still a property of FOCUS
+/// ([`DANGER`] whole, under [`TEXT_PRIMARY`]). That split is what keeps a destructive control a
+/// PlxNative control rather than a red button borrowed from somewhere else.
+pub const CONTROL_DANGER_IDLE_FILL: [f32; 4] = mix(CONTROL_IDLE_FILL, DANGER, DANGER_IDLE_TINT);
+/// The label over [`CONTROL_DANGER_IDLE_FILL`] — the danger ink itself. The hue is stated twice on
+/// an idle destructive control (a tinted plate AND a tinted label) because at ten feet the plate
+/// alone is a shade of grey; the label is what names the action.
+pub const CONTROL_DANGER_IDLE_INK: [f32; 4] = DANGER;
 /// Dev counter's two human-visible buffer phases. The renderer holds each for 30 returned swaps,
 /// so motion is visible instead of red/green frames blending into yellow at panel refresh rate.
 pub const DIAG_FLIP_A: [f32; 4] = GREEN_400;
@@ -866,6 +899,75 @@ pub const RATING_MUTED: [f32; 4] = COOL_400;
 /// Card corner radius (tiles/shelves — `CardRow`'s rounded rect + its baked focus glow follow it).
 pub const CARD_RING_RAD: f32 = 14.0;
 
+/// **The ALERT PANEL corner** — the full-frame glass sheet a block opens with OK
+/// (`Alert Views.dc.html`), as opposed to the anchored menus a chip or a button drops. Those keep
+/// their own smaller corner (`item_menu` 20, `alt_sources` 20, `account_menu` 24, `glassload` 28):
+/// a menu hangs off a control and reads as part of it, while an alert owns the middle of the frame
+/// and is its own object.
+///
+/// **32, in the design's own words** — quoted rather than paraphrased, because all four alert
+/// panels were built against this one paragraph and three of them re-derived it independently:
+///
+/// > "Panel corner is 32px, one step over `--radius-panel` 24. It was tried at 60 — one whole
+/// > `--control-h`, so the panel would read as round as the pills inside it — and that is the
+/// > value that made the modal look like it came from somewhere else: at 14px on every tile and
+/// > 18px on a `TableView` row pill, this page has a restrained corner vocabulary and a 60px arc
+/// > leaves it. 32 stays inside that vocabulary while still reading as softer than a card, and
+/// > clears the 28px glass bevel so the chamfer runs inside the arc."
+///
+/// The tile's 14 is [`CARD_RING_RAD`] and the row pill's 18 is `table::PILL_RAD`, so that sentence
+/// is checkable against this tree rather than only against the mock. Two consequences are
+/// load-bearing rather than decorative. The **bevel clause**: below the 28px glass bevel the
+/// chamfer would run OUTSIDE the corner arc and the rim would break at each corner. And the
+/// **padding clause**, which the design leaves implicit and the panels make explicit — every one of
+/// them pads 48, and 32 is the largest corner whose arc still clears a 48px pad, so the eyebrow's
+/// cap-top and the footer's keycap sit beside the curve rather than inside it. That is why a panel
+/// quotes its radius and its padding together.
+///
+/// Deliberately ONE token rather than a literal per panel: the alert panels are a FAMILY, and a
+/// corner that drifted between them is exactly the drift `theme.rs` exists to kill. It very nearly
+/// did — this shipped as four constants under four names (`ALERT_CORNER_RAD`, `ALERT_PANEL_RAD`,
+/// `ALERT_RAD`, `RADIUS_PANEL`) before the four panels were merged into one tree.
+///
+/// One independent corroboration is worth keeping, because it was derived from the app rather than
+/// from the mock and it agrees: the exit alert's two answers are fully-rounded capsules at
+/// [`StatusOverlay::CTRL_H`](crate::ui::widgets::StatusOverlay::CTRL_H)`/2` = 30, so 32 sits a hair
+/// OVER the pills it contains — enough that the sheet is unmistakably the outer shape, not enough
+/// for it to become one. That is the design's "as round as the pills inside it" objection to 60,
+/// measured on the one panel that actually holds pills.
+pub const ALERT_PANEL_RAD: f32 = 32.0;
+
+/// **The alert panels' HEAD ladder** — eyebrow → title → subtitle, in the design's own `margin-top`s
+/// (`Alert Views.dc.html` §1B and §1C, which spell the identical four numbers).
+///
+/// It is a module rather than four loose constants for the reason [`ALERT_PANEL_RAD`] is one token:
+/// the panels are a FAMILY, and this ladder had already drifted. §1B and §1A each named the pair
+/// locally and agreed by luck; §1C spelled it a third way — `cap_h(CAPTION) + space::SM` and
+/// `cap_h(TITLE) + space::SM` — which is not the same arithmetic at all. Measured on the simulator
+/// at 1920×1080, the person panel's eyebrow sat **26px** above its name where the track panel's sat
+/// 38, and its name **45px** above its identity line where the spec says 56. That is what "PERSON is
+/// too close to the name" was, and no amount of looking at one panel on its own would have found it:
+/// the bug is only visible as the difference between two sheets nobody sees side by side.
+///
+/// **A rung ladder is the wrong tool here and that is why the drift happened.** `space::SM` is 16 —
+/// the nearest rung to both 14 and 12 — so spelling this in rungs rounds two DIFFERENT gaps to one
+/// number and inverts them: a kicker belongs to the title under it and must sit tighter than the
+/// title sits to its own subtitle, which 14-then-12… does not do either. The design's own answer is
+/// that both are sub-rung and neither is the other: 14 over a 24px eyebrow band, 12 under a 44px
+/// title band. Those two BANDS are half the ladder, which is why the leads live here too — a caller
+/// that advanced by measured cap heights instead is exactly how §1C ended up 12px tight.
+pub mod alert {
+    /// `line-height: 1` on the eyebrow — a caps run has no descenders to clear.
+    pub const EYEBROW_LEAD: f32 = super::size::CAPTION as f32; // 24
+    /// The eyebrow's `margin-bottom`, as the title's `margin-top:14`.
+    pub const GAP_EYEBROW_TITLE: f32 = 14.0;
+    /// `1.1` — tight, because a panel's title is one line by construction.
+    pub const TITLE_LEAD: f32 = super::size::TITLE as f32 * 1.1; // 44
+    /// The title's `margin-bottom`, as the subtitle's `margin-top:12`. A subtitle here is §1B's file
+    /// path or §1C's dot-separated identity line.
+    pub const GAP_TITLE_SUB: f32 = 12.0;
+}
+
 // ── Card treatment (Home Screen.dc.html): every tile = a soft drop shadow that GROWS with the focus
 // pop + a 1px perimeter edge-sheen, both FOLDED into the tile's own draw pass (FS_IMG for textured
 // tiles, FS_SRC for skeleton/chip fills), replacing the old glow ring. Applies to circles too. ──
@@ -891,3 +993,41 @@ pub const CARD_SHADOW_REST_BLUR: f32 = 11.0;
 pub const CARD_SHADOW_REST_DY: f32 = 4.0;
 /// Resting shadow ink alpha (unfocused); lerps up to [`CARD_SHADOW`]'s alpha on focus.
 pub const CARD_SHADOW_REST_A: f32 = 0.34;
+
+// ── The lift under a TRANSLUCENT panel — `widgets::text_block_highlight`'s 7% prose wash, the
+// detail page's About columns and its episode filmstrip's metadata row. ──
+//
+// **Why this is not the card triple above.** Two independent reasons, and both of them are about
+// being able to SEE THROUGH the thing casting the shadow.
+//
+// 1. A card hides whatever ink lands beneath it, so the card numbers were only ever tuned as a
+//    CONTACT — a tight 11px falloff at 0.34, read as the few px of it that escape past the tile's
+//    edge. Under a 7% wash the whole pool is on show, and at that weight and that tightness it
+//    reads as a drawn edge rather than as distance from the page. So this triple goes the other
+//    way: far wider, a third of the gradient, no boundary anywhere in it. (Note it is the GRADIENT
+//    that drops, not the ink — the alpha ends up slightly higher than the card's, see `_A`.)
+// 2. A 250x375 poster and a 560x400 prose panel are not the same object. The same falloff that
+//    disappears round a card's short arcs runs for hundreds of px along a straight edge here,
+//    which is precisely where the eye finds a line.
+//
+// (The FRAME the owner rejected on 2026-08-21 was a third thing again, and it was geometry, not
+// weight: `Painter::shadow`'s box cut leaves a full-strength band under the occluder's own rim.
+// `Painter::shadow_outside` cuts the rounded shape instead. These constants are what makes what is
+// left read as a lift; the cut is what stopped it reading as a box.)
+/// Penumbra (px) of the translucent panel's lift — **four times the card's**, and that ratio is the
+/// whole point. What makes a soft edge a SEEN one is the gradient, not the ink: the field peaks at
+/// half the alpha (the contact line, at the panel's own edge) and falls to nothing over this
+/// distance, so the card's 0.34-over-11px runs at ~0.015 alpha/px while this runs at ~0.005/px.
+/// Tuned by eye on the simulator against both call sites, at 44 and 60 px: everything from 44 up is
+/// edgeless, and past ~50 the pool stops hugging the panel and starts hazing the column NEXT to it.
+pub const TEXT_BLOCK_SHADOW_BLUR: f32 = 44.0;
+/// Downward offset (px) of the translucent panel's lift. Bigger than the card's resting 4, because
+/// the pool is the only cue that the panel is off the page: with no offset the ink rings the panel
+/// evenly, which is the shape of an outline rather than of a raised object.
+pub const TEXT_BLOCK_SHADOW_DY: f32 = 12.0;
+/// Ink alpha of the translucent panel's lift. A shade ABOVE the card's resting 0.34 rather than
+/// below it, which is the counter-intuitive half: spread over four times the distance the same ink
+/// is a third of the gradient, and 0.30 measured ~7 of 255 at the contact line on this page's
+/// ground — edgeless, and also back to having no altitude. The BLUR is what removes the edge; the
+/// alpha is what keeps the lift visible from a sofa.
+pub const TEXT_BLOCK_SHADOW_A: f32 = 0.45;

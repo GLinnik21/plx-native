@@ -354,6 +354,83 @@ Returns one `Metadata[0]` with everything from §2 **plus** `tagline`, `studio`,
 (streamType 1=video, 2=audio, 3=subtitle; `codec`, `language`, `languageCode`,
 `channels`, `displayTitle`).
 
+#### The Dolby Vision fields on a video stream (verified live 2026-08-21)
+
+**`docs/plex-openapi.json` does not model these.** Its `stream` schema carries 29 properties and
+not one `DOVI*` among them, so the spec cannot settle their spelling and neither could this file
+until now — they were read off the dev server directly, by sweeping **every movie and episode on
+it**: 540 leaves, of which **28 carry Dolby Vision** (8 movies, 20 episodes) across 34 video
+streams. A `streamType: 1` stream on a DV file carries **eight** keys, and all 34 send all eight —
+no shape on this server reports a profile without also reporting a compatibility id:
+
+```jsonc
+"DOVIPresent": true, "DOVIProfile": 8, "DOVILevel": 6, "DOVIVersion": "1.0",
+"DOVIBLPresent": true, "DOVIELPresent": false, "DOVIRPUPresent": true, "DOVIBLCompatID": 1
+```
+
+Numbers arrive as JSON numbers and the flags as **real JSON booleans**, so every one of them is
+read through `de_i64` (which accepts both). A non-DV stream sends **none** of them, which is why
+absence and a legitimate zero are indistinguishable field-by-field — see `metadata::Dovi`.
+
+Three are load-bearing for playback, because the buffer-feed pipeline feeds one elementary stream
+to a decoder that ignores the RPU, so the **base layer is what the panel gets**:
+
+| field | meaning | measured on this library |
+|---|---|---|
+| `DOVIProfile` | 5 = single-layer IPT-PQ (**no HDR10 fallback**), 7 = dual-layer, 8 = HDR10/SDR/HLG-compatible base | 26 P8 (6 movies + all 20 episodes), one P7, one P5 |
+| `DOVIBLCompatID` | base-layer cross-compatibility: 0 none, 1 HDR10, 2 SDR, 4 HLG | `1` on every P8, `0` on the P5 — and **`6` on the P7** |
+| `DOVIELPresent` | an enhancement layer rides in the file | `true` only on the P7 |
+
+**The P7's `DOVIBLCompatID` of 6 is the trap**: a "is it profile 5" test written as
+`DOVIBLCompatID == 0` waves every dual-layer file straight through. `DOVIELPresent` is the only
+field that identifies P7. Note also that the **P5 item sends no `colorTrc` at all**, so
+`DOVIPresent` is the only thing marking it as HDR.
+
+These are on the FULL item fetch only — `/library/sections/{id}/all` returns `Part[]` with no
+`Stream[]` array, so no DOVI field is reachable from a grid listing.
+
+#### What the server actually DOES with a Dolby Vision source (verified live 2026-08-21)
+
+**Refusing direct play is not the same as getting a re-encode, and on the file that matters most
+the difference is the whole bug.** `/video/:/transcode/universal/decision` was driven directly with
+this app's own re-encode query — `directPlay=0&directStream=1&videoResolution=3840x2160&maxVideoBitrate=60000`
+plus the dev TV's capability profile — against each of the three profiles:
+
+| item | `Part.decision` | the VIDEO stream's own `decision` | output carries DOVI? |
+|---|---|---|---|
+| P5, mp4, hevc 3840x1602 @ 24.7 Mbit | `transcode` | **`copy`** | **yes — `DOVIProfile: 5` intact** |
+| P7, mkv, hevc 3840x2160 | `transcode` | `transcode` | no |
+| P8.1, mkv, hevc 3840x2160 | `transcode` | `transcode` | no |
+
+`Part.decision=transcode` says only that the *container* changes. `directStream=1` is standing
+permission to **copy** a track, and PMS takes it whenever the source fits the caps the query
+carries — resolution, bitrate, and the profile's `add-limitation` axes, which are width, height and
+bit depth. **None of those axes can express "Dolby Vision"**, so the P5 file came back as the same
+IPT-PQ bitstream one container down: identical pixels, identical wrong colours, at the cost of a
+server transcode session. The P7 transcodes for its own reasons (an enhancement layer is not
+copyable), which is why testing only the dual-layer item would have shown a clean result.
+
+Withdrawing the permission is what makes the refusal real. Re-running the P5 with
+**`directStream=0` + `directStreamAudio=1`** (video re-encoded, audio still copied):
+
+```
+generalDecisionCode 2000 / transcodeDecisionCode 2003
+"File is unplayable. DoVi (Profile 5) color space is not supported."
+```
+
+So this PMS **cannot convert a Profile 5 file at all** — and says so, in a sentence the player's
+read-out quotes verbatim (`route::refusal` fires on general code 2000). That is the honest end of
+the road for this file on this server, and it is strictly better than a picture in the wrong
+colours with nothing on any surface to explain it. `TranscodeSpec::no_video_copy` is the flag, set
+only for a Dolby Vision refusal — a size or codec refusal is one the server's own caps already
+express, and a copy that satisfies them is a free win worth keeping.
+
+Two profile limitations were tried first and **both are ignored by PMS 1.43.2** — the decision was
+byte-identical to the unmodified one:
+`add-limitation(scope=videoCodec&scopeName=hevc&type=notMatch&name=video.dovi.profile&value=5)` and
+the `lowerBound` form on `video.dovi.blCompatId`. Don't re-try them; the client profile has no
+Dolby Vision axis.
+
 ### Review scores — `Rating[]` + the flat pair (verified live 2026-07-29, PMS 1.43.2)
 
 An item carries its review scores **twice**, in two shapes:

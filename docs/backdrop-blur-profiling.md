@@ -385,16 +385,30 @@ rougher, because the Kawase tap offsets scale with the source while the bilinear
 
 ## Part 5 — the other 88.6%: what the MAIN UI submits, and why removing 37% of it bought 0.8%
 
-> **The two instruments this part describes are NOT in this branch yet.** `ui::overdraw`,
-> `/tmp/plxnative-drawmask` and `/tmp/plxnative-heroground` live on **`blur/e4-overdraw`**, whose
-> history was rewritten with `filter-branch` and therefore shares no ancestry with the baseline
-> commits here — a direct merge conflicts in nine files and was correctly refused rather than
-> forced. Rebase that branch onto this one instead; it is now possible, because the shared baseline
-> those experiments were handed uncommitted is landed here. The numbers below stand on their own —
-> every one is a whole-frame `frame.ui` A/B with three interleaved repeats — but the recipes cannot
-> be re-run until that rebase happens. `ui::overdraw` is the only instrument in this study that can
-> attribute a fragment to a draw class, since the GPU counters are global, so it is the one worth
-> landing first.
+> **The instruments this part describes ARE in the tree now** — `ui::overdraw`,
+> `/tmp/plxnative-overdraw`, `/tmp/plxnative-drawmask` and `/tmp/plxnative-heroground`. They were
+> hand-transplanted from `blur/e4-overdraw` rather than merged: that branch's history was rewritten
+> with `filter-branch`, so it shares no ancestry with the baseline commits here, and a direct merge
+> conflicts in fifteen files while sitting ~24,000 lines behind — resolving it in the branch's
+> favour would delete the deliberately-kept nav-glass code among much else. Only the ledger, the
+> mask, the one-pass ground and their host tests came across; everything else on that branch had
+> already landed here by another route, in a later form.
+>
+> **Two things changed in the transplant and the recipes below reflect them.** The hero-ground
+> program is linked LAZILY, at its first draw rather than at `init_image`, because `devtriggers` is
+> compiled out of a release build and linking a shader that build can never reach was pure boot
+> cost. And all three triggers are registered in `dev::DIAG`: they are measurement knobs whose
+> method is an A/B against an unmasked control, and a non-DIAG trigger suppresses the boot
+> who's-watching picker — so the control leg and the masked leg would have booted to different
+> screens, making the difference between them the screen rather than the class being priced.
+>
+> **The paths below name the STABLE install's runtime root.** A flavoured install puts the same
+> names under `$(make -s print-rundir FLAVOR=<f>)` — `/tmp/com.beb.plxnative.debug` at the tracked
+> `FLAVOR ?= debug` default — so pasted verbatim they arm one install while `make run` launches the
+> other, and every leg is then measured on an unarmed screen. See `docs/two-installs.md`.
+>
+> The numbers below were taken before all of this and stand on their own — every one is a
+> whole-frame `frame.ui` A/B with three interleaved repeats.
 
 
 Part 4 priced the glass at +11.4% of frame GPU cycles and recorded that the main UI is the rest,

@@ -97,7 +97,7 @@ pub(crate) fn enabled() -> bool {
 }
 
 /// Flip the readout. Deliberately NOT persisted across launches: the reviewer flow is "open the
-/// menu, tick it, reproduce, photograph" inside one session, and a diagnostic overlay that
+/// menu, turn it on, reproduce, photograph" inside one session, and a diagnostic overlay that
 /// survives a restart is one a user can strand themselves with.
 pub(crate) fn toggle() {
     ON.fetch_xor(true, Ordering::Relaxed);

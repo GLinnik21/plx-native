@@ -55,7 +55,7 @@ impl AccountClient {
             format!("X-Plex-Version: {}", id::VERSION),
             format!("X-Plex-Platform: {}", id::PLATFORM),
             format!("X-Plex-Device: {}", id::DEVICE),
-            format!("X-Plex-Device-Name: {}", id::DEVICE_NAME),
+            format!("X-Plex-Device-Name: {}", id::device_name()),
             format!("X-Plex-Model: {}", id::MODEL),
             format!("X-Plex-Client-Identifier: {}", self.client_id),
         ];

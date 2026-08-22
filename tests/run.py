@@ -17,14 +17,22 @@ For each case in manifest.json this driver:
      resumes anything past 10s. One item is shared by five cases and another by three, so
      leaving it implicit turned "play from the start" into "resume from somewhere", varying with
      suite order and run history. Do not make the reset conditional again;
-  3. clears every /tmp/plxnative-* trigger on the TV, then writes only the ones this case needs;
-  4. runs `make run-stream TV=<tv>`, which relaunches the app and tails
-     /tmp/plxnative-events.log live;
+  3. clears every plxnative-* trigger in THIS install's runtime root, then writes only the
+     ones this case needs;
+  4. runs `make run-stream TV=<tv> FLAVOR=<f>`, which relaunches the app and tails its event
+     log live;
   5. filters the `smp_cb type=43 num=0 str=` flood and evaluates the per-op assertions
      CONTINUOUSLY as lines arrive, stopping the case the moment it passes — the manifest's
      run_secs is the cap, not the runtime (see stream_case for why that is sound, and
      --no-early to turn it off);
   6. records PASS/FAIL with the failing evidence line.
+
+Two builds can sit on one television -- com.beb.plxnative, the app users install, and
+com.beb.plxnative.debug beside it -- each with its own app directory, its own SAM id and its own
+runtime root (/tmp for stable, /tmp/<app id> for a flavoured install). Every run here drives
+exactly ONE of them: the flavour comes from --flavor, else the overlay's `flavour` key, else the
+Makefile's own default, and every path that follows is ASKED FOR rather than restated
+(`make -s print-rundir` / `print-eventlog`). See resolve_flavour.
 
 Security: the PMS X-Plex-Token is read from src/config.local.h at runtime and is NEVER
 printed, logged, or written to any file. The TV ssh creds already live in the committed
@@ -36,6 +44,7 @@ Usage:
   ./tests/run.py --list                 # list cases and what they cover
   ./tests/run.py --build                # cargo + make + make deploy, then run all cases
   ./tests/run.py --filter marker        # run only cases whose name contains "marker"
+  ./tests/run.py --flavor stable        # drive the OTHER install (see check_install first)
   ./tests/run.py                        # run every case (assumes app already deployed)
 
 Exit code is nonzero if any selected case fails.
@@ -65,8 +74,25 @@ MANIFEST_LOCAL = os.path.join(TESTS_DIR, "manifest.local.json")
 MANIFEST_LOCAL_EXAMPLE = MANIFEST_LOCAL + ".example"
 CONFIG_LOCAL_H = os.path.join(REPO_ROOT, "src", "config.local.h")
 
-# reference list of the dev triggers the app reads (apply_triggers now GLOB-clears /tmp/plxnative-*,
-# so this no longer has to be exhaustive — it's kept for humans / grep)
+# ---------------------------------------------------------------------------
+# WHICH INSTALL this run drives. All four are resolved once, by resolve_flavour(), before anything
+# is touched — and every one of them is ANSWERED BY THE MAKEFILE rather than computed here.
+#
+# That is the whole point: the flavour this harness resolved and the flavour it kills, launches and
+# greps for are then one value and cannot disagree. Closing install A while launching install B
+# reproduces SAM's stale-"running" no-op, and the run afterwards grades the other app's log — the
+# "plausible wrong data" failure, not a clean one.
+#
+# (The Makefile spells the variable FLAVOR; this repo's prose, the Rust half and the overlay key
+# spell the word flavour. Both spellings are deliberate, so neither side is being quoted wrong.)
+FLAVOUR = None          # "stable" | "debug"
+APPID = None            # com.beb.plxnative[.<flavour>]
+RUNDIR = None           # the runtime root: /tmp for stable, /tmp/<app id> for a flavoured install
+EVENTLOG = None         # <RUNDIR>/plxnative-events.log
+RUN_STREAM_MARK = None  # the remote command text — see _run_stream_pids()
+
+# reference list of the dev triggers the app reads (apply_triggers now GLOB-clears the runtime
+# root's plxnative-*, so this no longer has to be exhaustive — it's kept for humans / grep)
 ALL_TRIGGERS = [
     "plxnative-detail", "plxnative-detailplay", "plxnative-detailsec", "plxnative-detailcol",
     "plxnative-autoseek", "plxnative-menupick", "plxnative-menu", "plxnative-noaudio",
@@ -139,6 +165,12 @@ def load_manifest():
         if field not in local:
             _die_no_overlay(f"\n  (no {field!r} block)")
         manifest[field] = local[field]
+    # WHICH INSTALL to drive, and optional: absent means the Makefile's own default. An
+    # installation that always tests one build says so once, here, instead of typing --flavor on
+    # every invocation. Not validated here on purpose — the Makefile owns the whitelist and its
+    # parse-time $(error) names both the bad value and the allowed set on the first query.
+    if "flavour" in local:
+        manifest["flavour"] = local["flavour"]
     # test_user is optional by design: leaving it out runs as the owner (with a warning).
     if "test_user" in local:
         manifest["test_user"] = local["test_user"]
@@ -241,8 +273,8 @@ def fetch_managed_user_token(admin_token, host, port, user_id):
 # ---------------------------------------------------------------------------
 # A shared server is a separate authority: its own machineIdentifier and its own per-(user,server)
 # accessToken, and the account token gets a 401 from it. So a run that has to reach two servers
-# needs two credentials, which one /tmp/plxnative-token cannot carry -- that is what
-# /tmp/plxnative-servers (app: dev::servers) exists for.
+# needs two credentials, which one plxnative-token file cannot carry -- that is what
+# plxnative-servers (app: dev::servers) exists for.
 #
 # The overlay NAMES the server; it never holds its token. plex.tv's resource list is keyed by the
 # owner's account token, which the harness already reads from src/config.local.h for everything
@@ -370,7 +402,7 @@ def resolve_shared_server(admin_token, spec):
 
 
 def shared_servers_json(cfg, entry):
-    """The /tmp/plxnative-servers payload for this case/scene, or None if it wants one server.
+    """The plxnative-servers payload for this case/scene, or None if it wants one server.
 
     Opt-in, never blanket: a case declares `needs_shared_server` in manifest.json (or the whole run
     passes --shared-server). Injecting a second server into every case would change what Home shows
@@ -404,10 +436,70 @@ def ssh(tv, remote_cmd, timeout=30):
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
 
+def make_argv(target_args):
+    """The `make` command line every invocation in this file uses — FLAVOR included.
+
+    The flavour is threaded HERE and not at the call sites, of which there are eight across four
+    functions (kill x3, all, deploy, run, run-stream, and stream_case's Popen). One of them would
+    be forgotten, and a `make kill` that forgot it closes the app users installed while this run
+    drives the developer one — then grades a log nobody wrote. There is nothing to forget if the
+    wrapper owns it.
+    """
+    return ["make", "-s", "-C", REPO_ROOT] + target_args + [f"FLAVOR={FLAVOUR}"]
+
+
 def make(target_args, timeout, capture=True):
     """Invoke a make target from the repo root (absolute cwd so nothing drifts)."""
-    cmd = ["make", "-s", "-C", REPO_ROOT] + target_args
-    return subprocess.run(cmd, capture_output=capture, text=True, timeout=timeout)
+    return subprocess.run(make_argv(target_args), capture_output=capture, text=True,
+                          timeout=timeout)
+
+
+def make_query(goal, flavour=None):
+    """Ask the Makefile for one derived value (`make -s print-<x>`) — the only supported way.
+
+    NEVER `make -p` / `make -pn`, which is the obvious-looking alternative and is a trap: it prints
+    a recursive variable's UNEXPANDED DEFINITION, so `TV` comes back as the literal
+    `$(strip $(shell cat .tv-host ...))`, every ssh built from it fails, and the tool reports an
+    unreachable television that is awake and answering (tools/tv-session.sh documents the same trap
+    from the shell side). These goals are real echo recipes of real values, and the Makefile's
+    PURE_QUERY guard keeps a query free of side effects.
+    """
+    cmd = ["make", "-s", "-C", REPO_ROOT, goal] + ([f"FLAVOR={flavour}"] if flavour else [])
+    shown = " ".join(cmd)
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        sys.exit(f"cannot ask the Makefile which install to drive (`{shown}`): {e}")
+    if p.returncode != 0:
+        # A bad flavour lands here: the Makefile's parse-time $(error) names the value and the
+        # whitelist, which is a better message than anything this file could invent.
+        sys.exit(f"`{shown}` failed:\n{(p.stderr or p.stdout).strip()}")
+    out = p.stdout.strip()
+    if not out:
+        sys.exit(f"`{shown}` printed nothing — is {REPO_ROOT} this repo?")
+    return out
+
+
+def resolve_flavour(args, manifest):
+    """Decide which install this run drives, then ask the Makefile for everything that follows.
+
+    Order: --flavor, else the overlay's `flavour` key, else the Makefile's own default (which is
+    `debug`, deliberately — the dangerous id has to be typed). Nothing below is computed from the
+    flavour here. The app id, the runtime root and the event log come back from the same Makefile
+    the launch will use, so this harness cannot arm triggers in one root and grade a log in
+    another — and a future change to the naming rule reaches the harness for free.
+    """
+    global FLAVOUR, APPID, RUNDIR, EVENTLOG, RUN_STREAM_MARK
+    FLAVOUR = args.flavor or manifest.get("flavour") or make_query("print-flavor")
+    APPID = make_query("print-appid", FLAVOUR)
+    RUNDIR = make_query("print-rundir", FLAVOUR)
+    EVENTLOG = make_query("print-eventlog", FLAVOUR)
+    # The tail `make run-stream` ends in. _run_stream_pids() matches it against `ps` to find this
+    # harness's OWN ssh clients, so it has to be the text the Makefile actually runs: a copy that
+    # stops matching reaps nothing, and every case then leaks an ssh client holding a remote
+    # `tail -F` (125 of them piled up against the TV in one session the last time that happened).
+    RUN_STREAM_MARK = f"tail -F -n +1 {EVENTLOG}"
+    return FLAVOUR
 
 
 def pms_unscrobble(host, port, rk, token):
@@ -459,7 +551,7 @@ def pms_put_progress(host, port, rk, time_ms, token):
 # ---------------------------------------------------------------------------
 def triggers_for_case(case):
     """
-    Map a case's operations -> the /tmp/plxnative-* files to write on the TV.
+    Map a case's operations -> the plxnative-* files to write in the TV's runtime root.
     Returns a list of (filename, content-or-None) pairs; None => `touch` (empty marker).
     """
     files = [("plxnative-play", case["rk"])]  # the robust play trigger (fetches any rk)
@@ -488,10 +580,10 @@ def triggers_for_case(case):
 def key_inject_for_case(case):
     """(log-pattern, remote-token) for a case that presses a key MID-RUN, or None.
 
-    The app mkfifos /tmp/plxnative-remote and drains it every frame, so a token written while it
-    runs replays through the real key handler. Keying the write to a LOG LINE rather than to a
-    wall-clock delay is what makes it deterministic: the press lands the moment the control is
-    actually on screen, however long the resolve took.
+    The app mkfifos plxnative-remote in its runtime root and drains it every frame, so a token
+    written while it runs replays through the real key handler. Keying the write to a LOG LINE
+    rather than to a wall-clock delay is what makes it deterministic: the press lands the moment
+    the control is actually on screen, however long the resolve took.
     """
     for op in case["operations"]:
         if op["op"] == "skip":
@@ -500,24 +592,38 @@ def key_inject_for_case(case):
 
 
 def apply_triggers(tv, files, extra=None):
-    """Clear every /tmp/plxnative-* trigger (sparing the *.log files), then create the ones this case
-    needs, in one ssh round-trip. GLOB-based, not an enumerated list, so a newly-added app trigger can
-    never bleed between scenes — a stale plxnative-novsync would uncap vsync and false-PASS an FPS
-    scene, a stale plxnative-press/-login would derail a home scene. ALL_TRIGGERS above is now just a
-    human reference of the known triggers.
+    """Clear every plxnative-* trigger in THIS install's runtime root (sparing the *.log files),
+    then create the ones this case needs, in one ssh round-trip. GLOB-based, not an enumerated list,
+    so a newly-added app trigger can never bleed between scenes — a stale plxnative-novsync would
+    uncap vsync and false-PASS an FPS scene, a stale plxnative-press/-login would derail a home
+    scene. ALL_TRIGGERS above is now just a human reference of the known triggers.
+
+    The glob is scoped to RUNDIR, which is what keeps the two installs out of each other's way: the
+    stable root is /tmp itself, and `/tmp/plxnative-*` cannot match the flavoured root beside it
+    (`/tmp/com.beb.plxnative.debug` — the separator is a DOT for exactly this reason, since a
+    directory called `plxnative-debug` would read as an armed trigger to `dev::any_trigger_present`
+    and silently suppress the other install's who's-watching picker).
 
     `extra` is a raw shell command — or a list of them — appended to the same round-trip, for a
     trigger whose VALUE must not reach stdout (a PMS token) and so cannot go through the printed
     `files` list. Both credential triggers ride it: plxnative-token and plxnative-servers.
     """
+    # The root has to EXIST and be world-writable before anything is written into it. Two uids
+    # write here and neither can be made to go second: this ssh is ROOT and arms triggers before the
+    # app has ever booted, while the app runs jailed under its own uid and creates its logs here.
+    # Whoever creates the directory sets its mode — and umask masks mkdir's, hence the explicit
+    # chmod — so an owner-only mode locks the other one out. A root-owned event log the app cannot
+    # write stays 0 bytes, which every assertion in this file reports as "no line found", i.e.
+    # exactly like a total regression. A no-op for the stable flavour, whose root is /tmp (1777).
+    parts = [f"mkdir -p {RUNDIR} && chmod 1777 {RUNDIR}"]
     # wipe every trigger, keeping only the append-only logs (events/stderr/crash)
-    parts = ['for f in /tmp/plxnative-*; do case "$f" in *.log) ;; *) rm -f "$f";; esac; done']
+    parts.append(f'for f in {RUNDIR}/plxnative-*; do case "$f" in *.log) ;; *) rm -f "$f";; esac; done')
     for name, content in files:
         if content is None:
-            parts.append(f"touch /tmp/{name}")
+            parts.append(f"touch {RUNDIR}/{name}")
         else:
             # single-quote the content; rks / "0,6" / "mkv" never contain quotes
-            parts.append(f"printf '%s' '{content}' > /tmp/{name}")
+            parts.append(f"printf '%s' '{content}' > {RUNDIR}/{name}")
     for cmd in ([extra] if isinstance(extra, str) else (extra or [])):
         if cmd:
             parts.append(cmd)
@@ -996,12 +1102,13 @@ def _drain(stream, sink, done):
         done.set()
 
 
-# The remote command `make run-stream` ends in — unique enough to identify our own ssh clients.
-RUN_STREAM_MARK = "tail -F -n +1 /tmp/plxnative-events.log"
-
-
 def _run_stream_pids():
-    """PIDs of every local ssh/sshpass process carrying a run-stream tail."""
+    """PIDs of every local ssh/sshpass process carrying a run-stream tail.
+
+    RUN_STREAM_MARK is the tail `make run-stream` ends in, and it is DERIVED (resolve_flavour) from
+    `make -s print-eventlog` rather than written out here — the two installs tail two different
+    files, and a mark that stops matching the remote command text reaps nothing at all.
+    """
     out = subprocess.run(["ps", "-Ao", "pid,command"], capture_output=True, text=True).stdout
     pids = set()
     for ln in out.splitlines():
@@ -1024,14 +1131,20 @@ def teardown(tv):
       inherits a resume point on that rk — the exact contamination ee07506 removed between
       cases, reintroduced at the seam between runs. It is also what "I see FPS tests running"
       looks like from the outside, long after the suite printed its summary.
-    * THE INJECTED TOKENS STAY in /tmp/plxnative-token and /tmp/plxnative-servers: real
+    * THE INJECTED TOKENS STAY in the runtime root's plxnative-token and plxnative-servers: real
       per-(user,server) PMS access tokens -- and the second file carries someone ELSE'S server's
       too -- world-readable, on a device with a rooted sshd and a committed password. The normal
       path did clear them; every abnormal one left them. Both are covered because the wipe is a
-      GLOB over /tmp/plxnative-*, which is exactly why a new credential trigger needs no change
-      here; a credential file named anything else would need one.
+      GLOB over <runtime root>/plxnative-*, which is exactly why a new credential trigger needs
+      no change here; a credential file named anything else would need one.
     * ssh CLIENTS. Per-case reaping covers a case that ends normally, but not the harness dying
       between cases.
+
+    All three are scoped to the install this run drove and to nothing else: `make kill` carries
+    the flavour (so `closeByAppId` names this id, and `fuser -k` is INODE-scoped on this app dir —
+    a name-based kill would take the other install down with it), and the trigger wipe is a glob
+    inside this flavour's runtime root. A run against the developer build must leave the app users
+    installed exactly as it found it, running or not.
 
     Never raises: a teardown that throws on an unreachable TV would mask the real failure (and
     on Ctrl-C would replace the user's interrupt with a traceback about ssh).
@@ -1062,6 +1175,69 @@ def arm_teardown(tv):
     _TEARDOWN_TV = tv
 
 
+# The app's first log line, written before anything can fail (app.rs's plex_run): which install
+# produced this log, and whether it was built with the dev triggers at all.
+RE_INSTALL = re.compile(r"install: id=(\S+) flavour=\S+ .*\bfeatures=(\S+)")
+
+
+def check_install(lines, cfg):
+    """Refuse to grade a log that did not come from the install this run drove.
+
+    Returns True once the boot line has been seen and matched, False while it has not arrived yet;
+    aborts the WHOLE run otherwise — not the case, for the reason below.
+
+    Nothing else can answer this question. Both binaries are named `plxnative`, so `pidof` matches
+    both on this busybox set, and `pkg/plxnative` is a path every flavour and every configuration
+    writes, so an md5 against the local build proves only that SOME build matches. This one line is
+    the only witness, which is why its absence is also a refusal (see require_install).
+
+    The un-caught failure is what makes this worth an abort. A RELEASE build reads no triggers at
+    all — `devtriggers` is compiled out, so `dev::read` is None at COMPILE time — which means the
+    injected PMS token is ignored, the app has no session, and it parks on the who's-watching
+    picker having played nothing. Every assertion then fails as "the line has not appeared YET",
+    which `failed_for_good` deliberately never settles, so every case burns its full run_secs and
+    the summary reads like a catastrophic regression — for a build that is working perfectly.
+    Grading the OTHER install's log is the same failure, quieter.
+    """
+    for ln in lines:
+        m = RE_INSTALL.search(ln)
+        if not m:
+            continue
+        got, feats = m.group(1), m.group(2)
+        if got != cfg["appid"]:
+            raise SystemExit(
+                f"WRONG INSTALL: the app that booted logs id={got}, but this run drives "
+                f"{cfg['appid']} (flavour {FLAVOUR}). Every path this harness used belongs to "
+                f"{cfg['appid']} — the triggers, the injected token, {EVENTLOG} — so the whole "
+                f"run would grade a log it never armed. Deploy the flavour you meant "
+                f"(`make FLAVOR={FLAVOUR} install` once, then `make FLAVOR={FLAVOUR} deploy`), or "
+                f"select the other one with --flavor.")
+        if feats != "dev":
+            raise SystemExit(
+                f"RELEASE BUILD on {got}: its boot line says features={feats}, so the whole "
+                f"`devtriggers` surface was compiled out and it reads NOTHING under {RUNDIR} — not "
+                f"the injected PMS token, not one trigger this harness wrote. It boots to the "
+                f"who's-watching picker and plays nothing, and every case would burn its full cap "
+                f"failing as if the player were broken. Ship a dev build to this install: "
+                f"`make FLAVOR={FLAVOUR} deploy` without RELEASE=1.\n"
+                f"  NB the STABLE install is normally a release build by design — `make deploy` "
+                f"refuses a dev build on that id unless ALLOW_DEV_ON_STABLE=1 — so `--flavor "
+                f"stable` lands here unless you deliberately put a dev build there.")
+        return True
+    return False
+
+
+def require_install(lines, cfg):
+    """check_install for a COMPLETE log, where an absent boot line is itself a refusal."""
+    if check_install(lines, cfg) or not lines:
+        return  # an empty log is graded by the assertions themselves ("no line found")
+    raise SystemExit(
+        f"no `install:` boot line in {EVENTLOG}. The deployed binary predates it (app.rs's "
+        f"plex_run writes it first, before anything can fail), so nothing in this log says which "
+        f"of the two installs produced it — and an unattributable log is exactly what this check "
+        f"exists to refuse. `make FLAVOR={FLAVOUR} deploy` ships one that carries it.")
+
+
 def stream_case(case, cfg, cap_s, early=True, inject=None):
     """Launch via `make run-stream` and grade the log as it streams.
 
@@ -1075,8 +1251,8 @@ def stream_case(case, cfg, cap_s, early=True, inject=None):
     # accumulate one per case — 125 of them piled up against the TV in a single session before
     # this was noticed, which is real load on a device whose dropbear has a connection limit.
     pre_pids = _run_stream_pids()
-    proc = subprocess.Popen(["make", "-s", "run-stream", f"TV={cfg['tv']}"],
-                            cwd=REPO_ROOT, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+    proc = subprocess.Popen(make_argv(["run-stream", f"TV={cfg['tv']}"]),
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                             text=True, bufsize=1,
                             # own process group: terminating `make` alone would orphan the
                             # sshpass/ssh child and leave the remote tail (and the app) attached.
@@ -1085,6 +1261,7 @@ def stream_case(case, cfg, cap_s, early=True, inject=None):
     threading.Thread(target=_drain, args=(proc.stdout, lines, done), daemon=True).start()
 
     injected = inject is None
+    install_ok = False
     started = time.monotonic()
     # cap_s is APP runtime, so the clock starts at the app's first log line — not here. Anchoring
     # it at ssh-start instead would silently shorten every case by the close+launch overhead
@@ -1099,6 +1276,10 @@ def stream_case(case, cfg, cap_s, early=True, inject=None):
             time.sleep(EVAL_EVERY_S)
             ended = done.is_set()  # sample BEFORE grading, so we grade what arrived last
             now = time.monotonic()
+            # As early as possible: a wrong or release install disqualifies the whole run, and
+            # finding that out at the first case costs one cap instead of the entire suite's.
+            if not install_ok:
+                install_ok = check_install(list(lines), cfg)
             if deadline is None:
                 if lines:
                     deadline = now + cap_s
@@ -1109,7 +1290,7 @@ def stream_case(case, cfg, cap_s, early=True, inject=None):
             if not injected and any(inject[0] in l for l in lines):
                 injected = True
                 # the FIFO has a live reader (the app drains it per frame), so this returns at once
-                ssh(cfg["tv"], f"printf '{inject[1]}\\n' > /tmp/plxnative-remote", timeout=15)
+                ssh(cfg["tv"], f"printf '{inject[1]}\\n' > {RUNDIR}/plxnative-remote", timeout=15)
                 print(f"    injected key '{inject[1]}' on '{inject[0]}'")
             if early:
                 snap = list(lines)
@@ -1144,6 +1325,10 @@ def stream_case(case, cfg, cap_s, early=True, inject=None):
                 os.kill(pid, signal.SIGKILL)
             except (ProcessLookupError, PermissionError):
                 pass
+    # And once more now the log is complete. The in-loop check cannot refuse an ABSENT boot line —
+    # while a case is still running, "not there" and "not there yet" are the same thing.
+    if not install_ok:
+        require_install(list(lines), cfg)
     return list(lines), time.monotonic() - started, stopped_early, settled
 
 
@@ -1311,17 +1496,17 @@ def run_case(case, cfg, token, verbose):
     # The token rides `extra=` rather than `files` so its value never reaches stdout — the only
     # reason it used to need a round-trip of its own. Ordering is what matters and is preserved:
     # plxnative-token is cleared by the glob wipe that opens the command, and rewritten after it.
-    # Always required — the binary carries no baked token, so /tmp/plxnative-token is the only way
-    # an automated run gets PMS access.
+    # Always required — the binary carries no baked token, so plxnative-token in the runtime root
+    # is the only way an automated run gets PMS access.
     files = triggers_for_case(case)
     extras = []
     if cfg.get("inject_token"):
-        extras.append(f"printf '%s' '{token}' > /tmp/plxnative-token")
+        extras.append(f"printf '%s' '{token}' > {RUNDIR}/plxnative-token")
     # …and, for a case that declares it needs one, the SECOND server's credentials — same rules:
     # value never on stdout, cleared by the glob wipe above and again by teardown().
     srv_json = shared_servers_json(cfg, case)
     if srv_json:
-        extras.append(f"printf '%s' {sh_squote(srv_json)} > /tmp/plxnative-servers")
+        extras.append(f"printf '%s' {sh_squote(srv_json)} > {RUNDIR}/plxnative-servers")
     apply_triggers(tv, files, extra=extras)
     shown = ", ".join(n + ("=" + c if c is not None else "") for n, c in files)
     print(f"    triggers: {shown}")
@@ -1493,9 +1678,9 @@ def run_fps_scene(scene, cfg, token):
     # about the SECOND server needs the first one's credentials to get past the boot gate to Home at
     # all — otherwise it sits on the QR sign-in screen and grades a route it never reached.
     if (is_player or srv_json) and cfg.get("inject_token"):
-        extras.append(f"printf '%s' '{token}' > /tmp/plxnative-token")
+        extras.append(f"printf '%s' '{token}' > {RUNDIR}/plxnative-token")
     if srv_json:
-        extras.append(f"printf '%s' {sh_squote(srv_json)} > /tmp/plxnative-servers")
+        extras.append(f"printf '%s' {sh_squote(srv_json)} > {RUNDIR}/plxnative-servers")
     apply_triggers(tv, files, extra=extras)
     shown = ", ".join(n + ("=" + c if c is not None else "") for n, c in files)
     print(f"    triggers: {shown or '(none)'}   run {run_secs}s, skip first {warmup} sample(s)")
@@ -1509,6 +1694,10 @@ def run_fps_scene(scene, cfg, token):
         print("    [FAIL] make run timed out")
         return False, "make run timed out"
     lines = filter_log(proc.stdout + "\n" + proc.stderr)
+    # Same refusal as the playback cases, and it matters at least as much here: a scene graded
+    # against the wrong install's log, or against a release build that never read its triggers,
+    # fails on the <5-samples guard and reads as "the app never reached this screen".
+    require_install(lines, cfg)
 
     alls = parse_loop(lines, route, overlay)
     samples = alls[warmup:]  # heartbeat is ~1/sec, so drop the first `warmup` matching samples
@@ -1678,6 +1867,14 @@ def main():
                          "NB distinct from fps_scenes' ui|player 'tier'.")
     ap.add_argument("--list", action="store_true", help="list cases and exit")
     ap.add_argument("--tv", default=None, help="override TV IP (default from manifest.local.json)")
+    # Deliberately NOT `choices=`: the Makefile's FLAVORS list is the one whitelist, and a second
+    # copy here would be the copy that goes stale. A bad value fails on the first `make -s print-*`
+    # with the Makefile's own parse-time error, which names the allowed set.
+    ap.add_argument("--flavor", default=None, metavar="stable|debug",
+                    help="which INSTALL to drive (default: the overlay's `flavour` key, else the "
+                         "Makefile's own default). The two builds have separate app ids, separate "
+                         "runtime roots and separate sign-ins; everything this run touches is "
+                         "derived from this one choice")
     ap.add_argument("--verbose", action="store_true", help="print evidence for passing assertions too")
     ap.add_argument("--no-early", action="store_true",
                     help="don't stop a case as soon as it passes — run the full manifest run_secs. "
@@ -1697,10 +1894,18 @@ def main():
     args = ap.parse_args()
 
     manifest = load_manifest()   # case definitions + the gitignored local overlay, merged
+    # BEFORE anything else, including --list: every path this run uses hangs off it, and the
+    # queries are offline and side-effect free (see make_query / the Makefile's PURE_QUERY).
+    resolve_flavour(args, manifest)
     cfg = {
         "tv": args.tv or manifest["tv"],
         "pms": manifest["pms"],
         "no_early": args.no_early,
+        # carried in cfg as well as in the module globals so the two consumers read the same value:
+        # the globals are what builds a command line, this is what check_install grades a log
+        # against.
+        "flavour": FLAVOUR,
+        "appid": APPID,
     }
     cases = manifest["cases"]
     if args.suite:
@@ -1723,6 +1928,7 @@ def main():
                 gates += f" fps_ceiling={s['fps_ceiling']}"
             mark = "  [+2nd server]" if s.get("needs_shared_server") else ""
             print(f"fps:{s['name']:28s} tier={s.get('tier','ui'):6s} {tag:16s} {gates}{mark}")
+        print(f"\ninstall: {APPID} [{FLAVOUR}] — runtime root {RUNDIR}")
         # Offline, so this reports what the OVERLAY says — nothing is resolved and plex.tv is not
         # called. It is still the answer to "will the [+2nd server] entries above actually run".
         # `describe_spec` rather than `describe_server` for exactly that reason: with no resolved
@@ -1758,6 +1964,7 @@ def main():
                 token = fetch_managed_user_token(admin_token, cfg["pms"]["host"],
                                                  cfg["pms"]["port"], test_user["id"])
                 cfg["inject_token"] = True
+        print(f"install: {APPID} [{FLAVOUR}] — triggers and log under {RUNDIR}")
         arm_teardown(cfg["tv"])
         if args.build:
             do_build(cfg["tv"])
@@ -1784,6 +1991,7 @@ def main():
                                          test_user["id"])
         cfg["user_label"] = f'{test_user.get("title", "managed")} (id={test_user["id"]})'
         cfg["inject_token"] = True
+    print(f"install: {APPID} [{FLAVOUR}] — triggers and log under {RUNDIR}")
     print(f"test identity: {cfg['user_label']}  (playback + watch-history isolation)")
 
     # The second server, if anything selected needs one. AFTER the identity above and before the TV

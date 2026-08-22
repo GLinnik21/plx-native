@@ -96,8 +96,16 @@ pub(crate) fn on_ok() -> InfoAction {
     }
 }
 
+/// The action column's FOCUS POP — one spring per button ([`crate::ui::widgets::CtlPop`]). Two, the
+/// whole of [`actions`].
+static mut CTL_POP: crate::ui::widgets::CtlPop<2> = crate::ui::widgets::CtlPop::new();
+
 pub(crate) fn update(dt: f32) {
     pop().update(dt);
+    // The card's focus walks the tabs above these buttons too, and `FOCUS` is the button index only
+    // while it is inside the column — outside it, every pop closes.
+    let f = usize::try_from(unsafe { addr_of!(FOCUS).read() }).ok().filter(|&i| i < actions().len());
+    unsafe { (*addr_of_mut!(CTL_POP)).step(f, dt) };
 }
 
 // ---- helpers ----
@@ -120,7 +128,7 @@ fn meta_badge(p: Painter, x: f32, cy: f32, text: &str) -> f32 {
 /// player uses for the video lane, and this is the only place the app names a video codec to a
 /// user. An unknown codec is upper-cased rather than dropped: "Converting · AV1" is still the
 /// truth, and inventing a friendly name for a codec we have never seen would not be.
-fn video_codec_name(codec: &str) -> String {
+pub(crate) fn video_codec_name(codec: &str) -> String {
     match codec.to_ascii_lowercase().as_str() {
         "h264" | "avc" | "avc1" => "H.264".to_string(),
         "hevc" | "h265" | "hvc1" | "hev1" => "HEVC".to_string(),
@@ -258,6 +266,7 @@ pub(crate) fn draw() {
             crate::ui::widgets::Button::new(cs.as_ptr(), theme::size::BODY, Rect::new(bx, by, bw, bh))
                 .icon(icon)
                 .focused(i as c_int == focus)
+                .scale(unsafe { addr_of!(CTL_POP).as_ref().unwrap().scale(i) })
                 .draw(&env, p);
         }
         by += bh + 16.0;

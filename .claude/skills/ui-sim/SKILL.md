@@ -54,7 +54,14 @@ make sim-shot SIM_DIR=/tmp/sim-b SIM_SHOT=/tmp/sim-b/home.png     # safe, simult
 
 Inside a root live that instance's dev triggers, its remote FIFO and its event log — the same
 names and the same contents as on the TV, so **every `tv-session` recipe transfers verbatim**.
-With no `SIM_DIR` the root is `/tmp`, exactly as on the device.
+With no `SIM_DIR` the root is `/tmp/plxnative-sim` (the Makefile's default); `/tmp` is the *device's* root, not this one's.
+
+**The flavour axis does not reach here.** The TV now carries two installs with two runtime roots,
+so `tv-session` recipes name theirs via `make -s print-rundir FLAVOR=…`; an explicit instance root
+outranks all of that in `paths::resolve_runtime_dir`, so the simulator is steered by `SIM_DIR`
+alone and takes no `FLAVOR`. Translate a device recipe by substituting `$SIM_DIR` for whatever
+runtime root it names — the trigger and log FILE names are identical either way, which is what
+makes the recipes transfer at all.
 
 `SIM_PMS`/`SIM_PORT` default to `src/config.local.h`. The host must be a **numeric IP**:
 `stream.rs` has no DNS resolver here either.
@@ -91,9 +98,11 @@ Three things, and notably no webOS NDK and no nightly:
 
 ## Boot into a specific screen
 
-Identical to the TV: arm a trigger in the instance root. The catalog is the source —
-`grep -rhoE '/tmp/plxnative-[a-z0-9]+' rust-modules/src src | sort -u` — and `tv-session` owns the
-screen-to-trigger recipes.
+Identical to the TV: arm a trigger in the instance root. The catalog is the source, and the
+command that produces it lives in `CLAUDE.md` (the "The catalog is the source, not this list"
+bullet) — use that one, not a copy: it has **two** greps, because a single path grep silently
+under-reports the four triggers named nowhere but their `dev::flag`/`dev::read` call. `tv-session`
+owns the screen-to-trigger recipes.
 
 ```sh
 touch $SIM_DIR/plxnative-library            # boot into the browse grid
@@ -131,6 +140,12 @@ past `press::LONG_MS`), and `shot` (simulator only).
 
 A desktop keyboard also works directly in `make sim-run`: arrows, RETURN, ESC (`is_ok`/`is_back`
 have always accepted keyboard keys), plus space=pause, `p`=play, `s`=stop, backspace=BACK.
+
+**`back` at Home's root raises the EXIT ALERT** (`ui::exit_alert`), it does not end the process —
+so a `back` too many leaves a modal question on screen and the next `shot` captures *that*, not the
+page you were driving toward. `back` again dismisses it (so does `ok`, which lands on the default
+*Cancel*); `right` then `ok` is what actually quits. Arm `$SIM_DIR/plxnative-noexitconfirm` if a
+script wants the old one-press exit.
 
 ### Three traps, each of which has already cost an hour
 

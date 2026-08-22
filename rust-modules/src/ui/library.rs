@@ -25,8 +25,11 @@
 use crate::pms::PmsMovie;
 use crate::ui::card_row::{self, RowStyle};
 use crate::ui::consts::*;
+// The Sources ROW MODEL lives one module over, because it is drawn on TWO surfaces: this
+// panel, and the first-run route that asks the same question before Home (`ui::onboard`).
+use crate::ui::source_list::{self, Level, SrcAction, Tail};
 use crate::ui::icons::Icon;
-use crate::ui::popover::Popover;
+use crate::ui::popover::{Opener, Popover};
 use crate::ui::table::{Row, Section, TableView};
 use crate::ui::theme;
 use crate::ui::widgets::{Art, Pill, Spinner, StatusKind};
@@ -42,7 +45,7 @@ const COLS: usize = 6;
 const LGAP: f32 = (SCR_W - 2.0 * MARGIN_X - COLS as f32 * CARD_W) / (COLS as f32 - 1.0);
 const TOOL_Y: f32 = 134.0;
 const TOOL_H: f32 = 52.0;
-const GRID_TOP: f32 = 214.0;
+pub(crate) const GRID_TOP: f32 = 214.0;
 // The top-chrome scrim's own numbers used to live here — a knee at 188, its .40 alpha, and a 56px
 // scroll-linked appear. They are `widgets::nav_scrim`'s now, DERIVED from `GRID_TOP` rather than
 // spelled: the design system tokenises this treatment for every full-screen route that scrolls a
@@ -55,11 +58,19 @@ const GRID_TOP: f32 = 214.0;
 // short linear ramp instead of the knee read as a harsh bar shadow with a visible bottom edge.
 /// Row pitch: card + the focused under-label band (title + caption) before the next row.
 const PITCH: f32 = CARD_H + 96.0;
-use crate::ui::widgets::TOP_BAR_Y; // the shared top-bar chrome lives in widgets
 
 // ---- screen state (main-thread statics, same discipline as home.rs) -------------------------
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Area {
+    /// The shared top bar's PROFILE CHIP, at the margin left of the pills. Not this screen's
+    /// control — `widgets` owns its rect, its hit test and its unfurl — but this screen owns
+    /// whether its own focus is standing on it, which is the half that used to be missing: the chip
+    /// was drawn here and focusable only on Home.
+    ///
+    /// Reached the way it is on every screen that wears the bar: **LEFT off the first pill**, with
+    /// RIGHT walking back onto it. The chip is the bar's leftmost stop, so that is the only walk
+    /// the geometry admits; DOWN leaves the band exactly as it does from [`Area::Tabs`].
+    Chip,
     Tabs,
     Toolbar,
     Grid,
@@ -264,31 +275,6 @@ enum Chip {
     Filter,
 }
 
-/// The two levels of the Sources panel, swapped by the pills at its top — the same swap the
-/// player's track menu makes between Audio and Subtitles.
-///
-/// They differ in MEDIUM as well as in position, and that is the design's rule: a **mark** says
-/// where you are, a **word** says what is set, and no row ever says both. So Browse draws one tick
-/// and no words, On Home draws every row's word and no ticks — neither level mirrors the other's
-/// marks.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Level {
-    /// a picker: one tick, on the library you are looking at; OK closes the panel
-    Browse,
-    /// toggles: `On`/`Off` at the trailing edge; OK flips and the panel stays open
-    OnHome,
-}
-
-/// What a row of the Sources panel does. Built beside the rows, indexed by the same global row
-/// index the `TableView` reports — including the separator, which does nothing and can never be
-/// focused, but still occupies an index.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum SrcAction {
-    None,
-    /// browse (Browse level) or pin (On Home level) this section
-    Library(usize),
-    Recheck,
-}
 /// What an OK / click means for app.rs (everything else is consumed internally).
 pub(crate) enum Action {
     None,
@@ -434,8 +420,8 @@ fn flush() {
 // The grid's data swap is deferred to the fade floor, but a CONTROL must acknowledge a press on
 // the frame it happens. So the pills/chips resolve through the queued [`Pending`] when there is
 // one and through the committed store otherwise. There is exactly ONE pending value, so the chip,
-// the pill and the menu checkmark can never disagree with each other — and none of them touches
-// `browse`'s query state, so the store stays coherent for the whole fade.
+// the pill and the menu's own `On`/`Off` read-out can never disagree with each other — and none of
+// them touches `browse`'s query state, so the store stays coherent for the whole fade.
 //
 // Do NOT "fix" the 70 ms by committing the query state early and deferring only the store wipe:
 // `browse::maybe_spawn` scans the OLD listing for holes and `pump` splices the reply in at
@@ -449,7 +435,10 @@ fn view_section() -> usize {
         _ => crate::browse::cur(),
     }
 }
-/// The unwatched-filter state the Filter menu's checkmark and the Filter chip's value should show.
+/// The unwatched-filter state the Filter menu's trailing `On`/`Off` read-out and the Filter chip's
+/// value should show — the QUEUED one while a switch is in flight. The switch row is rebuilt from
+/// this the frame OK lands, so the word flips under the finger while `browse` is still tearing the
+/// listing down and re-querying it; there is no mark in the leading column to flip instead.
 fn view_unwatched() -> bool {
     match pending() {
         Pending::Unwatched(v) => v,
@@ -860,6 +849,33 @@ fn tab_focus() -> c_int {
     }
 }
 
+/// The band DOWN off the shared top bar lands in — the toolbar normally, the failure read-out when
+/// the chips it would otherwise land on are not drawn. One expression, because both stops on that
+/// bar ([`Area::Chip`] and [`Area::Tabs`]) leave it downward and a screen whose two halves of one
+/// control disagreed about where DOWN goes is the bug this whole change is about.
+fn below_top_bar() -> Area {
+    if toolbar_n() > 0 {
+        Area::Toolbar
+    } else {
+        Area::Status
+    }
+}
+
+/// **Where this screen's focus is on the SHARED top bar** — the one question `widgets` asks of
+/// every screen that wears it, so the strip's capsules and the profile chip's unfurl are animated
+/// in one place rather than three. A menu takes the bar's focus away entirely, which is what
+/// [`tab_focus`] already says for the pills.
+pub(crate) fn top_focus() -> crate::ui::widgets::TopFocus {
+    use crate::ui::widgets::TopFocus;
+    if area() == Area::Chip && !menu_open() {
+        return TopFocus::Chip;
+    }
+    match tab_focus() {
+        i if i >= 0 => TopFocus::Pill(i as usize),
+        _ => TopFocus::Away,
+    }
+}
+
 /// The pill focus LANDS on when it walks up into the tab row.
 fn own_pill() -> usize {
     // The pill that REPRESENTS this section, which for a borrowed library is its type's — and then
@@ -1213,7 +1229,7 @@ pub(crate) fn update(dt: f32) {
     // it tracks THIS section's pill, which `enter` already put on screen, so it holds still.
     // the VIEW section, so the strip travels to the pressed pill on the press frame while the grid
     // dissolves under it
-    crate::ui::widgets::tab_row_update(crate::browse::tab_of_section(view_section()) as c_int + 1, tab_focus(), dt);
+    crate::ui::widgets::tab_row_update(crate::browse::tab_of_section(view_section()) as c_int + 1, top_focus(), dt);
     if menu_open() {
         pop().update(dt);
         table().update(dt, table_rect().h - crate::ui::table::PAD_V);
@@ -1284,18 +1300,33 @@ pub(crate) fn move_focus(sym: c_uint) {
     }
     unsafe {
         match area() {
+            Area::Chip => {
+                // The bar's leftmost stop: LEFT has nowhere to go, RIGHT is the only way back into
+                // the pills, and DOWN leaves the band by exactly the rule the pills use — the same
+                // [`below_top_bar`] call, not a restatement of it, so the two exits cannot drift.
+                if sym == SDLK_RIGHT {
+                    AREA = Area::Tabs;
+                    TAB_F = 0;
+                } else if sym == SDLK_DOWN {
+                    AREA = below_top_bar();
+                }
+            }
             Area::Tabs => {
                 // Home + every section: the row scrolls the far pills into view, so focus may
                 // walk to the last one (it used to stop at a hard cap of 4 sections)
                 let n = crate::ui::widgets::tab_count();
-                if sym == SDLK_LEFT && TAB_F > 0 {
-                    TAB_F -= 1;
+                if sym == SDLK_LEFT {
+                    // …and off the FIRST pill, LEFT reaches the profile chip beside it — the same
+                    // walk Home has always had, now that the chip is a stop here too
+                    if TAB_F > 0 {
+                        TAB_F -= 1;
+                    } else {
+                        AREA = Area::Chip;
+                    }
                 } else if sym == SDLK_RIGHT && TAB_F + 1 < n {
                     TAB_F += 1;
                 } else if sym == SDLK_DOWN {
-                    // DOWN goes to the first band that is DRAWN — the toolbar normally, the failure
-                    // read-out when the chips it would land on are not there
-                    AREA = if toolbar_n() > 0 { Area::Toolbar } else { Area::Status };
+                    AREA = below_top_bar();
                 }
             }
             Area::Toolbar => {
@@ -1444,6 +1475,11 @@ pub(crate) fn on_ok() -> Action {
         return Action::None;
     }
     match area() {
+        // The chip's press is the SAME press on all three screens that wear the bar, so `app.rs`
+        // answers it once, ahead of this ladder (`key_ok`'s `TopFocus::Chip` arm) — the destination
+        // is the account menu wherever you are standing, unlike a pill, whose destination depends
+        // on the screen. This arm is therefore unreachable in practice and stays for totality.
+        Area::Chip => Action::None,
         Area::Tabs => tab_pill_action(unsafe { addr_of!(TAB_F).read() }),
         Area::Toolbar => {
             // matched on the CHIP, never on its index: the row is two chips long with one source
@@ -1491,7 +1527,9 @@ pub(crate) fn back() -> bool {
         unsafe { AREA = Area::Grid };
         return true;
     }
-    if area() != Area::Tabs {
+    // …and the CHIP counts as the tab bar for this rule: it is a stop on the same shared control,
+    // so a BACK from it is already "focus is up in the chrome" and the next one leaves.
+    if !matches!(area(), Area::Tabs | Area::Chip) {
         unsafe {
             AREA = Area::Tabs;
             TAB_F = own_pill(); // `flush` above has made the chrome and the store agree
@@ -1580,90 +1618,17 @@ fn menu_stale() -> bool {
     match menu() {
         Menu::Sort { built } => *built != crate::browse::sorts().len(),
         Menu::Genre { built } => *built != crate::browse::genres().len(),
-        Menu::Source { gen, .. } => *gen != crate::browse::sections_gen(),
+        Menu::Source { gen, .. } => *gen != crate::browse::source_list_gen(),
         Menu::Filter | Menu::None => false,
     }
 }
 
 // ---- the Sources list ------------------------------------------------------------------------
-
-/// THE ROW MODEL of the two-level Sources panel, pure over its inputs so it is host-testable
-/// without a live section table (which is also why `browse` hands out owned [`SrcGroup`]/[`SrcRow`]
-/// projections rather than borrows of its statics).
-///
-/// The levels never mirror each other's marks. **Browse** is a picker: one tick, on the library you
-/// are looking at, and no words. **On Home** is a set of switches: every row states its value as
-/// the word `On`/`Off` at the trailing edge, and no ticks. A mark says where you are, a word says
-/// what is set, and no row is allowed to say both.
-///
-/// Returns the sections beside one [`SrcAction`] per global row index — the separator included,
-/// which does nothing but still occupies an index.
-fn source_sections(
-    level: Level,
-    groups: &[crate::browse::SrcGroup],
-    rows: &[crate::browse::SrcRow],
-) -> (Vec<Section>, Vec<SrcAction>) {
-    let mut out: Vec<Section> = Vec::new();
-    let mut acts: Vec<SrcAction> = Vec::new();
-    for (gi, g) in groups.iter().enumerate() {
-        let mine = rows.iter().filter(|r| r.src == gi);
-        // a server whose libraries we have never learned contributes no group at all — a header
-        // over nothing reads as broken, and D's answer for a source that cannot be reached on a
-        // FIRST run is absence
-        if mine.clone().next().is_none() {
-            continue;
-        }
-        // the header is the MACHINE, its accessory the PERSON — the one place in the app a machine
-        // is named, and the reason every other surface can say only the handle. An unreachable
-        // group also SAYS so there, and says it FIRST: the accessory is elided from the right, so
-        // leading with the state means a long handle gives way rather than the fact that the server
-        // is not answering. It is a state in the same register as the rows' own `On`/`Off`.
-        let accessory = match (g.reachable, g.handle.is_empty()) {
-            (true, _) => g.handle.clone(),
-            (false, true) => "Not reachable".to_string(),
-            (false, false) => format!("Not reachable \u{b7} {}", g.handle),
-        };
-        let mut sec = Section::new(g.name.clone()).accessory(accessory).dim(!g.reachable);
-        for r in mine {
-            let mut row = Row::new(r.title.clone());
-            row = match level {
-                Level::Browse => row.checked(r.current).detail(r.count_line.clone()),
-                Level::OnHome => row
-                    .toggle(r.pinned)
-                    // the LAST pinned library: the value dims, the label keeps live ink, and the
-                    // sub-line states the rule. Not the whole row — dim means unavailable, and this
-                    // is the library that works.
-                    .value_dim(r.last_pinned)
-                    .detail(if r.last_pinned {
-                        "Home needs one library".to_string()
-                    } else {
-                        r.count_line.clone()
-                    }),
-            };
-            acts.push(SrcAction::Library(r.section));
-            sec = sec.row(row);
-        }
-        out.push(sec);
-    }
-    // …and the one row that is not a library, last, under a separator. It rides BOTH levels, which
-    // is what keeps their row counts — and therefore the panel's height — identical.
-    if let Some(last) = out.last_mut() {
-        last.rows.push(Row::separator());
-        acts.push(SrcAction::None);
-        // no leading glyph, deliberately: on the Browse level that column carries the picker's
-        // tick, and an action mark in it would be a second grammar for one column
-        last.rows.push(Row::new("Check for new shares"));
-        acts.push(SrcAction::Recheck);
-    }
-    (out, acts)
-}
-
-/// Where the cursor sits. On OPEN it lands on the library you are browsing; on a rebuild — a level
-/// swap, a pin flip, a source's libraries landing — it HOLDS, because the two levels list the same
-/// rows in the same order and the design's whole claim about the swap is that nothing moves.
-fn source_sel(rows: &[crate::browse::SrcRow], keep: Option<i32>) -> i32 {
-    keep.unwrap_or_else(|| rows.iter().position(|r| r.current).map(|i| i as i32).unwrap_or(0))
-}
+//
+// The ROW MODEL is `ui::source_list` — the same builder the first-run route mounts, so the panel
+// and that route cannot drift on which column carries a mark, which carries a word, or what an
+// unreachable group says. What is left here is the panel: its level state, its cursor, and the
+// popover it lives in.
 
 /// Build (or rebuild in place) the Sources panel at the current level.
 fn build_source_menu(keep: bool) {
@@ -1672,11 +1637,11 @@ fn build_source_menu(keep: bool) {
     // only read, so nothing can move between here and the build today — but recording it after
     // would silently adopt a landing this panel was not built from, and that is a rebuild lost
     // rather than one too many.
-    let table_gen = crate::browse::sections_gen();
+    let table_gen = crate::browse::source_list_gen();
     let groups = crate::browse::source_groups();
     let rows = crate::browse::source_rows();
-    let (secs, acts) = source_sections(level, &groups, &rows);
-    let sel = source_sel(&rows, keep.then(|| table().sel));
+    let (secs, acts) = source_list::sections(level, &groups, &rows, Tail::Recheck);
+    let sel = source_list::sel(&rows, keep.then(|| table().sel));
     // the panel IS its key: the generation these rows were projected from and one action per row,
     // installed together and dropped together by [`close_menu`]
     set_menu(Menu::Source { gen: table_gen, acts });
@@ -1868,7 +1833,7 @@ fn menu_commit(sel: i32) {
             let (unwatched_row, genre_row) = filter_rows();
             if sel == unwatched_row {
                 request(Pending::Unwatched(!view_unwatched()));
-                open_filter_menu(true); // rebuilt from `view_unwatched()` — the check flips at once
+                open_filter_menu(true); // rebuilt from `view_unwatched()` — its `On`/`Off` flips at once
                 table().sel = unwatched_row;
             } else if sel == genre_row {
                 build_genre_menu(false);
@@ -2097,7 +2062,7 @@ fn chip_strs() -> &'static [ChipStrs] {
 /// dim + regular. Every chip on this toolbar OPENS A MENU, which is why the trailing glyph is
 /// always a chevron: the third chip — a value-less capsule that WAS its own toggle, wearing an
 /// amber disc when on — is gone (2026-08-13), because the Filter menu it sat beside already
-/// carries "Unwatched only" as a checkable row, and one state deserves one control.
+/// carries "Unwatched only" as a SWITCH row, and one state deserves one control.
 fn toolbar_chip(p: Painter, x: f32, cs: &ChipStrs, icon: Icon, focused: bool) -> Rect {
     let sz = theme::size::LABEL;
     let r = Rect::new(x, TOOL_Y, cs.w, TOOL_H);
@@ -2147,9 +2112,6 @@ pub(crate) fn draw() {
     let pg = p.alpha(xf().alpha());
     let sc = unsafe { addr_of!(SCROLL).read() }.pos;
     let focused_i = focus_idx();
-    // the focused card draws LAST (pass 2) while the grid OR the rail owns focus — a rail
-    // jump keeps the landed card visibly anchored
-    let focused_pass = matches!(area(), Area::Grid | Area::Rail) && !menu_open();
 
     // ---- the content region: a grid, or the ONE read-out that stands in for it ----------------
     // The spinner and the failure draw on `p`, not `pg`: a status must stay legible while the
@@ -2157,6 +2119,9 @@ pub(crate) fn draw() {
     // The empty line rides `pg` because it IS a function of the listing, and dissolves with it.
     let t = total();
     let read = readout();
+    // …and whether PASS 2 runs at all — one predicate, read here, by the neighbour loop that skips
+    // the cell pass 2 owns, and by the lift over a context menu's scrim ([`focused_card_drawn`]).
+    let focused_pass = focused_card_drawn(read, t);
     let mut status_btn = Rect::new(-1.0, -1.0, 0.0, 0.0);
     match read {
         Readout::Loading => {
@@ -2234,25 +2199,8 @@ pub(crate) fn draw() {
     // chrome: the toolbar/pills win, so a focused card scrolling through the top band slides
     // beneath the Sort/Filter chips instead of popping over them (Home's convention; this used to
     // draw after the chrome and inverted it).
-    if focused_pass && t > 0 && read == Readout::Grid {
-        let (r, c) = unsafe { (addr_of!(GR).read(), addr_of!(GC).read()) };
-        let y = GRID_TOP + r as f32 * PITCH - sc;
-        let x = MARGIN_X + c as f32 * (CARD_W + LGAP);
-        // mid-transit of a page/letter jump the focused row can be off-screen for a few
-        // frames — skip its resolve+draw until the scroll spring brings it on
-        if on_axis(y, CARD_H, SCR_H, GLOW_PAD) {
-            let s = unsafe { addr_of!(FOCUS_S).read() }.pos * crate::ui::press::scale();
-            let rect = Rect::new(x, y, CARD_W, CARD_H).scaled(s);
-            let m = crate::browse::item(focused_i);
-            let label = m
-                .map(|mm| match mm.year {
-                    y if y > 0 => card_row::TileLabel::titled(&mm.title, &y.to_string()),
-                    _ => card_row::TileLabel::title(&mm.title),
-                })
-                .unwrap_or_default();
-            let resume = m.and_then(PmsMovie::resume_frac);
-            card_row::draw_focused(pg, Art::Poster(m), rect, s, &RowStyle::HOME, resume, &label);
-        }
+    if focused_pass {
+        draw_focused_card(pg);
     }
 
     // ---- top chrome: scrim under it once the grid has scrolled, then chip + pills + toolbar --
@@ -2266,11 +2214,17 @@ pub(crate) fn draw() {
     // that was already fading out from under it — visible on the panel. `TOOL_Y + TOOL_H` is the
     // lowest thing this bar draws, which is exactly what the shared element wants.
     crate::ui::widgets::nav_scrim(p, TOOL_Y + TOOL_H, GRID_TOP, sc);
-    // the Library screen has no chip focus stop (its top-band focus is the tab row), so the chip
-    // never unfurls here — expand 0.
-    let cd = crate::ui::widgets::CHIP_D;
-    crate::ui::widgets::profile_chip(pk, Rect::new(MARGIN_X, TOP_BAR_Y, cd, cd), 0.0);
+    // the shared bar, both stops: the centred pills, and then the chip — which unfurls when THIS
+    // screen's focus is on it, where it used to be drawn with a hard-coded `expand: 0.0` because it
+    // could not be focused here at all.
+    //
+    // **The chip goes LAST, over the track**, and that order is load-bearing now that it unfurls on
+    // this screen: the focused chip grows the profile NAME to its right, far enough with a long
+    // name to reach the centred track, and drawn first it went under the track's own scrim. Home
+    // has always drawn it in this order for exactly that reason; this screen could get away with
+    // the other one only while the chip here was frozen shut.
     crate::ui::widgets::draw_tab_row(pk);
+    crate::ui::widgets::profile_chip(pk);
 
     // the focused index comes from `tool_f` — the same clamped authority `focused_chip` reads, so
     // the chip wearing the ring and the chip OK activates are one chip
@@ -2328,7 +2282,13 @@ pub(crate) fn draw() {
         // already-drawn grid) and the panel's own list, and they are separable only by measuring
         // them apart. Zero-overhead with the trigger off.
         use crate::ui::profile::phase;
-        let mp = phase("menu.scrim", || pop().painter(0.45, 20.0));
+        // `scrim_lifting` + `content_painter`, which is exactly what `painter` does with the chip
+        // LIFTED back out of the dim between the two halves — the chips are drawn above, so
+        // without it a chip recedes under its own menu.
+        let mp = phase("menu.scrim", || {
+            pop().scrim_lifting(0.45, &Opener::drawn(redraw_menu_chip));
+            pop().content_painter(20.0)
+        });
         phase("menu.panel", || {
             let r = panel_rect();
             pop().panel(mp, r, 24.0);
@@ -2342,6 +2302,138 @@ pub(crate) fn draw() {
             table().draw(mp, table_rect());
         });
     }
+}
+
+/// **Is the grid's PASS 2 — the focused card — drawn at all this frame?**
+///
+/// ONE predicate, asked by the page's own draw (which also uses it to SKIP that cell in the
+/// neighbour loop, so the two halves of the two-pass draw cannot disagree about which cell is
+/// pass 2's) and by [`redraw_focused_card`]'s lift over a context menu's scrim. Spelled once
+/// because those must agree exactly: a lift is a SECOND draw of a card the page already drew, so a
+/// condition that is looser here paints a magnified card the page itself left out — over the dim,
+/// where it would be the only thing on screen at full strength.
+///
+/// `read`/`total` are passed in because the draw already holds both; the lift re-reads them.
+fn focused_card_drawn(read: Readout, total: usize) -> bool {
+    // the focused card draws LAST (pass 2) while the grid OR the rail owns focus — a rail
+    // jump keeps the landed card visibly anchored
+    matches!(area(), Area::Grid | Area::Rail) && !menu_open() && total > 0 && read == Readout::Grid
+}
+
+/// The focused grid cell's UNMAGNIFIED frame, or None while it is off-screen mid-jump (a page or
+/// letter jump leaves the focused row off the panel for a few frames, and nothing there may resolve
+/// a texture). The one place this cell's geometry is written — both the drawn card and the rect the
+/// context menu anchors beside scale it.
+fn focused_card_base() -> Option<Rect> {
+    let (r, c) = unsafe { (addr_of!(GR).read(), addr_of!(GC).read()) };
+    let sc = unsafe { addr_of!(SCROLL).read() }.pos;
+    let y = GRID_TOP + r as f32 * PITCH - sc;
+    if !on_axis(y, CARD_H, SCR_H, GLOW_PAD) {
+        return None;
+    }
+    Some(Rect::new(MARGIN_X + c as f32 * (CARD_W + LGAP), y, CARD_W, CARD_H))
+}
+
+/// The focused grid card's rect at its **focus magnification** — what the item context menu is
+/// anchored beside.
+///
+/// `press::scale()` is deliberately left out, for `home::focused_card_rect`'s reason: the hold that
+/// opens the menu cancels the press in the same breath, so anchoring off the transient dip would
+/// leave the panel beside a card that springs back out from under it.
+pub(crate) fn focused_card_rect() -> Option<Rect> {
+    Some(focused_card_base()?.scaled(unsafe { addr_of!(FOCUS_S).read() }.pos))
+}
+
+/// The grid's PASS 2 — the focused card and its under-label, over its neighbours.
+///
+/// A function rather than the tail of the grid loop because it is drawn TWICE while the item
+/// context menu is up: once in its own z-order, and once more over the modal scrim
+/// ([`redraw_focused_card`]). One body, so the lifted copy is the drawn card.
+fn draw_focused_card(pg: Painter) {
+    let Some(base) = focused_card_base() else { return };
+    let s = unsafe { addr_of!(FOCUS_S).read() }.pos * crate::ui::press::scale();
+    let rect = base.scaled(s);
+    let m = crate::browse::item(focus_idx());
+    let label = m
+        .map(|mm| match mm.year {
+            y if y > 0 => card_row::TileLabel::titled(&mm.title, &y.to_string()),
+            _ => card_row::TileLabel::title(&mm.title),
+        })
+        .unwrap_or_default();
+    let resume = m.and_then(PmsMovie::resume_frac);
+    card_row::draw_focused(pg, Art::Poster(m), rect, s, &RowStyle::HOME, resume, &label);
+}
+
+/// Re-draw the focused grid card ON TOP of a modal scrim — this screen's half of
+/// [`crate::ui::popover::Opener`], for the item context menu opened over the browse grid.
+///
+/// The alpha is the page's own CONTENT fade (`page_alpha × Xfade`), the same `pg` the grid draws
+/// on: a card lifted on the bare page alpha would stay bright through a re-query that is dissolving
+/// the grid it belongs to.
+pub(crate) fn redraw_focused_card() {
+    crate::ui::guard(|| {
+        // The page's OWN pass-2 predicate, asked again rather than approximated: a lift is only
+        // ever the card the page drew, so the two must be one rule.
+        if !focused_card_drawn(readout(), total()) {
+            return;
+        }
+        let p = Painter::root().alpha(crate::ui::nav::page_alpha() * xf().alpha());
+        // **Cut at the chrome**, which on this screen is not defensive: the grid's pass 2 is drawn
+        // BEFORE the toolbar precisely so a focused card scrolling through the top band slides
+        // beneath the Sort/Filter chips instead of popping over them, and a lift drawn after
+        // everything would invert exactly that. `TOOL_Y + TOOL_H` is the lowest thing the top bar
+        // draws — the same line `nav_scrim` fades from. Set and cleared in one breath, as
+        // `Painter::clip`'s global GL state requires.
+        let cut = TOOL_Y + TOOL_H;
+        p.clip(Rect::new(0.0, cut, SCR_W, SCR_H - cut));
+        draw_focused_card(p);
+        p.clip_clear();
+    });
+}
+
+/// The toolbar chip an open chip menu hangs off — its index in [`chips`], or None when no menu is
+/// open. The [`Opener`](crate::ui::popover::Opener) side of [`redraw_menu_chip`].
+///
+/// Matched on the [`Chip`] and never on a position, for the reason the enum exists at all: the row
+/// is two chips long with one source and three with two, so an index is not an identity.
+fn menu_chip() -> Option<usize> {
+    menu_chip_of(menu(), chips())
+}
+
+/// [`menu_chip`]'s rule, pure — the open menu and the drawn chip row in, an index into that row out.
+/// Split from its two live reads so the mapping is host-gradeable: the row's LENGTH moves without
+/// input (a second source is granted, or a failed listing collapses `CHIPS_MANY` to
+/// `CHIPS_SOURCE_ONLY`), which is exactly the condition an index-based answer gets wrong.
+fn menu_chip_of(m: &Menu, chips: &[Chip]) -> Option<usize> {
+    let want = match m {
+        Menu::None => return None,
+        Menu::Source { .. } => Chip::Source,
+        Menu::Sort { .. } => Chip::Sort,
+        // Genre is drilled into FROM Filter and keeps that chip's panel — one popover, one opener
+        Menu::Filter | Menu::Genre { .. } => Chip::Filter,
+    };
+    chips.iter().position(|c| *c == want)
+}
+
+/// Re-draw the chip an open menu belongs to, above that menu's scrim.
+///
+/// The chips are drawn BEFORE the scrim (they are top chrome and the panel hangs under them), so
+/// without this a chip dims under its own menu — the same bug the focused card had, on the one
+/// control on screen the panel is about.
+///
+/// Drawn `focused: false`, which is not a simplification but exactly what the first pass drew:
+/// `tool_focus` already answers false while a menu is open, because focus is IN the panel.
+fn redraw_menu_chip() {
+    crate::ui::guard(|| {
+        let Some(i) = menu_chip() else { return };
+        let rects = unsafe { addr_of!(TOOL_RECTS).read() };
+        let (Some(cs), Some(r)) = (chip_strs().get(i), rects.get(i)) else { return };
+        if r.w <= 0.5 {
+            return; // never drawn this frame (the read-out collapsed the row) — nothing to lift
+        }
+        let p = Painter::root().alpha(crate::ui::nav::page_alpha());
+        toolbar_chip(p, r.x, cs, Icon::ChevronDown, false);
+    });
 }
 
 /// The Sources panel's level switch: two segmented pills at the panel top, the shared
@@ -2624,13 +2716,70 @@ mod tests {
         assert_eq!(focused_pill(), None, "a menu owns the frame; the row underneath is not focused");
         set_menu(Menu::None);
 
-        for a in [Area::Grid, Area::Toolbar, Area::Rail, Area::Status] {
+        // `Area::Chip` is in this list deliberately: the chip is a stop on the SAME shared bar, so
+        // it is the one band where "the top bar has focus" and "a pill has focus" differ — a chip
+        // that reported a pill would carry a highlight across to Home that nobody was standing on.
+        for a in [Area::Chip, Area::Grid, Area::Toolbar, Area::Rail, Area::Status] {
             unsafe { AREA = a };
             assert_eq!(focused_pill(), None, "focus is not on the tab row");
         }
 
         unsafe { AREA = area0; TAB_F = tab0 };
         set_menu(menu0);
+        clear();
+    }
+
+    /// **The profile chip is a real focus stop here too, and it is reached the way it is on every
+    /// screen that wears the shared bar.**
+    ///
+    /// The chip is drawn on Home, this screen and Search, and used to be activatable on Home alone
+    /// — the rect and the hit test are `widgets`' now, and what each screen still owns is where its
+    /// own focus is. The walk is the geometry's: the chip sits at the margin LEFT of the centred
+    /// pills, so ◀ off the first pill is the only approach and ▶ is the way back. DOWN leaves the
+    /// band by [`below_top_bar`], the same expression the pills use.
+    ///
+    /// Graded through [`top_focus`] — the value `widgets::tab_row_update` animates the bar from and
+    /// `app.rs` routes OK on — so "the chip is focused" cannot mean one thing to the unfurl and
+    /// another to the press. Takes `PEND` like its neighbours: it moves `AREA`/`TAB_F`.
+    #[test]
+    fn the_profile_chip_is_the_bars_leftmost_stop() {
+        use crate::ui::widgets::TopFocus;
+        let _g = PEND.lock().unwrap_or_else(|e| e.into_inner());
+        clear();
+        let (area0, tab0) = unsafe { (addr_of!(AREA).read(), addr_of!(TAB_F).read()) };
+        let menu0 = take_menu();
+        set_menu(Menu::None);
+
+        unsafe { AREA = Area::Tabs; TAB_F = 0 };
+        assert_eq!(top_focus(), TopFocus::Pill(0), "the row holds the FIRST pill");
+        move_focus(SDLK_LEFT);
+        assert_eq!(top_focus(), TopFocus::Chip, "◀ off the first pill reaches the chip");
+        for _ in 0..4 {
+            move_focus(SDLK_LEFT); // nothing further left: it must not wrap or underflow
+        }
+        assert_eq!(top_focus(), TopFocus::Chip, "the chip is the end of the row, not a step before one");
+
+        move_focus(SDLK_RIGHT);
+        assert_eq!(top_focus(), TopFocus::Pill(0), "▶ walks back onto the pill it left");
+
+        // DOWN out of the band, from BOTH stops, lands in the same place — the one thing that
+        // would read as the chip being a different control from the pills beside it.
+        unsafe { AREA = Area::Tabs };
+        move_focus(SDLK_DOWN);
+        let from_pills = area();
+        unsafe { AREA = Area::Chip };
+        move_focus(SDLK_DOWN);
+        assert!(area() == from_pills, "DOWN off the chip must land where DOWN off the pills lands");
+        assert_eq!(top_focus(), TopFocus::Away, "…and off the bar entirely — neither chip nor pill");
+
+        // A menu owns the frame, so the bar underneath holds nothing — the chip's half of the rule
+        // `focused_pill` already keeps for the pills.
+        unsafe { AREA = Area::Chip };
+        set_menu(Menu::Sort { built: 0 });
+        assert_eq!(top_focus(), TopFocus::Away, "a panel is up; the chip under it is not focused");
+
+        set_menu(menu0);
+        unsafe { AREA = area0; TAB_F = tab0 };
         clear();
     }
 
@@ -2798,13 +2947,13 @@ mod tests {
     fn the_two_levels_never_mirror_each_others_marks() {
         let (g, r) = two_sources();
 
-        let (browse, _) = source_sections(Level::Browse, &g, &r);
+        let (browse, _) = source_list::sections(Level::Browse, &g, &r, Tail::Recheck);
         let m = marks(&browse, r.len());
         assert_eq!(m.iter().filter(|(t, _)| *t).count(), 1, "exactly one tick — the library you are on");
         assert!(m[0].0, "…and it is on the current library");
         assert!(m.iter().all(|(_, w)| w.is_none()), "Browse states no values: no pins are drawn here");
 
-        let (home, _) = source_sections(Level::OnHome, &g, &r);
+        let (home, _) = source_list::sections(Level::OnHome, &g, &r, Tail::Recheck);
         let m = marks(&home, r.len());
         assert!(m.iter().all(|(t, _)| !t), "On Home draws no ticks — it is not a picker");
         assert_eq!(
@@ -2821,7 +2970,7 @@ mod tests {
     #[test]
     fn a_server_is_a_group_and_an_unreachable_one_dims_whole_while_still_reading_on() {
         let (mut g, r) = two_sources();
-        let (secs, _) = source_sections(Level::OnHome, &g, &r);
+        let (secs, _) = source_list::sections(Level::OnHome, &g, &r, Tail::Recheck);
         assert_eq!(secs.len(), 2);
         assert_eq!((secs[0].header.as_str(), secs[0].accessory.as_str()), ("mac-mini", ""));
         assert_eq!((secs[1].header.as_str(), secs[1].accessory.as_str()), ("nas-home", "friend"));
@@ -2830,7 +2979,7 @@ mod tests {
         g[1].reachable = false;
         let mut r = r;
         r[2].pinned = true; // pinned AND unreachable: the state the design calls out by name
-        let (secs, _) = source_sections(Level::OnHome, &g, &r);
+        let (secs, _) = source_list::sections(Level::OnHome, &g, &r, Tail::Recheck);
         assert!(secs[1].dim, "the whole group dims, header included");
         assert!(!secs[0].dim, "…and only that group");
         assert_eq!(secs[1].rows[0].toggle, Some(true), "it still reads On — nothing was turned off");
@@ -2839,7 +2988,7 @@ mod tests {
 
         // a source whose libraries we never learned contributes no group at all: a header over
         // nothing reads as broken, and absence is the answer for a share that has never answered
-        let (secs, _) = source_sections(Level::Browse, &g, &r[..2]);
+        let (secs, _) = source_list::sections(Level::Browse, &g, &r[..2], Tail::Recheck);
         assert_eq!(secs.len(), 1);
     }
 
@@ -2850,7 +2999,7 @@ mod tests {
     fn the_last_pinned_library_dims_its_value_and_states_the_rule() {
         let g = vec![group("mac-mini", "", true)];
         let r = vec![lib(0, 0, "Movies", true, true, true), lib(0, 1, "TV Shows", false, false, false)];
-        let (secs, _) = source_sections(Level::OnHome, &g, &r);
+        let (secs, _) = source_list::sections(Level::OnHome, &g, &r, Tail::Recheck);
         let last = &secs[0].rows[0];
         assert!(last.value_dim, "the value dims");
         assert!(!last.dim, "the label keeps live ink — the row is not unavailable");
@@ -2867,7 +3016,7 @@ mod tests {
     fn the_recheck_row_sits_last_under_a_separator_on_both_levels() {
         let (g, r) = two_sources();
         for level in [Level::Browse, Level::OnHome] {
-            let (secs, acts) = source_sections(level, &g, &r);
+            let (secs, acts) = source_list::sections(level, &g, &r, Tail::Recheck);
             let rows: Vec<&Row> = secs.iter().flat_map(|s| s.rows.iter()).collect();
             assert_eq!(rows.len(), acts.len(), "one action per row index, separator included");
             assert_eq!(rows.len(), r.len() + 2, "three libraries, a separator and the recheck row");
@@ -3187,5 +3336,34 @@ mod tests {
         for drive in 0..9 {
             assert_eq!(rail_scroll_target(0.0, drive, 9), 0.0);
         }
+    }
+
+    /// **The chip an open menu is lifted out of its own scrim by, resolved by IDENTITY.**
+    ///
+    /// The chip row is two long with one source and three with two, so the same menu is a different
+    /// index on the two — and the whole point of [`Chip`] is that an index is not an identity (a
+    /// `_` catch-all here is the bug that once made inserting Source at 0 open the Sort menu).
+    /// Getting this wrong is silent in a particular way: the LIFT would land on the wrong chip, so
+    /// the menu's own chip stays dimmed under it while a neighbour brightens for no reason.
+    #[test]
+    fn the_lifted_chip_is_the_one_its_menu_belongs_to_whatever_the_row_length() {
+        // Genre keeps the FILTER chip's panel: it is drilled into from Filter, not a fourth chip
+        let cases = [
+            (Menu::Source { gen: 0, acts: Vec::new() }, Chip::Source),
+            (Menu::Sort { built: 3 }, Chip::Sort),
+            (Menu::Filter, Chip::Filter),
+            (Menu::Genre { built: 7 }, Chip::Filter),
+        ];
+        for (m, want) in &cases {
+            for row in [&CHIPS_MANY[..], &CHIPS_ONE[..]] {
+                let expect = row.iter().position(|c| c == want);
+                assert_eq!(menu_chip_of(m, row), expect, "{m:?} on a {}-chip row", row.len());
+            }
+        }
+        // …and the two rows that draw no chip for the open menu answer NOTHING rather than an index
+        // into a row that is not on screen — a failed listing collapses the row to Source alone.
+        assert_eq!(menu_chip_of(&Menu::Sort { built: 0 }, &CHIPS_SOURCE_ONLY), None);
+        assert_eq!(menu_chip_of(&Menu::Filter, &CHIPS_NONE), None);
+        assert_eq!(menu_chip_of(&Menu::None, &CHIPS_MANY), None, "no menu, nothing to lift");
     }
 }

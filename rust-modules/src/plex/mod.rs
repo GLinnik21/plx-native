@@ -50,6 +50,11 @@ pub(crate) mod session;
 // 8-second timeout and a probe that answers as the wrong machine.
 pub(crate) mod probe;
 
+// Which libraries feed Home, PER PROFILE. Pure policy over the section table and one profile's
+// persisted answer — no store, no screen — so the ownership default, the recorded answer and the
+// never-empty floor are graded on the host rather than observed on a television.
+pub(crate) mod pins;
+
 // The plex.tv METADATA PROVIDER (`discover.provider.plex.tv`) — a third service, but one that
 // shares the account API's transport + identity headers exactly, so it only adds an
 // `impl AccountClient` block (same pattern as the PMS op files above).

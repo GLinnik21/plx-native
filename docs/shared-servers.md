@@ -76,7 +76,9 @@ which this repo already builds, at `rust-modules/src/plex/timeline.rs:56`.
 **Consequences, all client-side:**
 
 - PlayQueue creation, `/:/timeline`, `/:/scrobble`, `/decision` and `transcode_stop` must go to **the
-  server the bytes came from**, with **that server's token**. `viewOffset` lives there.
+  server the bytes came from**, with **that server's token**. `viewOffset` lives there. (One
+  deliberate exception, and only for the watched FLAG: a Mark as Watched is repeated on every source
+  holding the same `guid` — §11. Nothing else here fans out, and no `viewOffset` ever does.)
 - **Nothing aggregates server-side.** `/hubs`, `/hubs/continueWatching` and search are single-server;
   Plex's own provider contract describes `continuewatching` as a hub "for merging into a global
   Continue Watching hub" — the merge is the client's job.
@@ -291,7 +293,8 @@ machine name (`nas-home`) only in the Sources list and the failure read-out.
   per-server resume position.
 - **F — a first-run route** (new): after the profile picker, before Home, only when the roster holds
   more than one source. Two columns, own libraries `On` and a friend's `Off`, focus on *Start
-  watching*, BACK skips.
+  watching*, BACK skips. **LANDED — see §12, which also records the one place the OWNER's ruling
+  overrides this canvas: the selection is per Plex Home PROFILE, not per install.**
 
 **PINNING is the new concept.** It governs **Home only** — tabs, grid, sort, A–Z rail and browsing
 all come from the grant, which is not a setting. Three orthogonal states: *granted* (plex.tv's
@@ -505,3 +508,160 @@ one is stored, and `install_pms` registers every granted server at boot, so the 
 holds more than one. What remains is the probe RACE and `activate_best` (step 4's second half) —
 addresses are ranked and identity-verified today, but still dialled in sequence rather than
 concurrently.
+
+## 11. Watch state follows the TITLE (2026-08-21)
+
+**The one place the app deliberately breaks per-server semantics.** Everything else in this document
+is built on view state being per-server, and it still is on the wire: two copies of one film on two
+servers are two items with two `viewCount`s and two `viewOffset`s, and §1's identity rule (every
+item-shaped integer is server-local and dense from 1) is exactly why they cannot be conflated. But
+"I have watched this" is a claim about a **title**, not about a file on a host — so a Mark as
+Watched now **fans out** to every registered source that holds the same item.
+
+It lives in `rust-modules/src/viewstate.rs`, which was already the single owner of view-state
+writes, and it reuses the resolve "Also available" was built on (`Client::find_by_guid`, one query
+per source, off the SDL thread).
+
+- **The identity is the `guid` (`plex://movie/…`), never the `ratingKey`.** §1 is not academic here:
+  both servers in this household hold a `ratingKey` 4, so a fan-out matched on the key marks a
+  different film watched on the other machine — confidently, and with a 200 back.
+- **No resume position is ever COPIED between servers. Only the watched flag travels.** This is the
+  subtle half, and it is the half `ui/alt_sources.rs` reasons out: an offset is about a file you are
+  streaming from one host, which is also why that panel NAVIGATES to the other copy rather than
+  swapping it under you. `unscrobble` is fanned out too — it is the other end of one control, and
+  clearing the claim is still a claim about the title — but no `viewOffset` is read or pushed
+  anywhere. **The consequence that phrasing hides, stated plainly:** `/:/unscrobble` clears
+  `viewCount` *and* `viewOffset`, so marking a title unwatched DISCARDS the other copies' resume
+  points as well — exactly what it does to the copy you pressed. Watched and unwatched are therefore
+  not symmetric in cost: one adds a fact, the other throws two away, on every source holding the
+  title.
+- **Remove from Continue Watching does NOT fan out.** The deck is a per-server surface; taking a
+  friend's item off *your* deck is not what that row promises.
+- **Resolved at WRITE time, on the worker.** Not off a detail page's earlier cross-source resolve:
+  the press can come from a Home / Library / Search card menu where none has ever run. A press that
+  carries a guid (the detail hero, which holds the guid OF the item it is mounted on) uses it; every
+  other press has one looked up from its own `(server, ratingKey)`, which costs one extra GET on a
+  thread that is not drawing anything.
+- **Best-effort per source, unconditional, and never fatal.** One asleep share costs one log line and
+  cannot fail or retry the write the user actually pressed. There is no setting — this app has no
+  preferences screen by design. A **one-source install pays nothing**: the source count is checked
+  before the guid lookup, so there is no query and no log line.
+- **The other copies flip on screen a round trip later, not on the press frame.** The optimistic edit
+  can only reach the `(sid, rk)` in hand, because the other keys are what the resolve *discovers*;
+  the fan-out reports them and the landing applies the same local edit to each, with the hub refetch
+  that already follows every write reconciling the rest.
+
+**Not verified on device.** The host suite grades the identity rule (which copies a fan-out writes,
+that the pressed copy is not written twice, that a deck removal does not propagate) and the landing's
+local edit; the two-server round trip itself needs a television and both servers awake.
+
+## 12. The Home selection, per PROFILE — deliverable F (2026-08-21)
+
+The canvas's first-run route is built (`ui/onboard.rs`), and building it settled the question the
+canvas could not, because it was drawn before the owner ruled on it:
+
+> *"Servers are configured on a PC or phone. On the television we only CHOOSE from the available
+> servers. And it is separate for each profile."*
+
+Three consequences, all of which the code now states:
+
+**There is no add-a-server-by-address on the television, and there will not be.** The list is the
+plex.tv grant — the existing registry — and nothing else. (It was transport-blocked as well:
+`stream.rs` takes a numeric address and speaks cleartext.)
+
+**The selection is keyed by PROFILE.** `Session::pinned: Vec<PinnedLib>` hung off the `Session`,
+which is one per install — so a household could hold exactly one opinion about a friend's films,
+and switching profile left the previous person's shelves on the front door. It is now
+`Session::home_pins: Vec<HomePins>`, keyed by the Plex Home user's **`uuid`** (empty = the account
+owner with no Home selection), which is the same shape and the same reasoning `recent_searches`
+beside it already carries. A switch needs no code of its own to honour it: `install_pms` calls
+`browse::reset`, discovery re-runs, and the re-resolve reads the new profile's record.
+
+**`HomePins` records BOTH sides of the answer** — `on` and `off`, not one list of pins. A single
+list cannot tell *turned off* from *not answered about*, and libraries arrive over time: a share
+whose server was slow, a library the owner created last week. One that lands after the question was
+put must fall on its own DEFAULT, not silently Off because it was absent from a list written before
+it existed. That is also what makes the canvas's "a share arriving later does not reopen this
+screen" honest rather than merely quiet.
+
+The rules are `plex::pins` — pure, no store, host-graded: the ownership default, the recorded
+answer, the "more than one source, once per profile" gate, and a **never-empty floor** (a recorded
+selection CAN be emptied without any toggle — pin only a friend's library, then lose the friend
+from the roster). `browse.rs` is the plumbing around them, and `toggle_pin` now persists: every
+flip was in-memory before, so a selection made in the Sources panel was gone by the next boot and
+the ownership default came back, which reads as the switch not working.
+
+### Where the implementation reinterprets the canvas
+
+Four places, all recorded so the next reader does not "fix" them back:
+
+1. **Per profile.** The canvas predates the ruling and says nothing about profiles. The owner wins.
+2. **Your own server's group header carries no accessory.** The canvas gives it `"This account"`;
+   the shipped Sources panel draws nothing, on its own stated rule that an empty handle is *the
+   absence of an owner rather than an anonymous one*. The route and the panel must agree, and they
+   do — that rule is the one that stays.
+3. **A borrowed-only account gets every library On.** The canvas's "a friend's arrives Off" has no
+   answer for an account with no server of its own; taken literally it opens the app on nothing.
+   With nothing of your own to prefer, a borrowed library is simply a library.
+4. **Focus opens on *Start watching*.** The canvas says so twice in prose and draws it that way —
+   but a stale comment in its own `renderVals` claims focus opens on row index 2, "the first shared
+   library". The prose and the artwork agree with each other, so the comment is the odd one out.
+
+### The screen, and how to look at it
+
+`ui/onboard.rs` mounts `ui::source_list` — the SAME row-model builder the Library toolbar's Sources
+panel uses, extracted out of `ui/library.rs` for exactly this reason. It differs by two arguments,
+not by a second builder: every library rather than the browsed type's (`browse::all_source_rows` —
+there is no tab bar here to be scoped to), and no *Check for new shares* tail.
+
+**`/tmp/plxnative-firstrun` forces the route.** A screen asked once per profile is otherwise
+unreachable the moment you have answered it, and the two-source roster it needs comes from
+`/tmp/plxnative-servers`, which marks the boot automated — and an automated boot is exempt from the
+question, exactly as it is from the who's-watching picker. Both halves are why looking at this
+screen headlessly needs a trigger of its own.
+
+One fix fell out of building it and applies to the Sources PANEL too: the counts and the machine
+names land without changing the section table's SHAPE, and both surfaces were keyed on
+`sections_gen()` — so rows read "Films" long after "26 films" had arrived and an unnamed group drew
+no header at all. Both now watch `browse::source_list_gen()`, the shape plus the facts the rows
+state.
+
+### How the answer actually reaches Home — the join the section table cannot make
+
+Found in review, and it is the failure that would have made the whole screen look ornamental: **the
+answer has to govern Home on a boot where the friend's server is never enumerated at all.**
+
+`pms::feeds_home`'s standing rule is that *a library nobody has discovered is undecided, not
+unpinned* — §6's own bootstrap, and correct, because the pin is a decision about libraries and you
+cannot have decided against one that has never appeared. That was harmless while every granted
+library defaulted On. It stops being harmless the moment a friend's library defaults **Off**,
+because Home is the one screen that never enumerates: boot fetches the CURRENT server's sections and
+no others (`browse::ensure_sections`, deliberately — fanning out over the roster parks the SDL loop
+on one `connect(2)` per sleeping share), and the discovery pump runs from the Library, Search and
+first-run screens. So on the second and every later boot the share sat in the roster with **no row
+in the section table**, "undecided" applied, and a friend's shelves went back on the front door of
+somebody who had turned them off the night before — including the person who simply pressed *Start
+watching* on the defaults.
+
+Two halves close it, both in `browse.rs`, and both keyed on the machine id because that is the only
+name a record has:
+
+- **`RECORDED`** — the current profile's persisted answer, kept in memory from the read
+  `resolve_pins` already makes, and joined into `library_pins()` for every roster source the section
+  table does NOT hold. The record is on disk keyed by machine; that is exactly the join that was
+  missing. It is a snapshot rather than a per-call read because `library_pins` is reached from
+  Home's own pump, and `session.rs` forbids a per-frame file read.
+- **`pins::carry_forward`** — a record is written from the section table, and `set_pins_for`
+  replaces a profile's entry wholesale, so one switch flipped on a boot the share missed would
+  otherwise have erased the share's answer and let the ownership default back in. The merge grain is
+  the MACHINE: a server the table holds has just been answered about in full (a library it has since
+  lost is correctly dropped); one it does not hold has not been answered about at all.
+
+Both are graded on the host, with the negative case checked — `browse`'s
+`a_recorded_answer_reaches_home_before_that_servers_sections_do` and
+`a_flip_made_while_a_share_is_absent_does_not_erase_its_answer` both fail if either half is removed.
+
+A third, smaller ordering bug went with them: the stored-session boot called `install_pms` — whose
+section fetch resolves the Home selection — **before** `session::set_current`, so that resolve ran
+against the owner's record whoever was signed in. The switch path (`auth::take_ready`) already had
+the two the right way round; the boot path now matches it.
