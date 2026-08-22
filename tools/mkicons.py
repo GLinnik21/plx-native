@@ -83,8 +83,12 @@ from PIL import Image, ImageDraw, ImageFont
 # Fraction of the tile the logo's ink should span horizontally. Mid-pack against the four store
 # icons measured above; also keeps >=5px padding at 130 (130*0.78 -> 101 wide, 14 px each side).
 INK_FRACTION = 0.78
-# (filename, size). 80/130 are LG's; 160/320 are the webosbrew channel's iconUri/detailIconUri.
-TARGETS = (("icon.png", 80), ("largeIcon.png", 130), ("icon160.png", 160), ("icon320.png", 320))
+# (filename, size). 80/130 are LG's launcher pair; 160/320 are the webosbrew channel's
+# iconUri/detailIconUri; 400 is the LG Content Store listing icon, whose uploader refuses anything
+# under 400x400 ("Upload 400 x 400 pixels and greater icons only"). Only the first two are staged
+# into the ipk (the Makefile's ICONS/APP_FILES name them explicitly) — the rest are listing assets.
+TARGETS = (("icon.png", 80), ("largeIcon.png", 130), ("icon160.png", 160), ("icon320.png", 320),
+           ("icon400.png", 400))
 
 # --- the flavour badge -------------------------------------------------------------------------
 # `theme::RESUME_FILL` (AMBER_300) over `AMBER_950` — the design system's own filled-control pair.
