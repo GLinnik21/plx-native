@@ -81,6 +81,9 @@ description: |
   * Resume, seek and scrub, chapters, audio and subtitle track switching (including image
     subtitles), Skip Intro / Skip Credits, Up Next with auto-advance, and progress reported back
     to your server
+  * Dolby Vision and Dolby Atmos are declared to the television rather than sent down unlabelled,
+    so a Dolby Vision file is no longer played as if it were ordinary HDR — see the scope note
+    below for what has and has not been confirmed
 
   **Scope — please read before installing**
 
@@ -96,6 +99,10 @@ description: |
     65UP7560AUD (6.5.2) by a webosbrew reviewer. Everything from webOS 4.0 up is checked only for
     whether the app *starts*, which says nothing about whether a picture appears. If you are on
     5.x, 10 or 11, you are the first — and a report either way is welcome.
+  * **Dolby Vision is declared, not confirmed on a panel.** The app tells the television what the
+    stream is and the television's pipeline accepts it; nobody has yet watched a set light its own
+    Dolby Vision indicator. If you have a Dolby Vision television, that is the one report worth
+    sending.
   * **Seeking on webOS 5 and newer takes a slower route.** It reloads the stream rather than
     moving within it. It works; it has not been watched on hardware.
   * **Bit depth is asserted, not probed.** The app reads the codec table your television publishes
