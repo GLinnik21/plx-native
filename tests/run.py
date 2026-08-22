@@ -1865,6 +1865,16 @@ def setup_shared(manifest, cfg, args, entries, what):
 
 
 def main():
+    # LIVE OUTPUT. This suite drives a television for ten to twenty minutes, and Python
+    # block-buffers stdout the moment it is not a tty — so piping it to a file or a log viewer
+    # showed NOTHING until the run ended, which is indistinguishable from a hung harness against a
+    # TV that is doing exactly what it was asked to. Line buffering costs nothing here (the output
+    # is a few hundred lines) and makes progress visible wherever it is sent.
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+        sys.stderr.reconfigure(line_buffering=True)
+    except AttributeError:  # pragma: no cover — pre-3.7
+        pass
     ap = argparse.ArgumentParser(description="webOS Plex player on-device regression harness")
     ap.add_argument("--build", action="store_true", help="cargo + make + make deploy before running")
     ap.add_argument("--filter", default=None, help="run only cases whose name contains this substring")
