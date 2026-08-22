@@ -5953,7 +5953,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 crate::ui::up_next::tick(ctrl, now);
                 // …and the transport discs' focus pop, for the reason its own doc gives: it must be
                 // stepped once per FRAME, and `draw_hud` does not run on every frame of this route.
-                crate::ui::player_hud::update(ctrl, hud.nav.focus, hud.nav.btn, dt);
+                crate::ui::player_hud::update(ctrl, hud.nav.focus, hud.nav.btn, dt, now);
             }
             let fd_pc0 = if framedrop_on { SDL_GetPerformanceCounter() } else { 0 };
             // Async play resolve: install the worker's plan and start the engine. Route-
