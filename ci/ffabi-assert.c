@@ -82,8 +82,12 @@ SAME(offsetof(AVPacket, duration), 48, "AVPacket.duration moved");
 SAME(offsetof(AVPacket, time_base), 72, "AVPacket.time_base moved");
 
 /* --- AVCodecParameters: ff.rs models a read-only PREFIX and must NEVER allocate one. sizeof is
-       176 here and 136 on n3.3, and avcodec_parameters_from_context memsets the full size — so a
-       stack copy sized by our model is a stack smash. venc allocates through the library. --- */
+       168 against the bundled FFmpeg 9.0 headers — the number the assertion below demands, and the
+       one that compiles — and avcodec_parameters_from_context memsets the full size, so a stack
+       copy sized by our model is a stack smash. venc allocates through the library.
+       (This prose said 176 while the assertion three lines down said 168. This file is the
+       authority on the ABI table, so a wrong figure in its own comment is the one place it gets
+       believed: the next person bumping FFmpeg reads it and edits ff.rs's model to match.) --- */
 SAME(sizeof(AVCodecParameters), 168, "sizeof(AVCodecParameters) != 168 — do not stack-allocate it");
 SAME(offsetof(AVCodecParameters, codec_type), 0, "AVCodecParameters.codec_type moved");
 SAME(offsetof(AVCodecParameters, codec_id), 4, "AVCodecParameters.codec_id moved");

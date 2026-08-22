@@ -588,8 +588,19 @@ impl View for Backdrop {
         // the screen's and not the component's: one quad can carry a scrim over ONE art layer, so a
         // hero FLIP (two layers sliding past each other) falls back, as does a hero whose
         // photograph has not arrived — there the scrims still have the wash to darken.
+        //
+        // **`sp` must be AT REST, and that is a correctness bound rather than caution.** The two
+        // scrim fields are evaluated inside the ART quad, and `art_rect` lifts that quad off the
+        // bottom of the panel by `sp * (SCR_H - 120)` for the snap dive — so at sp=0.3 the art
+        // spans y ∈ [-288, 792] and the bottom 288 px of a 1080 panel get NO atmospheric ramp,
+        // where the four-quad path paints it up past alpha 0.59. Without this the fold suppresses
+        // a band the shipped picture draws, `hero_a > 0.01` alone lets that happen for every
+        // sp < 0.5445, and the A/B this experiment exists for would have compared a control leg
+        // against a leg missing a large black band — reading as a saving that is really a hole.
+        // The measurement in `docs/backdrop-blur-profiling.md` §5 was taken on a pinned, resting
+        // hero, so it is unaffected; a moving one falls back, as a flip already does.
         let folded = env.hero_a > 0.01
-            && sp < HERO_ART_CULL
+            && sp < 0.001
             && slide.is_none()
             && self.tex.0 != 0
             && a_in > 0.01
@@ -665,10 +676,6 @@ pub(crate) fn base_scrim_bottom_a(hero_a: f32) -> f32 {
     0.30 + 0.64 * hero_a.clamp(0.0, 1.0)
 }
 
-/// The frame-wide atmospheric ramp's alpha at `y` — the two stops [`Backdrop`] paints, as one pure
-/// function so the paint and the legibility contract cannot read different numbers. It is the base
-/// the hero wedge composites over; `widgets`' anchor table grades
-/// `1 − (1 − base_scrim_a) · (1 − hero_scrim_a)` against the real text ys.
 /// This screen's atmospheric ramp as the FOUR numbers the one-pass ground takes —
 /// `(y0, knee, alpha at the knee, alpha at the foot)`. The ONE place they are derived, so
 /// [`base_scrim_a`]'s curve, the two quads `Backdrop::draw` paints and the field `fs_hero.frag`
@@ -678,6 +685,10 @@ pub(crate) fn base_scrim_ramp(hero_a: f32) -> [f32; 4] {
     [HERO_BASE_SCRIM_Y0, BASE_SCRIM_Y1, sa * BASE_SCRIM_MID_K, sa]
 }
 
+/// The frame-wide atmospheric ramp's alpha at `y` — the two stops [`Backdrop`] paints, as one pure
+/// function so the paint and the legibility contract cannot read different numbers. It is the base
+/// the hero wedge composites over; `widgets`' anchor table grades
+/// `1 − (1 − base_scrim_a) · (1 − hero_scrim_a)` against the real text ys.
 pub(crate) fn base_scrim_a(y: f32, hero_a: f32) -> f32 {
     let sa = base_scrim_bottom_a(hero_a);
     let mid = sa * BASE_SCRIM_MID_K;

@@ -1513,30 +1513,6 @@ pub(crate) fn hero_ground_armed() -> bool {
     HERO_GROUND.load(std::sync::atomic::Ordering::Relaxed) && crate::gfx::hero_ground_ok()
 }
 
-/// THE HERO GROUND IN ONE PASS — the backdrop art carrying both scrim fields, instead of the art
-/// plus [`hero_scrim`]'s two quads plus the screen's own two atmospheric-ramp bands.
-///
-/// **This is the same picture by construction, not a cheaper approximation of it.** Both fields are
-/// closed forms of the authored pixel position, both are [`theme::SCRIM_INK`], and two straight-alpha
-/// layers of one ink compose exactly as `a1 + a2 - a1*a2`; `fs_hero.frag` carries the algebra and
-/// the one thing that does differ (the shipped path quantises the framebuffer three times where
-/// this quantises once).
-///
-/// **Why it is worth a program of its own.** Measured on the dev television with
-/// `/tmp/plxnative-overdraw`: Home's hero submits 5.39M authored pixels against a 2.07M-pixel panel
-/// — 2.60x — and the ramp (1,368,576 px) plus the wedge (1,410,048 px) are 52% of it, for fields
-/// that are three ALU operations each. Their cost is not their shading, it is that they are 2.78M
-/// more fragments through the blender landing on pixels the art has already written.
-///
-/// `art` is the resolved texture and the rect [`crate::ui::home`] would have drawn it at; `art_a`
-/// its tint alpha; `ramp` is the screen's atmospheric curve as `(y0, knee, a_knee, a_foot)` —
-/// **the screen's, not this module's**, because home's is a two-stop curve with a midpoint knee and
-/// detail's a single linear stop, and unifying them is a design decision nobody has taken.
-/// `strength` is the hero fade the wedge scales with, exactly as [`hero_scrim`] takes it.
-///
-/// The CALLER owns the preconditions, because they are all facts about the screen's own state: the
-/// art must be there and be the only layer (a hero FLIP slides two of them, and one quad cannot
-/// carry a scrim over both), and the wedge must actually be wanted. Anything else falls back.
 /// The one-pass ground's WEDGE field, exactly as `fs_hero.frag` evaluates it from the same four
 /// numbers. Pure, and written twice on purpose: a GLSL expression cannot be graded by `make check`,
 /// so this is the copy the tests pin against [`hero_scrim_quads`] — the shipped picture — at every
@@ -1564,6 +1540,30 @@ pub(crate) fn hero_ground_wedge(strength: f32) -> [f32; 4] {
     [hero_scrim_a(0.0, strength), HERO_SCRIM_W, HERO_SCRIM_TOP, HERO_SCRIM_KNEE]
 }
 
+/// THE HERO GROUND IN ONE PASS — the backdrop art carrying both scrim fields, instead of the art
+/// plus [`hero_scrim`]'s two quads plus the screen's own two atmospheric-ramp bands.
+///
+/// **This is the same picture by construction, not a cheaper approximation of it.** Both fields are
+/// closed forms of the authored pixel position, both are [`theme::SCRIM_INK`], and two straight-alpha
+/// layers of one ink compose exactly as `a1 + a2 - a1*a2`; `fs_hero.frag` carries the algebra and
+/// the one thing that does differ (the shipped path quantises the framebuffer three times where
+/// this quantises once).
+///
+/// **Why it is worth a program of its own.** Measured on the dev television with
+/// `/tmp/plxnative-overdraw`: Home's hero submits 5.39M authored pixels against a 2.07M-pixel panel
+/// — 2.60x — and the ramp (1,368,576 px) plus the wedge (1,410,048 px) are 52% of it, for fields
+/// that are three ALU operations each. Their cost is not their shading, it is that they are 2.78M
+/// more fragments through the blender landing on pixels the art has already written.
+///
+/// `art` is the resolved texture and the rect [`crate::ui::home`] would have drawn it at; `art_a`
+/// its tint alpha; `ramp` is the screen's atmospheric curve as `(y0, knee, a_knee, a_foot)` —
+/// **the screen's, not this module's**, because home's is a two-stop curve with a midpoint knee and
+/// detail's a single linear stop, and unifying them is a design decision nobody has taken.
+/// `strength` is the hero fade the wedge scales with, exactly as [`hero_scrim`] takes it.
+///
+/// The CALLER owns the preconditions, because they are all facts about the screen's own state: the
+/// art must be there and be the only layer (a hero FLIP slides two of them, and one quad cannot
+/// carry a scrim over both), and the wedge must actually be wanted. Anything else falls back.
 pub(crate) fn hero_ground(p: Painter, tex: u32, r: Rect, art_a: f32, ramp: [f32; 4], strength: f32) {
     // The wedge's own geometry, in the same authored units [`hero_scrim_quads`] builds its corners
     // from — and its peak through the very function the legibility table is graded on, so the one

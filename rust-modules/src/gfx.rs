@@ -953,9 +953,15 @@ pub(crate) fn hero_ground_ok() -> bool {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_hero_ground(tex: c_uint, x: f32, y: f32, w: f32, h: f32, tint: *const f32,
     ink: *const f32, ramp: [f32; 4], wedge: [f32; 4]) {
-    if tex == 0 || culled(x, y, w, h) || gate(Class::Image, x, y, w, h) {
+    if tex == 0 || culled(x, y, w, h) {
         return;
     }
+    // THE LINK IS ATTEMPTED BEFORE THE LEDGER IS TOLD ANYTHING. The caller has already skipped
+    // both `backdrop_art` and the scrim block on the strength of `hero_ground_ok`, which answers
+    // optimistically until the first attempt — so a program that turns out not to link must be
+    // discovered here, not after this quad has been booked as drawn. Booking first left the
+    // ledger carrying an `image` quad that was never submitted, on the one frame where the
+    // picture also lost its hero entirely.
     unsafe {
         if !HERO_TRIED {
             init_hero();
@@ -963,6 +969,9 @@ pub(crate) fn draw_hero_ground(tex: c_uint, x: f32, y: f32, w: f32, h: f32, tint
         if HPROG == 0 {
             return;
         }
+    }
+    if gate(Class::Image, x, y, w, h) {
+        return;
     }
     // Reciprocals on the CPU: Midgard has no uniform pre-shader, so a divide written in the
     // fragment shader is paid on every one of two million fragments (the same fold `draw_tex_impl`
@@ -2848,8 +2857,9 @@ pub(crate) fn draw_blur_backdrop(x: f32, y: f32, w: f32, h: f32, rest: [f32; 4],
         // DEV: a `drawmask=glass` leg removes the WHOLE surface — chain, composite and the region
         // bookkeeping — rather than only the panel quad, so the leg it prices is "this glass is
         // not here". `false` puts the caller on its opaque ground, exactly as a latched-off blur
-        // does.
-        if gate(Class::Glass, x, y, w, h) {
+        // does. REFUSAL ONLY: the ledger entry is booked further down, after every path that
+        // returns without drawing, because this one sits above three of them.
+        if crate::ui::overdraw::masked(Class::Glass) {
             return false;
         }
         // Declare what this surface needs BEFORE deciding whether to snapshot, so a frame's second
@@ -2876,6 +2886,16 @@ pub(crate) fn draw_blur_backdrop(x: f32, y: f32, w: f32, h: f32, rest: [f32; 4],
             return false;
         }
         let Some(c) = (*std::ptr::addr_of!(BLURST)).as_ref() else { return false };
+        // ...and only NOW is a composite certain, so this is where the ledger hears about it. The
+        // mask was answered at the top of the function; this books the quad. Booking it up there
+        // instead credited `glass` with a full panel per surface per frame on every frame that
+        // returned early — the blur latched off, or a snapshot that could not be taken — which is
+        // precisely the quietly-wrong number this module's doc warns a misplaced hook produces.
+        // (`gate` clamps to the panel and to `Painter::clip`, so an off-screen panel books zero
+        // area of its own accord; what it must not do is book a panel that never rasterized.)
+        if gate(Class::Glass, x, y, w, h) {
+            return false;
+        }
         // How much of `out` the region occupies. Both paths end with the up pass back to half res,
         // so `out` is `mid` whoever took the snapshot and the live area is the region halved.
         debug_assert_eq!(c.out, c.mid, "a finished snapshot lands in `mid`, on either path");

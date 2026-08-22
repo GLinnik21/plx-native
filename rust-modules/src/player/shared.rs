@@ -33,7 +33,7 @@ impl TrackNames {
     pub fn sub(&self, i: i32) -> &str {
         usize::try_from(i).ok().and_then(|i| self.subs.get(i)).map(String::as_str).unwrap_or("")
     }
-    /// The same for audio — `metadata::audio_render_ordinal`'s answer.
+    /// The same for audio — `metadata::audio_ordinal`'s answer.
     pub fn audio(&self, i: i32) -> &str {
         usize::try_from(i).ok().and_then(|i| self.audio.get(i)).map(String::as_str).unwrap_or("")
     }
@@ -234,7 +234,7 @@ pub(crate) struct Shared {
     /// **The container's own per-track names, which PMS does not always send** (D -> M).
     ///
     /// `audio` and `subs`, each in FILE order, so position N is the N-th audio / subtitle stream of
-    /// the part — the ordinal `metadata::audio_render_ordinal` and `metadata::sub_render_ordinal`
+    /// the part — the ordinal `metadata::audio_ordinal` and `metadata::sub_render_ordinal`
     /// already resolve a track-menu row to. Empty strings for a file that tags nothing, and an
     /// empty Vec until a demuxer has opened.
     ///
@@ -312,7 +312,7 @@ pub(crate) struct Shared {
     /// photograph as twelve seconds.
     pub dg_load_at: AtomicU32,
     pub dg_frame_at: AtomicU32,
-    /// **The video plane's own cadence** — the three counters behind the heartbeat's `vf=`/`vgap=`.
+    /// **The video plane's own cadence** — the three counters behind the heartbeat's `vtick=`/`vgap=`.
     ///
     /// They exist because every other frame number in this app is about the GRAPHICS plane. `fps=`
     /// counts our GL swaps and `worstframe=` times our own draw, and both stay a flat 60/0.5 ms

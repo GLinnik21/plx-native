@@ -69,10 +69,21 @@ pub(crate) fn resolve(libs: &[LibRef<'_>], rec: Option<&HomePins>) -> Vec<bool> 
     // ours-first (`auth::registration_order`), so that is your own server whenever you have one.
     // Absence here is not a preference anybody expressed; it is a selection that outlived the
     // server it named, and a front door with nothing on it is not a state this app has.
-    if let Some(first) = libs.first().map(|l| l.machine_id) {
-        for (i, l) in libs.iter().enumerate() {
-            out[i] = l.machine_id == first;
+    //
+    // **Keyed on the machine id, but ONLY when there is one.** `record` refuses to write down an
+    // empty `machineIdentifier`, so a source nobody has learned one for yet carries `""` — and
+    // `l.machine_id == first` is then `"" == ""`, true for every nameless library on every
+    // registered server at once. Home would come up fed by an arbitrary mixture of your server
+    // and a friend's, which is not "the FIRST source's libraries" and is not a state anyone
+    // chose. With no id to group by, the honest floor is the first library itself.
+    match libs.first().map(|l| l.machine_id) {
+        Some(first) if !first.is_empty() => {
+            for (i, l) in libs.iter().enumerate() {
+                out[i] = l.machine_id == first;
+            }
         }
+        Some(_) => out[0] = true,
+        None => {}
     }
     out
 }
