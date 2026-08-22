@@ -131,7 +131,7 @@ class FixtureHandler(BaseHTTPRequestHandler):
         self.close_connection = True
         if not body:
             return
-        self.server.count(os.path.basename(path), start, partial)
+        self.server.count(partial)
         try:
             with open(path, "rb") as f:
                 f.seek(start)
@@ -156,23 +156,40 @@ class FixtureServer(socketserver.ThreadingTCPServer):
         self.root = os.path.realpath(root)
         self.sink = sink
         self.lock = threading.Lock()
-        self.opens = []          # (file, start, partial) — one per served body
+        # Two counters, not a log: every request is already narrated through `note()`, and
+        # `stats()` is the only reader — it wants totals. A list of per-request tuples grew for
+        # the life of the run and read as though something consulted it.
+        self.n_opens = self.n_ranged = 0
         super().__init__((bind, port), FixtureHandler)
 
     def note(self, msg):
         if self.sink:
             self.sink(msg)
 
-    def count(self, name, start, partial):
+    def count(self, partial):
         with self.lock:
-            self.opens.append((name, start, partial))
+            self.n_opens += 1
+            self.n_ranged += bool(partial)
 
     def stats(self):
         """(total opens, range opens) — the harness asserts on these: a seek case that never
         produced a range open never reached the demuxer's seek path at all, which is a different
         failure from a seek that landed in the wrong place."""
         with self.lock:
-            return len(self.opens), sum(1 for o in self.opens if o[2])
+            return self.n_opens, self.n_ranged
+
+
+def default_root():
+    """Where `make fixtures-pipeline` writes the pack, and where the harness looks for it.
+
+    One definition, imported by `tests/run.py` — the expression lived in both files, and the
+    failure mode of letting them drift is the quiet one: the harness serves one directory while
+    the standalone server defaults to another. NOT inside the repo, and the generator enforces
+    that from its own side by refusing an `--out` under the repo root: this repository is public
+    and `.gitignore` as the only defence against committing media has been got wrong here before.
+    """
+    return os.path.join(
+        os.environ.get("FIXTURES_OUT") or os.path.expanduser("~/plxnative-fixtures"), "pipeline")
 
 
 def lan_ip():
@@ -242,14 +259,9 @@ def _selftest(root, port):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[1],
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    # $FIXTURES_OUT/pipeline, the same root `make fixtures-pipeline` writes and `tests/run.py
-    # --pipeline` reads. NOT inside the repo: the generator refuses an --out under the repo root,
-    # because this repository is public and .gitignore as the only defence against committing media
-    # has already been got wrong here once.
-    default_root = os.path.join(
-        os.environ.get("FIXTURES_OUT") or os.path.expanduser("~/plxnative-fixtures"), "pipeline")
-    ap.add_argument("--root", default=default_root,
-                    help=f"directory to serve (default $FIXTURES_OUT/pipeline, i.e. {default_root})")
+    root = default_root()
+    ap.add_argument("--root", default=root,
+                    help=f"directory to serve (default $FIXTURES_OUT/pipeline, i.e. {root})")
     ap.add_argument("--port", type=int, default=8020, help="TCP port (0 = pick a free one)")
     ap.add_argument("--selftest", action="store_true",
                     help="prove Range works and the LAN address is reachable, then exit")

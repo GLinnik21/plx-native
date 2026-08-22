@@ -901,7 +901,7 @@ PIPE_SHAPES = {
     "pipe_h264_ac3_1080p": {
         # The baseline: GET -> demux -> AU queues -> Feed -> ACB bind, an H264 payload and
         # LG's plain "AC3". Every other shape here varies one axis of this one.
-        "kind": "clip", "flat": True, "ext": "mkv",
+        "kind": "clip", "ext": "mkv",
         "duration": PIPE_SECS, "rate": 0.06,
         "declare": {"vcodec": "h264", "acodec": "ac3", "fps": float(FPS), "atmos": False},
         # crf 20 is movie_h264_ac3_1080p's, carried across so the socket and the queues see
@@ -918,7 +918,7 @@ PIPE_SHAPES = {
         # H265 payload selection AND the "AC3 PLUS" naming trap in one file: `eac3` is the
         # FFmpeg spelling the trigger carries, `AC3 PLUS` is what the engine must hand
         # Starfish, and the rename lives in engine.rs where nothing else can check it.
-        "kind": "clip", "flat": True, "ext": "mkv",
+        "kind": "clip", "ext": "mkv",
         "duration": PIPE_SECS, "rate": 0.65,
         # The AC-3 track beside it is not decoration: `H265 + AC3` is one of the six Load payload
         # combinations the player can direct-play, and it was the LAST one this tier could not
@@ -939,7 +939,7 @@ PIPE_SHAPES = {
         # hardware. Profile 8.1 is the one DV shape that can be synthesized at all (see
         # build_dovi), and the DECLARATION is what puts the node in the payload, so this is
         # the only fixture in the repo that reaches that code with no PMS decision behind it.
-        "kind": "clip", "flat": True, "ext": "mkv",
+        "kind": "clip", "ext": "mkv",
         "duration": PIPE_SECS, "rate": 0.60, "builder": "dovi", "dovi": True,
         "tools": ["dovi_tool", "mkvmerge"],
         "declare": {"vcodec": "hevc", "acodec": "eac3", "fps": float(FPS), "atmos": False,
@@ -954,7 +954,7 @@ PIPE_SHAPES = {
         # matroska's, and a seek here is a socket close and a `Range:` re-open — plus the
         # payload's AAC arm, which additionally turns on ff.rs' ADTS reframing (mp4 carries
         # raw AAC; LG's decoder needs the frame header).
-        "kind": "clip", "flat": True, "ext": "mp4",
+        "kind": "clip", "ext": "mp4",
         "duration": PIPE_SECS, "rate": 0.14,
         "declare": {"vcodec": "hevc", "acodec": "aac", "fps": float(FPS), "atmos": False},
         "video": {"codec": "hevc", "size": "1920x1080", "crf": 26, "tag": "hvc1"},
@@ -970,7 +970,7 @@ PIPE_SHAPES = {
         # one direct-play combination NEITHER tier touched. Both packs reached mp4 only through
         # an HEVC shape, so `part_is_streamable`'s mp4 arm, the mov demuxer's AVCC->Annex-B path
         # and the AAC/ADTS reframe had never been exercised together with the H264 payload.
-        "kind": "clip", "flat": True, "ext": "mp4",
+        "kind": "clip", "ext": "mp4",
         "duration": PIPE_SECS, "rate": 0.06,
         "declare": {"vcodec": "h264", "acodec": "aac", "fps": float(FPS), "atmos": False},
         "video": {"codec": "h264", "size": "1920x1080", "crf": 21},
@@ -986,7 +986,7 @@ PIPE_SHAPES = {
         # fixture in both packs is 24p, so that branch — and every rational branch beside it —
         # had never run against a real stream. The television's own capability table claims 60
         # for H.264, so this is inside the hardware envelope, not at its edge.
-        "kind": "clip", "flat": True, "ext": "mkv",
+        "kind": "clip", "ext": "mkv",
         "duration": PIPE_SECS, "rate": 0.13,
         "declare": {"vcodec": "h264", "acodec": "ac3", "fps": 59.94, "atmos": False},
         "video": {"codec": "h264", "size": "1920x1080", "crf": 22, "fps": 59.94},
@@ -1005,7 +1005,7 @@ PIPE_SHAPES = {
         # limitation at all. This fixture cannot test that gap — nothing synthetic can, because
         # the gap is on the server-decision side — but it does establish that the pipeline half
         # survives the rate, which is the half that would be blamed first.
-        "kind": "clip", "flat": True, "ext": "mkv",
+        "kind": "clip", "ext": "mkv",
         "duration": PIPE_SECS, "rate": 1.35,
         "declare": {"vcodec": "hevc", "acodec": "eac3", "fps": 60.0, "atmos": False},
         "video": {"codec": "hevc", "size": "3840x2160", "crf": 32, "hdr": True, "fps": 60},
@@ -1022,7 +1022,7 @@ PIPE_SHAPES = {
         # asserted too, so audio ordinal i is stream index i+1: ac3 -> a=#1, eac3 -> a=#2,
         # aac -> a=#3. `declare` names the ac3 lane; a case wanting another one overrides
         # `acodec` and reads the index out of this record's `audio` array.
-        "kind": "clip", "flat": True, "ext": "mkv",
+        "kind": "clip", "ext": "mkv",
         "duration": PIPE_SECS, "rate": 0.08,
         "declare": {"vcodec": "h264", "acodec": "ac3", "fps": float(FPS), "atmos": False},
         "video": {"codec": "h264", "size": "1920x1080", "crf": 25},
@@ -1041,9 +1041,8 @@ PIPE_SHAPES = {
 # mislabel its own record. verify() copies it into fixtures.json, which is what tells a
 # reader — and `tests/run.py` — which suite tier a pack can be pointed at. Note this is NOT
 # derivable from the duration: the integration table has 90 s shapes.
-for _tier, _table in (("integration", SHAPES), ("pipeline", PIPE_SHAPES)):
-    for _spec in _table.values():
-        _spec["tier"] = _tier
+# Stamped below, from TIERS itself — a second hand-written pairing of tier name to shape table
+# is one registry a third tier gets added to and another it gets forgotten in.
 
 
 def shape_duration(spec, secs=None):
@@ -1065,7 +1064,10 @@ def out_paths(root, key, spec):
     length has never been part of a path, and a shortened clip deliberately overwrites the
     full-length file it is a short copy of.)
     """
-    if spec.get("flat"):
+    # A clip is flat by definition: the Plex tree exists for a SCANNER, and nothing scans the
+    # pipeline pack — tests/serve_fixtures.py serves a directory. (`flat` was a second key set on
+    # exactly the shapes whose kind was already "clip", and read only here.)
+    if spec["kind"] == "clip":
         # The pipeline tier. `tests/serve_fixtures.py` serves a DIRECTORY — the trees below
         # exist for a Plex scanner and this tier has none — and the file is named for the
         # shape key, so a `plxnative-playurl` URL says which shape it is playing
@@ -1148,6 +1150,10 @@ TIERS = {
     "integration": {"shapes": SHAPES, "mbit": MBIT, "subdir": None},
     "pipeline": {"shapes": PIPE_SHAPES, "mbit": PIPE_MBIT, "subdir": "pipeline"},
 }
+
+for _tier, _t in TIERS.items():          # see the note above the tables
+    for _spec in _t["shapes"].values():
+        _spec["tier"] = _tier
 
 
 # ---------------------------------------------------------------------------------------

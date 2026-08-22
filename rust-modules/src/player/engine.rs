@@ -564,8 +564,12 @@ pub(crate) fn start_bufferfeed(mt: &MainThread) -> bool {
     // The LG-side audio name the payload ended up carrying, hoisted so the `load:` line below can
     // report it. "-" is the video-only case, where there is no audio ES to name.
     let mut audio_declared: &str = "-";
+    // ...and the video name beside it, for the same reason and to keep the hevc->"H265" mapping
+    // written ONCE: the `load:` line below would otherwise re-read the route and re-derive it.
+    let mut video_declared: &str = "-";
     let payload_str: &str = if stream {
         let hevc = crate::route::stream_vcodec() == "hevc";
+        video_declared = if hevc { "H265" } else { "H264" };
         // Record what the payload ACTUALLY says, for the diagnostics read-out — including the
         // video-only case, where `dg_load_a == 0` is the whole explanation for silence.
         SHARED.dg_load_v.store(if hevc { 2 } else { 1 }, Ordering::Relaxed);
@@ -573,7 +577,7 @@ pub(crate) fn start_bufferfeed(mt: &MainThread) -> bool {
             SHARED.dg_load_a.store(0, Ordering::Relaxed);
             if hevc { PAYLOAD_H265 } else { PAYLOAD_V }
         } else {
-            let vc = if hevc { "H265" } else { "H264" };
+            let vc = video_declared;
             // LG's pipeline names E-AC3 "AC3 PLUS" (Dolby Digital Plus), NOT "EAC3" — the
             // wrong string leaves the audio ES unconfigured, and with audioSync the video
             // sink slaves to the dead audio clock and stalls (verified: video-only plays).
@@ -616,7 +620,7 @@ pub(crate) fn start_bufferfeed(mt: &MainThread) -> bool {
         let dv = crate::route::stream_dovi();
         log(&format!(
             "load: v={} a={:?} fps={:.3} dv=present:{} P{}/{} el:{} atmos:{}",
-            if crate::route::stream_vcodec() == "hevc" { "H265" } else { "H264" },
+            video_declared,
             audio_declared,
             crate::route::stream_fps(),
             dv.present as i32, dv.profile, dv.bl_compat, dv.el_present as i32,

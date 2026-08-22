@@ -61,6 +61,7 @@ No third-party deps -- Python 3 stdlib only (macOS system python3 is fine).
 
 import argparse
 import atexit
+import functools
 import json
 import os
 import re
@@ -84,15 +85,14 @@ CONFIG_LOCAL_H = os.path.join(REPO_ROOT, "src", "config.local.h")
 TV_HOST_FILE = os.path.join(REPO_ROOT, ".tv-host")
 
 sys.path.insert(0, TESTS_DIR)
-from serve_fixtures import serve  # noqa: E402  (needs TESTS_DIR on the path first)
+from serve_fixtures import serve, default_root as serve_fixtures_default_root  # noqa: E402  (needs TESTS_DIR on the path first)
 
 # Where `make fixtures-pipeline` puts the generated pack. NOT inside the repo, and not merely by
 # convention: the generator REFUSES an --out under the repo root, because this repository is
 # public and .gitignore as the only defence against committing media has already been got wrong
 # here once. The env var is the same one the Makefile reads, so `FIXTURES_OUT=... make
 # fixtures-pipeline` and `FIXTURES_OUT=... ./tests/run.py` agree without a flag.
-FIXTURES_ROOT = os.path.join(
-    os.environ.get("FIXTURES_OUT") or os.path.expanduser("~/plxnative-fixtures"), "pipeline")
+FIXTURES_ROOT = serve_fixtures_default_root()
 
 # ---------------------------------------------------------------------------
 # WHICH INSTALL this run drives. All four are resolved once, by resolve_flavour(), before anything
@@ -228,7 +228,6 @@ def load_manifest(pipeline_only=False, tv_override=None):
             sys.exit(f"--pipeline needs a TV address: put one in {TV_HOST_FILE} (one line, an IP "
                      f"or hostname), or a `tv` key in {MANIFEST_LOCAL}, or pass --tv")
         manifest["tv"] = tv
-        manifest["pms"] = local.get("pms", {})
         if "flavour" in local:
             manifest["flavour"] = local["flavour"]
         return manifest
@@ -299,6 +298,19 @@ def load_manifest(pipeline_only=False, tv_override=None):
 
 
 # ---------------------------------------------------------------------------
+def partition_skips(entries):
+    """Split `entries` into (runnable, [(name, reason), …]).
+
+    The counterpart to `_resolve_items` / `_resolve_fixtures`, which are what set the `skip` key.
+    It must happen before ANY consumer subscripts `rk` or `path`, because a skipped entry carries
+    neither — deliberately, so a partition that is ever wrong raises KeyError naming the entry
+    instead of driving the television at some sentinel. Held as (name, reason) pairs so a summary
+    can say which shape an installation is missing, not merely how many.
+    """
+    return ([e for e in entries if not e.get("skip")],
+            [(e["name"], e["skip"]) for e in entries if e.get("skip")])
+
+
 def read_token():
     """Extract PMS_TOKEN "..." from the gitignored src/config.local.h."""
     try:
@@ -665,17 +677,20 @@ def triggers_for_case(case, url_base=None):
             # seek SCRIPT: comma-separated steps fired one per ~300ms — absolute seconds or
             # tap-relative +N/-N (vs the last requested target). Exercises seek coalescing.
             files.append(("plxnative-autoseek", op["script"]))
-        elif kind == "seek" and url_base is not None:
-            # A pipeline clip is 60 s, so the target has to be CARRIED: an empty autoseek means
-            # "one seek to 140 s", which on this tier is past the end of every fixture — and the
-            # symptom is not an error but an absence, `no in-place seek: line`, which reads exactly
-            # like the in-place path having regressed. (Written as its own arm rather than folding
-            # `target_s` into the one below, because the integration cases declare `target_s: 140`
-            # AND rely on the empty-file default: making them write it would swap an app code path
-            # — empty marker vs one-step script — for no benefit and with no device proof.)
-            files.append(("plxnative-autoseek", str(op["target_s"])))
         elif kind == "seek":
-            files.append(("plxnative-autoseek", None))          # touch -> one seek to 140s
+            # The TARGET, always, on both tiers — because the manifest already declares it and
+            # `evaluate` already grades against it (`op.get("target_s", 140)`), so writing an empty
+            # marker instead meant "where the case seeks" and "where the case asserts it seeked"
+            # were two independent statements of the same number that nothing kept in step.
+            #
+            # This was briefly a pipeline-only arm, on the theory that making the server tier write
+            # its target would swap an app code path. That theory was WRONG and the app says so:
+            # `dev::read` returns Some("") for an empty file, and app.rs splits on ',', drops empty
+            # tokens, then does `if steps.is_empty() { steps.push("140") }` — so an empty file and
+            # the content "140" converge to a byte-identical `steps == ["140"]` before any seek
+            # logic runs. There is no second path to preserve. The app's empty-file default
+            # survives as a by-hand affordance, exercised by no case, which is its correct status.
+            files.append(("plxnative-autoseek", str(op.get("target_s", 140))))
         elif kind == "skip":
             files.append(("plxnative-marker", op["marker"]))
         elif kind == "marker":
@@ -788,6 +803,9 @@ RE_LOAD = re.compile(r'load: v=(\S+) a="([^"]*)" fps=([\d.]+) '
                      r'dv=present:(\d) P(-?\d+)/(-?\d+) el:(\d) atmos:(\d)')
 # The audio LANE the demuxer actually fed, off the same `ff: v=#0 …` line: `a=#<index>`.
 RE_ALANE = re.compile(r"ff: v=#0 .*\ba=#(-?\d+)")
+# The RATIONAL the Load payload's esInfo actually carries — `engine::fps_rational`'s output, as
+# opposed to the float that went into it. Emitted on every playback that declares a non-zero rate.
+RE_ESINFO = re.compile(r"esInfo: videoFps (\d+/\d+)")
 # the media URL carries the secret X-Plex-Token; strip it from anything we print/log.
 RE_TOKEN = re.compile(r"(X-Plex-Token=)[^&\s]+")
 
@@ -939,15 +957,20 @@ def a_video_bound(lines):
     return (ln is not None), (ln.strip() if ln else "no `setMediaVideoData sent` (video plane never bound)")
 
 
-def a_timeline_climb(lines, min_climb):
+def a_timeline_climb(lines, min_climb, dense_only=False):
     """Media position advanced by >= min_climb seconds. Read from the densest signal available.
 
     This is the floor on every case and it is a real one: playback is 1x realtime, so a 15s
     climb can never cost less than 15s of wall clock. What the dense signal removes is only
     the SAMPLING tax on top of it.
+
+    `dense_only` refuses the 10 s `/:/timeline` fallback, and the synthetic tier passes it: a
+    URL-fed playback has no ratingKey, so the reporter thread is never spawned and the fallback
+    can never fire there. Silently accepting an absent dense signal is how a broken climb
+    assertion reads as a pass, so that tier says out loud that it will not.
     """
     dense = playpos_secs(lines)  # scanned once — evaluate() now runs twice a second
-    ts = dense or timeline_secs(lines)
+    ts = dense if dense_only else (dense or timeline_secs(lines))
     if len(ts) < 2:
         return False, f"only {len(ts)} media-position sample(s); need >=2 that climb"
     lo = min(t for t, _ in ts)
@@ -1027,34 +1050,27 @@ def a_load_decl(lines, exp):
         if actual != want:
             return False, f"declared {label}={actual!r}, want {want!r} :: {line}"
     if "load_fps" in exp:
-        # The rate reaches the payload as a RATIONAL — `engine::fps_rational` turns 59.94 into
-        # 60000/1001 and 60 into 60/1 — and the log prints the float it started from, to three
-        # decimals. Grading the float is therefore grading the input to that conversion, not its
-        # output; the tolerance is what three decimals can express. (Nothing in the event log
-        # carries the rational itself; the `esInfo:` line does, and it is not always emitted.)
+        # The float the conversion started from. Tolerance is what three decimals can express.
         want_fps = float(exp["load_fps"])
         got.append(f"fps={fps}")
         if abs(float(fps) - want_fps) > 0.005:
             return False, f"declared fps={fps}, want {want_fps:.3f} :: {line}"
+    if "load_fps_rational" in exp:
+        # ...and the RATIONAL it produced, which is the thing the frame-rate fixtures exist for.
+        # `engine::fps_rational` has one branch for the 1001-denominator broadcast rates and
+        # another for the integers, and grading only the float above would grade the INPUT to that
+        # split — leaving the branch a fixture was built to reach unobserved. It also pins the two
+        # copies of the broadcast-rate table (this repo has one in Rust and one in the generator's
+        # `_rate_arg`) against each other at the only place they can meet: the wire.
+        rat = next((m.group(1) for ln in lines for m in [RE_ESINFO.search(ln)] if m), None)
+        if rat is None:
+            return False, f"no `esInfo: videoFps` line — the rate never reached the payload :: {line}"
+        got.append(f"esInfo={rat}")
+        if rat != exp["load_fps_rational"]:
+            return False, f"esInfo videoFps {rat}, want {exp['load_fps_rational']} :: {line}"
     if not got:
         return False, f"case declares no load_* expectation to grade :: {line}"
     return True, f"declared {' '.join(got)} :: {line}"
-
-
-def a_pos_climb(lines, min_climb):
-    """Media position advanced, read from the 1 Hz heartbeat ONLY.
-
-    `a_timeline_climb` falls back to the 10 s `/:/timeline` series when no `pos=` field is
-    present. That fallback can never fire here — a URL-fed playback has no ratingKey, so the
-    reporter thread is never spawned — and silently accepting an absent dense signal is how a
-    broken climb assertion reads as a pass. So this one has no fallback and says so.
-    """
-    ts = playpos_secs(lines)
-    if len(ts) < 2:
-        return False, f"only {len(ts)} heartbeat pos= sample(s); need >=2 that climb"
-    lo, hi = min(t for t, _ in ts), max(t for t, _ in ts)
-    return (hi - lo) >= min_climb, \
-        f"heartbeat pos= {lo}s..{hi}s (climb {hi-lo}s, need >={min_climb}s) over {len(ts)} samples"
 
 
 def a_audio_lane(lines, want_idx):
@@ -1735,6 +1751,28 @@ def evaluate(case, lines):
     return passed, results
 
 
+def report_case(passed, results, elapsed, run_secs, stopped_early, settled, verbose):
+    """Print one case's verdict. Shared by both tiers, and `redact()` is why.
+
+    This was copied from `run_case` into the synthetic runner and the copy dropped the
+    redaction — harmless for a tier that injects no token, but the point of having ONE printer
+    is that the property cannot be lost by a copy. The evidence strings are arbitrary log lines
+    and opened URLs; `redact()` is a no-op on anything that carries no `X-Plex-Token=`.
+    """
+    for label, ok, evidence in results:
+        mark = "PASS" if ok else "FAIL"
+        if ok and not verbose:
+            print(f"      [{mark}] {label}")
+        else:
+            print(f"      [{mark}] {label}: {redact(evidence)}")  # never leak the token
+    how = f"{elapsed:.0f}s" + (f" (early, cap {run_secs}s)" if stopped_early else f" (full cap {run_secs}s)")
+    print(f"    => {'PASS' if passed else 'FAIL'} in {how}")
+    if settled:
+        # the true disqualifier — which is NOT always the assertion printed above (see
+        # failed_for_good), so losing it would point a reader at a symptom instead of the cause.
+        print(f"       stopped early — settled: {redact(settled)}")
+
+
 def run_case(case, cfg, token, verbose):
     name = case["name"]
     tv = cfg["tv"]
@@ -1810,18 +1848,7 @@ def run_case(case, cfg, token, verbose):
 
     # 5. evaluate
     passed, results = evaluate(case, lines)
-    for label, ok, evidence in results:
-        mark = "PASS" if ok else "FAIL"
-        if ok and not verbose:
-            print(f"      [{mark}] {label}")
-        else:
-            print(f"      [{mark}] {label}: {redact(evidence)}")  # never leak the token
-    how = f"{elapsed:.0f}s" + (f" (early, cap {run_secs}s)" if stopped_early else f" (full cap {run_secs}s)")
-    print(f"    => {'PASS' if passed else 'FAIL'} in {how}")
-    if settled:
-        # the true disqualifier — which is NOT always the assertion printed above (see
-        # failed_for_good), so losing it would point a reader at a symptom instead of the cause.
-        print(f"       stopped early — settled: {redact(settled)}")
+    report_case(passed, results, elapsed, run_secs, stopped_early, settled, verbose)
     return passed, results, lines
 
 
@@ -1847,37 +1874,79 @@ def run_case(case, cfg, token, verbose):
 # or any transcode. It is the tier that separates "the player is broken" from "the library layer
 # is broken" — not a replacement for either.
 # ---------------------------------------------------------------------------
-def _fixture_duration(path):
-    """The container duration in seconds, or None when it cannot be established.
+@functools.lru_cache(maxsize=None)
+def _probe_fixture(path):
+    """`(duration_s, [(codec_type, codec_name), ...])` for one fixture, or None.
 
     ffprobe rather than the generator's `fixtures.json`, deliberately: the file on disk is the
     thing the television will actually play, and a sidecar record can be stale, hand-edited, or
     written by a version of the generator that spelled its fields differently. None (no ffprobe on
-    this machine, an unreadable file) disables the depth check below rather than failing it —
+    this machine, an unreadable file) disables every check built on it rather than failing them —
     refusing to run a suite because a *diagnostic* is unavailable is the wrong trade.
+
+    Cached by PATH because cases share fixtures — three of the twelve reuse another case's file,
+    and `--list` pays for the lot. The streams come back in container order, which is the order
+    `ff.rs` walks when it matches the declared audio codec, so the list index IS the `a=#<n>` the
+    log reports.
     """
     try:
         out = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-             "-of", "default=nw=1:nk=1", path],
+            ["ffprobe", "-v", "error", "-of", "json",
+             "-show_entries", "format=duration:stream=codec_type,codec_name", path],
             capture_output=True, text=True, timeout=20)
-        return float(out.stdout.strip())
-    except (OSError, ValueError, subprocess.SubprocessError):
+        doc = json.loads(out.stdout)
+        dur = float(doc["format"]["duration"])
+        return dur, [(st.get("codec_type"), st.get("codec_name")) for st in doc.get("streams", [])]
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError):
         return None
 
 
+def _declaration_mismatch(case, streams):
+    """Why this case's `declare` does not describe the file it names, or None.
+
+    The tier's single premise is that the declaration is honest about the media, and until this
+    existed nothing checked it: the pack's generator verifies `declare` against what it built, but
+    the harness sends the manifest's copy, and the two are authored separately. The three cases
+    that deliberately override a shape's declaration to select another audio lane are exactly the
+    ones the generator's own check cannot cover — and they are the ones carrying a hand-counted
+    stream index.
+
+    A mismatch is a SKIP, not a failure, for the same reason a too-short pack is: the fixture is
+    wrong, the player is not, and a case that fails here would point squarely at the player.
+    """
+    dec = case.get("declare", {})
+    vid = [c for t, c in streams if t == "video"]
+    aud = [(i, c) for i, (t, c) in enumerate(streams) if t == "audio"]
+    if dec.get("vcodec") and vid and dec["vcodec"] != vid[0]:
+        return f"declares vcodec {dec['vcodec']!r}, the file's video stream is {vid[0]!r}"
+    if dec.get("acodec") and aud and dec["acodec"] not in [c for _, c in aud]:
+        return (f"declares acodec {dec['acodec']!r}, which no audio stream carries "
+                f"({', '.join(c for _, c in aud)})")
+    want_idx = case.get("expect", {}).get("audio_stream_index")
+    if want_idx is not None and dec.get("acodec"):
+        # `ff.rs::audio_stream_matching` feeds the FIRST audio stream whose codec matches, so the
+        # expected index is derivable — computed here from ffprobe rather than trusted from the
+        # manifest, which makes the hand-counted number an assertion instead of a premise.
+        first = next((i for i, c in aud if c == dec["acodec"]), None)
+        if first != want_idx:
+            return (f"expects audio_stream_index {want_idx}, but the first {dec['acodec']!r} "
+                    f"stream in this file is #{first}")
+    return None
+
+
 def _case_depth_s(case):
-    """The deepest media position this case needs to reach, in seconds."""
+    """The deepest media position this case needs to reach, in seconds.
+
+    Every seek op already DECLARES where it ends up — `final_s` for a rapid burst, `target_s`
+    otherwise — and those are the same fields the assertions grade against, so this reads them
+    rather than re-deriving anything. It briefly parsed a rapid burst's `script` to find the
+    deepest step, which was both dead (no synthetic case declares a rapid seek) and wrong (it
+    read a tap-relative `+10` as an absolute 10).
+    """
     depth = case.get("expect", {}).get("min_pos_climb_s", 0)
     for op in case.get("operations", []):
-        if op.get("op") != "seek":
-            continue
-        if op.get("mode") == "rapid":
-            depth = max(depth, op.get("final_s", 0),
-                        *[abs(float(s)) for s in str(op.get("script", "")).split(",")
-                          if s.strip().lstrip("+-").replace(".", "", 1).isdigit()])
-        else:
-            depth = max(depth, op.get("target_s", 140))
+        if op.get("op") == "seek":
+            depth = max(depth, op.get("final_s", op.get("target_s", 140)))
     return depth
 
 
@@ -1900,12 +1969,18 @@ def _resolve_fixtures(cases, root):
         if not os.path.isfile(path):
             c["skip"] = f"no fixture {name!r} in {root} — run `make fixtures-pipeline`"
             continue
-        dur = _fixture_duration(path)
-        depth = _case_depth_s(c)
-        if dur is not None and depth and depth > dur * 0.8:
-            c["skip"] = (f"{name} is {dur:.0f}s but this case needs {depth:.0f}s — regenerate the "
-                         f"pack longer (`make fixtures-pipeline FIXTURES_ARGS=--secs=<n>`)")
-            continue
+        probe = _probe_fixture(path)
+        if probe is not None:
+            dur, streams = probe
+            depth = _case_depth_s(c)
+            if depth and depth > dur * 0.8:
+                c["skip"] = (f"{name} is {dur:.0f}s but this case needs {depth:.0f}s — regenerate "
+                             f"the pack longer (`make fixtures-pipeline FIXTURES_ARGS=--secs=<n>`)")
+                continue
+            why = _declaration_mismatch(c, streams)
+            if why:
+                c["skip"] = f"{name} does not match this case: {why} — regenerate the pack"
+                continue
         c["path"] = path
 
 
@@ -1924,7 +1999,8 @@ def evaluate_pipeline(case, lines, srv_delta):
         results.append(("codec", *a_codec(lines, exp["codec"], exp.get("min_video_width", 0))))
     if exp.get("require_video_bound", True):
         results.append(("video_bound", *a_video_bound(lines)))
-    results.append(("pos_climb", *a_pos_climb(lines, exp.get("min_pos_climb_s", 8))))
+    results.append(("pos_climb", *a_timeline_climb(lines, exp.get("min_pos_climb_s", 8),
+                                               dense_only=True)))
     if "audio_stream_index" in exp:
         results.append(("audio_lane", *a_audio_lane(lines, exp["audio_stream_index"])))
     if exp.get("no_playing_error", True):
@@ -1980,13 +2056,7 @@ def run_pipeline_case(case, cfg, srv, url_base, verbose):
     delta = (after[0] - before[0], after[1] - before[1])
 
     passed, results = evaluate_pipeline(case, lines, delta)
-    for label, ok, evidence in results:
-        mark = "PASS" if ok else "FAIL"
-        print(f"      [{mark}] {label}" if ok and not verbose else f"      [{mark}] {label}: {evidence}")
-    how = f"{elapsed:.0f}s" + (f" (early, cap {run_secs}s)" if stopped_early else f" (full cap {run_secs}s)")
-    print(f"    => {'PASS' if passed else 'FAIL'} in {how}")
-    if settled:
-        print(f"       stopped early — settled: {settled}")
+    report_case(passed, results, elapsed, run_secs, stopped_early, settled, verbose)
     if delta[0] == 0:
         # Every case that reaches the television opens at least one body. Zero means the TV never
         # connected AT ALL, and on macOS the overwhelmingly likely reason is not the app: the
@@ -2263,11 +2333,10 @@ def fps_for_tiers(scenes, include_player):
 
 
 def run_fps_suite(scenes, cfg, token, include_player, skipped=()):
+    # `scenes` arrives already tier-filtered and already known non-empty: main() does both, and
+    # its bail has to happen there anyway, BEFORE arm_teardown commits to driving the television.
+    # A second filter-and-bail here was dead code that someone would keep maintaining.
     tiers = {"ui"} | ({"player"} if include_player else set())
-    scenes = fps_for_tiers(scenes, include_player)
-    if not scenes:
-        sys.exit("no FPS scenes left to run for the selected tier(s)"
-                 + (f" ({len(skipped)} skipped for want of a library item)" if skipped else ""))
     print(f"=== FPS regression suite: {len(scenes)} scene(s), tiers={sorted(tiers)} ===")
     results = []
     for s in scenes:
@@ -2431,7 +2500,9 @@ def main():
     resolve_flavour(args, manifest)
     cfg = {
         "tv": args.tv or manifest["tv"],
-        "pms": manifest["pms"],
+        # server-tier only: the synthetic tier talks to no PMS and `load_manifest` does not
+        # synthesize the key for it.
+        "pms": manifest.get("pms", {}),
         "no_early": args.no_early,
     }
     cases = manifest["cases"]
@@ -2441,16 +2512,18 @@ def main():
         cases = [c for c in cases if args.filter in c["name"]]
     # Partition BEFORE anything reads case["rk"]: a skipped case has none. Held as (name, reason)
     # pairs so the summary can say which shape this library is missing, not merely how many.
-    item_skipped = [(c["name"], c["skip"]) for c in cases if c.get("skip")]
-    cases = [c for c in cases if not c.get("skip")]
+    cases, item_skipped = partition_skips(cases)
+
+    # Both the listing and the run below need these, and they were computed identically in each.
+    fixtures_root = args.fixtures_dir or FIXTURES_ROOT
+    pipeline_cases = manifest.get("pipeline_cases", [])
 
     if args.list and not server_tier:
         # A separate listing, not a filtered one: these cases share no key with the integration
         # matrix (a `fixture` and a `declare`, never an `item` or an `rk`), and the columns that
         # matter — which file, what it declares, whether the pack holds it — have no counterpart
         # in the other table.
-        root = args.fixtures_dir or FIXTURES_ROOT
-        pcases = manifest.get("pipeline_cases", [])
+        root, pcases = fixtures_root, pipeline_cases
         _resolve_fixtures(pcases, root)
         for c in pcases:
             d = c.get("declare", {})
@@ -2514,13 +2587,11 @@ def main():
         if args.owner or args.shared_server:
             sys.exit("--owner / --shared-server are identities on a PMS; the default tier talks to "
                      "no server. Pass --server if you meant the library-backed cases.")
-        root = args.fixtures_dir or FIXTURES_ROOT
-        pcases = manifest.get("pipeline_cases", [])
+        root, pcases = fixtures_root, pipeline_cases
         if args.filter:
             pcases = [c for c in pcases if args.filter in c["name"]]
         _resolve_fixtures(pcases, root)
-        pskipped = [(c["name"], c["skip"]) for c in pcases if c.get("skip")]
-        pcases = [c for c in pcases if not c.get("skip")]
+        pcases, pskipped = partition_skips(pcases)
         # Bail BEFORE the server is started and before arm_teardown: arming commits to driving the
         # television, and its cleanup closes the app on EVERY exit path including this one. A run
         # with nothing to grade must not close an app somebody is watching.
@@ -2552,8 +2623,7 @@ def main():
         # Same partition as the playback cases, and for a sharper reason: run_fps_scene's "$rk"
         # substitution reads scene["rk"] directly, and the KeyError landed in the batch's blanket
         # `except` as `[FAIL] ERROR: 'rk'` -- a false FAILURE, indistinguishable from a regression.
-        fps_skipped = [(sc["name"], sc["skip"]) for sc in selected if sc.get("skip")]
-        selected = [sc for sc in selected if not sc.get("skip")]
+        selected, fps_skipped = partition_skips(selected)
         scenes, _skipped = setup_shared(manifest, cfg, args, selected, "scene")
         # Bail BEFORE read_token() and arm_teardown(): arming commits to driving the television,
         # and its cleanup closes the app on every exit path -- including this one. A run with
