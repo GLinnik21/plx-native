@@ -8,6 +8,7 @@ between the three places the version is written is a submission failure rather t
 import json
 import re
 import struct
+import os
 import sys
 from pathlib import Path
 
@@ -66,6 +67,50 @@ APPS = ROOT / "ipkroot/data/usr/palm/applications"
 staged = sorted(p.name for p in APPS.glob("*")) if APPS.is_dir() else []
 
 print("== packaged identity ==")
+
+# NOTHING STAGED IS NOT A FAILURE BY ITSELF — it depends on who is asking, and getting that wrong
+# breaks the release before it starts. Four jobs run this script and only TWO of them have built
+# anything first: `release.yml`'s `prepare` calls it before the tag exists, precisely so the four
+# version files are proven to agree while failing is still cheap, and `guard` does the same after
+# the tag. On a fresh checkout neither `ipkroot/data` nor `pkg/*.ipk` exists — both are derived and
+# neither is tracked — so a hard failure here means `prepare` exits 1 and NO RELEASE IS EVER CUT.
+# That is a regression this file shipped with: the pre-two-install version skipped the package half
+# when nothing was built, which is why v0.3.0 could be published at all.
+#
+# The fix is not to go back to skipping everywhere, which is how a build job could grade a package
+# it never made. It is to let the CALLER say which it is. `REQUIRE_PACKAGE=1` is set by the two
+# post-build steps, so a missing package there is still a hard error — strictly stronger than the
+# behaviour this replaces, which had no way to demand one at all.
+REQUIRE_PACKAGE = os.environ.get("REQUIRE_PACKAGE") == "1"
+if len(staged) != 1 and not REQUIRE_PACKAGE:
+    print(f"  SKIP — no package staged ({staged or 'nothing'}); grading the TRACKED files only.")
+    print("         Set REQUIRE_PACKAGE=1 to make this a failure (the post-build CI steps do).")
+    # ...but "skip" must not mean "grade nothing", which is what `prepare` would then be doing while
+    # its own comment claims it proves the version files agree. Everything below this point reads
+    # `appinfo` out of the STAGE, so none of it is reachable — yet the three files that carry the
+    # version are all TRACKED and all present on a bare checkout. This is that agreement, and it is
+    # the assertion `prepare` exists to make before it writes a tag.
+    print("== version agreement (tracked files) ==")
+    tracked_appinfo = json.loads((ROOT / "pkg/appinfo.json").read_text())
+    tracked_control = dict(
+        line.split(": ", 1)
+        for line in (ROOT / "ipkroot/ctl/control").read_text().splitlines() if ": " in line
+    )
+    tracked_cargo = re.search(r'^version = "([^"]+)"', (ROOT / "rust-modules/Cargo.toml").read_text(), re.M)
+    v = tracked_appinfo["version"]
+    check(re.fullmatch(r"\d+\.\d+\.\d+", v) is not None, f"pkg/appinfo.json version is X.Y.Z ({v})")
+    check(tracked_control.get("Version") == v, f'control Version == appinfo version ({v})')
+    check(tracked_cargo is not None and tracked_cargo.group(1) == v,
+          f'Cargo.toml version == appinfo version ({v})')
+    check(tracked_appinfo["id"] == flavor.STABLE_ID,
+          f'pkg/appinfo.json id is the stable id ({flavor.STABLE_ID})')
+    check(tracked_control.get("Package") == flavor.STABLE_ID,
+          f'control Package is the stable id ({flavor.STABLE_ID})')
+    for f in FAILURES:
+        print(f"::error::{f}")
+    print(f"\n{'all tracked-file assertions passed' if not FAILURES else 'FAILURES above'}")
+    sys.exit(1 if FAILURES else 0)
+
 check(len(staged) == 1,
       f"exactly one application directory is staged (saw {staged or 'none — run `make ipk` first'})")
 if len(staged) != 1:
