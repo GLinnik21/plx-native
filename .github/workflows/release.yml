@@ -262,12 +262,11 @@ jobs:
         # produced no package and must fail. The pre-build callers (`prepare`, `guard`) deliberately
         # do not set it — they exist to grade the version files before anything is built.
         env:
+          WEBOS_SDK: ${{ steps.ndk.outputs.sdk-dir }}
           REQUIRE_PACKAGE: "1"
         run: |
           ./ci/check-elf.sh
           python3 ci/check-package.py
-        env:
-          WEBOS_SDK: ${{ steps.ndk.outputs.sdk-dir }}
 
       - name: webosbrew tooling
         run: |
