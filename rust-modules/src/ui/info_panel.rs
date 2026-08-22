@@ -50,9 +50,12 @@ fn is_episode() -> bool {
     metadata::now_playing().map(|n| n.is_episode).unwrap_or(false)
 }
 
-/// the action-button labels for the playing item
-fn actions() -> Vec<&'static str> {
-    vec!["From Beginning", if is_episode() { "Go to Show" } else { "Go to Movie" }]
+/// the action-button labels for the playing item. An ARRAY, not a `Vec`: the count is fixed at two
+/// (it is what `CTL_POP`'s const generic is sized from), and five callers ask this — one of them
+/// [`draw`], every frame the card is up — so a heap allocation to hand back two `&'static str`s was
+/// paid 60 times a second to learn a constant.
+fn actions() -> [&'static str; 2] {
+    ["From Beginning", if is_episode() { "Go to Show" } else { "Go to Movie" }]
 }
 
 /// true when focus is on the last action button — a further DOWN should leave the card (back to the
@@ -96,6 +99,22 @@ pub(crate) fn on_ok() -> InfoAction {
     }
 }
 
+/// The focused thing is a pressable CONTROL FACE — one of the card's two action buttons, rather than
+/// the tab row above them. The card's `FOCUS` walks both, and is the button index only while it is
+/// inside the column; the same filter [`update`] pops on, asked here so the button that dips is
+/// always the button that popped.
+pub(crate) fn focus_is_ctl() -> bool {
+    ctl_index().is_some()
+}
+
+/// **The one filter, asked by both callers.** Which action button `FOCUS` is on, if it is in the
+/// column at all — [`focus_is_ctl`] asks it to decide whether a press may dip, and [`update`] asks
+/// it to decide which button `CTL_POP` pops. The doc above promised those were the same filter;
+/// they were the same expression written twice, seven lines apart, in two spellings.
+fn ctl_index() -> Option<usize> {
+    usize::try_from(unsafe { addr_of!(FOCUS).read() }).ok().filter(|&i| i < actions().len())
+}
+
 /// The action column's FOCUS POP — one spring per button ([`crate::ui::widgets::CtlPop`]). Two, the
 /// whole of [`actions`].
 static mut CTL_POP: crate::ui::widgets::CtlPop<2> = crate::ui::widgets::CtlPop::new();
@@ -104,8 +123,7 @@ pub(crate) fn update(dt: f32) {
     pop().update(dt);
     // The card's focus walks the tabs above these buttons too, and `FOCUS` is the button index only
     // while it is inside the column — outside it, every pop closes.
-    let f = usize::try_from(unsafe { addr_of!(FOCUS).read() }).ok().filter(|&i| i < actions().len());
-    unsafe { (*addr_of_mut!(CTL_POP)).step(f, dt) };
+    unsafe { (*addr_of_mut!(CTL_POP)).step(ctl_index(), dt) };
 }
 
 // ---- helpers ----

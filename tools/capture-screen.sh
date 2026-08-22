@@ -37,7 +37,18 @@ set -euo pipefail
 # The TV's address comes from $TV_HOST, else the gitignored .tv-host next to the Makefile (the
 # same file `make TV=` falls back to) — the repo carries no home-network address of its own.
 TV_HOST="${TV_HOST:-$(cat "$(dirname "$0")/../.tv-host" 2>/dev/null || true)}"
+# A linked worktree has no `.tv-host` of its own (it is gitignored), and that is where the parallel
+# agents live — ask the Makefile, which knows the main checkout's copy.
+[ -n "$TV_HOST" ] || TV_HOST="$(make -s -C "$(dirname "$0")/.." print-tv 2>/dev/null | head -1)"
 [ -n "$TV_HOST" ] || { echo "no TV configured — put its IP in .tv-host, or set TV_HOST=<ip>" >&2; exit 1; }
+
+# A capture is a MEASUREMENT of one moment on a set that only one lane may be steering: taken
+# during somebody else's session it is a picture of a screen THEY navigated to, and nothing in the
+# resulting PNG says so. So it takes the television's lock like any other device job.
+# NB `if`, not `[ -x … ] && …`: this script runs under `set -e`, where a trailing `&&` that tests
+# false IS a failing command and would exit 1 before taking a single picture.
+_LOCK="$(dirname "$0")/tv-lock.sh"
+if [ -x "$_LOCK" ]; then TV="$TV_HOST" "$_LOCK" require --quiet --why "capture-screen.sh"; fi
 TV_USER="${TV_USER:-root}"
 TV_PASS="${TV_PASS:-alpine}"
 CAP_W="${CAP_W:-1920}"

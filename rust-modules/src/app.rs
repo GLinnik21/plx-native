@@ -2577,13 +2577,27 @@ unsafe fn begin_fresh_press(
 /// and no worker behind it.
 unsafe fn key_onboarding(route: Route, sym: c_uint, wcode: c_uint, ok_armed: &mut bool) -> bool {
     if matches!(route, Route::Onboard) {
+        // The action PILL is a control face (`onboard`'s `ACTION_POP`) → tvOS press, committed on
+        // the spring-back by `commit_onboarding`. A `TableView` row is not a control face and keeps
+        // flipping its pin on the key-down.
+        if is_ok(sym) && crate::ui::onboard::focus_is_ctl() {
+            crate::ui::press::begin_ctl(SDL_GetTicks());
+            *ok_armed = true;
+            return false;
+        }
         return matches!(crate::ui::onboard::key(sym, wcode), crate::ui::onboard::Action::Done);
     }
     if matches!(route, Route::Profiles) {
+        // BOTH of this screen's press surfaces defer, for the one reason: each has a spring that
+        // folds `press::scale()` in and so has a dip to show. The roster avatar is a card
+        // (`card_row`'s), the Sign-out footer is a control face (`FOOTER_POP`) — which is why they
+        // arm through different doors and commit through one, `profiles::activate_focused`. The PIN
+        // keypad's keys have neither and act on the key-down.
         if is_ok(sym) && crate::ui::profiles::focus_is_avatar() {
-            // press the roster avatar; the select commits on the spring-back
-            // (route-agnostic press handler). Footer / keypad OK act immediately.
             crate::ui::press::begin(SDL_GetTicks());
+            *ok_armed = true;
+        } else if is_ok(sym) && crate::ui::profiles::focus_is_ctl() {
+            crate::ui::press::begin_ctl(SDL_GetTicks());
             *ok_armed = true;
         } else {
             crate::ui::profiles::key(sym, wcode);
@@ -2592,6 +2606,13 @@ unsafe fn key_onboarding(route: Route, sym: c_uint, wcode: c_uint, ok_armed: &mu
         crate::ui::login::key(sym, wcode);
     }
     false
+}
+
+/// Commit the onboarding-question screen's focused stop — the deferred half of [`key_onboarding`]'s
+/// `Onboard` arm. Returns what [`key_onboarding`] returns: whether the flow is finished and the
+/// caller should route Home.
+fn commit_onboarding() -> bool {
+    matches!(crate::ui::onboard::on_ok(), crate::ui::onboard::Action::Done)
 }
 
 /// Leave the first-run question for Home.
@@ -2754,6 +2775,7 @@ fn key_info_panel(
     trail: &mut Trail,
     hud_nav: &mut HudNav,
     held: &mut HeldKey,
+    ok_armed: &mut bool,
 ) {
     if sym == SDLK_DOWN && crate::ui::info_panel::at_last() {
         // past the bottom of the card → drop focus back onto the tabs
@@ -2765,60 +2787,80 @@ fn key_info_panel(
         crate::ui::info_panel::move_focus(sym as c_int);
         held.arm(sym, now); // holding repeats via the client-side timer
         extend_hud(now, HUD_MENU_MS);
+    } else if is_ok(sym) && crate::ui::info_panel::focus_is_ctl() {
+        // The card's two actions are control faces with a pop of their own, so OK takes the tvOS
+        // press and `commit_info_panel` spends it on the spring-back. The card stays up through the
+        // dip — `info_panel::on_ok` is what takes it down — so the whole animation is on screen.
+        crate::ui::press::begin_ctl(now);
+        *ok_armed = true;
     } else if is_ok(sym) {
-        match crate::ui::info_panel::on_ok() {
-            crate::ui::info_panel::InfoAction::FromBeginning => {
-                request_seek(0);
-                if paused() {
-                    set_paused(false);
-                    crate::player::resume(mt);
-                }
-            }
-            crate::ui::info_panel::InfoAction::GoToDetail(rk) => {
-                // Leave playback through THE exit ritual, then override where
-                // it landed. This arm used to hand-roll the exit — overlays +
-                // stop_bufferfeed — which is three quarters of `exit_player`
-                // and silently dropped the other quarter: `route::cancel_play()`
-                // (a jump taken while a play resolve was still in flight left
-                // it to land later on Detail, starting audio the user cannot
-                // reach) and the armed hub refresh (Continue Watching kept the
-                // resume point from BEFORE this session — exactly the stale-CW
-                // bug `exit_player`'s doc warns a new exit path re-introduces).
-                // The override is the one real difference: the Info card's
-                // "Go to Show/Movie" always lands on THIS rk's page, whatever
-                // origin route the ritual would otherwise have chosen.
-                if !rk.is_empty() {
-                    // The played leaf's server, read BEFORE the exit ritual —
-                    // `detail_rk` is that item's own show, so it is on the same
-                    // machine, and the store this reads is torn down below.
-                    let sid = crate::metadata::playing()
-                        .map(|p| p.sid)
-                        .unwrap_or_else(crate::plex::current_server);
-                    exit_player(mt, route, play_from, refresh_hubs_at, trail);
-                    crate::ui::detail::open_rk(sid, &rk);
-                    // A LANDING, not a navigation, so the trail is made to agree
-                    // rather than pushed blindly: the exit above has usually
-                    // already put this very page on top (the show playback
-                    // started from), and `ensure_detail` is a no-op there. It is
-                    // also strictly better than the flag it replaces — a
-                    // Library → detail → play → "Go to Show" now returns to the
-                    // Library instead of to Home.
-                    trail.ensure(&to_detail(sid, &rk));
-                    *route = Route::Detail;
-                }
-            }
-            crate::ui::info_panel::InfoAction::None => {}
-        }
-        // guarded: the GoToDetail arm above set Route::Detail — don't resurrect Player over it
-        if matches!(*route, Route::Player { .. }) {
-            *route = Route::Player { overlay: Overlay::None };
-        }
-        extend_hud(now, HUD_LINGER_MS);
+        commit_info_panel(mt, now, route, play_from, refresh_hubs_at, trail);
     } else if is_back(sym, wcode) {
         crate::ui::info_panel::close();
         *route = Route::Player { overlay: Overlay::None };
         extend_hud(now, HUD_LINGER_MS);
     }
+}
+
+/// Activate the Info card's focused action — the deferred half of [`key_info_panel`]'s OK arm, run
+/// from the per-frame loop on the press spring-back (and directly for a focus that is on the TABS
+/// above the column, which has no face to dip).
+fn commit_info_panel(
+    mt: &crate::task::MainThread,
+    now: u32,
+    route: &mut Route,
+    play_from: &Node,
+    refresh_hubs_at: &mut u32,
+    trail: &mut Trail,
+) {
+    match crate::ui::info_panel::on_ok() {
+        crate::ui::info_panel::InfoAction::FromBeginning => {
+            request_seek(0);
+            if paused() {
+                set_paused(false);
+                crate::player::resume(mt);
+            }
+        }
+        crate::ui::info_panel::InfoAction::GoToDetail(rk) => {
+            // Leave playback through THE exit ritual, then override where
+            // it landed. This arm used to hand-roll the exit — overlays +
+            // stop_bufferfeed — which is three quarters of `exit_player`
+            // and silently dropped the other quarter: `route::cancel_play()`
+            // (a jump taken while a play resolve was still in flight left
+            // it to land later on Detail, starting audio the user cannot
+            // reach) and the armed hub refresh (Continue Watching kept the
+            // resume point from BEFORE this session — exactly the stale-CW
+            // bug `exit_player`'s doc warns a new exit path re-introduces).
+            // The override is the one real difference: the Info card's
+            // "Go to Show/Movie" always lands on THIS rk's page, whatever
+            // origin route the ritual would otherwise have chosen.
+            if !rk.is_empty() {
+                // The played leaf's server, read BEFORE the exit ritual —
+                // `detail_rk` is that item's own show, so it is on the same
+                // machine, and the store this reads is torn down below.
+                let sid = crate::metadata::playing()
+                    .map(|p| p.sid)
+                    .unwrap_or_else(crate::plex::current_server);
+                exit_player(mt, route, play_from, refresh_hubs_at, trail);
+                crate::ui::detail::open_rk(sid, &rk);
+                // A LANDING, not a navigation, so the trail is made to agree
+                // rather than pushed blindly: the exit above has usually
+                // already put this very page on top (the show playback
+                // started from), and `ensure_detail` is a no-op there. It is
+                // also strictly better than the flag it replaces — a
+                // Library → detail → play → "Go to Show" now returns to the
+                // Library instead of to Home.
+                trail.ensure(&to_detail(sid, &rk));
+                *route = Route::Detail;
+            }
+        }
+        crate::ui::info_panel::InfoAction::None => {}
+    }
+    // guarded: the GoToDetail arm above set Route::Detail — don't resurrect Player over it
+    if matches!(*route, Route::Player { .. }) {
+        *route = Route::Player { overlay: Overlay::None };
+    }
+    extend_hud(now, HUD_LINGER_MS);
 }
 
 /// The Chapters strip is modal too — LEFT/RIGHT pick, OK seeks, BACK closes.
@@ -3009,18 +3051,52 @@ fn chip_clicked(route: Route, ev: &[u8]) -> bool {
 }
 
 /// OK, on every screen that has not already `continue`d above.
-unsafe fn key_ok(
+/// Activate the player transport's focused CONTROL ROW item — the deferred half of [`key_ok`]'s
+/// player arm, run from the per-frame loop once the press spring-back has played.
+///
+/// Two arms, in the order they were written in `key_ok`: a STAND-IN owns the row (Skip, Up Next) and
+/// performs its own action, or the row holds the three discs and OK opens that disc's panel. `ctrl`
+/// is re-resolved by the caller on the committing frame rather than captured at the press, so the
+/// activation acts on the row that is DRAWN — the slot is resolved once per loop iteration for input,
+/// update and draw alike (see the `let ctrl` at the top of the loop), and an offer that arrived
+/// mid-press has already changed what the user is looking at.
+unsafe fn activate_player_row(
     mt: &crate::task::MainThread,
     ctrl: crate::ui::player_hud::ControlSlot,
     now: u32,
     route: &mut Route,
     hud: &mut HudState,
-    ptr: &mut Pointer,
     held: &mut HeldKey,
+    trail: &mut Trail,
+    play_from: &mut Node,
+    refresh_hubs_at: &mut u32,
+) {
+    if !ctrl.is_discs() {
+        // A stand-in owns row 1 — activate it. Same value the draw used.
+        if activate_ctrl_row(mt, ctrl, route, play_from, refresh_hubs_at, &mut hud.nav, trail) {
+            held.sym = 0; // async route flip: don't repeat a held key into the next screen
+        }
+    } else if hud.nav.btn == crate::ui::player_hud::BTN_MORE {
+        // …so the discs are what row 1 holds — the complement of the arm above, and the row's only
+        // other occupant. OK on a control disc opens its panel (Subtitles / Audio / More).
+        crate::ui::more_menu::open();
+        *route = Route::Player { overlay: Overlay::More };
+    } else {
+        crate::ui::track_menu::open_tab(if hud.nav.btn == 0 { 1 } else { 0 });
+        *route = Route::Player { overlay: Overlay::Menu };
+    }
+    extend_hud(now, HUD_LINGER_MS);
+}
+
+unsafe fn key_ok(
+    mt: &crate::task::MainThread,
+    now: u32,
+    route: &mut Route,
+    hud: &mut HudState,
+    ptr: &mut Pointer,
     trail: &mut Trail,
     nav: &mut Option<NavReq>,
     play_from: &mut Node,
-    refresh_hubs_at: &mut u32,
     ok_armed: &mut bool,
 ) {
     // The shared top bar's PROFILE CHIP, ahead of the per-route ladder below: it is one control on
@@ -3035,22 +3111,15 @@ unsafe fn key_ok(
         // cleared `dismissed`, so re-asking calls a hand-hidden transport visible and this arm
         // would open a panel from behind it (`HudState::visible_at_press`)
         let vis = hud.visible_at_press;
-        // A stand-in owns row 1 — activate it. Same value the draw used.
-        if vis && hud.nav.focus == 1 && !ctrl.is_discs() {
-            if activate_ctrl_row(mt, ctrl, route, play_from, refresh_hubs_at, &mut hud.nav, trail) {
-                held.sym = 0; // async route flip: don't repeat a held key into the next screen
-            }
-        } else if vis && hud.nav.focus == 1 {
-            // …so the discs are what row 1 holds — the complement of the arm
-            // above, and the row's only other occupant.
-            // OK on a control disc opens its panel (Subtitles / Audio / More)
-            if hud.nav.btn == crate::ui::player_hud::BTN_MORE {
-                crate::ui::more_menu::open();
-                *route = Route::Player { overlay: Overlay::More };
-            } else {
-                crate::ui::track_menu::open_tab(if hud.nav.btn == 0 { 1 } else { 0 });
-                *route = Route::Player { overlay: Overlay::Menu };
-            }
+        // Row 1 is the transport's CONTROL ROW — the Subtitles / Audio / ⋯ discs, or whichever
+        // stand-in has taken their place (Skip, Up Next). Every occupant is a control FACE with a
+        // pop of its own (`player_hud::ROW_POP`), so OK takes the tvOS press: dip now, act on the
+        // spring-back, in `activate_player_row` from the per-frame loop. Both of its arms open
+        // something OVER this HUD rather than leaving the route, which makes this the one control
+        // row in the app where the whole dip → ring is on screen either side of the activation.
+        if vis && hud.nav.focus == 1 {
+            crate::ui::press::begin_ctl(now);
+            *ok_armed = true;
         } else if vis && hud.nav.focus == 2 {
             if hud.nav.tab == 0 {
                 crate::ui::info_panel::open(); // Info card
@@ -3111,9 +3180,15 @@ unsafe fn key_ok(
     } else if matches!(*route, Route::Detail) {
         // OK on a detail CARD (episode / Related / Cast) → tvOS press: dip now,
         // commit on the spring-back (the route-agnostic press handler runs on_ok
-        // then). The Play pill, season tabs and About rows activate immediately.
+        // then). So does the hero's CONTROL ROW — the same press with the hold
+        // gesture left off, since no context menu grows out of a Play pill.
+        // Season tabs, About rows and the filmstrip's metadata block still
+        // activate immediately: none of them draws `press::scale()`.
         if crate::ui::detail::focus_is_card() {
             crate::ui::press::begin(SDL_GetTicks());
+            *ok_armed = true;
+        } else if crate::ui::detail::focus_is_ctl() {
+            crate::ui::press::begin_ctl(now);
             *ok_armed = true;
         } else if crate::ui::detail::on_ok() {
             start_playback(
@@ -3149,9 +3224,20 @@ unsafe fn key_ok(
         // instantly while the hero stays visible ~130ms, so a quick DOWN→OK
         // must still act on the hero shown, not the grid's card 0.
         if crate::ui::home::snap_pos() < 0.5 {
-            // hero (Play pill / info / chip / pills): activate immediately.
-            let hf = crate::ui::home::hero_focus();
-            home_activate(mt, hf, HUD_LINGER_MS, route, play_from, trail, &mut hud.nav, nav);
+            // hero: its ACTION ROW (the Play/Continue pill, the info disc) takes
+            // the tvOS press like a card, with the hold gesture left off — the
+            // commit below re-reads `hero_focus` and hands it to this same
+            // activation. The rest of the hero band activates immediately: the
+            // top band's pills are controls in a TRACK and the status read-out's
+            // Retry belongs to no `CtlPop`, so neither has a dip to show
+            // (`home::focus_is_ctl`).
+            if crate::ui::home::focus_is_ctl() {
+                crate::ui::press::begin_ctl(now);
+                *ok_armed = true;
+            } else {
+                let hf = crate::ui::home::hero_focus();
+                home_activate(mt, hf, HUD_LINGER_MS, route, play_from, trail, &mut hud.nav, nav);
+            }
         } else {
             // grid card: tvOS press — dip the focused card now, activate on the
             // spring-back (committed from the per-frame loop). Nav cancels, so the
@@ -3348,9 +3434,8 @@ unsafe fn seed_scrub() {
 }
 
 /// CH▲/CH▼ page the browse grid a screenful of rows per press.
-fn key_library_page(sym: c_uint, wcode: c_uint) {
-    let up = sym == SDLK_PAGEUP || wcode == WCODE_CH_UP || wcode == crate::ui::consts::WCODE_CH_UP_KEY;
-    crate::ui::library::page(if up { -1 } else { 1 });
+fn key_library_page(dir: c_int) {
+    crate::ui::library::page(dir);
 }
 
 /// webOS BACK: this Magic Remote sends wcode 482 (0x1E2); 461 kept for others.
@@ -3469,25 +3554,40 @@ fn back_at_root(running: &mut bool) {
     }
 }
 
-/// The exit alert is modal: LEFT/RIGHT walk the two answers, OK commits the focused one, BACK
+/// The exit alert is modal: LEFT/RIGHT walk the two answers, OK PRESSES the focused one, BACK
 /// cancels. Every other key is SWALLOWED — the arm `continue`s unconditionally at its call site, so
 /// nothing behind the sheet can be driven while it is up.
 ///
-/// Only [`Choice::Exit`](crate::ui::exit_alert::Choice::Exit) sets `running`. BACK and *Cancel* are
-/// the same outcome by two routes, which is the point of the panel: the safe answer is both the
-/// default focus and what the dismiss key does.
-fn key_exit_alert(sym: c_uint, wcode: c_uint, running: &mut bool) {
-    use crate::ui::exit_alert::{self, Choice};
+/// OK arms the press and nothing more; [`commit_exit_alert`] is where the answer is spent, which is
+/// why `running` is that function's argument and not this one's. BACK and *Cancel* are the same
+/// outcome by two routes, which is the point of the panel: the safe answer is both the default focus
+/// and what the dismiss key does — and BACK still acts on the key-down, since a dismiss has no
+/// control face to dip.
+fn key_exit_alert(sym: c_uint, wcode: c_uint, now: u32, ok_armed: &mut bool) {
+    use crate::ui::exit_alert;
     if is_ok(sym) {
-        if exit_alert::on_ok() == Choice::Exit {
-            *running = false;
-        }
+        // Both answers are control faces with a pop of their own (`exit_alert`'s `CtlPop`), so OK
+        // takes the tvOS press: dip now, commit in `commit_exit_alert` once the bounce has played.
+        // This is the one press in the app worth deferring on its own merits as well as the design
+        // system's — the sheet is still up through the whole animation, so the answer being taken is
+        // legible right up to the moment it acts, including the one that ends the process.
+        crate::ui::press::begin_ctl(now);
+        *ok_armed = true;
     } else if is_back(sym, wcode) {
         exit_alert::close();
     } else {
         // LEFT/RIGHT only — `exit_alert::step` ignores everything else, so this is one call
         // rather than a key test here and a second one there.
         exit_alert::move_focus(sym as c_int);
+    }
+}
+
+/// Commit the exit alert's focused answer — the deferred half of [`key_exit_alert`], run from the
+/// per-frame loop on the press spring-back. The `running` flip lives HERE and nowhere else, which is
+/// the invariant `exit_alert_tests` guards: this is still the app's one door.
+fn commit_exit_alert(running: &mut bool) {
+    if crate::ui::exit_alert::on_ok() == crate::ui::exit_alert::Choice::Exit {
+        *running = false;
     }
 }
 
@@ -4344,7 +4444,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     // the top of the chain and `continue`ing on every key. That is also the whole
                     // of its modality: with the arm here, nothing behind the sheet is reachable.
                     if crate::ui::exit_alert::is_open() {
-                        key_exit_alert(sym, wcode, &mut running);
+                        key_exit_alert(sym, wcode, last_input, &mut ok_armed);
                         continue;
                     }
                     if matches!(route, Route::Login | Route::Profiles | Route::Onboard) {
@@ -4381,7 +4481,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     }
                     if matches!(route, Route::Player { overlay: Overlay::Info }) {
                         key_info_panel(mt, sym, wcode, last_input, &mut route, &play_from,
-                            &mut refresh_hubs_at, &mut trail, &mut hud.nav, &mut held_key);
+                            &mut refresh_hubs_at, &mut trail, &mut hud.nav, &mut held_key,
+                            &mut ok_armed);
                         continue;
                     }
                     if matches!(route, Route::Player { overlay: Overlay::Chapters }) {
@@ -4438,9 +4539,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         // and the simulator cannot produce one — so `tools/keytable.py` is blind to
                         // this by construction. Settling it needs a `key` line off the television.
                     } else if matches!(key, Key::Ok) {
-                        key_ok(mt, ctrl, last_input, &mut route, &mut hud, &mut ptr, &mut held_key,
-                            &mut trail, &mut nav_pending, &mut play_from,
-                            &mut refresh_hubs_at, &mut ok_armed);
+                        key_ok(mt, last_input, &mut route, &mut hud, &mut ptr,
+                            &mut trail, &mut nav_pending, &mut play_from, &mut ok_armed);
                     } else if matches!(key, Key::Pause) {
                         key_pause(mt, route, last_input);
                     } else if matches!(key, Key::Play) {
@@ -4467,15 +4567,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         exit_player(mt, &mut route, &play_from, &mut refresh_hubs_at, &mut trail);
                     } else if matches!(route, Route::Player { .. }) && matches!(key, Key::Left { .. } | Key::Right { .. }) {
                         key_scrub(key, last_input, ctrl, &mut hud, &mut ptr, &mut scrubber);
-                    } else if matches!(route, Route::Library)
-                        && (sym == SDLK_PAGEUP
-                            || sym == SDLK_PAGEDOWN
-                            || wcode == WCODE_CH_UP
-                            || wcode == WCODE_CH_DOWN
-                            || wcode == crate::ui::consts::WCODE_CH_UP_KEY
-                            || wcode == crate::ui::consts::WCODE_CH_DOWN_KEY)
+                    } else if let (Route::Library, Some(dir)) =
+                        (route, crate::ui::consts::page_dir(sym, wcode))
                     {
-                        key_library_page(sym, wcode);
+                        key_library_page(dir);
                     } else if matches!(key, Key::Back) {
                         key_back(mt, &mut route, &mut nav_pending, &mut trail, &play_from,
                             &mut refresh_hubs_at, &mut running);
@@ -4548,18 +4643,38 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     }
                 } else if et == SDL_MOUSEBUTTONDOWN {
                     last_input = SDL_GetTicks();
+                    // A FRESH click supersedes a press still in flight from the previous one — the
+                    // pointer's twin of `begin_fresh_press`'s nav-key abort. Without it, clicking a
+                    // control and then something else inside the ~210 ms commit window let the first
+                    // click's deferred activation fire AFTER the second had already acted (two
+                    // `on_ok`s: the watched toggle flipped twice, each with its own blocking
+                    // refetch). Every arm below re-arms from scratch.
+                    //
+                    // It sits at the TOP of the pointer handler rather than inside one route's arm,
+                    // where it lived while only detail cards armed a press from a click. Every
+                    // control face defers now, so the interleaving it guards is reachable on every
+                    // screen — including across arms, e.g. Home's hero pill pressed and then a tab
+                    // pill clicked, which navigates at once and would otherwise have played the
+                    // hero a moment later on the page it had just left.
+                    if ok_armed {
+                        crate::ui::press::cancel();
+                        ok_armed = false;
+                    }
                     // The exit alert's modality, pointer half — the twin of the key ladder's first
                     // arm, and here for the reason `item_menu`'s arm sits above Home's: without it
                     // a click that misses the sheet falls through onto the shelf behind it and
                     // launches whatever card it landed on, from under a modal question.
                     //
-                    // A MISS is not a dismissal (`exit_alert::click` reports `None`): "not either"
+                    // A MISS is not a dismissal (`exit_alert::press_at` reports `false`): "not either"
                     // is not an answer to a yes/no question, which is the one place this panel
                     // differs from every menu in the app.
                     if crate::ui::exit_alert::is_open() {
                         let (cx, cy) = ptr_xy(&ev);
-                        if crate::ui::exit_alert::click(cx, cy) == Some(crate::ui::exit_alert::Choice::Exit) {
-                            running = false;
+                        // Park the ring and dip the answer; `commit_exit_alert` spends it on the
+                        // spring-back, from the same per-frame arm the key press commits through.
+                        if crate::ui::exit_alert::press_at(cx, cy) {
+                            crate::ui::press::begin_ctl(last_input);
+                            ok_armed = true;
                         }
                         continue;
                     }
@@ -4615,7 +4730,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             _ if ctrl_click.is_some() => {
                                 hud.nav.focus = 1;
                                 hud.nav.btn = ctrl_click.unwrap_or(0);
-                                activate_ctrl_row(mt, ctrl, &mut route, &mut play_from, &mut refresh_hubs_at, &mut hud.nav, &mut trail);
+                                // …then the tvOS press, exactly as the key arm does it:
+                                // `activate_player_row` reads `hud.nav`, which the two lines
+                                // above have just parked on what was clicked.
+                                crate::ui::press::begin_ctl(last_input);
+                                ok_armed = true;
                             }
                             _ => {
                                 // shared HUD geometry: player_hud owns the button rects + scrub
@@ -4624,15 +4743,15 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                 let on_scrub =
                                     if hud_vis && dur() > 0 { crate::ui::player_hud::scrub_hit(cx, cy) } else { None };
                                 if let Some(idx) = icon {
-                                    if idx == crate::ui::player_hud::BTN_MORE {
-                                        crate::ui::more_menu::open();
-                                        route = Route::Player { overlay: Overlay::More };
-                                    } else {
-                                        crate::ui::track_menu::open_tab(if idx == 0 { 1 } else { 0 }); // Subtitles button → subtitles tab
-                                        route = Route::Player { overlay: Overlay::Menu };
-                                    }
+                                    // Park the ring on the disc, then dip it — which panel opens is
+                                    // `activate_player_row`'s to decide on the spring-back, off the
+                                    // same `hud.nav.btn` the key path hands it. The panel used to
+                                    // open here, on the button-DOWN, and the disc's own dip could
+                                    // never be seen under it.
                                     hud.nav.focus = 1;
                                     hud.nav.btn = idx;
+                                    crate::ui::press::begin_ctl(last_input);
+                                    ok_armed = true;
                                 } else if let Some(frac) = on_scrub {
                                     let mut t = (frac as f64 * dur() as f64) as i64;
                                     let cap = dur() - 3 * 1_000_000_000;
@@ -4683,8 +4802,18 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             // auto-flip's (this used to arm a click-hold pager here).
                             let b = crate::ui::home::hero_button_at(cx, cy);
                             if b >= 0 {
+                                // Park the ring FIRST — the commit re-reads `hero_focus` — then dip
+                                // the face and let the per-frame arm run the ONE activation. The
+                                // status read-out's Retry is hit-tested through this same rect
+                                // array and is not a control face, so it keeps acting at once
+                                // (`home::focus_is_ctl` is what tells them apart, here as on OK).
                                 crate::ui::home::set_hero_focus(b);
-                                home_activate(mt, b, HUD_LINGER_MS, &mut route, &mut play_from, &mut trail, &mut hud.nav, &mut nav_pending);
+                                if crate::ui::home::focus_is_ctl() {
+                                    crate::ui::press::begin_ctl(last_input);
+                                    ok_armed = true;
+                                } else {
+                                    home_activate(mt, b, HUD_LINGER_MS, &mut route, &mut play_from, &mut trail, &mut hud.nav, &mut nav_pending);
+                                }
                             }
                         } else if crate::ui::home::home_card_click(cx, cy) {
                             // grid card: click = OK (play a Continue-Watching tile / open detail)
@@ -4724,22 +4853,16 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         // Magic-Remote click on the detail page: focus what was clicked, then run the
                         // SAME activation the OK key does (detail::click did the hit-test) — a CARD
                         // (episode / Related / Cast) gets the tvOS press dip, committed on the
-                        // button-up spring-back below; the Play pill, watched disc and season tabs
-                        // act at once, exactly as in the key arm.
+                        // button-up spring-back below — and so, since the control faces landed, do
+                        // the Play pill, the watched discs and the season tabs. Every one of them
+                        // defers now; this comment said they still acted at once.
                         let (cx, cy) = ptr_xy(&ev);
-                        // A FRESH click supersedes a press still in flight from the previous one —
-                        // the pointer's twin of the nav-key abort above. Without this, clicking a
-                        // card and then something else within the ~210ms commit window let the
-                        // card's deferred activation fire AFTER the second click had already acted
-                        // (two `on_ok`s: the watched toggle flipped twice, each with its own
-                        // blocking refetch). The card branch re-arms from scratch below.
-                        if ok_armed {
-                            crate::ui::press::cancel();
-                            ok_armed = false;
-                        }
                         if crate::ui::detail::click(cx, cy) {
                             if crate::ui::detail::focus_is_card() {
                                 crate::ui::press::begin(last_input);
+                                ok_armed = true;
+                            } else if crate::ui::detail::focus_is_ctl() {
+                                crate::ui::press::begin_ctl(last_input);
                                 ok_armed = true;
                             } else if crate::ui::detail::on_ok() {
                                 start_playback(
@@ -4795,11 +4918,29 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         apply_item_action(mt, act, over, &mut route, &mut play_from, &mut trail, &mut hud.nav, &mut nav_pending);
                     } else if matches!(route, Route::Profiles) {
                         let (cx, cy) = ptr_xy(&ev);
-                        crate::ui::profiles::click(cx, cy);
+                        // an avatar (a card) or the Sign-out footer (a control face): park focus,
+                        // dip it, and let `activate_focused` spend the press on the spring-back —
+                        // the same two predicates the key arm asks, in the same order.
+                        if crate::ui::profiles::press_at(cx, cy) {
+                            if crate::ui::profiles::focus_is_avatar() {
+                                crate::ui::press::begin(last_input);
+                            } else {
+                                crate::ui::press::begin_ctl(last_input);
+                            }
+                            ok_armed = true;
+                        } else {
+                            crate::ui::profiles::click(cx, cy);
+                        }
                     } else if matches!(route, Route::Onboard) {
                         let (cx, cy) = ptr_xy(&ev);
-                        if matches!(crate::ui::onboard::click(cx, cy), crate::ui::onboard::Action::Done) {
-                            route = enter_home_from_onboard(&mut trail);
+                        // the action PILL is a control face → press it; a list row is not and
+                        // still flips its pin on the button-down. `commit_onboarding` is what can
+                        // finish the flow now, from the per-frame arm.
+                        if crate::ui::onboard::press_at(cx, cy) {
+                            crate::ui::press::begin_ctl(last_input);
+                            ok_armed = true;
+                        } else {
+                            crate::ui::onboard::click(cx, cy);
                         }
                     } else if matches!(route, Route::Login) {
                         // one actionable thing on the login screen (retry on error) — click = OK
@@ -5546,33 +5687,71 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     crate::ui::press::cancel();
                 } else if crate::ui::press::take_commit(now) {
                     ok_armed = false;
-                    match route {
-                        // `Account { over: Home }` and not every `Account`: the popover can stand on
-                        // three pages now, and a press armed on a Library card must not commit as a
-                        // HOME activation because a panel happened to open over it. (Reaching either
-                        // is near-impossible — a nav key cancels the press — but the arm has to say
-                        // which page it means.)
-                        Route::Home | Route::Account { over: BarHost::Home } => {
-                            home_activate(mt, c_int::MIN, HUD_LINGER_MS, &mut route, &mut play_from, &mut trail, &mut hud.nav, &mut nav_pending);
+                    // The deferred activation, dispatched by asking the SAME questions the key
+                    // ladder asked when it armed the press, in the SAME order. The two modal panels
+                    // come first here because they come first there (`key_exit_alert` is the top of
+                    // the chain, the onboarding arm is next): each stands OVER a route that has its
+                    // own arm below, so a match on `route` alone would commit an exit-alert press as
+                    // a Home activation.
+                    if crate::ui::exit_alert::is_open() {
+                        commit_exit_alert(&mut running);
+                    } else if matches!(route, Route::Onboard) {
+                        if commit_onboarding() {
+                            route = enter_home_from_onboard(&mut trail);
                         }
-                        Route::Library => open_library_card(route, &mut nav_pending),
-                        Route::Detail => {
-                            if crate::ui::detail::on_ok() {
-                                start_playback(mt, crate::ui::detail::last_resume_ns(), origin_here(route), HUD_LINGER_MS, &mut route, &mut play_from, &mut hud.nav);
+                    } else {
+                        match route {
+                            // `Account { over: Home }` and not every `Account`: the popover can stand on
+                            // three pages now, and a press armed on a Library card must not commit as a
+                            // HOME activation because a panel happened to open over it. (Reaching either
+                            // is near-impossible — a nav key cancels the press — but the arm has to say
+                            // which page it means.)
+                            Route::Home | Route::Account { over: BarHost::Home } => {
+                                // WHICH press this was, re-asked rather than remembered: the hero's
+                                // action row arms one and so does the grid, and `home_activate`
+                                // needs the focus value to tell them apart. Sound because focus
+                                // cannot move under a press (a nav key cancels it), so the answer is
+                                // the one that was true when the key went down — and the grid's
+                                // sentinel is what a hero pill or a Retry press could never be,
+                                // since neither arms a press at all.
+                                let hf = if crate::ui::home::focus_is_ctl() {
+                                    crate::ui::home::hero_focus()
+                                } else {
+                                    c_int::MIN
+                                };
+                                home_activate(mt, hf, HUD_LINGER_MS, &mut route, &mut play_from, &mut trail, &mut hud.nav, &mut nav_pending);
                             }
-                        }
-                        Route::Person => {
-                            if matches!(crate::ui::person::on_ok(), crate::ui::person::Action::Card) {
-                                open_person_card(route, &mut nav_pending);
+                            Route::Library => open_library_card(route, &mut nav_pending),
+                            // ONE arm for the page's cards AND its hero control row: `on_ok`
+                            // already resolves which, exactly as it does on the immediate path.
+                            Route::Detail => {
+                                if crate::ui::detail::on_ok() {
+                                    start_playback(mt, crate::ui::detail::last_resume_ns(), origin_here(route), HUD_LINGER_MS, &mut route, &mut play_from, &mut hud.nav);
+                                }
                             }
-                        }
-                        Route::Search => {
-                            if let crate::ui::search::Action::Open(node) = crate::ui::search::on_ok() {
-                                nav_open(route, node, None, &mut nav_pending);
+                            Route::Person => {
+                                if matches!(crate::ui::person::on_ok(), crate::ui::person::Action::Card) {
+                                    open_person_card(route, &mut nav_pending);
+                                }
                             }
+                            Route::Search => {
+                                if let crate::ui::search::Action::Open(node) = crate::ui::search::on_ok() {
+                                    nav_open(route, node, None, &mut nav_pending);
+                                }
+                            }
+                            // an avatar or the Sign-out footer — the screen resolves which
+                            Route::Profiles => crate::ui::profiles::activate_focused(),
+                            // the transport's control row (discs or a stand-in)
+                            Route::Player { overlay: Overlay::None } => activate_player_row(
+                                mt, ctrl, now, &mut route, &mut hud, &mut held_key, &mut trail,
+                                &mut play_from, &mut refresh_hubs_at,
+                            ),
+                            // the Info card's action column
+                            Route::Player { overlay: Overlay::Info } => commit_info_panel(
+                                mt, now, &mut route, &play_from, &mut refresh_hubs_at, &mut trail,
+                            ),
+                            _ => {}
                         }
-                        Route::Profiles => crate::ui::profiles::select_focused(),
-                        _ => {}
                     }
                 } else if !crate::ui::press::is_active() {
                     ok_armed = false; // long-press / cancelled — disarm without activating
@@ -6764,12 +6943,45 @@ mod exit_alert_tests {
         running
     }
 
-    /// Press one key at the alert, through the real modal arm. Returns whether the app is still
-    /// running.
+    /// Press one key at the alert, through the real modal arm AND the deferral behind it. Returns
+    /// whether the app is still running.
+    ///
+    /// OK stopped acting on the key-DOWN on 2026-08-22: both answers are control faces, so the arm
+    /// dips the focused one and the per-frame loop spends the press on the spring-back
+    /// (`ui::press`). Both halves are driven here, in the order the loop drives them, so these tests
+    /// still grade the real door — and the regression they exist for, a future edit putting
+    /// `*running = false` back beside the keypress, is still exactly what they would catch. It would
+    /// simply be [`commit_exit_alert`] that the edit had to be kept out of.
     fn press(sym: c_uint) -> bool {
         let mut running = true;
-        key_exit_alert(sym, 0, &mut running);
+        let mut armed = false;
+        key_exit_alert(sym, 0, 0, &mut armed);
+        if armed {
+            assert!(settle_press(), "an armed OK must reach its commit");
+            commit_exit_alert(&mut running);
+        }
         running
+    }
+
+    /// Run the real press machine from an arm to its commit and back to rest, the way the per-frame
+    /// loop does: the key-up, then `tick` at ~60 Hz until [`crate::ui::press::take_commit`] fires.
+    /// Reports whether it did.
+    ///
+    /// It runs on PAST the commit, to rest, deliberately: `press` is a crate global and a test that
+    /// left it mid-bounce would hand the next one a focused control at some fraction of its dip.
+    fn settle_press() -> bool {
+        crate::ui::press::release(1); // the key-up — the dip must still show for MIN_DIP_MS
+        let mut committed = false;
+        let mut now = 0u32;
+        for _ in 0..256 {
+            now = now.wrapping_add(16);
+            crate::ui::press::tick(now, 0.016);
+            committed |= crate::ui::press::take_commit(now);
+            if !crate::ui::press::is_active() {
+                break;
+            }
+        }
+        committed
     }
 
     /// **The one that matters**: BACK at the root no longer ends the process by itself. It raises

@@ -107,10 +107,11 @@ const HERO_PAGER_D: f32 = HERO_CTRL_D * crate::ui::widgets::DISC_ICON_RATIO;
 /// That is what the owner's "equal padding" asks for: equal to the eye, not equal in the arithmetic.
 /// (This was shipped box-measured first and corrected after looking at the television.)
 const HERO_PAGER_PAD: f32 = HERO_CTRL_GAP - HERO_PAGER_BEARING;
-/// The empty box each side of the chevron's ink — `chevron.svg`'s stroke starts 7.5/24 into its
-/// viewBox, so the bearing is that fraction of the mark's box. Named because [`HERO_PAGER_PAD`]
-/// subtracts it and the `on_axis` cull adds it back.
-const HERO_PAGER_BEARING: f32 = HERO_PAGER_D * (7.5 / 24.0);
+/// The empty box each side of the chevron's ink. The fraction comes from
+/// [`crate::ui::icons::ink_x`] rather than being transcribed here: it is `chevron.svg`'s, and a
+/// re-drawn asset used to move this number with no compile error and no test. Named because
+/// [`HERO_PAGER_PAD`] subtracts it and the `on_axis` cull adds it back.
+const HERO_PAGER_BEARING: f32 = HERO_PAGER_D * crate::ui::icons::ink_x(crate::ui::icons::Icon::Chevron).0;
 const K_SLIDE: f32 = 130.0; // slide spring — a touch softer than the grid springs, reads cinematic
 /// The slide is over once its remaining travel is **sub-pixel**. Threshold in PIXELS, not in
 /// spring units: the old `pos > 0.995` cut retired the transition while the incoming layer still
@@ -442,6 +443,37 @@ pub(crate) fn hero_focus_for_pill(i: usize) -> c_int {
 /// cards, so "the grid is showing" is the whole answer).
 pub(crate) fn focus_is_card() -> bool {
     snap_pos() > 0.5
+}
+
+/// The focused thing is a pressable CONTROL FACE — the hero action row's Play/Continue pill or its
+/// info disc. [`focus_is_card`]'s twin: between them they name everything on this screen that takes
+/// the tvOS press (`ui::press`), and everything else here activates on the key-down.
+///
+/// Two exclusions, both deliberate. The **top band** — the profile chip and the library tab pills —
+/// is a control inside a TRACK, which the design system exempts from the focus pop and from the
+/// press dip alike (`widgets::CTRL_FOCUS_SCALE`): the capsule travelling and the chip unfurling are
+/// that row's focus mark, and a pill that also dipped would be two answers to one question. The
+/// **status read-out's Retry pill** is excluded for the reason the person page's header row is
+/// (`app.rs`'s OK ladder): it is a `StatusOverlay` action, it belongs to no `CtlPop`, so it draws no
+/// `press::scale()` at all — deferring its activation would buy a wait with nothing on screen to
+/// justify it. `status_takes` is the same rule [`status_activate`] routes on, asked once here so the
+/// two can never disagree.
+pub(crate) fn focus_is_ctl() -> bool {
+    hero_ctl_index().is_some()
+}
+
+/// **The one filter, for the two questions that must never disagree** — which hero action-row
+/// control is focused, if any. [`focus_is_ctl`] asks it to decide whether a press may DIP, and
+/// `update` asks it to decide which control `HERO_POP` pops; the doc above promised those were one
+/// rule and they were two, differing by exactly the `status_takes` term. The pop's copy therefore
+/// popped the Retry pill's index while the read-out was up — a pop on a control that is not drawn,
+/// because the status overlay owns that band and the action row is not there at all.
+pub(crate) fn hero_ctl_index() -> Option<usize> {
+    let hf = hero_focus();
+    (!focus_is_card() && !status_takes(hf))
+        .then(|| usize::try_from(hf).ok())
+        .flatten()
+        .filter(|&i| i < HERO_NBTN)
 }
 
 /// Hero pointer hit-test against the action-row rects recorded at draw: returns the button index
@@ -1650,9 +1682,7 @@ pub(crate) fn home_update(dt: f32) {
         // focus (and can be a packed tab-pill value, or app.rs's `c_int::MIN` sentinel), so the
         // question is asked as "is the hero band focused at all, and is it on a control" — both
         // halves, or the row would sit popped behind a focused grid.
-        let hero_ctl =
-            (!focus_is_card()).then(|| usize::try_from(hero_focus()).ok()).flatten().filter(|&i| i < HERO_NBTN);
-        unsafe { (*addr_of_mut!(HERO_POP)).step(hero_ctl, dt) };
+        unsafe { (*addr_of_mut!(HERO_POP)).step(hero_ctl_index(), dt) };
         // the shared top bar's own motion — the strip's horizontal scroll (a server with more
         // libraries than fit the row reaches the rest by scrolling the focused pill into view),
         // its travelling capsules, and the profile chip's unfurl. Home is always this screen's

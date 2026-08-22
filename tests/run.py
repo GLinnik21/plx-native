@@ -1448,6 +1448,53 @@ def teardown(tv):
 _TEARDOWN_TV = None
 _TEARDOWN_DONE = False
 
+# Whether THIS run took the television's lock (as opposed to inheriting one the operator or an
+# outer `tv-lock.sh with` already held). Only a lock we took is a lock we release: dropping an
+# inherited one would hand the set away in the middle of somebody's larger session.
+_LOCK_TAKEN = False
+TVLOCK = os.path.join(REPO_ROOT, "tools", "tv-lock.sh")
+
+
+def acquire_tv_lock(tv, why):
+    """Take the television's lock, or refuse to run.
+
+    The whole suite is one long exclusive session: it closes the app between cases, wipes the
+    runtime root, injects tokens and grades a log it assumes only it is writing. A second job on
+    the set during any of that does not produce a clean failure — it produces a plausible wrong
+    one (a bogus timeline_climb, an fps sample taken while another lane's deploy was landing),
+    which is indistinguishable from a real regression when you read the summary.
+
+    A lease this lane already holds is inherited rather than re-taken, so
+    `tools/tv-lock.sh with -- ./tests/run.py` and a hand-held session both work unchanged.
+    """
+    global _LOCK_TAKEN
+    if not os.access(TVLOCK, os.X_OK):
+        return
+    env = dict(os.environ, TV=tv)
+    held = subprocess.run([TVLOCK, "status"], env=env, capture_output=True, text=True)
+    if "HELD BY THIS LANE" in held.stdout:
+        print("TV lock: already held by this lane — inheriting it")
+        return
+    # `--wait 0`: a harness that blocks for ten minutes inside somebody's tool call is worse than
+    # one that says who has the set and exits. `--wait <s>` is the caller's choice, not ours.
+    r = subprocess.run([TVLOCK, "acquire", "--why", why, "--as", "tests/run.py"], env=env)
+    if r.returncode != 0:
+        sys.exit("refusing to run: the television is held by another lane (see above). "
+                 "Wait for it (tools/tv-lock.sh acquire --wait 540), or run host-side work "
+                 "meanwhile (make check, make sim).")
+    _LOCK_TAKEN = True
+
+
+def release_tv_lock(tv):
+    """Give the set back. Never raises — it runs in the same finally as teardown."""
+    if not _LOCK_TAKEN:
+        return
+    try:
+        subprocess.run([TVLOCK, "release"], env=dict(os.environ, TV=tv),
+                       capture_output=True, timeout=30)
+    except Exception:
+        pass
+
 
 def arm_teardown(tv):
     """Commit to driving `tv`, and guarantee the cleanup from THIS MOMENT ON, whatever happens.
@@ -2608,6 +2655,15 @@ def main():
         print(f"install: {APPID} [{FLAVOUR}] — triggers and log under {RUNDIR}")
         print(f"fixtures: {root}")
         print(f"serving:  {url_base}  (the TV fetches from this address)")
+        # The television is a mutex for this tier too, and MORE so than for the others: this is
+        # the default suite now, so it is the one somebody runs without thinking. It closes the
+        # app between cases, wipes the runtime root and grades a log it assumes only it is
+        # writing — every reason the server tier takes the lock applies here unchanged.
+        #
+        # Immediately before `arm_teardown`, matching the other two call sites and for a reason:
+        # `teardown` is what releases the lease, so any statement between taking it and arming
+        # that is a window where a failure leaks the television.
+        acquire_tv_lock(cfg["tv"], f"tests/run.py ({len(pcases)} synthetic cases) [{FLAVOUR}]")
         arm_teardown(cfg["tv"])
         if args.build:
             do_build(cfg["tv"])
@@ -2646,6 +2702,7 @@ def main():
                                                  cfg["pms"]["port"], test_user["id"])
                 cfg["inject_token"] = True
         print(f"install: {APPID} [{FLAVOUR}] — triggers and log under {RUNDIR}")
+        acquire_tv_lock(cfg["tv"], f"tests/run.py --fps ({len(scenes)} scenes) [{FLAVOUR}]")
         arm_teardown(cfg["tv"])
         if args.build:
             do_build(cfg["tv"])
@@ -2690,6 +2747,7 @@ def main():
                  + f"{len(shared_skipped)} for want of a second server "
                  + f"(see {MANIFEST_LOCAL})")
 
+    acquire_tv_lock(cfg["tv"], f"tests/run.py ({len(cases)} cases) [{FLAVOUR}]")
     arm_teardown(cfg["tv"])
     if args.build:
         do_build(cfg["tv"])
@@ -2754,4 +2812,8 @@ if __name__ == "__main__":
     finally:
         if _TEARDOWN_TV:
             teardown(_TEARDOWN_TV)
+            # AFTER teardown, never before: the close, the trigger wipe and the token clear are
+            # still device work, and handing the lock back first would let the next lane start
+            # driving an app this one is still closing.
+            release_tv_lock(_TEARDOWN_TV)
     sys.exit(code)

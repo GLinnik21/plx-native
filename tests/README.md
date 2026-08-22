@@ -87,6 +87,14 @@ profile sent to PMS carries no frame-rate limitation at all.
   `make fixtures` / `make fixtures-quick`.
 - `README.md` — this file.
 
+**The runner takes the television's lock** (`tools/tv-lock.sh`) at the point it commits to driving
+the set, and releases it after the teardown. There is one dev TV and no OS-level mutex: a second
+job during a run does not fail cleanly, it produces plausible wrong results — a `timeline_climb`
+that failed because the other lane closed the app, an fps sample taken while a deploy was landing.
+If the set is held, the run refuses and names the holder; queue for it with
+`tools/tv-lock.sh acquire --wait 540`, or wrap the whole run in
+`tools/tv-lock.sh with --why "…" -- ./tests/run.py …`. See the `tv-lock` skill.
+
 The split is not just anonymisation. The symbolic key keeps "five cases deliberately share one
 item" visible in the tracked file — which is the fact the per-case resume reset exists for — and
 it makes a mis-set item a named setup error instead of a mystery failure.

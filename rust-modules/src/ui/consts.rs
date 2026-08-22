@@ -7,7 +7,7 @@
 //! ladder itself sits inside the SDL event loop, where no host test reaches it (which is the
 //! premise `tools/keytable.py` was written on).
 #![allow(dead_code)]
-use std::os::raw::c_uint;
+use std::os::raw::{c_int, c_uint};
 
 pub const CARD_W: f32 = 250.0;
 pub const CARD_H: f32 = 375.0;
@@ -236,11 +236,11 @@ pub fn classify(sym: c_uint, wcode: c_uint) -> Key {
     if wcode == WCODE_PLAYPAUSE || sym == WCODE_PLAYPAUSE {
         return Key::PlayPause;
     }
-    if sym == WCODE_STOP
-        || wcode == WCODE_STOP
-        || wcode == WCODE_STOP_KEY
-        || wcode == WCODE_STOP_CD
-    {
+    // The codes settled from LG's table are matched in `wcode` ALONE, which is the field the
+    // television fills for them; only the legacy web-namespace spellings are also tested as a `sym`,
+    // because that is how they arrived and narrowing them would be the behaviour change the comment
+    // above warns about in the other direction.
+    if matches!(wcode, WCODE_STOP | WCODE_STOP_KEY | WCODE_STOP_CD) || sym == WCODE_STOP {
         return Key::Stop;
     }
     if wcode == WCODE_EXIT || sym == WCODE_EXIT {
@@ -252,6 +252,26 @@ pub fn classify(sym: c_uint, wcode: c_uint) -> Key {
     Key::Other
 }
 
+/// **Which way the Library grid pages, if this press pages it at all.** `Some(-1)` up, `Some(1)`
+/// down, `None` for everything else.
+///
+/// One predicate because the set was being spelled TWICE, in two shapes: a six-term guard in
+/// `app.rs`'s ladder and a three-term direction test in `key_library_page`, where the second had to
+/// stay a subset of the first and nothing checked that it did. Adding the real channel rocker
+/// (300/301 — see [`WCODE_CH_UP_KEY`]) beside the digits meant editing both, which is the shape
+/// that goes wrong on the third code. Here it is one edit, next to [`classify`], and the test table
+/// below can see it.
+#[inline]
+pub fn page_dir(sym: c_uint, wcode: c_uint) -> Option<c_int> {
+    if sym == SDLK_PAGEUP || matches!(wcode, WCODE_CH_UP | WCODE_CH_UP_KEY) {
+        return Some(-1);
+    }
+    if sym == SDLK_PAGEDOWN || matches!(wcode, WCODE_CH_DOWN | WCODE_CH_DOWN_KEY) {
+        return Some(1);
+    }
+    None
+}
+
 // spring stiffnesses (from ui_home.c, redistributed 1:1 to their owning views)
 pub const K_SCALE: f32 = 320.0;
 pub const K_SCROLL: f32 = 170.0;
@@ -260,6 +280,19 @@ pub const K_SNAP: f32 = 200.0;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The Library pager's key set, which used to be spelled twice in `app.rs` in two shapes.
+    #[test]
+    fn the_pager_answers_both_spellings_and_nothing_else() {
+        assert_eq!(page_dir(SDLK_PAGEUP, 0), Some(-1));
+        assert_eq!(page_dir(SDLK_PAGEDOWN, 0), Some(1));
+        assert_eq!(page_dir(0, WCODE_CH_UP), Some(-1));       // the digits 4/5, kept
+        assert_eq!(page_dir(0, WCODE_CH_DOWN), Some(1));
+        assert_eq!(page_dir(0, WCODE_CH_UP_KEY), Some(-1));   // evdev 402/403, the real rocker
+        assert_eq!(page_dir(0, WCODE_CH_DOWN_KEY), Some(1));
+        assert_eq!(page_dir(SDLK_UP, 0), None, "the D-pad is not the pager");
+        assert_eq!(page_dir(0, WCODE_FASTFORWARD), None);
+    }
 
     /// **The transport codes settled from LG's own evdev->scancode table**, and the two that were
     /// retired by it. Kept apart from the big table above because these are the arms whose

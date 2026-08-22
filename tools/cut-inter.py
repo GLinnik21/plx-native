@@ -192,7 +192,9 @@ def _ellipse(pen, cx, cy, rx, ry, tilt=0.0, n=8):
 
 
 def _rect(pen, x0, y0, x1, y1):
-    """A closed rectangle, counter-clockwise, to match `_ellipse`'s winding."""
+    """A closed rectangle, counter-clockwise, to match `_ellipse`'s winding. Rounds at emit, so
+    callers may pass the scaled floats `add_music_notes` works in."""
+    x0, y0, x1, y1 = round(x0), round(y0), round(x1), round(y1)
     pen.moveTo((x0, y0))
     pen.lineTo((x1, y0))
     pen.lineTo((x1, y1))
@@ -205,28 +207,38 @@ def add_music_notes(font: TTFont) -> int:
     from fontTools.pens.ttGlyphPen import TTGlyphPen
 
     glyf, hmtx = font["glyf"], font["hmtx"]
-    HEAD_RX, HEAD_RY, TILT = 265, 195, math.radians(-20)
-    STEM_W, STEM_TOP, HEAD_CY = 80, 1350, 230
+
+    # **Every number below is in units of a 2048-upem em, and is scaled to whatever this font
+    # actually uses.** They were tuned by eye against Inter's 2048 (the note lands at ~88% of its
+    # 1490 cap height), and nothing else in this script reads a hardcoded unit — so a re-cut from a
+    # release with a different em would have silently produced a note at the wrong size while every
+    # other step stayed correct. Inter v3 shipped 2816, which would have made it 72%. The script's
+    # whole premise is that it IS the re-cut procedure, so the one hand-drawn thing in it has to
+    # survive that as well as the other three do.
+    k = font["head"].unitsPerEm / 2048.0
+    u = lambda v: round(v * k)   # glyf coordinates are integers; round at the source
+    HEAD_RX, HEAD_RY, TILT = u(265), u(195), math.radians(-20)
+    STEM_W, STEM_TOP, HEAD_CY = u(80), u(1350), u(230)
 
     def eighth(pen, x):
-        _ellipse(pen, x + 300, HEAD_CY, HEAD_RX, HEAD_RY, TILT)
-        _rect(pen, x + 520, HEAD_CY, x + 520 + STEM_W, STEM_TOP)
+        _ellipse(pen, x + u(300), HEAD_CY, HEAD_RX, HEAD_RY, TILT)
+        _rect(pen, x + u(520), HEAD_CY, x + u(520) + STEM_W, STEM_TOP)
 
     built = {}
 
     pen = TTGlyphPen(None)                                  # single note
     eighth(pen, 0)
-    pen.moveTo((600, STEM_TOP))                             # the flag, hung off the stem's edge
-    pen.qCurveTo((905, 1245), (830, 845))
-    pen.qCurveTo((880, 1130), (600, 1165))
+    pen.moveTo((u(600), STEM_TOP))                          # the flag, hung off the stem's edge
+    pen.qCurveTo((u(905), u(1245)), (u(830), u(845)))
+    pen.qCurveTo((u(880), u(1130)), (u(600), u(1165)))
     pen.closePath()
-    built["uni266A"] = (pen.glyph(), 1000)
+    built["uni266A"] = (pen.glyph(), round(u(1000)))
 
     pen = TTGlyphPen(None)                                  # beamed pair
     eighth(pen, 0)
-    eighth(pen, 780)
-    _rect(pen, 520, STEM_TOP - 150, 1380, STEM_TOP)         # the beam joining the two stems
-    built["uni266B"] = (pen.glyph(), 1780)
+    eighth(pen, u(780))
+    _rect(pen, u(520), STEM_TOP - u(150), u(1380), STEM_TOP)  # the beam joining the two stems
+    built["uni266B"] = (pen.glyph(), round(u(1780)))
 
     order = font.getGlyphOrder()
     for name, (g, adv) in built.items():

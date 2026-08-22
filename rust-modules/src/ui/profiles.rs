@@ -355,26 +355,35 @@ fn pad_key_at(mx: f32, my: f32) -> Option<(c_int, c_int)> {
 }
 
 /// Pointer hover: focus follows the cursor (roster tile / Sign out pill, or keypad key while the
-/// pad is up).
-pub fn pointer_focus(mx: f32, my: f32) {
+/// pad is up). **Reports whether it parked on anything**, which is what lets [`press_at`] be one
+/// line of it: a click in dead space parks nothing and must not arm a press on whatever happened
+/// to be focused already.
+pub fn pointer_focus(mx: f32, my: f32) -> bool {
     let s = scene();
     if s.pad.open {
         if let Some((r, c)) = pad_key_at(mx, my) {
             s.pad.fr = r;
             s.pad.fc = c;
+            return true;
         }
-        return;
+        return false;
     }
     if let Some(i) = tile_at(s, mx, my) {
         s.fc = i as c_int;
         s.footer = false;
-    } else if footer_rect().contains(mx, my) {
-        s.footer = true;
+        return true;
     }
+    if footer_rect().contains(mx, my) {
+        s.footer = true;
+        return true;
+    }
+    false
 }
 
-/// Pointer click: select the tile / press the keypad key / sign out under the cursor (same
-/// actions as OK); a click outside an open keypad dismisses it like BACK.
+/// Pointer click, **keypad only** since the control faces landed: press the key under the cursor, or
+/// dismiss the pad like BACK on a click outside it. Everything else on this screen is a press
+/// surface and belongs to [`press_at`], which has already had its turn by the time this is called —
+/// this doc still described the tile and Sign-out actions it no longer performs.
 pub fn click(mx: f32, my: f32) {
     let s = scene();
     if s.pad.open {
@@ -389,13 +398,24 @@ pub fn click(mx: f32, my: f32) {
         }
         return;
     }
-    if let Some(i) = tile_at(s, mx, my) {
-        s.fc = i as c_int;
-        s.footer = false;
-        select(s, i);
-    } else if footer_rect().contains(mx, my) {
-        auth::sign_out();
-    }
+    // …and everything OUTSIDE the pad is a press surface, so the click parks focus and stops:
+    // `press_at` above has already had its turn, and reaching here means the point hit neither.
+}
+
+/// Pointer-down on a roster avatar or on the Sign-out footer: PARK focus on it and report the hit,
+/// leaving the caller to arm the tvOS press and commit it through [`activate_focused`] on the
+/// spring-back. The two are told apart afterwards by the same [`focus_is_avatar`] / [`focus_is_ctl`]
+/// pair the key path asks, so a click and an OK animate identically and there is one activation
+/// rather than a click's and a key's.
+///
+/// The PIN pad is not a press surface — its keys belong to no `CtlPop` and have no dip to show — so
+/// an open pad reports `false` and [`click`] handles it on the button-down as it always did.
+///
+/// **One line of [`pointer_focus`], not a second copy of it.** This began as a verbatim copy of that
+/// function's non-pad half, so the rule mapping a hit to `(fc, footer)` was written twice for one
+/// picker; the pad guard below is the only thing that was ever actually different.
+pub fn press_at(mx: f32, my: f32) -> bool {
+    !scene().pad.open && pointer_focus(mx, my)
 }
 
 /// Dev/test hook (`plxnative-pickuser`): commit roster tile `idx` exactly like OK — a protected tile
@@ -413,10 +433,25 @@ pub fn focus_is_avatar() -> bool {
     !s.pad.open && !s.footer && !auth::users().is_empty()
 }
 
-/// Commit the focused roster avatar — the deferred OK activation (app.rs runs this on the press
-/// spring-back). Mirrors OK-on-avatar in [`key`].
-pub fn select_focused() {
+/// The Sign-out footer holds focus — the picker's one CONTROL FACE, and the other half of what
+/// takes the tvOS press here ([`focus_is_avatar`] is the first). It has a `CtlPop` of its own
+/// (`FOOTER_POP`), so the dip has somewhere to land; the PIN keypad's keys do not, which is why an
+/// open pad answers `false` for both.
+pub fn focus_is_ctl() -> bool {
     let s = scene();
+    !s.pad.open && s.footer
+}
+
+/// Commit whatever the picker has focus on — the deferred OK activation (app.rs runs this on the
+/// press spring-back, for an avatar and for the footer alike). Mirrors OK in [`key`], which is why
+/// it dispatches rather than assuming a roster tile: both stops arm a press now, and a commit that
+/// could only select an avatar would have signed nobody out.
+pub fn activate_focused() {
+    let s = scene();
+    if s.footer {
+        auth::sign_out();
+        return;
+    }
     let n = auth::users().len();
     if n > 0 {
         select(s, (s.fc.max(0) as usize).min(n - 1));
