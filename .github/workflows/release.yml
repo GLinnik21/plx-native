@@ -258,6 +258,11 @@ jobs:
             || { echo "::error::packaged the wrong flavour — pkg/ holds $(ls pkg/*.ipk 2>&1)"; exit 1; }
 
       - name: ELF + packaging assertions
+        # REQUIRE_PACKAGE: this step runs AFTER `make ipk`, so "nothing staged" here means the build
+        # produced no package and must fail. The pre-build callers (`prepare`, `guard`) deliberately
+        # do not set it — they exist to grade the version files before anything is built.
+        env:
+          REQUIRE_PACKAGE: "1"
         run: |
           ./ci/check-elf.sh
           python3 ci/check-package.py

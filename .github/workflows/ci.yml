@@ -113,6 +113,9 @@ jobs:
           WEBOS_SDK: ${{ steps.ndk.outputs.sdk-dir }}
 
       - name: Packaging assertions
+        # After the build above, so a missing package is a failure rather than a skip.
+        env:
+          REQUIRE_PACKAGE: "1"
         run: python3 ci/check-package.py
 
       - name: Font hinting audit
