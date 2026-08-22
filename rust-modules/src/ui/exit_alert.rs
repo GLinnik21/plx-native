@@ -45,8 +45,8 @@ const PANEL_W: f32 = 660.0;
 /// The design's `padding: 48 48 34`: 48 above the question, 48 either side, 34 under the buttons.
 /// The bottom is lighter than the top on purpose — a capsule's own visual mass sits lower than a
 /// line of text's, so equal padding reads bottom-heavy.
-const PAD_TOP: f32 = 48.0;
-const PAD_X: f32 = 48.0;
+const PAD_TOP: f32 = theme::alert::PAD;
+const PAD_X: f32 = theme::alert::PAD;
 const PAD_BOT: f32 = 34.0;
 /// Air between the question and the answers. Not a design number — the spec states the panel's
 /// padding and the buttons' frames and is silent here — so it comes off the shared gap ladder
@@ -67,8 +67,6 @@ const BTN_W: f32 = 260.0;
 /// unrelated pills that happen to share a row.
 const BTN_GAP: f32 = 20.0;
 
-/// How far the panel slides on open — up into place, the shape every panel in the app appears with.
-const RISE: f32 = Popover::RISE;
 /// How dark Home goes behind the alert.
 ///
 /// Heavier than any menu's (`item_menu` .34, `alt_sources` .45, `account_menu` .5) and that is the
@@ -208,18 +206,14 @@ impl Layout {
     /// answer to "which of these?"; "not either" is no answer at all to a yes/no question, and the
     /// safe reading of a click on the scrim is that the user missed.
     pub(crate) fn hit(&self, x: f32, y: f32) -> Option<Choice> {
-        if inside(self.cancel, x, y) {
+        if self.cancel.contains(x, y) {
             Some(Choice::Cancel)
-        } else if inside(self.exit, x, y) {
+        } else if self.exit.contains(x, y) {
             Some(Choice::Exit)
         } else {
             None
         }
     }
-}
-
-fn inside(r: Rect, x: f32, y: f32) -> bool {
-    x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h
 }
 
 /// Click: park the ring on what was hit, commit it, and report it — or report `None` and change
@@ -242,7 +236,7 @@ pub fn draw() {
         return;
     }
     // `content_painter`, NOT `painter`: the scrim is already on the page.
-    let p = pop().content_painter(RISE);
+    let p = pop().content_painter(Popover::RISE);
     let l = measured();
     pop().panel(p, l.panel, theme::ALERT_PANEL_RAD);
 

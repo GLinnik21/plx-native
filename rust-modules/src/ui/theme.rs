@@ -957,6 +957,21 @@ pub const ALERT_PANEL_RAD: f32 = 32.0;
 /// title band. Those two BANDS are half the ladder, which is why the leads live here too — a caller
 /// that advanced by measured cap heights instead is exactly how §1C ended up 12px tight.
 pub mod alert {
+    /// The alert panel's inset — the pad every read-only alert lays its head ladder and its body
+    /// against. **One number, because [`super::ALERT_PANEL_RAD`]'s own argument depends on it**:
+    /// "32 is the largest corner whose arc still clears a 48px pad" cannot be checked while the pad
+    /// is four private constants in four files. It was exactly that, and `widgets::KeyHint` had to
+    /// reason about "the PAD 48 all three read-only alerts drew" with no name to say it with.
+    pub const PAD: f32 = 48.0;
+    /// The still-scrim behind a modal alert — the design's `scrimStill`. Promoted for the reason
+    /// [`super::super::popover::Popover::RISE`] was: the family arrived with four files each
+    /// claiming to carry the shared value, and no two of them agreeing. This is the weight the
+    /// READ-ONLY alerts share; a panel with a different job (a destructive decision, a picker over
+    /// prose) still states its own, which is a design choice rather than a stray literal.
+    pub const SCRIM_A: f32 = 0.46;
+    /// The scrolled-viewport edge ramp (`widgets::edge_feather`) — how far the cut is softened at
+    /// the top and bottom of a scissor-clipped body.
+    pub const FEATHER: f32 = 88.0;
     /// `line-height: 1` on the eyebrow — a caps run has no descenders to clear.
     pub const EYEBROW_LEAD: f32 = super::size::CAPTION as f32; // 24
     /// The eyebrow's `margin-bottom`, as the title's `margin-top:14`.

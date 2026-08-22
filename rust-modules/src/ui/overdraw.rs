@@ -61,7 +61,7 @@ pub(crate) const NAMES: [&str; NCLASS] =
 /// shape, doing nothing — and the `pub(crate) use` under it re-exports whichever one is compiled.
 #[cfg(feature = "devtriggers")]
 mod imp {
-    use super::{Class, Nam, NAMES, NCLASS};
+    use super::{Class, NAMES, NCLASS};
     use crate::log;
     use crate::surface::{LOGICAL_H as SCR_H, LOGICAL_W as SCR_W};
     use std::cell::Cell;
@@ -73,8 +73,14 @@ mod imp {
         static ON: Cell<bool> = const { Cell::new(false) };
         /// `Painter::clip`'s live box in AUTHORED coordinates, or `None` for the whole canvas.
         static CLIP: Cell<Option<[f32; 4]>> = const { Cell::new(None) };
-        static PX: Cell<[f64; NCLASS]> = const { Cell::new([0.0; NCLASS]) };
-        static DRAWS: Cell<[u32; NCLASS]> = const { Cell::new([0; NCLASS]) };
+        /// PER-CLASS cells, not one `Cell<[f64; NCLASS]>`. An array cell has to be read and
+        /// written WHOLE — 72 + 36 bytes copied twice for every booked draw — and the DIRECTION of
+        /// that cost is what makes it a measurement problem rather than a micro-optimisation: a
+        /// `drawmask` leg books fewer draws than its control, so it pays less bookkeeping, IN THE
+        /// SAME DIRECTION as the saving it is trying to price. This module's whole claim is that
+        /// it prices a class without perturbing it. Eight bytes per draw, and the bias is gone.
+        static PX: [Cell<f64>; NCLASS] = const { [const { Cell::new(0.0) }; NCLASS] };
+        static DRAWS: [Cell<u32>; NCLASS] = const { [const { Cell::new(0) }; NCLASS] };
         static FRAMES: Cell<u32> = const { Cell::new(0) };
     }
 
@@ -175,16 +181,8 @@ mod imp {
 
     #[inline]
     fn add(i: usize, px: f64) {
-        PX.with(|f| {
-            let mut v = f.get();
-            v[i] += px;
-            f.set(v);
-        });
-        DRAWS.with(|f| {
-            let mut v = f.get();
-            v[i] += 1;
-            f.set(v);
-        });
+        PX.with(|f| f[i].set(f[i].get() + px));
+        DRAWS.with(|f| f[i].set(f[i].get() + 1));
     }
 
     /// One PRESENTED frame has ended. Logs a window every `LOG_EVERY` frames and resets.
@@ -201,8 +199,8 @@ mod imp {
         if n < LOG_EVERY {
             return;
         }
-        let px = PX.with(|f| f.replace([0.0; NCLASS]));
-        let draws = DRAWS.with(|f| f.replace([0; NCLASS]));
+        let px: [f64; NCLASS] = PX.with(|f| std::array::from_fn(|i| f[i].replace(0.0)));
+        let draws: [u32; NCLASS] = DRAWS.with(|f| std::array::from_fn(|i| f[i].replace(0)));
         FRAMES.with(|f| f.set(0));
         let frames = n as f64;
         let screen = (SCR_W * SCR_H) as f64;
@@ -211,7 +209,7 @@ mod imp {
         let panel: f64 = (0..NCLASS).filter(|i| *i != Class::Blur as usize).map(|i| px[i]).sum();
         let per = |i: usize| px[i] / frames;
         let parts: Vec<String> = (0..NCLASS)
-            .map(|i| format!("{}={:.0}/{}", Nam(i), per(i), (draws[i] as f64 / frames + 0.5) as u32))
+            .map(|i| format!("{}={:.0}/{}", NAMES[i], per(i), (draws[i] as f64 / frames + 0.5) as u32))
             .collect();
         log(&format!(
             "OVERDRAW frames={n} panel={:.0}px x{:.2} | {}",
@@ -219,16 +217,6 @@ mod imp {
             panel / frames / screen,
             parts.join(" ")
         ));
-    }
-}
-
-/// `NAMES[i]` as a `Display`, so the log line does not have to allocate a second time.
-#[cfg(feature = "devtriggers")]
-struct Nam(usize);
-#[cfg(feature = "devtriggers")]
-impl std::fmt::Display for Nam {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(NAMES[self.0])
     }
 }
 

@@ -63,10 +63,8 @@ const PANEL_W: f32 = 1120.0;
 const PANEL_H: f32 = 676.0;
 /// The one padding, on all four sides. Quoted with [`theme::ALERT_PANEL_RAD`] because the two constrain
 /// each other — see that token for why a bigger corner would eat this box.
-const PAD: f32 = 48.0;
+const PAD: f32 = theme::alert::PAD;
 
-/// How far the sheet rises into place, matching every other popover in the app.
-const RISE: f32 = Popover::RISE;
 /// The page dim. See the module doc — this is heavier than the chip menus' 0.45 on purpose, and it
 /// is a named token rather than a tuned number.
 const SCRIM_A: f32 = theme::SCRIM_TEXT_A;
@@ -89,7 +87,7 @@ const BIO_LEAD: f32 = 40.0;
 /// lines of overlap.
 const STEP: f32 = 200.0;
 /// The feather band at each end of the viewport — see [`widgets::edge_feather`].
-const FEATHER: f32 = 88.0;
+const FEATHER: f32 = theme::alert::FEATHER;
 /// Air between the prose column and the rail beside it.
 const RAIL_GAP: f32 = theme::space::MD;
 
@@ -445,7 +443,7 @@ pub(crate) fn draw() {
     let Some(person) = crate::person::current() else { return };
     // `content_painter`, not `painter` — the scrim was already drawn by the page (see `scrim`), and
     // calling `painter` here as well would dim the screen twice.
-    let p = pop().content_painter(RISE);
+    let p = pop().content_painter(Popover::RISE);
     let panel = panel_rect();
     pop().panel(p, panel, theme::ALERT_PANEL_RAD);
 
@@ -457,7 +455,7 @@ pub(crate) fn draw() {
     let scroll = unsafe { addr_of!(SCROLL).read() }.pos.clamp(0.0, max_scroll);
 
     // the two hairlines that bracket the reading block
-    let rule = |y: f32| p.rrect(Rect::new(c.x, y, c.w, 1.0), 0.0, 0.0, theme::HAIRLINE);
+    let rule = |y: f32| widgets::hairline(p, c.x, y, c.w);
     rule(view.y - theme::space::MD - 1.0);
     rule(view.y + view.h + theme::space::MD);
 

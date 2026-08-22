@@ -59,9 +59,11 @@ set -- ${_argv[@]+"${_argv[@]}"}
 # WHICH INSTALL — asked for, never restated. The app directory used to be a literal here, which
 # was one install's path hardcoded into a tool that now has two to choose between. An unknown
 # FLAVOR is a parse-time $(error) in the Makefile, so a typo stops here.
-: "${FLAVOR:=$(make -s -C "$REPO" print-flavor)}"
+# ONE invocation: `print-flavor` comes back first and answers the Makefile's own default when
+# nothing set FLAVOR, so no pre-fetch is needed. `${FLAVOR:+…}` passes the assignment only when
+# there is one, which is what lets make answer with its default.
 { read -r FLAVOR; read -r APPID; read -r APPDIR; read -r RUNDIR; } < <(
-  make -s -C "$REPO" FLAVOR="$FLAVOR" print-flavor print-appid print-appdir print-rundir
+  make -s -C "$REPO" ${FLAVOR:+FLAVOR="$FLAVOR"} print-flavor print-appid print-appdir print-rundir
 )
 # On a bad flavour make has already printed the exact complaint; do not restate it wrongly —
 # the failed `read` above left FLAVOR empty, so echoing it back here would name nothing.

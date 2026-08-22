@@ -81,7 +81,7 @@ set -- ${_argv[@]+"${_argv[@]}"}
 # so a typo stops here instead of resolving to six plausible-looking wrong paths. These
 # `print-*` targets are the ONLY supported way to ask;
 # `make -p` prints a recursive variable's UNEXPANDED definition, which is the trap documented on
-# tv_host below.
+# `print-tv` in the batched query below.
 #
 # APPPORT is the app's capture listener and belongs to the install like everything else here:
 # 8910 for the shipped app, 8911 for a flavoured one, so two installs cannot fight over one
@@ -89,16 +89,19 @@ set -- ${_argv[@]+"${_argv[@]}"}
 # them). It is read once and used TWICE below — the content of the `plxnative-capture` trigger
 # and the streamer's `--app-port` — because those two must be the same number and a literal in
 # either place is how the picture ends up on one install while the keys go to the other.
-: "${FLAVOR:=$(make -s -C "$REPO" print-flavor)}"
-{ read -r FLAVOR; read -r APPID; read -r APPDIR; read -r RUNDIR; read -r EVENTLOG; read -r APPPORT; } < <(
-  make -s -C "$REPO" FLAVOR="$FLAVOR" \
-       print-flavor print-appid print-appdir print-rundir print-eventlog print-appport
+# ONE invocation. `print-flavor` comes back first and answers the Makefile's own default when
+# nothing set FLAVOR, so the pre-fetch that used to stand above this line — a whole second Makefile
+# parse to learn a value the composed query already returns — is gone. `${FLAVOR:+…}` passes the
+# assignment only when there is one, which is what lets make answer with its default.
+{ read -r FLAVOR; read -r APPID; read -r APPDIR; read -r RUNDIR; read -r EVENTLOG; read -r APPPORT; read -r HOST; } < <(
+  make -s -C "$REPO" ${FLAVOR:+FLAVOR="$FLAVOR"} \
+       print-flavor print-appid print-appdir print-rundir print-eventlog print-appport print-tv
 )
 # On a bad flavour make has already printed the exact complaint; do not restate it wrongly —
 # the failed `read` above left FLAVOR empty, so echoing it back here would name nothing.
 # Test the LAST value read, not a middle one: a short answer (an older Makefile missing a goal)
-# fills the earlier variables and leaves only the tail empty.
-[ -n "${APPPORT:-}" ] || { echo "cannot resolve the flavour above from $REPO/Makefile" >&2; exit 2; }
+# fills the earlier variables and leaves only the tail empty. That tail is `print-tv` now.
+[ -n "${HOST:-}" ] || { echo "cannot resolve the flavour above from $REPO/Makefile" >&2; exit 2; }
 # The app mkfifos this at boot inside its own runtime root; the NAME is unchanged across flavours,
 # only the directory moved.
 REMOTE_FIFO="$RUNDIR/plxnative-remote"
@@ -130,19 +133,14 @@ stop_viewers() {
   return 0
 }
 
-tv_host() {
-  [ -n "${TV:-}" ] && { echo "$TV"; return; }
-  # `.tv-host` FIRST, because it is the source the Makefile itself reads (`TV ?= $(strip $(shell cat
-  # .tv-host))`). Asking make for the value with `-pn` does NOT work and used to be what this did:
-  # `-p` prints the DEFINITION, and a recursive `=` variable's definition is the literal
-  # `$(strip $(shell cat .tv-host ...))` text — so HOST became that string, every ssh failed with
-  # "hostname contains invalid characters", and `up` reported **"TV unreachable"** on a television
-  # that was awake and answering. Precisely the mimicry the header warns about, from the driver.
-  [ -f "$REPO/.tv-host" ] && { tr -d '[:space:]' < "$REPO/.tv-host"; return; }
-  # a hardcoded `TV = 1.2.3.4` in the Makefile, for a checkout with no .tv-host
-  sed -n 's/^TV *[?:]*= *\([0-9a-zA-Z.:_-]\{1,\}\) *$/\1/p' "$REPO/Makefile" | head -1
-}
-HOST="$(tv_host)"
+# HOST came back from the batched query above, as `print-tv`. This used to be a local `tv_host()`
+# that read `$TV`, then `.tv-host`, then SCRAPED `^TV *=` out of the Makefile with sed — and that
+# last branch was already dead: the Makefile ships `TV ?= $(strip $(shell cat .tv-host …))`, which
+# the pattern cannot match. Asking make is also the only correct way; `make -pn` prints a recursive
+# variable's DEFINITION, so HOST became the literal `$(strip $(shell cat .tv-host ...))` text, every
+# ssh failed with "hostname contains invalid characters", and `up` reported "TV unreachable" for a
+# television that was awake and answering. `tools/crash-report.sh` and the wake-tv skill were both
+# moved onto `print-tv` already; this was the last copy.
 SSH_OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=8)
 tv()  { ssh "${SSH_OPTS[@]}" "root@$HOST" "$@"; }
 tvq() { ssh "${SSH_OPTS[@]}" "root@$HOST" "$@" 2>/dev/null; }
