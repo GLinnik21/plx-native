@@ -444,6 +444,24 @@ pub(crate) fn focus_is_card() -> bool {
     snap_pos() > 0.5
 }
 
+/// The focused thing is a pressable CONTROL FACE — the hero action row's Play/Continue pill or its
+/// info disc. [`focus_is_card`]'s twin: between them they name everything on this screen that takes
+/// the tvOS press (`ui::press`), and everything else here activates on the key-down.
+///
+/// Two exclusions, both deliberate. The **top band** — the profile chip and the library tab pills —
+/// is a control inside a TRACK, which the design system exempts from the focus pop and from the
+/// press dip alike (`widgets::CTRL_FOCUS_SCALE`): the capsule travelling and the chip unfurling are
+/// that row's focus mark, and a pill that also dipped would be two answers to one question. The
+/// **status read-out's Retry pill** is excluded for the reason the person page's header row is
+/// (`app.rs`'s OK ladder): it is a `StatusOverlay` action, it belongs to no `CtlPop`, so it draws no
+/// `press::scale()` at all — deferring its activation would buy a wait with nothing on screen to
+/// justify it. `status_takes` is the same rule [`status_activate`] routes on, asked once here so the
+/// two can never disagree.
+pub(crate) fn focus_is_ctl() -> bool {
+    let hf = hero_focus();
+    !focus_is_card() && !status_takes(hf) && hf >= 0 && (hf as usize) < HERO_NBTN
+}
+
 /// Hero pointer hit-test against the action-row rects recorded at draw: returns the button index
 /// (0 pill / 1 info) or -2 for a miss. `hover` moves the hero focus without acting. The pager
 /// mark has no entry here: it is not selectable, so it is not clickable either.
