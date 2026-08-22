@@ -30,6 +30,12 @@
 #   --no-token        boot with no injected token (exercises the QR sign-in flow)
 #   --keep            do not clear existing triggers first (rarely what you want)
 #
+# THE TV LOCK: every subcommand that DRIVES the set (up, key, click, shot, down) requires the
+# television's lock and refuses when another lane holds it; `status` and `log` are read-only and
+# only name the holder. Take one for a whole session rather than letting each command take its own
+# 10-minute implicit lease — the gap between two of your own commands is exactly where another
+# job lands:  tools/tv-lock.sh acquire --why "…"  …  tools/tv-lock.sh release.
+#
 # WHY THIS EXISTS: every on-device task needs the same fragile ritual, and each step fails
 # silently in its own way — a sleeping TV makes every assertion read as a regression, a
 # stale binary means you are testing yesterday's build, a leftover trigger silently changes
@@ -152,6 +158,22 @@ tvq() { ssh "${SSH_OPTS[@]}" "root@$HOST" "$@" 2>/dev/null; }
 # path (which has none), so this normalises both to a plain space-separated list.
 app_pids() {
   tvq "fuser $APPDIR/plxnative" | tr -cs '0-9' ' ' | sed 's/^ *//; s/ *$//'
+}
+
+# ------------------------------------------------------------ the TV lock ----
+# One television, no OS-level mutex: two jobs on it do not fail cleanly, they produce plausible
+# WRONG data (an fps number measured while somebody else's binary was deployed underneath, a
+# capture of a screen the other job navigated away from). Every subcommand here that DRIVES the
+# set goes through the lock; the two read-only ones only say who is on it. tools/tv-lock.sh is the
+# mechanism and .claude/skills/tv-lock/SKILL.md is the workflow.
+LOCKTOOL="$REPO/tools/tv-lock.sh"
+require_lock() {  # $1 = what this session is for, for the holder read-out
+  [ -x "$LOCKTOOL" ] || return 0
+  TV="$HOST" "$LOCKTOOL" require --quiet --why "$1" || exit 1
+}
+advise_lock() {   # read-only: never takes the lock, never refuses — only names the holder
+  [ -x "$LOCKTOOL" ] || return 0
+  TV="$HOST" "$LOCKTOOL" require --advisory --quiet --why "$1" || true
 }
 
 ok()   { printf '  \033[32m✓\033[0m %s\n' "$*"; }
@@ -340,6 +362,10 @@ cmd_up() {
   stop_viewers
 
   echo "== bringing up the TV session ($screen) on $APPID [$FLAVOR]"
+  # FIRST, before anything is closed, cleared or deployed. `up` kills the running app and wipes
+  # every trigger under the runtime root — if another lane is mid-run, that is its session, and
+  # everything after this point would be measuring a television two jobs are steering.
+  require_lock "tv-session up --screen $screen [$FLAVOR]"
   ensure_awake  || exit 1
   ensure_installed || exit 1
   ensure_rundir || exit 1
@@ -492,6 +518,7 @@ cmd_up() {
 
 cmd_status() {
   echo "== session status: $APPID [$FLAVOR]"
+  advise_lock "tv-session status"
   ensure_awake || exit 1
   local pid; pid=$(app_pids)
   [ -n "$pid" ] && ok "app running (pid $pid)" || bad "app not running"
@@ -513,6 +540,7 @@ cmd_status() {
 
 cmd_key() {
   [ $# -gt 0 ] || { echo "usage: tv-session.sh key <token>..." >&2; exit 2; }
+  require_lock "tv-session key"
   # the app drains the FIFO each frame; time-box the write so a FIFO with no reader
   # (app not running) cannot wedge this shell
   for t in "$@"; do
@@ -527,11 +555,15 @@ cmd_click() {
 }
 
 cmd_shot() {
+  # A capture is a MEASUREMENT, not a peek: a shot taken during another lane's session is a
+  # picture of a screen that lane navigated to, and nothing about the image says so.
+  require_lock "tv-session shot"
   local out="${1:-$REPO/tv-shot.png}"
   "$REPO/tools/capture-screen.sh" "$out" DISPLAY
 }
 
 cmd_log() {
+  advise_lock "tv-session log"
   local pat="${1:-}"
   if [ -n "$pat" ]; then tvq "grep -E '$pat' $EVENTLOG"
   else tvq "cat $EVENTLOG"; fi
@@ -539,6 +571,10 @@ cmd_log() {
 
 cmd_down() {
   echo "== handing the TV back"
+  # `down` still needs the lock: it CLOSES the app and clears every trigger, which is the most
+  # destructive thing in this file if another lane is mid-run. Handing the television back to a
+  # human is `down` followed by `tools/tv-lock.sh release` — the skill spells that pair out.
+  require_lock "tv-session down"
   local had_url=0; [ -f "$REMOTE_URL_FILE" ] && had_url=1
   stop_viewers
   ok "streamer stopped"
@@ -561,5 +597,5 @@ case "${1:-}" in
   shot)   shift; cmd_shot "$@" ;;
   log)    shift; cmd_log "$@" ;;
   down)   shift; cmd_down ;;
-  *) sed -n '3,31p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  *) sed -n '3,38p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

@@ -11,6 +11,10 @@ description: >
 
 # Crash triage on the TV
 
+> **Collecting evidence is read-only and needs no lock** (`tools/crash-report.sh`, `tv-session.sh
+> log`) — but the moment you RE-RUN to reproduce, take the television's lock first:
+> `tools/tv-lock.sh acquire --why "reproduce <crash>"`. See the **`tv-lock`** skill.
+
 The C tracer (`src/main.c`) catches the fatal signals, writes what it knows, then
 **re-raises to `SIG_DFL`** so the OS crash daemon still captures a real backtrace. Per
 crash it emits:
