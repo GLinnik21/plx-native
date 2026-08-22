@@ -3118,7 +3118,7 @@ unsafe fn key_ok(
         // something OVER this HUD rather than leaving the route, which makes this the one control
         // row in the app where the whole dip → ring is on screen either side of the activation.
         if vis && hud.nav.focus == 1 {
-            crate::ui::press::begin_ctl(SDL_GetTicks());
+            crate::ui::press::begin_ctl(now);
             *ok_armed = true;
         } else if vis && hud.nav.focus == 2 {
             if hud.nav.tab == 0 {
@@ -3188,7 +3188,7 @@ unsafe fn key_ok(
             crate::ui::press::begin(SDL_GetTicks());
             *ok_armed = true;
         } else if crate::ui::detail::focus_is_ctl() {
-            crate::ui::press::begin_ctl(SDL_GetTicks());
+            crate::ui::press::begin_ctl(now);
             *ok_armed = true;
         } else if crate::ui::detail::on_ok() {
             start_playback(
@@ -3232,7 +3232,7 @@ unsafe fn key_ok(
             // Retry belongs to no `CtlPop`, so neither has a dip to show
             // (`home::focus_is_ctl`).
             if crate::ui::home::focus_is_ctl() {
-                crate::ui::press::begin_ctl(SDL_GetTicks());
+                crate::ui::press::begin_ctl(now);
                 *ok_armed = true;
             } else {
                 let hf = crate::ui::home::hero_focus();
@@ -3434,9 +3434,8 @@ unsafe fn seed_scrub() {
 }
 
 /// CH▲/CH▼ page the browse grid a screenful of rows per press.
-fn key_library_page(sym: c_uint, wcode: c_uint) {
-    let up = sym == SDLK_PAGEUP || wcode == WCODE_CH_UP || wcode == crate::ui::consts::WCODE_CH_UP_KEY;
-    crate::ui::library::page(if up { -1 } else { 1 });
+fn key_library_page(dir: c_int) {
+    crate::ui::library::page(dir);
 }
 
 /// webOS BACK: this Magic Remote sends wcode 482 (0x1E2); 461 kept for others.
@@ -4568,15 +4567,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         exit_player(mt, &mut route, &play_from, &mut refresh_hubs_at, &mut trail);
                     } else if matches!(route, Route::Player { .. }) && matches!(key, Key::Left { .. } | Key::Right { .. }) {
                         key_scrub(key, last_input, ctrl, &mut hud, &mut ptr, &mut scrubber);
-                    } else if matches!(route, Route::Library)
-                        && (sym == SDLK_PAGEUP
-                            || sym == SDLK_PAGEDOWN
-                            || wcode == WCODE_CH_UP
-                            || wcode == WCODE_CH_DOWN
-                            || wcode == crate::ui::consts::WCODE_CH_UP_KEY
-                            || wcode == crate::ui::consts::WCODE_CH_DOWN_KEY)
+                    } else if let (Route::Library, Some(dir)) =
+                        (route, crate::ui::consts::page_dir(sym, wcode))
                     {
-                        key_library_page(sym, wcode);
+                        key_library_page(dir);
                     } else if matches!(key, Key::Back) {
                         key_back(mt, &mut route, &mut nav_pending, &mut trail, &play_from,
                             &mut refresh_hubs_at, &mut running);
@@ -4671,7 +4665,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     // a click that misses the sheet falls through onto the shelf behind it and
                     // launches whatever card it landed on, from under a modal question.
                     //
-                    // A MISS is not a dismissal (`exit_alert::click` reports `None`): "not either"
+                    // A MISS is not a dismissal (`exit_alert::press_at` reports `false`): "not either"
                     // is not an answer to a yes/no question, which is the one place this panel
                     // differs from every menu in the app.
                     if crate::ui::exit_alert::is_open() {
@@ -4859,8 +4853,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         // Magic-Remote click on the detail page: focus what was clicked, then run the
                         // SAME activation the OK key does (detail::click did the hit-test) — a CARD
                         // (episode / Related / Cast) gets the tvOS press dip, committed on the
-                        // button-up spring-back below; the Play pill, watched disc and season tabs
-                        // act at once, exactly as in the key arm.
+                        // button-up spring-back below — and so, since the control faces landed, do
+                        // the Play pill, the watched discs and the season tabs. Every one of them
+                        // defers now; this comment said they still acted at once.
                         let (cx, cy) = ptr_xy(&ev);
                         if crate::ui::detail::click(cx, cy) {
                             if crate::ui::detail::focus_is_card() {

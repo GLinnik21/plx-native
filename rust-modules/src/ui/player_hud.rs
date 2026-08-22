@@ -977,8 +977,11 @@ pub(crate) fn draw_hud(slot: ControlSlot, busy: Busy, focus: i32, btn: i32, tab:
     // below takes its travel direction from the difference between them, and two loads of a live
     // atomic can straddle a tick.
     let livepos = crate::player::playpos_ns();
-    let dispos = if loading && crate::player::seek_display_ns() >= 0 {
-        crate::player::seek_display_ns()
+    // ONE sample of the seek target too, for the reason the line above hoists the playhead: the
+    // condition and the value were two loads of the same live atomic and could straddle a tick.
+    let seekdisp = crate::player::seek_display_ns();
+    let dispos = if loading && seekdisp >= 0 {
+        seekdisp
     } else if scrub >= 0 {
         scrub
     } else {
@@ -1049,33 +1052,32 @@ pub(crate) fn draw_hud(slot: ControlSlot, busy: Busy, focus: i32, btn: i32, tab:
         // travel marks are drawn to that SAME 14-unit band (see `Icon::Rewind`), which is what lets
         // one box serve the whole family without the slot changing weight as the state flips.
         let isz = 30.0f32;
-        // **`play.svg` is the one family member NOT authored to that band** — it spans y=4..20 of
-        // its viewBox (16 units, not 14), because it predates this slot and is worn elsewhere at
-        // its own size, so fixing it at source would move every other surface that wears it. Its
-        // box is scaled by 14/16 here instead, which lands the same ~17px of ink: the resume mark
-        // must not out-weigh the pause it replaces, and the DS's own rule for this family is that
-        // the slot never shifts weight as the state flips.
-        const PLAY_BAND: f32 = 14.0 / 16.0;
+        // The odd member of the family — `play.svg` is authored to 16 units where the other three
+        // are 14 — is corrected by asking `icons::band` rather than by a constant here. See that
+        // function: the metric is a property of the asset, and this was the second screen to
+        // transcribe one out of an SVG by hand.
         // **The gap is measured to the INK, not to the box.** Every member of this family carries a
         // different left bearing inside its 24-unit viewBox — pause's bars open at x=7, play's
         // triangle at x=6, the travel marks at x=2.6 — so ONE box origin gives each state a
         // visibly different gap after the clock, and the slot appears to twitch as the state flips.
         // Measuring to the ink makes the gap the eye sees a single number. It is also what the old
         // spacing really was: a box placed 14px out put pause's ink at 14 + 7/24*30 ~= 23px, which
-        // is the gap that read as too wide.
+        // is the gap that read as too wide. The bearings come from `icons::ink_x`, not from a table
+        // here — they are the asset's, and this screen was the second place to copy them out.
         const GAP: f32 = 14.0;
-        // (left, right) ink bounds as a fraction of the viewBox, per glyph.
-        let (glyph, ink) = match mark {
-            TransportMark::Pause => (Some(crate::ui::icons::Icon::Pause), (7.0 / 24.0, 17.0 / 24.0)),
-            TransportMark::Play => (Some(crate::ui::icons::Icon::Play), (6.0 / 24.0, 20.0 / 24.0)),
-            TransportMark::Rewind => (Some(crate::ui::icons::Icon::Rewind), (2.6 / 24.0, 21.4 / 24.0)),
-            TransportMark::FastForward => {
-                (Some(crate::ui::icons::Icon::FastForward), (2.6 / 24.0, 21.4 / 24.0))
-            }
-            TransportMark::Working | TransportMark::None => (None, (0.0, 1.0)),
+        let glyph = match mark {
+            TransportMark::Pause => Some(crate::ui::icons::Icon::Pause),
+            TransportMark::Play => Some(crate::ui::icons::Icon::Play),
+            TransportMark::Rewind => Some(crate::ui::icons::Icon::Rewind),
+            TransportMark::FastForward => Some(crate::ui::icons::Icon::FastForward),
+            TransportMark::Working | TransportMark::None => None,
         };
+        let ink = glyph.map_or((0.0, 1.0), crate::ui::icons::ink_x);
         let icy = ty + crate::text::text_height(theme::size::CAPTION, 1) * 0.5; // vertical center of the clock line
-        let bs = if mark == TransportMark::Play { isz * PLAY_BAND } else { isz };
+        // scaled so every member of the family lands the SAME height of ink in this one box
+        let bs = glyph.map_or(isz, |g| {
+            isz * crate::ui::icons::band(crate::ui::icons::Icon::Pause) / crate::ui::icons::band(g)
+        });
         // **Rewind sits to the LEFT of the clock; everything else to the right.** The mark points
         // the way the playhead is travelling, so `<<` after the time would point back at the number
         // it is leaving. The right-hand placement still falls back to the left when the remaining

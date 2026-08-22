@@ -316,17 +316,22 @@ fn toggle_selected() {
     }
 }
 
-pub fn pointer_focus(mx: f32, my: f32) {
+/// Park focus under the pointer. **Reports whether it parked on anything**, which is what makes it
+/// safe for [`press_at`] to build on: a click in dead space parks nothing and must not arm a press
+/// on whatever happened to be focused already.
+pub fn pointer_focus(mx: f32, my: f32) -> bool {
     if unsafe { addr_of!(ACTION_RECT).read() }.contains(mx, my) {
         set_focus(Focus::Action);
         crate::ui::idle::invalidate();
-        return;
+        return true;
     }
     if let Some(r) = table().hit_row(list_frame(), mx, my) {
         set_focus(Focus::List);
         table().sel = r;
         crate::ui::idle::invalidate();
+        return true;
     }
+    false
 }
 
 pub fn click(mx: f32, my: f32) {
@@ -340,12 +345,15 @@ pub fn click(mx: f32, my: f32) {
 /// Pointer-down on the action PILL: park focus on it and report the hit, so the caller can arm the
 /// tvOS press and spend it on the spring-back — the pointer's half of [`focus_is_ctl`]. A list row
 /// is not a control face, so it is [`click`]'s and still flips its pin on the button-down.
+///
+/// **Through [`pointer_focus`], not beside it.** This began as a copy of that function's first
+/// branch and dropped its `idle::invalidate()` in the copying — [`set_focus`] does not invalidate
+/// on its own, which is exactly why `pointer_focus` calls it explicitly, so the focus moved to the
+/// pill on the button-down with no repaint owed. It survived only because the press spring that the
+/// caller arms a moment later reports motion of its own; a press that failed to arm would have
+/// moved the ring invisibly.
 pub fn press_at(mx: f32, my: f32) -> bool {
-    if unsafe { addr_of!(ACTION_RECT).read() }.contains(mx, my) {
-        set_focus(Focus::Action);
-        return true;
-    }
-    false
+    pointer_focus(mx, my) && focus_is_ctl()
 }
 
 /// The focus probe's read of this screen — see `focusprobe`'s doc on why every screen owes one.

@@ -105,6 +105,12 @@ BADGE_CAP = 0.55
 BADGE_FONT = "pkg/appfont-bold.ttf"
 
 
+def _rgb(hexcolor):
+    """`"#rrggbb"` (or bare `rrggbb`) -> three 0-255 ints. Two callers parse the same shape."""
+    h = hexcolor.lstrip("#")
+    return [int(h[i:i + 2], 16) for i in (0, 2, 4)]
+
+
 def badge_ink(fill: str) -> str:
     """Black or white over `fill`, whichever has more contrast. Derived, never assumed.
 
@@ -113,7 +119,7 @@ def badge_ink(fill: str) -> str:
     """
     def lin(c: float) -> float:
         return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
-    r, g, b = (int(fill.lstrip("#")[i:i + 2], 16) / 255 for i in (0, 2, 4))
+    r, g, b = (c / 255 for c in _rgb(fill))
     lum = 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
     # Contrast against white is (1.05)/(L+0.05); against black it is (L+0.05)/0.05.
     return "#1a1204" if (lum + 0.05) / 0.05 > 1.05 / (lum + 0.05) else "#f7fafc"
@@ -209,7 +215,7 @@ def write_splash(src: Path, out: Path, lift=None) -> None:
     """
     im = Image.open(src).convert("RGB")
     if lift:
-        f = [int(lift.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4)]
+        f = _rgb(lift)
         a = np.asarray(im).astype(float)
         for c in range(3):
             a[..., c] = f[c] + a[..., c] * (255.0 - f[c]) / 255.0
