@@ -19,6 +19,14 @@ description: >
 
 # Working on the TV
 
+> **FIRST: take the television's lock.** One set, no OS-level mutex — two jobs on it produce
+> plausible WRONG data rather than a clean failure. `tools/tv-lock.sh acquire --why "…"` before the
+> session and `release` after (and `tools/tv-lock.sh status` to see who has it). Every driving
+> subcommand below refuses without it; `log` and `status` are read-only and only name the holder.
+> The **`tv-lock` skill** is the workflow, and the reason to take one lease for the whole session
+> rather than letting each command take its own: the gap between two of your own commands is where
+> another lane lands.
+
 > **Before booking the TV: can the simulator answer this?** `make sim` runs the same app core on
 > macOS — real UI, real PMS data, boot triggers, the same FIFO tokens, self-screenshotting, and
 > several instances at once. Layout, focus, navigation and the whole data layer are answerable
@@ -45,6 +53,10 @@ tools/tv-session.sh shot [out.png]          # panel capture (video plane include
 tools/tv-session.sh log [--flavor <f>] [regex]   # the on-device event log
 tools/tv-session.sh down [--flavor <f>]     # hand the TV back
 ```
+
+`down` hands back the APP (interactive boot, triggers cleared); `tools/tv-lock.sh release` hands
+back the TELEVISION. Do both, in that order — a released lock with an automated app still on
+screen is the next lane's confusing morning.
 
 `--flavor <f>` selects **which install** the command talks to, and every subcommand accepts it —
 each of them names an app id, an app directory or a runtime root, and none of those is a single
