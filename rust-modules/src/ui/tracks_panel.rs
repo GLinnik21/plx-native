@@ -51,6 +51,7 @@ use crate::ui::consts::{SCR_H, SCR_W, SDLK_DOWN, SDLK_UP};
 use crate::ui::icons::Icon;
 use crate::ui::label::{HAlign, Label, VAlign};
 use crate::ui::popover::Popover;
+use crate::ui::widgets;
 use crate::ui::theme;
 use crate::ui::{Painter, Rect, Spring};
 use std::ffi::CString;
@@ -73,14 +74,14 @@ const PANEL_H: f32 = 796.0;
 /// The design places the panel at `left:340px; top:130px` in a 1920x1080 frame, which is exactly
 /// centred on both axes — and clears `--glass-edge-clear` 68 on all four sides, which the spec
 /// asks of every panel in the set.
-const PAD: f32 = 48.0;
+const PAD: f32 = theme::alert::PAD;
 
 /// The scroll rail: 6px wide, `--radius-pill`, one `space::MD` clear of the body's right edge.
 const RAIL_W: f32 = 6.0;
 const RAIL_GAP: f32 = theme::space::MD;
 
 /// The mask's dissolve depth, from the design's `const feather = 88`.
-const FEATHER: f32 = 88.0;
+const FEATHER: f32 = theme::alert::FEATHER;
 /// One press of UP/DOWN, from the design's `tStep = 370`. A PAGE rather than a line, because the
 /// body is a grid of short runs with no single row pitch to step by — and because a read-only
 /// panel with no focus has nothing for a line-step to land on.
@@ -95,10 +96,8 @@ const K_SCROLL: f32 = 220.0;
 // The first four are the FAMILY's head ladder ([`theme::alert`]), not this panel's — §1B and §1C
 // spell the same eyebrow → title → subtitle steps, and the one that spelled them itself drifted 12px
 // tight. Named through here so the local flow still reads as a flow.
-const EYEBROW_H: f32 = theme::alert::EYEBROW_LEAD;
 const TITLE_H: f32 = theme::alert::TITLE_LEAD;
 const GAP_EYEBROW_TITLE: f32 = theme::alert::GAP_EYEBROW_TITLE;
-const GAP_TITLE_PATH: f32 = theme::alert::GAP_TITLE_SUB;
 const PATH_H: f32 = theme::size::MICRO as f32 * 1.3;
 const GAP_PATH_RULE: f32 = 28.0;
 const GAP_RULE_BODY: f32 = theme::space::MD;
@@ -111,7 +110,6 @@ const GAP_RULE_BODY: f32 = theme::space::MD;
 /// 2px top and bottom, and the overflow would have been invisible in review because nothing draws
 /// an edge there.
 const FOOTER_H: f32 = crate::ui::widgets::KeyHint::height();
-const HAIRLINE_H: f32 = 1.0;
 
 // Body rhythm — the design's `gap` values, one per nesting level.
 const SECTION_GAP: f32 = theme::space::LG; // 40 — between the grid / AUDIO / SUBTITLES blocks
@@ -136,16 +134,16 @@ fn body_rect() -> Rect {
     let r = panel_rect();
     let top = r.y
         + PAD
-        + EYEBROW_H
+        + theme::alert::EYEBROW_LEAD
         + GAP_EYEBROW_TITLE
         + TITLE_H
-        + GAP_TITLE_PATH
+        + theme::alert::GAP_TITLE_SUB
         + PATH_H
         + GAP_PATH_RULE
-        + HAIRLINE_H
+        + widgets::HAIRLINE_H
         + GAP_RULE_BODY;
     let bottom = r.y + PANEL_H - crate::ui::widgets::KeyHint::pad_below() - FOOTER_H
-        - theme::space::MD - HAIRLINE_H - theme::space::MD;
+        - theme::space::MD - widgets::HAIRLINE_H - theme::space::MD;
     Rect::new(r.x + PAD, top, PANEL_W - 2.0 * PAD - RAIL_W - RAIL_GAP, bottom - top)
 }
 
@@ -847,7 +845,7 @@ pub(crate) fn draw() {
     // CACHED glass over a page that is standing still, so the scrim rides `painter` and lands in
     // the snapshot with it — the pairing `Popover::scrim`'s doc reserves for a DYNAMIC backdrop is
     // not this panel's. `alt_sources` is the worked example on this same page.
-    let p = pop().painter(SCRIM_A, RISE);
+    let p = pop().painter(SCRIM_A, Popover::RISE);
     pop().panel(p, r, theme::ALERT_PANEL_RAD);
 
     // ---- header ------------------------------------------------------------------------------
@@ -858,15 +856,15 @@ pub(crate) fn draw() {
     Label::new(eyebrow.as_ptr(), theme::size::CAPTION, theme::TEXT_TERTIARY)
         .bold()
         .v(VAlign::CapTop)
-        .draw(p, Rect::new(cx, y, cw, EYEBROW_H));
-    y += EYEBROW_H + GAP_EYEBROW_TITLE;
+        .draw(p, Rect::new(cx, y, cw, theme::alert::EYEBROW_LEAD));
+    y += theme::alert::EYEBROW_LEAD + GAP_EYEBROW_TITLE;
     if let Ok(cs) = CString::new(crate::text::elide(&d.title, cw, theme::size::TITLE, 1, false)) {
         Label::new(cs.as_ptr(), theme::size::TITLE, theme::TEXT_PRIMARY)
             .bold()
             .v(VAlign::CapTop)
             .draw(p, Rect::new(cx, y, cw, TITLE_H));
     }
-    y += TITLE_H + GAP_TITLE_PATH;
+    y += TITLE_H + theme::alert::GAP_TITLE_SUB;
     // the server's own path for the part. One line, ellipsised, micro, tertiary — it is the
     // panel's subject, not its content, and it can be arbitrarily long.
     if !d.file.is_empty() {
@@ -908,7 +906,7 @@ pub(crate) fn draw() {
 
     // ---- footer ------------------------------------------------------------------------------
     let fy = r.y + PANEL_H - crate::ui::widgets::KeyHint::pad_below() - FOOTER_H;
-    rule(p, cx, fy - theme::space::MD - HAIRLINE_H, cw);
+    rule(p, cx, fy - theme::space::MD - widgets::HAIRLINE_H, cw);
     let cy = fy + FOOTER_H * 0.5;
     // left: the two chevrons + "to scroll". Marks, not controls — there is nothing to focus, so
     // they are drawn at their natural size with no frame (the Library A–Z rail's idiom).
@@ -933,16 +931,14 @@ pub(crate) fn draw() {
     back_hint.draw(p, cx + cw - back_hint.width(), cy);
 }
 
-/// The panel's one-pixel divider. A named helper because the design draws three of them and a rule
-/// is a `theme::HAIRLINE` rect, never a 1px `rrect` with a radius nobody can see.
+/// The panel's one-pixel divider — `widgets::hairline`, which carries the rule this file wrote
+/// down (a `theme::HAIRLINE` rect, never a 1px `rrect`) and now enforces for the whole family.
 fn rule(p: Painter, x: f32, y: f32, w: f32) {
-    p.rect(Rect::new(x, y, w, HAIRLINE_H), 0.0, theme::HAIRLINE, theme::HAIRLINE, 0.0);
+    widgets::hairline(p, x, y, w);
 }
 
 /// The modal dim, from the design's `scrimStill: 0.46`.
-const SCRIM_A: f32 = 0.46;
-/// How far the panel slides up into place — the panels' shared entry distance.
-const RISE: f32 = Popover::RISE;
+const SCRIM_A: f32 = theme::alert::SCRIM_A;
 
 #[cfg(test)]
 mod tests {

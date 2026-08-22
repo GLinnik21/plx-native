@@ -265,7 +265,8 @@ DEV_WITNESS = b"plxnative-noidle"
 binary = PAYLOAD / "plxnative"
 check(binary.exists(), f"the staged payload carries the binary ({binary.name})")
 
-# THE ID IS THE RULE, and it is graded UNCONDITIONALLY — outside the `BUILD` branch below.
+# THE ID IS THE RULE, and it is graded whatever the stamp says — note the `if IS_STABLE`
+# below sits BESIDE the `BUILD` branch, never inside it.
 #
 # `com.beb.plxnative` is what a user installs, so a dev-featured binary under it ships the whole
 # /tmp trigger surface, the world-writable `plxnative-remote` FIFO and the `:8910` listener to the
@@ -279,19 +280,18 @@ check(binary.exists(), f"the staged payload carries the binary ({binary.name})")
 # `release-guard` (RELEASE is non-empty), print "SKIP — neither shipped configuration", and package
 # a dev-trigger binary under the released id on a green run. "This package carries no dev-trigger
 # surface" is a property of the BYTES and needs no stamp to grade.
-if binary.exists() and IS_STABLE:
-    check(DEV_WITNESS not in binary.read_bytes(),
-          f"the {PACKAGED_ID} package carries no dev-trigger surface — that id is what users install")
-
-if binary.exists() and BUILD:
+if binary.exists():
     has_dev = DEV_WITNESS in binary.read_bytes()
+    if IS_STABLE:
+        check(not has_dev,
+              f"the {PACKAGED_ID} package carries no dev-trigger surface — that id is what users install")
     if BUILD == "release":
         check(not has_dev, "the packaged binary is a RELEASE build (no dev triggers compiled in)")
-    else:
+    elif BUILD:
         check(has_dev, "the packaged binary is the DEV build the stamp records — which is also what"
                        f" proves `{DEV_WITNESS.decode()}` still witnesses the trigger surface")
-elif binary.exists():
-    print("  SKIP — pkg/.build-config is neither shipped configuration; not grading the binary")
+    else:
+        print("  SKIP — pkg/.build-config is neither shipped configuration; not grading the binary")
 
 # The checksum file has to verify where a USER stands: they download it beside the .ipk, so a
 # `pkg/` prefix in the line makes `shasum -a 256 -c` fail for everyone. It did, through v0.2.1.

@@ -454,8 +454,14 @@ def make(target_args, timeout, capture=True):
                           timeout=timeout)
 
 
-def make_query(goal, flavour=None):
-    """Ask the Makefile for one derived value (`make -s print-<x>`) — the only supported way.
+def make_query(goals, flavour=None):
+    """Ask the Makefile for derived values (`make -s print-<x> …`) — the only supported way.
+
+    SEVERAL GOALS GO IN ONE INVOCATION, which is why this takes a tuple: the Makefile's query
+    targets compose, its PURE_QUERY guard is satisfied as long as EVERY goal is a query, and one
+    make start-up is cheaper than one per value — `resolve_flavour` was parsing a 900-line Makefile
+    four times at harness start. `tools/stream-screen.py` already worked this way; this is the
+    same helper, not a second one. Returns a list, one line per goal, in the order asked.
 
     NEVER `make -p` / `make -pn`, which is the obvious-looking alternative and is a trap: it prints
     a recursive variable's UNEXPANDED DEFINITION, so `TV` comes back as the literal
@@ -464,7 +470,8 @@ def make_query(goal, flavour=None):
     from the shell side). These goals are real echo recipes of real values, and the Makefile's
     PURE_QUERY guard keeps a query free of side effects.
     """
-    cmd = ["make", "-s", "-C", REPO_ROOT, goal] + ([f"FLAVOR={flavour}"] if flavour else [])
+    goals = [goals] if isinstance(goals, str) else list(goals)
+    cmd = ["make", "-s", "-C", REPO_ROOT, *goals] + ([f"FLAVOR={flavour}"] if flavour else [])
     shown = " ".join(cmd)
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
@@ -474,10 +481,10 @@ def make_query(goal, flavour=None):
         # A bad flavour lands here: the Makefile's parse-time $(error) names the value and the
         # whitelist, which is a better message than anything this file could invent.
         sys.exit(f"`{shown}` failed:\n{(p.stderr or p.stdout).strip()}")
-    out = p.stdout.strip()
-    if not out:
-        sys.exit(f"`{shown}` printed nothing — is {REPO_ROOT} this repo?")
-    return out
+    out = p.stdout.strip().splitlines()
+    if len(out) != len(goals):
+        sys.exit(f"`{shown}` printed {len(out)} lines for {len(goals)} goals — is {REPO_ROOT} this repo?")
+    return out[0] if len(goals) == 1 else out
 
 
 def resolve_flavour(args, manifest):
@@ -490,10 +497,11 @@ def resolve_flavour(args, manifest):
     another — and a future change to the naming rule reaches the harness for free.
     """
     global FLAVOUR, APPID, RUNDIR, EVENTLOG, RUN_STREAM_MARK
-    FLAVOUR = args.flavor or manifest.get("flavour") or make_query("print-flavor")
-    APPID = make_query("print-appid", FLAVOUR)
-    RUNDIR = make_query("print-rundir", FLAVOUR)
-    EVENTLOG = make_query("print-eventlog", FLAVOUR)
+    # ONE invocation for all four. `print-flavor` comes back first and answers the default when
+    # neither --flavor nor the overlay named one, so the old ask-then-ask-again round trip is gone.
+    FLAVOUR = args.flavor or manifest.get("flavour") or ""
+    FLAVOUR, APPID, RUNDIR, EVENTLOG = make_query(
+        ("print-flavor", "print-appid", "print-rundir", "print-eventlog"), FLAVOUR or None)
     # The tail `make run-stream` ends in. _run_stream_pids() matches it against `ps` to find this
     # harness's OWN ssh clients, so it has to be the text the Makefile actually runs: a copy that
     # stops matching reaps nothing, and every case then leaks an ssh client holding a remote
@@ -1204,7 +1212,7 @@ def check_install(lines, cfg):
         if not m:
             continue
         got, feats = m.group(1), m.group(2)
-        if got != cfg["appid"]:
+        if got != APPID:
             raise SystemExit(
                 f"WRONG INSTALL: the app that booted logs id={got}, but this run drives "
                 f"{cfg['appid']} (flavour {FLAVOUR}). Every path this harness used belongs to "
@@ -1901,11 +1909,6 @@ def main():
         "tv": args.tv or manifest["tv"],
         "pms": manifest["pms"],
         "no_early": args.no_early,
-        # carried in cfg as well as in the module globals so the two consumers read the same value:
-        # the globals are what builds a command line, this is what check_install grades a log
-        # against.
-        "flavour": FLAVOUR,
-        "appid": APPID,
     }
     cases = manifest["cases"]
     if args.suite:

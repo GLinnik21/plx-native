@@ -1135,14 +1135,30 @@ impl<'a> KeyHint<'a> {
 /// Promoted out of `detail.rs`, where it was `dotted_run` and private; the detail facts row and the
 /// bio panel's identity line are the same idiom one screen apart, and the second copy is where the
 /// separator ink would have drifted.
+/// The hairline divider's height. Published because a panel's flow has to MEASURE the rule as
+/// well as draw it, and the two files that made it a private constant each called it something
+/// else (`RULE_H`, `HAIRLINE_H`) while holding the same 1.0.
+pub(crate) const HAIRLINE_H: f32 = 1.0;
+
+/// One full-width HAIRLINE divider — the alert family's rule, in one place.
+///
+/// **A `theme::HAIRLINE` rect, never a 1px `rrect` with a radius nobody can see.** That sentence
+/// was already written down, in `tracks_panel`'s private copy of this function, while a third
+/// panel drew exactly the `rrect` it forbids — which is what three private drawers of one line
+/// buy you. The height is 1.0 and is not a parameter: a divider that is two pixels somewhere is a
+/// different object, and both files that made it a named constant gave it the same value.
+pub(crate) fn hairline(p: Painter, x: f32, y: f32, w: f32) {
+    p.rect(Rect::new(x, y, w, HAIRLINE_H), 0.0, theme::HAIRLINE, theme::HAIRLINE, 0.0);
+}
+
 pub(crate) fn dotted_run(p: Painter, parts: &[&str], x: f32, y: f32, sz: c_int, col: [f32; 4], pad: f32) -> f32 {
     let mut bx = x;
     for part in parts.iter().filter(|s| !s.is_empty()) {
         if bx > x {
             bx += pad;
-            if let Ok(dc) = CString::new("\u{b7}") {
-                bx += p.text(dc.as_ptr(), bx, y, sz, theme::TEXT_SEPARATOR, 0, 0);
-            }
+            // `c"·"`, not `CString::new` — the separator is a compile-time constant, and this runs
+            // once per gap per frame on the detail facts row and the bio identity line.
+            bx += p.text(c"\u{b7}".as_ptr(), bx, y, sz, theme::TEXT_SEPARATOR, 0, 0);
             bx += pad;
         }
         if let Ok(pc) = CString::new(*part) {
@@ -1240,25 +1256,11 @@ pub(crate) fn edge_feather(p: Painter, view: Rect, band: f32, top: bool, bot: bo
 
 // ---- Tracked caps: a kicker drawn letter by letter -----------------------------------------------
 
-/// Draw `chars` from `x` on cap-band y `y` with `track` px inserted BETWEEN characters (never after
-/// the last), returning the drawn width. The text backend has no letter-spacing, so tracking is
-/// always a per-character pen advance — see [`pass_capsule`]'s `PASS_TRACK`, which is the same
-/// technique with its own memo.
-///
-/// **Pre-split `&CStr` literals, not a `&str`**, so an eyebrow that draws every frame costs no
-/// allocation: the caller writes `const EYEBROW: [&CStr; 6] = [c"P", c"E", …]`. That is deliberately
-/// awkward — it is only worth doing for a CONSTANT word, which every tracked kicker in this app is.
-/// A tracked run of runtime text would want a different design (one `CString`, and the tracking
-/// baked into the wrap), and there is no such caller.
-pub(crate) fn tracked_run_w(chars: &[&std::ffi::CStr], sz: c_int, bold: c_int, track: f32) -> f32 {
-    if chars.is_empty() {
-        return 0.0;
-    }
-    let ink: f32 = chars.iter().map(|c| crate::text::text_width(c.as_ptr(), sz, bold)).sum();
-    ink + track * (chars.len() - 1) as f32
-}
-
-/// [`tracked_run_w`]'s draw half — see it for why the label is pre-split.
+/// Draw a letter-tracked kicker. The text backend has no letter-spacing, so tracking is always a
+/// per-character pen advance, and the label is pre-split into `&CStr` literals so a kicker that
+/// draws every frame costs no allocation — deliberately awkward, and only worth it for a CONSTANT
+/// word, which every tracked kicker in this app is. Returns the run's width, so nothing has to
+/// measure ahead (a measure-only half existed and never had a caller).
 pub(crate) fn tracked_run(
     p: Painter,
     chars: &[&std::ffi::CStr],

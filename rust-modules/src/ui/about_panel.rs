@@ -61,6 +61,7 @@ use crate::ui::popover::Popover;
 use crate::ui::text_view::TextView;
 use crate::ui::theme;
 use crate::ui::widgets::KeyHint;
+use crate::ui::widgets;
 use crate::ui::{Painter, Rect};
 use std::ptr::{addr_of, addr_of_mut};
 
@@ -70,7 +71,7 @@ use std::ptr::{addr_of, addr_of_mut};
 /// at a poster's width, and narrow enough to leave the page visible either side of it.
 const PANEL_W: f32 = 1120.0;
 /// The mock's padding, uniform on all four sides.
-const PAD: f32 = 48.0;
+const PAD: f32 = theme::alert::PAD;
 /// The panel's inner content column — every run wraps to this.
 pub(crate) const CONTENT_W: f32 = PANEL_W - 2.0 * PAD;
 /// The design system's `--glass-edge-clear`: the panel never comes closer than this to any screen
@@ -78,9 +79,7 @@ pub(crate) const CONTENT_W: f32 = PANEL_W - 2.0 * PAD;
 /// own rect, and a panel flush to an edge has nothing on one side to sample.
 const EDGE_CLEAR: f32 = 68.0;
 /// The modal scrim's peak alpha — the mock's `scrimStill: 0.46`, shared by all four alerts.
-const SCRIM_A: f32 = 0.46;
-/// How far below its resting place the panel starts its entry slide.
-const RISE: f32 = Popover::RISE;
+const SCRIM_A: f32 = theme::alert::SCRIM_A;
 
 // ---- the ladder ------------------------------------------------------------------------------
 //
@@ -112,8 +111,6 @@ const G_TAGLINE: f32 = 20.0;
 const G_RULE: f32 = 32.0;
 const G_FOOTER: f32 = 24.0;
 
-/// A hairline is one physical pixel of [`theme::HAIRLINE`] and occupies one pixel of flow.
-const RULE_H: f32 = 1.0;
 
 // ---- the pure layout -------------------------------------------------------------------------
 
@@ -172,7 +169,7 @@ pub(crate) fn stack(b: Blocks) -> Stack {
     }
 
     s.rule = y + G_RULE;
-    y = s.rule + RULE_H;
+    y = s.rule + widgets::HAIRLINE_H;
 
     s.footer = y + G_FOOTER;
     y = s.footer + KeyHint::height();
@@ -313,7 +310,7 @@ pub(crate) fn draw() {
     let r = panel_rect(s.h);
 
     // ---- ground ----
-    let p = pop().content_painter(RISE);
+    let p = pop().content_painter(Popover::RISE);
     pop().panel(p, r, theme::ALERT_PANEL_RAD);
 
     // ---- content ----
@@ -347,7 +344,7 @@ pub(crate) fn draw() {
 
 /// One full-width hairline across the content column.
 fn rule(p: Painter, r: Rect, y: f32) {
-    p.rect(Rect::new(r.x + PAD, r.y + y, CONTENT_W, RULE_H), 0.0, theme::HAIRLINE, theme::HAIRLINE, 0.0);
+    widgets::hairline(p, r.x + PAD, r.y + y, CONTENT_W);
 }
 
 // ---- pointer ---------------------------------------------------------------------------------
@@ -372,7 +369,7 @@ mod tests {
         assert_eq!(s.synopsis, s.eyebrow + EYEBROW_LEAD + G_SYNOPSIS);
         assert_eq!(s.tagline, s.synopsis + b.synopsis + G_TAGLINE);
         assert_eq!(s.rule, s.tagline + b.tagline + G_RULE);
-        assert_eq!(s.footer, s.rule + RULE_H + G_FOOTER);
+        assert_eq!(s.footer, s.rule + widgets::HAIRLINE_H + G_FOOTER);
         assert_eq!(
             s.h,
             s.footer + KeyHint::height() + KeyHint::pad_below(),
@@ -380,7 +377,7 @@ mod tests {
         );
         assert_eq!(
             s.h - (s.footer + KeyHint::height()),
-            s.footer - (s.rule + RULE_H),
+            s.footer - (s.rule + widgets::HAIRLINE_H),
             "which is the same air the rule opens above it — the hint is centred in that band"
         );
         // the whole point of the mock's shape: it fits, with room to spare
@@ -406,7 +403,7 @@ mod tests {
         );
         assert_eq!(
             s.h,
-            PAD + EYEBROW_LEAD + G_SYNOPSIS + b.synopsis + G_TAGLINE + b.tagline + G_RULE + RULE_H
+            PAD + EYEBROW_LEAD + G_SYNOPSIS + b.synopsis + G_TAGLINE + b.tagline + G_RULE + widgets::HAIRLINE_H
                 + G_FOOTER + KeyHint::height() + KeyHint::pad_below(),
             "the panel is exactly eyebrow · prose · tagline · rule · footer"
         );

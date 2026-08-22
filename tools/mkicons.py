@@ -115,14 +115,16 @@ def badge_ink(fill: str) -> str:
     return "#1a1204" if (lum + 0.05) / 0.05 > 1.05 / (lum + 0.05) else "#f7fafc"
 
 
-def draw_badge(tile: Image.Image, text: str, fill: str, repo: Path) -> int:
-    """Stamp a full-bleed bottom bar carrying `text`. Returns the bar's height in pixels.
+def draw_badge(tile: Image.Image, text: str, fill: str, repo: Path, bar: int) -> None:
+    """Stamp a full-bleed bottom bar of height `bar` carrying `text`.
+
+    The height comes from the CALLER, which already solved it for the wordmark lift — one
+    derivation, so the drawn bar and the lift cannot move independently.
 
     Drawn at the tile's OWN size — never scaled from a larger master — because at 80 px the bar is
     18 px tall and the glyphs about 10, and a 4x downsample of either is a smear.
     """
     n = tile.size[0]
-    bar = max(1, round(n * BADGE_BAR))
     cap = max(1, round(bar * BADGE_CAP))
     face = repo / BADGE_FONT
     if not face.exists():
@@ -151,7 +153,6 @@ def draw_badge(tile: Image.Image, text: str, fill: str, repo: Path) -> int:
     tx = round((n - (x1 - x0)) / 2) - x0
     ty = round(n - bar + (bar - (y1 - y0)) / 2) - y0
     d.text((tx, ty), text, font=f, fill=badge_ink(fill))
-    return bar
 
 
 def ink_bbox(a: np.ndarray, bg: np.ndarray, tol: int = 40) -> tuple:
@@ -313,7 +314,10 @@ def main() -> int:
         tile = Image.new("RGB", (n, n), tuple(bg))
         tile.paste(scaled, (round(-left), round(-upper) - bar // 2))
         if badge:
-            draw_badge(tile, badge, badge_fill, repo)
+            # `bar` is already solved above for the wordmark lift; pass it rather than
+            # letting `draw_badge` re-derive it, or the drawn bar and the lift can move
+            # independently when BADGE_BAR's rounding changes.
+            draw_badge(tile, badge, badge_fill, repo, bar)
         out = out_dir / name
         tile.save(out, optimize=True)
         w, h = round(ink_w * scale), round(ink_h * scale)

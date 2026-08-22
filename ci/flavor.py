@@ -50,7 +50,7 @@ def app_id(flavor: str) -> str:
     return STABLE_ID if flavor == "stable" else f"{STABLE_ID}.{flavor}"
 
 
-def appinfo_for(flavor: str, appinfo: dict | None = None) -> dict:
+def appinfo_for(flavor: str) -> dict:
     """The tracked `pkg/appinfo.json`, re-pointed at `flavor`. Identity when flavor == stable.
 
     Only `id` and `title` move. The icon FIELDS deliberately do not: they name `icon.png` and
@@ -59,7 +59,7 @@ def appinfo_for(flavor: str, appinfo: dict | None = None) -> dict:
     is packaged under. `ci/check-package.py` grades the payload by basename, and appinfo's own
     fields have to match what is in the box.
     """
-    a = dict(json.loads((ROOT / "pkg/appinfo.json").read_text()) if appinfo is None else appinfo)
+    a = dict(json.loads((ROOT / "pkg/appinfo.json").read_text()))
     if flavor == "stable":
         return a
     a["id"] = app_id(flavor)
@@ -160,6 +160,26 @@ def _selftest() -> int:
         goal_name = goal.group(1)
     check(goal_name == "all",
           f"a bare `make` builds the binary (default goal is {goal_name!r}, want 'all')")
+
+    # THE RUNTIME ROOT, the last flavour rule spelled in two languages with nothing comparing them.
+    # `Makefile`'s RUNDIR and `paths::resolve_runtime_dir` must agree that stable is bare /tmp and a
+    # flavour is /tmp/<app id>. On a divergence the APP writes its triggers, its FIFO and its three
+    # logs into one root while `tests/run.py`, `tv-session.sh`, `crash-report.sh` and
+    # `stream-screen.py` read the other — both sides silent, and every assertion downstream reports
+    # "no line found", which this repository documents as indistinguishable from a total
+    # regression. It cannot be caught on the television either: the harness's `install:` check can
+    # only fire once it has found the log it is looking for.
+    mk_rundir = re.search(
+        r"(?m)^RUNDIR\s*=\s*\$\(if \$\(filter stable,\$\(FLAVOR\)\),(\S+),(\S+)\)", mk)
+    check(mk_rundir is not None
+          and mk_rundir.group(1) == "/tmp"
+          and mk_rundir.group(2) == "/tmp/$(APPID)",
+          "Makefile RUNDIR: stable is bare /tmp, a flavour is /tmp/<app id>")
+    check('const DEFAULT_RUNTIME_DIR: &str = "/tmp"' in rust
+          and "if app_id == STABLE_APP_ID {" in rust
+          and "return PathBuf::from(DEFAULT_RUNTIME_DIR);" in rust
+          and "Path::new(DEFAULT_RUNTIME_DIR).join(app_id)" in rust,
+          "paths::resolve_runtime_dir spells the same rule as the Makefile's RUNDIR")
 
     print()
     for f in fails:
