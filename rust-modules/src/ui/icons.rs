@@ -171,6 +171,43 @@ pub enum Icon {
     Crowd,
 }
 
+/// **Where a mark's INK sits inside its 24-unit viewBox**, as `(left, right)` fractions — and
+/// [`band`] below, the vertical half of the same question.
+///
+/// Here rather than in the screens because it is a property of the ASSET. Two screens had already
+/// transcribed it independently and in two different shapes — `player_hud`'s transport slot carried
+/// an `(l, r)` tuple per glyph so the gap after the elapsed clock is measured to ink rather than to
+/// box, and `home`'s hero pager carried a single leading bearing for `chevron.svg` — with nothing in
+/// either file pointing back at the `.svg` whose numbers they are. `assets/icons/*.svg` is exactly
+/// the kind of file that gets re-drawn (this module's own doc invites it), and a re-draw moved both
+/// of those silently: no compile error, no test.
+///
+/// Default `(0.0, 1.0)` is "ink fills the box", which is what an unmeasured mark is assumed to do
+/// and what every caller wanted before any of this existed.
+pub(crate) const fn ink_x(id: Icon) -> (f32, f32) {
+    match id {
+        Icon::Pause => (7.0 / 24.0, 17.0 / 24.0),
+        Icon::Play => (6.0 / 24.0, 20.0 / 24.0),
+        Icon::Rewind | Icon::FastForward => (2.6 / 24.0, 21.4 / 24.0),
+        Icon::Chevron => (7.5 / 24.0, 16.5 / 24.0),
+        _ => (0.0, 1.0),
+    }
+}
+
+/// A mark's ink HEIGHT as a fraction of its viewBox. The transport family — rewind, pause,
+/// fast-forward — is authored to one 14-unit band precisely so a small player HUD never shifts
+/// weight when the state flips, and `play.svg` is the one member that is NOT: it spans y=4..20, so
+/// 16 units, because it predates that slot and is worn elsewhere at its own size. A caller drawing
+/// the family in one slot scales by `band(Pause) / band(id)` and the odd one out stops being the
+/// player HUD's private problem.
+pub(crate) const fn band(id: Icon) -> f32 {
+    match id {
+        Icon::Pause | Icon::Rewind | Icon::FastForward => 14.0 / 24.0,
+        Icon::Play => 16.0 / 24.0,
+        _ => 1.0,
+    }
+}
+
 fn src(id: Icon) -> &'static str {
     match id {
         Icon::Cc => include_str!("../../../assets/icons/cc.svg"),
@@ -281,5 +318,33 @@ pub(crate) fn draw(p: Painter, id: Icon, r: Rect, tint: [f32; 4]) {
             r.h,
         );
         p.tex(tex, r, 0.0, tint);
+    }
+}
+
+#[cfg(test)]
+mod ink_tests {
+    use super::*;
+
+    /// **The transport family shares one band, and `Play` is the documented exception.** This is
+    /// the invariant `player_hud`'s slot depends on — it scales every mark by
+    /// `band(Pause) / band(id)` so the read-out never shifts weight as the state flips — and the
+    /// way it breaks is a FIFTH transport glyph added later, authored to its own box, with nothing
+    /// to notice. A `Skip +10` chevron pair is the obvious next one.
+    #[test]
+    fn the_transport_family_is_one_band() {
+        let b = band(Icon::Pause);
+        for id in [Icon::Rewind, Icon::FastForward] {
+            assert_eq!(band(id), b, "every travel mark must share pause's band");
+        }
+        assert_ne!(band(Icon::Play), b, "play.svg is the off-band member; the scale exists for it");
+    }
+
+    /// Ink bounds are ordered and inside the viewBox — the shape every caller assumes.
+    #[test]
+    fn ink_bounds_are_sane() {
+        for id in [Icon::Pause, Icon::Play, Icon::Rewind, Icon::FastForward, Icon::Chevron, Icon::Check] {
+            let (l, r) = ink_x(id);
+            assert!((0.0..1.0).contains(&l) && r > l && r <= 1.0, "ink_x {l}..{r} out of shape");
+        }
     }
 }

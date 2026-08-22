@@ -3679,10 +3679,7 @@ pub(crate) fn focus_is_card() -> bool {
     // would begin a tvOS press on a tile nobody can see and commit it on release. True of ALL
     // THREE of this page's panels — neither alert has a list to route the press to, and About
     // dismisses on it.
-    if crate::ui::alt_sources::is_open()
-        || crate::ui::about_panel::is_open()
-        || crate::ui::tracks_panel::is_open()
-    {
+    if panel_open() {
         return false;
     }
     // The episode filmstrip's METADATA block is not a card: it is a link into another page, so it
@@ -3731,14 +3728,22 @@ pub(crate) fn focus_is_card() -> bool {
 /// `press::scale()` in for the focused control and — until a press was armed here — could only ever
 /// read it as 1.0.
 ///
-/// The three panels close it for [`focus_is_card`]'s reason, restated rather than shared because the
-/// two answer about different halves of the page: nothing behind an open panel is pressable, so an
-/// OK held over one must not dip a control nobody can see.
-pub(crate) fn focus_is_ctl() -> bool {
-    if crate::ui::alt_sources::is_open()
+/// The three panels close it for [`focus_is_card`]'s reason — the SAME reason, so it is now the same
+/// call ([`panel_open`]) rather than the same three-term OR written out twice. The guard is not
+/// about which half of the page is asking; it is the one fact that a modal panel owns the press.
+/// **A modal panel owns the press.** The page can have three of them up — "Also available", About,
+/// and the track picker — and while any is open nothing behind it is pressable, so an OK held over
+/// one must not dip a card or a control nobody can see. One predicate because it is one fact:
+/// [`focus_is_card`] and [`focus_is_ctl`] both open with it, and a fourth panel added to one of two
+/// hand-written ORs would have been a silent half-fix.
+pub(crate) fn panel_open() -> bool {
+    crate::ui::alt_sources::is_open()
         || crate::ui::about_panel::is_open()
         || crate::ui::tracks_panel::is_open()
-    {
+}
+
+pub(crate) fn focus_is_ctl() -> bool {
+    if panel_open() {
         return false;
     }
     view().section == 0

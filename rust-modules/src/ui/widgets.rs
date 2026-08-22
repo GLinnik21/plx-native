@@ -3355,13 +3355,6 @@ pub(crate) struct TabStrip {
     foc: Capsule,
 }
 
-/// Which of the app's two tab strips a [`TabStrip`] is drawing, and everything that differs between
-/// them. One value rather than the `(plated, glass)` pair it replaces, because that pair could spell
-/// a combination that does not exist — a plated strip has no track to be glass — and because the
-/// focus POP belongs to exactly one of the two and now cannot be handed to the other by mistake.
-///
-/// The split is the design system's own (`components/chrome/TabStrip.jsx`), which gates every
-/// press and transform handler it writes on `plated`.
 /// How a strip's SELECTION plate answers a change of selection. The FOCUS capsule always travels —
 /// it is the ring following your thumb, and the path between two pills is the information.
 ///
@@ -3384,6 +3377,13 @@ pub(crate) enum SelMark {
     Lands,
 }
 
+/// Which of the app's two tab strips a [`TabStrip`] is drawing, and everything that differs between
+/// them. One value rather than the `(plated, glass)` pair it replaces, because that pair could spell
+/// a combination that does not exist — a plated strip has no track to be glass — and because the
+/// focus POP belongs to exactly one of the two and now cannot be handed to the other by mistake.
+///
+/// The split is the design system's own (`components/chrome/TabStrip.jsx`), which gates every
+/// press and transform handler it writes on `plated`.
 #[derive(Clone, Copy)]
 pub(crate) enum TabGround {
     /// **The shared top tab bar**, inside its own track. The pills have no ground of their own and
@@ -6883,7 +6883,25 @@ mod tests {
 
     /// Ink CONSERVATION across a travel: the two capsules only ever have one pill's worth of coverage
     /// between them, so no frame can ink two labels toward `ACCENT_INK` at once. This is what bounds
-    /// the one transient the design accepts — a partly covered pill inks its WHOLE label — to half a
+    /// the one transient the design accepts — a partly covered pill inks its WHOLE label — to half
+    /// a label on each of two pills for the length of one travel, rather than a whole row dimming.
+    #[test]
+    fn a_travel_never_inks_more_than_one_pills_worth_of_label() {
+        let _g = serial_for_motion();
+        let w = widths_for(12);
+        let mut s = TabStrip::new();
+        let span = |i: usize| (i < w.len()).then(|| span_of(&w, i));
+        for _ in 0..90 {
+            s.update(-1, 4, span, SelMark::Travels, DT);
+        }
+        for f in 0..90 {
+            s.update(-1, 5, span, SelMark::Travels, DT);
+            let total: f32 = (0..w.len()).map(|i| s.mixes(span_of(&w, i)).0).sum();
+            assert!(total <= 1.0 + 1e-3, "frame {f}: {total} pills' worth of focus ink is lit at once");
+            assert!(total > 0.0, "frame {f}: the focus ink went out entirely mid-travel");
+        }
+    }
+
     /// **The season strip's selection LANDS; every other strip's travels.** Both halves, because the
     /// rule is a difference between two callers and a regression would be one call site copied onto
     /// the other.
@@ -6928,23 +6946,6 @@ mod tests {
         );
     }
 
-    /// label on each of two pills for the length of one travel, rather than a whole row dimming.
-    #[test]
-    fn a_travel_never_inks_more_than_one_pills_worth_of_label() {
-        let _g = serial_for_motion();
-        let w = widths_for(12);
-        let mut s = TabStrip::new();
-        let span = |i: usize| (i < w.len()).then(|| span_of(&w, i));
-        for _ in 0..90 {
-            s.update(-1, 4, span, SelMark::Travels, DT);
-        }
-        for f in 0..90 {
-            s.update(-1, 5, span, SelMark::Travels, DT);
-            let total: f32 = (0..w.len()).map(|i| s.mixes(span_of(&w, i)).0).sum();
-            assert!(total <= 1.0 + 1e-3, "frame {f}: {total} pills' worth of focus ink is lit at once");
-            assert!(total > 0.0, "frame {f}: the focus ink went out entirely mid-travel");
-        }
-    }
 
     /// Every RESTING state a strip-driven pill can be in must be the look it replaced, to the bit —
     /// this is the whole reason the mix lerps between the same ink roles the boolean arms pick from
