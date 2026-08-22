@@ -33,6 +33,7 @@ shipped fonts.
      Format 0's subtable length is a uint16, so it holds at most (65535-14)//6 = 10920 pairs; we
      keep the largest-magnitude pairs between glyphs the font can actually address from cmap.
 """
+import math
 import sys
 from pathlib import Path
 
@@ -154,6 +155,101 @@ def add_legacy_kern(font: TTFont) -> tuple:
     return len(kept), len(usable)
 
 
+
+# --- 4. Music notes, synthesized ------------------------------------------------------------
+#
+# **Inter has no U+2669-U+266C, and neither does the television.** Subtitle convention wraps a SUNG
+# line in a music note, so every song lyric in a library rendered as two `.notdef` tofu boxes —
+# photographed on the dev set 2026-08-22, in Family Guy's theme, as literal "NO GLYPH" marks either
+# side of the lyric. It is not a subsetting mistake to undo: Inter never had the range (2849
+# codepoints, none of them these), and `/usr/share/fonts/DroidSans.ttf` on the TV has 911 and none
+# either, so no fallback chain to a system face fixes it.
+#
+# Dropping the note instead of drawing it is the wrong trade: in SDH subtitles the note is the mark
+# that says "this is sung rather than spoken", which is precisely the information a deaf viewer is
+# reading subtitles for. So the four codepoints are DRAWN here, in-house, rather than merged from
+# another font — that keeps one licence (Inter, OFL) instead of two, and keeps the shipped face
+# reproducible from this one script.
+#
+# They are deliberately simple: a notehead, a stem, and a flag or beam. At the size a subtitle
+# actually renders (~28 px on a 1080p panel) the flag is about four pixels, so fine curvature is
+# invisible and legibility is entirely carried by the notehead-plus-stem silhouette.
+
+def _ellipse(pen, cx, cy, rx, ry, tilt=0.0, n=8):
+    """A closed ellipse, counter-clockwise, as `n` quadratic segments."""
+    k = 1.0 / math.cos(math.pi / n)  # control-point radius that makes a quadratic hit the arc
+    c, s = math.cos(tilt), math.sin(tilt)
+
+    def pt(a, r=1.0):
+        x, y = rx * r * math.cos(a), ry * r * math.sin(a)
+        return (round(cx + x * c - y * s), round(cy + x * s + y * c))
+
+    pen.moveTo(pt(0.0))
+    for i in range(n):
+        a0, a1 = 2 * math.pi * i / n, 2 * math.pi * (i + 1) / n
+        pen.qCurveTo(pt((a0 + a1) / 2, k), pt(a1))
+    pen.closePath()
+
+
+def _rect(pen, x0, y0, x1, y1):
+    """A closed rectangle, counter-clockwise, to match `_ellipse`'s winding."""
+    pen.moveTo((x0, y0))
+    pen.lineTo((x1, y0))
+    pen.lineTo((x1, y1))
+    pen.lineTo((x0, y1))
+    pen.closePath()
+
+
+def add_music_notes(font: TTFont) -> int:
+    """Draw U+2669-U+266C into `font` and map them. Returns how many were added."""
+    from fontTools.pens.ttGlyphPen import TTGlyphPen
+
+    glyf, hmtx = font["glyf"], font["hmtx"]
+    HEAD_RX, HEAD_RY, TILT = 265, 195, math.radians(-20)
+    STEM_W, STEM_TOP, HEAD_CY = 80, 1350, 230
+
+    def eighth(pen, x):
+        _ellipse(pen, x + 300, HEAD_CY, HEAD_RX, HEAD_RY, TILT)
+        _rect(pen, x + 520, HEAD_CY, x + 520 + STEM_W, STEM_TOP)
+
+    built = {}
+
+    pen = TTGlyphPen(None)                                  # single note
+    eighth(pen, 0)
+    pen.moveTo((600, STEM_TOP))                             # the flag, hung off the stem's edge
+    pen.qCurveTo((905, 1245), (830, 845))
+    pen.qCurveTo((880, 1130), (600, 1165))
+    pen.closePath()
+    built["uni266A"] = (pen.glyph(), 1000)
+
+    pen = TTGlyphPen(None)                                  # beamed pair
+    eighth(pen, 0)
+    eighth(pen, 780)
+    _rect(pen, 520, STEM_TOP - 150, 1380, STEM_TOP)         # the beam joining the two stems
+    built["uni266B"] = (pen.glyph(), 1780)
+
+    order = font.getGlyphOrder()
+    for name, (g, adv) in built.items():
+        if name not in order:
+            order = order + [name]
+        glyf[name] = g
+        hmtx[name] = (adv, 0)
+    font.setGlyphOrder(order)
+
+    # 2669 (quarter) and 266C (beamed sixteenths) reuse the two shapes rather than getting their own.
+    # As a SUBTITLE marker these are interchangeable — the note says "sung", and no player draws the
+    # rhythmic distinction — so two outlines cover the range a caption file can actually contain.
+    mapping = {0x2669: "uni266A", 0x266A: "uni266A", 0x266B: "uni266B", 0x266C: "uni266B"}
+    n = 0
+    for t in font["cmap"].tables:
+        if t.isUnicode():
+            for cp, name in mapping.items():
+                if cp not in t.cmap:
+                    t.cmap[cp] = name
+                    n += 1
+    return n
+
+
 def main() -> int:
     if len(sys.argv) != 2:
         return print(__doc__) or 2
@@ -170,10 +266,12 @@ def main() -> int:
             n.setName(val, nid, 1, 0, 0)
         digits = freeze_tabular_figures(f)
         kept, total = add_legacy_kern(f)
+        notes = add_music_notes(f)
         dst = repo / "pkg" / out
         f.save(dst)
         print(f"  {out:16s} wght {wght} opsz {OPSZ} | {digits} tabular digits frozen "
-              f"| kern {kept}/{total} pairs | {dst.stat().st_size // 1024} KB")
+              f"| kern {kept}/{total} pairs | {notes} note mappings "
+              f"| {dst.stat().st_size // 1024} KB")
     print("\nRe-run tools/font-hint-audit.py — these are new files and the ladder must be re-confirmed.")
     return 0
 

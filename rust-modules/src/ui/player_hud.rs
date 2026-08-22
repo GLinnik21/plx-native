@@ -1056,24 +1056,39 @@ pub(crate) fn draw_hud(slot: ControlSlot, busy: Busy, focus: i32, btn: i32, tab:
         // must not out-weigh the pause it replaces, and the DS's own rule for this family is that
         // the slot never shifts weight as the state flips.
         const PLAY_BAND: f32 = 14.0 / 16.0;
-        let need = isz + 6.0;
-        let right_ok = el_r + 14.0 + need < if rem_shown { rem_l - 8.0 } else { sx + sw };
-        let gx = if right_ok { el_r + 14.0 } else { el_l - 14.0 - need };
-        let icy = ty + crate::text::text_height(theme::size::CAPTION, 1) * 0.5; // vertical center of the clock line
-        let glyph = match mark {
-            TransportMark::Pause => Some(crate::ui::icons::Icon::Pause),
-            TransportMark::Play => Some(crate::ui::icons::Icon::Play),
-            TransportMark::Rewind => Some(crate::ui::icons::Icon::Rewind),
-            TransportMark::FastForward => Some(crate::ui::icons::Icon::FastForward),
-            TransportMark::Working | TransportMark::None => None,
+        // **The gap is measured to the INK, not to the box.** Every member of this family carries a
+        // different left bearing inside its 24-unit viewBox — pause's bars open at x=7, play's
+        // triangle at x=6, the travel marks at x=2.6 — so ONE box origin gives each state a
+        // visibly different gap after the clock, and the slot appears to twitch as the state flips.
+        // Measuring to the ink makes the gap the eye sees a single number. It is also what the old
+        // spacing really was: a box placed 14px out put pause's ink at 14 + 7/24*30 ~= 23px, which
+        // is the gap that read as too wide.
+        const GAP: f32 = 14.0;
+        // (left, right) ink bounds as a fraction of the viewBox, per glyph.
+        let (glyph, ink) = match mark {
+            TransportMark::Pause => (Some(crate::ui::icons::Icon::Pause), (7.0 / 24.0, 17.0 / 24.0)),
+            TransportMark::Play => (Some(crate::ui::icons::Icon::Play), (6.0 / 24.0, 20.0 / 24.0)),
+            TransportMark::Rewind => (Some(crate::ui::icons::Icon::Rewind), (2.6 / 24.0, 21.4 / 24.0)),
+            TransportMark::FastForward => {
+                (Some(crate::ui::icons::Icon::FastForward), (2.6 / 24.0, 21.4 / 24.0))
+            }
+            TransportMark::Working | TransportMark::None => (None, (0.0, 1.0)),
         };
-        // centred in the SAME slot whatever the box measures, so the compensated play mark sits
-        // where the other three do rather than drifting left by the width it gave up.
+        let icy = ty + crate::text::text_height(theme::size::CAPTION, 1) * 0.5; // vertical center of the clock line
         let bs = if mark == TransportMark::Play { isz * PLAY_BAND } else { isz };
-        let bx = gx + (isz - bs) * 0.5;
+        // **Rewind sits to the LEFT of the clock; everything else to the right.** The mark points
+        // the way the playhead is travelling, so `<<` after the time would point back at the number
+        // it is leaving. The right-hand placement still falls back to the left when the remaining
+        // label or the screen edge crowds it, which is the case this branch was originally for.
+        let need = (ink.1 - ink.0) * bs + 6.0;
+        let room_right = el_r + GAP + need < if rem_shown { rem_l - 8.0 } else { sx + sw };
+        let on_left = mark == TransportMark::Rewind || !room_right;
+        // Placed by ink on whichever side it lands: the trailing edge sits GAP before the clock's
+        // left, or the leading edge GAP after the clock's right.
+        let bx = if on_left { el_l - GAP - ink.1 * bs } else { el_r + GAP - ink.0 * bs };
         match glyph {
             Some(id) => crate::ui::icons::draw(p, id, Rect::new(bx, icy - bs * 0.5, bs, bs), white),
-            None => Spinner::new(gx + isz * 0.5, icy, Spinner::R_INLINE).phase(now).tint(white).draw(&e, p),
+            None => Spinner::new(bx + isz * 0.5, icy, Spinner::R_INLINE).phase(now).tint(white).draw(&e, p),
         }
     }
     } // end `if transport`
