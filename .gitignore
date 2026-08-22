@@ -100,3 +100,14 @@ pkg/auth.json
 pkg/PlxNative.app/
 pkg/PlxNative-*.zip
 pkg/PlxNative-README.md
+
+# Generated test media (tests/fixtures/make_fixtures.py, `make fixtures`). The default output
+# root is ~/plxnative-fixtures and the generator REFUSES an --out anywhere inside this repo, so
+# these patterns should never match anything — they are here for the case where somebody points
+# a build at the tree by hand or the guard is ever weakened. Media is ~2.5 GB per set and is
+# reproducible from the script, so none of it belongs in a public repository's history.
+tests/fixtures/out/
+tests/fixtures/**/*.mkv
+tests/fixtures/**/*.mp4
+tests/fixtures/**/*.sup
+tests/fixtures/fixtures.json
