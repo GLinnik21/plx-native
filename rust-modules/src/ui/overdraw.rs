@@ -121,6 +121,17 @@ mod imp {
         CLIP.with(|f| f.set(box_));
     }
 
+    /// Is this class masked out? The REFUSAL half of [`gate`], with no booking.
+    ///
+    /// Exists for one caller: a surface whose mask leg has to be decided EARLY (before it does
+    /// bookkeeping the leg is meant to remove) but whose ledger entry must be booked LATE, after
+    /// every path that returns without drawing. Asking `gate` twice would double-count; asking it
+    /// once, early, books quads that never rasterize.
+    #[inline]
+    pub(crate) fn masked(c: Class) -> bool {
+        c as usize != Class::Blur as usize && MASK.with(|f| f.get()) & (1 << (c as usize)) != 0
+    }
+
     /// Should this draw be REFUSED, and if not, book it. One call per primitive, immediately after
     /// that primitive's own `gfx::culled` test so a culled quad is never counted.
     #[inline]
@@ -222,11 +233,16 @@ impl std::fmt::Display for Nam {
 }
 
 #[cfg(feature = "devtriggers")]
-pub(crate) use imp::{frame_end, gate, note_px, set_clip, set_ledger, set_mask};
+pub(crate) use imp::{frame_end, gate, masked, note_px, set_clip, set_ledger, set_mask};
 
 #[cfg(not(feature = "devtriggers"))]
 #[inline]
 pub(crate) fn gate(_c: Class, _x: f32, _y: f32, _w: f32, _h: f32) -> bool {
+    false
+}
+#[cfg(not(feature = "devtriggers"))]
+#[inline]
+pub(crate) fn masked(_c: Class) -> bool {
     false
 }
 #[cfg(not(feature = "devtriggers"))]

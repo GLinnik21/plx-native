@@ -56,7 +56,11 @@ FLAVOR=""
 _argv=()
 while [ $# -gt 0 ]; do
   case "$1" in
-    --flavor)   FLAVOR="${2:-}"; shift 2 ;;
+    # `shift 2` with only one positional left is a NO-OP that returns 1, and neither script sets
+    # -e — so a bare trailing `--flavor` (a shell that ate the value, a tab-completion stop) left
+    # $# unchanged and this loop spun at 100% CPU forever, printing nothing. Shift what is
+    # actually there instead.
+    --flavor)   FLAVOR="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
     --flavor=*) FLAVOR="${1#*=}"; shift ;;
     *)          _argv+=("$1"); shift ;;
   esac
@@ -210,7 +214,16 @@ ensure_binary() {
   # THE SAME flavour that was resolved above. A deploy that fell back to the Makefile default
   # would write install A's directory and then launch install B below — SAM's stale-running no-op,
   # after which every assertion here grades the other app's log.
-  make -C "$REPO" FLAVOR="$FLAVOR" deploy >/dev/null 2>&1
+  # CAPTURED, not discarded. `release-guard` refuses a dev build on the stable id and explains
+  # itself in three lines including the ALLOW_DEV_ON_STABLE=1 hatch — all of which went to
+  # /dev/null, after which the md5 still differed and the operator got two diagnoses that are both
+  # wrong for that case ("the TV may have slept", "run make install"). Both fail identically on a
+  # refusal, so the refusal has to reach them.
+  if ! _deploy_out=$(make -C "$REPO" FLAVOR="$FLAVOR" deploy 2>&1); then
+    bad "make FLAVOR=$FLAVOR deploy failed — its own words follow"
+    printf '%s\n' "$_deploy_out" | sed 's/^/    /'
+    return 1
+  fi
   t=$(tvq "md5sum $APPDIR/plxnative" | cut -d' ' -f1)
   # a standby can truncate an scp mid-flight, so verify rather than trust
   [ "$l" = "$t" ] && { ok "deployed + md5 verified"; return 0; }

@@ -43,7 +43,11 @@ FLAVOR=""
 _argv=()
 while [ $# -gt 0 ]; do
   case "$1" in
-    --flavor)   FLAVOR="${2:-}"; shift 2 ;;
+    # `shift 2` with only one positional left is a NO-OP that returns 1, and neither script sets
+    # -e — so a bare trailing `--flavor` (a shell that ate the value, a tab-completion stop) left
+    # $# unchanged and this loop spun at 100% CPU forever, printing nothing. Shift what is
+    # actually there instead.
+    --flavor)   FLAVOR="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
     --flavor=*) FLAVOR="${1#*=}"; shift ;;
     *)          _argv+=("$1"); shift ;;
   esac

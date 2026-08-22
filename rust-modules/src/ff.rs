@@ -521,7 +521,6 @@ unsafe fn dovi_conf(cp: *const AVCodecParameters) -> Option<AVDOVIDecoderConfigu
     }
     None
 }
-#[inline]
 /// The container's own name for this track — `title` (Matroska and most formats), else `name`
 /// (MP4's per-track `udta` name box, which is what FFmpeg's mov demuxer exposes it as).
 ///
@@ -552,7 +551,7 @@ unsafe fn stream_name(s: *mut AVStream) -> String {
 }
 
 /// Every track's container name, by TYPE, in file order — the two lists
-/// `metadata::audio_render_ordinal` / `metadata::sub_render_ordinal` index into.
+/// `metadata::audio_ordinal` / `metadata::sub_render_ordinal` index into.
 ///
 /// File order is the join, and it is the mapping this file already relies on twice
 /// (`nth_audio_stream`, and the subtitle enumeration that feeds `desired_sub_idx`). It is worth
@@ -574,6 +573,7 @@ unsafe fn track_names(fmt: *mut AVFormatContext) -> (Vec<String>, Vec<String>) {
     (audio, subs)
 }
 
+#[inline]
 unsafe fn stream_index(s: *mut AVStream) -> c_int {
     *((s as *const u8).add(OFF_STREAM_INDEX) as *const c_int)
 }

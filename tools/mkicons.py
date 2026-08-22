@@ -241,6 +241,18 @@ def main() -> int:
     if not targets:
         raise SystemExit(f"--sizes={want} selects none of {[n for _, n in TARGETS]}")
     if splash:
+        # THE SPLASH IS SHARED, so it is pinned to `pkg/` and never follows `--out-dir`. The
+        # Makefile's `APP_FILES` stages `pkg/splash.png` unconditionally for every flavour — only
+        # the descriptor and the icons are flavour-dependent — and `docs/two-installs.md` lists it
+        # among the resources two installs share. Written into `pkg/dev/` it was a file nothing
+        # would ever ship, while the operator watched it appear and believed the debug install's
+        # splash had changed. Refusing is better than writing a decoy.
+        if out_dir != repo / "pkg":
+            raise SystemExit(
+                "--splash cannot be combined with --out-dir: the splash is SHARED by every "
+                "flavour (the Makefile stages pkg/splash.png for all of them), so a per-flavour "
+                "copy would never be packaged. Run --splash on its own."
+            )
         write_splash(Path(splash), out_dir / "splash.png")
     src = Image.open(args[0]).convert("RGB")
     a = np.asarray(src).astype(int)
