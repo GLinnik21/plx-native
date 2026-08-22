@@ -334,22 +334,25 @@ long acb_create(const char *appId, int playerType) {
      * line anywhere. The near half is fixed (`engine::acb_init_acb` now passes
      * `paths::app_id()`, read from the install directory, which cannot be absent); refusing here
      * rather than guessing is what keeps the pair readable together. */
-    if (g_acb && appId) {
-        acb.initialize(g_acb, playerType, appId, acb_cb);
-    } else if (g_acb) {
-        /* AND HAND BACK NOTHING. Returning the live handle here made the refusal half-done: the
-         * Rust side stores `ACB_OK = acb != 0`, so `acb_bind`, `acb_send_video_data` and
-         * `acb_send_atmos` would all then run against an object the library was never told about
-         * — strictly worse than the fallback id this replaced, which at least talked to an
-         * initialized ACB. Zeroing it makes every `if (!g_acb) return;` guard below do its job.
-         * The handle itself is leaked because this build resolves no `AcbAPI_destroy` (see the
-         * dlsym table's note); one leaked handle on a path that cannot be reached — `app_id()`
-         * cannot be absent — is the right trade against calling into uninitialized memory. */
-        if (elogf) {
-            fprintf(elogf, "acb: no appId — NOT initialized and NOT returned; video will not bind\n");
-            fflush(elogf);
+    if (g_acb) {
+        if (appId) {
+            acb.initialize(g_acb, playerType, appId, acb_cb);
+        } else {
+            /* AND HAND BACK NOTHING. Returning the live handle here made the refusal half-done:
+             * the Rust side stores `ACB_OK = acb != 0`, so `acb_bind`, `acb_send_video_data` and
+             * `acb_send_atmos` would all then run against an object the library was never told
+             * about — strictly worse than the fallback id this replaced, which at least talked to
+             * an initialized ACB. Zeroing it makes every `if (!g_acb) return;` guard below do its
+             * job. The handle itself is leaked because this build resolves no `AcbAPI_destroy`
+             * (see the dlsym table's note); one leaked handle on a path that cannot be reached —
+             * `app_id()` cannot be absent — is the right trade against calling into uninitialized
+             * memory. */
+            if (elogf) {
+                fprintf(elogf, "acb: no appId — NOT initialized and NOT returned; video will not bind\n");
+                fflush(elogf);
+            }
+            g_acb = 0;
         }
-        g_acb = 0;
     }
     return g_acb;
 }

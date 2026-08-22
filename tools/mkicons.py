@@ -136,7 +136,8 @@ def draw_badge(tile: Image.Image, text: str, fill: str, repo: Path) -> int:
     size = cap
     for _ in range(12):
         f = ImageFont.truetype(str(face), size)
-        h = d.textbbox((0, 0), text, font=f)[3] - d.textbbox((0, 0), text, font=f)[1]
+        bbox = d.textbbox((0, 0), text, font=f)
+        h = bbox[3] - bbox[1]
         if h <= 0:
             break
         adj = round(size * cap / h)
@@ -319,9 +320,11 @@ def main() -> int:
         # Padding is graded against whatever actually bounds the mark. With a badge that is the gap
         # to the BAR, not to the tile edge — the old expression would have reported LG's >=5px rule
         # satisfied while the wordmark sat directly on the amber.
-        top_of_mark = round((n - bar) / 2) - h // 2
-        pad = min((n - w) // 2, top_of_mark, (n - bar) - (top_of_mark + h)) if badge \
-            else min((n - w) // 2, (n - h) // 2)
+        if badge:
+            top_of_mark = round((n - bar) / 2) - h // 2
+            pad = min((n - w) // 2, top_of_mark, (n - bar) - (top_of_mark + h))
+        else:
+            pad = min((n - w) // 2, (n - h) // 2)
         flag = "" if pad >= 5 else "   ** under LG's 5px minimum padding **"
         print(f"  {out.relative_to(repo)!s:24s} {n}x{n}  logo {w}x{h}"
               f"{f'  bar {bar}px' if badge else ''}  padding {pad}px{flag}")

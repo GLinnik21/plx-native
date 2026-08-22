@@ -77,10 +77,13 @@ PACKAGED_ID = staged[0]
 FLAVOR = next((f for f in flavor.FLAVORS if flavor.app_id(f) == PACKAGED_ID), None)
 check(FLAVOR is not None, f"the staged id is a known flavour ({PACKAGED_ID})")
 IS_STABLE = FLAVOR == "stable"
+# The staged payload directory — written down ONCE, here, because everything below reads through
+# it: the descriptor, the build-machine-path scan, the binary and the icons.
+PAYLOAD = APPS / PACKAGED_ID
 print(f"  -- grading the {FLAVOR or '?'} package: {PACKAGED_ID}")
 
 print("== version / id consistency ==")
-appinfo = json.loads((ROOT / f"ipkroot/data/usr/palm/applications/{PACKAGED_ID}/appinfo.json").read_text())
+appinfo = json.loads((PAYLOAD / "appinfo.json").read_text())
 # The tracked control file names the STABLE package; the flavoured one is assembled in memory by
 # `mkipk.py` at package time (as `Installed-Size` already was). Grade through the same transform,
 # rather than widening the equality into something that cannot fail.
@@ -141,7 +144,6 @@ HOSTPATH = re.compile(rb"(?:^|[^A-Za-z0-9/_.-])(/(?:Users|home)/[A-Za-z0-9_./+-]
 # identical on every CI runner, which is the reason releases must be BUILT by CI.
 ALLOWED_PATH = re.compile(rb"webos-ndk|^/home/runner/")
 
-PAYLOAD = APPS / PACKAGED_ID
 # A missing payload directory is a HARD failure, not an empty loop. `check` only ever prints for
 # something it was given, so an absent stage used to print nothing at all here — no ok, no FAIL —
 # and the section that exists to keep a maintainer's working directory out of three FFmpeg

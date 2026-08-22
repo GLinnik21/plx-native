@@ -57,6 +57,8 @@ pub(crate) const NCLASS: usize = 9;
 pub(crate) const NAMES: [&str; NCLASS] =
     ["ambient", "grad", "rect", "shadow", "card", "image", "text", "glass", "blur"];
 
+/// The dev arm: the real ledger and the real mask. Its release twin sits below, same names, same
+/// shape, doing nothing — and the `pub(crate) use` under it re-exports whichever one is compiled.
 #[cfg(feature = "devtriggers")]
 mod imp {
     use super::{Class, Nam, NAMES, NCLASS};
@@ -129,7 +131,7 @@ mod imp {
     /// once, early, books quads that never rasterize.
     #[inline]
     pub(crate) fn masked(c: Class) -> bool {
-        c as usize != Class::Blur as usize && MASK.with(|f| f.get()) & (1 << (c as usize)) != 0
+        c != Class::Blur && MASK.with(|f| f.get()) & (1 << (c as usize)) != 0
     }
 
     /// Should this draw be REFUSED, and if not, book it. One call per primitive, immediately after
@@ -141,25 +143,23 @@ mod imp {
         // reduced-resolution FBOs, so their authored-coordinate quad is meaningless here, and half
         // a masked chain would leave the panel sampling a stale texture rather than measuring
         // anything. The whole glass — chain included — is masked at `Class::Glass` instead.
-        if c as usize == Class::Blur as usize {
+        if c == Class::Blur {
             return false;
         }
         if MASK.with(|f| f.get()) & (1 << i) != 0 {
             return true;
         }
-        if ON.with(|f| f.get()) {
-            // A blur source pass draws the page a second time into a small target; its quads are
-            // not on the panel and would double every class in the ledger.
-            if !crate::gfx::blur_source_pass() {
-                let (mut x0, mut y0, mut x1, mut y1) = (x.max(0.0), y.max(0.0), (x + w).min(SCR_W), (y + h).min(SCR_H));
-                if let Some(cl) = CLIP.with(|f| f.get()) {
-                    x0 = x0.max(cl[0]);
-                    y0 = y0.max(cl[1]);
-                    x1 = x1.min(cl[2]);
-                    y1 = y1.min(cl[3]);
-                }
-                add(i, ((x1 - x0).max(0.0) * (y1 - y0).max(0.0)) as f64);
+        // A blur source pass draws the page a second time into a small target; its quads are not
+        // on the panel and would double every class in the ledger.
+        if ON.with(|f| f.get()) && !crate::gfx::blur_source_pass() {
+            let (mut x0, mut y0, mut x1, mut y1) = (x.max(0.0), y.max(0.0), (x + w).min(SCR_W), (y + h).min(SCR_H));
+            if let Some(cl) = CLIP.with(|f| f.get()) {
+                x0 = x0.max(cl[0]);
+                y0 = y0.max(cl[1]);
+                x1 = x1.min(cl[2]);
+                y1 = y1.min(cl[3]);
             }
+            add(i, ((x1 - x0).max(0.0) * (y1 - y0).max(0.0)) as f64);
         }
         false
     }
@@ -232,34 +232,40 @@ impl std::fmt::Display for Nam {
     }
 }
 
-#[cfg(feature = "devtriggers")]
-pub(crate) use imp::{frame_end, gate, masked, note_px, set_clip, set_ledger, set_mask};
+/// The release arm: every entry point is present, `#[inline]`, and does nothing — so a release
+/// binary carries neither the branch nor the counters, and every call site compiles unchanged.
+///
+/// A MODULE rather than seven `#[cfg(not(…))]` + `#[inline]` attribute pairs standing loose at
+/// file scope, which is the shape this repository has been bitten by twice: a function inserted
+/// between such a pair captures the attribute meant for its neighbour, nothing warns, and the only
+/// symptom is codegen (`ff.rs`'s `stream_index` lost its `#[inline]` exactly that way). One `cfg`
+/// on the module and one re-export cannot be split by an insertion, and the two arms now have the
+/// same shape as each other.
+#[cfg(not(feature = "devtriggers"))]
+mod imp {
+    use super::Class;
 
-#[cfg(not(feature = "devtriggers"))]
-#[inline]
-pub(crate) fn gate(_c: Class, _x: f32, _y: f32, _w: f32, _h: f32) -> bool {
-    false
+    #[inline]
+    pub(crate) fn gate(_c: Class, _x: f32, _y: f32, _w: f32, _h: f32) -> bool {
+        false
+    }
+    #[inline]
+    pub(crate) fn masked(_c: Class) -> bool {
+        false
+    }
+    #[inline]
+    pub(crate) fn note_px(_c: Class, _px: f64) {}
+    #[inline]
+    pub(crate) fn set_clip(_box_: Option<[f32; 4]>) {}
+    #[inline]
+    pub(crate) fn frame_end() {}
+    #[inline]
+    pub(crate) fn set_ledger(_on: bool) {}
+    #[inline]
+    pub(crate) fn set_mask(_spec: &str) {}
 }
-#[cfg(not(feature = "devtriggers"))]
-#[inline]
-pub(crate) fn masked(_c: Class) -> bool {
-    false
-}
-#[cfg(not(feature = "devtriggers"))]
-#[inline]
-pub(crate) fn note_px(_c: Class, _px: f64) {}
-#[cfg(not(feature = "devtriggers"))]
-#[inline]
-pub(crate) fn set_clip(_box_: Option<[f32; 4]>) {}
-#[cfg(not(feature = "devtriggers"))]
-#[inline]
-pub(crate) fn frame_end() {}
-#[cfg(not(feature = "devtriggers"))]
-#[inline]
-pub(crate) fn set_ledger(_on: bool) {}
-#[cfg(not(feature = "devtriggers"))]
-#[inline]
-pub(crate) fn set_mask(_spec: &str) {}
+
+pub(crate) use imp::{frame_end, gate, masked, note_px, set_clip, set_ledger, set_mask};
 
 #[cfg(test)]
 mod tests {

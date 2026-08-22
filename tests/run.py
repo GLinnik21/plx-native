@@ -617,8 +617,7 @@ def apply_triggers(tv, files, extra=None):
     # exactly like a total regression. A no-op for the stable flavour, whose root is /tmp (1777).
     parts = [f"mkdir -p {RUNDIR} && chmod 1777 {RUNDIR}"]
     # wipe every trigger, keeping only the append-only logs (events/stderr/crash)
-    parts.append(f'for f in {RUNDIR}/plxnative-*; do case "$f" in *.log) ;; *) rm -f "$f";; esac;'
-                 f' done')
+    parts.append(f'for f in {RUNDIR}/plxnative-*; do case "$f" in *.log) ;; *) rm -f "$f";; esac; done')
     for name, content in files:
         if content is None:
             parts.append(f"touch {RUNDIR}/{name}")
