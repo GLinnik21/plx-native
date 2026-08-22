@@ -721,7 +721,10 @@ pub(crate) const CARD_FOCUS_SCALE: f32 = 1.07;
 /// **A control inside a TRACK does not take it.** The top tab bar's pills and the profile chip are
 /// focused by their row's own motion — the capsule travelling, the chip unfurling — and a pill that
 /// also grew would be two answers to one question. The season strip's BARE pills are not in a track
-/// and do pop.
+/// and do pop — through [`TabGround::Plated`], which carries the factor to the focus capsule that IS
+/// the focused pill's face. That last sentence was here for months while nothing in the draw scaled
+/// anything: a claim about another module cannot be compiled, so it read as a description and was
+/// a specification nobody had executed.
 ///
 /// Written as its own constant rather than an alias of [`CARD_FOCUS_SCALE`] because the two are
 /// separate design decisions that happen to have landed on one number; either may move alone.
@@ -737,9 +740,19 @@ pub(crate) const CTRL_FOCUS_SCALE: f32 = 1.07;
 /// to snap the outgoing face to 1.0 the instant focus moved, which is the 4px jump this exists to
 /// avoid.
 ///
-/// The spring is **underdamped** (`--ease-bounce`, the press release's own curve): the design system
-/// says the click and the control focus pop are the two things in the app that bounce, so they share
-/// `press`'s constants rather than restating them.
+/// The spring is **critically damped**, on [`K_SCALE`](crate::ui::consts::K_SCALE) — a control face
+/// arriving at focus is the SAME motion a poster's focus pop is, and neither bounces. The design
+/// system is explicit and states it twice: `tokens/motion.css` opens with "the only thing that
+/// BOUNCES is the press release: focus ARRIVING is a calm grow, the CLICK is what rings", and the
+/// `--ease-bounce` token's own comment says to use it "for the press spring-back and NOTHING else —
+/// never a focus pop, a fade, a slide, or anything that carries text". `Button.jsx` spends the two
+/// curves accordingly: `--ease-spring` on arrival, `--ease-bounce` only while `releasing`.
+///
+/// **This was underdamped until 2026-08-22**, on `press`'s own release constants, under a comment
+/// claiming the design system named two bouncing things. It names one. The pop is the tile's spring
+/// now — the same `K_SCALE` `card_row` steps every shelf with — so a capsule and a poster answer the
+/// same event at the same rate, which is the thing that was actually worth sharing. What still
+/// belongs to `press` is the click, and that is folded in by [`scale`](Self::scale) below.
 ///
 /// [`scale`](Self::scale) folds in [`press::scale`](crate::ui::press::scale) for the focused control
 /// only. The dip is a FACTOR on top of the focus scale — that is what makes a press read the same on
@@ -760,7 +773,7 @@ impl<const N: usize> CtlPop<N> {
         self.focused = focused;
         for (i, sp) in self.sp.iter_mut().enumerate() {
             let target = if focused == Some(i) { CTRL_FOCUS_SCALE } else { 1.0 };
-            sp.step_zeta(target, crate::ui::press::K_POP, crate::ui::press::ZETA_POP, dt);
+            sp.step(target, crate::ui::consts::K_SCALE, dt);
         }
     }
     /// Control `i`'s drawn scale this frame, press dip included. Out-of-range asks answer 1.0 rather
@@ -3294,10 +3307,13 @@ impl Capsule {
     /// A capsule that is not on screen ([`CAP_LAND_A`]) LANDS rather than glides. Without this, the
     /// first frame of the Library screen — and every return of focus to the row — would start with a
     /// bright capsule flying in from the pill the user was on two screens ago.
-    fn step(&mut self, target: Option<(usize, (f32, f32))>, dt: f32) {
+    ///
+    /// `land` forces that on every move, for a mark whose job is to say WHICH and not to draw a path
+    /// between two answers — see [`SelMark::Lands`].
+    fn step(&mut self, target: Option<(usize, (f32, f32))>, land: bool, dt: f32) {
         match target {
             Some((i, (x, w))) => {
-                if self.at < 0 || self.a.pos < CAP_LAND_A {
+                if land || self.at < 0 || self.a.pos < CAP_LAND_A {
                     self.x.jump(x);
                     self.w.jump(w);
                 }
@@ -3339,6 +3355,52 @@ pub(crate) struct TabStrip {
     foc: Capsule,
 }
 
+/// Which of the app's two tab strips a [`TabStrip`] is drawing, and everything that differs between
+/// them. One value rather than the `(plated, glass)` pair it replaces, because that pair could spell
+/// a combination that does not exist — a plated strip has no track to be glass — and because the
+/// focus POP belongs to exactly one of the two and now cannot be handed to the other by mistake.
+///
+/// The split is the design system's own (`components/chrome/TabStrip.jsx`), which gates every
+/// press and transform handler it writes on `plated`.
+/// How a strip's SELECTION plate answers a change of selection. The FOCUS capsule always travels —
+/// it is the ring following your thumb, and the path between two pills is the information.
+///
+/// Selection is a different statement, and on one of the two strips the path is noise.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum SelMark {
+    /// **It travels**, as the focus capsule does: the shared top tab bar and the sources popover's
+    /// segmented control, where the plate marks a page you are ON and sliding it reads as the row
+    /// re-pointing itself.
+    Travels,
+    /// **It lands** on the newly selected pill with no path in between — the detail page's season
+    /// strip (owner, 2026-08-22: the sliding grey pill "does not fit").
+    ///
+    /// The case is worth stating because it is the one where the travel was invisible AND ugly at
+    /// the same time. Selection only ever changes here by pressing a season, and the press leaves
+    /// the bright focus capsule sitting on that very pill — so the grey plate's whole journey
+    /// happens UNDER an accent capsule that has already answered the question, and the only part of
+    /// it anyone sees is a grey edge crawling out from behind the white one. A mark that says
+    /// "this one" has nothing to gain from drawing the route it took.
+    Lands,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum TabGround {
+    /// **The shared top tab bar**, inside its own track. The pills have no ground of their own and
+    /// nothing here scales: the capsule TRAVELLING under a row that encloses it is the whole focus
+    /// mark, and a pill that also grew would be two answers to one question. `glass` is whether that
+    /// track is drawn as the standing glass container this frame (it goes flat behind a panel and
+    /// past `GLASS_TRACK_MAX`), which decides whether the selection plate wears the material's own
+    /// perimeter or is a plain wash.
+    Tracked { glass: bool },
+    /// **The detail page's season strip**, bare on artwork with each pill laying its own ground. Its
+    /// focused pill is a CONTROL FACE and wears the whole of one: the `CTRL_FOCUS_SCALE` pop and the
+    /// press dip, both folded into `pop` (normally a `CtlPop<1>`'s [`scale`](CtlPop::scale), which is
+    /// what puts `press::scale()` in it), plus the control rim. The selection capsule still does not
+    /// scale — see [`TabStrip::draw`].
+    Plated { pop: f32 },
+}
+
 impl TabStrip {
     pub(crate) const fn new() -> Self {
         TabStrip { sel: Capsule::new(), foc: Capsule::new() }
@@ -3351,6 +3413,7 @@ impl TabStrip {
         selected: c_int,
         focused: c_int,
         span: impl Fn(usize) -> Option<(f32, f32)>,
+        sel: SelMark,
         dt: f32,
     ) {
         let pick = |i: c_int| -> Option<(usize, (f32, f32))> {
@@ -3364,25 +3427,28 @@ impl TabStrip {
         // frame, including the travelling ones the probe exists to look at. `None` means "hold
         // where you are" (see [`Capsule::step`]), so on those frames the target IS the position.
         let foc_x = foc_t.map(|(_, (x, _))| x).unwrap_or(self.foc.x.pos);
-        self.sel.step(sel_t, dt);
-        self.foc.step(foc_t, dt);
+        self.sel.step(sel_t, sel == SelMark::Lands, dt);
+        self.foc.step(foc_t, false, dt);
         crate::ui::anim::probe("tabstrip.foc", self.foc.x.pos, self.foc.x.vel, foc_x, dt);
     }
     /// Draw both capsules in the painter's own (already scroll-translated) CONTENT space, for a strip
     /// whose pills stand `h` tall at `top`. Selection first, focus over it — when they are on the same
-    /// pill the bright one wins, exactly as the boolean match ordered its arms. `plated` = the strip
-    /// lays its own per-pill ground (the detail season tabs), so the selection capsule takes the value
-    /// that composites OVER that ground instead of replacing it.
+    /// pill the bright one wins, exactly as the boolean match ordered its arms. [`TabGround`] says
+    /// which of the two strips this is, and carries everything that differs between them.
     ///
     /// Call this BEFORE the pill loop: the capsules are the pills' ground, and a label drawn under an
     /// opaque focus capsule is a label nobody can read.
-    pub(crate) fn draw(&self, p: Painter, top: f32, h: f32, plated: bool, glass: bool) {
-        let cap = |c: &Capsule, col: [f32; 4], rim: Option<[f32; 4]>| {
+    pub(crate) fn draw(&self, p: Painter, top: f32, h: f32, ground: TabGround) {
+        let cap = |c: &Capsule, col: [f32; 4], rim: Option<[f32; 4]>, scale: f32| {
             let (x, w) = c.span();
             let a = c.alpha();
             // sub-code alpha or a sub-pixel width is nothing on screen but still a full rrect pass
             if a > 0.004 && w > 0.5 {
-                let r = Rect::new(x, top, w, h);
+                // The pop + press dip, about the capsule's own centre — 1.0 for a tracked strip,
+                // which never scales. The RADIUS stays keyed to the drawn height so a scaled capsule
+                // is still a capsule rather than a rounded rectangle.
+                let r = Rect::new(x, top, w, h).scaled(scale);
+                let h = r.h;
                 match rim {
                     // On a GLASS track the selection plate is a piece of the same material, not a
                     // white wash: its own perimeter line and its own brighter top edge, exactly as
@@ -3390,26 +3456,48 @@ impl TabStrip {
                     // band has nothing to be bounded BY — it lands differently on each side of
                     // itself and reads as a smudge, which is what the first device photograph of
                     // this bar showed and what no amount of fill alpha fixes.
+                    // …and the boost to the shared lamp on the side facing it, derived from the
+                    // perimeter's OWN alpha rather than named: the two callers pass two different
+                    // perimeters (a glass track's `GLASS_RIM`, a control face's `CARD_SHEEN`) and
+                    // both want the crown at `GLASS_RIM_LIGHT`. Written as one subtraction, that is
+                    // the same expression `control_rim` makes.
                     Some(rc) => p.alpha(a).rect_rimmed(
                         r,
                         h * 0.5,
                         col,
                         col,
                         rc,
-                        theme::GLASS_RIM_LIGHT[3] - theme::GLASS_RIM[3],
+                        theme::GLASS_RIM_LIGHT[3] - rc[3],
                     ),
                     None => p.alpha(a).rrect(r, h * 0.5, h * 0.5, col),
                 }
             }
         };
+        let plated = matches!(ground, TabGround::Plated { .. });
         let sel_col = if plated { theme::TAB_PLATE_SELECTED_OVER } else { theme::OVERLAY_FOCUS_PILL };
-        cap(&self.sel, sel_col, (glass && !plated).then_some(theme::GLASS_RIM));
+        // The SELECTION capsule never scales, on either strip. It marks which season you are
+        // browsing, which is a fact about the page and not about the control under your thumb — and
+        // a plate that dipped with the press would say the selection had moved when it had not.
+        cap(&self.sel, sel_col, matches!(ground, TabGround::Tracked { glass: true }).then_some(theme::GLASS_RIM), 1.0);
         // The FOCUS capsule keeps its near-white fill: it is the one thing on this row that must not
         // read as a material, because the material is what everything else here is and focus has to
         // be the exception. It wore two stops of shadow for a while — near-white on a near-white
         // LIGHT track has no separation and had to be lifted instead — and that went with the light
         // track it was drawn for.
-        cap(&self.foc, crate::ui::ACCENT, None);
+        //
+        // On the PLATED strip it is additionally a control FACE, which the design system states in
+        // one sentence (`components/chrome/TabStrip.jsx`): a season pill "sits bare on artwork and
+        // provides its own ground, and because nothing encloses it its focused pill wears the
+        // control face: edge-sheen, top hairline, the `--focus-scale-control` pop, and a Button's
+        // press — dip on the way down, ring on release." All four of those are this line and the
+        // `scale` argument; a TRACKED pill gets none of them, because the capsule TRAVELLING under a
+        // row that encloses it is already the whole focus mark.
+        match ground {
+            TabGround::Plated { pop } => {
+                cap(&self.foc, crate::ui::ACCENT, Some(theme::CARD_SHEEN), pop)
+            }
+            TabGround::Tracked { .. } => cap(&self.foc, crate::ui::ACCENT, None, 1.0),
+        }
     }
     /// The `(focus, selected)` mixes pill `pill` (content-space `(x, w)`) should ink itself with —
     /// hand straight to [`TabPill::mix`].
@@ -4352,7 +4440,7 @@ pub(crate) fn tab_row_update(selected: c_int, focus: TopFocus, dt: f32) {
     let t = with_tab_metrics(|_, w| {
         let target = tab_scroll_target(w, idx, cur.pos);
         let span = |i: usize| (i < w.len()).then(|| (tab_pill_x(w, i), w[i]));
-        unsafe { (*addr_of_mut!(TOP_STRIP)).update(selected, focused, span, dt) };
+        unsafe { (*addr_of_mut!(TOP_STRIP)).update(selected, focused, span, SelMark::Travels, dt) };
         target
     });
     unsafe { (*addr_of_mut!(TAB_SCROLL)).step(t, K_TAB_SCROLL, dt) };
@@ -4609,7 +4697,7 @@ pub(crate) fn draw_tab_row(p: Painter) {
         // pills' ground. This strip is NOT plated — it sits inside the tab-bar track above, which
         // already is the ground, so the pills paint no fill of their own at all here.
         let cp = p.translate(x0 - sx, 0.0);
-        unsafe { &*addr_of!(TOP_STRIP) }.draw(cp, TOP_BAR_Y, TAB_PILL_H, false, glass_on);
+        unsafe { &*addr_of!(TOP_STRIP) }.draw(cp, TOP_BAR_Y, TAB_PILL_H, TabGround::Tracked { glass: glass_on });
         rects.reserve(n);
         for i in 0..n {
             // ONE prefix sum per pill: `tab_pill_x` is O(i), and it was walked twice here — once for
@@ -5268,20 +5356,87 @@ mod tests {
         assert!(arriving > 1.0, "…while the arriving one has already started: {arriving}");
     }
 
-    /// The pop is UNDERdamped — it overshoots and rings, because the design system names exactly two
-    /// things in this app that bounce and this is one of them (`--ease-bounce`, shared with the
-    /// press release). A critically damped spring cannot, so this is what would catch a `step` that
-    /// quietly went back to `Spring::step`.
+    /// **The SEASON STRIP's pop, driven exactly as `detail` drives it**: one control, open while
+    /// section 1 holds focus. The half that matters is the PRESS — the design system says a plated
+    /// pill takes "a Button's press, dip on the way down, ring on release"
+    /// (`components/chrome/TabStrip.jsx`), and this row had neither the pop nor the dip until
+    /// 2026-08-22 while `CTRL_FOCUS_SCALE`'s own doc claimed it had the pop.
+    ///
+    /// It also pins the other half, which is what stops the fix from over-reaching: once focus has
+    /// left the row for the episodes below, a press belongs to whatever is focused THERE and must
+    /// not reach this capsule. `CtlPop` already owns that rule; the test is that the season strip is
+    /// wired through it rather than multiplying `press::scale()` in by hand at the draw.
+    ///
+    /// Takes `testlock::serial()`: `press` is a crate global that `app.rs`'s own tests drive too.
     #[test]
-    fn the_pop_overshoots_the_way_a_click_does() {
+    fn the_season_strips_pop_takes_the_press_dip_only_while_the_row_holds_focus() {
+        let _g = crate::testlock::serial();
+        let mut pop: CtlPop<1> = CtlPop::new();
+        for _ in 0..60 {
+            pop.step(Some(0), 1.0 / 60.0);
+        }
+        let focused = pop.scale(0);
+        assert!(
+            (focused - CTRL_FOCUS_SCALE).abs() < 0.005,
+            "a focused season pill settles on the control pop: {focused}"
+        );
+
+        // OK goes down on the tab. The strip keeps a CARD's press — a hold here marks the whole
+        // season watched — so this is `begin`, not `begin_ctl`; the DIP is identical either way.
+        crate::ui::press::begin(1000);
+        let mut now = 1000u32;
+        for _ in 0..8 {
+            now = now.wrapping_add(16);
+            crate::ui::press::tick(now, 1.0 / 60.0);
+            pop.step(Some(0), 1.0 / 60.0);
+        }
+        let pressed = pop.scale(0);
+        assert!(
+            pressed < focused - 0.02,
+            "the press must dip the focused pill inward: {pressed} vs {focused}"
+        );
+
+        // …and the same press, with focus moved off the row, leaves this capsule alone.
+        let mut away: CtlPop<1> = CtlPop::new();
+        for _ in 0..60 {
+            away.step(None, 1.0 / 60.0);
+        }
+        assert_eq!(away.scale(0), 1.0, "a row without focus is at rest, press or no press");
+
+        crate::ui::press::cancel();
+        for _ in 0..200 {
+            now = now.wrapping_add(16);
+            crate::ui::press::tick(now, 1.0 / 60.0);
+        }
+        assert!(!crate::ui::press::is_active(), "leave the global at rest for the next test");
+    }
+
+    /// **The focus pop does NOT bounce**, and that is the whole assertion: it grows to its target and
+    /// stops, exactly as a poster's does. The design system says so twice — `tokens/motion.css`'s
+    /// opening line ("focus ARRIVING is a calm grow, the CLICK is what rings") and the `--ease-bounce`
+    /// token's own "never a focus pop" — and `Button.jsx` reaches for `--ease-bounce` only while
+    /// `releasing`.
+    ///
+    /// It asserted the OPPOSITE until 2026-08-22, when the owner reported the bounce on screen. A
+    /// test can pin a mistake as firmly as it pins a rule, and this one did: the pop rang on arrival,
+    /// the doc beside it said the design system asked for that, and the test agreed with the doc.
+    /// None of the three had been checked against the design system itself.
+    #[test]
+    fn the_pop_grows_to_focus_without_ringing() {
         let mut pop: CtlPop<1> = CtlPop::new();
         let mut peak = 1.0f32;
         for _ in 0..40 {
             pop.step(Some(0), 1.0 / 60.0);
             peak = peak.max(pop.scale(0));
         }
-        assert!(peak > CTRL_FOCUS_SCALE, "an underdamped pop passes its target: peaked at {peak}");
-        assert!(peak < CTRL_FOCUS_SCALE * 1.05, "…but rings, it does not launch: {peak}");
+        assert!(
+            peak <= CTRL_FOCUS_SCALE + 0.0005,
+            "a focus arrival must not pass its target — that is the click's alone: peaked at {peak}"
+        );
+        assert!(
+            (peak - CTRL_FOCUS_SCALE).abs() < 0.005,
+            "…and it does REACH it — a spring that never arrives is not calm, it is slow: {peak}"
+        );
     }
 
     /// Nothing focused closes every pop, and `reset` gets there with no motion at all — the two
@@ -6646,7 +6801,7 @@ mod tests {
         let w = widths_for(12);
         let p7 = span_of(&w, 7);
         let mut c = Capsule::new();
-        c.step(Some((7, p7)), DT);
+        c.step(Some((7, p7)), false, DT);
         assert_eq!(cap_cover(p7, c.span()), 1.0, "the first frame must already be ON pill 7");
         assert!(c.alpha() > 0.0 && c.alpha() < 1.0, "…while its alpha is still ramping up ({})", c.alpha());
     }
@@ -6661,14 +6816,14 @@ mod tests {
         let (p0, p1) = (span_of(&w, 0), span_of(&w, 1));
         let mut c = Capsule::new();
         for _ in 0..60 {
-            c.step(Some((0, p0)), DT);
+            c.step(Some((0, p0)), false, DT);
         }
         assert!(cap_cover(p0, c.span()) > 0.99, "the fixture must start settled on pill 0");
 
-        c.step(Some((1, p1)), DT);
+        c.step(Some((1, p1)), false, DT);
         assert!(cap_cover(p0, c.span()) > 0.5, "one frame in it must still be mostly on pill 0, not teleported");
         for f in 0..60 {
-            c.step(Some((1, p1)), DT);
+            c.step(Some((1, p1)), false, DT);
             let on = cap_cover(p0, c.span()).max(cap_cover(p1, c.span()));
             assert!(on > 0.0, "frame {f}: the capsule is on neither pill (span {:?})", c.span());
         }
@@ -6686,16 +6841,16 @@ mod tests {
         let (p2, p9) = (span_of(&w, 2), span_of(&w, 9));
         let mut c = Capsule::new();
         for _ in 0..60 {
-            c.step(Some((2, p2)), DT);
+            c.step(Some((2, p2)), false, DT);
         }
         let held = c.span();
         for _ in 0..40 {
-            c.step(None, DT);
+            c.step(None, false, DT);
         }
         assert!(c.alpha() < CAP_LAND_A, "focus off the row must fade the capsule out ({})", c.alpha());
         assert_eq!(c.span(), held, "…in place: an invisible capsule must not also drift");
 
-        c.step(Some((9, p9)), DT);
+        c.step(Some((9, p9)), false, DT);
         assert_eq!(cap_cover(p9, c.span()), 1.0, "returning focus to a FAR pill lands on it, never glides");
     }
 
@@ -6709,7 +6864,7 @@ mod tests {
         let settle = |sel: c_int, foc: c_int| {
             let mut s = TabStrip::new();
             for _ in 0..90 {
-                s.update(sel, foc, |i| (i < w.len()).then(|| span_of(&w, i)), DT);
+                s.update(sel, foc, |i| (i < w.len()).then(|| span_of(&w, i)), SelMark::Travels, DT);
             }
             s
         };
@@ -6729,6 +6884,50 @@ mod tests {
     /// Ink CONSERVATION across a travel: the two capsules only ever have one pill's worth of coverage
     /// between them, so no frame can ink two labels toward `ACCENT_INK` at once. This is what bounds
     /// the one transient the design accepts — a partly covered pill inks its WHOLE label — to half a
+    /// **The season strip's selection LANDS; every other strip's travels.** Both halves, because the
+    /// rule is a difference between two callers and a regression would be one call site copied onto
+    /// the other.
+    ///
+    /// The owner's report (2026-08-22) was that a grey pill sliding across the season row "does not
+    /// fit". It is graded on the capsule's POSITION one frame after the selection moves: a travelling
+    /// capsule is still near where it started, a landing one is already there.
+    #[test]
+    fn the_selection_mark_lands_on_a_season_strip_and_travels_on_a_tab_bar() {
+        const DT: f32 = 1.0 / 60.0;
+        let w = [140.0f32, 160.0, 150.0, 170.0];
+        let span_of = |i: usize| -> (f32, f32) {
+            (w.iter().take(i).map(|v| v + 20.0).sum::<f32>(), w[i])
+        };
+        let span = |i: usize| (i < w.len()).then(|| span_of(i));
+        let settle = |s: &mut TabStrip, sel: c_int, mark: SelMark| {
+            for _ in 0..120 {
+                s.update(sel, -1, span, mark, DT);
+            }
+        };
+        let (far, near) = (span_of(3).0, span_of(0).0);
+
+        // LANDS — one frame after the selection moves it is already at the new pill
+        let mut season = TabStrip::new();
+        settle(&mut season, 0, SelMark::Lands);
+        assert!((season.sel.span().0 - near).abs() < 0.5, "settled on pill 0");
+        season.update(3, -1, span, SelMark::Lands, DT);
+        assert!(
+            (season.sel.span().0 - far).abs() < 0.5,
+            "a landing mark is AT the new pill on the very next frame, not on its way: {}",
+            season.sel.span().0
+        );
+
+        // TRAVELS — one frame later it has barely left, which is the whole point of the other strip
+        let mut bar = TabStrip::new();
+        settle(&mut bar, 0, SelMark::Travels);
+        bar.update(3, -1, span, SelMark::Travels, DT);
+        let moved = bar.sel.span().0;
+        assert!(
+            moved > near && moved < near + (far - near) * 0.5,
+            "a travelling mark is between the two after one frame: {moved}"
+        );
+    }
+
     /// label on each of two pills for the length of one travel, rather than a whole row dimming.
     #[test]
     fn a_travel_never_inks_more_than_one_pills_worth_of_label() {
@@ -6737,10 +6936,10 @@ mod tests {
         let mut s = TabStrip::new();
         let span = |i: usize| (i < w.len()).then(|| span_of(&w, i));
         for _ in 0..90 {
-            s.update(-1, 4, span, DT);
+            s.update(-1, 4, span, SelMark::Travels, DT);
         }
         for f in 0..90 {
-            s.update(-1, 5, span, DT);
+            s.update(-1, 5, span, SelMark::Travels, DT);
             let total: f32 = (0..w.len()).map(|i| s.mixes(span_of(&w, i)).0).sum();
             assert!(total <= 1.0 + 1e-3, "frame {f}: {total} pills' worth of focus ink is lit at once");
             assert!(total > 0.0, "frame {f}: the focus ink went out entirely mid-travel");
