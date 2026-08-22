@@ -115,6 +115,8 @@ Two further results from the same pass, both of which would have been expensive 
 ## House rules
 
 - **Never modify anything on the device.** `pull` is read-only `scp`; the TV is a shared mutex
+  (`tools/tv-lock.sh` / the `tv-lock` skill — harvesting takes no lock, but anything that RUNS the
+  app does)
   and other work may be running against it. Wake it with `.claude/skills/wake-tv/wake-tv.sh`.
 - Record what you harvested. `pull` writes `MANIFEST.txt` with a sha256 per file, so a finding
   can be tied to the exact binary it came from — firmware updates change these.

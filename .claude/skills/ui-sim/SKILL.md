@@ -14,6 +14,13 @@ description: >
 
 # ui-sim — verify UI work on macOS, finish on the TV
 
+
+> **This is also what you do while the television is locked.** One set, one lane at a time
+> (`tools/tv-lock.sh`, the **`tv-lock`** skill): when a device command is refused because another
+> lane holds it, the simulator is usually the answer rather than the queue — N instances run at
+> once, each with its own `PLXNATIVE_RUNTIME_DIR`. Come back to the TV only for what the simulator
+> provably cannot answer (frame rate, text rasterization, video, the video plane).
+
 `plxnative-sim` is the same application core the television runs, linked against desktop SDL2 and
 desktop GL. It draws the real interface against your real Plex Media Server, on this Mac.
 
