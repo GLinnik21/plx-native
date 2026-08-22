@@ -129,6 +129,13 @@ full one-time setup + troubleshooting.
   decides staleness from a stat taken before prerequisites run, so no stamp-mtime scheme works.
   Each feature set also gets its own `--target-dir`, because cargo does not hash its output and
   would otherwise report the dev build fresh while the release `.a` sat at that path.
+  **`make check` cannot see a break in this configuration and neither can the PR gate** — both
+  build the default feature set, and `--no-default-features` is first compiled during a release
+  cut. So a **`PostToolUse` hook** (`.claude/hooks/release-config-check.py`) type-checks it after
+  every edit to a `rust-modules/src/**.rs`; it costs well under a second warm, because cargo keys
+  fingerprints by feature set and the two configurations coexist in one `target/`. The hazard it
+  guards is hand-written `#[cfg(feature = "devtriggers")]` PAIRS, where a spliced-in function
+  swallows a neighbour's attribute — `dev::latched_flag!` exists to avoid most of them.
 - Override the TV IP with `make TV=1.2.3.4 …`; the run duration with `make run RUN_SECS=30`.
 
 **Cross-compile toolchain:** the webosbrew **native-toolchain** buildroot NDK —
@@ -241,6 +248,13 @@ So `fwcompat.py` answers "does this release export that function" and cannot ans
 proving one of those across releases needs the actual `.so` files, not this database. For our own
 set, `.claude/skills/decompile-tv-lib/` harvests and decompiles them; for OTHER releases we have no
 binaries at all today, which is exactly the gap to state out loud rather than infer past.
+
+**Before pushing a change that touches FFI, linkage or `dynlib!`, hand it to the
+`fw-compat-reviewer` subagent.** It runs the matrix above and reads the new declarations against
+the rules the matrix cannot express — variadic placement, the all-or-nothing loading contract, and
+whether a new `DT_NEEDED` names a library whose SONAME actually holds still. CI gates the same
+check, so the value is catching it here, before the runner and before a television refuses to
+`exec()` the process.
 
 ## Look it up: this platform is under-documented, so search before assuming
 
@@ -403,6 +417,23 @@ used: **libcurl** (`net.rs`) does the plex.tv account/login TLS+DNS that the raw
 
 ## Non-obvious conventions & gotchas (all verified in code)
 
+- **This repository is PUBLIC, and some of the data in this working copy is not the maintainer's
+  to publish.** Several paths are gitignored for that reason — `.tv-host`, `.tv-mac`,
+  `src/config.local.h` (a live Plex token), `tests/manifest.local.json` and `pkg/auth.json` among
+  them; the LIST is `PRIVATE_FILES` in `.claude/hooks/outbound-guard.py`, not this sentence, which
+  is why no count is given here. The rule for anything leaving the machine is **placeholders,
+  always** — a PR body, an issue comment, a release note, a commit message — and
+  `docs/shared-servers.md` carries the stand-in table this repo actually uses. **It has already
+  failed once as a convention, in these words.** A batch of subagents told to write device
+  recipes "executable without me" each did the obviously helpful thing and pasted a friend's real
+  server address, port, `machineIdentifier` and handle into **four PR bodies (#28-31) on
+  2026-08-14**. All four were redacted; GitHub keeps PR-body edit history, so those values are
+  permanently public, and they were the FRIEND's rather than this project's to give. Since then a
+  **`PreToolUse` hook** (`.claude/hooks/outbound-guard.py`) refuses any publishing command whose
+  text carries one of those values — including a heredoc body and a `--body-file`, which are how a
+  PR body of any length is actually passed. It never prints the value it matched, since that is
+  the same leak by a shorter route. The escape hatch is a prefix on the command, and an agent
+  reaching for it is doing the thing the hook exists to prevent.
 - **LG's SDL fork has a shifted `SDL_KeyboardEvent`.** `e.key.keysym` is unreliable; the handler
   (`app.rs`, via `rd_u32`) reads raw bytes off the event: `+16` = state (u32), `+20` = webOS keycode
   (u32), `+24` = sym (u32). State low byte = pressed(1)/released(0); bit `0x100` = auto-repeat.
@@ -468,6 +499,14 @@ used: **libcurl** (`net.rs`) does the plex.tv account/login TLS+DNS that the raw
 
 ## Testing / verification (two tiers: a fast host unit suite, then the device)
 
+**Two skills sit on top of this section; reach for them before reading it end to end.**
+**`which-tier`** decides which tier a given change actually needs and — the half that gets skipped
+— which tiers are structurally blind to it, routing by what the change touched. This section
+documents what each tier IS; that skill decides which to run. **`doc-claim-auditor`** (a subagent)
+answers the other post-change question: did this change make any claim in the prose FALSE. That one
+exists because nothing compiles CLAUDE.md, which is why the paragraph below has to open by telling
+you its own numbers are wrong.
+
 > ### THERE IS ONE TELEVISION AND IT IS A MUTEX. TAKE THE LOCK.
 >
 > There is exactly one dev set, one app instance on it, and webOS enforces nothing: two
@@ -477,68 +516,36 @@ used: **libcurl** (`net.rs`) does the plex.tv account/login TLS+DNS that the raw
 > underneath, a capture of a screen the other job navigated away from. You cannot tell those from a
 > real regression by looking at them.
 >
-> **Since 2026-08-22 there IS a lock, and it is enforced** — this section said "no lock of any
-> kind, the only thing keeping two jobs off it is whoever is sequencing the work" for as long as
-> that was true, and hand-sequencing failed exactly the way it was always going to. The mechanism
-> is **`tools/tv-lock.sh`**, a lease held in a directory ON THE TELEVISION (`/tmp/plx-tv.lock`, so
-> it spans worktrees and machines, and outside the `plxnative-*` prefix so it neither trips
-> `dev::any_trigger_present` nor gets swept by a teardown). The workflow is the **`tv-lock` skill**:
->
-> ```sh
-> tools/tv-lock.sh status                             # who has it; also the unlocked-user pre-flight
-> tools/tv-lock.sh acquire --why "what this is for"   # --wait 540 queues instead of failing
->   … device work …
-> tools/tv-lock.sh release
-> tools/tv-lock.sh with --why "fps suite" -- ./tests/run.py --fps   # one-shot, released on Ctrl-C
-> ```
+> **Since 2026-08-22 there IS a lock, and it is enforced.** `tools/tv-lock.sh` holds a lease in a
+> directory ON THE TELEVISION (`/tmp/plx-tv.lock`, so it spans worktrees and machines, and outside
+> the `plxnative-*` prefix so it neither trips `dev::any_trigger_present` nor gets swept by a
+> teardown). **The `tv-lock` skill is the workflow** — acquiring and queueing, the two things the
+> lock CANNOT see (a human watching television, and a job started from a checkout without these
+> tools) together with the `fuser`-per-install and ssh-count pre-flight that is the only thing that
+> catches them, and when a lease is safe to break.
 >
 > **You cannot skip it.** `tv-session.sh` (`up`/`key`/`click`/`shot`/`down`), `make deploy`/`run`/
 > `run-stream`/`kill`/`install`/`uninstall`, `tests/run.py` and `tools/capture-screen.sh` all take
 > it, and a **`PreToolUse` hook** (`.claude/hooks/tv-lock-guard.py`) refuses any Bash command that
 > reaches the set without a lease — including a raw `ssh root@…`, an `scp` into the app directory
-> and a `sshpass` one-liner. With nobody holding the set, a single command takes a short implicit
-> lease rather than failing; **a SESSION should take a real one**, because the gap between two of
-> your own commands is exactly where another lane lands. Read-only diagnostics are deliberately not
-> blocked: `tv-session.sh log|status`, `tools/crash-report.sh`, `make -s print-*`.
+> and a `sshpass` one-liner. Read-only diagnostics are deliberately not blocked:
+> `tv-session.sh log|status`, `tools/crash-report.sh`, `make -s print-*`. With nobody holding the
+> set a single command takes a short implicit lease rather than failing; **a SESSION should take a
+> real one**, because the gap between two of your own commands is exactly where another lane lands.
 >
-> **What the lock cannot see is a human watching television**, or a job started from a checkout
-> without these tools — so `status` also runs the old pre-flight: `fuser` on **both** installs' own
-> binaries plus a count of ssh sessions taken ON the set (which therefore also sees other machines).
-> `fuser` on the app directory's own binary, not `pidof plxnative`: both installs' binaries are
-> named `plxnative`, so a name-scoped test matches BOTH and returns two pids in an order busybox
-> does not promise. `fuser` is inode-scoped, so it answers about one install
-> (`docs/two-installs.md` §4.2) — **which is why it has to ask twice**, since the question is "is
-> anybody else using the television", not "is my install alive". A single `fuser` reports NONE while
-> the OTHER install is mid-film or mid-release-verification.
->
-> **And a `NONE`/`NONE` answer is still not "the set is free" — reading it that way cost a collision
-> on 2026-08-22, which is what the lock above came out of.** `fuser` is inode-scoped and honest,
-> which is exactly its limit: it sees only the instants an app is UP, and hand-driven device work is
-> a close → deploy → launch → measure loop that is legitimately down between iterations. A `pgrep`
-> for the three HARNESS command names misses that job too, because most device work is raw
-> `ssh root@… <<EOF` and `luna-send`. **The ssh COUNT is the check that actually fires**, because it
-> is the one that sees a job between its app instances — so read those pids' argv
-> (`pgrep -fl "ssh .*$(cat .tv-host)"`) rather than counting them, and treat any you cannot account
-> for as OCCUPIED. A count explained away as "my own grep pipeline" is how the collision happened.
-> The hook now stops an unlocked job for anybody working in this repo; it cannot stop one started
-> before the lock existed, or from a checkout that does not have it.
->
-> **When farming work out to several agents, the TV is the scheduling constraint, not a detail.**
-> Give device access to **at most one lane at a time** and say so in the other prompts; run the rest
-> host-only or on the simulator (`make sim` — N instances, `PLXNATIVE_RUNTIME_DIR` per instance,
-> which is the whole reason it exists). Telling two prompts "you own the television exclusively" is
-> *not* a mutex — each is true when written and false the moment the second one starts. That exact
-> mistake was made on 2026-08-21 with a blur measurement and a Dolby capture running at once, and it
-> was caught by luck rather than by anything failing loudly; the lock above is what came of it, and
-> a **lane is a CHECKOUT** — the lease belongs to the worktree, so every command inside one inherits
-> it and a second worktree on the same Mac is a second lane. The lock turns that collision into a
-> refusal, but a fleet that all queue on one set is a fleet running in series: plan the work so only
-> one lane needs the device.
->
-> If you find a collision: stop **one** job (`TaskStop`), let the other finish, then re-run the
-> stopped one from scratch — do not salvage its half-collected numbers. Check afterwards for a
-> stranded app, stray ssh clients and leftover `/tmp/plxnative-*` triggers, and **re-run anything
-> that was measured during the overlap**, because it is contaminated whether or not it looks fine.
+> **Running SEVERAL agents at once is a PLANNING problem, not a locking one, and it has its own
+> skill: `fleet-plan`.** The lock schedules; it does not plan — two lanes that both want the set
+> still run in series, and that queue is invisible in the plan you wrote. The one line to carry
+> without opening it: the television is the scheduling constraint, **a lane is a CHECKOUT** (so a
+> second worktree on the same Mac is a second lane, however the prompt describes it), give device
+> access to at most one and send every other lane to `make sim`. Telling two prompts "you own the
+> television exclusively" is *not* a mutex — each is true when written and false the moment the
+> second one starts, which is the 2026-08-21 collision that was caught by luck rather than by
+> anything failing loudly. The skill carries the rest: the shared stash stack that hands one lane
+> another lane's work, what a second build tree costs on disk, cutting a worktree from the right
+> base, the gitignored files a lane has to be seeded with, the worker-prompt block, and the
+> collision recovery — stop **one** job, re-run it from scratch, and treat anything measured during
+> the overlap as contaminated whether or not it looks fine.
 
 There **is** a host unit suite, and it is not the real gate — both halves matter, and conflating
 them is how this section used to be wrong in three files at once.
