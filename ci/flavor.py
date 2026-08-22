@@ -174,4 +174,5 @@ if __name__ == "__main__":
     if len(sys.argv) == 2:
         print(app_id(sys.argv[1]))
         sys.exit(0)
-    sys.exit(__doc__ and print(__doc__) or 2)
+    print(__doc__)
+    sys.exit(2)

@@ -10,6 +10,7 @@ use std::os::raw::{c_char, c_int, c_uint, c_void};
 use std::ptr::{addr_of, addr_of_mut};
 
 use crate::surface::{LOGICAL_H as SCR_H, LOGICAL_W as SCR_W};
+use crate::ui::overdraw::{gate, Class};
 
 /// Last resort only. Reaching this is a DEFECT, not a graceful degradation — see `font_at`.
 const DROIDSANS: &CStr = c"/usr/share/fonts/DroidSans.ttf";
@@ -562,9 +563,7 @@ pub(crate) fn draw_text(s: *const c_char, x: f32, y: f32, sz: c_int, col: *const
         glUniform4f(TL_RECT, crate::gfx::snap(dx), crate::gfx::snap(y), w as f32, h as f32);
         // The width is still returned — callers lay out from it — but a run outside a blur source
         // pass's region contributes no fragment to the backdrop, so the quad is not submitted.
-        if !crate::gfx::culled(dx, y, w as f32, h as f32)
-            && !crate::ui::overdraw::gate(crate::ui::overdraw::Class::Text, dx, y, w as f32, h as f32)
-        {
+        if !crate::gfx::culled(dx, y, w as f32, h as f32) && !gate(Class::Text, dx, y, w as f32, h as f32) {
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         }
         w as f32
@@ -609,9 +608,7 @@ pub(crate) fn draw_text_fade(
         glUniform2f(TLF_FADE, fade_from / wf, fade_to / wf);
         glBindTexture(GL_TEXTURE_2D, tex);
         glUniform4f(TLF_RECT, crate::gfx::snap(dx), crate::gfx::snap(y), w as f32, h as f32);
-        if !crate::gfx::culled(dx, y, w as f32, h as f32)
-            && !crate::ui::overdraw::gate(crate::ui::overdraw::Class::Text, dx, y, w as f32, h as f32)
-        {
+        if !crate::gfx::culled(dx, y, w as f32, h as f32) && !gate(Class::Text, dx, y, w as f32, h as f32) {
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         }
         w as f32

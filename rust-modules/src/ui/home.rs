@@ -641,13 +641,16 @@ impl View for Backdrop {
             // black frame over the whole picture on the title's line. (The clearLogo the band
             // usually holds paints higher still — to y≈239 for a square — where this ramp is
             // nothing at all and only the wedge below is working.)
-            let sa = base_scrim_bottom_a(env.hero_a);
-            let mid = sa * BASE_SCRIM_MID_K;
-            // the two bands share ONE seam expression, so the pair is watertight and the paint
-            // cannot drift from `base_scrim_a`'s idea of where the stops are
-            p.rect(Rect::new(0.0, HERO_BASE_SCRIM_Y0, SCR_W, BASE_SCRIM_Y1 - HERO_BASE_SCRIM_Y0), 0.0,
+            // Through `base_scrim_ramp`, the SAME four numbers the one-pass ground is handed
+            // above, so the two paths cannot become two curves that happen to agree — which is
+            // what that function's doc already claims and what this block used to quietly
+            // contradict by re-deriving the pair itself. The two bands also share ONE seam
+            // expression (`knee`), so the pair is watertight and the paint cannot drift from
+            // `base_scrim_a`'s idea of where the stops are.
+            let [y0, knee, mid, sa] = base_scrim_ramp(env.hero_a);
+            p.rect(Rect::new(0.0, y0, SCR_W, knee - y0), 0.0,
                 theme::scrim(0.0), theme::scrim(mid), 0.0);
-            p.rect(Rect::new(0.0, BASE_SCRIM_Y1, SCR_W, SCR_H - BASE_SCRIM_Y1), 0.0,
+            p.rect(Rect::new(0.0, knee, SCR_W, SCR_H - knee), 0.0,
                 theme::scrim(mid), theme::scrim(sa), 0.0);
             // PART TWO: the corner the text is actually IN, darkened along the axis the ramp has
             // nothing to say about. `right: false` — home's hero is one left-aligned column.

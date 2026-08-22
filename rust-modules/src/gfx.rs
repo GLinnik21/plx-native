@@ -7,7 +7,7 @@ use std::os::raw::{c_char, c_int, c_uint, c_void};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::surface::{LOGICAL_H as SCR_H, LOGICAL_W as SCR_W};
-use crate::ui::overdraw::{gate, note_px, Class};
+use crate::ui::overdraw::{gate, masked, note_px, set_clip, Class};
 
 // Per-frame counters for the frame-drop detector: how many card composites are actually issued
 // (`draw_tex_carded`), and how many of those are (partly) off-screen — to confirm the cull is tight.
@@ -162,7 +162,7 @@ pub(crate) fn clip_set(x: f32, y: f32, w: f32, h: f32) {
     let y_top = y.max(0.0);
     let x1 = (x + w).min(SCR_W);
     let y1 = (y + h).min(SCR_H);
-    crate::ui::overdraw::set_clip(Some([x0, y_top, x1.max(x0), y1.max(y_top)]));
+    set_clip(Some([x0, y_top, x1.max(x0), y1.max(y_top)]));
     // Only the height is needed as an extent now — the x edges are rounded independently and
     // differenced, same as the y ones.
     let hi = (y1 - y_top).max(0.0);
@@ -214,7 +214,7 @@ pub(crate) fn clip_set(x: f32, y: f32, w: f32, h: f32) {
 /// bare `glDisable` in the middle of the scene draw would let the rest of the page spill across
 /// the tap targets' other content.
 pub(crate) fn clip_clear() {
-    crate::ui::overdraw::set_clip(None);
+    set_clip(None);
     unsafe {
         match CLIP_TARGET {
             Some((_, _, _, tw, th)) => glScissor(0, 0, tw, th),
@@ -2859,7 +2859,7 @@ pub(crate) fn draw_blur_backdrop(x: f32, y: f32, w: f32, h: f32, rest: [f32; 4],
         // not here". `false` puts the caller on its opaque ground, exactly as a latched-off blur
         // does. REFUSAL ONLY: the ledger entry is booked further down, after every path that
         // returns without drawing, because this one sits above three of them.
-        if crate::ui::overdraw::masked(Class::Glass) {
+        if masked(Class::Glass) {
             return false;
         }
         // Declare what this surface needs BEFORE deciding whether to snapshot, so a frame's second
