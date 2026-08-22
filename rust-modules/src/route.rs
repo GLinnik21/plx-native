@@ -388,6 +388,36 @@ pub(crate) fn set_stream_codecs(vc: &str, ac: &str) {
     })
 }
 
+/// The whole Load-payload DECLARATION for a stream the app did not SELECT — the pipeline test
+/// tier's `/tmp/plxnative-playurl` ([`crate::dev::PlayUrl`]), whose entire point is that no PMS
+/// chose anything and so `apply_plan` never runs.
+///
+/// ONE write for the reason [`set_stream_codecs`] is one write and [`apply_plan`] is a single
+/// struct assignment: these five fields describe ONE stream, and a half-applied set is a payload
+/// that describes nothing real — 4K HEVC declared with the default `""` audio, say, which falls
+/// through the engine's `_ =>` arm to `"AC3"` and stalls the sink on a Dolby Digital Plus track.
+/// Four separate setters would be four ways to leave it half-written.
+///
+/// `apply_plan` (the PMS path) is the only other writer of the last three; keep them in step.
+/// This touches neither `cur_rk`/`cur_sid` nor `tsession`, which is what keeps a URL-fed playback
+/// free of Plex entirely: the `/:/timeline` reporter stays unspawned and `is_transcoding()` stays
+/// false.
+pub(crate) fn set_stream_declaration(
+    vc: &str,
+    ac: &str,
+    fps: f64,
+    dovi: crate::metadata::Dovi,
+    immersive: bool,
+) {
+    session_mut(|s| {
+        s.stream_vcodec = vc.to_owned();
+        s.stream_acodec = ac.to_owned();
+        s.stream_fps = fps;
+        s.stream_dovi = dovi;
+        s.stream_immersive = immersive;
+    })
+}
+
 // (`set_source_codecs` stood here: a two-line setter for `src_vcodec`/`src_acodec` whose one
 // caller was `apply_plan`, which now installs them as part of its single assignment. The rule it
 // carried survives on [`Session::src_vcodec`] itself — those two are the FILE's codecs and
