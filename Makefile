@@ -640,7 +640,8 @@ check: lint
 	@# it would be too late to learn otherwise. It also cross-checks the three copies of the app id
 	@# (here, ci/flavor.py, rust-modules/src/paths.rs), which no compiler can.
 	python3 ci/flavor.py --selftest
-	@# The harness's own host unit tests (tests/test_harness.py, stdlib unittest, ~0.05s). run.py
+	@# The harness's own host unit tests (tests/test_harness.py, stdlib unittest, ~0.5s — most of
+	@# it is five `run.py --list` subprocesses, not test logic; measure before budgeting). run.py
 	@# decides WHAT gets driven on the one television and had no test of any kind until 2026-08-22.
 	@# What it pins is the code path a full manifest.local.json never enters: an `item` key this
 	@# installation cannot resolve SKIPS the cases that need it instead of killing the run. A

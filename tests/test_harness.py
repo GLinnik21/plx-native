@@ -18,6 +18,7 @@ tomorrow that breaks one of them should fail here rather than on the television.
 """
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -306,10 +307,11 @@ class PipelineTier(unittest.TestCase):
         spawned here (no ratingKey), so accepting its absence would make a broken assertion read as
         a pass. Pin that the pipeline one refuses a log carrying only timeline lines."""
         timeline_only = ["timeline playing t=10s/60s", "timeline playing t=20s/60s"]
-        self.assertTrue(run.a_timeline_climb(timeline_only, 8)[0], "the integration one still folds back")
-        self.assertFalse(run.a_pos_climb(timeline_only, 8)[0], "the pipeline one must not")
+        self.assertTrue(run.a_timeline_climb(timeline_only, 8)[0], "the server one still folds back")
+        self.assertFalse(run.a_timeline_climb(timeline_only, 8, dense_only=True)[0],
+                         "the synthetic one must not")
         heartbeat = [f"loop=60 route=player overlay=none pos={t}s vtick=5" for t in (2, 14)]
-        self.assertTrue(run.a_pos_climb(heartbeat, 8)[0])
+        self.assertTrue(run.a_timeline_climb(heartbeat, 8, dense_only=True)[0])
 
     def test_the_pipeline_tier_needs_no_overlay_at_all(self):
         """Requirement 1, as a test: a stranger with no manifest.local.json must still load."""
@@ -340,37 +342,30 @@ class DefaultTier(unittest.TestCase):
     it backwards means a bare command either demands credentials nobody has, or silently grades a
     tier the operator did not ask for."""
 
-    def _args(self, *argv):
-        import argparse
-        # Re-parsing main()'s parser is not possible without running main(), so assert on the
-        # rule instead, in the same form main() computes it. If that expression ever changes,
-        # this test is the thing that has to change with it — which is the point.
-        return argv
+    @staticmethod
+    def _list(*flags):
+        """`./tests/run.py <flags> --list` as a completed process. `--list` is offline and
+        side-effect free, which is what makes spawning the real CLI the honest way to ask which
+        tier a set of flags selects — the rule lives in `main()` and cannot be imported."""
+        return subprocess.run([sys.executable, os.path.join(TESTS_DIR, "run.py"), *flags, "--list"],
+                              capture_output=True, text=True, timeout=120)
 
     def test_the_bare_command_is_the_synthetic_tier(self):
         """Documented in three places (tests/README.md, CLAUDE.md, --help); pinned in one."""
-        import subprocess
-        out = subprocess.run([sys.executable, os.path.join(TESTS_DIR, "run.py"), "--list"],
-                             capture_output=True, text=True, timeout=120)
+        out = self._list()
         self.assertIn("pipe_", out.stdout, "a bare --list must show the synthetic cases")
         self.assertNotIn("dp_h264_ac3_1080p", out.stdout,
                          "a bare --list must NOT show the library-backed cases")
 
     def test_server_opts_into_the_library_tier(self):
-        import subprocess
-        out = subprocess.run([sys.executable, os.path.join(TESTS_DIR, "run.py"), "--server", "--list"],
-                             capture_output=True, text=True, timeout=120)
-        self.assertIn("dp_h264_ac3_1080p", out.stdout)
+        self.assertIn("dp_h264_ac3_1080p", self._list("--server").stdout)
 
     def test_contradictory_tier_flags_refuse(self):
         """`--pipeline` names the default, so pairing it with --server/--fps is two instructions,
         not a preference — honouring either one silently is how somebody trusts the wrong result."""
-        import subprocess
-        for extra in (["--server"], ["--fps"], ["--fps-player"]):
-            out = subprocess.run(
-                [sys.executable, os.path.join(TESTS_DIR, "run.py"), "--pipeline"] + extra + ["--list"],
-                capture_output=True, text=True, timeout=120)
-            self.assertNotEqual(out.returncode, 0, f"--pipeline {extra} should refuse")
+        for extra in ("--server", "--fps", "--fps-player"):
+            self.assertNotEqual(self._list("--pipeline", extra).returncode, 0,
+                                f"--pipeline {extra} should refuse")
 
     def test_the_manifest_declares_a_frame_rate_axis(self):
         """Every fixture ran at 24p until 2026-08-22, so `engine::fps_rational`'s branches had one
