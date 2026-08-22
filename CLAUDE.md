@@ -468,44 +468,60 @@ used: **libcurl** (`net.rs`) does the plex.tv account/login TLS+DNS that the raw
 
 ## Testing / verification (two tiers: a fast host unit suite, then the device)
 
-> ### THERE IS ONE TELEVISION AND IT IS A MUTEX. NOTHING ENFORCES THIS.
+> ### THERE IS ONE TELEVISION AND IT IS A MUTEX. TAKE THE LOCK.
 >
-> There is exactly one dev set, one app instance on it, and **no lock of any kind** — not a file,
-> not a flag, not the harness. The only thing keeping two jobs off it is whoever is sequencing the
-> work, and that is precisely why it goes wrong: two `tests/run.py` runs, or a run plus a
-> `make deploy`, or a capture session plus either, **kill each other's app**. The damage is not a
-> clean failure — it is *plausible wrong data*: bogus `timeline_climb` failures, an fps number
-> measured while somebody else's binary was being deployed underneath, a capture of a screen the
-> other job navigated away from. You cannot tell those from a real regression by looking at them.
+> There is exactly one dev set, one app instance on it, and webOS enforces nothing: two
+> `tests/run.py` runs, or a run plus a `make deploy`, or a capture session plus either, **kill each
+> other's app**. The damage is not a clean failure — it is *plausible wrong data*: bogus
+> `timeline_climb` failures, an fps number measured while somebody else's binary was being deployed
+> underneath, a capture of a screen the other job navigated away from. You cannot tell those from a
+> real regression by looking at them.
 >
-> **Before any device work, check — do not assume.** Owning it a minute ago is not owning it now:
+> **Since 2026-08-22 there IS a lock, and it is enforced** — this section said "no lock of any
+> kind, the only thing keeping two jobs off it is whoever is sequencing the work" for as long as
+> that was true, and hand-sequencing failed exactly the way it was always going to. The mechanism
+> is **`tools/tv-lock.sh`**, a lease held in a directory ON THE TELEVISION (`/tmp/plx-tv.lock`, so
+> it spans worktrees and machines, and outside the `plxnative-*` prefix so it neither trips
+> `dev::any_trigger_present` nor gets swept by a teardown). The workflow is the **`tv-lock` skill**:
 >
 > ```sh
-> pgrep -fl "tests/run.py|capture-screen|make deploy" ; ps aux | grep -c "[s]sh .*$(cat .tv-host)"
-> for f in stable debug; do          # BOTH installs — see below for why once is not enough
->   printf '%s: ' "$f"
->   ssh root@$(cat .tv-host) "fuser $(make -s print-appdir FLAVOR=$f)/plxnative || echo NONE"
-> done                               # `ps` finds nothing on this busybox TV
+> tools/tv-lock.sh status                             # who has it; also the unlocked-user pre-flight
+> tools/tv-lock.sh acquire --why "what this is for"   # --wait 540 queues instead of failing
+>   … device work …
+> tools/tv-lock.sh release
+> tools/tv-lock.sh with --why "fps suite" -- ./tests/run.py --fps   # one-shot, released on Ctrl-C
 > ```
 >
-> **A `NONE`/`NONE` answer is not "the set is free", and reading it that way cost a collision on
-> 2026-08-22.** `fuser` is inode-scoped and honest, which is exactly its limit: it sees only the
-> instants an app is UP, and hand-driven device work is a close → deploy → launch → measure loop
-> that is legitimately down between iterations. The `pgrep` above misses that job too — it names the
-> three HARNESS commands, and most device work is raw `ssh root@… <<EOF` and `luna-send`. **The
-> ssh-client COUNT is the check that actually fires**, because it is the one that sees a job between
-> its app instances — so read those pids' argv (`pgrep -fl "ssh .*$(cat .tv-host)"`) rather than
-> counting them, and treat any you cannot account for as OCCUPIED. A count explained away as "my own
-> grep pipeline" is how the collision happened.
+> **You cannot skip it.** `tv-session.sh` (`up`/`key`/`click`/`shot`/`down`), `make deploy`/`run`/
+> `run-stream`/`kill`/`install`/`uninstall`, `tests/run.py` and `tools/capture-screen.sh` all take
+> it, and a **`PreToolUse` hook** (`.claude/hooks/tv-lock-guard.py`) refuses any Bash command that
+> reaches the set without a lease — including a raw `ssh root@…`, an `scp` into the app directory
+> and a `sshpass` one-liner. With nobody holding the set, a single command takes a short implicit
+> lease rather than failing; **a SESSION should take a real one**, because the gap between two of
+> your own commands is exactly where another lane lands. Read-only diagnostics are deliberately not
+> blocked: `tv-session.sh log|status`, `tools/crash-report.sh`, `make -s print-*`.
 >
+> **What the lock cannot see is a human watching television**, or a job started from a checkout
+> without these tools — so `status` also runs the old pre-flight: `fuser` on **both** installs' own
+> binaries plus a count of ssh sessions taken ON the set (which therefore also sees other machines).
 > `fuser` on the app directory's own binary, not `pidof plxnative`: both installs' binaries are
 > named `plxnative`, so a name-scoped test matches BOTH and returns two pids in an order busybox
 > does not promise. `fuser` is inode-scoped, so it answers about one install
-> (`docs/two-installs.md` §4.2) — **which is exactly why this one has to ask twice**, since the
-> question here is "is anybody else using the television", not "is my install alive". A single
-> `fuser` reports NONE while the OTHER install is mid-film or mid-release-verification, and with no
-> `FLAVOR` on the command line `print-appdir` answers `debug`, so the bare form silently never asks
-> about the app the household watches with at all.
+> (`docs/two-installs.md` §4.2) — **which is why it has to ask twice**, since the question is "is
+> anybody else using the television", not "is my install alive". A single `fuser` reports NONE while
+> the OTHER install is mid-film or mid-release-verification.
+>
+> **And a `NONE`/`NONE` answer is still not "the set is free" — reading it that way cost a collision
+> on 2026-08-22, which is what the lock above came out of.** `fuser` is inode-scoped and honest,
+> which is exactly its limit: it sees only the instants an app is UP, and hand-driven device work is
+> a close → deploy → launch → measure loop that is legitimately down between iterations. A `pgrep`
+> for the three HARNESS command names misses that job too, because most device work is raw
+> `ssh root@… <<EOF` and `luna-send`. **The ssh COUNT is the check that actually fires**, because it
+> is the one that sees a job between its app instances — so read those pids' argv
+> (`pgrep -fl "ssh .*$(cat .tv-host)"`) rather than counting them, and treat any you cannot account
+> for as OCCUPIED. A count explained away as "my own grep pipeline" is how the collision happened.
+> The hook now stops an unlocked job for anybody working in this repo; it cannot stop one started
+> before the lock existed, or from a checkout that does not have it.
 >
 > **When farming work out to several agents, the TV is the scheduling constraint, not a detail.**
 > Give device access to **at most one lane at a time** and say so in the other prompts; run the rest
@@ -513,7 +529,11 @@ used: **libcurl** (`net.rs`) does the plex.tv account/login TLS+DNS that the raw
 > which is the whole reason it exists). Telling two prompts "you own the television exclusively" is
 > *not* a mutex — each is true when written and false the moment the second one starts. That exact
 > mistake was made on 2026-08-21 with a blur measurement and a Dolby capture running at once, and it
-> was caught by luck rather than by anything failing loudly.
+> was caught by luck rather than by anything failing loudly; the lock above is what came of it, and
+> a **lane is a CHECKOUT** — the lease belongs to the worktree, so every command inside one inherits
+> it and a second worktree on the same Mac is a second lane. The lock turns that collision into a
+> refusal, but a fleet that all queue on one set is a fleet running in series: plan the work so only
+> one lane needs the device.
 >
 > If you find a collision: stop **one** job (`TaskStop`), let the other finish, then re-run the
 > stopped one from scratch — do not salvage its half-collected numbers. Check afterwards for a

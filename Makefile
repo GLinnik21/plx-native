@@ -43,7 +43,13 @@
 # Which television. `make TV=1.2.3.4 …` overrides for one invocation; otherwise it comes from the
 # gitignored `.tv-host` (one line, an IP or hostname), so this repository carries nobody's home
 # network. `tools/` reads the same file via $TV_HOST. Absent, the targets that need a TV say so.
-TV       ?= $(strip $(shell cat .tv-host 2>/dev/null))
+# The second `cat` is for a LINKED WORKTREE, and it is not a convenience: `.tv-host` is gitignored,
+# so a worktree cut from this repo has none — and worktrees are exactly where the parallel agents
+# live. Without it, the checkouts most likely to collide over the one television are also the only
+# ones that cannot ask `tools/tv-lock.sh` who is holding it, which is how a lane ends up dialling
+# `root@` out of somebody's memory instead. `--git-common-dir` is the MAIN checkout's `.git` from
+# anywhere in the worktree family (and plain `.git` in the main one, where the first cat already won).
+TV       ?= $(strip $(shell cat .tv-host 2>/dev/null || cat "$$(git rev-parse --git-common-dir 2>/dev/null)/../.tv-host" 2>/dev/null))
 # Expanded only inside a recipe, so `make`, `make check` and `make ipk` never need a TV at all —
 # but anything that talks to one fails with this sentence instead of dialling `root@`.
 # `alpine` is NOT a secret: it is webosbrew's published dev-mode root password, the same on every
@@ -53,6 +59,27 @@ TV_OR_DIE = $(if $(TV),$(TV),$(error no TV configured — put its IP in .tv-host
 SSH       = sshpass -p alpine ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 root@$(TV_OR_DIE)
 SCP       = sshpass -p alpine scp -O -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
 RUN_SECS ?= 18
+
+# --- THE TELEVISION IS A MUTEX, and this is what enforces it -------------------------------
+#
+# One dev set, one app instance, no OS-level lock: two jobs on it do not fail cleanly, they
+# produce plausible WRONG data (a bogus timeline_climb, an fps number measured while somebody
+# else's binary was being deployed underneath). Every recipe below that TOUCHES the television
+# takes `tv-lock-require` as its first prerequisite, so the refusal happens before the first scp
+# rather than halfway through one.
+#
+# It is cheap: `require` re-checks a lease this lane verified in the last minute from a local file,
+# with no ssh at all, which is what makes it affordable on `run-stream` — a recipe tests/run.py
+# invokes once per case. And it is not a gate you have to remember: with nobody holding the set it
+# takes a short implicit lease rather than failing, so a lone `make deploy` still works and still
+# cannot collide with a fleet job. A SESSION should take a real one (`tools/tv-lock.sh acquire`),
+# because the gap between two of your own commands is where another lane lands.
+#
+# `$(TV)` rather than `$(TV_OR_DIE)`: with no television configured this must stay silent and let
+# the recipe's own ssh produce the familiar error, not replace it with a complaint about a lock.
+TVLOCK = tools/tv-lock.sh
+tv-lock-require:
+	@$(if $(TV),TV=$(TV),) $(TVLOCK) require --quiet --why "make $(or $(MAKECMDGOALS),deploy) [$(FLAVOR)]"
 
 # --- WHICH INSTALL: the FLAVOR axis --------------------------------------------------------
 #
@@ -510,7 +537,11 @@ pkg/.flavor/$(FLAVOR)/appinfo.json: pkg/appinfo.json ci/flavor.py ci/mkipk.py
 # the ACB bind needs — a stuck pipeline rather than an error. A flavour has to be INSTALLED once
 # from its own package (`make FLAVOR=$(FLAVOR) install`), and failing here names that, instead of
 # failing three steps later as something else.
-deploy: pkg/plxnative $(FFMPEG_STAGED) $(APPINFO) release-guard
+# `tv-lock-require` is LAST in that list, not first, and that is the whole point of where it sits:
+# prerequisites run left to right, and a cold `make deploy` spends ~2 minutes building FFmpeg
+# before it touches the television. Taking the lock first would hold the set through a build that
+# needs no television — and, on the short implicit lease, could even let it expire before the scp.
+deploy: pkg/plxnative $(FFMPEG_STAGED) $(APPINFO) release-guard tv-lock-require
 	@echo "deploying $(if $(RELEASE),RELEASE,dev) build ($(RUST_CFG)) to $(APPID) [$(FLAVOR)]"
 	@$(SSH) 'test -d $(APPDIR)' || { \
 	  echo "$(APPDIR) does not exist on $(TV) — the $(FLAVOR) flavour is not installed."; \
@@ -584,7 +615,7 @@ BOOT_SH = $(CLOSE_SH) \
 	  rm -f $(EVENTLOG) $(RUNDIR)/plxnative-gputime.jsonl $(RUNDIR)/plxnative-hwcnt.jsonl; \
 	  luna-send -i "luna://com.webos.applicationManager/launch" "{\"id\":\"$(APPID)\"}" >/dev/null 2>&1 & LP=$$!;
 
-run:
+run: tv-lock-require
 	@echo "running $(APPID) [$(FLAVOR)] — log $(EVENTLOG)"
 	$(SSH) '$(BOOT_SH) \
 	  sleep $(RUN_SECS); kill $$LP 2>/dev/null; sleep 1; \
@@ -596,12 +627,12 @@ run:
 # 60s. Hanging up kills the tail; the trap takes the luna-send subscription with it so 18
 # cases don't leave 18 of them behind. There is no time limit here on purpose — the caller
 # owns the deadline (run.py caps each case at its manifest run_secs).
-run-stream:
+run-stream: tv-lock-require
 	$(SSH) '$(BOOT_SH) \
 	  trap "kill $$LP 2>/dev/null" EXIT INT TERM HUP; \
 	  tail -F -n +1 $(EVENTLOG)'
 
-kill:
+kill: tv-lock-require
 	$(SSH) '$(CLOSE_SH) echo closed $(APPID)'
 
 clean:
@@ -742,7 +773,7 @@ release-guard:
 # fact that keeps the session file outside it (paths.rs) — so an install wipes whatever was in
 # there and leaves the PACKAGED binary behind. Ending here would leave you looking at a build you
 # did not make, which is the "plausible wrong data" failure this repo cares most about.
-install: ipk
+install: ipk tv-lock-require
 	@echo "installing $(IPK) as $(APPID) on $(TV)"
 	$(SCP) $(IPK) root@$(TV):/tmp/
 	@# `script -qc` because luna-send needs a tty (see the webos-screen-capture note); `-i` keeps
@@ -757,7 +788,7 @@ install: ipk
 
 # Remove a flavour from the television. Refuses the stable id: uninstalling the app the household
 # watches with is not something a make target should make easy, and appinstalld gives no undo.
-uninstall:
+uninstall: tv-lock-require
 	@test "$(FLAVOR)" != stable || { echo "refusing to uninstall $(APPID_STABLE) — do that from the TV's own app list"; exit 1; }
 	$(SSH) 'script -qc "luna-send -i -a com.webos.appInstallService \
 	  luna://com.webos.appInstallService/dev/remove \
@@ -892,5 +923,5 @@ fetch-profile:
 	-$(SCP) root@$(TV):$(RUNDIR)/plxnative-hwcnt.jsonl pkg/plxnative-hwcnt.jsonl
 	@ls -l pkg/plxnative-*.jsonl 2>/dev/null || echo "no profiler output in $(RUNDIR) on the TV ($(APPID))"
 
-.PHONY: all setup-env deploy run run-stream kill check lint test ipk clean threadprobe sockprobe logmprobe mali-hwcnt-probe sim sim-run sim-shot sim-token sim-clean macapp macapp-zip fetch-profile \
+.PHONY: all setup-env deploy run run-stream kill check lint test ipk clean tv-lock-require threadprobe sockprobe logmprobe mali-hwcnt-probe sim sim-run sim-shot sim-token sim-clean macapp macapp-zip fetch-profile \
         release-guard install uninstall $(QUERY_GOALS)
