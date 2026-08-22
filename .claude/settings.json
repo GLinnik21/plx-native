@@ -11,6 +11,23 @@
             "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/tv-lock-guard.py",
             "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/outbound-guard.py",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/release-config-check.py",
+            "timeout": 120
           }
         ]
       }
