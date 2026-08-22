@@ -826,7 +826,7 @@ Listed because each could change a decision above.
    the app from a webOS 6 user browsing the channel (§1.4). It needs a graceful failure.
 9. **Support model.** A Dev Mode user has no shell, so "send me `/tmp/plxnative-events.log`" doesn't
    work as a bug-report path.
-10. **`requiredMemory: 60`** vs a measured ~74 MB peak.
+10. ~~**`requiredMemory: 60`** vs a measured ~74 MB peak.~~ **RESOLVED 2026-08-22 — the “~74 MB” was never a measurement.** It was an uncited sentence written into this very section (“things nobody has verified”) and then copied verbatim into five other files, where it reads as established. The real figure, taken on the dev set (M16p3, webOS 4.10.2) from a `features=release` build via `VmHWM`: **35 MB** at boot, **119 MB** browsing Home/detail, **155,292 kB ≈ 152 MiB peak** with playback. Note `VmRSS` on this TV already INCLUDES Mali pages — proven arithmetically, `smaps_rollup` 38,540 kB + `/proc/gpu` 20,159×4 kB = 119,176 kB against `VmRSS` 119,044 kB — so roughly two thirds of the footprint is texture memory and adding `/proc/gpu` on top double-counts. `requiredMemory` is now **160**; it was raised because webOS substitutes a default of **120** when the field is absent or ≤ 0, which made 60 strictly worse than declaring nothing at all.
 
 ---
 

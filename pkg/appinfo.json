@@ -5,6 +5,7 @@
   "type": "native",
   "main": "plxnative",
   "title": "PlxNative",
+  "appDescription": "Unofficial native Plex client - not affiliated with Plex",
   "icon": "icon.png",
   "largeIcon": "largeIcon.png",
   "iconColor": "#060606",
@@ -12,5 +13,5 @@
   "nativeLifeCycleInterfaceVersion": 2,
   "handlesRelaunch": false,
   "transparent": true,
-  "requiredMemory": 60
+  "requiredMemory": 160
 }
