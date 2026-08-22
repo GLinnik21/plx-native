@@ -21,6 +21,58 @@ use crate::task::MainThread;
 use shared::{Shared, SubBitmap, SubCue, Transport};
 /// one rect of an image-subtitle display set — the demuxer builds them, the HUD draws them
 pub(crate) use shared::SubRect;
+pub(crate) use shared::TrackNames;
+
+/// `/tmp/plxnative-tracknames[=<audio>;<subs>]` — **stand in for the container's own track names**,
+/// which nothing off-device can read.
+///
+/// It exists for the same reason `/tmp/plxnative-personbio` does, and the shape of the problem is
+/// identical: the data comes from a source no automated or host run can reach, so without a seed
+/// every headless look at the screen shows the degenerate state. Here the source is the DEMUXER —
+/// `ff::track_names` publishes these when it opens a part — and the desktop simulator has no
+/// demuxer at all (the bundled FFmpeg is ARM, and `player::ffi`'s host arm has no video path), so
+/// the picker there can only ever draw what PMS sent. Which, for the MP4 this exists to fix, is a
+/// column of identical language names.
+///
+/// Pipe-separated within a list, `;` between the two lists, audio first:
+/// `Дубляж|Original;Forced|Full`. Either side may be empty (`;Forced|Full` seeds subtitles alone).
+/// An EMPTY file seeds the real nine-track sample this was built against, because that is the shape
+/// that exercises the case: six same-language rows PMS reports identically, which no shorter list
+/// demonstrates.
+///
+/// **It seeds the real store and stubs nothing else** — the same `SHARED.track_names` the demuxer
+/// writes, read back through the same `ui::track_menu::track_name` precedence. So a seeded
+/// screenshot verifies the ROW, honestly; what it cannot verify is the FFI read that fills the
+/// store on a television. Compiled out of a release build with every other trigger (`dev::read` is
+/// a compile-time `None`), so a shipped binary cannot be made to show a name that is not the
+/// file's.
+pub(crate) fn seed_dev_track_names() {
+    let Some(spec) = crate::dev::read("tracknames") else { return };
+    // The real subtitle names of a nine-track MP4 whose PMS record carries none — the file this
+    // whole path was written against. Audio is left empty on purpose: one list is enough to
+    // demonstrate, and seeding audio too would hide the `audio_descriptor` fallback the real menu
+    // still uses for a track the container does not name.
+    const SAMPLE: &str = ";Форс. iTunes|Форс. Jaskier песни|Форс. Red Head Sound песни|Полные iTunes|Полные Jaskier|Полные stirloo|Full|Full SDH|Повнi iTunes";
+    let spec = spec.trim().to_string();
+    let spec = if spec.is_empty() { SAMPLE } else { spec.as_str() };
+    let list = |s: &str| -> Vec<String> {
+        if s.is_empty() {
+            Vec::new()
+        } else {
+            s.split('|').map(|p| p.trim().to_string()).collect()
+        }
+    };
+    // `split_once(';')`, so a name may not contain a `;` and everything after the first one is the
+    // subtitle list — a seed is a diagnostic, not a format, and the alternative is quoting rules.
+    let (a, sub) = spec.split_once(';').unwrap_or(("", spec));
+    let (audio, subs) = (list(a), list(sub));
+    crate::log(&format!(
+        "player: DEV track names seeded (a={} s={}) — /tmp/plxnative-tracknames",
+        audio.len(),
+        subs.len()
+    ));
+    *SHARED.track_names.lock().unwrap() = TrackNames { audio, subs };
+}
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_long};
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -731,7 +783,46 @@ fn between(h: &[u8], prefix: &[u8], term: u8) -> Option<Vec<u8>> {
     Some(rest[..end].to_vec())
 }
 
-/// pipeline event on the LIBRARY thread. type 0 = frame presented (num = fed pts).
+/// Monotonic milliseconds, from an origin fixed at the first call.
+///
+/// Not SDL ticks: this is read on the pipeline's own callback thread, and the value is only ever
+/// differenced, so a private origin is enough and owes SDL nothing.
+fn vclock_ms() -> u32 {
+    use std::sync::OnceLock;
+    use std::time::Instant;
+    static T0: OnceLock<Instant> = OnceLock::new();
+    T0.get_or_init(Instant::now).elapsed().as_millis() as u32
+}
+
+/// **The pipeline's `FRAMEREADY` cadence since the last call**: ticks received, and the worst gap
+/// between two consecutive ones in milliseconds. Draining, like
+/// [`crate::ui::idle::take_presents`] — the heartbeat is the one caller, once a second.
+///
+/// **This is a liveness signal, not a frame rate.** See [`sf_on_event`]: the healthy reading on
+/// every codec, resolution and container measured so far is `5` and `201`, because the tick is
+/// ~5 Hz regardless of the stream's frame rate. What it is good for is the opposite question —
+/// whether the pipeline still thinks it is running. A steady `5 / 201` through a picture the
+/// viewer says is stuttering is a real and useful finding: it rules the fault OUT of everything
+/// this process can see, and sends the search to the display side.
+pub(crate) fn vplane_take() -> (u32, u32) {
+    (SHARED.dg_vpres_ct.swap(0, Relaxed), SHARED.dg_vpres_gap.swap(0, Relaxed))
+}
+
+/// pipeline event on the LIBRARY thread. type 0 = `PF_EVENT_TYPE_FRAMEREADY` (num = fed pts).
+///
+/// **`FRAMEREADY` is NOT one callback per decoded frame on this firmware, and reading it that way
+/// is how a stutter investigation gets the wrong answer.** Kodi's Starfish path treats it as one
+/// picture per event, which is where the old "frame presented" gloss here came from. Measured on
+/// webOS 4.10.2 (2026-08-21), it is a **~5 Hz position tick**: a 1080p H264 direct play, a 4K HEVC
+/// direct play and a visibly stuttering Dolby Vision direct play all deliver it 5 times a second,
+/// 201 ms apart, to the millisecond. So [`frames`](crate::player::shared::Shared::frames) counts
+/// TICKS, not frames — which is what `pump`'s `frames >= 2` gate really means (≈400 ms of
+/// playback, not two pictures) and what `ui::stats` really shows.
+///
+/// The consequence for diagnosis: this callback can say the pipeline still believes it is
+/// presenting, and cannot say the picture is smooth. The video plane's real cadence is not
+/// observable from this process at all — the evidence for that lives in the TV's own kernel log
+/// (`kad-hdr`).
 /// Panic-guarded (unwinding into C is UB); touches only SHARED.
 #[no_mangle]
 pub extern "C" fn sf_on_event(ty: c_int, num: i64, s: *const c_char) {
@@ -761,7 +852,30 @@ fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char) {
         log(&format!("smp_cb type={ty} num={num} str={preview}"));
     }
     if ty == 0 {
-        // a frame was PRESENTED — map fed pts -> real content position
+        // a POSITION UPDATE — map fed pts -> real content position.
+        //
+        // **It is not one per presented frame, and `vtick`/`vgap` cannot see a dropped frame.**
+        // Measured 2026-08-21 across every Profile 5 run: `vtick=5 vgap=201ms`, unvarying, on
+        // clean and visibly stuttering playback alike. The pipeline emits this at 5 Hz — it is a
+        // position report, not a vsync. This comment used to say "a frame was PRESENTED" and the
+        // `dg_vpres_*` block below still describes a cadence probe; both were written from the
+        // callback's NAME rather than from its rate, and an instrument that reads a flat 201 ms
+        // through the fault it exists to catch is worse than no instrument, because it is quoted.
+        //
+        // The real per-frame cadence is only observable from LG's own tracing — `GST_DEBUG=
+        // dualsequencer:6` via `/tmp/plxnative-gstlog`, whose `push_dual` and `lxvideosink`
+        // timestamps give one line per frame. That was long avoided as perturbing; it is not, at
+        // level 6: the same scene measured 123 LUT misses uninstrumented and 122 with the trace
+        // running. Level 9 IS perturbing and is what that reputation came from.
+        //
+        // `pres_fed` below is still sound — the feed-ahead throttle wants a position, and a 200 ms
+        // granularity against a 1.6 s budget is ample. Only the TIMING half was wrong.
+        let t = vclock_ms();
+        let prev = SHARED.dg_vpres_at.swap(t, Relaxed);
+        SHARED.dg_vpres_ct.fetch_add(1, Relaxed);
+        if prev != 0 {
+            SHARED.dg_vpres_gap.fetch_max(t.saturating_sub(prev), Relaxed);
+        }
         SHARED.frames.fetch_add(1, Relaxed);
         SHARED.seen_frame.store(true, Relaxed); // session-scoped: unlike `frames`, a seek won't clear it
         SHARED.pres_fed.store(num, Relaxed); // raw fed pts, for the feed-ahead throttle

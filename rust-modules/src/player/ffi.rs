@@ -61,6 +61,7 @@ mod sys {
         pub(super) fn acb_create(app_id: *const c_char, player_type: c_int) -> c_long;
         pub(super) fn acb_bind(media_id: *const c_char);
         pub(super) fn acb_send_video_data(source_info: *const c_char) -> c_int;
+        pub(super) fn acb_send_atmos(media_id: *const c_char) -> c_int;
         pub(super) fn acb_start(x: c_long, y: c_long, w: c_long, h: c_long);
         pub(super) fn acb_unload();
         pub(super) fn acb_pause();
@@ -188,6 +189,10 @@ pub(crate) unsafe fn acb_bind(_: &MainThread, media_id: *const c_char) {
 #[inline]
 pub(crate) unsafe fn acb_send_video_data(_: &MainThread, source_info: *const c_char) -> c_int {
     sys::acb_send_video_data(source_info)
+}
+#[inline]
+pub(crate) unsafe fn acb_send_atmos(_: &MainThread, media_id: *const c_char) -> c_int {
+    sys::acb_send_atmos(media_id)
 }
 #[inline]
 pub(crate) unsafe fn acb_start(_: &MainThread, x: c_long, y: c_long, w: c_long, h: c_long) {

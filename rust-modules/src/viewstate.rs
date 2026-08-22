@@ -39,6 +39,62 @@
 //!   and [`pump`] tries again after [`RETRY_FRAMES`], the same degradation `search.rs` and
 //!   `browse.rs` apply to a refused fetch.
 //!
+//! ## Watch state follows the TITLE, not the server
+//!
+//! View state in Plex is per-server: two copies of one film on two servers are two independent
+//! items with independent `viewCount`, and the rest of this app is built on exactly that
+//! (`docs/shared-servers.md` §1). Marking something watched is nonetheless a statement about the
+//! TITLE — "I have seen this" is not a fact about a file on a particular host — so a
+//! [`Write::Watched`]/[`Write::Unwatched`] **fans out**: the worker resolves the item's portable
+//! `guid` across every registered source and repeats the write on each copy it finds.
+//!
+//! Five things about that, each a decision rather than an implementation detail:
+//!
+//! * **The identity is the `guid`, never the `ratingKey`.** Every item-shaped integer Plex issues
+//!   is server-local and dense from 1, so both servers in this household have a `ratingKey` 4
+//!   (`docs/shared-servers.md` §1) — a fan-out matched on the key would confidently mark a
+//!   DIFFERENT film watched on the other machine, which is a bug this repo has already had once
+//!   (`ui::detail`'s note on posting a borrowed item's key to our own server).
+//!   [`crate::plex::Client::find_by_guid`] is the lookup, the same one "Also available" resolves
+//!   its rows with.
+//! * **No resume position is ever COPIED from one server to another — only the watched flag
+//!   travels.** This is the subtle half. A resume offset is about a file you are streaming from one
+//!   host, and `ui::alt_sources`' module doc reasons that out at length; that reasoning stands. So
+//!   `unscrobble` IS repeated on the other copies (it is the "unwatched" end of one control, and
+//!   clearing the flag is the same statement about the title), but no `viewOffset` is read here and
+//!   none is pushed anywhere.
+//!   **One consequence has to be said plainly, because "the position does not travel" does not
+//!   sound like it:** [`Write::Unwatched`] is `/:/unscrobble`, which clears `viewCount` **and**
+//!   `viewOffset` — so marking a title unwatched DISCARDS the other copies' resume points too, the
+//!   same thing the press does to the copy in hand. That is what "I have not seen this" means, and
+//!   it is the reason [`Write::Watched`] and [`Write::Unwatched`] are not symmetric in cost: a
+//!   scrobble adds a fact, an unscrobble throws two away, on every source that holds the title.
+//! * **[`Write::RemoveFromDeck`] does NOT fan out** ([`Write::propagates`]). The deck is a
+//!   per-server surface, and taking a friend's item off *your* Continue Watching is not what that
+//!   row promises.
+//! * **Resolved at WRITE time, on the worker.** Not from a detail page's earlier cross-source
+//!   resolve: the press can come from a Home / Library / Search card menu where none ever ran, and
+//!   a behaviour that only worked after visiting a page is a behaviour that is wrong most of the
+//!   time. A press that carries no guid gets one looked up from its own `(server, ratingKey)`.
+//! * **Best-effort per source, and unconditional.** A source that is asleep or refuses costs its
+//!   own log line and nothing else — the write the user pressed has already reported, and one
+//!   unreachable share must never fail or retry it. There is no setting: this app has no
+//!   preferences screen by design.
+//!
+//! The cost is real and priced deliberately: a press on a two-source install is one write, one guid
+//! query per source, and one write per other copy — every one of them on the worker and none on the
+//! frame loop. The queue still drains ONE worker at a time, so a burst of four episodes pays it four
+//! times in sequence rather than in parallel; that serialisation is the point rather than an
+//! oversight (see [`kick`]), and the single deferred refresh at the end of a burst is unchanged.
+//!
+//! **What the other copies look like on the press frame: unchanged, and that is deliberate.**
+//! [`request`]'s optimistic edit can only reach the `(sid, rk)` the user pressed, because no other
+//! key is KNOWN yet — the resolve is what discovers them, and it is off-thread by construction.
+//! The copies are flipped locally when the fan-out reports ([`pump`] applies [`edit_local`] to each
+//! one the server took), and the hub refetch that already follows every write reconciles whatever
+//! that missed. So the copy in hand changes at once and the others change a round trip later,
+//! which is the same contract the press already has with its own server.
+//!
 //! Every static here is main-thread-only except [`MAIL`], which is the worker's single output —
 //! the discipline `pms.rs` and `metadata.rs` state for their own mailboxes.
 
@@ -68,6 +124,14 @@ impl Write {
             Write::Watched | Write::Unwatched => 0,
             Write::RemoveFromDeck => 1,
         }
+    }
+
+    /// Does this write follow the TITLE across every source, or is it about ONE server?
+    ///
+    /// Watched/Unwatched are a claim about the title, so they fan out (see the module doc); a deck
+    /// removal is a per-server surface and stays on the machine it was pressed on.
+    fn propagates(self) -> bool {
+        matches!(self, Write::Watched | Write::Unwatched)
     }
 
     /// Perform it. WORKER THREAD — `c` was resolved on the main thread at the spawn site.
@@ -101,6 +165,15 @@ struct Req {
     /// `Some("")` = the hero's own toggle (no filmstrip position to protect); `None` = the press
     /// came from Home, which has no detail page to refresh.
     detail: Option<String>,
+    /// The item's PORTABLE identity (`plex://movie/…`) **as it is on `sid` for `rk`**, or empty when
+    /// the press had none in hand — [`fan_out`] then resolves it from the pair, on the worker.
+    ///
+    /// It must be the guid OF `rk` and of nothing else. The detail page's hero toggle knows it
+    /// (`metadata::Detail::guid`, the same pair the page is mounted on), while the card context
+    /// menu's rk can be an EPISODE of the show whose guid that page happens to be holding — which
+    /// is why `app.rs` passes nothing at all rather than something close: a wrong guid does not
+    /// fail, it marks a different title watched on every other source.
+    guid: String,
 }
 
 /// Writes waiting for a worker. Main-thread only; drained one at a time by [`kick`].
@@ -115,9 +188,18 @@ static mut WANT_HUBS: bool = false;
 /// back on (empty = none). Main-thread only.
 static mut WANT_DETAIL: Option<String> = None;
 
-/// The worker's ONLY output: whether the server took the write it was given. There is at most one
-/// worker at a time, and the main thread clears the slot as it takes it.
-static MAIL: Mutex<Option<bool>> = Mutex::new(None);
+/// The worker's ONLY output: whether the item's own server took the write it was given, plus the
+/// OTHER sources' copies of the same title the fan-out also wrote — `(server, ratingKey)` each, and
+/// only the ones that were TAKEN, since by the time this is filled the answer is known and there is
+/// no reason to flip a copy the server refused. Empty for a write that does not propagate.
+#[derive(Default)]
+struct Done {
+    ok: bool,
+    also: Vec<(ServerId, String)>,
+}
+
+/// There is at most one worker at a time, and the main thread clears the slot as it takes it.
+static MAIL: Mutex<Option<Done>> = Mutex::new(None);
 
 /// ~2 s at 60 fps — the same wait `search.rs` gives a refused spawn. Without it, a process at the
 /// thread ceiling would re-attempt (and log a refusal) every single frame.
@@ -142,7 +224,13 @@ pub(crate) fn is_busy() -> bool {
 /// `Some(episode_rk)` for the detail page's filmstrip menu, `Some("")` for the detail hero's own
 /// toggle. The hub refetch happens either way — the Continue Watching shelf changes with any of
 /// these three writes, whichever screen asked for it.
-pub(crate) fn request(sid: ServerId, rk: &str, w: Write, detail: Option<String>) -> bool {
+///
+/// `guid` is the item's portable identity **if the caller already holds the one belonging to `rk`**,
+/// and `""` otherwise — see [`Req::guid`], and note that "" is a perfectly ordinary answer rather
+/// than a degraded one: the worker looks it up. It is what a watched write FANS OUT on, so that a
+/// title held by more than one source ends up watched on all of them (module doc). It is ignored
+/// for [`Write::RemoveFromDeck`], which stays on the server it was pressed on.
+pub(crate) fn request(sid: ServerId, rk: &str, w: Write, detail: Option<String>, guid: &str) -> bool {
     // `client_for`, never `client()`: the item may live on a share, and a scrobble sent to the wrong
     // machine marks a DIFFERENT film watched there (both servers number their items from 1). None is
     // a slot that is not registered, where `client()` panics — a view-state write is exactly the
@@ -156,13 +244,46 @@ pub(crate) fn request(sid: ServerId, rk: &str, w: Write, detail: Option<String>)
         return false;
     }
     // OPTIMISTIC, before the request: the press must land on the panel now, not one WAN round trip
-    // from now. Both edits are no-ops where the item does not appear, so a Home press with no detail
-    // page mounted costs one catalog walk and nothing else.
+    // from now. Only THIS copy — the other sources' keys are not known until the fan-out resolves
+    // them, which is what [`pump`] finishes the job with.
+    edit_local(sid, rk, w);
+    coalesce(sid, rk, w);
+    queue().push(Req { sid, rk: rk.to_string(), w, detail, guid: guid.to_string() });
+    kick();
+    true
+}
+
+/// Flip every LOCAL surface that describes `(sid, rk)` to what `w` is about to make true, and ask
+/// for a repaint. Both edits are no-ops where the item does not appear, so a Home press with no
+/// detail page mounted costs one catalog walk and nothing else — and those two ARE every surface
+/// that holds an editable copy: the Library grid, Search and the person page re-read rather than
+/// cache a watch flag.
+///
+/// Called from two places, for one reason. [`request`] calls it optimistically for the copy the
+/// user pressed, and [`pump`] calls it for each OTHER source's copy the fan-out reached — which
+/// cannot be known any earlier than that, because discovering them is the round trip.
+fn edit_local(sid: ServerId, rk: &str, w: Write) {
     match w {
         Write::Watched | Write::Unwatched => {
             let on = w == Write::Watched;
+            // **Every store that can be DRAWING the item, not just the hub catalog.** The first two
+            // lines were the whole edit while the context menu opened on Home and the detail page
+            // alone; it opens on the Library grid, a Search result, a person's filmography and — since
+            // 2026-08-21 — the detail page's Related shelf, and each of those keeps its own rows.
+            // Left at two, the press wrote correctly to the server and changed nothing on the screen
+            // the user was looking at until a refetch, which reads as the row having done nothing.
+            //
+            // `metadata::set_watched_local` covers TWO of those surfaces, which is why the list below
+            // is five calls and not six: the detail page holds the loaded item, its season's episodes
+            // AND the Related tiles, and that one call walks all three.
+            //
+            // All five are no-ops where the item does not appear — a walk of an empty or unrelated
+            // store — so a press from any one screen still costs about what it did.
             crate::pms::edit_item(sid, rk, crate::pms::LocalEdit::Watched(on));
             crate::metadata::set_watched_local(sid, rk, on);
+            crate::browse::set_watched_local(sid, rk, on);
+            crate::search::set_watched_local(sid, rk, on);
+            crate::person::set_watched_local(sid, rk, on);
         }
         // The one edit that can be stated with certainty: the server hides the item from the deck
         // and keeps everything else about it (`plex::Client::remove_from_continue_watching`).
@@ -171,10 +292,6 @@ pub(crate) fn request(sid: ServerId, rk: &str, w: Write, detail: Option<String>)
         }
     }
     crate::ui::idle::invalidate(); // the tick/veil/bar just changed with no spring behind it
-    coalesce(sid, rk, w);
-    queue().push(Req { sid, rk: rk.to_string(), w, detail });
-    kick();
-    true
 }
 
 /// Drop any QUEUED write for the same item and toggle — see [`Write::family`]. The write already in
@@ -219,12 +336,22 @@ fn kick() {
             ));
             continue;
         };
-        let (rk, w) = (req.rk.clone(), req.w);
+        let (sid, rk, w, guid) = (req.sid, req.rk.clone(), req.w, req.guid.clone());
         let spawned = crate::task::spawn_small("viewstate", move || {
             // Filled OUTSIDE the guard, so a panicking write still lands (as a failure) rather than
             // latching the queue behind a worker that will never report.
-            let ok = catch_unwind(move || w.perform(c, &rk)).unwrap_or(false);
-            *MAIL.lock().unwrap_or_else(|e| e.into_inner()) = Some(ok);
+            let done = catch_unwind(move || {
+                let ok = w.perform(c, &rk);
+                // The fan-out runs INSIDE this worker rather than beside it. The queue is drained
+                // one worker at a time precisely so two writes for one item cannot land out of
+                // order, and a second thread doing the other sources would put those copies outside
+                // that ordering — a watched/unwatched pair could then settle differently per server,
+                // which is the one thing this whole feature exists to stop.
+                let also = if w.propagates() { fan_out(c, sid, &rk, &guid, w) } else { Vec::new() };
+                Done { ok, also }
+            })
+            .unwrap_or_default();
+            *MAIL.lock().unwrap_or_else(|e| e.into_inner()) = Some(done);
         });
         if !spawned {
             // Nothing will ever fill the mailbox. Put the write back at the HEAD — dropping it would
@@ -250,9 +377,22 @@ fn kick() {
 /// answer, and the refresh is owed either way.
 pub(crate) fn pump() {
     let due = retry_tick();
-    if let Some(ok) = MAIL.lock().unwrap_or_else(|e| e.into_inner()).take() {
+    if let Some(done) = MAIL.lock().unwrap_or_else(|e| e.into_inner()).take() {
         if let Some(r) = unsafe { (*addr_of_mut!(SENT)).take() } {
-            crate::log(&format!("viewstate: rk={} {} ok={}", r.rk, r.w.name(), ok as i32));
+            crate::log(&format!(
+                "viewstate: rk={} {} ok={} others={}",
+                r.rk,
+                r.w.name(),
+                done.ok as i32,
+                done.also.len()
+            ));
+            // The other sources' copies could not be flipped at the press — their keys are exactly
+            // what the resolve DISCOVERS — so they are flipped here, on the main thread, and only
+            // the ones their server took. A press that reached no other source does nothing here,
+            // which is every press on a one-server install.
+            for (osid, ork) in &done.also {
+                edit_local(*osid, ork, r.w);
+            }
             // The refresh is owed whether or not the server took it: on success it is the reconcile,
             // and on failure it is what puts the optimistic edit back to whatever the server really
             // says. A server that can answer neither question leaves the shelves exactly as they
@@ -288,6 +428,128 @@ pub(crate) fn pump() {
     }
 }
 
+// ---- the fan-out: one title, every source that holds it ---------------------------------------
+
+/// One source's answer to *"do you hold this guid, and under which key?"*. `None` is **did not
+/// answer**, `Some(keys)` is what it holds — `Some(empty)` included, which is the source saying it
+/// does not have the title. The two are deliberately not collapsed, for the same reason
+/// [`crate::plex::Client::find_by_guid`] refuses to collapse them: a share that is merely asleep is
+/// not a share that lacks the film, and only one of those is a fact about a library.
+type Answer = (ServerId, Option<Vec<String>>);
+
+/// WORKER. Repeat `w` on every OTHER copy of this title, and report the ones the server took so the
+/// main thread can flip them locally. **Best-effort throughout**: nothing here can fail, delay or
+/// retry the write that has already gone out, and a source that never answers costs one log line.
+///
+/// `c` is the item's OWN client — the one [`kick`] captured on the main thread and the write itself
+/// went out on, handed down rather than re-resolved from `sid` here. That is `pms::kick`'s
+/// capture-at-the-spawn-site rule (a worker never asks the registry about the server it was given),
+/// and it also keeps [`resolved_guid`]'s failure honest: a slot re-pointed or revoked mid-write
+/// cannot turn into a log line claiming the item has no portable id.
+fn fan_out(
+    c: &crate::plex::Client,
+    sid: ServerId,
+    rk: &str,
+    guid: &str,
+    w: Write,
+) -> Vec<(ServerId, String)> {
+    let sources: Vec<ServerId> = crate::plex::server_ids().collect();
+    if sources.len() < 2 {
+        // A one-server install pays NOTHING for this feature: no guid lookup, no query, no line in
+        // the log. Checked before the lookup below for exactly that reason.
+        return Vec::new();
+    }
+    let Some(guid) = resolved_guid(c, rk, guid) else {
+        // Never a silent no-op. With two sources registered, a title that cannot be identified
+        // portably is one whose watch state WILL disagree between them, and this line is the only
+        // place that says so.
+        crate::log(&format!("viewstate: fanout SKIPPED — rk={rk} on server {} has no guid", sid.raw()));
+        return Vec::new();
+    };
+    let answers = ask_sources(&sources, &guid);
+    let mut done = Vec::new();
+    for (id, key) in fanout_targets((sid, rk), &answers) {
+        // `dst`, not a second `c`: shadowing the item's own client inside the one loop that writes
+        // to OTHER machines is how a key ends up posted to the wrong server, which is the exact
+        // failure this whole function is arranged around.
+        let Some(dst) = crate::plex::client_for(id) else { continue };
+        let ok = w.perform(dst, &key);
+        crate::log(&format!(
+            "viewstate: fanout {guid} {} → server {} rk={key} ok={}",
+            w.name(),
+            id.raw(),
+            ok as i32
+        ));
+        if ok {
+            done.push((id, key));
+        }
+    }
+    done
+}
+
+/// WORKER. The guid to fan out on: the one the press carried, or — when it carried none, which is
+/// every press from a Home / Library / Search card menu, since a catalog row (`pms::PmsMovie`) does
+/// not hold one — the item's own record, read off its own server.
+///
+/// The lookup is what makes the "resolve at write time" rule hold: the fan-out must not require a
+/// prior detail-page visit, because a card menu is a place no cross-source resolve has ever run. It
+/// costs one extra GET, on this worker, and only where a second source is registered. `None` is a
+/// server that did not answer or an item it has no portable id for — both leave the caller with a
+/// log line rather than a quiet nothing.
+fn resolved_guid(c: &crate::plex::Client, rk: &str, given: &str) -> Option<String> {
+    if !given.is_empty() {
+        return Some(given.to_string()); // the press knew it; no round trip at all
+    }
+    let guid = c.metadata(rk).map(|m| m.guid).unwrap_or_default();
+    (!guid.is_empty()).then_some(guid)
+}
+
+/// WORKER. Ask every source for its copy of `guid`, one line per source with its outcome.
+///
+/// A guid is a public metadata id and is safe to log; **a machine name, an address or a token is
+/// not**, and none appears here — a source is named by its registry slot number, which means
+/// nothing off this device. (This repo is public, and a friend's server details are theirs.)
+fn ask_sources(sources: &[ServerId], guid: &str) -> Vec<Answer> {
+    sources
+        .iter()
+        .map(|&id| {
+            let keys = crate::plex::client_for(id)
+                .and_then(|c| c.find_by_guid(guid))
+                .map(|mc| mc.metadata.iter().map(|m| m.rating_key.clone()).collect::<Vec<_>>());
+            let outcome = match &keys {
+                None => "no answer".to_string(),
+                Some(k) if k.is_empty() => "not held".to_string(),
+                Some(k) => format!("holds {}", k.len()),
+            };
+            crate::log(&format!("viewstate: fanout {guid} server {}: {outcome}", id.raw()));
+            (id, keys)
+        })
+        .collect()
+}
+
+/// The copies a fan-out must write, given what each source answered — PURE, so the identity rule is
+/// graded on the host rather than inferred from a device log.
+///
+/// The `origin` PAIR is dropped, and only that pair: the write the user pressed has already gone
+/// out on it, so repeating it is a round trip that changes nothing. A source answering with a
+/// SECOND key for the same guid is kept — the origin server included — because that is another item
+/// in that library holding the same title, and the claim being propagated is about the title.
+/// Duplicate pairs are collapsed, so a server that listed one key twice is written once.
+fn fanout_targets(origin: (ServerId, &str), answers: &[Answer]) -> Vec<(ServerId, String)> {
+    let mut out: Vec<(ServerId, String)> = Vec::new();
+    for (id, keys) in answers {
+        for k in keys.iter().flatten() {
+            let pair = (*id, k.as_str());
+            let listed = out.iter().any(|(s, e)| crate::plex::same_item((*s, e), pair));
+            if listed || crate::plex::same_item(pair, origin) {
+                continue;
+            }
+            out.push((*id, k.clone()));
+        }
+    }
+    out
+}
+
 /// Drop everything — the identity-change twin of `pms::reset`/`browse::reset`, called from the same
 /// place. A queued write belongs to the account that asked for it; one already SENT is on the wire
 /// and simply lands into a mailbox nobody is owed a refresh for.
@@ -307,22 +569,45 @@ pub(crate) fn reset() {
 mod tests {
     use super::*;
 
-    // Every test here holds the crate-wide serial lock: the queue, the mailbox and the two refresh
-    // latches are process globals, and `request` reaches into `pms` and `metadata` — whose own tests
-    // drive the same statics. `reset()` doubles as setup and teardown.
+    // Every test here that touches a STATIC holds the crate-wide serial lock: the queue, the
+    // mailbox and the two refresh latches are process globals, and `request`/`pump` reach into `pms`
+    // and `metadata` — whose own tests drive the same statics. `reset()` doubles as setup and
+    // teardown. The fan-out block at the bottom is the exception and says so there: most of its
+    // cases grade pure functions, which is why the identity rule was factored out of the worker in
+    // the first place.
     //
     // None of these calls `kick`. A host test has no registry, so a kicked write resolves no client
     // and is dropped with a log line — which is correct behaviour and useless as a subject. What is
     // worth grading is the bookkeeping around it, which is what these drive directly.
 
+    /// The two fixture slots the identity rules are graded against. They are `ServerId`s and NOT a
+    /// registry: `from_raw` is `const` exactly so a test can name a server without a table, a
+    /// client or a socket behind it (`plex::servers`). Both hold a `ratingKey` 4, which is the
+    /// measured reality of this household and the whole reason the fan-out matches on a guid.
+    const SRV_A: ServerId = ServerId::from_raw(0);
+    const SRV_B: ServerId = ServerId::from_raw(1);
+    const SRV_C: ServerId = ServerId::from_raw(2);
+
     fn req(rk: &str, w: Write, detail: Option<&str>) -> Req {
-        Req { sid: ServerId::UNSET, rk: rk.into(), w, detail: detail.map(str::to_string) }
+        Req {
+            sid: ServerId::UNSET,
+            rk: rk.into(),
+            w,
+            detail: detail.map(str::to_string),
+            guid: String::new(),
+        }
     }
 
     /// Queue a write without spawning anything — the half of [`request`] under test here.
     fn enqueue(rk: &str, w: Write, detail: Option<&str>) {
         coalesce(ServerId::UNSET, rk, w);
         queue().push(req(rk, w, detail));
+    }
+
+    /// One source's answer, as [`ask_sources`] would have built it: `Some` is an answer (empty =
+    /// "I do not hold it"), `None` is a source that never replied.
+    fn held(id: ServerId, keys: &[&str]) -> Answer {
+        (id, Some(keys.iter().map(|k| k.to_string()).collect()))
     }
 
     fn queued() -> Vec<(String, Write)> {
@@ -456,7 +741,7 @@ mod tests {
             *addr_of_mut!(WANT_DETAIL) = Some("3".into());
             *addr_of_mut!(RETRY_CD) = 9;
         }
-        *MAIL.lock().unwrap_or_else(|e| e.into_inner()) = Some(false);
+        *MAIL.lock().unwrap_or_else(|e| e.into_inner()) = Some(Done::default());
 
         reset();
 
@@ -465,5 +750,141 @@ mod tests {
         assert!(!unsafe { *addr_of!(WANT_HUBS) });
         assert!(unsafe { (*addr_of!(WANT_DETAIL)).is_none() });
         assert_eq!(unsafe { *addr_of!(RETRY_CD) }, 0);
+    }
+
+    // ---- the fan-out ---------------------------------------------------------------------
+    //
+    // The first FIVE grade PURE functions and take no lock: `fanout_targets` and `propagates` touch
+    // no static, no registry and no socket, which is the whole reason the identity rule was factored
+    // out of the worker. The last two move crate globals and hold `testlock::serial()`.
+
+    /// **The claim this feature makes.** A title held by three sources ends up written on all of
+    /// them: the press wrote its own copy, and the fan-out writes the rest — matched on the guid,
+    /// so `4` on the share is understood to be a DIFFERENT item from `4` on ours and is written
+    /// under its own key.
+    #[test]
+    fn a_watched_write_fans_out_to_every_other_sources_copy_of_the_title() {
+        let answers = [held(SRV_A, &["4"]), held(SRV_B, &["4"]), held(SRV_C, &["5274"])];
+        assert_eq!(
+            fanout_targets((SRV_A, "4"), &answers),
+            vec![(SRV_B, "4".into()), (SRV_C, "5274".into())],
+            "both other copies, each under its own server's key"
+        );
+    }
+
+    /// The copy the press ALREADY wrote is never written a second time — and it is excluded as the
+    /// PAIR, not as a bare key: the share's `4` looks identical and is a different film.
+    #[test]
+    fn the_source_the_press_was_made_on_is_not_written_twice() {
+        let answers = [held(SRV_A, &["4"]), held(SRV_B, &["4"])];
+        let from_a = fanout_targets((SRV_A, "4"), &answers);
+        let from_b = fanout_targets((SRV_B, "4"), &answers);
+        assert_eq!(from_a, vec![(SRV_B, "4".into())], "pressed on A, so only B is written");
+        assert_eq!(from_b, vec![(SRV_A, "4".into())], "…and pressed on B, only A");
+    }
+
+    /// The ordinary case, and it must cost nothing: only one source holds the title, so there is
+    /// nothing to propagate to. A source that did not ANSWER is also nothing to write — it is not
+    /// evidence either way, and guessing a key for it is how the wrong film gets marked.
+    #[test]
+    fn a_title_only_one_source_holds_produces_no_fan_out_at_all() {
+        let answers = [held(SRV_A, &["4"]), held(SRV_B, &[]), (SRV_C, None)];
+        assert!(
+            fanout_targets((SRV_A, "4"), &answers).is_empty(),
+            "B does not have it and C never said; neither is a copy to write"
+        );
+    }
+
+    /// A source listing the same key twice is written once; a source listing a SECOND key for the
+    /// guid is a second item holding that title, and the claim being propagated is about the title,
+    /// so it is written too — the item's own server included.
+    #[test]
+    fn a_duplicate_key_is_collapsed_but_a_second_copy_is_still_a_copy() {
+        let answers = [held(SRV_A, &["4", "88"]), held(SRV_B, &["4", "4"])];
+        assert_eq!(
+            fanout_targets((SRV_A, "4"), &answers),
+            vec![(SRV_A, "88".into()), (SRV_B, "4".into())],
+            "our own second copy of the film is written; B's repeated key is written once"
+        );
+    }
+
+    /// **Remove from Continue Watching does NOT follow the title.** The deck is a per-server
+    /// surface: taking an item off yours says nothing about anyone else's, and a fan-out here would
+    /// reach into a friend's server to hide a row from a shelf that is not the one you pressed.
+    #[test]
+    fn a_deck_removal_stays_on_the_server_it_was_pressed_on() {
+        assert!(Write::Watched.propagates(), "watched is a claim about the title");
+        assert!(Write::Unwatched.propagates(), "…and so is taking that claim back");
+        assert!(!Write::RemoveFromDeck.propagates(), "the deck is one server's own surface");
+    }
+
+    /// The EDIT the landing applies to a fanned-out copy: the same local flip the press made for
+    /// the copy in hand, applied to a `(server, ratingKey)` that could not be known any earlier —
+    /// and applied to that PAIR, so the identical key on our own server is left alone. Graded
+    /// through the detail store, which is the surface that shows it. (That [`pump`] really calls
+    /// this, for every copy the worker reported, is the next test — this one is about the edit.)
+    #[test]
+    fn the_landing_flips_another_sources_copy_the_press_could_not_reach() {
+        let _g = crate::testlock::serial();
+        reset();
+        // the page is mounted on the SHARE's copy, which the press on our own copy never touched
+        crate::metadata::install_for_test(Some(crate::metadata::Detail {
+            sid: SRV_B,
+            rk: "4".into(),
+            resume_ms: 900_000,
+            ..Default::default()
+        }));
+
+        edit_local(SRV_A, "4", Write::Watched); // our copy: same key, different film, no effect here
+        assert!(!crate::metadata::current().unwrap().watched, "A's 4 is not B's 4");
+
+        edit_local(SRV_B, "4", Write::Watched); // …and the fan-out's report, which is
+        assert!(crate::metadata::current().unwrap().watched);
+        assert_eq!(crate::metadata::current().unwrap().resume_ms, 0, "watched stops offering to resume");
+
+        crate::metadata::install_for_test(None);
+        reset();
+    }
+
+    /// **The landing itself, driven through [`pump`].** The test above grades what `edit_local`
+    /// does; this one grades that `pump` actually CALLS it — for every copy the worker reported,
+    /// with the write that was SENT rather than whatever was pressed since — and then clears the
+    /// in-flight slot. Without this the fan-out could report copies nobody ever applied, and every
+    /// pure test above would still be green.
+    #[test]
+    fn the_landing_applies_the_workers_whole_report_and_retires_the_write() {
+        let _g = crate::testlock::serial();
+        reset();
+        // the mounted page is the SHARE's copy — the one the press could not reach
+        crate::metadata::install_for_test(Some(crate::metadata::Detail {
+            sid: SRV_B,
+            rk: "4".into(),
+            ..Default::default()
+        }));
+
+        // a write that went out on OUR copy, and the worker's answer naming the share's
+        unsafe {
+            *addr_of_mut!(SENT) = Some(Req {
+                sid: SRV_A,
+                rk: "4".into(),
+                w: Write::Watched,
+                detail: None, // no detail re-read: this press came from a Home card menu
+                guid: "plex://movie/6856893830a4aaafd5c4291d".into(),
+            })
+        };
+        *MAIL.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some(Done { ok: true, also: vec![(SRV_B, "4".into())] });
+
+        pump();
+
+        assert!(
+            crate::metadata::current().unwrap().watched,
+            "the page mounted on the share's copy is flipped by the landing, not by the press"
+        );
+        assert!(!is_busy(), "…and the write that reported is no longer in flight");
+        assert!(MAIL.lock().unwrap_or_else(|e| e.into_inner()).is_none(), "the mailbox is drained");
+
+        crate::metadata::install_for_test(None);
+        reset();
     }
 }

@@ -6,6 +6,10 @@
 #   crash-report.sh --all        symbolize every crash in the persistent log
 #   crash-report.sh --collect    evidence bundle only (no symbolization)
 #
+#   --flavor <f>                 which INSTALL to triage: debug (default) | stable. Two builds
+#                                live on the one television with their own app ids and their own
+#                                runtime roots, so they have their own crash logs; this picks one.
+#
 # The C tracer (src/main.c) writes, per crash:
 #     *** SIGNAL <n> (<name>) addr=0x… pc=0x… lr=0x…
 #     at:  <the /proc/self/maps line containing pc or lr>     (which library faulted)
@@ -15,24 +19,73 @@
 # the only thing in the repo that does that arithmetic.
 #
 # TWO LOGS, and the difference matters after a relaunch:
-#   /tmp/plxnative-crash.log   append-only, SURVIVES the relaunch  <- read this one
-#   /tmp/plxnative-events.log  truncated at every launch           <- already gone
+#   <runtime root>/plxnative-crash.log   append-only, SURVIVES the relaunch  <- read this one
+#   <runtime root>/plxnative-events.log  truncated at every launch           <- already gone
+# The NAMES are the same for both installs; only the root differs — `/tmp` for the stable
+# install, `/tmp/<app id>` for a flavoured one. Ask for the one you mean with
+# `make -s print-rundir FLAVOR=<f>`; this script derives CRASHLOG/STDERRLOG from it below.
+# Do not carry an absolute path out of here into a by-hand `cat`: at the default flavour
+# `/tmp/plxnative-crash.log` is the OTHER install's log, it exists, it is append-only, and it
+# will hand you a perfectly plausible crash that has nothing to do with the build you are
+# triaging.
 #
-# Config: TV host from $TV, else the Makefile's TV default. Nothing about the network
-# or any credential is stored here. See .claude/skills/crash-triage/SKILL.md.
+# Config: TV host, app id, install directory and runtime root all come from `make -s print-…`.
+# Nothing about the network or any credential is stored here.
+# See .claude/skills/crash-triage/SKILL.md.
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# --flavor is stripped out of the argv before the mode is read, so it can go either side of
+# --all/--collect. Every path below depends on it: the crash log, the stderr tail, the app
+# directory the `bin:` line has to match, and which app id SAM's exit status is filtered to.
+FLAVOR=""
+_argv=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    # `shift 2` with only one positional left is a NO-OP that returns 1, and neither script sets
+    # -e — so a bare trailing `--flavor` (a shell that ate the value, a tab-completion stop) left
+    # $# unchanged and this loop spun at 100% CPU forever, printing nothing. Shift what is
+    # actually there instead.
+    --flavor)   FLAVOR="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+    --flavor=*) FLAVOR="${1#*=}"; shift ;;
+    *)          _argv+=("$1"); shift ;;
+  esac
+done
+# bash 3.2 + `set -u`: "${arr[@]}" on an EMPTY array is an unbound-variable error, and the
+# no-argument invocation (the common one) is exactly that case.
+set -- ${_argv[@]+"${_argv[@]}"}
+
+# WHICH INSTALL — asked for, never restated. The app directory used to be a literal here, which
+# was one install's path hardcoded into a tool that now has two to choose between. An unknown
+# FLAVOR is a parse-time $(error) in the Makefile, so a typo stops here.
+: "${FLAVOR:=$(make -s -C "$REPO" print-flavor)}"
+{ read -r FLAVOR; read -r APPID; read -r APPDIR; read -r RUNDIR; } < <(
+  make -s -C "$REPO" FLAVOR="$FLAVOR" print-flavor print-appid print-appdir print-rundir
+)
+# On a bad flavour make has already printed the exact complaint; do not restate it wrongly —
+# the failed `read` above left FLAVOR empty, so echoing it back here would name nothing.
+[ -n "${RUNDIR:-}" ] || { echo "cannot resolve the flavour above from $REPO/Makefile" >&2; exit 2; }
+# These two have no `print-` target of their own, and want none: the log NAMES are unchanged
+# across flavours — only the directory they sit in moved — so the runtime root is the whole story.
+CRASHLOG="$RUNDIR/plxnative-crash.log"
+STDERRLOG="$RUNDIR/plxnative-stderr.log"
+
 : "${WEBOS_SDK:=$HOME/webos-ndk/arm-webos-linux-gnueabi_sdk-buildroot}"
 ADDR2LINE="$WEBOS_SDK/bin/arm-webos-linux-gnueabi-addr2line"
 READELF="$WEBOS_SDK/bin/arm-webos-linux-gnueabi-readelf"
 OBJDUMP="$WEBOS_SDK/bin/arm-webos-linux-gnueabi-objdump"
 BIN="$REPO/pkg/plxnative"
-APPDIR=/media/developer/apps/usr/palm/applications/com.beb.plxnative
 
 tv_host() {
   [ -n "${TV:-}" ] && { echo "$TV"; return; }
-  make -C "$REPO" -pn 2>/dev/null | sed -n 's/^TV *= *//p' | head -1
+  # `print-tv` is a real recipe echoing the EXPANDED value. This used to be `make -pn`, which was
+  # broken on every checkout that keeps the address in `.tv-host`: `-p` prints a recursive
+  # variable's UNEXPANDED DEFINITION, so HOST became the literal string
+  # `$(strip $(shell cat .tv-host 2>/dev/null))`, every ssh failed on an invalid hostname, and this
+  # script — the one you reach for immediately after a crash — reported the television unreachable
+  # while it sat there answering. Same trap tools/tv-session.sh documents; this was its twin.
+  make -s -C "$REPO" print-tv 2>/dev/null
 }
 SSH_OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=8)
 HOST="$(tv_host)"
@@ -43,8 +96,9 @@ mode="${1:-last}"
 hr() { printf '%s\n' "------------------------------------------------------------"; }
 
 # ---- 0. is the TV even up? a sleeping TV mimics every failure ----------------
+echo "== triaging $APPID [$FLAVOR] on ${HOST:-<no TV address>}"
 if ! tv true; then
-  echo "TV $HOST is unreachable — wake it first (.claude/skills/wake-tv/wake-tv.sh)."
+  echo "TV ${HOST:-<no TV address>} is unreachable — wake it first (.claude/skills/wake-tv/wake-tv.sh)."
   echo "NOTE: a sleeping TV makes every log assertion fail as 'no line found'; that is"
   echo "      not a crash. Re-run whatever failed after waking before triaging."
   exit 2
@@ -56,10 +110,10 @@ if [ -f "$BIN" ]; then
   local_md5=$(md5 -q "$BIN" 2>/dev/null || md5sum "$BIN" | cut -d' ' -f1)
   tv_md5=$(tv "md5sum $APPDIR/plxnative" | cut -d' ' -f1)
   echo "  local $local_md5"
-  echo "  on-TV $tv_md5"
+  echo "  on-TV $tv_md5   ($APPDIR/plxnative)"
   if [ "$local_md5" != "$tv_md5" ]; then
     echo "  *** MISMATCH — addresses below CANNOT be symbolized against this local build."
-    echo "      Redeploy (make deploy) and reproduce, or fetch the deployed binary."
+    echo "      Redeploy (make FLAVOR=$FLAVOR deploy) and reproduce, or fetch the deployed binary."
   else
     echo "  match — symbolization is valid"
   fi
@@ -108,21 +162,22 @@ fi
 
 hr
 # ---- 3. the crash log (append-only; survives the relaunch) -------------------
-echo "== /tmp/plxnative-crash.log"
-log="$(tv 'cat /tmp/plxnative-crash.log 2>/dev/null')"
+echo "== $CRASHLOG"
+log="$(tv "cat $CRASHLOG 2>/dev/null")"
 if [ -z "$log" ]; then
   echo "  empty or absent — no traced crash since the log was last cleared."
   echo "  If the app vanished anyway, it was not a caught signal: check the SAM exit status"
-  echo "  and /tmp/plxnative-stderr.log (a Rust panic aborts via SIGABRT and prints there)."
+  echo "  and $STDERRLOG (a Rust panic aborts via SIGABRT and prints there)."
+  echo "  NB this log is per-install: a crash in the other flavour is in ITS runtime root."
 else
   if [ "$mode" = "--all" ]; then echo "$log"; else echo "$log" | awk '/\*\*\* SIGNAL/{buf=""} {buf=buf $0 "\n"} END{printf "%s", buf}'; fi
 fi
 
-[ "$mode" = "--collect" ] && { hr; echo "== stderr tail"; tv 'tail -30 /tmp/plxnative-stderr.log 2>/dev/null'; exit 0; }
+[ "$mode" = "--collect" ] && { hr; echo "== stderr tail"; tv "tail -30 $STDERRLOG 2>/dev/null"; exit 0; }
 
 # ---- 4. symbolize ------------------------------------------------------------
 hr
-echo "== symbolization"
+echo "== symbolization ($APPID [$FLAVOR], against $BIN)"
 if [ -z "$log" ]; then
   echo "  (nothing to symbolize)"
 else
@@ -132,9 +187,22 @@ else
   pc=$(echo "$block"   | sed -n 's/.*pc=0x\([0-9a-f]*\).*/\1/p' | head -1)
   lr=$(echo "$block"   | sed -n 's/.*lr=0x\([0-9a-f]*\).*/\1/p' | head -1)
   at=$(echo "$block"   | sed -n 's/^at: *//p' | head -1)
-  base=$(echo "$block" | sed -n 's/^bin: *\([0-9a-f]*\)-.*/\1/p' | head -1)
-  # the executable's text mapping (first bin: line) bounds what we can symbolize
-  top=$(echo "$block"  | sed -n 's/^bin: *[0-9a-f]*-\([0-9a-f]*\).*/\1/p' | head -1)
+  # WHICH `bin:` line. The tracer emits one per maps line naming our executable, and that path
+  # carries the app directory — so the match has to be ANCHORED on `/<id>/`. A bare substring test
+  # would not do: `com.beb.plxnative` is a PREFIX of `com.beb.plxnative.debug`, so triaging the
+  # stable install would happily accept the debug install's load base and hand addr2line an offset
+  # into the wrong binary — which does not fail, it answers with a confident wrong function.
+  # (src/main.c's tracer documents the same trap for the /plxnative name itself.)
+  binline=$(echo "$block" | grep '^bin: ' | grep -F "/$APPID/" | tail -1)
+  if [ -z "$binline" ] && echo "$block" | grep -q '^bin: '; then
+    echo "  *** this crash's bin: line does not name $APPID:"
+    echo "$block" | grep '^bin: ' | tail -1 | sed 's/^/      /'
+    echo "      Symbolizing it against $BIN would be meaningless. Re-run with the --flavor that"
+    echo "      wrote it, or clear the log if it is a leftover from an earlier install."
+  fi
+  base=$(echo "$binline" | sed -n 's/^bin: *\([0-9a-f]*\)-.*/\1/p' | head -1)
+  # the executable's text mapping bounds what we can symbolize
+  top=$(echo "$binline"  | sed -n 's/^bin: *[0-9a-f]*-\([0-9a-f]*\).*/\1/p' | head -1)
   echo "  signal : ${sig:-?}"
   echo "  faulted in: ${at:-<no maps line — pc outside every mapping>}"
 
@@ -158,13 +226,13 @@ else
       echo "  $reg 0x$val  (base 0x$base, offset $off) -> $line"
     done
   else
-    echo "  (cannot symbolize: need the bin: maps line, pkg/plxnative and the NDK addr2line)"
+    echo "  (cannot symbolize: need a bin: maps line for $APPID, pkg/plxnative and the NDK addr2line)"
   fi
 
   case "${sig%% *}" in
     4)  echo "  SIGILL: suspect codegen, not logic — check the CP15 count above and rebuild." ;;
     6)  echo "  SIGABRT: usually a Rust panic crossing the FFI boundary. The PC is inside"
-        echo "           abort() and is worthless — read /tmp/plxnative-stderr.log instead." ;;
+        echo "           abort() and is worthless — read $STDERRLOG instead." ;;
     11|7) echo "  SIGSEGV/SIGBUS: bad pointer or a wrong struct offset — the symbolized line"
         echo "           above is the site; verify every offset on that path." ;;
   esac
@@ -172,13 +240,20 @@ fi
 
 # ---- 5. corroborating evidence ----------------------------------------------
 hr
-echo "== stderr tail (Rust panics land here)"
-tv 'tail -20 /tmp/plxnative-stderr.log 2>/dev/null' || echo "  (none)"
+echo "== stderr tail (Rust panics land here: $STDERRLOG)"
+tv "tail -20 $STDERRLOG 2>/dev/null" || echo "  (none)"
 hr
-echo "== SAM exit status (768 = exit(3); a signal death shows WIFSIGNALED in the low byte)"
-tv 'grep -a exit_status /var/log/messages 2>/dev/null | tail -5' || echo "  (none)"
+echo "== SAM exit status for $APPID (768 = exit(3); a signal death shows WIFSIGNALED in the low byte)"
+# Filtered to this install, and anchored on the RIGHT: /var/log/messages carries both apps' lines,
+# and `com.beb.plxnative` is a prefix of `com.beb.plxnative.debug`, so a plain grep for the stable
+# id also returns the debug id's deaths — the other install's crash reported as this one's.
+# The dots are escaped because they are regex metacharacters, not separators, to grep.
+APPID_RE=$(printf '%s' "$APPID" | sed 's/\./\\./g')
+sam=$(tv "grep -a exit_status /var/log/messages 2>/dev/null | grep -aE '$APPID_RE([^.a-zA-Z0-9]|\$)' | tail -5")
+[ -n "$sam" ] && printf '%s\n' "$sam" || echo "  (none naming $APPID)"
 hr
 echo "== crash daemon reports (real backtraces, thanks to the re-raise)"
 tv 'ls -lt /var/log/reports/librdx/ 2>/dev/null | head -5' || echo "  (none)"
 echo
 echo "Correlate by monotonic uptime, never wall clock — pmlog's clock is hours off on this TV."
+echo "Everything above is $APPID [$FLAVOR]; pass --flavor to triage the other install."

@@ -8,7 +8,8 @@
 //! GL work lives in `gfx::cap_cycle`; this module owns the trigger, the threads, the
 //! single-slot mailbox, and the wire protocol.
 //!
-//! Enabled by `/tmp/plxnative-capture` (content: optional port, default 8910), read
+//! Enabled by the `plxnative-capture` trigger (content: optional port, else [`default_port`] —
+//! 8910 for the app users install, one higher for a developer build beside it), read
 //! once at boot like every dev trigger — and excluded from `automated_boot`'s DIAG
 //! list (dev.rs) so attaching a live view to an interactive session doesn't suppress
 //! the who's-watching picker. With no client connected, `tick()` is one relaxed
@@ -54,7 +55,35 @@ use std::time::Instant;
 
 use crate::log;
 
-const DEFAULT_PORT: u16 = 8910;
+/// The listener's port for the app users install. A flavoured install steps off it — see
+/// [`default_port`].
+const STABLE_PORT: u16 = 8910;
+
+/// Which port this INSTALL listens on when the trigger names none.
+///
+/// The shipped id keeps 8910, so every existing recipe, skill and `stream-screen.py --source app`
+/// invocation is unchanged. A second install has to move, because the failure of sharing is silent
+/// on both sides: the second `bind` fails with one line in a log nobody is tailing
+/// (`capture: bind/listen … failed`), and the operator then watches ONE install's picture while
+/// every key token they type goes into the OTHER install's FIFO. `remote-dpad.py` makes exactly
+/// this argument for the FIFO — "a key sent to the wrong install disappears without an error" —
+/// and the FIFO half was separated by the runtime root while this half was not.
+///
+/// Reachable only with a dev build on both ids at once, which `release-guard` makes deliberate
+/// rather than accidental — but the whole point of that guard having a named hatch is that
+/// somebody will use it.
+///
+/// The rule is deliberately the simplest one that can be spelled twice: there are two flavours,
+/// so there are two ports. `make -s print-appport` is the same rule for the shell (that is what
+/// `tools/tv-session.sh` passes to `stream-screen.py --app-port`), and `ci/flavor.py --selftest`
+/// compares the two. A THIRD flavour needs a decision in both places, and the selftest is what
+/// will say so.
+pub(crate) fn default_port() -> u16 {
+    match crate::paths::flavour() {
+        None => STABLE_PORT,
+        Some(_) => STABLE_PORT + 1,
+    }
+}
 const MIN_GAP_MS: u32 = 33; // ~30fps capture cadence cap
 /// Idle wait before the encoder synthesises a keepalive from the LAST captured frame.
 ///
@@ -110,7 +139,7 @@ pub(crate) fn init() {
     let Some(content) = crate::dev::read("capture") else {
         return;
     };
-    let port: u16 = content.parse().unwrap_or(DEFAULT_PORT);
+    let port: u16 = content.parse().unwrap_or_else(|_| default_port());
     let mut hs = HANDLES.lock().unwrap();
     // Both halves are required — a listener with no encoder serves an empty stream — but whatever
     // did spawn still goes into HANDLES (Option is IntoIterator) so `shutdown` joins it either way.

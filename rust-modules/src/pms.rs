@@ -127,10 +127,14 @@ pub(crate) fn movie(i: usize) -> Option<&'static PmsMovie> {
 /// **Server-scoped, and that is the whole point.** This used to scan `m.rk == rk` over one flat
 /// catalog, which is unambiguous only while every row comes from one machine. On a Continue
 /// Watching shelf merged across servers it is not: a friend's episode and one of ours can carry the
-/// same ratingKey, so a bare-key scan returns whichever row is EARLIER — and the callers are the
-/// item menu's Play-from-Start (which then plays a different film with the friend's title still in
-/// the HUD) and `detail::mount_rk` (which mounts the wrong backdrop, blur envelope and selection).
-/// -1 stays "not in the hub catalog", which every caller already handles as "off-catalog".
+/// same ratingKey, so a bare-key scan returns whichever row is EARLIER — and the caller that
+/// exposed it was `detail::mount_rk` (which then mounts the wrong backdrop, blur envelope and
+/// selection). -1 stays "not in the hub catalog", which every caller already handles as
+/// "off-catalog".
+///
+/// The item menu's Play-from-Start was the other caller and is not one any more: it carries the row
+/// it was opened on (`ui::item_menu::ITEM`), because a Library, Search or person-page tile is in no
+/// hub at all and this answered -1 for every one of them.
 pub(crate) fn index_of_rk(sid: ServerId, rk: &str) -> c_int {
     catalog()
         .iter()
@@ -478,7 +482,11 @@ fn apply_edit(b: &mut SourceBuild, sid: ServerId, rk: &str, edit: LocalEdit) -> 
 /// progress bar it had before and show no tick at all — the press would read as having done
 /// nothing. An unscrobble genuinely clears `viewOffset` server-side, and a scrobbled item leaves
 /// the deck; where the server disagrees, its own refetch is a moment behind this and wins.
-fn set_watched(m: &mut PmsMovie, on: bool) {
+///
+/// `pub(crate)` because the hub catalog stopped being the only store an optimistic edit reaches:
+/// `browse`, `search` and `person` each hold their own rows and each flips them the same way, and
+/// three copies of "which three fields" is three chances for one of them to leave the resume bar on.
+pub(crate) fn set_watched(m: &mut PmsMovie, on: bool) {
     m.watched = on;
     m.unwatched = !on;
     m.resume_ms = 0;
@@ -938,6 +946,14 @@ fn feeds_home(sid: ServerId, pinned: &[ServerId], known: &[ServerId]) -> bool {
     // is exactly how the owner found it: "it appeared on the home screen only after I watched the
     // library."
     //
+    // **"Not enumerated" is no longer the same thing as "no answer", and that is what keeps this
+    // rule honest now a friend's library defaults OFF.** While every granted library defaulted On,
+    // undecided and pinned agreed and this cost nothing. They stopped agreeing when the first-run
+    // route landed, and Home never enumerates — so the recorded answer for a source with no rows
+    // in the section table is joined in by `browse::library_pins` and arrives here as an ordinary
+    // `known`/`pinned` entry. What is left undecided is a library nobody has ever been ASKED
+    // about, which is the case this rule was written for.
+    //
     // The whole-set emptiness check below is the same rule one level up (nothing discovered
     // anywhere yet) and is kept for the boot frame before any source has answered.
     pinned.is_empty() || pinned.contains(&sid) || !known.contains(&sid)
@@ -1275,6 +1291,13 @@ pub(crate) fn pump(dt: f32) {
 /// A source that has answered with `n` placeholder rows in one shelf (test fixture). Only the SHAPE
 /// is real — `project` would have dropped these rows for having no title/poster; what the tests
 /// using it assert is the landing/merge bookkeeping, which never looks inside a row.
+///
+/// Two fields ARE filled, and both because the hero pool reads them: `art`, since `merge` skips a
+/// row with no landscape artwork (it would make a blank billboard), and a distinct `rk` per row,
+/// since the pool dedups by item IDENTITY and n rows sharing the empty key are ONE film to it. A
+/// fixture of bare defaults therefore committed shelves with an EMPTY pool — a Home that has
+/// content but cannot page — and `ui::home`'s pager test needs somewhere to page to. A fixture
+/// that cannot express the app's ordinary state quietly limits what can be tested through it.
 #[cfg(test)]
 fn build_test(n: usize) -> SourceBuild {
     SourceBuild {
@@ -1282,7 +1305,9 @@ fn build_test(n: usize) -> SourceBuild {
         shelves: vec![Shelf {
             title: "Continue Watching".into(),
             hub_id: "home.continue".into(),
-            items: (0..n).map(|_| PmsMovie::default()).collect(),
+            items: (0..n)
+                .map(|i| PmsMovie { rk: (i + 1).to_string(), art: "/art".into(), ..PmsMovie::default() })
+                .collect(),
         }],
     }
 }

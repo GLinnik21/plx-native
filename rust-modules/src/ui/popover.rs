@@ -28,6 +28,47 @@ pub(crate) fn any_open() -> bool {
     unsafe { *std::ptr::addr_of!(OPEN_COUNT) > 0 }
 }
 
+/// The element a popover was opened FROM — where it is, and how to put it back on screen.
+///
+/// A modal scrim is ONE full-screen quad, so it dims the whole page INCLUDING the card or chip the
+/// menu is about: the one thing on screen the panel is talking about recedes with everything else.
+/// Fixing that needs no new machinery — the renderer is immediate-mode and z-order IS call order,
+/// so "above the scrim" literally means "drawn after the scrim call".
+///
+/// **Both halves come from the HOST, which is why they travel together.** Only the screen that drew
+/// the element knows where it landed (a shelf's scroll spring and the cell's own focus pop are
+/// invisible from here) and only that screen can draw it again. A bare `fn()` rather than a closure,
+/// because this is stored beside the open panel in a `static mut` — the same shape `ui::nav` carries
+/// an outgoing page's teardown as.
+#[derive(Clone, Copy)]
+pub(crate) struct Opener {
+    /// The element's drawn rect in screen coords — what the panel is anchored beside. `None` when
+    /// the host has no element to point at (the hero view has no card; a headless trigger opens the
+    /// menu with nothing focused), which is a placement fallback and never an error.
+    pub(crate) rect: Option<Rect>,
+    /// Re-draw that element exactly as its page drew it, ABOVE the scrim. It builds its own root
+    /// painter, because which alpha it belongs on is the host's business: a page element rides
+    /// `nav::page_alpha`, a piece of the shared top bar rides `nav::chrome_alpha`.
+    pub(crate) redraw: fn(),
+}
+
+/// The [`Opener::redraw`] of a popover with nothing to lift — a named fn rather than a closure, so
+/// [`Opener::NONE`] can be a `const`.
+fn draw_nothing() {}
+
+impl Opener {
+    /// No element at all: the panel falls back to its own placement and the scrim covers everything,
+    /// which is exactly what every popover did before this existed.
+    pub(crate) const NONE: Opener = Opener { rect: None, redraw: draw_nothing };
+
+    /// An opener that is only a DRAW — for a panel whose placement is its own. The Library's chip
+    /// menus are anchored on the toolbar rather than on the chip's measured rect, so they have a
+    /// thing to lift and no rect to hand over.
+    pub(crate) const fn drawn(redraw: fn()) -> Opener {
+        Opener { rect: None, redraw }
+    }
+}
+
 pub(crate) struct Popover {
     open: bool,
     appear: Spring,
@@ -113,6 +154,23 @@ impl Popover {
             .alpha(a * crate::ui::nav::page_alpha())
             .translate(0.0, rise * (1.0 - a))
     }
+    /// **The app's entry-slide distance** — how far a panel rises into place on open, in px, for
+    /// [`painter`](Self::painter) and [`content_painter`](Self::content_painter).
+    ///
+    /// It is published here because this type owns the appear choreography and the value is a
+    /// property of THAT, not of any one panel: every modal in the app is meant to arrive the same
+    /// way, and a panel sliding a different distance from its neighbour reads as a different kind
+    /// of object. `rise` stays a parameter rather than becoming this constant outright, because a
+    /// panel anchored to the BOTTOM of the frame passes it negative to drop down instead.
+    ///
+    /// 20 is what `alt_sources` has always drawn. It is written down because the four alert panels
+    /// arrived with 24 / 20 / 20 / 18 — each documented in its own file as "the shared entry
+    /// distance", "matching every other popover in the app", "the shape every panel in the app
+    /// appears with". Four files claiming to match each other, and no two of them agreeing, is the
+    /// exact failure a token exists to prevent; it is the same disease as the four names the 32px
+    /// corner shipped under.
+    pub(crate) const RISE: f32 = 20.0;
+
     /// Draw the optional modal scrim (peak alpha `scrim_a`; 0 = none) and return the content
     /// painter: faded by the appear state and sliding from `rise` px below (+, rises up into
     /// place) or above (−, drops down) to its rest position. The scrim draws on its OWN root
@@ -153,6 +211,33 @@ impl Popover {
         if scrim_a > 0.0 {
             let dim = theme::scrim_black(scrim_a * self.appear() * crate::ui::nav::page_alpha());
             Painter::root().rect(Rect::FULL, 0.0, dim, dim, 0.0);
+        }
+    }
+
+    /// Draw the modal scrim, then LIFT `opener` back out of it: the element the popover was opened
+    /// FROM, re-drawn on top of the dim, so the one thing the panel is about stays at full strength
+    /// while the page around it recedes.
+    ///
+    /// **Both calls belong to the HOST PAGE**, for the reason [`scrim`](Self::scrim) already gives
+    /// and one more. The direct blur source path re-renders the page closure into a small target
+    /// before any popover draws, so a lift drawn WITH the panel would reach the visible frame and
+    /// never the snapshot — and a glass panel frosting a *dimmed* copy of the very card it is about
+    /// is exactly the class of artefact the scrim's own placement rule exists to prevent.
+    ///
+    /// **The lift is a SECOND DRAW, not a cut-out, and that is a visual decision rather than an
+    /// implementation detail.** Everything the element paints OPAQUELY comes out at exactly its own
+    /// colour, which is the point. Everything it paints with ALPHA — its soft shadow, its focus
+    /// glow, the anti-aliased edges of its label — composites twice, once dimmed under the scrim
+    /// and once over it, so those read heavier than the same element does anywhere else on the
+    /// screen. The shadow reading twice is what a raised object would really cast; the label's AA
+    /// edges thickening is the price, and it is paid from the first frame the panel is up, not
+    /// only once the scrim has ramped in. The alternative — scrim as four quads around the rect —
+    /// has neither cost and cannot follow an element whose glow and caption run outside its own
+    /// frame, which every card surface here has.
+    pub(crate) fn scrim_lifting(&self, scrim_a: f32, opener: &Opener) {
+        self.scrim(scrim_a);
+        if scrim_a > 0.0 {
+            (opener.redraw)();
         }
     }
 

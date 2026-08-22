@@ -21,6 +21,7 @@
 #include <libavcodec/avcodec.h>
 #include <libavcodec/bsf.h>
 #include <libavutil/frame.h>
+#include <libavutil/dovi_meta.h>
 
 #define DUMP(name, expr) char plx_##name[(expr) + 1];
 
@@ -77,6 +78,25 @@ DUMP(off_par_width,      offsetof(AVCodecParameters, width))
 DUMP(off_par_height,     offsetof(AVCodecParameters, height))
 DUMP(off_par_channels,   offsetof(AVCodecParameters, ch_layout))
 DUMP(off_par_sample_rate, offsetof(AVCodecParameters, sample_rate))
+DUMP(off_par_coded_side_data,    offsetof(AVCodecParameters, coded_side_data))
+DUMP(off_par_nb_coded_side_data, offsetof(AVCodecParameters, nb_coded_side_data))
+DUMP(off_par_color_primaries,    offsetof(AVCodecParameters, color_primaries))
+DUMP(off_par_color_trc,          offsetof(AVCodecParameters, color_trc))
+DUMP(off_par_color_space,        offsetof(AVCodecParameters, color_space))
+
+/* AVPacketSideData — one entry of coded_side_data. `size` is a size_t, so sizeof is
+ * architecture-dependent and this is one to re-derive rather than assume. */
+DUMP(sizeof_pkt_side_data, sizeof(AVPacketSideData))
+DUMP(off_psd_data,         offsetof(AVPacketSideData, data))
+DUMP(off_psd_size,         offsetof(AVPacketSideData, size))
+DUMP(off_psd_type,         offsetof(AVPacketSideData, type))
+
+/* AVDOVIDecoderConfigurationRecord — nine uint8_t, but its size is explicitly not public ABI. */
+DUMP(sizeof_dovi_conf,   sizeof(AVDOVIDecoderConfigurationRecord))
+DUMP(off_dovi_profile,   offsetof(AVDOVIDecoderConfigurationRecord, dv_profile))
+DUMP(off_dovi_level,     offsetof(AVDOVIDecoderConfigurationRecord, dv_level))
+DUMP(off_dovi_el,        offsetof(AVDOVIDecoderConfigurationRecord, el_present_flag))
+DUMP(off_dovi_bl_compat, offsetof(AVDOVIDecoderConfigurationRecord, dv_bl_signal_compatibility_id))
 
 DUMP(off_sub_num_rects, offsetof(AVSubtitle, num_rects))
 DUMP(off_sub_rects,     offsetof(AVSubtitle, rects))

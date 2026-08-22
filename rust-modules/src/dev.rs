@@ -40,7 +40,7 @@
 // `test` as well as the feature: `any_trigger_present` is the only caller and it is cfg'd out of a
 // release build, but the test below asserts this list's contents and runs with default features.
 #[cfg(any(feature = "devtriggers", test))]
-const DIAG: [&str; 13] = [
+const DIAG: [&str; 18] = [
     "plxnative-events.log",
     "plxnative-stderr.log",
     "plxnative-crash.log",
@@ -58,6 +58,21 @@ const DIAG: [&str; 13] = [
     // harness has to be able to observe the who's-watching picker, which a non-DIAG trigger would
     // suppress — the observer would remove the screen it was armed to watch.
     "plxnative-focus",
+    // The two OVERDRAW surfaces and the hero-ground fold ([`crate::ui::overdraw`],
+    // `docs/backdrop-blur-profiling.md` Part 5). All three are measurement knobs whose whole
+    // method is an A/B against an unmasked control leg — and a non-DIAG trigger suppresses the
+    // who's-watching picker, so the control leg and the masked leg would boot to DIFFERENT
+    // SCREENS and the difference between them would be the screen, not the class being priced.
+    // That is the exact failure this list exists to stop, and it is invisible in the numbers.
+    "plxnative-overdraw",
+    "plxnative-drawmask",
+    "plxnative-heroground",
+    // LG's own GStreamer logging ([`arm_gst_logging`]) and the file it writes. Both are DIAG for
+    // the same reason `plxnative-profile` is: the whole point is to observe a playback that would
+    // otherwise be unobservable, and a non-DIAG trigger would silently move the boot screen out
+    // from under the very session being measured.
+    "plxnative-gstlog",
+    "plxnative-gst.log",
 ];
 
 /// Is the trigger `name` (bare, without the `plxnative-` prefix) present?
@@ -104,6 +119,46 @@ macro_rules! latched_flag {
 }
 pub(crate) use latched_flag;
 
+/// **Turn on the TELEVISION'S OWN GStreamer logging** — `/tmp/plxnative-gstlog`.
+///
+/// This is the only instrument that can see inside LG's Dolby Vision chain. That chain is
+/// `dvbin` → `h265parse` → `dvsplitter` → {`lxvideodec`, `dvmdparse`} → `dualsequencer`, all of it
+/// closed, and the app's own logs stop at `Feed()`. Decompilation established that
+/// `mediapipeline::PlayerFactory::create()` calls `gst_debug_is_active()` and, when it is, honours
+/// `GST_DEBUG_FILE_OVERWRITE` / `GST_DEBUG_FILE` by installing its own log function — so these four
+/// variables are read by libpf itself and need no cooperation from us beyond setting them.
+///
+/// **Timing is the whole reason this is here and not later.** Neither `libpf` nor `libplayerAPIs`
+/// imports `gst_init`; they use LG's lazy `gst_cool_init_check`, which does not run until a player
+/// is created. `plex_run` is therefore comfortably early — but anything that arms this AFTER the
+/// first `Load` would be setting variables nobody reads again.
+///
+/// An empty trigger takes the five Dolby categories at level 6; content overrides the whole
+/// `GST_DEBUG` spec, so `dvbin:9,dualsequencer:9` or `*:3` both work. The log goes to the runtime
+/// directory beside the event log.
+///
+/// **Not free.** Level 6 on five categories is a lot of formatted I/O on an ARM TV and it is not a
+/// setting to leave armed while measuring anything about frame pacing.
+#[cfg(feature = "devtriggers")]
+pub(crate) fn arm_gst_logging() {
+    let Some(spec) = read("gstlog") else { return };
+    let spec = if spec.is_empty() {
+        "dvbin:6,dvsplitter:6,dvsplitter_algo:6,dvmdparse:6,dualsequencer:6".to_string()
+    } else {
+        spec
+    };
+    let log = crate::paths::in_runtime_dir("plxnative-gst.log");
+    // SAFETY: single-threaded here by construction — `plex_run` has not yet minted a worker, and
+    // this runs before SDL init. `set_var` is only unsound against a concurrent reader.
+    std::env::set_var("GST_DEBUG", &spec);
+    std::env::set_var("GST_DEBUG_FILE", &log);
+    std::env::set_var("GST_DEBUG_FILE_OVERWRITE", "enable");
+    std::env::set_var("GST_DEBUG_NO_COLOR", "1");
+    crate::log(&format!("gstlog: GST_DEBUG={spec} -> {}", log.display()));
+}
+#[cfg(not(feature = "devtriggers"))]
+pub(crate) fn arm_gst_logging() {}
+
 /// The trigger's CONTENT, trimmed. `Some("")` for a trigger armed as an empty file — several
 /// distinguish empty (take the default) from a value (`autoseek`, `library`, `marker`), so an
 /// empty file must not read the same as an absent one.
@@ -116,14 +171,22 @@ pub(crate) fn read(_name: &str) -> Option<String> {
     None
 }
 
-/// A raw dev payload by ABSOLUTE path — only `/tmp/sample.h264` and `/tmp/sample.h265`, which
-/// predate the `plxnative-` prefix and feed the player a local Annex-B sample instead of a stream.
+/// A raw dev payload in the runtime root, by bare NAME — only `sample.h264` and `sample.h265`,
+/// which predate the `plxnative-` prefix and feed the player a local Annex-B sample instead of a
+/// stream. Everything else here is `plxnative-<name>`; these two are the exception, so they get
+/// their own door rather than a prefix they do not have.
+///
+/// It took an ABSOLUTE path until the flavour split, which left them as the last two runtime
+/// surfaces still pinned to a shared `/tmp` while every other one had moved — harmless in itself
+/// (two installs reading one sample is fine) but a hole in the rule that every runtime surface
+/// resolves through [`crate::paths::in_runtime_dir`], and rules with holes stop being checkable.
+/// NB the file now goes in the install's own root: `$(make -s print-rundir)/sample.h264`.
 #[cfg(feature = "devtriggers")]
-pub(crate) fn read_bytes_at(abs: &str) -> Option<Vec<u8>> {
-    std::fs::read(abs).ok()
+pub(crate) fn read_sample(name: &str) -> Option<Vec<u8>> {
+    std::fs::read(crate::paths::in_runtime_dir(name)).ok()
 }
 #[cfg(not(feature = "devtriggers"))]
-pub(crate) fn read_bytes_at(_abs: &str) -> Option<Vec<u8>> {
+pub(crate) fn read_sample(_name: &str) -> Option<Vec<u8>> {
     None
 }
 
@@ -271,15 +334,26 @@ pub(crate) fn servers() -> Result<Vec<DevServer>, String> {
 /// Is ANY non-diagnostic trigger armed? Used to skip the boot who's-watching picker, so that a
 /// headless run lands on a deterministic Home.
 ///
-/// This is the surface with no path literal: it `read_dir`s the shared `/tmp` and matches by
+/// This is the surface with no path literal: it `read_dir`s the runtime root and matches by
 /// prefix, so in a release build it would still have run — and still have changed the boot
 /// screen from a squatted file — after every named read had been compiled out.
+///
+/// **A trigger is a FILE.** Nothing else here names a path, so nothing else could have caught a
+/// non-file entry whose name happens to match: a directory called `plxnative-anything` sitting in
+/// the runtime root would read as an armed trigger and permanently suppress the boot picker,
+/// silently changing which screen this install comes up on with no line in any log. That became
+/// reachable the moment two installs could share `/tmp` — the obvious name for a second install's
+/// runtime root is exactly `plxnative-<flavour>`, which is why `paths::resolve_runtime_dir` spells
+/// it with a DOT instead. Two independent reasons is the right number for a failure this quiet.
 #[cfg(feature = "devtriggers")]
 pub(crate) fn any_trigger_present() -> bool {
     std::fs::read_dir(crate::paths::runtime_dir())
         .ok()
         .map(|rd| {
             rd.filter_map(|e| e.ok()).any(|e| {
+                if !e.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                    return false;
+                }
                 let n = e.file_name().to_string_lossy().into_owned();
                 n.starts_with("plxnative-") && !DIAG.contains(&n.as_str())
             })
@@ -297,7 +371,14 @@ pub(crate) const ENABLED: bool = cfg!(feature = "devtriggers");
 
 /// The trigger's absolute path. `/tmp/plxnative-<name>` on the television; see
 /// [`crate::paths::runtime_dir`] for why a host build may put the whole namespace elsewhere.
-#[cfg(feature = "devtriggers")]
+///
+/// `test` is in the cfg beside the feature, and only for a compile reason: the test below writes
+/// through this door rather than through a literal, and it guards itself at RUNTIME on
+/// [`ENABLED`] — but a runtime guard cannot stop a call from being compiled, so without this the
+/// whole crate failed to build under `--no-default-features --test` (E0425, "cannot find function
+/// `path` in module `super`"). A shipping release build is unchanged: `cfg(test)` is false there,
+/// and the fn is gone exactly as before.
+#[cfg(any(feature = "devtriggers", test))]
 fn path(name: &str) -> std::path::PathBuf {
     crate::paths::in_runtime_dir(&format!("plxnative-{name}"))
 }
@@ -321,6 +402,29 @@ mod tests {
         }
     }
 
+    /// A DIRECTORY whose name matches the trigger prefix must not read as an armed trigger.
+    ///
+    /// The failure it prevents is silent and permanent: `any_trigger_present` suppresses the boot
+    /// who's-watching picker, so a squatted entry changes which screen this install comes up on
+    /// with nothing logged anywhere. It became reachable when two installs started sharing `/tmp`
+    /// — the second install's runtime root is a directory sitting right there.
+    #[test]
+    fn a_directory_is_not_an_armed_trigger() {
+        if !super::ENABLED {
+            return; // a release build reads nothing
+        }
+        // `any_trigger_present` scans the WHOLE runtime root, so it sees every other test's
+        // triggers too — `empty_trigger_is_some_not_none` arms a real one in the same directory.
+        // The runtime root is a crate global in exactly the sense `testlock` exists for.
+        let _g = crate::testlock::serial();
+        let d = crate::paths::in_runtime_dir("plxnative-notatrigger");
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let armed = super::any_trigger_present();
+        let _ = std::fs::remove_dir_all(&d);
+        assert!(!armed, "a directory named {} read as an armed trigger", d.display());
+    }
+
     /// An empty trigger file and an absent one mean different things to several call sites
     /// (`autoseek` empty = one seek to 140s; `navosc` empty = Home <-> the first library section).
     #[test]
@@ -328,6 +432,9 @@ mod tests {
         if !super::ENABLED {
             return; // a release build reads nothing; nothing to distinguish
         }
+        // Arms a real trigger in the shared runtime root, which is what
+        // `a_directory_is_not_an_armed_trigger` scans — they must not overlap.
+        let _g = crate::testlock::serial();
         // Write through `path()` itself, NOT a literal and NOT `env::temp_dir()`. The literal was
         // right when the namespace was always `/tmp/plxnative-…`, but it stops meeting the read as
         // soon as an instance root is in effect; `env::temp_dir()` never met it at all, since on

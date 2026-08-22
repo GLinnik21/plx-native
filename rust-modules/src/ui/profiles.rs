@@ -99,9 +99,17 @@ pub fn enter() {
     s.footer = false;
 }
 
+/// The footer control's FOCUS POP ([`crate::ui::widgets::CtlPop`]) — one control, and it still gets
+/// a spring rather than a bare `if focused`: focus moves between the avatar row and this footer, so
+/// the pill has to animate BOTH ways, and it is the only mark it has (a lone capsule below a row of
+/// faces has nothing beside it to be compared against).
+static mut FOOTER_POP: crate::ui::widgets::CtlPop<1> = crate::ui::widgets::CtlPop::new();
+
 pub fn update(dt: f32) {
     let s = scene();
     s.spin_ms += dt * 1000.0;
+    // …closed while the PIN pad is up, which is also when the control is not drawn at all.
+    unsafe { (*std::ptr::addr_of_mut!(FOOTER_POP)).step((s.footer && !s.pad.open).then_some(0), dt) };
     if s.pad.open {
         if s.pad.error_ms > 0.0 {
             s.pad.error_ms = (s.pad.error_ms - dt).max(0.0);
@@ -192,6 +200,7 @@ pub fn draw() {
     if !s.pad.open {
         crate::ui::widgets::Button::new(c"Sign out".as_ptr(), theme::size::BODY, footer_rect())
             .focused(s.footer)
+            .scale(unsafe { std::ptr::addr_of!(FOOTER_POP).as_ref().unwrap().scale(0) })
             .draw(&env, p);
     }
 
@@ -498,9 +507,15 @@ pub fn key(sym: c_uint, wcode: c_uint) {
     if is_back(sym, wcode) {
         // BACK leaves the picker exactly the way choosing the ALREADY-ACTIVE profile does:
         // `auth::cancel` re-arms the resolved-credentials handoff with the persisted session, the
-        // main loop installs it and routes Home. It reports false — and we swallow the key — when
+        // main loop installs it and routes Home. It reports false — and we swallow the key — in the
+        // two cases where that would not be backing out to anything the user is entitled to: when
         // there is no usable session behind the picker (the roster shown straight after a sign-out,
-        // where the picker really is a dead end you must choose your way out of).
+        // where the picker really is a dead end you must choose your way out of), and at the BOOT
+        // picker when the stored session is behind a PIN — either a protected profile or one that
+        // names no profile at all, whose token is then the owner's (where resuming silently is the
+        // bypass `auth::cancel`'s doc describes). Both leave the user with a fully working picker
+        // and the Sign out pill under it, which is why swallowing is enough and no read-out is
+        // owed: nothing has been attempted and failed, the key simply does not act here.
         auth::cancel();
         return;
     }

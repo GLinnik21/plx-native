@@ -98,7 +98,14 @@ jobs:
         run: make WEBOS_SDK='${{ steps.ndk.outputs.sdk-dir }}' -j"$(nproc)"
 
       - name: Package
-        run: make ipk WEBOS_SDK='${{ steps.ndk.outputs.sdk-dir }}'
+        # DELIBERATELY the developer id. This artifact is a DEV build — the whole point of a PR
+        # package is that you can sideload it with the `/tmp` trigger surface on — and
+        # `release-guard` refuses a dev build on the id users install, correctly. So the artifact
+        # below is `com.beb.plxnative.debug_*.ipk` and installs BESIDE anyone's real one rather
+        # than over it. The release job is the only place `FLAVOR=stable` belongs (release.yml).
+        # Named explicitly rather than inherited, so this is a decision on the page instead of a
+        # default that moves if the Makefile's does.
+        run: make ipk FLAVOR=debug WEBOS_SDK='${{ steps.ndk.outputs.sdk-dir }}'
 
       - name: ELF assertions
         run: ./ci/check-elf.sh
@@ -168,6 +175,11 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: plxnative-${{ github.sha }}
+          # NB no `pkg/ipk.sha256` here: `make ipk` writes that file only for the stable flavour,
+          # because it is a published RELEASE ASSET NAME quoted verbatim in every release note's
+          # verification command. This job packages the developer id, so listing it would be a dead
+          # path on a clean runner — `upload-artifact` warns and moves on, which is how it would
+          # have stayed dead unnoticed. (A `#` line inside the `path: |` block below would NOT be a
+          # comment — that is a literal block scalar, and every line in it is a path.)
           path: |
             pkg/*.ipk
-            pkg/ipk.sha256

@@ -133,12 +133,21 @@ Fixed scene, vary only thermal history, and log the **ordered** `pres=` series. 
 
 **Arm** (clear first — `make run` clears only the event log, so a stale trigger silently changes the screen):
 
+> **The `/tmp/plxnative-…` paths in this section predate the two-install split: they are the STABLE
+> install's runtime root.** A flavoured install puts the same names under `$(make -s print-rundir
+> FLAVOR=<f>)` — `/tmp/com.beb.plxnative.debug` at the tracked `FLAVOR ?= debug` default — so
+> pasted as bare `/tmp/…` this arms one install while `make run` launches the other, and the ordered
+> `pres=` series comes off an unarmed screen. The block below is therefore scoped with
+> `R=$(make -s print-rundir)`, which is also what keeps its `rm -f` from reaching across and wiping
+> the other install's triggers; the legs and the numbers are unchanged. See `docs/two-installs.md`.
+
 ```
-rm -f /tmp/plxnative-*         # keeps the 3 append-only *.log files
-printf '2012' > /tmp/plxnative-detail      # detail-transition's rk, manifest.json:62
-touch  /tmp/plxnative-detailosc            # permanent scroll, app.rs:484 / :3362
-printf '0.01' > /tmp/plxnative-framedrop   # log EVERY frame — 0 is filtered out at app.rs:526
-touch  /tmp/plxnative-noidle               # pin present==loop so pres= is unambiguous
+R=$(make -s print-rundir)                  # this install's runtime root, never bare /tmp
+rm -f $R/plxnative-*                       # keeps the 3 append-only *.log files
+printf '2012' > $R/plxnative-detail        # detail-transition's rk, manifest.json:62
+touch  $R/plxnative-detailosc              # permanent scroll, app.rs:484 / :3362
+printf '0.01' > $R/plxnative-framedrop     # log EVERY frame — 0 is filtered out at app.rs:526
+touch  $R/plxnative-noidle                 # pin present==loop so pres= is unambiguous
 ```
 
 `plxnative-noidle` is in the DIAG list (`app.rs:386`) so it does **not** suppress the boot picker — `plxnative-detail` is what does that. Arming noidle alone lands you on the profiles picker.

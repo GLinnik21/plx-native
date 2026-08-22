@@ -28,12 +28,20 @@
 //! the sub-line *whose*, the badge *what you would get*.
 //!
 //! **OK NAVIGATES.** It opens that server's own page for the film; it does not swap the copy under
-//! you. That is also what settles the per-server progress problem: watch state does not travel
-//! between servers, so a design that switched the copy in place would have had to explain a resume
-//! position that jumped. Navigating makes it self-evident — you are on a different page, and it
-//! says where you are in *that* copy. Like every other menu here this module only REPORTS an
-//! [`Action`]; the detail page performs it (through its own `take_open_request` latch, the same one
-//! its Related shelf and episode filmstrip raise).
+//! you. That is also what settles the per-server progress problem: **a RESUME POSITION does not
+//! travel between servers** — it is about a file you are streaming from one host — so a design that
+//! switched the copy in place would have had to explain a resume position that jumped. Navigating
+//! makes it self-evident: you are on a different page, and it says where you are in *that* copy.
+//! Like every other menu here this module only REPORTS an [`Action`]; the detail page performs it
+//! (through its own `take_open_request` latch, the same one its Related shelf and episode filmstrip
+//! raise).
+//!
+//! This paragraph said "watch state does not travel between servers" flat, and half of that stopped
+//! being true when [`crate::viewstate`] began fanning a Mark as Watched out over every source
+//! holding the guid. The two halves are not the same claim and the split is the whole point: the
+//! **watched flag follows the TITLE** (having seen a film is not a fact about a host), while the
+//! **offset stays with the copy**. Nothing here changed — this panel still navigates rather than
+//! swaps, for the reason above, which is about the offset.
 //!
 //! **Ordering is the copy that PLAYS first**, then what a viewer would prefer: higher quality
 //! first, and at equal quality yours before a friend's, because yours cannot go offline mid-film.
@@ -127,7 +135,7 @@ const EDGE: f32 = theme::space::XL;
 /// The page recedes; it is not blanked, and the hero behind stays readable.
 const SCRIM_A: f32 = 0.45;
 /// How far the panel rises into place, matching those same chip menus.
-const RISE: f32 = 20.0;
+const RISE: f32 = Popover::RISE;
 
 /// The item the store describes, as the page's own mounted ratingKey. It does two jobs: with
 /// [`FOR_SID`] it is the mailbox key [`install`] matches a landing against (a guid resolve that

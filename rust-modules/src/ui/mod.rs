@@ -9,6 +9,7 @@
 
 use std::os::raw::{c_char, c_int};
 
+pub mod about_panel; // the detail About footer's CARD, read in full — the glass alert (Alert Views §1A)
 pub mod account_menu; // Home top-left profile popover (change profile / sign out)
 pub mod alt_sources; // "Also available": the same item on a second pinned source, as a picker
 pub mod anim;
@@ -16,6 +17,7 @@ pub mod card_row;
 pub mod chapters_panel;
 pub mod consts;
 pub mod detail;
+pub mod exit_alert; // the app's ONE decision alert: BACK at Home's root asks before it quits
 pub mod fmt; // shared duration/clock display formatters
 pub mod hero_logo; // the ONE clearLogo sizing rule + its fallback-to-title band (both heroes, the compact title)
 pub mod glassload; // dev-only backdrop-glass LOAD DIAL + the blurred-route-transition prototype
@@ -28,8 +30,11 @@ pub mod label;
 pub mod library; // the Library browse screen (poster wall + server-driven sort/filter)
 pub mod more_menu; // the player's `…` overflow popover (holds the Stats for nerds toggle)
 pub mod login; // sign-in screen (QR / short code) for the plex.tv account flow
+pub mod onboard; // first-run route: which sources feed Home, asked once per PROFILE
+pub mod source_list; // the Sources ROW MODEL, shared by the Library panel and that route
 pub mod nav; // ROUTE-level page cross-fade + the continuous-chrome rule (the tab bar rides across)
 pub mod person; // the person / actor page (Apple-TV shape) — opened from a detail page's cast row
+pub mod person_bio; // ...and that page's bio ALERT panel — the full biography behind its `MORE` mark
 pub mod search; // the Search screen: field + recents + typed result shelves (the last pill in the top strip)
 pub mod profiles; // "who's watching" Plex Home picker + PIN keypad
 pub mod player_hud;
@@ -37,12 +42,14 @@ pub mod skip_pill; // in-player Skip Intro / Skip Credits pill (server marker dr
 pub mod stats; // the "Stats for nerds" diagnostics overlay — how bug reports leave a stranger's TV
 pub mod popover; // shared modal open/appear choreography (track menu / info / chapters / account)
 pub mod press; // tvOS-style click: OK-down dips the focused card, OK-up springs it back + activates
+pub mod overdraw; // dev-only DRAW-CLASS ledger + mask — the attribution instrument (docs/backdrop-blur-profiling.md Part 5)
 pub mod profile;
 pub mod table;
 pub mod text_view;
 pub mod testpat; // dev-only SYNTHETIC GROUNDS — the page's picture replaced by a chosen pattern
 pub mod theme;
 pub mod track_menu;
+pub mod tracks_panel; // the detail page's "Track information" file inspector (Alert Views §1B)
 pub mod trail; // the BACK trail: which pages are behind the one on screen (app.rs pops it)
 pub mod up_next; // end-of-episode Up Next card + auto-advance countdown
 pub mod widgets;
@@ -360,9 +367,26 @@ impl Painter {
     }
     /// Soft drop-shadow of `r` (corner `radius`, `w/2` = circle) with `blur` px of penumbra, its box
     /// pushed down `off_y` px. Draw it BEFORE the tile art so the tile sits over its own shadow.
+    ///
+    /// **For an OPAQUE occluder only.** The shader throws away a box-shaped interior inset by
+    /// `radius + 1` (see `FS_SHADOW`), which leaves a full-strength band of ink under the
+    /// occluder's own rim, ending in a hard step. A tile hides that; anything you can see through
+    /// wears it as a drawn frame — use [`shadow_outside`](Self::shadow_outside) there.
     pub fn shadow(self, r: Rect, radius: f32, blur: f32, off_y: f32, col: [f32; 4]) {
         let c = self.c(col);
-        crate::gfx::draw_shadow(r.x + self.dx, r.y + self.dy + off_y, r.w, r.h, radius, blur, off_y, c.as_ptr());
+        crate::gfx::draw_shadow(r.x + self.dx, r.y + self.dy + off_y, r.w, r.h, radius, blur, off_y, -1.0, c.as_ptr());
+    }
+    /// [`shadow`](Self::shadow) for a **TRANSLUCENT** occluder: the ink stops at the occluder's own
+    /// rounded outline (corner `radius`), so nothing is drawn under the panel to show through it.
+    /// Everything outside is unchanged — the same analytic penumbra falling off over `blur`.
+    ///
+    /// The only user today is [`widgets::text_block_highlight`](crate::ui::widgets::text_block_highlight),
+    /// whose 7% wash was showing `shadow`'s under-the-rim band as a frame; the cut is worth its own
+    /// entry point rather than a flag on the tile path, because a tile pays a rounded-rect SDF for
+    /// a region it covers anyway.
+    pub fn shadow_outside(self, r: Rect, radius: f32, blur: f32, off_y: f32, col: [f32; 4]) {
+        let c = self.c(col);
+        crate::gfx::draw_shadow(r.x + self.dx, r.y + self.dy + off_y, r.w, r.h, radius, blur, off_y, radius, c.as_ptr());
     }
     /// Standalone soft drop-shadow under a tile (its own [`FS_SHADOW`](crate::gfx) pass) — used by the
     /// profile chip, whose avatar isn't a folded card composite. Every tile carries a shadow that GROWS
@@ -450,6 +474,30 @@ impl Painter {
         let pad = blur + 1.0; // inflate for the symmetric penumbra (+1 AA margin)
         crate::gfx::draw_tex_carded(tex, r.x + self.dx, r.y + self.dy, r.w, r.h, rad, t.as_ptr(),
             theme::CARD_SHEEN_W, self.sheen_rim().as_ptr(), pad, blur, shcol.as_ptr());
+    }
+    /// THE HERO GROUND IN ONE PASS: the backdrop art with both scrim fields evaluated on it,
+    /// instead of the art and then four blended gradient quads over the same 2.78M fragments.
+    /// [`crate::ui::widgets::hero_ground`] is the component — reach for that, not for this — and
+    /// `fs_hero.frag` carries the algebra that makes it the same picture rather than a cheaper one.
+    ///
+    /// `ramp` is `(y0, knee, alpha_at_knee, alpha_at_foot)` and `wedge` is
+    /// `(peak, width, feather_top, feather_knee)`, both in authored pixels. The two fields' alphas
+    /// take the cascade here, exactly as the layers they replace took it through [`Self::c`] — the
+    /// composite is not linear in them, so folding it anywhere else would quietly change the mix.
+    pub fn hero_ground(self, tex: u32, r: Rect, art_a: f32, ramp: [f32; 4], wedge: [f32; 4]) {
+        let tint = self.c(theme::with_a(theme::TINT_WHITE, art_a));
+        let ink = self.c(theme::scrim(1.0));
+        crate::gfx::draw_hero_ground(
+            tex,
+            r.x + self.dx,
+            r.y + self.dy,
+            r.w,
+            r.h,
+            tint.as_ptr(),
+            ink.as_ptr(),
+            [ramp[0], ramp[1], ramp[2] * self.a, ramp[3] * self.a],
+            [wedge[0] * self.a, wedge[1], wedge[2], wedge[3]],
+        );
     }
     /// Bilinear 4-corner gradient. The written pixels stay OPAQUE — this primitive REPLACES what is
     /// under it (see [`AmbientWash`](crate::ui::widgets::AmbientWash)) — but it is no longer blind
@@ -545,6 +593,56 @@ pub fn on_axis(start: f32, extent: f32, span: f32, lead: f32) -> bool {
 #[inline]
 pub fn hero_alpha(progress: f32, fade_end: f32) -> f32 {
     (1.0 - progress / fade_end).clamp(0.0, 1.0)
+}
+
+/// The hero synopsis' line pitch. See [`hero_synopsis`].
+pub const HERO_SYN_LEAD: f32 = 36.0;
+/// Lines of blurb before it elides — the mock's own band, and both heroes'. Past it the flow would
+/// walk the action row down the screen (detail) or the pinned row into the peeking shelf (home).
+pub const HERO_SYN_MAXLINES: usize = 3;
+
+/// The height an `n`-line hero synopsis BLOCK occupies — `TextView::measure_h`'s answer, written
+/// down so a layout contract can quote it without a font.
+///
+/// Three places need it and none of them can measure: home's own "the clearLogo must not reach the
+/// tab bar" test, `widgets`' hero-scrim legibility table, and any reader of either. All three used
+/// to carry the literal `87.0` with `// three size::MICRO lines at the hero's 29px leading` beside
+/// it, which is a comment that goes stale silently the moment the rung or the leading moves — as
+/// both just did.
+#[inline]
+pub fn hero_syn_h(lines: usize) -> f32 {
+    lines as f32 * HERO_SYN_LEAD
+}
+
+/// **The ONE hero synopsis** — the rung, the leading, the ink and the line cap, in one place,
+/// because BOTH full-bleed heroes draw this same role and for one release they did not agree about
+/// any of it: home was `size::MICRO` 22 / leading 29 / [`theme::TEXT_SECONDARY`] while detail was
+/// `size::LABEL` 26 / 36 / [`theme::TEXT_READING`]. They were identical until `aa598bf2` ("ui: the
+/// detail screen, redrawn from the design project's mockup") moved detail alone.
+///
+/// **Detail's values won, and they are these.** The detail screen is the mock-derived side — the
+/// design canvas for it specifies `--size-label` 26px, `--leading-synopsis` 36px and `--text-reading`
+/// explicitly — while the home canvas has no hero at all and so cannot contradict it. Its own note
+/// (*"lifted to LABEL 26/36, it read too small on-device at MICRO 22"*) is a device reading, which is
+/// the kind of evidence that settles this. The recorded owner directive against MICRO — *"bigger,
+/// but smaller than the meta line"* — still holds at LABEL 26, because the meta line above is
+/// `size::BODY` 28.
+///
+/// `lead` is an optional bold run before the first word (detail's `"S2, E3 · Laura:"` episode
+/// prefix); empty means none, which is home's case and a movie's.
+///
+/// Shared by each hero's flow MEASURE and its PAINT, so within a screen the two cannot diverge
+/// either — that was already this function's job on the detail page, and it is now the same
+/// function.
+pub fn hero_synopsis<'a>(summary: &'a str, lead: &'a str) -> text_view::TextView<'a> {
+    let v = text_view::TextView::new(summary, theme::size::LABEL, theme::TEXT_READING)
+        .leading(HERO_SYN_LEAD)
+        .max_lines(HERO_SYN_MAXLINES);
+    if lead.is_empty() {
+        v
+    } else {
+        v.lead(lead, theme::TEXT_PRIMARY)
+    }
 }
 
 /// A vertical scroll-into-content container: owns the scroll `Spring` + the cumulative child flow

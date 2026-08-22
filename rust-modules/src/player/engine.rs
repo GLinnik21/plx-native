@@ -19,16 +19,44 @@ use std::sync::atomic::{AtomicI64, Ordering};
 
 // BUFFERSTREAM Load payloads (ss4s shape). Video-only for the local sample path;
 // video+AC3 for streaming. Copied VERBATIM from playback.c.
-const PAYLOAD_V: &str = r#"{"args":[{"mediaTransportType":"BUFFERSTREAM","option":{"appId":"com.beb.plxnative","externalStreamingInfo":{"contents":{"codec":{"video":"H264"},"esInfo":{"pauseAtDecodeTime":false,"ptsToDecode":0,"seperatedPTS":true},"format":"RAW","provider":"plxnative"},"streamQualityInfo":true,"audioSync":true,"restartStreaming":false,"bufferingCtrInfo":{"bufferMaxLevel":0,"bufferMinLevel":0,"preBufferByte":0,"qBufferLevelAudio":0,"qBufferLevelVideo":0,"srcBufferLevelAudio":{"minimum":1,"maximum":32768},"srcBufferLevelVideo":{"minimum":1,"maximum":8388608}}},"needAudio":false,"queryPosition":false,"lowDelayMode":true,"transmission":{"contentsType":"LIVE"},"adaptiveStreaming":{"audioOnly":false,"maxWidth":1920,"maxHeight":1080,"maxFrameRate":30}}}]}"#;
+//
+// `@APPID@` is substituted by `with_app_id` at the single choke point every variant passes
+// through. It is a PLACEHOLDER rather than the literal it used to be because two installs can now
+// sit on one television (`paths::app_id`), and a developer build announcing the SHIPPED app's id
+// would be a false statement to the media pipeline about which application it is.
+//
+// WHAT THIS FIELD IS ACTUALLY FOR IS NOT KNOWN HERE, and the distinction matters because the two
+// app ids this app sends travel different paths into different libraries:
+//
+//   * the ACB id (`acb_create` -> `AcbAPI_initialize`) has real evidence behind it. LG's own
+//     `libcbe` keys media metadata on `{"appId":…,"pipelineId":…}` — recovered from this
+//     television's binaries, `docs/dolby-vision.md` §3 — so the id reaches a subsystem that reads
+//     it. What it does with it there is still inferred, not traced.
+//   * `option.appId` in the Load payload, this key, has NOT been traced into `libpf` at all.
+//     `tools/fwcompat.py` is a symbol inventory and a JSON key path lives in `.rodata`, so no tool
+//     in this repository can answer it; `.claude/skills/decompile-tv-lib/` is the only route, and
+//     `docs/two-installs.md` §7 states the question rather than an answer.
+//
+// So: sending the true id is the conservative move on a field whose consumer is unknown, not a fix
+// for a mechanism anyone here has read. The failure it guards against — if it guards against one —
+// is a black video plane with working audio and no error line anywhere, which is why it is worth
+// making correct by construction rather than finding out on a television.
+//
+// A placeholder rather than `format!`-ing the constant: `with_window_id` splices `option.windowId`
+// onto this exact key, and deriving both from one source is what makes it impossible for the
+// anchor and the payload to drift apart. For the shipped app the composed bytes and the key order
+// are identical to what every release so far sent — asserted in the tests below, because the
+// webOS 5+ splice path is one this project's 4.5 dev set cannot exercise.
+const PAYLOAD_V: &str = r#"{"args":[{"mediaTransportType":"BUFFERSTREAM","option":{"appId":"@APPID@","externalStreamingInfo":{"contents":{"codec":{"video":"H264"},"esInfo":{"pauseAtDecodeTime":false,"ptsToDecode":0,"seperatedPTS":true},"format":"RAW","provider":"plxnative"},"streamQualityInfo":true,"audioSync":true,"restartStreaming":false,"bufferingCtrInfo":{"bufferMaxLevel":0,"bufferMinLevel":0,"preBufferByte":0,"qBufferLevelAudio":0,"qBufferLevelVideo":0,"srcBufferLevelAudio":{"minimum":1,"maximum":32768},"srcBufferLevelVideo":{"minimum":1,"maximum":8388608}}},"needAudio":false,"queryPosition":false,"lowDelayMode":true,"transmission":{"contentsType":"LIVE"},"adaptiveStreaming":{"audioOnly":false,"maxWidth":1920,"maxHeight":1080,"maxFrameRate":30}}}]}"#;
 // NB: pauseAtDecodeTime stays FALSE here. Kodi uses true, but only alongside its decode-time
 // trigger machinery (setTimeToDecode); with true and no trigger the decoder never starts
 // (verified on-device: Load+Play OK but zero frames decoded). The feed-ahead throttle
 // (MAX_FEED_AHEAD_NS in feed_stream) is the anti-stall mechanism; the other Kodi payload
 // flags are being re-introduced one at a time.
-const PAYLOAD_AV: &str = r#"{"args":[{"mediaTransportType":"BUFFERSTREAM","option":{"appId":"com.beb.plxnative","externalStreamingInfo":{"contents":{"codec":{"video":"H264","audio":"AC3"},"esInfo":{"pauseAtDecodeTime":false,"ptsToDecode":0,"seperatedPTS":true},"format":"RAW","provider":"plxnative"},"streamQualityInfo":true,"audioSync":true,"restartStreaming":false,"bufferingCtrInfo":{"bufferMaxLevel":0,"bufferMinLevel":0,"preBufferByte":0,"qBufferLevelAudio":0,"qBufferLevelVideo":0,"srcBufferLevelAudio":{"minimum":1,"maximum":1048576},"srcBufferLevelVideo":{"minimum":1,"maximum":8388608}}},"needAudio":true,"queryPosition":false,"lowDelayMode":false,"transmission":{"contentsType":"LIVE"},"adaptiveStreaming":{"audioOnly":false,"maxWidth":1920,"maxHeight":1080,"maxFrameRate":30}}}]}"#;
+const PAYLOAD_AV: &str = r#"{"args":[{"mediaTransportType":"BUFFERSTREAM","option":{"appId":"@APPID@","externalStreamingInfo":{"contents":{"codec":{"video":"H264","audio":"AC3"},"esInfo":{"pauseAtDecodeTime":false,"ptsToDecode":0,"seperatedPTS":true},"format":"RAW","provider":"plxnative"},"streamQualityInfo":true,"audioSync":true,"restartStreaming":false,"bufferingCtrInfo":{"bufferMaxLevel":0,"bufferMinLevel":0,"preBufferByte":0,"qBufferLevelAudio":0,"qBufferLevelVideo":0,"srcBufferLevelAudio":{"minimum":1,"maximum":1048576},"srcBufferLevelVideo":{"minimum":1,"maximum":8388608}}},"needAudio":true,"queryPosition":false,"lowDelayMode":false,"transmission":{"contentsType":"LIVE"},"adaptiveStreaming":{"audioOnly":false,"maxWidth":1920,"maxHeight":1080,"maxFrameRate":30}}}]}"#;
 // Phase 0 HEVC probe payload — identical to PAYLOAD_V but codec video "H265", to isolate
 // the single variable: does StarfishMediaAPIs BUFFERSTREAM decode HEVC on this panel?
-const PAYLOAD_H265: &str = r#"{"args":[{"mediaTransportType":"BUFFERSTREAM","option":{"appId":"com.beb.plxnative","externalStreamingInfo":{"contents":{"codec":{"video":"H265"},"esInfo":{"pauseAtDecodeTime":false,"ptsToDecode":0,"seperatedPTS":true},"format":"RAW","provider":"plxnative"},"streamQualityInfo":true,"audioSync":true,"restartStreaming":false,"bufferingCtrInfo":{"bufferMaxLevel":0,"bufferMinLevel":0,"preBufferByte":0,"qBufferLevelAudio":0,"qBufferLevelVideo":0,"srcBufferLevelAudio":{"minimum":1,"maximum":32768},"srcBufferLevelVideo":{"minimum":1,"maximum":8388608}}},"needAudio":false,"queryPosition":false,"lowDelayMode":true,"transmission":{"contentsType":"LIVE"},"adaptiveStreaming":{"audioOnly":false,"maxWidth":3840,"maxHeight":2160,"maxFrameRate":60}}}]}"#;
+const PAYLOAD_H265: &str = r#"{"args":[{"mediaTransportType":"BUFFERSTREAM","option":{"appId":"@APPID@","externalStreamingInfo":{"contents":{"codec":{"video":"H265"},"esInfo":{"pauseAtDecodeTime":false,"ptsToDecode":0,"seperatedPTS":true},"format":"RAW","provider":"plxnative"},"streamQualityInfo":true,"audioSync":true,"restartStreaming":false,"bufferingCtrInfo":{"bufferMaxLevel":0,"bufferMinLevel":0,"preBufferByte":0,"qBufferLevelAudio":0,"qBufferLevelVideo":0,"srcBufferLevelAudio":{"minimum":1,"maximum":32768},"srcBufferLevelVideo":{"minimum":1,"maximum":8388608}}},"needAudio":false,"queryPosition":false,"lowDelayMode":true,"transmission":{"contentsType":"LIVE"},"adaptiveStreaming":{"audioOnly":false,"maxWidth":3840,"maxHeight":2160,"maxFrameRate":60}}}]}"#;
 
 // ACCEPTED AUs — what the pipeline took. This is what `ui::stats` reports, because a count of
 // attempts reads as healthy throughput through a stall: a full sink retains the AU and it is
@@ -198,7 +226,20 @@ fn acb_init_acb(mt: &MainThread) {
     }
     let pt = PTYPE.load(Ordering::Relaxed);
     log(&format!("ptype={pt}"));
-    let app_c = std::env::var("APPID").ok().and_then(|s| std::ffi::CString::new(s).ok());
+    // Which app ACB is being initialized for. The third argument of `AcbAPI_initialize` is an app
+    // id — that much is certain, and both reference implementations pass one (Kodi's webOS port
+    // passes `getenv("APPID")`; see docs/distribution.md). What ACB does with it has not been
+    // decompiled here, so the rule is simply that it must be the install SAM actually launched —
+    // and with a developer build able to sit beside the shipped one, "the id compiled in" and
+    // "the id we were launched as" are no longer the same question.
+    //
+    // It used to be `env::var("APPID")` with a NULL fallback, which `starfish.c` then turned into
+    // the shipped app's literal id. That is a double fallback whose failure is invisible: on any
+    // launch where SAM did not export APPID, a developer install would announce itself as the
+    // shipped app. `paths::app_id` reads the install directory instead, which is the id webOS
+    // registered by definition. The environment is still logged, one line at boot, as the
+    // independent witness for whether SAM sets it at all on this firmware.
+    let app_c = std::ffi::CString::new(crate::paths::app_id()).ok();
     let app_ptr = app_c.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
     let acb = unsafe { ffi::acb_create(mt, app_ptr, pt) };
     ACB_OK.store(acb != 0, Ordering::Relaxed);
@@ -234,7 +275,17 @@ fn build_av_payload(video: &str, audio: &str, mw: i32, mh: i32) -> String {
     // Real source frame rate (direct-play only; 0 on transcode → skip): give the pipeline the true
     // fps for A/V timing instead of the sink-envelope default, + adaptiveResolution so it adapts if
     // the coded dims change. libpf parses videoFpsValue/videoFpsScale/adaptiveResolution (verified).
-    if let Some((num, den)) = fps_rational(crate::route::stream_fps()) {
+    // `/tmp/plxnative-nofps` withholds the pair, for one experiment: the Dolby Vision display
+    // -management lookup misses because the LUT ring is keyed ONE 90 kHz tick above what the
+    // display firmware asks for (measured 2026-08-21 — 38 of 40 misses, written key == requested
+    // + 1, with LG's own level-2 KADP logging armed mid-playback). Neither derivation is ours: the
+    // fed PTS provably does not move the outcome (nudge A/B, alternating unseeked legs, 163/164/165
+    // misses regardless), and the pipeline timestamps by NEAREST-rounding on the 1001/24000 lattice
+    // rather than passing ours through. This rational is the one input we hand it that could be
+    // what it builds that lattice FROM, so it is the one remaining lever on our side.
+    if crate::dev::flag("nofps") {
+        log("esInfo: videoFps WITHHELD by /tmp/plxnative-nofps");
+    } else if let Some((num, den)) = fps_rational(crate::route::stream_fps()) {
         p = p
             .replace(
                 r#""seperatedPTS":true}"#,
@@ -243,7 +294,125 @@ fn build_av_payload(video: &str, audio: &str, mw: i32, mh: i32) -> String {
             .replace(r#""audioOnly":false"#, r#""audioOnly":false,"adaptiveResolution":true"#);
         log(&format!("esInfo: videoFps {num}/{den} + adaptiveResolution (src {:.3})", crate::route::stream_fps()));
     }
-    p
+    let p = with_dolby_hdr_info(&p, video, crate::route::stream_dovi().presentation_now());
+    with_immersive(&p, crate::route::stream_immersive())
+}
+
+/// The `contents.immersive` node — **the Dolby Atmos half of the same envelope**, and the reason
+/// the television's Atmos read-out never appeared while its Dolby Vision one did.
+///
+/// PURE, so the splice is host-testable, and spliced at the same `provider` anchor and in the same
+/// shape as [`with_dolby_hdr_info`], which is its sibling in every sense: one key inside
+/// `externalStreamingInfo.contents`, one string, and the whole difference between a stream the
+/// pipeline treats as ordinary E-AC3 and one it treats as immersive.
+///
+/// **The key and the value are both read off the television's own binaries** (2026-08-21), which
+/// matters because neither is guessable and a wrong one is silent:
+/// - `libpf-1.0.so.1.0.0` holds the literal key path `option.externalStreamingInfo.contents.immersive`,
+///   logs it as `PF_EXT_IMMERSIVE : %s`, and carries it onto the audio caps it builds —
+///   `audio mediaInfo … channels[%d] language[%s] … immersive[%s] role[%s]`. It is a `%s` all the
+///   way down: libpf validates nothing and passes the string through.
+/// - The VALUE therefore has to come from whoever fills it, and **the bare literal `ATMOS` exists in
+///   exactly one library on this device: `libcbe.so`** — Chromium's media backend, i.e. the path
+///   LG's own web apps (Plex's included) take. In its string pool that literal sits immediately
+///   after `immersive` and in the same run as `externalStreamingInfo`, `esInfo`, `seperatedPTS`,
+///   `provider`, `DolbyHdrInfo`, `encryptionType`, `profileId` and `contents` — the payload we
+///   build, key for key. So `"ATMOS"` is not our invention; it is the value the working client
+///   sends, recovered from the binary that sends it.
+///
+/// `libplayerAPIs` injects `platformSupportDolbyATMOS` itself from its configd cache, exactly as it
+/// does for Dolby Vision, so this node states a fact about the STREAM and never about the set.
+fn with_immersive(p: &str, atmos: bool) -> String {
+    if !atmos {
+        return p.to_string();
+    }
+    let anchor = r#""provider":"plxnative""#;
+    if !p.contains(anchor) {
+        log("atmos: payload has no provider anchor — immersive NOT spliced");
+        return p.to_string();
+    }
+    log("atmos: sourceInfo contents.immersive=ATMOS");
+    p.replace(anchor, &format!(r#"{anchor},"immersive":"ATMOS""#))
+}
+
+/// The `contents.DolbyHdrInfo` node — **the whole of the Dolby Vision fix**, spliced into the
+/// Load payload for a direct play we have decided to declare.
+///
+/// PURE, so the splice is host-testable; the decision arrives as an argument and is the SAME value
+/// `route::build_stream` gated direct play on ([`crate::metadata::Dovi::presentation`]).
+///
+/// **Why this one node is the fix, from the television's own binaries** (decompiled 2026-08-21,
+/// webOS 4.10.2 `libpf`): `CustomPipeline::parseOptionStringSpi` builds the literal key
+/// `option.externalStreamingInfo.contents.DolbyHdrInfo`, asks `Options::checkKeyExistance` for it,
+/// and on a hit sets `hasDolbyHdrInfo` — unconditionally, before a single sub-field is read and
+/// with no platform gate. `getVideoCaps` then ends by adding `dolby-vision=TRUE` (plus
+/// `dolby-vision-profile` when `profileId != -1`) to the caps it was already building. Without the
+/// node, appsrc gets plain `video/x-h265` and nothing downstream can engage Dolby Vision. The
+/// pipeline has parsed this all along; we simply never sent it.
+///
+/// Three things that look like they should change and do not:
+/// - **the codec string stays `"H265"`.** `getVideoCaps` maps H265 to `video/x-h265` and that
+///   branch falls THROUGH into the Dolby Vision tail; there is no DVHE/DVH1 entry in its codec
+///   table (those literals belong to AdaptivePipeline's RFC-6381 parser, a different pipeline).
+///   LG's own Chromium client also reports `codec.video = "H265"` for a Dolby Vision stream. The
+///   `video == "H265"` guard below is therefore a consistency check, not a translation.
+/// - **`profileId` must be a JSON integer** (`getInt`). Quoting it would leave the `-1` sentinel.
+/// - **nothing declares platform support.** `libplayerAPIs::generateJsonPayloadForPlayer` injects
+///   `platformSupportDolbyVision` / `supportDolbyTVATMOS` itself from its configd cache, at the
+///   tree ROOT as siblings of `option`, and both already read true on this set. Sending our own
+///   would be a second opinion on a question the library answers for itself.
+///
+/// The anchor is `"provider":"plxnative"` — the last key of `contents` and, by the test below,
+/// present exactly once in `PAYLOAD_AV`. A `replace` that finds nothing is a silent no-node, which
+/// is why the miss is logged rather than assumed away.
+fn with_dolby_hdr_info(p: &str, video: &str, dv: crate::metadata::DvPresentation) -> String {
+    let Some(n) = dv.declared() else { return p.to_string() };
+    if crate::metadata::dv_node_suppressed() {
+        log(&format!("dv: DolbyHdrInfo P{} SUPPRESSED by /tmp/plxnative-dvnonode (direct play kept)", n.profile_id));
+        return p.to_string();
+    }
+    if video != "H265" {
+        // Unreachable by construction — `route` records the DV layering on the direct-play branch
+        // only, and that branch's payload codec is the file's own hevc — so this is the guard that
+        // says so out loud rather than declaring Dolby Vision over an H264 elementary stream. A
+        // malformed sourceInfo does not fail loudly; it wedges the sink.
+        log(&format!("dv: DolbyHdrInfo P{} NOT sent — payload video codec is {video}, not H265", n.profile_id));
+        return p.to_string();
+    }
+    let anchor = r#""provider":"plxnative""#;
+    if !p.contains(anchor) {
+        log("dv: payload has no provider anchor — DolbyHdrInfo NOT spliced");
+        return p.to_string();
+    }
+    let node = format!(
+        r#","DolbyHdrInfo":{{"trackType":"{}","encryptionType":"{}","profileId":{}}}"#,
+        n.track_type, n.encryption_type, n.profile_id
+    );
+    // ONE line, and it is the answer to "what did we actually send" — the only place the emitted
+    // values exist as fact rather than as intent.
+    log(&format!(
+        "dv: sourceInfo contents.DolbyHdrInfo profileId={} trackType={} encryptionType={} (codec {video})",
+        n.profile_id, n.track_type, n.encryption_type
+    ));
+    p.replace(anchor, &format!("{anchor}{node}"))
+}
+
+/// `"appId":"<this install's id>"` — the payload key, and the anchor `with_window_id` splices onto.
+///
+/// One expression, called from both places, so the two cannot disagree.
+fn app_id_key() -> String {
+    format!(r#""appId":"{}""#, crate::paths::app_id())
+}
+
+/// Substitute the `@APPID@` placeholder with the id of the install this process actually is.
+///
+/// Exactly once per payload, asserted at build time: a `replace` that matched twice would leave a
+/// second `appId` key for `with_window_id` to splice a duplicate `windowId` onto, and one that
+/// matched nothing would hand LG's JSON parser the placeholder as a literal app id. Both are
+/// silent — the pipeline reports no error for either — which is why this is graded in the host
+/// suite rather than left to be noticed on a television.
+fn with_app_id(p: &str) -> String {
+    p.replace("@APPID@", crate::paths::app_id())
 }
 
 /// Create the exported window and splice its id into the Load payload — the webOS 5+ binding, in
@@ -262,7 +431,8 @@ fn build_av_payload(video: &str, audio: &str, mw: i32, mh: i32) -> String {
 /// 5 and swaps only the resource file; Kodi adds this key and nothing else).
 ///
 /// Inserted after `"appId":"…"` because that is a stable sibling inside `option` in every payload
-/// variant here. A no-op on every webOS 4.x set, where `vp_create_window` returns NULL.
+/// variant here — via [`app_id_key`], so the anchor cannot drift from what `with_app_id` composed.
+/// A no-op on every webOS 4.x set, where `vp_create_window` returns NULL.
 fn with_window_id(mt: &MainThread, p: &str) -> String {
     if ffi::vp_mode() != ffi::VP_EXPORTED {
         return p.to_string();
@@ -273,13 +443,13 @@ fn with_window_id(mt: &MainThread, p: &str) -> String {
         return p.to_string();
     }
     let id = unsafe { std::ffi::CStr::from_ptr(id) }.to_string_lossy();
-    let anchor = r#""appId":"com.beb.plxnative""#;
-    if !p.contains(anchor) {
+    let anchor = app_id_key();
+    if !p.contains(&anchor) {
         log("windowId: payload has no appId anchor — NOT spliced; video will not bind");
         return p.to_string();
     }
     log(&format!("vplane: exported windowId={id} spliced into the Load payload"));
-    p.replace(anchor, &format!(r#"{anchor},"windowId":"{id}""#))
+    p.replace(&anchor, &format!(r#"{anchor},"windowId":"{id}""#))
 }
 
 /// Plex decimal fps → (value, scale) rational for the Load esInfo. Broadcast rates map to their
@@ -332,14 +502,14 @@ pub(crate) fn start_bufferfeed(mt: &MainThread) -> bool {
     let mut sample: Option<Box<SampleBuf>> = None;
     let mut is_h265 = false;
     if url.is_empty() {
-        if let Some(data) = crate::dev::read_bytes_at("/tmp/sample.h264") {
+        if let Some(data) = crate::dev::read_sample("sample.h264") {
             let au = bf_split(&data, 0x09);
             log(&format!("bf_split h264: {} AUs in {} bytes", au.len(), data.len()));
             if au.len() < 2 {
                 return false;
             }
             sample = Some(Box::new(SampleBuf { data, au, next: 0, loops: 0 }));
-        } else if let Some(data) = crate::dev::read_bytes_at("/tmp/sample.h265") {
+        } else if let Some(data) = crate::dev::read_sample("sample.h265") {
             // Phase 0 probe: feed a local HEVC Annex-B sample to test native HEVC decode.
             let au = bf_split(&data, 0x46);
             log(&format!("bf_split h265: {} AUs in {} bytes", au.len(), data.len()));
@@ -399,7 +569,10 @@ pub(crate) fn start_bufferfeed(mt: &MainThread) -> bool {
     // rather than inside build_av_payload — three of the four variants are static strings that
     // never see the builder, and a binding that works only for streamed A/V would be the kind of
     // bug that reproduces on some content and not others.
-    let payload_c = std::ffi::CString::new(with_window_id(mt, payload_str)).unwrap();
+    // ...and the appId substitution happens here for the same reason, and BEFORE the splice —
+    // `with_window_id`'s anchor is the composed `"appId":"<id>"`, so the placeholder has to be
+    // gone by then.
+    let payload_c = std::ffi::CString::new(with_window_id(mt, &with_app_id(payload_str))).unwrap();
 
     // fd = -1 (CLOSED) so a teardown before/without http_open doesn't close(0)
     let mut hs = crate::stream::http_stream_boxed();
@@ -819,6 +992,98 @@ pub(crate) const PRES_NONE: i64 = i64::MIN;
 /// VIDEO lane feeder (aq_video is video-only). Owns the seek rebase + in-place-seek handshake + prime→Play, all of
 /// which key off the first post-seek VIDEO keyframe. A BufferFull/over-budget breaks THIS lane
 /// only — the audio lane (feed_audio_lane) keeps flowing so the audioSync master clock advances.
+/// Nanoseconds added to every fed VIDEO PTS — **a one-tick rounding repair for LG's Dolby Vision
+/// display-management lookup**, and inert everywhere else.
+///
+/// The fault is arithmetic and it is entirely on the television's side; this is the only lever we
+/// have on it. `gstdualsequencer.c:606` (DWARF-confirmed, `libgstdualsequencer.so` 0x25b0–0x25e0)
+/// keys the LUT entry it hands the display firmware with a DOUBLE truncation of the buffer's
+/// nanosecond PTS:
+///
+/// ```text
+/// ulTimeStamp = trunc(trunc(pts_ns) * 9 / 100000)      // ns -> 90 kHz ticks
+/// ```
+///
+/// and `DOVI_SWSync_SetDoviLUTnMap` (`libkadaptor` 0xe30e8) then scans all 95 slots for **exact
+/// 32-bit equality** — no tolerance, no nearest match. At 24000/1001 fps neither unit is exact:
+/// a frame time is a whole number of nanoseconds only every **3rd** frame and a whole number of
+/// 90 kHz ticks only every **4th**, so on `n ≡ 4, 8 (mod 12)` — and on no other frame — the two
+/// truncations disagree by exactly one tick, the lookup misses, and the panel reuses the previous
+/// frame's tone mapping. `lcm(3,4) = 12` frames is **0.5005 s**, which is the period of the
+/// stutter as seen.
+///
+/// Measured on this set, uninstrumented, 85 s of Profile 5: 340 misses, and **340 of 340** equal
+/// the double-truncated key while **0 of 340** equal the exact tick value — residues `{4: 170,
+/// 8: 170}` and nothing else. It is a derivation that reproduces the data with no free parameter,
+/// not a fit.
+///
+/// The repair is to hand the pipeline a PTS whose truncation lands in the right bin. The loss is
+/// the fractional nanosecond FFmpeg's rescale already dropped, so it is strictly less than 1 ns,
+/// and **one** nanosecond recovers it. The upper bound is `100000/9 ≈ 11111 ns` — beyond that an
+/// already-correct frame would be pushed a tick the other way — so 1 sits at the safe end of a
+/// wide range. As an A/V offset it is nothing: 1 ns against a 41.7 ms frame.
+///
+/// **Video only.** The key is computed from the video buffer's own PTS; the audio lane never
+/// reaches this code and shifting it would be a skew for no reason.
+///
+/// **THE SIGN WAS BACKWARDS, AND −1 IS THE FIX.** Read the history below for what was tried; the
+/// short version is that the model was right about the mechanism, wrong about which side rounds,
+/// and the device settled it. Measured with LG's own level-2 KADP logging armed mid-playback
+/// (`tools/logmprobe`): for **38 of 40** misses the key written into the LUT ring is exactly the
+/// key the display firmware requested **plus one**. The ring is a tick HIGH, so the fed PTS goes
+/// DOWN. Alternating unseeked legs, same title, same binary:
+///
+/// ```text
+///   nudge = -1   misses 1        nudge = 0   misses 81
+///   nudge = -1   misses 1        nudge = 0   misses 81
+/// ```
+///
+/// Reproducible, 81:1, and the arithmetic that predicts −1 also predicted +1 would help; +1 was
+/// measured at 163/165 against 164 for zero — i.e. inert. **Trust the measurement here, not the
+/// derivation**: our fed PTS is not passed through, the pipeline re-timestamps by NEAREST-rounding
+/// on the 1001/24000 lattice (measured: alternating −0.333/+0.333 ns against the exact rational),
+/// so exactly how one nanosecond on our side moves a tick on theirs is not something this comment
+/// can honestly claim to model. What it can claim is 81:1, twice, with the scene controlled by
+/// alternation.
+///
+/// # The history, kept because three of its steps were wrong and each cost a run
+///
+/// **AND THE DEVICE REFUTED THE FIRST ATTEMPT, which is why the default was 0 for a while.** The one step
+/// the disassembly could not settle was whether the OTHER side of that exact-equality comparison
+/// moves with us. It does. Controlled A/B, same title, same seek to 900 s, same 45 s window, only
+/// this value differing: **nudge 0 → 118 misses, nudge 1 → 230**. Worse, not fixed. A constant
+/// offset cannot repair a *relative* truncation difference when both sides derive from the same
+/// fed timestamp — which is now measured rather than assumed, and which also retires the tidiest
+/// explanation this investigation has produced.
+///
+/// What survives the refutation is the arithmetic, and it is not small: 340 of 340 misses in the
+/// unseeked run equal the double-truncated key and 0 of 340 equal the exact tick value, residues
+/// `{4, 8}` mod 12 and nothing else. So the key IS computed that way and the comparison IS exact.
+/// What is now open is why the slot the firmware asks for — using, we measured, dualsequencer's
+/// own key — is not in the ring. That points at pairing or at slot lifetime, not at rounding.
+///
+/// `/tmp/plxnative-ptsnudge=<ns>` is kept because it is the instrument that produced that result
+/// and the next candidate value is one run away. Anything from 1 to ~11110 is in range; beyond
+/// that an already-correct frame is pushed a tick the other way.
+fn pts_nudge_ns() -> i64 {
+    const DEFAULT: i64 = -1;
+    static NUDGE: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(i64::MIN);
+    let v = NUDGE.load(Ordering::Relaxed);
+    if v != i64::MIN {
+        return v;
+    }
+    // Latched at the first feed rather than read per AU: this is the hottest path in the app and
+    // the trigger surface is a filesystem open. Same shape as every other `dev::` read here.
+    let v = crate::dev::read("ptsnudge")
+        .and_then(|s| s.trim().parse::<i64>().ok())
+        .unwrap_or(DEFAULT);
+    NUDGE.store(v, Ordering::Relaxed);
+    if v != DEFAULT {
+        log(&format!("ptsnudge: video PTS nudge overridden to {v} ns (default {DEFAULT})"));
+    }
+    v
+}
+
 pub(crate) fn feed_stream(mt: &MainThread, eng: &mut Engine) {
     let qp = match eng.aq_video.as_mut() {
         Some(q) => &mut **q as *mut AuQueue,
@@ -915,7 +1180,7 @@ pub(crate) fn feed_stream(mt: &MainThread, eng: &mut Engine) {
                 continue;
             }
         }
-        let mut fp = pts + SHARED.pts_shift.load(Ordering::Relaxed);
+        let mut fp = pts + SHARED.pts_shift.load(Ordering::Relaxed) + pts_nudge_ns();
         if fp < eng.max_fed_video_pts - STALE_BACKJUMP_NS {
             eng.pending_video = None; // stale (a big backward jump)
             continue;
@@ -1049,7 +1314,8 @@ pub(crate) fn feed_audio_lane(mt: &MainThread, eng: &mut Engine) {
     }
 }
 
-/// feed the looped /tmp/sample.h264 validation sample (continuous PTS @ 23.976).
+/// feed the looped `sample.h264` validation sample from the install's runtime root
+/// (continuous PTS @ 23.976).
 pub(crate) fn feed_sample(mt: &MainThread, eng: &mut Engine) {
     let s = match &mut eng.source {
         Source::Sample(s) => s,
@@ -1079,22 +1345,162 @@ pub(crate) fn feed_sample(mt: &MainThread, eng: &mut Engine) {
 
 #[cfg(test)]
 mod payload_tests {
-    use super::{PAYLOAD_AV, PAYLOAD_H265, PAYLOAD_V};
+    use super::{with_dolby_hdr_info, with_immersive, PAYLOAD_AV, PAYLOAD_H265, PAYLOAD_V};
+    use crate::metadata::Dovi;
 
-    /// **Every Load payload must carry the `appId` anchor**, because that string is what
-    /// `with_window_id` splices the webOS 5+ `option.windowId` onto — without it the decoded video
-    /// has nowhere to bind on every set from 5.0 up.
+    fn p5() -> Dovi {
+        Dovi { present: true, profile: 5, bl_compat: 0, el_present: false, ..Dovi::NONE }
+    }
+
+    /// **Every Load payload must carry the `appId` placeholder, exactly once**, because that key
+    /// is what `with_window_id` splices the webOS 5+ `option.windowId` onto — without it the
+    /// decoded video has nowhere to bind on every set from 5.0 up — and because a second one would
+    /// splice a second `windowId`.
     ///
     /// This replaces a panel row that was proposed and rejected: the "not spliced — no anchor" arm
-    /// is UNREACHABLE at runtime (the anchor is a literal in all three constants and
-    /// `build_av_payload` never touches it), so a row reporting it would print the same constant on
-    /// a working and a broken television. The real risk is a payload edited a year from now that
-    /// drops the anchor — a build-time risk, caught at build time.
+    /// is UNREACHABLE at runtime (the placeholder is in all three constants and `build_av_payload`
+    /// never touches it), so a row reporting it would print the same constant on a working and a
+    /// broken television. The real risk is a payload edited a year from now that drops it — a
+    /// build-time risk, caught at build time. The placeholder is a strictly better witness than the
+    /// literal id it replaced: an id can be spelled correctly by accident, `@APPID@` cannot.
     #[test]
-    fn every_load_payload_carries_the_window_id_anchor() {
-        const ANCHOR: &str = r#""appId":"com.beb.plxnative""#;
+    fn every_load_payload_carries_the_app_id_placeholder_exactly_once() {
         for (name, p) in [("PAYLOAD_V", PAYLOAD_V), ("PAYLOAD_AV", PAYLOAD_AV), ("PAYLOAD_H265", PAYLOAD_H265)] {
-            assert!(p.contains(ANCHOR), "{name} lost the anchor — webOS 5+ video cannot bind");
+            assert_eq!(p.matches(r#""appId":"@APPID@""#).count(), 1,
+                       "{name} must carry the appId placeholder exactly once — webOS 5+ video binds on it");
         }
+    }
+
+    /// **The shipped app's payload must be byte-identical to what every release so far sent**, and
+    /// the splice anchor must be the composed key rather than a second spelling of it.
+    ///
+    /// This is the whole safety argument for making the id dynamic. The webOS 5+ `windowId` path
+    /// cannot be exercised on this project's 4.5 dev set (`vp_mode()` returns `VP_ACB` there and
+    /// `with_window_id` returns early), so its failure — a black video plane with working audio,
+    /// and no error line — would not be seen until somebody else's television. Pinning the
+    /// composed bytes here is the only gate available for it.
+    #[test]
+    fn the_shipped_app_composes_the_payload_it_always_did() {
+        let want = r#""appId":"com.beb.plxnative""#;
+        for (name, p) in [("PAYLOAD_V", PAYLOAD_V), ("PAYLOAD_AV", PAYLOAD_AV), ("PAYLOAD_H265", PAYLOAD_H265)] {
+            let composed = p.replace("@APPID@", crate::paths::STABLE_APP_ID);
+            assert!(composed.contains(want), "{name} no longer composes the shipped key");
+            // key ORDER too: `appId` stays the first key of `option`, where it has always been.
+            assert!(composed.contains(&format!(r#""option":{{{want},"#)), "{name} moved the appId key");
+        }
+        // And the anchor the splice looks for is the composed key, not a restatement of it.
+        assert_eq!(super::app_id_key(), format!(r#""appId":"{}""#, crate::paths::app_id()));
+        assert!(super::with_app_id(PAYLOAD_V).contains(&super::app_id_key()));
+        assert!(!super::with_app_id(PAYLOAD_V).contains("@APPID@"));
+    }
+
+    /// The Dolby Vision node's anchor, with the same reasoning as the one above: `provider` is the
+    /// LAST key of `contents`, which is where `DolbyHdrInfo` has to land — the pipeline reads it at
+    /// `option.externalStreamingInfo.contents.DolbyHdrInfo` and nowhere else. Exactly once, or a
+    /// `replace` would splice two nodes into one payload.
+    #[test]
+    fn the_av_payload_carries_exactly_one_dolby_hdr_info_anchor() {
+        assert_eq!(PAYLOAD_AV.matches(r#""provider":"plxnative""#).count(), 1);
+        // and it really is the last key of `contents` — the next character after it closes the
+        // object, so appending a key there stays INSIDE `contents`
+        assert!(PAYLOAD_AV.contains(r#""provider":"plxnative"},"streamQualityInfo""#));
+    }
+
+    /// **What we actually send for a Profile 5 direct play.** The three fields at the path the
+    /// television's own parser reads, `profileId` as a bare JSON integer (`getInt` — a quoted "5"
+    /// would leave the pipeline's -1 sentinel), and the whole node inside `contents`.
+    #[test]
+    fn a_declared_profile_5_splices_the_node_into_contents() {
+        // what `build_av_payload` hands it: the AV template with the codec already set to H265,
+        // which is what a native HEVC direct play — the only kind that can be Dolby Vision — sends
+        let base = PAYLOAD_AV.replace(r#""video":"H264""#, r#""video":"H265""#);
+        let out = with_dolby_hdr_info(&base, "H265", p5().presentation(true));
+        assert!(
+            out.contains(r#""provider":"plxnative","DolbyHdrInfo":{"trackType":"single","encryptionType":"clear","profileId":5}}"#),
+            "{out}"
+        );
+        // the trailing `}` above is `contents` closing: the node is the last key INSIDE it, not a
+        // sibling of `contents` in `externalStreamingInfo`
+        assert!(out.contains(r#""DolbyHdrInfo":{"trackType":"single","encryptionType":"clear","profileId":5}},"streamQualityInfo""#));
+        assert!(!out.contains(r#""profileId":"5""#), "getInt wants an integer, not a string");
+        // the codec string stays `H265` — `getVideoCaps` maps it to `video/x-h265` and falls
+        // THROUGH into its Dolby Vision tail; there is no DVHE/DVH1 entry in that table, and
+        // inventing one would describe a stream the pipeline has no decoder row for
+        assert!(out.contains(r#""video":"H265""#), "{out}");
+        assert!(!out.contains("DVHE") && !out.contains("dvh1"), "{out}");
+        // and NOTHING else moved: take the node back out and the payload is what came in
+        const NODE: &str = r#","DolbyHdrInfo":{"trackType":"single","encryptionType":"clear","profileId":5}"#;
+        assert_eq!(out.replace(NODE, ""), base);
+    }
+
+    /// The three ways the node is NOT sent, each of which must leave the payload byte-identical:
+    /// a file with no Dolby Vision, a Dolby Vision file we refuse (the dual-layer P7 — declaring a
+    /// layer we cannot feed is worse than refusing it), and the disarmed trigger, which is what a
+    /// `RELEASE=1` build compiles in and what every boot without `/tmp/plxnative-dv` does today.
+    #[test]
+    fn nothing_is_spliced_unless_the_stream_is_declared() {
+        let p7 = Dovi { present: true, profile: 7, bl_compat: 6, el_present: true, ..Dovi::NONE };
+        for dv in [
+            Dovi::NONE.presentation(true),
+            p7.presentation(true),
+            p5().presentation(false),
+        ] {
+            assert_eq!(with_dolby_hdr_info(PAYLOAD_AV, "H265", dv), PAYLOAD_AV);
+        }
+    }
+
+    /// **What we actually send for a Dolby Atmos track**, at the key path `libpf` reads
+    /// (`option.externalStreamingInfo.contents.immersive`) and with the value `libcbe` — the
+    /// television's own working client — puts there. Same anchor and same shape as the Dolby
+    /// Vision node, which is the point: they are one envelope with two statements in it.
+    #[test]
+    fn an_atmos_track_splices_immersive_into_contents() {
+        let out = with_immersive(PAYLOAD_AV, true);
+        assert!(out.contains(r#""provider":"plxnative","immersive":"ATMOS"}"#), "{out}");
+        // the trailing `}` is `contents` closing — the node is INSIDE it, not a sibling of
+        // `contents` in `externalStreamingInfo`, which is where libpf would never look
+        assert!(out.contains(r#""immersive":"ATMOS"},"streamQualityInfo""#), "{out}");
+        // and nothing else moved
+        assert_eq!(out.replace(r#","immersive":"ATMOS""#, ""), PAYLOAD_AV);
+    }
+
+    /// The other side of it, and the one that matters for the whole library: a track with no
+    /// Atmos leaves the payload byte-identical. Every ordinary AAC/AC3 film takes this path, so a
+    /// splice that fired unconditionally would tell the television that all of them are immersive.
+    #[test]
+    fn a_plain_track_splices_nothing() {
+        assert_eq!(with_immersive(PAYLOAD_AV, false), PAYLOAD_AV);
+    }
+
+    /// **Both nodes at once**, which is the real case — the Profile 5 test item is Dolby Vision
+    /// AND Dolby Atmos, and it is what the television shows two read-outs for. They are spliced by
+    /// two independent functions at ONE anchor, so this is the test that says the second does not
+    /// land inside the first: `immersive` must be a sibling KEY of `DolbyHdrInfo` inside
+    /// `contents`, never a fourth field of the `DolbyHdrInfo` object.
+    #[test]
+    fn dolby_vision_and_atmos_are_siblings_inside_contents() {
+        let base = PAYLOAD_AV.replace(r#""video":"H264""#, r#""video":"H265""#);
+        let out = with_immersive(&with_dolby_hdr_info(&base, "H265", p5().presentation(true)), true);
+        assert!(
+            out.contains(
+                r#""provider":"plxnative","immersive":"ATMOS","DolbyHdrInfo":{"trackType":"single","encryptionType":"clear","profileId":5}}"#
+            ),
+            "{out}"
+        );
+        // the DolbyHdrInfo object still has exactly its three fields — `immersive` did not get
+        // swept inside it by an anchor both functions matched
+        assert!(!out.contains(r#""profileId":5,"immersive""#), "{out}");
+        assert_eq!(out.matches(r#""immersive":"ATMOS""#).count(), 1);
+        assert_eq!(out.matches("DolbyHdrInfo").count(), 1);
+    }
+
+    /// The consistency guard: a Dolby Vision declaration only ever rides an HEVC elementary
+    /// stream, so a payload built for H264 must not carry one. Unreachable by construction — the
+    /// route records the DV record on the direct-play branch, whose codec is the file's own hevc —
+    /// which is exactly why it is asserted rather than trusted: the `sourceInfo` envelope is
+    /// parsed before anything decodes, and a malformed one wedges the sink instead of failing.
+    #[test]
+    fn a_declaration_never_rides_a_non_hevc_payload() {
+        assert_eq!(with_dolby_hdr_info(PAYLOAD_AV, "H264", p5().presentation(true)), PAYLOAD_AV);
     }
 }

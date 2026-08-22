@@ -142,6 +142,22 @@ event log it prints. A healthy boot shows the GL context, `ff: avformat=...`, `a
 create=1`, and rising FPS with no `SIGILL` / `undefined symbol`. See the main
 `CLAUDE.md` "Testing / verification" section for the full event-log surface.
 
+**On a television that has never had this checkout's developer build, that first `make
+test` stops before it deploys**, saying the app directory does not exist. That is
+correct and it is not a toolchain fault: `make deploy` scp's into an app directory that
+is already registered, while creating an app is appinstalld's job — SAM has to learn the
+id and the per-id LS2 role file has to be written. Two builds live on one TV now
+(`com.beb.plxnative`, what users install, and `com.beb.plxnative.debug`, the Makefile's
+**default**), so install this one once and everything after it is a plain `make test`:
+
+```bash
+make FLAVOR=debug install    # builds its .ipk, installs it, then deploys into it
+```
+
+The event log then lands under that install's own runtime root, not `/tmp` — ask for
+the path with `make -s print-eventlog FLAVOR=debug` rather than typing one. The
+`tv-session` skill owns the rest of the on-device loop.
+
 ## Troubleshooting
 
 | Symptom | Cause → fix |

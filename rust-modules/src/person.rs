@@ -592,6 +592,31 @@ fn resettle(p: &mut Person) {
     p.landed = p.srcs.iter().any(Src::has_content) || p.srcs.iter().all(Src::settled);
 }
 
+/// Flip `(sid, rk)`'s watched state on this person's shelves — the optimistic half of a view-state
+/// write. `pms::edit_item`'s twin, for `browse::set_watched_local`'s reason: that one reaches the
+/// HOME hubs alone, so a film marked watched from a filmography tile's context menu kept its old
+/// mark until a refetch.
+///
+/// **Through the SOURCES, then [`resettle`]** — the module's own rule that a source owns its rows
+/// and [`Person::shelves`] is a projection of them. Editing the merged shelves directly would be
+/// undone by the next landing.
+///
+/// Returns whether anything matched. **MAIN THREAD.**
+pub(crate) fn set_watched_local(sid: ServerId, rk: &str, on: bool) -> bool {
+    let Some(p) = (unsafe { (*addr_of_mut!(CURRENT)).as_mut() }) else { return false };
+    let mut hit = false;
+    for m in p.srcs.iter_mut().flat_map(|s| s.shelves.iter_mut()).flat_map(|sh| sh.items.iter_mut()) {
+        if crate::plex::same_item((m.sid, &m.rk), (sid, rk)) {
+            crate::pms::set_watched(m, on);
+            hit = true;
+        }
+    }
+    if hit {
+        resettle(p);
+    }
+    hit
+}
+
 // ---- public surface --------------------------------------------------------------------------
 
 /// Open the page for the person the ORIGIN server `sid` knows as `key`, with the header the caller
@@ -626,9 +651,77 @@ pub(crate) fn open(sid: ServerId, key: &str, guid: &str, name: &str, thumb: &str
         // here rather than hardcoding `landed: false` is what keeps that rule in one place.
         if let Some(p) = (*addr_of_mut!(CURRENT)).as_mut() {
             resettle(p);
+            seed_dev_profile(p);
         }
     }
 }
+
+/// `/tmp/plxnative-personbio[=<text>]` — **stand in for the plex.tv biography record**, so the
+/// person page's header bio and the bio alert panel behind it can be reached headlessly.
+///
+/// **Why this trigger has to exist.** Everything below the name on this page — roles, dates,
+/// birthplace and the biography itself — comes from `discover.provider.plex.tv`, which is a
+/// different identity from the PMS. An automated boot signs in with `/tmp/plxnative-token`, a
+/// *server* token, and the provider answers that `401`; a real interactive session gets a real
+/// biography and an automated one never does. So neither `tests/run.py` nor `make sim-shot` can
+/// reach a person page with any prose on it at all, and the panel this seeds is by construction
+/// only reachable when there is MORE prose than the header shows. That is the same argument
+/// `/tmp/plxnative-search`'s query seed makes (no harness can type) and `/tmp/plxnative-failtest`'s
+/// (no server will refuse on cue) — the screen is real, the route to it is not automatable.
+///
+/// Empty file = a long built-in sample with paragraph breaks in it, which is the shape that
+/// exercises the panel (a one-paragraph blob would never show [`PARA_GAP`], and a short one would
+/// leave the rail and both feather edges undrawn). A value = that text, so a specific length or a
+/// specific wrap can be reproduced.
+///
+/// It sets `profiled`, which is the flag [`address`] gates the profile fetch on — so a seeded page makes no
+/// provider request at all, rather than racing one that would overwrite the seed a second later.
+/// The invented roles/dates/birthplace are what make the identity line's separator logic visible;
+/// they are as fictional as the rest of the trigger and never reach a release build (`dev::read` is
+/// `None` at compile time without `devtriggers`).
+#[allow(unused_variables)]
+fn seed_dev_profile(p: &mut Person) {
+    let Some(text) = crate::dev::read("personbio") else { return };
+    p.bio = if text.is_empty() { DEV_BIO.trim().replace("\\n", "\n").to_string() } else { text };
+    if p.roles.is_empty() {
+        p.roles = "Actress \u{b7} Singer \u{b7} Songwriter".to_string();
+    }
+    if p.born.is_empty() {
+        p.born = "1987-01-08".to_string();
+    }
+    if p.birthplace.is_empty() {
+        p.birthplace = "Stockwell, London".to_string();
+    }
+    p.profiled = true;
+    crate::log(&format!("person: DEV bio seeded ({}B) — /tmp/plxnative-personbio", p.bio.len()));
+}
+
+/// The built-in sample for an empty [`seed_dev_profile`] trigger: several paragraphs of plausible
+/// biography prose, long enough to scroll for a handful of pages at `size::BODY` in a 1120px sheet.
+/// Written out rather than generated so a shot taken today and one taken next month are comparable.
+#[cfg(feature = "devtriggers")]
+const DEV_BIO: &str = "\
+Cynthia Erivo is a British actress, singer and songwriter whose work spans the stage, the concert \
+hall and the screen. She trained at the Royal Academy of Dramatic Art, graduating in 2010 after an \
+earlier spell reading music psychology, and spent her first professional years in ensemble and \
+understudy work in London before the role that would define the next decade found her.\n\n\
+That role was Celie in the Menier Chocolate Factory's 2013 revival of The Color Purple, a stripped \
+back staging that traded spectacle for the voice at its centre. When the production transferred to \
+Broadway in 2015 it won two Tony Awards, one of them hers; the cast recording took a Grammy, and a \
+Daytime Emmy followed for a televised performance. Three of the four American entertainment awards \
+in under three years left her one short of a set that fewer than twenty people have completed.\n\n\
+Her screen career began in earnest with a run of ensemble thrillers before Harriet in 2019, in \
+which she played Harriet Tubman and earned nominations for both Best Actress and Best Original \
+Song in the same year. She has since moved between prestige television, animation and the kind of \
+large studio musical that asks a performer to sing live on camera, a discipline she has spoken \
+about as closer to theatre than to film.\n\n\
+Alongside acting she writes and records her own music, and has been open about the relationship \
+between the two: songs, she has said, are where the parts she plays go when the run ends. She \
+continues to divide her time between London and New York.";
+/// The release build has no sample — `seed_dev_profile` cannot be reached (`dev::read` is `None` at
+/// compile time), and a few hundred bytes of fiction has no business in a shipped binary.
+#[cfg(not(feature = "devtriggers"))]
+const DEV_BIO: &str = "";
 
 /// Drop the open person and supersede any fetch for it — on leaving the page. Without the
 /// supersede, a landing arriving after the page closed would repopulate `CURRENT` behind whatever

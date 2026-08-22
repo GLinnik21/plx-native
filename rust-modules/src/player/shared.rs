@@ -8,6 +8,37 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicPtr, AtomicU32, 
 use std::sync::Mutex;
 use crate::stream::HttpStream;
 
+/// **The names the CONTAINER gives its audio and subtitle tracks**, each list in file order.
+///
+/// Published once by the demuxer when it opens a part ([`crate::ff`]), read by the in-player track
+/// menu. Both `Vec`s are dense — a track the file does not name contributes an EMPTY string rather
+/// than being skipped — because position is the whole join: the N-th entry is the N-th stream of
+/// that type, which is the ordinal `metadata::sub_render_ordinal` resolves a menu row to. Skipping
+/// unnamed tracks would silently shift every name after the first untagged one onto its neighbour,
+/// which is worse than showing none: a wrong name is indistinguishable from a right one.
+#[derive(Default)]
+pub(crate) struct TrackNames {
+    pub audio: Vec<String>,
+    pub subs: Vec<String>,
+}
+
+impl TrackNames {
+    /// `Default`, but callable from `Shared::new`, which is a `const fn`.
+    pub const fn new() -> Self {
+        Self { audio: Vec::new(), subs: Vec::new() }
+    }
+    /// The name of the `i`-th subtitle stream in file order, or `""` — `i` is what
+    /// `metadata::sub_render_ordinal` answers, and its `-1` (an external sidecar, which is not in
+    /// the container at all) can be passed straight in.
+    pub fn sub(&self, i: i32) -> &str {
+        usize::try_from(i).ok().and_then(|i| self.subs.get(i)).map(String::as_str).unwrap_or("")
+    }
+    /// The same for audio — `metadata::audio_ordinal`'s answer.
+    pub fn audio(&self, i: i32) -> &str {
+        usize::try_from(i).ok().and_then(|i| self.audio.get(i)).map(String::as_str).unwrap_or("")
+    }
+}
+
 /// one client-rendered subtitle cue (content-time ns). `track` is the 0-based subtitle-stream
 /// index it belongs to; the demuxer pushes cues for ALL text tracks and the render filters by
 /// the selected `desired_sub_idx`, so switching tracks is instant (no re-demux of the buffered
@@ -200,6 +231,18 @@ pub(crate) struct Shared {
     // client-rendered subtitles: selected track index (-1 = off) + the demuxed cues.
     // demux (D) pushes cues; main (M) reads the active one for the current playpos.
     pub desired_sub_idx: AtomicI32,
+    /// **The container's own per-track names, which PMS does not always send** (D -> M).
+    ///
+    /// `audio` and `subs`, each in FILE order, so position N is the N-th audio / subtitle stream of
+    /// the part — the ordinal `metadata::audio_ordinal` and `metadata::sub_render_ordinal`
+    /// already resolve a track-menu row to. Empty strings for a file that tags nothing, and an
+    /// empty Vec until a demuxer has opened.
+    ///
+    /// It exists because for an **MP4** part PMS sends no `Stream.title` at all, though the file
+    /// names every track (`"Полные Jaskier"`, `"Форс. iTunes"`). See `ff::stream_name`. So the
+    /// picker's rows are the only place this reaches, and only on DIRECT PLAY: a transcode is a
+    /// remux the server built, and its tags are whatever the server put there.
+    pub track_names: Mutex<TrackNames>,
     pub sub_cues: Mutex<Vec<SubCue>>,
     pub sub_bitmaps: Mutex<Vec<SubBitmap>>, // image-sub cues (selected track only)
 
@@ -269,6 +312,25 @@ pub(crate) struct Shared {
     /// photograph as twelve seconds.
     pub dg_load_at: AtomicU32,
     pub dg_frame_at: AtomicU32,
+    /// **The video plane's own cadence** — the three counters behind the heartbeat's `vtick=`/`vgap=`.
+    ///
+    /// They exist because every other frame number in this app is about the GRAPHICS plane. `fps=`
+    /// counts our GL swaps and `worstframe=` times our own draw, and both stay a flat 60/0.5 ms
+    /// through playback that visibly stutters: the decoded picture is composited by the TV on a
+    /// plane we never touch. The one place the pipeline tells us it put a frame on that plane is
+    /// the `ty == 0` callback, so that is where these are stamped.
+    ///
+    /// Written on the LIBRARY thread (`sf_on_event`), drained on the main thread
+    /// ([`crate::player::vplane_take`]) — hence a drained COUNT rather than a delta of
+    /// [`frames`](Self::frames), which a seek resets underneath a reader.
+    ///
+    /// `dg_vpres_at` is the previous presentation's stamp and MUST be zeroed wherever `frames` is
+    /// (session reset, and the post-seek re-count in the pump): the pipeline legitimately shows
+    /// nothing across a seek, and a gap measured over that pause is the harness reporting the seek
+    /// as a stutter.
+    pub dg_vpres_ct: AtomicU32,
+    pub dg_vpres_at: AtomicU32,
+    pub dg_vpres_gap: AtomicU32,
     /// Bytes queued in each AU lane at the last tick, against `engine::aq_caps`.
     pub dg_aq_video: AtomicI64,
     pub dg_aq_audio: AtomicI64,
@@ -306,6 +368,9 @@ impl Shared {
             dg_net_rx: AtomicI64::new(0),
             dg_load_at: AtomicU32::new(0),
             dg_frame_at: AtomicU32::new(0),
+            dg_vpres_ct: AtomicU32::new(0),
+            dg_vpres_at: AtomicU32::new(0),
+            dg_vpres_gap: AtomicU32::new(0),
             dg_aq_video: AtomicI64::new(0),
             dg_aq_audio: AtomicI64::new(0),
             dg_fed_v_pts: AtomicI64::new(0),
@@ -337,6 +402,7 @@ impl Shared {
             demux_no_video: AtomicBool::new(false),
             load_failed: AtomicBool::new(false),
             desired_sub_idx: AtomicI32::new(-1),
+            track_names: Mutex::new(TrackNames::new()),
             sub_cues: Mutex::new(Vec::new()),
             sub_bitmaps: Mutex::new(Vec::new()),
             file_size: AtomicI64::new(0),
@@ -362,6 +428,9 @@ impl Shared {
         self.dg_net_rx.store(0, Ordering::Relaxed);
         self.dg_load_at.store(0, Ordering::Relaxed);
         self.dg_frame_at.store(0, Ordering::Relaxed);
+        self.dg_vpres_ct.store(0, Ordering::Relaxed);
+        self.dg_vpres_at.store(0, Ordering::Relaxed);
+        self.dg_vpres_gap.store(0, Ordering::Relaxed);
         self.dg_aq_video.store(0, Ordering::Relaxed);
         self.dg_aq_audio.store(0, Ordering::Relaxed);
         self.dg_fed_v_pts.store(0, Ordering::Relaxed);
@@ -402,6 +471,11 @@ impl Shared {
         // and DO clear (the fresh demuxer re-populates them).
         self.sub_cues.lock().unwrap().clear();
         self.sub_bitmaps.lock().unwrap().clear();
+        // Cleared with them, and for the same reason: they describe the FILE the last demuxer had
+        // open. A reload-based seek re-opens the same part and re-publishes the same names, but a
+        // session that ends with a transcode reload would otherwise leave the direct-play file's
+        // names sitting under the server's own track list.
+        *self.track_names.lock().unwrap() = TrackNames::new();
         self.file_size.store(0, Ordering::Relaxed);
         self.duration_ns.store(0, Ordering::Relaxed);
         self.ended.store(false, Ordering::Relaxed);

@@ -47,10 +47,21 @@ static struct {
     int  (*setMediaId)(long, const char *);
     /* 3-arg ABI CONFIRMED: createTask(TaskType, long*) writes the task id through arg3 — the
      * 2-arg form leaves garbage in r2 and segfaults / corrupts memory. Audio is owned by the
-     * pipeline (never feed it to ACB -> SOUND_ERROR_019), so setMediaAudioData is unused. */
+     * pipeline: we never hand ACB an audio SINK or elementary stream, and that half of the old
+     * rule stands. What does NOT stand is its stated consequence — `SOUND_ERROR_019` appears in
+     * no library on this device, and the clause carried no evidence from the initial commit
+     * onward. `setMediaAudioData` is used, for a two-key METADATA descriptor: see
+     * acb_send_atmos(). */
     int  (*setMediaVideoData)(long, const char *, long *);
     int  (*setState)(long, int, int, long *);
     int  (*setDisplayWindow)(long, long, long, long, long, int, long *);
+    /* OPTIONAL — deliberately absent from the all-present gate below, and this is the one
+     * pointer here that may legitimately be NULL. `AcbAPI_setMediaAudioData` is exported on
+     * webOS 3.9.2 / 4.4.2 / 4.10.0 but NOT on 2.2.3 or 3.4.0 (tools/fwcompat.py --lib
+     * libAcbAPI.so.1.0.0 --grep setMedia). Adding it to the AND would refuse ACB outright on
+     * those two releases and take ALL VIDEO with it — a Dolby Atmos read-out is not worth a
+     * black screen. See acb_send_atmos(). */
+    int  (*setMediaAudioData)(long, const char *, long *);
 } acb;
 
 static struct {
@@ -80,6 +91,8 @@ int vp_mode(void) {
         acb.setMediaVideoData = dlsym(h, "AcbAPI_setMediaVideoData");
         acb.setState          = dlsym(h, "AcbAPI_setState");
         acb.setDisplayWindow  = dlsym(h, "AcbAPI_setDisplayWindow");
+        /* Optional; NULL on 2.2.3/3.4.0 and acb_send_atmos() simply does nothing there. */
+        acb.setMediaAudioData = dlsym(h, "AcbAPI_setMediaAudioData");
         /* Every pointer assigned above, checked. This list used to name seven of the eight and
          * drop `destroy` silently — which is the argument against hand-enumeration, and why
          * `destroy` and the two unused SDL crop/property pointers are gone rather than resolved
@@ -313,7 +326,34 @@ char sf_feed(const unsigned char *p, unsigned size, long long pts, int esData) {
 long acb_create(const char *appId, int playerType) {
     if (vp_mode() != VP_ACB) return 0;
     g_acb = acb.create();
-    if (g_acb) acb.initialize(g_acb, playerType, appId ? appId : "com.beb.plxnative", acb_cb);
+    /* NO FALLBACK ID. This used to substitute the shipped app's literal id for a NULL `appId`,
+     * which was the far half of a double fallback: the Rust side read `getenv("APPID")` and passed
+     * NULL when SAM had not exported it, and this line then quietly claimed to be the app users
+     * install. With a developer build able to sit beside that app on one television, a wrong id
+     * here binds the video plane for the WRONG application — audio with a black plane, no error
+     * line anywhere. The near half is fixed (`engine::acb_init_acb` now passes
+     * `paths::app_id()`, read from the install directory, which cannot be absent); refusing here
+     * rather than guessing is what keeps the pair readable together. */
+    if (g_acb) {
+        if (appId) {
+            acb.initialize(g_acb, playerType, appId, acb_cb);
+        } else {
+            /* AND HAND BACK NOTHING. Returning the live handle here made the refusal half-done:
+             * the Rust side stores `ACB_OK = acb != 0`, so `acb_bind`, `acb_send_video_data` and
+             * `acb_send_atmos` would all then run against an object the library was never told
+             * about — strictly worse than the fallback id this replaced, which at least talked to
+             * an initialized ACB. Zeroing it makes every `if (!g_acb) return;` guard below do its
+             * job. The handle itself is leaked because this build resolves no `AcbAPI_destroy`
+             * (see the dlsym table's note); one leaked handle on a path that cannot be reached —
+             * `app_id()` cannot be absent — is the right trade against calling into uninitialized
+             * memory. */
+            if (elogf) {
+                fprintf(elogf, "acb: no appId — NOT initialized and NOT returned; video will not bind\n");
+                fflush(elogf);
+            }
+            g_acb = 0;
+        }
+    }
     return g_acb;
 }
 void acb_bind(const char *mediaId) {
@@ -321,6 +361,50 @@ void acb_bind(const char *mediaId) {
     acb.setSinkType(g_acb, SINK_TYPE_MAIN);
     acb.setMediaId(g_acb, mediaId);
     acb.setState(g_acb, APPSTATE_FOREGROUND, PLAYSTATE_LOADED, &g_taskId);
+}
+/* Tell ACB the stream is Dolby Atmos — the AUDIO counterpart of acb_send_video_data(), and a
+ * METADATA descriptor rather than anything resembling an audio sink.
+ *
+ * Recovered whole from this television's own binaries (2026-08-21). `libcbe.so`
+ * `media::MediaAPIsWrapper::SetDolbyAtmosInfoToACB` @0x01b976f0 — the ONLY caller of the ACB
+ * audio entry point anywhere in ~70 harvested libraries, and the path LG's own web apps take —
+ * builds exactly this two-key object with jsoncpp and hands it to `Acb::setMediaAudioData` with
+ * a NULL taskId. `AcbAPI_setMediaAudioData` @0x1836c is instruction-for-instruction the same
+ * 316-byte shape as `AcbAPI_setMediaVideoData` @0x16fac, so the 3-arg taskId ABI applies here
+ * unchanged; below it `ACB::AcbCore::setMediaAudioData` @0xfda4 parses the JSON, dedups against
+ * its cached copy, and posts luna://com.webos.service.acb/setAudioInfo with
+ * {"appId":…,"pipelineId":<mediaId>,"audioInfo":<this object>}. That is the whole path: a
+ * validity check, a dedup and one async Luna post. It touches no sink, no elementary stream, no
+ * codec descriptor and no second bind.
+ *
+ * `context` is the SAME string acb_bind() passed to setMediaId, and carrying it is the entire
+ * reason LG synthesises this object instead of forwarding the pipeline's own AUDIO_INFO callback:
+ * `StarfishMediaAPIs::handleAudioInfoEvent` builds that callback from `track` and `dualMono` only
+ * and has no `context`, while `generateVideoInfoPtree` @0x3755c puts one in the VIDEO envelope we
+ * already forward verbatim and which already works. Same object, one codec over.
+ *
+ * ON THE RULE THIS APPEARS TO BREAK. `src/starfish.c` and `player/CLAUDE.md` have said since the
+ * initial commit that audio must never be fed to ACB because it causes `SOUND_ERROR_019`. That
+ * literal exists in NO library on this device — swept three ways across the whole harvest,
+ * including 92 MB of Chromium — and no log line containing it has ever been committed. It sits in
+ * `f2523483` beside the 3-arg taskId note, which does carry its evidence. What the rule is
+ * plainly RIGHT about is the audio ES: the pipeline owns it and we never hand ACB a sink. This is
+ * not that, and the distinction is now readable in the disassembly rather than remembered.
+ * The residual is the ACB DAEMON, whose binary is not a `.so` and so was never harvested — the
+ * far side of that Luna post is unread. Hence the trigger: this is armed, not assumed.
+ *
+ * Returns 1 accepted, -1 our JSON was rejected client-side (nothing left the process), -2 ACB not
+ * initialized, 0 no ACB / no symbol / no id. Call after acb_bind(), which is where libcbe fires
+ * it (0x1b98d78, on LOADCOMPLETED) — no decoded frame is needed and no state is read. */
+int acb_send_atmos(const char *mediaId) {
+    if (!g_acb || !acb.setMediaAudioData || !mediaId) return 0;
+    char j[192];
+    /* The trailing newline is jsoncpp FastWriter's and is byte-for-byte what Chromium sends.
+     * json-c ignores it; it is here for exactness, not because anything requires it. */
+    snprintf(j, sizeof j, "{\"audio\":{\"immersive\":\"ATMOS\"},\"context\":\"%s\"}\n", mediaId);
+    int rv = acb.setMediaAudioData(g_acb, j, &g_taskId);
+    if (elogf) { fprintf(elogf, "acb setMediaAudioData rv=%d payload=%s", rv, j); fflush(elogf); }
+    return rv;
 }
 int acb_send_video_data(const char *sourceInfoVerbatim) {
     if (!g_acb) return 0;

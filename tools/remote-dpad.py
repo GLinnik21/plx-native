@@ -53,8 +53,22 @@
 # It is exactly as secret as the password and travels only inside TLS.
 #
 # Usage:
-#   tools/remote-dpad.py [--port 8908] [--upstream 8909] [--user tv] [--pass SECRET]
-#   (no --pass: one is generated and printed once at startup)
+#   tools/remote-dpad.py [--port 8908] [--upstream 8909] [--user tv] [--password SECRET]
+#                        [--runtime-dir DIR] [--fifo PATH]
+#   (no --password: one is generated and printed once at startup)
+#
+# It is spelled `--password` in full and must stay that way here. argparse accepts any
+# unambiguous PREFIX, so `--pass` — which this block said for a while — works today and
+# stops working the moment a second `--pass*` option exists, failing in every recipe that
+# copied it at once, naming a flag the documentation told the reader to type.
+#
+# --runtime-dir / --fifo name the INSTALL being driven — two builds share the dev
+# television now, each with its own runtime root (/tmp for the stable install,
+# /tmp/<app id> for a flavoured one) and so its own remote FIFO. They are the same
+# option names stream-screen.py takes, so one caller can pass one pair down to both.
+# Here they are ECHOED, never acted on: this process opens no FIFO and no SSH (see the
+# note at DPAD), and the page reports the upstream's OWN answer, which is the one that
+# decides where a keypress actually lands.
 #
 # Start the upstream with `--source app` so the picture is the app's own GLES frames.
 # The picture is then UI-PLANE ONLY — GL cannot see the hardware video overlay, so
@@ -72,7 +86,12 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # The ONLY tokens that may reach the TV's FIFO. Names are the app's own
-# (crate::remote drains /tmp/plxnative-remote).
+# (crate::remote drains `plxnative-remote` inside that install's runtime root — /tmp
+# for the stable install, /tmp/<app id> for a flavoured one). This file never touches
+# that path: an allowed token is forwarded to stream-screen.py's /key, and the held
+# SSH writer THERE resolves and writes the FIFO. Keeping the path in exactly one
+# process is deliberate — two copies of it would be two chances to drive the wrong
+# install, and a key sent to the wrong install disappears without an error.
 #
 # `okdown`/`okup` are the SPLIT halves of OK and they are what make a press-and-hold
 # possible — held past `press::LONG_MS` (500 ms) the app opens the card context menu,
@@ -106,7 +125,7 @@ button.ok:active{background:#fff}
 .sp{visibility:hidden}
 </style></head><body>
 <div id=wrap><canvas id=cv></canvas><img id=pic alt=""></div>
-<div id=st><span id=fps>connecting&hellip;</span><span id=mode>&nbsp;</span></div>
+<div id=st><span id=fps>connecting&hellip;</span><span id=inst>&nbsp;</span><span id=mode>&nbsp;</span></div>
 <div id=pad>
   <button class=sp></button><button data-k=up>&#9650;</button><button class=sp></button>
   <button data-k=left>&#9664;</button><button data-k=ok class=ok>OK</button><button data-k=right>&#9654;</button>
@@ -116,7 +135,8 @@ button.ok:active{background:#fff}
 <script>
 const WT="__WSTOKEN__";
 const pic=document.getElementById('pic'),cv=document.getElementById('cv'),
-      fps=document.getElementById('fps'),modeEl=document.getElementById('mode');
+      fps=document.getElementById('fps'),modeEl=document.getElementById('mode'),
+      instEl=document.getElementById('inst');
 let n=0,t0=Date.now();
 function tick(){if(++n%10===0){const d=(Date.now()-t0)/1000;fps.textContent=(n/d).toFixed(1)+' fps';}}
 
@@ -155,8 +175,18 @@ async function startJpeg(){
   }
 }
 
+// The upstream's /version is "<ver> <mode> app=<id> runtime=<dir>", the first two
+// fields POSITIONAL. Read by index, not by searching the whole reply for the word
+// `mpeg`: that is what this did when the reply was only two fields, and it would now
+// be decided by a runtime path — `--runtime-dir /tmp/mpeg-x` alone would force the
+// canvas on. `app=` is likewise anchored to a field start so a path cannot supply it.
+// It is the only thing on this page naming WHICH of the two builds sharing the
+// television a keypress lands on. An older upstream sends just "<ver> <mode>", which
+// still reads correctly and simply leaves the install blank.
 fetch('v',{cache:'no-store'}).then(r=>r.text()).then(t=>{
-  const mpeg=/\\bmpeg\\b/.test(t)&&typeof JSMpeg!=='undefined';
+  const p=t.trim().split(/\\s+/);
+  const mpeg=p[1]==='mpeg'&&typeof JSMpeg!=='undefined';
+  const a=/(?:^|\\s)app=(\\S+)/.exec(t); if(a)instEl.textContent=a[1];
   mpeg?startMpeg():startJpeg();
 }).catch(()=>startJpeg());
 
@@ -367,6 +397,14 @@ def main():
     ap.add_argument("--upstream", type=int, default=8909, help="stream-screen.py port (default 8909)")
     ap.add_argument("--host", default="127.0.0.1",
                     help="bind address; keep 127.0.0.1 and put a TUNNEL in front, never a port forward")
+    # Accepted so ONE caller can hand the same pair to both scripts. Echoed only —
+    # nothing here opens a FIFO (see the note at DPAD); the upstream resolves the path
+    # and the page shows the answer it reports.
+    ap.add_argument("--runtime-dir", default=None, metavar="DIR",
+                    help="the install's on-device runtime root, for the status line "
+                         "(the upstream is what actually resolves and writes the FIFO)")
+    ap.add_argument("--fifo", default=None, metavar="PATH",
+                    help="the install's remote FIFO, for the status line (same caveat)")
     ap.add_argument("--user", default="tv")
     ap.add_argument("--password", default=None, help="omit to generate one and print it once")
     a = ap.parse_args()
@@ -379,6 +417,9 @@ def main():
     print(f"  user: {a.user}", file=sys.stderr)
     print(f"  pass: {pw}", file=sys.stderr)
     print(f"  allowed keys: {' '.join(DPAD)}", file=sys.stderr)
+    if a.runtime_dir or a.fifo:
+        print(f"  install: {a.fifo or a.runtime_dir} (as told — the page shows the "
+              f"upstream's own answer, which is where keys really go)", file=sys.stderr)
     srv = ThreadingHTTPServer((a.host, a.port), make_handler(a.upstream, token, wstoken))
     srv.daemon_threads = True
     srv.serve_forever()

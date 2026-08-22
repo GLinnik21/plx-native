@@ -52,6 +52,12 @@ struct Session {
     /// pair, this flag) via plex::TranscodeSpec — replaces the old stored offset-free TBASE query
     /// string.
     cur_remux: bool,
+    /// This playback asked the server for a re-encode it may NOT satisfy with a stream copy —
+    /// [`crate::plex::TranscodeSpec::no_video_copy`]. Stored for the same reason `cur_remux` is:
+    /// a seek and an audio-track switch rebuild the start.mkv query from scratch, and a rebuild
+    /// that dropped this would hand the server back the permission mid-playback, so the film
+    /// would carry on in the wrong colours from the first seek.
+    cur_no_video_copy: bool,
     /// ratingKey of the currently-playing item (movie or episode), so an audio-track
     /// switch can force a fresh transcode of the same item.
     cur_rk: String,
@@ -115,6 +121,27 @@ struct Session {
     stream_acodec: String,
     /// Direct-play source video frame rate (0 = unknown/transcode → omit from the Load esInfo).
     stream_fps: f64,
+    /// The direct-played file's own Dolby Vision layering, carried for one consumer: the Load
+    /// payload's `DolbyHdrInfo` node ([`crate::metadata::Dovi::presentation`]). Rides the session
+    /// exactly like `stream_fps` and for the same reason — an audio-track switch tears the engine
+    /// down and rebuilds the payload from here, and a payload that lost the node mid-film would
+    /// put the rest of the picture up in the wrong colours.
+    ///
+    /// `Dovi::NONE` on every transcode and remux: what arrives then is the server's output, and
+    /// the only DV file that reaches those paths is one we refused to declare in the first place.
+    stream_dovi: crate::metadata::Dovi,
+    /// **Does the audio elementary stream we are feeding carry Dolby Atmos?** The Load payload's
+    /// `contents.immersive` node turns on it ([`crate::player::engine`]).
+    ///
+    /// Rides the session for exactly the reason `stream_dovi` does, and the failure it prevents is
+    /// the audible twin of that one: an audio-track switch tears the engine down and rebuilds the
+    /// payload from here, so a value that lived only in the plan would silently stop declaring
+    /// Atmos the moment the user opened the track menu — on the very track they had just chosen
+    /// *because* it is the Atmos one.
+    ///
+    /// `false` on every transcode and remux; see where it is set for why that is deliberate rather
+    /// than an omission.
+    stream_immersive: bool,
     /// HUD strings as fixed NUL-terminated C buffers, so title_cptr()/ctxline_cptr() hand
     /// draw_text (extern "C", *const c_char) a pointer that stays valid for the whole frame.
     ///
@@ -147,6 +174,7 @@ impl Session {
         tsession: String::new(),
         play_verdict: None,
         cur_remux: false,
+        cur_no_video_copy: false,
         cur_rk: String::new(),
         cur_sid: ServerId::UNSET,
         cur_audio_sid: 0,
@@ -162,6 +190,8 @@ impl Session {
         stream_vcodec: String::new(),
         stream_acodec: String::new(),
         stream_fps: 0.0,
+        stream_dovi: crate::metadata::Dovi::NONE,
+        stream_immersive: false,
         title: [0; 128],
         ctxline: [0; 96],
         up_next: None,
@@ -333,6 +363,17 @@ pub(crate) fn stream_acodec() -> String {
 pub(crate) fn stream_fps() -> f64 {
     session().stream_fps
 }
+/// The direct-played file's Dolby Vision layering, for the Load payload's `DolbyHdrInfo` node.
+/// `Dovi::NONE` for anything the server is transcoding or remuxing, and for a DV file we refused
+/// to declare — in every one of those cases the payload must say nothing.
+pub(crate) fn stream_dovi() -> crate::metadata::Dovi {
+    session().stream_dovi
+}
+/// Is the audio being fed a Dolby Atmos stream? — the Load payload's `contents.immersive` node.
+/// See [`Session::stream_immersive`].
+pub(crate) fn stream_immersive() -> bool {
+    session().stream_immersive
+}
 /// Override the audio codec used to build the Load payload — set by a native audio-track
 /// switch to the chosen track's codec before the direct-play reload.
 pub(crate) fn set_stream_acodec(codec: &str) {
@@ -360,6 +401,11 @@ pub(crate) fn set_stream_codecs(vc: &str, ac: &str) {
 pub(crate) fn is_remux() -> bool {
     session().cur_remux
 }
+/// Did this playback forbid the server a video stream COPY? Read by the seek and audio-switch
+/// rebuilds so the constraint survives them — see [`Session::cur_no_video_copy`].
+fn is_no_video_copy() -> bool {
+    session().cur_no_video_copy
+}
 pub(crate) fn source_vcodec() -> String {
     session().src_vcodec.clone()
 }
@@ -376,11 +422,20 @@ pub(crate) fn ctxline_cptr() -> *const c_char {
 /// This playback's universal-transcoder spec, rebuilt from the module state (rk + session are
 /// borrowed from the caller's locals; audio/subtitle ride the CURRENT selection) — so every
 /// (re)start of the item's transcode carries identical params.
-fn transcode_spec<'a>(rk: &'a str, session: &'a str, remux: bool, offset_secs: i64, aud: i64, sub: i64) -> crate::plex::TranscodeSpec<'a> {
+fn transcode_spec<'a>(
+    rk: &'a str,
+    session: &'a str,
+    remux: bool,
+    no_video_copy: bool,
+    offset_secs: i64,
+    aud: i64,
+    sub: i64,
+) -> crate::plex::TranscodeSpec<'a> {
     crate::plex::TranscodeSpec {
         rating_key: rk,
         session,
         remux,
+        no_video_copy,
         audio_stream_id: aud,
         subtitle_stream_id: sub,
         offset_secs,
@@ -504,7 +559,7 @@ pub(crate) fn transcode_seek(offset_secs: i64) -> Option<String> {
     // the old engine down — dropping its connection, and with it the old transcode.
     // /decision is just a query and doesn't cut the streaming connection.
     let session = sess();
-    let sp = transcode_spec(&rk, &session, is_remux(), offset_secs.max(0),
+    let sp = transcode_spec(&rk, &session, is_remux(), is_no_video_copy(), offset_secs.max(0),
                             cur_audio_sid(), cur_sub_sid());
     // same session, same output codecs — no payload rebuild here, so the body is unused
     let _ = c.transcode_decision(&sp);
@@ -871,8 +926,22 @@ pub(crate) struct Plan {
     pub src_vcodec: String,
     pub src_acodec: String,
     pub fps: f64,
+    /// The direct-played file's Dolby Vision layering, for the Load payload's `DolbyHdrInfo`
+    /// node. Set on the DIRECT-PLAY branch only, beside `fps` and for the same reason: the
+    /// transcode branch's payload describes the server's OUTPUT, which is not this file.
+    pub dovi: crate::metadata::Dovi,
+    /// Does the direct-played audio track carry Dolby Atmos, for the Load payload's
+    /// `contents.immersive` node. Set on the DIRECT-PLAY branch only, for the same reason `dovi`
+    /// is: it describes the FILE's own elementary stream.
+    pub immersive: bool,
     pub audio_sid: i64,
     pub remux: bool,
+    /// This plan's transcode may not be satisfied by a video stream COPY — the flag rides all the
+    /// way to `plex::TranscodeSpec::no_video_copy`, and `apply_plan` stores it so a seek or an
+    /// audio switch rebuilds the same constraint. Set only where the refusal is about what the
+    /// pixels ARE (a Dolby Vision base layer we cannot display), never for a size or codec one:
+    /// those the server's own caps already express, and a copy that satisfies them is a free win.
+    pub no_video_copy: bool,
     /// demuxer stream ordinal to feed (direct-play, non-default track). None = leave as-is.
     pub feed_audio_ordinal: Option<i32>,
     /// the subtitle stream the server already had selected for this part (0 = none/off), so the
@@ -970,7 +1039,58 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveE
     // any AAC/AC3 track (nearly every file has one) direct-played straight onto the bounded
     // decoder. See `video_direct_plays` for the gate itself.
     let (src_w, src_h) = plan.playing.as_ref().map(|p| (p.width, p.height)).unwrap_or((0, 0));
-    let video_dp = video_direct_plays(vcodec, src_w, src_h, crate::devcaps::caps());
+    // The DV layering rides the same playing-item store as the frame size, for the same reason:
+    // it is the PLAYED LEAF's, not the detail page's (a show page's Detail describes whichever
+    // episode backfilled it). Absent store → default `Dovi`, which is all-zero and refuses
+    // nothing.
+    let dovi = plan.playing.as_ref().map(|p| p.dovi).unwrap_or_default();
+    // ONE predicate, resolved once: it answers the direct-play gate here and the Load payload's
+    // `DolbyHdrInfo` node later (`engine::build_av_payload`, off `stream_dovi()` + the same
+    // latched trigger). Two predicates is what this used to be, and the pair could disagree —
+    // which for Dolby Vision means either a declared stream we refused to play or, worse, a
+    // Profile 5 direct-played with nothing declared: the wrong colours, back again.
+    let dv = dovi.presentation_now();
+    let video_dp = video_direct_plays(vcodec, src_w, src_h, dv, crate::devcaps::caps());
+    // **Refusing direct play is only half of it.** The transcode query below grants the server
+    // `directStream=1` — permission to COPY the video rather than encode it — and PMS takes that
+    // permission whenever the source fits the caps the query carries. Those caps are resolution,
+    // bitrate and the profile's limitation axes, and **not one of them can say "Dolby Vision"**,
+    // so a refused Profile 5 file came back `Part.decision=transcode` with the video's own
+    // decision `copy`: the identical IPT-PQ bitstream, one container down, and the identical
+    // wrong colours the refusal was for (measured against the dev PMS 2026-08-21 — before this
+    // line existed, the whole gate above changed the container and nothing else). Withdrawing the
+    // permission is what makes the refusal mean something, and it is withdrawn ONLY here: a size
+    // or codec refusal is one the server's own caps already express, and a copy that satisfies
+    // them is a free win worth keeping.
+    //
+    // **This stays the base-layer question, and does NOT become `dv.refusal().is_some()`.** A copy
+    // arrives with no `DolbyHdrInfo` node attached — the declaration rides the direct play, not
+    // the file — so the test is the pre-declaration one: is this bitstream a correct picture when
+    // nobody has been told what it is? Declaring a Profile 5 makes direct play right and leaves a
+    // copy of it exactly as wrong as before.
+    let no_video_copy = dovi.base_layer_unusable();
+    if let Some(why) = dv.refusal() {
+        // Worth a line of its own: from the outside this looks like a 4K HEVC file with a normal
+        // audio track being sent to the transcoder for no reason, and the DOVI fields that
+        // explain it are not in any other log line. `ff.rs` logs the demuxer's own reading of the
+        // configuration record at open, which is the ground truth this decision only approximates.
+        // NB the server is allowed to answer that it cannot do it — this PMS refuses a Profile 5
+        // outright ("File is unplayable. DoVi (Profile 5) color space is not supported."), which
+        // `refusal` below turns into the player's read-out quoting that sentence. A read-out that
+        // names the reason beats a picture in the wrong colours with nothing to explain it.
+        crate::player::log(&format!(
+            "route: dolby vision P{} (bl_compat={} el={}) — {why}, base layer is not self-displayable; re-encoding (no copy)",
+            dovi.profile, dovi.bl_compat, dovi.el_present as i32
+        ));
+    } else if let Some(n) = dv.declared() {
+        // The other half of the same story, and worth its own line for the same reason: from the
+        // outside a Profile 5 that suddenly direct-plays looks like the refusal having silently
+        // regressed. This says it was a decision, and names the values the payload will carry.
+        crate::player::log(&format!(
+            "route: dolby vision P{} (bl_compat={} el={}) — declaring DolbyHdrInfo (trackType={} profileId={}); direct play",
+            dovi.profile, dovi.bl_compat, dovi.el_present as i32, n.track_type, n.profile_id
+        ));
+    }
     // MKV and MP4 both direct-play. MP4 once died after AU#0 (b1002de) because the mov demuxer's
     // random access needed seeks the then-unseekable AVIO could not serve; `ff.rs::seek_cb` has
     // reopened with a byte Range since, and mp4 was re-measured on-device 2026-08-11: sequential
@@ -1022,6 +1142,36 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveE
         plan.vcodec = vcodec.to_string();
         plan.acodec = achosen.clone();
         plan.fps = fps;
+        // Only here: this is the branch that feeds the FILE's own elementary stream, so it is the
+        // only one whose Load payload may describe the file's Dolby Vision.
+        plan.dovi = dovi;
+        // **Dolby Atmos, and it is the same sentence one codec over.** `contents.immersive` tells
+        // the pipeline that the E-AC3 it is about to decode carries JOC, which is what raises the
+        // television's own Atmos read-out and what puts the sound engine in the right mode.
+        //
+        // Read off the track we ACTUALLY PICKED, not off the part: a film routinely ships an Atmos
+        // 7.1 beside a plain 5.1 and a commentary, and declaring the part's best track while
+        // feeding the user's chosen one is a lie the pipeline has no way to detect. `aidx` is the
+        // list position `audio_sel` chose; with no explicit pick, the server's `selected` flag is
+        // the same track `acodec` came from.
+        //
+        // **Set on this branch only, and the omission on the others is deliberate.** A transcode's
+        // audio is re-encoded and its Atmos is gone, so declaring it would be false. A REMUX copies
+        // the audio and would in fact still carry JOC — but `plan.dovi` already draws the line at
+        // this branch on the same reasoning (a copy's payload describes what the server sends, and
+        // the declaration rides the direct play), and one rule that is occasionally conservative
+        // beats two rules that can disagree. Nothing is lost visibly: an undeclared Atmos plays as
+        // ordinary E-AC3, which is what it does today.
+        plan.immersive = plan
+            .playing
+            .as_ref()
+            .and_then(|p| {
+                if aidx >= 0 { p.audio.get(aidx as usize) } else { p.audio.iter().find(|a| a.selected) }
+            })
+            .is_some_and(|a| a.has_atmos());
+        if plan.immersive {
+            crate::player::log("audio: dolby atmos — declaring contents.immersive=ATMOS");
+        }
         // record the picked track's stream id so the timeline reports what actually plays
         // (0 = default/unknown → the param is omitted, the server shows the part default)
         plan.audio_sid = asid;
@@ -1060,7 +1210,15 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveE
     // A direct-playable source means "ask Plex to REMUX" — unless the link forbids a copy, in
     // which case this is a re-encode after all and every line below must agree (the payload guess,
     // the stored flavor a seek rebuilds from, and the /decision query itself).
-    let remux = video_dp && link.remux;
+    // `!no_video_copy` is the third term and it is not redundant with `video_dp`. A remux COPIES
+    // the video, so a Dolby Vision file whose base layer needs a declaration would come back with
+    // the same RPU one container down and a payload built on this branch — which declares nothing.
+    // Before the declaration existed the gate above already excluded every such file (they were
+    // all refused); now a Profile 5 can PASS it and reach here for a different reason — an
+    // unstreamable container, or no direct-playable audio track — and would have been quietly
+    // remuxed into the very picture the whole change is about. It also keeps the invariant
+    // `plex::Client::transcode_query` relies on: `remux` and `no_video_copy` are never both true.
+    let remux = video_dp && link.remux && !no_video_copy;
     if remux {
         let achosen = audio_sel.as_ref().map(|(_, c, _)| c.clone()).unwrap_or_else(|| acodec.to_string());
         plan.vcodec = vcodec.to_string();
@@ -1085,8 +1243,9 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveE
     // and passes: without the gate a relay stalls, without the sid a friend's audio pick is PUT
     // to our own server, which answers 200 and changes nothing on theirs.
     plan.remux = remux;
+    plan.no_video_copy = no_video_copy;
     put_selection(env.sid, plan.part_id, env.audio_sid, env.sub_sid); // audio/subtitle selection drives the encode/remux + burn
-    let sp = transcode_spec(rk, &session, remux, -1, env.audio_sid, env.sub_sid);
+    let sp = transcode_spec(rk, &session, remux, no_video_copy, -1, env.audio_sid, env.sub_sid);
     if let Some(mc) = client.transcode_decision(&sp) {
         // The server has already answered, and it is allowed to answer NO. Stop here rather than
         // stream a `start.mkv` it has just said it cannot produce: the plan leaves with no URL —
@@ -1231,8 +1390,8 @@ fn pick_dp_subtitle(subs: &[crate::metadata::Stream]) -> Option<(i64, i32)> {
     Some((subs[i].id, ord))
 }
 
-/// PURE: the local direct-play VIDEO test — the codec and the source's stated frame size must
-/// BOTH clear the device's own decode table (`devcaps`).
+/// PURE: the local direct-play VIDEO test — the codec, the source's stated frame size and its
+/// Dolby Vision layering must ALL clear what this device and this pipeline can actually show.
 ///
 /// The codec half: h264 unconditionally (every webOS SoC decodes it), hevc only when the table
 /// lists the decoder — anything else the pipeline cannot feed at all. The resolution half is the
@@ -1242,13 +1401,50 @@ fn pick_dp_subtitle(subs: &[crate::metadata::Stream]) -> Option<(i64, i32)> {
 /// verbatim to a decoder whose table says 1920x1088 — the wrong-side failure devcaps' own doc
 /// names (issue #22's over-claim class), invisible on the dev TV, whose bound is 4096x2176.
 ///
+/// **The Dolby Vision half is the same shape of bug, found the same way, and it is NOT about the
+/// decoder.** Every profile's base layer is ordinary HEVC and every one of them decodes here — so
+/// a codec-name gate cannot see the difference, which is exactly why this one is needed. What
+/// differs is whether the base layer MEANS anything on its own: Profile 8.1's does (it is HDR10,
+/// and dropping the RPU costs only the dynamic metadata), Profile 5's does not (single-layer
+/// IPT-PQ, no fallback — it decodes cleanly and displays in visibly wrong colours), and Profile
+/// 7's is only half the picture.
+///
+/// **That half arrives here already DECIDED**, as a [`DvPresentation`] rather than as the raw
+/// record, and that is the point: the same value the caller passes here is the value the Load
+/// payload reads for its `DolbyHdrInfo` node. A stream we DECLARE is one the pipeline puts in
+/// Dolby Vision mode, so Profile 5 direct-plays correctly and this gate must let it through; a
+/// stream we do not declare falls back to `Dovi::base_layer_unusable`, the pre-declaration rule,
+/// which carries the never-convict-on-silence reasoning. Taking the decision as an argument is
+/// what makes "the gate and the payload can never disagree" checkable in one place —
+/// [`Dovi::presentation`] — instead of being a coincidence between two functions.
+///
+/// **Refusing here is only half the work, and the other half is not in this function.** A refusal
+/// sends the item down the transcode branch — but that branch's query grants PMS `directStream=1`,
+/// permission to COPY the video rather than encode it, and the server takes it whenever the source
+/// fits the caps: resolution, bitrate, and the profile's own limitation axes. None of those can say
+/// "Dolby Vision", so a refused Profile 5 came back `Part.decision=transcode` with the video's own
+/// decision `copy` — the same bitstream, the same wrong colours, one container down. `build_stream`
+/// therefore also sets [`crate::plex::TranscodeSpec::no_video_copy`], off `base_layer_unusable` and
+/// never off this gate: a COPY carries no declaration, so it stays wrong even for a profile we are
+/// happy to direct-play. The measurement is in `docs/pms-api.md` §"What the server actually does
+/// with a Dolby Vision source". A server that cannot encode the result is then allowed to say so —
+/// this PMS answers general code 2000, *"File is unplayable. DoVi (Profile 5) color space is not
+/// supported."*, which [`DvPresentation::Refuse`] turns into the player's read-out. A read-out that
+/// names the reason is the honest end of that road; a picture in the wrong colours is not.
+///
 /// Unknown dimensions (0) PASS: PMS omitting a Media attribute is not evidence of 4K, and
 /// failing open is yesterday's behavior for every file the server never measured — the same
-/// misread-degrades-to-assumed rule `devcaps::parse` applies.
-fn video_direct_plays(vcodec: &str, src_w: i64, src_h: i64, caps: &crate::devcaps::Caps) -> bool {
+/// misread-degrades-to-assumed rule `devcaps::parse` applies, and `Dovi` applies it too.
+fn video_direct_plays(
+    vcodec: &str,
+    src_w: i64,
+    src_h: i64,
+    dv: crate::metadata::DvPresentation,
+    caps: &crate::devcaps::Caps,
+) -> bool {
     let codec_ok = vcodec == "h264" || (vcodec == "hevc" && caps.hevc);
     let (bw, bh) = caps.hevc_max;
-    codec_ok && src_w <= bw as i64 && src_h <= bh as i64
+    codec_ok && src_w <= bw as i64 && src_h <= bh as i64 && dv.refusal().is_none()
 }
 
 /// The detail page's "how this plays" answer, BEFORE anything is played — the same three gates
@@ -1285,7 +1481,7 @@ pub(crate) fn playback_preview(d: &crate::metadata::Detail) -> Option<Preview> {
         Some(ep) => (ep.part.as_str(), ep.vcodec.as_str()),
         None => (d.part.as_str(), d.vcodec.as_str()),
     };
-    playback_preview_of(part, vcodec, d.width, d.height, &d.audio)
+    playback_preview_of(part, vcodec, d.width, d.height, d.dovi.presentation_now(), &d.audio)
 }
 
 /// [`playback_preview`]'s pure core — the three-way answer from the fields it actually needs, so
@@ -1295,12 +1491,13 @@ pub(crate) fn playback_preview_of(
     vcodec: &str,
     width: i64,
     height: i64,
+    dv: crate::metadata::DvPresentation,
     audio_streams: &[crate::metadata::Stream],
 ) -> Option<Preview> {
     if part.is_empty() {
         return None; // nothing playable loaded (a show still resolving its episode)
     }
-    let video = video_direct_plays(vcodec, width, height, crate::devcaps::caps());
+    let video = video_direct_plays(vcodec, width, height, dv, crate::devcaps::caps());
     let audio = audio_streams.iter().any(|a| crate::plex::is_dp_audio(&a.codec));
     // Mirrors `build_stream`'s own ladder: the video gate decides whether an ENCODER runs at all,
     // and only once it has passed do the container and the audio decide between pulling the file
@@ -1578,6 +1775,7 @@ fn apply_plan(plan: Plan, rk: &str) {
             // makes that true without a second clear anyone can forget.
             play_verdict: plan.verdict,
             cur_remux: plan.remux,
+            cur_no_video_copy: plan.no_video_copy,
             // The two halves of the playing item's identity, installed together and by the same
             // writer — a ratingKey means nothing without the server it is a key ON. Everything
             // after this point (the track PUT, a transcode seek, the retranscode, the stop, and
@@ -1599,6 +1797,8 @@ fn apply_plan(plan: Plan, rk: &str) {
             stream_vcodec,
             stream_acodec,
             stream_fps: plan.fps,
+            stream_dovi: plan.dovi,
+            stream_immersive: plan.immersive,
             title,
             ctxline,
             up_next: plan.up_next,
@@ -1654,7 +1854,8 @@ pub(crate) fn retranscode(offset_secs: i64) -> Option<String> {
     set_stream_codecs(crate::devcaps::caps().encode_vcodec(), "ac3");
     put_selection(cur_sid(), cur_part_id(), cur_audio_sid(), cur_sub_sid()); // drives the encode + burn
     let qsess = sess();
-    let sp = transcode_spec(&rk, &qsess, false, offset_secs.max(0), cur_audio_sid(), cur_sub_sid());
+    let sp =
+        transcode_spec(&rk, &qsess, false, is_no_video_copy(), offset_secs.max(0), cur_audio_sid(), cur_sub_sid());
     if let Some(mc) = c.transcode_decision(&sp) {
         apply_decision_codecs(&mc); // reload builds a fresh Load payload — match the real output
     }
@@ -1777,21 +1978,18 @@ mod tests {
     // a pure function, and these pin the order the comments claim.
 
     fn trk(id: i64, codec: &str, lang: &str, default: bool) -> crate::metadata::Stream {
+        // `..Default::default()` for the rest, which is what that derive is FOR (see the comment
+        // above `metadata::Stream`): this ladder is about id / codec / language / default, and a
+        // fixture that spells out the technical fields it does not read would have to be revisited
+        // every time the Track-information panel learns another one.
         crate::metadata::Stream {
             id,
             index: id,
-            lang: String::new(),
             lang_code: lang.into(),
             codec: codec.into(),
             channels: 2,
-            layout: String::new(),
-            title: String::new(),
-            sdh: false,
-            ad: false,
-            forced: false,
             default,
-            external: false,
-            selected: false,
+            ..Default::default()
         }
     }
 
@@ -1986,6 +2184,271 @@ mod tests {
         assert_eq!(pick_dp_subtitle(&subs), None);
     }
 
+    // ---- video_direct_plays: the local codec + resolution + Dolby Vision direct-play gate ----
+
+    use crate::metadata::{Dovi, DvPresentation};
+
+    /// The two settings of the `/tmp/plxnative-dv` trigger, named so every assertion below says
+    /// which world it is in. `DECLARED` is the armed one — the pipeline is told the stream is
+    /// Dolby Vision — and `SILENT` is a build (or a boot) that sends no node, which is also what
+    /// `RELEASE=1` compiles in today.
+    const DECLARED: bool = true;
+    const SILENT: bool = false;
+
+    /// An ordinary non-DV file: every DOVI field absent, which is what PMS sends for one.
+    fn no_dv() -> Dovi {
+        Dovi::default()
+    }
+    /// The four real shapes, spelled exactly as the dev server reports them (probed live
+    /// 2026-08-21 by sweeping all 540 movies and episodes on the dev PMS: 28 carry Dolby Vision,
+    /// 8 movies and 20 episodes — the numbers are not invented, and `p7`'s `bl_compat: 6` in
+    /// particular is why an `== 0` test is not enough).
+    fn p5() -> Dovi {
+        Dovi { present: true, profile: 5, bl_compat: 0, el_present: false, ..Dovi::NONE }
+    }
+    fn p7() -> Dovi {
+        Dovi { present: true, profile: 7, bl_compat: 6, el_present: true, ..Dovi::NONE }
+    }
+    fn p8() -> Dovi {
+        Dovi { present: true, profile: 8, bl_compat: 1, el_present: false, ..Dovi::NONE }
+    }
+
+    /// **The bug this gate exists for.** Profile 5 is single-layer IPT-PQ with no HDR10 fallback,
+    /// so feeding its base layer to an ordinary HEVC decoder produces a picture in visibly wrong
+    /// colours — and nothing else in the ladder can see that: the codec is `hevc` (fine), the
+    /// frame size clears the dev TV's bound (fine), the container is mp4, which has direct-played
+    /// since 2026-08-11 (fine). Every gate passes and the user gets a broken picture.
+    #[test]
+    fn a_profile_5_source_does_not_direct_play_undeclared() {
+        let caps = crate::devcaps::Caps {
+            hevc: true,
+            hevc_max: (4096, 2176), // the dev TV's own bound — this must fail on SIZE grounds nowhere
+            vp9: false,
+            audio: "aac,ac3,eac3".into(),
+        };
+        // the live P5 item's own shape: 3840x1602 hevc, well inside the bound
+        assert!(
+            !video_direct_plays("hevc", 3840, 1602, p5().presentation(SILENT), &caps),
+            "IPT-PQ has no HDR10 base layer"
+        );
+        // and it is the DV fields doing it, not the size or the codec: the same file without them
+        // direct-plays, which is exactly the behaviour that shipped the wrong colours
+        assert!(video_direct_plays("hevc", 3840, 1602, no_dv().presentation(SILENT), &caps));
+    }
+
+    /// **The inversion, and the reason the refusal above is now conditional.** Declaring the
+    /// stream — one `DolbyHdrInfo` node in the Load payload — is what makes the pipeline set
+    /// `dolby-vision=TRUE` on the caps it builds, and a Profile 5 shown in Dolby Vision mode is
+    /// the correct picture rather than the wrong one. So the same file, same size, same codec,
+    /// direct-plays once we are willing to say what it is; the refusal was never about the
+    /// decoder, only about our own silence.
+    #[test]
+    fn declaring_dolby_vision_inverts_the_profile_5_refusal() {
+        let caps = crate::devcaps::Caps {
+            hevc: true,
+            hevc_max: (4096, 2176),
+            vp9: false,
+            audio: "aac,ac3,eac3".into(),
+        };
+        let dv = p5().presentation(DECLARED);
+        assert!(video_direct_plays("hevc", 3840, 1602, dv, &caps), "a declared P5 is displayable");
+        let n = dv.declared().expect("the payload must carry the node the gate was opened for");
+        assert_eq!(n.profile_id, 5, "getInt, and the pipeline's -1 sentinel means no profile hint");
+        assert_eq!(n.track_type, "single");
+        assert_eq!(n.encryption_type, "clear");
+        // ...and the size and codec halves of the gate are untouched by any of it
+        assert!(!video_direct_plays("av1", 3840, 1602, dv, &caps));
+        let small = crate::devcaps::Caps { hevc_max: (1920, 1088), ..caps.clone() };
+        assert!(!video_direct_plays("hevc", 3840, 1602, dv, &small));
+    }
+
+    /// Profile 7 is dual-layer: the picture is split across a base and an enhancement layer, and
+    /// the pipeline feeds ONE elementary stream. Caught by `el_present` alone — the live P7 item
+    /// reports `bl_compat = 6`, so a compatibility-id test would wave it straight through.
+    #[test]
+    fn a_dual_layer_profile_7_source_does_not_direct_play() {
+        let caps =
+            crate::devcaps::Caps { hevc: true, hevc_max: (4096, 2176), vp9: false, audio: "eac3".into() };
+        // and it is refused in BOTH worlds: no payload key can hand the pipeline a layer we do
+        // not feed it, so arming the trigger must not open this gate the way it opens P5's
+        for signal in [SILENT, DECLARED] {
+            let dv = p7().presentation(signal);
+            assert!(!video_direct_plays("hevc", 3840, 2160, dv, &caps), "signal={signal}");
+            assert_eq!(dv.refusal(), Some("dual-layer"));
+            assert_eq!(dv.declared(), None, "a layer we cannot feed must never be declared");
+        }
+        assert_ne!(p7().bl_compat, 0, "the fixture must keep the trap it was built to hold");
+    }
+
+    /// **Profile 8.1 must be UNAFFECTED**, and so must every file with no DOVI record at all.
+    /// P8's base layer IS an HDR10 stream, so ignoring the RPU costs the dynamic metadata and
+    /// nothing else — the 21-case on-device suite includes a passing P8 case (`dp_hevc_eac3_dovi_p8`)
+    /// and this change must not move it.
+    #[test]
+    fn profile_8_and_plain_files_are_unaffected() {
+        let caps = crate::devcaps::Caps {
+            hevc: true,
+            hevc_max: (4096, 2176),
+            vp9: false,
+            audio: "aac,ac3,eac3".into(),
+        };
+        for signal in [SILENT, DECLARED] {
+            assert!(
+                video_direct_plays("hevc", 3840, 2160, p8().presentation(signal), &caps),
+                "HDR10-compatible base layer (signal={signal})"
+            );
+            assert!(video_direct_plays("hevc", 3840, 2160, no_dv().presentation(signal), &caps));
+            assert!(video_direct_plays("h264", 1920, 1080, no_dv().presentation(signal), &caps));
+            assert_eq!(p8().presentation(signal).refusal(), None);
+            assert_eq!(no_dv().presentation(signal).refusal(), None);
+        }
+        // A file with no Dolby Vision at all declares nothing however the trigger is set — the
+        // node is a statement about the stream, not a mode the app is in.
+        assert_eq!(no_dv().presentation(DECLARED).declared(), None);
+        // P8 declares in BOTH settings, and that is deliberate: its base layer is HDR10 either
+        // way, so the node costs nothing and adds the dynamic metadata the RPU carries. The
+        // trigger reaches only the profile whose declaration is not yet free — P5, measured to
+        // lose two frames every ~40 s on this set. `SILENT` here is the half that would silently
+        // regress if the gate were ever rewritten as a bare `signal &&`.
+        for signal in [SILENT, DECLARED] {
+            assert_eq!(
+                p8().presentation(signal).declared().map(|n| n.profile_id),
+                Some(8),
+                "a cross-compatible base layer declares without the trigger: signal={signal}"
+            );
+        }
+        assert_eq!(p5().presentation(SILENT).declared(), None, "P5 stays behind the trigger");
+    }
+
+    /// **Silence must not convict.** Every field of `Dovi` is 0 both when the server omits it and
+    /// when the file simply is not Dolby Vision, so a bare `bl_compat == 0` test would refuse
+    /// direct play for the entire library. Two guards keep that from happening, and this drives
+    /// both: `present` gates the whole question, and a KNOWN profile gates the compat-id test.
+    /// The direction is deliberate — a false refusal costs 4K and HDR10 on a file that played
+    /// perfectly, and on a Pass-less server (issue #22) it costs playback outright.
+    #[test]
+    fn an_unreported_dolby_vision_record_refuses_nothing() {
+        // the shape every ordinary SDR file has: no DV at all, so bl_compat 0 means nothing
+        assert!(!Dovi::default().base_layer_unusable());
+        // `DOVIPresent` and nothing else — an older or quieter server. Not enough to convict.
+        let bare = Dovi { present: true, profile: 0, bl_compat: 0, el_present: false, ..Dovi::NONE };
+        assert!(!bare.base_layer_unusable(), "a compat id of 0 read out of a silent field is not a 0");
+        // but an explicit enhancement layer is disqualifying even with no profile reported,
+        // because that field says what it says regardless of what sits beside it
+        let el_only = Dovi { present: true, profile: 0, bl_compat: 0, el_present: true, ..Dovi::NONE };
+        assert!(el_only.base_layer_unusable());
+        // and `present: false` overrides everything — no DV means no DV, whatever noise follows
+        let contradictory = Dovi { present: false, profile: 5, bl_compat: 0, el_present: true, ..Dovi::NONE };
+        assert!(!contradictory.base_layer_unusable());
+        // The rule survives the declaration, in both settings: a bare `present` names no profile,
+        // `getInt` has nothing to be given, and a node we cannot fill is not a reason to convict a
+        // file that plays. It falls through to `NotDv` — plays as it always has, declares nothing.
+        for signal in [SILENT, DECLARED] {
+            assert_eq!(Dovi::default().presentation(signal), DvPresentation::NotDv);
+            assert_eq!(bare.presentation(signal), DvPresentation::NotDv, "signal={signal}");
+            assert_eq!(contradictory.presentation(signal), DvPresentation::NotDv);
+            assert_eq!(el_only.presentation(signal), DvPresentation::Refuse("dual-layer"));
+        }
+    }
+
+    /// **The gate and the payload are one predicate, and this is the property that says so.**
+    /// Every shape the server can report, in both trigger settings: whatever the answer, direct
+    /// play is allowed exactly when a node will be sent or there was no Dolby Vision to declare,
+    /// and refused exactly when there is Dolby Vision we are not declaring. The pair that must
+    /// never occur is a direct play with an undeclared DV stream — that IS the wrong-colours bug —
+    /// and its mirror, a refusal carrying a node nobody will ever send.
+    #[test]
+    fn the_direct_play_gate_and_the_payload_node_can_never_disagree() {
+        let caps = crate::devcaps::Caps {
+            hevc: true,
+            hevc_max: (4096, 2176),
+            vp9: false,
+            audio: "aac,ac3,eac3".into(),
+        };
+        let bare = Dovi { present: true, profile: 0, bl_compat: 0, el_present: false, ..Dovi::NONE };
+        for d in [no_dv(), p5(), p7(), p8(), bare] {
+            for signal in [SILENT, DECLARED] {
+                let dv = d.presentation(signal);
+                let plays = video_direct_plays("hevc", 3840, 1602, dv, &caps);
+                assert_eq!(plays, dv.refusal().is_none(), "{d:?} signal={signal}");
+                assert!(!(dv.refusal().is_some() && dv.declared().is_some()), "{d:?}");
+                // and a refusal always implies the COPY refusal beside it — `build_stream`'s
+                // `no_video_copy` reads `base_layer_unusable`, and its log line at the refusal
+                // says "(no copy)" in so many words. If a shape could be refused while a copy of
+                // it stayed permitted, the item would come back byte-identical from the server.
+                if dv.refusal().is_some() {
+                    assert!(d.base_layer_unusable(), "a refusal must also withdraw the copy: {d:?}");
+                }
+                // **The one that matters, and it is now unconditional.** A direct-played Dolby
+                // Vision stream is a DECLARED one — in either trigger setting, for every shape.
+                // It reads as a strengthening and it is one: while the trigger gated every
+                // declaration this could only be asserted as `== signal`, which quietly permitted
+                // the wrong-colours pair for any profile the trigger happened to be off for. Now
+                // the only undeclared DV is refused DV, so the implication holds outright.
+                if plays && d.present && d.profile > 0 {
+                    assert!(dv.declared().is_some(), "{d:?} signal={signal}");
+                }
+                if let Some(n) = dv.declared() {
+                    assert_eq!(n.profile_id, d.profile);
+                    // `trackType:"dual"` with `encryptionType:"all"` is what sets the pipeline's
+                    // `dv-dual-svp` secure-video-path flag, which this app cannot satisfy. No
+                    // input may produce that pair.
+                    assert!(!(n.track_type == "dual" && n.encryption_type == "all"), "dv-dual-svp");
+                }
+            }
+        }
+    }
+
+    /// The three profiles, through the predicate itself rather than the gate, including the
+    /// 8.2 (SDR base) and 8.4 (HLG base) variants: their base layers are ordinary displayable
+    /// pictures, so they direct-play like 8.1 and only the compat id tells them apart.
+    #[test]
+    fn base_layer_usability_by_profile() {
+        assert!(p5().base_layer_unusable());
+        assert!(p7().base_layer_unusable());
+        assert!(!p8().base_layer_unusable());
+        assert_eq!(p5().presentation(SILENT).refusal(), Some("no cross-compatible base layer"));
+        for compat in [1, 2, 4] {
+            let d = Dovi { present: true, profile: 8, bl_compat: compat, el_present: false, ..Dovi::NONE };
+            assert!(!d.base_layer_unusable(), "P8 with a cross-compatible base layer (id {compat})");
+        }
+    }
+
+    /// The detail page's preview must agree with what Play will do, or the facts row promises a
+    /// direct play the route then refuses. A P5 item reads `Converts` — which is the honest
+    /// answer, since a real re-encode is exactly what the server has to do to make it displayable.
+    ///
+    /// It is a client-side PREDICTION and stops there: `Preview` has no "this server cannot do it"
+    /// state, and on the dev PMS a Profile 5 conversion is exactly what comes back refused. The
+    /// page says what the route will ASK for; whether the server can answer is the read-out's
+    /// question, not this one's.
+    #[test]
+    fn the_preview_calls_a_profile_5_item_a_conversion() {
+        let aac = [crate::metadata::Stream { codec: "aac".into(), ..Default::default() }];
+        let part = "/library/parts/1/2/movie.mp4";
+        assert_eq!(
+            playback_preview_of(part, "hevc", 1920, 1080, p5().presentation(SILENT), &aac),
+            Some(Preview::Converts),
+            "the server must re-encode it — a container remux would copy the same wrong pixels"
+        );
+        // the identical item without the DV record is a plain direct play, so the preview is
+        // reading the new field and not something else that happens to differ
+        assert_eq!(
+            playback_preview_of(part, "hevc", 1920, 1080, no_dv().presentation(SILENT), &aac),
+            Some(Preview::DirectPlay)
+        );
+        assert_eq!(
+            playback_preview_of(part, "hevc", 1920, 1080, p8().presentation(SILENT), &aac),
+            Some(Preview::DirectPlay)
+        );
+        // and the page must follow the inversion, or the facts row promises a conversion the
+        // route no longer performs — the preview reads the same predicate the gate does
+        assert_eq!(
+            playback_preview_of(part, "hevc", 1920, 1080, p5().presentation(DECLARED), &aac),
+            Some(Preview::DirectPlay)
+        );
+    }
+
     // ---- video_direct_plays: the local codec + resolution direct-play gate -------------------
 
     /// The RESOLUTION half of the gate (issue #22's over-claim class): the smart-DP branch never
@@ -2001,12 +2464,12 @@ mod tests {
             audio: "aac,ac3,eac3".into(),
         };
         // the codec agrees; the frame size must still refuse — on either codec
-        assert!(!video_direct_plays("h264", 3840, 2160, &caps));
-        assert!(!video_direct_plays("hevc", 3840, 2160, &caps));
+        assert!(!video_direct_plays("h264", 3840, 2160, no_dv().presentation(SILENT), &caps));
+        assert!(!video_direct_plays("hevc", 3840, 2160, no_dv().presentation(SILENT), &caps));
         // one axis over is over (per-axis bound, not an area heuristic)
-        assert!(!video_direct_plays("h264", 4096, 1080, &caps));
+        assert!(!video_direct_plays("h264", 4096, 1080, no_dv().presentation(SILENT), &caps));
         // within the bound plays, exactly at it included (1088 IS the table's number)
-        assert!(video_direct_plays("h264", 1920, 1088, &caps));
+        assert!(video_direct_plays("h264", 1920, 1088, no_dv().presentation(SILENT), &caps));
     }
 
     /// Unknown dimensions fail OPEN (0 = PMS never measured the file — not evidence of 4K, and
@@ -2015,9 +2478,9 @@ mod tests {
     fn unknown_dimensions_fail_open_and_the_codec_half_still_gates() {
         let caps =
             crate::devcaps::Caps { hevc: false, hevc_max: (1920, 1088), vp9: false, audio: "aac".into() };
-        assert!(video_direct_plays("h264", 0, 0, &caps));
-        assert!(!video_direct_plays("hevc", 1280, 720, &caps), "no decoder row, no direct play");
-        assert!(!video_direct_plays("av1", 1280, 720, &caps), "the pipeline cannot feed it at any size");
+        assert!(video_direct_plays("h264", 0, 0, no_dv().presentation(SILENT), &caps));
+        assert!(!video_direct_plays("hevc", 1280, 720, no_dv().presentation(SILENT), &caps), "no decoder row, no direct play");
+        assert!(!video_direct_plays("av1", 1280, 720, no_dv().presentation(SILENT), &caps), "the pipeline cannot feed it at any size");
     }
 
     #[test]

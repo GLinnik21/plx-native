@@ -107,8 +107,9 @@ install it with the Homebrew Channel or
 Every release will also publish a `sha256`, and it's worth checking. Nothing in this distribution chain
 is code-signed, so that hash is the only thing standing between you and a tampered package. Builds
 are reproducible: the same commit, toolchain and configuration give a byte-identical `.ipk`, so you
-can rebuild and compare. Use `make RELEASE=1 ipk` if you do — a plain `make ipk` is a development
-build and differs on purpose, so its hash won't match and that isn't tampering.
+can rebuild and compare. Use `make FLAVOR=stable RELEASE=1 ipk` if you do — both halves matter. A
+plain `make ipk` is a *development* build of a *second, developer* app id, and differs on purpose on
+both counts, so its hash won't match and that isn't tampering.
 
 ## Building it yourself
 
@@ -119,17 +120,42 @@ From a clean clone:
 ```sh
 make setup-env        # one-time: fetches the webOS NDK into ~/webos-ndk (~140 MB down, ~700 MB on disk)
 rustup toolchain install nightly --component rust-src --component clippy   # build-std + the lint gate
-make                  # builds pkg/plxnative
-make ipk              # builds the installable pkg/com.beb.plxnative_<version>_arm.ipk
+make                  # builds pkg/plxnative — a developer build
+make ipk              # packages it as pkg/com.beb.plxnative.debug_<version>_arm.ipk
 ```
 
 `make check` runs the lint gate and the host unit suite — seconds once warm, and no TV involved.
 Run it first; it's the only signal you get without waking a television.
 
+**Two flavours, and the default is the developer one** — which is why that filename says `.debug`.
+The app can be installed twice on one television: `com.beb.plxnative`, the id in every release and
+what users install, and `com.beb.plxnative.debug` beside it, with its own launcher tile, sign-in
+and log. `FLAVOR` chooses which one every TV-facing target talks to, and the checked-in default is
+`debug`. That asymmetry is deliberate rather than an oversight: `stable` is the install somebody may
+be watching a film on, and no command you type from muscle memory should be able to overwrite it.
+So the shippable artifact has to be asked for by name:
+
+```sh
+make FLAVOR=stable RELEASE=1 ipk   # pkg/com.beb.plxnative_<version>_arm.ipk — what a release publishes
+```
+
+`make FLAVOR=stable ipk` on its own is refused: the stable id is release-only.
+[`docs/two-installs.md`](docs/two-installs.md) is the whole story — what the two share, what they
+don't, and the name traps.
+
 ### Developing against a real TV
 
 The rest of the loop assumes a **rooted** TV reachable over ssh, because it deploys by copying the
-binary straight into the installed app directory:
+binary straight into the installed app directory. That directory has to exist first: `deploy` scp's
+into an app the TV has already registered, and only an install teaches SAM the id and writes the
+permission file the media stack needs — so do this once, and it builds, installs and deploys in one
+go:
+
+```sh
+make FLAVOR=debug TV=<ip> install   # ONCE per TV: registers com.beb.plxnative.debug, then deploys
+```
+
+After that, the loop (every target here defaults to the `debug` flavour):
 
 ```sh
 make TV=<ip> deploy   # scp the binary + assets
@@ -139,6 +165,12 @@ make TV=<ip> test     # deploy + run
 ./tests/run.py --fps  # the frame-rate regression scenes
 ```
 
+Skip the install and `deploy` stops with *"the debug flavour is not installed"* rather than
+half-working. Drop the address into a gitignored `.tv-host` (one line, an IP or hostname) and you
+can leave `TV=<ip>` off every command; ask `make -s print-appid print-appdir print-rundir
+FLAVOR=<f>` when you need to know where a given flavour's binary, logs and dev triggers actually
+live, rather than guessing.
+
 The device is the real test. Nothing on your computer draws a pixel, decodes a frame, or talks to
 the TV's media stack, so a green host suite proves much less than it looks like it does.
 `./tests/run.py` needs two gitignored files: `tests/manifest.local.json`, mapping named media shapes
@@ -146,9 +178,11 @@ to items in *your* library (copy the `.example` beside it and drop the ones you 
 `src/config.local.h` with your Plex token, which the harness reads on the host and injects — it is
 never compiled into the binary.
 
-For anything you intend to ship, add `RELEASE=1` to **every** command that builds or packages
-(`make RELEASE=1 ipk`). It drops the developer feature set: the on-screen frame counter, and the
-whole `/tmp` trigger surface the test harness drives the app through.
+For anything you intend to ship, add `FLAVOR=stable RELEASE=1` to **every** command that builds or
+packages (`make FLAVOR=stable RELEASE=1 ipk`). `RELEASE=1` drops the developer feature set — the
+on-screen frame counter, and the whole `/tmp` trigger surface the test harness drives the app
+through — and `FLAVOR=stable` is what puts it under the id users actually install. Neither is the
+default, and `FLAVOR=stable` without `RELEASE=1` is refused rather than merely discouraged.
 
 ## Layout
 

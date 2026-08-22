@@ -40,7 +40,15 @@ SIM = os.path.join(REPO, "rust-modules", "target-sim", "debug", "plxnative-sim")
 
 # The keys the ladder dispatches on. `okdown`/`okup` are the split halves — the only way to drive a
 # press-and-hold past `press::LONG_MS`, which is a different arm from a tap and has to be recorded
-# as one. `back` is last in every script because at a screen's root it EXITS the app.
+# as one.
+#
+# `back` is NOT here, and the comment that used to explain why said it "is last in every script
+# because at a screen's root it EXITS the app" — which described neither the list (there was no
+# `back` in it to be last) nor, since 2026-08-21, the behaviour: a root BACK raises the exit alert
+# (`ui::exit_alert`) instead of quitting. Adding it is now a real and worthwhile option — `home` is
+# in SCREENS, and the ladder's whole BACK cascade is currently uncharacterised — but it costs a
+# re-record of `tests/keytable.json`, and a script that ends on the alert has to answer it (`back`
+# again, or arm `/tmp/plxnative-noexitconfirm`) before the next screen's run.
 KEYS = ["up", "down", "left", "right", "ok", "play", "pause", "stop"]
 
 # screen name -> (trigger file, trigger content or None)

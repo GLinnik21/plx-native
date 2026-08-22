@@ -277,6 +277,10 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
         // presented position (which would wrongly break feeding on a forward in-place seek).
         SHARED.pres_fed.store(super::engine::PRES_NONE, Relaxed);
         SHARED.frames.store(0, Relaxed); // count only POST-seek frames (rebind + resume re-pause gate)
+        // …and forget the last presentation stamp with it. The plane goes dark across a seek by
+        // design, so the first frame after one would otherwise post a gap the size of the seek and
+        // read as a stutter (`Shared`'s `dg_vpres_*` block).
+        SHARED.dg_vpres_at.store(0, Relaxed);
         SHARED.playpos_ns.store(t, Relaxed); // displayed position jumps; wall clock takes over
     }
 
@@ -326,6 +330,28 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
         if let Some(id) = id {
             unsafe { ffi::acb_bind(mt, id.as_ptr()) };
             super::log(&format!("SMP ACB bound id={}", id.to_string_lossy()));
+            // **Dolby Atmos, to ACB, exactly here** — this is where LG's own client fires it
+            // (`libcbe` 0x1b98d78, on LOADCOMPLETED): after setMediaId, and BEFORE the
+            // frame-gated setMediaVideoData below. It needs no decoded frame and reads no
+            // state; `context` is the `id` we have in hand, which is the whole reason the call
+            // exists rather than a forward of the pipeline's own AUDIO_INFO callback (that
+            // string carries `track` and `dualMono` and no context). See `acb_send_atmos`.
+            //
+            // **This looks like it breaks the "never feed audio to ACB" rule and it does not** —
+            // the rule is about the audio ELEMENTARY STREAM, which the pipeline owns and which we
+            // still never hand ACB. This is a two-key metadata descriptor, and the distinction is
+            // now readable rather than remembered (see `acb_send_atmos` in `src/starfish.c` for
+            // the addresses). The rule's stated consequence, `SOUND_ERROR_019`, is a literal that
+            // exists in NO library on this device.
+            //
+            // Ran behind `/tmp/plxnative-atmosacb` first, then measured, then made the default:
+            // `rv=1` accepted, 1600 audio AUs fed with `reply=O` and no error of any kind, and the
+            // television's own read-out — "Dolby Vision / Dolby Atmos", both lines — photographed
+            // in a DISPLAY capture at 11 s. `/tmp/plxnative-noatmosacb` is the way back out.
+            if crate::route::stream_immersive() && !crate::dev::flag("noatmosacb") {
+                let rv = unsafe { ffi::acb_send_atmos(mt, id.as_ptr()) };
+                super::log(&format!("atmos: acb setMediaAudioData rv={rv}"));
+            }
             eng.stage = Stage::Bound;
         }
     }

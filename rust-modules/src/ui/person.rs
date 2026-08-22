@@ -4,9 +4,10 @@
 //! Apple TV's, not Plex's field list. One scroll flow, two states of one header:
 //!
 //! * an **asymmetric editorial band** across the top — a circular portrait on the left with a text
-//!   column beside it (name at HERO, a roles kicker, a Born/Died line, a 3-line bio with an inline
-//!   `MORE`), the two **centred on each other** — followed by plain **`Movies` / `Shows` shelves**
-//!   of ordinary poster cards on the shared [`CardRow`] strip, each heading carrying its count.
+//!   column beside it (name at HERO, a roles kicker, a Born/Died line, a 3-line bio that dissolves
+//!   into a right-pinned `MORE`), the two **centred on each other** — followed by plain **`Movies`
+//!   / `Shows` shelves** of ordinary poster cards on the shared [`CardRow`] strip, each heading
+//!   carrying its count.
 //! * the band **CONDENSES once focus drops into the shelves** (portrait 320→160, the name steps
 //!   HERO→TITLE, every other header line fades out) and expands again when focus returns. The
 //!   condense is editorial, not load-bearing: v2's side-by-side packing already fits the first
@@ -46,14 +47,14 @@ use crate::person::Person;
 use crate::pms::PmsMovie;
 use crate::ui::card_row::{self, CardRow, RowStyle};
 use crate::ui::consts::*;
-use crate::ui::label::{Label, VAlign};
+use crate::ui::label::{HAlign, Label, VAlign};
 use crate::ui::text_view::TextView;
 use crate::ui::theme;
 use crate::ui::widgets::{AmbientWash, Art, Spinner, StatusKind, StatusOverlay};
 use crate::ui::{card_row::reveal, Column, Env, Painter, Rect, ScrollColumn, Spring, View};
 use std::ffi::CString;
 use std::os::raw::{c_int, c_uint};
-use std::ptr::addr_of_mut;
+use std::ptr::{addr_of, addr_of_mut};
 
 // ---- geometry (a measured flow; every Y below is derived, none is authored) -------------------
 
@@ -99,6 +100,23 @@ const SHELF_COUNT_GAP: f32 = theme::space::SM;
 const BIO_W: f32 = 1180.0;
 const BIO_LINES: usize = 3;
 const BIO_LEAD: f32 = 40.0;
+/// The selectable-block mark's inset around the bio prose — `detail.rs`'s About columns spend the
+/// same 26 on x, so a block that can be opened is padded identically on both pages. The vertical
+/// pad is even (the About columns' 36/24 pair is asymmetric because their 36 clears a HEADING's cap
+/// band; this block has no heading, so an even box is what hugs it).
+const HL_PAD_X: f32 = 26.0;
+const HL_PAD_Y: f32 = 24.0;
+/// The bio's truncation mark, as a C literal — it is drawn every frame the bio is cut off, and the
+/// SAME pointer the reserved zone is measured from, so the gap and the mark can never end up being
+/// two different strings (`detail.rs`'s About card writes `c"MORE"` twice for want of one).
+const MORE: &std::ffi::CStr = c"MORE";
+/// Air between the point the bio's dissolving last line has vanished and the left edge of [`MORE`].
+/// **Re-derived for this rung, not copied.** detail's About card reserves 36 px beside a
+/// `size::CAPTION` synopsis — 1.5× its own type size — and the bio is a rung larger
+/// (`size::BODY`), where the same proportion is 42; `theme::space::LG` is the ladder rung nearest
+/// that. An inline gap comes off the space ladder here exactly as [`SHELF_COUNT_GAP`] does, never
+/// off a literal tuned against another screen's type size.
+const BIO_MORE_GAP: f32 = theme::space::LG;
 /// Block gap between the header and a shelf, and between shelves — detail.rs's `SECTION_GAP`.
 const SHELF_GAP: f32 = theme::space::XL;
 /// Shelf heading → poster row. Matches detail's Related row, so a shelf is paced identically on
@@ -350,14 +368,29 @@ fn header_flow(sc: &Scene) -> HeaderFlow {
 }
 
 /// The bio block, in ONE place so its measure and its draw cannot disagree: 3 lines of body text
-/// with the classic inline `… MORE` affordance, which `TextView` only paints when the cap actually
-/// hid words. The affordance is a truncation MARK, not a control — nothing on this page expands
-/// text in place. `a` fades it with the rest of the expanded header.
+/// that **dissolve into a right-pinned [`MORE`]** when the cap actually hid words. The affordance
+/// is a truncation MARK, not a control — nothing on this page expands text in place. `a` fades it
+/// with the rest of the expanded header.
+///
+/// **The reserve is all this view owns of the affordance; the mark itself is drawn by
+/// [`draw_header`].** That is `fade_last`'s shape, and it is the About card's — the last line is
+/// painted through the fade shader (`shaders/fs_text_fade.frag`) so it vanishes *before* the
+/// column's right edge, and the word is then pinned to that edge on the same cap band. It replaced
+/// an inline `.trailing("MORE", …)`, which hard-elided the last line with an ellipsis and floated
+/// the word at the text's own ragged end: one page of this app cut its prose off with `…`, the
+/// other let it fade, for the same reason and one rung apart.
 fn bio_view(bio: &str, a: f32) -> TextView<'_> {
     TextView::new(bio, theme::size::BODY, theme::with_a(theme::TEXT_SECONDARY, a))
         .leading(BIO_LEAD)
         .max_lines(BIO_LINES)
-        .trailing("MORE", theme::with_a(theme::TEXT_PRIMARY, a))
+        .fade_last(more_w() + BIO_MORE_GAP)
+}
+
+/// [`MORE`]'s drawn width at the bio's own rung and weight — `size::BODY` bold, NOT the About
+/// card's `size::CAPTION`. Only the reserve reads it: the mark is drawn right-ALIGNED on the
+/// column edge, so its own draw needs no width at all.
+fn more_w() -> f32 {
+    crate::text::text_width(MORE.as_ptr(), theme::size::BODY, 1)
 }
 
 /// Rebuild the header's cached text runs from the store — from [`update`], on the frame a store
@@ -539,7 +572,63 @@ pub(crate) fn leave() {
     // drop any un-consumed request: `requested` is a LATCH, and one left set here would fire on
     // some unrelated OK several screens later
     scene().requested = false;
+    // the bio panel is THIS page's, so it dies with it — a panel left open would come back up over
+    // whatever the trail puts here next, with the previous person's biography still in it
+    crate::ui::person_bio::close();
     crate::person::close();
+}
+
+/// A panel this SCREEN has open takes the BACK press, and the page stays — `detail::back()`'s shape
+/// one screen over, and for the reason that one records: a panel is part of the screen, so leaving
+/// the screen must not be how you close it. `false` means there was nothing of ours to close and
+/// `app.rs` should pop the BACK trail.
+pub(crate) fn back() -> bool {
+    if crate::ui::person_bio::is_open() {
+        crate::ui::person_bio::close();
+        return true;
+    }
+    false
+}
+
+/// **Is there more biography than the header shows?** — the ONE gate on the bio panel, and it is
+/// deliberately the same call the truncation MARK is drawn from ([`draw_header`]), sharing the same
+/// memoised wrap.
+///
+/// Written as one predicate rather than repeated at the two call sites because the mark and the
+/// panel must never disagree: a panel reachable on a bio that fits would open on the words the user
+/// has just finished reading, and a `MORE` with nothing behind it is worse still.
+pub(crate) fn bio_is_truncated() -> bool {
+    crate::person::current()
+        .map(|p| !p.bio.is_empty() && bio_view(&p.bio, 1.0).truncates(BIO_W))
+        .unwrap_or(false)
+}
+
+/// OK while the HEADER holds focus. Returns whether the press was spent.
+///
+/// **This is the bio panel's entry point, and it is why the header's OK is no longer inert.** The
+/// header is already a focus row (flow child 0) but contains no CONTROL — nothing in it draws a
+/// focus ring, `focus_is_card` is false there, and `app.rs` therefore arms no tvOS press on it. So
+/// this acts on the key DOWN rather than on a press spring-back: there is no card to dip, and
+/// waiting ~150ms to animate a dip nobody can see would only add latency.
+///
+/// The alternative — making the bio block a real focusable inside the band — was rejected against
+/// the page as built, and still is. It would put a second focus stop inside a row this module
+/// documents four times over as a scroll POSITION rather than a selection, and give the condense a
+/// state it has no mock for. Here the whole header band is the target: focus is already at the top
+/// of the page, and OK there reads the rest.
+///
+/// **What that rejection used to include, and no longer does, is the MARK.** The argument ran that
+/// a focus mark on the prose would turn `MORE` into a control — but the band was then the only
+/// focusable thing in the app that drew nothing at all for holding focus, so the block OK acts on
+/// was indistinguishable from prose that ends in a word. [`draw_header`] now draws the shared
+/// `widgets::text_block_highlight` under the bio on exactly this function's predicate. `MORE` is
+/// unchanged and is still a mark; the lift is the page saying which block the press will reach.
+pub(crate) fn header_ok() -> bool {
+    if !scene().on_header || !bio_is_truncated() {
+        return false;
+    }
+    crate::ui::person_bio::open();
+    true
 }
 
 /// The focused shelf card (None while the shelves are still out, and None while the HEADER holds
@@ -554,14 +643,21 @@ pub(crate) fn focused_item() -> Option<&'static PmsMovie> {
 /// on key-down, activate on the spring-back). Named to match the other screens' predicate so
 /// app.rs's press arm reads the same for all of them.
 ///
-/// False on the header row, which is what keeps app.rs unchanged by the header being a row: it
-/// arms no press and dispatches no activation, so OK there is simply inert — correct, because the
-/// header carries no control.
+/// False on the header row: it carries no card to dip. OK there is not inert any more — it opens
+/// the bio panel ([`header_ok`]) — but that is an overlay rather than an activation, so it takes no
+/// press. And false while the bio panel is UP, for `detail::focus_is_card`'s reason: without it an
+/// OK held over the panel would begin a tvOS press on a tile nobody can see and commit it on
+/// release, opening a detail page from behind a modal.
 pub(crate) fn focus_is_card() -> bool {
-    focused_item().is_some()
+    !crate::ui::person_bio::is_open() && focused_item().is_some()
 }
 
 pub(crate) fn on_ok() -> Action {
+    // nothing behind an open panel is activatable — the panel's own OK is inert (it is a reader,
+    // not a chooser), so the press is simply swallowed here
+    if crate::ui::person_bio::is_open() {
+        return Action::None;
+    }
     if focused_item().is_some() {
         Action::Card
     } else {
@@ -609,6 +705,9 @@ pub(crate) fn update(dt: f32) {
     }
     let want = scroll_target(sc);
     sc.column.scroll.step(want, K_SCROLL, dt);
+    // the bio panel's own appear + scroll springs. Unconditional, like every other popover's
+    // `update` — a closed one steps nothing.
+    crate::ui::person_bio::update(dt);
 }
 
 /// The focused card's IDENTITY — the `(server, ratingKey)` PAIR, never the bare key. The shelves
@@ -672,6 +771,14 @@ fn clamp_focus() {
 /// second job: it is the state the band expands for. UP into it is a scroll + expand, not a
 /// selection — nothing draws a focus ring, and DOWN returns to the shelf that had it.
 pub(crate) fn move_focus(sym: c_uint) {
+    // The bio panel takes the nav keys while it is up — focus is TRAPPED in it, as it is in every
+    // other popover this app opens (`detail::move_focus` carries the same three lines for the
+    // "Also available" sheet). Without this the shelves would walk under the sheet and the page
+    // would scroll behind it.
+    if crate::ui::person_bio::is_open() {
+        crate::ui::person_bio::move_focus(sym);
+        return;
+    }
     let sc = scene();
     let Some(p) = crate::person::current() else { return };
     let (kinds, n) = present(p);
@@ -710,6 +817,11 @@ fn shelf_row_y(sc: &Scene, pos: usize) -> f32 {
 
 /// The shelf tile under the pointer, or None in the gaps.
 ///
+/// **None while the bio panel is up**, which gates hover AND click in one place rather than in the
+/// two callers: a modal owns the frame, so a cursor wandering over the page behind it must neither
+/// light a card up nor activate one. (Its own hit test is the panel's; today it has none — the
+/// panel is read with the D-pad and dismissed with BACK.)
+///
 /// O(VISIBLE), deliberately — the same discipline `library.rs::cell_at` documents. Two things
 /// make it that: the per-shelf `row_y` is computed ONCE outside the column loop (calling it per
 /// tile walks the whole `child_top` flow ~48 times per pointer motion), and the column is derived
@@ -717,6 +829,9 @@ fn shelf_row_y(sc: &Scene, pos: usize) -> f32 {
 /// `Column::height(0)` reads the cached [`HeaderFlow`] through [`Scene::band_h`] rather than
 /// measuring text — but the hoist stays: it is the part that keeps this O(VISIBLE).
 fn tile_at(mx: f32, my: f32) -> Option<(usize, usize)> {
+    if crate::ui::person_bio::is_open() {
+        return None;
+    }
     let sc = scene();
     let p = crate::person::current()?;
     let (kinds, n) = present(p);
@@ -778,6 +893,10 @@ pub(crate) fn draw() {
     let p = Painter::root().alpha(crate::ui::nav::page_alpha());
     let sc = scene();
     let env = Env::inert();
+    // Forget last frame's focused tile before anything draws, and before the early return below:
+    // focus on the header, or a page with no shelves yet, must leave [`FOCUS_TILE`] empty rather
+    // than naming a tile this frame does not draw.
+    unsafe { *addr_of_mut!(FOCUS_TILE) = None };
     if crate::person::current().is_none() {
         return;
     }
@@ -786,6 +905,14 @@ pub(crate) fn draw() {
     let col = sc.column;
     col.draw(sc, &env, p);
     draw_shelf_state(p, &env, sc);
+    // ---- the bio panel, over everything the page just drew ------------------------------------
+    // The SCRIM is the page's and is drawn HERE, before the panel — `Popover::scrim`'s rule, and on
+    // this page it is also what protects the panel's fine print: the person's own `size::HERO` name
+    // sits directly behind the sheet's top-left corner, and a 72px headline read through a 72%
+    // frost lifts the ground under a `size::CAPTION` line past its graded contrast. Dimming the
+    // page before the frost samples it is the fix; see `person_bio`'s module doc.
+    crate::ui::person_bio::scrim();
+    crate::ui::person_bio::draw();
 }
 
 /// The header band: the circular portrait and, centred on it, the text column (name, the roles
@@ -856,7 +983,54 @@ fn draw_header(p: Painter, person: &Person, sc: &Scene) {
         // `header_flow` measured (same cache entry), and a width that moved with the condense would
         // re-wrap ~3 KB of prose on every frame of the animation. The column has room for it at
         // every portrait diameter — see `BIO_W`.
-        bio_view(&person.bio, ea).draw(p, Rect::new(col_x, by, BIO_W, 0.0));
+        let bio = bio_view(&person.bio, ea);
+        // **The block that OK opens wears the page's selectable-block mark** — the shared
+        // `text_block_highlight`, i.e. the same lift the detail page's About card and its three
+        // columns take. Drawn UNDER the prose, so it is a ground and not a frame around it.
+        //
+        // Owner call, and it narrows a decision `header_ok` records rather than reversing it: what
+        // was rejected there was making the bio a SECOND FOCUS STOP inside the band, and it still
+        // is not one — the whole band is one stop, and this draws no ring, no scale and no dip.
+        // What it fixes is that the band was the only focusable thing in the app that showed
+        // nothing for holding focus, so the one block OK acts on looked like prose that happened to
+        // end in a word. `MORE` stays a mark; the lift is what says the mark can be pressed.
+        //
+        // Gated on `header_ok`'s condition, in its two halves: focus is here, and there is more to
+        // read. A lift under a two-line bio would promise a panel `person_bio::open` is never going
+        // to be asked for. The truncation half is asked of THIS view rather than through
+        // `bio_is_truncated`, so the lift, the `MORE` below it and the panel behind them are one
+        // expression on one memoised wrap and cannot disagree by a frame. On `sc.on_header` rather
+        // than on the condense spring, because focus leaves on a keypress and the spring is still
+        // at ~0 for several frames after it — a mark that faded out with the band would be
+        // describing focus that had already gone.
+        //
+        // The box hugs the prose's own INK: `last_line_cap_y` is where the view put the last line's
+        // cap band, so the height is measured to the text rather than to the flow, which ends in a
+        // line of leading nothing is drawn in.
+        let bh = bio.measure_h(BIO_W);
+        let truncated = bio.truncates(BIO_W);
+        if sc.on_header && truncated {
+            let ink = bio.last_line_cap_y(by, bh) - by + crate::text::cap_h(theme::size::BODY, 0);
+            crate::ui::widgets::text_block_highlight(
+                p,
+                Rect::new(col_x - HL_PAD_X, by - HL_PAD_Y, BIO_W + 2.0 * HL_PAD_X, ink + 2.0 * HL_PAD_Y),
+            );
+        }
+        bio.draw(p, Rect::new(col_x, by, BIO_W, 0.0));
+        // MORE — quiet grey (the About card's ink; this is a mark, not a control, and the loudest
+        // thing in the band must stay the name), pinned to the bio COLUMN's right edge and sitting
+        // on the last line's own cap band, which is where the line just dissolved to meet it. Both
+        // halves of that placement are ASKED OF THE VIEW THAT DREW THE TEXT (`last_line_cap_y`, and
+        // `Label`'s own cap-band conversion) rather than restated here — the leading and the cap
+        // band are `bio`'s, not this block's. `ea` because the mark belongs to the expanded band and
+        // must condense out with it.
+        if truncated {
+            Label::new(MORE.as_ptr(), theme::size::BODY, theme::with_a(theme::TEXT_TERTIARY, ea))
+                .bold()
+                .h(HAlign::Right)
+                .v(VAlign::CapTop)
+                .draw(p, Rect::new(col_x, bio.last_line_cap_y(by, bh), BIO_W, 0.0));
+        }
     }
 }
 
@@ -876,6 +1050,12 @@ fn draw_shelf(p: Painter, person: &Person, kind: usize, sc: &Scene) {
     // (`update` already freezes these rows' springs in that state, so the pop was correctly absent,
     // which is exactly what made the stray labels look deliberate.)
     let focus_col = if !sc.on_header && sc.focus_kind == kind { sc.col[kind] } else { -1 };
+    // Where this shelf's tile row lands on the PANEL — the `ScrollColumn` has already translated `p`
+    // to the block top, so the number is not otherwise recoverable from inside the strip. Only
+    // needed for the focused shelf, and only to record the focused tile's frame (see [`FOCUS_TILE`]).
+    let screen_top = (focus_col >= 0)
+        .then(|| focus_pos(person, sc).map(|pos| sc.column.child_top(sc, pos + 1) - sc.column.scroll.pos))
+        .flatten();
     let hy = -row.lift();
     #[allow(unused_variables)] // `tw` is used only when the count run exists
     let tw = Label::new(SHELF_TITLE[kind].as_ptr(), theme::size::HEADLINE, theme::TEXT_HEADING)
@@ -908,8 +1088,57 @@ fn draw_shelf(p: Painter, person: &Person, kind: usize, sc: &Scene) {
             Some(m) => card_row::TileLabel::titled(&m.title, person.role(kind, i)),
             None => card_row::TileLabel::default(),
         },
-        |_, _, _, _| {},
+        // The focused tile's frame, in screen space and UNSCALED — what the press-and-hold context
+        // menu is anchored beside and re-drawn into over its scrim. Recorded rather than derived,
+        // for `search::HIT_R`'s reason: the horizontal offset is the scroll spring inside this
+        // shelf's own `CardRow`, which the caller cannot see.
+        |_, i, x, focused| {
+            if let (true, Some(top)) = (focused, screen_top) {
+                let r = Rect::new(x - row.scroll_x(), top + SHELF_LABEL_H, CARD_W, CARD_H);
+                unsafe { *addr_of_mut!(FOCUS_TILE) = Some((kind, i, r)) };
+            }
+        },
     );
+}
+
+/// The focused shelf tile's kind, column and UNSCALED screen frame, recorded by [`draw_shelf`].
+///
+/// Cleared at the top of every [`draw`], so a frame drawn with focus on the HEADER — or with no
+/// shelves at all — leaves `None` rather than the last tile that held it.
+static mut FOCUS_TILE: Option<(usize, usize, Rect)> = None;
+
+/// The focused tile's rect at its focus magnification — what the item context menu anchors beside.
+/// `press::scale()` is left out for `home::focused_card_rect`'s reason.
+pub(crate) fn focused_tile_rect() -> Option<Rect> {
+    let (kind, i, base) = unsafe { *addr_of!(FOCUS_TILE) }?;
+    Some(base.scaled(scene().shelves[kind].scale(i)))
+}
+
+/// Re-draw the focused tile ON TOP of a modal scrim — this screen's half of
+/// [`crate::ui::popover::Opener`].
+///
+/// The page has no clip of its own (the shelves are `on_axis`-culled, not scissored) and no chrome
+/// over them, so unlike Search this needs no bound: whatever the strip drew, this draws again in
+/// the same place.
+pub(crate) fn redraw_focused_tile() {
+    crate::ui::guard(|| {
+        let Some((kind, i, base)) = (unsafe { *addr_of!(FOCUS_TILE) }) else { return };
+        let Some(person) = crate::person::current() else { return };
+        let sc = scene();
+        let Some(m) = person.shelf(kind).get(i) else { return };
+        let s = sc.shelves[kind].scale(i) * crate::ui::press::scale();
+        let label = card_row::TileLabel::titled(&m.title, person.role(kind, i));
+        let p = Painter::root().alpha(crate::ui::nav::page_alpha());
+        card_row::draw_focused(
+            p,
+            Art::Poster(Some(m)),
+            base.scaled(s),
+            s,
+            &SHELF_STYLE,
+            m.resume_frac(),
+            &label,
+        );
+    });
 }
 
 /// What sits where the shelves go while there are none: a spinner until the one `/media` request
