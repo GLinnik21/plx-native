@@ -488,6 +488,16 @@ used: **libcurl** (`net.rs`) does the plex.tv account/login TLS+DNS that the raw
 > done                               # `ps` finds nothing on this busybox TV
 > ```
 >
+> **A `NONE`/`NONE` answer is not "the set is free", and reading it that way cost a collision on
+> 2026-08-22.** `fuser` is inode-scoped and honest, which is exactly its limit: it sees only the
+> instants an app is UP, and hand-driven device work is a close → deploy → launch → measure loop
+> that is legitimately down between iterations. The `pgrep` above misses that job too — it names the
+> three HARNESS commands, and most device work is raw `ssh root@… <<EOF` and `luna-send`. **The
+> ssh-client COUNT is the check that actually fires**, because it is the one that sees a job between
+> its app instances — so read those pids' argv (`pgrep -fl "ssh .*$(cat .tv-host)"`) rather than
+> counting them, and treat any you cannot account for as OCCUPIED. A count explained away as "my own
+> grep pipeline" is how the collision happened.
+>
 > `fuser` on the app directory's own binary, not `pidof plxnative`: both installs' binaries are
 > named `plxnative`, so a name-scoped test matches BOTH and returns two pids in an order busybox
 > does not promise. `fuser` is inode-scoped, so it answers about one install

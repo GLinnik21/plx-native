@@ -216,12 +216,18 @@ impl Layout {
     }
 }
 
-/// Click: park the ring on what was hit, commit it, and report it — or report `None` and change
-/// nothing at all.
-pub fn click(x: f32, y: f32) -> Option<Choice> {
-    let c = measured().hit(x, y)?;
+/// Pointer-down on an answer: PARK the ring on it and report the hit. It does not answer the
+/// question — the caller arms the tvOS press on a `true` and spends it through `commit_exit_alert`
+/// once the bounce has played, exactly as the key path does. A control face dips under a click as
+/// well as under OK (the design system's `Button` is driven by `onPointerDown`/`onPointerUp`), and a
+/// click that ended the process on the button-DOWN could show neither half of that.
+///
+/// A miss parks nothing and reports `false`, which is [`Layout::hit`]'s rule intact: "not either" is
+/// no answer to a yes/no question, so a click on the scrim leaves the alert exactly as it was.
+pub fn press_at(x: f32, y: f32) -> bool {
+    let Some(c) = measured().hit(x, y) else { return false };
     unsafe { addr_of_mut!(SEL).write(c) };
-    Some(on_ok())
+    true
 }
 
 /// The modal dim, drawn as part of the HOST PAGE — see the module doc and `Popover::scrim`.

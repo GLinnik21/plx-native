@@ -30,8 +30,8 @@ use crate::ui::theme;
 // `dotted_run` lives in `widgets` now — the facts row and the bio panel's identity line are one
 // idiom two screens apart, and this file is where it was written first, not where it belongs.
 use crate::ui::widgets::{
-    dotted_run, resolve_tex_wh_on, AmbientWash, Art, Button, CircleButton, PosterMark, TabPill,
-    TabStrip, HERO_BASE_SCRIM_Y0,
+    dotted_run, resolve_tex_wh_on, AmbientWash, Art, Button, CircleButton, PosterMark, SelMark,
+    TabGround, TabPill, TabStrip, HERO_BASE_SCRIM_Y0,
 };
 use crate::ui::{hero_alpha, on_axis, Column, Env, Painter, Rect, ScrollColumn, Spring, View}; // View: Button/CircleButton::draw
 use std::ffi::CString;
@@ -165,6 +165,16 @@ struct DetailView {
     /// The action row's FOCUS POP — one spring per control, indexed the way [`hero_ctls`] orders
     /// them. Four, the widest set the page can build (`Play, ▶|, Also available, ✓`).
     ctl_pop: crate::ui::widgets::CtlPop<4>,
+    /// The SEASON STRIP's focus pop + press dip — `CtlPop<1>`, applied to the travelling focus
+    /// capsule that is the focused pill's face (`TabGround::Plated`).
+    ///
+    /// One spring, not one per season, because this row's focus mark TRAVELS: only one pill is ever
+    /// a control face, and the pill being left behind does not keep animating — the capsule simply
+    /// slides off it. That is exactly what a `CtlPop<N>` is for on the hero row next door and
+    /// exactly what it is NOT needed for here; `CtlPop<1>` is still the right component, because
+    /// what is wanted is its rule that `press::scale()` folds into the FOCUSED control and nothing
+    /// else, and re-deriving that beside a bare `Spring` is how the two would drift apart.
+    season_pop: crate::ui::widgets::CtlPop<1>,
     // per-section focus memory (episodes/related/cast): leaving a row and coming back restores the
     // item you were on — paired with the frozen h-scrolls, a row "stays where it was" instead of
     // snapping to its start whenever focus moves elsewhere. Indexed by section id.
@@ -200,6 +210,7 @@ impl DetailView {
             hero_set: HeroSet::default(),
             disc_unfurl: [Spring::at(0.0); 2],
             ctl_pop: crate::ui::widgets::CtlPop::new(),
+            season_pop: crate::ui::widgets::CtlPop::new(),
             saved_col: [0; 6],
             spin_ms: 0.0,
             // the app's own flat ground until an item keys it — byte-identical to the grey this page
@@ -1449,6 +1460,7 @@ fn reset_view_state(v: &mut DetailView) {
     // …and the pop beside it, for that same reason: a page must not mount with a control already
     // standing 7% proud of the row.
     v.ctl_pop.reset();
+    v.season_pop.reset();
     // Retained MOTION state, exactly like the scrolls above: a fresh strip's capsules must not glide
     // in from the season the previous item was parked on. Re-seating the whole component is the reset
     // (`TabStrip::new()` is the same const value the constructor uses), and the capsules' own landing
@@ -1981,6 +1993,9 @@ pub(crate) fn update(dt: f32) {
     // The FOCUS POP the same way, and for the same reason the unfurl gets a spring each: the control
     // being left has to keep animating after it has stopped being the focused one.
     v.ctl_pop.step(ctl_foc, dt);
+    // Section 1 IS the season strip, and it holds exactly one control — so the pop is open whenever
+    // focus is on the row, and closed the moment it leaves for the episodes below or the hero above.
+    v.season_pop.step((v.section == 1).then_some(0), dt);
     v.ep_hscroll.step(hst, 240.0, dt);
     crate::ui::anim::probe("detail.epscroll", v.ep_hscroll.pos, v.ep_hscroll.vel, hst, dt);
     v.tab_hscroll.step(tst, 240.0, dt);
@@ -1990,7 +2005,10 @@ pub(crate) fn update(dt: f32) {
     // seasons hands both capsules an empty span table, i.e. "nothing to mark", so they fade out in
     // place rather than holding a stale pill through a `/children` load that emptied the row.
     let tab_foc = if v.section == 1 { v.col } else { -1 };
-    v.tabs.update(tab_sel, tab_foc, |i| tab_span(tab_lays, i), dt);
+    // `SelMark::Lands`: the season plate does not slide between pills. Changing season here always
+    // happens with the focus capsule already sitting on the destination, so the grey plate's travel
+    // is hidden under it except for the edge that crawls out from behind — see `SelMark::Lands`.
+    v.tabs.update(tab_sel, tab_foc, |i| tab_span(tab_lays, i), SelMark::Lands, dt);
     // Related is the shared home-shelf component now: step its per-card scale springs + scroll spring
     // (focused only when the Related section holds focus, else the scales ease back and scroll freezes).
     let rfoc = (v.section == 3).then_some(v.col.max(0) as usize);
@@ -3205,7 +3223,11 @@ fn draw_tabs(p: Painter) {
     // because they are the pills' ground; each pill then paints only its own idle plate and its
     // label, and takes its ink from how covered it is.
     let tabs = view().tabs; // Copy, resolved once — like `amb` in `draw`
-    tabs.draw(pt, tab_y, TAB_ROW_H, true, false);
+    // The focused pill's POP + press dip, folded into the capsule that IS that pill's face
+    // (`TabGround::Plated`). One `CtlPop<1>` because the strip has one focused pill and its capsule
+    // TRAVELS between them — there is no second control here to keep animating after focus left it,
+    // which is the whole reason the hero row next door needs a spring per control.
+    tabs.draw(pt, tab_y, TAB_ROW_H, TabGround::Plated { pop: view().season_pop.scale(0) });
     let e = Env::inert();
     for lay in tabs_layout(d) {
         // pill sized to the (bold) label plus its trailing note — content sits at x, pill padded
@@ -3678,11 +3700,48 @@ pub(crate) fn focus_is_card() -> bool {
     // RELEASE, which is what a tap should do anyway, and lets `press::tick`'s long latch cancel that
     // activation so a HOLD opens the menu instead of also switching the season under it.
     //
-    // It gets no press DIP, unlike every tile above: the strip's focus mark is a travelling capsule
-    // the pills share as their ground (`TabStrip`), and scaling one pill off a capsule that stays
-    // put would draw a ring around it rather than a press. The capsule arriving IS the tab's
-    // feedback; the popover's own appear spring is the hold's.
+    // It DOES get the press dip, and the focus pop with it — corrected 2026-08-22, when the design
+    // system was read rather than recalled. `components/chrome/TabStrip.jsx` gates every transform
+    // and press handler it writes on `plated`, and says of that case: a season pill "sits bare on
+    // artwork and provides its own ground, and because nothing encloses it its focused pill wears
+    // the control face: edge-sheen, top hairline, the `--focus-scale-control` pop, and a Button's
+    // press — dip on the way down, ring on release."
+    //
+    // This comment used to argue the opposite — that scaling a pill off a capsule that stayed put
+    // would draw a ring around it rather than a press. The observation is real and the conclusion
+    // was backwards: the fix is to scale the CAPSULE, which on this strip is not a mark sliding
+    // under the pills but the focused pill's own face. It is the top tab bar's pills that must not
+    // scale, because a track encloses them, and the rule was carried across to a row the design
+    // system had deliberately exempted. `widgets::CTRL_FOCUS_SCALE` had said the bare pills "do pop"
+    // for months while nothing in the draw scaled anything, which is how the divergence survived.
+    // `View::season_pop` is the spring, `TabGround::Plated` carries it in.
+    //
+    // The one thing that stays this row's own is the HOLD: the strip keeps a CARD's press
+    // (`press::begin`, not `begin_ctl`) because a long press here marks a whole season watched, an
+    // action the design system does not model at all.
     matches!(view().section, 1 | 3 | 4)
+}
+
+/// The focused thing is a pressable CONTROL FACE — the hero's action row (section 0): the
+/// Play/Resume pill, Restart, the two watch-state discs and the ⋯ overflow, whatever
+/// [`hero_ctls`] resolved for this item. [`focus_is_card`]'s twin, and between them they name
+/// everything on this page that takes the tvOS press (`ui::press`).
+///
+/// The row's dip arrives through `View::ctl_pop`'s [`CtlPop::scale`](crate::ui::widgets::CtlPop::scale), which has always folded
+/// `press::scale()` in for the focused control and — until a press was armed here — could only ever
+/// read it as 1.0.
+///
+/// The three panels close it for [`focus_is_card`]'s reason, restated rather than shared because the
+/// two answer about different halves of the page: nothing behind an open panel is pressable, so an
+/// OK held over one must not dip a control nobody can see.
+pub(crate) fn focus_is_ctl() -> bool {
+    if crate::ui::alt_sources::is_open()
+        || crate::ui::about_panel::is_open()
+        || crate::ui::tracks_panel::is_open()
+    {
+        return false;
+    }
+    view().section == 0
 }
 
 pub(crate) fn on_ok() -> bool {

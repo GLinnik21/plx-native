@@ -96,6 +96,14 @@ pub(crate) fn on_ok() -> InfoAction {
     }
 }
 
+/// The focused thing is a pressable CONTROL FACE — one of the card's two action buttons, rather than
+/// the tab row above them. The card's `FOCUS` walks both, and is the button index only while it is
+/// inside the column; the same filter [`update`] pops on, asked here so the button that dips is
+/// always the button that popped.
+pub(crate) fn focus_is_ctl() -> bool {
+    usize::try_from(unsafe { addr_of!(FOCUS).read() }).is_ok_and(|i| i < actions().len())
+}
+
 /// The action column's FOCUS POP — one spring per button ([`crate::ui::widgets::CtlPop`]). Two, the
 /// whole of [`actions`].
 static mut CTL_POP: crate::ui::widgets::CtlPop<2> = crate::ui::widgets::CtlPop::new();

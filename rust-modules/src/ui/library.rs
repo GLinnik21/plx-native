@@ -32,7 +32,7 @@ use crate::ui::icons::Icon;
 use crate::ui::popover::{Opener, Popover};
 use crate::ui::table::{Row, Section, TableView};
 use crate::ui::theme;
-use crate::ui::widgets::{Art, Pill, Spinner, StatusKind};
+use crate::ui::widgets::{Art, Pill, SelMark, Spinner, StatusKind};
 use crate::ui::xfade::Xfade;
 use crate::ui::{on_axis, Env, Painter, Rect, Spring, View};
 use std::ffi::CString;
@@ -1142,7 +1142,7 @@ pub(crate) fn update(dt: f32) {
         let sel_i = if unsafe { addr_of!(SRC_LEVEL).read() } == Level::Browse { 0 } else { 1 };
         let foc_i = if unsafe { addr_of!(SRC_ON_PILLS).read() } { sel_i } else { -1 };
         unsafe {
-            (*addr_of_mut!(SRC_STRIP)).update(sel_i, foc_i, |i| rects.get(i).map(|r| (r.x, r.w)), dt);
+            (*addr_of_mut!(SRC_STRIP)).update(sel_i, foc_i, |i| rects.get(i).map(|r| (r.x, r.w)), SelMark::Travels, dt);
         }
     }
 
@@ -2447,7 +2447,7 @@ fn redraw_menu_chip() {
 /// owner-reported "two items are at focus", where the pill row took the bright capsule while the
 /// table went on painting its selection, which a table always did.
 fn draw_level_pills(p: Painter, panel: Rect) {
-    use crate::ui::widgets::TabPill;
+    use crate::ui::widgets::{TabGround, TabPill};
     let rects = src_pill_rects(panel);
     unsafe { *addr_of_mut!(SRC_PILL_RECTS) = rects };
     let level = unsafe { addr_of!(SRC_LEVEL).read() };
@@ -2461,7 +2461,10 @@ fn draw_level_pills(p: Painter, panel: Rect) {
     //
     // `span` reads the SAME `rects` the pills are drawn from, which is the strip's own requirement:
     // a capsule can then never land off a pill.
-    unsafe { (*addr_of!(SRC_STRIP)).draw(p, rects[0].y, SRC_PILL_H, false, false) };
+    // `Tracked`, though it has no glass: the design system's `plated` is "bare on artwork with
+    // nothing enclosing it", and this strip sits INSIDE a popover panel that grounds it. So it takes
+    // neither the control-face rim nor the press dip — its capsules travelling are its whole mark.
+    unsafe { (*addr_of!(SRC_STRIP)).draw(p, rects[0].y, SRC_PILL_H, TabGround::Tracked { glass: false }) };
     for (i, (label, lv)) in [(c"Browse", Level::Browse), (c"On Home", Level::OnHome)].into_iter().enumerate() {
         let selected = if level == lv { 1.0 } else { 0.0 };
         TabPill::new(label.as_ptr(), theme::size::BODY, rects[i])
