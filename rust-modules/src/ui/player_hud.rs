@@ -266,7 +266,12 @@ static mut ROW_POP: crate::ui::widgets::CtlPop<{ BTN_N as usize }> =
 /// `focus == 1` is the control column; anything else closes every pop. The index is bounded by the
 /// CURRENT occupant's item count, so a stale `btn` left over from a wider slot cannot pop a control
 /// the narrower one does not have.
-pub(crate) fn update(slot: ControlSlot, focus: i32, btn: i32, dt: f32) {
+///
+/// It also steps the state read-out's resume clock ([`note_transport`]) — the row's other piece of
+/// retained motion state, and one that is a raw CLOCK rather than a spring, so it needs this
+/// once-per-frame call for exactly the reason spelled out above.
+pub(crate) fn update(slot: ControlSlot, focus: i32, btn: i32, dt: f32, now: u32) {
+    note_transport(now);
     let f = (focus == 1)
         .then(|| usize::try_from(btn).ok())
         .flatten()
@@ -526,6 +531,146 @@ pub(crate) fn busy() -> Busy {
         return Busy::Readout(StatusKind::Failed, crate::player::error_caption());
     }
     busy_surface(crate::player::state(), crate::player::seen_frame())
+}
+
+// ---- the transport STATE READ-OUT (the glyph slot just past the elapsed clock) ---------------
+//
+// One slot, one glyph, four states. It is a READ-OUT and not an action toggle — there is no
+// transport button row in this app and a standing owner decision forbids adding one, so nothing
+// here is focusable, hit-tested or in `BTN_N`. The glyphs are the design system's transport
+// family (`Icon::Rewind` / `Icon::Pause` / `Icon::FastForward`, all in one 14-unit band, with
+// `Icon::Play` swapping in for `Pause`), which is what keeps the slot from shifting optical
+// weight as the state flips under a running clock.
+
+/// How long [`TransportMark::Play`] stands after a resume — "a couple of seconds", per the owner:
+/// the mark answers *did that press land*, and a play glyph held for the whole film would be
+/// saying "playing" to someone who is watching a moving picture.
+const PLAY_MARK_MS: u32 = 2_000;
+
+/// What the state read-out shows this frame. See [`transport_mark`] for the rule.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum TransportMark {
+    /// playing steadily — the slot is EMPTY, which is the common case and the point of the whole
+    /// design: a mark that is always up says nothing
+    None,
+    /// paused
+    Pause,
+    /// the playhead is travelling BACKWARDS (scrub, hop or seek burst)
+    Rewind,
+    /// the playhead is travelling FORWARDS
+    FastForward,
+    /// resumed within the last [`PLAY_MARK_MS`]
+    Play,
+    /// the inline [`Spinner`] — the pipeline is being waited on with NO travel to show
+    Working,
+}
+
+/// PURE: which mark the state read-out wears, given the transport's live state.
+///
+/// * `paused` — `player::TX.paused`.
+/// * `busy` — the frame's single resolve ([`busy_surface`]); only [`Busy::Transport`] reaches here,
+///   the other two being the centred read-out's business.
+/// * `scrubbing` — `player::TX.scrub_ns >= 0`, i.e. a LIVE preview the user is dragging. It is its
+///   own argument because a preview is not busy: the pipeline is still playing the old position
+///   happily while the playhead is dragged around, so `busy` alone cannot see it.
+/// * `travel_ns` / `pos_ns` — the DISPLAYED playhead against the PUBLISHED one. Their difference is
+///   the direction, and it is deliberately derived from position rather than from the keycode that
+///   caused it: one expression then covers a LEFT/RIGHT scrub, a chapter or marker hop and a
+///   rapid-seek burst, none of which agree about which key (if any) was pressed.
+/// * `since_play_ms` — ms since the last paused→playing edge, `None` if this session has never been
+///   resumed. See [`note_transport`], which is where that clock is sampled (NOT here, and not in
+///   the draw).
+///
+/// **Precedence: travel, then the pipeline, then paused, then the resume mark.** Travel outranks
+/// `paused` because a paused scrub is still a scrub — that is also the order the slot has always
+/// had, when its two states were spinner-over-pause.
+///
+/// **What happened to the spinner** (the slot's only occupant during a seek until now): it stays,
+/// narrowed to what it actually means. `Busy::Transport` is *the pipeline is being waited on with a
+/// picture already up*, which is *`Seeking`* — the seek the user asked for — but also *`Buffering`*,
+/// a re-buffer nobody asked for. Those are two facts and `player_hud`'s own rule at [`Busy`] is that
+/// two indicators for one fact read as two facts; the inverse is just as true, so one indicator for
+/// two facts reads as one. The direction glyph therefore takes the slot whenever there IS a
+/// direction to show (it says everything the spinner said, plus which way), and the spinner keeps
+/// every busy frame that has none — a mid-play re-buffer, and the prime→first-frame tail of a seek
+/// after the published position has already caught up with the target. Drawing both was never an
+/// option: it is one slot, and they would overlap.
+pub(crate) fn transport_mark(
+    paused: bool,
+    busy: Busy,
+    scrubbing: bool,
+    travel_ns: i64,
+    pos_ns: i64,
+    since_play_ms: Option<u32>,
+) -> TransportMark {
+    let seeking = busy == Busy::Transport;
+    if scrubbing || seeking {
+        match travel_ns.cmp(&pos_ns) {
+            core::cmp::Ordering::Greater => return TransportMark::FastForward,
+            core::cmp::Ordering::Less => return TransportMark::Rewind,
+            // no direction to show: the seek's target and the published position agree, which is
+            // the tail of a landed seek and the whole of a re-buffer. Fall through to the spinner.
+            //
+            // NB the comparison is against the PLAYHEAD, so it reports NET travel rather than the
+            // instantaneous drag: dragging back from +100s to +50s while still ahead of the
+            // playhead keeps reading FastForward. That is deliberate and is the more useful of the
+            // two — it answers "which way will I jump when I let go", and the alternative flickers
+            // the glyph every time a thumb wobbles on the stick.
+            core::cmp::Ordering::Equal => {}
+        }
+    }
+    if seeking {
+        return TransportMark::Working;
+    }
+    if paused {
+        return TransportMark::Pause;
+    }
+    match since_play_ms {
+        Some(ms) if ms < PLAY_MARK_MS => TransportMark::Play,
+        _ => TransportMark::None,
+    }
+}
+
+/// The paused→playing EDGE, as an `SDL_GetTicks` stamp — the clock behind [`TransportMark::Play`].
+/// `None` until this session has been resumed at least once.
+///
+/// A module static for [`ROW_POP`]'s reason, and stepped from [`note_transport`] for the same one:
+/// the HUD keeps no view struct, and this is a CLOCK, which is the trap that doc warns about in its
+/// spring form. A stamp taken inside [`draw_hud`] would be taken once per DRAW, and this row is not
+/// drawn on every frame of the route (a failure read-out owns the frame; the Info card and the
+/// Chapters strip take the transport away) — so a resume pressed with the Info card open would
+/// stamp its 2 s from the moment the card CLOSED, or never.
+static mut PLAY_AT: Option<u32> = None;
+/// Last frame's `TX.paused`, for the edge above. `None` while there is no session, which is what
+/// makes the edge per-SESSION: `TX::reset` clears both `started` and `paused` on stop, so without
+/// this a session that ended paused would hand the next one a spurious resume edge on its first
+/// frame and flash `Play` over a start nobody pressed play for.
+static mut PAUSE_SEEN: Option<bool> = None;
+
+/// Step the resume clock — once per frame, from `app.rs`'s update phase, beside [`update`].
+fn note_transport(now: u32) {
+    let (at, seen) = unsafe { (&mut *std::ptr::addr_of_mut!(PLAY_AT), &mut *std::ptr::addr_of_mut!(PAUSE_SEEN)) };
+    if !crate::player::is_started() {
+        *at = None;
+        *seen = None;
+        return;
+    }
+    let paused = crate::player::TX.paused.load(Relaxed);
+    if *seen == Some(true) && !paused {
+        *at = Some(now);
+    }
+    *seen = Some(paused);
+}
+
+/// ms since the last resume edge — the read half of [`PLAY_AT`].
+///
+/// **No `ui::idle` report is owed for this clock**, and that is a finding rather than an omission:
+/// `app.rs`'s present gate is `idle::should_present(now) || player`, so the player route presents
+/// unconditionally (`system.rs` documents the hardware video plane as slaved to our surface). This
+/// is the one place in the app where a raw-time animation cannot ship frozen — every other one
+/// (`Xfade::tick`, `Spinner::draw`) had to be taught to report, and both froze first.
+fn since_play_ms(now: u32) -> Option<u32> {
+    unsafe { *std::ptr::addr_of!(PLAY_AT) }.map(|t| now.wrapping_sub(t))
 }
 
 /// The read-out's frame: **the whole panel**, because the wait is about the whole picture.
@@ -828,12 +973,16 @@ pub(crate) fn draw_hud(slot: ControlSlot, busy: Busy, focus: i32, btn: i32, tab:
     // while a seek is loading, freeze the playhead at the target (no wobble through the reopen);
     // else follow the live scrub preview, else the real playhead.
     let loading = crate::player::loading();
+    // Hoisted so the display position and the PUBLISHED one are one sample: the state read-out
+    // below takes its travel direction from the difference between them, and two loads of a live
+    // atomic can straddle a tick.
+    let livepos = crate::player::playpos_ns();
     let dispos = if loading && crate::player::seek_display_ns() >= 0 {
         crate::player::seek_display_ns()
     } else if scrub >= 0 {
         scrub
     } else {
-        crate::player::playpos_ns()
+        livepos
     };
     let dur = crate::player::duration_ns();
     let frac = if dur > 0 { (dispos as f64 / dur as f64).clamp(0.0, 1.0) } else { 0.0 };
@@ -884,26 +1033,47 @@ pub(crate) fn draw_hud(slot: ControlSlot, busy: Busy, focus: i32, btn: i32, tab:
             p.text(cs.as_ptr(), sx + sw, ty, theme::size::CAPTION, dim, 2, 0);
         }
     }
-    // transport state indicator just past the elapsed clock — a Pause glyph while paused, a seek
-    // spinner while THIS surface owns the busy signal, and NOTHING while playing (a state read-out,
-    // not an action toggle). Gated on `busy`, not on `loading()`: with `loading()` the transport lit
-    // the same spinner the centred read-out was already showing, for the whole of every load AND
-    // every seek. Centered on the clock's line box; drops to the clock's LEFT when the right side is
-    // against the remaining label / screen edge.
+    // transport state indicator just past the elapsed clock — the four-state READ-OUT resolved by
+    // [`transport_mark`] (rewind / pause / fast-forward / play, plus the narrowed spinner), and
+    // NOTHING while playing steadily. A read-out, not an action toggle: nothing here is focusable
+    // or hit-tested, and the control row stays the three discs it has always been.
+    // Gated on `busy`, not on `loading()`: with `loading()` the transport lit the same spinner the
+    // centred read-out was already showing, for the whole of every load AND every seek. Centered on
+    // the clock's line box; drops to the clock's LEFT when the right side is against the remaining
+    // label / screen edge.
     let paused = crate::player::TX.paused.load(Relaxed);
-    let seeking = busy == Busy::Transport;
-    if seeking || paused {
+    let mark = transport_mark(paused, busy, scrub >= 0, dispos, livepos, since_play_ms(now));
+    if mark != TransportMark::None {
         // pause bars under-fill their viewBox (14/24 tall) — a 30px box renders ~17px of ink,
-        // matching the CAPTION clock's cap height so the glyph reads as the label's size.
+        // matching the CAPTION clock's cap height so the glyph reads as the label's size. The two
+        // travel marks are drawn to that SAME 14-unit band (see `Icon::Rewind`), which is what lets
+        // one box serve the whole family without the slot changing weight as the state flips.
         let isz = 30.0f32;
+        // **`play.svg` is the one family member NOT authored to that band** — it spans y=4..20 of
+        // its viewBox (16 units, not 14), because it predates this slot and is worn elsewhere at
+        // its own size, so fixing it at source would move every other surface that wears it. Its
+        // box is scaled by 14/16 here instead, which lands the same ~17px of ink: the resume mark
+        // must not out-weigh the pause it replaces, and the DS's own rule for this family is that
+        // the slot never shifts weight as the state flips.
+        const PLAY_BAND: f32 = 14.0 / 16.0;
         let need = isz + 6.0;
         let right_ok = el_r + 14.0 + need < if rem_shown { rem_l - 8.0 } else { sx + sw };
         let gx = if right_ok { el_r + 14.0 } else { el_l - 14.0 - need };
         let icy = ty + crate::text::text_height(theme::size::CAPTION, 1) * 0.5; // vertical center of the clock line
-        if seeking {
-            Spinner::new(gx + isz * 0.5, icy, Spinner::R_INLINE).phase(now).tint(white).draw(&e, p);
-        } else {
-            crate::ui::icons::draw(p, crate::ui::icons::Icon::Pause, Rect::new(gx, icy - isz * 0.5, isz, isz), white);
+        let glyph = match mark {
+            TransportMark::Pause => Some(crate::ui::icons::Icon::Pause),
+            TransportMark::Play => Some(crate::ui::icons::Icon::Play),
+            TransportMark::Rewind => Some(crate::ui::icons::Icon::Rewind),
+            TransportMark::FastForward => Some(crate::ui::icons::Icon::FastForward),
+            TransportMark::Working | TransportMark::None => None,
+        };
+        // centred in the SAME slot whatever the box measures, so the compensated play mark sits
+        // where the other three do rather than drifting left by the width it gave up.
+        let bs = if mark == TransportMark::Play { isz * PLAY_BAND } else { isz };
+        let bx = gx + (isz - bs) * 0.5;
+        match glyph {
+            Some(id) => crate::ui::icons::draw(p, id, Rect::new(bx, icy - bs * 0.5, bs, bs), white),
+            None => Spinner::new(gx + isz * 0.5, icy, Spinner::R_INLINE).phase(now).tint(white).draw(&e, p),
         }
     }
     } // end `if transport`
@@ -1292,5 +1462,125 @@ mod tests {
             "the read-out must not reach into the transport scrim"
         );
         assert!(f.cy() - StatusOverlay::above() > 0.0, "nor off the top of the panel");
+    }
+
+    // ---- the transport state read-out ---------------------------------------------------------
+    //
+    // `transport_mark` is the whole rule, factored out of the draw so it can be graded here: the
+    // draw itself is one `match` over the returned value, and the slot's geometry is unchanged.
+    // 1 s in ns, so a position reads as a second.
+    const S: i64 = 1_000_000_000;
+
+    /// The common case, and the one the design is FOR: frames on the panel, nothing pressed
+    /// recently, and the slot is empty. A mark that is always up says nothing.
+    #[test]
+    fn playing_steadily_shows_nothing() {
+        assert_eq!(
+            transport_mark(false, Busy::None, false, 42 * S, 42 * S, None),
+            TransportMark::None
+        );
+        // …and the resume mark has expired rather than never existed
+        assert_eq!(
+            transport_mark(false, Busy::None, false, 42 * S, 42 * S, Some(PLAY_MARK_MS)),
+            TransportMark::None
+        );
+    }
+
+    /// Paused is UNCHANGED from the behaviour that shipped before the read-out grew its other two
+    /// states, and it outranks the resume mark: a user who resumed and re-paused inside two seconds
+    /// is paused, whatever the clock still says.
+    #[test]
+    fn paused_shows_pause_and_outranks_a_live_resume_clock() {
+        assert_eq!(transport_mark(true, Busy::None, false, 42 * S, 42 * S, None), TransportMark::Pause);
+        assert_eq!(
+            transport_mark(true, Busy::None, false, 42 * S, 42 * S, Some(200)),
+            TransportMark::Pause
+        );
+    }
+
+    /// Direction comes from the POSITIONS, not from a keycode — which is what makes one expression
+    /// cover the three ways the playhead travels. A live scrub is not busy (the pipeline is still
+    /// playing the old position), so `scrubbing` has to be its own input.
+    #[test]
+    fn travel_direction_is_read_off_the_positions() {
+        // LEFT/RIGHT scrub preview, while playing: not busy at all
+        assert_eq!(
+            transport_mark(false, Busy::None, true, 52 * S, 42 * S, None),
+            TransportMark::FastForward
+        );
+        assert_eq!(transport_mark(false, Busy::None, true, 32 * S, 42 * S, None), TransportMark::Rewind);
+        // a chapter/marker hop or a rapid-seek burst: scrub cleared, the seek in flight, the frozen
+        // playhead sitting at the target while the published position is still where we left
+        assert_eq!(
+            transport_mark(false, Busy::Transport, false, 600 * S, 42 * S, None),
+            TransportMark::FastForward
+        );
+        assert_eq!(
+            transport_mark(false, Busy::Transport, false, 5 * S, 42 * S, None),
+            TransportMark::Rewind
+        );
+    }
+
+    /// Travel outranks paused — a paused scrub is still a scrub, and that is also the precedence
+    /// the slot had when its two states were spinner-over-pause.
+    #[test]
+    fn a_paused_scrub_still_reads_as_travel() {
+        assert_eq!(transport_mark(true, Busy::None, true, 32 * S, 42 * S, None), TransportMark::Rewind);
+        assert_eq!(
+            transport_mark(true, Busy::Transport, false, 90 * S, 42 * S, None),
+            TransportMark::FastForward
+        );
+    }
+
+    /// What the spinner was narrowed TO. `Busy::Transport` is two facts — the seek the user asked
+    /// for, and a re-buffer nobody asked for — and the direction glyph can only speak for the
+    /// first. So the spinner keeps every busy frame with no direction in it, and gives up the ones
+    /// that have one.
+    #[test]
+    fn the_spinner_keeps_only_the_busy_frames_with_no_direction() {
+        // a mid-play re-buffer: busy, but the playhead is not going anywhere
+        assert_eq!(
+            transport_mark(false, Busy::Transport, false, 42 * S, 42 * S, None),
+            TransportMark::Working
+        );
+        // the prime→first-frame tail of a landed seek, once the published position has caught up
+        assert_eq!(
+            transport_mark(false, Busy::Transport, true, 42 * S, 42 * S, None),
+            TransportMark::Working
+        );
+        // and the centred read-out's own states never reach this slot
+        assert_eq!(
+            transport_mark(false, Busy::Readout(StatusKind::Working, c"Buffering…"), false, 0, 0, None),
+            TransportMark::None
+        );
+    }
+
+    /// "Play sign show only for a couple of seconds when we press play, do not show it all the play
+    /// time." The clock is ms since the paused→playing edge; `None` means this session has never
+    /// been resumed, which is a fresh start rather than a resume and draws nothing.
+    #[test]
+    fn the_play_mark_expires_and_a_never_resumed_session_has_none() {
+        assert_eq!(transport_mark(false, Busy::None, false, 0, 0, Some(0)), TransportMark::Play);
+        assert_eq!(
+            transport_mark(false, Busy::None, false, 0, 0, Some(PLAY_MARK_MS - 1)),
+            TransportMark::Play
+        );
+        assert_eq!(
+            transport_mark(false, Busy::None, false, 0, 0, Some(PLAY_MARK_MS)),
+            TransportMark::None,
+            "the couple of seconds is a boundary, not a suggestion"
+        );
+        assert_eq!(transport_mark(false, Busy::None, false, 0, 0, None), TransportMark::None);
+    }
+
+    /// A resume the user asked for while the playhead is also travelling: the travel is the newer
+    /// fact and the slot is one glyph, so it wins. (This is the frame after a paused scrub commits
+    /// — `commit_seek` drops `paused` to let the pipeline prime the new position.)
+    #[test]
+    fn travel_outranks_the_resume_mark() {
+        assert_eq!(
+            transport_mark(false, Busy::Transport, false, 90 * S, 42 * S, Some(0)),
+            TransportMark::FastForward
+        );
     }
 }
