@@ -193,9 +193,28 @@ def sync_icon_color(appinfo: Path, hexcolor: str) -> str:
     return m.group(2)
 
 
-def write_splash(src: Path, out: Path) -> None:
-    """Emit the 1920x1080 splash. LANCZOS because the art is vector-derived with hard edges."""
+def write_splash(src: Path, out: Path, lift=None) -> None:
+    """Emit the 1920x1080 splash. LANCZOS because the art is vector-derived with hard edges.
+
+    `lift` raises the BLACK POINT to a hex colour, remapping [0,255] -> [lift,255] per channel.
+    It exists for one line in LG's App Resources page — *"The splash screen should not be black
+    and should use minimal text to avoid localization issues."* The master measures mean RGB
+    (23,15,10) with 63% of its pixels effectively black, which is exactly what that sentence warns
+    against, and a QA reader who takes it literally is the whole audience for this artwork.
+
+    Lift rather than brighten: a linear remap keeps the logo's highlights at 255 and only opens up
+    the field behind it, so the mark does not go grey. Passing the app's own `theme::SURFACE_APP`
+    (#2C2C2E) additionally makes the splash match the FIRST FRAME the app draws, so boot stops
+    stepping from near-black to the shelf gray.
+    """
     im = Image.open(src).convert("RGB")
+    if lift:
+        f = [int(lift.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4)]
+        a = np.asarray(im).astype(float)
+        for c in range(3):
+            a[..., c] = f[c] + a[..., c] * (255.0 - f[c]) / 255.0
+        im = Image.fromarray(a.round().clip(0, 255).astype("uint8"), "RGB")
+        print(f"  splash black point lifted to #{lift.lstrip('#').upper()}")
     if im.size != (1920, 1080):
         w, h = im.size
         if abs(w / h - 16 / 9) > 0.01:
@@ -213,7 +232,7 @@ def write_splash(src: Path, out: Path) -> None:
 #: `pkg/icon160.png` — the last of which release.yml publishes as a raw.githubusercontent URL for
 #: the webosbrew channel listing. One mistyped letter, and the artwork thousands of people see
 #: before installing carries a DEV bar.
-OPTIONS = ("--band=", "--splash=", "--out-dir=", "--sizes=", "--badge=", "--badge-fill=", "--appinfo=")
+OPTIONS = ("--band=", "--splash=", "--splash-lift=", "--out-dir=", "--sizes=", "--badge=", "--badge-fill=", "--appinfo=")
 
 
 def opt(name: str, default=None):
@@ -259,7 +278,7 @@ def main() -> int:
                 "flavour (the Makefile stages pkg/splash.png for all of them), so a per-flavour "
                 "copy would never be packaged. Run --splash on its own."
             )
-        write_splash(Path(splash), out_dir / "splash.png")
+        write_splash(Path(splash), out_dir / "splash.png", opt("--splash-lift="))
     src = Image.open(args[0]).convert("RGB")
     a = np.asarray(src).astype(int)
     bg = a[2, 2].copy()                      # the master's own corner is the panel colour

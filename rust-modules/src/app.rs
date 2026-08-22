@@ -372,6 +372,12 @@ fn remote_token_key(tok: &str) -> Option<(c_uint, c_uint)> {
         "play" => (0, WCODE_PLAY),
         "pause" => (0, WCODE_PAUSE),
         "stop" => (0, WCODE_STOP),
+        // The transport keys settled from LG's own scancode table (`ui::consts`' WCODE_REWIND doc).
+        // Here for the same reason the edit keys below are: nothing else can press them headlessly.
+        "ff" | "fastforward" => (0, crate::ui::consts::WCODE_FASTFORWARD),
+        "rew" | "rewind" => (0, crate::ui::consts::WCODE_REWIND),
+        "playpause" => (0, crate::ui::consts::WCODE_PLAYPAUSE),
+        "exit" => (0, crate::ui::consts::WCODE_EXIT),
         // The system keyboard's own two edit keys (`ui::consts`' doc has the protocol). They are
         // here because they are otherwise UNREACHABLE without a human at the panel: no trigger
         // raises the keyboard and `SDL_PushEvent` cannot carry a text event on the simulator, so
@@ -3343,7 +3349,7 @@ unsafe fn seed_scrub() {
 
 /// CH▲/CH▼ page the browse grid a screenful of rows per press.
 fn key_library_page(sym: c_uint, wcode: c_uint) {
-    let up = sym == SDLK_PAGEUP || wcode == WCODE_CH_UP;
+    let up = sym == SDLK_PAGEUP || wcode == WCODE_CH_UP || wcode == crate::ui::consts::WCODE_CH_UP_KEY;
     crate::ui::library::page(if up { -1 } else { 1 });
 }
 
@@ -4440,13 +4446,34 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     } else if matches!(key, Key::Play) {
                         key_play(mt, last_input, bg_was_playing, &mut route, &mut play_from,
                             &mut ptr);
+                    } else if matches!(key, Key::PlayPause) {
+                        // ONE key, both directions. `key_play`/`key_pause` are each half of the
+                        // toggle, so this arm picks; off the player route `key_play` is what starts
+                        // playback, which is the right answer for a PLAYPAUSE press on a card.
+                        if paused() || !matches!(route, Route::Player { .. }) {
+                            key_play(mt, last_input, bg_was_playing, &mut route, &mut play_from,
+                                &mut ptr);
+                        } else {
+                            key_pause(mt, route, last_input);
+                        }
+                    } else if matches!(key, Key::Exit) {
+                        // The remote's EXIT key — LG's checklist item 38 wants the app terminated,
+                        // and unlike BACK at Home's root there is nothing ambiguous about a key
+                        // labelled EXIT, so it does NOT raise `ui::exit_alert`.
+                        log("EXIT key: terminating");
+                        running = false;
                     } else if matches!(route, Route::Player { .. }) && matches!(key, Key::Stop) {
                         // Stop — the whole arm is the one ritual, already named.
                         exit_player(mt, &mut route, &play_from, &mut refresh_hubs_at, &mut trail);
                     } else if matches!(route, Route::Player { .. }) && matches!(key, Key::Left { .. } | Key::Right { .. }) {
                         key_scrub(key, last_input, ctrl, &mut hud, &mut ptr, &mut scrubber);
                     } else if matches!(route, Route::Library)
-                        && (sym == SDLK_PAGEUP || sym == SDLK_PAGEDOWN || wcode == WCODE_CH_UP || wcode == WCODE_CH_DOWN)
+                        && (sym == SDLK_PAGEUP
+                            || sym == SDLK_PAGEDOWN
+                            || wcode == WCODE_CH_UP
+                            || wcode == WCODE_CH_DOWN
+                            || wcode == crate::ui::consts::WCODE_CH_UP_KEY
+                            || wcode == crate::ui::consts::WCODE_CH_DOWN_KEY)
                     {
                         key_library_page(sym, wcode);
                     } else if matches!(key, Key::Back) {

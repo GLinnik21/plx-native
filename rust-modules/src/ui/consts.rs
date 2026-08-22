@@ -85,14 +85,46 @@ pub const WCODE_POINTER_HIDDEN: c_uint = 0x1e4;
 /// rather than being re-inlined by whoever needs to synthesize a press.
 pub const WCODE_BACK: c_uint = 482;
 pub const WCODE_PLAY: c_uint = 450;
-/// Magic-Remote D-pad LEFT/RIGHT — the ALTERNATE codes that arrive beside the ordinary
-/// [`SDLK_LEFT`]/[`SDLK_RIGHT`] syms, matched in BOTH fields (as a `sym` and as a `wcode`). Named
-/// here rather than repeated at each of the sites in `app.rs` that carried them raw, and for the
-/// same reason [`WCODE_BACK`] is: a code belongs with the predicate that matches it, which for
-/// these is [`classify`]. The press it resolves to carries `alt: true`, which is what keeps the
-/// two horizontal tests in the ladder apart — see [`Key::Left`].
-pub const WCODE_DPAD_LEFT: c_uint = 412;
-pub const WCODE_DPAD_RIGHT: c_uint = 417;
+/// **REWIND and FAST-FORWARD — the codes that took over the `alt: true` machinery.**
+///
+/// This pair used to be `WCODE_DPAD_LEFT`/`WCODE_DPAD_RIGHT` = 412/417, described as "the
+/// alternate codes that arrive beside the ordinary [`SDLK_LEFT`]/[`SDLK_RIGHT`] syms". **That was
+/// never true and those codes have never fired.** They entered in the initial commit as bare
+/// literals with no note, next to a measured pair that carries an explicit *"verified from the raw
+/// key log"* — and 412/413/415/417 are the CEA-2014-A / LG **web** keyCodes for Rewind/Stop/Play/
+/// Fast-forward, a different namespace from the native scancodes this app actually receives (under
+/// it BACK would be 461, and BACK measures 482).
+///
+/// Settled two ways on 2026-08-22. LG's own evdev->scancode table, at file offset `0x92840` of the
+/// television's `libSDL2-2.0.so.0.4.1`, produces 412 and 417 only from evdev 524 and 556 — which
+/// `linux/input.h` does not name at all — while the D-pad is evdev 105/106/103/108 -> **80/79/82/
+/// 81**. And 336 real key lines captured off the dev set's own remote show exactly 80/79/81/82 for
+/// the D-pad, 40 for OK, 482 for BACK, and **no 412 or 417 at any point**.
+///
+/// So the `alt: true` DESIGN was right and only its codes were wrong: a press that seeks in the
+/// player and does nothing on Home is precisely what a transport key should be, and that is what
+/// these two now carry. From the same table: evdev 168 `KEY_REWIND` -> 452, evdev 208
+/// `KEY_FASTFORWARD` -> 451.
+pub const WCODE_REWIND: c_uint = 452;
+pub const WCODE_FASTFORWARD: c_uint = 451;
+/// **STOP, as the television actually spells it.** [`WCODE_STOP`] (413) comes from unnamed evdev
+/// 534 in the same table; the real ones are evdev 128 `KEY_STOP` -> 120 and evdev 166 `KEY_STOPCD`
+/// -> 260. 413 is KEPT beside them rather than deleted — unlike 412/417 there is no positive
+/// evidence it never fires, only that nothing in `linux/input.h` names its producer.
+pub const WCODE_STOP_KEY: c_uint = 120;
+pub const WCODE_STOP_CD: c_uint = 260;
+/// evdev 164 `KEY_PLAYPAUSE` -> 261. A TOGGLE, which is why it gets its own [`Key`] variant rather
+/// than joining [`WCODE_PLAY`] or [`WCODE_PAUSE`]: `key_play` un-pauses and `key_pause` pauses, and
+/// one key that does whichever is needed cannot be either of them.
+pub const WCODE_PLAYPAUSE: c_uint = 261;
+/// evdev 174 `KEY_EXIT` -> 505. LG's checklist item 38 wants the app terminated on this press.
+pub const WCODE_EXIT: c_uint = 505;
+/// The channel rocker as the table spells it — evdev 402/403 `KEY_CHANNELUP`/`KEY_CHANNELDOWN` ->
+/// **300/301**. [`WCODE_CH_UP`]/[`WCODE_CH_DOWN`] (33/34) are kept beside these and are almost
+/// certainly NOT the rocker: 33 and 34 are `SDL_SCANCODE_4` and `SDL_SCANCODE_5`, produced by
+/// evdev 5/6, i.e. the DIGITS 4 and 5. Harmless to keep, wrong to rely on.
+pub const WCODE_CH_UP_KEY: c_uint = 300;
+pub const WCODE_CH_DOWN_KEY: c_uint = 301;
 
 /// OK/confirm press — RETURN, keypad ENTER, or the remote's SELECT. The ONE OK predicate
 /// (app.rs + the login/profiles screens all route through it).
@@ -122,7 +154,7 @@ pub enum Key {
     /// LEFT and RIGHT carry a flag because the ladder asks about them in two ways that accept
     /// DIFFERENT sets, and the difference is behaviour rather than an accident of spelling.
     /// `alt` is `false` when the press arrived as the plain [`SDLK_LEFT`]/[`SDLK_RIGHT`] sym, and
-    /// `true` when it arrived only as the Magic Remote's [`WCODE_DPAD_LEFT`]/[`WCODE_DPAD_RIGHT`]
+    /// `true` when it arrived only as a TRANSPORT key, [`WCODE_REWIND`]/[`WCODE_FASTFORWARD`]
     /// (in either field). The non-player four-way nav dispatch matches `alt: false` alone, so an
     /// alternate-code LEFT on Home reaches no arm that acts on it; the player's scrub arm and the
     /// Chapters strip match both. Preserve that asymmetry — it is what the flag is for.
@@ -136,7 +168,14 @@ pub enum Key {
     Back,
     Play,
     Pause,
+    /// One key that does whichever of the two is needed — evdev `KEY_PLAYPAUSE`. Its own variant
+    /// because `key_play` and `key_pause` are each one direction of the toggle.
+    PlayPause,
     Stop,
+    /// The remote's EXIT key. Terminates the app outright rather than raising the exit alert:
+    /// the alert exists so BACK at Home's root cannot quit by accident, and a key labelled EXIT
+    /// carries no such ambiguity.
+    Exit,
     /// The Magic Remote reporting that its pointer auto-hid ([`WCODE_POINTER_HIDDEN`]).
     PointerHidden,
     Other,
@@ -147,7 +186,7 @@ pub enum Key {
 ///
 /// **The precedence is deliberate, because the two fields are independent and can both be
 /// filled.** The `sym` field is asked FIRST and settles the four directions: a press carrying
-/// `SDLK_LEFT` in `sym` and [`WCODE_DPAD_LEFT`] in `wcode` is a plain `Left { alt: false }`, which
+/// `SDLK_LEFT` in `sym` and [`WCODE_REWIND`] in `wcode` is a plain `Left { alt: false }`, which
 /// is what keeps the four-way nav dispatch matching it — classify that pair as the ALTERNATE
 /// spelling instead and Home's navigation stops answering it. Only a press whose `sym` names none
 /// of the four plain direction syms can come back `alt: true`.
@@ -167,10 +206,10 @@ pub fn classify(sym: c_uint, wcode: c_uint) -> Key {
         SDLK_RIGHT => return Key::Right { alt: false },
         _ => {}
     }
-    if sym == WCODE_DPAD_LEFT || wcode == WCODE_DPAD_LEFT {
+    if sym == WCODE_REWIND || wcode == WCODE_REWIND {
         return Key::Left { alt: true };
     }
-    if sym == WCODE_DPAD_RIGHT || wcode == WCODE_DPAD_RIGHT {
+    if sym == WCODE_FASTFORWARD || wcode == WCODE_FASTFORWARD {
         return Key::Right { alt: true };
     }
     if wcode == WCODE_POINTER_HIDDEN {
@@ -194,8 +233,18 @@ pub fn classify(sym: c_uint, wcode: c_uint) -> Key {
     {
         return Key::Play;
     }
-    if sym == WCODE_STOP || wcode == WCODE_STOP {
+    if wcode == WCODE_PLAYPAUSE || sym == WCODE_PLAYPAUSE {
+        return Key::PlayPause;
+    }
+    if sym == WCODE_STOP
+        || wcode == WCODE_STOP
+        || wcode == WCODE_STOP_KEY
+        || wcode == WCODE_STOP_CD
+    {
         return Key::Stop;
+    }
+    if wcode == WCODE_EXIT || sym == WCODE_EXIT {
+        return Key::Exit;
     }
     if is_back(sym, wcode) {
         return Key::Back;
@@ -211,6 +260,31 @@ pub const K_SNAP: f32 = 200.0;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **The transport codes settled from LG's own evdev->scancode table**, and the two that were
+    /// retired by it. Kept apart from the big table above because these are the arms whose
+    /// provenance is a decompiled firmware table plus 336 captured key lines, not a guess — and
+    /// because the LAST two assertions are the ones that would silently regress if somebody
+    /// "restored" the old D-pad names: 412/417 must now reach no direction at all.
+    #[test]
+    fn the_codes_lg_actually_sends() {
+        // evdev 168 KEY_REWIND -> 452, evdev 208 KEY_FASTFORWARD -> 451
+        assert_eq!(classify(0, WCODE_REWIND), Key::Left { alt: true });
+        assert_eq!(classify(0, WCODE_FASTFORWARD), Key::Right { alt: true });
+        // evdev 164 KEY_PLAYPAUSE -> 261, a toggle and so its own variant
+        assert_eq!(classify(0, WCODE_PLAYPAUSE), Key::PlayPause);
+        // evdev 128 KEY_STOP -> 120 and evdev 166 KEY_STOPCD -> 260, beside the legacy 413
+        assert_eq!(classify(0, WCODE_STOP_KEY), Key::Stop);
+        assert_eq!(classify(0, WCODE_STOP_CD), Key::Stop);
+        assert_eq!(classify(0, WCODE_STOP), Key::Stop);
+        // evdev 174 KEY_EXIT -> 505
+        assert_eq!(classify(0, WCODE_EXIT), Key::Exit);
+        // 412/417 are produced only by evdev 524/556, which `linux/input.h` does not name, and
+        // never appeared in 336 real presses from this remote. They are not the D-pad, and the
+        // D-pad (80/79) reaches `classify` as the plain SDLK_LEFT/RIGHT syms instead.
+        assert_eq!(classify(0, 412), Key::Other, "412 is not a direction");
+        assert_eq!(classify(0, 417), Key::Other, "417 is not a direction");
+    }
 
     /// The two horizontal tests the ladder asks, copied here as the `matches!` patterns `app.rs`
     /// spells at those arms — so the asymmetry between them is asserted rather than described.
@@ -230,11 +304,12 @@ mod tests {
             (SDLK_DOWN, 0, Key::Down),
             (SDLK_LEFT, 0, Key::Left { alt: false }),
             (SDLK_RIGHT, 0, Key::Right { alt: false }),
-            // the alternate D-pad codes, in each field on their own
-            (WCODE_DPAD_LEFT, 0, Key::Left { alt: true }),
-            (0, WCODE_DPAD_LEFT, Key::Left { alt: true }),
-            (WCODE_DPAD_RIGHT, 0, Key::Right { alt: true }),
-            (0, WCODE_DPAD_RIGHT, Key::Right { alt: true }),
+            // the transport keys that carry `alt: true` — REWIND and FAST-FORWARD, in
+            // each field on its own (see WCODE_REWIND for why these are not the D-pad)
+            (WCODE_REWIND, 0, Key::Left { alt: true }),
+            (0, WCODE_REWIND, Key::Left { alt: true }),
+            (WCODE_FASTFORWARD, 0, Key::Right { alt: true }),
+            (0, WCODE_FASTFORWARD, Key::Right { alt: true }),
             // OK: RETURN, keypad ENTER, the remote's SELECT
             (SDLK_RETURN, 0, Key::Ok),
             (SDLK_KP_ENTER, 0, Key::Ok),
@@ -282,8 +357,8 @@ mod tests {
     #[test]
     fn the_two_horizontal_tests_accept_different_sets() {
         for (plain, alt) in [
-            (classify(SDLK_LEFT, 0), classify(0, WCODE_DPAD_LEFT)),
-            (classify(SDLK_RIGHT, 0), classify(0, WCODE_DPAD_RIGHT)),
+            (classify(SDLK_LEFT, 0), classify(0, WCODE_REWIND)),
+            (classify(SDLK_RIGHT, 0), classify(0, WCODE_FASTFORWARD)),
         ] {
             assert!(nav4(plain), "the plain sym is what the nav dispatch takes");
             assert!(lr(plain), "…and the scrub arm takes it too");
@@ -297,8 +372,8 @@ mod tests {
     /// for an event that carries a perfectly ordinary `SDLK_LEFT`.
     #[test]
     fn a_plain_sym_beside_its_own_alternate_code_stays_plain() {
-        let l = classify(SDLK_LEFT, WCODE_DPAD_LEFT);
-        let r = classify(SDLK_RIGHT, WCODE_DPAD_RIGHT);
+        let l = classify(SDLK_LEFT, WCODE_REWIND);
+        let r = classify(SDLK_RIGHT, WCODE_FASTFORWARD);
         assert_eq!(l, Key::Left { alt: false });
         assert_eq!(r, Key::Right { alt: false });
         assert!(nav4(l) && nav4(r));
