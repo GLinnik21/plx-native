@@ -15,8 +15,23 @@ the evidence the refactor did not change behaviour, and a non-empty one names th
     tools/keytable.py --out tests/keytable.json          # record
     tools/keytable.py --check tests/keytable.json        # re-record and diff against it
 
-Requires `make sim` to have been built. Never touches the television. Each screen gets its own
-instance root, so several of these can run at once (that is the whole point of `SIM_DIR`).
+Requires `make sim` to have been built (honouring `SIM_TDIR` if the lane set one). Never touches
+the television. Each screen gets its own instance root, so several of these can run at once (that
+is the whole point of `SIM_DIR`).
+
+**What it can and cannot see.** A row is the FOCUS fingerprint before and after, so this grades
+where a key moved the user and nothing else. It is blind to the two effects a press has on state no
+screen owns — the player HUD's dismissal and an armed tvOS click — which is why the unsupported-key
+invariant is graded twice: here for "moves nothing on any screen", and in `app.rs`'s
+`unsupported_key_tests` for "touches nothing global". Neither half implies the other.
+
+**A fingerprint carries RATING KEYS, so part of this table is a fact about one library and one
+moment, not about the ladder.** Two rows drift on their own: `home` samples whichever hero the 8 s
+auto-flip has landed on, and any row is keyed to whatever the server's hubs held when it was
+recorded. A re-record on another day, or against another PMS, therefore diffs on `rk=` while every
+structural field (`route`, `hf`, `row`, `col`, `zone`, `card`, `sec`) is identical — read that as
+noise, and read a change in a STRUCTURAL field as the regression. Diffing the two by eye is the
+job; nothing here is asserted by `make check`.
 
 Two triggers are armed in every root:
   * `plxnative-focus`  — the fingerprint itself (`crate::focusprobe`)
@@ -36,11 +51,34 @@ import sys
 import time
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SIM = os.path.join(REPO, "rust-modules", "target-sim", "debug", "plxnative-sim")
+# `SIM_TDIR` is the Makefile's own knob for where the simulator's build tree lives, and a parallel
+# lane sets it to keep two checkouts off one `target/`. Read it here rather than hardcoding the
+# default, or this harness looks for a binary that lane never wrote — which reads as "run `make
+# sim` first" for a tree where `make sim` has just succeeded.
+SIM = os.path.join(
+    os.environ.get("SIM_TDIR") or os.path.join(REPO, "rust-modules", "target-sim"),
+    "debug",
+    "plxnative-sim",
+)
+if not os.path.isabs(SIM):
+    SIM = os.path.join(REPO, SIM)
 
 # The keys the ladder dispatches on. `okdown`/`okup` are the split halves — the only way to drive a
 # press-and-hold past `press::LONG_MS`, which is a different arm from a tap and has to be recorded
 # as one.
+#
+# **`k:<sym>,<wcode>` presses a RAW pair** (`app.rs`'s `remote_token_key`), which is the only way to
+# reach a key the mnemonic map does not name — and therefore the only way this harness can grade
+# what an UNSUPPORTED key does, which is LG checklist item 40. The four in the middle of the script
+# are there for one question each, and they are placed between `right` and `ok` so that the screen
+# they are asked on is still the one the trigger booted:
+#   k:53,34   the digit `5`, sym '5' + `SDL_SCANCODE_5` — exactly as the television spells it.
+#             Until 2026-08-23 `page_dir` read scancode 34 as the channel rocker, so this PAGED the
+#             Library grid. It must now move nothing, anywhere.
+#   k:0,301   the real CH-down rocker (evdev 403), which must still page the Library…
+#   k:0,300   …and the real CH-up, which pages back, so the script's later rows are unperturbed.
+#   k:0,269   HOME — `SDL_SCANCODE_AC_HOME`, evdev 172. Unbound by decision, not by omission
+#             (`docs/remote-keys.md` §HOME); the row that records it staying inert is the evidence.
 #
 # `back` is NOT here, and the comment that used to explain why said it "is last in every script
 # because at a screen's root it EXITS the app" — which described neither the list (there was no
@@ -49,7 +87,11 @@ SIM = os.path.join(REPO, "rust-modules", "target-sim", "debug", "plxnative-sim")
 # in SCREENS, and the ladder's whole BACK cascade is currently uncharacterised — but it costs a
 # re-record of `tests/keytable.json`, and a script that ends on the alert has to answer it (`back`
 # again, or arm `/tmp/plxnative-noexitconfirm`) before the next screen's run.
-KEYS = ["up", "down", "left", "right", "ok", "play", "pause", "stop"]
+KEYS = [
+    "up", "down", "left", "right",
+    "k:53,34", "k:0,301", "k:0,300", "k:0,269",
+    "ok", "play", "pause", "stop",
+]
 
 # screen name -> (trigger file, trigger content or None)
 SCREENS = {

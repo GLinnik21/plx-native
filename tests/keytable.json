@@ -1,57 +1,85 @@
 {
  "home": [
   {
-   "after": "focus route=home snapt=0 snapp=0 hf=-1 row=0 col=0 sid=0 rk=2108 press=0",
-   "before": "focus route=home snapt=0 snapp=0 hf=0 row=0 col=0 sid=0 rk=2108 press=0",
+   "after": "focus route=home snapt=0 snapp=0 hf=-1 row=0 col=0 sid=0 rk=2056 press=0",
+   "before": "focus route=home snapt=0 snapp=0 hf=0 row=0 col=0 sid=0 rk=2056 press=0",
    "key": "up",
    "moved": true,
    "route": "home"
   },
   {
-   "after": "focus route=home snapt=0 snapp=0 hf=0 row=0 col=0 sid=0 rk=2108 press=0",
-   "before": "focus route=home snapt=0 snapp=0 hf=-1 row=0 col=0 sid=0 rk=2108 press=0",
+   "after": "focus route=home snapt=0 snapp=0 hf=0 row=0 col=0 sid=0 rk=2056 press=0",
+   "before": "focus route=home snapt=0 snapp=0 hf=-1 row=0 col=0 sid=0 rk=2056 press=0",
    "key": "down",
    "moved": true,
    "route": "home"
   },
   {
-   "after": "focus route=home snapt=0 snapp=0 hf=0 row=0 col=0 sid=0 rk=2032 press=0",
-   "before": "focus route=home snapt=0 snapp=0 hf=0 row=0 col=0 sid=0 rk=2108 press=0",
+   "after": "focus route=home snapt=0 snapp=0 hf=0 row=0 col=0 sid=0 rk=2029 press=0",
+   "before": "focus route=home snapt=0 snapp=0 hf=0 row=0 col=0 sid=0 rk=2056 press=0",
    "key": "left",
    "moved": true,
    "route": "home"
   },
   {
-   "after": "focus route=home snapt=0 snapp=0 hf=1 row=0 col=0 sid=0 rk=2032 press=0",
-   "before": "focus route=home snapt=0 snapp=0 hf=0 row=0 col=0 sid=0 rk=2032 press=0",
+   "after": "focus route=home snapt=0 snapp=0 hf=1 row=0 col=0 sid=0 rk=2029 press=0",
+   "before": "focus route=home snapt=0 snapp=0 hf=0 row=0 col=0 sid=0 rk=2029 press=0",
    "key": "right",
    "moved": true,
    "route": "home"
   },
   {
-   "after": "focus route=detail sec=0 col=0 eptext=0 season=- saved=0,0,0,0,0,0 card=0 alt=0 show=0 sid=0 rk=2032 ep=- epwatched=- press=0",
-   "before": "focus route=home snapt=0 snapp=0 hf=1 row=0 col=0 sid=0 rk=2032 press=0",
+   "after": "focus route=home snapt=0 snapp=0 hf=1 row=0 col=0 sid=0 rk=2029 press=0",
+   "before": "focus route=home snapt=0 snapp=0 hf=1 row=0 col=0 sid=0 rk=2029 press=0",
+   "key": "k:53,34",
+   "moved": false,
+   "route": "home"
+  },
+  {
+   "after": "focus route=home snapt=0 snapp=0 hf=1 row=0 col=0 sid=0 rk=2029 press=0",
+   "before": "focus route=home snapt=0 snapp=0 hf=1 row=0 col=0 sid=0 rk=2029 press=0",
+   "key": "k:0,301",
+   "moved": false,
+   "route": "home"
+  },
+  {
+   "after": "focus route=home snapt=0 snapp=0 hf=1 row=0 col=0 sid=0 rk=2029 press=0",
+   "before": "focus route=home snapt=0 snapp=0 hf=1 row=0 col=0 sid=0 rk=2029 press=0",
+   "key": "k:0,300",
+   "moved": false,
+   "route": "home"
+  },
+  {
+   "after": "focus route=home snapt=0 snapp=0 hf=1 row=0 col=0 sid=0 rk=2029 press=0",
+   "before": "focus route=home snapt=0 snapp=0 hf=1 row=0 col=0 sid=0 rk=2029 press=0",
+   "key": "k:0,269",
+   "moved": false,
+   "route": "home"
+  },
+  {
+   "after": "focus route=detail sec=0 col=0 eptext=0 season=- saved=0,0,0,0,0,0 card=0 alt=0 show=0 sid=0 rk=2029 ep=- epwatched=- press=0",
+   "before": "focus route=home snapt=0 snapp=0 hf=1 row=0 col=0 sid=0 rk=2029 press=0",
    "key": "ok",
    "moved": true,
    "route": "home"
   },
   {
-   "after": "focus route=detail sec=0 col=0 eptext=0 season=- saved=0,0,0,0,0,0 card=0 alt=0 show=0 sid=0 rk=2032 ep=- epwatched=- press=0",
-   "before": "focus route=detail sec=0 col=0 eptext=0 season=- saved=0,0,0,0,0,0 card=0 alt=0 show=0 sid=0 rk=2032 ep=- epwatched=- press=0",
+   "after": "focus route=detail sec=0 col=0 eptext=0 season=- saved=0,0,0,0,0,0 card=0 alt=0 show=0 sid=0 rk=2029 ep=- epwatched=- press=0",
+   "before": "focus route=detail sec=0 col=0 eptext=0 season=- saved=0,0,0,0,0,0 card=0 alt=0 show=0 sid=0 rk=2029 ep=- epwatched=- press=0",
    "key": "play",
    "moved": false,
    "route": "detail"
   },
   {
-   "after": "focus route=detail sec=0 col=0 eptext=0 season=- saved=0,0,0,0,0,0 card=0 alt=0 show=0 sid=0 rk=2032 ep=- epwatched=- press=0",
-   "before": "focus route=detail sec=0 col=0 eptext=0 season=- saved=0,0,0,0,0,0 card=0 alt=0 show=0 sid=0 rk=2032 ep=- epwatched=- press=0",
+   "after": "focus route=detail sec=0 col=0 eptext=0 season=- saved=0,0,0,0,0,0 card=0 alt=0 show=0 sid=0 rk=2029 ep=- epwatched=- press=0",
+   "before": "focus route=detail sec=0 col=0 eptext=0 season=- saved=0,0,0,0,0,0 card=0 alt=0 show=0 sid=0 rk=2029 ep=- epwatched=- press=0",
    "key": "pause",
    "moved": false,
    "route": "detail"
   },
   {
-   "after": "focus route=detail sec=0 col=0 eptext=0 season=- saved=0,0,0,0,0,0 card=0 alt=0 show=0 sid=0 rk=2032 ep=- epwatched=- press=0",
-   "before": "focus route=detail sec=0 col=0 eptext=0 season=- saved=0,0,0,0,0,0 card=0 alt=0 show=0 sid=0 rk=2032 ep=- epwatched=- press=0",
+   "after": "focus route=detail sec=0 col=0 eptext=0 season=- saved=0,0,0,0,0,0 card=0 alt=0 show=0 sid=0 rk=2029 ep=- epwatched=- press=0",
+   "before": "focus route=detail sec=0 col=0 eptext=0 season=- saved=0,0,0,0,0,0 card=0 alt=0 show=0 sid=0 rk=2029 ep=- epwatched=- press=0",
    "key": "stop",
    "moved": false,
    "route": "detail"
@@ -84,6 +112,34 @@
    "before": "focus route=library pill=-1 card=1 menu=0 sid=0 rk=1 press=0",
    "key": "right",
    "moved": true,
+   "route": "library"
+  },
+  {
+   "after": "focus route=library pill=-1 card=1 menu=0 sid=0 rk=2 press=0",
+   "before": "focus route=library pill=-1 card=1 menu=0 sid=0 rk=2 press=0",
+   "key": "k:53,34",
+   "moved": false,
+   "route": "library"
+  },
+  {
+   "after": "focus route=library pill=-1 card=1 menu=0 sid=0 rk=1924 press=0",
+   "before": "focus route=library pill=-1 card=1 menu=0 sid=0 rk=2 press=0",
+   "key": "k:0,301",
+   "moved": true,
+   "route": "library"
+  },
+  {
+   "after": "focus route=library pill=-1 card=1 menu=0 sid=0 rk=2 press=0",
+   "before": "focus route=library pill=-1 card=1 menu=0 sid=0 rk=1924 press=0",
+   "key": "k:0,300",
+   "moved": true,
+   "route": "library"
+  },
+  {
+   "after": "focus route=library pill=-1 card=1 menu=0 sid=0 rk=2 press=0",
+   "before": "focus route=library pill=-1 card=1 menu=0 sid=0 rk=2 press=0",
+   "key": "k:0,269",
+   "moved": false,
    "route": "library"
   },
   {
@@ -141,6 +197,34 @@
    "after": "focus route=search zone=Field editing=0 row=0 col=0 recent=0 pill=-1 card=0 below=Results clear=0 press=0",
    "before": "focus route=search zone=Field editing=0 row=0 col=0 recent=0 pill=-1 card=0 below=Results clear=0 press=0",
    "key": "right",
+   "moved": false,
+   "route": "search"
+  },
+  {
+   "after": "focus route=search zone=Field editing=0 row=0 col=0 recent=0 pill=-1 card=0 below=Results clear=0 press=0",
+   "before": "focus route=search zone=Field editing=0 row=0 col=0 recent=0 pill=-1 card=0 below=Results clear=0 press=0",
+   "key": "k:53,34",
+   "moved": false,
+   "route": "search"
+  },
+  {
+   "after": "focus route=search zone=Field editing=0 row=0 col=0 recent=0 pill=-1 card=0 below=Results clear=0 press=0",
+   "before": "focus route=search zone=Field editing=0 row=0 col=0 recent=0 pill=-1 card=0 below=Results clear=0 press=0",
+   "key": "k:0,301",
+   "moved": false,
+   "route": "search"
+  },
+  {
+   "after": "focus route=search zone=Field editing=0 row=0 col=0 recent=0 pill=-1 card=0 below=Results clear=0 press=0",
+   "before": "focus route=search zone=Field editing=0 row=0 col=0 recent=0 pill=-1 card=0 below=Results clear=0 press=0",
+   "key": "k:0,300",
+   "moved": false,
+   "route": "search"
+  },
+  {
+   "after": "focus route=search zone=Field editing=0 row=0 col=0 recent=0 pill=-1 card=0 below=Results clear=0 press=0",
+   "before": "focus route=search zone=Field editing=0 row=0 col=0 recent=0 pill=-1 card=0 below=Results clear=0 press=0",
+   "key": "k:0,269",
    "moved": false,
    "route": "search"
   },
