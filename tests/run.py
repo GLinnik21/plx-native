@@ -196,7 +196,7 @@ def _resolve_items(entries, items):
         e["rk"] = rk
 
 
-def load_manifest(pipeline_only=False, tv_override=None):
+def load_manifest(pipeline_only=False, tv_override=None, for_listing=False):
     """Merge the tracked matrix with the gitignored overlay.
 
     `pipeline_only` is what makes requirement-1 true — that a stranger can run the pipeline tier
@@ -205,6 +205,16 @@ def load_manifest(pipeline_only=False, tv_override=None):
     case the TV address is read from the repo's own gitignored `.tv-host` (the same file the
     Makefile and `tools/` fall back to). A TV address is the one thing that still cannot be
     guessed, and is the only thing this path can die for.
+
+    `for_listing` drops **even that**, and it is the difference between `--list` being offline and
+    only claiming to be. `--list` prints which cases a set of flags selects; it opens no socket,
+    arms no trigger and touches no television, which is exactly why `DefaultTier` in
+    `tests/test_harness.py` spawns the real CLI to ask what a bare command runs. On any machine
+    with no `.tv-host` and no overlay — a fresh clone, a fleet worktree, and **the CI runner** —
+    the requirements below fired first and `--list` exited 1 with empty stdout, so those two tests
+    failed on every push. They had been red on `main` since 2026-08-22 and were about to be
+    inherited, identically, by every lane of a parallel fleet: eleven red PRs in which a real
+    failure would have been indistinguishable from the background.
     """
     with open(MANIFEST) as f:
         manifest = json.load(f)
@@ -213,9 +223,12 @@ def load_manifest(pipeline_only=False, tv_override=None):
         with open(MANIFEST_LOCAL) as f:
             local = json.load(f)
     except FileNotFoundError:
-        if not pipeline_only:
+        if not (pipeline_only or for_listing):
             _die_no_overlay()
     except ValueError as e:
+        # Still fatal for a listing: a malformed overlay is a typo to fix, not an absent one to
+        # work around, and silently listing the wrong thing is the failure mode this whole
+        # function is shaped to avoid.
         sys.exit(f"{MANIFEST_LOCAL} is not valid JSON: {e}")
 
     if pipeline_only:
@@ -224,16 +237,19 @@ def load_manifest(pipeline_only=False, tv_override=None):
         if not tv and os.path.isfile(TV_HOST_FILE):
             with open(TV_HOST_FILE) as f:
                 tv = f.read().strip() or None
-        if not tv:
+        if not tv and not for_listing:
             sys.exit(f"--pipeline needs a TV address: put one in {TV_HOST_FILE} (one line, an IP "
                      f"or hostname), or a `tv` key in {MANIFEST_LOCAL}, or pass --tv")
-        manifest["tv"] = tv
+        if tv:
+            manifest["tv"] = tv
         if "flavour" in local:
             manifest["flavour"] = local["flavour"]
         return manifest
 
     for field in ("pms", "tv"):
         if field not in local:
+            if for_listing:
+                continue    # nothing downstream of a listing dials either of them
             _die_no_overlay(f"\n  (no {field!r} block)")
         manifest[field] = local[field]
     # WHICH INSTALL to drive, and optional: absent means the Makefile's own default. An
@@ -286,8 +302,12 @@ def load_manifest(pipeline_only=False, tv_override=None):
     # answer of somebody whose library has nothing of that shape, and it now skips the cases that
     # need it. The values below stay fatal because no run of any size can proceed without them.
     ss = manifest.get("shared_server", {})
+    # `.get` on both, for `for_listing`'s sake: with no overlay at all neither key was ever
+    # installed above, and a listing must still print. A real run cannot reach here without them —
+    # the `_die_no_overlay` calls above are what guarantee that, which is why this stays a lookup
+    # and not a second requirement check.
     stray = [f"{k}={v}" for k, v in
-             [("pms.host", manifest["pms"].get("host")), ("tv", manifest["tv"])]
+             [("pms.host", manifest.get("pms", {}).get("host")), ("tv", manifest.get("tv"))]
              + ([("test_user.id", manifest["test_user"].get("id"))] if "test_user" in manifest else [])
              + [(f"shared_server.{k}", ss.get(k)) for k in ("machine_id", "name", "host")]
              if isinstance(v, str) and v.startswith("<")]
@@ -2541,12 +2561,15 @@ def main():
         # not ask for and believe the result.
         sys.exit("--pipeline names the DEFAULT tier and cannot be combined with "
                  "--server/--fps/--fps-player, which select the server tier. Pick one.")
-    manifest = load_manifest(pipeline_only=not server_tier, tv_override=args.tv)
+    manifest = load_manifest(pipeline_only=not server_tier, tv_override=args.tv, for_listing=args.list)
     # BEFORE anything else, including --list: every path this run uses hangs off it, and the
     # queries are offline and side-effect free (see make_query / the Makefile's PURE_QUERY).
     resolve_flavour(args, manifest)
     cfg = {
-        "tv": args.tv or manifest["tv"],
+        # `.get`, not `[…]`: under `--list` the overlay and `.tv-host` are both optional, so there
+        # may be no address at all. Nothing on a listing path dials it — and a RUN cannot reach
+        # here without one, because `load_manifest` still exits for that case.
+        "tv": args.tv or manifest.get("tv", ""),
         # server-tier only: the synthetic tier talks to no PMS and `load_manifest` does not
         # synthesize the key for it.
         "pms": manifest.get("pms", {}),
