@@ -1288,6 +1288,12 @@ pub(crate) fn majors() -> (u32, u32, u32) {
 
 /// Boot smoke test + optional ABI probe. Called once at startup.
 pub(crate) fn boot() {
+    // The https media transport's own table, resolved here so the `dlopen` and its log line land
+    // on the MAIN thread at start-up rather than inside a demux worker — and after `app.rs` has
+    // run `net::global_init`, which is what makes `curl_global_init` main-thread-only as its doc
+    // requires. Independent of FFmpeg: a set with no libcurl multi still demuxes local samples,
+    // and a set with no FFmpeg still signs in.
+    crate::curlio::boot();
     if !load_libraries() {
         ABI_OK.store(false, std::sync::atomic::Ordering::Relaxed);
         crate::log("ff: FFmpeg unavailable — the app runs, playback will refuse");
@@ -1397,17 +1403,58 @@ const SEEK_CUR: c_int = 1;
 const SEEK_END: c_int = 2;
 const AVSEEK_SIZE: c_int = 0x10000;
 
-/// AVIO backing state: wraps the Engine-owned demux socket so libavformat reads through
-/// stream.rs's raw socket (numeric IP, no DNS, Connection: close) and can seek by
-/// re-opening with a byte Range. Boxed so its address is stable for the C callbacks.
+/// **Which transport is under the AVIO.** The two are not interchangeable and the choice is made
+/// once, in `demux`, from the part URL's SCHEME — never guessed per call.
+///
+/// * [`Src::Socket`] is the original and the default: `stream.rs`'s raw TCP socket wrapping the
+///   ENGINE-owned `HttpStream` — cleartext, numeric address, seeking by closing and re-opening
+///   with a byte `Range`. Its behaviour here is byte for byte what it was before this enum
+///   existed.
+/// * [`Src::Curl`] is the https path ([`crate::curlio`]), which the demux thread owns outright.
+///   `ff.rs` never learns curl-multi mechanics: all it can ask is `read`/`seek`/`size`/`status`/
+///   `abort`, deliberately the same five questions the socket answers.
+enum Src {
+    Socket {
+        /// The Engine's stream — NOT owned here. `player::engine` allocates it, publishes it in
+        /// `SHARED.hs_ptr`, `http_shutdown`s it at teardown and closes it after the join.
+        hs: *mut HttpStream,
+        host: CString,
+        port: c_int,
+        path: CString,
+    },
+    /// Owned by this state, and so by the demux thread — which is why teardown reaches it through
+    /// `curlio`'s registry instead of a pointer the engine holds. `curlio`'s module doc says why
+    /// that is not the accident it looks like.
+    Curl(Box<crate::curlio::CurlSource>),
+}
+
+/// AVIO backing state: wraps the demux transport so libavformat reads through it and can seek by
+/// byte offset. Boxed so its address is stable for the C callbacks.
 struct AvioState {
-    hs: *mut HttpStream,
+    src: Src,
     aq: *mut AuQueue,
-    host: CString,
-    port: c_int,
-    path: CString,
     off: i64,
     size: i64,
+}
+
+impl AvioState {
+    /// **Fold the AU lane's abort into the transport's own.**
+    ///
+    /// There are two abort signals in the media path and they arrive by different routes. The AU
+    /// lane's flag (`aq_is_aborted`) is what these callbacks have always checked on entry, and it
+    /// is set by every stopper — teardown, and `start_bufferfeed`'s early return when the media
+    /// thread will not spawn. `curlio`'s wake pipe is what reaches a thread already BLOCKED inside
+    /// `curl_multi_wait`, which the AU flag cannot do; teardown fires it separately.
+    ///
+    /// This is the join between them, in the one place both are visible: once the lane is aborted,
+    /// the curl source is latched too, so it refuses on its own terms afterwards rather than
+    /// depending on every future caller re-checking the lane. The socket source needs no
+    /// equivalent — closing it IS the latch, and the engine owns that.
+    fn latch_abort(&self) {
+        if let Src::Curl(cs) = &self.src {
+            cs.abort();
+        }
+    }
 }
 
 /// AVIOContext leading fields, so we can free avio->buffer manually (FFmpeg 3.3 has no
@@ -1425,9 +1472,15 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
         // interrupt the read — the demux thread services it itself between two av_read_frame
         // calls (see the read loop), so there is nothing to unblock and nothing to race.
         if crate::aq::aq_is_aborted(s.aq) {
+            s.latch_abort();
             return AVERROR_EOF;
         }
-        let r = crate::stream::http_read(s.hs, dst as *mut c_uchar, n);
+        // Both sources use the same three-way return — >0 bytes, 0 clean end, <0 error — so the
+        // EOF decision below stays one branch rather than one per transport.
+        let r = match &mut s.src {
+            Src::Socket { hs, .. } => crate::stream::http_read(*hs, dst as *mut c_uchar, n),
+            Src::Curl(cs) => cs.read(std::slice::from_raw_parts_mut(dst, n.max(0) as usize)),
+        };
         if r <= 0 {
             return AVERROR_EOF;
         }
@@ -1461,6 +1514,7 @@ extern "C" fn seek_cb(op: *mut c_void, offset: i64, whence: c_int) -> i64 {
         // Placed AFTER the AVSEEK_SIZE branch on purpose: a size query is a field read, not I/O,
         // and answering it during teardown costs nothing.
         if crate::aq::aq_is_aborted(s.aq) {
+            s.latch_abort();
             return -1;
         }
         let target = match whence {
@@ -1472,9 +1526,19 @@ extern "C" fn seek_cb(op: *mut c_void, offset: i64, whence: c_int) -> i64 {
         if target < 0 {
             return -1;
         }
-        crate::stream::http_close(s.hs);
-        let range = CString::new(format!("Range: bytes={}-\r\n", target)).unwrap_or_default();
-        if crate::stream::http_open(s.hs, s.host.as_ptr(), s.port, s.path.as_ptr(), range.as_ptr(), "GET") != 0 {
+        let ok = match &mut s.src {
+            Src::Socket { hs, host, port, path } => {
+                crate::stream::http_close(*hs);
+                let range = CString::new(format!("Range: bytes={}-\r\n", target)).unwrap_or_default();
+                crate::stream::http_open(*hs, host.as_ptr(), *port, path.as_ptr(), range.as_ptr(), "GET") == 0
+            }
+            // `curlio` REFUSES a Range the server answered with a 200, where `stream.rs` accepts
+            // any 2xx. That is the one behavioural difference between these two arms, and it is
+            // deliberate: bytes from the head of the file, delivered as though they were the bytes
+            // at `target`, are corruption that looks like success.
+            Src::Curl(cs) => cs.seek(target),
+        };
+        if !ok {
             return -1;
         }
         s.off = target;
@@ -1777,7 +1841,15 @@ fn adts_header(freq_idx: u8, chan_cfg: u8, payload_len: usize) -> [u8; 7] {
     ]
 }
 
-pub(crate) fn demux(host: String, port: c_int, path: String, acodec: String, aq: SendPtr<AuQueue>, aqa: SendPtr<AuQueue>, hs: SendPtr<HttpStream>) {
+/// The demux thread body (spawned by `engine::start_bufferfeed`).
+///
+/// Takes an [`Origin`](crate::plex::Origin) rather than a `(host, port)` pair because **the scheme
+/// decides the transport**: `http` reads through the Engine's `stream.rs` socket, `https` through
+/// [`crate::curlio`]. An origin is parsed from a URL and never rebuilt from an address, which is
+/// what keeps the `plex.direct` hostname TLS validates against intact all the way down here
+/// (`plex/origin.rs`). `hs` is still passed on both paths — it is the Engine's, and it stays
+/// unused (fd = -1, published as `SHARED.hs_ptr`) when the origin turns out to be https.
+pub(crate) fn demux(origin: crate::plex::Origin, path: String, acodec: String, aq: SendPtr<AuQueue>, aqa: SendPtr<AuQueue>, hs: SendPtr<HttpStream>) {
     PUSHED_ANY.store(false, Ordering::Relaxed);
     // Refuse rather than read a struct whose shape we do not know (see `boot`). EOF must still be
     // set on both lanes or `pump` waits forever on a queue nothing will ever fill — the same
@@ -1793,7 +1865,12 @@ pub(crate) fn demux(host: String, port: c_int, path: String, acodec: String, aq:
     let aq_p = aq.0; // VIDEO lane (also the AVIO abort ptr + EOF marker)
     let aqa_p = aqa.0; // AUDIO lane (es=2) — always a distinct queue on the ff (two-lane) path
     let hs_p = hs.0;
-    let host_c = CString::new(host).unwrap_or_default();
+    let port = origin.port() as c_int;
+    // `host()` is the origin's BARE host — a v6 literal arrives unbracketed, which is what
+    // `stream.rs` wants; `base()` re-brackets it, which is what a URL needs. Both spellings come
+    // from the one `Origin` rather than being reconstructed, which is the whole point of the type.
+    let host_c = CString::new(origin.host().to_owned()).unwrap_or_default();
+    let url = format!("{}{}", origin.base(), path); // https only — carries the token, never logged
     let path_c = CString::new(path).unwrap_or_default();
 
     // PANIC BARRIER around the whole producer body. Not about the unwind itself — this thread is
@@ -1834,29 +1911,51 @@ pub(crate) fn demux(host: String, port: c_int, path: String, acodec: String, aq:
                 crate::player::log("ff: aborted before reopen");
                 break;
             }
-            crate::stream::http_close(hs_p);
-            if crate::stream::http_open(hs_p, host_c.as_ptr(), port, path_c.as_ptr(), std::ptr::null(), "GET") != 0 {
+            // ONE decision, here, from the scheme — and the only place in the media path that
+            // makes it. Both arms publish the same two diagnostics (`dg_http_status`, `file_size`)
+            // before anything else can fail, because the read-out panel is the first thing anybody
+            // looks at when a part will not play and it must mean the same thing either way.
+            let (src, size) = if origin.is_tls() {
+                match crate::curlio::CurlSource::open(&url, 0) {
+                    Ok(cs) => {
+                        let (st, size) = (cs.status(), cs.size());
+                        SHARED.file_size.store(size, Ordering::Release);
+                        SHARED.dg_http_status.store(st, Ordering::Relaxed);
+                        crate::player::log(&format!("ff: open https status={st} clen={size}"));
+                        (Src::Curl(cs), size)
+                    }
+                    Err(e) => {
+                        // A status we could not stream is worth publishing; a transport failure has
+                        // no status, and 0 is how the panel already spells "never answered".
+                        if let crate::curlio::OpenErr::Status(st) = e {
+                            SHARED.dg_http_status.store(st, Ordering::Relaxed);
+                        }
+                        crate::player::log(&format!("ff: https open FAILED: {e:?}"));
+                        SHARED.demux_failed.store(true, Ordering::Release);
+                        break;
+                    }
+                }
+            } else {
+                crate::stream::http_close(hs_p);
+                if crate::stream::http_open(hs_p, host_c.as_ptr(), port, path_c.as_ptr(), std::ptr::null(), "GET") != 0 {
+                    let st = crate::stream::hs_status(hs_p);
+                    SHARED.dg_http_status.store(st, Ordering::Relaxed);
+                    crate::player::log(&format!("ff: http_open FAILED status={st}"));
+                    SHARED.demux_failed.store(true, Ordering::Release);
+                    break;
+                }
+                let size = crate::stream::hs_content_length(hs_p);
+                SHARED.file_size.store(size, Ordering::Release);
                 let st = crate::stream::hs_status(hs_p);
                 SHARED.dg_http_status.store(st, Ordering::Relaxed);
-                crate::player::log(&format!("ff: http_open FAILED status={st}"));
-                SHARED.demux_failed.store(true, Ordering::Release);
-                break;
-            }
-            let size = crate::stream::hs_content_length(hs_p);
-            SHARED.file_size.store(size, Ordering::Release);
-            let st = crate::stream::hs_status(hs_p);
-            SHARED.dg_http_status.store(st, Ordering::Relaxed);
-            crate::player::log(&format!("ff: open status={st} clen={size}"));
+                crate::player::log(&format!("ff: open status={st} clen={size}"));
+                (
+                    Src::Socket { hs: hs_p, host: host_c.clone(), port, path: path_c.clone() },
+                    size,
+                )
+            };
 
-            let mut state = Box::new(AvioState {
-                hs: hs_p,
-                aq: aq_p,
-                host: host_c.clone(),
-                port,
-                path: path_c.clone(),
-                off: 0,
-                size,
-            });
+            let mut state = Box::new(AvioState { src, aq: aq_p, off: 0, size });
             let buf = av_malloc(65536) as *mut u8;
             if buf.is_null() {
                 crate::player::log("ff: av_malloc failed");
@@ -2479,31 +2578,75 @@ mod tests {
     // (an HttpStream, an AuQueue, two CStrings, three integers) is ordinary Rust. So long as a
     // test stays off `av_*`, the callbacks link and run here exactly as they do on the TV.
 
-    /// A loopback PMS stand-in that COUNTS accepted connections — the observable that matters,
-    /// since "did the callback open a new socket" is the whole question. Each connection gets a
-    /// 200 whose 8-byte body arrives inside the header read, so `http_read` serves it from
-    /// `HttpStream`'s buffer and never needs the socket again.
+    /// A loopback PMS stand-in that COUNTS both accepted connections and requests served — the
+    /// observables that matter, since "did the callback go back to the server" is the whole
+    /// question and no return value can answer it.
     ///
-    /// The count is bumped BEFORE the reply is written, so it is already final by the time any
-    /// `http_open` against this listener can return — every assertion below is causally ordered
-    /// behind that, and needs no sleep and no timing margin.
-    fn with_counting_listener(body: impl FnOnce(u16, &std::sync::atomic::AtomicUsize)) {
-        use std::io::Write;
+    /// **Why two counters.** `stream.rs` sends `Connection: close` and reopens per seek, so for
+    /// the socket source a new request IS a new connection and the accept count says everything.
+    /// libcurl instead keeps the connection in its multi handle's cache and REUSES it, which is
+    /// what we want for a media stream — a seek that costs no TLS handshake — and it means a
+    /// curl-backed seek that succeeded and one that was refused have the SAME accept count. So
+    /// the curl-backed tests grade requests, and the accept count stays what it always was for
+    /// the socket ones.
+    ///
+    /// Each connection gets its own handler thread and is served keep-alive; the accept count is
+    /// bumped BEFORE the reply is written, so it is already final by the time any `http_open`
+    /// against this listener can return — every assertion below is causally ordered behind that,
+    /// and needs no sleep and no timing margin.
+    fn with_counting_listener(body: impl FnOnce(u16, &std::sync::atomic::AtomicUsize, &std::sync::atomic::AtomicUsize)) {
+        use std::io::{Read, Write};
         use std::sync::atomic::AtomicUsize;
         let srv = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = srv.local_addr().unwrap().port();
         srv.set_nonblocking(true).expect("set_nonblocking"); // so the acceptor can be stopped
         let accepts = AtomicUsize::new(0);
+        let requests = AtomicUsize::new(0);
         let stop = AtomicBool::new(false);
         std::thread::scope(|sc| {
             sc.spawn(|| {
-                let mut held = Vec::new(); // hold the peers open: an RST would read as a failed reopen
                 while !stop.load(Ordering::Acquire) {
                     match srv.accept() {
-                        Ok((mut s, _)) => {
+                        Ok((s, _)) => {
                             accepts.fetch_add(1, Ordering::AcqRel);
-                            let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nABCDEFGH");
-                            held.push(s);
+                            let (rq, st) = (&requests, &stop);
+                            sc.spawn(move || {
+                                // Read each request head, count it, answer 200 with an 8-byte
+                                // body — small enough that it arrives inside the client's header
+                                // read, so `http_read` serves it from `HttpStream`'s buffer and
+                                // never needs the socket again.
+                                let _ = s.set_read_timeout(Some(std::time::Duration::from_millis(100)));
+                                let mut w = match s.try_clone() {
+                                    Ok(c) => c,
+                                    Err(_) => return,
+                                };
+                                let mut buf: Vec<u8> = Vec::new();
+                                loop {
+                                    if let Some(k) = buf.windows(4).position(|x| x == b"\r\n\r\n") {
+                                        buf.drain(..k + 4);
+                                        rq.fetch_add(1, Ordering::AcqRel);
+                                        if w.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nABCDEFGH").is_err() {
+                                            return;
+                                        }
+                                        let _ = w.flush();
+                                        continue;
+                                    }
+                                    let mut tmp = [0u8; 1024];
+                                    match (&s).read(&mut tmp) {
+                                        Ok(0) => return,
+                                        Ok(n) => buf.extend_from_slice(&tmp[..n]),
+                                        Err(ref e) if matches!(
+                                            e.kind(),
+                                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                                        ) => {
+                                            if st.load(Ordering::Acquire) {
+                                                return;
+                                            }
+                                        }
+                                        Err(_) => return,
+                                    }
+                                }
+                            });
                         }
                         Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                             std::thread::sleep(std::time::Duration::from_millis(1))
@@ -2512,7 +2655,7 @@ mod tests {
                     }
                 }
             });
-            // Stop the acceptor on the way out however we leave. A FAILING assertion in `body`
+            // Stop everything on the way out however we leave. A FAILING assertion in `body`
             // unwinds through here and `scope` joins before it reports, so a flag set only on the
             // success path would turn every real failure into a hang instead of a message.
             struct StopAcceptor<'a>(&'a AtomicBool);
@@ -2522,7 +2665,7 @@ mod tests {
                 }
             }
             let _stop_on_exit = StopAcceptor(&stop);
-            body(port, &accepts);
+            body(port, &accepts, &requests);
         });
     }
 
@@ -2555,11 +2698,12 @@ mod tests {
     /// teardown fix.
     #[test]
     fn a_seek_after_teardown_fails_instead_of_opening_a_second_connection() {
-        with_counting_listener(|port, accepts| {
+        with_counting_listener(|port, accepts, _| {
             let (mut hs, mut aq, ip, path) = opened_stream_with_aborted_lane(port);
             assert_eq!(accepts.load(Ordering::Acquire), 1, "fixture: exactly one connection so far");
             let mut st = AvioState {
-                hs: &mut *hs, aq: &mut *aq, host: ip, port: port as c_int, path, off: 0, size: 8,
+                src: Src::Socket { hs: &mut *hs, host: ip, port: port as c_int, path },
+                aq: &mut *aq, off: 0, size: 8,
             };
             let op = &mut st as *mut AvioState as *mut c_void;
 
@@ -2587,10 +2731,11 @@ mod tests {
     /// static reading of this suggested.
     #[test]
     fn an_aborted_read_and_seek_cannot_ping_pong_into_new_connections() {
-        with_counting_listener(|port, accepts| {
+        with_counting_listener(|port, accepts, _| {
             let (mut hs, mut aq, ip, path) = opened_stream_with_aborted_lane(port);
             let mut st = AvioState {
-                hs: &mut *hs, aq: &mut *aq, host: ip, port: port as c_int, path, off: 0, size: 8,
+                src: Src::Socket { hs: &mut *hs, host: ip, port: port as c_int, path },
+                aq: &mut *aq, off: 0, size: 8,
             };
             let op = &mut st as *mut AvioState as *mut c_void;
             let mut dst = [0u8; 8];
@@ -2608,6 +2753,89 @@ mod tests {
             assert!(reads.iter().all(|r| *r == AVERROR_EOF), "aborted reads must all report EOF: {reads:?}");
             assert!(seeks.iter().all(|r| *r == -1), "every hop must refuse the seek: {seeks:?}");
             crate::stream::http_close(&mut *hs);
+            crate::aq::aq_destroy(&mut *aq);
+        });
+    }
+
+    // -- the same two invariants, with libcurl under the AVIO instead of a socket ------------
+    //
+    // The guards above live in `read_cb`/`seek_cb`, ABOVE the dispatch, so they are transport
+    // independent by construction — which is exactly the kind of claim that stops being true the
+    // first time somebody moves a check into a branch. These pin it. The listener speaks plain
+    // HTTP and curl speaks plain HTTP, so no TLS is needed to grade the abort path; what a host
+    // cannot reach is a real handshake, which is why the PR carries a device recipe for aborting
+    // during DNS and during TLS instead of pretending these cover it.
+
+    /// libcurl bound and both tables live, with the crate-wide lock HELD for the caller's whole
+    /// test — `curlio`'s one-source registry is a process-global these two contend on with
+    /// `curlio`'s own suite, in another module, which is exactly what `testlock` is for. `None`
+    /// on a host with no libcurl at all, where these two would be grading nothing.
+    fn curl_gate() -> Option<std::sync::MutexGuard<'static, ()>> {
+        let g = crate::testlock::serial();
+        if crate::net::global_init() && crate::curlio::available() {
+            Some(g)
+        } else {
+            None
+        }
+    }
+
+    /// The curl twin of `opened_stream_with_aborted_lane`: a live https-capable source over the
+    /// counting listener, plus the aborted video lane teardown leaves behind.
+    fn opened_curl_with_aborted_lane(port: u16) -> (Box<crate::curlio::CurlSource>, Box<AuQueue>) {
+        let cs = crate::curlio::CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0)
+            .expect("fixture: the first open must succeed");
+        let mut aq = crate::aq::aq_new(1 << 20);
+        crate::aq::aq_abort(&mut *aq);
+        (cs, aq)
+    }
+
+    #[test]
+    fn a_curl_seek_after_teardown_fails_instead_of_opening_a_second_connection() {
+        let Some(_gate) = curl_gate() else { return };
+        with_counting_listener(|port, accepts, requests| {
+            let (cs, mut aq) = opened_curl_with_aborted_lane(port);
+            assert_eq!(accepts.load(Ordering::Acquire), 1, "fixture: exactly one connection so far");
+            assert_eq!(requests.load(Ordering::Acquire), 1, "fixture: and exactly one request");
+            let mut st = AvioState { src: Src::Curl(cs), aq: &mut *aq, off: 0, size: 8 };
+            let op = &mut st as *mut AvioState as *mut c_void;
+
+            let rv = seek_cb(op, 4, SEEK_SET);
+
+            assert_eq!(
+                requests.load(Ordering::Acquire), 1,
+                "seek_cb went back to the server through curlio during teardown — and it would do \
+                 so on the CACHED connection, which is why this grades requests and not accepts"
+            );
+            assert_eq!(accepts.load(Ordering::Acquire), 1, "and opened no new connection either");
+            assert_eq!(rv, -1, "an aborted seek must report failure so libavformat stops healing");
+            assert_eq!(seek_cb(op, 0, AVSEEK_SIZE), 8,
+                       "a size query is not I/O — the guard belongs AFTER that branch, on both transports");
+            crate::aq::aq_destroy(&mut *aq);
+        });
+    }
+
+    #[test]
+    fn an_aborted_curl_read_and_seek_cannot_ping_pong_into_new_connections() {
+        let Some(_gate) = curl_gate() else { return };
+        with_counting_listener(|port, accepts, requests| {
+            let (cs, mut aq) = opened_curl_with_aborted_lane(port);
+            let mut st = AvioState { src: Src::Curl(cs), aq: &mut *aq, off: 0, size: 8 };
+            let op = &mut st as *mut AvioState as *mut c_void;
+            let mut dst = [0u8; 8];
+            let mut reads = Vec::new();
+            let mut seeks = Vec::new();
+            for _ in 0..8 {
+                reads.push(read_cb(op, dst.as_mut_ptr(), dst.len() as c_int));
+                seeks.push(seek_cb(op, 4, SEEK_SET));
+            }
+            assert_eq!(
+                requests.load(Ordering::Acquire), 1,
+                "the read/seek recovery loop asked the server again once per hop — that is the \
+                 wedge, not merely a slow teardown"
+            );
+            assert_eq!(accepts.load(Ordering::Acquire), 1, "and it opened no new connection either");
+            assert!(reads.iter().all(|r| *r == AVERROR_EOF), "aborted reads must all report EOF: {reads:?}");
+            assert!(seeks.iter().all(|r| *r == -1), "every hop must refuse the seek: {seeks:?}");
             crate::aq::aq_destroy(&mut *aq);
         });
     }

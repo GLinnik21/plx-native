@@ -636,23 +636,17 @@ pub(crate) fn start_bufferfeed(mt: &MainThread) -> bool {
 
     if stream {
         let su = crate::plex::StreamUrl::parse(&url); // the typed layer's URL splitter
-        // **REFUSED rather than downgraded.** `crate::stream` speaks cleartext to a numeric
-        // address and nothing else, so handing it an https target's host and port would open a
-        // plaintext connection to a TLS port — a hang or a garbage response, with nothing in the
-        // log saying why. A `Client` registered at an https origin can already produce one of
-        // these (`direct_play_url`/`transcode_start_url` copy the client's origin, and
-        // `/tmp/plxnative-servers` can inject `"scheme":"https"`), so this is reachable today and
-        // not a guard against the future. The transport lane deletes this branch when it can honour
-        // the scheme.
-        if su.origin.is_tls() {
-            log(&format!("stream: REFUSED — {} needs TLS and this transport has none", su.origin.log_form()));
-            return false;
-        }
-        // `host()` is the origin's BARE host — a v6 literal arrives here unbracketed, which is
-        // what `stream.rs` needs and is not what the URL carried.
-        let (host, port) = (su.host().to_owned(), su.port());
+        // **The whole ORIGIN goes down, not a `(host, port)` pair, because the SCHEME chooses the
+        // transport**: `ff::demux` reads http through `crate::stream`'s cleartext socket and https
+        // through `crate::curlio`. This used to REFUSE an https origin outright — cleartext to a
+        // TLS port is a hang or a garbage response with nothing in the log — and that refusal is
+        // what a remote QA reviewer, with no PMS on their LAN, would have hit on every Play.
+        // Rebuilding the origin from an address would put the refusal back in a subtler form: the
+        // certificate is issued for the `plex.direct` NAME, so a TLS connection to the dotted quad
+        // behind it fails validation however well the packets flow (`plex/origin.rs`).
         let path = su.path;
-        log(&format!("stream: host={host} port={port} path={}", &path[..path.len().min(80)]));
+        log(&format!("stream: {} path={}", su.origin.log_form(), &path[..path.len().min(80)]));
+        let origin = su.origin;
         // Two-lane feed: the demuxer routes es=1 video to aq_video and es=2 audio to
         // aq_audio, each with its own cap + feeder.
         let mut qv = crate::aq::aq_new(AQ_VIDEO_BYTES);
@@ -675,7 +669,7 @@ pub(crate) fn start_bufferfeed(mt: &MainThread) -> bool {
             // `teardown(true) + start_bufferfeed()` (reload_at / reload_transcode /
             // switch_audio_native), which respawns this thread with the new value.
             let acodec = crate::route::stream_acodec();
-            stream_th = crate::task::spawn("demux", move || crate::ff::demux(host, port, path, acodec, aqp, aqap, hsp));
+            stream_th = crate::task::spawn("demux", move || crate::ff::demux(origin, path, acodec, aqp, aqap, hsp));
             if stream_th.is_none() {
                 // Nothing will ever fill the AU queues, so there is no session to start. `hs` is
                 // about to drop with this early return, so retract the pointer first — the pump
@@ -706,6 +700,7 @@ pub(crate) fn start_bufferfeed(mt: &MainThread) -> bool {
         if !p.is_null() {
             crate::stream::http_shutdown(p);
         }
+        crate::curlio::abort_active(); // the https demuxer's equivalent — see teardown
         if let Some(t) = stream_th.take() {
             crate::task::join("demux", t);
         }
@@ -921,6 +916,12 @@ fn teardown(mt: &MainThread, for_reload: bool) {
             // this one is still reading it. The real close happens after the join.
             crate::stream::http_shutdown(p);
         }
+        // …and the same interrupt for the OTHER transport. An https demux is parked in
+        // `curl_multi_wait`, where no `shutdown(2)` of ours can reach it — this writes a byte to
+        // the wake pipe it is polling. A no-op when the live source is a plaintext socket, or when
+        // there is none; exactly one of these two lines ever has anything to do. `curlio`'s module
+        // doc explains why the handle lives in a registry rather than being passed up to here.
+        crate::curlio::abort_active();
     }
     // 2. JOIN every worker before freeing anything they hold raw ptrs into
     // Through `task::join` so a stall leaves a number behind: this is the main thread, and every
