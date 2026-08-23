@@ -451,6 +451,9 @@ pub const AV_CODEC_ID_HEVC: c_int = 172;
 pub const AVSEEK_FLAG_BACKWARD: c_int = 1;
 pub const AVERROR_EOF: c_int = -541478725;
 pub const AVERROR_EAGAIN: c_int = -11;
+/// `AVERROR(EIO)`: unlike EOF, tells libavformat and our producer that the source was truncated by
+/// a transport failure.
+pub const AVERROR_IO: c_int = -5;
 pub const AV_NOPTS_VALUE: i64 = i64::MIN;
 pub const AV_TIME_BASE: i64 = 1_000_000;
 pub const NS_TB: AVRational = AVRational { num: 1, den: 1_000_000_000 };
@@ -1435,6 +1438,10 @@ struct AvioState {
     aq: *mut AuQueue,
     off: i64,
     size: i64,
+    /// A callback saw a curl I/O failure during the current enclosing libavformat operation.
+    /// FFmpeg may heal it through `seek_cb`; only an operation that still returns failure may
+    /// publish it to the player.
+    io_failed: bool,
 }
 
 impl AvioState {
@@ -1485,7 +1492,18 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
             Src::Curl(_) if dst.is_null() || n <= 0 => 0,
             Src::Curl(cs) => cs.read(std::slice::from_raw_parts_mut(dst, n as usize)),
         };
-        if r <= 0 {
+        if r < 0 {
+            // Teardown was handled above through the AU flag and remains EOF. A curl source's
+            // negative result here is therefore a real transport/range failure. Keep it distinct
+            // through FFmpeg, but only pending here: libavformat may recover through `seek_cb`
+            // inside this same operation.
+            if matches!(&s.src, Src::Curl(_)) {
+                s.io_failed = true;
+                return AVERROR_IO;
+            }
+            return AVERROR_EOF;
+        }
+        if r == 0 {
             return AVERROR_EOF;
         }
         s.off += r as i64;
@@ -1546,8 +1564,24 @@ extern "C" fn seek_cb(op: *mut c_void, offset: i64, whence: c_int) -> i64 {
             return -1;
         }
         s.off = target;
+        // This may be libavformat healing a failed read. A source validated at the requested byte
+        // has recovered; a later callback failure will arm the bit again.
+        s.io_failed = false;
         target
     }
+}
+
+/// Settle one `av_read_frame` result against errors observed by its AVIO callbacks.
+fn frame_read_failed(state: &mut AvioState, result: c_int) -> bool {
+    if result >= 0 {
+        state.io_failed = false;
+        return false;
+    }
+    if state.io_failed {
+        crate::player::log(&format!("ff: media transport failed during av_read_frame r={result}"));
+        SHARED.demux_io_failed.store(true, Ordering::Release);
+    }
+    true
 }
 
 #[inline]
@@ -1907,10 +1941,26 @@ pub(crate) fn demux(origin: crate::plex::Origin, path: String, acodec: String, a
     // demux thread. So the reopen had no live writer and no live caller.
     loop {
         unsafe {
-            // Teardown may have raced us here (it aborts the lanes, then shutdown(2)s the
-            // socket, then JOINS this thread on the main thread). Without this check we would
-            // open a BRAND NEW connection that the already-fired shutdown cannot touch, and the
-            // main thread would sit in that join for the full connect+recv budget.
+            // Publish curl's wake target BEFORE the final AU-abort check. These two operations
+            // close each other's race: teardown either sees and signals the reservation, or it
+            // aborts the lane first and this check refuses to start I/O. Creating/registering the
+            // source only after the check leaves a window where teardown's one wake sees nothing
+            // and the demuxer then opens a fresh connection under the main thread's join.
+            let mut curl_open = if origin.is_tls() {
+                match crate::curlio::CurlSource::reserve_open() {
+                    Ok(r) => Some(r),
+                    Err(e) => {
+                        crate::player::log(&format!("ff: https reservation FAILED: {e:?}"));
+                        SHARED.demux_failed.store(true, Ordering::Release);
+                        break;
+                    }
+                }
+            } else {
+                None
+            };
+            // Teardown may have raced us here (it aborts the lanes, then signals both transports,
+            // then JOINS this thread on the main thread). The reservation above makes the HTTPS
+            // side as race-free as the socket's already-published `hs_ptr`.
             if crate::aq::aq_is_aborted(aq_p) {
                 crate::player::log("ff: aborted before reopen");
                 break;
@@ -1920,7 +1970,8 @@ pub(crate) fn demux(origin: crate::plex::Origin, path: String, acodec: String, a
             // before anything else can fail, because the read-out panel is the first thing anybody
             // looks at when a part will not play and it must mean the same thing either way.
             let (src, size) = if origin.is_tls() {
-                match crate::curlio::CurlSource::open(&url, 0) {
+                let reservation = curl_open.take().expect("TLS reserved its abort handle above");
+                match crate::curlio::CurlSource::open_reserved(&url, 0, reservation) {
                     Ok(cs) => {
                         let (st, size) = (cs.status(), cs.size());
                         SHARED.file_size.store(size, Ordering::Release);
@@ -1959,7 +2010,7 @@ pub(crate) fn demux(origin: crate::plex::Origin, path: String, acodec: String, a
                 )
             };
 
-            let mut state = Box::new(AvioState { src, aq: aq_p, off: 0, size });
+            let mut state = Box::new(AvioState { src, aq: aq_p, off: 0, size, io_failed: false });
             let buf = av_malloc(65536) as *mut u8;
             if buf.is_null() {
                 crate::player::log("ff: av_malloc failed");
@@ -2204,10 +2255,15 @@ pub(crate) fn demux(origin: crate::plex::Origin, path: String, acodec: String, a
                     let sr = av_seek_frame(fmt, vi, ts, AVSEEK_FLAG_BACKWARD);
                     crate::player::log(&format!("ff: seek {}s rv={sr}", seek_ns / 1_000_000_000));
                 }
+                // Pending callback errors belong only to this enclosing operation. A successful
+                // packet (possibly after an internal seek/retry) clears them; a failed operation
+                // publishes a real transport truncation to the main thread.
+                state.io_failed = false;
                 let r = av_read_frame(fmt, pkt);
-                if r < 0 {
-                    // Genuine end of stream, or teardown. NOT a seek — a seek is serviced at the
-                    // top of this loop and never surfaces as a read error.
+                if frame_read_failed(&mut state, r) {
+                    // Genuine end of stream, teardown, or an unrecovered I/O error published by
+                    // `frame_read_failed`. NOT an app seek — that is serviced at the top of this
+                    // loop and never surfaces as a read error.
                     break;
                 }
                 let si = (*pkt).stream_index;
@@ -2707,7 +2763,7 @@ mod tests {
             assert_eq!(accepts.load(Ordering::Acquire), 1, "fixture: exactly one connection so far");
             let mut st = AvioState {
                 src: Src::Socket { hs: &mut *hs, host: ip, port: port as c_int, path },
-                aq: &mut *aq, off: 0, size: 8,
+                aq: &mut *aq, off: 0, size: 8, io_failed: false,
             };
             let op = &mut st as *mut AvioState as *mut c_void;
 
@@ -2739,7 +2795,7 @@ mod tests {
             let (mut hs, mut aq, ip, path) = opened_stream_with_aborted_lane(port);
             let mut st = AvioState {
                 src: Src::Socket { hs: &mut *hs, host: ip, port: port as c_int, path },
-                aq: &mut *aq, off: 0, size: 8,
+                aq: &mut *aq, off: 0, size: 8, io_failed: false,
             };
             let op = &mut st as *mut AvioState as *mut c_void;
             let mut dst = [0u8; 8];
@@ -2800,7 +2856,7 @@ mod tests {
             let (cs, mut aq) = opened_curl_with_aborted_lane(port);
             assert_eq!(accepts.load(Ordering::Acquire), 1, "fixture: exactly one connection so far");
             assert_eq!(requests.load(Ordering::Acquire), 1, "fixture: and exactly one request");
-            let mut st = AvioState { src: Src::Curl(cs), aq: &mut *aq, off: 0, size: 8 };
+            let mut st = AvioState { src: Src::Curl(cs), aq: &mut *aq, off: 0, size: 8, io_failed: false };
             let op = &mut st as *mut AvioState as *mut c_void;
 
             let rv = seek_cb(op, 4, SEEK_SET);
@@ -2823,7 +2879,7 @@ mod tests {
         let Some(_gate) = curl_gate() else { return };
         with_counting_listener(|port, accepts, requests| {
             let (cs, mut aq) = opened_curl_with_aborted_lane(port);
-            let mut st = AvioState { src: Src::Curl(cs), aq: &mut *aq, off: 0, size: 8 };
+            let mut st = AvioState { src: Src::Curl(cs), aq: &mut *aq, off: 0, size: 8, io_failed: false };
             let op = &mut st as *mut AvioState as *mut c_void;
             let mut dst = [0u8; 8];
             let mut reads = Vec::new();
@@ -2840,6 +2896,61 @@ mod tests {
             assert_eq!(accepts.load(Ordering::Acquire), 1, "and it opened no new connection either");
             assert!(reads.iter().all(|r| *r == AVERROR_EOF), "aborted reads must all report EOF: {reads:?}");
             assert!(seeks.iter().all(|r| *r == -1), "every hop must refuse the seek: {seeks:?}");
+            crate::aq::aq_destroy(&mut *aq);
+        });
+    }
+
+    /// A curl machinery failure is not the same event as the server finishing the file. Pin the
+    /// distinction at the AVIO seam, where an earlier implementation collapsed every non-positive
+    /// source result to EOF and thereby hid mid-playback truncation from both FFmpeg and the HUD.
+    #[test]
+    fn a_curl_transport_failure_crosses_avio_as_io_error_not_eof() {
+        let Some(_gate) = curl_gate() else { return };
+        with_counting_listener(|port, _, _| {
+            struct ClearIoFailure;
+            impl Drop for ClearIoFailure {
+                fn drop(&mut self) {
+                    SHARED.demux_io_failed.store(false, Ordering::Relaxed);
+                }
+            }
+            let _clear = ClearIoFailure;
+            SHARED.demux_io_failed.store(false, Ordering::Relaxed);
+
+            let mut cs = crate::curlio::CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0)
+                .expect("fixture: open");
+            cs.fail_multi_for_test();
+            let mut aq = crate::aq::aq_new(1 << 20);
+            let mut st = AvioState { src: Src::Curl(cs), aq: &mut *aq, off: 0, size: 8, io_failed: false };
+            let op = &mut st as *mut AvioState as *mut c_void;
+            let mut dst = [0u8; 8];
+
+            // Headers and all eight body bytes may have arrived together. Drain any buffered bytes;
+            // the terminal callback result is what must retain the machinery failure.
+            let mut terminal = 1;
+            for _ in 0..3 {
+                terminal = read_cb(op, dst.as_mut_ptr(), dst.len() as c_int);
+                if terminal <= 0 {
+                    break;
+                }
+            }
+
+            assert_eq!(terminal, AVERROR_IO, "transport failure must not masquerade as AVERROR_EOF");
+            assert!(st.io_failed, "the callback leaves the error pending on its enclosing operation");
+            assert!(
+                !SHARED.demux_io_failed.load(Ordering::Acquire),
+                "a callback alone is not fatal because libavformat may still recover"
+            );
+            assert!(!frame_read_failed(&mut st, 0), "a recovered packet clears the pending error");
+            assert!(!st.io_failed);
+            assert!(!SHARED.demux_io_failed.load(Ordering::Acquire));
+
+            let terminal = read_cb(op, dst.as_mut_ptr(), dst.len() as c_int);
+            assert_eq!(terminal, AVERROR_IO);
+            assert!(frame_read_failed(&mut st, terminal), "an unrecovered frame read ends the demux loop");
+            assert!(
+                SHARED.demux_io_failed.load(Ordering::Acquire),
+                "the main-thread pump must see the failure even after frames were presented"
+            );
             crate::aq::aq_destroy(&mut *aq);
         });
     }

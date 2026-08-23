@@ -35,10 +35,21 @@ unsafe fn node_data(n: *mut AuNode) -> *mut u8 {
     (n as *mut u8).add(core::mem::offset_of!(AuNode, es) + core::mem::size_of::<c_int>())
 }
 
-/// crate-internal: has the consumer asked the producer to stop? (the demuxer checks this)
+/// Crate-internal: has the consumer asked the producer to stop? (the demuxer checks this.)
+///
+/// `abort` is written under `m` by [`aq_abort`], so it must be read under the same mutex. The old
+/// unlocked read was a Rust data race and, more practically, could miss teardown after its one
+/// transport wake had already fired, letting the demuxer open a fresh connection under `join`.
 #[inline]
 pub(crate) unsafe fn aq_is_aborted(q: *const AuQueue) -> bool {
-    !q.is_null() && (*q).abort != 0
+    if q.is_null() {
+        return false;
+    }
+    let q = q as *mut AuQueue;
+    libc::pthread_mutex_lock(ptr::addr_of_mut!((*q).m));
+    let aborted = (*q).abort != 0;
+    libc::pthread_mutex_unlock(ptr::addr_of_mut!((*q).m));
+    aborted
 }
 
 /// crate-internal: read a popped node's fields (es, key, pts, len, data ptr) —

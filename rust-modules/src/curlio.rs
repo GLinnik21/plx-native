@@ -1,11 +1,11 @@
 //! **The HTTPS media plane: a byte range of a remote file, pulled on demand.**
 //!
-//! [`crate::stream`] is a raw TCP socket that speaks cleartext to a numeric address. It is the
-//! right transport for a PMS on the same LAN and it cannot reach one anywhere else: no TLS, and
-//! (before b1) no resolver. LG's QA reviewers will not have a Plex Media Server on their LAN —
-//! they sign in with an account we supply and stream from a server on the public internet, over
-//! https, at a `plex.direct` hostname whose certificate is issued for that NAME. So the media
-//! plane needs a second transport, and this is it.
+//! [`crate::stream`] is a raw TCP socket that speaks cleartext to a host name or address of either
+//! family. It is the right transport for a plaintext PMS, but it cannot carry an HTTPS origin.
+//! LG's QA reviewers will not have a Plex Media Server on their LAN — they sign in with an account
+//! we supply and stream from a server on the public internet, over https, at a `plex.direct`
+//! hostname whose certificate is issued for that NAME. So the media plane needs a second
+//! transport, and this is it.
 //!
 //! # What this module IS
 //!
@@ -96,9 +96,10 @@
 //!   it. `SHARED.hs_ptr` solves the same problem for `stream.rs` by having the ENGINE own the
 //!   `HttpStream` box — an option here only if the engine constructed the curl source too, i.e.
 //!   only by moving transport choice out of the demuxer.
-//! * Handing the engine a handle instead means publishing it across a thread boundary at some
-//!   point *after* the thread starts, which is a race with the very teardown it exists to serve:
-//!   a teardown that lands before publication finds nothing to signal.
+//! * Handing the engine a handle instead means publishing it across a thread boundary after the
+//!   thread starts. The registry closes that race with an [`OpenReservation`]: the demuxer
+//!   publishes the wake target, then re-checks its already-engine-owned AU abort flag, and only
+//!   then starts network I/O. Teardown must win one side or the other.
 //!
 //! So the registry holds an `Arc<Abort>` — atomics and two pipe fds, **no pointer into the
 //! source** — and [`abort_active`] signals it under the same mutex that [`CurlSource::drop`]
@@ -181,6 +182,22 @@ const CURLOPT_SSL_VERIFYHOST: c_int = 81;
 const CURLOPT_BUFFERSIZE: c_int = 98;
 const CURLOPT_NOSIGNAL: c_int = 99;
 const CURLOPT_TCP_NODELAY: c_int = 121;
+/// The numeric protocol options are the compatibility surface for this project's curl floor.
+/// Their `_STR` replacements are newer than webOS 4.5's libcurl 7.53.1.
+const CURLOPT_PROTOCOLS: c_int = 181;
+const CURLOPT_REDIR_PROTOCOLS: c_int = 182;
+const CURLPROTO_HTTP: c_long = 1 << 0;
+const CURLPROTO_HTTPS: c_long = 1 << 1;
+
+/// Protocol floor for redirects. A TLS request may never cross back into plaintext; an HTTP
+/// request may upgrade. Kept pure so the security rule is host-testable without a TLS fixture.
+fn allowed_redirect_protocols(url: &[u8]) -> c_long {
+    if url.starts_with(b"https://") {
+        CURLPROTO_HTTPS
+    } else {
+        CURLPROTO_HTTP | CURLPROTO_HTTPS
+    }
+}
 
 /// How long one `curl_multi_wait` may sit before we call `curl_multi_perform` again.
 ///
@@ -298,6 +315,38 @@ fn lock_active() -> std::sync::MutexGuard<'static, Option<Arc<Abort>>> {
     ACTIVE.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// An abort handle published before the demux thread's final teardown check.
+///
+/// Publication has to precede that check: teardown either sees this handle and signals it, or it
+/// aborts the AU lane first and the demuxer observes that flag before starting network I/O. A
+/// handle created by [`CurlSource::open`] only after the check leaves a lost-wake window between
+/// the two operations.
+pub(crate) struct OpenReservation {
+    abort: Option<Arc<Abort>>,
+}
+
+impl OpenReservation {
+    fn publish() -> Option<OpenReservation> {
+        let abort = Abort::new()?;
+        *lock_active() = Some(Arc::clone(&abort));
+        Some(OpenReservation { abort: Some(abort) })
+    }
+
+    fn into_abort(mut self) -> Arc<Abort> {
+        self.abort.take().expect("a reservation is consumed once")
+    }
+}
+
+impl Drop for OpenReservation {
+    fn drop(&mut self) {
+        let Some(abort) = self.abort.as_ref() else { return };
+        let mut act = lock_active();
+        if act.as_ref().is_some_and(|a| Arc::ptr_eq(a, abort)) {
+            *act = None;
+        }
+    }
+}
+
 /// **Teardown's entry point** — `player::engine::teardown` calls this beside
 /// `crate::stream::http_shutdown`, and exactly one of the two has anything to signal.
 ///
@@ -373,6 +422,9 @@ pub(crate) enum OpenErr {
     Aborted,
     /// A `CURLcode` — DNS, TLS, connect, low-speed. Named the way `net.rs` names them.
     Transport(c_int),
+    /// A `CURLMcode` from the multi interface itself. This is local transport machinery failing,
+    /// not a clean end of the media resource.
+    Multi(c_int),
     /// The server answered, with a status we cannot stream.
     Status(c_int),
     /// **We asked for a byte range and the server ignored it**, answering `200` from byte zero (or
@@ -443,17 +495,23 @@ pub(crate) struct CurlSource {
     off: i64,
     /// Total size of the resource, or -1 when the server never said.
     size: i64,
-    /// The transfer reached `CURLMSG_DONE`.
+    /// The transfer reached `CURLMSG_DONE`, or ended through a multi-interface failure.
     done: bool,
-    /// The `CURLcode` that DONE carried.
+    /// The `CURLcode` that DONE carried, when there was one.
     rc: c_int,
-    /// **A seek failed, so nothing this source could deliver is at a known offset.**
+    /// Whether the transfer ended badly. Kept separately from `rc` because a `CURLMcode` failure
+    /// has no `CURLcode`, and must not become a clean EOF merely because `rc` is still zero.
+    failed: bool,
+    /// The multi handle itself failed and must be rebuilt before a later seek may retry.
+    multi_failed: bool,
+    /// Whether the attached transfer has been validated at the byte offset in [`Self::off`].
+    /// A failed seek leaves this false: reads fail, but a later seek may still recover.
+    readable: bool,
+    /// **The range-corruption latch, and only that.**
     ///
-    /// Not paranoia about an impossible state: a refused `avio_seek` does not stop libavformat
-    /// from calling `read_cb` again, and the transfer a failed [`CurlSource::start`] leaves behind
-    /// is attached to the multi handle and positioned wherever the server decided. Serving from it
-    /// would be the same corruption [`OpenErr::RangeIgnored`] exists to refuse, arrived at by a
-    /// different door. Once set, every `read` and every `seek` refuses.
+    /// Set only when a server ignores a byte Range or answers it from the wrong offset. A 416 is
+    /// deliberately not poison: it is the correct response to a seek at or past EOF, and a later
+    /// seek to a valid byte may recover.
     poisoned: bool,
 }
 
@@ -461,24 +519,53 @@ impl CurlSource {
     /// Open `url` and read up to the end of its response headers, so that [`status`](Self::status)
     /// and [`size`](Self::size) are answerable the moment this returns — the same contract
     /// `stream::http_open` has, and what `ff::demux` publishes into the diagnostics read-out.
+    #[cfg(test)]
     pub(crate) fn open(url: &str, at: i64) -> Result<Box<CurlSource>, OpenErr> {
         Self::open_gated(url, at, available())
     }
 
+    /// Publish teardown's wake target before the demuxer's last AU-abort check.
+    pub(crate) fn reserve_open() -> Result<OpenReservation, OpenErr> {
+        if !available() {
+            crate::player::log("curlio: refusing — libcurl multi is not available on this device");
+            return Err(OpenErr::Unavailable);
+        }
+        OpenReservation::publish().ok_or(OpenErr::Local)
+    }
+
+    /// Finish an open whose abort handle was already published by [`reserve_open`](Self::reserve_open).
+    pub(crate) fn open_reserved(
+        url: &str,
+        at: i64,
+        reservation: OpenReservation,
+    ) -> Result<Box<CurlSource>, OpenErr> {
+        Self::open_with_reservation(url, at, reservation)
+    }
+
     /// [`open`](Self::open) with the availability verdict injected, so the host suite can grade
     /// the no-libcurl path without poisoning a process-global table.
+    #[cfg(test)]
     fn open_gated(url: &str, at: i64, curl_ok: bool) -> Result<Box<CurlSource>, OpenErr> {
         if !curl_ok {
             crate::player::log("curlio: refusing — libcurl multi is not available on this device");
             return Err(OpenErr::Unavailable);
         }
+        let reservation = OpenReservation::publish().ok_or(OpenErr::Local)?;
+        Self::open_with_reservation(url, at, reservation)
+    }
+
+    fn open_with_reservation(
+        url: &str,
+        at: i64,
+        reservation: OpenReservation,
+    ) -> Result<Box<CurlSource>, OpenErr> {
         let url_c = CString::new(url).map_err(|_| OpenErr::Local)?;
         let ua = CString::new(crate::plex::identity::user_agent()).map_err(|_| OpenErr::Local)?;
-        let abort = Abort::new().ok_or(OpenErr::Local)?;
         let multi = unsafe { curl_multi_init() };
         if multi.is_null() {
             return Err(OpenErr::Local);
         }
+        let abort = reservation.into_abort();
         let mut src = Box::new(CurlSource {
             multi,
             easy: std::ptr::null_mut(),
@@ -491,11 +578,11 @@ impl CurlSource {
             size: -1,
             done: false,
             rc: 0,
+            failed: false,
+            multi_failed: false,
+            readable: false,
             poisoned: false,
         });
-        // Registered BEFORE the first request goes out, so a teardown racing the open has
-        // something to signal. Retired by `Drop`, under the same lock.
-        *lock_active() = Some(abort);
         src.start(at)?;
         Ok(src)
     }
@@ -503,9 +590,24 @@ impl CurlSource {
     /// Attach a fresh easy handle at byte `at` and pump until its headers are complete.
     fn start(&mut self, at: i64) -> Result<(), OpenErr> {
         self.stop();
+        if self.multi_failed {
+            // A CURLM error describes this multi handle, not the remote byte range. Rebuild the
+            // local machinery before allowing a later seek to retry; clearing the flag while
+            // reusing the same broken handle would immediately fail again.
+            if !self.multi.is_null() {
+                unsafe { curl_multi_cleanup(self.multi) };
+            }
+            self.multi = unsafe { curl_multi_init() };
+            if self.multi.is_null() {
+                return Err(OpenErr::Local);
+            }
+            self.multi_failed = false;
+        }
         self.xfer.reset();
         self.done = false;
         self.rc = 0;
+        self.failed = false;
+        self.readable = false;
         if self.abort.is_set() {
             return Err(OpenErr::Aborted);
         }
@@ -540,6 +642,14 @@ impl CurlSource {
             crate::net::curl_easy_setopt_long(easy, CURLOPT_NOSIGNAL, 1);
             crate::net::curl_easy_setopt_long(easy, CURLOPT_FOLLOWLOCATION, 1);
             crate::net::curl_easy_setopt_long(easy, CURLOPT_MAXREDIRS, 5);
+            // A redirect must not downgrade a TLS media request. On the television's libcurl
+            // 7.53.1 the redirect default is broader than HTTP(S), and even current curl permits
+            // https -> http unless the caller narrows it. The token is in the URL, so a downgrade
+            // would expose both it and the stream. A plaintext request may upgrade to TLS; a TLS
+            // request may remain TLS only.
+            let redirect_protocols = allowed_redirect_protocols(self.url.as_bytes());
+            crate::net::curl_easy_setopt_long(easy, CURLOPT_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS);
+            crate::net::curl_easy_setopt_long(easy, CURLOPT_REDIR_PROTOCOLS, redirect_protocols);
             crate::net::curl_easy_setopt_long(easy, CURLOPT_CONNECTTIMEOUT, CONNECT_TIMEOUT_S);
             crate::net::curl_easy_setopt_long(easy, CURLOPT_LOW_SPEED_LIMIT, 1);
             crate::net::curl_easy_setopt_long(easy, CURLOPT_LOW_SPEED_TIME, LOW_SPEED_TIME_S);
@@ -549,8 +659,13 @@ impl CurlSource {
             // NB no CURLOPT_TIMEOUT: a whole movie has no deadline. The low-speed pair above is
             // what bounds a stall, and unlike a total timeout it cannot kill a healthy transfer.
             // NB no CURLOPT_ACCEPT_ENCODING either — the demuxer wants the bytes the file has.
-            if curl_multi_add_handle(self.multi, easy) != CURLM_OK {
-                return Err(OpenErr::Local);
+            let rc = curl_multi_add_handle(self.multi, easy);
+            if rc != CURLM_OK {
+                crate::player::log(&format!("curlio: curl_multi_add_handle failed mcode={rc}"));
+                self.failed = true;
+                self.multi_failed = true;
+                self.done = true;
+                return Err(OpenErr::Multi(rc));
             }
         }
         // Pump until the final response's headers are in, the transfer ends, or teardown fires.
@@ -558,14 +673,17 @@ impl CurlSource {
             if self.abort.is_set() {
                 return Err(OpenErr::Aborted);
             }
-            self.perform();
+            self.perform()?;
             if self.xfer.headers_done || self.done {
                 break;
             }
-            if let Wait::Woken = multi_wait(self.multi, &self.abort, WAIT_MS) {
-                if self.abort.is_set() {
-                    return Err(OpenErr::Aborted);
+            match multi_wait(self.multi, &self.abort, WAIT_MS) {
+                Wait::Woken if self.abort.is_set() => return Err(OpenErr::Aborted),
+                Wait::Failed(rc) => {
+                    self.fail_multi_wait(rc);
+                    return Err(OpenErr::Multi(rc));
                 }
+                _ => {}
             }
         }
         self.validate(at)
@@ -577,7 +695,7 @@ impl CurlSource {
         if self.abort.is_set() {
             return Err(OpenErr::Aborted);
         }
-        if self.done && self.rc != 0 {
+        if self.done && self.failed {
             crate::player::log(&format!("curlio: transport failed rc={} — {}", self.rc, curl_why(self.rc)));
             return Err(OpenErr::Transport(self.rc));
         }
@@ -585,13 +703,19 @@ impl CurlSource {
             crate::player::log("curlio: the transfer ended before any response line arrived");
             return Err(OpenErr::Transport(self.rc));
         }
+        // Grade the transaction before its Range semantics. A 401, final redirect, 416, or
+        // transient 5xx is a failed request, not evidence that this server ignores Range; only a
+        // SUCCESSFUL but wrong response can make future reads unsafe.
+        if !(200..300).contains(&self.xfer.status) {
+            crate::player::log(&format!("curlio: status={}", self.xfer.status));
+            return Err(OpenErr::Status(self.xfer.status));
+        }
         // **A Range answered 200 is CORRUPTION, not a restart.** The body would be the head of the
-        // file while the demuxer believes it is at `at`. `stream.rs` accepts any 2xx and has the
-        // same hazard; here it is refused. A 206 that starts somewhere else is the same bug with
-        // the right status code on it, so it is caught by the same branch.
+        // file while the demuxer believes it is at `at`. A real Range answer is 206 and MUST name
+        // the requested first byte in Content-Range. Missing/malformed is `-1` and is just as
+        // unverified as a different positive offset.
         if at > 0 {
-            let bad_start = self.xfer.range_start >= 0 && self.xfer.range_start != at;
-            if self.xfer.status != 206 || bad_start {
+            if self.xfer.status != 206 || self.xfer.range_start != at {
                 crate::player::log(&format!(
                     "curlio: asked for bytes={at}- and got status={} start={} — refusing rather than \
                      feeding the demuxer the wrong offset",
@@ -599,10 +723,6 @@ impl CurlSource {
                 ));
                 return Err(OpenErr::RangeIgnored);
             }
-        }
-        if !(200..300).contains(&self.xfer.status) {
-            crate::player::log(&format!("curlio: status={}", self.xfer.status));
-            return Err(OpenErr::Status(self.xfer.status));
         }
         self.off = at;
         // Size, in the order of authority: `Content-Range`'s total names the whole resource;
@@ -614,20 +734,32 @@ impl CurlSource {
         } else {
             -1
         };
+        self.readable = true;
         Ok(())
     }
 
     /// One `curl_multi_perform`, reaping the completion message when the last handle finishes.
-    fn perform(&mut self) {
+    fn perform(&mut self) -> Result<(), OpenErr> {
         let mut running: c_int = 0;
-        let rc = unsafe { curl_multi_perform(self.multi, &mut running) };
+        let mut rc = unsafe { curl_multi_perform(self.multi, &mut running) };
         // CURLM_CALL_MULTI_PERFORM (-1) is a pre-7.20 "call me again"; harmless to honour once.
         if rc == -1 {
-            unsafe { curl_multi_perform(self.multi, &mut running) };
+            rc = unsafe { curl_multi_perform(self.multi, &mut running) };
+        }
+        // On a real CURLM error libcurl does not promise to write `running`; leaving its initial
+        // zero to fall into `reap` would find no DONE message and turn this failure into a clean
+        // EOF. Persist the failure so a later read cannot make the same mistake.
+        if rc != CURLM_OK {
+            crate::player::log(&format!("curlio: curl_multi_perform failed mcode={rc}"));
+            self.failed = true;
+            self.multi_failed = true;
+            self.done = true;
+            return Err(OpenErr::Multi(rc));
         }
         if running == 0 {
             self.reap();
         }
+        Ok(())
     }
 
     /// Drain the multi handle's message queue. Only reached with `running == 0`, so the transfer
@@ -642,6 +774,7 @@ impl CurlSource {
             unsafe {
                 if (*m).msg == CURLMSG_DONE {
                     self.rc = msg_result(m);
+                    self.failed = self.rc != 0;
                 }
             }
             if left == 0 {
@@ -652,10 +785,25 @@ impl CurlSource {
     }
 
     /// Detach and free the current easy handle. Idempotent.
+    ///
+    /// If libcurl refuses the detach, ownership is no longer provable. Its documented cleanup
+    /// order requires a successful remove before either handle is cleaned, so that catastrophic
+    /// path deliberately abandons both pointers and lets a later seek create a fresh multi. A
+    /// bounded leak is safer than freeing an easy that libcurl may still reference.
     fn stop(&mut self) {
         if !self.easy.is_null() {
             unsafe {
-                curl_multi_remove_handle(self.multi, self.easy);
+                let rc = curl_multi_remove_handle(self.multi, self.easy);
+                if rc != CURLM_OK {
+                    crate::player::log(&format!("curlio: curl_multi_remove_handle failed mcode={rc}"));
+                    self.multi_failed = true;
+                    // Neither cleanup is contractually safe while attachment is uncertain.
+                    // Forget both values; `start` sees `multi_failed` and builds a fresh owner.
+                    self.multi = std::ptr::null_mut();
+                    self.easy = std::ptr::null_mut();
+                    self.range = None;
+                    return;
+                }
                 crate::net::curl_easy_cleanup(self.easy);
             }
             self.easy = std::ptr::null_mut();
@@ -664,14 +812,14 @@ impl CurlSource {
     }
 
     /// Deliver up to `dst.len()` bytes. **`>0` = bytes, `0` = clean end of stream, `<0` = error or
-    /// teardown** — the same three-way return `stream::http_read` gives, so `ff.rs`'s `read_cb`
-    /// treats both sources identically.
+    /// teardown** — the same three-way return `stream::http_read` gives. `ff.rs` preserves curl's
+    /// negative result as an I/O error rather than collapsing a truncated transfer into EOF.
     pub(crate) fn read(&mut self, dst: &mut [u8]) -> c_int {
         if dst.is_empty() {
             return 0;
         }
         loop {
-            if self.abort.is_set() || self.poisoned {
+            if self.abort.is_set() || self.poisoned || !self.readable {
                 return -1;
             }
             if self.xfer.pending() > 0 {
@@ -688,18 +836,35 @@ impl CurlSource {
                 return n as c_int;
             }
             if self.done {
-                return if self.rc == 0 { 0 } else { -1 };
+                return if self.failed { -1 } else { 0 };
             }
-            self.perform();
+            if self.perform().is_err() {
+                return -1;
+            }
             if self.xfer.pending() > 0 || self.done {
                 continue;
             }
-            if let Wait::Woken = multi_wait(self.multi, &self.abort, WAIT_MS) {
-                if self.abort.is_set() {
+            match multi_wait(self.multi, &self.abort, WAIT_MS) {
+                Wait::Woken if self.abort.is_set() => return -1,
+                Wait::Failed(rc) => {
+                    self.fail_multi_wait(rc);
                     return -1;
                 }
+                _ => {}
             }
         }
+    }
+
+    /// Record a multi-wait failure as a terminal transport error.
+    ///
+    /// `curl_multi_wait` returns immediately on error. Treating that as a timeout spins at 100%
+    /// CPU; retrying on the same multi handle cannot repair it, so fail this transfer immediately
+    /// and mark the handle for replacement before a later seek may retry.
+    fn fail_multi_wait(&mut self, rc: c_int) {
+        crate::player::log(&format!("curlio: curl_multi_wait failed mcode={rc}"));
+        self.failed = true;
+        self.multi_failed = true;
+        self.done = true;
     }
 
     /// Re-open at byte `to`. `false` means the demuxer must treat the seek as failed — including
@@ -719,11 +884,12 @@ impl CurlSource {
         match self.start(to) {
             Ok(()) => true,
             Err(e) => {
-                // Detach whatever the failed attempt left attached and refuse everything after —
-                // see `poisoned`. The one exception is a teardown, which is not a fault and whose
-                // own flag already refuses.
+                // Detach whatever the failed attempt left attached. `start` cleared `readable`, so
+                // reads fail rather than reporting clean EOF, but another seek may recover.
                 self.stop();
-                if e != OpenErr::Aborted {
+                // Only a server that ignores byte ranges is permanently unsafe. A 416, 5xx, or
+                // dropped connection may all be answered differently by the next seek.
+                if e == OpenErr::RangeIgnored {
                     self.poisoned = true;
                 }
                 crate::player::log(&format!("curlio: seek to {to} failed: {e:?}"));
@@ -746,6 +912,11 @@ impl CurlSource {
     /// does not hold the source; this is the direct form, and what the host suite drives.
     pub(crate) fn abort(&self) {
         self.abort.signal();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_multi_for_test(&mut self) {
+        self.fail_multi_wait(1);
     }
 }
 
@@ -772,7 +943,7 @@ impl Drop for CurlSource {
 // ---- the wait, and the C callbacks -----------------------------------------------------------
 
 /// What ended a [`multi_wait`].
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 enum Wait {
     /// The abort pipe fired. The pipe has been drained.
     Woken,
@@ -780,6 +951,9 @@ enum Wait {
     Ready,
     /// Nothing happened inside the timeout.
     Timeout,
+    /// The multi interface itself failed. This is distinct from a timeout because it returns
+    /// immediately; callers must terminate the transfer or they busy-spin.
+    Failed(c_int),
 }
 
 /// `curl_multi_wait` with the abort pipe as an application-owned extra descriptor.
@@ -797,7 +971,7 @@ fn multi_wait(multi: *mut CURLM, abort: &Abort, timeout_ms: c_int) -> Wait {
     let mut numfds: c_int = 0;
     let rc = unsafe { curl_multi_wait(multi, fds.as_mut_ptr(), 1, timeout_ms, &mut numfds) };
     if rc != CURLM_OK {
-        return Wait::Timeout; // treat as a tick: the caller re-checks the abort flag either way
+        return Wait::Failed(rc);
     }
     if fds[0].revents != 0 {
         abort.wake.drain();
@@ -1013,6 +1187,10 @@ mod tests {
         Honour,
         Ignore,
         Stall,
+        /// Answer a Range with 206 but omit the header that proves its starting offset.
+        OmitContentRange,
+        /// Fail the first seek request with 503, then honour a later retry.
+        FailFirstSeek,
     }
 
     const BODY: &[u8] = b"ABCDEFGH";
@@ -1092,7 +1270,7 @@ mod tests {
                     Err(_) => return,
                 }
             };
-            requests.fetch_add(1, Ordering::AcqRel);
+            let request_no = requests.fetch_add(1, Ordering::AcqRel) + 1;
             let start = range_start_of(&head);
             if mode == RangeMode::Stall {
                 // Headers, then silence — the shape `tools/netcond.py --mode stall` produces
@@ -1104,8 +1282,29 @@ mod tests {
                 }
                 return;
             }
-            let ranged = start > 0 && mode == RangeMode::Honour;
-            let hdr = if ranged {
+            if matches!(mode, RangeMode::Honour | RangeMode::FailFirstSeek) && start >= BODY.len() as i64 {
+                let hdr = format!(
+                    "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */{}\r\nContent-Length: 0\r\n\r\n",
+                    BODY.len()
+                );
+                if w.write_all(hdr.as_bytes()).is_err() {
+                    return;
+                }
+                let _ = w.flush();
+                continue;
+            }
+            if mode == RangeMode::FailFirstSeek && start > 0 && request_no == 2 {
+                if w.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n").is_err() {
+                    return;
+                }
+                let _ = w.flush();
+                continue;
+            }
+            let ranged = start > 0
+                && matches!(mode, RangeMode::Honour | RangeMode::OmitContentRange | RangeMode::FailFirstSeek);
+            let hdr = if ranged && mode == RangeMode::OmitContentRange {
+                format!("HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\n\r\n", BODY.len() - start as usize)
+            } else if ranged {
                 format!(
                     "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {}-{}/{}\r\nContent-Length: {}\r\n\r\n",
                     start,
@@ -1192,6 +1391,46 @@ mod tests {
         });
     }
 
+    /// A 416 is the correct response to a range at or past EOF. It fails that seek, but it says
+    /// nothing bad about the server's range support, so a later valid seek must still work.
+    #[test]
+    fn a_416_seek_failure_does_not_poison_a_later_valid_seek() {
+        let Some(_gate) = curl_gate() else { return };
+        with_server(RangeMode::Honour, |port, _, requests| {
+            let mut src = CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0).expect("open");
+            assert!(!src.seek(BODY.len() as i64), "a seek exactly at EOF receives 416");
+            let mut b = [0u8; 8];
+            assert_eq!(src.read(&mut b), -1, "the failed seek must not masquerade as clean EOF");
+            assert!(src.seek(4), "a valid seek after 416 must recover");
+            assert_eq!(read_all(&mut src), b"EFGH");
+            assert_eq!(requests.load(Ordering::Acquire), 3, "open, rejected EOF seek, recovered seek");
+        });
+    }
+
+    #[test]
+    fn a_206_without_content_range_is_refused_as_an_unverified_offset() {
+        let Some(_gate) = curl_gate() else { return };
+        with_server(RangeMode::OmitContentRange, |port, _, requests| {
+            let mut src = CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0).expect("open");
+            assert!(!src.seek(4), "206 alone does not prove which bytes the server returned");
+            assert!(src.poisoned, "an unverified successful Range response is unsafe to reuse");
+            assert_eq!(requests.load(Ordering::Acquire), 2, "open plus refused seek");
+        });
+    }
+
+    #[test]
+    fn a_transient_seek_status_does_not_poison_a_later_retry() {
+        let Some(_gate) = curl_gate() else { return };
+        with_server(RangeMode::FailFirstSeek, |port, _, requests| {
+            let mut src = CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0).expect("open");
+            assert!(!src.seek(4), "the first seek receives a transient 503");
+            assert!(!src.poisoned, "an HTTP failure says nothing about the server's Range support");
+            assert!(src.seek(4), "a later seek may recover once the server does");
+            assert_eq!(read_all(&mut src), b"EFGH");
+            assert_eq!(requests.load(Ordering::Acquire), 3, "open, failed seek, recovered seek");
+        });
+    }
+
     // -- (c) size comes from Content-Range / Content-Length --------------------------------------
 
     #[test]
@@ -1235,6 +1474,16 @@ mod tests {
         parse_header_line(&mut b, b"Server: caf\xC3\x28\r\n");
         parse_header_line(&mut b, b"Content-Length: 8\r\n");
         assert_eq!((b.status, b.body_len), (200, 8));
+    }
+
+    #[test]
+    fn redirects_never_downgrade_a_tls_media_origin() {
+        assert_eq!(allowed_redirect_protocols(b"https://example.invalid/media"), CURLPROTO_HTTPS);
+        assert_eq!(
+            allowed_redirect_protocols(b"http://example.invalid/media"),
+            CURLPROTO_HTTP | CURLPROTO_HTTPS,
+            "plaintext may upgrade, but the inverse is forbidden"
+        );
     }
 
     // -- (d) abort during connect and during read unblocks promptly ------------------------------
@@ -1394,6 +1643,85 @@ mod tests {
         unsafe { curl_multi_cleanup(multi) };
     }
 
+    #[test]
+    fn a_multi_wait_error_is_not_reported_as_a_timeout_tick() {
+        let Some(_gate) = curl_gate() else { return };
+        let abort = Abort::new().expect("pipe");
+        assert!(
+            matches!(multi_wait(std::ptr::null_mut(), &abort, 0), Wait::Failed(_)),
+            "a bad multi handle returns immediately and must terminate, not spin as Timeout"
+        );
+    }
+
+    #[test]
+    fn a_multi_perform_error_is_not_reported_as_clean_eof() {
+        let Some(_gate) = curl_gate() else { return };
+        with_server(RangeMode::Honour, |port, _, _| {
+            let mut src = CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0).expect("open");
+            src.xfer.buf.clear();
+            src.xfer.pos = 0;
+
+            // A null handle is libcurl's supported BAD_HANDLE path. Restore the real handle before
+            // drop so normal cleanup still removes the attached easy handle from its owner.
+            let real_multi = src.multi;
+            src.multi = std::ptr::null_mut();
+            let result = src.perform();
+            src.multi = real_multi;
+
+            assert!(matches!(result, Err(OpenErr::Multi(_))));
+            assert!(src.failed && src.done && src.multi_failed, "the failure must persist past its call");
+            let mut b = [0u8; 8];
+            assert_eq!(src.read(&mut b), -1, "a later read must not reinterpret the failure as EOF");
+            assert!(src.seek(4), "a retry must rebuild the failed multi handle before reuse");
+            assert_eq!(read_all(&mut src), b"EFGH");
+            assert!(!src.multi_failed, "the replacement multi handle is healthy");
+        });
+    }
+
+    #[test]
+    fn add_handle_failure_marks_the_multi_for_replacement() {
+        let Some(_gate) = curl_gate() else { return };
+        with_server(RangeMode::Honour, |port, _, _| {
+            let mut src = CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0).expect("open");
+            src.stop();
+            let real_multi = src.multi;
+            src.multi = std::ptr::null_mut();
+
+            let result = src.start(4);
+
+            assert!(matches!(result, Err(OpenErr::Multi(_))));
+            assert!(src.failed && src.done && src.multi_failed);
+            // Restore the valid owner only so `start` can retire it safely before constructing the
+            // replacement. The easy from the failed add was never attached to it.
+            src.multi = real_multi;
+            assert!(src.seek(4), "the next seek must replace the failed multi before adding");
+            assert_eq!(read_all(&mut src), b"EFGH");
+        });
+    }
+
+    #[test]
+    fn remove_handle_failure_abandons_uncertain_ownership_before_rebuilding() {
+        let Some(_gate) = curl_gate() else { return };
+        with_server(RangeMode::Honour, |port, _, _| {
+            let mut src = CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0).expect("open");
+            let real_multi = src.multi;
+            let real_easy = src.easy;
+            assert_eq!(unsafe { curl_multi_remove_handle(real_multi, real_easy) }, CURLM_OK);
+            src.multi = std::ptr::null_mut();
+
+            src.stop();
+
+            assert!(src.easy.is_null());
+            assert!(src.multi_failed, "a failed removal makes the old multi unsafe to reuse");
+            // The injected failure used an easy we KNOW was pre-detached above, so the test can
+            // reclaim it. Production cannot know that and deliberately leaks this exceptional pair.
+            unsafe { crate::net::curl_easy_cleanup(real_easy) };
+            src.multi = real_multi;
+            assert!(src.seek(4), "the next seek must retire and replace that multi");
+            assert_eq!(read_all(&mut src), b"EFGH");
+        });
+    }
+
     /// **The instrument check.** Every curl-driven test above SKIPS when libcurl cannot be bound,
     /// which is right on a host that has none and is a green suite grading nothing anywhere else.
     /// This is the line that makes the difference visible — the project rule is
@@ -1435,6 +1763,23 @@ mod tests {
             }
             assert!(lock_active().is_none(), "a dropped source must retire, so a later teardown is a no-op");
             abort_active(); // must not panic, must not write to a closed fd
+        });
+    }
+
+    /// The lost-wake regression: demux publishes a reservation, teardown fires, and only then
+    /// does the demuxer finish constructing the source. The open must observe the already-latched
+    /// abort before it sends even one byte to the server.
+    #[test]
+    fn teardown_between_reservation_and_open_cannot_start_a_connection() {
+        let Some(_gate) = curl_gate() else { return };
+        with_server(RangeMode::Honour, |port, accepts, requests| {
+            let reservation = CurlSource::reserve_open().expect("reserve");
+            abort_active();
+            let result = CurlSource::open_reserved(&format!("http://127.0.0.1:{port}/f.mkv"), 0, reservation);
+            assert!(matches!(result, Err(OpenErr::Aborted)));
+            assert_eq!(accepts.load(Ordering::Acquire), 0, "no connection may begin after teardown");
+            assert_eq!(requests.load(Ordering::Acquire), 0, "and no request may leave");
+            assert!(lock_active().is_none(), "the failed open retires its reservation");
         });
     }
 }

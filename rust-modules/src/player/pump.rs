@@ -119,6 +119,10 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
     // The producer died before publishing a duration: the EOS path is gated on `duration_ns > 0`
     // so it can NEVER fire, and the player used to sit on a black screen forever with no error
     // and no exit. Surface it instead — BACK is already the escape.
+    if SHARED.demux_io_failed.load(Relaxed) {
+        set_state(PlaybackState::Error);
+        return;
+    }
     if SHARED.demux_failed.load(Relaxed) && SHARED.frames.load(Relaxed) == 0 {
         set_state(PlaybackState::Error);
         return;

@@ -211,6 +211,10 @@ pub(crate) struct Shared {
     // (which needs `duration_ns > 0`) can never fire and the player would sit on a black screen
     // forever. The pump turns this into `PlaybackState::Error` so the HUD can say so.
     pub demux_failed: AtomicBool,
+    /// The media transport failed after open, possibly after frames were already presented.
+    /// Unlike `demux_failed`, this is not gated on a zero-frame start: a truncated live transfer
+    /// is an error rather than a successful early EOF.
+    pub demux_io_failed: AtomicBool,
     /// WHY the demuxer found nothing to feed, when the answer is "the stream itself": the server
     /// delivered audio streams and no video stream. Issue #22's whole shape — a transcode target
     /// the server cannot honour makes PMS drop the video track, and `ff: no video stream` alone
@@ -399,6 +403,7 @@ impl Shared {
             pending_retranscode: AtomicBool::new(false),
             pb_state: AtomicU8::new(PlaybackState::Idle as u8),
             demux_failed: AtomicBool::new(false),
+            demux_io_failed: AtomicBool::new(false),
             demux_no_video: AtomicBool::new(false),
             load_failed: AtomicBool::new(false),
             desired_sub_idx: AtomicI32::new(-1),
@@ -463,6 +468,7 @@ impl Shared {
         self.pending_retranscode.store(false, Ordering::Relaxed);
         self.pb_state.store(PlaybackState::Idle as u8, Ordering::Relaxed);
         self.demux_failed.store(false, Ordering::Relaxed);
+        self.demux_io_failed.store(false, Ordering::Relaxed);
         self.demux_no_video.store(false, Ordering::Relaxed);
         self.load_failed.store(false, Ordering::Relaxed);
         // NB: desired_sub_idx is NOT reset here — like desired_audio_idx it persists across
@@ -591,8 +597,10 @@ mod tests {
         assert!(!s.seen_frame.load(Ordering::Relaxed), "a fresh session has shown nothing");
         s.seen_frame.store(true, Ordering::Relaxed);
         s.frames.store(9, Ordering::Relaxed);
+        s.demux_io_failed.store(true, Ordering::Relaxed);
         s.reset_session();
         assert!(!s.seen_frame.load(Ordering::Relaxed), "a reload/stop blanks the plane — say so");
         assert_eq!(s.frames.load(Ordering::Relaxed), 0, "and the two must be reset together");
+        assert!(!s.demux_io_failed.load(Ordering::Relaxed), "a new session must not inherit an I/O failure");
     }
 }
