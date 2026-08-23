@@ -1,5 +1,19 @@
 # Plex API layer — typed Rust design (`rust-modules/src/plex/`)
 
+> **Banner (2026-08-23): the ADDRESS shape below is superseded.** This is the design note as
+> written, sketches and all, and it is kept that way rather than rewritten. One thing in it has
+> since changed and would mislead: a server's address is no longer a `(host, port)` pair. It is a
+> **`plex::Origin`** — scheme + host + port — and it is **parsed from a URL, never assembled from an
+> address**, because the host a `plex.direct` certificate is issued for is the hostname plex.tv
+> sends in `Connection.uri` while `Connection.address` is the dotted quad behind it. So read
+> §3.1's `Client { host, port }`, §3.3's `StreamUrl { host, port, path }` and rule 9 ("Numeric host,
+> no DNS") as the state of the world before `rust-modules/src/plex/origin.rs`, whose module doc is
+> the current account — including the bracket invariant (`host()` is bare for the resolver,
+> `authority()` brackets a v6 literal for a URL) that the old pair could not express at all.
+> `Client::host()`/`port()` and `StreamUrl::host()`/`port()` still answer exactly what rule 9 says,
+> as views on the origin; the transport constraint below it is unchanged — the socket still does no
+> name resolution and no TLS.
+
 Goal: **replace every hand-built Plex path/query string in the app with one typed method per
 operation.** After this lands, no module outside `plex/` ever writes `format!("/library/…")`,
 `&X-Plex-Token=`, `%2F`, or `http://host:port/…`. The catalog (`docs/plex-api-catalog.md`) is

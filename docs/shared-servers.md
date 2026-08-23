@@ -314,7 +314,9 @@ from "the unwatched angle", which `23f28ce6` replaced with the white tick over a
    over a WAN link measured at 38.8 Mbit/s. Expect this, not direct play, to be the common case —
    and it argues for a remote-aware bitrate policy well before relay does (step 9).
 2. ~~**The harness cannot grade any of this yet.**~~ **ANSWERED** (§9): `/tmp/plxnative-servers`
-   carries a JSON array of ADDITIONAL servers — host, port, machineIdentifier and the token to trust
+   carries a JSON array of ADDITIONAL servers — host, port, an optional `"scheme"` (`http`, the
+   default, or `https` — the only way to put a TLS origin through the registry without an account
+   that has one), machineIdentifier and the token to trust
    them with — beside the unchanged `/tmp/plxnative-token`, and `run.py` resolves the second token
    from `/api/v2/resources` so no new secret is stored. One limitation stands and is not a bug to
    fix: there is **no managed-user token for someone else's server**, so a case that PLAYS from a

@@ -100,8 +100,10 @@ pub struct Origin {
 }
 
 impl Origin {
-    /// Build an origin from parts. `host` may arrive bracketed (that is what
-    /// [`super::probe`]'s `host_of` returns) and is stored bare regardless.
+    /// Build an origin from parts. `host` may arrive **either** spelling — bare or bracketed —
+    /// because a caller holding a v6 address has usually just read it out of a URL authority; it
+    /// is stored bare regardless, which is the invariant [`Origin::host`] promises. Unbalanced
+    /// brackets are left alone rather than half-stripped.
     pub fn new(scheme: Scheme, host: &str, port: i32) -> Origin {
         Origin { scheme, host: unbracket(host).to_owned(), port }
     }
@@ -225,8 +227,9 @@ impl<'a> Parts<'a> {
             None => (rest, ""),
         };
         // A bracketed v6 literal carries its own colons, so the port separator is the one AFTER
-        // the closing bracket — this is exactly the reading `probe::host_of` does, except that it
-        // keeps the brackets (an authority) where we drop them (a resolver node).
+        // the closing bracket. `probe` used to carry its own copy of this reading, which returned
+        // the BRACKETED spelling — right for an authority, wrong for the resolver node this
+        // produces, and precisely the confusion the module doc's bracket rule exists to end.
         let (host, port_txt) = match auth.strip_prefix('[').and_then(|r| r.split_once(']')) {
             Some((h, after)) => (h, after.strip_prefix(':')),
             None => match auth.split_once(':') {
