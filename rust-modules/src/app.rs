@@ -1356,8 +1356,9 @@ impl HudState {
     /// ([`crate::ui::up_next::countdown_may_run`]) read as the user walking away — latching the
     /// countdown off for the whole segment. The tile appeared only if the HUD was raised by hand,
     /// with its auto-advance already dead: exactly as reported. A dismissal is a "not now" that any
-    /// key clears; a segment beginning is that same kind of event, arriving from the player instead
-    /// of the remote, and it must clear it too — which is also what makes an offer behave the same
+    /// key the app BINDS clears (an unsupported one clears nothing — `note_global_press`); a segment
+    /// beginning is that same kind of event, arriving from the player instead of the remote, and it
+    /// must clear it too — which is also what makes an offer behave the same
     /// whether the HUD auto-hid or was hidden on purpose.
     ///
     /// Parking is only ever from REST: a user who walked to the Subtitles disc or an Info tab keeps
@@ -1366,17 +1367,23 @@ impl HudState {
     /// ([`crate::ui::player_hud::ControlSlot::primary_btn`]) — item 0 for a Skip pill, the
     /// RIGHT-hand one for Up Next, where parking on item 0 would disarm the timer on the frame
     /// after it armed.
-    /// A fresh key has arrived: record what the transport LOOKED like to the user, then clear the
-    /// dismissal it may have been carrying.
+    /// A fresh key the app BINDS has arrived: record what the transport LOOKED like to the user,
+    /// then clear the dismissal it may have been carrying.
     ///
     /// The two are one operation and the ORDER is the whole point — `dismissed` outranks the timer
     /// inside [`hud_visible`], so sampling after the clear reports a hand-hidden transport as being
     /// on screen (see [`visible_at_press`](Self::visible_at_press)). Written down as one function
-    /// rather than two lines in [`begin_fresh_press`] so that the order is a thing a test can hold
-    /// still, instead of a convention a later edit can quietly transpose.
+    /// rather than two lines in its caller so that the order is a thing a test can hold still,
+    /// instead of a convention a later edit can quietly transpose.
+    ///
+    /// That caller is [`note_global_press`], NOT [`begin_fresh_press`] as it once was, and the
+    /// difference is the point of the split: an unsupported key never gets here at all.
     fn note_fresh_press(&mut self, now: u32) {
         self.visible_at_press = hud_visible(now, hud_until(), paused(), self.dismissed);
-        self.dismissed = false; // any fresh key un-dismisses the HUD (UP-hide re-sets it)
+        // Any BOUND fresh key un-dismisses the HUD (UP-hide re-sets it). "Bound" and not "any" is
+        // the whole of `note_global_press`, the ONLY caller: an unsupported press never reaches
+        // here, so a colour button over a film no longer raises the transport.
+        self.dismissed = false;
     }
 
     fn raise_for_offer(&mut self, now: u32, primary: c_int) {
