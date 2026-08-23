@@ -441,12 +441,24 @@ print("== shipped fonts ==")
 # Landed 2026-08-01: Inter (SIL OFL 1.1). This is now a REAL gate, not an XFAIL — its job is to
 # stop Monotype Arial coming back through a stale local copy, which is exactly how it would
 # return (the files are named appfont*.ttf, so nothing about the filename reveals the swap).
-ALLOWED = {"Inter", "Arimo", "Roboto", "Noto Sans", "Source Sans 3"}
-for f in ("pkg/appfont.ttf", "pkg/appfont-bold.ttf"):
+ALLOWED = {"Inter", "Arimo", "Roboto", "Noto Sans", "Source Sans 3", "Noto Sans CJK KR"}
+for f in ("pkg/appfont.ttf", "pkg/appfont-bold.ttf", "pkg/appfont-cjk.ttf"):
     fam = font_family(ROOT / f)
     check(fam in ALLOWED, f"{f} family={fam!r} is redistributable (allowed: {sorted(ALLOWED)})")
+# The fallback face, checked for PRESENCE separately: the payload assertion below only runs when
+# an .ipk has been built, and this file is the difference between a Korean library rendering and
+# rendering as tofu. The floor is deliberately crude — a subsetted or truncated stand-in is caught
+# properly by `fontcov.rs`'s cmap gate in `make check`; this only catches "it is not there".
+_cjk = ROOT / "pkg/appfont-cjk.ttf"
+check(_cjk.exists() and _cjk.stat().st_size > 15_000_000,
+      "pkg/appfont-cjk.ttf present and whole — the CJK fallback face (see rust-modules/src/fontcov.rs)")
 check((ROOT / "pkg/OFL.txt").exists(),
       "pkg/OFL.txt present — the OFL requires the licence to travel with the font")
+# One OFL text covers both faces: Inter's and Noto CJK's licence bodies are byte-identical after
+# their differing copyright headers, and the per-font copyright notices live in THIRD-PARTY-NOTICES
+# and in each font's own name table (ID 0/7/13/14, asserted by tools/cut-noto-cjk.py).
+check("Noto Sans CJK" in (ROOT / "THIRD-PARTY-NOTICES.md").read_text(),
+      "THIRD-PARTY-NOTICES.md attributes Noto Sans CJK (OFL 1.1 §2 wants the notice to travel)")
 
 print("== compliance artifacts ==")
 # LGPL-2.1 §6 requires the notice AND the licence text to travel with the BINARY, so these are
@@ -478,7 +490,9 @@ for name, why in NEEDED_LICENCES.items():
 print("== ipk payload ==")
 expected = {
     "plxnative", "appinfo.json", "icon.png", "largeIcon.png", "splash.png",
-    "appfont.ttf", "appfont-bold.ttf", "OFL.txt",
+    # appfont-cjk.ttf is the fallback face. Its absence is not a cosmetic loss: every Korean,
+    # Japanese and Chinese title in the library becomes tofu, which is LG checklist #6 and #48.
+    "appfont.ttf", "appfont-bold.ttf", "appfont-cjk.ttf", "OFL.txt",
     "THIRD-PARTY-NOTICES.md", "LICENSE", "TRADEMARKS.md", *NEEDED_LICENCES,
 }
 data_tar = ROOT / "ipkroot/data.tar.gz"
