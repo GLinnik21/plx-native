@@ -6,7 +6,7 @@
 //! from the previous procedural version — only the presentation moved onto the table.
 #![allow(dead_code)]
 use crate::metadata;
-use crate::ui::consts::{SCR_H, SCR_W, SDLK_DOWN, SDLK_LEFT, SDLK_RIGHT, SDLK_UP};
+use crate::ui::consts::{SCR_H, SDLK_DOWN, SDLK_LEFT, SDLK_RIGHT, SDLK_UP};
 use crate::ui::popover::Popover;
 use crate::ui::table::{Badge, Row, Section, TableView};
 use crate::ui::theme;
@@ -365,11 +365,25 @@ fn rebuild(tab: c_int, slide: bool) {
     table().set_sections(vec![sec], sel_for_tab(tab), slide);
 }
 
+/// The panel at its WIDEST and TALLEST, for the overscan audit ([`crate::ui::consts::SAFE`]) — the
+/// audio tab's 560 and the full `top_min`→`bottom` span, since the measured height comes from a
+/// `TableView` no host test can measure.
+#[cfg(test)]
+pub(crate) fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
+    let pw = 560.0f32;
+    let (bottom, top_min) = (SCR_H - 316.0, 60.0);
+    out.push((
+        "track menu panel",
+        Rect::new(crate::ui::player_hud::CTRL_RIGHT - pw, top_min, pw, bottom - top_min),
+    ));
+}
+
 // ---- panel geometry (shared by update + draw so scrolling math matches) ----
 fn panel_rect() -> Rect {
     let tab = unsafe { addr_of!(TAB).read() };
     let pw = if tab == 0 { 560.0f32 } else { 448.0f32 }; // audio / subtitles (mockup panel widths)
-    let px = SCR_W - 80.0 - pw; // right:80 (mockup)
+    // the transport control row's own right edge — one number for the discs and both panels
+    let px = crate::ui::player_hud::CTRL_RIGHT - pw;
     // Bottom-anchored just above the control-button row (buttons top at SCR_H-288) with a clear gap.
     // The panel grows UPWARD from this fixed bottom edge, and its height is capped so the top never
     // crosses `top_min` — so a long list (an item with many audio dubs) SCROLLS inside the panel

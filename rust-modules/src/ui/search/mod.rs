@@ -73,9 +73,10 @@ pub(crate) mod field;
 pub(crate) mod recents;
 pub(crate) mod results;
 
-/// Field bottom (148 + one control height) plus one 40 rung — where every state's content starts,
-/// and what a scrolled shelf returns to.
-pub(crate) const CONTENT_TOP: f32 = 248.0;
+/// Field bottom (166 + one control height) plus one 40 rung — where every state's content starts,
+/// and what a scrolled shelf returns to. It moved down 18px with [`FIELD`] on 2026-08-23; the
+/// raised keyboard's clearance absorbed it (`recents`' block test still passes with 48px to spare).
+pub(crate) const CONTENT_TOP: f32 = 266.0;
 /// Shelf heading to the top of its row: the 30px heading plus a 30px gap, as `home.rs` draws it.
 pub(crate) const HEAD_TO_ROW: f32 = 60.0;
 /// The caption pair reserved under every tile. Reserved whether or not it is drawn, so nothing
@@ -96,7 +97,14 @@ pub(crate) const LABEL_BLOCK: f32 = 114.0;
 /// panel up, scan a column for the discontinuity) — everything else on this screen is derived.
 pub(crate) const KEYBOARD_H: f32 = 324.0;
 /// The field: 820 wide at the app's own side margin, on the one control height.
-pub(crate) const FIELD: Rect = Rect { x: 90.0, y: 148.0, w: 820.0, h: 60.0 };
+///
+/// `x` is `consts::MARGIN_X` rather than a literal 90 — it always MEANT the app's side margin, and
+/// spelling it twice is how it stayed at 90 when the margin moved to the overscan-safe 96. `y` is
+/// 36px under `widgets::TOP_BAR_BOTTOM` (130), and moved down 18px with that bar on 2026-08-23; it
+/// is still a hand-maintained literal, which is the same shape the `x` above just stopped being —
+/// derive it the next time this screen is opened for anything else.
+pub(crate) const FIELD: Rect =
+    Rect { x: crate::ui::consts::MARGIN_X, y: 166.0, w: 820.0, h: 60.0 };
 /// Where the app's own chrome ends and the result band begins — the field's bottom edge.
 ///
 /// It is the navigation scrim's OPAQUE floor: [`crate::ui::widgets::nav_scrim`] fills flat from the

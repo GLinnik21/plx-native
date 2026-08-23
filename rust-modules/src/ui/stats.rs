@@ -575,7 +575,17 @@ fn panel_rect() -> Rect {
     // a panel that resizes as rows come and go is a panel that moves under the camera.
     let w = 2.0 * FIELD_COL_W + theme::space::MD + 2.0 * PAD;
     let h = HEAD_H + FieldList::height(COLUMN_ROWS) + PAD;
-    Rect::new(MARGIN, MARGIN, w, h)
+    // x on the app's own side margin, not [`MARGIN`]: the panel's whole output format is a
+    // PHOTOGRAPH of a television, so it is the one overlay that must sit inside the overscan frame
+    // even though nothing on it is pressable. 60 cleared it vertically and missed it by 36 across.
+    Rect::new(crate::ui::consts::MARGIN_X, MARGIN, w, h)
+}
+
+/// The read-out's frame, for the overscan audit ([`crate::ui::consts::SAFE`]). Fixed at the row
+/// budget by [`panel_rect`], so this is the whole state space.
+#[cfg(test)]
+pub(crate) fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
+    out.push(("stats read-out panel", panel_rect()));
 }
 
 pub(crate) fn draw() {
@@ -717,8 +727,12 @@ mod tests {
             "panel bottom {bottom} overlaps the control row at {}",
             crate::ui::player_hud::CTRL_Y
         );
-        let right = MARGIN + 2.0 * FIELD_COL_W + theme::space::MD + 2.0 * PAD;
-        assert!(right < SCR_W, "panel is wider than the screen: {right}");
+        // through `panel_rect` itself, not a restatement of its arithmetic: its x is `MARGIN_X`
+        // (the overscan side margin) while its y is `MARGIN`, and a copy here would have kept
+        // spelling 60 for both.
+        let p = panel_rect();
+        assert!(p.x + p.w < SCR_W, "panel is wider than the screen: {}", p.x + p.w);
+        assert!(crate::ui::consts::inside_safe(p), "the read-out is photographed — it must clear the overscan frame");
     }
 
     /// **The chart can be deleted by a green suite.** `draw_chart` returns silently below 40 px,

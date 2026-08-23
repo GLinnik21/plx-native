@@ -155,12 +155,21 @@ fn action_at(rows: &[Action], sel: i32) -> Action {
     usize::try_from(sel).ok().and_then(|i| rows.get(i)).copied().unwrap_or(Action::None)
 }
 
+/// The panel at its TALLEST, for the overscan audit ([`crate::ui::consts::SAFE`]).
+#[cfg(test)]
+pub(crate) fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
+    let (pw, ph) = (448.0f32, 320.0f32);
+    let bottom = SCR_H - 316.0;
+    out.push(("… overflow menu panel", Rect::new(crate::ui::player_hud::CTRL_RIGHT - pw, bottom - ph, pw, ph)));
+}
+
 /// Bottom-right, above the control row — anchored to the `…` disc that opened it, the way the
-/// track menu is anchored to the pair beside it. Shares the track menu's right margin (80) and its
-/// bottom edge, so opening one after the other does not make the panel hop.
+/// track menu is anchored to the pair beside it. Shares the track menu's right margin
+/// (`player_hud::CTRL_RIGHT`, the discs' own edge) and its bottom edge, so opening one after the
+/// other does not make the panel hop.
 fn panel_rect() -> Rect {
     let pw = 448.0f32;
-    let px = SCR_W - 80.0 - pw;
+    let px = crate::ui::player_hud::CTRL_RIGHT - pw;
     let bottom = SCR_H - 316.0; // ~28px above the discs, as track_menu
     let ph = table().measured_height().clamp(120.0, 320.0);
     Rect::new(px, bottom - ph, pw, ph)
