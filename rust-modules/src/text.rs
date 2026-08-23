@@ -2,6 +2,66 @@
 //! draw_text. Main-thread only (all GL), so the caches are plain statics (no
 //! locking). Uses gfx's link_program/use_prog (crate path). Mostly GL/TTF FFI —
 //! the retui text backend.
+//!
+//! # The fallback chain, and why the unit of work is a RUN
+//!
+//! Inter carries 2853 codepoints — Latin, Cyrillic, Greek — and no Hangul, Kana or Han at all, so
+//! a Korean, Japanese or Chinese Plex library used to render as tofu end to end. SDL2_ttf 2.0.x
+//! has **no fallback-font API**: one `TTF_Font` is one face, and `TTF_RenderUTF8_Blended` draws
+//! whatever that one face has, box glyphs included. So the chain has to be built here, and
+//! building it means changing the unit of work from a *string* to a **run**:
+//!
+//!   1. split the string into maximal runs, each entirely drawable by ONE face
+//!      ([`split_runs`], deciding per character through [`crate::fontcov`]),
+//!   2. render each run with its own face,
+//!   3. composite the run surfaces side by side, **aligned on the baseline**, into one buffer,
+//!   4. upload that buffer exactly as a single-run string was uploaded before.
+//!
+//! Step 4 is what keeps everything downstream unchanged: the 160-slot LRU still keys on
+//! `(string bytes, size, bold)` — run splitting is a pure function of the string, so the key still
+//! determines the texture — and the `ink_t`/`ink_b` cap-band machinery still measures one texture.
+//!
+//! **The chain, in order:** Inter (`appfont.ttf`) → the **bundled** `appfont-cjk.ttf` → the
+//! television's own `/usr/share/fonts/DroidSansFallback.ttf`. The bundled face is the guarantee,
+//! because a submission is graded on whatever firmware the reviewer happens to have; the system
+//! face behind it is free insurance, measured present on webOS 4.10.0 (2026-08-23: 11172/11172
+//! Hangul, 20902 Han, Kana, and — see below — no Hebrew and no Arabic).
+//!
+//! **Baseline, not top.** Two faces have two line boxes, so compositing by the surface top would
+//! shift Latin down whenever a CJK glyph shared the line. Every run is placed so its baseline
+//! lands on the BASE face's baseline (`TTF_RenderUTF8_Blended` puts the baseline `TTF_FontAscent`
+//! rows from the top), and the composite keeps the base face's box. That box provably contains the
+//! fallback's ink at every rung of `theme::size`: measured host-side through FreeType with
+//! SDL_ttf's own metric arithmetic, Noto Sans CJK's ink top is 16..53 px against Inter's 22..70 px
+//! ascent for 22..72 px sizes, and its descent is shallower at every rung. Swept across the whole
+//! Hangul / Han / Kana / fullwidth repertoire the fallback's ink reaches 0.842–0.939 em above the
+//! baseline against Inter's 0.9688 em ascent, so the `y < 0` guard in [`render_runs`] discards only
+//! blank rows. The single exception in the font is **U+3031** (a vertical-writing kana repeat mark,
+//! 1.323 em), which SDL_ttf already clips inside its own run surface before the compositor sees it.
+//!
+//! One consequence of anchoring on the base face, worth knowing before anyone reports it as a bug:
+//! `text_cap_band` still measures Inter's "H", so a CJK label vertically centred through
+//! [`text_vcenter_y`] is centred on INTER's cap band, not on its own ink. CJK glyphs fill more of
+//! the em than Latin caps do (at 28 px: ink 21 px above the baseline against Inter's 15), so such a
+//! label sits ~1–2 px lower than optically centred. That is deliberate, not an oversight — the cap
+//! band is string-INDEPENDENT by design (see [`text_cap_band`]), which is what makes every label of
+//! a size align with every other, and making it depend on the script would break that for the mixed
+//! lines this feature exists to draw.
+//!
+//! **The fallback face is NOT emboldened for bold runs.** It ships at one weight (a second is
+//! ~21 MB), and SDL_ttf's synthetic bold is `FT_Outline_Embolden` at ppem/10 — 2.2 px at
+//! `size::MICRO`. Rendered against this face that fills 電視劇, 曇天 and 鬱 into solid blocks at
+//! **every** size in the ladder, 22 through 40. A weight mismatch beside bold Latin is a
+//! typographic compromise; an illegible ideograph is a defect, so bold runs use the regular
+//! fallback face.
+//!
+//! **RTL is out of scope.** No link of the chain has Hebrew or Arabic, and that is deliberate
+//! twice over: coverage is not support. Arabic needs joining and contextual shaping, Hebrew needs
+//! bidi reordering, and neither exists anywhere in this module — `TTF_RenderUTF8_Blended` in
+//! SDL2_ttf 2.0.x is a left-to-right advance loop with no shaper behind it. Adding a face without
+//! a shaper would turn tofu into fluent-looking WRONG text, which is harder to notice and worse to
+//! ship. `fontcov`'s `rtl_is_out_of_scope_and_stays_that_way` asserts the absence so this stays a
+//! decision rather than an oversight.
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
@@ -69,6 +129,34 @@ extern "C" {
     /// on device 2026-07-29 by dumping its dynamic symbols), and in the NDK sysroot copy we link
     /// against, so this resolves for real at link time like every other TTF symbol here.
     fn TTF_SizeUTF8(font: *mut TtfFont, text: *const c_char, w: *mut c_int, h: *mut c_int) -> c_int;
+    /// Rows from the top of a `TTF_RenderUTF8_Blended` surface to the BASELINE — the anchor the
+    /// run compositor aligns every face on. `TTF_FontHeight` is that surface's height. Both are
+    /// plain metric readers with no allocation.
+    ///
+    /// **Declared here rather than routed through `dynlib!` because the SONAME holds still**, which
+    /// is that module's actual criterion — `libSDL2_ttf-2.0.so.0` on all 14 firmware inventories
+    /// (`tools/fwcompat.py --inventory libSDL2_ttf`), unlike libcurl's `.so.5`→`.so.4`. Symbol
+    /// presence is the second half, also 14/14 (`--lib libSDL2_ttf-2.0.so.0 --grep '^TTF_FontAscent$'`).
+    ///
+    /// **READ THIS BEFORE ADDING ANOTHER `TTF_*` SYMBOL.** For this one library, "it compiles and
+    /// links" is evidence of NOTHING. The repo pins SDL2's *core* headers in `include/` but not
+    /// SDL_ttf's, so a TTF call compiles against the NDK's header and links against the NDK's
+    /// `libSDL2_ttf-2.0.so.0.18.0` — **2.0.18**, while every firmware ships 2.0.10 or 2.0.14. The
+    /// NDK exports 75 `TTF_*` functions; the televisions export 47 or 48, and **27 of them link
+    /// cleanly here and exist on no supported release** (`TTF_SetFontSize`, `TTF_MeasureUTF8`,
+    /// `TTF_SetDirection`, every `*32` and `*_Wrapped`, …). There is no local signal at all: it
+    /// builds, `make check` passes, and the process dies at the first call on every set. Grade a
+    /// new symbol with `tools/fwcompat.py --lib libSDL2_ttf-2.0.so.0 --grep '^NAME$'` before
+    /// writing the call.
+    ///
+    /// That is exactly the trap this module dodged. The coverage query one would reach for —
+    /// `TTF_GlyphIsProvided` — takes a `Uint16`, so it cannot be asked about anything above
+    /// U+FFFF; and `TTF_GlyphIsProvided32` is in the NDK header, exported by the NDK `.so`, and
+    /// present on **none of the 14** (`--grep '32$'` returns zero matches on every release). So
+    /// `crate::fontcov` reads the cmap from the file instead, which also makes coverage a host
+    /// question rather than a device one.
+    fn TTF_FontAscent(font: *mut TtfFont) -> c_int;
+    fn TTF_FontHeight(font: *mut TtfFont) -> c_int;
     fn TTF_SetFontStyle(font: *mut TtfFont, style: c_int);
     fn TTF_SetFontHinting(font: *mut TtfFont, hinting: c_int);
     fn SDL_FreeSurface(surf: *mut SdlSurface);
@@ -194,6 +282,281 @@ unsafe fn font_at(sz: c_int, bold: c_int) -> *mut TtfFont {
     arr[sz]
 }
 
+// ------------------------------------------------------------------------------------------------
+// The fallback chain. See this module's header for the design; this half is the mechanism.
+// ------------------------------------------------------------------------------------------------
+
+/// One link of the chain, in priority order. `as usize` indexes [`COV`] and the face arrays, so
+/// the discriminants are load-bearing.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Link {
+    /// Inter — `appfont.ttf` / `appfont-bold.ttf`. The app's typeface, and the ONLY link with a
+    /// bold companion. 2853 codepoints.
+    Base = 0,
+    /// The bundled `appfont-cjk.ttf` (Noto Sans CJK KR, `tools/cut-noto-cjk.py`). 44810
+    /// codepoints: all of Hangul, Kana, Han and CJK punctuation. Shipped rather than borrowed
+    /// because a submission is graded on whichever firmware the reviewer has.
+    Cjk = 1,
+    /// The television's own `DroidSansFallback.ttf`. Free insurance behind the bundled face —
+    /// measured on webOS 4.10.0 as covering the same Hangul/Han/Kana ground — and it costs
+    /// nothing when it is absent, as it is on the desktop simulator and the macOS app.
+    ///
+    /// **That measurement is ONE television and cannot be generalised.** `tools/fwcompat.py`
+    /// grades symbols, not filesystems, so it has nothing to say about a font PATH on the other 13
+    /// releases; we have no images for them. This is precisely why link 2 is bundled rather than
+    /// borrowed — this link is a bonus that may or may not exist, and the code treats it as such.
+    Sys = 2,
+}
+const CHAIN: [Link; 3] = [Link::Base, Link::Cjk, Link::Sys];
+
+/// The bundled fallback face, cut by `tools/cut-noto-cjk.py` and staged beside the binary.
+const CJK_FONT: &str = "appfont-cjk.ttf";
+/// The television's pan-CJK fallback. Distinct from [`DROIDSANS`], which is the *Latin* face and a
+/// defect path: reaching this one is normal and expected on a Korean library.
+const DROIDSANS_FALLBACK: &str = "/usr/share/fonts/DroidSansFallback.ttf";
+
+static mut FONTS_CJK: [*mut TtfFont; 80] = [std::ptr::null_mut(); 80];
+static mut FONTS_SYS: [*mut TtfFont; 80] = [std::ptr::null_mut(); 80];
+/// Per-link coverage, read from the file's cmap on FIRST NEED and never again. `None` after
+/// `COV_TRIED` means the file is absent or unreadable, i.e. the link is empty.
+static mut COV: [Option<crate::fontcov::Coverage>; 3] = [None, None, None];
+static mut COV_TRIED: [bool; 3] = [false; 3];
+
+/// The ONE place a link's file is named — both the coverage read and the `TTF_OpenFont` go
+/// through it, so the two can never disagree about which file a link is.
+fn link_file(link: Link) -> std::path::PathBuf {
+    match link {
+        // Coverage is read from the REGULAR face only. That is sound because `fontcov`'s
+        // `bold_face_covers_exactly_what_the_regular_one_does` asserts the two are identical in
+        // `make check` — the gate is not decoration here, it is what makes one read enough.
+        Link::Base => crate::paths::in_app_dir("appfont.ttf"),
+        Link::Cjk => crate::paths::in_app_dir(CJK_FONT),
+        Link::Sys => std::path::PathBuf::from(DROIDSANS_FALLBACK),
+    }
+}
+
+/// Can `link` draw `cp`? Loads that link's coverage on first ask.
+///
+/// The BASE link answers `true` for everything when its own cmap cannot be read. That is
+/// deliberate: an install whose `appfont.ttf` is missing has already fallen through to
+/// `font_at`'s DroidSans branch and logged loudly, and in that state the useful behaviour is the
+/// pre-chain one — render the whole string in one call with whatever face opened — not to split
+/// every string into runs against a coverage set of nothing.
+unsafe fn link_covers(link: Link, cp: u32) -> bool {
+    let i = link as usize;
+    let tried = &mut *addr_of_mut!(COV_TRIED);
+    if !tried[i] {
+        tried[i] = true;
+        let path = link_file(link);
+        let cov = &mut *addr_of_mut!(COV);
+        match crate::fontcov::of_file(&path) {
+            Ok(c) => {
+                log(&format!("font chain: {link:?} {} codepoints={}", path.display(), c.len()));
+                cov[i] = Some(c);
+            }
+            // Not a failure for Cjk/Sys — a television without DroidSansFallback, or a host
+            // simulator with no bundled face, simply has a shorter chain. Logged once either way,
+            // WITH the path, because "why is this still tofu" is otherwise unanswerable from a log
+            // and the answer is usually that the file is not where the install put it.
+            Err(e) => log(&format!("font chain: {link:?} unavailable — {}: {e}", path.display())),
+        }
+    }
+    match &(*addr_of!(COV))[i] {
+        Some(c) => c.contains(cp),
+        None => link == Link::Base,
+    }
+}
+
+/// The face for one run. Bold exists only on [`Link::Base`]: the fallback ships at a single
+/// weight, and SDL_ttf's synthetic bold turns dense ideographs into solid blocks at every UI size
+/// (measured — see this module's header). So a bold CJK run renders in the regular fallback face,
+/// which is also what halves the memory below.
+///
+/// **Cost, and why it is lazy.** SDL_ttf 2.0.x opens one `FT_Face` per (file, ptsize) — there is
+/// no size sharing — and this face has 65535 glyphs, so its `loca`, `hmtx` and `cmap` are large.
+/// Host-measured through the same FreeType: **~2.1 MB resident per opened size**, ~17 MB if a
+/// library exercises all eight rungs of `theme::size`. Nothing here opens until a string actually
+/// needs it, so a Latin or Cyrillic library pays exactly zero — and sharing one face between
+/// regular and bold is what keeps the worst case at eight faces rather than sixteen.
+unsafe fn link_font(link: Link, sz: c_int, bold: c_int) -> *mut TtfFont {
+    if link == Link::Base {
+        return font_at(sz, bold);
+    }
+    let sz = sz.clamp(8, 79) as usize;
+    let arr = match link {
+        Link::Cjk => &mut *addr_of_mut!(FONTS_CJK),
+        _ => &mut *addr_of_mut!(FONTS_SYS),
+    };
+    if arr[sz].is_null() {
+        let file = link_file(link);
+        let Ok(c) = CString::new(file.into_os_string().into_encoded_bytes()) else {
+            return std::ptr::null_mut();
+        };
+        arr[sz] = TTF_OpenFont(c.as_ptr(), sz as c_int);
+        if !arr[sz].is_null() {
+            // The same light-hinting contract the base face is opened under (see `font_at`).
+            TTF_SetFontHinting(arr[sz], TTF_HINTING_LIGHT);
+        }
+    }
+    arr[sz]
+}
+
+/// A string's split into single-face runs. Fixed capacity so the common path allocates nothing;
+/// a string that alternates script more than this absorbs its tail into the last run, which
+/// degrades to the pre-chain behaviour (tofu for the overflow) instead of failing.
+const MAX_RUNS: usize = 24;
+struct Runs {
+    n: usize,
+    at: [(Link, usize, usize); MAX_RUNS], // (face, byte start, byte end)
+}
+
+/// Split `s` into maximal runs, each drawable by one face. Returns `None` when the WHOLE string
+/// is drawable by [`Link::Base`] — the overwhelmingly common case, and the caller's signal to take
+/// the untouched single-render path.
+///
+/// The ASCII shortcut is the reason an English library pays nothing at all for this feature: it
+/// returns before any coverage is loaded, so `appfont-cjk.ttf`'s cmap is never even opened.
+unsafe fn split_runs(s: &str) -> Option<Runs> {
+    split_runs_with(s, |link, cp| link_covers(link, cp))
+}
+
+/// [`split_runs`] with the coverage oracle passed in — the pure half, so the host suite can drive
+/// it against the REAL shipped cmaps without a `TTF_Font`, a GL context or an install directory.
+/// The `unsafe` half is only the lazy file load behind `link_covers`.
+fn split_runs_with(s: &str, covers: impl Fn(Link, u32) -> bool) -> Option<Runs> {
+    if s.is_ascii() {
+        return None;
+    }
+    let mut runs = Runs { n: 0, at: [(Link::Base, 0, 0); MAX_RUNS] };
+    let mut mixed = false;
+    for (off, ch) in s.char_indices() {
+        let cp = ch as u32;
+        // First covering link wins, ALWAYS — never "stay in the current face because it happens
+        // to have this glyph too". Noto Sans CJK carries a full Latin set, so a sticky rule would
+        // render "(2024)" in a different typeface from the rest of the interface.
+        //
+        // A codepoint NO link covers resolves to Base, which draws its .notdef box. That is the
+        // right answer: it is the honest tofu, it keeps the runs contiguous, and it is what the
+        // renderer did before the chain existed.
+        let link = CHAIN.iter().copied().find(|&l| covers(l, cp)).unwrap_or(Link::Base);
+        if link != Link::Base {
+            mixed = true;
+        }
+        let end = off + ch.len_utf8();
+        match runs.at.get_mut(..runs.n).and_then(|r| r.last_mut()) {
+            Some(last) if last.0 == link => last.2 = end,
+            _ if runs.n < MAX_RUNS => {
+                runs.at[runs.n] = (link, off, end);
+                runs.n += 1;
+            }
+            // Out of run slots: everything left joins the final run. Extending rather than
+            // stopping is what keeps the runs a PARTITION of the string — a gap here would drop
+            // characters from the composite silently, which is worse than the wrong face.
+            _ => runs.at[MAX_RUNS - 1].2 = s.len(),
+        }
+    }
+    // A single all-Base run is exactly the fast path, however the string is spelled.
+    if !mixed {
+        return None;
+    }
+    Some(runs)
+}
+
+/// vertical ink bounds of a packed RGBA buffer — the same scan [`surface_ink_v`] does, over a
+/// buffer we own rather than an SDL surface.
+fn buf_ink_v(px: &[u8], w: c_int, h: c_int) -> (c_int, c_int) {
+    let (mut top, mut bot) = (h, -1);
+    for y in 0..h {
+        let row = &px[(y as usize) * (w as usize) * 4..];
+        if (0..w as usize).any(|x| row[x * 4 + 3] > 24) {
+            if y < top {
+                top = y;
+            }
+            bot = y;
+        }
+    }
+    if bot < 0 {
+        (0, h)
+    } else {
+        (top, bot + 1)
+    }
+}
+
+/// Render each run with its own face and composite them into one packed RGBA buffer.
+///
+/// Returns `(pixels, w, h)`. Geometry: the composite keeps the BASE face's box — height
+/// `TTF_FontHeight`, baseline `TTF_FontAscent` rows down — and each run is placed so its own
+/// baseline lands there. The box only ever grows DOWNWARD (a run that descends further than the
+/// base face), because growing it upward would move every glyph relative to the caller's `y` and
+/// silently mis-align a mixed-script label against its pure-Latin neighbours.
+unsafe fn render_runs(s: &str, runs: &Runs, sz: c_int, bold: c_int) -> Option<(Vec<u8>, c_int, c_int)> {
+    let base = font_at(sz, bold);
+    if base.is_null() {
+        return None;
+    }
+    let base_asc = TTF_FontAscent(base);
+    let white = SdlColor { r: 255, g: 255, b: 255, a: 255 };
+    // (surface, x, ascent) per run. Surfaces are freed on every exit path below.
+    let mut parts: Vec<(*mut SdlSurface, c_int, c_int)> = Vec::with_capacity(runs.n);
+    let free_all = |parts: &Vec<(*mut SdlSurface, c_int, c_int)>| {
+        for &(s, _, _) in parts {
+            SDL_FreeSurface(s);
+        }
+    };
+    let (mut w, mut below) = (0i32, TTF_FontHeight(base) - base_asc);
+    for &(link, from, to) in &runs.at[..runs.n] {
+        let f = link_font(link, sz, bold);
+        // A link whose face will not open is not fatal: fall back to the base face, which draws
+        // the run's .notdef boxes — the pre-chain result for that run only.
+        let f = if f.is_null() { base } else { f };
+        let Ok(c) = CString::new(&s[from..to]) else {
+            free_all(&parts);
+            return None;
+        };
+        let surf = TTF_RenderUTF8_Blended(f, c.as_ptr(), white);
+        if surf.is_null() {
+            free_all(&parts);
+            return None;
+        }
+        let asc = TTF_FontAscent(f);
+        below = below.max((*surf).h - asc);
+        parts.push((surf, w, asc));
+        w += (*surf).w;
+    }
+    let h = base_asc + below;
+    if w <= 0 || h <= 0 {
+        free_all(&parts);
+        return None;
+    }
+    let stride = w as usize * 4;
+    let mut out = vec![0u8; stride * h as usize];
+    for &(surf, x, asc) in &parts {
+        let (sw, sh, pitch) = ((*surf).w, (*surf).h, (*surf).pitch as usize);
+        let src = (*surf).pixels as *const u8;
+        if src.is_null() {
+            continue;
+        }
+        let dy = base_asc - asc; // negative when the run's face rises higher than the base's
+        for row in 0..sh {
+            let y = dy + row;
+            if y < 0 {
+                continue;
+            }
+            if y >= h {
+                break;
+            }
+            let n = (sw as usize * 4).min(stride - x as usize * 4);
+            std::ptr::copy_nonoverlapping(
+                src.add(row as usize * pitch),
+                out.as_mut_ptr().add(y as usize * stride + x as usize * 4),
+                n,
+            );
+        }
+    }
+    free_all(&parts);
+    Some((out, w, h))
+}
+
 pub(crate) fn init_text() {
     unsafe {
         if TTF_Init() != 0 {
@@ -300,6 +663,21 @@ unsafe fn text_tex(s_bytes: &[u8], s_c: *const c_char, sz: c_int, bold: c_int) -
             }
         }
     }
+    // A string the base face cannot draw on its own goes through the run compositor; everything
+    // else — every ASCII string, and every string Inter fully covers — takes the single
+    // `TTF_RenderUTF8_Blended` it always did, byte for byte. A compositor FAILURE also falls
+    // through to that path, which renders the base face's .notdef boxes: the pre-chain result,
+    // which is a worse picture but never a missing one.
+    let composed = std::str::from_utf8(s_bytes)
+        .ok()
+        .and_then(|st| Some((st, split_runs(st)?)))
+        .and_then(|(st, runs)| render_runs(st, &runs, sz, bold));
+    if let Some((px, w, h)) = composed {
+        let (ink_t, ink_b) = buf_ink_v(&px, w, h);
+        let tex = crate::gfx::upload_rgba(0, w, h, px.as_ptr());
+        return cache_store(s_bytes, hash, sz, bold, tex, w, h, ink_t, ink_b);
+    }
+
     let f = font_at(sz, bold);
     if f.is_null() {
         return (0, 0, 0, 0, 0);
@@ -338,7 +716,17 @@ unsafe fn text_tex(s_bytes: &[u8], s_c: *const c_char, sz: c_int, bold: c_int) -
         crate::gfx::upload_rgba(0, sw, sh, packed.as_ptr())
     };
     SDL_FreeSurface(surf);
+    cache_store(s_bytes, hash, sz, bold, tex, sw, sh, ink_t, ink_b)
+}
 
+/// Evict the LRU slot and install a freshly uploaded texture in it, returning what `text_tex`
+/// returns. Split out because there are now TWO ways to get a texture — one
+/// `TTF_RenderUTF8_Blended`, or a composite of several — and exactly one cache to put it in.
+#[allow(clippy::too_many_arguments)]
+unsafe fn cache_store(
+    s_bytes: &[u8], hash: u64, sz: c_int, bold: c_int, tex: c_uint, sw: c_int, sh: c_int,
+    ink_t: c_int, ink_b: c_int,
+) -> (c_uint, c_int, c_int, c_int, c_int) {
     let cache = &mut *addr_of_mut!(TCACHE_A);
     let mut slot = 0usize;
     let mut oldest = c_uint::MAX;
@@ -393,10 +781,37 @@ unsafe fn text_tex(s_bytes: &[u8], s_c: *const c_char, sz: c_int, bold: c_int) -
 /// layout, and the ones that also draw the string get their texture from `draw_text` on the same
 /// frame (a cache miss there, but the identical single render the measure used to do — so the
 /// per-frame render count never rises, and for measure-only strings it falls to zero).
+///
+/// **A mixed-script string is measured per RUN and summed**, because that is how it is drawn. The
+/// two agree exactly rather than approximately: SDL_ttf sizes a blended surface with this very
+/// call, so each run's `TTF_SizeUTF8` width IS the width `render_runs` advances the cursor by.
+/// (Cross-run kerning is lost — there is no such thing between a Latin and a Han glyph, and the
+/// faces are different files, so no kern table spans the boundary.)
+///
+/// The cost model changes for those strings only, and both callers that hammer this absorb it:
+/// `elide`'s binary search is memoised on its RESULT, and `TextView`'s wrap sweep goes through
+/// `elide`. A pure-ASCII string still costs exactly one `TTF_SizeUTF8`, decided before any
+/// coverage is loaded.
 pub(crate) fn text_width(s: *const c_char, sz: c_int, bold: c_int) -> f32 {
     unsafe {
         if TEXT_OK == 0 || s.is_null() || *s == 0 {
             return 0.0;
+        }
+        let bytes = CStr::from_ptr(s).to_bytes();
+        if let Some((st, runs)) =
+            std::str::from_utf8(bytes).ok().and_then(|st| Some((st, split_runs(st)?)))
+        {
+            let mut total = 0.0f32;
+            for &(link, from, to) in &runs.at[..runs.n] {
+                let f = link_font(link, sz, bold);
+                let f = if f.is_null() { font_at(sz, bold) } else { f };
+                let Ok(c) = CString::new(&st[from..to]) else { continue };
+                let (mut w, mut h): (c_int, c_int) = (0, 0);
+                if !f.is_null() && TTF_SizeUTF8(f, c.as_ptr(), &mut w, &mut h) == 0 {
+                    total += w as f32;
+                }
+            }
+            return total;
         }
         let f = font_at(sz, bold);
         if f.is_null() {
@@ -612,5 +1027,144 @@ pub(crate) fn draw_text_fade(
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         }
         w as f32
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! The RUN SPLITTER, against the real shipped cmaps.
+    //!
+    //! Everything else in this module needs a `TTF_Font`, a GL context and a television, which is
+    //! exactly why the chain's *decision* was factored out of its *rendering*: `split_runs_with`
+    //! is pure, and the coverage it consults is a property of files this repository ships. So the
+    //! half that decides which face draws which characters is gradable in `make check`, and only
+    //! the rasterization is left to the device.
+    //!
+    //! What these CANNOT see, and the reason a device capture is still required: whether the
+    //! composite is aligned, hinted and snapped correctly on the panel. `cargo test` runs on
+    //! Darwin against a different FreeType, and the simulator renders through desktop GL — the ♪
+    //! regression that named this unit was found by a photograph, not by a test.
+
+    use super::*;
+    use crate::fontcov;
+
+    /// The real shipped cmaps, parsed once for the whole test binary (see `fontcov::shipped`).
+    /// `Link::Sys` is `None` on purpose: the television's DroidSansFallback does not exist on a
+    /// build host, so this is also the "the chain is SHORT" configuration under test.
+    fn chain() -> [Option<&'static fontcov::Coverage>; 3] {
+        [
+            fontcov::shipped("appfont.ttf").as_ref().ok(),
+            fontcov::shipped("appfont-cjk.ttf").as_ref().ok(),
+            None,
+        ]
+    }
+
+    fn split(s: &str) -> Option<Runs> {
+        let cov = chain();
+        split_runs_with(s, |link, cp| cov[link as usize].is_some_and(|c| c.contains(cp)))
+    }
+
+    /// Every run, as (face, the text it draws).
+    fn runs_of(s: &str) -> Vec<(Link, &str)> {
+        match split(s) {
+            None => vec![(Link::Base, s)],
+            Some(r) => r.at[..r.n].iter().map(|&(l, a, b)| (l, &s[a..b])).collect(),
+        }
+    }
+
+    /// The one invariant the compositor's correctness rests on: the runs PARTITION the string —
+    /// contiguous, in order, covering every byte exactly once. A gap drops characters from the
+    /// picture with nothing in any log; an overlap draws them twice.
+    fn assert_partitions(s: &str) {
+        let Some(r) = split(s) else { return };
+        let mut at = 0usize;
+        for &(_, from, to) in &r.at[..r.n] {
+            assert_eq!(from, at, "run starts at {from}, previous ended at {at}, in {s:?}");
+            assert!(to > from, "empty run in {s:?}");
+            at = to;
+        }
+        assert_eq!(at, s.len(), "runs stop at byte {at} of {} in {s:?}", s.len());
+        let joined: String = r.at[..r.n].iter().map(|&(_, a, b)| &s[a..b]).collect();
+        assert_eq!(joined, s, "the runs do not reassemble the string");
+    }
+
+    /// Anything Inter fully covers must return `None`, which is the caller's signal to take the
+    /// single-render path byte for byte. This is the performance contract of the whole feature:
+    /// an English or Russian library pays nothing, and never even opens the 21 MB fallback.
+    #[test]
+    fn strings_the_base_face_covers_take_the_untouched_fast_path() {
+        for s in [
+            "Breaking Bad",                     // pure ASCII — decided before any cmap is read
+            "Amélie",                           // Latin-1
+            "Ирония судьбы",                    // Cyrillic
+            "Ο Θίασος",                         // Greek
+            "\u{266A} It seems today \u{266B}", // the ♪ regression: Inter carries U+2669..U+266C
+            "S1 · E1 — 47 min",                 // the punctuation the UI composes by hand
+        ] {
+            assert!(split(s).is_none(), "{s:?} should not need the fallback chain");
+        }
+    }
+
+    #[test]
+    fn a_korean_title_splits_onto_the_bundled_face() {
+        assert_eq!(
+            runs_of("오징어 게임 (2021)"),
+            vec![(Link::Cjk, "오징어"), (Link::Base, " "), (Link::Cjk, "게임"), (Link::Base, " (2021)")],
+        );
+    }
+
+    /// Japanese mixes three scripts inside one word boundary, and Chinese shares Han with Korean.
+    /// Both must land on the same single fallback face rather than fragmenting further.
+    #[test]
+    fn japanese_and_chinese_land_on_one_face() {
+        assert_eq!(runs_of("君の名は。"), vec![(Link::Cjk, "君の名は。")]);
+        assert_eq!(runs_of("ドラえもん"), vec![(Link::Cjk, "ドラえもん")]);
+        assert_eq!(runs_of("臥虎藏龍"), vec![(Link::Cjk, "臥虎藏龍")]);
+        assert_eq!(
+            runs_of("流浪地球 The Wandering Earth"),
+            vec![(Link::Cjk, "流浪地球"), (Link::Base, " The Wandering Earth")],
+        );
+    }
+
+    /// Noto Sans CJK carries a complete Latin set. If the splitter ever went "sticky" — staying in
+    /// the current face while it happens to cover the next character — a title like this would
+    /// render its Latin half in a DIFFERENT TYPEFACE from the rest of the interface, which is a
+    /// subtle enough wrong to survive review.
+    #[test]
+    fn latin_after_a_cjk_run_returns_to_the_app_typeface() {
+        assert_eq!(runs_of("東京物語 1953"), vec![(Link::Cjk, "東京物語"), (Link::Base, " 1953")]);
+        assert_eq!(runs_of("A한B"), vec![(Link::Base, "A"), (Link::Cjk, "한"), (Link::Base, "B")]);
+    }
+
+    /// A codepoint no link covers stays on the base face and stays INSIDE the run structure, so it
+    /// draws a box where it belongs rather than vanishing. Hebrew is the honest example, because
+    /// the chain deliberately has no face for it (see the module header — coverage is not support).
+    #[test]
+    fn an_uncoverable_codepoint_is_a_box_not_a_gap() {
+        assert_eq!(
+            runs_of("한글 \u{05D0}\u{05D1}"),
+            vec![(Link::Cjk, "한글"), (Link::Base, " \u{05D0}\u{05D1}")]
+        );
+        assert_partitions("한글 \u{05D0}\u{05D1}");
+    }
+
+    /// The run array is fixed-capacity, and the overflow policy has to keep the partition. A
+    /// string that alternates on every character is the worst case by construction.
+    #[test]
+    fn overflowing_the_run_array_still_partitions_the_string() {
+        let pathological: String = (0..MAX_RUNS * 3).map(|i| if i % 2 == 0 { 'A' } else { '한' }).collect();
+        assert_partitions(&pathological);
+        let r = split(&pathological).expect("a mixed string splits");
+        assert_eq!(r.n, MAX_RUNS, "the array is full");
+        assert_eq!(r.at[MAX_RUNS - 1].2, pathological.len(), "the tail was absorbed, not dropped");
+    }
+
+    /// Byte-indexed boundary arithmetic on multi-byte characters at the very edges of the string,
+    /// where an off-by-one would slice mid-codepoint and panic inside `&s[a..b]`.
+    #[test]
+    fn multibyte_characters_at_both_edges_are_sliced_on_char_boundaries() {
+        for s in ["한", "한A", "A한", "한A한", "\u{1F600}한", "君の名は。 2016", "ラーメン大好き小泉さん"] {
+            assert_partitions(s);
+        }
     }
 }

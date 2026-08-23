@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
-"""Cut the shipped `pkg/appfont*.ttf` statics from the Inter variable font.
+"""Cut the shipped Inter statics — `pkg/appfont.ttf` and `pkg/appfont-bold.ttf` — from the Inter
+variable font.
 
     python3 tools/cut-inter.py path/to/Inter[opsz,wght].ttf
+
+A THIRD face ships and does not come from here: `pkg/appfont-cjk.ttf` is Noto Sans CJK KR, cut by
+`tools/cut-noto-cjk.py` from a pinned upstream asset. It matches this file's old `appfont*.ttf`
+glob, which is why the wording above is now explicit. None of the three fixes below apply to it —
+that script's docstring says why, one by one.
 
 Why this is a script and not a one-off: the two fixes below restore conditions the UI was tuned
 under for months, and BOTH are invisible in the font's appearance — a future re-cut that forgets
 them reintroduces two silent regressions. Re-running this is the only supported way to change the
-shipped fonts.
+two Inter faces.
 
   1. wght 400/700, **opsz 18**. opsz 18 is the single point on Inter's optical-size axis where the
      theme's whole size ladder renders design-true under LIGHT hinting: regular is bar-heavy only

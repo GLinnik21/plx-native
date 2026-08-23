@@ -145,6 +145,28 @@ copyright statement declares **no Reserved Font Name**, so OFL §3 imposes no re
 family name "Inter" is retained. The fonts also carry the upstream trademark statement
 "Inter UI and Inter is a trademark of rsms."
 
+**Noto Sans CJK KR** — `appfont-cjk.ttf`
+Copyright © 2014-2021 Adobe (https://www.adobe.com/), per the font's own name table. Version
+2.004, from `github.com/notofonts/noto-cjk` release `Sans2.004`, asset
+`Sans/Variable/TTF/NotoSansCJKkr-VF.ttf`.
+Licence: **SIL Open Font License 1.1** — the same text that ships in this package as `OFL.txt`.
+The licence body distributed with Noto CJK and the one distributed with Inter are identical; only
+their copyright headers differ, and both copyright statements are reproduced here and inside each
+font's own name table (IDs 0, 7, 13 and 14).
+*Modified*: this is a static instance cut from the variable font at weight 400, with the `GSUB`,
+`GPOS`, `GDEF`, `BASE`, `DSIG`, `vhea` and `vmtx` tables removed — all of them unreadable by
+SDL2_ttf 2.0.x, which performs no shaping and no vertical layout. **No codepoint was removed**:
+all 44810 ship. The recipe is `tools/cut-noto-cjk.py`, which pins the input by sha256.
+The Reserved Font Name declared by this font's copyright statement is **"Source"** (Noto Sans CJK
+derives from Adobe's Source Han Sans), which this package does not use, so OFL §3 imposes no
+rename and the family name "Noto Sans CJK KR" is retained. The font also carries the upstream
+trademark statement "Source is a trademark of Adobe in the United States and/or other countries."
+
+*Why it ships:* it is the second link of the application's font fallback chain. Inter covers no
+Hangul, Kana or Han, so without this face every Korean, Japanese and Chinese title in a Plex
+library renders as empty boxes. See `rust-modules/src/text.rs` for the chain and
+`rust-modules/src/fontcov.rs` for the coverage each face is required to have.
+
 ### 2.4 Rust code statically linked into `plxnative`
 
 The application core is Rust. The Rust standard library is compiled from source
@@ -313,8 +335,11 @@ This package must contain exactly the following licence texts, verbatim:
 | `licenses/Unicode-3.0.txt` | Unicode Character Database tables in Rust `core` (§2.4) — UNICODE LICENSE V3, "Copyright © 1991-2024 Unicode, Inc." |
 | `licenses/Zlib.txt` | nanosvg (§2.1) |
 
-`OFL.txt` (SIL Open Font License 1.1, for Inter) already ships at the root of this package. Keep
-it there; do not add a second copy under `licenses/`.
+`OFL.txt` (SIL Open Font License 1.1, for **Inter and Noto Sans CJK KR** — §2.3) already ships at
+the root of this package. Keep it there; do not add a second copy under `licenses/`, and do not
+add a second copy for the second font: the two upstream licence bodies are byte-identical, and
+what differs between them (the copyright statement and the Reserved Font Name) is reproduced in
+§2.3 and carried inside each font's own name table.
 
 No BSD-3-Clause text is required because Apache-2.0 is elected for `moxcms` and `pxfm`. No
 GPL-3.0 text is required: the only GPL-3-covered components are GCC runtime pieces carried by

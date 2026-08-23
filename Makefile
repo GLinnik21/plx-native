@@ -511,8 +511,15 @@ TURBOJPEG_SO := $(firstword $(wildcard $(SYSROOT)/usr/lib/libturbojpeg.so.0.*))
 APPINFO   = $(if $(filter stable,$(FLAVOR)),pkg/appinfo.json,pkg/.flavor/$(FLAVOR)/appinfo.json)
 ICONS     = $(if $(filter stable,$(FLAVOR)),pkg/icon.png pkg/largeIcon.png,pkg/dev/icon.png pkg/dev/largeIcon.png)
 APP_FILES = pkg/plxnative $(APPINFO) $(ICONS) pkg/splash.png \
-            pkg/appfont.ttf pkg/appfont-bold.ttf pkg/OFL.txt THIRD-PARTY-NOTICES.md \
+            pkg/appfont.ttf pkg/appfont-bold.ttf pkg/appfont-cjk.ttf pkg/OFL.txt \
+            THIRD-PARTY-NOTICES.md \
             $(FFMPEG_STAGED)
+# appfont-cjk.ttf is the fallback face (Noto Sans CJK KR, tools/cut-noto-cjk.py) and it is the
+# single largest thing in the package — 21 MB raw, ~11 MB of the .ipk. It is PAYLOAD, not an
+# optional extra: without it a Korean, Japanese or Chinese library renders as tofu end to end, and
+# the television's own DroidSansFallback is present on the sets we have measured but is not
+# something a submission can be graded against. `rust-modules/src/fontcov.rs`'s host gate asserts
+# what it must cover; `text.rs`'s module doc is the chain.
 
 # TRADEMARKS.md ships too: it carries the brand reservation and the Plex/LG non-affiliation
 # statement, which used to be appended to LICENSE. It was moved out because GitHub's `licensee`
@@ -573,6 +580,22 @@ deploy: pkg/plxnative $(FFMPEG_STAGED) $(APPINFO) release-guard tv-lock-require
 	# never reach the TV, so a font swap looked like it had no effect. They are ~300 KB.
 	$(SCP) pkg/appfont.ttf root@$(TV):$(APPDIR)/appfont.ttf
 	$(SCP) pkg/appfont-bold.ttf root@$(TV):$(APPDIR)/appfont-bold.ttf
+	# ...and the CJK fallback face, which is 21 MB — the one exception to "unconditional", because
+	# it is a minute of scp on every deploy and it changes only when tools/cut-noto-cjk.py is
+	# re-run. Without it text.rs's chain has no link 2 and CJK falls through to the system face.
+	# The .ipk path (APP_FILES) has no guard at all and is what a real install uses.
+	#
+	# The guard is an MD5, deliberately not a size compare, and this is not hypothetical caution:
+	# the very first re-cut of this font (adding `recalcTimestamp=False` for reproducibility)
+	# produced a file of IDENTICAL SIZE and different bytes, because only `head.modified` moved. A
+	# size guard would have kept the old font on the television and said nothing — which is exactly
+	# the failure the `test -f || scp` guard above was removed for. One ssh round trip either way.
+	@l=`md5 -q pkg/appfont-cjk.ttf 2>/dev/null || md5sum pkg/appfont-cjk.ttf | cut -d' ' -f1`; \
+	 t=`$(SSH) 'md5sum $(APPDIR)/appfont-cjk.ttf 2>/dev/null | cut -d" " -f1'`; \
+	 if [ "$$l" != "$$t" ]; then \
+	   echo "  scp pkg/appfont-cjk.ttf (21 MB — absent or re-cut)"; \
+	   $(SCP) pkg/appfont-cjk.ttf root@$(TV):$(APPDIR)/appfont-cjk.ttf; \
+	 fi
 	@if [ -n "$(TURBOJPEG_SO)" ]; then \
 	  $(SSH) 'test -f $(APPDIR)/libturbojpeg.so.0' || $(SCP) $(TURBOJPEG_SO) root@$(TV):$(APPDIR)/libturbojpeg.so.0; \
 	else echo "note: no libturbojpeg in the sysroot — capture JPEG mode will use the slow encoder"; fi
