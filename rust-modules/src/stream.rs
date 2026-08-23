@@ -7,8 +7,11 @@
 //! decimal octets parsed by hand into a `sockaddr_in`, which made a hostname and every IPv6 server
 //! not "degraded" but impossible — the shape of the gap LG's checklist #43 CASE2 asks about, and
 //! the reason `plex::probe` ranks a `plex.direct` name below the dotted quad behind it. What is
-//! still missing is TLS: this speaks cleartext, so an `https://` origin remains `net.rs`'s
-//! (libcurl's) job, and that is now the ONLY thing separating the two transports.
+//! still missing is TLS: this speaks cleartext, so an `https://` origin is somebody else's job —
+//! and WHICH somebody depends on the plane. The account/login calls are [`crate::net`]'s; the
+//! MEDIA bytes are [`crate::curlio`]'s, a libcurl-multi pull source sitting under the same `ff.rs`
+//! AVIO that this module sits under for `http`. TLS is the only thing separating this transport
+//! from either of them.
 //!
 //! Failures the return value cannot carry are reported to the event log instead: a non-2xx
 //! response (in [`http_open`], where the code is known and the socket is about to close) and a

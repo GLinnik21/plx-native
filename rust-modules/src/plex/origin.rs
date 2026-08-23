@@ -3,9 +3,11 @@
 //!
 //! ## Why this type exists at all
 //!
-//! This app can currently reach exactly one shape of server: **plaintext HTTP at a numeric IPv4
-//! address**. `stream.rs` builds a `sockaddr_in` out of four decimal octets and speaks cleartext;
-//! there is no resolver and no TLS in it. So `(host, port)` was a complete description of a server,
+//! The app's CONTROL plane can currently reach exactly one shape of server: **plaintext
+//! HTTP**. `stream.rs`, which every plex.tv and PMS *query* goes out through, speaks cleartext and
+//! has no TLS in it. (The MEDIA plane is no longer bound that way — `crate::curlio` streams a part
+//! over https — but a server you cannot query is one you cannot reach an item on.) So
+//! `(host, port)` was a complete description of a server,
 //! and every layer — the registry, the session file, the login flow, the stream URLs — carried
 //! those two values and nothing else.
 //!
@@ -53,11 +55,14 @@ use super::probe::dial_port;
 /// property of an ORIGIN; probe merely *ranks* it, and re-exports this type for that.
 ///
 /// **Ordered best-first FOR THIS APP, which is not best-first in general**, and the derived `Ord`
-/// *is* that preference: `stream.rs` speaks plain HTTP to a dotted quad with no DNS and no TLS, so
-/// an https `plex.direct` origin cannot be dialled at all until the curl control plane lands
-/// (`docs/shared-servers.md` §5 step 6). Ranking https below http keeps
-/// [`super::probe::candidates`]'s order equal to what can actually connect today; when TLS exists,
-/// swapping these two declarations is the whole change.
+/// *is* that preference: `stream.rs` speaks plain HTTP — it resolves a name now, but it has no
+/// TLS — so an https `plex.direct` origin cannot be QUERIED at all until the curl control plane lands
+/// (`docs/shared-servers.md` §5 step 6). Its MEDIA half already works — `crate::curlio` streams a
+/// part over https — so this reason is narrower than it was, and the ranking it justifies is
+/// unchanged: a server the data layer cannot ask for metadata is one no item can be reached on.
+/// Ranking https below http keeps
+/// [`super::probe::candidates`]'s order equal to what can actually connect today; when the control
+/// plane speaks TLS, swapping these two declarations is the whole change.
 ///
 /// `Default` is [`Scheme::Http`] — the scheme this app has always spoken, and what a session file
 /// or a dev trigger written before schemes existed meant.
@@ -117,10 +122,12 @@ impl Origin {
     /// The **plaintext** constructor, named so that it is greppable.
     ///
     /// Every call is a place that still assumes cleartext — the legacy `(host, port)` registry
-    /// entry points, the compiled-in PMS host, a session file with no stored origin. That is
-    /// correct today (there is no TLS transport) and each one is a line the TLS lane has to
-    /// revisit, which is why they are spelled `Origin::http(` rather than
-    /// `Origin::new(Scheme::Http, …)`.
+    /// entry points, the compiled-in PMS host, a session file with no stored origin. Each one is a
+    /// line the TLS lane has to revisit, which is why they are spelled `Origin::http(` rather than
+    /// `Origin::new(Scheme::Http, …)`. This used to add "that is correct today (there is no TLS
+    /// transport)", which stopped being true of the MEDIA plane when `crate::curlio` landed: an
+    /// origin invented here that ends up in a part URL now silently downgrades a server that could
+    /// have been streamed from securely.
     pub fn http(host: &str, port: i32) -> Origin {
         Origin::new(Scheme::Http, host, port)
     }

@@ -203,9 +203,10 @@ both halves compile-time facts, and it is also webosbrew's published guidance.
 
 **One consequence settles a question that keeps getting re-opened: our FFmpeg has NO network.** It
 is configured `--disable-network` with `--enable-protocol=file` as the *only* protocol, so it
-cannot open a URL — http or https, on any firmware. Every byte reaches the demuxer through
-`stream.rs` and the custom AVIO, and that is not an accident of the current pipeline but a
-build-time fact you cannot route around. "Does the TV's FFmpeg have https?" is therefore not
+cannot open a URL — http or https, on any firmware. Every byte reaches the demuxer through **the
+custom AVIO**, whichever transport happens to be under it (`stream.rs` for http, `curlio.rs` for
+https), and that is not an accident of the current pipeline but a build-time fact you cannot route
+around. "Does the TV's FFmpeg have https?" is therefore not
 something to go and probe on a device; it is decided, and the answer is that no FFmpeg in this app
 has any transport of its own.
 
@@ -299,14 +300,19 @@ threading model, the Starfish/ACB ABI + bind-order gotchas, seek/PTS rebase. Rea
 touching playback):** LG's in-process **StarfishMediaAPIs** (`libplayerAPIs.so`) in
 `BUFFERSTREAM` **buffer-feed** mode, the decoded sink bound to the hardware video plane via
 **`libAcbAPI` (ACB)** — in-process is what lets ACB bind the app-owned sink. The media pipeline
-is all Rust: `PMS HTTP GET (raw TCP, stream.rs)` → demux (**`ff.rs`, over a custom AVIO on the
+is all Rust: `PMS HTTP GET` → demux (**`ff.rs`, over a custom AVIO on the
 FFmpeg the app BUNDLES** — not the television's; see the linking section, and note ours is built
 `--disable-network`, so the AVIO is the *only* way bytes reach it) → AU queues with backpressure
 (`aq.rs`) → the pump `Feed()`s the Starfish
 pipeline. Two worker threads (demux, media/load) sit beside the main loop, which owns all
-ACB/Starfish control calls. Also linked and
-used: **libcurl** (`net.rs`) does the plex.tv account/login TLS+DNS that the raw-socket
-`stream.rs` can't.
+ACB/Starfish control calls. **That GET has TWO transports and the part URL's SCHEME picks one**,
+once, in `ff::demux`: `http` reads through `stream.rs`'s raw socket, `https` through
+**`curlio.rs`** — libcurl's *multi* interface behind a `read`/`seek`/`size`/`status`/`abort` pull
+source, so `ff.rs` never learns curl-multi mechanics. It exists because LG's reviewers have no PMS
+on their LAN and stream from the public internet, which `stream.rs` cannot reach: it speaks
+cleartext. So **libcurl is used by two modules for two jobs** — `net.rs` for the plex.tv
+account/login calls, `curlio.rs` for the media bytes — and each binds its own `dynlib!` table,
+which the linking section explains is load-bearing rather than tidy.
 
 ## Key files
 
@@ -341,10 +347,15 @@ used: **libcurl** (`net.rs`) does the plex.tv account/login TLS+DNS that the raw
   one-consumer AU FIFO with byte-cap backpressure. Both are Rust ports of the deleted C headers;
   the hand-rolled `mkv.rs` demuxer they fed is retired — `ff.rs` is the only demux path.)
 - `rust-modules/src/dynlib.rs` — the runtime library binder (`dlopen`, by SONAME candidate list or
-  by absolute path). Two callers, for two different reasons: `net.rs` binds **curl** by candidate
-  list because its SONAME moves between releases, and `ff.rs` binds the **bundled FFmpeg** by
+  by absolute path). Three callers, for three different reasons: `net.rs` binds **curl** by candidate
+  list because its SONAME moves between releases; `ff.rs` binds the **bundled FFmpeg** by
   absolute path because ours ships beside the binary, on no library search path — not because any
-  version varies. (**ACB** is the same idea but not this module: `src/starfish.c` is C and does its
+  version varies; and `curlio.rs` binds **`curl_multi_*` in a SECOND table of its own**, from the
+  same candidate list, because `load_into` is all-or-nothing and a set missing one multi symbol
+  must still be able to SIGN IN. That table is frozen to the oldest supported set:
+  `curl_multi_poll`/`curl_multi_wakeup` resolve on the dev Mac, are absent on the dev television,
+  and first appear at webOS 7.4.0 — so binding them would have emptied this table on four of the
+  nine gated releases. (**ACB** is the same idea but not this module: `src/starfish.c` is C and does its
   own `dlopen`.) Replaced `stub/`, which is deleted. `tools/fwcompat.py` grades the result;
   `docs/webos5-port.md` is the full account.
 - `pkg/` — deployable payload: `appinfo.json` (native app manifest), `plxnative` binary, icons,
