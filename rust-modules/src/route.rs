@@ -1616,10 +1616,11 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveE
     // to our own server, which answers 200 and changes nothing on theirs.
     plan.remux = remux;
     plan.no_video_copy = no_video_copy;
-    // …and the ceiling, for the third time the same reason: a seek and an audio switch rebuild
-    // this query from `Session`, and one that dropped the ceiling would hand the encoder back the
-    // full 4K/60 Mbps bound the moment the user touched the scrubber.
-    plan.ceiling = env.quality.ceiling();
+    // `plan.ceiling` is NOT set here — it was set for every flavour up at the decision, which is
+    // what the direct-play branch needed too. Spending it below is the third reader of the same
+    // reasoning `remux` and `no_video_copy` carry: a seek and an audio switch rebuild this query
+    // from `Session`, and one that dropped the ceiling would hand the encoder back the full
+    // 4K/60 Mbps bound the moment the user touched the scrubber.
     put_selection(env.sid, plan.part_id, env.audio_sid, env.sub_sid); // audio/subtitle selection drives the encode/remux + burn
     let sp = transcode_spec(rk, &session, remux, no_video_copy, -1, env.audio_sid, env.sub_sid, plan.ceiling);
     if let Some(mc) = client.transcode_decision(&sp) {
