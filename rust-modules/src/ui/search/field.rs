@@ -26,13 +26,14 @@
 //!
 //! ## The two pieces of arithmetic worth extracting
 //!
-//! [`run_layout`] and [`scope_text`] are **pure**, and host-tested below, because both are the kind
-//! of thing that is wrong by a few pixels or one word and invisible in a screenshot. They are not
-//! the whole risk, though — [`draw`] and [`draw_scope`] carry the composition (the fill branch, the
-//! scissor pair and three placements), and that is where a defect hides from both the tests and the
-//! eye. The registry projection the scope line is written from is no longer part of that: it is
-//! [`with_scope`], built once per change and shared with [`super::empty`] — see the section comment
-//! above it for what that fixed.
+//! [`run_layout`], [`run_and_head`] and [`scope_text`] are **pure**, and host-tested below, because
+//! each is the kind of thing that is wrong by a few pixels, one word or one byte and invisible in a
+//! screenshot — and [`run_and_head`]'s failure is not cosmetic at all, since a slice cut off a char
+//! boundary panics inside the SDL event loop. They are not the whole risk, though — [`draw`] and
+//! [`draw_scope`] carry the composition (the fill branch, the scissor pair and three placements),
+//! and that is where a defect hides from both the tests and the eye. The registry projection the
+//! scope line is written from is no longer part of that: it is [`with_scope`], built once per change
+//! and shared with [`super::empty`] — see the section comment above it for what that fixed.
 #![allow(dead_code)]
 
 use crate::ui::label::Label;
@@ -105,18 +106,11 @@ pub(crate) fn draw(p: Painter, v: &View) {
 
     let inner = Rect::new(FIELD.x + PAD_X, FIELD.y, FIELD.w - PAD_X * 2.0, FIELD.h);
     // Verbatim — `search::query` keeps the trailing space precisely because this is what draws it.
-    // Truncated at a NUL first: keyboard input cannot contain one, but `enter` is also fed by a
-    // boot trigger that reads a FILE, and `CString::new` failing there would blank the capsule
-    // while leaving the Rust string non-empty — a field that refuses to show its own text.
-    let q = crate::search::query();
-    let q = &q[..q.find('\0').unwrap_or(q.len())];
+    // The two cuts [`run_and_head`] makes (the NUL, and the caret back to a char boundary) are
+    // argued there.
+    let (q, head) = run_and_head(crate::search::query(), v.caret);
     let cq = CString::new(q).unwrap_or_default();
     let run_w = crate::text::text_width(cq.as_ptr(), theme::size::BODY, 0);
-    // How far into the run the insertion point sits: the width of the text BEFORE it. `v.caret` is
-    // already clamped to a char boundary of the live query by `super::caret`, but this slice is
-    // taken from the NUL-truncated copy above, so it is re-bounded here rather than trusted —
-    // `enter` is fed by a file, and a panic in a draw is the app.
-    let head = &q[..v.caret.min(q.len())];
     let ch = CString::new(head).unwrap_or_default();
     let caret_w = crate::text::text_width(ch.as_ptr(), theme::size::BODY, 0);
     let (run_dx, caret_dx) = run_layout(run_w, caret_w, inner.w, v.editing);
@@ -150,6 +144,45 @@ pub(crate) fn draw(p: Painter, v: &View) {
     p.clip_clear();
 
     draw_scope(p);
+}
+
+/// The run this capsule DRAWS, and the slice of it that sits before the insertion point — the two
+/// slices [`draw`] measures, CUT once so the two cuts can never drift apart. (They are still
+/// MEASURED separately, which is a different thing and not fixed here: `head` is shaped on its own,
+/// so a kern pair straddling the insertion point is applied to the run and not to the head, and the
+/// bar can sit a pixel or so off where the next glyph lands. Inter's `kern` is deliberately kept —
+/// `tools/cut-inter.py`, and the root `CLAUDE.md` calls it load-bearing — so this is real, but it
+/// is a sub-pixel placement question that only a panel can judge, and `text_width` cannot be
+/// reached from the host suite at all.)
+///
+/// Pure, and the third thing in this file that is (see the module doc), because **every expression
+/// in it is a slice and every one of them is in a DRAW**: a bad index here does not mis-place a
+/// pixel, it panics inside the SDL event loop and takes the app down — the class `remote.rs` lost
+/// the app to once already, off a multi-byte separator.
+///
+/// Two cuts, and neither may be assumed away:
+///
+/// 1. **At the first NUL.** Keyboard input cannot contain one, and `super::mount` already filters
+///    every control character out of the boot trigger's seed — so this is the BELT over that brace,
+///    not the only guard, and neither may be deleted on the strength of the other. It is kept
+///    because the failure it prevents is silent and total: `CString::new` refuses a string with an
+///    interior NUL, so the capsule would blank while the Rust string stayed non-empty — a field
+///    refusing to show its own text — and the caret would be placed against the wrong length.
+/// 2. **The caret, back to a CHAR BOUNDARY of the run** — not merely `min(len)`, which is the shape
+///    this was written as and the reason it is now a function. `min` bounds the LENGTH and says
+///    nothing about the boundary, so it is only sound while the incoming offset is already a
+///    boundary of *this* slice. `super::caret` does clamp against the live query, so nothing in the
+///    tree reaches the bad case today — but the two strings are not the same string whenever the
+///    query holds a NUL, the guarantee is one another module owns, and the comment that used to
+///    stand here claimed the re-bound as though it had been done. A defence that is documented and
+///    absent is worse than one that is neither.
+fn run_and_head(q: &str, caret: usize) -> (&str, &str) {
+    let run = &q[..q.find('\0').unwrap_or(q.len())];
+    let mut c = caret.min(run.len());
+    while c > 0 && !run.is_char_boundary(c) {
+        c -= 1;
+    }
+    (run, &run[..c])
 }
 
 /// Is the one-character hint on? Exactly one character SHORT of the minimum, never at zero (an
@@ -624,6 +657,50 @@ mod tests {
             let (_, caret) = run_layout(2000.0, c, box_w, true);
             assert!((0.0..=avail).contains(&caret), "caret at {c} drew at {caret}, outside the field");
         }
+    }
+
+    // ---- the two slices the draw measures ------------------------------------------------------
+
+    /// The ordinary case, and the one that carries the whole point of the caret: the head is the
+    /// text BEFORE the insertion point, so its width is where the bar stands.
+    #[test]
+    fn the_head_is_the_text_before_the_insertion_point() {
+        assert_eq!(run_and_head("wallace", 0), ("wallace", ""));
+        assert_eq!(run_and_head("wallace", 3), ("wallace", "wal"));
+        assert_eq!(run_and_head("wallace", 7), ("wallace", "wallace"));
+        // A trailing space is part of the run — `search::query` keeps it because this draws it.
+        assert_eq!(run_and_head("wallace ", 8), ("wallace ", "wallace "));
+        assert_eq!(run_and_head("", 0), ("", ""));
+    }
+
+    /// **A caret is a BYTE offset, and half the characters a television's keyboard can commit are
+    /// not one byte wide.** Splitting one panics — inside a DRAW, inside the SDL event loop, which
+    /// is the app. Every offset into a multi-byte run is exercised here, including the ones that
+    /// land mid-codepoint, because `super::caret` clamps against the LIVE query while this cuts the
+    /// NUL-truncated copy, and the two are not the same string.
+    #[test]
+    fn a_caret_inside_a_multi_byte_character_never_splits_it() {
+        for q in ["суббота", "千と千尋", "Amélie", "🎬🎬", "aé千🎬z"] {
+            for c in 0..=q.len() + 4 {
+                let (run, head) = run_and_head(q, c);
+                assert_eq!(run, q);
+                assert!(q.starts_with(head), "the head must be a prefix of the run: {head:?}");
+                // it lands on the boundary at or below the asked-for offset, never above it
+                assert!(head.len() <= c.min(q.len()));
+                assert!(c.min(q.len()) - head.len() < 4, "…and never backs up past one character");
+            }
+        }
+    }
+
+    /// The run is cut at the first NUL — `super::enter`'s seed is read from a FILE, so a control
+    /// byte is reachable — and a caret past that cut lands at its end rather than out of range.
+    #[test]
+    fn a_nul_cuts_the_run_and_the_caret_lands_inside_what_is_left() {
+        assert_eq!(run_and_head("wal\0lace", 3), ("wal", "wal"));
+        assert_eq!(run_and_head("wal\0lace", 8), ("wal", "wal"), "a caret past the cut clamps to it");
+        assert_eq!(run_and_head("\0wallace", 4), ("", ""));
+        // …and the clamp still lands on a character boundary, not merely inside the length.
+        assert_eq!(run_and_head("су\0ббота", 99), ("су", "су"));
     }
 
     /// The degenerate box (a field narrower than its own caret) must not produce a negative
