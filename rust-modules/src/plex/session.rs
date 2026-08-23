@@ -826,9 +826,10 @@ fn new_client_id() -> String {
 /// path enters Home without ever writing one. Reading that emptiness as "signed out" is how a
 /// signed-in owner ends up being offered "Sign in".
 ///
-/// Converted so far: `ui/account_menu.rs`. **Not yet: the Home profile chip** (`ui/widgets.rs`
-/// `profile_chip`), which still labels itself off `title.is_empty()` and so still says "Sign in"
-/// to that same owner — the remaining half of the bug, and a one-block change once this lands.
+/// Converted: `ui/account_menu.rs`, and — since 2026-08-23 — the shared top bar's profile chip
+/// (`ui/widgets.rs` `profile_chip`), which was the remaining half of the bug. Both now word
+/// themselves through ONE resolver, `ui::account_menu::chip_label`, so the chip and the menu it
+/// opens cannot disagree about the same account again.
 pub struct Account {
     /// **This device** holds a session: a plex.tv account token, or at least a server + PMS token
     /// it can stream on. The opposite of "offer them Sign in". Note it describes the session ON
