@@ -398,15 +398,41 @@ pub fn register_origin(machine_id: &str, origin: &Origin, token: &str) -> Server
     id
 }
 
-/// [`register`] with the device id supplied — the seam that keeps the session file out of the
-/// registry proper (and out of the tests).
+/// [`register`] with the device id supplied — the seam that keeps the session file **and the
+/// network** out of the registry proper, and out of the tests.
 ///
 /// `pub(crate)` rather than `pub(super)` because tests OUTSIDE `plex/` need it too (`route.rs`
-/// grades which server a `/:/timeline` POST reaches, which takes two registered clients): the
-/// public [`register`] resolves the device id through `session::load`, which MINTS AND PERSISTS a
-/// uuid when there is none, and a host test must not write one.
+/// grades which server a `/:/timeline` POST reaches, which takes two registered clients).
+///
+/// **Two reasons a host test must come through here, and the second one cost a red CI run.**
+///
+/// 1. The public [`register`] resolves the device id through `session::load`, which MINTS AND
+///    PERSISTS a uuid when there is none. A host test must not write one.
+/// 2. [`register`] also fires [`serverinfo::refresh`](super::serverinfo::refresh), which spawns a
+///    `task::spawn_small` worker that really opens a socket — on a **256 KiB** stack. In a DEBUG
+///    build `stream::http_stream_boxed` builds its 64 KiB `HttpStream` as a stack temporary before
+///    it reaches the heap (the optimizer elides that in the `--release` build the television
+///    ships, and only there), so that worker needs somewhere north of 192 KiB on ARM64 and more
+///    than 256 KiB on x86-64. A test that calls [`register`] therefore aborts the whole suite with
+///    `thread '<unknown>' has overflowed its stack` — on Linux only, in a thread libtest never
+///    named, at whatever test happened to be printing. `make check` passed on the dev Mac while CI
+///    failed twice.
+///
+/// So: **no test in this crate may call [`register`] or [`register_origin`]**. The two seams here
+/// are the whole test surface, and neither loads a session nor spawns anything.
 pub(crate) fn register_with_client_id(machine_id: &str, host: &str, port: i32, token: &str, client_id: &str) -> ServerId {
-    register_lazy(machine_id, &Origin::http(host, port), token, &|| client_id.to_owned())
+    register_origin_with_client_id(machine_id, &Origin::http(host, port), token, client_id)
+}
+
+/// [`register_with_client_id`], given the whole [`Origin`] — the seam for a test that is about the
+/// SCHEME, which the `(host, port)` form cannot express. Same contract: no session file, no worker.
+pub(crate) fn register_origin_with_client_id(
+    machine_id: &str,
+    origin: &Origin,
+    token: &str,
+    client_id: &str,
+) -> ServerId {
+    register_lazy(machine_id, origin, token, &|| client_id.to_owned())
 }
 
 fn register_lazy(machine_id: &str, origin: &Origin, token: &str, client_id: &dyn Fn() -> String) -> ServerId {
@@ -619,17 +645,23 @@ mod tests {
     /// comparison wrong — compare `host`/`port` and forget the scheme, which is exactly what the
     /// pair-shaped code did because it could not spell one — and the day a server moves to https
     /// the registry keeps a plaintext client for it, in place, with nothing in the log.
+    ///
+    /// Driven through [`register_origin_with_client_id`], NOT the public [`register_origin`] — see
+    /// that seam's doc. This test was written against the public one and turned CI red on Linux
+    /// with a stack overflow in an unnamed thread, because `register_origin` spawns a real
+    /// `serverinfo` worker that opens a real socket on a 256 KiB stack.
     #[test]
     fn moving_a_server_to_https_re_points_its_slot() {
         let _g = fresh();
+        let reg_at = |o: &Origin, tok: &str| register_origin_with_client_id("mach-A", o, tok, "test-client-id");
         let plain = Origin::http("10.0.0.1", 32400);
-        let id = register_origin("mach-A", &plain, "tok-a");
+        let id = reg_at(&plain, "tok-a");
         let before: *const Client = client_for(id).unwrap();
         let gen_before = client_for(id).unwrap().token_gen();
         client_for(id).unwrap().set_link(crate::plex::probe::Location::Local);
 
         let tls = Origin::parse("https://10-0-0-1.hash.plex.direct:32400").expect("an origin");
-        assert_eq!(register_origin("mach-A", &tls, "tok-a"), id, "same machine, same slot");
+        assert_eq!(reg_at(&tls, "tok-a"), id, "same machine, same slot");
         assert_eq!(count(), 1, "a scheme change is not a second server");
 
         let c = client_for(id).unwrap();
@@ -641,7 +673,7 @@ mod tests {
 
         // and re-registering the SAME origin lands in place again, as any unchanged address does
         let same: *const Client = c;
-        assert_eq!(register_origin("mach-A", &tls, "tok-b"), id);
+        assert_eq!(reg_at(&tls, "tok-b"), id);
         assert!(std::ptr::eq(client_for(id).unwrap(), same), "unchanged origin, unchanged pointer");
     }
 
