@@ -1575,7 +1575,11 @@ folders are therefore a device-verification question, and the bare-language form
 sources agree on. `ci/check-package.py`'s `LOCALE_RE` already accepts the **hyphenated** shapes
 (`ko-KR`, `zh-Hans-CN`, `es-419`), so widening the set that way is adding directories and nothing
 else; a **nested** `resources/ko/KR/appinfo.json` is the one shape that would need a code change,
-and it fails loudly (`pkg/resources/ko/appinfo.json exists`) rather than shipping silently.
+and it fails loudly (`pkg/resources/ko/appinfo.json exists`) rather than shipping silently. One
+trap in that regex, since it will be met by whoever widens the set: **LG's own example `mn-Cy-MN`
+is rejected**, and correctly — ISO 15924 script subtags are four letters (`Cyrl`), so `Cy` is not a
+tag any BCP-47 reader would resolve. Copying LG's string verbatim fails the gate with a message
+naming the directory; the fix is `mn-Cyrl-MN`, not a looser regex.
 
 ### 12.3 How it is packaged and gated
 
