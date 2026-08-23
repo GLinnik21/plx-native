@@ -681,11 +681,11 @@ non-24p rung — the frame-rate axis is `pipe_h264_1080p5994` and `pipe_hevc_4k_
 
 ### Playing to the END, and then again (LG #46)
 
-`pipe_finish_eos` is **the only case in either tier that is supposed to run out**. Every other clip
-in both packs is sized so it *cannot* hit EOF inside a case's window (`make_fixtures.py` trap 9's
-second half), because a finish tears the session down under assertions that were only ever about
-playing — so this one gets its own 20 s fixture, `pipe_h264_ac3_short.mkv`, which nothing else may
-name. The `finished` assertion wants two lines **in order**: `EOS reached: … → ended` (the pump
+`pipe_finish_eos` and `pipe_replay_after_eos` are **the only cases in either tier that are supposed
+to run out**. Every other clip in both packs is sized so it *cannot* hit EOF inside a case's window
+(`make_fixtures.py` trap 9's second half), because a finish tears the session down under assertions
+that were only ever about playing — so those two share a 20 s fixture, `pipe_h264_ac3_short.mkv`,
+which only a case declaring `reaches_eos` may name. The `finished` assertion wants two lines **in order**: `EOS reached: … → ended` (the pump
 gates that on `eos_pushed && pos >= dur - 1s`, so a truncated transfer does not reach it) and then
 `stop_bufferfeed: torn down`. The order is the assertion — every stop tears the engine down, the
 harness's own close included.

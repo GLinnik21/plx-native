@@ -1191,18 +1191,29 @@ def a_replayed(lines, want):
     if len(ts) < 2:
         return False, f"only {len(ts)} media-position sample(s); a replay cannot be seen in them"
     # The DROP, as the deepest fall anywhere in the series — so a case replaying twice still reads
-    # as one number, and a single late sample cannot hide it.
-    peak, drop = ts[0], 0
-    for t in ts:
+    # as one number, and a single late sample cannot hide it. The INDEX is kept too, because the
+    # climb below has to be measured from there.
+    peak, drop, at = ts[0], 0, 0
+    for i, t in enumerate(ts):
         peak = max(peak, t)
-        drop = max(drop, peak - t)
+        if peak - t > drop:
+            drop, at = peak - t, i
     if drop < 5:
         return False, (f"the media position never fell (peak {max(ts)}s, deepest drop {drop}s) — "
                        f"the `replay:` line fired but playback carried on from where it was")
     # ...and it CLIMBED after falling, which is the second viewing rather than a restart that
-    # stalled at the join. Measured from the last sample at or below the drop's floor.
-    floor = min(ts)
-    tail = ts[max(i for i, t in enumerate(ts) if t == floor):]
+    # stalled at the join.
+    #
+    # Anchored at the deepest DROP, not at the global floor. The floor form is the shape this
+    # shipped with and it was a FALSE PASS: the floor is a VALUE, and viewing 2 only reaches
+    # viewing 1's minimum value by coincidence — the `pos=` heartbeat is 1 Hz and free-running, so
+    # viewing 1 logging `pos=0s` while viewing 2's first sample lands at `pos=1s` puts the anchor
+    # back in viewing 1 and measures VIEWING 1'S OWN CLIMB. `[0,5,10,19,1]` then read as "fell 18s
+    # then climbed 19s" and passed with the second viewing having produced one sample and zero
+    # seconds of playback — which is precisely the near-miss named below, in the sample ordering
+    # the field will actually produce, and the state the harness normally grades because it exits
+    # the moment every assertion passes.
+    tail = ts[at:]
     climb = max(tail) - min(tail)
     if climb < 5:
         return False, (f"the position fell {drop}s but only climbed {climb}s afterwards — the "
@@ -1236,10 +1247,9 @@ def a_finished(lines):
     player froze on the last frame", which is exactly the reading this assertion exists to avoid.
 
     What it deliberately does NOT claim is the SECOND half of #46 — that the same content can then
-    be started again. That is unreachable from this tier today and it is an app gap, not a test
-    gap: the pipeline tier's only entry is `plxnative-playurl`, read behind `app.rs`'s one-shot
-    `auto_tried` latch, so there is exactly one playback per boot and no key path back into the
-    player without a Plex item behind it. See the case's own `_replay_note` in the manifest.
+    be started again. That is [`a_replayed`]'s job and `pipe_replay_after_eos`'s, and the two stay
+    apart because the failures are different: a stream that never ends, and a stream that ends and
+    cannot be restarted. One case would report either as the other.
     """
     eos = next((i for i, ln in enumerate(lines) if "EOS reached" in ln), None)
     if eos is None:

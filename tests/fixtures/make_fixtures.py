@@ -104,12 +104,14 @@ out of the finished file with ffprobe, and a mismatch is a hard error naming bot
     contaminates `no_playing_error` and the teardown assertions of a case that was only
     ever about playing.
     ONE EXCEPTION, and it is the exception that proves the rule: `pipe_h264_ac3_short` is
-    20 s BECAUSE ending is what it grades (LG item #46, `tests/run.py::a_finished`). It is
-    the only shape in either table allowed to be short, `pipe_finish_eos` is the only case
-    allowed to name it, and the harness enforces the OPPOSITE bound for that pair —
-    `_resolve_fixtures` SKIPS a `reaches_eos` case whose fixture is longer than 0.6 × the
-    case's cap. Adding a second short clip means picking a side; whichever side the harness
-    was not told about, it will skip rather than fail.
+    20 s BECAUSE ending is what it grades (LG item #46 — `tests/run.py::a_finished` for the
+    completion, `a_replayed` for the restart after it). It is the only shape in either table
+    allowed to be short, and the cases allowed to name it are exactly those declaring
+    `reaches_eos` — two today, `pipe_finish_eos` and `pipe_replay_after_eos`. The harness
+    enforces the OPPOSITE bound for them: `_resolve_fixtures` SKIPS such a case whose fixture
+    is longer than 0.6 × the case's cap PER VIEWING (a replaying case needs the clip twice).
+    Adding a second short clip means picking a side; whichever side the harness was not told
+    about, it will skip rather than fail.
 
 10. ffmpeg HAS A PGS DECODER AND NO PGS ENCODER, and refuses text→bitmap conversion
     outright ("Subtitle encoding currently only possible from text to text or bitmap to
@@ -1132,8 +1134,9 @@ PIPE_SHAPES = {
         # that it CANNOT hit EOF inside a case's window (trap 9's second half), because a finish
         # tears the session down under assertions that were only ever about playing. This one
         # exists to reach the end — `pipe_finish_eos` grades the `EOS reached: … → ended` line
-        # and the clean teardown behind it, which is the completion half of "replay after
-        # completion". Nothing else may name this fixture.
+        # and the clean teardown behind it, and `pipe_replay_after_eos` then starts it AGAIN,
+        # which is #46's two halves. Only a case declaring `reaches_eos` may name this fixture;
+        # anything else would be graded through a teardown it never asked for.
         #
         # 720x480 for cost alone: the assertion is about the END of a stream, not about its
         # picture, and this is the cheapest raster the pack builds.

@@ -24,6 +24,7 @@ tomorrow that breaks one of them should fail here rather than on the television.
 """
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -574,6 +575,37 @@ class CompletionCase(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("did not play", why)
 
+    def test_the_climb_is_measured_from_the_drop_and_not_from_the_global_floor(self):
+        """THE false PASS this assertion shipped with, and the ordering the field will produce.
+
+        The first version anchored the post-drop climb at the global floor, which is a VALUE — so
+        it only landed in viewing 2 when viewing 2 happened to reach viewing 1's minimum. The
+        `pos=` heartbeat is 1 Hz and free-running, so viewing 1 logging `pos=0s` while viewing 2's
+        first sample lands at `pos=1s` put the anchor back in viewing 1 and measured VIEWING 1'S
+        OWN CLIMB: `[0,5,10,19,1]` read as "fell 18s then climbed 19s" and PASSED with the second
+        viewing having produced one sample and zero seconds of playback.
+
+        It is also the state the harness normally grades, because it exits the moment every
+        assertion passes — so this was not a corner, it was the common case. The class's other
+        near-miss test passes only because its series starts at 2 rather than 0, which is exactly
+        the kind of accident a regression test is for.
+        """
+        rep = "replay: starting the finished stream again (0 left)\n"
+        load = 'load: v=H264 a="AC3" fps=24.000 dv=present:0 P0/0 el:0 atmos:0\n'
+
+        def pos(t):
+            return f"loop=60 route=player overlay=none pos={t}s vtick=5\n"
+
+        # Viewing 1 reaches 0; viewing 2's only sample is 1, so the global floor sits in viewing 1.
+        stalled = [load, pos(0), pos(5), pos(10), pos(19), rep, load, pos(1)]
+        ok, why = run.a_replayed(stalled, 1)
+        self.assertFalse(ok, "a replay with one sample and no playback must not pass")
+        self.assertIn("did not play", why)
+        # ...and the same shape with a real second viewing still passes.
+        played = [load, pos(0), pos(5), pos(10), pos(19), rep, load, pos(1), pos(9), pos(18)]
+        ok, why = run.a_replayed(played, 1)
+        self.assertTrue(ok, why)
+
     def test_a_pack_too_short_to_be_played_twice_skips_the_replay_case(self):
         """The EOS bound is per VIEWING: a clip that fits once inside the cap need not fit twice."""
         case = {"name": "rep", "fixture": "c.mkv", "run_secs": 60,
@@ -644,7 +676,10 @@ class NetcondRate(unittest.TestCase):
     FLOOR_S = N * 8 / (KBPS * 1000)
 
     def setUp(self):
+        # A cleaned-up temp dir, like every other temp use in this file: six of these leaked per
+        # `make check` while it was a bare `mkdtemp`, and `make check` is the command run most.
         self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.ctl = os.path.join(self.tmp, "netcond.mode")
         # The proxy narrates every connection; a test runner is not where that belongs.
         saved_sink = netcond.SINK

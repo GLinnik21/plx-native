@@ -693,8 +693,9 @@ resolves every key and so never enters the path. The full on-device suite is `./
 (21 cases; `--fps` for the perf gates), and `make test` = `deploy` + `run`.
 
 **Tier 2 is TWO SUITES on one television, and since 2026-08-22 the DEFAULT IS THE SYNTHETIC ONE.**
-A bare **`./tests/run.py`** now runs the SYNTHETIC tier (generated clips, no Plex — 19 cases as of
-2026-08-23, and take that count yourself with `./tests/run.py --list`); the
+A bare **`./tests/run.py`** now runs the SYNTHETIC tier (generated clips, no Plex — take the count
+yourself with `./tests/run.py --list`, which is the only census that cannot rot; the number written
+here went stale inside the branch that wrote it, in one commit); the
 21 library-backed cases everything above describes are **`./tests/run.py --server`**, and `--fps` /
 `--fps-player` imply `--server` because those scenes navigate a real signed-in Home. `--pipeline`
 still parses (it names the default); pairing it with `--server`/`--fps` is refused rather than
