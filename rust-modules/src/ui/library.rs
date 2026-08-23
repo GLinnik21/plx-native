@@ -346,6 +346,15 @@ static mut SRC_STRIP: crate::ui::widgets::TabStrip = crate::ui::widgets::TabStri
 static mut SRC_ON_PILLS: bool = false;
 /// The two level pills' rects, for the pointer.
 static mut SRC_PILL_RECTS: [Rect; 2] = [Rect::new(0.0, 0.0, 0.0, 0.0); 2];
+/// The manual-address row's state — see [`source_list::Add`], which owns every rule about it. It
+/// lives HERE rather than in that module because the module is deliberately pure over its inputs:
+/// the panel holds the value, the row model only renders it.
+///
+/// It rides BOTH levels, like "Check for new shares" and for the same reason — the swap's whole
+/// claim is that nothing moves — so a level flip mid-typing keeps the field and the characters in
+/// it. Cleared with the panel ([`close_menu`]): an address abandoned by closing the panel is not
+/// waiting for you the next time you open it.
+static mut SRC_ADD: source_list::Add = source_list::Add::new();
 
 // ---- the grid's content cross-fade + its deferred reload -------------------------------------
 /// A grid reload the user has asked for but which has NOT been applied to the store yet: the
@@ -516,18 +525,25 @@ const CHIPS_MANY: [Chip; 3] = [Chip::Source, Chip::Sort, Chip::Filter];
 /// **The failure read-out takes the grid's controls away and keeps navigation.** Sort and Filter
 /// act on a grid that has no items, so neither is drawn (nor is the count, nor the A–Z rail); the
 /// Source chip is how you LEAVE a dead source, which is exactly why the read-out spends no line
-/// telling you the way out (`Shared Sources.dc.html` D). With one source there is no Source chip to
-/// keep, so that row empties completely and the tab strip above is the way out.
+/// telling you the way out (`Shared Sources.dc.html` D).
 ///
-/// An OPEN menu is the exception: it is anchored under its own chip and would otherwise be a panel
-/// hanging off nothing — a listing can fail while its Filter menu is up, and a chip must outlive
-/// the panel it opened.
+/// **A FAILED read-out keeps the Source chip at ANY source count, and that changed on 2026-08-23.**
+/// This row used to empty completely on a one-source failure — "there is no Source chip to keep, so
+/// the tab strip above is the way out" — which was true while the panel could only ever offer you
+/// another source you already had. It now also carries the manual address, and that makes the empty
+/// row the one dead end this whole area exists to remove: a lone server whose address the app
+/// cannot dial is exactly the user who has to type one, and it was the only state in the app with
+/// nowhere to type it. The design's rule is untouched where it was arguing about a WORKING library
+/// — one source, nothing wrong, still no chip.
+///
+/// An OPEN menu is the other exception: it is anchored under its own chip and would otherwise be a
+/// panel hanging off nothing — a listing can fail while its Filter menu is up, and a chip must
+/// outlive the panel it opened.
 fn chips() -> &'static [Chip] {
     match (source_chip_on(), readout() == Readout::Failed && !menu_open()) {
         (true, false) => &CHIPS_MANY,
-        (true, true) => &CHIPS_SOURCE_ONLY,
+        (_, true) => &CHIPS_SOURCE_ONLY,
         (false, false) => &CHIPS_ONE,
-        (false, true) => &CHIPS_NONE,
     }
 }
 /// **The toolbar's focused chip INDEX — the ONE authority, read by the draw, by the walk and by
@@ -1200,6 +1216,10 @@ pub(crate) fn update(dt: f32) {
         unsafe {
             (*addr_of_mut!(SRC_STRIP)).update(sel_i, foc_i, |i| rects.get(i).map(|r| (r.x, r.w)), SelMark::Travels, dt);
         }
+        // …and the manual-address row's two landings — a character off the television's keyboard,
+        // and the backend answering (or not) the address it was handed. Both rebuild the panel, so
+        // they belong beside the springs and not in the key ladder.
+        pump_source_add(dt);
     }
 
     // ---- content cross-fade. FIRST, because the commit frame teleports SCROLL/GR/GC and the
@@ -1574,7 +1594,14 @@ pub(crate) fn back() -> bool {
             return true;
         }
         // the Sources panel has no drill-in level to walk back through: its two levels are peers,
-        // reached sideways, so BACK dismisses the panel from either one
+        // reached sideways, so BACK dismisses the panel from either one. The manual-address field
+        // IS a drill-in, though — it is the one thing in this panel you can be INSIDE — so while it
+        // is open BACK closes IT and leaves the list you were choosing against on screen.
+        Menu::Source { .. } if src_add().is_open() => {
+            close_address_field();
+            build_source_menu(true);
+            return true;
+        }
         Menu::Source { .. } | Menu::Sort { .. } | Menu::Filter => {
             close_menu();
             return true;
@@ -1658,6 +1685,10 @@ fn src_pill_rects(panel: Rect) -> [Rect; 2] {
 /// `Menu::None` is not a flag sitting beside a row count and an action list that describe a panel
 /// nobody can see any more; it is the absence of them.
 fn close_menu() {
+    // the address field goes with the panel: an attempt abandoned by dismissing the panel is not
+    // waiting for you the next time you open it, and its keyboard must not outlive the surface it
+    // was raised for
+    close_address_field();
     set_menu(Menu::None);
     pop().close();
 }
@@ -1702,7 +1733,7 @@ fn build_source_menu(keep: bool) {
     let table_gen = crate::browse::source_list_gen();
     let groups = crate::browse::source_groups();
     let rows = crate::browse::source_rows();
-    let (secs, acts) = source_list::sections(level, &groups, &rows, Tail::Recheck);
+    let (secs, acts) = source_list::sections(level, &groups, &rows, Tail::Panel(src_add()));
     let sel = source_list::sel(&rows, keep.then(|| table().sel));
     // the panel IS its key: the generation these rows were projected from and one action per row,
     // installed together and dropped together by [`close_menu`]
@@ -1736,6 +1767,128 @@ fn set_source_level(l: Level) {
     }
     unsafe { SRC_LEVEL = l };
     build_source_menu(true);
+}
+
+// ---- the manual address, as two rows of this same panel --------------------------------------
+//
+// The escape hatch for a server plex.tv never named — `ui::source_list`'s `Add` owns every rule
+// about it (what parses, what the rows say, when the action is inert) and this is only the wiring:
+// the state, the keyboard, and the four presses.
+//
+// **No new route and no screen of its own**, deliberately. It is two rows in the tail of a popover
+// that already exists, beside "Check for new shares", which is the other answer to "my server is
+// missing" — putting them side by side is the point.
+
+fn src_add() -> &'static mut source_list::Add {
+    unsafe { &mut *addr_of_mut!(SRC_ADD) }
+}
+
+/// Open the field (or re-raise its keyboard) and rebuild the panel around it.
+///
+/// The keyboard is the television's own, through the one door
+/// ([`crate::textinput`]): `start` is what raises the panel, and it also clears the commit queue,
+/// so nothing typed into Search five minutes ago can arrive in an address.
+fn open_address_field() {
+    src_add().open();
+    // A field in flight takes no characters ([`source_list::Add::push`]), so raising a keyboard
+    // over it would be a panel that swallows typing. The row's action is already `None` then; this
+    // is the second half of the same rule, kept here so the two cannot be separated by a refactor.
+    if !src_add().is_editing() {
+        return;
+    }
+    crate::textinput::start();
+    build_source_menu(true);
+    crate::ui::idle::invalidate();
+}
+
+/// Close the field, forget the attempt, and take the keyboard down with it.
+///
+/// Called from BACK (which then leaves the panel itself open — the field is what you were in) and
+/// from [`close_menu`]. Cheap and idempotent, so the panel's own close can call it unconditionally
+/// rather than testing a state it does not otherwise care about.
+fn close_address_field() {
+    if !src_add().is_open() {
+        return;
+    }
+    src_add().close();
+    crate::textinput::stop();
+    crate::ui::idle::invalidate();
+}
+
+/// **Drop the television's keyboard, keep what was typed** — this screen's half of the app-switch
+/// teardown, and the exact counterpart of `ui::search::leave`.
+///
+/// The compositor tears its own IME down when it takes the screen away and tells the app nothing,
+/// so a field left thinking the panel is up comes back to a keyboard that is gone — and typing is
+/// then dead in a way no press recovers, because `textinput::start` early-returns while its own
+/// `STARTED` flag is set. Clearing that flag here is what makes the next OK on the address row
+/// raise the panel again.
+///
+/// **It does NOT close the field or forget the address.** An app switch is the OS moving the
+/// screen, not the user abandoning what they were typing — that is what BACK is for
+/// ([`close_address_field`]). Self-guarded, so `app.rs` calls it unconditionally on every route,
+/// exactly as it does for Search.
+pub(crate) fn leave_keyboard() {
+    if source_menu_open() && src_add().is_open() {
+        crate::textinput::stop();
+        crate::ui::idle::invalidate();
+    }
+}
+
+/// The keys the FIELD claims, returned as "did I take it" so `app.rs` can fall through to the
+/// screen's own ladder for everything else — the shape `ui::search::key` established, and the
+/// reason the arm there is a guard around a call rather than a term in a condition.
+///
+/// Only two, and only while the field is taking characters: the television's keyboard has no
+/// caret, so its **delete** arrives as [`SDLK_BACKSPACE`] and its **Clear all** as [`SDLK_CLEAR`]
+/// (`ui::consts`, device-measured). Everything else on the panel — the D-pad, OK, BACK — is
+/// already routed and must stay that way, or opening the field would take the list away from the
+/// remote.
+pub(crate) fn key(sym: c_uint) -> bool {
+    if !(source_menu_open() && src_add().is_editing()) {
+        return false;
+    }
+    if sym == SDLK_BACKSPACE {
+        src_add().backspace();
+    } else if sym == SDLK_CLEAR {
+        src_add().clear();
+    } else {
+        return false;
+    }
+    build_source_menu(true);
+    crate::ui::idle::invalidate();
+    true
+}
+
+/// One frame of the address field: take what the keyboard committed, and age a request the backend
+/// has not answered.
+///
+/// Both are LANDINGS on a settled popover, so both rebuild and both invalidate — `ui::idle` gates
+/// presents, and a character that does not say it moved arrives invisibly until the next key press.
+fn pump_source_add(dt: f32) {
+    if !source_menu_open() {
+        // **The field cannot outlive the panel.** [`close_menu`] is the ordinary way it goes, and
+        // it is not the only way the panel can: a profile switch resets the stores under it. A
+        // raised television keyboard over a screen with no field under it is the worst version of
+        // this to leave behind, so the invariant is re-asserted every frame instead of being
+        // argued about per exit. Free when there is nothing open.
+        close_address_field();
+        return;
+    }
+    let mut moved = src_add().tick(dt);
+    // The commit queue is drained ONLY while this field is editing. Off it, text belongs to
+    // whoever raised the panel (`ui::search`), and taking it here would eat their typing — the
+    // queue is process-wide by design, see `textinput`'s module doc.
+    if src_add().is_editing() {
+        for s in crate::textinput::drain() {
+            src_add().push(&s);
+            moved = true;
+        }
+    }
+    if moved {
+        build_source_menu(true);
+        crate::ui::idle::invalidate();
+    }
 }
 
 /// What the row at global index `sel` of the OPEN Sources panel does.
@@ -1878,6 +2031,21 @@ fn menu_commit(sel: i32) {
             SrcAction::Recheck => {
                 crate::browse::recheck_shares();
                 build_source_menu(true);
+            }
+            // the manual address. All three keep the panel OPEN — you are still deciding which
+            // server you meant, and closing it would take the list you are choosing against away.
+            SrcAction::AddOpen | SrcAction::AddEdit => open_address_field(),
+            SrcAction::AddSubmit => {
+                // `submit` is the gate, not this call site: the action is only ever `AddSubmit` on
+                // a row whose address parses, and the model refuses one that does not anyway —
+                // two guards for a press that must never dial something the user did not type.
+                if src_add().submit() {
+                    // the keyboard comes down at the moment the address stops being editable, so
+                    // the panel it was covering is what you watch answer
+                    crate::textinput::stop();
+                    build_source_menu(true);
+                    crate::ui::idle::invalidate();
+                }
             }
             SrcAction::None => {}
         },
@@ -2972,6 +3140,12 @@ mod tests {
     /// own: it is NAVIGATION, it is how you leave a dead source, and it is why the read-out spends
     /// no line telling you the way out. `chips()` is the ONE predicate behind the draw, the pointer
     /// scan and the vertical walk, so this pins all three at once.
+    ///
+    /// **The one-source failure changed on 2026-08-23** and this test is where it is pinned: that
+    /// row used to empty COMPLETELY, which was defensible only while the panel had nothing to offer
+    /// a user with one server. It now carries the manual address, so the empty row was the single
+    /// state in the app where a user whose only server cannot be dialled had nowhere to type one —
+    /// exactly the dead end the field exists to remove.
     #[test]
     fn the_failure_read_out_keeps_navigation_and_drops_every_grid_control() {
         let _s = crate::testlock::serial();
@@ -2981,7 +3155,11 @@ mod tests {
         assert_eq!(chips(), &CHIPS_ONE[..], "one source draws no Source chip");
         crate::browse::seed_sources_for_test(1, false);
         assert_eq!(readout(), Readout::Failed);
-        assert!(chips().is_empty(), "there is nothing to sort, to filter or to count");
+        assert_eq!(
+            chips(),
+            &CHIPS_SOURCE_ONLY[..],
+            "nothing to sort, to filter or to count — but the panel that can be typed an address STAYS"
+        );
 
         // TWO sources: the Source chip leads the row, and it OUTLIVES the failure
         crate::browse::seed_sources_for_test(2, true);
@@ -3001,6 +3179,17 @@ mod tests {
             state: if reachable { crate::browse::SourceState::Reachable } else { crate::browse::SourceState::Unreachable },
             tier: None,
         }
+    }
+    /// The panel's own list — the tail included, with the manual-address field CLOSED, which is
+    /// how it opens. (What the field says once it is open is `ui::source_list`'s to test: it is
+    /// pure over that state, and the panel here only holds the value.)
+    fn panel(
+        level: Level,
+        g: &[crate::browse::SrcGroup],
+        r: &[crate::browse::SrcRow],
+    ) -> (Vec<Section>, Vec<SrcAction>) {
+        let add = source_list::Add::new();
+        source_list::sections(level, g, r, Tail::Panel(&add))
     }
     fn lib(src: usize, section: usize, title: &str, pinned: bool, last: bool, current: bool) -> crate::browse::SrcRow {
         crate::browse::SrcRow {
@@ -3042,13 +3231,13 @@ mod tests {
     fn the_two_levels_never_mirror_each_others_marks() {
         let (g, r) = two_sources();
 
-        let (browse, _) = source_list::sections(Level::Browse, &g, &r, Tail::Recheck);
+        let (browse, _) = panel(Level::Browse, &g, &r);
         let m = marks(&browse, r.len());
         assert_eq!(m.iter().filter(|(t, _)| *t).count(), 1, "exactly one tick — the library you are on");
         assert!(m[0].0, "…and it is on the current library");
         assert!(m.iter().all(|(_, w)| w.is_none()), "Browse states no values: no pins are drawn here");
 
-        let (home, _) = source_list::sections(Level::OnHome, &g, &r, Tail::Recheck);
+        let (home, _) = panel(Level::OnHome, &g, &r);
         let m = marks(&home, r.len());
         assert!(m.iter().all(|(t, _)| !t), "On Home draws no ticks — it is not a picker");
         assert_eq!(
@@ -3065,7 +3254,7 @@ mod tests {
     #[test]
     fn a_server_is_a_group_and_an_unreachable_one_dims_whole_while_still_reading_on() {
         let (mut g, r) = two_sources();
-        let (secs, _) = source_list::sections(Level::OnHome, &g, &r, Tail::Recheck);
+        let (secs, _) = panel(Level::OnHome, &g, &r);
         assert_eq!(secs.len(), 2);
         assert_eq!((secs[0].header.as_str(), secs[0].accessory.as_str()), ("mac-mini", ""));
         assert_eq!((secs[1].header.as_str(), secs[1].accessory.as_str()), ("nas-home", "friend"));
@@ -3074,7 +3263,7 @@ mod tests {
         g[1].state = crate::browse::SourceState::Unreachable;
         let mut r = r;
         r[2].pinned = true; // pinned AND unreachable: the state the design calls out by name
-        let (secs, _) = source_list::sections(Level::OnHome, &g, &r, Tail::Recheck);
+        let (secs, _) = panel(Level::OnHome, &g, &r);
         assert!(secs[1].dim, "the whole group dims, header included");
         assert!(!secs[0].dim, "…and only that group");
         assert_eq!(secs[1].rows[0].toggle, Some(true), "it still reads On — nothing was turned off");
@@ -3083,7 +3272,7 @@ mod tests {
 
         // a source whose libraries we never learned contributes no group at all: a header over
         // nothing reads as broken, and absence is the answer for a share that has never answered
-        let (secs, _) = source_list::sections(Level::Browse, &g, &r[..2], Tail::Recheck);
+        let (secs, _) = panel(Level::Browse, &g, &r[..2]);
         assert_eq!(secs.len(), 1);
     }
 
@@ -3094,7 +3283,7 @@ mod tests {
     fn the_last_pinned_library_dims_its_value_and_states_the_rule() {
         let g = vec![group("mac-mini", "", true)];
         let r = vec![lib(0, 0, "Movies", true, true, true), lib(0, 1, "TV Shows", false, false, false)];
-        let (secs, _) = source_list::sections(Level::OnHome, &g, &r, Tail::Recheck);
+        let (secs, _) = panel(Level::OnHome, &g, &r);
         let last = &secs[0].rows[0];
         assert!(last.value_dim, "the value dims");
         assert!(!last.dim, "the label keeps live ink — the row is not unavailable");
@@ -3103,26 +3292,46 @@ mod tests {
         assert_eq!(secs[0].rows[1].detail, "26 films", "every other row keeps its size");
     }
 
-    /// `Check for new shares` is the only row that is not a library: last, under a separator, and
-    /// on BOTH levels — which is also what keeps their row counts, and so the panel's height,
-    /// identical across the swap. Its action must line up with the row index the table reports,
-    /// separator included.
+    /// The two rows that are not libraries — `Check for new shares` and `Add a server`, the panel's
+    /// two answers to "my server is missing" — sit last, under one separator, on BOTH levels, which
+    /// is also what keeps the levels' row counts and so the panel's height identical across the
+    /// swap. Their actions must line up with the row index the table reports, separator included.
     #[test]
-    fn the_recheck_row_sits_last_under_a_separator_on_both_levels() {
+    fn the_tail_rows_sit_last_under_a_separator_on_both_levels() {
         let (g, r) = two_sources();
         for level in [Level::Browse, Level::OnHome] {
-            let (secs, acts) = source_list::sections(level, &g, &r, Tail::Recheck);
+            let (secs, acts) = panel(level, &g, &r);
             let rows: Vec<&Row> = secs.iter().flat_map(|s| s.rows.iter()).collect();
             assert_eq!(rows.len(), acts.len(), "one action per row index, separator included");
-            assert_eq!(rows.len(), r.len() + 2, "three libraries, a separator and the recheck row");
-            assert!(rows[3].sep, "the separator divides the libraries from the action");
+            assert_eq!(rows.len(), r.len() + 3, "three libraries, a separator and the two actions");
+            assert!(rows[3].sep, "the separator divides the libraries from the actions");
             assert_eq!(acts[3], SrcAction::None, "…and it does nothing");
             assert_eq!(rows[4].label, "Check for new shares");
             assert_eq!(acts[4], SrcAction::Recheck);
+            assert_eq!(rows[5].label, "Add a server");
+            assert_eq!(acts[5], SrcAction::AddOpen);
             for (i, row) in r.iter().enumerate() {
                 assert_eq!(acts[i], SrcAction::Library(row.section));
             }
         }
+    }
+
+    /// **The tail survives a list with nothing in it**, which is the state it matters most in: a
+    /// roster where no source has produced a library yet is exactly the user who needs to re-check
+    /// their shares or type an address, and the tail used to hang off the LAST GROUP — so with no
+    /// groups it was not drawn at all, and the panel offered a way out of nothing.
+    #[test]
+    fn an_empty_list_still_offers_both_ways_out() {
+        let (g, _) = two_sources();
+        let (secs, acts) = panel(Level::Browse, &g, &[]);
+        let rows: Vec<&Row> = secs.iter().flat_map(|s| s.rows.iter()).collect();
+        assert_eq!(rows.len(), acts.len(), "one action per row index");
+        assert_eq!(rows.len(), 2, "no separator: there is no group above it to divide from");
+        assert!(!rows[0].sep);
+        assert_eq!((rows[0].label.as_str(), acts[0]), ("Check for new shares", SrcAction::Recheck));
+        assert_eq!((rows[1].label.as_str(), acts[1]), ("Add a server", SrcAction::AddOpen));
+        assert_eq!(secs.len(), 1);
+        assert!(secs[0].header.is_empty(), "…and the rows carry no header over nothing");
     }
 
     /// **The single most load-bearing test in this unit.** The toolbar used to match on a chip's

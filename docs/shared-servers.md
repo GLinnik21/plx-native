@@ -596,6 +596,24 @@ Three consequences, all of which the code now states:
 plex.tv grant — the existing registry — and nothing else. (It was transport-blocked as well:
 `stream.rs` takes a numeric address and speaks cleartext.)
 
+> **⚠ CONTRADICTED IN THE TREE, 2026-08-23 — this needs the owner, and the sentence above is left
+> standing until it gets one.** The LG-submission work asked for exactly the thing this ruling
+> forbids, and it was built: `ui/source_list.rs`'s `Add` is a manual-address field in the Sources
+> panel's tail, wired by `ui/library.rs`. **The ruling is the user's and an agent may not overturn
+> it**, so nothing here has been rewritten — this note only records that the code and the ruling now
+> disagree, and which way each points.
+>
+> The case that argued for it is `docs/lg-self-checklist.md` #20/#43/#47: a QA bench that is not on
+> the same IPv4 LAN as a plaintext-HTTP PMS dead-ends at "no server found", and until 2026-08-23 the
+> app had no surface anywhere that could be typed an address. That is an argument about a REVIEWER
+> being unable to evaluate the app at all, which is not the same question the ruling answered
+> ("where do you *configure* a server"), and it may or may not move it.
+>
+> What is NOT in dispute: the field dials nothing. `source_list::take_request` has no implementer,
+> so a typed address ages out saying nothing answered, and the list a user can actually browse is
+> still the plex.tv grant and nothing else. **If the ruling stands, the row comes out** — it is two
+> rows of one `Tail::Panel` arm and one `SrcAction`, and removing it costs less than it cost to add.
+
 **The selection is keyed by PROFILE.** `Session::pinned: Vec<PinnedLib>` hung off the `Session`,
 which is one per install — so a household could hold exactly one opinion about a friend's films,
 and switching profile left the previous person's shelves on the front door. It is now

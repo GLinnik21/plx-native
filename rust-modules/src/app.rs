@@ -4803,6 +4803,12 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     // this screen's alone and both calls under it are guarded, so it costs a
                     // predictable nothing on every other route.
                     crate::ui::search::leave();
+                    // …and the OTHER field on this television's keyboard: the Sources panel's
+                    // manual address (`ui::library`). Same reason, same unconditional call, one
+                    // difference stated where it is made — that one keeps what was typed, because
+                    // it has no "recent searches" for a half-typed value to be wrongly filed in and
+                    // an address is a thing you were part-way through, not a search you meant.
+                    crate::ui::library::leave_keyboard();
                     if matches!(route, Route::Player { .. }) && !bg_was_playing {
                         // INTENDED, not published: this snapshot is the only thing the foreground
                         // restore has, and `suspend_bufferfeed` below drops the pending seek target
@@ -4959,6 +4965,15 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     // the chain below exactly as it did.
                     if matches!(route, Route::Search) {
                         if crate::ui::search::key(sym) {
+                            continue;
+                        }
+                    }
+                    // The Sources panel's manual-address field, the SAME shape and for the same
+                    // reason: the television's keyboard has no caret, so its delete and Clear-all
+                    // arrive here as ordinary key syms and only that field has a claim on them.
+                    // It declines every key while it is closed, which is nearly always.
+                    if matches!(route, Route::Library) {
+                        if crate::ui::library::key(sym) {
                             continue;
                         }
                     }

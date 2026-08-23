@@ -850,8 +850,12 @@ Listed because each could change a decision above.
    DNS and no TLS (it *does* decode chunked bodies; that was listed here as a third limitation and
    never was one). So remote-only servers, relay users, "Require secure
    connections", IPv6 and hostname-addressed servers all dead-end at *"No local Plex server found on
-   this network."* There is **no Settings screen and no manual server entry** anywhere in the route
-   enum (`app.rs:670-685`).
+   this network."* There is **no Settings screen** anywhere in the route enum (`app.rs:670-685`).
+   **Manual server entry now exists** (2026-08-23) and is deliberately not in that enum: it is two
+   rows in the Sources panel's tail (`ui/source_list.rs`'s `Add`), beside "Check for new shares".
+   The field, its parse and its read-outs are landed; the DIAL is not — the panel posts a validated
+   endpoint through a seam that nothing takes yet, so today the row times out saying nothing
+   answered. It stops being a dead end when the transport work above lands with it.
 8. **What should the app do on unsupported firmware?** `requirements.webosRelease` does **not** hide
    the app from a webOS 6 user browsing the channel (§1.4). It needs a graceful failure.
 9. **Support model.** A Dev Mode user has no shell, so "send me `/tmp/plxnative-events.log`" doesn't
