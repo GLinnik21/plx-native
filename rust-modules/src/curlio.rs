@@ -403,10 +403,11 @@ fn easy_ready() -> bool {
     !crate::net::curl::curl_easy_init.load(Ordering::Relaxed).is_null()
 }
 
-/// Can this device stream over https at all? Both tables must be live.
+/// Can this device stream over https at all? Both tables must be live, and a legacy TLS backend
+/// must have the process locks that make concurrent control and media curl handles safe.
 pub(crate) fn available() -> bool {
     ensure_loaded();
-    MULTI_OK.load(Ordering::Acquire) && easy_ready()
+    MULTI_OK.load(Ordering::Acquire) && easy_ready() && crate::net::threaded_tls_ready()
 }
 
 // ---- the transfer ----------------------------------------------------------------------------
