@@ -130,8 +130,12 @@ event log → the process is gone.
 
 Every focusable control has three visually distinct states — **idle**, **focused** and
 **pressed**. Focus is drawn as a scale-up on a critically damped spring plus a glow; press is a
-separate depression (`ui/press.rs`). There is no control anywhere in the app that can take focus and
-do nothing when OK is pressed on it.
+separate depression (`ui/press.rs`). **Every control that performs an action responds to OK.**
+
+Two focus stops do not, and both are deliberate rather than dead: the tab pill for the page you are
+*already on* (OK on Home's own pill, standing on Home, is a documented no-op), and the person page's
+header band when that person has no biography long enough to expand. Neither is a button, neither
+leaves the user stuck, and every other focus stop in the app acts.
 
 **A long press is its own gesture.** Holding OK for ≥500 ms on a card opens that card's context
 menu (§5.6); releasing before then is an ordinary activation. Nothing else in the app uses a hold.
@@ -162,7 +166,11 @@ promoted items; the dots under the action row show the position.
 |---|---|
 | **Play** / **Continue** | starts playback — *Continue* when the item has a resume point, *Play* when it does not |
 | **ⓘ** (info) | opens that item's detail page |
-| **›** (chevron) | advances to the next hero item |
+
+Those are the only two. **The `›` beside them is an indicator, not a third button** — it is drawn,
+it never takes focus and it has no hit rect. The hero is paged by **RIGHT past the info disc** or
+**LEFT off the Play pill**, and it also advances itself every **8 s** while the row sits idle. The
+dots under the row show the position.
 
 **Above it**, the top tab strip: **Home**, then **one pill per library section the server reports**
 (here *Movies* and *TV Shows*), then the **Search** pill — drawn as a magnifier mark, not a word.
@@ -184,11 +192,14 @@ The focused card grows, and its title and a status line appear beneath it — he
 left"*, which is the resume state. A watched item carries a check mark in its corner.
 
 **OK on a card in *Continue Watching* plays it directly** — as does OK on any card that is itself an
-episode, wherever it sits. OK on any other card opens that item's page. The difference is
+episode, wherever it sits. **OK on any other card opens that item's page.** The difference is
 intentional: the deck is a list of things already in progress, and one press is the whole point of
-it. A card that is a **show** or a **season** opens its page, resolves it, and fires that page's
-Play only once the right item has actually loaded — never blindly, because a failed fetch would
-otherwise play whatever page was open before.
+it.
+
+One refinement inside the deck rule: a **show** or **season** card there has no single stream to
+start, so it opens its page, waits for the load to land on the expected item, and fires that page's
+Play only then — never blindly, because a failed fetch would otherwise play whatever page was open
+before. On any other shelf, a show or season card simply opens its page.
 
 **BACK** from the shelves returns focus to the hero row; BACK at the hero row raises the exit alert
 (§5.9).
@@ -334,7 +345,7 @@ The action row:
 |---|---|
 | **Play** / **Resume** | start, or resume from the stored position |
 | **↺** | play from the start (shown when there is a resume point) |
-| **✓** | toggle watched |
+| the watched disc | toggle watched — it **wears the face of the write it would perform**, so it is a **✓** on an unwatched item and a **−** on a watched one |
 
 Below, **Cast & Crew** — OK on a headshot opens that person's page, from which their other titles
 lead back into more detail pages. The BACK trail unwinds the whole chain.
@@ -548,8 +559,7 @@ the playhead is inside it, a single **Skip Intro** / **Skip Credits** pill takes
 position, same height, never narrower than the disc pair, so the transport does not visibly jump.
 When the segment begins the HUD is raised and the focus ring is parked on the pill, so **one bare OK
 skips**. OK seeks past the segment and resumes; on a `final` credits marker it finishes the item
-instead. The pill leaves with the segment, and focus returns to the scrubber when it does. Where the
-server has no credits detection, a synthesized 30 s tail stands in.
+instead. The pill leaves with the segment, and focus returns to the scrubber when it does.
 
 **3. Over the credits with another episode queued: Up Next.** The row becomes the next episode's
 still, a caption (*"Up Next · S2, E4 · Laura"*), and **two buttons — Watch Credits** on the left and
@@ -561,9 +571,16 @@ cancels it explicitly and leaves the tile as a plain OK-to-play target. While th
 is held up, so the countdown is never invisible.
 
 Up Next deliberately outranks Skip Credits: with somewhere to go, "next episode" is the better
-offer, and Skip Credits remains for the last episode of a show, where there is nowhere to go. At the
-end of an item with nothing queued, the player simply exits to the page it came from. **There is no
-full-screen post-play interstitial** — one was built and is deliberately not shipped.
+offer.
+
+**Credits detection is a Plex Pass server feature, and where the server has none the app synthesizes
+a 30 s tail — but only when there is a next episode to offer.** So the synthesized tail always
+raises Up Next and can never raise a Skip pill: a movie's tail must not grow a *Skip Credits* button
+pointing nowhere. The practical consequence for a bench test is that on a Pass-less server **Skip
+Credits is unreachable**, and only *Skip Intro* and *Up Next* can be exercised.
+
+At the end of an item with nothing queued, the player simply exits to the page it came from. **There
+is no full-screen post-play interstitial** — one was built and is deliberately not shipped.
 
 ### 6.8 Info and Chapters
 
@@ -594,7 +611,8 @@ off in a setting — none exists. This was checked five independent ways across 
   link line is SDL2, SDL2_ttf, GLESv2, luna-service2, glib, wayland-client and LG's two media
   libraries, and nothing else (`Makefile`, `LIBS_REAL`);
 - **there are no audio assets** — no `.wav`, `.mp3`, `.ogg`, `.aac` or `.m4a` anywhere in the
-  shipped tree. `assets/` holds a logo, a splash and 24 SVG icons;
+  shipped tree. `assets/` holds a logo, a splash and the UI's SVG icon set, and nothing that decodes
+  as audio;
 - **no webOS sound service is called** — no `playSound`, no `com.webos.service.audio`, no key-tone
   or feedback Luna request.
 

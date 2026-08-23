@@ -684,8 +684,10 @@ plex.tv can key on, not decoration:
 | `X-Plex-Provides` | what this client offers (`player`, …) | how it appears as a cast target |
 | `X-Plex-Token` | the per-server access token | |
 
-The five in **bold** are the ones this reference omitted until 2026-08-23. That is a documentation
-gap rather than a discovery, and the source is **the official Plex webOS client's own requests** —
+**Two things this table is not.** It is not a census of what this app sends, and the count of new
+rows is not worth carrying — the **bolded** rows are the ones this reference omitted until
+2026-08-23, and the bold is the list. That is a documentation gap rather than a discovery, and the
+source is **the official Plex webOS client's own requests** —
 tier: another client's observed behaviour, which proves what Plex's own app sends and does not by
 itself prove what a server does with each field. Two are worth separating on that basis.
 `X-Plex-Platform-Version` is the one with a mechanism you can reason about — Plex demonstrably gates
@@ -695,10 +697,17 @@ because nothing errors — the server simply never offers a shape you did not cl
 also the one whose exact effect this repo has **not** measured. Settling that needs a live A/B
 against a PMS, which nobody has run.
 
-This app builds the set in `rust-modules/src/plex/client.rs::playback_identity` (with the constants
-in `plex/identity.rs`), appended as **query parameters** rather than headers because the raw-socket
-transport in `stream.rs` writes its own request line — PMS accepts either, which is what the
-"(also accepted as query params)" above means and why that spelling is not a compromise.
+**What THIS app sends is a subset of the table, and the two must not be read as one.**
+`rust-modules/src/plex/client.rs::playback_identity` (constants in `plex/identity.rs`) emits nine
+fields: `X-Plex-Client-Identifier`, `-Product`, `-Version`, `-Platform`, `-Platform-Version`,
+`-Device`, `-Device-Name`, `-Model` and `-Provides`, plus the token. The four capability and locale
+fields — **`X-Plex-Device-Vendor`, `X-Plex-Device-Screen-Resolution`, `X-Plex-Language` and
+`X-Plex-Features`** — appear nowhere in the tree today. The table is the target; this paragraph is
+the state.
+
+They are appended as **query parameters** rather than headers because the raw-socket transport in
+`stream.rs` writes its own request line — PMS accepts either, which is what the "(also accepted as
+query params)" above means and why that spelling is not a compromise.
 
 Client behavior expected by PMS (matches official clients):
 
