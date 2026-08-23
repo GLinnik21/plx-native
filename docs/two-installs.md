@@ -258,10 +258,13 @@ inside a bullet already claiming to be separate. It is written out in full below
   tile that says `PlxNative debug` under artwork with an amber DEV bar on it. It is the one place
   the flavour is knowingly not carried through, and it is recorded here so nobody re-derives it as
   an oversight.
-- **`requiredMemory: 60`.** SAM's memory budget is claimed once per *registered* app, so two
-  installs are two claims — and the number is already known to be under-declared against a measured
-  ~74 MB peak (`docs/distribution.md` §6.10). Only one runs at a time, so this is a budgeting
-  question rather than a runtime one, but it is a second claim on the same set.
+- **`requiredMemory: 160`.** SAM's memory budget is claimed once per *registered* app, so two
+  installs are two claims. Only one runs at a time, so this is a budgeting question rather than a
+  runtime one, but it is a second claim on the same set. The number is the measured **152 MiB**
+  peak rounded up (`docs/distribution.md` §6.10 — boot, browsing and 4K HDR playback on the dev
+  set); this line said `60` against "a measured ~74 MB peak" long after both halves were retired,
+  and §6.10 records that the ~74 MB was never a measurement at all. 60 was worse than declaring
+  nothing, since webOS substitutes 120 for an app that declares none.
 - **The host build tree, deliberately — the one entry here that is not on the television.**
   `FLAVOR` never reaches codegen (§2), so `pkg/plxnative`,
   the `pkg/.build-config` stamp and the cargo `--target-dir` are one set for both installs — that

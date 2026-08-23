@@ -10,6 +10,7 @@
 mod app; // plex_run — the Rust app core / event loop (the entry inverted from main.c)
 mod aq;
 mod cbuf; // fixed NUL-terminated C-string buffer read/write (shared by pms/route/posters)
+mod coldstart; // where the app was when it last stopped, persisted — the COLD-start restore (LG checklist #3)
 mod auth; // plex.tv login/boot flow controller (PIN/QR → discovery → who's-watching → install)
 mod browse; // Library browse: per-section paged catalog (sparse store + off-thread page fetches)
 mod capture; // dev live UI capture stream: own-GLES-frame grab → MPEG1/TS or JPEG → TCP (UI plane only)
@@ -18,7 +19,7 @@ mod devcaps; // what this SoC decodes — the TV's own codec table, read once at
 #[macro_use]
 mod dynlib; // dlopen-by-SONAME-candidate: the libraries whose major moves between webOS releases
 mod egl; // boot-time EGL capability probe (extensions, swap behaviour, buffer age) — diagnostic only
-mod ff; // FFmpeg (libavformat/libavcodec/libavutil) demuxer — the TV's own FFmpeg 3.3 via the stub-.so link
+mod ff; // THE demuxer — the FFmpeg 9.0 this app BUNDLES and pins (majors 63/63/61), dlopen'd by absolute path beside the binary, never the television's
 mod focusprobe; // dev: one diffable line naming everything app.rs's key ladder can move, logged when it changes
 mod fontcov; // which codepoints a font file can draw, read from its cmap — text.rs's fallback chain, and the host gate that stops tofu shipping
 mod gfx;

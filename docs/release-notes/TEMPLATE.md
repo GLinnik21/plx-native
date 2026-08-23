@@ -142,9 +142,9 @@ and `licenses/LGPL-2.1.txt`, both inside the package.
 | `DT_NEEDED` | `<n>` entries, `<unchanged since vA.B.C>` (asserted in CI against `ci/expected-dt-needed.txt`) |
 | payload | `<+0 files since vA.B.C>` |
 | listening sockets | none. A release build compiles out the whole `/tmp` trigger surface, the remote-control FIFO and the TCP capture listener. (`strings` on the binary also shows `/tmp/plxnative-url` — that is a log message, not a path it opens.) |
-| written outside its own directory | `/tmp/plxnative-{events,stderr,crash}.log`, mode 0600; the signed-in session at `/media/developer/com.beb.plxnative-auth.json` or `/media/internal/.com.beb.plxnative-auth.json`, mode 0600. A crash writes no core file. |
+| written outside its own directory | `/tmp/plxnative-{events,stderr,crash}.log`, mode 0600; the signed-in session at `/media/developer/com.beb.plxnative-auth.json` or `/media/internal/.com.beb.plxnative-auth.json`, mode 0600; and where you were when you last closed it, at `/media/developer/com.beb.plxnative-lastplace.json` or `/media/internal/.com.beb.plxnative-lastplace.json`, mode 0600 — the page, your Plex Home profile id and one server/item id, with no token and no playback position in it. A crash writes no core file. |
 | outbound hosts | your Plex Media Server, `plex.tv`, `discover.provider.plex.tv`. No analytics, telemetry or crash upload. |
-| declared `requiredMemory` | 60 MB against a measured ~74 MB peak — under-declared; known, tracked in `docs/distribution.md` §6.10 |
+| declared `requiredMemory` | 160 MB, against a peak of 152 MiB measured on the dev set across boot, browsing and 4K HDR playback. Was 60, which was below the 120 MB webOS substitutes when an app declares nothing. |
 
 <!-- ALWAYS — byte-identical between releases. Changes only when the code changes. -->
 ## Still the same scope
