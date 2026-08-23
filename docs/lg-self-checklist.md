@@ -26,10 +26,19 @@ Status taken 2026-08-22.
 
 ### #43 CASE1 — resolution must change with network speed
 
-There is no adaptive bitrate anywhere. `route.rs` makes one direct-play-vs-transcode decision at
-start and holds it for the session. The item's own legs are 512 Kbps → 1 Mbps → 7 Mbps →
-17.5 Mbps with the remark *"buffering should not occur constantly"*; the two slow legs would buffer
-continuously.
+**Still FAILS, and since 2026-08-23 (PR #57) for a narrower reason.** There is no adaptive bitrate
+anywhere: nothing measures the link, so no rung ever moves on its own — which is precisely what this
+item asks for. What the app now has is a USER-chosen ceiling (`route::Quality` — Auto plus five
+rungs, in the player's `…` popover) that is a routing policy rather than a parameter: an
+over-ceiling source loses direct play *and* the container remux, leaving the one flavour whose query
+the server can come in under, and `route::set_quality` re-decides the playback already on screen. So
+"one direct-play-vs-transcode decision at start, held for the session" is no longer true — a user
+can change it mid-film; a *measurement* cannot.
+
+The item's own legs are 512 Kbps → 1 Mbps → 7 Mbps → 17.5 Mbps with the remark *"buffering should
+not occur constantly"*; the two slow legs would still buffer continuously with nobody touching the
+picker. Closing it needs the measurement half plus a device pass over those four legs
+(`tools/netcond.py` is where the legs become reproducible).
 
 ### #43 CASE2 — IPv6
 
