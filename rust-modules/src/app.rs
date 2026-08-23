@@ -1394,6 +1394,9 @@ fn modal_of(r: Route) -> Modal {
 fn apply_more_action(a: crate::ui::more_menu::Action) {
     match a {
         crate::ui::more_menu::Action::ToggleStats => crate::ui::stats::toggle(),
+        // A rung of the playback-quality ladder. Stored as a routing POLICY, not handed to a
+        // running stream: it lands on the next resolve (`route::set_quality`).
+        crate::ui::more_menu::Action::SetQuality(q) => crate::route::set_quality(q),
         crate::ui::more_menu::Action::None => {}
     }
 }

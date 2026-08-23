@@ -14,7 +14,7 @@
 //! scan (caller falls back to the local codec heuristic / skips the codec override).
 use super::client::{Client, QueryBuilder, StreamUrl};
 use super::models::MediaContainer;
-use super::params::TranscodeSpec;
+use super::params::{Ceiling, TranscodeSpec};
 use super::probe::Location;
 
 /// The AUDIO codec set the buffer-feed PIPELINE decodes. This is the software half of a
@@ -221,12 +221,27 @@ impl Client {
             .int("directPlay", 0)
             .int("directStream", copy_ok as i64);
         // the one block the two flavors differ in: container-only REMUX copies the codecs
-        // (a resolution/bitrate cap would force a re-encode), RE-ENCODE caps at native 4K so
-        // an undecodable source goes to the profile's HEVC target instead of downscaled H264.
+        // (a resolution/bitrate cap would force a re-encode), RE-ENCODE caps at the ceiling this
+        // playback is bound by, so an undecodable source goes to the profile's HEVC target
+        // instead of downscaled H264.
+        //
+        // **The ceiling is the PARAMETER half of a decision already taken.** `None` is Auto and
+        // resolves to [`Ceiling::NATIVE_4K`] — the literal pair this line has always sent, so the
+        // default query is byte-identical to yesterday's. A `Some` is the user's pick off
+        // `route::Quality`'s ladder, and it can only be spent here because `route::quality_policy`
+        // has already denied direct play and the remux for this source: a number is meaningless on
+        // a flavor where no encoder runs to read it (`TranscodeSpec`'s own doc, and `link_policy`'s
+        // for the relay case that first established the shape).
+        //
+        // The remux branch still sends no cap, WITH a ceiling set, and that stays correct rather
+        // than becoming a hole: `quality_policy` admits a remux only for a source it measured
+        // under the ceiling, so those bytes are already inside the bound. A cap here would do the
+        // one thing the remux exists to avoid — force the re-encode.
         q = if s.remux {
             q.int("directStreamAudio", 1)
         } else {
-            q.str("videoResolution", "3840x2160").int("maxVideoBitrate", 60000)
+            let c = s.ceiling.unwrap_or(Ceiling::NATIVE_4K);
+            q.str("videoResolution", &c.resolution()).int("maxVideoBitrate", c.max_kbps)
         };
         if !copy_ok {
             // the audio lane keeps its own permission, so this costs a VIDEO encoder and nothing
@@ -308,7 +323,7 @@ impl Client {
 
 #[cfg(test)]
 mod tests {
-    use super::{link_policy, Client, Location, LinkPolicy, TranscodeSpec};
+    use super::{link_policy, Ceiling, Client, Location, LinkPolicy, TranscodeSpec};
     use crate::devcaps::Caps;
     use crate::plex::ServerId;
 
@@ -327,6 +342,7 @@ mod tests {
             audio_stream_id: 0,
             subtitle_stream_id: 0,
             offset_secs: -1,
+            ceiling: None,
         }
     }
 
@@ -379,6 +395,58 @@ mod tests {
         assert_eq!(plain, flagged, "the flag is meaningless on the remux flavor");
         assert!(plain.contains("directStream=1"), "{plain}");
         assert!(!plain.contains("videoResolution"), "a remux carries no cap, by design: {plain}");
+    }
+
+    // ---- the QUALITY ceiling, on the wire -------------------------------------------------
+
+    /// **GATE 5 — the re-encode receives the selected cap, and only the re-encode.**
+    ///
+    /// This is the PARAMETER half of `route::Quality`, and it is the half that is worthless on its
+    /// own: by the time a `Some` gets here, `route::quality_policy` has already refused direct play
+    /// and the remux for this source (`route`'s gates 3 and 4). What this pins is that the number
+    /// then actually reaches the query, on BOTH axes, replacing the native-4K default rather than
+    /// sitting beside it.
+    ///
+    /// It also pins the other end: **Auto is byte-identical to what this query has always sent**,
+    /// which is the parameter half of `route`'s gate 1. A ceiling that leaked a default would be a
+    /// change for every transcode in the app.
+    #[test]
+    fn the_re_encode_query_carries_the_selected_ceiling_and_auto_still_asks_for_native_4k() {
+        // Auto — the `None` path. Byte for byte the pre-ceiling literals.
+        let auto = a_client().transcode_query(&spec(false, false));
+        assert!(auto.contains("videoResolution=3840x2160"), "{auto}");
+        assert!(auto.contains("maxVideoBitrate=60000"), "{auto}");
+
+        // A rung: 720p at 4 Mbps. Both axes move, and the old values are GONE — a query carrying
+        // both would be a contradiction PMS resolves by position, which is not ours to assume.
+        let mut s = spec(false, false);
+        s.ceiling = Some(Ceiling { max_kbps: 4000, max_w: 1280, max_h: 720 });
+        let capped = a_client().transcode_query(&s);
+        assert!(capped.contains("videoResolution=1280x720"), "{capped}");
+        assert!(capped.contains("maxVideoBitrate=4000"), "{capped}");
+        assert!(!capped.contains("3840x2160"), "the native-4K default must be replaced, not joined: {capped}");
+        assert!(!capped.contains("60000"), "{capped}");
+        assert_eq!(capped.matches("maxVideoBitrate=").count(), 1, "one cap, not two: {capped}");
+        assert_eq!(capped.matches("videoResolution=").count(), 1, "one resolution, not two: {capped}");
+
+        // …and everything else about the query is untouched by the ceiling: the two differ in
+        // exactly the two params above.
+        assert_eq!(
+            auto.replace("videoResolution=3840x2160", "R").replace("maxVideoBitrate=60000", "B"),
+            capped.replace("videoResolution=1280x720", "R").replace("maxVideoBitrate=4000", "B"),
+            "the ceiling changed something other than the two params it is allowed to"
+        );
+
+        // A REMUX still sends no cap WITH a ceiling set, and that is correct rather than a hole:
+        // `quality_policy` admits a remux only for a source it measured UNDER the ceiling, so
+        // those bytes are already inside the bound — and a cap here would force the very
+        // re-encode the remux exists to avoid.
+        let mut r = spec(true, false);
+        r.ceiling = Some(Ceiling { max_kbps: 4000, max_w: 1280, max_h: 720 });
+        let remuxed = a_client().transcode_query(&r);
+        assert!(!remuxed.contains("maxVideoBitrate"), "a remux carries no cap, ceiling or not: {remuxed}");
+        assert!(!remuxed.contains("videoResolution"), "{remuxed}");
+        assert_eq!(remuxed, a_client().transcode_query(&spec(true, false)), "the ceiling is inert on a remux");
     }
 
     // ---- the relay policy ---------------------------------------------------------------

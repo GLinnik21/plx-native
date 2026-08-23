@@ -10,15 +10,31 @@
 /// item, and `session` is the per-playback id shared with the timeline
 /// (`X-Plex-Session-Identifier == session=`, byte-for-byte, so /status/sessions correlates).
 ///
-/// **There is no bitrate field here, and a capped link is not answered by adding one.** The only
-/// bitrate literal in the whole spec is `maxVideoBitrate`, on the RE-ENCODE branch of
+/// **A ceiling is answered by choosing the FLAVOR, and only then by asking for a number.** The
+/// only bitrate literal in the whole spec is `maxVideoBitrate`, on the RE-ENCODE branch of
 /// `transcoder::transcode_query`; the [`remux`](Self::remux) branch deliberately sends no cap at
 /// all, because a resolution or bitrate cap is precisely what makes PMS re-encode instead of copy.
 /// And on the third path — direct play, this client's default and its whole point — a cap means
 /// nothing, since no encoder is running to obey it. So a link with a ceiling (Plex's 2 Mbit/s
-/// relay) is answered by choosing the FLAVOR — deny direct play, deny the remux, let the server
-/// pick a rate on the branch that has one — never by asking for a number:
-/// `transcoder::link_policy` is that decision, with the reasoning and the honesty note.
+/// relay) is answered by denying direct play and denying the remux, leaving the one branch that
+/// can pick a rate: `transcoder::link_policy` is that decision, with the reasoning and the
+/// honesty note.
+///
+/// **[`ceiling`](Self::ceiling) does not contradict that paragraph — it is its second half, and
+/// it arrives only after the first half has run.** This field said "there is no bitrate field
+/// here" until 2026-08-23, and the sentence was right about a LINK ceiling and wrong as a general
+/// rule, because a link is not the only thing that can impose one. A **user-chosen** ceiling
+/// (`route::Quality` — the picker behind the player's `…` menu, for LG checklist #43 CASE1) is a
+/// different input with the identical mechanism: `route::quality_policy` returns the same
+/// [`LinkPolicy`](super::LinkPolicy) two flags `link_policy` does, `build_stream` composes the two
+/// by AND so the stricter always wins, and only once direct play and the remux have BOTH been
+/// denied does a number reach the wire here. Adding the field without that gate is the change that
+/// looks like it works and does nothing: the file that most needs the cap — a 30 Mbit/s source on
+/// a 4 Mbit/s link — is exactly the one that direct-plays, where no encoder ever reads it.
+///
+/// The invariant that keeps the two halves honest, asserted in `transcoder`'s tests: a spec may
+/// carry a ceiling **and** `remux == true` only when the source was already measured under it, so
+/// the remux branch still sends no cap and still does not need one.
 pub struct TranscodeSpec<'a> {
     pub rating_key: &'a str,
     /// The per-playback opaque session id (`route::sess()`).
@@ -56,6 +72,57 @@ pub struct TranscodeSpec<'a> {
     pub subtitle_stream_id: i64,
     /// Restart the encode at this offset (seconds); < 0 = fresh start (no `&offset=`).
     pub offset_secs: i64,
+    /// The bound this playback's RE-ENCODE may not exceed — the user's pick off the quality
+    /// ladder. `None` = Auto, and Auto is byte-identical to what this query has always sent
+    /// ([`Ceiling::NATIVE_4K`]), which is what makes the default path a pure regression gate.
+    ///
+    /// Read on the re-encode branch **only**, and that is not an oversight: see the type doc
+    /// above. By the time a `Some` reaches here, `route::quality_policy` has already refused the
+    /// two flavors no number can bind.
+    pub ceiling: Option<Ceiling>,
+}
+
+/// A bound a playback must come in under, in the units PMS's own params use: `maxVideoBitrate` is
+/// **kbps**, `videoResolution` is a `WxH` pair. One value rather than two scattered ints, because
+/// the two axes have to move together — a rung that halves the rate and keeps 4K asks the server
+/// for something it cannot make look like anything.
+///
+/// Lives here rather than in `route` so the ladder's rungs and the query that spends them are one
+/// type: `route::Quality::ceiling` is the only constructor of a non-default one.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Ceiling {
+    /// `maxVideoBitrate`, in **kbps** (PMS's unit — not bits, not bytes).
+    pub max_kbps: i64,
+    /// `videoResolution`, as the frame the encode may not exceed.
+    pub max_w: i64,
+    pub max_h: i64,
+}
+
+impl Ceiling {
+    /// What the re-encode branch has asked for since it existed: the panel's own native 4K at a
+    /// rate high enough to be no bound in practice. This is the `None`/Auto substitute, so it is
+    /// also the pin that says "Auto changed nothing" — `transcoder`'s tests assert the query it
+    /// produces byte for byte.
+    pub const NATIVE_4K: Ceiling = Ceiling { max_kbps: 60000, max_w: 3840, max_h: 2160 };
+
+    /// `videoResolution`'s value for this bound.
+    pub fn resolution(&self) -> String {
+        format!("{}x{}", self.max_w, self.max_h)
+    }
+
+    /// Does a source measured at `kbps` and `w`x`h` come in under this bound?
+    ///
+    /// **An unmeasured source does NOT** — `0` is "the server did not say", and it fails CLOSED
+    /// here while the same `0` PASSES `route::video_direct_plays`'s device-capability gate. The
+    /// asymmetry is the point and it is a decision, not an inconsistency: a device bound is a
+    /// CAPABILITY, so an unknown degrades to "assume yesterday's behaviour works" (the rule
+    /// `devcaps::parse` applies); a user ceiling is an explicit ASK, and the only way to honour an
+    /// ask about a file you have not measured is to route it to the branch where the server
+    /// applies the bound for you. Failing open here would reproduce, for every play from a shelf
+    /// that never loaded a detail page, exactly the do-nothing bug the type doc describes.
+    pub fn admits(&self, kbps: i64, w: i64, h: i64) -> bool {
+        kbps > 0 && w > 0 && h > 0 && kbps <= self.max_kbps && w <= self.max_w && h <= self.max_h
+    }
 }
 
 /// One paged section-listing query (the Library browse grid). Built per fetch by the browse

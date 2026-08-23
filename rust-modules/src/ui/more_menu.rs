@@ -4,28 +4,48 @@
 //!
 //! # Why an overflow menu exists at all
 //!
-//! One row today: **Stats for nerds**, the diagnostics overlay ([`crate::ui::stats`]). It needs a
-//! home a stranger can find, because it is how this app gets bug reports off televisions nobody
-//! here owns — every other diagnostic surface in the codebase (the `/tmp/plxnative-*` triggers, the
-//! remote FIFO, the capture stream) is compiled out of RELEASE builds by the `devtriggers` feature,
-//! which is what a user installs. "Press `…`, turn Stats for nerds on, photograph the screen" is a
-//! sentence that fits in a GitHub reply and needs no ssh, no root and no rebuild.
+//! **Stats for nerds**, the diagnostics overlay ([`crate::ui::stats`]), needs a home a stranger can
+//! find, because it is how this app gets bug reports off televisions nobody here owns — every other
+//! diagnostic surface in the codebase (the `/tmp/plxnative-*` triggers, the remote FIFO, the
+//! capture stream) is compiled out of RELEASE builds by the `devtriggers` feature, which is what a
+//! user installs. "Press `…`, turn Stats for nerds on, photograph the screen" is a sentence that
+//! fits in a GitHub reply and needs no ssh, no root and no rebuild.
 //!
-//! A menu with one row is not a mistake. The alternative — hanging the toggle off a hidden key
-//! chord — is undiscoverable by exactly the people who would report the bug, and the alternative to
-//! THAT is a fourth disc for a control most users touch once. Overflow is what a `…` means.
+//! It held that one row for a while, and a menu with one row is not a mistake either: the
+//! alternative — hanging the toggle off a hidden key chord — is undiscoverable by exactly the
+//! people who would report the bug, and the alternative to THAT is a fourth disc for a control most
+//! users touch once. Overflow is what a `…` means.
 //!
-//! # A switch, not a chevron — and not a picker's checkmark either
+//! # Two sections, and the two row idioms they are each drawn in
 //!
-//! The row carries [`Row::toggle`], so it states itself as the WORD `On`/`Off` at the row's
-//! trailing edge. It is a STATE, not a destination: a chevron would promise a page behind the row
-//! and there is none. It is equally not [`Row::checked`]'s leading checkmark, which means "the
-//! active one of several" and would be answering a question a lone switch never asked — the design
-//! system's rule is that a mark says where you are and a word says what is set, and no row says
-//! both. (It drew as a PAIR OF MARKS for one day, a ring ticked when on; those assets were deleted
-//! the same evening — see [`crate::ui::icons`].) The menu closes on commit either way, so the
-//! read-out is never what confirms the press: the overlay appearing behind the dismissed panel is,
-//! which is louder than a word the dismissal would take off screen anyway.
+//! **Options** holds switches. Its row carries [`Row::toggle`], so it states itself as the WORD
+//! `On`/`Off` at the row's trailing edge. It is a STATE, not a destination: a chevron would promise
+//! a page behind the row and there is none.
+//!
+//! **Quality** is the [`crate::route::Quality`] ladder — Auto plus a few rungs — and its rows carry
+//! [`Row::checked`]'s LEADING checkmark, which means "the active one of several". That is the same
+//! design-system rule from the other side: **a mark says where you are and a word says what is set,
+//! and no row says both**, which is why a rung's rate rides inside its own label rather than in a
+//! trailing value beside the mark. (The Options row drew as a PAIR OF MARKS for one day, a ring
+//! ticked when on; those assets were deleted the same evening — see [`crate::ui::icons`].)
+//!
+//! A flat popover with a header per section, deliberately, rather than a Quality row that drills
+//! into a second page: `docs/parity-gaps.md`'s standing decision is that this app has **no
+//! full-screen menu sheets** — the reference clients put playback quality in one and we do not —
+//! and a drill-in inside a popover would need a BACK that means "up one page" where every other
+//! panel's BACK means "dismiss". Six rungs and a switch fit; when they stop fitting, the
+//! [`TableView`] scrolls, which is what it is for.
+//!
+//! The menu closes on commit either way, so the read-out is never what confirms the press: the
+//! overlay appearing behind the dismissed panel — or, for a rung, the next play routing differently
+//! — is.
+//!
+//! # What a picked rung does, and what it deliberately does not
+//!
+//! It is a ROUTING policy, not a number handed to the transcoder: over-ceiling content loses direct
+//! play *and* the container remux, which is the only way a cap can bind at all. The whole argument
+//! is [`crate::route::Quality`]'s doc. It takes effect on the NEXT resolve — nothing here reshapes
+//! a stream already on the wire.
 #![allow(non_upper_case_globals)]
 use crate::ui::consts::*;
 use crate::ui::popover::Popover;
@@ -40,13 +60,19 @@ pub enum Action {
     None,
     /// flip [`crate::ui::stats`]'s overlay on/off
     ToggleStats,
+    /// select a rung of the playback-quality ladder ([`crate::route::set_quality`])
+    SetQuality(crate::route::Quality),
 }
 
 static mut POP: Popover = Popover::new(); // shared open/appear choreography
 static mut TABLE: TableView = TableView::new(); // main-thread only
 /// The ordered rows captured at [`open`] — the ONE place row order lives, so [`on_ok`]'s index
 /// mapping cannot drift from what was drawn. (`account_menu`'s rationale, and its bug.)
-static mut ROWS: &[Action] = &[];
+///
+/// An owned `Vec` rather than the `&'static [Action]` it was, because the Quality section's rows
+/// are BUILT from `route::QUALITY_LADDER` rather than written out here. Main-thread only, like
+/// `TABLE` beside it, and read through `addr_of!` for the same reason — never as `&ROWS`.
+static mut ROWS: Vec<Action> = Vec::new();
 
 fn table() -> &'static mut TableView {
     unsafe { &mut *addr_of_mut!(TABLE) }
@@ -67,42 +93,70 @@ pub fn is_open() -> bool {
     unsafe { (*addr_of!(POP)).is_open() }
 }
 
-/// Every row the menu can offer, in order. A free function (rather than a literal inside [`open`])
-/// so the index mapping [`on_ok`] relies on is one testable value.
-fn rows_for() -> &'static [Action] {
-    &[Action::ToggleStats]
+/// Every row the menu can offer, in order and ACROSS SECTIONS. A free function (rather than a
+/// literal inside [`open`]) so the index mapping [`on_ok`] relies on is one testable value.
+///
+/// **The order here is the whole contract**, because [`TableView`]'s `sel` is a single flat index
+/// over every row of every section: this list must be built in exactly the order [`open`] pushes
+/// rows, or a press commits its neighbour. A separator would be a row here too — there is none, and
+/// the debug assert in [`open`] is what would catch one being added on one side only.
+fn rows_for() -> Vec<Action> {
+    let mut v = vec![Action::ToggleStats];
+    v.extend(crate::route::QUALITY_LADDER.iter().map(|q| Action::SetQuality(*q)));
+    v
 }
 
 fn label(a: Action) -> &'static str {
     match a {
         Action::ToggleStats => "Stats for nerds",
+        // the rung names itself — rate and frame in one string, because the row already carries
+        // the picker's leading mark (see this module's doc)
+        Action::SetQuality(q) => q.label(),
         Action::None => "",
     }
 }
 
-/// Whether the state a row names is currently on. It reaches the row as [`Row::toggle`] and so
-/// draws as the WORD `On`/`Off` at the trailing edge — never as a picker's leading checkmark: this
-/// menu's rows are things you turn on and off, and nothing here is "the active one of several".
-/// (Named `checked` until 2026-08-21, from the row builder it no longer calls — a name that read
-/// as a promise of the leading mark this menu deliberately does not draw.)
+/// Whether the SWITCH a row names is currently on. It reaches the row as [`Row::toggle`] and so
+/// draws as the WORD `On`/`Off` at the trailing edge — never as a picker's leading checkmark, which
+/// means "the active one of several" and is what the Quality rung rows use instead. Two idioms, one
+/// rule: a mark says where you are and a word says what is set, and no row says both. (Named
+/// `checked` until 2026-08-21, from the row builder it does not call — a name that read as a
+/// promise of the leading mark an Options row deliberately does not draw.)
 fn is_on(a: Action) -> bool {
     match a {
         Action::ToggleStats => crate::ui::stats::enabled(),
-        Action::None => false,
+        // a rung is not a switch — see `row_for`, which gives it the leading mark instead
+        Action::SetQuality(_) | Action::None => false,
+    }
+}
+
+/// One row, drawn in the idiom its ACTION calls for. Free-standing (rather than inline in [`open`])
+/// so the two idioms are decided in one place: a switch gets the trailing word, a picker rung gets
+/// the leading mark, and nothing gets both.
+fn row_for(a: Action) -> Row {
+    match a {
+        Action::SetQuality(q) => Row::new(label(a)).checked(crate::route::quality() == q),
+        _ => Row::new(label(a)).toggle(is_on(a)),
     }
 }
 
 pub fn open() {
     let rows = rows_for();
-    unsafe { addr_of_mut!(ROWS).write(rows) };
-    let mut sec = Section::new("Options");
-    for a in rows {
-        sec = sec.row(Row::new(label(*a)).toggle(is_on(*a)));
+    // TWO sections, built in ROWS order — see `rows_for`: `TableView::sel` is one flat index over
+    // both, so the split here is presentational and the ORDER is the contract.
+    let mut options = Section::new("Options");
+    let mut quality = Section::new("Quality");
+    for a in &rows {
+        match a {
+            Action::SetQuality(_) => quality = quality.row(row_for(*a)),
+            _ => options = options.row(row_for(*a)),
+        }
     }
     table().compact = true; // a short action list — BODY labels, like the profile menu
-    table().set_sections(vec![sec], 0, false);
+    table().set_sections(vec![options, quality], 0, false);
     // ROWS *is* the index→action map, so it must stay one-to-one with what was built above.
     debug_assert_eq!(rows.len() as i32, table().n_rows());
+    unsafe { addr_of_mut!(ROWS).write(rows) };
     pop().open();
 }
 
@@ -146,7 +200,9 @@ pub fn click(mx: f32, my: f32) -> Action {
 pub fn on_ok() -> Action {
     let sel = table().sel;
     close();
-    action_at(unsafe { addr_of!(ROWS).read() }, sel)
+    // BORROW the row list, never `read()` it: `ROWS` owns its `Vec` now, and a `read` would move
+    // the allocation out of the static and drop it at the end of this expression.
+    action_at(unsafe { &*addr_of!(ROWS) }, sel)
 }
 
 /// The row list IS the mapping — a selection outside it is `None` rather than whatever action
@@ -162,7 +218,13 @@ fn panel_rect() -> Rect {
     let pw = 448.0f32;
     let px = SCR_W - 80.0 - pw;
     let bottom = SCR_H - 316.0; // ~28px above the discs, as track_menu
-    let ph = table().measured_height().clamp(120.0, 320.0);
+    // The ceiling was 320 while this menu held one row, and it was invisible then. With the
+    // Quality ladder beside it the natural height is ~560, so a 320 cap put four of nine rows on
+    // screen and silently scrolled the rest — a picker whose options you cannot see is a picker
+    // that reads as broken. 596 is the room there actually is: the panel is anchored to `bottom`
+    // and grows UPWARD, so this is `bottom` minus the 168 the design leaves at the top of the
+    // frame. Past that it scrolls, which is what `TableView` is for.
+    let ph = table().measured_height().clamp(120.0, bottom - 168.0);
     Rect::new(px, bottom - ph, pw, ph)
 }
 
@@ -194,14 +256,21 @@ mod tests {
     #[test]
     fn every_row_has_a_label() {
         for a in rows_for() {
-            assert!(!label(*a).is_empty(), "{a:?} would draw a blank row");
+            assert!(!label(a).is_empty(), "{a:?} would draw a blank row");
         }
     }
 
     #[test]
     fn a_selection_maps_to_its_row() {
         let rows = rows_for();
-        assert_eq!(action_at(rows, 0), Action::ToggleStats);
+        assert_eq!(action_at(&rows, 0), Action::ToggleStats);
+        // …and the Quality section follows the Options one, in `route::QUALITY_LADDER` order.
+        // `sel` is ONE flat index over both sections, so this is the join that a section split
+        // could quietly break: row 1 must be the ladder's head, not its second rung.
+        assert_eq!(action_at(&rows, 1), Action::SetQuality(crate::route::Quality::Auto));
+        for (i, q) in crate::route::QUALITY_LADDER.iter().enumerate() {
+            assert_eq!(action_at(&rows, 1 + i as i32), Action::SetQuality(*q));
+        }
     }
 
     /// Out-of-range must be `None`, never a neighbouring action: `sel` survives a rebuild, so a
@@ -209,8 +278,8 @@ mod tests {
     #[test]
     fn an_out_of_range_selection_is_none_not_a_neighbour() {
         let rows = rows_for();
-        assert_eq!(action_at(rows, rows.len() as i32), Action::None);
-        assert_eq!(action_at(rows, -1), Action::None);
+        assert_eq!(action_at(&rows, rows.len() as i32), Action::None);
+        assert_eq!(action_at(&rows, -1), Action::None);
         assert_eq!(action_at(&[], 0), Action::None);
     }
 }

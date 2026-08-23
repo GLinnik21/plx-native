@@ -91,12 +91,20 @@ a dead source is **absent** from Home and states itself in its own library secti
   also why a probe must **verify `machineIdentifier` on the response** before accepting a
   connection, and why `probe.rs` is pure (no socket, no clock): the rules are then gradeable on the
   dev Mac, which is the only tier that can grade them at all.
-- **A capped link is answered by the transcode FLAVOR, never by a bitrate parameter.** Plex's relay
-  is a ~2 Mbit/s tunnel, so `transcoder::link_policy` denies direct play *and* the container remux
-  over one — the remux is the half that is easy to miss, since it copies the codecs and deliberately
-  sends no cap, i.e. the same bytes at the same rate one layer down. `TranscodeSpec` has no bitrate
-  field and must not grow one. **No relay connection has ever been observed by this codebase**, so
-  that policy is reasoned, not measured; read its doc before touching it.
+- **A ceiling is answered by the transcode FLAVOR *first*, and only then by a parameter.** Plex's
+  relay is a ~2 Mbit/s tunnel, so `transcoder::link_policy` denies direct play *and* the container
+  remux over one — the remux is the half that is easy to miss, since it copies the codecs and
+  deliberately sends no cap, i.e. the same bytes at the same rate one layer down. **No relay
+  connection has ever been observed by this codebase**, so that policy is reasoned, not measured;
+  read its doc before touching it.
+  `TranscodeSpec` grew a `ceiling` field on 2026-08-23 and this bullet used to end "and must not
+  grow one" — which was right about a LINK ceiling and wrong as a general rule. A **user-chosen**
+  ceiling (`route::Quality`, the picker in the player's `…` menu, for LG checklist #43 CASE1) is a
+  different input with the identical mechanism: `route::quality_policy` returns the same two flags
+  `link_policy` does, `route::flavors_allowed` composes them so the stricter wins, and only once
+  direct play and the remux are BOTH denied does `Ceiling` reach `transcode_query`. The rule that
+  survives unchanged is the ORDER: a number that is not preceded by a flavour refusal does nothing
+  at all, because the flavour it would have bound is the one with no encoder in it.
 - **Capture the server at the SPAWN SITE**, the rule the multi-server work inherits from
   `route::ResolveEnv` — whose doc says why in general: a worker reads no `static mut`, because the
   main thread reassigns those under it. "Which server is current" is exactly such a value, and a
