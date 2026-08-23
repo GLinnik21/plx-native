@@ -1172,6 +1172,10 @@ def a_replayed(lines, want):
     The position series is the same `pos=` heartbeat every other case reads, deliberately: a binary
     that stopped emitting it fails here the way it fails everywhere else, instead of passing this
     case by having nothing left to contradict.
+
+    NB the replay COUNT is an equality, which makes this the third exception to the early-exit
+    soundness rule above `SETTLE_S` — see that note for what it can and cannot see, and why the
+    real defence against a runaway loop is `replay_left` in `app.rs` rather than anything here.
     """
     fired = [ln for ln in lines if "replay: starting the finished stream again" in ln]
     if len(fired) != want:
@@ -1456,6 +1460,17 @@ def op_resume_transcode(lines, offset_s):
 # ABSENCE checks, which start out true and can only flip the other way:
 #   * a_no_error            — `smp_cb type=18` / `Playing error`
 #   * op_seek_rapid         — `reload_at: fresh Load` (stuck-watchdog gave up on in-place)
+# ...and, since 2026-08-23, one COUNT that is an equality rather than a floor:
+#   * a_replayed            — exactly N `replay:` lines (more than N is a loop)
+# It is the same shape as the two above and it is here because this file asks a third exception to
+# be reasoned about rather than added. What it cannot see: an app that replays FOREVER fires its
+# next `replay:` line only after another full viewing (~20 s on the short clip), and the case can
+# satisfy everything else at ~28 s, so an early exit two seconds later stops before the evidence
+# arrives. The primary defence is therefore app-side and not here — `replay_left` is decremented
+# before each re-arm and its parsing is host-tested (`app::replay_budget_tests`) — and `--no-early`
+# is how to go looking for a loop deliberately. Deliberately NOT closed by forcing this one case to
+# burn its whole 100 s cap: that is ~1.5 min on every suite run to guard three lines whose bound is
+# already gradeable by `make check`, and the trade is worth re-taking only if that bound moves.
 # So early exit can never turn a FAIL into a PASS on the evidence *seen*; what it can do is
 # stop before evidence that would have failed the case arrives. SETTLE_S keeps watching for a
 # moment after the last assertion flips, and --no-early restores the full fixed window.
