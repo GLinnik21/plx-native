@@ -44,6 +44,13 @@ pub(crate) mod serverinfo;
 pub(crate) mod account;
 pub(crate) mod session;
 
+// WHERE a server is, as one value: scheme + host + port, parsed from a URL and never assembled
+// from an address. The type every layer below the transport passes instead of a bare
+// `(host, port)` pair — read its module doc before adding a call site, in particular the bracket
+// invariant that keeps `host()` (the resolver's node) and `authority()` (URL serialization) from
+// being confused for one another.
+pub(crate) mod origin;
+
 // Which of a server's advertised addresses are worth dialling, and in what order. PURE policy over
 // an `account::Resource` — no socket, no thread — so the rules that decide reachability are gradeable
 // on the host, which is the only tier that can grade them at all: the failures they prevent are an
@@ -63,14 +70,19 @@ pub(crate) mod discover;
 // The re-exports are the public surface the call sites import.
 #[allow(unused_imports)]
 pub use client::{Client, StreamUrl};
+// WHERE a server is, as one value. `Origin` is what `register_origin`/`install` take and what a
+// `Client` carries; `Scheme` is re-exported beside it because `dev::DevServer` deserializes one
+// straight out of the `plxnative-servers` trigger.
+#[allow(unused_imports)]
+pub use origin::{Origin, Scheme};
 // The registry surface. `client`/`client_opt`/`install` keep the exact signatures they had as
 // singleton accessors, so every call site outside `plex/` reads unchanged; `client_for`,
 // `register`, `set_current` and `ServerId` are the multi-server additions.
 #[allow(unused_imports)]
 pub use servers::{
     client, client_for, client_opt, count as server_count, current as current_server, describe as describe_server,
-    describe_name as describe_server_name, facts as server_facts, ids as server_ids, install, register, same_item,
-    set_current, ServerFacts, ServerId, MAX_SERVERS,
+    describe_name as describe_server_name, facts as server_facts, ids as server_ids, install, register, register_origin,
+    same_item, set_current, ServerFacts, ServerId, MAX_SERVERS,
 };
 // Sign-out. `pub(crate)` like the function itself: retiring the whole table is `auth::sign_out`'s
 // to call and nothing else's — a caller that merely wants to stop using a server wants

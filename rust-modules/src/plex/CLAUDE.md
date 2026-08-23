@@ -30,11 +30,31 @@ token gets a **401** from it, and its section key `1` is a different library fro
 
 `client()` and `client_opt()` still mean what they always did, they just mean **the CURRENT
 server** now — which is why nothing outside `plex/` changed when the `OnceLock<Client>` singleton
-became a table. `client_for(id)` is the multi-server addition; `register(machine_id, host, port,
-token)` puts a server in the table; `install(host, port, token)` is the SESSION path (boot, QR
-login, profile switch) and always retargets. Slots are keyed on `machineIdentifier` because that is
-the only identity that survives a server changing address — and a `register` that has *learned* an
-id **adopts** an address-only slot instead of adding a second one for the same machine.
+became a table. `client_for(id)` is the multi-server addition; `register_origin(machine_id,
+&Origin, token)` puts a server in the table; `install(&Origin, token)` is the SESSION path (boot, QR
+login, profile switch) and always retargets.
+
+**A server's address is an `Origin` — scheme + host + port — and it is PARSED FROM A URL, never
+assembled from an address.** `origin.rs` is the type and the reasoning; the short version is that
+plex.tv advertises a server's TLS origin as the `plex.direct` HOSTNAME (`Connection.uri`) while
+`Connection.address` stays the dotted quad behind it, and the certificate is issued for the name —
+so a control plane carrying only an address can never validate one, however much TLS is added
+underneath it. `probe::Candidate::origin()` is the one derivation, and `Candidate::address` survives
+only as what a log and the Sources panel SAY. Two invariants come with it: `Origin::host()` is
+**always unbracketed** (it is the `getaddrinfo` node) while `Origin::authority()` **always**
+brackets a v6 literal (it is URL serialization) — confusing the two makes URL construction keep
+looking right while name resolution quietly stops working. `register(machine_id, host, port, token)`
+and `Origin::http(host, port)` still exist and are honest about what they mean: **every caller of
+either is a place that still assumes cleartext**, which is what makes them the grep for the TLS
+work. Today they all are, because `stream.rs` speaks nothing else — with one caller that has an
+origin and throws it away: `ui/alt_sources.rs`'s dev-only `stand_in_slot`, which registers a
+stand-in from `c.host()`/`c.port()` and should say `register_origin(&…, c.origin(), &token)`. It is
+one line and it is not in the origin unit's ownership, so it is written down here rather than
+silently left.
+
+Slots are keyed on `machineIdentifier` because that is the only identity that survives a server
+changing address — and a registration that has *learned* an id **adopts** an address-only slot
+instead of adding a second one for the same machine.
 
 Three design choices carry the weight, and each is a prevented bug rather than a preference:
 

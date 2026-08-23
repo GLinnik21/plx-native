@@ -68,7 +68,8 @@ Line numbers are as of the current tree. All paths below are relative to `rust-m
 
 ### Prerequisite wiring (not one of the 5 files, but required first)
 
-**DONE** — `plex::install(host, port, token)` is called in the boot/login paths (`app.rs`,
+**DONE** — `plex::install` (which took `(host, port, token)` when this was written and takes
+`(&Origin, token)` since `plex/origin.rs`) is called in the boot/login paths (`app.rs`,
 `auth.rs`) before the first PMS read. Remaining follow-ons when the playback layer migrates:
 
 - `route::CFG` keeps only `demo_url` (host/port/token move to the client; `route::config()` callers

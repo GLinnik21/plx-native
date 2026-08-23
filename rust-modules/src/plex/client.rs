@@ -1,4 +1,4 @@
-//! The `Client` (immutable host/port/token + identity) and the four centralisation
+//! The `Client` (immutable origin/token + identity) and the four centralisation
 //! choke points every op file routes through:
 //!   * `with_token` — the ONLY place `X-Plex-Token` is appended.
 //!   * `enc` / `QueryBuilder` — the ONLY place a value is percent-encoded (via
@@ -15,6 +15,7 @@
 //! Client` is handed out live next door in [`super::servers`] — this file is the type, that
 //! file is the table.
 use super::models::{Envelope, MediaContainer};
+use super::origin::Origin;
 use super::probe::Location;
 use super::servers::ServerId;
 use std::sync::atomic::{AtomicU32, AtomicU8, Ordering::Relaxed};
@@ -24,7 +25,9 @@ const ACCEPT_JSON: &str = "Accept: application/json\r\n";
 
 /// Immutable after construction (apart from the token + its generation, both interior-mutable).
 /// Cheap to share by `&ref` across threads (poster workers, the timeline reporter, the detail
-/// loader all read it). `host` is a numeric dotted-quad — the raw socket does no DNS.
+/// loader all read it). Its address is an [`Origin`] — see the field, and `origin.rs` for why a
+/// `(host, port)` pair could not be the whole of one. Every origin today is `http://` at a numeric
+/// dotted quad, because that is all the raw socket in `crate::stream` speaks: no DNS, no TLS.
 pub struct Client {
     /// This client's slot in the [server registry](super::servers) — a stable handle for the
     /// life of the process, which is what lets a caller name a server without holding a
@@ -35,8 +38,19 @@ pub struct Client {
     /// token)` has only an address to go on, and a later `register` that learns the id adopts
     /// that slot rather than adding a second one for the same server.
     pub(super) machine_id: String,
-    pub(super) host: String,      // e.g. "192.0.2.10" (numeric; passed straight to http_get/http_open)
-    pub(super) port: i32,         // 32400
+    /// **WHERE this server is** — scheme, host and port as one value ([`Origin`]).
+    ///
+    /// It was a `host: String` + `port: i32` pair, and the pair could not say `https`. That was
+    /// not a missing feature so much as a trap: plex.tv advertises a server's TLS origin as the
+    /// `plex.direct` HOSTNAME while its `address` stays the dotted quad behind it, so a client
+    /// carrying only an address can never validate a certificate however much TLS is added
+    /// underneath it. The origin is PARSED from what plex.tv sent — see
+    /// [`super::probe::Candidate::origin`].
+    ///
+    /// Today every one of these is `http://` at a numeric IPv4 address, because that is all
+    /// `crate::stream` speaks. [`Client::host`] and [`Client::port`] still answer exactly what
+    /// they always did, which is why the ~30 call sites below this layer did not move.
+    pub(super) origin: Origin,
     // X-Plex-Token value. Interior-mutable because the token changes at runtime after boot: it's
     // installed once we've logged in, and swapped when the user switches Plex Home profile (same
     // server, different per-user token). Read in exactly one place (`with_token`).
@@ -131,12 +145,11 @@ impl Client {
     /// a registry that constructs a `Client` per server and re-points slots. The registry does
     /// that read once per registration instead, so this constructor touches no filesystem and no
     /// global but the generation counter.
-    pub(super) fn new(id: ServerId, machine_id: &str, host: &str, port: i32, token: &str, client_id: &str) -> Client {
+    pub(super) fn new(id: ServerId, machine_id: &str, origin: Origin, token: &str, client_id: &str) -> Client {
         Client {
             id,
             machine_id: machine_id.to_owned(),
-            host: host.to_owned(),
-            port,
+            origin,
             token: RwLock::new(token.to_owned()),
             client_id: client_id.to_owned(),
             product: super::identity::PRODUCT.into(),
@@ -177,11 +190,18 @@ impl Client {
     pub fn token_gen(&self) -> u32 {
         self.token_gen.load(Relaxed)
     }
+    /// The host to DIAL — never bracketed, even for a v6 literal (see [`Origin::host`]). Unchanged
+    /// in meaning and in bytes from when this was a plain field.
     pub fn host(&self) -> &str {
-        &self.host
+        self.origin.host()
     }
     pub fn port(&self) -> i32 {
-        self.port
+        self.origin.port()
+    }
+    /// **Where this server is, whole** — the value to pass on rather than re-deriving a pair from
+    /// [`Client::host`] and [`Client::port`], which cannot carry the scheme.
+    pub fn origin(&self) -> &Origin {
+        &self.origin
     }
     /// This client's registry slot — pass it to [`super::servers::client_for`] to get back a
     /// `&'static Client` from anywhere.
@@ -198,7 +218,7 @@ impl Client {
     /// until someone does, [`Client::link`] is `None` and playback policy is unrestricted.
     ///
     /// **ORDER MATTERS: register the address FIRST, then set the link on the client you get back**
-    /// (`let id = register(mid, host, port, tok); client_for(id).unwrap().set_link(l);`). A
+    /// (`let id = register_origin(mid, &o, tok); client_for(id).unwrap().set_link(l);`). A
     /// `register` whose address differs RE-POINTS the slot — it publishes a fresh `Client`, which
     /// starts at `LINK_UNKNOWN` — so a tier set before that call is simply gone, and the policy
     /// silently reverts to unrestricted. That reset is deliberate rather than a wart: an address
@@ -219,13 +239,13 @@ impl Client {
     /// GET → parse the `{ "MediaContainer": … }` envelope into the flat container.
     pub(super) fn get_json(&self, path_no_token: &str) -> Option<MediaContainer> {
         let path = self.with_token(path_no_token);
-        let body = crate::stream::http_get(&self.host, self.port, &path, Some(ACCEPT_JSON))?;
+        let body = crate::stream::http_get(self.host(), self.port(), &path, Some(ACCEPT_JSON))?;
         serde_json::from_slice::<Envelope>(&body).ok().map(|e| e.media_container)
     }
 
     /// GET raw bytes (image transcode / sidecar sub) — caller decodes.
     pub(super) fn get_bytes(&self, path_no_token: &str) -> Option<Vec<u8>> {
-        crate::stream::http_get(&self.host, self.port, &self.with_token(path_no_token), None)
+        crate::stream::http_get(self.host(), self.port(), &self.with_token(path_no_token), None)
     }
 
     /// GET raw bytes for a path this server ALREADY BUILT — the one entry point that does **not**
@@ -242,12 +262,12 @@ impl Client {
     /// The token is therefore in the CALLER's string. It must not be logged — the poster store
     /// logs no keys, and neither may anything else that holds one.
     pub(crate) fn fetch_built(&self, path_with_token: &str) -> Option<Vec<u8>> {
-        crate::stream::http_get(&self.host, self.port, path_with_token, None)
+        crate::stream::http_get(self.host(), self.port(), path_with_token, None)
     }
 
     /// GET whose body is discarded (transcode decision / stop registration side effects).
     pub(super) fn get_void(&self, path_no_token: &str) {
-        let _ = crate::stream::http_get(&self.host, self.port, &self.with_token(path_no_token), None);
+        let _ = crate::stream::http_get(self.host(), self.port(), &self.with_token(path_no_token), None);
     }
 
     /// [`Client::get_void`], but reporting whether the request actually reached the server and came
@@ -256,12 +276,12 @@ impl Client {
     /// timed-out connect as much as a rejected status, which is the distinction that matters here:
     /// a share that is asleep answers nothing at all.
     pub(super) fn get_ok(&self, path_no_token: &str) -> bool {
-        crate::stream::http_get(&self.host, self.port, &self.with_token(path_no_token), None).is_some()
+        crate::stream::http_get(self.host(), self.port(), &self.with_token(path_no_token), None).is_some()
     }
 
     /// PUT (no body) — returns the HTTP status (all `select_streams` reads).
     pub(super) fn put(&self, path_no_token: &str) -> i32 {
-        crate::stream::http_put(&self.host, self.port, &self.with_token(path_no_token))
+        crate::stream::http_put(self.host(), self.port(), &self.with_token(path_no_token))
     }
 
     /// POST whose body carries nothing to read — /:/timeline (spec verb; params ride the query
@@ -277,13 +297,13 @@ impl Client {
     /// timeline is the only body-less POST in the layer, so a twin that dropped the outcome would
     /// be a method with no callers.
     pub(super) fn post_ok(&self, path_no_token: &str) -> bool {
-        crate::stream::http_post(&self.host, self.port, &self.with_token(path_no_token), None).is_some()
+        crate::stream::http_post(self.host(), self.port(), &self.with_token(path_no_token), None).is_some()
     }
 
     /// POST → parse the `{ "MediaContainer": … }` envelope — /playQueues (the returned ids).
     pub(super) fn post_json(&self, path_no_token: &str) -> Option<MediaContainer> {
         let path = self.with_token(path_no_token);
-        let body = crate::stream::http_post(&self.host, self.port, &path, Some(ACCEPT_JSON))?;
+        let body = crate::stream::http_post(self.host(), self.port(), &path, Some(ACCEPT_JSON))?;
         serde_json::from_slice::<Envelope>(&body).ok().map(|e| e.media_container)
     }
 
@@ -357,40 +377,49 @@ impl QueryBuilder {
 // ---- StreamUrl — the streaming return type ----
 
 /// A built playback target for the raw demux/cue sockets. NOT a fetched response — the player
-/// passes these three fields straight to `crate::stream::http_open`. Range headers for seeks
+/// passes its origin and path straight to `crate::stream::http_open`. Range headers for seeks
 /// are added by the player as `http_open`'s `extra`, never by this layer. `path` includes the
 /// `?query&X-Plex-Token`.
 pub struct StreamUrl {
-    pub host: String,
-    pub port: i32,
+    /// Where the bytes come from ([`Origin`]) — copied from the [`Client`] that built this, so a
+    /// stream target can never disagree with the control plane about which scheme, host and port
+    /// it means.
+    pub origin: Origin,
     pub path: String,
 }
 
 impl StreamUrl {
-    /// The full `http://host:port/path?…` form — what `route` stores as the playback URL
+    /// The full `{scheme}://{authority}{path}` form — what `route` stores as the playback URL
     /// (the engine later splits it back with [`StreamUrl::parse`]).
+    ///
+    /// Byte-identical to the `format!("http://{host}:{port}{path}")` it replaced for every origin
+    /// this app builds today, and correct for the two shapes that spelling could not express: an
+    /// https origin, and a v6 literal (which must be BRACKETED in a URL and BARE at the resolver
+    /// — see [`Origin`]).
     pub fn to_url(&self) -> String {
-        format!("http://{}:{}{}", self.host, self.port, self.path)
+        format!("{}{}", self.origin.base(), self.path)
     }
 
-    /// Parse an EXTERNAL full URL (the /tmp/plxnative-url override) back into parts —
-    /// replaces `player::engine::parse_stream_url` (same behavior: default port 32400).
+    /// Parse an EXTERNAL full URL (the `/tmp/plxnative-url` override) back into parts —
+    /// replaces `player::engine::parse_stream_url`.
+    ///
+    /// **Total**, because its caller has no failure path: a garbage override has to come back as
+    /// *something* to fail on at `http_open`. That is why it goes through [`super::origin::split`]
+    /// rather than [`Origin::parse`] — the defaults are the ones this function has always had (no
+    /// scheme means `http`, no port means 32400), and an undialable port becomes the default
+    /// instead of wrapping into one nobody wrote down.
     pub fn parse(url: &str) -> StreamUrl {
-        let s = url.strip_prefix("http://").unwrap_or(url);
-        let he = s.find(|c| c == ':' || c == '/').unwrap_or(s.len());
-        let (host, rest) = (s[..he].to_string(), &s[he..]);
-        if let Some(r) = rest.strip_prefix(':') {
-            let pe = r.find('/').unwrap_or(r.len());
-            let port = r[..pe].parse().unwrap_or(32400);
-            let path = if pe < r.len() { r[pe..].into() } else { "/".into() };
-            StreamUrl { host, port, path }
-        } else {
-            StreamUrl {
-                host,
-                port: 32400,
-                path: if rest.is_empty() { "/".into() } else { rest.into() },
-            }
-        }
+        let (origin, path) = super::origin::split(url);
+        StreamUrl { origin, path: if path.is_empty() { "/".into() } else { path.into() } }
+    }
+
+    /// The host to DIAL — bare, never bracketed. `crate::stream` takes this; a URL takes
+    /// [`StreamUrl::to_url`].
+    pub fn host(&self) -> &str {
+        self.origin.host()
+    }
+    pub fn port(&self) -> i32 {
+        self.origin.port()
     }
 }
 
@@ -399,7 +428,7 @@ mod tests {
     use super::*;
 
     fn a_client(machine: &str, token: &str) -> Client {
-        Client::new(ServerId::from_raw(3), machine, "10.0.0.1", 32400, token, "cid-42")
+        Client::new(ServerId::from_raw(3), machine, Origin::http("10.0.0.1", 32400), token, "cid-42")
     }
 
     /// A `Client` is one server's identity plus its token, and every piece of it now arrives
@@ -410,6 +439,7 @@ mod tests {
     fn a_client_carries_the_identity_it_was_built_with() {
         let c = a_client("mach-A", "tok-a");
         assert_eq!((c.host(), c.port()), ("10.0.0.1", 32400));
+        assert_eq!(c.origin().base(), "http://10.0.0.1:32400", "…and those two are one value now");
         assert_eq!(c.machine_id(), "mach-A");
         assert_eq!(c.id(), ServerId::from_raw(3));
         // the token choke point picks the right separator either way
@@ -421,7 +451,7 @@ mod tests {
             .build()
             .contains("X-Plex-Client-Identifier=cid-42"));
         // a client built outside the registry says so rather than claiming slot 0
-        assert!(!Client::new(ServerId::UNSET, "", "1.2.3.4", 32400, "t", "cid").id().is_set());
+        assert!(!Client::new(ServerId::UNSET, "", Origin::http("1.2.3.4", 32400), "t", "cid").id().is_set());
     }
 
     /// A fresh client knows nothing about how it is reached, and says so rather than guessing a
@@ -455,5 +485,65 @@ mod tests {
         assert_eq!(a.with_token("/x"), "/x?X-Plex-Token=tok-a2");
         assert_ne!(a.token_gen(), ga, "the swapped client's generation moved");
         assert_eq!(b.token_gen(), gb, "the other client's did not");
+    }
+
+    /// **A client's ORIGIN is the whole address; `host()`/`port()` are views on it.** Those two
+    /// accessors are what ~30 call sites below this layer read, so they must keep answering
+    /// exactly what they did as plain fields — including for the shapes the pair could not spell.
+    #[test]
+    fn a_clients_host_and_port_are_views_on_its_origin() {
+        let tls = Origin::parse("https://nas.hash.plex.direct:32400").expect("parses");
+        let c = Client::new(ServerId::UNSET, "m", tls, "t", "cid");
+        assert_eq!(c.host(), "nas.hash.plex.direct", "the NAME a certificate is validated against");
+        assert_eq!(c.port(), 32400);
+        assert!(c.origin().is_tls());
+
+        // a v6 origin: bare at the resolver, bracketed in a URL. `host()` is the resolver's half.
+        let v6 = Client::new(ServerId::UNSET, "m", Origin::http("2001:db8::1", 32400), "t", "cid");
+        assert_eq!(v6.host(), "2001:db8::1");
+        assert_eq!(v6.origin().authority(), "[2001:db8::1]:32400");
+    }
+
+    /// `StreamUrl`'s two halves answer two different questions: [`StreamUrl::to_url`] is what
+    /// `route` STORES (a URL string) and [`StreamUrl::host`] is what `crate::stream` DIALS. The
+    /// engine really does round-trip the stored string through [`StreamUrl::parse`], so that trip
+    /// is graded rather than assumed — and the `to_url` bytes are pinned, because a change there
+    /// is a change to every playback URL in the app.
+    #[test]
+    fn a_stream_url_round_trips_through_the_string_route_stores() {
+        let su = StreamUrl { origin: Origin::http("10.0.0.1", 32400), path: "/library/parts/9?X-Plex-Token=t".into() };
+        assert_eq!(su.to_url(), "http://10.0.0.1:32400/library/parts/9?X-Plex-Token=t");
+
+        let back = StreamUrl::parse(&su.to_url());
+        assert_eq!((back.host(), back.port()), ("10.0.0.1", 32400));
+        assert_eq!(back.path, su.path);
+        assert_eq!(back.to_url(), su.to_url());
+    }
+
+    /// The two shapes `StreamUrl` could not previously express. Nothing calls it with either yet —
+    /// they are here so the transport lane inherits a splitter that is already right, and so the
+    /// v6 case cannot regress to the old reading, which took `[` as the entire host.
+    #[test]
+    fn a_stream_url_understands_https_and_a_bracketed_v6_literal() {
+        let s = StreamUrl::parse("https://nas.hash.plex.direct:32400/video/x?a=1");
+        assert!(s.origin.is_tls());
+        assert_eq!((s.host(), s.port(), s.path.as_str()), ("nas.hash.plex.direct", 32400, "/video/x?a=1"));
+        assert_eq!(s.to_url(), "https://nas.hash.plex.direct:32400/video/x?a=1");
+
+        let v6 = StreamUrl::parse("http://[2001:db8::1]:32400/p");
+        assert_eq!(v6.host(), "2001:db8::1", "the resolver never sees the brackets");
+        assert_eq!(v6.to_url(), "http://[2001:db8::1]:32400/p", "…and the URL always carries them");
+    }
+
+    /// The defaults `player::engine::parse_stream_url` had and this inherited: no scheme means
+    /// http, no port means 32400, and no path at all means `/` — a bare host is a request for the
+    /// server's root, not for the empty string. The `/tmp/plxnative-url` override is written by
+    /// hand, so all three are reachable.
+    #[test]
+    fn a_stream_url_keeps_the_defaults_the_override_trigger_relies_on() {
+        let bare = StreamUrl::parse("192.0.2.10");
+        assert_eq!((bare.host(), bare.port(), bare.path.as_str()), ("192.0.2.10", 32400, "/"));
+        assert_eq!(StreamUrl::parse("192.0.2.10/x").port(), 32400);
+        assert_eq!(StreamUrl::parse("http://192.0.2.10:8020/f.mkv").port(), 8020);
     }
 }

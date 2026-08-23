@@ -285,7 +285,7 @@ impl Client {
     /// The start.mkv stream target for `spec` — same params as the registering decision.
     pub fn transcode_start_url(&self, spec: &TranscodeSpec) -> StreamUrl {
         let path = format!("/video/:/transcode/universal/start.mkv?{}", self.transcode_query(spec));
-        StreamUrl { host: self.host.clone(), port: self.port, path: self.with_token(&path) }
+        StreamUrl { origin: self.origin.clone(), path: self.with_token(&path) }
     }
 
     /// GET /video/:/transcode/universal/stop — free the server-side encoder for `session`.
@@ -310,12 +310,12 @@ impl Client {
 mod tests {
     use super::{link_policy, Client, Location, LinkPolicy, TranscodeSpec};
     use crate::devcaps::Caps;
-    use crate::plex::ServerId;
+    use crate::plex::{Origin, ServerId};
 
     // ---- the universal-transcoder query: who is allowed to COPY ---------------------------
 
     fn a_client() -> Client {
-        Client::new(ServerId::from_raw(1), "mach", "10.0.0.1", 32400, "tok", "cid")
+        Client::new(ServerId::from_raw(1), "mach", Origin::http("10.0.0.1", 32400), "tok", "cid")
     }
 
     fn spec<'a>(remux: bool, no_video_copy: bool) -> TranscodeSpec<'a> {

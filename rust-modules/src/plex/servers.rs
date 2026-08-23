@@ -2,7 +2,7 @@
 //! `&'static Client` handed to ~30 call sites outside this module.
 //!
 //! This replaces `client.rs`'s `static PLEX: OnceLock<Client>`: one server per process, forever,
-//! whose second `install` could only swap a token because host/port were frozen by the first.
+//! whose second `install` could only swap a token because its address was frozen by the first.
 //! That single fact is what made browsing a SECOND (shared) server impossible — not the UI, not
 //! the ops. So the singleton becomes a table, and `client()` becomes "the current entry of it"
 //! with its signature untouched, which is why nothing outside `plex/` changed in the commit that
@@ -10,10 +10,16 @@
 //!
 //! **Keyed by `machineIdentifier`.** The server's own permanent id is the only identity that
 //! survives it changing address (LAN ↔ remote, DHCP, a relay), so the table keys on it and an
-//! address is just where that key currently answers. The legacy `install(host, port, token)`
-//! doesn't know the id — its callers (`app.rs`, `auth.rs`) have only a stored session address —
-//! so it registers with an EMPTY id and matches on the address; a later [`register`] that does
-//! know the id adopts that slot instead of adding a second one for the same server.
+//! address is just where that key currently answers. [`install`] doesn't know the id — its callers
+//! (`app.rs`, `auth.rs`) have only a stored session origin — so it registers with an EMPTY id and
+//! matches on the origin; a later [`register_origin`] that does know the id adopts that slot
+//! instead of adding a second one for the same server.
+//!
+//! **An address here is an [`Origin`], not a `(host, port)` pair** — scheme included, and parsed
+//! from the URL plex.tv advertised rather than rebuilt from the address behind it (`origin.rs` has
+//! the reasoning; the one-line version is that a `plex.direct` certificate is issued for the NAME).
+//! [`register`] and [`register_with_client_id`] keep the pair-shaped spelling for callers that
+//! genuinely hold nothing else, and say `Origin::http` out loud when they do.
 //!
 //! ## Why an atomic pointer table and not an `RwLock<Vec<Arc<Client>>>`
 //!
@@ -55,6 +61,7 @@
 //! inside one process.
 
 use super::client::Client;
+use super::origin::Origin;
 use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
@@ -326,11 +333,11 @@ fn pick(new: &str, old: Option<&str>) -> String {
 /// address moving. Otherwise the address is all there is: for the legacy `install` (no id at
 /// all), and for a `register` that has learned an id for a slot registered without one, which is
 /// the ADOPT case rather than a second slot for one server.
-fn same_server(c: &Client, machine_id: &str, host: &str, port: i32) -> bool {
+fn same_server(c: &Client, machine_id: &str, origin: &Origin) -> bool {
     if !machine_id.is_empty() && !c.machine_id().is_empty() {
         return c.machine_id() == machine_id;
     }
-    c.host() == host && c.port() == port
+    c.origin() == origin
 }
 
 /// Publish a client into a slot. Takes the leak (see the module doc); the Release store pairs
@@ -362,12 +369,24 @@ fn publish(id: ServerId, c: Client) {
 /// (otherwise there is nothing for `client()` to answer with). Use [`set_current`] to switch,
 /// or [`install`], which is the session path and always retargets.
 pub fn register(machine_id: &str, host: &str, port: i32, token: &str) -> ServerId {
+    register_origin(machine_id, &Origin::http(host, port), token)
+}
+
+/// [`register`], given the server's whole [`Origin`] instead of a plaintext address.
+///
+/// **This is the real one.** The `(host, port)` spelling above cannot say `https`, and an origin
+/// is not something that can be rebuilt from an address afterwards: plex.tv advertises a server's
+/// TLS origin as the `plex.direct` HOSTNAME while its `address` stays the dotted quad behind it,
+/// and the certificate is issued for the name. So an origin has to be carried from where it was
+/// parsed ([`super::probe::Candidate::origin`]) all the way to here, and the pair-shaped entry
+/// points are kept only for callers that genuinely have nothing but an address.
+pub fn register_origin(machine_id: &str, origin: &Origin, token: &str) -> ServerId {
     // The playback identity (`X-Plex-Client-Identifier`) is the persisted login identity, so it
     // comes from the session file — read LAZILY, i.e. only when a `Client` is actually built.
     // `session::load` can WRITE (it mints + persists the uuid when there is none), and the
     // commonest call here by far is the profile switch, which only swaps a token; the singleton
     // this replaced read the file exactly once, and so does this.
-    let id = register_lazy(machine_id, host, port, token, &|| super::session::load().client_id);
+    let id = register_lazy(machine_id, origin, token, &|| super::session::load().client_id);
     // Every server the app actually talks to arrives through THIS function (the `_with_client_id`
     // seam below is the test one and deliberately does not), so it is the single place that keeps
     // each server's self-description — version + Plex Pass, issue #22's blind spot — fresh
@@ -379,34 +398,66 @@ pub fn register(machine_id: &str, host: &str, port: i32, token: &str) -> ServerI
     id
 }
 
-/// [`register`] with the device id supplied — the seam that keeps the session file out of the
-/// registry proper (and out of the tests).
+/// [`register`] with the device id supplied — the seam that keeps the session file **and the
+/// network** out of the registry proper, and out of the tests.
 ///
 /// `pub(crate)` rather than `pub(super)` because tests OUTSIDE `plex/` need it too (`route.rs`
-/// grades which server a `/:/timeline` POST reaches, which takes two registered clients): the
-/// public [`register`] resolves the device id through `session::load`, which MINTS AND PERSISTS a
-/// uuid when there is none, and a host test must not write one.
+/// grades which server a `/:/timeline` POST reaches, which takes two registered clients).
+///
+/// **Two reasons a host test must come through here, and the second one cost a red CI run.**
+///
+/// 1. The public [`register`] resolves the device id through `session::load`, which MINTS AND
+///    PERSISTS a uuid when there is none. A host test must not write one.
+/// 2. [`register`] also fires [`serverinfo::refresh`](super::serverinfo::refresh), which spawns a
+///    `task::spawn_small` worker that really opens a socket — on a **256 KiB** stack. In a DEBUG
+///    build `stream::http_stream_boxed` builds its 64 KiB `HttpStream` as a stack temporary before
+///    it reaches the heap (the optimizer elides that in the `--release` build the television
+///    ships, and only there), so that worker needs somewhere north of 192 KiB on ARM64 and more
+///    than 256 KiB on x86-64. A test that calls [`register`] therefore aborts the whole suite with
+///    `thread '<unknown>' has overflowed its stack` — on Linux only, in a thread libtest never
+///    named, at whatever test happened to be printing. `make check` passed on the dev Mac while CI
+///    failed twice.
+///
+/// So: **no test in this crate may call [`register`] or [`register_origin`]**. The two seams here
+/// are the whole test surface, and neither loads a session nor spawns anything.
 pub(crate) fn register_with_client_id(machine_id: &str, host: &str, port: i32, token: &str, client_id: &str) -> ServerId {
-    register_lazy(machine_id, host, port, token, &|| client_id.to_owned())
+    register_origin_with_client_id(machine_id, &Origin::http(host, port), token, client_id)
 }
 
-fn register_lazy(machine_id: &str, host: &str, port: i32, token: &str, client_id: &dyn Fn() -> String) -> ServerId {
+/// [`register_with_client_id`], given the whole [`Origin`] — the seam for a test that is about the
+/// SCHEME, which the `(host, port)` form cannot express. Same contract: no session file, no worker.
+pub(crate) fn register_origin_with_client_id(
+    machine_id: &str,
+    origin: &Origin,
+    token: &str,
+    client_id: &str,
+) -> ServerId {
+    register_lazy(machine_id, origin, token, &|| client_id.to_owned())
+}
+
+fn register_lazy(machine_id: &str, origin: &Origin, token: &str, client_id: &dyn Fn() -> String) -> ServerId {
     let _w = WRITE.lock().unwrap_or_else(|e| e.into_inner());
     let n = COUNT.load(Ordering::Acquire);
     // LIVE slots only. A revoked slot for this very machine is not adopted: the previous account's
     // grant on it is dead, and the number belongs to that account's stores forever (module doc).
-    let found = ids().find(|&id| client_for(id).is_some_and(|c| same_server(c, machine_id, host, port)));
+    let found = ids().find(|&id| client_for(id).is_some_and(|c| same_server(c, machine_id, origin)));
 
     if let Some(id) = found {
         let c = client_for(id).expect("the matched slot is populated");
         // Keep an id we already know: a legacy address-keyed call must not blank it.
         let mid = if machine_id.is_empty() { c.machine_id() } else { machine_id };
-        if c.host() != host || c.port() != port || c.machine_id() != mid {
+        if c.origin() != origin || c.machine_id() != mid {
             // Re-point. The old `Client` stays alive and merely stale for anyone mid-request
             // with it; the fresh one also gets a fresh token generation, so token-baked caches
             // flush without a special case.
-            crate::log(&format!("plex: server slot {} re-pointed to {host}:{port}", id.0));
-            publish(id, Client::new(id, mid, host, port, token, &client_id()));
+            //
+            // `log_form`: the bare authority for a plaintext origin, so this line stays
+            // byte-identical to the `{host}:{port}` it has always been and an archived log is
+            // still comparable with a current one — and the whole URL the moment the scheme is
+            // worth saying, which is the only way a headless run armed with `{"scheme":"https"}`
+            // can be told from an http one at all. See `Origin::log_form`.
+            crate::log(&format!("plex: server slot {} re-pointed to {}", id.0, origin.log_form()));
+            publish(id, Client::new(id, mid, origin.clone(), token, &client_id()));
         } else {
             c.set_token(token); // in place — every reference already handed out follows along
         }
@@ -420,11 +471,12 @@ fn register_lazy(machine_id: &str, host: &str, port: i32, token: &str, client_id
         return ServerId::UNSET;
     }
     let id = ServerId(n as u16);
-    publish(id, Client::new(id, machine_id, host, port, token, &client_id()));
+    publish(id, Client::new(id, machine_id, origin.clone(), token, &client_id()));
     COUNT.store(n + 1, Ordering::Release); // after the pointer: a visible count implies a live slot
     // Address only — the machineIdentifier is a permanent household fingerprint (see `ui::stats`)
-    // and the event log is what users send us.
-    crate::log(&format!("plex: server slot {} registered at {host}:{port}", id.0));
+    // and the event log is what users send us. `log_form` rather than `base`, for the reason the
+    // re-point line above gives.
+    crate::log(&format!("plex: server slot {} registered at {}", id.0, origin.log_form()));
     if !current().is_set() {
         // Release: this store is what makes the `publish` above reachable through `client()`, so it
         // must not be seen before it (see `current()`).
@@ -440,10 +492,10 @@ fn register_lazy(machine_id: &str, host: &str, port: i32, token: &str, client_id
 /// so the same address is the same server: a second call for it swaps the token in place exactly
 /// as the old singleton did — which is every install this app makes today, and why nothing about
 /// a single-server session changed. A call naming a DIFFERENT address now registers a second slot
-/// and makes it current, where the singleton kept the FIRST server's host/port and quietly applied
-/// the new token to it (a mis-target no caller could see, because host/port were frozen).
-pub fn install(host: &str, port: i32, token: &str) {
-    let id = register("", host, port, token);
+/// and makes it current, where the singleton kept the FIRST server's address and quietly applied
+/// the new token to it (a mis-target no caller could see, because the address was frozen).
+pub fn install(origin: &Origin, token: &str) {
+    let id = register_origin("", origin, token);
     set_current(id); // the session path always retargets: this is now the server we are using
     // (`register` already refreshed this server's self-description — see its doc.)
 }
@@ -583,6 +635,46 @@ mod tests {
         assert_eq!(count(), 1);
         assert_eq!(token_of(client_for(id).unwrap()), "tok-c");
         assert_eq!(client_for(id).unwrap().machine_id(), "mach-A", "a call with no id must not blank one");
+    }
+
+    /// **A scheme change is an ADDRESS change**, so it re-points the slot exactly as a new host or
+    /// port does — a fresh `Client`, a fresh token generation, the tier reset to unknown.
+    ///
+    /// It cannot be observed any other way: `same_server` matches on the machine id whenever both
+    /// sides have one, so the origin comparison only ever decides whether to RE-POINT. Get that
+    /// comparison wrong — compare `host`/`port` and forget the scheme, which is exactly what the
+    /// pair-shaped code did because it could not spell one — and the day a server moves to https
+    /// the registry keeps a plaintext client for it, in place, with nothing in the log.
+    ///
+    /// Driven through [`register_origin_with_client_id`], NOT the public [`register_origin`] — see
+    /// that seam's doc. This test was written against the public one and turned CI red on Linux
+    /// with a stack overflow in an unnamed thread, because `register_origin` spawns a real
+    /// `serverinfo` worker that opens a real socket on a 256 KiB stack.
+    #[test]
+    fn moving_a_server_to_https_re_points_its_slot() {
+        let _g = fresh();
+        let reg_at = |o: &Origin, tok: &str| register_origin_with_client_id("mach-A", o, tok, "test-client-id");
+        let plain = Origin::http("10.0.0.1", 32400);
+        let id = reg_at(&plain, "tok-a");
+        let before: *const Client = client_for(id).unwrap();
+        let gen_before = client_for(id).unwrap().token_gen();
+        client_for(id).unwrap().set_link(crate::plex::probe::Location::Local);
+
+        let tls = Origin::parse("https://10-0-0-1.hash.plex.direct:32400").expect("an origin");
+        assert_eq!(reg_at(&tls, "tok-a"), id, "same machine, same slot");
+        assert_eq!(count(), 1, "a scheme change is not a second server");
+
+        let c = client_for(id).unwrap();
+        assert!(!std::ptr::eq(c, before), "the slot was RE-POINTED, not updated in place");
+        assert_eq!(c.origin(), &tls);
+        assert_eq!(c.host(), "10-0-0-1.hash.plex.direct", "the name a certificate is issued for");
+        assert_ne!(c.token_gen(), gen_before, "a fresh client means token-baked caches flush");
+        assert_eq!(c.link(), None, "a new address is not evidence about the old tier");
+
+        // and re-registering the SAME origin lands in place again, as any unchanged address does
+        let same: *const Client = c;
+        assert_eq!(reg_at(&tls, "tok-b"), id);
+        assert!(std::ptr::eq(client_for(id).unwrap(), same), "unchanged origin, unchanged pointer");
     }
 
     /// A different server is a NEW slot, never a silent retarget of the old one — the singleton's

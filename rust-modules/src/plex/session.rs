@@ -16,6 +16,7 @@
 //! **Nothing here carries a timestamp**, deliberately: this TV's wall clock runs ~3 h skewed
 //! (root `CLAUDE.md`), so a stored "last seen" would be a number that cannot be compared with
 //! anything and would invite an expiry rule built on it.
+use super::origin::Origin;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::sync::Mutex;
@@ -204,9 +205,42 @@ pub struct HomeUserRef {
 pub struct ServerRef {
     pub name: String,
     pub machine_id: String,
+    /// The dotted quad (or v6 literal, or hostname) discovery recorded. **Diagnostic, and the
+    /// LEGACY fallback** — see [`ServerRef::origin`], which is what anything dialling reads.
     pub address: String,
     pub port: i64,
     pub token: String,
+    /// **Where this server is, as a URL** — `"http://192.0.2.10:32400"`. Written since the origin
+    /// model landed; **empty in every file written before it**, which is the whole reason
+    /// [`ServerRef::origin`] has a fallback rather than an `Option`.
+    ///
+    /// It is a serialized [`Origin`] and not a `scheme` beside `address` because the two are not
+    /// interchangeable: the host a TLS certificate is issued for is the `plex.direct` NAME, which
+    /// `address` never holds (`origin.rs`). Storing the URL keeps the file legible to a human
+    /// editing it on the television, which the struct-shaped alternative does not.
+    ///
+    /// **The `_url` suffix is not decoration**: this is the raw string, [`ServerRef::origin`] is
+    /// the parsed value, and naming both `origin` would put a silent mix-up two characters away at
+    /// every use. The FILE's key stays `origin`, which is what a human editing it reads.
+    #[serde(default, rename = "origin")]
+    pub origin_url: String,
+}
+
+impl ServerRef {
+    /// **Where the primary server is.** [`ServerRef::origin`] when the file has one, else the
+    /// legacy `http://{address}:{port}` — which is exactly what a file written before that field
+    /// existed meant, and what every reader of this struct did with those two fields by hand.
+    ///
+    /// **TOTAL, unlike [`SourceRef::origin`].** The asymmetry is deliberate. A roster entry has
+    /// [`SourceRef::usable`] in front of every caller, so `None` there costs one entry. This is
+    /// the PRIMARY: `app.rs`'s boot gate and `auth::cancel` read it unconditionally, gated only by
+    /// [`Session::can_go_local`], so a `None` here would be a NEW refusal on a path that has never
+    /// had one — a silent sign-out at boot, which is the failure this whole field exists to avoid.
+    /// The gate stays where it is, and the `port as i32` below is the same cast those readers were
+    /// already doing, kept in one documented place instead of three.
+    pub fn origin(&self) -> Origin {
+        Origin::parse(&self.origin_url).unwrap_or_else(|| Origin::http(&self.address, self.port as i32))
+    }
 }
 
 /// One server this identity can browse — our own or a friend's share. What discovery resolved:
@@ -231,11 +265,21 @@ pub struct SourceRef {
     pub owned: bool,
     /// The address that answered `/identity` with the right `machineIdentifier` — not the first
     /// one advertised. A share's `local` address is the OWNER's LAN and is never this.
+    ///
+    /// **Diagnostic metadata, and the LEGACY fallback.** It is what [`SourceRef::describe`] prints
+    /// and what the Sources panel says; it is *not* what a connection is built from — that is
+    /// [`SourceRef::origin`], and for an https server the two genuinely differ (`origin.rs`).
     pub address: String,
     pub port: i64,
     /// This identity's per-(user, server) `accessToken` for THIS server. A secret — never logged.
     /// Our own server's token gets a 401 from a share, which is why one token cannot serve both.
     pub token: String,
+    /// **Where this server is, as a URL** — the [`Origin`] the probe accepted, serialized. Empty
+    /// in every file written before the field existed; [`SourceRef::origin`] falls back to
+    /// `http://{address}:{port}` for those, which is what they meant. See [`ServerRef::origin`]
+    /// for why that fallback exists at all, and [`ServerRef::origin_url`] for the `_url` suffix.
+    #[serde(default, rename = "origin")]
+    pub origin_url: String,
 }
 
 impl SourceRef {
@@ -255,7 +299,29 @@ impl SourceRef {
     /// An out-of-range port wraps in that cast; here it costs the entry instead, and `de_soft_vec`
     /// already establishes that one bad roster entry costs that entry and never the session.
     pub fn usable(&self) -> bool {
-        !self.address.is_empty() && super::probe::dial_port(self.port).is_some() && !self.token.is_empty()
+        self.origin().is_some() && !self.token.is_empty()
+    }
+
+    /// **Where to dial this source**, `None` when there is nothing dialable written down.
+    ///
+    /// [`SourceRef::origin`] when the file has one, else the legacy `http://{address}:{port}` — an
+    /// entry written before the field existed, which is every entry in every session file on every
+    /// television today. The port still goes through
+    /// [`probe::dial_port`](super::probe::dial_port) on that path, for the reason
+    /// [`SourceRef::usable`] gives: this file is JSON on disk that a hand edit or an older build
+    /// can leave holding anything an `i64` can hold, and `port as i32` WRAPS.
+    ///
+    /// `Option`, unlike [`ServerRef::origin`], because every caller here is already behind
+    /// [`SourceRef::usable`] — so `None` costs one roster entry, which is the rule `de_soft_vec`
+    /// establishes for this whole struct.
+    pub fn origin(&self) -> Option<Origin> {
+        if !self.origin_url.is_empty() {
+            return Origin::parse(&self.origin_url);
+        }
+        if self.address.is_empty() {
+            return None;
+        }
+        super::probe::dial_port(self.port).map(|p| Origin::http(&self.address, p))
     }
 }
 
@@ -368,9 +434,30 @@ impl Session {
     /// also covers `port` simply being ABSENT from an older file (`#[serde(default)]` = 0), which
     /// could never have connected either.
     pub fn can_go_local(&self) -> bool {
-        !self.server.address.is_empty()
-            && super::probe::dial_port(self.server.port).is_some()
-            && !self.pms_token().is_empty()
+        self.server_dialable() && !self.pms_token().is_empty()
+    }
+
+    /// Is the primary's address one this app could actually open a socket to?
+    ///
+    /// Split out of [`Session::can_go_local`] because [`ServerRef::origin`] is deliberately total
+    /// (see its doc) — so the refusal that used to be implicit in reading `address`/`port` has to
+    /// be stated somewhere, and this is it. A stored ORIGIN is judged by whether it parses at all
+    /// (`Origin::parse` refuses an undialable port and a scheme this app does not speak); a legacy
+    /// file with no origin is judged exactly as before.
+    ///
+    /// **It asks "is there an address written down", NOT "can this build's transport open it".**
+    /// The two are the same question today and will not be during the transport work: an https or
+    /// hostname origin parses fine and `crate::stream` cannot reach either, so a session file
+    /// holding one boots to a Home whose every request fails silently. That is not gated here on
+    /// purpose — refusing would send the user to a QR code for a transport gap that is not theirs,
+    /// and `can_go_local` means "this device holds a session", which it does. The half-landed state
+    /// it exposes (discovery accepting https before `stream.rs` speaks it) is one lane's to avoid,
+    /// and `player::engine` refuses a TLS stream target out loud for the same reason.
+    fn server_dialable(&self) -> bool {
+        if !self.server.origin_url.is_empty() {
+            return Origin::parse(&self.server.origin_url).is_some();
+        }
+        !self.server.address.is_empty() && super::probe::dial_port(self.server.port).is_some()
     }
     /// The token PMS calls use: the switched managed-user token if we have one, else the server
     /// access token (owner).
@@ -811,6 +898,94 @@ mod tests {
             "home_pins":[{"user":"u-7","asked":true,
                           "on":[{"machine_id":"bbbb2222","key":1}],
                           "off":[{"machine_id":"aaaa1111","key":1}]}]}"#
+    }
+
+    /// **THE COMPATIBILITY GATE: a session file written by 0.4.1 must still boot.**
+    ///
+    /// That build knew nothing about origins — it wrote `address` and `port` and no more — and
+    /// every signed-in television in the world is holding one of these files right now. If
+    /// `Session::server` failed to carry through, the cost is not a degraded feature: `app.rs`'s
+    /// boot gate runs on `can_go_local()`, so the app would land on the QR sign-in screen on
+    /// **every boot for every existing user**, which is a silent sign-out that no test above this
+    /// one can see (the roster lists are soft-parsed — `de_soft_vec` — but the primary is not a
+    /// disposable entry, and nothing soft-parses a MISSING field into a different meaning).
+    ///
+    /// Written as literal 0.4.1-shaped JSON rather than by serialising a `Session`, because the
+    /// thing under test is precisely that today's struct is not what wrote those bytes.
+    #[test]
+    fn a_session_file_written_before_origins_existed_still_boots_as_plain_http() {
+        // Byte-for-byte the shape 0.4.1 wrote: no `origin` on the primary, none on any source.
+        let v041 = r#"{"client_id":"cid-1","account_token":"acct",
+            "server":{"name":"Mac mini","machine_id":"aaaa1111","address":"192.168.0.10",
+                      "port":32400,"token":"tok-own"},
+            "user":{"id":7,"uuid":"u-7","title":"Gleb","thumb":"","token":"tok-user"},
+            "sources":[
+              {"machine_id":"aaaa1111","name":"Mac mini","shared_by":"","owned":true,
+               "address":"192.168.0.10","port":32400,"token":"tok-own"},
+              {"machine_id":"bbbb2222","name":"nas-home","shared_by":"friend","owned":false,
+               "address":"203.0.113.9","port":31234,"token":"tok-share"}]}"#;
+        let s: Session = serde_json::from_str(v041).expect("a 0.4.1 session file still parses");
+
+        // the boot gate itself — this is the assertion whose failure is the silent sign-out
+        assert!(s.can_go_local(), "a 0.4.1 session must still reach Home without a QR code");
+
+        // …and it boots against exactly the address it always did, as plain http
+        let o = s.server.origin();
+        assert_eq!(o.base(), "http://192.168.0.10:32400");
+        assert_eq!((o.host(), o.port()), ("192.168.0.10", 32400));
+        assert!(!o.is_tls(), "nothing in that file ever meant TLS");
+
+        // every roster entry too, including the share on its non-default port
+        assert!(s.sources.iter().all(|x| x.usable()), "{:#?}", s.sources.len());
+        assert_eq!(s.owned_source().unwrap().origin().unwrap().base(), "http://192.168.0.10:32400");
+        assert_eq!(s.source("bbbb2222").unwrap().origin().unwrap().base(), "http://203.0.113.9:31234");
+    }
+
+    /// The other side of the gate: once an origin IS written down it is what gets dialled, and it
+    /// beats the address pair beside it. That is not a tie-break for its own sake — for an https
+    /// server the two genuinely differ (the certificate is issued for the `plex.direct` NAME, not
+    /// for the quad), so reading the pair would connect and then fail validation.
+    #[test]
+    fn a_stored_origin_beats_the_address_pair_beside_it() {
+        let json = r#"{"client_id":"c","account_token":"a",
+            "server":{"machine_id":"aaaa1111","address":"203.0.113.9","port":31234,"token":"t",
+                      "origin":"https://203-0-113-9.hash.plex.direct:31234"},
+            "sources":[{"machine_id":"aaaa1111","owned":true,"address":"203.0.113.9","port":31234,
+                        "token":"t","origin":"https://203-0-113-9.hash.plex.direct:31234"}]}"#;
+        let s: Session = serde_json::from_str(json).expect("parses");
+
+        let o = s.server.origin();
+        assert_eq!(o.host(), "203-0-113-9.hash.plex.direct", "the name TLS validates against");
+        assert!(o.is_tls());
+        assert_eq!(s.server.address, "203.0.113.9", "…and the quad survives as the diagnostic half");
+        assert!(s.can_go_local(), "an https primary is still a session this device holds");
+        assert_eq!(s.sources[0].origin().unwrap(), o, "the roster entry says the same thing");
+
+        // and it round-trips: what we write back is what we would read next boot
+        let again: Session = serde_json::from_slice(&serde_json::to_vec(&s).unwrap()).expect("re-read");
+        assert_eq!(again.server.origin(), o);
+    }
+
+    /// A stored origin that cannot be dialled is refused rather than silently repaired. The port
+    /// is the case that really arrives — the session file is JSON on disk that a hand edit or an
+    /// older build can leave holding anything an `i64` can hold, and `4_294_999_696 as i32` is
+    /// **32400**, so "repair it to the default" means dialling a port nobody wrote down.
+    #[test]
+    fn an_undialable_stored_origin_is_refused_not_repaired() {
+        let bad = |origin: &str| {
+            let json = format!(
+                r#"{{"client_id":"c","account_token":"a",
+                     "server":{{"address":"192.168.0.10","port":32400,"token":"t","origin":"{origin}"}},
+                     "sources":[{{"machine_id":"m","address":"192.168.0.10","port":32400,"token":"t",
+                                  "origin":"{origin}"}}]}}"#
+            );
+            serde_json::from_str::<Session>(&json).expect("the file still parses")
+        };
+        for origin in ["http://192.168.0.10:4294999696", "ftp://192.168.0.10:21", "http://"] {
+            let s = bad(origin);
+            assert!(!s.can_go_local(), "{origin} is not something to boot on");
+            assert!(!s.sources[0].usable(), "{origin} is not something to register");
+        }
     }
 
     /// The roster survives a write/read cycle intact — including the two facts that make a share

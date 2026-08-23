@@ -3855,8 +3855,12 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         // Install the PMS client (the read layer AND the playback path) as the CURRENT server,
         // then fetch the catalog. Used by the boot gate and again when a login resolves; a later
         // call for the same address just swaps the token (profile switch).
-        let install_pms = |host: &str, port: c_int, token: &str| {
-            crate::plex::install(host, port, token); // a (re)install is a login / profile switch
+        // Takes an ORIGIN and not a `(host, port)` pair: the pair cannot say `https`, and the host
+        // a certificate is issued for is the `plex.direct` NAME rather than the address behind it
+        // (`plex::origin`). Every origin this boot builds is still `http://`, because that is all
+        // `crate::stream` speaks.
+        let install_pms = |origin: &crate::plex::Origin, token: &str| {
+            crate::plex::install(origin, token); // a (re)install is a login / profile switch
             // Every additional server this boot was handed credentials for joins the REGISTRY
             // beside it — the granted roster `browse` addresses its section table by. Registration
             // is not activation: `install` above has already made the session's own server current,
@@ -3869,7 +3873,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // the roster across a switch — and it must precede `activate_server`, whose refetch is
             // what turns a newly registered source into shelves and section tabs.
             for s in crate::dev::servers().unwrap_or_default().iter().filter(|s| s.usable()) {
-                let id = crate::plex::register(&s.machine_id, &s.host, s.port as c_int, &s.token);
+                // `usable()` IS `origin().is_some()`, so this `else` cannot be taken; it is a
+                // `continue` rather than an `expect` because an injected server has never been
+                // allowed to cost more than itself.
+                let Some(origin) = s.origin() else { continue };
+                let id = crate::plex::register_origin(&s.machine_id, &origin, &s.token);
                 // the roster's own answer about this server: a handle means someone else's.
                 crate::plex::describe_server(id, &s.name, &s.handle, s.handle.is_empty());
             }
@@ -3911,14 +3919,16 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             log("boot: /tmp/plxnative-login — starting QR login");
             BootTo::Login
         } else if !dev_token.is_empty() {
-            install_pms(&host_s, pms_port, &dev_token);
+            // `Origin::http` names the assumption out loud: the host and port compiled into the
+            // C shim are a plaintext address, with no scheme to read off them.
+            install_pms(&crate::plex::Origin::http(&host_s, pms_port), &dev_token);
             BootTo::Home
         } else if session.can_go_local() {
             if session.home_users.len() > 1 && (!automated_boot() || pick_user.is_some()) {
                 // Who's watching first. Only the read client is installed here (the avatars proxy
                 // through the PMS photo transcoder); the catalog fetch + playback config happen in
                 // take_ready once a profile is picked — done now they'd be thrown out on a switch.
-                crate::plex::install(&session.server.address, session.server.port as i32, session.pms_token());
+                crate::plex::install(&session.server.origin(), session.pms_token());
                 crate::plex::session::set_current(Some(session.user.clone()));
                 // seeds the persisted roster + refreshes it online. `Picker::Boot` is what makes
                 // BACK out of this picker refuse to reinstate a PIN-protected profile — nobody has
@@ -3948,7 +3958,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 // OWNER's record whoever was actually signed in. (`auth::take_ready`, the other
                 // way into Home, already sets it before its own `install_pms` for this reason.)
                 crate::plex::session::set_current(Some(session.user.clone()));
-                install_pms(&session.server.address, session.server.port as c_int, session.pms_token());
+                install_pms(&session.server.origin(), session.pms_token());
                 log("boot: stored session — local server (offline-capable)");
                 BootTo::Home
             }
@@ -5858,7 +5868,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // route (Login while creating/waiting/discovering/error, Profiles while picking/switching).
             if matches!(route, Route::Login | Route::Profiles) {
                 if let Some(c) = crate::auth::take_ready() {
-                    install_pms(&c.host, c.port, &c.token);
+                    install_pms(&c.origin, &c.token);
                     // the fourth store an identity change must not survive, beside the
                     // `browse`/`pms`/`person` resets `install_pms` performs: a new user must never
                     // be able to walk BACK into the previous one's pages. Reset at the CALL SITE
