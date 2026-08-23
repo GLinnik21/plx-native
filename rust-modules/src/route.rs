@@ -1824,9 +1824,12 @@ fn video_direct_plays(
     codec_ok && src_w <= bw as i64 && src_h <= bh as i64 && dv.refusal().is_none()
 }
 
-/// The detail page's "how this plays" answer, BEFORE anything is played — the same three gates
+/// The detail page's "how this plays" answer, BEFORE anything is played — the same FOUR gates
 /// `build_stream` will apply (codec+resolution via [`video_direct_plays`], container via
-/// [`part_is_streamable`], one direct-playable audio track), asked of the loaded `Detail`.
+/// [`part_is_streamable`], one direct-playable audio track, and the user's quality ceiling via
+/// [`quality_policy`] — applied last and able only to downgrade), asked of the loaded `Detail`.
+/// The ceiling is the one a reader debugging "why does this ordinary h264/AC-3 MKV say Converts"
+/// will not think of, which is why it is named in the list rather than left to the code.
 /// An approximation by design: the real decision can still consult the server (`server_decision`
 /// when no DP audio track is found), so this leans the same way that fallback usually lands.
 /// It exists for `Details Screen.dc.html`'s facts row and must stay a READ-ONLY preview —

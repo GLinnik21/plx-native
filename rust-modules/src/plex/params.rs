@@ -32,9 +32,11 @@
 /// looks like it works and does nothing: the file that most needs the cap — a 30 Mbit/s source on
 /// a 4 Mbit/s link — is exactly the one that direct-plays, where no encoder ever reads it.
 ///
-/// The invariant that keeps the two halves honest, asserted in `transcoder`'s tests: a spec may
-/// carry a ceiling **and** `remux == true` only when the source was already measured under it, so
-/// the remux branch still sends no cap and still does not need one.
+/// The invariant that keeps the two halves honest: a spec may carry a ceiling **and**
+/// `remux == true` only when the source was already measured under it, so the remux branch still
+/// sends no cap and still does not need one. It is asserted in two places because it is two
+/// claims — `transcoder`'s tests pin that a ceiling is INERT on a remux, and `route`'s gates 2
+/// and 4 pin that a remux is only ever reached for a source under it.
 pub struct TranscodeSpec<'a> {
     pub rating_key: &'a str,
     /// The per-playback opaque session id (`route::sess()`).

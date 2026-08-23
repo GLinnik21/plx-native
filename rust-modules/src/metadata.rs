@@ -937,8 +937,13 @@ pub(crate) struct Detail {
     pub(crate) width: i64,               // stored frame size, not the resolution class (1918x802
     pub(crate) height: i64,              // is a 1080p scope movie) — badge off video_resolution
     pub(crate) bitrate: i64,             // kbps, whole-stream
-    // ---- the rest of the primary version's technical record, added for `ui::tracks_panel` and
-    // read by nothing else. Same caveat as the block above: this is version 0, not a best-of pick.
+    // ---- the rest of the primary version's technical record, added for `ui::tracks_panel` — and
+    // since 2026-08-23 ON THE ROUTING PATH too: `route::source_kbps` takes `video`'s own bitrate
+    // from here to judge a source against the user's quality ceiling, preferring it over the
+    // whole-file `bitrate` above precisely so a rung does not bite one AC-3 track early. So this
+    // block is no longer only the inspector's, and dropping the backfill would silently move every
+    // rung's threshold with a green suite. Same caveat as the block above: version 0, not a
+    // best-of pick.
     /// `Part[0].container`, falling back to `Media[0].container` — `"mp4"`, `"mkv"`, ….
     pub(crate) container: String,
     /// `Part[0].file` — the part's absolute path ON THE SERVER. Shown as the Track-information

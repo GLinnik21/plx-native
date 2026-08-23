@@ -102,7 +102,9 @@ a dead source is **absent** from Home and states itself in its own library secti
   ceiling (`route::Quality`, the picker in the player's `…` menu, for LG checklist #43 CASE1) is a
   different input with the identical mechanism: `route::quality_policy` returns the same two flags
   `link_policy` does, `route::flavors_allowed` composes them so the stricter wins, and only once
-  direct play and the remux are BOTH denied does `Ceiling` reach `transcode_query`. The rule that
+  direct play and the remux are BOTH denied does a rate reach the WIRE. Note the field itself rides
+  EVERY spec, remux included — `transcode_query` reads it on the re-encode branch alone, and the
+  remux branch's silence is an invariant a host test pins, not a `None` you can rely on. The rule that
   survives unchanged is the ORDER: a number that is not preceded by a flavour refusal does nothing
   at all, because the flavour it would have bound is the one with no encoder in it.
 - **Capture the server at the SPAWN SITE**, the rule the multi-server work inherits from
