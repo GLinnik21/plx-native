@@ -2008,10 +2008,13 @@ def _probe_fixture(path):
     this machine, an unreadable file) disables every check built on it rather than failing them —
     refusing to run a suite because a *diagnostic* is unavailable is the wrong trade.
 
-    Cached by PATH because cases share fixtures — three of the twelve reuse another case's file,
-    and `--list` pays for the lot. The streams come back in container order, which is the order
-    `ff.rs` walks when it matches the declared audio codec, so the list index IS the `a=#<n>` the
-    log reports.
+    Cached by PATH because SEVERAL cases share one fixture — a seek case beside its play case, an
+    audio-lane pair on the multi-audio clip — so `--list` would otherwise ffprobe the same file
+    twice. Stated as the property rather than as a count: this line read "three of the twelve" and
+    was wrong on both halves even before the resolution matrix widened the denominator (it was four
+    of twelve then, and is four of nineteen now). The caching is right at any of those numbers.
+    The streams come back in container order, which is the order `ff.rs` walks when it matches the
+    declared audio codec, so the list index IS the `a=#<n>` the log reports.
     """
     try:
         out = subprocess.run(

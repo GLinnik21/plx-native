@@ -351,10 +351,20 @@ movies — a freshly scanned library puts them all in recently-added — but tha
 of the Home catalog, not something this script verifies.)
 
 **`library_gaps`.** The synthetic-clip supplement `tests/manifest.json` describes (VP9,
-MPEG-2, MPEG-4-ASP, 8-bit HEVC, 4K H.264, interlaced, FLAC/PCM/MP3, ASS, VobSub, mov_text,
-HLG, HDR10+) is *not* built here. Those are fed through the `plxnative-url` boot trigger
-rather than through Plex, so they are a different tool. Four notes for whoever writes it,
-each measured on this ffmpeg 8.1.2:
+MPEG-2, MPEG-4-ASP, interlaced, FLAC/PCM/MP3, ASS, VobSub, mov_text, HLG, HDR10+) is *not*
+built here. **Two entries came off that list and this paragraph named them for a day after
+they had:** `4K H.264` is built here now (`pipe_h264_ac3_2160p`, the resolution matrix's
+UHD/h264 rung, 2026-08-23) and `8-bit HEVC` had been all along (`pipe_hevc_aac_mp4` carries
+no `hdr` key, so `venc_args` picks `-profile:v main` / `yuv420p`) — the gap list had simply
+not caught up. What neither of them closes is the half those entries were really about: a
+PMS *decision* on such an item, which no generated clip can give.
+
+Whatever is still missing is fed through the **`plxnative-playurl`** boot trigger rather
+than through Plex, so it is a different tool. **Not `plxnative-url`**, which this sentence
+said until 2026-08-23 and which would send you down a dead end: that one hands over a URL
+and no DECLARATION, so the payload describes whatever the route happened to hold — and
+several of the remaining gaps (HLG, HDR10+) are *about* what the payload declares. Four
+notes for whoever writes it, each measured on this ffmpeg 8.1.2:
 
 * **HLG needs nothing special beyond `setparams`.** An earlier version of this file said
   ffmpeg's Matroska muxer drops `arib-std-b67` and that HLG therefore had to be muxed with

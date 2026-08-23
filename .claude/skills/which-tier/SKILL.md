@@ -163,11 +163,13 @@ fails as "no line found", which reads exactly like a total regression. There is 
 OS-level mutex, and two jobs on it produce plausible WRONG data rather than a clean failure.
 
 ```sh
-./tests/run.py                 # 12 synthetic cases — the player pipeline, no Plex, no credentials
+./tests/run.py                 # the synthetic tier — the player pipeline, no Plex, no credentials
 ./tests/run.py --server        # the 21 library-backed cases — selection, the whole Plex chain
 ./tests/run.py --fps           # the 14 UI fps scenes (implies --server)
 ./tests/run.py --fps-player    # + the 2 player-tier scenes (info-panel, track-menu)
-./tests/run.py --list          # OFFLINE: the 12 synthetic cases, each declaration, missing fixtures
+./tests/run.py --list          # OFFLINE: the synthetic cases, each declaration and raster, and
+                               #          which fixtures the pack is missing. THE census — a count
+                               #          written into prose here rotted inside one commit.
 ./tests/run.py --list --server # OFFLINE: the 21 cases + 16 fps scenes, each SKIP and its reason
 tools/tv-session.sh up --screen <name>   # boot into a screen, then `key` / `click` / `shot`
 tools/capture-screen.sh out.png DISPLAY  # the panel, video plane composited in

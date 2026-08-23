@@ -103,6 +103,13 @@ out of the finished file with ffprobe, and a mismatch is a hard error naming bot
     hits EOF inside its `run_secs` fires the finish → Up Next → auto-advance chain, which
     contaminates `no_playing_error` and the teardown assertions of a case that was only
     ever about playing.
+    ONE EXCEPTION, and it is the exception that proves the rule: `pipe_h264_ac3_short` is
+    20 s BECAUSE ending is what it grades (LG item #46, `tests/run.py::a_finished`). It is
+    the only shape in either table allowed to be short, `pipe_finish_eos` is the only case
+    allowed to name it, and the harness enforces the OPPOSITE bound for that pair —
+    `_resolve_fixtures` SKIPS a `reaches_eos` case whose fixture is longer than 0.6 × the
+    case's cap. Adding a second short clip means picking a side; whichever side the harness
+    was not told about, it will skip rather than fail.
 
 10. ffmpeg HAS A PGS DECODER AND NO PGS ENCODER, and refuses text→bitmap conversion
     outright ("Subtitle encoding currently only possible from text to text or bitmap to
@@ -868,8 +875,11 @@ QUICK_SECS = 20
 # WHY A SECOND TABLE AND NOT MORE ROWS IN `SHAPES`. Every constant up there is derived from
 # something that does not exist down here. A duration is the deepest seek/resume/marker
 # depth a Plex CASE reaches divided by Plex's 90% watched threshold (trap 9); nothing here
-# seeds a viewOffset, marks anything watched, or has an Up Next to fire, so the only length
-# constraint left is "do not hit EOF while a case is still asserting". The LAYOUT differs
+# seeds a viewOffset, marks anything watched, or has an Up Next to fire, so the length
+# constraints left are TWO, in opposite directions: "do not hit EOF while a case is still
+# asserting" for fourteen of the fifteen clips, and "DO end, inside the cap" for
+# `pipe_h264_ac3_short`, which exists to run out. The harness enforces both and skips rather
+# than fails on either side. The LAYOUT differs
 # for the same kind of reason: the Plex trees exist for a SCANNER, and the thing reading
 # these is a static file server (see `out_paths`).
 #

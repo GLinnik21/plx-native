@@ -18,7 +18,7 @@ Read `docs/distribution.md` §2 first for the eligibility question this document
 aside — LG's live `appinfo.json` reference still says of `type` that *"Only `web` is allowed
 currently"*, and whether a native ipk is submittable at all is unsettled.
 
-Status taken 2026-08-22.
+Status taken 2026-08-23. **Bump this line in the same edit that changes any row below** — it is the only sentence in the file nothing else restates, so a stale one silently discounts the newest rows as older than they are, which is what it was doing for the four entries dated 2026-08-23 (#14, #43 CASE1, #46, #50/51).
 
 ---
 
