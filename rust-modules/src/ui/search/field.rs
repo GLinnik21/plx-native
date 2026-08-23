@@ -423,7 +423,7 @@ impl Key {
             // The same reading [`build`] uses: a source `browse`'s table has never adopted has not
             // failed, so an absent one is live. The two must agree or the line changes without the
             // key moving.
-            if srcs.iter().find(|s| s.sid == sid).map(|s| s.reachable).unwrap_or(true) {
+            if srcs.iter().find(|s| s.sid == sid).map(|s| s.reachable()).unwrap_or(true) {
                 k.live |= 1 << i;
             }
             k.facts[i] = crate::plex::server_facts(sid).map_or(0, |f| std::ptr::from_ref(f) as usize);
@@ -496,7 +496,7 @@ fn build(key: Key) -> ScopeState {
                 owned: f.map(|f| f.owned).unwrap_or(Some(sid) == first),
                 // `browse`'s is the app's ONE notion of a source that has stopped answering. A
                 // source its table has never adopted has not failed, so it reads as live.
-                live: srcs.iter().find(|s| s.sid == sid).map(|s| s.reachable).unwrap_or(true),
+                live: srcs.iter().find(|s| s.sid == sid).map(|s| s.reachable()).unwrap_or(true),
             }
         })
         .collect();

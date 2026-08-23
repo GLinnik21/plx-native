@@ -51,6 +51,50 @@ const SRC_RETRY_CD: u32 = 600; // ~10 s at 60 fps
 
 // ---- the granted roster: the SOURCE dimension of the table ----------------------------------
 
+/// **How a source's last dial ended** — the widened form of what used to be one `bool`.
+///
+/// A bool could say "answered" or "did not", and the Sources list said exactly those two things.
+/// It could not say the three things a user needs told apart, and which the prober already
+/// distinguishes ([`crate::plex::probe::Outcome`]): nobody has dialled yet, the server answered but
+/// refused our token, and the server did not answer at all. Those want different words and, for the
+/// middle one, a different remedy — a 401 is a sharing-grant problem that re-fetching
+/// `/api/v2/resources` fixes, and telling the user their friend's server is unreachable sends them
+/// to look at a router for something that was never a network fault.
+///
+/// **This enum is a CONTRACT, landed on its own.** One lane renders it and another populates it, so
+/// it exists before either: the renderer cannot reference a type living in an unmerged branch, and
+/// two lanes cannot own one definition. Today only the two ends of the old bool are ever stored —
+/// [`Self::NotProbed`] and [`Self::Unauthorized`] are constructible and unwritten, exactly so that
+/// the behaviour of this commit is unchanged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub(crate) enum SourceState {
+    /// Registered, never dialled. Distinct from [`Self::Unreachable`]: a source nobody has tried is
+    /// not a source that failed, and the group must not open dimmed. This is the DEFAULT for the
+    /// same reason the old `reachable: true` seed was optimistic.
+    #[default]
+    NotProbed,
+    /// Answered, and it was the machine we asked for.
+    Reachable,
+    /// Answered with 401. A token problem, never a network one — the remedy is a fresh
+    /// `/api/v2/resources`, not another address.
+    ///
+    /// **Unconstructed in production on purpose, and the attribute is the handover note.** Nothing
+    /// can produce this until the prober that tells 401 apart is wired in; when it is, the `expect`
+    /// becomes unfulfilled and the build fails until the line is deleted — which is the point, and
+    /// is why this is not a permanently-silent `allow`.
+    ///
+    /// `cfg_attr(not(test), …)` because the tests below DO construct it — pinning that an
+    /// answered-but-refused server is not drawn as unreachable — and under `--tests` the variant is
+    /// therefore live, which would make the expectation unfulfilled immediately.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "contract variant: written once the racing prober lands, and this attribute goes with it")
+    )]
+    Unauthorized,
+    /// Did not answer: refused, timed out, or unresolvable.
+    Unreachable,
+}
+
 /// One SOURCE the table is addressed by — a server this account has been granted. Comes from the
 /// [server registry](crate::plex::server_ids), which is the granted roster: a server is registered
 /// only once plex.tv (or the `plxnative-servers` dev trigger) handed us a token for it.
@@ -72,18 +116,48 @@ pub(crate) struct BrowseSource {
     /// The owner's plex.tv handle ("friend"); **empty on your own server**, where the absence of an
     /// owner is drawn as the absence of a run rather than as an empty one.
     pub(crate) handle: String,
-    /// Did it ANSWER? One of the design's three orthogonal states — *granted* (the roster's
-    /// answer), *pinned* (the only control), *reachable* (a fact about now). A source that has
-    /// stopped answering keeps every section it had learned and every pin on them: its group dims
-    /// whole and still reads `On`, because nothing was unpinned. Hiding it would read as a
+    /// How its last dial ended. One of the design's three orthogonal states — *granted* (the
+    /// roster's answer), *pinned* (the only control), *reachable* (a fact about now). A source that
+    /// has stopped answering keeps every section it had learned and every pin on them: its group
+    /// dims whole and still reads `On`, because nothing was unpinned. Hiding it would read as a
     /// revoked share.
-    pub(crate) reachable: bool,
+    ///
+    /// Was a `bool`; see [`SourceState`] for why it is not any more, and note that today only its
+    /// two former values are ever written. **Read it through [`BrowseSource::reachable`] and write
+    /// it through [`BrowseSource::set_reachable`]** unless you genuinely mean one of the new
+    /// states — that is what keeps this widening from changing behaviour.
+    pub(crate) state: SourceState,
+    /// Which tier of connection actually won — local, remote, or Plex's relay tunnel. `None` until
+    /// something probes, which is **everything, today**: `Client::set_link` has no production
+    /// caller, so the one consumer of this fact (`route`'s relay policy) has never seen a value.
+    /// Landed here with the state it belongs beside, unwritten, for the same contract reason.
+    pub(crate) tier: Option<crate::plex::probe::Location>,
     /// its `/library/sections` has landed — sections are appended exactly once per source
     sections_done: bool,
     /// its per-library item counts have landed (the row sub-line's "185 films")
     counts_done: bool,
     /// frames before the next discovery attempt after a failure (main-thread; [`pump`] counts down)
     retry_cd: u32,
+}
+
+impl BrowseSource {
+    /// Did the last dial succeed? The old `bool`, preserved as a QUESTION so that widening the
+    /// field did not have to become a behaviour change at the same time.
+    ///
+    /// **`NotProbed` answers `true`**, which looks generous and is the behaviour being preserved
+    /// exactly: the field it replaced was seeded `reachable: true` on registration, with the
+    /// comment *"a source nobody has dialled yet is not a source that failed, and the whole group
+    /// would otherwise open dimmed"*. Anything that needs to tell "not yet" from "yes" must read
+    /// [`BrowseSource::state`] and say so, which is the entire reason the state exists.
+    pub(crate) fn reachable(&self) -> bool {
+        !matches!(self.state, SourceState::Unreachable)
+    }
+    /// Record a dial that answered or did not — the only writer today, and the one that keeps this
+    /// commit behaviour-identical. A prober that can tell 401 apart sets [`BrowseSource::state`]
+    /// directly instead; this deliberately cannot express [`SourceState::Unauthorized`].
+    pub(crate) fn set_reachable(&mut self, ok: bool) {
+        self.state = if ok { SourceState::Reachable } else { SourceState::Unreachable };
+    }
 }
 
 // ---- section table (discovered per source) ---------------------------------------------------
@@ -450,8 +524,11 @@ fn sync_roster() {
                     name,
                     handle,
                     // Optimistic until proven otherwise: a source nobody has dialled yet is not a
-                    // source that failed, and the whole group would otherwise open dimmed.
-                    reachable: true,
+                    // source that failed, and the whole group would otherwise open dimmed. That
+                    // is `NotProbed`, which `reachable()` answers `true` for — the seed this
+                    // replaced was a literal `true`, and the two say the same thing here.
+                    state: SourceState::NotProbed,
+                    tier: None,
                     sections_done: false,
                     counts_done: false,
                     retry_cd: 0,
@@ -491,7 +568,7 @@ pub(crate) fn ensure_sections() -> usize {
     append_sections(si, found.unwrap_or_default());
     if let Some(s) = source_mut(si) {
         s.sections_done = ok;
-        s.reachable = ok;
+        s.set_reachable(ok);
         s.retry_cd = if ok { 0 } else { SRC_RETRY_CD };
     }
     sections().len()
@@ -701,10 +778,10 @@ fn activate_source_of(_i: usize) {
 fn mark_source_reachable(i: usize, ok: bool) {
     let Some(src) = sections().get(i).map(|s| s.src) else { return };
     let Some(s) = source_mut(src) else { return };
-    if s.reachable == ok {
+    if s.reachable() == ok {
         return;
     }
-    s.reachable = ok;
+    s.set_reachable(ok);
     // A server that has come back is worth re-asking properly (its library list may have moved on);
     // one that has gone means the Sources list must dim its group NOW rather than at the next press.
     if ok {
@@ -1023,8 +1100,25 @@ pub(crate) struct SrcGroup {
     /// the owner's handle — the header's accessory; empty on your own server, where the header
     /// carries no accessory at all
     pub(crate) handle: String,
-    /// false dims the WHOLE group, header included, and states it there
-    pub(crate) reachable: bool,
+    /// How its last dial ended — [`SourceState::Unreachable`] dims the WHOLE group, header
+    /// included, and states it there.
+    ///
+    /// Was `reachable: bool`. The renderer still asks the old question through
+    /// [`SrcGroup::reachable`]; widening what it can be told is what lets that renderer grow a
+    /// third and fourth word without this projection changing again.
+    pub(crate) state: SourceState,
+    /// Which tier won — local, remote or relay. `None` until something probes, which is everything
+    /// today. The Sources list is the surface that should say it: "relay" explains a 2 Mbit/s
+    /// ceiling that otherwise reads as a broken server.
+    pub(crate) tier: Option<crate::plex::probe::Location>,
+}
+
+impl SrcGroup {
+    /// The old two-state question. See [`BrowseSource::reachable`] — `NotProbed` answers `true`
+    /// here too, and for the same reason: a group nobody has dialled must not open dimmed.
+    pub(crate) fn reachable(&self) -> bool {
+        !matches!(self.state, SourceState::Unreachable)
+    }
 }
 
 /// One library row in the Sources list.
@@ -1047,7 +1141,7 @@ pub(crate) struct SrcRow {
 pub(crate) fn source_groups() -> Vec<SrcGroup> {
     sources()
         .iter()
-        .map(|s| SrcGroup { name: s.name.clone(), handle: s.handle.clone(), reachable: s.reachable })
+        .map(|s| SrcGroup { name: s.name.clone(), handle: s.handle.clone(), state: s.state, tier: s.tier })
         .collect()
 }
 
@@ -1231,7 +1325,7 @@ pub(crate) fn loading_initial() -> bool {
 /// for, a server that could not be reached to discover anything.
 pub(crate) fn cur_source_state() -> SecFetch {
     let Some(s) = cur_source_idx().and_then(|i| sources().get(i)) else { return SecFetch::Loading };
-    if !s.reachable {
+    if !s.reachable() {
         SecFetch::Failed
     } else if s.sections_done {
         SecFetch::Ready
@@ -1260,7 +1354,8 @@ pub(crate) fn seed_sources_for_test(n: usize, reachable: bool) {
             owned: k == 0,
             name: if k == 0 { "nas-home".into() } else { "film-club".into() },
             handle: if k == 0 { String::new() } else { "friend".into() },
-            reachable,
+            state: if reachable { SourceState::Reachable } else { SourceState::Unreachable },
+            tier: None,
             sections_done: reachable,
             counts_done: true,
             retry_cd: 0,
@@ -1678,9 +1773,9 @@ fn land_discovery() {
             let ok = list.is_some();
             append_sections(si, list.unwrap_or_default());
             if let Some(s) = source_mut(si) {
-                let was = s.reachable;
+                let was = s.reachable();
                 s.sections_done = ok;
-                s.reachable = ok;
+                s.set_reachable(ok);
                 s.retry_cd = if ok { 0 } else { SRC_RETRY_CD };
                 if was != ok {
                     SRC_FACTS_GEN.fetch_add(1, Ordering::SeqCst); // the group dims, or comes back
@@ -2107,7 +2202,8 @@ mod tests {
             owned: true,
             name: "nas-home".into(),
             handle: "friend".into(),
-            reachable,
+            state: if reachable { SourceState::Reachable } else { SourceState::Unreachable },
+            tier: None,
             sections_done,
             counts_done: true,
             retry_cd: 0,
@@ -2124,7 +2220,7 @@ mod tests {
         let _g = crate::testlock::serial();
         seed_one_source(true, false);
         assert_eq!(cur_source_state(), SecFetch::Loading, "nobody has asked it anything yet");
-        source_mut(0).unwrap().reachable = false;
+        source_mut(0).unwrap().set_reachable(false);
         assert_eq!(cur_source_state(), SecFetch::Failed, "the screen must be able to see this");
         reset();
     }
@@ -2150,7 +2246,7 @@ mod tests {
         assert_eq!(cur_source_state(), SecFetch::Failed);
         {
             let s = source_mut(0).unwrap();
-            s.reachable = true;
+            s.set_reachable(true);
             s.sections_done = true;
         }
         append_sections(0, vec![(1, "Movies".into(), SecKind::Movie), (2, "Film Club".into(), SecKind::Movie)]);
@@ -2176,7 +2272,8 @@ mod tests {
             owned: handle.is_empty(),
             name: name.into(),
             handle: handle.into(),
-            reachable,
+            state: if reachable { SourceState::Reachable } else { SourceState::Unreachable },
+            tier: None,
             sections_done: true,
             counts_done: true,
             retry_cd: 0,
@@ -2658,12 +2755,63 @@ mod tests {
         assert!(sources()[1].sections_done, "discovery is done — it will never re-ask by itself");
 
         mark_source_reachable(1, false); // a page for THEIR library did not come back
-        assert!(!sources()[1].reachable, "their group dims");
-        assert!(sources()[0].reachable, "…and ours is untouched — it answered");
+        assert!(!sources()[1].reachable(), "their group dims");
+        assert!(sources()[0].reachable(), "…and ours is untouched — it answered");
 
         mark_source_reachable(1, true); // …and it comes back
-        assert!(sources()[1].reachable);
+        assert!(sources()[1].reachable());
         assert_eq!(sources()[1].retry_cd, 0, "a server that answered is worth re-asking at once");
+        reset();
+    }
+
+    /// **The widening contract, pinned.** [`SourceState`] replaced a `bool`, and the whole claim of
+    /// that commit is that it changed nothing — so the mapping is a test rather than a paragraph.
+    ///
+    /// The asymmetry is the part worth pinning: **`NotProbed` reads as reachable**. That looks
+    /// wrong until you recall what it replaced — a source was seeded `reachable: true` at
+    /// registration precisely so its group would not open dimmed before anything had been dialled.
+    /// A future reader who "fixes" this to `false` will dim every group for the frames between
+    /// registration and the first probe, which is a visible flicker on every boot.
+    #[test]
+    fn not_probed_reads_as_reachable_and_only_a_failed_dial_dims_a_group() {
+        let _g = crate::testlock::serial();
+        let mut s = a_source("nas-home", "friend", true);
+
+        s.state = SourceState::NotProbed;
+        assert!(s.reachable(), "nobody has dialled it — the group must not open dimmed");
+        assert_eq!(s.tier, None, "and nothing has told us which tier won");
+
+        s.set_reachable(true);
+        assert_eq!(s.state, SourceState::Reachable);
+        assert!(s.reachable());
+
+        s.set_reachable(false);
+        assert_eq!(s.state, SourceState::Unreachable);
+        assert!(!s.reachable(), "the ONLY state that dims a group");
+
+        // Answered-but-refused is a token problem, not a network one — so it does NOT dim, and it
+        // is not something `set_reachable` can even express. Both halves are the point.
+        s.state = SourceState::Unauthorized;
+        assert!(s.reachable(), "it answered; the group is not 'not reachable'");
+        reset();
+    }
+
+    /// The same mapping on the projection the renderer actually sees, because `SrcGroup` carries
+    /// its own copy of the question and two copies are how a widening drifts.
+    #[test]
+    fn the_source_group_projection_answers_reachability_the_same_way() {
+        let _g = crate::testlock::serial();
+        seed_sources(vec![a_source("mac-mini", "", true), a_source("nas-home", "friend", true)]);
+        // Set the SOURCE directly. `mark_source_reachable` takes a *section* index and resolves the
+        // source through it (`sections()[i].src`), so with no sections seeded it early-returns —
+        // which cost this test one failing run before the name gave it away.
+        source_mut(1).unwrap().set_reachable(false);
+        let g = source_groups();
+        assert_eq!(g[0].state, SourceState::Reachable);
+        assert!(g[0].reachable());
+        assert_eq!(g[1].state, SourceState::Unreachable);
+        assert!(!g[1].reachable(), "the dim the Sources list draws");
+        assert_eq!(g[1].tier, None);
         reset();
     }
 
@@ -2697,7 +2845,7 @@ mod tests {
 
         assert!(!SRC_FETCHING.load(Ordering::SeqCst), "the single flight must be released");
         assert_eq!(sources()[1].retry_cd, SRC_RETRY_CD, "…and the next attempt is ~10s out, not 1 frame");
-        assert!(sources()[1].reachable, "a refused THREAD says nothing about their server");
+        assert!(sources()[1].reachable(), "a refused THREAD says nothing about their server");
         assert!(!sources()[1].sections_done, "…and it is still a source waiting to be discovered");
         assert_eq!(sources()[0].retry_cd, 0, "the other source is untouched");
 
