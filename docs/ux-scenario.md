@@ -234,7 +234,7 @@ name beneath, and a **Sign out** pill centred below them.
 An empty roster draws a spinner; a failed switch draws an error line under the row.
 
 **A protected profile opens a PIN pad** rather than committing. The pad is its own screen, not a
-peek-through: a title *"Enter <Name>'s PIN"*, four entry dots, and a 4×3 keypad —
+peek-through: a title `Enter <Name>'s PIN`, four entry dots, and a 4×3 keypad —
 `1 2 3 / 4 5 6 / 7 8 9 / · 0 ⌫`, the bottom-left cell empty and unfocusable. The D-pad walks the
 grid and skips the empty cell, OK presses a key, and **the remote's own number buttons type straight
 into the PIN**. On the fourth digit the pad stays up and the dot row becomes a spinner while the PIN
@@ -675,5 +675,5 @@ The needed captures are all reachable on the bench with the boot triggers docume
 - Audio: `Makefile` `LIBS_REAL`, and `SDL_Init(SDL_INIT_VIDEO)` in `rust-modules/src/app.rs`.
 - Figures: `make sim`, 2026-08-23, at 1920×1080, dev counter compiled out.
 
-**Two figures are edited, and both edits are stated where they appear**: the Search scope line
-(§5.5) and nothing else. No other figure has been retouched.
+**Exactly one figure is edited, and the edit is stated where it appears**: the Search scope line
+(§5.5), which named a real server. No other figure has been retouched in any way.
