@@ -88,12 +88,12 @@ pub(crate) fn sections(
         // group also SAYS so there, and says it FIRST: the accessory is elided from the right, so
         // leading with the state means a long handle gives way rather than the fact that the server
         // is not answering. It is a state in the same register as the rows' own `On`/`Off`.
-        let accessory = match (g.reachable, g.handle.is_empty()) {
+        let accessory = match (g.reachable(), g.handle.is_empty()) {
             (true, _) => g.handle.clone(),
             (false, true) => "Not reachable".to_string(),
             (false, false) => format!("Not reachable \u{b7} {}", g.handle),
         };
-        let mut sec = Section::new(g.name.clone()).accessory(accessory).dim(!g.reachable);
+        let mut sec = Section::new(g.name.clone()).accessory(accessory).dim(!g.reachable());
         for r in mine {
             let mut row = Row::new(r.title.clone());
             row = match level {

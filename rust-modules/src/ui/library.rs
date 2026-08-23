@@ -2908,7 +2908,12 @@ mod tests {
     // ---- the Sources chip + its two-level panel -------------------------------------------------
 
     fn group(name: &str, handle: &str, reachable: bool) -> crate::browse::SrcGroup {
-        crate::browse::SrcGroup { name: name.into(), handle: handle.into(), reachable }
+        crate::browse::SrcGroup {
+            name: name.into(),
+            handle: handle.into(),
+            state: if reachable { crate::browse::SourceState::Reachable } else { crate::browse::SourceState::Unreachable },
+            tier: None,
+        }
     }
     fn lib(src: usize, section: usize, title: &str, pinned: bool, last: bool, current: bool) -> crate::browse::SrcRow {
         crate::browse::SrcRow {
@@ -2979,7 +2984,7 @@ mod tests {
         assert_eq!((secs[1].header.as_str(), secs[1].accessory.as_str()), ("nas-home", "friend"));
         assert!(!secs[0].dim && !secs[1].dim);
 
-        g[1].reachable = false;
+        g[1].state = crate::browse::SourceState::Unreachable;
         let mut r = r;
         r[2].pinned = true; // pinned AND unreachable: the state the design calls out by name
         let (secs, _) = source_list::sections(Level::OnHome, &g, &r, Tail::Recheck);
