@@ -218,8 +218,12 @@ pub struct ServerRef {
     /// interchangeable: the host a TLS certificate is issued for is the `plex.direct` NAME, which
     /// `address` never holds (`origin.rs`). Storing the URL keeps the file legible to a human
     /// editing it on the television, which the struct-shaped alternative does not.
-    #[serde(default)]
-    pub origin: String,
+    ///
+    /// **The `_url` suffix is not decoration**: this is the raw string, [`ServerRef::origin`] is
+    /// the parsed value, and naming both `origin` would put a silent mix-up two characters away at
+    /// every use. The FILE's key stays `origin`, which is what a human editing it reads.
+    #[serde(default, rename = "origin")]
+    pub origin_url: String,
 }
 
 impl ServerRef {
@@ -235,7 +239,7 @@ impl ServerRef {
     /// The gate stays where it is, and the `port as i32` below is the same cast those readers were
     /// already doing, kept in one documented place instead of three.
     pub fn origin(&self) -> Origin {
-        Origin::parse(&self.origin).unwrap_or_else(|| Origin::http(&self.address, self.port as i32))
+        Origin::parse(&self.origin_url).unwrap_or_else(|| Origin::http(&self.address, self.port as i32))
     }
 }
 
@@ -273,9 +277,9 @@ pub struct SourceRef {
     /// **Where this server is, as a URL** — the [`Origin`] the probe accepted, serialized. Empty
     /// in every file written before the field existed; [`SourceRef::origin`] falls back to
     /// `http://{address}:{port}` for those, which is what they meant. See [`ServerRef::origin`]
-    /// for why that fallback exists at all.
-    #[serde(default)]
-    pub origin: String,
+    /// for why that fallback exists at all, and [`ServerRef::origin_url`] for the `_url` suffix.
+    #[serde(default, rename = "origin")]
+    pub origin_url: String,
 }
 
 impl SourceRef {
@@ -311,8 +315,8 @@ impl SourceRef {
     /// [`SourceRef::usable`] — so `None` costs one roster entry, which is the rule `de_soft_vec`
     /// establishes for this whole struct.
     pub fn origin(&self) -> Option<Origin> {
-        if !self.origin.is_empty() {
-            return Origin::parse(&self.origin);
+        if !self.origin_url.is_empty() {
+            return Origin::parse(&self.origin_url);
         }
         if self.address.is_empty() {
             return None;
@@ -441,8 +445,8 @@ impl Session {
     /// (`Origin::parse` refuses an undialable port and a scheme this app does not speak); a legacy
     /// file with no origin is judged exactly as before.
     fn server_dialable(&self) -> bool {
-        if !self.server.origin.is_empty() {
-            return Origin::parse(&self.server.origin).is_some();
+        if !self.server.origin_url.is_empty() {
+            return Origin::parse(&self.server.origin_url).is_some();
         }
         !self.server.address.is_empty() && super::probe::dial_port(self.server.port).is_some()
     }

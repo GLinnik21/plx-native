@@ -801,7 +801,7 @@ fn resolve_roster(resources: &[Resource], dial: &dyn Fn(&str, i32) -> (i32, Vec<
                     // Empty when the URL somehow is not an origin — `SourceRef::origin` then falls
                     // back to the legacy address pair, which is the same answer this line used to
                     // give unconditionally.
-                    origin: c.origin().map(|o| o.base()).unwrap_or_default(),
+                    origin_url: c.origin().map(|o| o.base()).unwrap_or_default(),
                     // The address that ANSWERED, never the first advertised. Kept as the
                     // DIAGNOSTIC half — what `describe` prints and the Sources panel says.
                     address: c.address,
@@ -870,7 +870,7 @@ fn discover_and_store(ac: &AccountClient) -> Discovery {
         token: p.token.clone(),
         // Carried across from the roster entry, so the primary and its `sources` twin can never
         // disagree about where the same server is. `reconcile_primary` keeps them together later.
-        origin: p.origin.clone(),
+        origin_url: p.origin_url.clone(),
     };
     with_ctl(|c| {
         c.session.server = server;
@@ -992,10 +992,11 @@ fn reconcile_primary(server: &mut ServerRef, found: &[SourceRef]) -> bool {
         return false;
     }
     let Some(s) = found.iter().find(|s| s.machine_id == server.machine_id && s.usable()) else { return false };
-    if server.address == s.address && server.port == s.port && server.token == s.token && server.origin == s.origin {
+    if server.address == s.address && server.port == s.port && server.token == s.token && server.origin_url == s.origin_url
+    {
         return false;
     }
-    if server.address != s.address || server.port != s.port || server.origin != s.origin {
+    if server.address != s.address || server.port != s.port || server.origin_url != s.origin_url {
         // The machine name and the address, never the token and never the machine id — the same
         // line `SourceRef::describe` draws.
         log(&format!("auth: primary {:?} now answers at {}:{}", server.name, s.address, s.port));
@@ -1005,7 +1006,7 @@ fn reconcile_primary(server: &mut ServerRef, found: &[SourceRef]) -> bool {
     // The origin moves with the address for the same reason the token does: it came out of the
     // same answer. Leaving it behind would keep dialling the old one, which is the bug this
     // whole function exists to close, one field further in.
-    server.origin = s.origin.clone();
+    server.origin_url = s.origin_url.clone();
     // The token moves with the address because it came from the same answer: this is the OWNER's
     // per-(user, server) grant, which is exactly what `ServerRef::token` means (and the refresh
     // above only runs for the owner). `pms_token()` still prefers a switched profile's own token.
@@ -1559,12 +1560,12 @@ mod tests {
             panic!("both servers answer")
         };
 
-        assert_eq!(roster[0].origin, "http://192.168.0.10:32400");
-        assert_eq!(roster[1].origin, "http://203.0.113.9:31234");
+        assert_eq!(roster[0].origin_url, "http://192.168.0.10:32400");
+        assert_eq!(roster[1].origin_url, "http://203.0.113.9:31234");
         // …and it is a parseable origin, so the registry gets one rather than the legacy fallback
         for s in &roster {
             let o = s.origin().expect("a reached entry is dialable");
-            assert_eq!(o.base(), s.origin, "the stored string round-trips");
+            assert_eq!(o.base(), s.origin_url, "the stored string round-trips");
             assert!(!o.is_tls(), "nothing this transport can accept is TLS yet");
             // the equality that makes this a behaviour-preserving change today
             assert_eq!((o.host(), o.port() as i64), (s.address.as_str(), s.port));
