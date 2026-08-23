@@ -40,6 +40,14 @@ not occur constantly"*; the two slow legs would still buffer continuously with n
 picker. Closing it needs the measurement half plus a device pass over those four legs
 (`tools/netcond.py` is where the legs become reproducible).
 
+**The legs can now be PRODUCED, which they could not before 2026-08-23** — `tools/netcond.py`
+gained a `rate:<kbps>` mode, so `echo rate:512 > /tmp/netcond.mode` throttles the link the app is
+streaming over, live, under an already-open transfer, and `rate:512@/library/parts` throttles the
+media stream while leaving the control calls at full speed. That does not move this item off the
+FAIL list — the defect is the absent ABR, not the absent instrument — but it turns "the two slow
+legs would buffer continuously" from a prediction into something measurable, and it is the same
+instrument #14 needs.
+
 ### #43 CASE2 — IPv6
 
 `stream.rs` is `AF_INET` only (lines 284, 307, 703, 716, 731, 788, 867). Playback over IPv6 is not
@@ -68,14 +76,14 @@ Not failures — *unknowns*, and unmarkable. Every one of these is a device sess
 | # | Item | What is actually unknown |
 | --- | --- | --- |
 | 3 | Reboot | The whole matrix: remote power off/on, AC unplug/replug, Recent List behaviour, playback resumed after reboot. `handlesRelaunch: false` is set and its consequences are untested. |
-| 14 | Abnormal end | Wired vs wireless × static vs dynamic IP. |
+| 14 | Abnormal end | Wired vs wireless × static vs dynamic IP. The DEGRADING-link half is now producible with `tools/netcond.py`'s `rate:<kbps>` (see #43 CASE1 above); the wired/wireless and static/dynamic axes still need a bench. |
 | 16 | Keyboard character fidelity | The item's own example — does `\` arrive as typed? |
 | 17 | Keyboard linked buttons | The LG VKB's Voice Search and its siblings. |
 | 26 | General (IR) remote | Every key. Everything here has only ever been driven with the Magic Remote — see §4, which is why this one is not a formality. |
 | 36 / 39 | HOME and LIVE keys | Assumed system-handled; never observed. HOME is scancode 269, unbound. |
 | 40 | Unsupported keys | `Key::Other` swallows them so it is *probably* safe, but unproven. |
-| 46 | Replay after completion | Untested. |
-| 50 / 51 | Resolution × codec | Pieces are covered by `tests/run.py`; never run as the matrix the item asks for. 4K HEVC 10-bit HDR10 was device-verified 2026-08-22, SD/HD were not. |
+| 46 | Replay after completion | **Half answerable since 2026-08-23.** `./tests/run.py`'s `pipe_finish_eos` plays a 20 s clip to its end and asserts `EOS reached → ended` followed by a clean `stop_bufferfeed: torn down`, i.e. that a finished stream ends rather than freezing on the last frame. The REPLAY itself is still untested and is an app gap, not a test gap: the synthetic tier's only entry into the player is `plxnative-playurl` behind `app.rs`'s one-shot `auto_tried` latch, so a boot gets one playback and there is no key path back in without a Plex item. `tests/README.md` §*Playing to the END* names the small app-side change that would close it. |
+| 50 / 51 | Resolution × codec | **Runnable as the matrix the item asks for since 2026-08-23**, on the synthetic tier: eight cells, SD 720×480 / HD 1280×720 / FHD 1920×1080 / UHD 3840×2160 × {h264, hevc}, each grading the demuxed raster EXACTLY (`expect.video_size`) rather than through a width floor. Device-run pending. What the matrix does not answer: the 4096-wide edge the device table claims and any refusal above it, HDR at any rung but UHD/HEVC, and — because these are generated clips — a PMS *decision* on any of these shapes. |
 | 13 | LockUp / LatchUp | No known instance; never formally exercised. |
 | 22 | Search CASE2 | A query in a language the app does not support. |
 

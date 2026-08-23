@@ -1013,6 +1013,128 @@ PIPE_SHAPES = {
                    "default": True, "title": "E-AC-3 5.1 English"}],
         "subs": [],
     },
+    # -----------------------------------------------------------------------------------
+    # THE RESOLUTION x CODEC MATRIX — LG App Self Checklist #50 / #51.
+    #
+    # That item is graded as a MATRIX, and until 2026-08-23 this repo could only answer it as
+    # "pieces are covered": the pack was 1080p everywhere plus one 4K HEVC, so SD and HD had
+    # never been played at all and 4K H.264 existed in neither pack (`library_gaps` lists it —
+    # every 4K item in the maintainer's library is HEVC or AV1, which is a fact about one
+    # library, not about the app). Six shapes below complete it:
+    #
+    #                 h264 / AC-3 5.1 mkv          hevc / E-AC-3 5.1 mkv
+    #     SD   720x480    pipe_h264_ac3_480p           pipe_hevc_eac3_480p
+    #     HD  1280x720    pipe_h264_ac3_720p           pipe_hevc_eac3_720p
+    #     FHD 1920x1080   pipe_h264_ac3_1080p (above)  pipe_hevc_eac3_1080p
+    #     UHD 3840x2160   pipe_h264_ac3_2160p          pipe_hevc_eac3_4k_hdr10 (above)
+    #
+    # FOUR decisions in it, each of which looks arbitrary and is not:
+    #
+    #  * ONE AUDIO CODEC PER COLUMN, held constant down the column, so a row-to-row difference
+    #    is the resolution and nothing else — and each column's constant is the one the rung
+    #    ALREADY in the table above uses, so the existing two cells belong to the matrix rather
+    #    than being neighbours of it. E-AC-3 in the HEVC column is also the better false-PASS
+    #    defence: `engine`'s `_ =>` arm produces `"AC3"`, so every HEVC row here expects an
+    #    `"AC3 PLUS"` no unread declaration can produce.
+    #  * SQUARE PIXELS AT 720x480, so the picture is 3:2 rather than the 4:3 a DVD would
+    #    display. An anamorphic fixture would be testing PAR handling — a different axis, with
+    #    no assertion behind it anywhere in this repo — and `testsrc2` has no PAR to speak of.
+    #  * CRF IS NOT THE AXIS and is not held constant. A constant CRF is constant QUALITY, not
+    #    constant bitrate, and 4K H.264 at the 1080p rung's crf 20 measures ~30 Mbit/s, i.e. a
+    #    quarter-gigabyte clip in service of no assertion; crf 26 lands at ~11.8 Mbit/s, which
+    #    is inside the band real 4K H.264 ships in. Nothing here declares `min_mbit`: that floor
+    #    exists for the rapid-seek cases (trap 5) and no case in this matrix seeks.
+    #  * SDR 8-BIT THROUGHOUT, which makes the UHD/HEVC cell the odd one — it is the existing
+    #    HDR10 Main10 fixture. Deliberate: HDR is a third axis, that cell is the one already
+    #    device-verified (2026-08-22), and an SDR 4K HEVC twin would differ from it only in
+    #    `trc=`/`pri=`, which nothing in this matrix grades. Say it out loud rather than let a
+    #    reader infer a uniform column that is not there.
+    #
+    # The television's own capability table (`/etc/umediaserver/device_codec_capability_config
+    # .json`, which `devcaps.rs` reads) claims H.264 to 4096x2304 and HEVC to 4096x2176, so
+    # every rung here is INSIDE the hardware envelope. The 4096-wide edge, and any refusal
+    # above it, stay uncovered — a fixture wider than the panel would be grading a refusal path
+    # nobody has specified.
+    "pipe_h264_ac3_480p": {
+        "kind": "clip", "ext": "mkv",
+        "duration": PIPE_SECS, "rate": 0.02,
+        "declare": {"vcodec": "h264", "acodec": "ac3", "fps": float(FPS), "atmos": False},
+        "video": {"codec": "h264", "size": "720x480", "crf": 20},
+        "audio": [{"codec": "ac3", "ch": 6, "lang": "eng", "br": "448k", "pitch": 220,
+                   "default": True, "title": "AC-3 5.1 English"}],
+        "subs": [],
+    },
+    "pipe_h264_ac3_720p": {
+        "kind": "clip", "ext": "mkv",
+        "duration": PIPE_SECS, "rate": 0.03,
+        "declare": {"vcodec": "h264", "acodec": "ac3", "fps": float(FPS), "atmos": False},
+        "video": {"codec": "h264", "size": "1280x720", "crf": 20},
+        "audio": [{"codec": "ac3", "ch": 6, "lang": "eng", "br": "448k", "pitch": 220,
+                   "default": True, "title": "AC-3 5.1 English"}],
+        "subs": [],
+    },
+    "pipe_h264_ac3_2160p": {
+        # The cell NEITHER pack could reach: 4K H.264. See the CRF note above for why this one
+        # is crf 26 where its 1080p sibling is 20.
+        "kind": "clip", "ext": "mkv",
+        "duration": PIPE_SECS, "rate": 0.20,
+        "declare": {"vcodec": "h264", "acodec": "ac3", "fps": float(FPS), "atmos": False},
+        "video": {"codec": "h264", "size": "3840x2160", "crf": 26},
+        "audio": [{"codec": "ac3", "ch": 6, "lang": "eng", "br": "448k", "pitch": 220,
+                   "default": True, "title": "AC-3 5.1 English"}],
+        "subs": [],
+    },
+    "pipe_hevc_eac3_480p": {
+        "kind": "clip", "ext": "mkv",
+        "duration": PIPE_SECS, "rate": 0.04,
+        "declare": {"vcodec": "hevc", "acodec": "eac3", "fps": float(FPS), "atmos": False},
+        "video": {"codec": "hevc", "size": "720x480", "crf": 26},
+        "audio": [{"codec": "eac3", "ch": 6, "lang": "eng", "br": "384k", "pitch": 330,
+                   "default": True, "title": "E-AC-3 5.1 English"}],
+        "subs": [],
+    },
+    "pipe_hevc_eac3_720p": {
+        "kind": "clip", "ext": "mkv",
+        "duration": PIPE_SECS, "rate": 0.08,
+        "declare": {"vcodec": "hevc", "acodec": "eac3", "fps": float(FPS), "atmos": False},
+        "video": {"codec": "hevc", "size": "1280x720", "crf": 26},
+        "audio": [{"codec": "eac3", "ch": 6, "lang": "eng", "br": "384k", "pitch": 330,
+                   "default": True, "title": "E-AC-3 5.1 English"}],
+        "subs": [],
+    },
+    "pipe_hevc_eac3_1080p": {
+        # 1080p HEVC in MKV with E-AC-3. `pipe_hevc_aac_mp4` is also 1920x1080 HEVC and is NOT
+        # this cell: it is mp4 + stereo AAC, i.e. two axes away, and reading it as the matrix's
+        # FHD/HEVC rung is exactly the "some of the shapes this library happens to own" answer
+        # #50/#51 is asking us to stop giving.
+        "kind": "clip", "ext": "mkv",
+        "duration": PIPE_SECS, "rate": 0.14,
+        "declare": {"vcodec": "hevc", "acodec": "eac3", "fps": float(FPS), "atmos": False},
+        "video": {"codec": "hevc", "size": "1920x1080", "crf": 26},
+        "audio": [{"codec": "eac3", "ch": 6, "lang": "eng", "br": "384k", "pitch": 330,
+                   "default": True, "title": "E-AC-3 5.1 English"}],
+        "subs": [],
+    },
+    # -----------------------------------------------------------------------------------
+    # ...and the one shape in either pack that is SUPPOSED to run out — LG item #46.
+    "pipe_h264_ac3_short": {
+        # 20 s, and the short length IS the feature: every other clip in both packs is sized so
+        # that it CANNOT hit EOF inside a case's window (trap 9's second half), because a finish
+        # tears the session down under assertions that were only ever about playing. This one
+        # exists to reach the end — `pipe_finish_eos` grades the `EOS reached: … → ended` line
+        # and the clean teardown behind it, which is the completion half of "replay after
+        # completion". Nothing else may name this fixture.
+        #
+        # 720x480 for cost alone: the assertion is about the END of a stream, not about its
+        # picture, and this is the cheapest raster the pack builds.
+        "kind": "clip", "ext": "mkv",
+        "duration": 20, "rate": 0.02,
+        "declare": {"vcodec": "h264", "acodec": "ac3", "fps": float(FPS), "atmos": False},
+        "video": {"codec": "h264", "size": "720x480", "crf": 20},
+        "audio": [{"codec": "ac3", "ch": 6, "lang": "eng", "br": "448k", "pitch": 220,
+                   "default": True, "title": "AC-3 5.1 English"}],
+        "subs": [],
+    },
     "pipe_multiaudio_1080p": {
         # Audio-LANE selection by declared codec. `ff.rs::audio_stream_matching` walks the
         # streams and feeds the FIRST whose `avcodec_get_name` matches the declaration, so
@@ -1139,6 +1261,16 @@ PIPE_MBIT = {
     "pipe_h264_1080p5994": 9.48,        # measured; NB 2.5x the frames cost only 1.3x the bits
     "pipe_hevc_4k_60fps": 9.40,         # measured, at crf 32 (crf 30 would be well over 15)
     "pipe_multiaudio_1080p": 8.10,      # = movie_h264_ac3_many_audio, minus five tracks
+    # The resolution matrix. Video measured 2026-08-23 over a 5 s encode at each rung's own
+    # settings, plus its audio track's nominal rate — so these run HIGH for the reason the note
+    # above gives (a short clip is I-frame-heavy), which is the safe direction for a warning.
+    "pipe_h264_ac3_480p": 1.71,         # 1.26 video + 0.45 AC-3
+    "pipe_h264_ac3_720p": 3.73,         # 3.28 + 0.45
+    "pipe_h264_ac3_2160p": 12.2,        # 11.77 + 0.45
+    "pipe_hevc_eac3_480p": 1.34,        # 0.96 video + 0.38 E-AC-3
+    "pipe_hevc_eac3_720p": 2.50,        # 2.12 + 0.38
+    "pipe_hevc_eac3_1080p": 4.90,       # 4.52 + 0.38
+    "pipe_h264_ac3_short": 1.71,        # = pipe_h264_ac3_480p, of which it is a 20 s copy
 }
 
 # The two tiers as data: which table, which wire-rate estimate, and which subdirectory of

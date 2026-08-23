@@ -956,13 +956,26 @@ def a_decision(lines, expected):
     return False, "no `stream: ... path=` or `decision: ... ->` line found"
 
 
-def a_codec(lines, expected, min_width):
+def a_codec(lines, expected, min_width, size=None):
+    """What the DEMUXER found: the codec, and how big the picture is.
+
+    `size` ("1920x1080") is an EXACT assertion and is what the resolution x codec matrix
+    (LG App Self Checklist #50/#51) actually grades — `min_width` cannot tell 720x480 from
+    720x576, and a matrix answered with "at least 1900 wide" is the "pieces are covered" answer
+    that item is asking us to stop giving. Read out of `AVCodecParameters::width/height`, i.e.
+    the CROPPED dimensions the container declares, so 1080 is 1080 and not the coded 1088.
+    The two are independent: a case may declare either, both, or neither.
+    """
     cs = codec_ids(lines)
     if not cs:
         return False, "no `ff: v=#0 codec=` line found"
     name, w, h, ln = cs[0]
     ok = (name == expected) and (w >= min_width)
-    return ok, f"codec={name} {w}x{h} (want {expected} w>={min_width}) :: {ln.strip()}"
+    want = f"{expected} w>={min_width}"
+    if size:
+        ok = ok and (f"{w}x{h}" == size)
+        want = f"{expected} {size}"
+    return ok, f"codec={name} {w}x{h} (want {want}) :: {ln.strip()}"
 
 
 def a_no_error(lines):
@@ -1129,6 +1142,50 @@ def a_server_wire(delta, min_opens, min_range):
         return False, (f"{ranges} ranged (206) request(s), need >={min_range} — the seek never "
                        f"reached the demuxer's Range reopen")
     return True, f"server saw {opens} open(s), {ranges} ranged"
+
+
+def a_finished(lines):
+    """The stream ran OUT, and the app left the player instead of freezing on the last frame.
+
+    LG App Self Checklist #46 is "replay after completion", and this is its first half — the
+    completion. Two links, in order, because either alone is satisfiable by something that is not
+    a finish:
+
+      * `EOS reached: playpos=Ns/Ms → ended` (pump.rs) — the producer hit file EOF AND the pipeline
+        played out to within a second of the duration. Not merely "the socket closed": the pump
+        gates the flag on `eos_pushed && pos >= dur - 1s`, so a truncated transfer does not reach
+        it.
+      * `stop_bufferfeed: torn down` (engine.rs::teardown) AFTER that line — `app.rs` calls
+        `finish_playback` on `player::ended()`, which with nothing queued is `exit_player`. The
+        ORDER is the assertion: this app tears the engine down on every stop, including the
+        harness's own close at the end of a case, so an unordered match would pass on a clip that
+        never ended at all.
+
+    "After" is a SEARCH FROM `eos`, not a comparison against the first teardown in the log, and
+    the difference is a false regression rather than a nicety: `teardown` writes that same line on
+    a `for_reload` stop too — a seek that escalated to `reload_at`, or an app-switch suspend — so a
+    first-match index can sit BEFORE the EOS while every teardown that matters comes after it. The
+    comparison form fails such a case for its whole `run_secs`, with the evidence reading "the
+    player froze on the last frame", which is exactly the reading this assertion exists to avoid.
+
+    What it deliberately does NOT claim is the SECOND half of #46 — that the same content can then
+    be started again. That is unreachable from this tier today and it is an app gap, not a test
+    gap: the pipeline tier's only entry is `plxnative-playurl`, read behind `app.rs`'s one-shot
+    `auto_tried` latch, so there is exactly one playback per boot and no key path back into the
+    player without a Plex item behind it. See the case's own `_replay_note` in the manifest.
+    """
+    eos = next((i for i, ln in enumerate(lines) if "EOS reached" in ln), None)
+    if eos is None:
+        ts = progress_secs(lines)
+        far = max((t for t, _ in ts), default=-1)
+        return False, (f"no `EOS reached` line — the stream never ran out (deepest position "
+                       f"{far}s). A fixture longer than this case's cap cannot end inside it.")
+    torn = next((i for i, ln in enumerate(lines) if i > eos
+                 and "stop_bufferfeed: torn down" in ln), None)
+    if torn is None:
+        return False, (f"reached EOS but never tore the engine down after it — the player froze on "
+                       f"the last frame :: {lines[eos].strip()}")
+    return True, f"{lines[eos].strip()} -> {lines[torn].strip()}"
 
 
 # ---- per-op assertions ----
@@ -2022,10 +2079,12 @@ def _resolve_fixtures(cases, root):
 
     Same contract as `_resolve_items`: a case that cannot run gets `skip` and NO `path`, so a
     partition that is ever wrong raises KeyError naming the case rather than driving the TV at
-    some default. Two ways to be unrunnable, and they are different answers: the pack was never
-    built, or it was built SHORTER than this case seeks. The second is the quiet one — a pack
-    regenerated at `--secs 30` while the manifest still seeks to 40 s makes the seek assertion
-    fail as though the player had regressed.
+    some default. Three ways to be unrunnable, and they are different answers: the pack was never
+    built, it was built SHORTER than this case seeks, or — for the one case that wants the stream
+    to run OUT — it was built LONGER than the case can play through. The last two are the quiet
+    ones: a pack regenerated at `--secs 30` while the manifest still seeks to 40 s makes the seek
+    assertion fail as though the player had regressed, and the same regeneration at `--secs 300`
+    would do it to `a_finished`.
     """
     for c in cases:
         name = c.get("fixture")
@@ -2044,6 +2103,19 @@ def _resolve_fixtures(cases, root):
                 c["skip"] = (f"{name} is {dur:.0f}s but this case needs {depth:.0f}s — regenerate "
                              f"the pack longer (`make fixtures-pipeline FIXTURES_ARGS=--secs=<n>`)")
                 continue
+            # ...and the opposite bound, for `reaches_eos` alone. That case has to boot the app,
+            # join the stream and then play the WHOLE clip at 1x inside its cap, so the clip must
+            # be comfortably shorter than the cap rather than merely shorter: 0.6 leaves 40% of the
+            # window for close+launch+pre-roll, against a boot-to-playing measured well under 15 s.
+            # A `--secs`-regenerated pack is the realistic way to trip this, and it must skip —
+            # `a_finished` failing on a 300 s clip reads as the app freezing on the last frame.
+            if c.get("expect", {}).get("reaches_eos"):
+                cap = c.get("run_secs", 30)
+                if dur > cap * 0.6:
+                    c["skip"] = (f"{name} is {dur:.0f}s and this case must play it to the END "
+                                 f"within a {cap}s cap — rebuild the pack at its declared length "
+                                 f"(`make fixtures-pipeline`, no --secs/--quick)")
+                    continue
             why = _declaration_mismatch(c, streams)
             if why:
                 c["skip"] = f"{name} does not match this case: {why} — regenerate the pack"
@@ -2063,13 +2135,16 @@ def evaluate_pipeline(case, lines, srv_delta):
     results = [("stream_path", *a_stream_path(lines, case["fixture"]))]
     results.append(("load_decl", *a_load_decl(lines, exp)))
     if "codec" in exp:
-        results.append(("codec", *a_codec(lines, exp["codec"], exp.get("min_video_width", 0))))
+        results.append(("codec", *a_codec(lines, exp["codec"], exp.get("min_video_width", 0),
+                                          exp.get("video_size"))))
     if exp.get("require_video_bound", True):
         results.append(("video_bound", *a_video_bound(lines)))
     results.append(("pos_climb", *a_timeline_climb(lines, exp.get("min_pos_climb_s", 8),
                                                dense_only=True)))
     if "audio_stream_index" in exp:
         results.append(("audio_lane", *a_audio_lane(lines, exp["audio_stream_index"])))
+    if exp.get("reaches_eos"):
+        results.append(("finished", *a_finished(lines)))
     if exp.get("no_playing_error", True):
         results.append(("no_error", *a_no_error(lines)))
 
@@ -2607,8 +2682,12 @@ def main():
             if abs(float(d.get("fps", 24.0)) - 24.0) > 0.01:
                 decl += f"@{d['fps']:g}"
             ops = "+".join(o["op"] for o in c.get("operations", [])) or "play"
+            # The RESOLUTION, which six of these cases exist to vary (#50/#51) and which was
+            # otherwise readable only by opening the manifest — the listing showed the codec pair
+            # and the filename, and half the filenames do not carry the raster.
+            size = c.get("expect", {}).get("video_size", "-")
             mark = f"  [SKIP: {c['skip']}]" if c.get("skip") else ""
-            print(f"{c['name']:30s} {decl:22s} {ops:12s} {c.get('fixture','?')}{mark}")
+            print(f"{c['name']:30s} {decl:22s} {size:11s} {ops:8s} {c.get('fixture','?')}{mark}")
         print(f"\nfixtures: {root}")
         print(f"install:  {APPID} [{FLAVOUR}] — triggers and log under {RUNDIR}")
         print("\nThe pipeline tier needs no PMS, no token and no manifest.local.json — only a TV "

@@ -880,6 +880,7 @@
   "_pipeline_comment": "The SYNTHETIC tier, and the DEFAULT one since 2026-08-22: the player with no Plex behind it. Each case names a GENERATED clip (`make fixtures-pipeline`) served off the dev machine by tests/serve_fixtures.py, and the Load payload DECLARATION to play it with. A bare `./tests/run.py` runs them; `--server` selects the library-backed 21 instead. Nothing here is installation-dependent -- no ratingKey, no PMS, no token, no manifest.local.json -- which is what makes this the tier a stranger can run.",
   "_pipeline_declare_comment": "`declare` is written verbatim into /tmp/plxnative-playurl (the harness injects `url`) and lands in route::set_stream_declaration, i.e. it IS the Load payload: `vcodec` picks the H265 vs H264 payload, `acodec` is renamed LG-side (eac3 -> \"AC3 PLUS\", aac -> \"AAC\", everything else -> \"AC3\"), `dovi` becomes the contents.DolbyHdrInfo node and `atmos` the contents.immersive one. `expect.load_*` grades what the app SAYS; `expect.codec` / `audio_stream_index` grade what the demuxer FOUND. The two are independent here, which is the whole point -- on the integration tier they both come from the same PMS metadata and can only ever agree.",
   "_pipeline_skip_comment": "A fixture the pack does not hold SKIPS its cases with the reason printed, exactly as an unresolvable `item` does on the integration tier. So does a fixture generated SHORTER than the case seeks into it (checked with ffprobe), which would otherwise fail as though the player had regressed.",
+  "_resolution_matrix_comment": "LG App Self Checklist #50 / #51 is graded as a MATRIX of resolution x codec, and until 2026-08-23 this repo could only answer it as \"pieces are covered\": every fixture was 1080p except one 4K HEVC, so SD and HD had never been played at all and 4K H.264 existed in neither pack. The eight cells, all direct-play, all 24p, one audio codec per column so a row-to-row difference is the RESOLUTION and nothing else:\n\n                    h264 / AC-3 5.1 mkv     hevc / E-AC-3 5.1 mkv\n  SD    720x480     pipe_res_h264_sd        pipe_res_hevc_sd\n  HD   1280x720     pipe_res_h264_hd        pipe_res_hevc_hd\n  FHD  1920x1080    pipe_h264_ac3_1080p     pipe_res_hevc_fhd\n  UHD  3840x2160    pipe_res_h264_uhd       pipe_hevc_eac3_4k_hdr10\n\nTwo cells predate the matrix and keep their names (`covers` carries `resolution-matrix` on them, so grepping that tag finds all eight). Every cell grades `expect.video_size` — an EXACT WxH out of the `ff:` line's AVCodecParameters, not a `min_video_width`, which cannot tell 720x480 from 720x576 and is how a matrix gets answered with \"at least 1900 wide\". The UHD/HEVC cell is HDR10 Main10 where every other cell is SDR 8-bit: HDR is a third axis, that cell is the one already device-verified (2026-08-22), and an SDR twin would differ from it only in `trc=`/`pri=`, which nothing here grades. Uncovered on purpose: the 4096-wide edge the device table claims and any refusal above it, and every non-24p rung (the frame-rate axis is pipe_h264_1080p5994 and pipe_hevc_4k_60fps, both at 1080p/4K only).",
   "pipeline_cases": [
     {
       "name": "pipe_h264_ac3_1080p",
@@ -891,7 +892,9 @@
         "aq backpressure",
         "Starfish Feed",
         "ACB bind",
-        "H264 Load payload"
+        "H264 Load payload",
+        "resolution-matrix",
+        "fhd-1080"
       ],
       "declare": {
         "vcodec": "h264",
@@ -906,7 +909,7 @@
       ],
       "expect": {
         "codec": "h264",
-        "min_video_width": 1900,
+        "video_size": "1920x1080",
         "load_video": "H264",
         "load_audio": "AC3",
         "load_dovi": "none",
@@ -924,7 +927,9 @@
       "covers": [
         "hevc-4k-directplay",
         "H265 Load payload",
-        "eac3 -> AC3 PLUS"
+        "eac3 -> AC3 PLUS",
+        "resolution-matrix",
+        "uhd-2160"
       ],
       "declare": {
         "vcodec": "hevc",
@@ -939,7 +944,7 @@
       ],
       "expect": {
         "codec": "hevc",
-        "min_video_width": 3800,
+        "video_size": "3840x2160",
         "load_video": "H265",
         "load_audio": "AC3 PLUS",
         "load_dovi": "none",
@@ -1110,6 +1115,236 @@
         "no_playing_error": true,
         "server_opens_min": 1
       }
+    },
+    {
+      "name": "pipe_res_h264_sd",
+      "fixture": "pipe_h264_ac3_480p.mkv",
+      "title": "SD 720x480 h264 + AC-3 — the smallest raster in the matrix",
+      "covers": [
+        "resolution-matrix",
+        "sd-480",
+        "h264-720x480"
+      ],
+      "declare": {
+        "vcodec": "h264",
+        "acodec": "ac3",
+        "fps": 24.0
+      },
+      "run_secs": 40,
+      "operations": [
+        {
+          "op": "play"
+        }
+      ],
+      "expect": {
+        "codec": "h264",
+        "video_size": "720x480",
+        "load_video": "H264",
+        "load_audio": "AC3",
+        "load_dovi": "none",
+        "min_pos_climb_s": 8,
+        "require_video_bound": true,
+        "no_playing_error": true,
+        "server_opens_min": 1
+      },
+      "_note": "Square pixels, so the picture is 3:2 rather than the 4:3 a DVD displays. An anamorphic fixture would be grading PAR handling, which nothing in this repo asserts anywhere; see the matrix comment in make_fixtures.py."
+    },
+    {
+      "name": "pipe_res_h264_hd",
+      "fixture": "pipe_h264_ac3_720p.mkv",
+      "title": "HD 1280x720 h264 + AC-3",
+      "covers": [
+        "resolution-matrix",
+        "hd-720",
+        "h264-1280x720"
+      ],
+      "declare": {
+        "vcodec": "h264",
+        "acodec": "ac3",
+        "fps": 24.0
+      },
+      "run_secs": 40,
+      "operations": [
+        {
+          "op": "play"
+        }
+      ],
+      "expect": {
+        "codec": "h264",
+        "video_size": "1280x720",
+        "load_video": "H264",
+        "load_audio": "AC3",
+        "load_dovi": "none",
+        "min_pos_climb_s": 8,
+        "require_video_bound": true,
+        "no_playing_error": true,
+        "server_opens_min": 1
+      }
+    },
+    {
+      "name": "pipe_res_h264_uhd",
+      "fixture": "pipe_h264_ac3_2160p.mkv",
+      "title": "UHD 3840x2160 h264 + AC-3 — the cell NEITHER pack could reach",
+      "covers": [
+        "resolution-matrix",
+        "uhd-2160",
+        "h264-3840x2160"
+      ],
+      "declare": {
+        "vcodec": "h264",
+        "acodec": "ac3",
+        "fps": 24.0
+      },
+      "run_secs": 40,
+      "operations": [
+        {
+          "op": "play"
+        }
+      ],
+      "expect": {
+        "codec": "h264",
+        "video_size": "3840x2160",
+        "load_video": "H264",
+        "load_audio": "AC3",
+        "load_dovi": "none",
+        "min_pos_climb_s": 8,
+        "require_video_bound": true,
+        "no_playing_error": true,
+        "server_opens_min": 1
+      },
+      "_note": "4K H.264 exists in no real library the maintainer has (every 4K item there is HEVC or AV1 — `library_gaps.video` lists it), so before this fixture the combination had never been played at all. The device's own capability table claims H.264 to 4096x2304@60, so this is inside the envelope, not at its edge."
+    },
+    {
+      "name": "pipe_res_hevc_sd",
+      "fixture": "pipe_hevc_eac3_480p.mkv",
+      "title": "SD 720x480 hevc + E-AC-3",
+      "covers": [
+        "resolution-matrix",
+        "sd-480",
+        "hevc-720x480"
+      ],
+      "declare": {
+        "vcodec": "hevc",
+        "acodec": "eac3",
+        "fps": 24.0
+      },
+      "run_secs": 40,
+      "operations": [
+        {
+          "op": "play"
+        }
+      ],
+      "expect": {
+        "codec": "hevc",
+        "video_size": "720x480",
+        "load_video": "H265",
+        "load_audio": "AC3 PLUS",
+        "load_dovi": "none",
+        "min_pos_climb_s": 8,
+        "require_video_bound": true,
+        "no_playing_error": true,
+        "server_opens_min": 1
+      }
+    },
+    {
+      "name": "pipe_res_hevc_hd",
+      "fixture": "pipe_hevc_eac3_720p.mkv",
+      "title": "HD 1280x720 hevc + E-AC-3",
+      "covers": [
+        "resolution-matrix",
+        "hd-720",
+        "hevc-1280x720"
+      ],
+      "declare": {
+        "vcodec": "hevc",
+        "acodec": "eac3",
+        "fps": 24.0
+      },
+      "run_secs": 40,
+      "operations": [
+        {
+          "op": "play"
+        }
+      ],
+      "expect": {
+        "codec": "hevc",
+        "video_size": "1280x720",
+        "load_video": "H265",
+        "load_audio": "AC3 PLUS",
+        "load_dovi": "none",
+        "min_pos_climb_s": 8,
+        "require_video_bound": true,
+        "no_playing_error": true,
+        "server_opens_min": 1
+      }
+    },
+    {
+      "name": "pipe_res_hevc_fhd",
+      "fixture": "pipe_hevc_eac3_1080p.mkv",
+      "title": "FHD 1920x1080 hevc + E-AC-3 in mkv",
+      "covers": [
+        "resolution-matrix",
+        "fhd-1080",
+        "hevc-1920x1080"
+      ],
+      "declare": {
+        "vcodec": "hevc",
+        "acodec": "eac3",
+        "fps": 24.0
+      },
+      "run_secs": 40,
+      "operations": [
+        {
+          "op": "play"
+        }
+      ],
+      "expect": {
+        "codec": "hevc",
+        "video_size": "1920x1080",
+        "load_video": "H265",
+        "load_audio": "AC3 PLUS",
+        "load_dovi": "none",
+        "min_pos_climb_s": 8,
+        "require_video_bound": true,
+        "no_playing_error": true,
+        "server_opens_min": 1
+      },
+      "_note": "NOT the same cell as pipe_hevc_aac_mp4, which is also 1920x1080 HEVC: that one is mp4 + stereo AAC, two axes away, and reading it as this rung is the \"pieces are covered\" answer #50/#51 asks us to stop giving."
+    },
+    {
+      "name": "pipe_finish_eos",
+      "fixture": "pipe_h264_ac3_short.mkv",
+      "title": "a 20 s clip played to its END — the completion half of LG #46",
+      "covers": [
+        "end-of-stream",
+        "finish_playback",
+        "clean teardown"
+      ],
+      "declare": {
+        "vcodec": "h264",
+        "acodec": "ac3",
+        "fps": 24.0
+      },
+      "run_secs": 60,
+      "operations": [
+        {
+          "op": "play"
+        }
+      ],
+      "expect": {
+        "codec": "h264",
+        "video_size": "720x480",
+        "load_video": "H264",
+        "load_audio": "AC3",
+        "load_dovi": "none",
+        "min_pos_climb_s": 8,
+        "require_video_bound": true,
+        "no_playing_error": true,
+        "server_opens_min": 1,
+        "reaches_eos": true
+      },
+      "_eof_note": "THE ONLY case in either tier that is supposed to run out, and the only one that may name pipe_h264_ac3_short.mkv. Every other clip in both packs is sized so it CANNOT hit EOF inside a case's window (make_fixtures.py trap 9's second half), because a finish tears the session down under assertions that were only ever about playing. run_secs is 60 against a 20 s clip: _resolve_fixtures SKIPS this case when the fixture is longer than 0.6 * run_secs, so a pack regenerated with --secs/--quick skips it instead of failing it as a player regression.",
+      "_replay_note": "THE SECOND HALF OF #46 — starting the same content AGAIN after it finished — is NOT graded here, and it is an app gap rather than a test gap. This tier's only entry into the player is /tmp/plxnative-playurl, read behind app.rs's one-shot `auto_tried` latch (app.rs, the autoplay block), so a boot gets exactly one playback; on EOS finish_playback -> exit_player leaves the player, and with no Plex session there is no detail page, no Play control and no key path back in. engine::start_bufferfeed already re-reads dev::playurl() whenever route::url() is empty, so the app-side change is small — a re-armable entry (drop the latch while playurl is armed and the route left the player, or a plxnative-replay trigger) — and the case here then grows one assertion: a second `load:` line and a second climb from ~0. Until then #46 stays UNTESTED in docs/lg-self-checklist.md for its replay half; what this case does establish is the precondition, that a completed stream ends and tears down cleanly rather than freezing on the last frame."
     },
     {
       "name": "pipe_h264_aac_mp4",
@@ -1287,8 +1522,8 @@
       "mpeg2",
       "vc1",
       "mpeg4-asp",
-      "8-bit-hevc (all HEVC is Main10)",
-      "4k-h264 (all 4k is hevc/av1)",
+      "8-bit-hevc (all HEVC in the surveyed library is Main10). This entry was ALREADY STALE for the synthetic tier before 2026-08-23 and was mis-credited to that day's resolution matrix: pipe_hevc_aac_mp4 is 1920x1080 HEVC with no `hdr` key, so make_fixtures picks `-profile:v main` / yuv420p — 8-bit HEVC has been played here since that fixture landed. What the matrix added is the RASTER spread (pipe_res_hevc_sd/hd/fhd are Main 8-bit too), not the profile. Still genuinely open: 8-bit HEVC as a REAL item, i.e. with a PMS decision behind it, which no generated clip can reach.",
+      "4k-h264 (all 4k in the surveyed library is hevc/av1). CLOSED on the SYNTHETIC tier 2026-08-23 — pipe_res_h264_uhd plays a generated 3840x2160 H.264 clip, which is inside the device table's H.264 bound of 4096x2304@60. Still open for a REAL item: nothing here exercises a PMS decision on 4K H.264, which is the half a synthetic clip cannot reach.",
       "interlaced"
     ],
     "audio": [
