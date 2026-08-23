@@ -197,11 +197,12 @@ change rather than a tidy-up, and the sibling codes (`402`, `415`, `413`) come f
 `linux/input.h` does not name — so unlike `33`/`34` there is no positive evidence about them in
 either direction. **Settle all four together, with the §7 capture plus a USB keyboard, in one pass.**
 
-### 4.3 and 4.4
+### 4.3 and 4.4 — `SDLK_SELECT`, and `digit_of`'s `wcode` arm
 
-`SDLK_SELECT` (§9, first bullet) and `profiles::digit_of`'s `wcode` arm (§9, second) are the other
-two. Both are misreadings of the same field and both are recorded rather than changed, for the
-reasons given there.
+The other two are written up in §9, whose first and third bullets they are: `SDLK_SELECT` is
+`SDL_SCANCODE_END`, and `profiles::digit_of` reads ASCII digits out of the scancode field. Both are
+misreadings of the same field, both are recorded rather than changed, and the reasons are there.
+`is_bound` (§6) declines to inherit the second of them.
 
 ---
 
