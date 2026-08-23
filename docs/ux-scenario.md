@@ -653,7 +653,7 @@ Where the four deferring items are answered, and the neighbouring items this doc
 | **#42 sound** | **§7 — N/A on its own precondition** |
 | #44 full/original screen toggle | N/A — no such control; video is always full-panel |
 | **#45 playback control** | **§6** |
-| #46 replay after completion | partly §6.7 (Up Next / end of item). **Not fully answered here** — see `docs/lg-self-checklist.md` §2, where it is listed as untested |
+| #46 replay after completion | partly §6.7 (Up Next / end of item). **Not fully answered here** — see `docs/lg-self-checklist.md`, where it is a runnable case as of 2026-08-23 (`pipe_replay_after_eos`) awaiting its device run, rather than the untested item this row used to point at |
 | #48 subtitles | §6.7 — rendering in scope, appearance settings N/A |
 | #49 resume | §5.8, §6.4 |
 

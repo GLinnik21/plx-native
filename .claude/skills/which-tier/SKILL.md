@@ -38,8 +38,10 @@ minutes of television for a pipeline the change cannot reach.)
 **For UI-only work the check is CAPTURES, LOOKED AT.** A shot nobody opens has verified nothing.
 
 **2. Reading a bare `./tests/run.py` as the suite it used to be.** The default **inverted on
-2026-08-22**. A bare run is now the **12-case synthetic tier** — generated clips served off your
-Mac through `/tmp/plxnative-playurl`, **no Plex anywhere**. The 21 library-backed cases are
+2026-08-22**. A bare run is now the **synthetic tier** — generated clips served off your
+Mac through `/tmp/plxnative-playurl`, **no Plex anywhere**. Ask `./tests/run.py --list` for the
+count — a number written down here has now rotted twice, the second time inside the branch that
+was correcting the first. The 21 library-backed cases are
 `./tests/run.py --server`; `--fps` and `--fps-player` imply `--server` (their scenes navigate a
 real signed-in Home and would otherwise grade a QR screen). `--pipeline` still parses — it names
 the default — and pairing it with `--server`/`--fps` is refused rather than silently resolved.
@@ -162,11 +164,13 @@ fails as "no line found", which reads exactly like a total regression. There is 
 OS-level mutex, and two jobs on it produce plausible WRONG data rather than a clean failure.
 
 ```sh
-./tests/run.py                 # 12 synthetic cases — the player pipeline, no Plex, no credentials
+./tests/run.py                 # the synthetic tier — the player pipeline, no Plex, no credentials
 ./tests/run.py --server        # the 21 library-backed cases — selection, the whole Plex chain
 ./tests/run.py --fps           # the 14 UI fps scenes (implies --server)
 ./tests/run.py --fps-player    # + the 2 player-tier scenes (info-panel, track-menu)
-./tests/run.py --list          # OFFLINE: the 12 synthetic cases, each declaration, missing fixtures
+./tests/run.py --list          # OFFLINE: the synthetic cases, each declaration and raster, and
+                               #          which fixtures the pack is missing. THE census — a count
+                               #          written into prose here rotted inside one commit.
 ./tests/run.py --list --server # OFFLINE: the 21 cases + 16 fps scenes, each SKIP and its reason
 tools/tv-session.sh up --screen <name>   # boot into a screen, then `key` / `click` / `shot`
 tools/capture-screen.sh out.png DISPLAY  # the panel, video plane composited in

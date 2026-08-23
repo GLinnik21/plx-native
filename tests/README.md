@@ -18,10 +18,10 @@ how a green run means nothing.
 | what it needs | a TV address and `make fixtures-pipeline` | a Plex server, a token, a `manifest.local.json`, and a library holding the shapes the matrix names |
 | media | generated clips, served off your Mac | real items on your PMS |
 | who can run it | **anyone** | whoever owns that library |
-| cost | ~0.4 GB, a few minutes to build; seconds per case | ~3 GB, ~20 minutes to build; ten to twenty minutes to run |
+| cost | ~0.7 GB, a few minutes to build; seconds per case | ~3 GB, ~20 minutes to build; ten to twenty minutes to run |
 
 ```sh
-./tests/run.py                  # the synthetic tier — 12 cases, ~4 min, needs nothing
+./tests/run.py                  # the synthetic tier — 20 cases, ~7 min, needs nothing
 ./tests/run.py --server         # the library-backed 21, through the whole Plex chain
 ```
 
@@ -42,7 +42,7 @@ half is bypassed and a regression there passes it green. Nor does it reach resum
 timeline reporting, subtitle or audio-track *selection*, or any transcode. **Never ship on the
 default alone.**
 
-### What the twelve synthetic cases actually cover
+### What the synthetic cases actually cover
 
 The player direct-plays exactly `{h264, hevc}` × `{aac, ac3, eac3}` in `mkv`/`mp4`/`m4v` —
 `route.rs`'s codec gate and `plex::DP_AUDIO_CODECS`. That is **2 of the 19 video codecs and 3 of the
@@ -58,17 +58,21 @@ by design, because the Starfish `Load` payload has only the strings `H264`/`H265
 | **H265** | `pipe_hevc_ac3_lane` | `pipe_hevc_eac3_4k_hdr10`, `pipe_hevc_4k_60fps` | `pipe_hevc_aac_mp4` |
 
 plus Dolby Vision 8.1 (`pipe_hevc_eac3_4k_dovi_p8`), both containers, in-place seek in each of
-them, and the **frame-rate axis**: `pipe_h264_1080p5994` is the only fixture in the repo that
-reaches `engine::fps_rational`'s 1001-denominator branch (`esInfo: videoFps 60000/1001`), and
-`pipe_hevc_4k_60fps` is 4K60 HEVC — the most demanding thing the device table claims. Every other
-fixture in both packs is 24p.
+them, the **frame-rate axis** — `pipe_h264_1080p5994` is the only fixture in the repo that reaches
+`engine::fps_rational`'s 1001-denominator branch (`esInfo: videoFps 60000/1001`), and
+`pipe_hevc_4k_60fps` is 4K60 HEVC, the most demanding thing the device table claims; every other
+fixture in both packs is 24p — the **resolution × codec matrix** (SD/HD/FHD/UHD × h264/hevc, eight
+cells, §*The resolution × codec matrix* below), and one clip played to its **end**
+(`pipe_finish_eos`).
 
 Still uncovered, and worth knowing before quoting a green run: **HLG, HDR10+, DV P5/P7, Atmos**
 (the `atmos` declaration field exists and no case sets it), the **4096-wide edge** and any file
-that must be *refused* for exceeding it, and the whole **transcode input space** — three server
-cases on one AV1 item stand in for 17 video codecs. One of those is an app gap rather than a test
-gap: `devcaps` reads the table's width and height and explicitly ignores `maxFrameRate`, so the
-profile sent to PMS carries no frame-rate limitation at all.
+that must be *refused* for exceeding it, a **user-driven** replay (as opposed to the trigger-driven
+one below — a Play control on a detail page is server-tier by construction), and the whole
+**transcode input space** — three server cases on one AV1 item stand in for 17 video codecs. One of
+those is an app gap rather than a test gap: `devcaps` reads the table's width and height and
+explicitly ignores `maxFrameRate`, so the profile sent to PMS carries no frame-rate limitation at
+all.
 
 - `manifest.json` — the test matrix, and **installation-independent**: the triggers each case
   needs, the expected log signals, and the *shape* of the item it needs (`item`, a symbolic key
@@ -590,12 +594,19 @@ per-op assertions from the `op`/`mode`. Track-menu row semantics: **audio tab** 
 metadata audio index (0-based, file order); **subtitles tab** row 0 = *Off*, row *r* = subtitle
 index *r−1*.
 
+A **synthetic** case is a `pipeline_cases` entry instead, and its `expect` keys are the ones listed
+under *Assertions* below. Two are worth naming here because they are recent and easy to miss:
+**`video_size`** (`"1920x1080"`) grades the demuxed raster EXACTLY and is what the resolution
+matrix is built on — prefer it to `min_video_width` in any case where the resolution is the point;
+and **`reaches_eos`** turns on the `finished` assertion, which only `pipe_finish_eos` may set,
+because it needs a fixture short enough to actually run out.
+
 ## The synthetic tier (the default) — the player, with no Plex behind it
 
 ```sh
-make fixtures-pipeline          # ~0.45 GB into $FIXTURES_OUT/pipeline; ~3 min, once
+make fixtures-pipeline          # ~0.7 GB into $FIXTURES_OUT/pipeline; ~4 min, once
 ./tests/run.py                  # runs them on the TV
-./tests/run.py --list           # offline: what would run, what is missing and why
+./tests/run.py --list           # offline: what would run, at what resolution, what is missing
 ```
 
 Nothing else is required — no `manifest.local.json`, no PMS, no token, no ratingKey, no library, no
@@ -634,10 +645,75 @@ produce by accident — and the `load_decl` assertion grades the app's new `load
 trigger pointed it at), `load_decl` (above), `codec` and `audio_stream_index` (what the demuxer
 *found*, independent of what was *declared* — the two can only ever agree on the integration tier),
 `video_bound`, `pos_climb` (the 1 Hz heartbeat only; there is no `/:/timeline` fallback here and
-accepting its absence would make a broken assertion read as a pass), `no_error`, the seek
-assertions, and **`server_wire`** — the counters from the fixture server itself, which is the one
-assertion no log line can give: the pump logs its seek intent whether or not the demuxer ever
-reached the AVIO, so a counted `206` is the only proof the `Range` reopen actually happened.
+accepting its absence would make a broken assertion read as a pass), `no_error`, `finished` (below),
+the seek assertions, and **`server_wire`** — the counters from the fixture server itself, which is
+the one assertion no log line can give: the pump logs its seek intent whether or not the demuxer
+ever reached the AVIO, so a counted `206` is the only proof the `Range` reopen actually happened.
+
+### The resolution × codec matrix (LG App Self Checklist #50 / #51)
+
+That item is graded as a **matrix**, and until 2026-08-23 this repo could only answer it as
+*"pieces are covered"*: every fixture was 1080p except one 4K HEVC, so SD and HD had never been
+played at all and 4K H.264 existed in neither pack (`library_gaps` lists it — every 4K item in the
+maintainer's library is HEVC or AV1, which is a fact about one library and not about the app).
+Eight cells now, all direct-play, all 24p, **one audio codec per column** so a row-to-row
+difference is the resolution and nothing else:
+
+| | h264 / AC-3 5.1 mkv | hevc / E-AC-3 5.1 mkv |
+|---|---|---|
+| **SD** 720×480 | `pipe_res_h264_sd` | `pipe_res_hevc_sd` |
+| **HD** 1280×720 | `pipe_res_h264_hd` | `pipe_res_hevc_hd` |
+| **FHD** 1920×1080 | `pipe_h264_ac3_1080p` | `pipe_res_hevc_fhd` |
+| **UHD** 3840×2160 | `pipe_res_h264_uhd` | `pipe_hevc_eac3_4k_hdr10` |
+
+Two cells predate the matrix and keep their names; `covers` carries `resolution-matrix` on all
+eight, so grepping that tag finds the lot. Every cell grades **`expect.video_size`** — an exact
+`WxH` out of the `ff:` line's `AVCodecParameters`, not a `min_video_width`, which cannot tell
+720×480 from 720×576 and is exactly how a matrix ends up answered with *"at least 1900 wide"*.
+`./tests/run.py --list` prints the resolution as its own column.
+
+Three things it deliberately does **not** cover, so nobody reads a uniform grid that is not there:
+the UHD/HEVC cell is HDR10 Main10 where the rest are SDR 8-bit (HDR is a third axis, that cell is
+the one already device-verified, and an SDR twin would differ only in `trc=`/`pri=`, which nothing
+here grades); the 4096-wide edge the device table claims, and any refusal above it; and every
+non-24p rung — the frame-rate axis is `pipe_h264_1080p5994` and `pipe_hevc_4k_60fps`, at 1080p and
+4K only.
+
+### Playing to the END, and then again (LG #46)
+
+`pipe_finish_eos` and `pipe_replay_after_eos` are **the only cases in either tier that are supposed
+to run out**. Every other clip in both packs is sized so it *cannot* hit EOF inside a case's window
+(`make_fixtures.py` trap 9's second half), because a finish tears the session down under assertions
+that were only ever about playing — so those two share a 20 s fixture, `pipe_h264_ac3_short.mkv`,
+which only a case declaring `reaches_eos` may name. The `finished` assertion wants two lines **in order**: `EOS reached: … → ended` (the pump
+gates that on `eos_pushed && pos >= dur - 1s`, so a truncated transfer does not reach it) and then
+`stop_bufferfeed: torn down`. The order is the assertion — every stop tears the engine down, the
+harness's own close included.
+
+**And the second half — starting the same content *again* — is `pipe_replay_after_eos`**, which
+plays the same clip, lets it end, and restarts it. That needed an app change and got the smallest
+one that works: `/tmp/plxnative-replay[=N]` re-arms `app.rs`'s one-shot `auto_tried` latch N times
+when a `plxnative-playurl` playback reaches EOS, so the next frame goes back through the entry it
+booted through. Everything else was already in place — `teardown` clears the URL and the `ended`
+flag on a real stop, and `engine::start_bufferfeed` re-reads `dev::playurl()` whenever
+`route::url()` is empty.
+
+A **counter**, not a lifted latch: `auto_tried` also guards the `autoplay`+`playidx` arm, which
+does a `request_play_movie` + `load_detail_now`, so an unconditionally re-armable latch would
+re-fetch a catalog item on every player exit and loop a real playback forever. An absent trigger is
+0, which leaves every other boot byte-identical, and `replay_budget` (host-tested) is what turns
+the file's contents into that number.
+
+The `replayed` assertion wants **three** things, because each is worthless alone: the `replay:`
+line exactly N times (counted — more often than asked is a loop, and a loop satisfies everything
+else); at least N+1 `load:` lines (one per session, so the second says the declaration really was
+re-read); and the media position **falling and then climbing again** (a replay that resumed where
+the first run stopped would produce both lines above and no second viewing). `server_opens_min: 2`
+is the wire-side half: the second viewing has to fetch the clip again, which no log line can prove.
+
+Two things it still does not cover: **replay driven by a user** rather than by a trigger — that is
+a Play control on a detail page, so it belongs to the server tier — and replay of a **transcode**,
+which has a server session behind it that a synthetic clip has no equivalent for.
 
 **`serve_fixtures.py`, and why not `python3 -m http.server`.** The demuxer seeks by closing the
 socket and reopening with `Range: bytes=<n>-`, and `stream.rs` accepts any 2xx. A server that
@@ -656,7 +732,11 @@ the keyboard**, before any headless run. If the server saw no request at all, `r
 **Skips.** A fixture the pack does not hold skips its cases with the reason named, exactly as an
 unresolvable `item` does on the integration tier — and so does a fixture generated *shorter* than
 the case seeks into it (checked with `ffprobe`), which would otherwise fail as though the player
-had regressed. As always: the pass count is meaningless without the skip count beside it.
+had regressed. `pipe_finish_eos` takes the opposite bound and skips when its fixture is **longer**
+than `0.6 × run_secs`, since it has to play the whole clip at 1× inside the cap; a pack regenerated
+with `--secs`/`--quick` is the realistic way to trip that, and `finished` failing on a 300 s clip
+would read as the app freezing on the last frame. As always: the pass count is meaningless without
+the skip count beside it.
 
 ## Library gaps — combos NO real item can cover
 
@@ -670,9 +750,13 @@ trigger is **`plxnative-playurl`**, not `plxnative-url`, because the latter carr
 and several of these gaps (HLG, HDR10+, 8-bit HEVC) are *about* what the payload declares. Still
 secondary to the real item shapes, and still to be labelled synthetic:
 
-- **Video:** VP9, MPEG-2, VC-1, MPEG-4-ASP; **8-bit HEVC** (every HEVC is Main10); **4K H.264**
-  (all 4K is HEVC/AV1); interlaced. (These would exercise the transcode-fallback path from the
-  client side.)
+- **Video:** VP9, MPEG-2, VC-1, MPEG-4-ASP; interlaced. (These would exercise the
+  transcode-fallback path from the client side.) **4K H.264 came off this list on 2026-08-23** —
+  `pipe_res_h264_uhd` generates it — and **8-bit HEVC was already off it and nobody had noticed**:
+  `pipe_hevc_aac_mp4` carries no `hdr` key, so it is Main / `yuv420p`, and has been since that
+  fixture landed; the matrix widened the raster spread rather than closing the gap. Both caveats
+  are the same one: these are generated clips, so what neither reaches is the half the entries were
+  really about — a **PMS decision** on such an item. That still needs a real one.
 - **Audio:** FLAC, PCM/LPCM, MP3; a DTS-only file to force an audio-only transcode without
   depending on the many-audio movie's track ordering.
 - **Subtitles:** ASS/SSA, VobSub/dvd_subtitle; mov_text/tx3g soft-render.

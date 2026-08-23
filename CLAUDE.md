@@ -355,10 +355,20 @@ used: **libcurl** (`net.rs`) does the plex.tv account/login TLS+DNS that the raw
   cannot produce. Sits between the TV and the PMS (`--listen 32499 --target 127.0.0.1:32400`; the PMS
   runs on the dev Mac) and makes the server misbehave on demand via `/tmp/netcond.mode`:
   `pass` / `stall` (accept, hold open, answer nothing — the case that turns a join into a parked
-  frame loop) / `blackhole` / `reject` / `delay:<ms>`. Any mode scopes to matching requests —
-  `stall@/:/timeline` freezes the progress reporter while video keeps streaming, which is what makes
-  a clean experiment possible. Modes apply to connections ALREADY OPEN, so a POST can be frozen
-  mid-flight. Point the app at it by editing `PMS_PORT` in the gitignored `src/config.local.h` and
+  frame loop) / `blackhole` / `reject` / `delay:<ms>` / **`rate:<kbps>`**. Any mode scopes to
+  matching requests — `stall@/:/timeline` freezes the progress reporter while video keeps
+  streaming, which is what makes a clean experiment possible. **That sentence was FALSE for as
+  long as it existed and became true on 2026-08-23**: `serve_conn` consulted the scope-aware
+  `applies()` to decide reject/blackhole, then handed `relay` a bare `Mode.split`, which throws
+  the scope away — so a scoped mode really applied to every open connection, media stream
+  included, which is the exact opposite of what a scope is for. Both halves are scope-aware now
+  and `tests/test_harness.py` pins it. Modes apply to connections ALREADY
+  OPEN, so a POST can be frozen mid-flight. **`rate:` is the newest and it is a SPEED rather than a
+  fault**: one token bucket for the whole proxy (a link is shared), decimal kilobits, live under an
+  open transfer, so the four legs of LG checklist item #43 CASE1 — 512 Kbps → 1 Mbps → 7 Mbps →
+  17.5 Mbps — are one scripted run instead of four launches, and #14's degrading link is
+  measurable rather than anecdotal. `tools/netcond.py --selftest`
+  proves the shaper against a loopback transfer with no television in the room. Point the app at it by editing `PMS_PORT` in the gitignored `src/config.local.h` and
   `make deploy` (host/port are compiled into `main.c`). **Pick a port Plex is not already on** — it
   binds `127.0.0.1:32401` itself, and the more specific bind wins, so the proxy is silently bypassed.
   **And the macOS application firewall silently drops the TV's connections to the ad-hoc python
@@ -367,7 +377,20 @@ used: **libcurl** (`net.rs`) does the plex.tv account/login TLS+DNS that the raw
   path, so start netcond BEFORE going headless, and treat "netcond logs nothing" as this, not as a
   quiet TV.
   Measured with it 2026-07-29: teardown's join of the `/:/timeline` reporter parked the main loop
-  **6974 ms**; after moving that join onto the scrobble worker, BACK→teardown is **0.5 s**. NB a
+  **6974 ms**; after moving that join onto the scrobble worker, BACK→teardown is **0.5 s**.
+  **That run was taken while the scope bug above was live, so the proxy was stalling EVERY
+  connection and not only the reporter's — and the number and the conclusion both survive it,
+  for a reason worth writing down rather than re-deriving.** The finding was recorded as
+  `THREADJOIN timeline 6974ms` (`task::join` emits one NAMED line per join), so the attribution
+  came from the instrument and not from inferring a total; and `timeline` is the only join that
+  COULD have parked whatever else was stalled, because `engine::teardown`'s step 1 deliberately
+  wakes the other two before joining them — `http_shutdown` on the demux socket, `aq_abort` on
+  both AU lanes — while the reporter's POST had no such wake, `stream`'s one-shot wrappers boxing
+  their socket privately. The before and after were taken the same way, so the 14x is
+  apples-to-apples. What CANNOT be claimed from that session is the thing the scope sentence
+  promises — that video kept streaming while the reporter was frozen. It is a property of the tool
+  today and was not a property of that run; re-running it scoped (and seeing `demux`/`media` at 0
+  beside it) is a device job nobody has done. NB a
   request occasionally fails through the proxy that succeeds direct (seen once on `POST /playQueues`)
   — confirm any new failure against a direct run before believing it.
 - `tools/sockprobe.c` — standalone ARM diagnostic (`make sockprobe`, scp, run, delete) for socket
@@ -670,7 +693,9 @@ resolves every key and so never enters the path. The full on-device suite is `./
 (21 cases; `--fps` for the perf gates), and `make test` = `deploy` + `run`.
 
 **Tier 2 is TWO SUITES on one television, and since 2026-08-22 the DEFAULT IS THE SYNTHETIC ONE.**
-A bare **`./tests/run.py`** now runs the 12-case SYNTHETIC tier (generated clips, no Plex); the
+A bare **`./tests/run.py`** now runs the SYNTHETIC tier (generated clips, no Plex — take the count
+yourself with `./tests/run.py --list`, which is the only census that cannot rot; the number written
+here went stale inside the branch that wrote it, in one commit); the
 21 library-backed cases everything above describes are **`./tests/run.py --server`**, and `--fps` /
 `--fps-player` imply `--server` because those scenes navigate a real signed-in Home. `--pipeline`
 still parses (it names the default); pairing it with `--server`/`--fps` is refused rather than
@@ -681,7 +706,7 @@ answers "is the PLAYER broken" — charging a PMS, a token and a filled-in overl
 (what it cannot see is three paragraphs down). The server tier is still the right shape for what it
 grades — SELECTION: `/decision`, direct-play vs transcode, track menus from PMS metadata, markers,
 resume, the `/:/timeline` reporter — which is also why it needs somebody's library.
-**The synthetic tier is the PLAYER PIPELINE, with no Plex anywhere.** A generated clip (`make fixtures-pipeline`, ~0.4 GB flat in
+**The synthetic tier is the PLAYER PIPELINE, with no Plex anywhere.** A generated clip (`make fixtures-pipeline`, ~0.7 GB flat in
 `$FIXTURES_OUT/pipeline`) is served off the dev Mac by `tests/serve_fixtures.py` and played through
 **`/tmp/plxnative-playurl`**, one JSON object carrying the URL *and the Load payload declaration*.
 It needs a TV address and nothing else — no token, no ratingKey, no `manifest.local.json`, no
@@ -695,10 +720,25 @@ only `H264`/`H265` and `AC3`/`AC3 PLUS`/`AAC`. All six of those payload combinat
 here, plus DV 8.1, both containers, in-place seek in each, and the FRAME-RATE axis added the same
 day (`pipe_h264_1080p5994` is the only fixture that reaches `fps_rational`'s 1001-denominator
 branch — device-verified `esInfo: videoFps 60000/1001` — and `pipe_hevc_4k_60fps` is 4K60 HEVC;
-every other fixture in both packs is 24p). Still uncovered: HLG, HDR10+, DV P5/P7, Atmos, the
-4096-wide edge and any refusal above it, and the transcode INPUT space (three server cases on one
-AV1 item stand in for 17 codecs). One of those is an app gap, not a test gap — `devcaps` ignores
-the table's `maxFrameRate`, so the profile sent to PMS bounds no frame rate at all. Three things about it
+every other fixture in both packs is 24p), and — since 2026-08-23 — the **RESOLUTION x CODEC
+matrix** LG checklist #50/#51 is graded as: SD 720x480 / HD 1280x720 / FHD 1920x1080 / UHD
+3840x2160 x {h264, hevc}, eight cells, one audio codec per column so a row-to-row difference is the
+raster alone, each grading `expect.video_size` EXACTLY out of the `ff:` line rather than a width
+floor — which is what stopped the item being answerable only as "pieces are covered", and which
+closed the `4k-h264` library gap on this tier (`8-bit-hevc` was already closed by
+`pipe_hevc_aac_mp4` and the gap list had not caught up; a generated clip closes neither gap's real
+half, which is a PMS DECISION on such an item). The same day added the one clip in
+either pack that is MEANT to run out (`pipe_finish_eos` and `pipe_replay_after_eos`, 20 s), which
+is #46 END TO END — the second of those restarts the finished stream through
+`/tmp/plxnative-replay[=N]`, a bounded counter re-arming `app.rs`'s one-shot autoplay latch, and
+grades the re-entry COUNT, a second `load:` line, a second fetch off the fixture server and a
+media position that falls and then climbs. Still
+uncovered: HLG, HDR10+, DV P5/P7, Atmos, the
+4096-wide edge and any refusal above it, a USER-driven replay (a Play control on a detail page is
+server-tier by construction), and the transcode INPUT space
+(three server cases on one AV1 item stand in for 17 codecs). One of those is an app gap, not a test
+gap — `devcaps` ignores the table's `maxFrameRate`, so the profile sent to PMS bounds no frame
+rate at all. Three things about it
 are worth knowing before reading a result. **(1)** The declaration is the interesting half and the
 main false-PASS risk: `engine`'s `_ =>` arm maps an unrecognised audio codec to `"AC3"` and a
 non-`hevc` video codec to the H264 payload, so a trigger that was never read produces exactly the
@@ -882,7 +922,12 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   `{"url":…,"vcodec":…,"acodec":…,"fps":…,"dovi":{…},"atmos":…}`, which is what the pipeline test
   tier drives and the only way to declare HEVC / `"AC3 PLUS"` / Dolby for a stream no PMS chose;
   it also ENTERS the player on its own from a boot with no session, since there is no home grid to
-  press OK on), **`sample.h264` / `sample.h265`** (feed the player a local raw Annex-B sample instead of
+  press OK on), **`/tmp/plxnative-replay[=N]`** (once a `playurl` stream reaches EOS,
+  start it AGAIN, N times — LG checklist #46's replay half; a COUNTER rather than a lifted latch
+  because `auto_tried` also guards the autoplay+playidx arm, which fetches a catalog item, so an
+  unconditionally re-armable latch would loop a real playback forever. Absent = 0 = the one-shot
+  behaviour every other boot has),
+  **`sample.h264` / `sample.h265`** (feed the player a local raw Annex-B sample instead of
   streaming — the two names that predate the `plxnative-` prefix, and since the flavour split the
   last two runtime surfaces to stop being pinned to a shared `/tmp`: they resolve through the
   install's own root like everything else, `$(make -s print-rundir)/sample.h264`),

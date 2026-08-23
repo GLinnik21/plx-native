@@ -977,8 +977,14 @@ fixtures-quick:
 # `./tests/run.py` (the DEFAULT tier since 2026-08-22) needs none of that — it serves these files
 # off this machine over HTTP
 # and plays them through plxnative-playurl with no Plex anywhere — so the pack is short clips in a
-# FLAT directory, ~0.4 GB and a few minutes instead of ~3 GB and twenty. Same root, its own
+# FLAT directory, ~0.7 GB and a few minutes instead of ~3 GB and twenty. Same root, its own
 # subdirectory, which is also where the harness looks by default.
+#
+# It grew from ~0.4 GB on 2026-08-23, when the RESOLUTION x CODEC matrix landed (LG App Self
+# Checklist #50/#51): six new clips at SD/HD/FHD/UHD, of which the 4K H.264 one is 93 MB on its
+# own, plus a deliberately SHORT 20 s clip that exists to run out (#46). Resolution is a property
+# of the media, so a matrix cell cannot be a second case on an existing file — that is the whole
+# reason this is disk rather than manifest. `--only <shape>` rebuilds one.
 fixtures-pipeline:
 	python3 tests/fixtures/make_fixtures.py --tier pipeline --out "$(FIXTURES_OUT)/pipeline" $(FIXTURES_ARGS)
 

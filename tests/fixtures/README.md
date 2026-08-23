@@ -351,10 +351,20 @@ movies — a freshly scanned library puts them all in recently-added — but tha
 of the Home catalog, not something this script verifies.)
 
 **`library_gaps`.** The synthetic-clip supplement `tests/manifest.json` describes (VP9,
-MPEG-2, MPEG-4-ASP, 8-bit HEVC, 4K H.264, interlaced, FLAC/PCM/MP3, ASS, VobSub, mov_text,
-HLG, HDR10+) is *not* built here. Those are fed through the `plxnative-url` boot trigger
-rather than through Plex, so they are a different tool. Four notes for whoever writes it,
-each measured on this ffmpeg 8.1.2:
+MPEG-2, MPEG-4-ASP, interlaced, FLAC/PCM/MP3, ASS, VobSub, mov_text, HLG, HDR10+) is *not*
+built here. **Two entries came off that list and this paragraph named them for a day after
+they had:** `4K H.264` is built here now (`pipe_h264_ac3_2160p`, the resolution matrix's
+UHD/h264 rung, 2026-08-23) and `8-bit HEVC` had been all along (`pipe_hevc_aac_mp4` carries
+no `hdr` key, so `venc_args` picks `-profile:v main` / `yuv420p`) — the gap list had simply
+not caught up. What neither of them closes is the half those entries were really about: a
+PMS *decision* on such an item, which no generated clip can give.
+
+Whatever is still missing is fed through the **`plxnative-playurl`** boot trigger rather
+than through Plex, so it is a different tool. **Not `plxnative-url`**, which this sentence
+said until 2026-08-23 and which would send you down a dead end: that one hands over a URL
+and no DECLARATION, so the payload describes whatever the route happened to hold — and
+several of the remaining gaps (HLG, HDR10+) are *about* what the payload declares. Four
+notes for whoever writes it, each measured on this ffmpeg 8.1.2:
 
 * **HLG needs nothing special beyond `setparams`.** An earlier version of this file said
   ffmpeg's Matroska muxer drops `arib-std-b67` and that HLG therefore had to be muxed with
@@ -422,7 +432,7 @@ built palette is 255/160, so this is not the case today.
 | flag | |
 |---|---|
 | `--out DIR` | output root; default `$FIXTURES_OUT`, else `~/plxnative-fixtures` — the same variable the Makefile and `tests/run.py` read, so all three agree without a flag. Refuses any path inside the repo. With `--tier pipeline` the pack goes in a `pipeline/` subdirectory, and naming that subdirectory yourself is idempotent (both spellings of the seam land in one place). |
-| `--tier T` | `integration` (default) or `pipeline`. **Two packs, for two suites.** The default builds the media the 21-case on-device matrix names — full length, laid out in two Plex-scannable trees, because every duration in it is a *Plex* constant (the ~90 % watched threshold that drops a seeded resume point, the marker windows, the Up Next tail). `pipeline` builds eight short clips, flat, for `./tests/run.py` — the DEFAULT tier since 2026-08-22, which serves them off this machine over HTTP and plays them with no Plex anywhere: ~0.3 GB and ~1.5 min against ~3 GB and ~20. |
+| `--tier T` | `integration` (default) or `pipeline`. **Two packs, for two suites.** The default builds the media the 21-case on-device matrix names — full length, laid out in two Plex-scannable trees, because every duration in it is a *Plex* constant (the ~90 % watched threshold that drops a seeded resume point, the marker windows, the Up Next tail). `pipeline` builds fifteen short clips, flat, for `./tests/run.py` — the DEFAULT tier since 2026-08-22, which serves them off this machine over HTTP and plays them with no Plex anywhere: ~0.7 GB and ~4 min against ~3 GB and ~20. Seven of those fifteen landed 2026-08-23 — the SD/HD/FHD/UHD resolution matrix (LG checklist #50/#51), plus the one 20 s clip in either pack that is meant to run OUT (#46). |
 | `--secs N` | override every shape's duration. Generalises `--quick` across its whole range. Note what the harness does with a pack built short: a pipeline case that seeks deeper than the clip is **skipped with the reason named**, not failed — the failure it would otherwise produce reads exactly like a player regression. |
 | `--quick` | every shape at ~20 s, whole run ~75 s. **Development only** — structurally correct but shallower than every seek, resume and marker depth the suite asserts, and short enough to hit EOF inside a case. The script says so on every quick run, and every record it writes is stamped `quick: true`. |
 | `--only K[,K]` | build a subset; comma-separated **and/or repeated**. Accepts `episode_hevc_4k_hdr10_eac3_next` and maps it to its pair. |

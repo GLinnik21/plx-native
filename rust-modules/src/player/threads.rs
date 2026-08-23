@@ -37,6 +37,13 @@ const REPORT_INTERVAL_S: u64 = 10;
 /// goes quiet the frame loop parked for the rest of `SO_RCVTIMEO`. **Measured at 6974 ms** with
 /// `tools/netcond.py` in `stall@/:/timeline` mode.
 ///
+/// That proxy's SCOPE was broken until 2026-08-23 (`relay` discarded it), so the run actually
+/// stalled every connection rather than only the reporter's. The number survives: it was recorded
+/// as `THREADJOIN timeline 6974ms`, one NAMED line per join, and `timeline` is the only join that
+/// could have parked whatever else was stalled — `engine::teardown` wakes the demux socket and
+/// both AU lanes before joining them, while this POST had no such wake, which is the whole reason
+/// this type exists.
+///
 /// Per-session ownership makes the stop unambiguous: a detached reporter always sees ITS OWN flag
 /// set and exits, no matter what the next session does to `SHARED`. That is what lets the join
 /// move off the main thread.

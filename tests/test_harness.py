@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """
-Host unit tests for the harness itself (`tests/run.py`) — stdlib `unittest`, no TV, no PMS, no
-network, ~0.05s. Run by `make check` beside the Rust suite and `ci/flavor.py --selftest`.
+Host unit tests for the harness itself (`tests/run.py`) and for `tools/netcond.py` — stdlib
+`unittest`, no TV, no PMS, no OUTBOUND network. Run by `make check` beside the Rust suite and
+`ci/flavor.py --selftest`.
+
+("no network" needs one qualification since the netcond tests landed: they bind and drive real
+LOOPBACK sockets, because a token bucket is only interesting where it meets a socket, and a test
+against the arithmetic alone would grade a function the proxy does not call. Nothing leaves the
+machine, and nothing there binds a fixed port.)
 
 Why this file exists at all: run.py is 2100 lines of Python that decides WHAT gets driven on the
 one television, and until 2026-08-22 nothing tested a line of it. The specific thing it guards is
@@ -18,13 +24,23 @@ tomorrow that breaks one of them should fail here rather than on the television.
 """
 import json
 import os
+import shutil
+import socket
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 
 TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.dirname(TESTS_DIR)
 sys.path.insert(0, TESTS_DIR)
+# APPENDED, not inserted: `tools/` is a grab-bag of scripts, and putting it ahead of `tests/` means
+# the day somebody adds a `tools/run.py` the import below silently binds the wrong module and this
+# whole suite grades a file nobody meant.
+sys.path.append(os.path.join(REPO_ROOT, "tools"))
+import netcond  # noqa: E402
 import run  # noqa: E402  (path juggling above is the point)
 
 
@@ -385,6 +401,399 @@ class DefaultTier(unittest.TestCase):
                   for c in _manifest()["pipeline_cases"]}
         want = {(v, a) for v in ("H264", "H265") for a in ("AC3", "AC3 PLUS", "AAC")}
         self.assertEqual(want - combos, set(), f"uncovered Load payload combinations: {want - combos}")
+
+
+class ResolutionMatrix(unittest.TestCase):
+    """LG App Self Checklist #50 / #51, which is graded as a MATRIX and was answered as pieces.
+
+    Two halves, and the second is the one that rots: the assertion has to be EXACT, and the matrix
+    has to stay complete as cases are added and renamed. A `min_video_width` cannot tell 720x480
+    from 720x576, so a matrix built on it would read as covered while grading nothing.
+    """
+
+    CELLS = {("h264", "720x480"), ("h264", "1280x720"), ("h264", "1920x1080"),
+             ("h264", "3840x2160"), ("hevc", "720x480"), ("hevc", "1280x720"),
+             ("hevc", "1920x1080"), ("hevc", "3840x2160")}
+
+    FF = ("ff: v=#0 codec={0} codec_id=27 {1} trc=1 pri=1 spc=1 a=#1 dur_ns=60000000000\n")
+
+    @staticmethod
+    def _cases():
+        return _manifest()["pipeline_cases"]
+
+    def test_all_eight_cells_exist(self):
+        got = {(c["expect"]["codec"], c["expect"]["video_size"]) for c in self._cases()
+               if "resolution-matrix" in c.get("covers", [])}
+        self.assertEqual(self.CELLS - got, set(), f"uncovered resolution x codec cells: "
+                                                  f"{self.CELLS - got}")
+
+    def test_every_matrix_cell_grades_the_size_exactly(self):
+        """...and none of them falls back to a width bound, which is the shape being replaced."""
+        for c in self._cases():
+            if "resolution-matrix" not in c.get("covers", []):
+                continue
+            self.assertIn("video_size", c["expect"], c["name"])
+            self.assertNotIn("min_video_width", c["expect"],
+                             f"{c['name']}: video_size subsumes min_video_width — keeping both "
+                             f"leaves two statements of one number that nothing keeps in step")
+
+    def test_a_codec_rejects_the_wrong_raster(self):
+        """The whole value of the exact form: a 4:3 SD clip must not satisfy a 16:9 SD cell."""
+        ok, why = run.a_codec([self.FF.format("h264", "720x480")], "h264", 0, "720x480")
+        self.assertTrue(ok, why)
+        ok, why = run.a_codec([self.FF.format("h264", "720x576")], "h264", 0, "720x480")
+        self.assertFalse(ok, "720x576 must not pass a 720x480 cell")
+        self.assertIn("720x576", why)
+        # ...and a width bound would have passed it, which is the point.
+        self.assertTrue(run.a_codec([self.FF.format("h264", "720x576")], "h264", 700)[0])
+
+    def test_a_codec_still_grades_the_codec_and_the_width_alone(self):
+        """The non-matrix cases pass no `size`, and their behaviour must be bit-identical."""
+        self.assertTrue(run.a_codec([self.FF.format("hevc", "3840x2160")], "hevc", 3800)[0])
+        self.assertFalse(run.a_codec([self.FF.format("h264", "3840x2160")], "hevc", 3800)[0])
+        self.assertFalse(run.a_codec([self.FF.format("hevc", "1920x1080")], "hevc", 3800)[0])
+        self.assertFalse(run.a_codec([], "hevc", 0, "1920x1080")[0])
+
+    def test_each_matrix_fixture_is_named_by_exactly_one_cell(self):
+        """A cell reusing another's file would be a matrix with a hole in it that reads as full —
+        the exact failure `pipe_hevc_aac_mp4`-as-the-FHD-HEVC-rung would have been."""
+        fixtures = [c["fixture"] for c in self._cases()
+                    if "resolution-matrix" in c.get("covers", [])]
+        self.assertEqual(len(fixtures), len(set(fixtures)), f"a fixture serves two cells: "
+                                                            f"{sorted(fixtures)}")
+
+
+class CompletionCase(unittest.TestCase):
+    """LG #46's first half — a stream that runs OUT and an app that leaves the player.
+
+    Every other case in both tiers is built so the clip CANNOT end inside its window, so this is
+    the one place the finish path is exercised at all, and the assertion behind it has to refuse
+    three near-misses that each look like a pass.
+    """
+
+    EOS = "EOS reached: playpos=19s/20s -> ended\n"
+    TORN = "stop_bufferfeed: torn down\n"
+    POS = "loop=60 route=player overlay=none pos=19s vtick=5\n"
+
+    def test_the_finish_needs_both_lines_in_order(self):
+        self.assertTrue(run.a_finished([self.POS, self.EOS, self.TORN])[0])
+
+    def test_a_teardown_without_an_eos_is_not_a_finish(self):
+        """Every stop tears the engine down, the harness's own close included — so an unordered
+        match would pass on a clip that never ended."""
+        ok, why = run.a_finished([self.POS, self.TORN])
+        self.assertFalse(ok)
+        self.assertIn("EOS reached", why)
+        ok, why = run.a_finished([self.TORN, self.EOS])
+        self.assertFalse(ok, "a teardown BEFORE the EOS is the previous session's, not this one's")
+
+    def test_an_earlier_reload_teardown_does_not_poison_the_finish(self):
+        """`teardown` writes the same line for a `for_reload` stop — a seek that escalated to
+        `reload_at`, or an app-switch suspend. Comparing the FIRST teardown's index against the
+        EOS fails such a run for its whole cap, reading as "the player froze on the last frame",
+        which is precisely the false regression this assertion exists to avoid."""
+        ok, why = run.a_finished([self.TORN, self.POS, self.EOS, self.TORN])
+        self.assertTrue(ok, why)
+
+    def test_an_eos_that_never_tore_down_is_a_frozen_last_frame(self):
+        ok, why = run.a_finished([self.POS, self.EOS])
+        self.assertFalse(ok)
+        self.assertIn("froze", why)
+
+    def test_only_a_case_that_asks_to_reach_the_end_may_name_the_short_clip(self):
+        """The rule is not "exactly one case", which is what it said while there was one — it is
+        that a case graded through a TEARDOWN has to have asked for one. The short clip ends inside
+        every window, so any case naming it without `reaches_eos` would have its assertions cut off
+        by a finish it never declared."""
+        cases = _manifest()["pipeline_cases"]
+        eos = [c for c in cases if c["expect"].get("reaches_eos")]
+        self.assertTrue(eos, "no case reaches EOS — LG #46 has nothing behind it")
+        short = {c["fixture"] for c in eos}
+        self.assertEqual(len(short), 1, f"the completion cases disagree on which clip ends: {short}")
+        strays = [c["name"] for c in cases
+                  if c["fixture"] in short and not c["expect"].get("reaches_eos")]
+        self.assertFalse(strays, f"the short clip ENDS mid-window; {strays} would be graded "
+                                 f"through a teardown they never asked for")
+
+    def test_the_replay_case_grades_both_halves_of_46(self):
+        """#46 is "replay AFTER completion", so the case that grades the replay must also be the
+        one that reaches the end — a replay asserted without a finish behind it would pass on a
+        stream that was merely restarted mid-play."""
+        cases = _manifest()["pipeline_cases"]
+        replays = [c for c in cases if c["expect"].get("replays")]
+        self.assertEqual(len(replays), 1, f"expected one replay case, got {[c['name'] for c in replays]}")
+        c = replays[0]
+        self.assertTrue(c["expect"].get("reaches_eos"), f"{c['name']} replays without finishing")
+        # The second viewing must fetch the clip again — `teardown` closed the socket and cleared
+        # the URL — so a floor of 2 opens is the wire-side half of the same assertion.
+        self.assertGreaterEqual(c["expect"].get("server_opens_min", 0), 2, c["name"])
+
+    def test_the_replay_trigger_carries_the_number_the_case_grades(self):
+        """One statement, not two: `expect.replays` is what the harness writes into
+        `plxnative-replay` AND what `a_replayed` counts, so they cannot drift."""
+        c = next(c for c in _manifest()["pipeline_cases"] if c["expect"].get("replays"))
+        files = dict(run.triggers_for_case(c, url_base="http://192.0.2.10:8020"))
+        self.assertEqual(files.get("plxnative-replay"), str(c["expect"]["replays"]))
+        # ...and every other case must NOT arm it, or a one-shot boot silently becomes a loop.
+        for other in _manifest()["pipeline_cases"]:
+            if other["expect"].get("replays"):
+                continue
+            self.assertNotIn("plxnative-replay",
+                             dict(run.triggers_for_case(other, url_base="http://192.0.2.10:8020")),
+                             other["name"])
+
+    def test_a_replay_is_seen_as_a_fall_then_a_climb(self):
+        """The three signals, and the three near-misses that each look like a pass."""
+        rep = "replay: starting the finished stream again (0 left)\n"
+        load = 'load: v=H264 a="AC3" fps=24.000 dv=present:0 P0/0 el:0 atmos:0\n'
+        pos = [f"loop=60 route=player overlay=none pos={t}s vtick=5\n" for t in (2, 10, 19)]
+        pos2 = [f"loop=60 route=player overlay=none pos={t}s vtick=5\n" for t in (1, 9, 18)]
+        good = [load] + pos + [rep, load] + pos2
+        ok, why = run.a_replayed(good, 1)
+        self.assertTrue(ok, why)
+
+        # (a) the app never re-entered — no `replay:` line at all.
+        ok, why = run.a_replayed([load] + pos, 1)
+        self.assertFalse(ok)
+        self.assertIn("never re-entered", why)
+        # (b) it fired more often than asked: a loop, which every other signal would accept.
+        ok, why = run.a_replayed([load] + pos + [rep, load] + pos2 + [rep, load] + pos2, 1)
+        self.assertFalse(ok)
+        self.assertIn("loop", why)
+        # (c) it fired and the payload was never rebuilt — one `load:` for one replay.
+        ok, why = run.a_replayed([load] + pos + [rep] + pos2, 1)
+        self.assertFalse(ok)
+        self.assertIn("rebuilt its payload", why)
+        # (d) it fired, reloaded, and playback CARRIED ON rather than restarting.
+        carried = [f"loop=60 route=player overlay=none pos={t}s vtick=5\n" for t in (20, 28, 37)]
+        ok, why = run.a_replayed([load] + pos + [rep, load] + carried, 1)
+        self.assertFalse(ok)
+        self.assertIn("never fell", why)
+        # (e) it restarted and then stalled at the join — a fall with no second viewing.
+        stalled = ["loop=60 route=player overlay=none pos=0s vtick=5\n"] * 3
+        ok, why = run.a_replayed([load] + pos + [rep, load] + stalled, 1)
+        self.assertFalse(ok)
+        self.assertIn("did not play", why)
+
+    def test_the_climb_is_measured_from_the_drop_and_not_from_the_global_floor(self):
+        """THE false PASS this assertion shipped with, and the ordering the field will produce.
+
+        The first version anchored the post-drop climb at the global floor, which is a VALUE — so
+        it only landed in viewing 2 when viewing 2 happened to reach viewing 1's minimum. The
+        `pos=` heartbeat is 1 Hz and free-running, so viewing 1 logging `pos=0s` while viewing 2's
+        first sample lands at `pos=1s` put the anchor back in viewing 1 and measured VIEWING 1'S
+        OWN CLIMB: `[0,5,10,19,1]` read as "fell 18s then climbed 19s" and PASSED with the second
+        viewing having produced one sample and zero seconds of playback.
+
+        It is also the state the harness normally grades, because it exits the moment every
+        assertion passes — so this was not a corner, it was the common case. The class's other
+        near-miss test passes only because its series starts at 2 rather than 0, which is exactly
+        the kind of accident a regression test is for.
+        """
+        rep = "replay: starting the finished stream again (0 left)\n"
+        load = 'load: v=H264 a="AC3" fps=24.000 dv=present:0 P0/0 el:0 atmos:0\n'
+
+        def pos(t):
+            return f"loop=60 route=player overlay=none pos={t}s vtick=5\n"
+
+        # Viewing 1 reaches 0; viewing 2's only sample is 1, so the global floor sits in viewing 1.
+        stalled = [load, pos(0), pos(5), pos(10), pos(19), rep, load, pos(1)]
+        ok, why = run.a_replayed(stalled, 1)
+        self.assertFalse(ok, "a replay with one sample and no playback must not pass")
+        self.assertIn("did not play", why)
+        # ...and the same shape with a real second viewing still passes.
+        played = [load, pos(0), pos(5), pos(10), pos(19), rep, load, pos(1), pos(9), pos(18)]
+        ok, why = run.a_replayed(played, 1)
+        self.assertTrue(ok, why)
+
+    def test_a_pack_too_short_to_be_played_twice_skips_the_replay_case(self):
+        """The EOS bound is per VIEWING: a clip that fits once inside the cap need not fit twice."""
+        case = {"name": "rep", "fixture": "c.mkv", "run_secs": 60,
+                "expect": {"reaches_eos": True, "replays": 1, "min_pos_climb_s": 8}}
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "c.mkv"), "wb") as f:
+                f.write(b"\0" * 16)
+            saved = run._probe_fixture
+            try:
+                # 25 s fits once inside 60 * 0.6 = 36, and twice does not.
+                run._probe_fixture = lambda p: (25.0, [("video", "h264"), ("audio", "ac3")])
+                run._resolve_fixtures([case], d)
+                self.assertIn("skip", case)
+                self.assertIn("2x", case["skip"])
+                once = dict(case)
+                once.pop("skip", None)
+                once["expect"] = dict(case["expect"], replays=0)
+                run._resolve_fixtures([once], d)
+                self.assertNotIn("skip", once)
+            finally:
+                run._probe_fixture = saved
+
+    def test_a_pack_too_long_to_finish_skips_rather_than_fails(self):
+        """A `--secs`/`--quick` regeneration is the realistic way to break this, and `a_finished`
+        failing on a 300 s clip reads as the app freezing on the last frame."""
+        case = {"name": "eos", "fixture": "c.mkv", "run_secs": 60,
+                "expect": {"reaches_eos": True, "min_pos_climb_s": 8}}
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "c.mkv")
+            with open(path, "wb") as f:
+                f.write(b"\0" * 16)
+            saved = run._probe_fixture
+            try:
+                run._probe_fixture = lambda p: (300.0, [("video", "h264"), ("audio", "ac3")])
+                run._resolve_fixtures([case], d)
+                self.assertIn("skip", case)
+                self.assertIn("to the END", case["skip"])
+                # ...and the same clip inside the budget resolves.
+                short = dict(case)
+                short.pop("skip", None)
+                run._probe_fixture = lambda p: (20.0, [("video", "h264"), ("audio", "ac3")])
+                run._resolve_fixtures([short], d)
+                self.assertNotIn("skip", short)
+                self.assertEqual(short["path"], path)
+            finally:
+                run._probe_fixture = saved
+
+
+class NetcondRate(unittest.TestCase):
+    """`tools/netcond.py`'s `rate:<kbps>` — the mode LG #43 CASE1's legs are produced with.
+
+    Driven through the REAL proxy (`start_proxy` -> `serve_conn` -> `relay`) over loopback rather
+    than against the bucket alone: the bucket is arithmetic and cannot be wrong in an interesting
+    way, while everything that HAS been wrong here lives at the seam — the scope thrown away
+    before it reached `relay`, tokens charged for bytes that never arrived, a mode that could not
+    be changed under an open transfer.
+
+    Graded from ABOVE only. A shaper must not EXCEED what was asked for; a lower bound would be
+    grading this machine's scheduler under whatever else `make check` is running, which is the
+    flaky direction.
+    """
+
+    #: 0.128 s per throttled pull. Every timing below is a multiple of that, and the class as a
+    #: whole is budgeted at half a second: `make check` is the command run before every other one.
+    N = 32 * 1024
+    KBPS = 2048.0
+    #: The wall time a full transfer CANNOT beat at KBPS.
+    FLOOR_S = N * 8 / (KBPS * 1000)
+
+    def setUp(self):
+        # A cleaned-up temp dir, like every other temp use in this file: six of these leaked per
+        # `make check` while it was a bare `mkdtemp`, and `make check` is the command run most.
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.ctl = os.path.join(self.tmp, "netcond.mode")
+        # The proxy narrates every connection; a test runner is not where that belongs.
+        saved_sink = netcond.SINK
+        netcond.SINK = lambda _msg: None
+        self.addCleanup(lambda: setattr(netcond, "SINK", saved_sink))
+        self.origin, oport = netcond.start_origin(self.N)
+        self.addCleanup(self.origin.close)
+        self.mode = netcond.Mode(self.ctl, "pass")
+        self._set("pass")
+        self.proxy, self.port = netcond.start_proxy(
+            0, ("127.0.0.1", oport), self.mode, bind="127.0.0.1")
+        self.addCleanup(self.proxy.close)
+
+    def _set(self, raw):
+        with open(self.ctl, "w") as f:
+            f.write(raw)
+
+    def _pull(self, path="/library/parts/1/file.mkv"):
+        netcond.BUCKET.reset()
+        c = socket.create_connection(("127.0.0.1", self.port), timeout=30)
+        try:
+            c.sendall(f"GET {path} HTTP/1.1\r\nHost: x\r\n\r\n".encode())
+            t0 = time.monotonic()
+            got = b""
+            while len(got) < self.N:
+                b = c.recv(65536)
+                if not b:
+                    break
+                got += b
+            return time.monotonic() - t0, got
+        finally:
+            c.close()
+
+    def test_the_bucket_never_hands_out_more_than_the_rate(self):
+        """1 kbps = 1000 bits/s, decimal — the unit the checklist item states its legs in."""
+        b = netcond.RateBucket()
+        t0 = time.monotonic()
+        total = 0
+        while time.monotonic() - t0 < 0.1:
+            total += b.take(512, 1 << 20)
+        # 512 kbps = 64000 B/s; over the elapsed window, plus the burst capacity it may hold.
+        allowed = 64000.0 * (time.monotonic() - t0) + max(64000.0 * b.BURST_S, b.MIN_CAP)
+        self.assertLessEqual(total, allowed, f"granted {total} bytes, ceiling {allowed:.0f}")
+
+    def test_the_bucket_starts_empty(self):
+        """A full one hands the first quarter-second a free burst — which, on transfers this
+        short, is most of the transfer, and makes an absent throttle measure as a working one.
+
+        Graded against what a FULL bucket would grant rather than against zero: `take` refills from
+        the wall clock, so any descheduling between the constructor and the first call accrues real
+        tokens (2 bytes = 31 us at 512 kbps, and an 8-up `make check` produces exactly that). An
+        exact `== 0` here is a test of the machine's scheduler, not of the bucket.
+        """
+        b = netcond.RateBucket()
+        fresh = b.take(512, 1 << 20)
+        full = max(512 * 1000 / 8 * b.BURST_S, b.MIN_CAP)
+        self.assertLess(fresh, full / 8,
+                        f"a fresh bucket granted {fresh} bytes; a FULL one grants {full:.0f}")
+
+    def test_a_rate_mode_shapes_a_real_transfer(self):
+        self._set("pass")
+        free_s, free = self._pull()
+        self.assertEqual(len(free), self.N)
+        self._set(f"rate:{self.KBPS:g}")
+        slow_s, slow = self._pull()
+        self.assertEqual(slow, free, "the shaper corrupted or truncated the body")
+        self.assertGreater(slow_s, free_s, "rate: changed nothing")
+        self.assertLessEqual(len(slow) * 8 / slow_s / 1000, self.KBPS * 1.35,
+                             f"measured faster than the requested {self.KBPS:g} kbps "
+                             f"(floor {self.FLOOR_S:.3f}s, took {slow_s:.3f}s)")
+
+    def test_a_scoped_rate_leaves_other_connections_alone(self):
+        """The half that was broken until 2026-08-23: `relay` took `Mode.split`, which discards the
+        scope, so a scoped mode really applied to every open connection. Scoping is the whole
+        reason a #43 leg can throttle the media stream while the control calls stay fast."""
+        self._set(f"rate:{self.KBPS:g}@/library/parts")
+        slow_s, slow = self._pull("/library/parts/1/file.mkv")
+        fast_s, fast = self._pull("/:/timeline?x=1")
+        self.assertEqual(len(slow), self.N)
+        self.assertEqual(len(fast), self.N)
+        # Both bounds sit on the SLOW side of what they grade: a throttled transfer can only be
+        # made slower by a busy machine, and an unthrottled loopback pull measures in milliseconds
+        # against a 64 ms allowance. Neither can be tripped by scheduling noise.
+        self.assertGreater(slow_s, self.FLOOR_S * 0.8,
+                           f"the in-scope connection was not throttled ({slow_s:.3f}s)")
+        self.assertLess(fast_s, self.FLOOR_S * 0.5,
+                        f"the out-of-scope connection WAS throttled ({fast_s:.3f}s) — the scope is "
+                        f"not being honoured per connection")
+
+    def test_a_malformed_mode_passes_rather_than_killing_the_connection(self):
+        """The control file is edited by hand mid-experiment; `int()` raising inside a relay thread
+        drops a live connection with a traceback that reads like a proxy bug."""
+        self.assertIsNone(netcond.arg_of("rate:", "rate"))
+        self.assertIsNone(netcond.arg_of("rate:fast", "rate"))
+        self.assertIsNone(netcond.arg_of("delay:soon", "delay"))
+        self.assertEqual(netcond.arg_of("rate:512", "rate"), 512.0)
+        self.assertEqual(netcond.arg_of("delay:250", "delay"), 250.0)
+        self.assertIsNone(netcond.arg_of("stall", "rate"))
+        self._set("rate:oops")
+        _s, body = self._pull()
+        self.assertEqual(len(body), self.N)
+
+    def test_the_mode_is_live_under_an_open_transfer(self):
+        """One scripted run has to cover four CASE1 legs; four launches is not the same experiment,
+        because the app's own state differs between them."""
+        self._set(f"rate:{self.KBPS / 4:g}")
+        t = threading.Timer(0.1, self._set, args=("pass",))
+        t.start()
+        self.addCleanup(t.cancel)
+        live_s, body = self._pull()
+        self.assertEqual(len(body), self.N)
+        # A quarter of the rate is four times the floor; releasing it has to land well inside that.
+        self.assertLess(live_s, self.FLOOR_S * 4,
+                        "releasing the mode mid-transfer changed nothing")
 
 
 if __name__ == "__main__":
