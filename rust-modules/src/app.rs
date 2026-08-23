@@ -71,9 +71,9 @@ pub(crate) const SDL_TEXTINPUT: u32 = 0x303;
 // keysyms, the OK/BACK predicates and `classify` — the key VOCABULARY the ladder below dispatches
 // on — live in ui::consts (the single keycode home)
 use crate::ui::consts::{
-    classify, is_back, is_ok, Key, SDLK_DOWN, SDLK_ESCAPE, SDLK_LEFT, SDLK_PAGEDOWN, SDLK_PAGEUP,
-    SDLK_RETURN, SDLK_RIGHT, SDLK_UP, WCODE_CH_DOWN, WCODE_CH_UP, WCODE_PAUSE, WCODE_PLAY,
-    WCODE_POINTER_HIDDEN, WCODE_STOP,
+    classify, is_back, is_bound, is_ok, Key, SDLK_DOWN, SDLK_ESCAPE, SDLK_LEFT, SDLK_PAGEDOWN,
+    SDLK_PAGEUP, SDLK_RETURN, SDLK_RIGHT, SDLK_UP, WCODE_CH_DOWN_KEY, WCODE_CH_UP_KEY, WCODE_PAUSE,
+    WCODE_PLAY, WCODE_POINTER_HIDDEN, WCODE_STOP,
 };
 // The window we ASK SDL for. `surface::probe` then reads back what we actually got.
 const SCR_W: c_int = crate::surface::LOGICAL_W as c_int;
@@ -262,6 +262,45 @@ fn rd_u32(ev: &[u8], off: usize) -> u32 {
 /// `cfg!` rather than `#[cfg]` deliberately: both arms stay compiled on both platforms, so
 /// the one nobody is currently building cannot rot. This is the single site that knows the
 /// layout — `rd_u32`'s callers elsewhere read pointer events, whose offsets already agree.
+///
+/// **The `wcode` this returns is LG's SCANCODE**, which is worth saying because the name suggests
+/// otherwise. Every field measured off the dev set is the SDL scancode of the key beside it —
+/// backspace 42, Clear 156, ◀/▶ 80/79, OK 40 — so the fork's shift puts an ordinary
+/// `SDL_Keysym { scancode, sym }` at +20/+24 rather than inventing a webOS keycode namespace. That
+/// is why the codes above SDL's own range (450 play, 482 back, 505 exit) carry no sym at all: they
+/// are LG-private scancodes the keymap has no keycode for. `docs/remote-keys.md` has the account.
+///
+/// # The simulator's carrier moved, because the old one was silently DEAD
+///
+/// A synthetic press from the remote FIFO has to get its wcode across `SDL_PushEvent`, and on the
+/// host that queue is not SDL2's: macOS `libSDL2` is **sdl2-compat forwarding into SDL3**, so every
+/// pushed event is converted out and back. Measured 2026-08-23 by dumping the polled bytes of a
+/// press whose every spare field carried a distinct value:
+///
+/// | field                        | offset | survives |
+/// |------------------------------|--------|----------|
+/// | `windowID`                   |  +8    | yes      |
+/// | `padding2` / `padding3`      | +14/15 | no       |
+/// | `keysym.scancode`            | +16    | **no** — comes back 0 |
+/// | `keysym.mod`                 | +24    | yes      |
+/// | `keysym.unused`              | +28    | **no** — comes back 1 |
+///
+/// It used to be `unused`, so **every wcode-ONLY token was dead**: `play`, `pause`, `stop`, `ff`,
+/// `rew`, `playpause`, `exit`, `chup`, `chdown` all decoded as wcode 1 and did nothing at all, and
+/// `tests/keytable.json` recorded three of them as `moved: false` — which reads as "that key does
+/// nothing on that screen" and actually meant the press never arrived. An instrument silent by
+/// construction: prove it can see the thing before reading its silence.
+///
+/// `scancode` would have been the honest home (it is what a wcode IS) and it is the one field the
+/// compat layer recomputes. So a synthetic press carries the value in `mod` and a MARKER in
+/// `windowID` ([`SYNTH_WINDOW`]) — two fields, because the value alone cannot say whether it is
+/// one: a real press puts its modifier bitmask in `mod`, so `mod != 0` means "shift is down" at
+/// least as often as it means "injected". The marker restores the priority the `unused` field used
+/// to express — **injected first, the desktop stand-in only as a fallback** — which is load-bearing
+/// and not a preference: `host_wcode(8)` is BACK, while `remote_token_key`'s `backspace` token is
+/// `(8, 42)`, so asking the stand-in first turns the panel's delete key into a navigation.
+/// Clobbering `windowID` is safe here and nowhere else: this arm is `hostsim`-only, the simulator
+/// has one window, and nothing in the event loop reads that field.
 #[inline]
 fn decode_key(ev: &[u8]) -> (u32, u32, u32) {
     if cfg!(feature = "hostsim") {
@@ -271,15 +310,28 @@ fn decode_key(ev: &[u8]) -> (u32, u32, u32) {
         // Rebuild the fork's packed state byte-for-byte: low byte pressed(1)/released(0),
         // bit 0x100 auto-repeat. Everything downstream tests exactly those two.
         let state = pressed | if repeat != 0 { 0x100 } else { 0 };
-        // A synthetic event from the remote FIFO parks its webOS keycode in the spare `unused`
-        // field; a real keypress leaves it zero, and then the keyboard mapping supplies one.
-        let injected = rd_u32(ev, 28);
+        let injected = if rd_u32(ev, 8) == SYNTH_WINDOW {
+            u32::from(u16::from_ne_bytes([ev[24], ev[25]]))
+        } else {
+            0 // a real desktop press: `mod` there is the modifier bitmask, not a wcode
+        };
+        // The stand-in is the only way a physical Mac keyboard reaches a key the remote has and a
+        // keyboard does not (space = PAUSE), and it applies to real presses alone.
         let wcode = if injected != 0 { injected } else { host_wcode(sym) };
         (state, wcode, sym)
     } else {
         (rd_u32(ev, 16), rd_u32(ev, 20), rd_u32(ev, 24))
     }
 }
+
+/// The `windowID` a SYNTHETIC key event carries on the host, marking it as one — see [`decode_key`]
+/// for why the wcode needs a marker beside it rather than standing on its own. Any value no real
+/// window can have; SDL numbers windows from 1.
+///
+/// Defined unconditionally, like both halves of [`decode_key`]: the arm that uses it is behind
+/// `cfg!` rather than `#[cfg]`, precisely so the configuration nobody is currently building cannot
+/// rot.
+const SYNTH_WINDOW: u32 = 0x504c_584b; // "PLXK"
 
 /// The Magic Remote button a desktop keyboard stands in for, or 0.
 ///
@@ -314,12 +366,13 @@ fn encode_key(sym: c_uint, wcode: c_uint, down: bool) -> [u8; 128] {
         ev[12] = u8::from(down); // state
         ev[13] = 0; // repeat
         ev[20..24].copy_from_slice(&sym.to_ne_bytes());
-        // Stock SDL_Keysym ends in a spare `unused` u32 (event offset +28). A webOS keycode has
-        // nowhere else to go on this layout, and several tokens carry ONLY a wcode (`pause` is
-        // sym 0, wcode 72), so deriving it from the sym would lose them. `decode_key` prefers
-        // this field and falls back to the keyboard mapping when it is zero — which is what a
-        // real desktop keypress leaves it as.
-        ev[28..32].copy_from_slice(&wcode.to_ne_bytes());
+        // The wcode rides `SDL_Keysym.mod` (event offset +24, a `Uint16`), under a marker in
+        // `windowID` that says this press is synthetic at all. Several tokens carry ONLY a wcode
+        // (`pause` is sym 0, wcode 72), so deriving it from the sym is not an option.
+        // `decode_key`'s doc has the measurement behind both fields — the short version is that of
+        // the spare places to put a value, these two are the ones sdl2-compat does not discard.
+        ev[8..12].copy_from_slice(&SYNTH_WINDOW.to_ne_bytes());
+        ev[24..26].copy_from_slice(&(wcode as u16).to_ne_bytes());
     } else {
         ev[16..20].copy_from_slice(&if down { 1u32 } else { 0 }.to_ne_bytes()); // state
         ev[20..24].copy_from_slice(&wcode.to_ne_bytes());
@@ -359,7 +412,21 @@ fn rd_i32(ev: &[u8], off: usize) -> i32 {
 /// real Magic-Remote press would carry — the pair the ONE key handler already matches
 /// (see `ui::consts`). Returns None for an unknown token. Kept deliberately small: the
 /// core nav set + OK/BACK + the transport keys that testing needs.
+///
+/// **Plus one escape hatch, `k:<sym>,<wcode>`, which is the only way to press a key this map does
+/// NOT name.** That is not a convenience: the whole point of LG checklist item 40 is what an
+/// *unsupported* key does, and a named-token map can by construction never send one. It also
+/// covers the keys that are bound but have no business getting a mnemonic — the digits, the
+/// channel rocker's raw codes — and lets a device question be rehearsed against the simulator
+/// first (`k:0,269` is HOME, `k:53,34` is the digit `5` exactly as the television spells it).
+/// Both fields are DECIMAL and both are required, because a pair with one field guessed is the
+/// bug class `decode_key` exists to prevent. `tools/keytable.py` drives its unsupported-key and
+/// pager rows through this.
 fn remote_token_key(tok: &str) -> Option<(c_uint, c_uint)> {
+    if let Some(rest) = tok.strip_prefix("k:") {
+        let (s, w) = rest.split_once(',')?;
+        return Some((s.parse().ok()?, w.parse().ok()?));
+    }
     Some(match tok {
         "up" => (SDLK_UP, 0),
         "down" => (SDLK_DOWN, 0),
@@ -367,8 +434,15 @@ fn remote_token_key(tok: &str) -> Option<(c_uint, c_uint)> {
         "right" => (SDLK_RIGHT, 0),
         "ok" | "enter" | "select" => (SDLK_RETURN, 0), // is_ok()
         "back" | "esc" => (SDLK_ESCAPE, 0),            // is_back()
-        "pageup" | "chup" => (SDLK_PAGEUP, WCODE_CH_UP),
-        "pagedown" | "chdown" => (SDLK_PAGEDOWN, WCODE_CH_DOWN),
+        // The pager's two spellings, and they are two tokens now rather than one pair carrying
+        // both: a PAGE key is a keyboard's and arrives as a sym alone, the rocker is the remote's
+        // and arrives as a wcode alone. The single pair they shared was `(SDLK_PAGEUP, 33)` — a
+        // shape no real press has, since 33 is the digit `4` (`ui::consts`, where they were
+        // retired), so half of what it drove was never the pager answering the rocker at all.
+        "pageup" => (SDLK_PAGEUP, 0),
+        "pagedown" => (SDLK_PAGEDOWN, 0),
+        "chup" => (0, WCODE_CH_UP_KEY),
+        "chdown" => (0, WCODE_CH_DOWN_KEY),
         "play" => (0, WCODE_PLAY),
         "pause" => (0, WCODE_PAUSE),
         "stop" => (0, WCODE_STOP),
@@ -2537,9 +2611,34 @@ unsafe fn on_auto_repeat(
 /// spelled-out `sym ==` comparisons here took. Whether the alternate D-pad codes BELONG in it is an
 /// open behavioural question — the Chapters strip accepts them and does not hide the cursor — and
 /// naming the identity did not settle it.
+///
+/// # The unsupported-key invariant (LG checklist item 40)
+///
+/// **This function runs BEFORE the ladder has decided whether anything takes the press**, and two
+/// of the things it does are GLOBAL rather than local to an arm: un-dismissing the player HUD, and
+/// aborting a tvOS click in flight. So until 2026-08-23 an unsupported key — a colour button,
+/// GUIDE, INFO, a universal remote's extra half — raised the transport over playback and cancelled
+/// a press the user was in the middle of, and neither is a thing "the app ignored that key" is
+/// allowed to mean. Both are now gated on [`is_bound`], whose doc carries the whole map and the one
+/// place it deliberately over-approximates.
+///
+/// **The invariant is about CONSUMPTION, not about [`Key::Other`].** `Other` is a legitimate
+/// identity for real, handled keys — the Library pager (a separate `page_dir` predicate) and
+/// Search's Backspace/Clear both classify as `Other` and are then taken by hand — so making the
+/// variant inert would break all of them. `is_bound` is the superset that answers the actual
+/// question.
+///
+/// Three things stay UNCONDITIONAL and each for its own reason. `held.down_sym` is bookkeeping
+/// about the physical key, not a side effect: without it a held unsupported key's auto-repeats
+/// would each arrive as a fresh press (`state & 0x100 != 0 && sym == held.down_sym` in the
+/// caller). The D-pad cursor gate is already narrower than `is_bound` — it takes the four plain
+/// direction syms and nothing else — so it needs no second guard. And the caller's `last_input`
+/// stamp is a local read only by arms that run in the same iteration, so an unbound press cannot
+/// carry it anywhere.
 unsafe fn begin_fresh_press(
     key: Key,
     sym: c_uint,
+    wcode: c_uint,
     now: u32,
     held: &mut HeldKey,
     hud: &mut HudState,
@@ -2547,17 +2646,7 @@ unsafe fn begin_fresh_press(
     ok_armed: &mut bool,
 ) {
     held.down_sym = sym;
-    // What the user could SEE, and only then the un-dismiss — one operation, because the order is
-    // load-bearing (`HudState::note_fresh_press`). Taken for every key on every screen: it is one
-    // cheap predicate, and the alternative is each player arm remembering to ask first, which is
-    // exactly the ordering the pointer path had to be fixed for once already.
-    hud.note_fresh_press(now);
-    // a fresh non-OK key (navigation / BACK) while a click is armed aborts the press —
-    // spring the card back to rest WITHOUT activating (you "slid off" the control).
-    if *ok_armed && !is_ok(sym) {
-        crate::ui::press::cancel();
-        *ok_armed = false;
-    }
+    note_global_press(sym, wcode, now, hud, ok_armed);
     if matches!(key, Key::Up | Key::Down | Key::Left { alt: false } | Key::Right { alt: false }) {
         if !ptr.dpad_mode || !ptr.cur_hidden {
             hide_cursor();
@@ -2565,6 +2654,91 @@ unsafe fn begin_fresh_press(
         ptr.dpad_mode = true;
         ptr.cur_hidden = true;
         ptr.mot_accum = 0.0;
+    }
+}
+
+/// **The two GLOBAL effects of a fresh press, and the guard that decides whether they happen** —
+/// the half of [`begin_fresh_press`] that LG checklist item 40 is about, and its only caller.
+///
+/// Split out for one blunt reason: `begin_fresh_press` calls `hide_cursor`, which names a
+/// webOS-only SDL symbol, so a host test that reaches it fails at `ld` rather than at an assertion
+/// (the boundary the testing section of the root `CLAUDE.md` describes — the crate links today only
+/// because nothing reachable from a test calls it and the linker dead-strips it). This half touches
+/// no SDL at all, so the invariant is gradeable by `make check` instead of only by a television.
+fn note_global_press(sym: c_uint, wcode: c_uint, now: u32, hud: &mut HudState, ok_armed: &mut bool) {
+    if !is_bound(sym, wcode) {
+        return; // an unsupported key is not input the app acted on — see `begin_fresh_press`
+    }
+    // What the user could SEE, and only then the un-dismiss — one operation, because the order is
+    // load-bearing (`HudState::note_fresh_press`). Taken for every BOUND key on every screen: it is
+    // one cheap predicate, and the alternative is each player arm remembering to ask first, which
+    // is exactly the ordering the pointer path had to be fixed for once already.
+    hud.note_fresh_press(now);
+    // a fresh non-OK key (navigation / BACK) while a click is armed aborts the press — spring the
+    // card back to rest WITHOUT activating (you "slid off" the control). A key the app does not
+    // bind is not sliding off anything: nothing moved, so nothing is abandoned.
+    if *ok_armed && !is_ok(sym) {
+        crate::ui::press::cancel();
+        *ok_armed = false;
+    }
+}
+
+/// **The unsupported-key invariant, graded.** `tools/keytable.py` grades the other half — that an
+/// unbound press moves no focus on any screen — and cannot see either of these two, because neither
+/// appears in a focus fingerprint.
+#[cfg(test)]
+mod unsupported_key_tests {
+    use super::*;
+
+    /// Drive one fresh press through [`note_global_press`] and report what it left behind:
+    /// `(a click is still armed, the HUD is still dismissed)`. `press::*`, `hud_until()` and
+    /// `paused()` are all crate globals, so every caller holds `testlock::serial()`.
+    fn press(sym: c_uint, wcode: c_uint) -> (bool, bool) {
+        let mut hud = HudState::IDLE;
+        let mut ok_armed = true; // a click is in flight, as if OK were still down on a card
+        hud.dismissed = true; // …and the transport was hidden by hand (UP from the control row)
+        crate::ui::press::begin(1_000);
+        note_global_press(sym, wcode, 1_000, &mut hud, &mut ok_armed);
+        let out = (crate::ui::press::is_active() && ok_armed, hud.dismissed);
+        crate::ui::press::cancel();
+        out
+    }
+
+    /// A key the app binds behaves exactly as it always has: it un-dismisses the HUD and aborts the
+    /// click it slid off. BACK is the case to use — it is not OK, so it takes the abort branch.
+    #[test]
+    fn a_bound_key_still_wakes_the_hud_and_aborts_the_click() {
+        let _g = crate::testlock::serial();
+        let (armed, dismissed) = press(SDLK_ESCAPE, 0);
+        assert!(!armed, "BACK slides off the control — the press is cancelled");
+        assert!(!dismissed, "…and any key un-dismisses the transport");
+    }
+
+    /// **The regression.** An unsupported key must do NEITHER — it is not input the app acted on,
+    /// so it may not raise the transport over playback and it may not abandon a press in flight.
+    /// 269 is HOME (`SDL_SCANCODE_AC_HOME`, evdev 172 `KEY_HOMEPAGE`); every other unbound
+    /// scancode takes the same branch.
+    #[test]
+    fn an_unsupported_key_wakes_nothing_and_abandons_nothing() {
+        let _g = crate::testlock::serial();
+        for (sym, wcode, what) in
+            [(0, 269, "HOME"), (0, 270, "AC_BACK"), (b'a' as c_uint, 4, "a letter")]
+        {
+            let (armed, dismissed) = press(sym, wcode);
+            assert!(armed, "{what} must not cancel the armed click");
+            assert!(dismissed, "{what} must not un-dismiss the HUD");
+        }
+    }
+
+    /// The digits are the one place [`is_bound`] deliberately over-approximates (its doc argues
+    /// it): the who's-watching PIN keypad types from them, so they count as bound everywhere.
+    /// Pinned so the trade-off stays a decision on record rather than something a reader finds.
+    #[test]
+    fn a_number_key_counts_as_bound_because_the_pin_keypad_types_from_it() {
+        let _g = crate::testlock::serial();
+        let (armed, dismissed) = press(b'5' as c_uint, 34);
+        assert!(!armed);
+        assert!(!dismissed);
     }
 }
 
@@ -4428,7 +4602,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     }
                     // From here down this IS a fresh press, whatever the driver stamped on it.
                     last_input = SDL_GetTicks();
-                    begin_fresh_press(key, sym, last_input, &mut held_key, &mut hud, &mut ptr, &mut ok_armed);
+                    begin_fresh_press(key, sym, wcode, last_input, &mut held_key, &mut hud, &mut ptr, &mut ok_armed);
 
                     // ---- the route-scoped arms, each of which `continue`s once it has taken the
                     // press. That makes the chain itself the priority statement: an earlier guard
@@ -6896,7 +7070,23 @@ mod key_layout_tests {
     fn key_bytes_round_trip() {
         // The wcode-only case is the one that breaks a sym-derived mapping, and the one a naive
         // host layout loses: `pause` carries no sym at all.
-        for (sym, wcode) in [(SDLK_DOWN, 0), (SDLK_RETURN, 0), (0, WCODE_PAUSE), (8, WCODE_BACK)] {
+        //
+        // **`(8, 42)` is the case that MATTERS and it was missing.** It is the `backspace` token,
+        // and 8 is one of the four syms `host_wcode` maps a desktop key onto — to `WCODE_BACK`.
+        // The only sym-plus-wcode case here used to be `(8, WCODE_BACK)`, the single pair where
+        // the stand-in and the carrier agree, so a decode that consulted the stand-in FIRST passed
+        // this test while turning the panel's delete key into a navigation. Every one of those
+        // four syms belongs here for the same reason.
+        for (sym, wcode) in [
+            (SDLK_DOWN, 0),
+            (SDLK_RETURN, 0),
+            (0, WCODE_PAUSE),
+            (8, WCODE_BACK),
+            (8, 42),    // backspace: sym 8, SDL_SCANCODE_BACKSPACE — NOT BACK
+            (32, 44),   // space, 'p', 's': the other three syms the stand-in claims, each
+            (112, 19),  // beside its own real scancode, which must survive unchanged
+            (115, 22),
+        ] {
             for down in [true, false] {
                 let ev = encode_key(sym, wcode, down);
                 let (state, got_wcode, got_sym) = decode_key(&ev);
@@ -6910,6 +7100,25 @@ mod key_layout_tests {
                 assert_eq!(state & 0x100, 0, "a synthetic edge must never look like auto-repeat");
             }
         }
+    }
+
+    /// **`k:<sym>,<wcode>` — the only token that can press a key the map does NOT name**, which is
+    /// what LG checklist item 40 needs: a named-token map can by construction never send an
+    /// unsupported key. Both fields are required and decimal; a half-parsed pair must be REFUSED
+    /// rather than silently become a press of something else, because the drain's `else` logs an
+    /// unknown token and a wrong pair would log nothing at all.
+    #[test]
+    fn the_raw_key_token_carries_both_fields_or_none() {
+        use super::remote_token_key;
+        assert_eq!(remote_token_key("k:0,269"), Some((0, 269)), "HOME, which nothing else can send");
+        assert_eq!(remote_token_key("k:53,34"), Some((53, 34)), "the digit 5 as the TV spells it");
+        for bad in ["k:", "k:1", "k:1,", "k:,1", "k:a,1", "k:1,b", "k:1,2,3", "k:-1,2", "k: 1,2"] {
+            assert_eq!(remote_token_key(bad), None, "{bad:?} must not become a keypress");
+        }
+        // …and it must not shadow the named tokens or the other prefixed ones.
+        assert!(remote_token_key("ck:10,20").is_none(), "a click token is not a key token");
+        assert_eq!(remote_token_key("chup"), Some((0, crate::ui::consts::WCODE_CH_UP_KEY)));
+        assert_eq!(remote_token_key("pageup"), Some((crate::ui::consts::SDLK_PAGEUP, 0)));
     }
 }
 
