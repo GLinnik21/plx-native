@@ -29,6 +29,13 @@ needed, both derived from `pkg/appinfo.json` so the version stays single-sourced
     not the member's, so the error reads like a corrupt archive.
   * `Installed-Size` in the control file — opkg checks it against free space before unpacking.
     Verifiers ignore the literal `1234`, the dummy `ares-package` emits, so it must be real.
+  * `resources/<locale>/appinfo.json` — the LOCALIZED descriptors, staged from the tracked
+    `pkg/resources/` tree. Same reason as the two above: the ipk is the only artifact that carries
+    them, `make deploy` has no use for them (the launcher tile of a developer install is not what
+    LG's QA looks at), and the Makefile's `APP_FILES` is a flat `cp … $(STAGE)/` that cannot
+    express a two-level tree. `stage_resources` is where the FLAVOUR suffix is reapplied — see its
+    docstring for why a flavoured package that skipped that step would lose its badge in every
+    non-English locale.
 
 WHY NOT `ares-package` (LG's own packager, which webosbrew's submission check asks for): it is NOT
 REPRODUCIBLE. Measured with ares-cli 2.4.0 on this payload — two runs of byte-identical input give
@@ -57,6 +64,7 @@ import gzip
 import io
 import json
 import os
+import shutil
 import sys
 import tarfile
 from pathlib import Path
@@ -128,6 +136,61 @@ def write_packageinfo(data: Path, app: dict) -> Path:
     return out
 
 
+def stage_resources(repo: Path, data: Path, app: dict) -> list:
+    """Stage `pkg/resources/<locale>/appinfo.json` into the app dir. Returns the locales staged.
+
+    webOS reads a locale's app title and description from `resources/<locale>/appinfo.json` inside
+    the application directory, merging it over the top-level descriptor when the television's
+    language changes (LG, *App Localization*; webOS OSE, *appinfo.json*). Only `title` and
+    `appDescription` belong in one — `ci/check-package.py` gates that, because a full copy would put
+    the version and the id in a file `ci/bump-version.py` has never heard of.
+
+    THE FLAVOUR SUFFIX IS REAPPLIED HERE, and it is the whole reason this is a transform rather than
+    a copy. `flavor.appinfo_for` renames a flavoured install's tile `PlxNative debug` precisely so
+    two tiles are not a coin flip; a localized descriptor carrying the bare tracked title would
+    override that back to `PlxNative` the moment the set was switched to Korean — restoring the
+    ambiguity in exactly the locale nobody developing this app is looking at.
+
+    The suffix is read off the transform's OUTPUT rather than re-derived from `flavor.FLAVORS`,
+    so there is still only one place that decides what a flavoured title looks like. If that rule
+    ever stops being a suffix, the assertion below fails loudly instead of silently mislabelling.
+    """
+    src = repo / "pkg" / "resources"
+    dest = data / "usr" / "palm" / "applications" / app["id"] / "resources"
+    if dest.exists():
+        # Idempotence: a locale deleted from the tree must not survive in a stale stage, and two
+        # runs of this script must produce the same archive.
+        shutil.rmtree(dest)
+    if not src.is_dir():
+        return []
+    base_title = json.loads((repo / "pkg" / "appinfo.json").read_text())["title"]
+    if not app["title"].startswith(base_title):
+        raise SystemExit(f"flavour title {app['title']!r} is not {base_title!r} plus a suffix — "
+                         "stage_resources can no longer reapply it; see ci/flavor.py")
+    suffix = app["title"][len(base_title):]
+    locales = []
+    for loc_dir in sorted(p for p in src.iterdir() if p.is_dir()):
+        f = loc_dir / "appinfo.json"
+        if not f.is_file():
+            continue
+        loc = json.loads(f.read_text(encoding="utf-8"))
+        if "title" not in loc:
+            # Packaging runs BEFORE ci/check-package.py, so say what is wrong rather than dying in
+            # a KeyError traceback that names neither the file nor the rule.
+            raise SystemExit(f"{f} has no `title` — a localized appinfo.json carries exactly "
+                             "`title` and `appDescription` (ci/check-package.py gates it)")
+        out_dir = dest / loc_dir.name
+        out_dir.mkdir(parents=True, exist_ok=True)
+        # Rewritten rather than copied, so the staged bytes are this script's output on every host:
+        # `ensure_ascii=False` keeps the translations readable in the archive, UTF-8 with no BOM is
+        # LG's stated requirement for non-Latin text, and the key order is the input file's.
+        body = json.dumps({**loc, "title": loc["title"] + suffix},
+                          ensure_ascii=False, indent=2) + "\n"
+        (out_dir / "appinfo.json").write_bytes(body.encode("utf-8"))
+        locales.append(loc_dir.name)
+    return locales
+
+
 def control_with_size(ctl: Path, data: Path, flav: str) -> tuple:
     """The control file's text with a real Installed-Size. Returns (text, size in KiB).
 
@@ -184,7 +247,22 @@ def main() -> int:
     # right default for anything that does not know about flavours (release.yml pins it anyway).
     flav = os.environ.get("FLAVOR", "stable")
     app = flavor.appinfo_for(flav)
+    # The staged application directory's NAME is a fourth witness of the id, and the one the
+    # installed app READS at runtime (`paths::app_id`). It is laid down by the Makefile rather than
+    # here, so this is the one place that can see both at once — and a package whose directory and
+    # descriptor disagree is one whose binary would identify as something its own appinfo denies.
+    #
+    # IT RUNS BEFORE ANYTHING IS WRITTEN, and that ordering is load-bearing rather than tidy:
+    # `stage_resources` mkdirs `applications/<id>/resources/…`, so it would CREATE the very
+    # directory this reads and turn "nothing was staged" into a package containing the localized
+    # descriptors and nothing else — exit 0, no binary, no top-level appinfo. Checked at the end,
+    # as it was until the resources tree existed, this guard could no longer see its own subject.
+    staged = sorted((root / "data/usr/palm/applications").glob("*"))
+    if [p.name for p in staged] != [app["id"]]:
+        sys.exit(f"staged applications/{[p.name for p in staged]} does not match appinfo id {app['id']}")
     write_packageinfo(root / "data", app)
+    # Before `control_with_size`, which sums the staged tree for `Installed-Size`.
+    locales = stage_resources(repo, root / "data", app)
     control, kib = control_with_size(root / "ctl" / "control", root / "data", flav)
     write_targz(root / "control.tar.gz", root / "ctl", "",
                 extra={"control": control.encode()})
@@ -195,14 +273,8 @@ def main() -> int:
     write_ar(ipk, [(n, (root / n).read_bytes())
                    for n in ("debian-binary", "control.tar.gz", "data.tar.gz")])
     print(f"wrote {ipk.name} ({ipk.stat().st_size} bytes) — packageinfo.json for {app['id']}, "
-          f"Installed-Size {kib} KiB")
-    # The staged application directory's NAME is a fourth witness of the id, and the one the
-    # installed app READS at runtime (`paths::app_id`). It is laid down by the Makefile rather than
-    # here, so this is the one place that can see both at once — and a package whose directory and
-    # descriptor disagree is one whose binary would identify as something its own appinfo denies.
-    staged = sorted((root / "data/usr/palm/applications").glob("*"))
-    if [p.name for p in staged] != [app["id"]]:
-        sys.exit(f"staged applications/{[p.name for p in staged]} does not match appinfo id {app['id']}")
+          f"Installed-Size {kib} KiB, {len(locales)} localized appinfo "
+          f"({' '.join(locales) or 'none'})")
     return 0
 
 

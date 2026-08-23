@@ -1438,8 +1438,11 @@ webosbrew: `github.com/webosbrew/apps-repo` (README, `repogen/`, `content/schema
 `github.com/webosbrew/dev-toolbox-cli`, `github.com/webosbrew/native-toolchain`,
 `github.com/webosbrew/webos-bridge-64to32`, `repo.webosbrew.org/api/apps.json`, `webosbrew.org/devmode`.
 LG: `webostv.developer.lge.com` (appinfo-json reference, app-approval-process, app-ecosystem,
-guides/flutter-for-webos, news 2026-06-30, web-api-and-web-engine), `forum.webostv.developer.lge.com`
+guides/flutter-for-webos, guides/app-localization, news 2026-06-30, web-api-and-web-engine),
+`forum.webostv.developer.lge.com`
 (threads 5262, 10290, 3365, 10880, 27101), `github.com/lg-flutter-webos/ndk`.
+webOS OSE: `webosose.org/docs/guides/development/configuration-files/appinfo-json/` (the
+localization tree, and `type: native` documented on the same page — §12.1).
 Other native webOS apps: `xbmc/xbmc` `docs/README.webOS.md`, `mariotaku/moonlight-tv`,
 `webosbrew/retroarch-cores`, `throwaway96/faultmanager-autoroot`.
 Licences: `gnu.org` LGPL-2.1 + GPL FAQ, `ffmpeg.org/legal.html`, `learn.microsoft.com` font-redistribution FAQ,
@@ -1481,3 +1484,179 @@ What remains is not a licensing question but a taste one: the tomato is a fruit,
 a percentage in a movie app still gestures at Rotten Tomatoes. That is the owner's call, made with
 the facts on the table, and the two shapes a rights holder would actually write about — the seal and
 the popcorn pair — are the ones that are gone.
+
+---
+
+## 12. Localized app metadata — `resources/<locale>/appinfo.json` (2026-08-23)
+
+**LG App Self Checklist #41 (*Change Language*).** Before this, the checklist recorded #41 as
+*"the app is English-only … LG supports locale-specific `appinfo.json` files carrying a translated
+`title` and `appDescription`, which localizes the store listing and launcher tile without touching
+the UI. That is the cheap half and it is not done."* It is done now. **The UI half is not, and
+this section is careful about which half is which**, because the difference is the difference
+between an honest Pass and the marking error LG's own preamble names as a rejection ground.
+
+### 12.1 What LG documents, and what tier that documentation is
+
+Two sources, neither of which is a television.
+
+**LG, *App Localization* — `webostv.developer.lge.com/develop/guides/app-localization`.**
+`develop/*`, so by this repo's own rule it is **web-runtime documentation: context, never proof for
+a native app**. It says:
+
+> To add app information in a specific locale, you need to first create a locale folder under the
+> resources folder and then write an *appinfo.json* file under the correct location.
+
+> In the *appinfo.json* file for localization, you should fill appDescription and title properties.
+
+> When the locale value is changed after adding an *appinfo.json* file corresponding to the locale
+> information, the top-level *appinfo.json* file is loaded into the system memory of webOS TV
+> first, and then other *appinfo.json* files are overridden depending on the locale setting.
+
+> The app ID and version in each localized *appinfo.json* file are the same as those in the
+> top-level *appinfo.json* file.
+
+> If you use non-Latin letters (non-ASCII) in the *appinfo.json* file, you should save the file in
+> UTF-8 without BOM format.
+
+**webOS OSE, *appinfo.json* — `webosose.org/docs/guides/development/configuration-files/appinfo-json/`.**
+The open-source platform's reference for the same descriptor read by the same SAM; still not this
+firmware, but not the web-runtime guide either:
+
+> To provide app information in a specific locale, you need to create locale folders under the
+> `resources` folder, then `appinfo.json` files for each locale under correct locations
+
+with the localized file carrying only `title` and `appDescription`.
+
+**The honest reading.** The mechanism is documented by LG for webOS TV apps and by webOS OSE for
+the descriptor in general — and the OSE page which documents the localization tree is the *same
+page* that documents `type: native` as a valid application type, so the one authority describing
+both does not carve native apps out of it. Neither page, however, says anything about native apps
+and localization *together*, and LG's is under `develop/*`. What reads the file is **SAM**, which
+is app-type agnostic in both descriptions: the descriptor is read to register and display an app,
+not to run its code, and nothing in either page ties the resource lookup to the web runtime. That
+is a good argument, not a measurement.
+
+**So: the path is documented, the native applicability is inferred, and it has NOT been seen on a
+television.** §12.4 is the recipe that would settle it. Until somebody runs it, #41's metadata half
+is *implemented and gated* rather than *verified*, and the checklist should say so.
+
+### 12.2 What ships
+
+`pkg/resources/<language>/appinfo.json`, twelve of them — `de es fr it ja ko nl pl pt ru sv tr` —
+each carrying exactly two properties, UTF-8 without BOM:
+
+```json
+{
+  "title": "PlxNative",
+  "appDescription": "비공식 네이티브 Plex 클라이언트 - Plex와 제휴 관계가 없습니다"
+}
+```
+
+Three decisions in that file are deliberate and each has a gate behind it in `ci/check-package.py`:
+
+* **The title is NOT translated.** `PlxNative` is the brand `TRADEMARKS.md` reserves, and LG's own
+  listing shows it verbatim. Every locale carries the same string.
+* **Exactly two properties.** A third would be `pkg/appinfo.json` duplicated — the version would
+  then live in a file `ci/bump-version.py`, the release tag guard and every version assertion in
+  `ci/check-package.py` have never heard of. This is `ci/flavor.py`'s "PATCH, DO NOT DUPLICATE"
+  arrived at from the other direction, and it is also what LG asks for.
+* **The description is a near-literal translation, not marketing copy per market.** The English
+  sentence is a **trademark disclaimer** (*"not affiliated with Plex"*), so it is graded against
+  the English rather than rewritten — and the mark itself stays Latin `Plex` in every locale, which
+  is asserted, because a transliteration would both weaken the disclaimer and misuse the mark.
+  Chinese is absent for a related reason: `zh` alone does not say Hans or Hant, and guessing a
+  script for a legal sentence is worse than shipping English.
+
+**Only plain language folders are used.** LG says a locale "consists of Language, Script, and
+Country/Region information (e.g., ko-KR, mn-Cy-MN)", and the example tree on that page is an image
+this repo cannot read; the OSE page's worked example is a bare `ko`. Region- and script-qualified
+folders are therefore a device-verification question, and the bare-language form is the one both
+sources agree on. `ci/check-package.py`'s `LOCALE_RE` already accepts the **hyphenated** shapes
+(`ko-KR`, `zh-Hans-CN`, `es-419`), so widening the set that way is adding directories and nothing
+else; a **nested** `resources/ko/KR/appinfo.json` is the one shape that would need a code change,
+and it fails loudly (`pkg/resources/ko/appinfo.json exists`) rather than shipping silently.
+
+### 12.3 How it is packaged and gated
+
+**`ci/mkipk.py::stage_resources` stages the tree; the Makefile does not.** `APP_FILES` is a flat
+`cp … $(STAGE)/` that preserves basenames — it cannot express a two-level tree, and `make deploy`
+has no use for these files anyway (a developer install's tile is not what LG's QA looks at). So
+this joins `packageinfo.json` and the real `Installed-Size` as a thing the ipk carries and a
+scp-based dev loop never needed. **Consequence worth stating: the localized descriptors are in the
+`.ipk` only.** `make deploy` does not put them on the television, so the device recipe below is an
+*install*, not a deploy.
+
+**The flavour suffix is reapplied when staging, and that is the non-obvious half.**
+`ci/flavor.py` renames a flavoured install's tile `PlxNative debug` precisely so two tiles on one
+set are not a coin flip. A localized descriptor carrying the bare tracked title would override that
+back to `PlxNative` the moment the set was switched to Korean — restoring the ambiguity in exactly
+the locale nobody developing this app is looking at. `stage_resources` reads the suffix off
+`flavor.appinfo_for`'s **output** rather than re-deriving it, so there is still one place that
+decides what a flavoured title looks like, and it raises rather than guesses if that rule ever
+stops being a suffix.
+
+**The gates, all in `ci/check-package.py`**, and all verified to FAIL on a planted defect rather
+than assumed to work (seven of them: a third property, a BOM, a non-locale directory name, a
+translated title, a translation that dropped the mark, a tracked locale that never reached the
+archive, and the tree deleted outright):
+
+* the tracked half runs on **both** paths — including the no-package-staged branch that
+  `release.yml`'s `prepare` takes before a tag exists — because a translation is exactly the kind
+  of thing edited by hand between builds;
+* the staged locale set is a **set equality** with the tracked one, so a locale added and never
+  shipped fails as loudly as a stale one left behind. That is the ipk-vs-deploy divergence which
+  shipped a fontless package for months, caught on the way in;
+* the payload is asserted **by path**, `usr/palm/applications/<id>/resources/<loc>/appinfo.json`.
+  The existing `expected` set is basenames and is structurally blind to this: `resources/ko/appinfo.json`
+  contributes the basename `appinfo.json`, which the top-level descriptor already supplies, so a
+  resources tree that never reached the archive would pass every other assertion in the file.
+
+**Reproducibility is unaffected and was re-measured, not assumed.** `stage_resources` writes its
+output through `json.dumps` and `add_tree` normalises identity, mode, mtime and order as before;
+two `mkipk.py` runs over one stage give one sha256 (checked for both flavours).
+
+### 12.4 What only a television can settle
+
+Nothing below is answerable from a desk, and the first item is the one that decides whether this
+section closed anything at all.
+
+1. **Does webOS read `resources/<locale>/appinfo.json` for a NATIVE app?** Install the ipk
+   (`make FLAVOR=debug install` — an *install*, not a deploy: the descriptors are packaged, not
+   scp'd), then switch the television to 한국어 in *Settings → General → Language → Menu Language*
+   and look at the launcher tile and the app's entry in the app list. The tile title should still
+   read `PlxNative debug` (the brand is not translated, and the flavour suffix must survive); the
+   *description*, wherever this firmware surfaces one, should be Korean.
+2. **Does SAM need a restart or a reinstall to notice?** webOS OSE's own documentation warns that
+   SAM may cache the contents of `appinfo.json` at boot. If the tile does not change on a live
+   language switch, re-check after a reboot before concluding the file is unread.
+3. **Bare language vs region-qualified.** If `resources/ko/` is not picked up, try `resources/ko-KR/`
+   and `resources/ko/KR/` before concluding the mechanism does not apply to native apps — the two
+   sources disagree about the folder shape and neither example is machine-readable here. `ko-KR` is
+   a rename of a directory and nothing else; **`ko/KR` needs a code change** — `stage_resources`
+   walks exactly one level — so try it by hand in the staged tree before writing that recursion.
+4. **Does anything on a webOS TV display `appDescription` at all** for a sideloaded app, or is it
+   Content-Store-listing metadata only? If the latter, this closes #41's listing half and nothing
+   visible on the set, which is still the right answer for a submission but is a different claim.
+5. **The app does not crash or misrender on a language change** — which it structurally cannot,
+   see §12.5, but the checklist item asks about behaviour and behaviour is measured.
+
+### 12.5 What is explicitly NOT closed
+
+**The UI is English-only and stays that way in this change.** There are ~203 display literals
+across 45 files, and `Label`/`Button` take a non-owning `*const c_char` — an owned `String` needs a
+lifetime story that a metadata change has no business inventing. The CJK fallback face landed
+separately and is a *precondition* for a translated UI, not the thing itself: glyph coverage means
+Korean renders, not that anything is written in Korean.
+
+**The app is locale-blind, and that is checkable rather than asserted:** `grep -rn
+"setlocale\|LC_ALL\|localeInfo\|X-Plex-Language" rust-modules/src src` finds nothing. It never
+reads the television's language, and it never sends `X-Plex-Language` — so PMS returns metadata in
+the server's default language whatever the set is set to. That last one is the cheapest remaining
+i18n win by a wide margin (one header, and `docs/pms-api.md` already documents it as *"selects the
+language of server-returned strings"*), and it is a `plex/` change rather than a packaging one.
+
+**So the honest mark for #41** is: the metadata half is implemented and gated; the UI half is
+English-only by design; and the whole thing is **unverified on a television** until §12.4 item 1 is
+run. A tester who changes the language and finds an English UI has found a documented decision, not
+a defect — but "Pass" cannot be written next to this row on the strength of this section alone.

@@ -31,6 +31,70 @@ def png_size(p: Path) -> tuple[int, int]:
     return struct.unpack(">II", p.read_bytes()[16:24])
 
 
+# ---- the localized descriptors ----------------------------------------------------------------
+#
+# `resources/<locale>/appinfo.json` gives the launcher tile and the store listing a title and
+# description per television language. LG documents exactly two properties in one — "In the
+# appinfo.json file for localization, you should fill appDescription and title properties. All
+# other properties are kept the same as the top-level appinfo.json file" — and requires UTF-8
+# WITHOUT BOM for non-Latin text. Both are gated below, and neither is cosmetic:
+#
+#   * a THIRD property in one of these files is `pkg/appinfo.json` duplicated. The version would
+#     then live in a file `ci/bump-version.py`, `release.yml`'s tag guard and every version
+#     assertion in THIS file have never heard of — the failure `ci/flavor.py`'s "PATCH, DO NOT
+#     DUPLICATE" exists to prevent, arrived at from the other direction.
+#   * a BOM makes the file unparseable to a strict JSON reader while looking identical in every
+#     editor and in `git diff`. LG asks for its absence by name, so this is their rule, not ours.
+#
+# This runs against the TRACKED tree in every invocation, including the one that has no package
+# staged — the tracked-only branch below is what `release.yml`'s `prepare` runs before a tag
+# exists, and a translation is exactly the kind of thing that gets edited by hand.
+LOCALE_RE = re.compile(r"^[a-z]{2,3}(-[A-Z][a-z]{3})?(-([A-Z]{2}|[0-9]{3}))?$")
+LOCALIZED_KEYS = {"title", "appDescription"}
+
+
+def check_tracked_resources(expect_title: str) -> list:
+    """Grade `pkg/resources/`. `expect_title` is the title these must carry. Returns the locales."""
+    src = ROOT / "pkg" / "resources"
+    if not src.is_dir():
+        check(False, "pkg/resources/ exists — the localized appinfo tree (LG checklist #41)")
+        return []
+    locales = sorted(p.name for p in src.iterdir() if p.is_dir())
+    check(bool(locales), f"pkg/resources/ carries at least one locale (saw {len(locales)})")
+    english = json.loads((ROOT / "pkg/appinfo.json").read_text())["appDescription"]
+    for loc in locales:
+        f = src / loc / "appinfo.json"
+        check(LOCALE_RE.fullmatch(loc) is not None,
+              f"pkg/resources/{loc} is a locale tag (language[-Script][-REGION])")
+        if not f.is_file():
+            check(False, f"pkg/resources/{loc}/appinfo.json exists")
+            continue
+        raw = f.read_bytes()
+        check(not raw.startswith(b"\xef\xbb\xbf"),
+              f"{loc}/appinfo.json is UTF-8 without BOM (LG's stated requirement)")
+        try:
+            d = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as e:
+            check(False, f"{loc}/appinfo.json is valid UTF-8 JSON ({e})")
+            continue
+        check(set(d) == LOCALIZED_KEYS,
+              f"{loc}/appinfo.json carries exactly {sorted(LOCALIZED_KEYS)} (saw {sorted(d)})")
+        # The title is the BRAND, not a string to translate: TRADEMARKS.md reserves it, and LG's
+        # own listing shows it verbatim. A translated one here would also silently un-badge a
+        # flavoured install's tile, which is why `mkipk.stage_resources` reapplies the suffix
+        # rather than trusting whatever is written in the tree.
+        check(d.get("title") == expect_title,
+              f"{loc}/appinfo.json title is the untranslated brand ({expect_title!r})")
+        desc = d.get("appDescription", "")
+        check(bool(desc.strip()) and desc != english,
+              f"{loc}/appinfo.json appDescription is present and actually translated")
+        # The English sentence is a trademark disclaimer. A translation that transliterated the
+        # mark ("플렉스") would both lose the disclaimer's force and misuse it, and no reader of
+        # this repository is placed to catch that by eye in twelve languages.
+        check("Plex" in desc, f"{loc}/appinfo.json names Plex verbatim (the disclaimer's subject)")
+    return locales
+
+
 def font_family(p: Path) -> str:
     """nameID 1 out of a TrueType `name` table, without fontTools."""
     b = p.read_bytes()
@@ -106,6 +170,10 @@ if len(staged) != 1 and not REQUIRE_PACKAGE:
           f'pkg/appinfo.json id is the stable id ({flavor.STABLE_ID})')
     check(tracked_control.get("Package") == flavor.STABLE_ID,
           f'control Package is the stable id ({flavor.STABLE_ID})')
+    # Tracked too, and editable by hand in twelve languages — so graded on the cheap path as well,
+    # not only after a cross-build has produced a package.
+    print("== localized appinfo (tracked) ==")
+    check_tracked_resources(tracked_appinfo["title"])
     for f in FAILURES:
         print(f"::error::{f}")
     print(f"\n{'all tracked-file assertions passed' if not FAILURES else 'FAILURES above'}")
@@ -198,8 +266,12 @@ for member in sorted(PAYLOAD.rglob("*")) if PAYLOAD.is_dir() else []:
     if not member.is_file():
         continue
     dirty = sorted({m for m in HOSTPATH.findall(member.read_bytes()) if not ALLOWED_PATH.search(m)})
+    # Labelled by PATH inside the payload, not basename: since the localized descriptors landed
+    # there are THIRTEEN files called `appinfo.json` in here (the top level plus one per locale),
+    # and a basename cannot say which one is dirty — nor which twelve of the thirteen identical
+    # `ok` lines to stop reading.
     check(not dirty,
-          f"{member.name} carries no build-machine path"
+          f"{member.relative_to(PAYLOAD)} carries no build-machine path"
           + (f" (saw {dirty[0].decode(errors='replace')})" if dirty else ""))
 
 # ---- the RELEASE is coherent, not just the package -------------------------------------------
@@ -487,6 +559,32 @@ for name, why in NEEDED_LICENCES.items():
     p = ROOT / "licenses" / name
     check(p.exists() and p.stat().st_size > 200, f"licenses/{name} — {why}")
 
+print("== localized appinfo (staged) ==")
+# The tracked half first, against the TRACKED title — `stage_resources` reapplies the flavour
+# suffix, so the file in the tree carries the bare brand name whatever is being packaged.
+tracked_locales = check_tracked_resources(json.loads((ROOT / "pkg/appinfo.json").read_text())["title"])
+staged_res = PAYLOAD / "resources"
+staged_locales = sorted(p.name for p in staged_res.iterdir() if p.is_dir()) if staged_res.is_dir() else []
+# A SET EQUALITY, not a subset. A locale added to the tree and never staged is the ipk-vs-deploy
+# divergence that shipped a fontless package for months, and a locale left in the stage after being
+# deleted from the tree is a translation nobody can find the source of.
+check(staged_locales == tracked_locales,
+      f"the staged locales are exactly the tracked ones ({len(tracked_locales)}: "
+      f"{' '.join(tracked_locales) or 'none'})")
+for loc in staged_locales:
+    staged_loc = json.loads((staged_res / loc / "appinfo.json").read_text(encoding="utf-8"))
+    check(set(staged_loc) == LOCALIZED_KEYS,
+          f"staged {loc}/appinfo.json carries exactly {sorted(LOCALIZED_KEYS)} (saw {sorted(staged_loc)})")
+    # THE flavour assertion, and the only one that can fail for the debug package alone: a localized
+    # descriptor overrides the top-level one, so a tile reading `PlxNative debug` in English and
+    # `PlxNative` in Korean is two installs that cannot be told apart on a Korean set.
+    check(staged_loc.get("title") == appinfo["title"],
+          f'staged {loc}/appinfo.json title == the staged top-level title ({appinfo["title"]!r})')
+    if loc in tracked_locales:
+        tracked_loc = json.loads((ROOT / "pkg/resources" / loc / "appinfo.json").read_text(encoding="utf-8"))
+        check(staged_loc.get("appDescription") == tracked_loc.get("appDescription"),
+              f"staged {loc}/appinfo.json appDescription is the tracked translation, unchanged")
+
 print("== ipk payload ==")
 expected = {
     "plxnative", "appinfo.json", "icon.png", "largeIcon.png", "splash.png",
@@ -513,6 +611,15 @@ if data_tar.exists():
     # TV already has registered. Without it `appinstalld` unpacks nothing.
     check(f'usr/palm/packages/{appinfo["id"]}/packageinfo.json' in paths,
           "payload carries usr/palm/packages/<id>/packageinfo.json")
+    # ...and the localized descriptors, asserted BY PATH. The `expected` set above is basenames, so
+    # it cannot see these at all: `resources/ko/appinfo.json` contributes the basename
+    # `appinfo.json`, which the top-level descriptor already supplies. A resources tree that never
+    # reached the archive would pass every other assertion in this file.
+    missing = [loc for loc in tracked_locales
+               if f'usr/palm/applications/{appinfo["id"]}/resources/{loc}/appinfo.json' not in paths]
+    check(not missing,
+          f"payload carries resources/<locale>/appinfo.json for all {len(tracked_locales)} locales"
+          + (f" (missing {' '.join(missing)})" if missing else ""))
 else:
     print("  SKIP — ipkroot/data.tar.gz absent (run `make ipk` first)")
 
