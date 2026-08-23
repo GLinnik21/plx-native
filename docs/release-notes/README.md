@@ -287,9 +287,9 @@ Every row is derived, not remembered. Rows whose value CI cannot produce do not 
 | `DT_NEEDED` | `<n>` entries, `<unchanged since vA.B.C / changed: …>` (asserted in CI against `ci/expected-dt-needed.txt`) |
 | payload | `<+0 files since vA.B.C>` |
 | listening sockets | none. A release build compiles out the whole `/tmp` trigger surface, the remote-control FIFO and the TCP capture listener |
-| written outside its own directory | `/tmp/plxnative-{events,stderr,crash}.log`, mode 0600; the signed-in session at `/media/developer/com.beb.plxnative-auth.json` or `/media/internal/.com.beb.plxnative-auth.json`, mode 0600. A crash writes no core file. |
+| written outside its own directory | `/tmp/plxnative-{events,stderr,crash}.log`, mode 0600; the signed-in session at `/media/developer/com.beb.plxnative-auth.json` or `/media/internal/.com.beb.plxnative-auth.json`, mode 0600; and where you were when you last closed it, at `/media/developer/com.beb.plxnative-lastplace.json` or `/media/internal/.com.beb.plxnative-lastplace.json`, mode 0600 — the page, your Plex Home profile id and one server/item id, with no token and no playback position in it. A crash writes no core file. |
 | outbound hosts | your Plex Media Server, `plex.tv`, `discover.provider.plex.tv`. No analytics, telemetry or crash upload. |
-| declared `requiredMemory` | 60 MB against a measured ~74 MB peak — under-declared; known, tracked in `docs/distribution.md` §6.10 |
+| declared `requiredMemory` | 160 MB, against a peak of 152 MiB measured on the dev set across boot, browsing and 4K HDR playback. Was 60, which was below the 120 MB webOS substitutes when an app declares nothing. |
 ````
 
 Two notes on that table, both load-bearing.
@@ -301,8 +301,11 @@ Two notes on that table, both load-bearing.
   still prints `/tmp/plxnative-url`, add *"(`strings` also shows `/tmp/plxnative-url` — that is a
   log message, not a path it opens.)"* and open an issue to remove the literal. A property stated
   in a form that fails the reader's own check reads as a lie, not a rounding error.
-- **A knowingly wrong number is disclosed, never omitted.** `requiredMemory: 60` against ~74 MB
-  measured costs us nothing to admit and the whole release if the reviewer finds it himself.
+- **A knowingly wrong number is disclosed, never omitted.** The archetype is `requiredMemory`:
+  it shipped as 60 against a peak that later measurement put at 152 MiB, and saying so in the
+  v0.3.0 and v0.4.0 tables cost nothing — the reviewer finding it himself would have cost the
+  release. It is 160 now and no longer an admission, which is exactly why the rule is written down
+  here rather than left to live in its example.
 
 ---
 
