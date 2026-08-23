@@ -1005,6 +1005,182 @@ fn page_of(r: Route) -> Route {
         other => other,
     }
 }
+
+// ---- cold start: where this install was when it last stopped (`crate::coldstart`) --------------
+
+/// How long after the app's first tick the recorded page is put on screen.
+///
+/// It is a COMPROMISE between two visible things, which is why it is a number at all.
+///
+/// **Later is better for the page.** Home's catalog lands asynchronously (`hubs: landed`, about a
+/// second in on the dev set), and a detail page opened before it has no catalog row to take its
+/// backdrop and blur from — `detail::open_rk` falls back to the item's own art, which is a page
+/// that looks subtly unlike the one a navigation produces. The `plxnative-library` and
+/// `plxnative-detail` boot triggers wait 400/500 ms for the same reason and this sits with them.
+///
+/// **Earlier is better for the boot.** Everything before this instant is Home on screen, so the
+/// restore is a visible replacement rather than an arrival. Whether that reads as a glitch behind
+/// webOS's splash is a device question, and it is in this feature's PR matrix rather than answered
+/// here.
+///
+/// What it is NOT is a budget for a blocking fetch. `apply_coldstart` does no blocking work at
+/// all, and both halves of that are deliberate: the item path takes the ASYNC `detail::open_rk`,
+/// and the library path refuses outright rather than let `library::enter` reach its blocking
+/// section discovery. So lengthening this cannot buy correctness, and shortening it cannot park
+/// the boot.
+///
+/// It is measured from the app's first tick, and it is a FLOOR rather than the moment of the
+/// restore: on the who's-watching path the boot sequence runs past it, and the restore then lands
+/// on the frame the picker hands over to Home — instantly, with no Home to flash through.
+const COLDSTART_RESTORE_MS: u32 = 500;
+
+/// The cold-start restore and the running record, in one call per frame.
+///
+/// The restore is resolved and the recorder is opened by the SAME condition — the boot sequence
+/// having ended on a real page — so the two can never disagree about when the boot is over.
+fn coldstart_frame(
+    now: u32,
+    t0: u32,
+    route: &mut Route,
+    trail: &mut Trail,
+    nav: &Option<NavReq>,
+    backgrounded: bool,
+) {
+    if crate::coldstart::restore_pending() {
+        // **Still inside the boot SEQUENCE.** The QR sign-in, the who's-watching picker and the
+        // first-run question are not pages, and on the picker path the profile a record belongs to
+        // is not even known yet (`session::current_profile_key` answers for whoever was last
+        // signed in). So the restore WAITS for the screen the sequence ends on rather than being
+        // declined here — which is what makes this work at all for a multi-user Plex Home, where
+        // every boot goes through the picker. Recording is held off for the same window: the Home
+        // those screens hand over to would otherwise settle and overwrite the record.
+        if matches!(page_of(*route), Route::Login | Route::Profiles | Route::Onboard) {
+            return;
+        }
+        if now.wrapping_sub(t0) < COLDSTART_RESTORE_MS {
+            return;
+        }
+        // `nav.is_none()` is not belt and braces: a route change starts on the press frame and
+        // only LANDS at the `ui::nav` fade floor, so a press in the last ~70 ms of the wait leaves
+        // `route` reading Home while the user's own navigation is in flight. Restoring on top of
+        // it would push a page they never visited UNDER the one they asked for, and BACK would
+        // then land on it.
+        let onto_home = matches!(*route, Route::Home) && nav.is_none();
+        match crate::coldstart::take_restore() {
+            Some(p) if onto_home => apply_coldstart(p, route, trail),
+            Some(_) => log("coldstart: the boot went elsewhere first — not restoring"),
+            None => {}
+        }
+    }
+    // **The OS took the screen, not the user.** The app-switch arm drops `route` to Home while the
+    // playback session stays suspended, so recording that Home would replace the item record with
+    // the one thing this module exists to avoid — the film you were watching when the set was
+    // switched off. The BACK trail is deliberately left alone through the same window, for the
+    // same reason; see the `0x103` arm.
+    if backgrounded {
+        return;
+    }
+    if let Some(p) = coldstart_place(*route) {
+        crate::coldstart::note(now, p);
+    }
+}
+
+/// What the page on screen is, as something that can be written down — `None` for a route that
+/// must not be recorded at all.
+///
+/// Asked through [`page_of`], so a popover records the live page underneath it rather than
+/// nothing: an account menu or an item menu is a thing open OVER where you are, not where you are.
+fn coldstart_place(route: Route) -> Option<crate::coldstart::PlaceRef<'static>> {
+    use crate::coldstart::PlaceRef;
+    // An item is only recordable when BOTH halves of its identity are in hand. `rk` is
+    // server-local — every Plex ratingKey is dense from 1 on every machine — so a key with no
+    // `machineIdentifier` beside it names an item on no server in particular, which is the one
+    // thing a restore must never act on. A server whose id has not been learned yet therefore
+    // records nothing and leaves the PREVIOUS record standing, rather than degrading it to Home.
+    let item = |sid: crate::plex::ServerId, rk: &'static str| {
+        let machine = crate::plex::client_for(sid).map(|c| c.machine_id()).unwrap_or("");
+        (!machine.is_empty() && !rk.is_empty()).then_some(PlaceRef::Item { machine, rk })
+    };
+    match page_of(route) {
+        Route::Home => Some(PlaceRef::Home),
+        // The strip's PILL rather than `browse::cur()`'s section — see `coldstart::Place::Library`
+        // for why the pill is the more durable of the two across a reboot.
+        Route::Library => {
+            Some(PlaceRef::Library { tab: crate::browse::tab_of_section(crate::browse::cur()) as u32 })
+        }
+        Route::Detail => crate::metadata::current().and_then(|d| item(d.sid, &d.rk)),
+        // A playback records the ITEM, and `coldstart` restores it to that item's detail page
+        // rather than to the player — see that module's doc. `metadata::playing` is the played
+        // LEAF, which is the right one: an episode played from a show page must come back to the
+        // episode, not to the show whose page launched it.
+        Route::Player { .. } => crate::metadata::playing().and_then(|p| item(p.sid, &p.rk)),
+        // Both are real pages the user chose, and neither has an identity worth restoring: a
+        // search screen restored without its query is the empty state, and the person page is
+        // rebuilt from a header the cast row hands over. Home is the honest answer for both, and
+        // recording it is deliberate — it retires a stale detail record the user has navigated off.
+        Route::Search | Route::Person => Some(PlaceRef::Home),
+        // Not pages anyone chose: the QR sign-in, the who's-watching picker and the first-run
+        // question are the boot sequence. Recording Home here would erase a good record during
+        // every boot of every multi-profile household, before its owner had touched anything.
+        Route::Login | Route::Profiles | Route::Onboard => None,
+        // Unreachable: `page_of` resolved both to the page they are drawn over. Spelled out rather
+        // than left to a wildcard so a new popover host has to answer this question.
+        Route::Account { .. } | Route::ItemMenu { .. } => None,
+    }
+}
+
+/// Put the recorded page on screen. Every failure here lands on Home, which is where the boot
+/// already was.
+fn apply_coldstart(p: crate::coldstart::Place, route: &mut Route, trail: &mut Trail) {
+    use crate::coldstart::Place;
+    match p {
+        Place::Home => return,
+        Place::Library { tab } => {
+            // **Only onto a strip that already exists.** `library::enter` opens with
+            // `browse::ensure_sections`, which is a BLOCKING discovery GET whenever the boot's own
+            // `activate_server` did not land one — so on a server that has stopped answering this
+            // would park the main loop for `stream`'s connect plus read timeout, at boot, in front
+            // of the first interactive frame. `tab_count` is the same table projected and asks
+            // nobody, so it is the honest non-blocking form of "did discovery happen".
+            if crate::browse::tab_count() == 0 {
+                log("coldstart: no library strip yet — staying on Home");
+                return;
+            }
+            // A HARD CUT, for the `plxnative-library` boot's reason: a transition means "this
+            // screen replaced that one", and at boot there is no outgoing screen to replace.
+            // `enter` clamps the pill into the strip that actually exists, so a record naming a
+            // library that has since been revoked lands on a real tab instead of nothing.
+            crate::ui::library::enter(tab as usize, crate::ui::library::Arrival::Cut);
+            *route = Route::Library;
+            log(&format!("coldstart: restored the library, tab={tab}"));
+        }
+        Place::Item { machine, rk } => {
+            // The `machineIdentifier` back to a live registry slot. A share that has since been
+            // revoked, or a server the roster has not re-registered yet, simply has no slot — and
+            // then there is nothing to open, because `rk` on its own names an item on no machine.
+            let found = crate::plex::server_ids()
+                .find(|&id| crate::plex::client_for(id).is_some_and(|c| c.machine_id() == machine));
+            let Some(sid) = found else {
+                log("coldstart: the recorded item's server is not registered — staying on Home");
+                return;
+            };
+            // **`open_rk`, the ASYNC one** — the same primitive an ordinary navigation and a BACK
+            // restore use (`enter_node`), and deliberately not the blocking `open_rk_now` the
+            // `plxnative-detail` trigger takes. Nothing here reads `metadata::current()` before
+            // the next statement, so the freeze would buy nothing — and it would be a freeze at
+            // BOOT, bounded by `stream`'s 2 s connect plus a 15 s read timeout, on a server that
+            // may be a friend's WAN box. It resolves the catalog row itself for the backdrop and
+            // falls back to the item's own art when the record is older than the last hub refresh.
+            crate::ui::detail::open_rk(sid, &rk);
+            push_detail(trail, route, sid, &rk);
+            log("coldstart: restored the item's detail page");
+        }
+    }
+    // A discrete, non-spring change of the whole screen: without this the restored page waits for
+    // the next keypress to be drawn (`ui::idle` gates the present).
+    crate::ui::idle::invalidate();
+}
+
 /// The page's TEARDOWN — what leaving it FOR GOOD has to run, handed to `ui::nav` so it
 /// happens at the fade floor instead of on the press frame (see that module's doc: run
 /// early, `detail::close`'s `metadata::clear` empties the page *during its own fade-out*).
@@ -4165,6 +4341,23 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             crate::ui::account_menu::open();
             route = Route::Account { over: BarHost::Home };
         }
+        // **Where this install was when it last stopped** (`crate::coldstart`, LG checklist #3).
+        // The boot route above answers only "what does the CREDENTIAL state allow" — it is the
+        // same four-way choice on the first launch after an install as on the launch after a mains
+        // pull mid-browse, because nothing about the session was written down. This reads what was.
+        //
+        // **Not on an AUTOMATED boot**, and that is the only gate applied here. A harness run must
+        // leave nothing behind that changes the next boot, and this file is deliberately outside
+        // both the `plxnative-*` trigger namespace and the glob `tests/run.py` sweeps — so
+        // refusing to arm is the only place that determinism can be bought.
+        //
+        // Everything else is decided LATER, in `coldstart_frame`: which page to restore, and
+        // whether the record even belongs to the person now watching. It has to be, because on the
+        // who's-watching path nobody has said who they are yet at this line — see
+        // `coldstart::take_restore`.
+        if !automated_boot() {
+            crate::coldstart::arm();
+        }
         // The page the live playback session was LAUNCHED FROM — where Stop/BACK/EOS returns to.
         // Kept OUTSIDE Route (like bg_was_playing keeps the suspended session): it is navigation
         // history, not the current node, and Route makes every page and Player exclusive so it
@@ -5006,6 +5199,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             }
 
             let now = SDL_GetTicks();
+            // The cold-start restore, then the running record of where we are (LG checklist #3).
+            // AFTER the event pump, so the page it records is the one this frame's input produced;
+            // it is a comparison and no allocation unless the page actually changed, and it writes
+            // a file only once a page has been settled for `coldstart::SETTLE_MS`.
+            coldstart_frame(now, t0, &mut route, &mut trail, &nav_pending, bg_was_playing);
             // dev: /tmp/plxnative-autoplay auto-presses OK once
             if !auto_tried && !matches!(route, Route::Player { .. }) && now.wrapping_sub(t0) > 2000 {
                 auto_tried = true;

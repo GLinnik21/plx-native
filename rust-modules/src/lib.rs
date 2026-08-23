@@ -10,6 +10,7 @@
 mod app; // plex_run — the Rust app core / event loop (the entry inverted from main.c)
 mod aq;
 mod cbuf; // fixed NUL-terminated C-string buffer read/write (shared by pms/route/posters)
+mod coldstart; // where the app was when it last stopped, persisted — the COLD-start restore (LG checklist #3)
 mod auth; // plex.tv login/boot flow controller (PIN/QR → discovery → who's-watching → install)
 mod browse; // Library browse: per-section paged catalog (sparse store + off-thread page fetches)
 mod capture; // dev live UI capture stream: own-GLES-frame grab → MPEG1/TS or JPEG → TCP (UI plane only)
