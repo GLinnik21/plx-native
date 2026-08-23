@@ -1479,7 +1479,11 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
         // EOF decision below stays one branch rather than one per transport.
         let r = match &mut s.src {
             Src::Socket { hs, .. } => crate::stream::http_read(*hs, dst as *mut c_uchar, n),
-            Src::Curl(cs) => cs.read(std::slice::from_raw_parts_mut(dst, n.max(0) as usize)),
+            // The null/length guard `stream::http_read` does for itself. `from_raw_parts_mut`
+            // requires a non-null pointer even for a zero-length slice, and libavformat is not
+            // contractually barred from asking for nothing.
+            Src::Curl(_) if dst.is_null() || n <= 0 => 0,
+            Src::Curl(cs) => cs.read(std::slice::from_raw_parts_mut(dst, n as usize)),
         };
         if r <= 0 {
             return AVERROR_EOF;
