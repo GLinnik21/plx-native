@@ -18,7 +18,7 @@ answers what a QA pass would find.
 | Question | Answer |
 | --- | --- |
 | Ship via **webOS Homebrew Channel**? | **Yes** — it is a real, current, native-app-friendly path. ~1 day of packaging work plus the licence fixes below. |
-| Ship via **LG Content Store**? | **No.** Not for a hand-written native binary, not under any partner tier, not at any price. Would require a rewrite as a web app. |
+| Ship via **LG Content Store**? | **Submittable — this was a "no" here until 2026-08-23 and the "no" was wrong.** Seller Lounge parses this project's ipk as **File Type: Native** and asks for the native SDK version, chipset and resolution. The old verdict rested on a `develop/*` **web-runtime** page (*"Only `web` is allowed currently"*), which is not authority over a native app. What remains is a QA problem, not a permission problem — §2, and `docs/lg-self-checklist.md` for the four items that genuinely fail. |
 | Runs on **newer webOS**? | 32-bit armv7 is *not* the problem — it stays the native userland through webOS 26. **ACB is the problem**: `libAcbAPI` exists on webOS 4.x only. Today's binary does not reach `main()` on 5.0+. |
 | Is **private data** in the repo? | Git history is clean of credentials. **Mostly resolved 2026-08-02:** the 252 (not ~40) `/Users/gleblinnik/…` paths are remapped to 0, and both runtime surfaces — the squattable `/tmp` FIFO and the unauthenticated `0.0.0.0:8910` listener — are compiled out of a release build along with the whole trigger surface. Left: the **event log is still written by every build** and names the server, its LAN address, profile names and episode titles into a world-readable `/tmp` (§4 — the one item on that list not compiled out); `192.168.0.3` is still baked into a binary built on *this* machine (release comes from CI, which has no `config.local.h`); and the token still wants rotating. |
 | Needs a **rooted** TV? | **No** — device-proven, see §3.5. But the app currently only works under the **Dev Mode** install prefix; a Homebrew-Channel install breaks fonts and login. |
@@ -184,44 +184,70 @@ factory webOS 10.0 is vulnerable) — but **webOS 4.5, our own target, is unpatc
 
 ---
 
-## 2. LG Content Store — no
+## 2. LG Content Store — a native ipk IS submittable
 
-**[corrected]** The adversarial pass found one part of the naive answer is now stale, so state it
-precisely:
+**[corrected 2026-08-23]** This section used to be headed *"LG Content Store — no"* and to argue
+that native eligibility was **unsettled**, on the strength of one sentence in LG's `appinfo.json`
+reference. That framing is retired. It was wrong in a specific and instructive way, and the way it
+was wrong is the rule the rest of this repo now applies to every LG page it cites.
 
-**What's true:** LG's own `appinfo.json` reference still says of `type`: *"Only `web` is allowed
-currently"* (webostv.developer.lge.com/develop/references/appinfo-json). LG staff on their own forum,
-repeatedly: *"webOS TV apps are web-based… if you can run your app in a web browser you can run it on
-webOS TV"* (2024-01-30). A developer who asked Seller Lounge to sign a partnership for NDK access was
-told *"the NDK feature cannot be supported even when the deal proceeds"* (2023-07-12 — a forum user
-quoting an email, so: reported practice, not documented policy). webosbrew states flatly *"Native
-application development is not officially supported."*
+**The evidence that settles it is LG's own submission portal.** Seller Lounge has **parsed this
+project's IPK and reported `File Type: Native`**, and the listing form it then presented exposes
+the native-app fields — **Native SDK version, chipset, resolution** and the package version, read
+out of the archive we uploaded. A portal that classifies a package as native, names the SDK it was
+built against and asks for the chipset is not a portal that has no native app model. Native
+submission is therefore an **established premise** of everything downstream in this repo —
+`docs/lg-self-checklist.md`, `docs/ux-scenario.md`, and the QA questions in §9 — rather than a
+caveat those documents have to open by hedging.
 
-**What changed [corrected]:** LG **does** now publish a webOS TV NDK publicly on GitHub with no NDA
-or login — `github.com/lg-flutter-webos/ndk`, release 11.2.0 published 2026-06-29, a 340 MB starfish
-`ca9v1` **32-bit ARM** cross toolchain, the same class of toolchain we already use. LG documents
-"Flutter for webOS" as an official Develop guide (announced 2026-06-30), and **LG's own project
-template writes `"type": "native"` into `appinfo.json`**. So LG's docs now contradict each other.
+**What the old argument actually rested on, and why it never supported the conclusion.** The quoted
+sentence — *"Only `web` is allowed currently"*, of `appinfo.json`'s `type` field
+(`webostv.developer.lge.com/develop/references/appinfo-json`) — sits on a **`develop/*`** page.
+Those pages document the **web-runtime API**: the enyo/Chromium app model, its manifest, its
+lifecycle. This application is a native SDL2/GLES binary and does not use that runtime at all, so
+that reference describes a manifest we do not write, for a runtime we do not load. **`develop/*` is
+context, never proof, for a native app.** The pages that *are* authority over us are
+**`distribute/*`** — the App Approval Process, the submission requirements, and the self-checklist
+itself — because those are submission and QA policy and are written about applications generally.
+That distinction is now a standing rule for reading LG documentation in this repo; it is the single
+correction that turned this section around.
 
-**Why it still doesn't help us:**
-- Flutter for webOS requires **webOS 26 Re:New**. Nothing for a 2019 TV.
-- LG scopes the NDK to *"building Flutter applications on webOS."* No LG source documents submitting
-  a hand-rolled Rust/SDL2 binary.
-- Whether even a Flutter ipk can be *submitted to the store* is **UNVERIFIED** — no LG page (Flutter
-  guide, the news post, getting-started, App Approval Process, App Ecosystem, public Seller Lounge)
-  mentions store submission of non-web apps in either direction.
+**Historical claims, kept because they are true and no longer load-bearing.** LG staff have said on
+their own forum that *"webOS TV apps are web-based… if you can run your app in a web browser you can
+run it on webOS TV"* (2024-01-30). A developer who asked Seller Lounge to sign a partnership for NDK
+access was told *"the NDK feature cannot be supported even when the deal proceeds"* (2023-07-12 — a
+forum user quoting an email: reported practice, not documented policy). webosbrew states flatly
+*"Native application development is not officially supported."* All three are about **access to LG's
+toolchain and support for building natively** — none of them is a statement that a finished native
+package cannot be submitted, which is the question, and which the portal has now answered directly.
 
-The submission pipeline itself is otherwise open: Seller Lounge account (individual or corporate),
-ipk ≤ 2 GB, mandatory UX-scenario doc + self-checklist, three-stage QA. Hard UX rules include: every
-selectable element must respond to 4-way + OK + Back, and on webOS 23–25 Back on the entry page must
-show the Home screen.
+**And LG's own tooling had already stopped agreeing with the quoted sentence.** LG publishes a webOS
+TV NDK on GitHub with no NDA or login — `github.com/lg-flutter-webos/ndk`, release 11.2.0 published
+2026-06-29, a 340 MB starfish `ca9v1` **32-bit ARM** cross toolchain, the same class we build with.
+"Flutter for webOS" is an official Develop guide (announced 2026-06-30), and **LG's own project
+template writes `"type": "native"` into `appinfo.json`** — the value the reference page says is not
+allowed. Two caveats on that path, unchanged and still true: Flutter for webOS requires **webOS 26
+Re:New**, which is nothing for a 2019 set, and LG scopes that NDK to *"building Flutter applications
+on webOS"* rather than to a hand-rolled Rust/SDL2 binary. Neither bears on submission; both are
+evidence that "native" is a shape LG's own tools emit.
 
-**Content policy is not the obstacle** — Jellyfin and Emby both ship on the LG Content Store, so
-"client for a self-hosted media server" is an accepted category. Plex ships an official webOS app
-covering webOS 3/4/5. The obstacle is purely that this is a native binary.
+**What is still open is the QA outcome, not the eligibility.** The submission pipeline is a Seller
+Lounge account (individual or corporate), an ipk ≤ 2 GB, a mandatory **UX-scenario document** and
+**self-checklist**, and three-stage QA. Hard UX rules include: every selectable element must respond
+to 4-way + OK + Back, and on webOS 23–25 Back on the entry page must show the Home screen. What this
+app would be graded on is recorded item by item in `docs/lg-self-checklist.md` — four genuine
+failures and a column of untested items — and the transport-control question is answered by
+**`docs/ux-scenario.md`**, which is the document LG's checklist item 45 defers to by name.
 
-**If store presence ever becomes the goal it means a rewrite as a web app**, which is what Plex,
-Jellyfin and Emby all did. That is a different product, not a port.
+**Content policy is not an obstacle either** — Jellyfin and Emby both ship on the LG Content Store,
+so "client for a self-hosted media server" is an accepted category, and Plex ships an official webOS
+app covering webOS 3/4/5.
+
+**What a submission would still cost is real, and it is engineering rather than permission**: the
+four failing checklist items (adaptive bitrate, IPv6, TLS/DNS transport so a QA bench can reach a
+server at all, and the factory-reset item that is undefined for a sideloaded app). Those are the
+subject of §9 and of the checklist's §1 — and the transport one is the item that fails first in a
+lab.
 
 ---
 

@@ -57,10 +57,34 @@ Plex's own clients (python-plexapi `MyPlexResource.connect`, plex-for-kodi `plex
 use the per-resource token, never the account token; for an owner the two merely happen to coincide.
 
 **`plex.direct`.** A public CA will not issue for a private IP, so Plex runs a wildcard DNS zone:
-`A-B-C-D.<hash>.plex.direct` resolves to `A.B.C.D`, and the server holds a real cert for
-`*.<hash>.plex.direct`. That is why `connections[].uri` is an https URL with a dashed-IP hostname.
-Use the `uri` **verbatim** — the `<hash>` label is the certificate UUID, *not* the
-machineIdentifier. Connecting to the bare IP over https fails validation by design.
+`A-B-C-D.<label>.plex.direct` resolves to `A.B.C.D`, and the server holds a real cert for
+`*.<label>.plex.direct`. That is why `connections[].uri` is an https URL with a dashed-IP hostname.
+Connecting to the bare IP over https fails validation by design.
+
+**THE RULE IS: use the advertised `uri` VERBATIM, and never construct the hostname.** That is the
+whole of what a client needs, it is what the official client does, and it is correct under either
+answer to the question below — which is why it is stated first and separately.
+
+**What the `<label>` actually is, is genuinely disputed, and this file used to pick a side without
+saying so.** It read *"the `<hash>` label is the certificate UUID, **not** the machineIdentifier"*,
+flatly. Meanwhile `docs/plex-openapi.json`'s `servers[0]` describes the very same label — its
+`identifier` path variable in `https://{IP-description}.{identifier}.plex.direct:{port}` — as
+*"The unique identifier of this particular PMS"*, with a 32-hex default, which reads as the
+machineIdentifier. **Two sources in this repo disagree and neither is graded above the other:**
+one is a note written from observation, the other is a published OpenAPI description; the shapes
+are indistinguishable, because a machineIdentifier and a dashless UUID are both 32 hex characters,
+so no sample settles it by inspection. It is left recorded as a disagreement rather than resolved,
+because resolving it would take a server whose `machineIdentifier` is known and whose advertised
+`uri` can be compared against it character by character, and nobody has done that.
+
+**Neither answer changes what a client does**, which is the point. The official Plex client never
+builds this hostname from an identifier it holds: it **regex-captures the label out of a `uri` the
+resources API already gave it**, and the only hostname it ever assembles itself is the loopback form
+`127-0-0-1.<label>.plex.direct` — where the label is again one it extracted, not one it derived. So
+the safe rule survives the ambiguity intact: **the label is data you copy, never data you compute.**
+Treat any code that would build `plex.direct` out of a `clientIdentifier` as a bug even if the
+OpenAPI reading turns out to be the right one, because the failure mode is a TLS validation error
+against a certificate you cannot inspect from the TV.
 
 **Relay** is a tunnel the server holds open to a Plex relay host: another https connection, flagged
 `relay:true`, conventionally port 8443, capped at **2 Mbps** with the server transcoding down to

@@ -7,7 +7,7 @@
 //! unwind reaches the C caller. It does **not** make decoding "never crash the app", which is what
 //! this doc used to claim flatly: Rust's allocation-failure path is `handle_alloc_error`, which
 //! **aborts** the process. An abort unwinds nothing, so it sails straight past every `catch_unwind`
-//! in the tree — and an unbounded decode on a device whose manifest declares `requiredMemory: 60`
+//! in the tree — and an unbounded decode on a device whose manifest declares `requiredMemory: 160`
 //! is exactly how you reach one. Bounding the allocation is therefore a separate, explicit job that
 //! the guard cannot do for us; see [`decode_limits`].
 use std::os::raw::{c_int, c_uchar, c_uint, c_void};
@@ -23,7 +23,7 @@ use crate::log;
 
 /// The decode budget, sized for THIS device. `image`'s defaults are not one: `max_image_width` and
 /// `max_image_height` default to `None` — no dimension cap at all — and `max_alloc` to **512 MiB**,
-/// which a 32-bit ARM TV declaring `requiredMemory: 60` in `pkg/appinfo.json` cannot honour and
+/// which a 32-bit ARM TV declaring `requiredMemory: 160` in `pkg/appinfo.json` cannot honour and
 /// would abort trying to (see the module doc on why the `catch_unwind` cannot save us there).
 ///
 /// Every image the app fetches is a `/photo/:/transcode?width=W&height=H&minSize=1` request whose
@@ -94,7 +94,7 @@ pub(crate) fn img_decode_rgba(buf: *const c_uchar, len: c_int,
     // `malloc`'d buffer the caller owns that came back null. The SIZE is the field worth having.
     // `decode_limits` names this very allocation as one of the two that sit OUTSIDE the budget it
     // sets, and puts the largest legitimate decode at ~21 MiB (1920×2880 RGBA) — on a set whose
-    // `pkg/appinfo.json` declares `requiredMemory: 60`. So `n` answers the first question a reader
+    // `pkg/appinfo.json` declares `requiredMemory: 160`. So `n` answers the first question a reader
     // has: one outsized request, or a heap already full. Same `img:` prefix and the same
     // `len=`/`magic=` tail as the two failures above, so one `img:` grep finds this line and those.
     if px.is_null() {
