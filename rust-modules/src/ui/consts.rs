@@ -12,7 +12,33 @@ use std::os::raw::{c_int, c_uint};
 pub const CARD_W: f32 = 250.0;
 pub const CARD_H: f32 = 375.0;
 pub const GAP: f32 = 30.0;
-pub const MARGIN_X: f32 = 90.0;
+/// **The safe area's LEFT/RIGHT keep-out — 5% of [`SCR_W`], and the reason it is 96 rather than 90.**
+///
+/// A television overscans: the panel shows less than the frame it is handed, by a margin the set
+/// decides and the app cannot query. LG's App Self Checklist item #2 asks that *"buttons, texts and
+/// logos on the main page are placed within the overscan frame"*, and the broadcast convention that
+/// phrase names is **5% of each edge** — 96px horizontally and [`MARGIN_Y`] 54px vertically on this
+/// 1920×1080 canvas. (LG's current *developer* guide states a laxer 20px; the 5% frame is the
+/// stricter of the two published numbers and is the one this app is graded against, because a
+/// margin that satisfies 5% satisfies 20px and not the other way round.)
+///
+/// It was **90** until 2026-08-23 — 4.7%, i.e. six pixels INSIDE the exclusion zone, on every screen
+/// in the app at once. `docs/lg-self-checklist.md` recorded that as passing, reading "4.7% against a
+/// 5% frame" as clearance when it is the opposite: a smaller margin puts content NEARER the edge.
+/// Nothing had ever measured it, which is why
+/// `tests::no_required_content_enters_the_safe_area_exclusion_zone` now does — it grades the
+/// composed rects, not this literal, so a future audit is free to move this number again without
+/// rewriting the test.
+pub const MARGIN_X: f32 = 96.0;
+/// **The safe area's TOP/BOTTOM keep-out — 5% of [`SCR_H`].** [`MARGIN_X`]'s missing twin: until
+/// 2026-08-23 the vertical bound was simply unstated, so nothing in the tree bounded it and nothing
+/// could check it. It bit in four places — the shared top bar sat at y=44, the detail page's pinned
+/// compact title at 40 (its tallest logo reaching 22), and the Home/Library/Person scroll reveals
+/// left 24/16/40px under a focused card.
+///
+/// Smaller than [`MARGIN_X`] because it is 5% of the SHORTER axis; the frame is a percentage of each
+/// dimension, not one distance.
+pub const MARGIN_Y: f32 = 54.0;
 pub const ROW_TITLE_H: f32 = 30.0;
 pub const ROW_PITCH: f32 = CARD_H + ROW_TITLE_H + 144.0; // 549: room for the shelf title above + the focused card's title AND caption below (clears the next shelf's title)
 /// Hub-title cap top above the shelf's `row_y` origin — the heading draws at `row_y − TITLE_DY`,
@@ -28,6 +54,30 @@ pub const CONTENT_Y: f32 = 200.0;
 pub const GLOW_PAD: f32 = 48.0;
 pub(crate) use crate::surface::{LOGICAL_H as SCR_H, LOGICAL_W as SCR_W};
 
+/// **The safe area itself** — the box every piece of REQUIRED content has to fit inside, as one
+/// value so no caller re-derives it from the two margins and gets a sign wrong.
+///
+/// "Required" is the whole content of the rule and the reason this is a predicate rather than a
+/// clip: a full-bleed hero backdrop, a shelf peeking off the bottom edge, a scrim, the page ground —
+/// all of those are *supposed* to reach the panel edge, and clipping them would be the bug. What
+/// must be inside is what the viewer has to read or press: text, controls, marks, logos.
+pub const SAFE: crate::ui::Rect =
+    crate::ui::Rect::new(MARGIN_X, MARGIN_Y, SCR_W - 2.0 * MARGIN_X, SCR_H - 2.0 * MARGIN_Y);
+
+/// Is `r` wholly inside [`SAFE`]? The one test the audit's table asks, per rect.
+///
+/// A hair of tolerance (`EPS`) because several of the rects handed here are the result of an f32
+/// derivation that lands on the boundary exactly — `SCR_W - MARGIN_X - w` then `+ w` is not bit-for-
+/// bit `SCR_W - MARGIN_X` — and a control flush against the frame is compliant, not a violation.
+#[inline]
+pub fn inside_safe(r: crate::ui::Rect) -> bool {
+    const EPS: f32 = 0.01;
+    r.x >= SAFE.x - EPS
+        && r.y >= SAFE.y - EPS
+        && r.x + r.w <= SAFE.x + SAFE.w + EPS
+        && r.y + r.h <= SAFE.y + SAFE.h + EPS
+}
+
 // hero <-> grid continuum
 /// Shelf top in hero view. Re-derived once the peek row stopped magnifying its focused cell: the
 /// peek used to be judged off that popped tile, whose 1.09 scale about its centre lifted its top
@@ -36,8 +86,11 @@ pub(crate) use crate::surface::{LOGICAL_H as SCR_H, LOGICAL_W as SCR_W};
 /// hero view was tuned to (828 → 811; card top = `PEEK_Y + CARD_DY` = 837, as the popped one was).
 pub const PEEK_Y: f32 = 811.0;
 // shelf top in grid view — leaves the first hub title (row_y − TITLE_DY, lifted up to ~10 more when its
-// leftmost card magnifies) a clear space::MD under the profile chip (bottom edge 108)
-pub const GRID_TOP_Y: f32 = 176.0;
+// leftmost card magnifies) a clear space::MD under the profile chip (bottom edge 126).
+// 176 until 2026-08-23: it moved with the top bar, which dropped 18px so its track clears MARGIN_Y
+// (`widgets::TOP_BAR_Y`). The clearance under the chip is what this number IS, so it follows the bar
+// rather than staying put and letting the heading crowd it.
+pub const GRID_TOP_Y: f32 = 194.0;
 
 // SDL keycodes (scancode | SDLK_SCANCODE_MASK, or ASCII)
 pub const SDLK_RIGHT: c_uint = 79 | (1 << 30);
@@ -355,6 +408,113 @@ pub const K_SNAP: f32 = 200.0;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::Rect;
+
+    /// **The frame itself.** 5% of each axis at the authored canvas, and the two margins are not the
+    /// same number — the frame is a percentage of each DIMENSION, not one distance, which is the
+    /// mistake a single `MARGIN` would bake in.
+    #[test]
+    fn the_safe_area_is_five_percent_of_each_axis() {
+        assert_eq!(MARGIN_X, SCR_W * 0.05);
+        assert_eq!(MARGIN_Y, SCR_H * 0.05);
+        assert_eq!((SAFE.x, SAFE.y, SAFE.w, SAFE.h), (96.0, 54.0, 1728.0, 972.0));
+        assert!(inside_safe(SAFE), "the frame contains itself");
+        assert!(!inside_safe(Rect::new(SAFE.x - 1.0, SAFE.y, 10.0, 10.0)), "one px left of it does not");
+        assert!(!inside_safe(Rect::new(SAFE.x, SAFE.y - 1.0, 10.0, 10.0)), "nor one px above");
+        assert!(!inside_safe(Rect::FULL), "nor the whole panel");
+    }
+
+    /// **NO REQUIRED CONTENT ENTERS THE OVERSCAN EXCLUSION ZONE, ON EITHER AXIS.**
+    ///
+    /// LG's App Self Checklist item #2 asks that the buttons, texts and logos on the main page sit
+    /// inside the overscan frame; this is that sentence, executable, over the outermost rect of
+    /// every screen and panel in the app.
+    ///
+    /// **It grades the composed geometry, never the tokens.** There is deliberately no
+    /// `assert_eq!(MARGIN_X, 96.0)` here: that passes today and forbids the next audit from moving
+    /// the margin, or from giving one screen a correction of its own, which is the fix such an audit
+    /// most often needs. What is asserted is the requirement — so a future change that moves a token
+    /// AND keeps every screen inside the frame passes without this test being rewritten to permit
+    /// it, and one that moves a screen's own y by hand fails without anyone remembering to come
+    /// here. Six of the rows below were OUTSIDE the frame when this was written; the ones that were
+    /// worst — the A–Z rail at 32px, the detail page's pinned logo at 32, the top bar at 18 — were
+    /// all in geometry no token could have described.
+    ///
+    /// **"Required" is doing real work in that sentence.** A full-bleed hero backdrop, a page
+    /// ground, a scrim, a shelf peeking off the bottom edge and the focus GLOW that overflows a
+    /// poster are all supposed to reach the panel edge; bounding them would be the bug. What is
+    /// graded is what a viewer has to read or press.
+    ///
+    /// **So tiles are entered at REST, and that is a decision rather than an oversight.** A focused
+    /// card is drawn `RowStyle::HOME`'s 1.09 about its own centre, which puts the first column's
+    /// painted edge ~11px past the margin, and `GLOW_PAD` spills 48 further. Neither is new content:
+    /// the pop MAGNIFIES ink already inside the frame, strictly containing its resting rect
+    /// (`widgets`' own note on the control pop), and the caption under it — the TEXT — does not
+    /// scale at all. The line this draws is between decoration that overflows and *the thing
+    /// itself*: the detail page's pinned compact logo IS graded at its upward spill, because there
+    /// the spill is the logo, and a clearLogo is one of the three things item #2 names.
+    ///
+    /// **What it cannot see**, so that a green run is not read as more than it is: text is graded by
+    /// the box a screen lays it out in, not by rasterized ink (the host suite cannot link
+    /// SDL2_ttf — the boundary `StatusOverlay::bands` documents), so a run that overflows its own
+    /// column is `text::elide`'s business and not this test's. Rects whose width is a measured
+    /// label are entered degenerate, with the EDGE that matters and a zero extent the other way.
+    #[test]
+    fn no_required_content_enters_the_safe_area_exclusion_zone() {
+        let mut r: Vec<(&'static str, Rect)> = Vec::new();
+
+        // **A probe that quietly stops contributing is a screen that quietly stops being audited**,
+        // and an `assert!` loop over an empty table passes. So each one is required to contribute,
+        // individually: a table-wide floor cannot see one probe of eight going silent, which is what
+        // a `r.len() >= N` guard was actually doing here.
+        let mut probe = |name: &str, f: &dyn Fn(&mut Vec<(&'static str, Rect)>)| {
+            let before = r.len();
+            f(&mut r);
+            assert!(r.len() > before, "the {name} probe contributed nothing — it stopped being audited");
+        };
+
+        // ---- the shared chrome, and the screens composed on it ------------------------------
+        probe("widgets", &crate::ui::widgets::overscan_rects);
+        probe("library", &crate::ui::library::overscan_rects);
+        probe("detail", &crate::ui::detail::overscan_rects);
+        probe("player_hud", &crate::ui::player_hud::overscan_rects);
+
+        // ---- the panels, each at the widest/tallest state its own clamp admits ---------------
+        probe("account_menu", &crate::ui::account_menu::overscan_rects);
+        probe("track_menu", &crate::ui::track_menu::overscan_rects);
+        probe("more_menu", &crate::ui::more_menu::overscan_rects);
+        probe("stats", &crate::ui::stats::overscan_rects);
+        drop(probe);
+
+        // ---- the screens whose outermost geometry is already public here --------------------
+        // Home: the hero's text column and its action row start at the margin; the grid view's
+        // first shelf heading is the highest ink the page draws under the bar.
+        r.push(("home hero text column", Rect::new(MARGIN_X, 380.0, crate::ui::home::HERO_COL_W, 400.0)));
+        r.push(("home first shelf heading (grid view)", Rect::new(MARGIN_X, GRID_TOP_Y - TITLE_DY, 400.0, TITLE_DY)));
+        r.push(("home first shelf card (grid view)", Rect::new(MARGIN_X, GRID_TOP_Y + CARD_DY, CARD_W, CARD_H)));
+        // …and the focused card's block at the BOTTOM of its reveal: card + the 96px label band,
+        // which is what `home::update`'s and `library`'s reveal rules keep clear of the edge.
+        r.push(("home focused card block, revealed", Rect::new(MARGIN_X, SCR_H - MARGIN_Y - CARD_H - 96.0, CARD_W, CARD_H + 96.0)));
+
+        // Search: the query capsule, and the scope line beside it.
+        r.push(("search field", crate::ui::search::FIELD));
+        r.push(("search first shelf heading", Rect::new(MARGIN_X, crate::ui::search::CONTENT_TOP, 400.0, 40.0)));
+
+        // Person: the portrait at the margin, and the air the reveal keeps under a shelf.
+        r.push(("person portrait", Rect::new(MARGIN_X, 96.0, 320.0, 320.0)));
+        r.push(("person shelf block, revealed", Rect::new(MARGIN_X, SCR_H - MARGIN_Y - CARD_H, CARD_W, CARD_H)));
+
+        // Onboarding + login: both centre or hang off the same margin.
+        r.push(("onboard copy column", Rect::new(MARGIN_X, 150.0, crate::ui::home::HERO_COL_W, 500.0)));
+
+        for (name, rect) in r {
+            assert!(
+                inside_safe(rect),
+                "{name} at ({}, {}) {}x{} leaves the {}x{} safe area at ({}, {})",
+                rect.x, rect.y, rect.w, rect.h, SAFE.w, SAFE.h, SAFE.x, SAFE.y,
+            );
+        }
+    }
 
     /// The Library pager's key set, which used to be spelled twice in `app.rs` in two shapes.
     #[test]

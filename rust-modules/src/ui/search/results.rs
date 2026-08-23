@@ -120,7 +120,11 @@ const COUNT_GAP: f32 = theme::space::SM;
 /// third spacing.
 const SOURCE_PAD: f32 = theme::space::XS;
 /// Air kept under the lowest visible content when a shelf is revealed by scrolling.
-const BOTTOM_PAD: f32 = theme::space::LG;
+///
+/// The OVERSCAN keep-out rather than a `space` rung (it was `LG` 40) — `person::BOTTOM_PAD`'s twin
+/// and for its reason: what this bounds is a focused tile's own caption against the bottom edge of
+/// the panel, so the number is the safe area's and not one from the spacing ladder.
+const BOTTOM_PAD: f32 = crate::ui::consts::MARGIN_Y;
 /// Headroom between the field's bottom edge and where scrolled content is cut. It is not spacing —
 /// nothing is drawn in it at rest — it is the allowance for the two things that paint above a
 /// shelf's own block top: the focused heading's `CardRow::lift()` and a magnified tile's glow.
@@ -817,8 +821,9 @@ mod tests {
             assert!(bottom <= floor, "{k:?}: the first row ends at {bottom}, under the keyboard at {floor}");
         }
         // The ACTUAL numbers `super`'s layout note quotes, so a doc claim nobody can reproduce
-        // cannot come back: a poster shelf ends at 683 against a MEASURED panel edge of 756.
-        assert_eq!(stack_top(&[Kind::Movie], 0) + HEAD_TO_ROW + CARD_H, 683.0);
+        // cannot come back: a poster shelf ends at 701 against a MEASURED panel edge of 756.
+        // (683 until 2026-08-23, when the field and `CONTENT_TOP` moved down 18px with the top bar.)
+        assert_eq!(stack_top(&[Kind::Movie], 0) + HEAD_TO_ROW + CARD_H, 701.0);
         assert_eq!(floor, 756.0);
     }
 

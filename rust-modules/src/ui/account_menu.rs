@@ -167,12 +167,25 @@ fn action_at(rows: &[Action], sel: i32) -> Action {
 }
 
 /// Top-left popover, tucked under the profile chip.
+///
+/// `px` is the app's own side margin: it was a literal 80, which sat 16px outside the 5% overscan
+/// frame — and the chip it hangs off is at `MARGIN_X`, so aligning the two is what the design meant
+/// anyway. `py` clears `widgets::TOP_BAR_BOTTOM` (130) by a `space::MD`.
 fn panel_rect() -> Rect {
     let pw = 440.0f32;
-    let px = 80.0f32;
-    let py = 150.0f32;
+    let px = crate::ui::consts::MARGIN_X;
+    let py = 154.0f32;
     let ph = table().measured_height().clamp(120.0, 440.0);
     Rect::new(px, py, pw, ph)
+}
+
+/// The panel at its TALLEST, for the overscan audit ([`crate::ui::consts::SAFE`]) — the clamp
+/// ceiling rather than this session's measured height, since the audit grades the widest state a
+/// surface can be in and the height comes from a `TableView` no host test can measure.
+#[cfg(test)]
+pub(crate) fn overscan_rects(out: &mut Vec<(&'static str, crate::ui::Rect)>) {
+    let r = panel_rect();
+    out.push(("account menu panel", crate::ui::Rect::new(r.x, r.y, r.w, 440.0)));
 }
 
 pub fn update(dt: f32) {

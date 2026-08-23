@@ -99,7 +99,12 @@ const PANEL_RAD: f32 = 20.0;
 /// Air between the focused card's drawn edge and the panel — one `space` rung, like every other gap.
 const CARD_GAP: f32 = theme::space::MD;
 /// Keep-out from the screen edges, so a shelf near the bottom still gets a fully-visible panel.
+///
+/// Per AXIS, because the overscan frame is: `space::XL` 64 already cleared `MARGIN_Y` 54 vertically,
+/// but the horizontal clamp is what a panel opened over the LAST column lands on, and 64 is 32px
+/// outside `MARGIN_X`.
 const EDGE: f32 = theme::space::XL;
+const EDGE_X: f32 = crate::ui::consts::MARGIN_X;
 /// Scrim peak alpha. Deliberately LIGHTER than the in-player panels' 0.58: the design's whole point
 /// is that the card and the shelf stay legible behind the popover, so this recesses them rather than
 /// blanking them.
@@ -471,8 +476,8 @@ pub(crate) fn click(mx: f32, my: f32) -> Action {
 fn panel_at(a: Rect, content_h: f32) -> Rect {
     let h = content_h.clamp(120.0, SCR_H - 2.0 * EDGE); // same floor the profile popover uses
     let right = a.x + a.w + CARD_GAP;
-    let x = if right + PANEL_W <= SCR_W - EDGE { right } else { a.x - CARD_GAP - PANEL_W };
-    let x = x.clamp(EDGE, (SCR_W - EDGE - PANEL_W).max(EDGE));
+    let x = if right + PANEL_W <= SCR_W - EDGE_X { right } else { a.x - CARD_GAP - PANEL_W };
+    let x = x.clamp(EDGE_X, (SCR_W - EDGE_X - PANEL_W).max(EDGE_X));
     let y = a.y.clamp(EDGE, (SCR_H - EDGE - h).max(EDGE));
     Rect::new(x, y, PANEL_W, h)
 }
@@ -923,8 +928,16 @@ mod tests {
         assert!(r.x + r.w <= a.x, "flipped panel overlaps its card: x={} w={} card.x={}", r.x, r.w, a.x);
         assert!(r.x >= EDGE - 0.5);
         // a card near the bottom keeps the whole panel on screen
-        let r = panel_at(Rect::new(MARGIN_X, SCR_H - 120.0, CARD_W, CARD_H), h);
-        assert!(r.y + r.h <= SCR_H - EDGE + 0.5, "panel ran off the bottom: y={} h={}", r.y, r.h);
-        assert!(r.y >= EDGE - 0.5);
+        let low = panel_at(Rect::new(MARGIN_X, SCR_H - 120.0, CARD_W, CARD_H), h);
+        assert!(low.y + low.h <= SCR_H - EDGE + 0.5, "panel ran off the bottom: y={} h={}", low.y, low.h);
+        assert!(low.y >= EDGE - 0.5);
+
+        // …and "on screen" means inside the OVERSCAN frame, which is why the keep-out is per axis:
+        // `space::XL` 64 clears `MARGIN_Y` and misses `MARGIN_X` by 32. A panel placed against an
+        // anchor has no fixed rect a table could carry, so the frame is graded on its extremes here.
+        let tall = panel_at(Rect::new(MARGIN_X, 300.0, CARD_W, CARD_H), 4000.0);
+        for (what, p) in [("flipped", r), ("low", low), ("tall", tall)] {
+            assert!(crate::ui::consts::inside_safe(p), "the {what} panel leaves the safe area: ({}, {}) {}x{}", p.x, p.y, p.w, p.h);
+        }
     }
 }

@@ -38,7 +38,7 @@ use crate::ui::{theme, Env, Painter, Rect, View};
 use std::os::raw::c_uint;
 use std::ptr::{addr_of, addr_of_mut};
 
-/// **The one top guide both columns hang from** (`--route-top`). Clear of the 112px top chrome the
+/// **The one top guide both columns hang from** (`--route-top`). Clear of the 130px top chrome the
 /// bar-wearing screens use, which this route does not draw — the alignment is what makes the copy
 /// and the list read as one screen rather than two panes.
 const ROUTE_TOP: f32 = 150.0;
