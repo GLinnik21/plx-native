@@ -636,10 +636,20 @@ pub(crate) fn start_bufferfeed(mt: &MainThread) -> bool {
 
     if stream {
         let su = crate::plex::StreamUrl::parse(&url); // the typed layer's URL splitter
+        // **REFUSED rather than downgraded.** `crate::stream` speaks cleartext to a numeric
+        // address and nothing else, so handing it an https target's host and port would open a
+        // plaintext connection to a TLS port — a hang or a garbage response, with nothing in the
+        // log saying why. A `Client` registered at an https origin can already produce one of
+        // these (`direct_play_url`/`transcode_start_url` copy the client's origin, and
+        // `/tmp/plxnative-servers` can inject `"scheme":"https"`), so this is reachable today and
+        // not a guard against the future. The transport lane deletes this branch when it can honour
+        // the scheme.
+        if su.origin.is_tls() {
+            log(&format!("stream: REFUSED — {} needs TLS and this transport has none", su.origin.log_form()));
+            return false;
+        }
         // `host()` is the origin's BARE host — a v6 literal arrives here unbracketed, which is
-        // what `stream.rs` needs and is not what the URL carried. The scheme is deliberately
-        // dropped: this transport speaks cleartext only, so an https target would fail at the
-        // socket rather than be silently downgraded here.
+        // what `stream.rs` needs and is not what the URL carried.
         let (host, port) = (su.host().to_owned(), su.port());
         let path = su.path;
         log(&format!("stream: host={host} port={port} path={}", &path[..path.len().min(80)]));

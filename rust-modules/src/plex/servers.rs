@@ -425,11 +425,12 @@ fn register_lazy(machine_id: &str, origin: &Origin, token: &str, client_id: &dyn
             // with it; the fresh one also gets a fresh token generation, so token-baked caches
             // flush without a special case.
             //
-            // The line says the AUTHORITY (`host:port`, a v6 literal bracketed) and not the whole
-            // base URL, which keeps it byte-identical to the `{host}:{port}` it has always been
-            // for the http/IPv4 origins this app has today — and correct for the v6 spelling that
-            // format could not express at all.
-            crate::log(&format!("plex: server slot {} re-pointed to {}", id.0, origin.authority()));
+            // `log_form`: the bare authority for a plaintext origin, so this line stays
+            // byte-identical to the `{host}:{port}` it has always been and an archived log is
+            // still comparable with a current one — and the whole URL the moment the scheme is
+            // worth saying, which is the only way a headless run armed with `{"scheme":"https"}`
+            // can be told from an http one at all. See `Origin::log_form`.
+            crate::log(&format!("plex: server slot {} re-pointed to {}", id.0, origin.log_form()));
             publish(id, Client::new(id, mid, origin.clone(), token, &client_id()));
         } else {
             c.set_token(token); // in place — every reference already handed out follows along
@@ -447,9 +448,9 @@ fn register_lazy(machine_id: &str, origin: &Origin, token: &str, client_id: &dyn
     publish(id, Client::new(id, machine_id, origin.clone(), token, &client_id()));
     COUNT.store(n + 1, Ordering::Release); // after the pointer: a visible count implies a live slot
     // Address only — the machineIdentifier is a permanent household fingerprint (see `ui::stats`)
-    // and the event log is what users send us. The AUTHORITY rather than the base URL, for the
-    // reason the re-point line above gives.
-    crate::log(&format!("plex: server slot {} registered at {}", id.0, origin.authority()));
+    // and the event log is what users send us. `log_form` rather than `base`, for the reason the
+    // re-point line above gives.
+    crate::log(&format!("plex: server slot {} registered at {}", id.0, origin.log_form()));
     if !current().is_set() {
         // Release: this store is what makes the `publish` above reachable through `client()`, so it
         // must not be seen before it (see `current()`).

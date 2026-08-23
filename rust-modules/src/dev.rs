@@ -268,7 +268,12 @@ impl DevServer {
         if self.machine_id.chars().nth(8).is_some() {
             mid.push_str("..");
         }
-        format!("name={:?} handle={:?} {}:{} mid={}", self.name, self.handle, self.host, self.port, mid)
+        // The origin's `log_form`, not `{host}:{port}`: this trigger's whole reason for having a
+        // `scheme` field is to put a TLS origin through the registry headlessly, and a description
+        // that cannot say which one it injected is the `[[silent-instrument-trap]]` again. It is
+        // byte-identical for the plaintext servers every overlay writes today.
+        let where_ = self.origin().map(|o| o.log_form()).unwrap_or_else(|| format!("{}:{}", self.host, self.port));
+        format!("name={:?} handle={:?} {where_} mid={mid}", self.name, self.handle)
     }
 
     /// A short, stable, NON-reversible tag for a shared server — enough to tell two shares apart in

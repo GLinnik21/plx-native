@@ -46,7 +46,11 @@ brackets a v6 literal (it is URL serialization) — confusing the two makes URL 
 looking right while name resolution quietly stops working. `register(machine_id, host, port, token)`
 and `Origin::http(host, port)` still exist and are honest about what they mean: **every caller of
 either is a place that still assumes cleartext**, which is what makes them the grep for the TLS
-work. Today they all are, because `stream.rs` speaks nothing else.
+work. Today they all are, because `stream.rs` speaks nothing else — with one caller that has an
+origin and throws it away: `ui/alt_sources.rs`'s dev-only `stand_in_slot`, which registers a
+stand-in from `c.host()`/`c.port()` and should say `register_origin(&…, c.origin(), &token)`. It is
+one line and it is not in the origin unit's ownership, so it is written down here rather than
+silently left.
 
 Slots are keyed on `machineIdentifier` because that is the only identity that survives a server
 changing address — and a registration that has *learned* an id **adopts** an address-only slot

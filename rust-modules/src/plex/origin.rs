@@ -94,8 +94,14 @@ pub struct Origin {
     scheme: Scheme,
     /// **Always UNBRACKETED**, even for a v6 literal — this is the `getaddrinfo` node argument.
     host: String,
-    /// Always `1..=65535`: every constructor here goes through [`dial_port`] or takes an
-    /// already-narrowed `i32`, so nothing downstream has to re-check it.
+    /// The port to dial.
+    ///
+    /// **Read this as "the transport's argument", not as "a validated port".** [`Origin::parse`]
+    /// narrows through [`dial_port`], so anything read out of a URL is in `1..=65535` — but
+    /// [`Origin::new`] and [`Origin::http`] take the caller's `i32` as given, and one caller has an
+    /// `i64` from a file to cast first: `session::ServerRef::origin`'s legacy fallback, which is
+    /// total by design and gated by `Session::can_go_local` instead (its doc says why). The
+    /// narrowing lives in [`dial_port`] and at the gates, not in this field.
     port: i32,
 }
 
@@ -165,6 +171,30 @@ impl Origin {
     pub fn base(&self) -> String {
         format!("{}://{}", self.scheme.as_str(), self.authority())
     }
+
+    /// **How an origin is written in the EVENT LOG** — the authority alone for a plaintext origin,
+    /// the whole base URL for anything else.
+    ///
+    /// The asymmetry is not cosmetic and it is not indecision. The log has said `host:port` since
+    /// before origins existed, and it is the file users paste into issues and the surface every
+    /// headless lane grades a run by — so a plaintext registration must keep reading exactly as it
+    /// always has, or every archived log becomes incomparable with a current one.
+    ///
+    /// The other half is the `[[silent-instrument-trap]]` this project has already paid for once:
+    /// `dev::DevServer`'s `scheme` field exists *specifically* so a lane with no TLS server of its
+    /// own can put an https origin through the registry, and an instrument that cannot see the one
+    /// thing it was armed to test is worse than no instrument. Printing the authority for both
+    /// would make an https run byte-identical to an http one.
+    ///
+    /// It carries no path, no query and no token — the same redaction the address-only lines it
+    /// replaces already observed.
+    pub fn log_form(&self) -> String {
+        if self.scheme == Scheme::Http {
+            self.authority()
+        } else {
+            self.base()
+        }
+    }
 }
 
 /// Split a URL into its origin and the rest of it (path + query, `""` when there is none).
@@ -203,8 +233,14 @@ struct Parts<'a> {
     host: &'a str,
     /// `None` when the URL wrote no port at all.
     port: Option<i32>,
-    /// `true` when a port WAS written and is not dialable — the case that must not silently
-    /// become [`DEFAULT_PORT`] for a caller that can refuse.
+    /// `true` when a `:` was written and what follows it is not a dialable port — the case that
+    /// must not silently become [`DEFAULT_PORT`] for a caller that can refuse.
+    ///
+    /// **An EMPTY port counts.** `http://192.0.2.10:` is a truncated write or a half-finished hand
+    /// edit, not a request for the default, and reading it as one is exactly the "dial a port
+    /// nobody wrote down" outcome [`dial_port`] exists to prevent. RFC 3986 would let an empty port
+    /// mean the default; this is a PMS origin parser reading a file that can be corrupt, and the
+    /// two want opposite answers.
     port_bad: bool,
     path: &'a str,
 }
@@ -246,7 +282,7 @@ impl<'a> Parts<'a> {
             scheme_known,
             host,
             port,
-            port_bad: port_txt.is_some_and(|t| !t.is_empty()) && port.is_none(),
+            port_bad: port_txt.is_some() && port.is_none(),
             path,
         }
     }
@@ -338,6 +374,11 @@ mod tests {
         assert_eq!(Origin::parse("http://192.0.2.10:0"), None);
         assert_eq!(Origin::parse("http://192.0.2.10:70000"), None);
         assert_eq!(Origin::parse("http://192.0.2.10:abc"), None);
+        // an EMPTY port is a port that WAS written — a truncated write, not a request for the
+        // default. Reading it as 32400 is the same "port nobody wrote down" this list exists for.
+        assert_eq!(Origin::parse("http://192.0.2.10:"), None);
+        // …while a URL that writes no `:` at all really does mean the default
+        assert_eq!(Origin::parse("http://192.0.2.10").unwrap().port(), DEFAULT_PORT);
     }
 
     /// [`split`] is the TOTAL sibling — its caller has no failure path — so the same inputs that
@@ -352,8 +393,20 @@ mod tests {
         assert_eq!(split("192.0.2.10").0.base(), "http://192.0.2.10:32400");
         assert_eq!(split("192.0.2.10").1, "", "no path is an empty path, not a slash");
         assert_eq!(split("http://192.0.2.10:70000/x").0.port(), DEFAULT_PORT, "undialable → the default");
+        assert_eq!(split("http://192.0.2.10:/x").0.port(), DEFAULT_PORT, "…and so does an empty one, here");
+        assert_eq!(split("http://192.0.2.10:/x").1, "/x");
         assert_eq!(split("https://[2001:db8::1]:8443/y").0.base(), "https://[2001:db8::1]:8443");
         assert_eq!(split("https://[2001:db8::1]:8443/y").1, "/y");
+    }
+
+    /// **The event log's spelling**: unchanged for the plaintext origins it has always carried,
+    /// and legible the moment a scheme is worth saying. Both halves matter — see [`Origin::log_form`].
+    #[test]
+    fn the_log_form_is_the_bare_authority_for_http_and_the_whole_url_for_anything_else() {
+        assert_eq!(Origin::http("192.0.2.10", 32400).log_form(), "192.0.2.10:32400", "byte-identical to the old line");
+        assert_eq!(Origin::parse("https://nas.hash.plex.direct:32400").unwrap().log_form(), "https://nas.hash.plex.direct:32400");
+        // a v6 literal is bracketed either way — it is a URL authority, not a resolver node
+        assert_eq!(Origin::http("2001:db8::1", 32400).log_form(), "[2001:db8::1]:32400");
     }
 
     /// [`url_host`] is the borrowed reading `probe`'s ranking uses, and it must give the URL's own
