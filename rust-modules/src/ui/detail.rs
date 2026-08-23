@@ -358,18 +358,30 @@ const FACTS_SEP_PAD: f32 = theme::space::SM;
 // per-section Y to keep in sync. A block's height is content-derived (e.g. the Related block tracks
 // REL_H → the shared home poster size), so resizing one block reflows everything below it. The
 // container's scroll lifts the focused block's top to TOP_MARGIN under the compact title.
-const TOP_MARGIN: f32 = 120.0;
-/// The pinned compact title's top edge — the literal the old top-anchored logo draw used, now named.
-const COMPACT_TITLE_TOP: f32 = 40.0;
-/// …and its anchor line: the compact logo's BOTTOM EDGE and the text fallback's BASELINE both sit
-/// here. [`TOP_MARGIN`] (120) is where the first scrolled section lifts to, so this leaves 26px of
-/// air under it — and `theme::logo::COMPACT_H_MAX` (72) is set by exactly that clearance rather than
-/// by the area rule.
-const COMPACT_TITLE_BOT: f32 = COMPACT_TITLE_TOP + theme::logo::COMPACT_H_MIN; // 94
+const TOP_MARGIN: f32 = COMPACT_TITLE_BOT + COMPACT_TITLE_AIR; // 152
+/// The pinned compact title's ANCHOR LINE: the compact logo's BOTTOM EDGE and the text fallback's
+/// BASELINE both sit here.
+///
+/// **Solved from the overscan frame, and it is the TALLEST logo that sets it.** The band a caller
+/// reserves is `COMPACT_H_MIN` (54), but a squarer mark spills UPWARD as paint to
+/// `COMPACT_H_MAX` (72) — so the line that has to clear `consts::MARGIN_Y` is `BOT − 72`, not
+/// `BOT − 54`. This was a literal top edge of **40** until 2026-08-23, which put a wordmark 14px and
+/// a square emblem 32px inside the top exclusion zone, on the one screen where a LOGO is the
+/// content LG's checklist item #2 names by name.
+const COMPACT_TITLE_BOT: f32 = crate::ui::consts::MARGIN_Y + theme::logo::COMPACT_H_MAX; // 126
+/// The pinned title's top edge — the reserved BAND's top, which is where a wordmark actually draws.
+/// It has no reader (the draw derives its own y from [`COMPACT_TITLE_BOT`] and the band `hero_logo`
+/// hands back) and is kept as the other end of the strip's stated extent; the module's
+/// `allow(dead_code)` is why nothing warns.
+#[allow(dead_code)]
+const COMPACT_TITLE_TOP: f32 = COMPACT_TITLE_BOT - theme::logo::COMPACT_H_MIN; // 72
+/// Air between the pinned title and the first scrolled section under it. Unchanged at 26; it is
+/// [`TOP_MARGIN`] that follows the title now rather than the title being fitted into a fixed 120.
+const COMPACT_TITLE_AIR: f32 = 26.0;
 const CONTENT_TOP: f32 = 920.0; // nominal flow top; update() re-derives it from the hero buttons
 const SECTION_GAP: f32 = theme::space::XL; // vertical padding between top-level blocks (64)
 const TAB_EP_GAP: f32 = theme::space::MD; // season tabs → their episode row (they read as one unit)
-const SCROLLED: f32 = CONTENT_TOP - TOP_MARGIN; // backdrop-dim saturation reference (= 800)
+const SCROLLED: f32 = CONTENT_TOP - TOP_MARGIN; // backdrop-dim saturation reference (= 768; it was 800 while `TOP_MARGIN` was 120)
 const BTN_CONTENT_GAP: f32 = theme::space::XL; // hero button row → first below-hero block (64)
 const HERO_FADE: f32 = 400.0; // px of scroll over which the hero fades out (draw + pointer share it)
 const HERO_HIT_MIN_A: f32 = 0.5; // a hero control must be at least this opaque to be CLICKABLE
@@ -3185,6 +3197,23 @@ fn compact_title_vis(scroll: f32) -> f32 {
         })
         .unwrap_or(f32::MAX);
     ((hide_at - scroll) / 300.0).clamp(0.0, 1.0)
+}
+
+/// **This page's outermost drawn chrome, for the overscan audit** ([`crate::ui::consts::SAFE`]).
+///
+/// The pinned compact title is graded at `COMPACT_H_MAX`, not at the band it RESERVES: a logo
+/// taller than its band spills upward as paint (`hero_logo`'s constant-area rule), so the band alone
+/// would grade a rect nothing draws and miss the case that was 32px outside the frame.
+#[cfg(test)]
+pub(crate) fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
+    let tall = theme::logo::COMPACT_H_MAX;
+    out.push((
+        "detail pinned compact title (tallest logo)",
+        Rect::new(MARGIN_X, COMPACT_TITLE_BOT - tall, SCR_W - 2.0 * MARGIN_X, tall),
+    ));
+    out.push(("detail hero text column", Rect::new(MARGIN_X, TITLE_BOTTOM - 200.0, HERO_TEXT_W, 200.0)));
+    out.push(("detail people column (right edge)", Rect::new(SCR_W - MARGIN_X - PEOPLE_W, 700.0, PEOPLE_W, 100.0)));
+    out.push(("detail below-hero flow, at rest", Rect::new(MARGIN_X, TOP_MARGIN, SCR_W - 2.0 * MARGIN_X, 100.0)));
 }
 
 /// small centered clearLogo/title shown at the top once the page is scrolled. The band spans the

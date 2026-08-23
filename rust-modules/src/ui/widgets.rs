@@ -1374,8 +1374,8 @@ pub(crate) fn art_scrim(p: Painter, card: Rect, rad: f32, h: f32, a: f32) {
 /// completely alone: that is the side of the picture the composition is usually about.
 const HERO_SCRIM_W: f32 = 0.80 * crate::ui::consts::SCR_W; // 1536
 
-/// Where the wedge starts feathering in. Clears the tab track's own band ([`TOP_BAR_Y`] 44 +
-/// [`TAB_PILL_H`] 60 + [`TAB_TRACK_PAD`] 8 = 112) by 50px: the top chrome owns its legibility with
+/// Where the wedge starts feathering in. Clears the tab track's own band ([`TOP_BAR_Y`] 62 +
+/// [`TAB_PILL_H`] 60 + [`TAB_TRACK_PAD`] 8 = 130) by 32px: the top chrome owns its legibility with
 /// its own dark capsule (`draw_tab_row`) and must not get a second treatment stacked under it.
 const HERO_SCRIM_TOP: f32 = 0.15 * crate::ui::consts::SCR_H; // 162
 /// Where the wedge reaches full strength — and the seam between its two quads, named once so the
@@ -1607,7 +1607,12 @@ const CHIP_NAME_MAX: f32 = 320.0;
 /// `home.rs`, `library.rs` and `search/mod.rs` — and only the first of the three also recorded it
 /// for a hit test, which is exactly how a control drawn on three screens came to be clickable on
 /// one.
-pub(crate) const CHIP_FRAME: Rect = Rect::new(crate::ui::consts::MARGIN_X, TOP_BAR_Y, CHIP_D, CHIP_D);
+/// **It is the CAPSULE that lands on the margin, not the avatar** — the chip is a control in the
+/// top BAND, and the band's own material (the tab track) is inset the same [`TAB_TRACK_PAD`] from
+/// its pills. Written as `MARGIN_X` flat until 2026-08-23, which put the focused capsule's left edge
+/// at 88, i.e. 8px into the overscan exclusion zone, on the three screens that wear this bar.
+pub(crate) const CHIP_FRAME: Rect =
+    Rect::new(crate::ui::consts::MARGIN_X + TAB_TRACK_PAD, TOP_BAR_Y, CHIP_D, CHIP_D);
 
 /// **The focused capsule's rect — the ONE expression, drawn and priced from the same place.**
 ///
@@ -3633,7 +3638,13 @@ const TAB_ICON_PILL_W: f32 = TAB_PILL_H;
 /// `--btn-icon-ratio`, the same ratio every icon-and-label control in the app uses.
 const TAB_ICON_D: f32 = 32.0;
 /// The top chrome band's y — the chip and the pills sit on it (Home and Library alike).
-pub(crate) const TOP_BAR_Y: f32 = 44.0;
+///
+/// **Derived from the overscan safe area, not chosen.** It was a bare `44.0` until 2026-08-23, which
+/// put the pills 10px and the track behind them ([`TAB_TRACK_PAD`] higher still) 18px inside the top
+/// exclusion zone — on the three screens that wear this bar, i.e. exactly the "main page" LG's
+/// checklist item #2 names. The band is measured from its OUTERMOST ink (the track, not the pills),
+/// so the whole control clears the frame rather than only the part you press.
+pub(crate) const TOP_BAR_Y: f32 = crate::ui::consts::MARGIN_Y + TAB_TRACK_PAD;
 /// SAME element, SAME geometry as the detail season tabs (user directive): one control height
 /// (the 60px circle-button CD family) and the season tabs' ±18 label padding — the two rows
 /// must be indistinguishable as a control.
@@ -3649,7 +3660,7 @@ pub(crate) const TAB_TRACK_PAD: f32 = 8.0;
 /// edge ([`TOP_BAR_Y`] + the pill height + the track's inset). Exposed so a screen that lets art
 /// overflow UPWARD out of its layout band ([`crate::ui::hero_logo`]) can ASSERT its clearance in a
 /// host test instead of leaving it to a device capture.
-pub(crate) const TOP_BAR_BOTTOM: f32 = TOP_BAR_Y + TAB_PILL_H + TAB_TRACK_PAD; // 112
+pub(crate) const TOP_BAR_BOTTOM: f32 = TOP_BAR_Y + TAB_PILL_H + TAB_TRACK_PAD; // 130
 /// Inter-pill air ≈ the season tabs' rhythm (their `TAB_ADVANCE` 52 minus the 2×18 pad the pills
 /// here already carry — pill edge to pill edge reads the same). Doubles as the scroll-into-view
 /// context margin, exactly as the season tabs use their advance.
@@ -3657,8 +3668,31 @@ const TAB_GAP: f32 = 16.0;
 /// How wide the pill strip may grow before it starts scrolling. The row stays CENTERED, but it
 /// must never reach the profile chip (a focus stop of its own at `MARGIN_X`), so the viewport is
 /// the screen less a symmetric chip-clearing margin, less the track's own inset on both ends.
-const TAB_SIDE_CLEAR: f32 = crate::ui::consts::MARGIN_X + CHIP_D + theme::space::MD;
+const TAB_SIDE_CLEAR: f32 = CHIP_FRAME.x + CHIP_D + theme::space::MD;
 const TAB_VIEW_MAX: f32 = crate::ui::consts::SCR_W - 2.0 * (TAB_SIDE_CLEAR + TAB_TRACK_PAD);
+/// **The shared top bar's outermost drawn chrome, for the overscan audit**
+/// ([`crate::ui::consts::SAFE`]) — the one band Home, the Library and Search all wear, i.e. the
+/// "main page" LG's checklist item #2 is about.
+///
+/// Each rect is the widest/tallest state the thing can be in: the track at [`TAB_VIEW_MAX`] (past
+/// which the strip scrolls rather than growing), and the chip at full unfurl with a name at its
+/// budget. The chip's own capsule is the rect that matters rather than the avatar — it is the
+/// focused control's visible edge, and it sits [`TAB_TRACK_PAD`] outside the avatar on every side.
+#[cfg(test)]
+pub(crate) fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
+    let tw = TAB_VIEW_MAX + 2.0 * TAB_TRACK_PAD;
+    out.push((
+        "top tab track (widest)",
+        Rect::new((crate::ui::consts::SCR_W - tw) * 0.5, TOP_BAR_Y - TAB_TRACK_PAD, tw, TAB_PILL_H + 2.0 * TAB_TRACK_PAD),
+    ));
+    out.push((
+        "top tab pill row",
+        Rect::new((crate::ui::consts::SCR_W - TAB_VIEW_MAX) * 0.5, TOP_BAR_Y, TAB_VIEW_MAX, TAB_PILL_H),
+    ));
+    out.push(("profile chip", CHIP_FRAME));
+    out.push(("profile chip, focused capsule", chip_cap(1.0, CHIP_NAME_MAX)));
+}
+
 /// The strip's scroll stiffness. The detail page's season-tab row springs at the same 240 — same
 /// control, same overflow problem, so the two rows must move alike (the user directive that keeps
 /// the tab pills and the season tabs in step covers their motion, not just their geometry).
@@ -4195,15 +4229,21 @@ const CHIP_CAP_MAX_R: f32 = {
 /// together:
 ///
 /// * **The BUDGET is the UNION.** Two glass surfaces in a frame converge on one grab
-///   (`gfx::blur_region_union`), so the bar costs one snapshot — but that snapshot spans both. The
-///   chip's capsule starts at x=82 and the margin is 88, so the union's left edge clamps to 0 and
-///   its right is the track's; the band is 200px tall after the same clamp. That prices the pair at
-///   `(1048 + w/2) x 200`, which reaches [`crate::gfx::GLASS_REGION_BUDGET`] at **w = 904** — not at
-///   the 940 the track alone could afford.
-/// * **And the two must not TOUCH**, which binds tighter. The track is centred, so its left edge is
-///   `(SCR_W - w) / 2`; the capsule's right edge stops at [`CHIP_CAP_MAX_R`]. Solving for
-///   [`BAND_AIR`] between them is this expression — **856** — and it is written as the expression so
-///   that raising [`CHIP_NAME_MAX`] tightens the cap instead of silently letting the two meet.
+///   (`gfx::blur_region_union`), so the bar costs one snapshot — but that snapshot spans both. Its
+///   left edge is the capsule's ([`BAND_REGION_X0`]) and its right is the track's, over
+///   [`BAND_REGION_H`]; solving that for the width is [`GLASS_TRACK_BUDGET_MAX`].
+/// * **And the two must not TOUCH.** The track is centred, so its left edge is `(SCR_W - w) / 2`;
+///   the capsule's right edge stops at [`CHIP_CAP_MAX_R`]. Solving for [`BAND_AIR`] between them is
+///   [`GLASS_TRACK_TOUCH_MAX`] — **848** — written as the expression so that raising
+///   [`CHIP_NAME_MAX`] tightens the cap instead of silently letting the two meet.
+///
+/// **Which of the two BINDS moved on 2026-08-23, and this constant is now the `min` rather than the
+/// touch rule alone.** It was written as the touch expression with a comment saying the budget
+/// reached at 904 — true while the band's blurred region was 200px tall, i.e. while `TOP_BAR_Y` was
+/// 44. Dropping the bar 18px so its track clears the overscan frame (`consts::MARGIN_Y`) makes that
+/// region 218 tall, and 18 more rows of a ~1470-wide grab is 26k px², enough to put the touch width
+/// outside the budget. The two constraints were only ever ordered by coincidence; asserting one and
+/// documenting the other is what let that go unnoticed until the test caught it.
 ///
 /// Overlap is what had to be made impossible, rather than handled. There is ONE blur cache: a
 /// second surface over the first gets no second blur, only a second frost and a second rim
@@ -4211,10 +4251,54 @@ const CHIP_CAP_MAX_R: f32 = {
 /// source-pass note measures from the other direction. Nothing in the shader can undo that, so the
 /// geometry has to keep them apart, and the test below is what keeps them apart.
 ///
-/// What it costs is stated plainly: the pair fits ~84px less strip than the track alone did, which
-/// is under one pill's width and so changes the answer for at most one section table in the band
-/// where it lands. What it buys is that the band is never two materials and never a doubled one.
-const GLASS_TRACK_MAX: f32 = crate::ui::consts::SCR_W - 2.0 * (CHIP_CAP_MAX_R + BAND_AIR);
+/// What it costs is stated plainly: the product's own strip is 572px, so the material survives
+/// today's bar with room for one more library and not two. What it buys is that the band is never
+/// two materials and never a doubled one, and never over the budget a measurement set.
+const GLASS_TRACK_MAX: f32 = if GLASS_TRACK_TOUCH_MAX < GLASS_TRACK_BUDGET_MAX {
+    GLASS_TRACK_TOUCH_MAX
+} else {
+    GLASS_TRACK_BUDGET_MAX
+};
+
+/// The widest track that still leaves [`BAND_AIR`] between the unfurled chip and the centred strip.
+const GLASS_TRACK_TOUCH_MAX: f32 = crate::ui::consts::SCR_W - 2.0 * (CHIP_CAP_MAX_R + BAND_AIR);
+
+/// The band's blurred region HEIGHT, in authored px.
+///
+/// The top clamps to 0 — the track's own top edge (`TOP_BAR_Y - TAB_TRACK_PAD` = 54) is inside
+/// [`crate::gfx::BLUR_MARGIN`] 88 of the panel edge — so the whole region is
+/// `0 .. TOP_BAR_BOTTOM + BLUR_MARGIN`. If the bar ever drops far enough that the top stops
+/// clamping, this over-states the region and [`the_whole_bands_glass_fits_one_region_budget`] (which
+/// asks `gfx::blur_region` itself, not this) is what will say so.
+const BAND_REGION_H: f32 = TOP_BAR_BOTTOM + crate::gfx::BLUR_MARGIN;
+
+/// [`crate::gfx::GLASS_REGION_BUDGET`], restated here because that constant is `cfg(test)` on a
+/// deliberate argument — *"a number the shipping build never reads should not pretend to"* — and
+/// this one IS read by the shipping build, through [`GLASS_TRACK_MAX`]. The duplication is closed by
+/// an equality ([`tests::the_band_budget_restated_here_is_the_measured_one`]) rather than by a
+/// comment, which is the same trade `CHIP_CAP_MAX_R` makes against the rect `chip_cap` draws.
+const BAND_REGION_BUDGET: f32 = 300_000.0;
+
+/// The band's blurred region LEFT edge — the chip capsule's own left grown [`crate::gfx::BLUR_MARGIN`],
+/// clamped to the panel. It used to clamp to 0 and no longer does: the capsule starts at `MARGIN_X`
+/// 96 (it was 82 when the chip sat at a 90px margin with no [`TAB_TRACK_PAD`] inset), so the grab
+/// begins at 8. Written out because [`GLASS_TRACK_BUDGET_MAX`] is a closed form of what
+/// `gfx::blur_region_union` computes, and an assumed-0 left edge silently overcharges it by 16px of
+/// track — which is safe but wrong, and wrong in a constant the shipping build reads.
+const BAND_REGION_X0: f32 = {
+    let x = CHIP_FRAME.x - TAB_TRACK_PAD - crate::gfx::BLUR_MARGIN;
+    if x > 0.0 {
+        x
+    } else {
+        0.0
+    }
+};
+
+/// [`BAND_REGION_BUDGET`] solved for the track width, over the union
+/// `[BAND_REGION_X0, (SCR_W + w) / 2 + BLUR_MARGIN] x BAND_REGION_H`.
+const GLASS_TRACK_BUDGET_MAX: f32 = 2.0
+    * (BAND_REGION_BUDGET / BAND_REGION_H + BAND_REGION_X0
+        - (crate::ui::consts::SCR_W * 0.5 + crate::gfx::BLUR_MARGIN));
 
 /// Is the shared tab track wearing glass this frame?
 ///
@@ -5589,8 +5673,8 @@ mod tests {
         };
         let lib = area(crate::ui::library::GRID_TOP);
         let search = area(crate::ui::search::CONTENT_TOP);
-        assert_eq!(lib, 1920.0 * 302.0, "the Library band: 1920 wide, 0..214 grown 88 below");
-        assert_eq!(search, 1920.0 * 336.0, "Search's field sits 34px lower, and the band with it");
+        assert_eq!(lib, 1920.0 * 320.0, "the Library band: 1920 wide, 0..232 grown 88 below");
+        assert_eq!(search, 1920.0 * 354.0, "Search's field sits 34px lower, and the band with it");
         for (name, a) in [("library", lib), ("search", search)] {
             assert!(
                 a > 1.9 * crate::gfx::GLASS_REGION_BUDGET,
@@ -5681,6 +5765,19 @@ mod tests {
     /// exists to catch, so the counterexample moved with it: the old one was a 1050-wide track,
     /// which is far outside either limit, where 940 — the width the TRACK alone could afford — is
     /// inside its own budget and outside the band's. That is the boundary the second surface moved.
+    /// [`BAND_REGION_BUDGET`] is a restatement of a `cfg(test)` constant, so it can only be kept
+    /// honest by an equality. Both halves of [`GLASS_TRACK_MAX`] are also re-derived here through
+    /// `gfx::blur_region` itself, which is the check that `BAND_REGION_H`'s clamp assumption still
+    /// holds — the constant would silently over-state the region if the bar ever dropped past
+    /// `BLUR_MARGIN`.
+    #[test]
+    fn the_band_budget_restated_here_is_the_measured_one() {
+        assert_eq!(BAND_REGION_BUDGET, crate::gfx::GLASS_REGION_BUDGET);
+        let (h, y) = (TAB_PILL_H + 2.0 * TAB_TRACK_PAD, TOP_BAR_Y - TAB_TRACK_PAD);
+        let reg = crate::gfx::blur_region(0.0, y, crate::ui::consts::SCR_W, h);
+        assert_eq!(reg[3], BAND_REGION_H, "the band's real region height");
+    }
+
     #[test]
     fn the_whole_bands_glass_fits_one_region_budget() {
         assert!(
@@ -5732,12 +5829,40 @@ mod tests {
             track_x(GLASS_TRACK_MAX),
             BAND_AIR,
         );
+        // **The cap is TIGHT against whichever constraint binds** — a limit that gives away more
+        // strip than either rule needs is a cost nobody decided to pay. This used to be pinned
+        // within a pixel of `BAND_AIR`, which said the same thing while the touch rule was the one
+        // that bound; since the bar dropped to clear the overscan frame the BUDGET binds instead,
+        // so the clearance above is legitimately wider and the tightness claim has to be made
+        // against the widest track the budget admits.
+        //
+        // Both bounds are RE-DERIVED here rather than read back: the touch one off the rect
+        // `chip_cap` draws, the budget one by searching `band_region` — which asks
+        // `gfx::blur_region_union` itself. Comparing `GLASS_TRACK_MAX` against the two module
+        // constants it is literally the `min` of would be an identity that only NaN could fail, and
+        // it would have missed exactly the error this catches: `GLASS_TRACK_BUDGET_MAX`'s closed
+        // form assumed a union left edge of 0, which stopped being true when the chip moved to
+        // `MARGIN_X`.
+        let touch = crate::ui::consts::SCR_W - 2.0 * (cap.x + cap.w + BAND_AIR);
+        let budget = {
+            let (mut lo, mut hi) = (0.0f32, crate::ui::consts::SCR_W);
+            for _ in 0..40 {
+                let mid = 0.5 * (lo + hi);
+                if band_region(mid) <= crate::gfx::GLASS_REGION_BUDGET {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+            lo
+        };
+        let want = touch.min(budget);
         assert!(
-            cap.x + cap.w + 2.0 * BAND_AIR + 1.0 > track_x(GLASS_TRACK_MAX),
-            "the clearance is {:.0}px where {BAND_AIR} was asked for — a limit that gives away \
-             more strip than the band needs is a cost nobody decided to pay",
-            track_x(GLASS_TRACK_MAX) - (cap.x + cap.w),
+            (GLASS_TRACK_MAX - want).abs() <= 1.0,
+            "the cap is {GLASS_TRACK_MAX} where the binding constraint allows {want} \
+             (touch {touch}, budget {budget})",
         );
+        assert!(budget < touch, "the BUDGET is what binds today — if that flips, so does the note above");
         // the capsule only ever grows RIGHTWARD off a fixed edge, which is what lets one number
         // stand for the band at every point of the unfurl (see `band_region`).
         for e in [0.0, 0.25, 0.5, 0.75, 1.0] {

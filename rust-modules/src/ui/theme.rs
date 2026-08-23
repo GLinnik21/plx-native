@@ -219,8 +219,14 @@ pub mod logo {
     /// so a wordmark in the pinned strip is pixel-identical to today.
     pub const COMPACT_H_MIN: f32 = 54.0;
     /// Set by the BAND, not by the area rule (which would want 121 here): the pinned strip has to
-    /// clear the screen top and stop short of `detail::TOP_MARGIN` (120), where the first scrolled
-    /// section lifts to. 72 leaves 22px of head room above the logo and 26px below it.
+    /// clear the screen top and stop short of `detail::TOP_MARGIN`, where the first scrolled
+    /// section lifts to.
+    ///
+    /// Since 2026-08-23 the strip is solved from this number rather than fitted around it — "clear
+    /// the screen top" now means clear the OVERSCAN frame (`consts::MARGIN_Y` 54), so
+    /// `detail::COMPACT_TITLE_BOT` is `54 + this` and `TOP_MARGIN` is that plus 26px of air. Pulling
+    /// this down (still the one knob to pull if a device capture says a square emblem crowds the
+    /// pinned title) now lifts the whole strip with it instead of only shrinking the mark.
     pub const COMPACT_H_MAX: f32 = 72.0;
 }
 

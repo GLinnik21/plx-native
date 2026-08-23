@@ -130,7 +130,11 @@ const SHELF_STYLE: RowStyle = RowStyle { title_lines: 2, ..RowStyle::HOME };
 /// A focused shelf lifts no higher than this from the screen top — [`HEADER_TOP`]'s twin.
 const TOP_MARGIN: f32 = HEADER_TOP;
 /// Air kept under the lowest visible content when a shelf is revealed by scrolling.
-const BOTTOM_PAD: f32 = theme::space::LG;
+///
+/// The OVERSCAN keep-out rather than a `space` rung (it was `LG` 40): what this bounds is a focused
+/// tile's own caption against the bottom edge of the panel, so the number that belongs here is the
+/// safe area's, not a gap from the spacing ladder.
+const BOTTOM_PAD: f32 = crate::ui::consts::MARGIN_Y;
 
 /// The condense spring's rate — the scroll rate, because the band's resize IS a scroll-scale
 /// motion (the mock gives both the same `.42s` curve).
@@ -1383,17 +1387,32 @@ mod tests {
     #[test]
     fn the_first_shelf_fits_at_rest_under_either_band_state() {
         let h = shelf_block_h();
-        for band in [H_CON, EXP_HEADER_H] {
+        let scroll = |band: f32| {
             let top = HEADER_TOP + band + SHELF_GAP;
-            let content = top + h + BOTTOM_PAD;
+            reveal_block(0.0, top, h, top + h + BOTTOM_PAD)
+        };
+        // The two bands the page can actually BE in: condensed, and the portrait-bound expanded one.
+        for band in [H_CON, PORTRAIT_EXP] {
             assert_eq!(
-                reveal_block(0.0, top, h, content),
+                scroll(band),
                 0.0,
                 "band {band}: focusing the first shelf scrolled the page (block bottom {}, floor {})",
-                top + h,
+                HEADER_TOP + band + SHELF_GAP + h,
                 SCR_H - BOTTOM_PAD
             );
         }
+        // [`EXP_HEADER_H`] is a MODELLING bound, not a band — it substitutes point sizes for cap
+        // heights, so it stands 4px above anything the text stack can produce. Since `BOTTOM_PAD`
+        // became the overscan keep-out (54, from 40) the expanded band clears the floor by 3px, so
+        // those 4 phantom pixels buy one pixel of scroll. Asserted as a BOUND rather than dropped:
+        // what this test is for is the packing dividend, and a bound that grows past its own
+        // pessimism is the regression to catch.
+        assert!(
+            scroll(EXP_HEADER_H) <= EXP_HEADER_H - PORTRAIT_EXP,
+            "the pessimistic bound costs {}px of scroll, more than the {}px it is pessimistic by",
+            scroll(EXP_HEADER_H),
+            EXP_HEADER_H - PORTRAIT_EXP,
+        );
     }
 
     /// ...and a SECOND shelf, which cannot fit alongside the first, does scroll — by exactly

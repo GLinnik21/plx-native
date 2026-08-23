@@ -219,7 +219,9 @@ pub(crate) fn draw_subtitle_bitmap(hud_up: bool) {
 }
 
 // ---- HUD geometry (shared by draw_hud + the pointer hit-tests in app.rs) ----
-const SB_X: f32 = 90.0; // scrubber (and title) left margin
+// scrubber (and title, and the bottom tab pills) left margin — the app's own, not a second copy of
+// it: this was a literal 90 and so stayed put when `MARGIN_X` moved to the overscan-safe 96
+const SB_X: f32 = crate::ui::consts::MARGIN_X;
 pub(crate) const fn sb_w() -> f32 {
     SCR_W - 2.0 * SB_X
 }
@@ -236,8 +238,12 @@ const BTN_Y: f32 = SCR_H - 288.0;
 pub(crate) const CTRL_H: f32 = BTN_S;
 /// control-row top
 pub(crate) const CTRL_Y: f32 = BTN_Y;
-/// control-row right edge — 80px margin, matching the track-menu panel (right:80)
-pub(crate) const CTRL_RIGHT: f32 = SCR_W - 80.0;
+/// control-row right edge — the app's side margin, matching the track-menu panel.
+///
+/// The mock's `right: 80` put the Subtitles/Audio/`…` discs 16px past the 5% overscan frame, and the
+/// track and `…` panels were aligned to the same 80 (`track_menu`/`more_menu`). All three moved onto
+/// `MARGIN_X` together on 2026-08-23 — they are one right edge by design, so they take one number.
+pub(crate) const CTRL_RIGHT: f32 = SCR_W - crate::ui::consts::MARGIN_X;
 /// how many control discs the row holds: Subtitles, Audio, More
 const BTN_N: i32 = 3;
 
@@ -1114,6 +1120,24 @@ pub(crate) fn draw_hud(slot: ControlSlot, busy: Busy, focus: i32, btn: i32, tab:
         }
         px += pw + 16.0;
     }
+}
+
+/// **The transport's outermost drawn chrome, for the overscan audit**
+/// ([`crate::ui::consts::SAFE`]). Private geometry, so the rects are built where they are drawn
+/// rather than restated in the module that grades them.
+///
+/// The bottom tab row is measured at its widest — `Info` + `Chapters`, the pair an item with
+/// chapters draws — because a pill's width is the label's and the audit has to grade the widest
+/// state a screen can be in, not the one a screenshot happened to catch. That measurement needs a
+/// font, which the host suite cannot link, so it is bounded by the row's OWN height instead: what
+/// the audit is about here is the row's left edge and its BOTTOM, and both are font-independent.
+#[cfg(test)]
+pub(crate) fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
+    out.push(("player scrubber", Rect::new(SB_X, SB_Y, sb_w(), SB_H)));
+    out.push(("player control row", Rect::new(CTRL_RIGHT - CTRL_ROW_W, CTRL_Y, CTRL_ROW_W, CTRL_H)));
+    let py = (SB_Y + SCR_H) * 0.5 - BTN_S * 0.5;
+    out.push(("player bottom tab row", Rect::new(SB_X, py, 0.0, BTN_S)));
+    out.push(("player title / elapsed clock", Rect::new(SB_X, SCR_H - 312.0, 0.0, 0.0)));
 }
 
 #[cfg(test)]

@@ -41,11 +41,30 @@ use std::ptr::{addr_of, addr_of_mut};
 
 // ---- geometry -------------------------------------------------------------------------------
 const COLS: usize = 6;
-/// 6×250 + 5×LGAP fills the 1740px between the margins exactly.
-const LGAP: f32 = (SCR_W - 2.0 * MARGIN_X - COLS as f32 * CARD_W) / (COLS as f32 - 1.0);
-const TOOL_Y: f32 = 134.0;
+/// **The A–Z rail's own band, reserved on the grid's right whether or not the rail is drawn.**
+///
+/// The rail used to hang in the OUTER margin, at `SCR_W - 64` — 32px past the 5% overscan frame, the
+/// worst horizontal violation in the app, and unfixable by moving the rail alone: with the grid
+/// filling `SCR_W - 2*MARGIN_X` exactly there is no room inside the frame for a 44px control to its
+/// right. So the grid gives the band up instead.
+///
+/// **Reserved unconditionally**, which costs 48px on a section whose letters the server never sent.
+/// The alternative — widening the grid when [`rail_drawn`] is false — moves every column between two
+/// sections of one library, and a grid that reflows as you change tab is a worse answer than a
+/// slightly narrower one that never does. It is the same argument [`draw_rail`] makes for
+/// top-anchoring the rail rather than centring it.
+const RAIL_BAND: f32 = RAIL_TRACK_W + theme::space::XS;
+/// The grid's right edge — the rail's band inside the safe area's own right edge.
+const GRID_R: f32 = SCR_W - MARGIN_X - RAIL_BAND;
+/// 6×250 + 5×LGAP fills the space between the left margin and [`GRID_R`] exactly.
+const LGAP: f32 = (GRID_R - MARGIN_X - COLS as f32 * CARD_W) / (COLS as f32 - 1.0);
+// TOOL_Y/GRID_TOP each moved down 18px on 2026-08-23 with `widgets::TOP_BAR_Y`, which dropped so the
+// tab track clears `consts::MARGIN_Y`. They are clearances under that bar (22px and, after the
+// chips, 28px), so they follow it — holding them still would have left the Sort chip 4px under the
+// track instead of 22.
+const TOOL_Y: f32 = 152.0;
 const TOOL_H: f32 = 52.0;
-pub(crate) const GRID_TOP: f32 = 214.0;
+pub(crate) const GRID_TOP: f32 = 232.0;
 // The top-chrome scrim's own numbers used to live here — a knee at 188, its .40 alpha, and a 56px
 // scroll-linked appear. They are `widgets::nav_scrim`'s now, DERIVED from `GRID_TOP` rather than
 // spelled: the design system tokenises this treatment for every full-screen route that scrolls a
@@ -623,6 +642,17 @@ const MAX_LETTERS: usize = 64;
 /// what fits at this pitch the rail scrolls ([`RAIL_SCROLL`]) — so every section's rail has the
 /// same spacing, for the same reason it is top-anchored rather than centred.
 const RAIL_PITCH: f32 = 34.0;
+/// The rail's capsule track width — the widest thing the rail draws, and so what [`RAIL_BAND`]
+/// reserves and what [`rail_geom`]'s `cx` is placed from. Named because those three used to be the
+/// literal `44` / `22` / `SCR_W - 64` spelled in three places with no arithmetic tying them.
+const RAIL_TRACK_W: f32 = 44.0;
+/// The rail's first letter-slot top, below [`GRID_TOP`] — the letters line up with the grid's first
+/// row rather than with its card tops.
+const RAIL_TOP_OFF: f32 = 8.0;
+/// How far the capsule track overhangs the letter WINDOW at each end. It is the difference between
+/// what the rail measures its scroll against (the window) and what it draws (the capsule), and so
+/// the term the safe-area bound in [`rail_geom`] has to carry.
+const RAIL_CAP_PAD: f32 = 10.0;
 static mut RAIL_F: usize = 0;
 static mut RAIL_RECTS: [Rect; MAX_LETTERS] = [Rect::new(0.0, 0.0, 0.0, 0.0); MAX_LETTERS];
 static mut RAIL_N: usize = 0;
@@ -657,7 +687,9 @@ static mut RAIL_SCROLL: Spring = Spring::at(0.0);
 /// block centred on the panel says the APP failed. Centring it on the content region says this
 /// section did, and leaves the live chrome above it saying so.
 fn content_region() -> Rect {
-    Rect::new(MARGIN_X, GRID_TOP, SCR_W - 2.0 * MARGIN_X, SCR_H - GRID_TOP - theme::space::LG)
+    // bottom on `MARGIN_Y` rather than a `space::LG` rung: the read-out and its Try again pill are
+    // CENTRED in this band, so the band itself is what has to sit inside the overscan frame
+    Rect::new(MARGIN_X, GRID_TOP, SCR_W - 2.0 * MARGIN_X, SCR_H - GRID_TOP - MARGIN_Y)
 }
 
 /// How many toolbar chips are DRAWN — [`chips`]'s length, and nothing else. The whole decision
@@ -1094,11 +1126,35 @@ fn letter_of(idx: usize) -> usize {
 /// scroll step in [`update`] and [`draw_rail`] must agree about the window — a reveal rule aimed
 /// at a window that is not the one on screen parks the focused letter off the end of it.
 fn rail_geom(n: usize) -> (f32, f32, f32, f32) {
-    // the band the fit-to-fill divisor used, so a rail that DID fit sits exactly where it did
-    let vis = ((SCR_H - GRID_TOP - 40.0) / RAIL_PITCH).floor().max(1.0);
+    // How many letters fit: the band from the rail's own top down to the OVERSCAN FRAME, less the
+    // capsule's overhang past the last letter. It was `SCR_H - GRID_TOP - 40` — the band the old
+    // fit-to-fill divisor used — which is a bare inset rather than a bound, and once `GRID_TOP`
+    // moved down 18px it put the capsule's bottom cap 6px outside the frame.
+    let vis = ((SCR_H - MARGIN_Y - (GRID_TOP + RAIL_TOP_OFF) - RAIL_CAP_PAD) / RAIL_PITCH).floor().max(1.0);
     let win_h = vis.min(n as f32) * RAIL_PITCH;
-    (GRID_TOP + 8.0, SCR_W - 64.0, win_h, (n as f32 * RAIL_PITCH - win_h).max(0.0))
+    // cx puts the track's RIGHT edge on the safe area's, which is what `RAIL_BAND` bought
+    (GRID_TOP + RAIL_TOP_OFF, SCR_W - MARGIN_X - RAIL_TRACK_W * 0.5, win_h, (n as f32 * RAIL_PITCH - win_h).max(0.0))
 }
+/// **This screen's outermost drawn chrome, for the overscan audit** ([`crate::ui::consts::SAFE`]).
+///
+/// The full-width A–Z rail, the first and last grid columns, the toolbar's leading chip and the
+/// right-aligned item count — the four rects that reach furthest, at the widest state each can be
+/// in. It lives here rather than in the test that grades it because these are private constants and
+/// because the rects have to be the DRAWN ones: a table in another module would be a second copy of
+/// the layout, which is exactly the shape that let a 90px margin pass for a 5% frame.
+#[cfg(test)]
+pub(crate) fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
+    let (y0, cx, win_h, _) = rail_geom(MAX_LETTERS);
+    out.push(("library A–Z rail track", Rect::new(cx - RAIL_TRACK_W * 0.5, y0 - RAIL_CAP_PAD, RAIL_TRACK_W, win_h + 2.0 * RAIL_CAP_PAD)));
+    out.push(("library grid, first column", Rect::new(MARGIN_X, GRID_TOP, CARD_W, CARD_H)));
+    let last = MARGIN_X + (COLS as f32 - 1.0) * (CARD_W + LGAP);
+    out.push(("library grid, last column", Rect::new(last, GRID_TOP, CARD_W, CARD_H)));
+    out.push(("library toolbar, leading chip", Rect::new(MARGIN_X, TOOL_Y, 200.0, TOOL_H)));
+    // the count is right-ALIGNED on this edge, so the rect is degenerate on purpose
+    out.push(("library item count (right edge)", Rect::new(SCR_W - MARGIN_X, TOOL_Y, 0.0, TOOL_H)));
+    out.push(("library failure read-out band", content_region()));
+}
+
 /// Where the rail's scroll wants to be with letter `drive` in hand: the grid's own reveal rule in
 /// letter units, keeping one whole letter clear on each side so the driver never sits in the edge
 /// fade. Pure, so the window invariant is assertable off-device.
@@ -1203,8 +1259,14 @@ pub(crate) fn update(dt: f32) {
 
         // vertical scroll: reveal the focused row (label band included), never above its slot
         let row_top = GR as f32 * PITCH;
-        let max_y = (n_rows() as f32 * PITCH - (SCR_H - GRID_TOP) + 20.0).max(0.0);
-        let lo = row_top + CARD_H + 96.0 - (SCR_H - GRID_TOP - 16.0);
+        // The scroll CEILING carries the same bound as `lo` below, or the last row cannot reach it:
+        // `reveal` clamps its target to `max_y`, so a trailing air of 20 pinned the final row's
+        // caption 20px off the panel however much the reveal asked for. It is the pair that has to
+        // agree, which is why this line moved with that one.
+        let max_y = (n_rows() as f32 * PITCH - (SCR_H - GRID_TOP) + MARGIN_Y).max(0.0);
+        // …and the reveal leaves the card + its label band a MARGIN_Y clear of the bottom edge: a
+        // focused tile's caption used to settle 16px off the panel, i.e. inside the overscan frame
+        let lo = row_top + CARD_H + 96.0 - (SCR_H - GRID_TOP - MARGIN_Y);
         let hi = row_top;
         let want = if matches!(area(), Area::Grid | Area::Rail) {
             card_row::reveal((*addr_of!(SCROLL)).pos, lo, hi, max_y) // rail jumps scroll the grid too
@@ -2501,7 +2563,7 @@ fn draw_rail(p: Painter) {
     let scroll = unsafe { (*addr_of!(RAIL_SCROLL)).pos };
     // a slim capsule track behind the letters — the tab-track family, minimized: makes the
     // rail read as a CONTROL to discover, not stray typography
-    let track = Rect::new(cx - 22.0, y0 - 10.0, 44.0, win_h + 20.0);
+    let track = Rect::new(cx - RAIL_TRACK_W * 0.5, y0 - RAIL_CAP_PAD, RAIL_TRACK_W, win_h + 2.0 * RAIL_CAP_PAD);
     p.rect_sheened(track, 22.0, theme::scrim_black(0.30), theme::scrim_black(0.40));
     let in_rail = area() == Area::Rail;
     let cur_letter = letter_of(focus_idx());
@@ -2527,7 +2589,7 @@ fn draw_rail(p: Painter) {
         // belt and braces under the edge fade: a glyph reaches α0 before it reaches the window
         // edge, so this only catches the rounding — but without it a letter could paint over the
         // capsule's rounded cap while the spring is mid-flight.
-        p.clip(Rect::new(cx - 22.0, y0, 44.0, win_h));
+        p.clip(Rect::new(cx - RAIL_TRACK_W * 0.5, y0, RAIL_TRACK_W, win_h));
     }
     for (i, label) in labels.iter().enumerate() {
         let cy = y0 + (i as f32 + 0.5) * RAIL_PITCH - scroll;
@@ -2548,7 +2610,7 @@ fn draw_rail(p: Painter) {
         // false on it — so a click can only reach a letter that is actually legible.
         unsafe {
             (*addr_of_mut!(RAIL_RECTS))[i] = if a > 0.5 {
-                Rect::new(cx - 22.0, cy - RAIL_PITCH * 0.5, 44.0, RAIL_PITCH)
+                Rect::new(cx - RAIL_TRACK_W * 0.5, cy - RAIL_PITCH * 0.5, RAIL_TRACK_W, RAIL_PITCH)
             } else {
                 Rect::new(0.0, 0.0, 0.0, 0.0)
             }
@@ -2830,6 +2892,31 @@ mod tests {
     /// (music and photos only) ANSWERED, so there is no section, no state, and both of the section
     /// accessors fall through to their defaults — `Loading` and `-1`, i.e. the spinner again. It is
     /// `Empty`, because the server told us; catching only the FAILED table would have left this
+    /// **The LAST row's caption reaches the overscan frame and no further** — the reveal's two
+    /// halves (`lo` and the scroll ceiling `max_y`) graded as the pair they are.
+    ///
+    /// `card_row::reveal` clamps its target to `max_y`, so the bound this screen asks for is only
+    /// what it gets while the ceiling is at least as generous. They disagreed by 34px when only `lo`
+    /// was moved onto `MARGIN_Y`: every row but the last obeyed the frame and the last one settled
+    /// 20px off the panel, which is the state a grid is actually left in more often than any other.
+    /// Pure arithmetic, so it needs no store and no mutex.
+    #[test]
+    fn the_last_grid_rows_caption_settles_on_the_overscan_frame() {
+        for n_rows in [1usize, 2, 3, 7, 40] {
+            let row_top = (n_rows - 1) as f32 * PITCH;
+            let max_y = (n_rows as f32 * PITCH - (SCR_H - GRID_TOP) + MARGIN_Y).max(0.0);
+            let lo = row_top + CARD_H + 96.0 - (SCR_H - GRID_TOP - MARGIN_Y);
+            // scrolled to the very bottom already, then asked to reveal the last row
+            let scroll = card_row::reveal(max_y, lo, row_top, max_y);
+            let caption_bottom = GRID_TOP + row_top + CARD_H + 96.0 - scroll;
+            assert!(
+                caption_bottom <= SCR_H - MARGIN_Y + 0.01,
+                "{n_rows} rows: the last caption settles at {caption_bottom}, past the frame at {}",
+                SCR_H - MARGIN_Y,
+            );
+        }
+    }
+
     /// spinning exactly as before.
     #[test]
     fn a_table_that_answered_with_no_browsable_library_is_empty_not_a_spinner() {

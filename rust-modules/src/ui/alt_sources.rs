@@ -129,7 +129,11 @@ const PANEL_RAD: f32 = 20.0;
 /// Air between the button that opened the panel and the panel itself — one `space` rung.
 const BTN_GAP: f32 = theme::space::MD;
 /// Keep-out from the screen edges, so a panel opened low on the page is still whole.
+///
+/// Per AXIS, for `item_menu::EDGE`'s reason: `space::XL` 64 clears `MARGIN_Y` vertically and misses
+/// `MARGIN_X` horizontally by 32px.
 const EDGE: f32 = theme::space::XL;
+const EDGE_X: f32 = crate::ui::consts::MARGIN_X;
 /// Scrim peak alpha — the LIBRARY toolbar chip menu's (`ui::library`), deliberately, because this
 /// is the same object one page over: a chip-shaped control on a live page opening a list over it.
 /// The page recedes; it is not blanked, and the hero behind stays readable.
@@ -485,7 +489,7 @@ fn panel_at(a: Rect, content_h: f32) -> Rect {
     let h = content_h.clamp(120.0, SCR_H - 2.0 * EDGE);
     let below = a.y + a.h + BTN_GAP;
     let y = if below + h <= SCR_H - EDGE { below } else { (a.y - BTN_GAP - h).max(EDGE) };
-    let x = a.x.clamp(EDGE, (SCR_W - EDGE - PANEL_W).max(EDGE));
+    let x = a.x.clamp(EDGE_X, (SCR_W - EDGE_X - PANEL_W).max(EDGE_X));
     Rect::new(x, y, PANEL_W, h)
 }
 
@@ -918,14 +922,14 @@ mod tests {
     /// The panel hangs off the control that opened it, and is never over it or off the screen.
     #[test]
     fn the_panel_hangs_off_its_button_and_stays_on_screen() {
-        let btn = Rect::new(90.0, 300.0, 300.0, 60.0);
+        let btn = Rect::new(crate::ui::consts::MARGIN_X, 300.0, 300.0, 60.0);
         let r = panel_at(btn, 224.0);
         assert_eq!(r.w, PANEL_W);
         assert_eq!(r.y, btn.y + btn.h + BTN_GAP, "under the button when there is room");
         assert_eq!(r.x, btn.x, "and aligned to its left edge");
 
         // a button low on the page flips the panel ABOVE it rather than off the bottom
-        let low = Rect::new(90.0, 900.0, 300.0, 60.0);
+        let low = Rect::new(crate::ui::consts::MARGIN_X, 900.0, 300.0, 60.0);
         let r = panel_at(low, 224.0);
         assert!(r.y + r.h <= low.y - BTN_GAP + 0.01, "flipped above the button");
         assert!(r.y >= EDGE);
@@ -933,9 +937,17 @@ mod tests {
         // a button near the right edge pulls the panel back inside the keep-out
         let right = Rect::new(SCR_W - 200.0, 300.0, 180.0, 60.0);
         let r = panel_at(right, 224.0);
-        assert!(r.x + r.w <= SCR_W - EDGE + 0.01, "a panel must not run off the panel");
+        assert!(r.x + r.w <= SCR_W - EDGE_X + 0.01, "a panel must not run off the panel");
         // …and a list taller than the screen is clamped rather than drawn past both edges
         let tall = panel_at(btn, 4000.0);
         assert!(tall.y >= EDGE && tall.y + tall.h <= SCR_H - EDGE + 0.01);
+
+        // Every one of those worst cases is inside the overscan frame — the keep-out is per AXIS
+        // precisely so that the horizontal clamp is `MARGIN_X` and not the `space::XL` the vertical
+        // one uses. `ui::consts::SAFE` is the frame; this is that predicate on this panel's own
+        // extremes, since a panel placed against an ANCHOR has no fixed rect a table could carry.
+        for (what, p) in [("under", r), ("tall", tall), ("right-edge", panel_at(right, 224.0))] {
+            assert!(crate::ui::consts::inside_safe(p), "the {what} panel leaves the safe area: ({}, {}) {}x{}", p.x, p.y, p.w, p.h);
+        }
     }
 }

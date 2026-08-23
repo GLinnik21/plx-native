@@ -1259,7 +1259,9 @@ impl View for Grid {
         // move the page when the focused row's block — title band above, card + focused label
         // below — would clip the viewport; a fully visible row never re-seats the page.
         let top = env.fr as f32 * ROW_PITCH;
-        let lo = top + GRID_TOP_Y + CARD_DY + CARD_H + 96.0 - (SCR_H - 24.0); // card + title/caption metadata visible
+        // card + title/caption metadata visible, and a MARGIN_Y clear of the bottom edge — it was a
+        // bare 24, which settled a focused tile's caption inside the overscan frame
+        let lo = top + GRID_TOP_Y + CARD_DY + CARD_H + 96.0 - (SCR_H - MARGIN_Y);
         let hi = top + GRID_TOP_Y - 66.0 - 96.0; // hub title band clear below the chip row
         self.scroll_y.step(card_row::reveal(self.scroll_y.pos, lo, hi, max_y), K_SCROLL, env.dt);
     }

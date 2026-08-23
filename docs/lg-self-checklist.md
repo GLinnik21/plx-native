@@ -85,9 +85,9 @@ Not failures — *unknowns*, and unmarkable. Every one of these is a device sess
 
 | # | Item | Basis |
 | --- | --- | --- |
-| 1, 2 | Execution, main screen | Launches and reaches Home; UI authored at 1920×1080 with `MARGIN_X` 90 (4.7%), inside the 5% overscan frame. Splash is 1920×1080 PNG. |
+| 1, 2 | Execution, main screen | Launches and reaches Home; UI authored at 1920×1080 inside a 5% overscan frame (`consts::MARGIN_X` 96 / `MARGIN_Y` 54), asserted per screen by `no_required_content_enters_the_safe_area_exclusion_zone`. Splash is 1920×1080 PNG. **This row claimed a pass on the wrong arithmetic until 2026-08-23** — see §4. |
 | 6 | Correct text | `text::elide` for overflow, `ui/text_view.rs` for long-form scroll. **Was failing until 2026-08-22** — see §4. |
-| 7 | Focus / mouse-over | Idle, focused and pressed states are distinct (focus scale spring, glow, `ui/press.rs`). |
+| 7 | Focus / mouse-over | Idle, focused and **selected** states are distinct, and as of 2026-08-23 that is an OBSERVATION rather than a belief: audited screen by screen in the simulator at 1920×1080. The tab strip carries all three at once (idle = bare label, focused = bright white capsule, selected = subtle plated capsule); a `TableView` row does the same (idle plain, selected ✓, focused white pill); a card separates idle from focused by scale, drop shadow and the caption band that only the focused tile draws. Nothing needed changing. |
 | 8 | Flickering | No known flicker; the Dolby Vision Profile 5 pulse is fixed (`docs/dolby-vision.md` §4). |
 | 9 | Full-size video | Video track and video plane are both full-panel 1920×1080; no margins. |
 | 21 | Sign out | `ui/account_menu.rs` → `auth::sign_out`. |
@@ -126,6 +126,45 @@ which also makes the splash match the first frame the app draws.
 **Not a numbered item, but it was wrong:** `requiredMemory` was 60 against a measured 152 MiB peak,
 and webOS substitutes a default of **120** when the field is absent — so 60 asked for less headroom
 than declaring nothing. Now 160. `docs/distribution.md` §6.10 has the measurements.
+
+---
+
+## 4b. #2's OTHER half, and how it read as a pass for a year (2026-08-23)
+
+**The overscan row of §3 was marked Pass on arithmetic that says the opposite of what it claims.**
+It read *"`MARGIN_X` 90 (4.7%), inside the 5% overscan frame"* — but a 4.7% margin puts content
+NEARER the edge than a 5% one, i.e. six pixels inside the exclusion zone, on every screen at once.
+The sentence is the whole failure: nobody had ever measured a screen, so a number that sounded
+reassuring stood in for a measurement, exactly as the splash's "63% black" did until somebody looked.
+
+**And the vertical bound did not exist at all.** There was no `MARGIN_Y` anywhere in the tree, so
+nothing bounded the top or bottom of anything, and four places were outside the frame by more than
+the horizontal margin ever was: the shared top tab bar and profile chip (18px), the detail page's
+pinned compact title (14px, and 32 for a square clearLogo, which spills upward as paint), the
+Library's A–Z rail (**32px**, the worst in the app), and the Home / Library / Person scroll reveals,
+which settled a focused card's caption 24 / 16 / 40px off the bottom edge.
+
+Both margins are now `ui/consts.rs` tokens (96 / 54) and — the half that matters — the requirement
+is a host test rather than a literal:
+`no_required_content_enters_the_safe_area_exclusion_zone` grades the COMPOSED rect of every screen
+and panel against `consts::SAFE`, so a future audit can move a token, or give one screen a
+correction of its own, without the test having to be rewritten to permit it. "Required" is doing
+work in that sentence: a full-bleed backdrop, a page ground, a scrim, a focus glow and a shelf
+peeking off the bottom edge are all *supposed* to reach the panel edge.
+
+**One design cost, recorded because it is a trade rather than a fix.** Dropping the top bar 18px
+grows the tab band's backdrop-blur region by the same 18 rows of a ~1470px-wide grab, which is
+enough to put `widgets::GLASS_TRACK_MAX` outside `gfx::GLASS_REGION_BUDGET`. That constant is now
+the `min` of its two constraints instead of the "must not touch" rule alone, so the glass material
+comes off a strip wider than ~656px rather than ~848. The product's own strip is 572px, so today's
+bar is unaffected and a library with one more section still keeps it; two more would drop to the
+flat capsule, which is a designed, shipped alternative rather than a break. If that is judged too
+tight, the lever is the measured budget (`docs/glass-hardware-budget.md` §11, which already records
+the region term as ~4x conservative on the direct source path), not the frame.
+
+**LG publishes two numbers and they disagree.** The developer guide's overscan page states a **20px**
+margin; the checklist item says "overscan frame", which by broadcast convention is **5%**. This app
+is graded against 5%, because a layout that satisfies 5% satisfies 20px and not the other way round.
 
 ---
 
