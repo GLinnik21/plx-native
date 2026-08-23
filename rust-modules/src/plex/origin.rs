@@ -3,13 +3,16 @@
 //!
 //! ## Why this type exists at all
 //!
-//! The app's CONTROL plane can currently reach exactly one shape of server: **plaintext
-//! HTTP**. `stream.rs`, which every plex.tv and PMS *query* goes out through, speaks cleartext and
-//! has no TLS in it. (The MEDIA plane is no longer bound that way — `crate::curlio` streams a part
-//! over https — but a server you cannot query is one you cannot reach an item on.) So
-//! `(host, port)` was a complete description of a server,
-//! and every layer — the registry, the session file, the login flow, the stream URLs — carried
-//! those two values and nothing else.
+//! This app could once reach exactly one shape of server: **plaintext HTTP at a numeric IPv4
+//! address**. `stream.rs` built a `sockaddr_in` out of four decimal octets and spoke cleartext, so
+//! `(host, port)` was a complete description of a server, and every layer — the registry, the
+//! session file, the login flow, the stream URLs — carried those two values and nothing else.
+//!
+//! Every half of that limit is gone, through separate transports:
+//! `stream.rs` resolves through `getaddrinfo` and dials either address family, and the CONTROL
+//! plane routes a TLS origin through libcurl (`crate::http` dispatches on the scheme), while the
+//! MEDIA plane uses `crate::curlio` as a libcurl-multi pull source. What
+//! `(host, port)` still could not say is the SCHEME, which is this type's reason for existing.
 //!
 //! It is not a complete description of the servers plex.tv actually advertises, and the gap is not
 //! cosmetic. [`super::probe`] builds ranked candidates from an account's `/api/v2/resources`, and
@@ -54,24 +57,29 @@ use super::probe::dial_port;
 /// Which transport an origin names. Lives here rather than in [`super::probe`] because it is a
 /// property of an ORIGIN; probe merely *ranks* it, and re-exports this type for that.
 ///
-/// **Ordered best-first FOR THIS APP, which is not best-first in general**, and the derived `Ord`
-/// *is* that preference: `stream.rs` speaks plain HTTP — it resolves a name now, but it has no
-/// TLS — so an https `plex.direct` origin cannot be QUERIED at all until the curl control plane lands
-/// (`docs/shared-servers.md` §5 step 6). Its MEDIA half already works — `crate::curlio` streams a
-/// part over https — so this reason is narrower than it was, and the ranking it justifies is
-/// unchanged: a server the data layer cannot ask for metadata is one no item can be reached on.
-/// Ranking https below http keeps
-/// [`super::probe::candidates`]'s order equal to what can actually connect today; when the control
-/// plane speaks TLS, swapping these two declarations is the whole change.
+/// **Ordered best-first, and the derived `Ord` IS that preference** — [`super::probe::candidates`]
+/// sorts on it directly.
 ///
-/// `Default` is [`Scheme::Http`] — the scheme this app has always spoken, and what a session file
-/// or a dev trigger written before schemes existed meant.
+/// **The two declarations were the other way round until the TLS control plane landed**, and this
+/// note is kept rather than replaced because the reversal is the whole of what changed. The old
+/// order was not a claim about which transport is better; it was a claim about which one this app
+/// could *dial*: the app spoke plain HTTP and nothing else, so an https `plex.direct` origin ranked
+/// first would have spent the first probe slot on something that could not connect. `crate::http`
+/// now routes an https origin through libcurl, and https is the better connection on every axis
+/// that matters here — it is the only one a certificate can authenticate, the only one that
+/// survives an owner's *Require secure connections*, and the only one that reaches a server from
+/// outside its LAN at all.
+///
+/// `Default` is still [`Scheme::Http`] — the scheme this app has always spoken, and what a session
+/// file or a dev trigger written before schemes existed meant. `Default` and `Ord` are independent
+/// here on purpose: the default is about reading an old file, the order is about picking an
+/// address.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Scheme {
+    Https,
     #[default]
     Http,
-    Https,
 }
 
 impl Scheme {
@@ -122,12 +130,12 @@ impl Origin {
     /// The **plaintext** constructor, named so that it is greppable.
     ///
     /// Every call is a place that still assumes cleartext — the legacy `(host, port)` registry
-    /// entry points, the compiled-in PMS host, a session file with no stored origin. Each one is a
-    /// line the TLS lane has to revisit, which is why they are spelled `Origin::http(` rather than
-    /// `Origin::new(Scheme::Http, …)`. This used to add "that is correct today (there is no TLS
-    /// transport)", which stopped being true of the MEDIA plane when `crate::curlio` landed: an
-    /// origin invented here that ends up in a part URL now silently downgrades a server that could
-    /// have been streamed from securely.
+    /// entry points, the compiled-in PMS host, a session file with no stored origin. Each of those
+    /// really does mean plaintext (they have only an address to go on, and an address cannot carry
+    /// the name a certificate is issued for), which is why they are spelled `Origin::http(` rather
+    /// than `Origin::new(Scheme::Http, …)`: the grep is what finds them the day one of them learns
+    /// a URL. A caller that already has a URL must parse it instead; rebuilding that URL through
+    /// this constructor silently downgrades both its control requests and its media stream.
     pub fn http(host: &str, port: i32) -> Origin {
         Origin::new(Scheme::Http, host, port)
     }
@@ -329,8 +337,8 @@ mod tests {
         assert_eq!(Origin::http("2001:db8::1", 32400).base(), "http://[2001:db8::1]:32400");
     }
 
-    /// A v4 origin is the case every line of this app takes today, and it must serialize to
-    /// exactly the bytes it always has — no brackets, no default port appearing from nowhere.
+    /// A plaintext v4 origin is the legacy case, and it must serialize to exactly the bytes it
+    /// always has — no brackets, no default port appearing from nowhere.
     #[test]
     fn a_v4_origin_round_trips_unchanged() {
         let o = Origin::parse("http://192.0.2.10:32400").expect("parses");
@@ -433,6 +441,11 @@ mod tests {
         assert_eq!((Scheme::Http.as_str(), Scheme::Https.as_str()), ("http", "https"));
         assert!(!Scheme::Http.is_tls() && Scheme::Https.is_tls());
         assert_eq!(Scheme::default(), Scheme::Http, "the scheme this app has always spoken");
-        assert!(Scheme::Http < Scheme::Https, "probe RANKS on this order — http is what can be dialled today");
+        // The ranking and the default are independent, and this is the pair that says so: an
+        // origin read out of a file that names no scheme is plaintext, while an origin CHOSEN
+        // between is TLS first. Reversing the declarations to make `Ord` agree with `Default`
+        // would put the http twin of every candidate ahead of the one a certificate can
+        // authenticate.
+        assert!(Scheme::Https < Scheme::Http, "probe RANKS on this order — TLS is the better connection");
     }
 }

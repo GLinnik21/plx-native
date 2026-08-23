@@ -845,13 +845,13 @@ Listed because each could change a decision above.
    enable Dev Mode (session-limited, apps uninstalled on expiry) or root. Nobody multiplied those
    out. Related: **Plex ships an official webOS app covering webOS 3/4/5** — the same hardware. The
    value proposition against the incumbent is the thing the compliance work has to justify.
-7. **Multi-server users.** `auth.rs:392` filters `local && !relay`, falling back from owned to
-   *shared* servers, and takes the first match. `stream.rs:239-253` is IPv4-dotted-quad only — no
-   DNS and no TLS (it *does* decode chunked bodies; that was listed here as a third limitation and
-   never was one). So remote-only servers, relay users, "Require secure
-   connections", IPv6 and hostname-addressed servers all dead-end at *"No local Plex server found on
-   this network."* There is **no Settings screen and no manual server entry** anywhere in the route
-   enum (`app.rs:670-685`).
+7. ~~**Multi-server users.**~~ **IMPLEMENTED 2026-08-23; device acceptance remains.** Discovery
+   evaluates every granted server and its ranked connection URLs. The plaintext arm resolves
+   hostnames and IPv4/IPv6; HTTPS PMS control uses `net.rs`, and HTTPS media uses `curlio.rs`, so
+   remote, relay and *Require secure connections* origins no longer dead-end structurally. There
+   is still **no Settings screen or manual server entry**, by owner decision: servers are
+   configured on a phone/PC and the television chooses per profile from the plex.tv grant. The
+   unresolved part is an end-to-end run against a remote/shared server on real TV firmware.
 8. **What should the app do on unsupported firmware?** `requirements.webosRelease` does **not** hide
    the app from a webOS 6 user browsing the channel (§1.4). It needs a graceful failure.
 9. **Support model.** A Dev Mode user has no shell, so "send me `/tmp/plxnative-events.log`" doesn't
@@ -1653,12 +1653,14 @@ lifetime story that a metadata change has no business inventing. The CJK fallbac
 separately and is a *precondition* for a translated UI, not the thing itself: glyph coverage means
 Korean renders, not that anything is written in Korean.
 
-**The app is locale-blind, and that is checkable rather than asserted:** `grep -rn
-"setlocale\|LC_ALL\|localeInfo\|X-Plex-Language" rust-modules/src src` finds nothing. It never
-reads the television's language, and it never sends `X-Plex-Language` — so PMS returns metadata in
-the server's default language whatever the set is set to. That last one is the cheapest remaining
-i18n win by a wide margin (one header, and `docs/pms-api.md` already documents it as *"selects the
-language of server-returned strings"*), and it is a `plex/` change rather than a packaging one.
+**The native UI remains locale-blind, but PMS metadata has a best-effort locale.**
+`plex::identity::language` reads the inherited POSIX `LC_ALL`, `LC_MESSAGES`, then `LANG` and
+validates the value; `plex::client::pms_headers` and `AccountClient::headers` send the result as
+`X-Plex-Language`. An absent, neutral, or malformed locale omits the header and leaves PMS on its
+default language. The app does not query webOS's language service, so whether the TV launcher
+exports the menu language into that process environment is a device acceptance question, not a
+host claim. This improves server-returned strings without pretending that the app's own display
+literals are translated.
 
 **So the honest mark for #41** is: the metadata half is implemented and gated; the UI half is
 English-only by design; and the whole thing is **unverified on a television** until §12.4 item 1 is

@@ -1,17 +1,14 @@
-//! Blocking HTTP/1.1 GET over a raw TCP socket (was src/stream.c). Callers
+//! Blocking HTTP/1.1 over a raw TCP socket (was src/stream.c). Callers
 //! (posters/pms/player) allocate an `HttpStream` and pass `&hs`; this operates on it
 //! in place. Header/chunk parsing is bounds-checked (no OOB).
 //!
 //! The host is a **name or an address literal of either family**, resolved through `getaddrinfo`
 //! ([`resolve`]) and dialled down the whole returned chain ([`connect_any`]). It used to be four
 //! decimal octets parsed by hand into a `sockaddr_in`, which made a hostname and every IPv6 server
-//! not "degraded" but impossible — the shape of the gap LG's checklist #43 CASE2 asks about, and
-//! the reason `plex::probe` ranks a `plex.direct` name below the dotted quad behind it. What is
-//! still missing is TLS: this speaks cleartext, so an `https://` origin is somebody else's job —
-//! and WHICH somebody depends on the plane. The account/login calls are [`crate::net`]'s; the
-//! MEDIA bytes are [`crate::curlio`]'s, a libcurl-multi pull source sitting under the same `ff.rs`
-//! AVIO that this module sits under for `http`. TLS is the only thing separating this transport
-//! from either of them.
+//! not "degraded" but impossible — the shape of the gap LG's checklist #43 CASE2 asks about.
+//! What is still missing here is TLS: this arm stays cleartext. [`crate::http`] sends an `https://`
+//! control-plane origin through [`crate::net`], while MEDIA bytes use [`crate::curlio`], a
+//! libcurl-multi pull source under the same `ff.rs` AVIO that this module serves for `http`.
 //!
 //! Failures the return value cannot carry are reported to the event log instead: a non-2xx
 //! response (in [`http_open`], where the code is known and the socket is about to close) and a
@@ -176,9 +173,17 @@ fn short_body_line(method: &str, path: &str, consumed: i64, content_length: i64,
                  log_endpoint(path)))
 }
 
-/// [`short_body_line`] applied to a finished stream. The wrappers call it after their read loop;
-/// the fields it reads are counters, which `http_close` does not touch.
-fn note_short_body(method: &str, path: &str, hs: &HttpStream, recv_err: bool) {
+/// [`short_body_line`] applied to a finished stream — call it after the read loop, before or after
+/// [`http_close`] (the fields it reads are counters, which `http_close` does not touch).
+///
+/// `pub(crate)` because the one-shot wrappers that used to call it are gone. They folded away half
+/// of every answer — `http_get`/`http_post` dropped the status, `http_put` dropped the body — and
+/// the control plane needs both (a `401` is a token problem and a refusal is a reachability one;
+/// `plex::probe::Outcome` exists to keep those apart). Their replacement composes this module's
+/// primitives directly: [`crate::http`]'s plaintext arm, which is now this function's only caller
+/// and the reason it did not go with them. The three fields it reads are private, so the notice
+/// could not have been reproduced from outside.
+pub(crate) fn note_short_body(method: &str, path: &str, hs: &HttpStream, recv_err: bool) {
     if let Some(line) = short_body_line(method, path, hs.consumed, hs.content_length,
                                         hs.chunked != 0, recv_err) {
         crate::log(&line);
@@ -481,12 +486,12 @@ fn host_header(host: &str, port: c_int) -> String {
 /// shoot. There is none here: `getaddrinfo` owns its sockets. A NAME whose DNS server is not
 /// answering therefore holds the caller for the resolver's own budget, which under glibc is
 /// `timeout` × `attempts` × nameservers and defaults to 5 s × 2 each — far past anything this
-/// module bounds, and on the main thread that is the 60 fps loop. It does not touch the path this
-/// app takes TODAY, because a literal never reaches the resolver's network side at all
-/// (`AI_NUMERICHOST`), which is what keeps the existing dotted-quad callers exactly as fast and
-/// exactly as interruptible as they were. It becomes real the moment a name is dialled from the
-/// main thread. The levers, none of them this file's to pull: resolve off the main thread, or set
-/// `RES_OPTIONS=timeout:2 attempts:1` at boot (glibc reads it at `res_init`).
+/// module bounds. Names are ordinary inputs now: control-plane calls reach this code on background
+/// workers and plaintext media reaches it on the demux thread, so resolution cannot freeze the
+/// SDL loop but can outlive the advertised connect budget or delay a worker join. T4's HTTPS media
+/// source uses libcurl after integration; a plaintext hostname remains this resolver's job. The
+/// levers, none of them this file's to pull, are an interruptible resolver or an application-owned
+/// resolution worker.
 unsafe fn resolve(host: &str, port: c_int) -> Option<AddrList> {
     // The port is range-checked HERE and not left to `AI_NUMERICSERV`, because the two platforms
     // disagree and the disagreement is SILENT. Darwin rejects an out-of-range numeric service;
@@ -742,12 +747,11 @@ pub(crate) fn http_open(hs: *mut HttpStream, host: *const c_char, port: c_int,
         hs.bpos = hdr_end as c_int; // first body byte
         if hs.status < 200 || hs.status >= 300 {
             // The code is known exactly here and the return value cannot carry it: the open
-            // reports a flat `-1` whatever went wrong. It does survive in the struct — `close_owned`
-            // touches only the fd — and three callers dig it back out afterwards (`http_put`,
-            // `auth::get_identity` and `ff.rs`'s demux open all read `hs_status` on the failure
-            // path). `http_get`/`http_post`, i.e. the whole `plex::client` data layer, and the AVIO
-            // seek reopen do not, so for them a 401 from a revoked token and a 500 from a sick
-            // server are one value.
+            // reports a flat `-1` whatever went wrong. It does survive in the struct —
+            // `close_owned` touches only the fd — and both current consumers read it: the
+            // plaintext control arm in `crate::http` returns the status with the body, while the
+            // AVIO open uses it to diagnose a refused media request. A seek reopen still has only
+            // the flat failure, because it has no HTTP response surface to return through.
             //
             // `status=0` is not a code any server sent: it is what the parse above leaves when the
             // status line was not `HTTP/1.x` followed by exactly three digits.
@@ -889,94 +893,21 @@ pub(crate) fn http_shutdown(hs: *mut HttpStream) {
 /// exactly one syscall on an already-open descriptor. Deliberately NOT taken by `set_fd`/`fd()`:
 /// `hs_getb` loads the fd per byte on the chunked path, which is why it stays an atomic.
 
-/// Rust-friendly one-shot GET: open -> read to end -> close. Used by pms.
-/// (http_stream carries a 64KB buffer, so box it off the caller's stack.)
-pub(crate) fn http_get(host: &str, port: c_int, path: &str, extra: Option<&str>) -> Option<Vec<u8>> {
-    let host_c = std::ffi::CString::new(host).ok()?;
-    let path_c = std::ffi::CString::new(path).ok()?;
-    let extra_c = extra.and_then(|e| std::ffi::CString::new(e).ok());
-    let extra_ptr = extra_c.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
-    let mut hs = http_stream_boxed();
-    if http_open(&mut *hs, host_c.as_ptr(), port, path_c.as_ptr(), extra_ptr, "GET") != 0 {
-        return None;
-    }
-    let mut body = Vec::new();
-    let mut chunk = vec![0u8; 65536];
-    // The two non-positive returns are split rather than folded into one `r <= 0`: -1 is a recv
-    // ERROR and 0 a clean end, and `short_body_line` needs them apart to say which ended the
-    // transfer. Both still break, so what this function RETURNS is unchanged — a short body is
-    // handed back exactly as it is.
-    let mut recv_err = false;
-    loop {
-        let r = http_read(&mut *hs, chunk.as_mut_ptr(), chunk.len() as c_int);
-        if r < 0 {
-            recv_err = true;
-            break;
-        }
-        if r == 0 {
-            break;
-        }
-        body.extend_from_slice(&chunk[..r as usize]);
-    }
-    note_short_body("GET", path, &hs, recv_err);
-    http_close(&mut *hs);
-    Some(body)
-}
-
-/// Minimal HTTP PUT (no request body); returns the response status, or -1 on failure.
-/// Used to SELECT a stream server-side — PUT /library/parts/{id}?allParts=1&audioStreamID=…
-/// — because the transcoder encodes the part's *selected* audio, not a query-param one
-/// (a GET on the same path does not change the selection; only PUT does).
-pub(crate) fn http_put(host: &str, port: c_int, path: &str) -> c_int {
-    let host_c = match std::ffi::CString::new(host) {
-        Ok(c) => c,
-        Err(_) => return -1,
-    };
-    let path_c = match std::ffi::CString::new(path) {
-        Ok(c) => c,
-        Err(_) => return -1,
-    };
-    let mut hs = http_stream_boxed();
-    if http_open(&mut *hs, host_c.as_ptr(), port, path_c.as_ptr(), std::ptr::null(), "PUT") != 0 {
-        return if hs.status != 0 { hs.status } else { -1 };
-    }
-    let status = hs.status;
-    let mut chunk = vec![0u8; 4096];
-    while http_read(&mut *hs, chunk.as_mut_ptr(), chunk.len() as c_int) > 0 {}
-    http_close(&mut *hs);
-    status
-}
-
-/// Minimal HTTP POST (no request body); returns the response body, or None on failure.
-/// Used for POST /playQueues (parse the returned ids) and POST /:/timeline (body ignored) —
-/// the Plex spec verb for both. Params ride the query string like the GET/PUT wrappers.
-pub(crate) fn http_post(host: &str, port: c_int, path: &str, extra: Option<&str>) -> Option<Vec<u8>> {
-    let host_c = std::ffi::CString::new(host).ok()?;
-    let path_c = std::ffi::CString::new(path).ok()?;
-    let extra_c = extra.and_then(|e| std::ffi::CString::new(e).ok());
-    let extra_ptr = extra_c.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
-    let mut hs = http_stream_boxed();
-    if http_open(&mut *hs, host_c.as_ptr(), port, path_c.as_ptr(), extra_ptr, "POST") != 0 {
-        return None;
-    }
-    let mut body = Vec::new();
-    let mut chunk = vec![0u8; 65536];
-    let mut recv_err = false; // see the read loop in `http_get` — same split, same reason
-    loop {
-        let r = http_read(&mut *hs, chunk.as_mut_ptr(), chunk.len() as c_int);
-        if r < 0 {
-            recv_err = true;
-            break;
-        }
-        if r == 0 {
-            break;
-        }
-        body.extend_from_slice(&chunk[..r as usize]);
-    }
-    note_short_body("POST", path, &hs, recv_err);
-    http_close(&mut *hs);
-    Some(body)
-}
+// The three one-shot wrappers that lived here — `http_get`, `http_put`, `http_post` — are GONE.
+//
+// They were the Plex control plane's transport, and each folded away half of the answer:
+// `http_get`/`http_post` returned `Option<Vec<u8>>`, collapsing every non-2xx into the same `None`
+// a refused connection produces, and `http_put` returned the status with the body dropped. That
+// collapse is precisely what `plex::probe::Outcome` exists to prevent — a `401` is a TOKEN problem
+// (every other address of that server answers identically) while a refusal is a REACHABILITY one,
+// and reporting the first as the second sends a user to look at their friend's router.
+// `auth::get_identity` had already had to hand-roll its own open/read/close for that reason.
+//
+// Their replacement is `crate::http`, the one door that dispatches a control-plane request on its
+// origin's SCHEME — this module for plaintext, `net.rs`/libcurl for TLS — and returns the status
+// AND the body over either. Its plaintext arm is the same composition the wrappers were, so
+// nothing about the bytes on the wire moved; `note_short_body` above went `pub(crate)` to keep the
+// short-body notice on that path.
 
 /// A boxed HttpStream in the CLOSED state (fd = -1, never 0 — a stray close on a zeroed box
 /// would take stdin), so http_close is a no-op until
@@ -996,6 +927,18 @@ pub(crate) fn http_stream_boxed() -> Box<HttpStream> {
 mod tests {
     use super::*;
     use std::time::Instant;
+
+    /// One `GET /x` at a loopback port, through the door the control plane actually uses.
+    ///
+    /// These assertions used to call `stream::http_get`, and they outlived it: what they grade —
+    /// that a chunked body is decoded on the READ path, and that a truncated one still reaches its
+    /// caller — is a property of `http_open`/`http_read`, not of the wrapper that wrapped them. Now
+    /// they grade it through `crate::http`'s plaintext arm, i.e. through the composition that runs
+    /// in production, which is strictly more than the wrapper could say.
+    fn loopback_get(port: u16) -> Option<crate::http::Reply> {
+        let o = crate::plex::Origin::http("127.0.0.1", port as i32);
+        crate::http::request(&o, "/x", crate::http::Method::Get, &[])
+    }
 
     /// Descriptors currently open in this process. `/dev/fd` works on both macOS and Linux;
     /// `read_dir` opens one itself, but that is constant between two calls.
@@ -1730,8 +1673,8 @@ mod tests {
     fn a_chunked_body_spelled_without_a_space_is_still_decoded() {
         let (port, h) = one_shot_server(
             b"HTTP/1.1 200 OK\r\nTransfer-Encoding:chunked\r\n\r\n4\r\nabcd\r\n3\r\nefg\r\n0\r\n\r\n".to_vec());
-        let body = http_get("127.0.0.1", port as c_int, "/x", None).expect("a 200 must open");
-        assert_eq!(body.as_slice(), b"abcdefg", "the chunk framing was left in the body");
+        let r = loopback_get(port).expect("a 200 must open");
+        assert_eq!((r.status, r.body.as_slice()), (200, &b"abcdefg"[..]), "the chunk framing was left in the body");
         h.join().unwrap();
     }
 
@@ -1742,9 +1685,38 @@ mod tests {
     #[test]
     fn a_truncated_body_is_still_returned_to_the_caller() {
         let (port, h) = one_shot_server(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nabcd".to_vec());
-        let body = http_get("127.0.0.1", port as c_int, "/x", None)
-            .expect("a truncated body is still a body — this must not become None");
-        assert_eq!(body.as_slice(), b"abcd", "the bytes that did arrive must be handed over intact");
+        let r = loopback_get(port).expect("a truncated body is still a body — this must not become None");
+        assert_eq!(r.body.as_slice(), b"abcd", "the bytes that did arrive must be handed over intact");
+        assert_eq!(r.status, 200, "…and the server's own verdict travels beside them");
         h.join().unwrap();
+    }
+
+    /// **A non-2xx is a RESPONSE, and it must arrive as one.** The wrapper these two tests used to
+    /// call answered `None` here, indistinguishable from a refused connection — the collapse the
+    /// whole `plex::probe::Outcome` model is built to avoid, and the reason `crate::http` replaced
+    /// it. Graded against a real socket rather than against the header parser, because what is
+    /// being asserted is the composition: `http_open` reports the failure through its return value
+    /// and leaves the code on the struct, and only reading `hs_status` afterwards recovers it.
+    #[test]
+    fn a_401_reaches_the_caller_as_a_status_and_not_as_a_transport_failure() {
+        let (port, h) = one_shot_server(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n".to_vec());
+        let r = loopback_get(port).expect("the server ANSWERED — that is not a transport failure");
+        assert_eq!(r.status, 401);
+        assert!(!r.ok(), "…and it is still not a success");
+        h.join().unwrap();
+    }
+
+    /// Nothing listening is the OTHER outcome, and it must not wear a status. `0` is what
+    /// `http_open`'s parser leaves when no `HTTP/1.x NNN` line ever arrived, and `crate::http`
+    /// turns that into `None` so a caller cannot read it as a refusal (`classify` would score it
+    /// `Unreachable` either way, but by luck rather than by decision).
+    #[test]
+    fn a_connection_that_never_answers_is_none_rather_than_a_status_of_zero() {
+        // Bind and drop, so the port is one nothing is listening on any more.
+        let port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+            l.local_addr().expect("addr").port()
+        };
+        assert!(loopback_get(port).is_none());
     }
 }

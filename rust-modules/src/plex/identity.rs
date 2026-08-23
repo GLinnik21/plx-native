@@ -57,10 +57,76 @@ pub(crate) fn platform_version() -> &'static str {
     if r.is_empty() { "4.5" } else { r }
 }
 
+/// The UI language inherited by this native process, as a safe BCP-47-shaped tag.
+///
+/// webOS's authoritative setting is `localeInfo.locales.UI`, but this native app has no LS2
+/// settings client. The honest source it already inherits is the process locale environment; the
+/// host simulator inherits the same thing from its shell. POSIX precedence is `LC_ALL`, then
+/// `LC_MESSAGES`, then `LANG`. If the launcher supplies none (or explicitly supplies the neutral
+/// `C`/`POSIX` locale), the identity omits `X-Plex-Language` instead of inventing English.
+pub(crate) fn language() -> Option<&'static str> {
+    static LANGUAGE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    LANGUAGE
+        .get_or_init(|| {
+            for key in ["LC_ALL", "LC_MESSAGES", "LANG"] {
+                let Some(raw) = std::env::var_os(key) else { continue };
+                if raw.is_empty() {
+                    continue;
+                }
+                // A present higher-precedence locale decides the answer, including `C` (None).
+                return raw.to_str().and_then(locale_language_tag);
+            }
+            None
+        })
+        .as_deref()
+}
+
+/// POSIX locale (`sr_RS.UTF-8@latin`) to the language tag PMS expects (`sr-RS`). Strict ASCII
+/// validation is also the header/query-injection boundary for an inherited environment value.
+fn locale_language_tag(raw: &str) -> Option<String> {
+    let base = raw.trim().split(['.', '@']).next()?;
+    if base.eq_ignore_ascii_case("C") || base.eq_ignore_ascii_case("POSIX") {
+        return None;
+    }
+    let parts: Vec<&str> = base.split(['-', '_']).collect();
+    let language = *parts.first()?;
+    if !(2..=8).contains(&language.len()) || !language.bytes().all(|b| b.is_ascii_alphabetic()) {
+        return None;
+    }
+
+    let mut out = language.to_ascii_lowercase();
+    for part in parts.into_iter().skip(1) {
+        if part.is_empty() || part.len() > 8 || !part.bytes().all(|b| b.is_ascii_alphanumeric()) {
+            return None;
+        }
+        out.push('-');
+        if part.len() == 4 && part.bytes().all(|b| b.is_ascii_alphabetic()) {
+            let mut chars = part.chars();
+            out.extend(chars.next()?.to_uppercase());
+            out.push_str(&chars.as_str().to_ascii_lowercase());
+        } else if part.len() == 2 && part.bytes().all(|b| b.is_ascii_alphabetic()) {
+            out.push_str(&part.to_ascii_uppercase());
+        } else {
+            out.push_str(&part.to_ascii_lowercase());
+        }
+    }
+    Some(out)
+}
+
 /// Device CLASS — what kind of thing this is. Generic on purpose: this app runs on any rooted
 /// webOS 4.x panel, not on the model it was developed against.
 pub(crate) const DEVICE: &str = "LG webOS TV";
 pub(crate) const MODEL: &str = "LG webOS TV";
+
+/// Who MADE the hardware. The one field in this file that is a fact about the panel rather than a
+/// claim about this app, and it is safe to state because it is not a choice: the binary is
+/// cross-compiled for LG's webOS, links LG's `libplayerAPIs`, and starts on nothing else.
+///
+/// It rides the **plex.tv** headers only. That surface is the account's authorized-device list,
+/// where a user picks their television out of a column of them and revokes it — the place the
+/// vendor is worth reading. PMS is told what it acts on instead (`Client::playback_identity`), and
+/// it acts on the codec profile, not on who built the set. See that method's doc for the split.
+pub(crate) const VENDOR: &str = "LG";
 
 /// The FRIENDLY name, which is what a user actually reads in plex.tv's device list and in the
 /// server's Now Playing. Names the app rather than a room, so it is true on every install and
@@ -115,9 +181,19 @@ mod tests {
     /// The developer's own panel must not be reported as every user's hardware.
     #[test]
     fn no_specific_model_is_asserted() {
-        for s in [super::DEVICE, super::MODEL, super::device_name()] {
+        for s in [super::DEVICE, super::MODEL, super::device_name(), super::VENDOR] {
             assert!(!s.contains("49SM9000"), "{s:?} names the author's television");
         }
+    }
+
+    /// The vendor is the panel's, and it is the ONE identity field that is not this app's to
+    /// choose — the binary starts on LG's webOS and on nothing else. Pinned so that "make the
+    /// identity honest" can never be read as a reason to blank it: an empty header value is a
+    /// claim too, and a wrong one.
+    #[test]
+    fn the_vendor_names_the_hardware_this_binary_runs_on() {
+        assert_eq!(super::VENDOR, "LG");
+        assert!(!super::VENDOR.to_ascii_lowercase().starts_with("plex"));
     }
 
     /// The shipped app's device name must not move — it is already in every existing user's
@@ -141,5 +217,15 @@ mod tests {
     #[test]
     fn unknown_firmware_falls_back_to_the_old_literal() {
         assert_eq!(super::platform_version(), "4.5");
+    }
+
+    #[test]
+    fn a_process_locale_becomes_a_safe_plex_language_tag() {
+        assert_eq!(super::locale_language_tag("en_US.UTF-8"), Some("en-US".into()));
+        assert_eq!(super::locale_language_tag("mn_Cyrl_MN.UTF-8"), Some("mn-Cyrl-MN".into()));
+        assert_eq!(super::locale_language_tag("pt-BR"), Some("pt-BR".into()));
+        assert_eq!(super::locale_language_tag("C.UTF-8"), None);
+        assert_eq!(super::locale_language_tag("POSIX"), None);
+        assert_eq!(super::locale_language_tag("en_US\r\nX-Plex-Token: stolen"), None);
     }
 }

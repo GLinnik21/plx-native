@@ -3,8 +3,11 @@
 //!   * `with_token` — the ONLY place `X-Plex-Token` is appended.
 //!   * `enc` / `QueryBuilder` — the ONLY place a value is percent-encoded (via
 //!     `crate::pms::urlenc_str`) or a query string is assembled.
-//!   * `get_json`/`get_bytes`/`get_void`/`put`/`post` — the ONLY code that touches the
-//!     raw socket in `crate::stream`.
+//!   * `get_json`/`get_bytes`/`get_void`/`put`/`post` — the ONLY code that issues a PMS request.
+//!     They went straight at the raw socket in `crate::stream` until this layer learned to speak
+//!     to a server that is not on the LAN; they go through [`crate::http`] now, which dispatches
+//!     on the origin's SCHEME — `stream.rs` for plaintext, libcurl for TLS. Nothing below this
+//!     file knows there is more than one transport.
 //! Plus `StreamUrl`, the built-playback-target return type for the demux/cue sockets.
 //!
 //! Fields + helpers are `pub(super)` (visible inside the `plex` module tree only): the op
@@ -18,16 +21,32 @@ use super::models::{Envelope, MediaContainer};
 use super::origin::Origin;
 use super::probe::Location;
 use super::servers::ServerId;
+use crate::http::{self, Method};
 use std::sync::atomic::{AtomicU32, AtomicU8, Ordering::Relaxed};
 use std::sync::RwLock;
 
-const ACCEPT_JSON: &str = "Accept: application/json\r\n";
+/// `Accept: application/json`, from [`crate::http`] — one spelling for both transports, and
+/// without the CRLF the raw socket used to want (each transport frames its own headers now).
+use crate::http::ACCEPT_JSON;
+
+/// The headers shared by EVERY PMS operation, over either transport. `X-Plex-Language` belongs
+/// here rather than in [`Client::playback_identity`]: it selects server-returned metadata for
+/// browse/search reads too, not only playback protocol calls. Owned strings keep the optional
+/// locale value alive while `crate::http` borrows the slice.
+fn pms_headers(headers: &[&str]) -> Vec<String> {
+    let mut out: Vec<String> = headers.iter().map(|h| (*h).to_string()).collect();
+    if let Some(language) = super::identity::language() {
+        out.push(format!("X-Plex-Language: {language}"));
+    }
+    out
+}
 
 /// Immutable after construction (apart from the token + its generation, both interior-mutable).
 /// Cheap to share by `&ref` across threads (poster workers, the timeline reporter, the detail
 /// loader all read it). Its address is an [`Origin`] — see the field, and `origin.rs` for why a
-/// `(host, port)` pair could not be the whole of one. Every origin today is `http://` at a numeric
-/// dotted quad, because that is all the raw socket in `crate::stream` speaks: no DNS, no TLS.
+/// `(host, port)` pair could not be the whole of one. The origin's SCHEME picks the transport
+/// ([`crate::http`]), so a client whose server is a `plex.direct` name over the public internet is
+/// the same type reached a different way — no call site below this layer knows the difference.
 pub struct Client {
     /// This client's slot in the [server registry](super::servers) — a stable handle for the
     /// life of the process, which is what lets a caller name a server without holding a
@@ -47,9 +66,12 @@ pub struct Client {
     /// underneath it. The origin is PARSED from what plex.tv sent — see
     /// [`super::probe::Candidate::origin`].
     ///
-    /// Today every one of these is `http://` at a numeric IPv4 address, because that is all
-    /// `crate::stream` speaks. [`Client::host`] and [`Client::port`] still answer exactly what
-    /// they always did, which is why the ~30 call sites below this layer did not move.
+    /// It is **the transport selector**: every request this client makes goes through
+    /// [`crate::http`], which dispatches on this scheme. A `plex.direct` origin therefore reaches
+    /// its server over libcurl with the certificate validated against [`Origin::host`], and a
+    /// plaintext one keeps the raw socket it always used. [`Client::host`] and [`Client::port`]
+    /// still answer exactly what they always did, which is why the ~30 call sites below this
+    /// layer did not move.
     pub(super) origin: Origin,
     // X-Plex-Token value. Interior-mutable because the token changes at runtime after boot: it's
     // installed once we've logged in, and swapped when the user switches Plex Home profile (same
@@ -105,9 +127,8 @@ fn next_gen() -> u32 {
     GEN_SEQ.fetch_add(1, Relaxed)
 }
 
-/// [`Client::link`] before anything has told us how this server is reached — the state every
-/// client is in today, since nothing dials from a [`Location`] yet. Distinct from every real tier
-/// on purpose: "unknown" is not "local", and the policy treats the two differently.
+/// [`Client::link`] before discovery has activated a candidate. Distinct from every real tier on
+/// purpose: "unknown" is not "local", and the policy treats the two differently.
 const LINK_UNKNOWN: u8 = 0;
 
 /// `Location` ⇄ `u8`, so the tier fits in an atomic. Written as two total matches rather than a
@@ -162,6 +183,34 @@ impl Client {
 
     /// Append the full playback identity to a query — every playback-protocol request
     /// (decision/start/stop/playQueues/timeline/direct-play GET) carries it.
+    ///
+    /// **This surface is what PMS ACTS ON**, which is the rule that decides what belongs here as
+    /// against the plex.tv header copy (`account::AccountClient::headers`, whose doc states the
+    /// other half). PMS draws these into the Player node of `/status/sessions`, groups a device's
+    /// sessions by the identifier, and keys `GET /video/:/transcode/universal/stop` on it. What it
+    /// does NOT do is choose a transcode from any of them — that is the capability profile
+    /// `transcoder.rs` sends, built from the television's own codec table (`devcaps.rs`).
+    ///
+    /// **Two headers the official webOS client sends are absent from both surfaces on purpose.**
+    /// Each was considered and each is a claim this app cannot honestly make:
+    ///
+    /// * **`X-Plex-Device-Screen-Resolution`.** The honest value is the PANEL — 3840x2160 on the
+    ///   dev set, whose UI surface is 1080p — and the panel is read behind a private accessor in
+    ///   `surface.rs`, which this layer does not own. Sending the drawable instead would announce
+    ///   `1920x1080` from a 4K television, and it would announce it *alongside* a capability
+    ///   profile that already says `videoResolution=3840x2160` with per-codec width and height
+    ///   bounds from the device's own table. Two contradictory resolution claims in one request
+    ///   can only cost quality, and the one that would lose is the truthful one.
+    /// * **`X-Plex-Features: external-media,indirect-media`.** Both are capability CLAIMS, and
+    ///   neither is true: nothing in `plex/` or `player/` handles an `indirect="1"` decision
+    ///   response (it needs a second fetch this client never makes), and there is no path that
+    ///   plays media the server does not host. Claiming them makes a server hand this app a
+    ///   payload it cannot play — which is a worse failure than not claiming them, and it is
+    ///   issue #22's lesson exactly: a claim true of the development environment asserted as
+    ///   universal.
+    ///
+    /// `X-Plex-Language` is conditional rather than absent, and broader than this PLAYBACK-only
+    /// query identity: [`pms_headers`] adds it to every PMS operation from the process locale.
     pub(super) fn playback_identity(&self, q: QueryBuilder) -> QueryBuilder {
         q.str("X-Plex-Client-Identifier", &self.client_id)
             .str("X-Plex-Product", &self.product)
@@ -236,16 +285,73 @@ impl Client {
 
     // ---- transport choke points: the only code that touches crate::stream ----
 
+    /// The ONE call every choke point below makes — origin, token, transport, in that order.
+    ///
+    /// `path_no_token` goes through [`Client::with_token`] (the token choke point) and then
+    /// through [`crate::http`], which picks the transport from this client's origin. Splitting it
+    /// out is not tidiness: it is what makes "did this request carry the token" and "which
+    /// transport did it take" two questions with one answer each, rather than eight copies of the
+    /// same three lines that a future scheme has to be threaded through one at a time.
+    ///
+    /// Returns the whole [`Reply`](crate::http::Reply) — status included — so each caller applies
+    /// the fold it actually wants. That is the difference this file cares about: the one-shot
+    /// wrapper this used to call folded every non-2xx into `None` for everybody, which is why a
+    /// probe could not tell a 401 from a dead router.
+    fn send(&self, path_no_token: &str, method: Method, headers: &[&str]) -> Option<http::Reply> {
+        let owned = pms_headers(headers);
+        let headers: Vec<&str> = owned.iter().map(String::as_str).collect();
+        http::request(&self.origin, &self.with_token(path_no_token), method, &headers)
+    }
+
+    /// A 2xx response body, or `None` — the fold the raw socket used to apply for every caller,
+    /// written once here now that the transport no longer does it. Every read below wants exactly
+    /// this: a non-2xx PMS answer is not a container, and `http_open` has already logged the
+    /// status line (`stream: GET /path status=…`) on the plaintext arm.
+    fn body_2xx(&self, path_no_token: &str, method: Method, headers: &[&str]) -> Option<Vec<u8>> {
+        let r = self.send(path_no_token, method, headers)?;
+        r.ok().then_some(r.body)
+    }
+
+    /// The read twin of [`Client::body_2xx`] for a content-dependent PMS body. On HTTPS it keeps
+    /// the connect deadline but has no 25 s whole-transfer cutoff; on plaintext it is the same
+    /// socket policy `stream.rs` has always used.
+    fn body_2xx_bulk(&self, path_no_token: &str, headers: &[&str]) -> Option<Vec<u8>> {
+        let owned = pms_headers(headers);
+        let headers: Vec<&str> = owned.iter().map(String::as_str).collect();
+        let r =
+            http::request_bulk(&self.origin, &self.with_token(path_no_token), Method::Get, &headers)?;
+        r.ok().then_some(r.body)
+    }
+
     /// GET → parse the `{ "MediaContainer": … }` envelope into the flat container.
     pub(super) fn get_json(&self, path_no_token: &str) -> Option<MediaContainer> {
-        let path = self.with_token(path_no_token);
-        let body = crate::stream::http_get(self.host(), self.port(), &path, Some(ACCEPT_JSON))?;
-        serde_json::from_slice::<Envelope>(&body).ok().map(|e| e.media_container)
+        let body = self.body_2xx_bulk(path_no_token, &[ACCEPT_JSON])?;
+        match serde_json::from_slice::<Envelope>(&body) {
+            Ok(e) => Some(e.media_container),
+            Err(e) => {
+                // A 2xx whose body will not parse is the failure that used to be indistinguishable
+                // from "the server never answered": both left by the same `None`. `stream.rs` had
+                // a short-body notice for the truncation case, which reads two of its private
+                // fields and so does not survive the move behind `crate::http`; this line answers
+                // the same question from the other side, and covers the cases that one could not
+                // (XML because an Accept header was rewritten in flight, an error page from a
+                // proxy, a body that is simply a different shape).
+                //
+                // The ENDPOINT only — never the built path, which carries `X-Plex-Token`. Serde's
+                // own message names a type and an offset and quotes no content.
+                crate::log(&format!(
+                    "pms: GET {} answered {} bytes that will not parse — {e}",
+                    path_no_token.split('?').next().unwrap_or(path_no_token),
+                    body.len()
+                ));
+                None
+            }
+        }
     }
 
     /// GET raw bytes (image transcode / sidecar sub) — caller decodes.
     pub(super) fn get_bytes(&self, path_no_token: &str) -> Option<Vec<u8>> {
-        crate::stream::http_get(self.host(), self.port(), &self.with_token(path_no_token), None)
+        self.body_2xx_bulk(path_no_token, &[])
     }
 
     /// GET raw bytes for a path this server ALREADY BUILT — the one entry point that does **not**
@@ -262,12 +368,17 @@ impl Client {
     /// The token is therefore in the CALLER's string. It must not be logged — the poster store
     /// logs no keys, and neither may anything else that holds one.
     pub(crate) fn fetch_built(&self, path_with_token: &str) -> Option<Vec<u8>> {
-        crate::stream::http_get(self.host(), self.port(), path_with_token, None)
+        // NOT `body_2xx`, for the same reason this method exists at all: that helper appends the
+        // token, and this path already ends in one.
+        let owned = pms_headers(&[]);
+        let headers: Vec<&str> = owned.iter().map(String::as_str).collect();
+        let r = http::request_bulk(&self.origin, path_with_token, Method::Get, &headers)?;
+        r.ok().then_some(r.body)
     }
 
     /// GET whose body is discarded (transcode decision / stop registration side effects).
     pub(super) fn get_void(&self, path_no_token: &str) {
-        let _ = crate::stream::http_get(self.host(), self.port(), &self.with_token(path_no_token), None);
+        let _ = self.send(path_no_token, Method::Get, &[]);
     }
 
     /// [`Client::get_void`], but reporting whether the request actually reached the server and came
@@ -276,12 +387,15 @@ impl Client {
     /// timed-out connect as much as a rejected status, which is the distinction that matters here:
     /// a share that is asleep answers nothing at all.
     pub(super) fn get_ok(&self, path_no_token: &str) -> bool {
-        crate::stream::http_get(self.host(), self.port(), &self.with_token(path_no_token), None).is_some()
+        self.body_2xx(path_no_token, Method::Get, &[]).is_some()
     }
 
-    /// PUT (no body) — returns the HTTP status (all `select_streams` reads).
+    /// PUT (no body) — returns the HTTP status (all `select_streams` reads), or `-1` when the
+    /// request never completed. `-1` is the value the `stream.rs` wrapper this replaced always
+    /// returned for a transport failure, and it is kept because a caller reading a status must not
+    /// mistake "the server refused" for "nothing was sent".
     pub(super) fn put(&self, path_no_token: &str) -> i32 {
-        crate::stream::http_put(self.host(), self.port(), &self.with_token(path_no_token))
+        self.send(path_no_token, Method::Put, &[]).map_or(-1, |r| r.status)
     }
 
     /// POST whose body carries nothing to read — /:/timeline (spec verb; params ride the query
@@ -297,13 +411,12 @@ impl Client {
     /// timeline is the only body-less POST in the layer, so a twin that dropped the outcome would
     /// be a method with no callers.
     pub(super) fn post_ok(&self, path_no_token: &str) -> bool {
-        crate::stream::http_post(self.host(), self.port(), &self.with_token(path_no_token), None).is_some()
+        self.body_2xx(path_no_token, Method::Post, &[]).is_some()
     }
 
     /// POST → parse the `{ "MediaContainer": … }` envelope — /playQueues (the returned ids).
     pub(super) fn post_json(&self, path_no_token: &str) -> Option<MediaContainer> {
-        let path = self.with_token(path_no_token);
-        let body = crate::stream::http_post(self.host(), self.port(), &path, Some(ACCEPT_JSON))?;
+        let body = self.body_2xx(path_no_token, Method::Post, &[ACCEPT_JSON])?;
         serde_json::from_slice::<Envelope>(&body).ok().map(|e| e.media_container)
     }
 
@@ -392,10 +505,10 @@ impl StreamUrl {
     /// The full `{scheme}://{authority}{path}` form — what `route` stores as the playback URL
     /// (the engine later splits it back with [`StreamUrl::parse`]).
     ///
-    /// Byte-identical to the `format!("http://{host}:{port}{path}")` it replaced for every origin
-    /// this app builds today, and correct for the two shapes that spelling could not express: an
-    /// https origin, and a v6 literal (which must be BRACKETED in a URL and BARE at the resolver
-    /// — see [`Origin`]).
+    /// Byte-identical to the `format!("http://{host}:{port}{path}")` it replaced for a legacy
+    /// plaintext origin, and correct for the two shapes that spelling could not express: an https
+    /// origin, and a v6 literal (which must be BRACKETED in a URL and BARE at the resolver — see
+    /// [`Origin`]).
     pub fn to_url(&self) -> String {
         format!("{}{}", self.origin.base(), self.path)
     }
@@ -450,6 +563,12 @@ mod tests {
             .playback_identity(QueryBuilder::new("/p"))
             .build()
             .contains("X-Plex-Client-Identifier=cid-42"));
+        let headers = pms_headers(&[ACCEPT_JSON]);
+        let sent = headers.iter().find_map(|h| h.strip_prefix("X-Plex-Language: "));
+        match super::super::identity::language() {
+            Some(language) => assert_eq!(sent, Some(language)),
+            None => assert_eq!(sent, None),
+        }
         // a client built outside the registry says so rather than claiming slot 0
         assert!(!Client::new(ServerId::UNSET, "", Origin::http("1.2.3.4", 32400), "t", "cid").id().is_set());
     }

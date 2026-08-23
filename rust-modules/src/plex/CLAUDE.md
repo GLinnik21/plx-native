@@ -46,11 +46,11 @@ brackets a v6 literal (it is URL serialization) — confusing the two makes URL 
 looking right while name resolution quietly stops working. `register(machine_id, host, port, token)`
 and `Origin::http(host, port)` still exist and are honest about what they mean: **every caller of
 either is a place that still assumes cleartext**, which is what makes them the grep for the TLS
-work. Today they all are, because `stream.rs` speaks nothing else — with one caller that has an
-origin and throws it away: `ui/alt_sources.rs`'s dev-only `stand_in_slot`, which registers a
-stand-in from `c.host()`/`c.port()` and should say `register_origin(&…, c.origin(), &token)`. It is
-one line and it is not in the origin unit's ownership, so it is written down here rather than
-silently left.
+work. The CONTROL plane no longer makes that assumption: `http.rs` sends an HTTPS origin through
+libcurl. Neither does playback: `StreamUrl` preserves the scheme and `ff.rs` selects `stream.rs`
+for plaintext or `curlio.rs` for HTTPS. One dev-only caller also still throws an origin away:
+`ui/alt_sources.rs`'s `stand_in_slot` registers a stand-in from `c.host()`/`c.port()` and must move
+to `register_origin` in that UI-owned lane.
 
 Slots are keyed on `machineIdentifier` because that is the only identity that survives a server
 changing address — and a registration that has *learned* an id **adopts** an address-only slot
@@ -167,6 +167,7 @@ a dead source is **absent** from Home and states itself in its own library secti
 
 ## Where the bytes go next
 
-This layer only *decides and locates*; the actual byte stream (direct-play or transcode) is pulled and
-demuxed by `stream.rs`/`mkv.rs` and fed to Starfish by the `player/` engine — see `player/CLAUDE.md`
-for the Load-payload/codec and subtitle-rendering rules on the other side of the handoff.
+This layer only *decides and locates*; the actual byte stream (direct-play or transcode) is pulled
+through `stream.rs` or `curlio.rs`, demuxed by `ff.rs`, and fed to Starfish by the `player/` engine
+— see `player/CLAUDE.md` for the Load-payload/codec and subtitle-rendering rules on the other side
+of the handoff. The old hand-rolled `mkv.rs` path is retired.

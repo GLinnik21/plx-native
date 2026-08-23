@@ -43,10 +43,35 @@ impl AccountClient {
     }
 
     /// The `X-Plex-*` identity headers every plex.tv request carries (+ the token when present).
-    /// These are also what plex.tv shows in the account's "authorized devices" list — which is
-    /// why every value comes from [`identity`](super::identity) rather than a literal here: this
-    /// list and the PMS's query-parameter copy had drifted on five of seven fields, and one of
-    /// them ("Plex for webOS") read as an official Plex client in a stranger's account.
+    ///
+    /// **This surface is the account's AUTHORIZED-DEVICE LIST**, and that is what decides which
+    /// fields belong here rather than on the PMS query-parameter copy
+    /// (`Client::playback_identity`). A user reads this list to find one television among several
+    /// and revoke it, so every field that helps them TELL DEVICES APART belongs here: what the app
+    /// is, what it runs on, which firmware, who made the panel, and the per-install identifier the
+    /// entry is keyed on. Fields that exist so a SERVER can decide what to send — a codec profile,
+    /// a screen size — do not: plex.tv sends no media.
+    ///
+    /// Every value comes from [`identity`](super::identity) rather than a literal here. The two
+    /// lists had drifted on five of seven fields, and one of them ("Plex for webOS") read as an
+    /// official Plex client in a stranger's account.
+    ///
+    /// Three of these were added when the control plane learned to reach a server over the public
+    /// internet, because a reviewer signing in from somewhere else is exactly the person reading
+    /// this list:
+    ///
+    /// * **`X-Plex-Platform-Version`** — the real firmware, off the set (`identity::platform_version`).
+    ///   PMS has been told this since issue #22, and plex.tv had not been, so an account's list
+    ///   said "webOS" with no version while `/status/sessions` said "webOS 6.5.2".
+    /// * **`X-Plex-Device-Vendor`** — `LG`. Not a choice this app makes; see [`identity::VENDOR`].
+    /// * **`X-Plex-Provides`** — `player`. plex.tv reports this field back per device in
+    ///   `/api/v2/resources` (it is what `Resource::is_server` reads on the way in), so a client
+    ///   that never sends it is asking to be classified by absence.
+    ///
+    /// Two headers the official webOS client sends are **deliberately absent from both surfaces**,
+    /// and the reasons are in `Client::playback_identity`: `X-Plex-Device-Screen-Resolution` and
+    /// `X-Plex-Features`. `X-Plex-Language` is present when `identity::language` can derive an
+    /// honest tag from the process locale, and omitted when the launcher supplied no locale.
     fn headers(&self) -> Vec<String> {
         use super::identity as id;
         let mut h = vec![
@@ -54,11 +79,17 @@ impl AccountClient {
             format!("X-Plex-Product: {}", id::PRODUCT),
             format!("X-Plex-Version: {}", id::VERSION),
             format!("X-Plex-Platform: {}", id::PLATFORM),
+            format!("X-Plex-Platform-Version: {}", id::platform_version()),
             format!("X-Plex-Device: {}", id::DEVICE),
             format!("X-Plex-Device-Name: {}", id::device_name()),
+            format!("X-Plex-Device-Vendor: {}", id::VENDOR),
             format!("X-Plex-Model: {}", id::MODEL),
+            format!("X-Plex-Provides: {}", id::PROVIDES),
             format!("X-Plex-Client-Identifier: {}", self.client_id),
         ];
+        if let Some(language) = id::language() {
+            h.push(format!("X-Plex-Language: {language}"));
+        }
         if let Some(t) = &self.token {
             h.push(format!("X-Plex-Token: {t}"));
         }
@@ -372,7 +403,14 @@ pub struct HomeUser {
 
 #[cfg(test)]
 mod tests {
-    use super::{endpoint_shape, Pin, Resource};
+    use super::{endpoint_shape, AccountClient, Pin, Resource};
+
+    #[test]
+    fn account_headers_use_the_same_honest_language_source_as_pms() {
+        let headers = AccountClient::new("cid", None).headers();
+        let sent = headers.iter().find_map(|h| h.strip_prefix("X-Plex-Language: "));
+        assert_eq!(sent, super::super::identity::language());
+    }
 
     /// The log's shape rule, on the exact URLs this file and `discover.rs` build. Both halves are
     /// asserted: the route survives (or the line stops saying which call failed) and every

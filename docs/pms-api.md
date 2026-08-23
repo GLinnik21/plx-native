@@ -183,7 +183,7 @@ the spec but **this server does not emit it on `Role[]`** — treat 0 as unknown
   on TV Shows here). NB the rows key the id as **`key`/`title`**, not `id`/`tag` — a different
   shape from the tag arrays above. This is the *Categories → by Actor* browse axis.
 - **Headshots are absolute `https://metadata-static.plex.tv/…` URLs**, which the raw-socket
-  client can never fetch (no DNS, no TLS). They render anyway because `image_transcode_path`
+  client can never fetch (it resolves names now, but has no TLS). They render anyway because `image_transcode_path`
   passes the whole URL as `url=` to `/photo/:/transcode` and **the server does the TLS** — the
   same path posters take. Never invent another image route for them.
 
@@ -699,16 +699,19 @@ also the one whose exact effect this repo has **not** measured. Settling that ne
 against a PMS, which nobody has run.
 
 **What THIS app sends is a subset of the table, and the two must not be read as one.**
-`rust-modules/src/plex/client.rs::playback_identity` (constants in `plex/identity.rs`) emits nine
-fields: `X-Plex-Client-Identifier`, `-Product`, `-Version`, `-Platform`, `-Platform-Version`,
-`-Device`, `-Device-Name`, `-Model` and `-Provides`, plus the token. The four capability and locale
-fields — **`X-Plex-Device-Vendor`, `X-Plex-Device-Screen-Resolution`, `X-Plex-Language` and
-`X-Plex-Features`** — appear nowhere in the tree today. The table is the target; this paragraph is
-the state.
+`rust-modules/src/plex/client.rs::playback_identity` (constants in `plex/identity.rs`) always emits
+nine fields: `X-Plex-Client-Identifier`, `-Product`, `-Version`, `-Platform`, `-Platform-Version`,
+`-Device`, `-Device-Name`, `-Model` and `-Provides`, plus the token. The central PMS request choke
+point conditionally sends **`X-Plex-Language` as a header** from the inherited process locale on
+every operation, omitting it for an absent or neutral locale. `X-Plex-Device-Vendor` is sent to
+plex.tv's authorized-device surface but not PMS;
+`X-Plex-Device-Screen-Resolution` and `X-Plex-Features` remain absent from both. The table is the
+target; this paragraph is the state.
 
-They are appended as **query parameters** rather than headers because the raw-socket transport in
-`stream.rs` writes its own request line — PMS accepts either, which is what the "(also accepted as
-query params)" above means and why that spelling is not a compromise.
+The nine playback fields and token are appended as **query parameters** because the raw-socket
+transport in `stream.rs` writes its own request line; the language is a header on both transports.
+PMS accepts either identity spelling, which is what the "(also accepted as query params)" above
+means.
 
 Client behavior expected by PMS (matches official clients):
 

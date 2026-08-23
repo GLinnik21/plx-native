@@ -50,17 +50,17 @@ instrument #14 needs.
 
 ### #43 CASE2 — IPv6
 
-`stream.rs` is `AF_INET` only (lines 284, 307, 703, 716, 731, 788, 867). Playback over IPv6 is not
-degraded, it is impossible.
+Implemented, not yet device-accepted. `stream.rs` resolves with `AF_UNSPEC`, walks the whole
+`getaddrinfo` chain, keeps IPv6 literals bare for the resolver and bracketed in URLs, and has host
+tests for both address families. A real IPv6 PMS playback run is still owed before this row is Pass.
 
 ### #20 / #43 / #47 — a tester cannot reach a server at all
 
-**This is the one that fails first in a lab, and it fails three items at once.**
-`stream.rs::http_open` builds a `sockaddr_in` by hand from four decimal octets: plaintext HTTP, no
-TLS, no name resolution. `auth.rs` ranks every candidate the account can reach, but the transport
-still cannot dial an `https` `plex.direct` origin, a hostname, IPv6, or a relay connection — and
-there is no Settings screen and no manual server entry anywhere in the route enum. Unless the QA
-bench sits on the same IPv4 LAN as a plaintext-HTTP PMS, the app dead-ends at "no server found".
+The former lab blocker is implemented, not yet device-accepted. `auth.rs` ranks all granted
+connection URLs; `http.rs` routes HTTPS PMS control through libcurl, `curlio.rs` carries HTTPS
+media, and `stream.rs` resolves hostnames plus IPv4/IPv6 for plaintext origins. There is no manual
+server entry by design: the television chooses per profile from servers configured through Plex.
+An actual remote/relay browse-and-play session on the QA firmware is still required for Pass.
 
 ### #53 — factory reset → execute app
 
@@ -190,10 +190,12 @@ UX scenario for movement details"*, so the UX scenario submitted to Seller Loung
 the transport against. That makes writing it carefully load-bearing rather than a formality — and
 it is the same escape hatch for #10, #42 and #2, which all cite it.
 
-**#41 — the app is English-only.** N/A on the item's own precondition (no in-app language setting),
-but a Korean tester on a Korean set still sees an all-English UI. LG supports locale-specific
-`appinfo.json` files carrying a translated `title` and `appDescription`, which localizes the store
-listing and launcher tile without touching the UI. That is the cheap half and it is not done.
+**#41 — the app UI is English-only.** N/A on the item's own precondition (no in-app language
+setting), but a Korean tester on a Korean set still sees English display literals. The cheap halves
+are implemented: locale-specific `appinfo.json` resources cover launcher/listing metadata, and a
+validated inherited POSIX locale conditionally becomes `X-Plex-Language` for PMS metadata. What is
+unknown is whether each TV firmware refreshes the localized descriptor and exports its menu locale
+to the jailed native process; that needs the Korean-set device recipe in `docs/distribution.md`.
 
 ---
 

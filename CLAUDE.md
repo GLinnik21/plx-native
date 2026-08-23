@@ -310,8 +310,8 @@ once, in `ff::demux`: `http` reads through `stream.rs`'s raw socket, `https` thr
 **`curlio.rs`** — libcurl's *multi* interface behind a `read`/`seek`/`size`/`status`/`abort` pull
 source, so `ff.rs` never learns curl-multi mechanics. It exists because LG's reviewers have no PMS
 on their LAN and stream from the public internet, which `stream.rs` cannot reach: it speaks
-cleartext. So **libcurl is used by two modules for two jobs** — `net.rs` for the plex.tv
-account/login calls, `curlio.rs` for the media bytes — and each binds its own `dynlib!` table,
+cleartext. So **libcurl is used by two modules for two jobs** — `net.rs` for plex.tv plus HTTPS PMS
+control calls, `curlio.rs` for the media bytes — and each binds its own `dynlib!` table,
 which the linking section explains is load-bearing rather than tidy.
 
 ## Key files
@@ -337,13 +337,14 @@ which the linking section explains is load-bearing rather than tidy.
   never raw font sizes (ALL text in the UI takes its size from the `theme::size` token scale — add
   a documented rung when a new role needs one), never hand-place text.** Full design/status:
   `docs/ui-system-migration.md`.
-  (`rust-modules/src/stream.rs` — blocking HTTP/1.1 GET over a raw TCP socket: numeric IP, and a
+  (`rust-modules/src/stream.rs` — blocking HTTP/1.1 over a raw TCP socket: hostname or IPv4/IPv6
+  address, and a
   body delimited by `Content-Length`, by close, **or by `Transfer-Encoding: chunked`, which it does
   decode** (`HttpStream`'s `chunked`/`chunk_left`, the header match in `http_open`, and
   `hs_next_chunk`). This line claimed "no chunked decoding" long after that stopped being true,
   which makes `stream.rs` read as less capable than it is and sends work to `net.rs` that it would
-  have handled — its only real disqualifiers are **DNS and TLS**: it takes a numeric address and
-  speaks cleartext, nothing more. `aq.rs` — one-producer/
+  have handled — its remaining transport disqualifier is **TLS**: it resolves through
+  `getaddrinfo`, walks either address family, and speaks cleartext. `aq.rs` — one-producer/
   one-consumer AU FIFO with byte-cap backpressure. Both are Rust ports of the deleted C headers;
   the hand-rolled `mkv.rs` demuxer they fed is retired — `ff.rs` is the only demux path.)
 - `rust-modules/src/dynlib.rs` — the runtime library binder (`dlopen`, by SONAME candidate list or

@@ -10,20 +10,27 @@
 //!
 //! Three rules, each earned:
 //!
-//! 1. **A `local` connection on a NON-owned server is dropped unless `publicAddressMatches`.**
+//! 1. **Drop a `local` connection on a NON-owned server unless `publicAddressMatches`.**
 //!    `Connection.local` means "this address is RFC1918", *not* "you are on that LAN" — the share
-//!    advertises the OWNER's `172.20.x.x`. Dialling it from here times out after 8 s, and the worse
-//!    outcome is that it succeeds: `172.20.x.x` may well be a *different machine on our own LAN*,
-//!    which is a probe that connects, answers, and is the wrong server. `publicAddressMatches` is
-//!    the field that means what `local` looks like it means — with it true we really are behind the
-//!    same NAT, so the address is ours to use. python-plexapi (`myplex.py`) drops these too.
+//!    advertises the OWNER's `172.20.x.x`. Dialling it from here costs the full 8 s TLS connect
+//!    deadline before the public candidate gets a turn, and the worse outcome is that it succeeds:
+//!    `172.20.x.x` may be a *different machine on our own LAN*. TLS and the identity response make
+//!    that success safe to reject; neither makes the sequential 8 s stall useful. The whole
+//!    connection therefore goes before candidates are built. `publicAddressMatches` is the field
+//!    that means what `local` looks like it means — with it true we really are behind the same NAT,
+//!    so the address is ours to use.
 //! 2. **No plain-HTTP candidate when the owner set `httpsRequired`.** It is their setting; a plain
 //!    request to such a server is a refusal, not a connection.
-//! 3. **Rank local → remote → relay.** The order every Plex client with an order uses. Relay is a
-//!    2 Mbit/s tunnel the server transcodes down to fit: a last resort, never a preference. Inside a
-//!    tier, an address this client can actually dial comes first: IPv4 before IPv6, and a numeric
-//!    literal before a HOSTNAME (see [`is_numeric_address`] — the transport has no resolver at all,
-//!    and the measured share lists an unresolvable internal name ahead of the address that answers).
+//! 3. **Rank local → remote → relay, and TLS before plaintext inside a tier.** The location order
+//!    is the one every Plex client with an order uses: relay is a 2 Mbit/s tunnel the server
+//!    transcodes down to fit, a last resort and never a preference. The SCHEME order flipped when
+//!    the TLS control plane landed — https is the only connection a certificate can authenticate
+//!    and the only one that works from outside the LAN, so it now leads (see
+//!    [`Scheme`](super::origin::Scheme), whose declaration order IS this ranking). Then IPv4 before
+//!    IPv6, and a numeric literal before a HOSTNAME ([`is_numeric_address`]) — a WEAKER tiebreak
+//!    than it was, because both transports resolve names now, and one that is still worth having:
+//!    a literal costs no DNS round trip, and on a LAN with no route to the internet it is the only
+//!    thing that resolves at all.
 //!
 //! ## What a real prober must still do (this module cannot)
 //!
@@ -70,10 +77,10 @@ pub struct Candidate {
     /// The raw host as plex.tv gave it: a dotted quad, a v6 literal, or a hostname.
     ///
     /// **DIAGNOSTIC METADATA — never what a connection is built from.** It is what the event log
-    /// and the Sources panel say, and it is what today's cleartext `dial` is handed because
-    /// `stream.rs` takes an address and not a URL. It is emphatically *not* the host a TLS
-    /// certificate is validated against: see [`Candidate::origin`], and [`candidates`] below for
-    /// why the two differ.
+    /// and the Sources panel say, and nothing dials it: [`Candidate::origin`] is the one derivation,
+    /// and `auth::dial_target` hands that whole origin to the transport. It is emphatically *not*
+    /// the host a TLS certificate is validated against — for an advertised `uri` the two are
+    /// different strings, which is what [`candidates`] below exists to preserve.
     pub address: String,
     pub port: i64,
     pub ipv6: bool,
@@ -152,18 +159,13 @@ pub fn dial_port(p: i64) -> Option<i32> {
     (1..=65535).contains(&p).then_some(p as i32)
 }
 
-/// Would this connection be dialled at all? Rule 1 lives here, alone, so the reason it exists is
-/// readable in one place.
+/// Is there anything here to dial at all? An address and valid port are the mechanical half; rule
+/// 1 is the policy half. It drops a share's unmatched private-LAN connection WHOLE so neither its
+/// TLS uri nor its plaintext twin can spend a sequential deadline before a public candidate.
 fn is_usable(res: &Resource, c: &Connection) -> bool {
-    if c.address.is_empty() || dial_port(c.port).is_none() {
-        return false;
-    }
-    // A non-owned server's `local` address belongs to the OWNER's LAN unless our public address
-    // says otherwise. See the module doc, rule 1 — this line is the whole 8-second timeout.
-    if c.local && !res.owned && !res.public_address_matches {
-        return false;
-    }
-    true
+    !c.address.is_empty()
+        && dial_port(c.port).is_some()
+        && !(c.local && !res.owned && !res.public_address_matches)
 }
 
 fn tier(c: &Connection) -> Location {
@@ -207,17 +209,26 @@ fn host_for_url(address: &str) -> String {
 
 /// Is this host a NUMERIC literal (v4 or v6) rather than a name that needs resolving?
 ///
-/// The fourth ranking axis, and it exists for the same reason `Scheme` is ranked at all: this app's
-/// transport has **no name resolution of any kind** — `stream.rs`'s `http_open` builds a
-/// `sockaddr_in` from four decimal octets and there is no `getaddrinfo` in the file — so a hostname
-/// candidate cannot be dialled however well it ranks. It is not hypothetical: the share measured on
-/// 2026-08-11 advertises a custom internal hostname that does not resolve from here at all, and it
-/// is listed BEFORE the public IPv4 that answers. Ranking it above a numeric address spends the
-/// first probe slot on a name that cannot resolve.
+/// The fourth ranking axis, and **the one whose reason for existing has changed twice.**
 ///
-/// A hostname is not DROPPED, because it is the only form that can ever carry TLS validation (an
-/// https `plex.direct` origin is a name by construction) — it is merely ranked behind the addresses
-/// that can be dialled today, which is exactly the treatment IPv6 already gets.
+/// It began as "can this be dialled at all": `stream.rs`'s `http_open` built a `sockaddr_in` from
+/// four decimal octets, so a hostname candidate could not be opened however well it ranked. That is
+/// simply false now — `stream.rs` resolves through `getaddrinfo` and libcurl always did — and a
+/// term that still read as a dialability gate would send the next reader looking for a restriction
+/// that is gone.
+///
+/// What it means TODAY is *cost and reach*, and both survive:
+///
+/// * a literal needs no DNS round trip, which is one fewer thing between a spinner and a picture;
+/// * and on a LAN with **no route to the internet** it is the only thing that resolves at all —
+///   `plex.direct` is public DNS, so an isolated network answers none of those names while
+///   `192.168.0.10` needs no answer. Offline play on the house's own server is exactly the case,
+///   and it is why this term is worth keeping rather than deleting with its original reason.
+///
+/// It is the FOURTH key, below the scheme, which is what keeps it from undoing rule 3: an https
+/// name still outranks a plaintext literal in the same tier. The live evidence for the term is the
+/// share measured on 2026-08-11, which advertises a custom internal hostname that does not resolve
+/// from here at all — and plex.tv lists it BEFORE the public IPv4 that answers.
 ///
 /// **Exactly four octets**, because a name can be all-digits per label: `1.2.3` is not an address
 /// and must not be scored as one.
@@ -231,10 +242,15 @@ fn is_numeric_address(a: &str) -> bool {
 ///
 /// Each surviving connection yields its advertised `uri` (verbatim — the `plex.direct` hostname's
 /// hash label is the *certificate's* UUID, so it cannot be rebuilt from the machine id, and https to
-/// the bare IP fails validation by design), and, unless `httpsRequired`, a synthesized
-/// `http://{address}:{port}` twin. **That twin is the point of the whole file**: it is the only
-/// candidate the app's current transport can dial, and measured against the real share it is the
-/// one that answers.
+/// the bare IP fails validation by design), plus a synthesized `http://{address}:{port}` twin unless
+/// something refuses it: `httpsRequired` (rule 2) or a relay connection. Rule 1 acts earlier and
+/// drops an unsafe/expensive shared-LAN connection whole, before either candidate is built.
+///
+/// That twin was once the point of the whole file — the only candidate the app's transport could
+/// dial. It is the FALLBACK now: the advertised https uri leads its tier, and the twin is what
+/// answers when DNS cannot. That case is real rather than theoretical — a LAN with no route to the
+/// internet resolves no `plex.direct` name at all, and offline play on the house's own server is
+/// exactly what must keep working there.
 ///
 /// A `relay` connection gets no http twin: it is a Plex-operated TLS tunnel, and plain HTTP on it is
 /// not a thing that exists — synthesizing one would only spend a probe slot proving that.
@@ -337,39 +353,41 @@ mod tests {
         )
     }
 
-    /// The share's `local` connection must not survive policy, and the plain-http twin of its public
-    /// IPv4 must — that single candidate is the difference between the feature working and an
-    /// 8-second hang followed by "no server found".
+    /// **Rule 1: the share's `local` connection goes whole.** TLS proves a stranger at that address
+    /// is not the wanted machine; it does not make a sequential 8 s timeout useful. The public
+    /// candidate is the first one worth spending a deadline on.
     #[test]
-    fn the_shares_local_address_is_dropped_and_its_public_ipv4_yields_plain_http() {
+    fn a_shares_unmatched_local_connection_is_never_a_probe_slot() {
         let cs = candidates(&shared_server());
 
         assert!(
-            !cs.iter().any(|c| c.address.starts_with("172.20") || c.url.contains("172-20")),
-            "the OWNER's LAN address is not ours to dial: {cs:#?}"
+            !cs.iter().any(|c| c.address == "10.9.9.7" || c.location == Location::Local),
+            "neither candidate from the OWNER's LAN may consume a deadline: {cs:#?}"
         );
+        assert_eq!(cs.len(), 4, "two remote connections, an uri and an http twin each: {cs:#?}");
+
+        // **TLS leads.** It is the only connection a certificate can authenticate, the only one an
+        // owner's *Require secure connections* leaves standing, and the only one that reaches a
+        // server from outside its LAN — which is the whole case this ranking exists to serve.
+        assert_eq!(cs[0].scheme, Scheme::Https);
+        assert!(
+            cs.iter().position(|c| c.scheme == Scheme::Https).unwrap()
+                < cs.iter().position(|c| c.scheme == Scheme::Http).unwrap(),
+            "every https candidate outranks every http one in the same tier: {cs:#?}"
+        );
+
+        // The plain twin measured as the one that answers from the TV is still there, ranked as
+        // the FALLBACK it now is: a LAN with no route to the internet resolves no plex.direct name.
         assert!(
             cs.iter().any(|c| c.url == "http://203.0.113.9:31234" && c.scheme == Scheme::Http),
-            "the one connection measured as reachable from the TV: {cs:#?}"
-        );
-        // two surviving connections, each an https uri + an http twin
-        assert_eq!(cs.len(), 4);
-        assert!(cs.iter().all(|c| c.location == Location::Remote), "a share has no local tier here");
-        // and http outranks https for now, because https is the one this app cannot dial yet
-        assert_eq!(cs[0].scheme, Scheme::Http);
-        // FIRST, not merely present. This fixture carries a second http candidate — the custom
-        // hostname `media.example.internal`, which plex.tv lists BEFORE the public IPv4 — and with
-        // no resolvability term the tie fell through to that order and put an address the media
-        // transport cannot open at the head of the list.
-        assert_eq!(
-            cs[0].url, "http://203.0.113.9:31234",
-            "the dialable address must lead, not merely appear: {cs:#?}"
+            "the connection measured as reachable in 115 ms must survive: {cs:#?}"
         );
     }
 
-    /// `stream.rs` has no resolver, so a hostname is as undialable as an https origin. plex.tv's
-    /// listing order decides this tie unless we rank it, which makes the failure depend on a remote
-    /// service's array order — reproducible for one account and not another.
+    /// A hostname costs a DNS round trip that a literal does not, and on a LAN with no route to
+    /// the internet it costs the whole connection. plex.tv's listing order decides this tie unless
+    /// we rank it, which would make the outcome depend on a remote service's array order —
+    /// reproducible for one account and not another.
     #[test]
     fn a_dotted_quad_outranks_a_hostname_that_plex_tv_listed_first() {
         let cs = candidates(&shared_server());
@@ -416,8 +434,7 @@ mod tests {
         assert_eq!(o.base(), "https://203-0-113-9.hash2.plex.direct:31234");
         assert!(o.is_tls());
 
-        // and the synthesized plain-http twin — the one this app can actually dial today — is the
-        // address, unchanged, so nothing about the current transport moves
+        // and the synthesized plain-http twin is the address, unchanged
         let twin = cs.iter().find(|c| c.url == "http://203.0.113.9:31234").expect("the http twin");
         let t = twin.origin().expect("parses");
         assert_eq!((t.scheme(), t.host(), t.port()), (Scheme::Http, "203.0.113.9", 31234));
@@ -439,13 +456,13 @@ mod tests {
         assert_eq!(o.authority(), "[2001:db8::1]:32400", "…and the URL authority always is");
     }
 
-    /// **A hostname ranks behind a numeric address**, and the share is the live case: plex.tv lists
-    /// the owner's internal name (`media.example.internal`, which does not resolve from here)
-    /// BEFORE the public IPv4 that answered in 115 ms. This client's transport has no resolver at
-    /// all, so ranking the name first spends the first probe slot proving that.
+    /// **Within one scheme, a numeric address ranks ahead of a hostname**, and the share is the
+    /// live case: plex.tv lists the owner's internal name (`media.example.internal`, which does not
+    /// resolve from here) BEFORE the public IPv4 that answered in 115 ms. Ranking the name first
+    /// spends the first probe slot on a lookup that fails.
     ///
-    /// It is ranked, not dropped — a name is the only thing TLS can validate, so it has to survive
-    /// for the curl transport to use later.
+    /// It is ranked, not dropped — a name is the only thing TLS can validate, and both transports
+    /// resolve one.
     #[test]
     fn a_hostname_ranks_behind_an_address_that_can_actually_be_dialled() {
         let cs = candidates(&shared_server());
@@ -511,8 +528,16 @@ mod tests {
             ],
             "{cs:#?}"
         );
-        assert_eq!(cs[0].url, "http://192.168.0.10:32400", "IPv4 before IPv6 inside the tier");
-        assert!(!cs[0].ipv6 && cs[1].ipv6, "the v6 twin is next, not first: {cs:#?}");
+        // https first inside the tier, and IPv4 before IPv6 within that — the second key and the
+        // fourth, in that order. `2001-db8--1.hash1.plex.direct` is a NAME whose address family is
+        // v6, which is exactly why `Candidate::ipv6` is carried rather than re-read off the url.
+        assert_eq!(cs[0].url, "https://192-168-0-10.hash1.plex.direct:32400", "TLS leads its tier: {cs:#?}");
+        assert!(!cs[0].ipv6 && cs[1].ipv6, "the v6 uri is next, not first: {cs:#?}");
+        assert_eq!(
+            cs.iter().find(|c| c.scheme == Scheme::Http).map(|c| c.url.as_str()),
+            Some("http://192.168.0.10:32400"),
+            "…and the plaintext fallbacks are ordered the same way: {cs:#?}"
+        );
 
         let last = cs.last().expect("a relay candidate");
         assert_eq!((last.location, last.scheme), (Location::Relay, Scheme::Https));
@@ -525,9 +550,8 @@ mod tests {
         assert!(cs.iter().any(|c| c.url == "http://[2001:db8::1]:32400"), "{cs:#?}");
     }
 
-    /// The owner's *Require secure connections* is their call, and it removes every http candidate —
-    /// including the synthesized twin, which is the only kind this app can currently dial. The
-    /// resulting list is honest rather than empty: those servers wait for the TLS transport.
+    /// The owner's *Require secure connections* is their call, and it removes every http candidate,
+    /// including the synthesized twin. The resulting list keeps the advertised TLS origins.
     #[test]
     fn https_required_suppresses_every_http_candidate() {
         let mut res = owned_server();
@@ -538,7 +562,7 @@ mod tests {
         assert_eq!(cs.len(), 4, "one per connection, the advertised uri only");
         assert!(cs.iter().all(|c| c.url.starts_with("https://")));
 
-        // and the share, whose one working address is the plain-http twin, loses it too
+        // and the share, whose measured working fallback is the plain-http twin, loses it too
         let mut share = shared_server();
         share.https_required = true;
         assert!(candidates(&share).iter().all(|c| c.scheme == Scheme::Https));
@@ -595,5 +619,36 @@ mod tests {
         assert_eq!(p.name, "nas-home", "the machine name — settings surfaces only");
         assert_eq!(p.source_title.as_deref(), Some("friend"), "the handle the rest of the UI says");
         assert_eq!(p.candidates.len(), 4);
+    }
+
+    /// **The gate is rule 1's, and it applies to the connection WHOLE.** Stated on the predicate
+    /// rather than only through `candidates`, because ownership and `publicAddressMatches` each
+    /// independently make a `local` address ours, and a non-`local` address was never in question.
+    #[test]
+    fn only_a_non_owned_unmatched_lan_connection_is_unusable() {
+        let lan = |local: bool| Connection { address: "10.0.0.9".into(), port: 32400, local, ..Default::default() };
+        let res = |owned: bool, pam: bool| Resource {
+            owned,
+            public_address_matches: pam,
+            ..Default::default()
+        };
+
+        assert!(!is_usable(&res(false, false), &lan(true)), "a share's LAN address is the OWNER's");
+        assert!(is_usable(&res(false, true), &lan(true)), "…unless we are behind the same NAT");
+        assert!(is_usable(&res(true, false), &lan(true)), "…and our OWN LAN address is always ours");
+        assert!(is_usable(&res(false, false), &lan(false)), "a public address was never rule 1's business");
+    }
+
+    /// `is_usable` composes mechanical dialability with rule 1; this test isolates the mechanical
+    /// half on an owned resource so the policy cannot mask it.
+    #[test]
+    fn a_connection_still_needs_an_address_and_a_dialable_port() {
+        let c = |addr: &str, port: i64| Connection { address: addr.into(), port, ..Default::default() };
+        let res = Resource { owned: true, ..Default::default() };
+        assert!(is_usable(&res, &c("10.0.0.9", 32400)));
+        assert!(is_usable(&res, &c("nas.example.internal", 1)));
+        assert!(!is_usable(&res, &c("", 32400)), "nothing to dial");
+        assert!(!is_usable(&res, &c("10.0.0.9", 0)), "no port a socket could take");
+        assert!(!is_usable(&res, &c("10.0.0.9", 4_294_999_696)), "the wrap that reads as 32400");
     }
 }

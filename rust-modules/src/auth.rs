@@ -9,7 +9,7 @@
 //! Tokens live in the working [`Session`] and are never logged.
 #![allow(dead_code)]
 use crate::plex::account::{AccountClient, HomeUser, Resource};
-use crate::plex::probe::{self, Candidate, Outcome, ProbePlan, Scheme};
+use crate::plex::probe::{self, Candidate, Outcome, ProbePlan};
 use crate::plex::Origin;
 use crate::plex::session::{self, ServerRef, Session, SourceRef, UserRef};
 use std::sync::Mutex;
@@ -429,7 +429,7 @@ fn login_thread() {
     } else {
         pin.qr.clone()
     };
-    let qr_png = crate::net::https_get(&qr_url, &[]).filter(|r| r.ok()).map(|r| r.body).unwrap_or_default();
+    let qr_png = crate::net::https_get_public(&qr_url).filter(|r| r.ok()).map(|r| r.body).unwrap_or_default();
     log(&format!("auth: qr png {} bytes", qr_png.len()));
     with_ctl(|c| {
         c.pin_id = pin.id;
@@ -543,8 +543,9 @@ fn poll_for_token(ac: &AccountClient, id: i64, expires_in: i64) -> Option<String
 // `172.20.x.x` — 8 s of timeout from here, and the *worse* outcome is that it succeeds against
 // somebody else's box at that address on our own LAN (`docs/shared-servers.md` §2a).
 //
-// So the shape is: ranked candidates from `plex::probe` (pure policy — it is what drops that
-// address), then dial them in order and **verify identity on the answer** before believing it.
+// So the shape is: ranked candidates from `plex::probe` (pure policy — it drops that entire
+// connection before any deadline can be spent), then dial them in order and **verify identity on
+// the answer** before believing it.
 
 /// How far one server got. Only [`Reach::At`] is a server we can use; the other two are the
 /// distinction `probe.rs`'s module doc refuses to let a caller collapse, because they send the
@@ -603,48 +604,38 @@ enum Discovery {
 /// be reported as an unreachable address.
 const IDENTITY: &str = "/identity";
 
-/// Can this app's transport dial that candidate **today**? `stream.rs` speaks plain HTTP to a
-/// dotted quad: no TLS, and no name resolution of any kind (`stream.rs`'s `http_open` builds the
-/// `sockaddr_in` by hand from four decimal octets). An https `plex.direct` origin and the owner's
-/// custom hostname are therefore not "unreachable" — they are unspoken, and saying otherwise would
-/// blame a server for a gap in this client. They come back when the curl control plane lands
-/// (`docs/shared-servers.md` §5 step 6), which is why `probe::candidates` already emits them.
+/// Can this app's transport dial that candidate? **Every one of them, now** — see [`dial_target`],
+/// which this is the boolean face of.
+///
+/// It used to be the narrowest predicate in the app: plain HTTP at a dotted quad and nothing else,
+/// because `stream.rs` was the only transport there was. Every https `plex.direct` origin and every
+/// hostname was "unspoken" rather than unreachable — a true distinction, and no comfort at all to
+/// an account signed in from anywhere but the server's own LAN, which had nothing left to dial.
+/// That was the dead end this one predicate was responsible for.
 fn dialable(c: &Candidate) -> bool {
     dial_target(c).is_some()
 }
 
-/// [`dialable`] and the PORT to dial, from one expression — so the predicate that admits a
-/// candidate and the number handed to the socket can never disagree.
+/// [`dialable`] and the ORIGIN to dial, from one expression — so the predicate that admits a
+/// candidate and the value handed to the transport can never disagree.
 ///
-/// The port comes from [`probe::dial_port`], which is what keeps `c.port as i32` from wrapping an
-/// out-of-range `i64` into a plausible port (its doc has the arithmetic). A candidate whose port
-/// cannot be dialled is refused here for the same reason a hostname is: it is a connection this
-/// client cannot open, not a server that failed to answer.
+/// **It is [`Candidate::origin`] and nothing else now**, and the emptiness is the achievement. Two
+/// separate narrowings used to live in this function, one per gap in the transport, and they were
+/// closed by two different pieces of work:
+///
+/// * *No TLS* — every `https://` candidate was skipped, which is every `plex.direct` uri plex.tv
+///   advertises. `crate::http` closed that one by routing an https origin through libcurl.
+/// * *No resolver, no IPv6* — a plaintext candidate had to be four decimal octets, because
+///   `http_open` built a `sockaddr_in` by hand. `stream.rs` closed that one with `getaddrinfo` and
+///   a walk down the whole resolved chain, so a name and a v6 literal are both ordinary now.
+///
+/// What survives is the port narrowing, and it survives *inside* [`Origin::parse`]: an out-of-range
+/// `i64` from plex.tv is refused by [`probe::dial_port`] rather than wrapped by `as i32` into a
+/// plausible-looking 32400 (that function's doc has the arithmetic). A candidate refused there is
+/// a connection this client cannot open, not a server that failed to answer, so it is skipped and
+/// the next address gets its turn.
 fn dial_target(c: &Candidate) -> Option<Origin> {
-    let o = c.origin()?;
-    // Both schemes, and they are not redundant: `probe::scheme_of` calls anything that is not
-    // `http://` https (it is a RANKING axis and errs toward "cannot dial"), while `Origin::parse`
-    // refuses only a scheme it does not know. Requiring both keeps this gate exactly as narrow as
-    // it has always been.
-    let plaintext = c.scheme == Scheme::Http && o.scheme() == Scheme::Http;
-    (plaintext && is_ipv4_literal(o.host())).then_some(o)
-}
-
-/// Four decimal octets and nothing else — the exact address shape `stream.rs` can turn into a
-/// `sockaddr_in`. Anything else (a hostname, a v6 literal, a five-part typo) would be handed to
-/// `http_open` only to be rejected there after a `CString` round trip.
-///
-/// Asked of the ORIGIN's host, not of [`Candidate::address`]: the origin is what gets dialled and
-/// what gets recorded, and for an advertised `uri` the address is a different string.
-fn is_ipv4_literal(a: &str) -> bool {
-    let mut parts = 0;
-    for p in a.split('.') {
-        if p.is_empty() || p.len() > 3 || !p.bytes().all(|b| b.is_ascii_digit()) || p.parse::<u8>().is_err() {
-            return false;
-        }
-        parts += 1;
-    }
-    parts == 4
+    c.origin()
 }
 
 /// The `machineIdentifier` in an `/identity` body, read out of **either** encoding.
@@ -693,39 +684,36 @@ fn classify(status: i32, body: &[u8], want_machine_id: &str) -> Outcome {
     }
 }
 
-/// One unauthenticated `GET http://host:port/identity`, as (status, body).
+/// One unauthenticated `GET {origin}/identity`, as (status, body).
 ///
-/// Uses the raw stream primitives rather than `stream::http_get` because the STATUS is half the
-/// answer: `http_get` folds every non-2xx into `None`, which is precisely the collapse of 401 into
-/// "unreachable" that this module exists to avoid. `http_open` already closed the socket on a
-/// non-2xx (and `http_close` is a no-op the second time, by `take_fd`'s swap), so the status
-/// survives on the stream while the body does not.
-fn get_identity(host: &str, port: i32) -> (i32, Vec<u8>) {
-    let (Ok(h), Ok(p)) = (std::ffi::CString::new(host), std::ffi::CString::new(IDENTITY)) else {
-        return (0, Vec::new());
-    };
-    let accept = c"Accept: application/json\r\n";
-    let mut hs = crate::stream::http_stream_boxed();
-    let opened = crate::stream::http_open(&mut *hs, h.as_ptr(), port, p.as_ptr(), accept.as_ptr(), "GET");
-    let status = crate::stream::hs_status(&*hs);
-    let mut body = Vec::new();
-    if opened == 0 {
-        let mut chunk = vec![0u8; 8192];
-        loop {
-            let n = crate::stream::http_read(&mut *hs, chunk.as_mut_ptr(), chunk.len() as i32);
-            if n <= 0 {
-                break;
-            }
-            body.extend_from_slice(&chunk[..n as usize]);
-            // `/identity` is one empty MediaContainer. Anything past this is not an answer to the
-            // question, and a probe must not be a way to make us read an unbounded body.
-            if body.len() >= 64 * 1024 {
-                break;
-            }
-        }
+/// Goes through [`crate::http`], which is what makes this ONE function able to probe both a
+/// plaintext LAN address and an `https://…plex.direct` name: the dispatch is on the origin's
+/// scheme, and every candidate `dial_target` admits carries the transport it needs in that field.
+/// It hand-rolled the socket before, which is also why it could only ever probe the first kind.
+///
+/// The STATUS is half the answer, which is why this cannot be a `stream::http_get`: that wrapper
+/// folds every non-2xx into `None`, and folding is precisely the collapse of 401 into "unreachable"
+/// that this module exists to avoid. [`crate::http::Reply`] carries both halves over either
+/// transport.
+///
+/// A transport failure — nothing answered, DNS said no, the certificate would not validate — comes
+/// back as `(0, [])`, and `classify` reads that as [`Outcome::Unreachable`]. `0` is not a status any
+/// server can send, so it cannot be confused with one.
+fn get_identity(origin: &Origin) -> (i32, Vec<u8>) {
+    match crate::http::request_capped(
+        origin,
+        IDENTITY,
+        crate::http::Method::Get,
+        &[crate::http::ACCEPT_JSON],
+        64 * 1024,
+    ) {
+        // `/identity` is one small MediaContainer. The ceiling is enforced by each transport
+        // WHILE it reads, before a machine we have not accepted can make this worker allocate an
+        // unbounded body; an over-limit answer is therefore a transport failure, never a prefix
+        // that might happen to contain a plausible machine id.
+        Some(r) => (r.status, r.body),
+        None => (0, Vec::new()),
     }
-    crate::stream::http_close(&mut *hs);
-    (status, body)
 }
 
 /// Dial one server's candidates in rank order, stopping at the first that answers **as it**.
@@ -734,19 +722,35 @@ fn get_identity(host: &str, port: i32) -> (i32, Vec<u8>) {
 /// accepted, a wrong machine discarded rather than retried, a 401 ending the server instead of the
 /// candidate — is host-testable without a socket.
 ///
-/// Sequential, not parallel. `stream.rs` bounds a handshake at 2 s (`CONNECT_TIMEOUT_MS`), the
-/// dialable list is short (policy has already dropped the owner's LAN address and this client
-/// cannot speak to the https/hostname ones), and this runs on the login worker behind a spinner —
-/// so racing would buy a couple of seconds at the price of N threads that each have to capture
-/// their inputs at the spawn site. It is the trade `docs/shared-servers.md` §5 step 4 leaves open.
-fn probe_server(plan: &ProbePlan, dial: &dyn Fn(&str, i32) -> (i32, Vec<u8>)) -> Reach {
+/// Sequential, not parallel — **and that trade got more expensive when the transport stopped
+/// refusing things.** It used to be cheap because every https and hostname candidate was skipped
+/// outright. [`dial_target`] admits those now, and each address costs a real deadline —
+/// `stream.rs`'s `CONNECT_TIMEOUT_MS` (a whole-chain budget) on the plaintext arm, `net::API`'s
+/// connect timeout on the TLS one. `probe::candidates` therefore removes a non-owned unmatched LAN
+/// connection whole: the measured private address cannot be ours and must not consume an 8 s TLS
+/// slot before the share's public address.
+///
+/// The worst case is a set on a LAN with no route to the internet: every `plex.direct` name fails
+/// to resolve before the plaintext twin — which is exactly the address that answers there — gets
+/// its turn. It is bounded rather than open-ended, and it is the cost of ranking TLS first, which
+/// is right for every other case.
+///
+/// It stays sequential because this runs on the login worker behind a spinner, and because the
+/// racing design is a unit of its own: parallel within a server, serial across servers with a gap,
+/// and a two-phase "usable on the first reachable probe, upgraded to the best-scoring one when the
+/// race completes" selection. Nothing here precludes it — `probe_server` takes its candidates in
+/// rank order and its `dial` by reference, so the loop is the only thing that has to change — and
+/// it is the trade `docs/shared-servers.md` §5 step 4 leaves open.
+fn probe_server(plan: &ProbePlan, dial: &dyn Fn(&Origin) -> (i32, Vec<u8>)) -> Reach {
     let mut tried = 0;
     for c in plan.candidates.iter() {
         let Some(origin) = dial_target(c) else { continue };
         tried += 1;
-        // The ORIGIN's host and port — the same value handed back in `Reach::At`, so what answered
-        // and what the roster records cannot be two different addresses.
-        let (status, body) = dial(origin.host(), origin.port());
+        // The ORIGIN, whole — the same value handed back in `Reach::At`, so what answered and what
+        // the roster records cannot be two different things. It is passed rather than split into
+        // `(host, port)` because the SCHEME is now part of what gets dialled: splitting it here
+        // would put the transport choice back at a call site.
+        let (status, body) = dial(&origin);
         match classify(status, &body, &plan.machine_id) {
             Outcome::Reachable => return Reach::At(c.clone(), origin),
             Outcome::Unauthorized => {
@@ -785,7 +789,7 @@ enum Resolved {
 /// takes the response and a `dial`, so a full sign-in against a two-server account is a host test
 /// rather than a screenshot — which matters because this function is the gate on the whole feature:
 /// register the wrong connection and no other unit's work is reachable, however correct it is.
-fn resolve_roster(resources: &[Resource], dial: &dyn Fn(&str, i32) -> (i32, Vec<u8>)) -> Resolved {
+fn resolve_roster(resources: &[Resource], dial: &dyn Fn(&Origin) -> (i32, Vec<u8>)) -> Resolved {
     let mut servers: Vec<&Resource> = resources.iter().filter(|r| r.is_server()).collect();
     if servers.is_empty() {
         return Resolved::NoServers;
@@ -812,9 +816,9 @@ fn resolve_roster(resources: &[Resource], dial: &dyn Fn(&str, i32) -> (i32, Vec<
                     // and never from `Candidate::address`: plex.tv advertises the `plex.direct` NAME
                     // in `uri` while `address` stays the quad behind it, and the certificate is
                     // issued for the name, so a session file that stored the address would fail TLS
-                    // validation on every real server (`plex::origin`). Today the two agree — the
-                    // only candidates this transport dials are plain-http IPv4 ones — and the
-                    // roster test asserts that equality rather than trusting it.
+                    // validation on every real server (`plex::origin`). The two deliberately do
+                    // not agree for a TLS `plex.direct` candidate: its URL names the certificate,
+                    // while `address` remains diagnostic metadata about the endpoint behind it.
                     origin_url: origin.base(),
                     // The address that ANSWERED, never the first advertised. Kept as the
                     // DIAGNOSTIC half — what `describe` prints and the Sources panel says.
@@ -824,7 +828,16 @@ fn resolve_roster(resources: &[Resource], dial: &dyn Fn(&str, i32) -> (i32, Vec<
                     // there is no such thing as one token for the roster.
                     token: plan.token.clone(),
                 };
-                log(&format!("auth: reached {}", s.describe()));
+                // **`origin.log_form()`, not just `describe()`.** `SourceRef::describe` prints the
+                // diagnostic `address:port`, and both candidates of one connection carry the SAME
+                // address — plex.tv advertises `192.168.0.10` alongside a
+                // `192-168-0-10.<hash>.plex.direct` uri — so that line alone cannot say which of
+                // the two answered, i.e. whether this run reached the server over TLS at all. That
+                // is the `[[silent-instrument-trap]]` exactly: an instrument that cannot see the
+                // one thing the change was made to do. `log_form` is byte-identical to the old
+                // half for a plaintext origin (the bare authority), so an archived log stays
+                // comparable, and says the whole URL the moment it is anything else.
+                log(&format!("auth: reached {} via {}", s.describe(), origin.log_form()));
                 found.push(s);
             }
             Reach::Refused => refused = true,
@@ -1256,6 +1269,7 @@ fn set_error(msg: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::plex::probe::Scheme;
     use std::cell::RefCell;
 
     fn resource(json: &str) -> Resource {
@@ -1298,10 +1312,21 @@ mod tests {
         fn new(answers: Vec<(&'static str, i32, Vec<u8>)>) -> Dialled {
             Dialled { seen: RefCell::new(Vec::new()), answers }
         }
-        fn dial(&self, host: &str, port: i32) -> (i32, Vec<u8>) {
-            self.seen.borrow_mut().push(format!("{host}:{port}"));
-            match self.answers.iter().find(|(h, _, _)| *h == host) {
-                Some((_, s, b)) => (*s, b.clone()),
+        /// Answers are keyed on the origin's HOST, which is the field that tells the two candidates
+        /// of one connection apart: `203-0-113-9.h.plex.direct` is the advertised uri and
+        /// `203.0.113.9` is the plaintext twin synthesized from the address behind it. A fixture can
+        /// therefore say "the name answers and the address does not" (a reviewer over the internet)
+        /// or the reverse (a LAN with no DNS), which is the axis this whole unit turns on.
+        ///
+        /// `seen` records `Origin::log_form` — the bare authority for plaintext, the whole URL for
+        /// TLS — so a probe order that reads plausibly cannot hide which transport each step took.
+        fn dial(&self, o: &Origin) -> (i32, Vec<u8>) {
+            self.seen.borrow_mut().push(o.log_form());
+            match self.answers.iter().find(|(h, _, _)| *h == o.host()) {
+                Some((s, st, b)) => {
+                    let _ = s;
+                    (*st, b.clone())
+                }
                 None => (0, Vec::new()), // nothing answered at that address
             }
         }
@@ -1321,18 +1346,31 @@ mod tests {
     fn a_response_from_the_wrong_machine_is_rejected_and_the_next_address_is_tried() {
         let plan = probe::plan(&a_share());
         let d = Dialled::new(vec![
-            ("198.51.100.7", 200, identity_json("zzzz9999")), // someone else entirely
-            ("203.0.113.9", 200, identity_json("bbbb2222")),  // the server we asked for
+            ("198-51-100-7.h.plex.direct", 200, identity_json("zzzz9999")), // someone else entirely
+            ("203-0-113-9.h.plex.direct", 200, identity_json("bbbb2222")),  // the server we asked for
         ]);
 
-        match probe_server(&plan, &|h, p| d.dial(h, p)) {
+        match probe_server(&plan, &|o| d.dial(o)) {
             Reach::At(c, o) => {
+                // The DIAGNOSTIC half is still the address plex.tv sent…
                 assert_eq!((c.address.as_str(), c.port), ("203.0.113.9", 31234));
-                assert_eq!(o.base(), "http://203.0.113.9:31234", "the origin handed back is the one dialled");
+                // …and the origin is the NAME the certificate is issued for, which is the whole
+                // reason `Reach::At` carries both. A roster rebuilt from `address` would store an
+                // https origin no certificate matches.
+                assert_eq!(o.base(), "https://203-0-113-9.h.plex.direct:31234");
             }
             _ => panic!("the second address answers as the right machine: {:?}", d.seen()),
         }
-        assert_eq!(d.seen(), vec!["198.51.100.7:31234", "203.0.113.9:31234"]);
+        // Every https candidate is tried before any plaintext one. Rule 1 removed the private-LAN
+        // connection whole, so the walk starts at the remote names.
+        assert_eq!(
+            d.seen(),
+            vec![
+                "https://media.example.internal:31234",
+                "https://198-51-100-7.h.plex.direct:31234",
+                "https://203-0-113-9.h.plex.direct:31234",
+            ]
+        );
 
         // …and the same body from the wrong machine is never enough on its own
         assert_eq!(classify(200, &identity_json("zzzz9999"), "bbbb2222"), Outcome::WrongServer);
@@ -1357,58 +1395,84 @@ mod tests {
         }
 
         let plan = probe::plan(&a_share());
-        let d = Dialled::new(vec![("198.51.100.7", 401, Vec::new()), ("203.0.113.9", 200, identity_json("bbbb2222"))]);
-        assert!(matches!(probe_server(&plan, &|h, p| d.dial(h, p)), Reach::Refused));
-        assert_eq!(d.seen(), vec!["198.51.100.7:31234"], "the remaining addresses are not dialled");
+        let d = Dialled::new(vec![
+            ("198-51-100-7.h.plex.direct", 401, Vec::new()),
+            ("203.0.113.9", 200, identity_json("bbbb2222")),
+        ]);
+        assert!(matches!(probe_server(&plan, &|o| d.dial(o)), Reach::Refused));
+        assert_eq!(
+            d.seen(),
+            vec![
+                "https://media.example.internal:31234",
+                "https://198-51-100-7.h.plex.direct:31234",
+            ],
+            "the 401 ends the SERVER: the address that would have answered is never even tried"
+        );
     }
 
-    /// The 8-second trap, and the half of it the transport adds. Policy has already dropped the
-    /// share's `local` address (the OWNER's LAN); this asserts the probe loop never dials it — and
-    /// never dials the two candidates this client cannot speak to at all, which are unspoken rather
-    /// than unreachable and must not be counted as the server failing.
+    /// **Every advertised address is dialable now, and the only thing that can still refuse one is
+    /// a port no socket could take.** This test asserted the opposite for four shapes — an https
+    /// origin, a hostname, a v6 literal, and by implication the whole `plex.direct` fleet — and
+    /// each of those was true of a transport that no longer exists: `crate::http` routes TLS
+    /// through libcurl, and `stream.rs` resolves names and dials either address family.
+    ///
+    /// The `probe_server` leg is the one that matters more than the table: it proves that opening
+    /// the transport did not open the ACCEPTANCE. Five candidates are dialled here, four answer
+    /// nothing, and only the one whose `machineIdentifier` matches is accepted.
     #[test]
-    fn only_addresses_this_transport_can_dial_are_ever_probed() {
+    fn every_advertised_address_is_dialable_and_only_an_impossible_port_is_not() {
         let plan = probe::plan(&a_share());
-        assert_eq!(plan.candidates.len(), 6, "policy kept three connections, two candidates each");
+        assert_eq!(plan.candidates.len(), 6, "four connections; the share's LAN one goes whole");
+        assert!(plan.candidates.iter().all(dialable), "not one of them is refused any more: {plan:#?}",
+                plan = plan.candidates);
 
         let d = Dialled::new(vec![("203.0.113.9", 200, identity_json("bbbb2222"))]);
-        assert!(matches!(probe_server(&plan, &|h, p| d.dial(h, p)), Reach::At(..)));
+        assert!(matches!(probe_server(&plan, &|o| d.dial(o)), Reach::At(..)));
+        // The owner's `172.20.x.x` connection is absent whole. TLS could reject a stranger there,
+        // but it cannot recover the sequential 8 s deadline spent before the public candidate.
         let seen = d.seen();
-        assert!(!seen.iter().any(|s| s.starts_with("172.20")), "the owner's LAN address: {seen:?}");
-        assert!(!seen.iter().any(|s| s.contains("example.internal")), "no DNS in this transport: {seen:?}");
-        assert!(!seen.iter().any(|s| s.contains("plex.direct")), "no TLS in this transport: {seen:?}");
+        assert!(!seen.iter().any(|s| s.contains("172.20") || s.contains("172-20-4-7")),
+                "no candidate from the owner's LAN: {seen:?}");
 
         // The rule itself, stated on the candidates. The fixture builds `url` the way
         // `probe::candidates` does — from the SAME address and port — because that consistency is
-        // the property `dial_target` now relies on: it reads the origin off the URL, which is also
-        // what gets recorded, so a fixture whose url and port disagree would assert nothing real.
-        let http_v4 = |a: &str, port: i64| Candidate {
-            url: format!("http://{}:{port}", if a.contains(':') { format!("[{a}]") } else { a.to_string() }),
-            scheme: Scheme::Http,
+        // the property `dial_target` relies on: it reads the origin off the URL, which is also what
+        // gets recorded, so a fixture whose url and port disagree would assert nothing real.
+        let cand = |scheme: Scheme, host: &str, port: i64| Candidate {
+            url: format!(
+                "{}://{}:{port}",
+                scheme.as_str(),
+                if host.contains(':') { format!("[{host}]") } else { host.to_string() }
+            ),
+            scheme,
             location: probe::Location::Remote,
-            address: a.into(),
+            address: host.into(),
             port,
-            ipv6: a.contains(':'),
+            ipv6: host.contains(':'),
         };
-        let at = |a: &str| http_v4(a, 32400);
+        let at = |host: &str| cand(Scheme::Http, host, 32400);
         assert!(dialable(&at("203.0.113.9")));
-        assert!(!dialable(&Candidate { scheme: Scheme::Https, ..at("203.0.113.9") }), "no TLS in this transport");
-        assert!(!dialable(&at("media.example.internal")), "no resolver in this transport");
-        assert!(!dialable(&at("2001:db8::1")), "a v6 literal needs a socket this app does not open");
-        assert!(!dialable(&at("203.0.113")), "three octets is not an address");
-        assert!(!dialable(&at("203.0.113.999")), "999 is not an octet");
+        assert!(dialable(&cand(Scheme::Https, "203-0-113-9.h.plex.direct", 31234)), "libcurl speaks TLS");
+        assert!(dialable(&at("media.example.internal")), "stream.rs resolves names now");
+        assert!(dialable(&at("2001:db8::1")), "…and dials either address family");
 
-        // …and the PORT is part of "can this transport dial it". `4_294_999_696 as i32` is 32400,
-        // so without the range check `probe::dial_port` applies — in `Origin::parse` now, one layer
-        // down from where it used to be — a nonsense answer from plex.tv would have been dialled at
-        // the most ordinary port there is.
-        assert!(!dialable(&http_v4("203.0.113.9", 4_294_999_696)));
-        assert!(!dialable(&http_v4("203.0.113.9", 0)));
+        // …and the PORT is the one narrowing left. `4_294_999_696 as i32` is 32400, so without the
+        // range check `probe::dial_port` applies — inside `Origin::parse` now, one layer down from
+        // where it used to be — a nonsense answer from plex.tv would have been dialled at the most
+        // ordinary port there is.
+        assert!(!dialable(&cand(Scheme::Http, "203.0.113.9", 4_294_999_696)));
+        assert!(!dialable(&cand(Scheme::Http, "203.0.113.9", 0)));
+        assert!(!dialable(&cand(Scheme::Http, "203.0.113.9", 70_000)));
 
         // **The predicate hands back the ORIGIN, and it is the one `probe_server` dials and
         // `resolve_roster` records.** One value, so the address that answered and the address
-        // written down cannot be two different things.
+        // written down cannot be two different things — and for an https candidate the two really
+        // do differ, which is why this is a value rather than a bool.
         assert_eq!(dial_target(&at("203.0.113.9")), Some(crate::plex::Origin::http("203.0.113.9", 32400)));
+        assert_eq!(
+            dial_target(&cand(Scheme::Https, "203-0-113-9.h.plex.direct", 31234)).map(|o| o.base()),
+            Some("https://203-0-113-9.h.plex.direct:31234".to_string())
+        );
     }
 
     /// A candidate whose port cannot be dialled is SKIPPED, exactly as a hostname is — the next
@@ -1433,7 +1497,7 @@ mod tests {
         );
 
         let d = Dialled::new(vec![("203.0.113.9", 200, identity_json("bbbb2222"))]);
-        assert!(matches!(probe_server(&plan, &|h, p| d.dial(h, p)), Reach::At(..)), "the good one still answers");
+        assert!(matches!(probe_server(&plan, &|o| d.dial(o)), Reach::At(..)), "the good one still answers");
         assert!(
             !d.seen().iter().any(|s| s.starts_with("192.0.2.55")),
             "the wrapping candidate was never dialled: {:?}",
@@ -1441,17 +1505,20 @@ mod tests {
         );
     }
 
-    /// **The address that reaches the session file is one this transport can dial — never an IPv6
-    /// literal, never a hostname.** This is the property that replaced `choose_local_connection`'s
-    /// v6 guard: the foundation's `includeIPv6=1` made plex.tv offer v6 connections, and the chooser
-    /// this file used to end in took the FIRST `local` match and PERSISTED it, so one v6 address
-    /// wrote an undialable server to disk and broke every later boot, not just that one.
+    /// **Only an address that ANSWERED is ever stored** — the guard that replaced
+    /// `choose_local_connection`, which took the first `local` match and persisted it sight unseen,
+    /// so one v6 address wrote an undialable server to disk and broke every later boot.
     ///
-    /// Here the guard is structural rather than a filter that can be forgotten: nothing but a
-    /// `dialable` candidate is ever dialled, and only a candidate that ANSWERED becomes a
-    /// `SourceRef`. So an address can only be persisted after it has been connected to.
+    /// The guard was once "this transport can only dial a dotted quad" and is now structural
+    /// instead, which is strictly stronger: every advertised address is dialable, nothing but a
+    /// candidate that answered as the right machine becomes a `SourceRef`, and the origin recorded
+    /// is the very value that was dialled.
+    ///
+    /// The scenario is **a LAN with no route to the internet**, which is the case ranking TLS first
+    /// costs something: every `plex.direct` name is probed and none resolves, and the plaintext
+    /// twin — the address that works there — is what answers. That is the whole trade, priced.
     #[test]
-    fn only_an_address_this_transport_can_dial_is_ever_chosen_and_stored() {
+    fn only_an_address_that_answered_is_ever_chosen_and_stored() {
         // our own server, v6 first — and the second v6 lies about its flag, which is why the shape
         // of the address is what decides rather than `IPv6`
         let res = resource(
@@ -1466,23 +1533,31 @@ mod tests {
         );
         let plan = probe::plan(&res);
         let d = Dialled::new(vec![
-            // every one of them answers, correctly — so nothing but the ORDER and the dialable
-            // filter can keep the v6 addresses out
+            // No plex.direct name resolves on an isolated LAN, so only the plaintext twins are
+            // reachable — and both v6 ones answer too, so nothing but the ORDER decides.
             ("2001:db8::1", 200, identity_json("aaaa1111")),
             ("fd00::5", 200, identity_json("aaaa1111")),
             ("192.168.0.10", 200, identity_json("aaaa1111")),
         ]);
 
-        match probe_server(&plan, &|h, p| d.dial(h, p)) {
+        match probe_server(&plan, &|o| d.dial(o)) {
             Reach::At(c, o) => {
-                assert_eq!(c.address, "192.168.0.10", "a v6 literal is not dialable here");
-                assert_eq!(o.host(), "192.168.0.10", "…and the origin recorded is that same address");
+                assert_eq!(c.address, "192.168.0.10", "IPv4 leads the plaintext fallbacks");
+                assert_eq!(o.base(), "http://192.168.0.10:32400", "…and the origin recorded is what was dialled");
             }
             _ => panic!("the LAN IPv4 answers: {:?}", d.seen()),
         }
-        assert_eq!(d.seen(), vec!["192.168.0.10:32400"], "the v6 addresses are never even tried");
-        // …and the flag being false does not make a colon-bearing address dialable
-        assert!(!is_ipv4_literal("fd00::5") && !is_ipv4_literal("2001:db8::1"));
+        assert_eq!(
+            d.seen(),
+            vec![
+                "https://192-168-0-10.h.plex.direct:32400",
+                "https://2001-db8--1.h.plex.direct:32400",
+                "192.168.0.10:32400",
+            ],
+            "TLS is tried first and costs two probes here; the twin is the fallback that answers"
+        );
+        // …and the v6 addresses are never reached, because a candidate that answers ends the walk
+        assert!(!d.seen().iter().any(|s| s.contains("fd00") || s.contains("2001:db8")), "{:?}", d.seen());
     }
 
     /// The one field that decides whether we trust a connection is scanned for, not deserialized:
@@ -1549,7 +1624,7 @@ mod tests {
             ("192.168.0.10", 200, identity_json("aaaa1111")),
             ("203.0.113.9", 200, identity_json("bbbb2222")),
         ]);
-        let Resolved::Reached(roster) = resolve_roster(&a_two_server_account(), &|h, p| d.dial(h, p)) else {
+        let Resolved::Reached(roster) = resolve_roster(&a_two_server_account(), &|o| d.dial(o)) else {
             panic!("both servers answer: {:?}", d.seen())
         };
 
@@ -1573,27 +1648,81 @@ mod tests {
         assert_eq!(share.shared_by, "friend");
         assert!(roster.iter().all(|s| s.usable()), "every entry is dialable, so every one registers");
 
-        // Exactly two dials: the relay is never tried (a 2 Mbit/s https-only tunnel), nor the
-        // owner's LAN, nor the internal hostname, nor the v6 literal — none of which this transport
-        // can speak to. And OURS is probed first, though plex.tv listed the share first.
-        assert_eq!(d.seen(), vec!["192.168.0.10:32400", "203.0.113.9:31234"]);
+        // OURS is probed first, though plex.tv listed the share first — that ordering is what
+        // decides which library Home is built from. Within each server, TLS leads and the plaintext
+        // twin is the fallback that answers on this (internet-less) LAN, and the walk STOPS at the
+        // first acceptance: the relay is never reached, and neither is the share's plain hostname.
+        assert_eq!(
+            d.seen(),
+            vec![
+                "https://192-168-0-10.h.plex.direct:32400",
+                "https://2001-db8--1.h.plex.direct:32400",
+                "192.168.0.10:32400",
+                "https://media.example.internal:31234",
+                "https://203-0-113-9.h.plex.direct:31234",
+                "203.0.113.9:31234",
+            ]
+        );
+        assert!(!d.seen().iter().any(|s| s.contains("plex-relay")), "a 2 Mbit/s tunnel is a last resort");
+    }
+
+    /// **The case this whole unit exists for: an account signed in from OUTSIDE the servers' LAN.**
+    /// It is the shape an LG QA reviewer has — no PMS on their network, an account we supply — and
+    /// before the TLS control plane it produced an empty roster and "Couldn't reach any Plex
+    /// server", because every candidate that can work from there is an https `plex.direct` name and
+    /// not one of them was dialable.
+    ///
+    /// Here nothing on either LAN answers. The share is reached at its public `plex.direct` name,
+    /// and OUR server — which this fixture advertises no public direct address for, the ordinary
+    /// shape when nobody has forwarded a port — is reached at its **relay**, the last candidate
+    /// there is. What must come out is a roster whose origins are the NAMES a certificate is issued
+    /// for, while `address`, the diagnostic half, still reads as whatever plex.tv sent.
+    #[test]
+    fn an_account_reached_only_over_the_public_internet_settles_on_its_https_origins() {
+        let d = Dialled::new(vec![
+            ("plex-relay.example.net", 200, identity_json("aaaa1111")),
+            ("203-0-113-9.h.plex.direct", 200, identity_json("bbbb2222")),
+        ]);
+        let Resolved::Reached(roster) = resolve_roster(&a_two_server_account(), &|o| d.dial(o)) else {
+            panic!("both servers answer over TLS: {:?}", d.seen())
+        };
+
+        assert_eq!(roster.len(), 2);
+        assert_eq!(roster[0].origin_url, "https://plex-relay.example.net:8443", "ours, over the relay");
+        assert_eq!(roster[1].origin_url, "https://203-0-113-9.h.plex.direct:31234", "the share, direct");
+        for s in &roster {
+            let o = s.origin().expect("a reached entry is dialable");
+            assert!(o.is_tls(), "the connection that answered was TLS, so the stored origin must be");
+            assert_eq!(o.base(), s.origin_url, "the stored string round-trips");
+        }
+        // The share's stored origin is the NAME and its `address` is the quad behind it. That
+        // inequality is the whole reason an origin is parsed from a URL rather than rebuilt from an
+        // address: rebuild it and the certificate stops matching.
+        assert_eq!(roster[1].address, "203.0.113.9");
+        assert_ne!(roster[1].origin().expect("dialable").host(), roster[1].address);
+
+        // The relay is genuinely LAST: every LAN candidate of our own server was tried first, and
+        // the share's walk stopped the moment its public name answered.
+        let seen = d.seen();
+        assert_eq!(seen.last().map(String::as_str), Some("https://203-0-113-9.h.plex.direct:31234"));
+        assert!(
+            seen.iter().position(|x| x.contains("plex-relay")).unwrap() == 4,
+            "four LAN candidates of ours precede the relay: {seen:?}"
+        );
     }
 
     /// **Each roster entry's ORIGIN comes from the candidate's URL, not from its address.**
     ///
-    /// It is the same value today — `dial_target` accepts only a plain-http IPv4 literal, whose URL
-    /// `probe::candidates` synthesized as `http://{address}:{port}` — and that equality is the
-    /// whole no-behaviour-change claim, so it is asserted rather than assumed. It stops being an
-    /// equality the moment an https candidate can be accepted: plex.tv advertises the `plex.direct`
-    /// NAME in `uri` while `address` stays the quad behind it, so a roster rebuilt from `address`
-    /// would store an origin no certificate matches.
+    /// A plaintext twin has the same host as `address`; an accepted TLS candidate deliberately
+    /// does not. plex.tv advertises the `plex.direct` NAME in `uri` while `address` stays the quad
+    /// behind it, so a roster rebuilt from `address` would store an origin no certificate matches.
     #[test]
     fn each_reached_entry_records_the_origin_its_url_named() {
         let d = Dialled::new(vec![
             ("192.168.0.10", 200, identity_json("aaaa1111")),
             ("203.0.113.9", 200, identity_json("bbbb2222")),
         ]);
-        let Resolved::Reached(roster) = resolve_roster(&a_two_server_account(), &|h, p| d.dial(h, p)) else {
+        let Resolved::Reached(roster) = resolve_roster(&a_two_server_account(), &|o| d.dial(o)) else {
             panic!("both servers answer")
         };
 
@@ -1603,8 +1732,9 @@ mod tests {
         for s in &roster {
             let o = s.origin().expect("a reached entry is dialable");
             assert_eq!(o.base(), s.origin_url, "the stored string round-trips");
-            assert!(!o.is_tls(), "nothing this transport can accept is TLS yet");
-            // the equality that makes this a behaviour-preserving change today
+            assert!(!o.is_tls(), "these are the plaintext twins, and they answered");
+            // On a plaintext twin the URL's host IS the address, which is what makes this leg the
+            // control for the https one above: there the two differ, and only the URL is right.
             assert_eq!((o.host(), o.port() as i64), (s.address.as_str(), s.port));
         }
     }
@@ -1618,12 +1748,12 @@ mod tests {
             r#"[{"name":"iPad","clientIdentifier":"cccc3333","provides":"player","connections":[]}]"#,
         )
         .unwrap();
-        assert!(matches!(resolve_roster(&players, &|_, _| (0, Vec::new())), Resolved::NoServers));
+        assert!(matches!(resolve_roster(&players, &|_| (0, Vec::new())), Resolved::NoServers));
 
         // servers that simply do not answer
         let silent = Dialled::new(vec![]);
         assert!(matches!(
-            resolve_roster(&a_two_server_account(), &|h, p| silent.dial(h, p)),
+            resolve_roster(&a_two_server_account(), &|o| silent.dial(o)),
             Resolved::None { refused: false }
         ));
 
@@ -1631,14 +1761,14 @@ mod tests {
         // which is not a network fault and must not be worded as one
         let refused = Dialled::new(vec![("192.168.0.10", 401, Vec::new()), ("203.0.113.9", 401, Vec::new())]);
         assert!(matches!(
-            resolve_roster(&a_two_server_account(), &|h, p| refused.dial(h, p)),
+            resolve_roster(&a_two_server_account(), &|o| refused.dial(o)),
             Resolved::None { refused: true }
         ));
 
         // a share that answers while OUR server is off still signs in — a friend's library beats
         // "no server found" — and it becomes the primary because it is the only thing there is
         let one = Dialled::new(vec![("203.0.113.9", 200, identity_json("bbbb2222"))]);
-        let Resolved::Reached(roster) = resolve_roster(&a_two_server_account(), &|h, p| one.dial(h, p)) else {
+        let Resolved::Reached(roster) = resolve_roster(&a_two_server_account(), &|o| one.dial(o)) else {
             panic!("the share answered")
         };
         assert_eq!(roster.len(), 1);

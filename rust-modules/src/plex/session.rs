@@ -445,14 +445,11 @@ impl Session {
     /// (`Origin::parse` refuses an undialable port and a scheme this app does not speak); a legacy
     /// file with no origin is judged exactly as before.
     ///
-    /// **It asks "is there an address written down", NOT "can this build's transport open it".**
-    /// The two are the same question today and will not be during the transport work: an https or
-    /// hostname origin parses fine and `crate::stream` cannot reach either, so a session file
-    /// holding one boots to a Home whose every request fails silently. That is not gated here on
-    /// purpose — refusing would send the user to a QR code for a transport gap that is not theirs,
-    /// and `can_go_local` means "this device holds a session", which it does. The half-landed state
-    /// it exposes (discovery accepting https before `stream.rs` speaks it) is one lane's to avoid,
-    /// and `player::engine` refuses a TLS stream target out loud for the same reason.
+    /// **It asks "is there a supported address written down", not whether the network answers
+    /// now.** `Origin::parse` accepts the two schemes the control and media transports implement,
+    /// plus hostname/IPv4/IPv6 authorities with dialable ports. Reachability is measured after
+    /// restore by the ordinary request/probe paths; refusing an offline but well-formed session
+    /// here would wrongly send its user back to the QR flow.
     fn server_dialable(&self) -> bool {
         if !self.server.origin_url.is_empty() {
             return Origin::parse(&self.server.origin_url).is_some();

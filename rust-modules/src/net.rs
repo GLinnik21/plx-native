@@ -1,25 +1,44 @@
 //! `net` — a small blocking HTTPS client over **whatever libcurl the machine already has**, bound
 //! at runtime by the candidate list below (nothing is linked, and `stub/` — which this line named
-//! for months after it was deleted — is gone). The plain-HTTP numeric-IP socket in
-//! [`crate::stream`] can't reach `plex.tv` (no DNS, no TLS); this fills that control-plane gap.
-//! Every call is **blocking**, so callers must run it off the SDL main loop.
+//! for months after it was deleted — is gone). The plain-HTTP socket in [`crate::stream`] can
+//! resolve names now, but it still cannot do TLS; this fills that gap. Every call is
+//! **blocking**, so callers must run it off the SDL main loop (the account and PMS workers).
+//!
+//! **It is no longer the plex.tv transport alone**, and that line stood here while it was becoming
+//! untrue. A PMS reached over the public internet is an `https://…plex.direct` origin — a NAME,
+//! because that is what the certificate is issued for — so the whole PMS control plane comes
+//! through here too whenever the origin is TLS. `crate::http` is the door that decides which of
+//! the two transports a request takes; this module is only ever the https half of it. Direct
+//! callers are limited to `plex::account` and auth's public, headerless QR-image fetch.
 //!
 //! Only the curl *easy* API is used here; [`crate::curlio`] binds the multi API separately for the
 //! media plane. This module owns their shared process init, including the mutex callbacks required
-//! when the TV's libcurl uses OpenSSL 1.0. TLS peer+host verification is ON (the device ships a CA
-//! bundle at `/etc/ssl/certs/ca-certificates.crt`, curl's default; macOS uses its own trust store),
+//! when the TV's libcurl uses OpenSSL 1.0. The option/info integer constants are curl's stable
+//! public ABI values (kept here so we do not need the header). TLS peer+host verification is ON,
 //! and `NOSIGNAL` is set because we call from threads. Response bodies never carry into a log here.
 #![allow(non_camel_case_types)]
 use std::cell::UnsafeCell;
 use std::ffi::CString;
 use std::mem::MaybeUninit;
-use std::os::raw::{c_char, c_int, c_long, c_void};
+use std::os::raw::{c_char, c_int, c_long, c_uint, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 type CURL = c_void;
 type curl_slist = c_void;
+
+/// The stable head of `curl_version_info_data`. Passing `CURLVERSION_FIRST` promises to inspect
+/// only these original fields; libcurl extends the struct at the tail for later ages, so this
+/// prefix has the same offsets on the television's 7.53.1 and current macOS.
+#[repr(C)]
+pub(crate) struct CurlVersionInfo {
+    age: c_int,
+    version: *const c_char,
+    version_num: c_uint,
+    host: *const c_char,
+    features: c_int,
+}
 
 // ---- libcurl, bound at RUNTIME by SONAME candidate list ----
 //
@@ -49,6 +68,7 @@ crate::dynlib! {
     curl: ["libcurl.so.4", "libcurl.so.5", "libcurl.4.dylib"] {
     fn curl_global_init(flags: c_long) -> c_int;
     fn curl_version() -> *const c_char;
+    fn curl_version_info(age: c_int) -> *const CurlVersionInfo;
     fn curl_easy_init() -> *mut CURL;
     fn curl_easy_perform(handle: *mut CURL) -> c_int;
     fn curl_easy_cleanup(handle: *mut CURL);
@@ -74,23 +94,46 @@ const CURLOPT_POSTFIELDS: c_int = 10015;
 const CURLOPT_POSTFIELDSIZE: c_int = 60;
 const CURLOPT_POST: c_int = 47;
 const CURLOPT_USERAGENT: c_int = 10018;
+const CURLOPT_LOW_SPEED_LIMIT: c_int = 19;
+const CURLOPT_LOW_SPEED_TIME: c_int = 20;
 const CURLOPT_FOLLOWLOCATION: c_int = 52;
+const CURLOPT_MAXREDIRS: c_int = 68;
 const CURLOPT_SSL_VERIFYPEER: c_int = 64;
 const CURLOPT_SSL_VERIFYHOST: c_int = 81;
 const CURLOPT_NOSIGNAL: c_int = 99;
 const CURLOPT_CONNECTTIMEOUT: c_int = 78;
 const CURLOPT_TIMEOUT: c_int = 13;
+/// The numeric protocol allow-list options are the compatibility surface for this project's curl
+/// floor. Their `_STR` replacements arrived in 7.85; the television has 7.53.1. Both numeric
+/// options have existed since 7.19.4.
+const CURLOPT_PROTOCOLS: c_int = 181;
+const CURLOPT_REDIR_PROTOCOLS: c_int = 182;
+const CURLPROTO_HTTP: c_long = 1 << 0;
+const CURLPROTO_HTTPS: c_long = 1 << 1;
+const PUBLIC_MAX_REDIRECTS: c_long = 5;
+/// `CURLOPT_CUSTOMREQUEST` (OBJECTPOINT + 36). The METHOD TOKEN, and nothing else — it does not
+/// change what curl sends or expects, it only overrides the verb written on the request line. That
+/// is exactly what a body-less `PUT` needs: `CURLOPT_UPLOAD` would make curl wait to read a body
+/// it is never given, while this sends a plain GET-shaped request that says `PUT` — the same bytes
+/// `crate::http`'s plaintext arm puts on the wire for `plex::Client::put`.
+///
+/// It is an option ID, **not a new symbol**: `curl_easy_setopt` is already bound, so nothing about
+/// the `dynlib!` table (and therefore nothing about which firmwares this binary starts on) moves
+/// for this. Present since libcurl 7.1; the television's is 7.53.1.
+const CURLOPT_CUSTOMREQUEST: c_int = 10036;
 // curl.h info ids (CURLINFO_LONG = 0x200000).
 const CURLINFO_RESPONSE_CODE: c_int = 0x20_0002;
 const CURL_GLOBAL_ALL: c_long = 3;
+const CURLVERSION_FIRST: c_int = 0;
+const CURL_VERSION_ASYNCHDNS: c_int = 1 << 7;
 
 /// Is libcurl resolved? False on a device with no libcurl this app can bind, which means no
-/// plex.tv sign-in and no account calls — but a running app, and a log line saying why.
+/// plex.tv account calls or HTTPS PMS control — but a running app, and a log line saying why.
 static CURL_OK: AtomicBool = AtomicBool::new(false);
 
 /// Whether two threads may enter distinct curl handles concurrently. The media multi transport
 /// checks this separately from [`CURL_OK`]: an old OpenSSL whose mutex API cannot be installed may
-/// still serve single-threaded sign-in, but must not be driven beside another curl request.
+/// still serve serialized HTTPS control, but must not be driven beside another curl request.
 static CURL_THREADED_TLS_OK: AtomicBool = AtomicBool::new(false);
 /// Only used on the abnormal old-OpenSSL/no-callback fallback. Normal devices never take it.
 static CURL_FALLBACK_SERIAL: Mutex<()> = Mutex::new(());
@@ -279,39 +322,100 @@ pub fn global_init() -> bool {
             let locks = if legacy { setup_legacy_crypto_locks(soname) } else { LegacyCrypto::NotNeeded };
             let threaded = threaded_tls_policy(&v, locks);
             CURL_THREADED_TLS_OK.store(threaded, Ordering::Release);
+            // `curl_version()`'s prose happened to name c-ares on the development television,
+            // but the feature bit is the API. With NOSIGNAL, a synchronous resolver can outlive
+            // CONNECTTIMEOUT; log the runtime fact for every firmware instead of promoting one
+            // set's string into a fleet-wide guarantee.
+            let vi = unsafe { curl_version_info(CURLVERSION_FIRST) };
+            let async_dns = if vi.is_null() {
+                "unknown"
+            } else if unsafe { (*vi).features } & CURL_VERSION_ASYNCHDNS != 0 {
+                "yes"
+            } else {
+                "no"
+            };
             crate::log(&format!(
-                "net: bound libcurl -> {soname} ({v}); threaded-tls={threaded} legacy-locks={locks:?}"
+                "net: bound libcurl -> {soname} ({v}; AsynchDNS={async_dns}); \
+                 threaded-tls={threaded} legacy-locks={locks:?}"
             ));
             if legacy && !threaded {
                 crate::log(
-                    "net: legacy OpenSSL mutex callbacks unavailable — sign-in remains available; \
-                     concurrent HTTPS media is disabled",
+                    "net: legacy OpenSSL concurrency unavailable — serialized HTTPS control \
+                     remains available; concurrent HTTPS media is disabled",
                 );
             }
             CURL_OK.store(true, Ordering::Release);
             true
         }
         crate::dynlib::Loaded::NoLibrary => {
-            crate::log("net: no libcurl on this device (tried .so.4, .so.5 and .4.dylib) — plex.tv sign-in unavailable");
+            crate::log(
+                "net: no libcurl on this device (tried .so.4, .so.5 and .4.dylib) — \
+                 account calls and HTTPS PMS control unavailable",
+            );
             false
         }
         crate::dynlib::Loaded::Incomplete(soname, n) => {
-            crate::log(&format!("net: {soname} is missing {n} symbol(s) — plex.tv sign-in unavailable"));
+            crate::log(&format!(
+                "net: {soname} is missing {n} symbol(s) — account calls and HTTPS PMS control unavailable"
+            ));
             false
         }
     }
 }
 
-/// libcurl `CURLOPT_WRITEFUNCTION`: append received bytes to the caller's `Vec<u8>`.
+struct BodySink {
+    body: Vec<u8>,
+    max: Option<usize>,
+    overflowed: bool,
+}
+
+impl BodySink {
+    fn new(max: Option<usize>) -> BodySink {
+        BodySink { body: Vec::new(), max, overflowed: false }
+    }
+
+    /// Append one curl callback chunk without ever allocating past the caller's ceiling.
+    fn push(&mut self, bytes: &[u8]) -> bool {
+        if self.max.is_some_and(|max| bytes.len() > max.saturating_sub(self.body.len())) {
+            self.overflowed = true;
+            return false;
+        }
+        self.body.extend_from_slice(bytes);
+        true
+    }
+}
+
+/// libcurl `CURLOPT_WRITEFUNCTION`: append received bytes to the caller's bounded sink.
 extern "C" fn write_cb(ptr: *mut c_char, size: usize, nmemb: usize, userdata: *mut c_void) -> usize {
     let n = size.saturating_mul(nmemb);
     if userdata.is_null() || ptr.is_null() {
         return 0;
     }
-    let buf = unsafe { &mut *(userdata as *mut Vec<u8>) };
+    let sink = unsafe { &mut *(userdata as *mut BodySink) };
+    if sink.max.is_some_and(|max| n > max.saturating_sub(sink.body.len())) {
+        sink.overflowed = true;
+        return 0;
+    }
     let slice = unsafe { std::slice::from_raw_parts(ptr as *const u8, n) };
-    buf.extend_from_slice(slice);
-    n
+    if sink.push(slice) { n } else { 0 }
+}
+
+struct Easy(*mut CURL);
+
+impl Drop for Easy {
+    fn drop(&mut self) {
+        unsafe { curl_easy_cleanup(self.0) };
+    }
+}
+
+struct HeaderList(*mut curl_slist);
+
+impl Drop for HeaderList {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe { curl_slist_free_all(self.0) };
+        }
+    }
 }
 
 /// An HTTP response: numeric status + raw body bytes.
@@ -325,18 +429,96 @@ impl Resp {
     }
 }
 
-/// Blocking HTTPS request. `headers` are full `"Name: value"` lines. `post_body` = `Some` for POST
-/// (empty slice → POST with no body), `None` → GET. Returns `None` on a transport error (offline,
-/// TLS failure, timeout) — callers treat that as "not reachable" and fall back to the local server.
-fn perform(url: &str, headers: &[String], post_body: Option<&[u8]>) -> Option<Resp> {
+/// **How long one call may take.** The values are a PER-CALL argument rather than constants
+/// because the right policy depends entirely on what is being fetched.
+///
+/// `total_s` is `CURLOPT_TIMEOUT`, which bounds the WHOLE transfer — connect, TLS, request,
+/// response body, all of it. 25 s is right for an API call, whose answer is a few kilobytes of
+/// JSON, and is **fatal for anything that streams**: a long transfer is aborted mid-body at 25 s
+/// however healthy the connection is. The control plane once hard-coded that number for every
+/// curl body; T4's separate curl-multi media transport does not use this easy-client policy.
+///
+/// `connect_s` is `CURLOPT_CONNECTTIMEOUT` and bounds only the handshake, so it is the one that
+/// normally decides how long a *dead* address costs. The development television has c-ares, but
+/// that is not assumed fleet-wide: [`global_init`] queries and logs `CURL_VERSION_ASYNCHDNS`.
+/// With `NOSIGNAL` and a synchronous resolver, a name lookup may outlive this value.
+///
+/// `low_speed_bps` + `low_speed_s` are curl's rolling low-speed guard. They bound a connection
+/// that succeeds and then stops making useful progress without imposing a deadline on a healthy
+/// large body. Zero disables the pair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Timeouts {
+    pub connect_s: c_long,
+    pub total_s: c_long,
+    pub low_speed_bps: c_long,
+    pub low_speed_s: c_long,
+}
+
+/// The deadlines for an **API call** — a request whose answer is small and whose caller is a user
+/// waiting behind a spinner. The values every call in this app used before they were a parameter,
+/// unchanged, so nothing about plex.tv sign-in moves.
+pub const API: Timeouts = Timeouts { connect_s: 8, total_s: 25, low_speed_bps: 0, low_speed_s: 0 };
+
+/// The deadlines for a PMS body whose size is content-dependent (library JSON, artwork, sidecar
+/// subtitles). A connect normally costs at most 8 s and fewer than one byte per second for 30 s
+/// ends a stalled transfer, but a healthy transfer has no wall-clock guillotine:
+/// `CURLOPT_TIMEOUT=0` is libcurl's documented disabled value.
+pub const BULK: Timeouts =
+    Timeouts { connect_s: 8, total_s: 0, low_speed_bps: 1, low_speed_s: 30 };
+
+/// Protocol floor for a public redirect. A TLS request may remain TLS only; a plaintext request
+/// may stay plaintext or upgrade. Pure so the no-downgrade rule is host-testable.
+fn allowed_redirect_protocols(url: &[u8]) -> c_long {
+    if url.get(..8).is_some_and(|scheme| scheme.eq_ignore_ascii_case(b"https://")) {
+        CURLPROTO_HTTPS
+    } else {
+        CURLPROTO_HTTP | CURLPROTO_HTTPS
+    }
+}
+
+/// Blocking HTTPS request. `headers` are full `"Name: value"` lines. `body` = `Some` for a request
+/// that carries one (empty slice → a POST with no body), `None` for one that does not. `verb` is
+/// the method token; see [`CURLOPT_CUSTOMREQUEST`] for how a body-less non-GET is sent.
+///
+/// Returns `None` on a transport error (offline, TLS failure, timeout) — callers treat that as
+/// "not reachable". A request that COMPLETED comes back as `Some`, whatever status it carries, so
+/// a `401` is a value here and never a `None`: that distinction is the whole of
+/// `plex::probe::Outcome`, and folding it is what sends a user to look at a router for a token
+/// problem.
+///
+/// **The easy handle is per call, deliberately.** It is initialised and cleaned up here, so there
+/// is no cross-call state to remember to clear — no leftover `CUSTOMREQUEST` turning the next GET
+/// into a PUT, no stale header list, no connection reuse whose keep-alive outlives the token that
+/// authorised it. A reusable handle (or a share/multi) would buy connection reuse and cost a
+/// design: this app makes tens of control-plane requests per session, not thousands.
+pub(crate) fn request(
+    url: &str,
+    headers: &[String],
+    verb: &str,
+    body: Option<&[u8]>,
+    t: Timeouts,
+    follow_redirects: bool,
+    max_body: Option<usize>,
+) -> Option<Resp> {
+    // Every fallible CString is built BEFORE the easy handle exists. The RAII guards below still
+    // make later early returns safe, but this ordering also means malformed caller input never
+    // enters curl with a half-configured request.
+    let verb_c = CString::new(verb).ok()?;
+    let url_c = CString::new(url).ok()?;
+    let ua = CString::new(crate::plex::identity::user_agent()).ok()?;
+    let hdr_owned: Vec<CString> = headers
+        .iter()
+        .map(|line| CString::new(line.as_str()))
+        .collect::<Result<_, _>>()
+        .ok()?;
     // The guard `CURL_OK` exists for. Without it, a device with no libcurl this app can bind
     // reaches `curl_easy_init`'s wrapper and takes `dynlib::missing_symbol`, which panics — an
     // account lookup failing should return None and let the caller fall back, not kill a thread.
     if !available() {
         return None;
     }
-    // A legacy OpenSSL whose callback API is unexpectedly hidden can still support sign-in, but
-    // only one easy request at a time. The normal installed/existing-callback path never takes
+    // A legacy OpenSSL whose callback API is unexpectedly hidden can still support HTTPS control,
+    // but only one easy request at a time. The normal installed/existing-callback path never takes
     // this mutex, and curlio remains disabled in the degraded state.
     let _fallback_serial = if threaded_tls_ready() {
         None
@@ -348,48 +530,67 @@ fn perform(url: &str, headers: &[String], post_body: Option<&[u8]>) -> Option<Re
         if h.is_null() {
             return None;
         }
-        let url_c = CString::new(url).ok()?;
-        curl_easy_setopt_ptr(h, CURLOPT_URL, url_c.as_ptr() as *const c_void);
-        curl_easy_setopt_ptr(h, CURLOPT_WRITEFUNCTION, write_cb as *const c_void);
-        let mut buf: Vec<u8> = Vec::new();
-        curl_easy_setopt_ptr(h, CURLOPT_WRITEDATA, (&mut buf as *mut Vec<u8>) as *mut c_void);
-        curl_easy_setopt_long(h, CURLOPT_FOLLOWLOCATION, 1 as c_long);
-        curl_easy_setopt_long(h, CURLOPT_SSL_VERIFYPEER, 1 as c_long);
-        curl_easy_setopt_long(h, CURLOPT_SSL_VERIFYHOST, 2 as c_long);
-        curl_easy_setopt_long(h, CURLOPT_NOSIGNAL, 1 as c_long);
-        curl_easy_setopt_long(h, CURLOPT_CONNECTTIMEOUT, 8 as c_long);
-        curl_easy_setopt_long(h, CURLOPT_TIMEOUT, 25 as c_long);
-        let ua = CString::new(crate::plex::identity::user_agent()).ok()?;
-        curl_easy_setopt_ptr(h, CURLOPT_USERAGENT, ua.as_ptr() as *const c_void);
+        let easy = Easy(h);
+        curl_easy_setopt_ptr(easy.0, CURLOPT_URL, url_c.as_ptr() as *const c_void);
+        curl_easy_setopt_ptr(easy.0, CURLOPT_WRITEFUNCTION, write_cb as *const c_void);
+        let mut sink = BodySink::new(max_body);
+        curl_easy_setopt_ptr(easy.0, CURLOPT_WRITEDATA, (&mut sink as *mut BodySink) as *mut c_void);
+        // No curl call in this module may escape HTTP(S). The public QR fetch is the only one that
+        // follows redirects; it is capped, and an HTTPS start may never downgrade to plaintext.
+        curl_easy_setopt_long(easy.0, CURLOPT_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS);
+        curl_easy_setopt_long(easy.0, CURLOPT_FOLLOWLOCATION, follow_redirects as c_long);
+        if follow_redirects {
+            curl_easy_setopt_long(easy.0, CURLOPT_MAXREDIRS, PUBLIC_MAX_REDIRECTS);
+            curl_easy_setopt_long(easy.0, CURLOPT_REDIR_PROTOCOLS, allowed_redirect_protocols(url.as_bytes()));
+        }
+        curl_easy_setopt_long(easy.0, CURLOPT_SSL_VERIFYPEER, 1 as c_long);
+        curl_easy_setopt_long(easy.0, CURLOPT_SSL_VERIFYHOST, 2 as c_long);
+        curl_easy_setopt_long(easy.0, CURLOPT_NOSIGNAL, 1 as c_long);
+        curl_easy_setopt_long(easy.0, CURLOPT_CONNECTTIMEOUT, t.connect_s);
+        curl_easy_setopt_long(easy.0, CURLOPT_TIMEOUT, t.total_s);
+        curl_easy_setopt_long(easy.0, CURLOPT_LOW_SPEED_LIMIT, t.low_speed_bps);
+        curl_easy_setopt_long(easy.0, CURLOPT_LOW_SPEED_TIME, t.low_speed_s);
+        curl_easy_setopt_ptr(easy.0, CURLOPT_USERAGENT, ua.as_ptr() as *const c_void);
 
         // request headers — keep the CStrings alive until after perform.
-        let mut hdr_owned: Vec<CString> = Vec::with_capacity(headers.len());
-        let mut slist: *mut curl_slist = ptr::null_mut();
-        for line in headers {
-            if let Ok(c) = CString::new(line.as_str()) {
-                slist = curl_slist_append(slist, c.as_ptr());
-                hdr_owned.push(c);
+        let mut slist = HeaderList(ptr::null_mut());
+        for c in &hdr_owned {
+            let next = curl_slist_append(slist.0, c.as_ptr());
+            if next.is_null() {
+                return None;
             }
+            slist.0 = next;
         }
-        if !slist.is_null() {
-            curl_easy_setopt_ptr(h, CURLOPT_HTTPHEADER, slist as *const c_void);
+        if !slist.0.is_null() {
+            curl_easy_setopt_ptr(easy.0, CURLOPT_HTTPHEADER, slist.0 as *const c_void);
         }
-        if let Some(body) = post_body {
-            curl_easy_setopt_long(h, CURLOPT_POST, 1 as c_long);
-            curl_easy_setopt_long(h, CURLOPT_POSTFIELDSIZE, body.len() as c_long);
+        // The VERB. Three shapes, and the split is what keeps each one on the wire curl already
+        // knows how to send:
+        //   * `GET` with no body is curl's default — setting nothing is setting it right.
+        //   * anything WITH a body rides `CURLOPT_POST`, so curl writes the `Content-Length` and
+        //     the body itself; a non-`POST` verb on top of that only renames the request line.
+        //   * a body-LESS non-GET (the `PUT` `select_streams` sends) is a GET-shaped request with
+        //     the verb overridden — see [`CURLOPT_CUSTOMREQUEST`] for why not `CURLOPT_UPLOAD`.
+        if let Some(body) = body {
+            curl_easy_setopt_long(easy.0, CURLOPT_POST, 1 as c_long);
+            curl_easy_setopt_long(easy.0, CURLOPT_POSTFIELDSIZE, body.len() as c_long);
             // curl references (doesn't copy) the buffer during perform; `body` outlives the call.
-            curl_easy_setopt_ptr(h, CURLOPT_POSTFIELDS, body.as_ptr() as *const c_void);
+            curl_easy_setopt_ptr(easy.0, CURLOPT_POSTFIELDS, body.as_ptr() as *const c_void);
+            if verb != "POST" {
+                curl_easy_setopt_ptr(easy.0, CURLOPT_CUSTOMREQUEST, verb_c.as_ptr() as *const c_void);
+            }
+        } else if verb != "GET" {
+            curl_easy_setopt_ptr(easy.0, CURLOPT_CUSTOMREQUEST, verb_c.as_ptr() as *const c_void);
         }
 
-        let rc = curl_easy_perform(h);
+        let rc = curl_easy_perform(easy.0);
         let mut code: c_long = 0;
-        curl_easy_getinfo_long(h, CURLINFO_RESPONSE_CODE, &mut code as *mut c_long);
+        curl_easy_getinfo_long(easy.0, CURLINFO_RESPONSE_CODE, &mut code as *mut c_long);
 
-        if !slist.is_null() {
-            curl_slist_free_all(slist);
+        if sink.overflowed {
+            crate::log(&format!("net: response exceeded {} byte body limit", max_body.unwrap_or(0)));
+            return None;
         }
-        curl_easy_cleanup(h);
-        drop(hdr_owned);
         if rc != 0 {
             // NAMED, not just counted. Everything here rides the TELEVISION's curl and therefore
             // its OpenSSL and its CA store — the library webosbrew's caniuse data singles out as
@@ -408,21 +609,66 @@ fn perform(url: &str, headers: &[String], post_body: Option<&[u8]>) -> Option<Re
             crate::log(&format!("net: curl rc={rc} — {why}"));
             return None;
         }
-        Some(Resp { status: code as u16, body: buf })
+        Some(Resp { status: code as u16, body: sink.body })
     }
 }
 
-/// Blocking HTTPS GET.
+/// Blocking HTTPS GET on the [`API`] deadlines — the plex.tv account calls.
 pub fn https_get(url: &str, headers: &[String]) -> Option<Resp> {
-    perform(url, headers, None)
+    request(url, headers, "GET", None, API, false, None)
 }
-/// Blocking HTTPS POST (`body` may be empty).
+/// Blocking HTTPS POST (`body` may be empty) on the [`API`] deadlines.
 pub fn https_post(url: &str, headers: &[String], body: &[u8]) -> Option<Resp> {
-    perform(url, headers, Some(body))
+    request(url, headers, "POST", Some(body), API, false, None)
+}
+
+/// Redirect-following HTTPS GET for a PUBLIC, credential-free resource. The QR image fetch is the
+/// only caller: at most five HTTP(S)-only redirects are followed, and an HTTPS request may never
+/// downgrade. Account/PMS requests keep redirects off because replayed headers/URLs carry tokens.
+pub fn https_get_public(url: &str) -> Option<Resp> {
+    request(url, &[], "GET", None, API, true, None)
 }
 
 #[cfg(test)]
-mod tests {
+mod request_tests {
+    use super::*;
+
+    #[test]
+    fn a_bounded_sink_refuses_before_it_allocates_past_the_limit() {
+        let mut sink = BodySink::new(Some(4));
+        assert!(sink.push(b"abc"));
+        assert!(!sink.push(b"de"));
+        assert_eq!(sink.body, b"abc", "the overflowing callback chunk is never appended");
+        assert!(sink.overflowed);
+    }
+
+    #[test]
+    fn bulk_reads_keep_the_connect_deadline_and_drop_the_transfer_deadline() {
+        assert_eq!(
+            API,
+            Timeouts { connect_s: 8, total_s: 25, low_speed_bps: 0, low_speed_s: 0 }
+        );
+        assert_eq!(
+            BULK,
+            Timeouts { connect_s: 8, total_s: 0, low_speed_bps: 1, low_speed_s: 30 }
+        );
+    }
+
+    #[test]
+    fn public_redirects_are_http_only_and_never_downgrade_tls() {
+        assert_eq!(allowed_redirect_protocols(b"https://example.invalid/qr"), CURLPROTO_HTTPS);
+        assert_eq!(allowed_redirect_protocols(b"HTTPS://example.invalid/qr"), CURLPROTO_HTTPS);
+        assert_eq!(
+            allowed_redirect_protocols(b"http://example.invalid/qr"),
+            CURLPROTO_HTTP | CURLPROTO_HTTPS,
+            "plaintext may upgrade, but the inverse is forbidden"
+        );
+        assert_eq!(PUBLIC_MAX_REDIRECTS, 5);
+    }
+}
+
+#[cfg(test)]
+mod legacy_tests {
     use super::*;
 
     #[test]

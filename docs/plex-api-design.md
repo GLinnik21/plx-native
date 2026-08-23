@@ -10,9 +10,11 @@
 > no DNS") as the state of the world before `rust-modules/src/plex/origin.rs`, whose module doc is
 > the current account — including the bracket invariant (`host()` is bare for the resolver,
 > `authority()` brackets a v6 literal for a URL) that the old pair could not express at all.
-> `Client::host()`/`port()` and `StreamUrl::host()`/`port()` still answer exactly what rule 9 says,
-> as views on the origin; the transport constraint below it is unchanged — the socket still does no
-> name resolution and no TLS.
+> `Client::host()`/`port()` and `StreamUrl::host()`/`port()` still expose views on that origin, but
+> the transport constraint below is superseded too: `stream.rs` resolves names and either address
+> family for plaintext, `http.rs` selects `net.rs`/libcurl for HTTPS control, and `ff.rs` selects
+> `curlio.rs` for HTTPS media. The hard-constraint list is the historical design input, not the
+> current transport surface.
 
 Goal: **replace every hand-built Plex path/query string in the app with one typed method per
 operation.** After this lands, no module outside `plex/` ever writes `format!("/library/…")`,
@@ -20,7 +22,7 @@ operation.** After this lands, no module outside `plex/` ever writes `format!("/
 the operation list this design implements; `docs/pms-api.md` + `docs/plex-openapi.json` are the
 field/shape sources.
 
-Hard constraints (unchanged):
+Hard constraints at the time of this design:
 
 - **Transport is the existing raw socket in `stream.rs` only** — `http_get(host,port,path,extra)`,
   `http_put(host,port,path)`, `http_open(hs,ip,port,path,extra,method)`. **No reqwest/hyper/DNS.**

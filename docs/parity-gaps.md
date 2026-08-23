@@ -795,7 +795,12 @@ player, transport and tracks auditors, and is counted once in the themes above.
   NB the partial that does exist: `plex/discover.rs` was added for person bios (see *Superseded by
   owner decisions*), so the transport question is already answered — what is missing is the catalog
   and watchlist surface, not a way to reach plex.tv.  
-  *Where:* A new `plex/discover.rs` `DiscoverClient` alongside `plex/account.rs` (HTTPS via `net.rs`/libcurl, since `stream.rs` is plaintext raw-socket + numeric IP only), a Watchlist store, and a new `ui/` screen plus `Route` arm in `app.rs`. Endpoints: `https://discover.provider.plex.tv/library/sections/…`, `https://metadata.provider.plex.tv/library/search`, `PUT/DELETE https://discover.provider.plex.tv/actions/addToWatchlist`.  
+  *Where:* Extend `plex/discover.rs`'s `DiscoverClient` beside `plex/account.rs` (HTTPS via
+  `net.rs`/libcurl; `stream.rs` is the plaintext raw-socket arm), add a Watchlist store, and add a
+  new `ui/` screen plus `Route` arm in `app.rs`. Endpoints:
+  `https://discover.provider.plex.tv/library/sections/…`,
+  `https://metadata.provider.plex.tv/library/search`, and `PUT/DELETE`
+  `https://discover.provider.plex.tv/actions/addToWatchlist`.
   *Verified:* CONFIRMED. `rg -ni "watchlist|discover|provider\.plex\.tv"` over rust-modules/src returns zero watchlist hits and zero provider hits; every `discover` hit is LAN server discovery or an unrelated comment — auth.rs:3/25-26/295/297/307/314/375/462 (`Phase::Discovering`, `discover_and_store`), plex/account.rs:1/10/83, plex/session.rs:2/45, browse.rs:29/201, app.rs:354/2299, lib.rs:8. plex/mod.rs:27 confirms `account.rs` is the ONLY non-PMS surface (plex.tv login / server discovery / home-users), and plex/hubs.rs:23-29 `search` goes through `Client::get_json`, i.e. the local PMS host. Severity/effo
 
 - **No type/view switch on the grid (Movies vs Collections vs Folders; Shows vs Seasons vs Episodes)** — `minor` / `medium`  
@@ -996,11 +1001,14 @@ player, transport and tracks auditors, and is counted once in the themes above.
 
 *Already implemented here: 19 reference features.*
 
-- **A remote-only or relay-only server cannot be used at all** — `blocker` / `large`  
-  Sign-in hard-requires a plex.tv connection flagged `local` and not `relay`; anything else is rejected with "No local Plex server found on this network." The official client connects over the server's public/plex.direct address and over Plex Relay when the server is not on the LAN — which is the normal case for a server a friend shared with you.  
-  *Where:* auth.rs:375-414 (accept the `uri`/https connections and rank them), plex/client.rs (host/port currently `String`/`i32` set once), and the streaming transport: stream.rs would need a TLS+DNS path for `*.plex.direct` (or route media through a curl-based streamer beside net.rs). Endpoint already fetched: `/api/v2/resources?includeHttps=1&includeRelay=1` (plex/account.rs:88-91) — the relay/https connections come back today and are thrown away.  
-  *Verified:* CONFIRMED, and the transport half is worse than stated. auth.rs:385-395 both passes filter `c.local && !c.relay && !c.address.is_empty()`; the miss logs auth.rs:399 and becomes 'No local Plex server found on this network.' at auth.rs:315. Resource::local_connection (plex/account.rs:156-161) — which has an `.or_else` non-local fallback — is genuinely dead: a whole-crate grep finds only its definition. stream.rs has NO name resolution at all (no getaddrinfo/gethostbyname/inet_pton anywhere in the file); the sockaddr is hand-built from a dotted quad at stream.rs:236-254 with the comment 'No DNS, 
 
+- ~~**A remote-only or relay-only server cannot be used at all** — `blocker` / `large`~~
+  **Implemented 2026-08-23; device acceptance remains.** Discovery retains and ranks the full
+  connection URLs from `/api/v2/resources?includeHttps=1&includeRelay=1`, TLS-first. `http.rs`
+  routes HTTPS PMS control through `net.rs`/libcurl, `curlio.rs` carries HTTPS media, and the raw
+  `stream.rs` arm resolves hostnames plus IPv4/IPv6 for plaintext. Host tests cover routing,
+  ranking, status-vs-reachability and media byte ranges. The remaining gate is a real-TV
+  remote/relay browse-and-play session, not missing transport code.
 - **No Settings screen exists at all** — `major` / `large`  
   The official TV client has a Settings surface (video quality for local/remote, auto skip intro/credits, subtitle appearance, audio options, Continue Watching behaviour, account info, sign out). We have no settings screen, no settings route, and no persisted preference store of any kind. Two files are written to disk today and neither is a preference: the credentials session (`plex/session.rs`) and the cold-start place (`coldstart.rs`, added 2026-08-23). The second is the pattern to copy for prefs — its own file, its own format version, soft-fail on every shape — precisely so a bad parse cannot cost the account token, which is the whole reason it is not a field on `Session`.  
   *Where:* New `ui/settings.rs` (compose Popover+TableView like ui/account_menu.rs / ui/track_menu.rs), a `Route::Settings` arm in app.rs (route enum at app.rs:585-593, key/click/draw dispatch), a new "Settings" row in ui/account_menu.rs:45-49, and a new preferences file alongside plex/session.rs (same load/save/0600 pattern, separate from credentials). No PMS endpoint needed.  
@@ -1008,7 +1016,11 @@ player, transport and tracks auditors, and is counted once in the themes above.
 
 - **No Watchlist — not readable, not addable, not removable** — `major` / `large`  
   The official client has Watchlist as a first-class sidebar destination spanning owned-library and Discover-only titles, plus an add/remove action on every detail page. We have none of it: no watchlist fetch, no watchlist shelf or grid, and no watchlist control on the detail page.  
-  *Where:* New `plex/discover.rs` (or extend plex/account.rs) for `GET https://discover.provider.plex.tv/library/sections/watchlist/all` and `PUT|DELETE https://discover.provider.plex.tv/actions/addToWatchlist|removeFromWatchlist?ratingKey=…`; add a PUT/DELETE verb to net.rs:84-146 (`perform` already takes a body — it needs CURLOPT_CUSTOMREQUEST); a third control in ui/detail.rs `draw_buttons`/`on_ok`; a Watchlist entry in the tab row (ui/widgets.rs:540-592) plus a grid screen reusing ui/library.rs.  
+  *Where:* Extend `plex/discover.rs` for
+  `GET https://discover.provider.plex.tv/library/sections/watchlist/all` and `PUT|DELETE`
+  `https://discover.provider.plex.tv/actions/addToWatchlist|removeFromWatchlist?ratingKey=…`;
+  `net::request` already supports body-less custom verbs. Add a third control in `ui/detail.rs`
+  `draw_buttons`/`on_ok`, plus a Watchlist tab and a grid reusing `ui/library.rs`.
   *Verified:* CONFIRMED. Case-insensitive grep for 'watchlist' over all of rust-modules/src returns zero hits. ui/detail.rs:824-849 draw_buttons draws exactly Play (833) + the watched-state CircleButton (843); on_ok (detail.rs:1148-1219) handles col 0 = play and col 1 = scrobble/unscrobble and nothing else (`if col != 0 { return false }` at 1176). Tab row is Home + PMS sections only (ui/widgets.rs:539-591, labels from browse::section_title at 550). One correction to the evidence: PUT does exist on the PMS transport — stream.rs::http_put via plex/client.rs:112 `put()` (used by select_streams, plex/library.rs
 
 - **No server picker when the account has several servers, and the server cannot be changed at runtime** — `major` / `medium`  

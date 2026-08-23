@@ -37,6 +37,12 @@ caller migrations · **D** owns the accessor-demotion rule.
 
 ## What decided it (all verified against the repo, not taken from self-ratings)
 
+> **Supersession note (2026-08-23):** the `http_get`/`put`/`post` one-shot wrappers discussed below
+> were later replaced by the scheme-selecting `http.rs` control façade, and HTTPS media gained its
+> own abortable `curlio.rs` source. The argument records the ownership constraints that drove the
+> original socket fix; read `stream.rs`, `http.rs`, and `curlio.rs` for the current cancellation
+> surfaces.
+
 **1. The board's most valuable finding is not an async-model answer.** A, B, C *and* the audit's
 own Phase C3 all claimed that making `apply_plan` the sole writer removes the `ff.rs:1358`
 `STREAM_ACODEC` race. **It does not.** Verified: every writer is *already* main-thread —

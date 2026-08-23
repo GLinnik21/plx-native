@@ -24,9 +24,10 @@ hardware video plane via ACB — 29 symbols that exist on a television and nowhe
 the simulator's contract; the bundle inherits it. A Mac playback backend would be a new media
 engine, not a packaging change.
 
-It is also **LAN-only**, exactly as on the television: `stream.rs` speaks HTTP/1.1 over a raw
-socket to a numeric IP, with no DNS and no TLS. Plex's remote-access path (`plex.direct` over
-HTTPS) is not reachable from it. `net.rs`/libcurl exists for plex.tv account calls only.
+Browsing is not LAN-only: the same `http.rs` control façade runs here, using `stream.rs` for
+plaintext hostname/IPv4/IPv6 origins and `net.rs`/libcurl for HTTPS PMS control. The media path is
+also present structurally (`curlio.rs` for HTTPS), but playback still ends at the host FFI seam
+described above because macOS has no Starfish/ACB decoder backend.
 
 ## What had to change for it to work at all
 

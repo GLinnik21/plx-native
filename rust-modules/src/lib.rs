@@ -24,6 +24,7 @@ mod ff; // THE demuxer — the FFmpeg 9.0 this app BUNDLES and pins (majors 63/6
 mod focusprobe; // dev: one diffable line naming everything app.rs's key ladder can move, logged when it changes
 mod fontcov; // which codepoints a font file can draw, read from its cmap — text.rs's fallback chain, and the host gate that stops tofu shipping
 mod gfx;
+mod http; // the ONE door out of the control plane: dispatch a Plex REST request on its origin's scheme (stream.rs for http, net.rs/libcurl for https)
 #[cfg(feature = "devtriggers")]
 mod hwcnt; // direct userspace Mali r12p0 vinstr reader for the phase profiler
 #[cfg(feature = "devtriggers")]

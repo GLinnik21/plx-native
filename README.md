@@ -76,9 +76,11 @@ with no special permissions. Root only matters for the development loop below.
 **The honest scope.** I built this for how *I* watch, so it's narrower than Plex's:
 
 - **Movies and TV shows.** No music, no photos, no live TV or DVR.
-- **A server on your LAN.** The app only connects to a server it finds locally, over a socket that
-  takes a numeric address with no DNS and no TLS. Remote-only and relay servers won't connect at
-  all, and there's nowhere to type an address in.
+- **Servers granted to your Plex account.** The app discovers owned and shared servers through
+  plex.tv, prefers their authenticated HTTPS origins, and supports plaintext hostname/IPv4/IPv6
+  origins too. There is deliberately nowhere to type an address on the TV: configure servers on a
+  phone or PC, then choose per profile from the account's available libraries. Remote/relay
+  browse-and-play is implemented but still needs broader firmware/device acceptance.
 - **webOS 4.x is what's tested.** It runs on 6 and 10 — the UI works and the library browses — but
   playback doesn't start there yet: 5.0 replaced the LG library that puts decoded video on the
   hardware plane, and getting the replacement right is in progress.
