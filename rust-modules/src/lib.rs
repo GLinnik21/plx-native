@@ -20,6 +20,7 @@ mod dynlib; // dlopen-by-SONAME-candidate: the libraries whose major moves betwe
 mod egl; // boot-time EGL capability probe (extensions, swap behaviour, buffer age) — diagnostic only
 mod ff; // FFmpeg (libavformat/libavcodec/libavutil) demuxer — the TV's own FFmpeg 3.3 via the stub-.so link
 mod focusprobe; // dev: one diffable line naming everything app.rs's key ladder can move, logged when it changes
+mod fontcov; // which codepoints a font file can draw, read from its cmap — text.rs's fallback chain, and the host gate that stops tofu shipping
 mod gfx;
 #[cfg(feature = "devtriggers")]
 mod hwcnt; // direct userspace Mali r12p0 vinstr reader for the phase profiler
