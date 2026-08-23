@@ -835,7 +835,7 @@ fn up_next_of(r: &crate::plex::QueueRow) -> Option<UpNext> {
 ///   1. **The registry's own id for this client** — it is the key the server is filed under, so it
 ///      cannot belong to another one. Free, and refreshed whenever the slot is re-pointed.
 ///   2. `cached`, which `ResolveEnv` only fills in when the cache was learned from *this* server
-///      (see [`Session::machine_sid`]) — the legacy `install(host, port, token)` path registers with no id, so
+///      (see [`Session::machine_sid`]) — the `install(&Origin, token)` path registers with no id, so
 ///      for the session's own server rung 1 is empty and this is what saves a round trip.
 ///   3. `GET /identity`, whose answer travels back in `QueueInfo::machine_id` for `apply_plan` to
 ///      cache against this server.

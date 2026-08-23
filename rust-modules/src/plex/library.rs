@@ -216,7 +216,7 @@ impl Client {
     pub fn direct_play_url(&self, part_key: &str, session: &str) -> StreamUrl {
         let q = QueryBuilder::new(part_key).str("X-Plex-Session-Identifier", session);
         let path = self.playback_identity(q).build();
-        StreamUrl { host: self.host.clone(), port: self.port, path: self.with_token(&path) }
+        StreamUrl { origin: self.origin.clone(), path: self.with_token(&path) }
     }
 }
 

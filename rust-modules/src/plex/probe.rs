@@ -42,6 +42,11 @@
 //! The racing itself (parallel dial, first good wins, cancel the rest) lands with the transport
 //! work; it belongs above this file, which stays a function of the resource alone.
 use super::account::{Connection, Resource};
+use super::origin::{url_host, Origin};
+/// `Scheme` lives in [`super::origin`] — it is a property of an ORIGIN, and this module only
+/// RANKS it (see the third sort key in [`candidates`]). Re-exported so `probe::Scheme` keeps
+/// resolving for every caller that reads it as a ranking axis.
+pub use super::origin::Scheme;
 
 /// Where an address sits relative to us. The ranking axis every Plex client agrees on, ordered
 /// best-first by declaration so the derived `Ord` *is* the preference.
@@ -55,17 +60,6 @@ pub enum Location {
     Relay,
 }
 
-/// Ordered best-first for THIS app, which is not the same as best-first in general: `stream.rs`
-/// speaks plain HTTP to a dotted quad with no DNS and no TLS (`stream.rs:239-253`), so an https
-/// `plex.direct` origin cannot be dialled at all until the curl control plane lands
-/// (`docs/shared-servers.md` §5 step 6). Ranking https below http keeps the order equal to what can
-/// actually connect today; when TLS exists, swapping these two declarations is the whole change.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Scheme {
-    Http,
-    Https,
-}
-
 /// One address worth dialling. `url` is a bare origin — scheme, host, port, no trailing slash and
 /// no path — so a prober appends `/identity` and a client keeps it as its base.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,11 +67,36 @@ pub struct Candidate {
     pub url: String,
     pub scheme: Scheme,
     pub location: Location,
-    /// The raw host as plex.tv gave it: a dotted quad, a v6 literal, or a hostname. Kept beside
-    /// `url` because the current transport wants host and port, not a URL.
+    /// The raw host as plex.tv gave it: a dotted quad, a v6 literal, or a hostname.
+    ///
+    /// **DIAGNOSTIC METADATA — never what a connection is built from.** It is what the event log
+    /// and the Sources panel say, and it is what today's cleartext `dial` is handed because
+    /// `stream.rs` takes an address and not a URL. It is emphatically *not* the host a TLS
+    /// certificate is validated against: see [`Candidate::origin`], and [`candidates`] below for
+    /// why the two differ.
     pub address: String,
     pub port: i64,
     pub ipv6: bool,
+}
+
+impl Candidate {
+    /// **Where this candidate actually is — parsed from [`Candidate::url`].**
+    ///
+    /// The one derivation in this file that must never be short-cut through
+    /// [`Candidate::address`]. plex.tv advertises the `plex.direct` HOSTNAME in `uri` while
+    /// `address` stays the dotted quad behind it, and the certificate is issued for the name — so
+    /// an origin rebuilt from `address` produces a control plane that *looks* like it speaks TLS
+    /// and fails hostname validation on every real share. [`candidates`] says the same thing from
+    /// the other end ("https to the bare IP fails validation by design"); this is the accessor
+    /// that keeps a caller from having to know it.
+    ///
+    /// `None` only for a `url` that is not an origin this app can speak — which [`candidates`]
+    /// never builds, since it either copies a `uri` plex.tv sent or synthesizes one itself. A
+    /// caller therefore treats `None` as "skip this candidate", exactly as it already treats an
+    /// address the transport cannot dial.
+    pub fn origin(&self) -> Option<Origin> {
+        Origin::parse(&self.url)
+    }
 }
 
 /// Everything a prober needs about one server, and nothing it does not.
@@ -178,17 +197,13 @@ fn host_for_url(address: &str) -> String {
     }
 }
 
-/// The host of a bare origin — **what would actually be dialled**, which for a `uri` candidate is
-/// NOT [`Candidate::address`]: plex.tv advertises the `plex.direct` hostname in `uri` while
-/// `address` stays the dotted quad behind it. Ranking the `uri` candidate on `address` would score
-/// `https://203-0-113-9.hash.plex.direct:32400` as numeric when it is the very name that needs DNS.
-fn host_of(url: &str) -> &str {
-    let rest = url.split_once("://").map_or(url, |(_, r)| r);
-    if let Some(end) = rest.find(']') {
-        return &rest[..=end]; // bracketed v6 literal, port (if any) follows
-    }
-    rest.split(':').next().unwrap_or(rest)
-}
+// The host of a bare origin — **what would actually be dialled**, which for a `uri` candidate is
+// NOT `Candidate::address`: plex.tv advertises the `plex.direct` hostname in `uri` while `address`
+// stays the dotted quad behind it. Ranking the `uri` candidate on `address` would score
+// `https://203-0-113-9.hash.plex.direct:32400` as numeric when it is the very name that needs DNS.
+//
+// It used to be a `host_of` of this file's own; it is `origin::url_host` now, so there is exactly
+// one reading of a URL in this layer and the bracket convention is decided in one place.
 
 /// Is this host a NUMERIC literal (v4 or v6) rather than a name that needs resolving?
 ///
@@ -253,9 +268,9 @@ pub fn candidates(res: &Resource) -> Vec<Candidate> {
     }
     // Stable, so plex.tv's own order survives inside a tier — it is the only tiebreak left once
     // location, scheme, resolvability and address family have spoken, and it is not ours to reorder.
-    // Resolvability is read off the URL's own host, not `address` — see `host_of`, which is the
-    // difference between scoring the `plex.direct` uri and scoring the quad hiding behind it.
-    out.sort_by_key(|c| (c.location, c.scheme, !is_numeric_address(host_of(&c.url)), c.ipv6));
+    // Resolvability is read off the URL's own host, not `address` — see `origin::url_host`, which
+    // is the difference between scoring the `plex.direct` uri and scoring the quad hiding behind it.
+    out.sort_by_key(|c| (c.location, c.scheme, !is_numeric_address(url_host(&c.url)), c.ipv6));
     out
 }
 
@@ -384,11 +399,44 @@ mod tests {
         assert!(!is_numeric_address(""));
     }
 
+    /// **A candidate's origin comes from its `url` and NEVER from its `address`.** The https
+    /// candidate here is the whole reason: plex.tv advertises the `plex.direct` NAME in `uri`
+    /// while `address` stays the dotted quad, and the certificate is issued for the name — so an
+    /// origin rebuilt from `address` gives a URL that connects and then fails TLS validation on
+    /// every real share. This is the assertion that fails if anyone "simplifies" `Candidate::origin`
+    /// into `Origin::http(&self.address, self.port)`.
     #[test]
-    fn the_host_of_an_origin_is_read_without_its_scheme_or_port() {
-        assert_eq!(host_of("http://203.0.113.9:31234"), "203.0.113.9");
-        assert_eq!(host_of("https://media.example.internal:31234"), "media.example.internal");
-        assert_eq!(host_of("http://[2001:db8::1]:32400"), "[2001:db8::1]", "the port is not a v6 group");
+    fn a_candidates_origin_is_parsed_from_its_url_not_rebuilt_from_its_address() {
+        let cs = candidates(&shared_server());
+
+        let uri = cs.iter().find(|c| c.scheme == Scheme::Https && c.address == "203.0.113.9").expect("the https uri");
+        let o = uri.origin().expect("an advertised uri is an origin");
+        assert_eq!(o.host(), "203-0-113-9.hash2.plex.direct", "the NAME the certificate is for");
+        assert_ne!(o.host(), uri.address, "…which is not the quad hiding behind it");
+        assert_eq!(o.base(), "https://203-0-113-9.hash2.plex.direct:31234");
+        assert!(o.is_tls());
+
+        // and the synthesized plain-http twin — the one this app can actually dial today — is the
+        // address, unchanged, so nothing about the current transport moves
+        let twin = cs.iter().find(|c| c.url == "http://203.0.113.9:31234").expect("the http twin");
+        let t = twin.origin().expect("parses");
+        assert_eq!((t.scheme(), t.host(), t.port()), (Scheme::Http, "203.0.113.9", 31234));
+        assert_eq!(t.base(), twin.url, "every candidate's origin round-trips to its own url");
+
+        // every candidate this policy builds is a parseable origin — a caller's `None` branch is
+        // for a hand-made `Candidate`, never for one that came from here
+        assert!(cs.iter().all(|c| c.origin().is_some_and(|o| o.base() == c.url)), "{cs:#?}");
+    }
+
+    /// A v6 candidate's origin is bare for the resolver and bracketed in its URL — the invariant
+    /// `origin.rs` documents, asserted where the v6 candidate is actually built.
+    #[test]
+    fn a_v6_candidates_origin_is_bare_for_the_resolver() {
+        let cs = candidates(&owned_server());
+        let v6 = cs.iter().find(|c| c.url == "http://[2001:db8::1]:32400").expect("the v6 twin");
+        let o = v6.origin().expect("parses");
+        assert_eq!(o.host(), "2001:db8::1", "the getaddrinfo node is never bracketed");
+        assert_eq!(o.authority(), "[2001:db8::1]:32400", "…and the URL authority always is");
     }
 
     /// **A hostname ranks behind a numeric address**, and the share is the live case: plex.tv lists
