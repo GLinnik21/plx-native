@@ -10,6 +10,7 @@
 #![allow(dead_code)]
 use crate::plex::account::{AccountClient, HomeUser, Resource};
 use crate::plex::probe::{self, Candidate, Outcome, ProbePlan, Scheme};
+use crate::plex::Origin;
 use crate::plex::session::{self, ServerRef, Session, SourceRef, UserRef};
 use std::sync::Mutex;
 
@@ -110,8 +111,11 @@ impl UserTile {
 
 /// PMS credentials the main loop installs once the flow resolves.
 pub struct ReadyCreds {
-    pub host: String,
-    pub port: i32,
+    /// **Where the primary server is** — an [`Origin`], not a `(host, port)` pair, because the
+    /// pair cannot say `https` and the host a certificate is issued for is not the address behind
+    /// it (`plex::origin`). Read straight off the stored [`session::ServerRef`], which is the
+    /// value discovery wrote and the one `can_go_local` gates.
+    pub origin: Origin,
     pub token: String,
 }
 
@@ -308,11 +312,7 @@ pub fn take_ready() -> Option<ReadyCreds> {
             session::set_current(Some(c.session.user.clone())); // drives the Home profile chip
             Some((
                 c.session.sources.clone(),
-                ReadyCreds {
-                    host: c.session.server.address.clone(),
-                    port: c.session.server.port as i32,
-                    token: c.session.pms_token().to_owned(),
-                },
+                ReadyCreds { origin: c.session.server.origin(), token: c.session.pms_token().to_owned() },
             ))
         } else {
             None
@@ -476,10 +476,12 @@ fn login_thread() {
     }
     // Install the PMS client now (server/owner token) so the who's-watching avatars can proxy
     // through the server's photo transcoder. The per-user token is swapped in on profile pick.
-    let (addr, port, stok) =
-        with_ctl(|c| (c.session.server.address.clone(), c.session.server.port, c.session.server.token.clone()));
-    crate::plex::install(&addr, port as i32, &stok);
-    log(&format!("auth: PMS client installed {addr}:{port}"));
+    let (origin, stok) = with_ctl(|c| (c.session.server.origin(), c.session.server.token.clone()));
+    crate::plex::install(&origin, &stok);
+    // The AUTHORITY, not the base URL: byte-identical to the `{addr}:{port}` this line always
+    // printed for the http/IPv4 origins the app has today, and correct for a v6 literal, which
+    // that format could not spell at all.
+    log(&format!("auth: PMS client installed {}", origin.authority()));
 
     // 4) Plex Home roster → who's-watching, or straight in if there's a single user. The roster is
     // kept on the session so it persists with the creds — the boot picker and every later
@@ -786,9 +788,22 @@ fn resolve_roster(resources: &[Resource], dial: &dyn Fn(&str, i32) -> (i32, Vec<
                     name: plan.name.clone(),
                     shared_by: plan.source_title.clone().unwrap_or_default(),
                     owned: plan.owned,
-                    // The address that ANSWERED, never the first advertised — and it got here only
-                    // by being dialable, which is what keeps a v6 literal or a hostname out of the
-                    // session file.
+                    // **The ORIGIN is parsed from the candidate's URL, never rebuilt from its
+                    // address.** For every candidate this transport can dial today the two agree
+                    // exactly — `dial_target` accepts only a plain-http IPv4 literal, whose URL
+                    // `probe::candidates` synthesized as `http://{address}:{port}` — so nothing
+                    // about the current behaviour moves. They stop agreeing the moment an https
+                    // candidate can be accepted: plex.tv advertises the `plex.direct` NAME in
+                    // `uri` while `address` stays the quad behind it, and the certificate is
+                    // issued for the name, so a session file that stored the address would fail
+                    // TLS validation on every real share (`plex::origin`).
+                    //
+                    // Empty when the URL somehow is not an origin — `SourceRef::origin` then falls
+                    // back to the legacy address pair, which is the same answer this line used to
+                    // give unconditionally.
+                    origin: c.origin().map(|o| o.base()).unwrap_or_default(),
+                    // The address that ANSWERED, never the first advertised. Kept as the
+                    // DIAGNOSTIC half — what `describe` prints and the Sources panel says.
                     address: c.address,
                     port: c.port,
                     // That server's OWN grant. Our own server's token gets a 401 from a share, so
@@ -853,6 +868,9 @@ fn discover_and_store(ac: &AccountClient) -> Discovery {
         address: p.address.clone(),
         port: if p.port != 0 { p.port } else { 32400 },
         token: p.token.clone(),
+        // Carried across from the roster entry, so the primary and its `sources` twin can never
+        // disagree about where the same server is. `reconcile_primary` keeps them together later.
+        origin: p.origin.clone(),
     };
     with_ctl(|c| {
         c.session.server = server;
@@ -974,16 +992,20 @@ fn reconcile_primary(server: &mut ServerRef, found: &[SourceRef]) -> bool {
         return false;
     }
     let Some(s) = found.iter().find(|s| s.machine_id == server.machine_id && s.usable()) else { return false };
-    if server.address == s.address && server.port == s.port && server.token == s.token {
+    if server.address == s.address && server.port == s.port && server.token == s.token && server.origin == s.origin {
         return false;
     }
-    if server.address != s.address || server.port != s.port {
+    if server.address != s.address || server.port != s.port || server.origin != s.origin {
         // The machine name and the address, never the token and never the machine id — the same
         // line `SourceRef::describe` draws.
         log(&format!("auth: primary {:?} now answers at {}:{}", server.name, s.address, s.port));
     }
     server.address = s.address.clone();
     server.port = s.port;
+    // The origin moves with the address for the same reason the token does: it came out of the
+    // same answer. Leaving it behind would keep dialling the old one, which is the bug this
+    // whole function exists to close, one field further in.
+    server.origin = s.origin.clone();
     // The token moves with the address because it came from the same answer: this is the OWNER's
     // per-(user, server) grant, which is exactly what `ServerRef::token` means (and the refresh
     // above only runs for the owner). `pms_token()` still prefers a switched profile's own token.
@@ -1004,7 +1026,11 @@ fn install_roster(sources: &[SourceRef], primary: Option<usize>) -> usize {
     let order = registration_order(sources);
     for &i in &order {
         let s = &sources[i];
-        let id = crate::plex::register(&s.machine_id, &s.address, s.port as i32, &s.token);
+        // `registration_order` already filtered on `usable()`, which IS `origin().is_some()` —
+        // so this `else` is unreachable today and is a `continue` rather than an `expect` because
+        // a roster entry has never been allowed to cost more than itself (`de_soft_vec`).
+        let Some(origin) = s.origin() else { continue };
+        let id = crate::plex::register_origin(&s.machine_id, &origin, &s.token);
         // …and say WHOSE it is. Registering without this was the bug that made the whole shared-
         // source feature invisible on the only path a real user takes: `ServerFacts` stayed unset,
         // so every source read as owned with no handle, and each surface then correctly drew
@@ -1515,6 +1541,36 @@ mod tests {
         assert_eq!(d.seen(), vec!["192.168.0.10:32400", "203.0.113.9:31234"]);
     }
 
+    /// **Each roster entry's ORIGIN comes from the candidate's URL, not from its address.**
+    ///
+    /// It is the same value today — `dial_target` accepts only a plain-http IPv4 literal, whose URL
+    /// `probe::candidates` synthesized as `http://{address}:{port}` — and that equality is the
+    /// whole no-behaviour-change claim, so it is asserted rather than assumed. It stops being an
+    /// equality the moment an https candidate can be accepted: plex.tv advertises the `plex.direct`
+    /// NAME in `uri` while `address` stays the quad behind it, so a roster rebuilt from `address`
+    /// would store an origin no certificate matches.
+    #[test]
+    fn each_reached_entry_records_the_origin_its_url_named() {
+        let d = Dialled::new(vec![
+            ("192.168.0.10", 200, identity_json("aaaa1111")),
+            ("203.0.113.9", 200, identity_json("bbbb2222")),
+        ]);
+        let Resolved::Reached(roster) = resolve_roster(&a_two_server_account(), &|h, p| d.dial(h, p)) else {
+            panic!("both servers answer")
+        };
+
+        assert_eq!(roster[0].origin, "http://192.168.0.10:32400");
+        assert_eq!(roster[1].origin, "http://203.0.113.9:31234");
+        // …and it is a parseable origin, so the registry gets one rather than the legacy fallback
+        for s in &roster {
+            let o = s.origin().expect("a reached entry is dialable");
+            assert_eq!(o.base(), s.origin, "the stored string round-trips");
+            assert!(!o.is_tls(), "nothing this transport can accept is TLS yet");
+            // the equality that makes this a behaviour-preserving change today
+            assert_eq!((o.host(), o.port() as i64), (s.address.as_str(), s.port));
+        }
+    }
+
     /// The three ways discovery can come to nothing are three different things to say, and the one
     /// that used to be said for all of them ("No local Plex server found on this network") was the
     /// old policy talking rather than a description of what happened.
@@ -1552,6 +1608,10 @@ mod tests {
         assert!(!roster[0].owned, "the primary is a share here, and that is the point");
     }
 
+    /// A roster entry in the **LEGACY shape** — no stored `origin`, which is what every session
+    /// file on every television written before that field carries. `..Default::default()` is what
+    /// leaves it empty, so these fixtures also stand as the compatibility case: everything they
+    /// assert about registration and re-keying runs through `SourceRef::origin`'s fallback.
     fn source(machine_id: &str, owned: bool, token: &str) -> SourceRef {
         SourceRef {
             machine_id: machine_id.into(),
@@ -1561,6 +1621,7 @@ mod tests {
             address: "10.0.0.1".into(),
             port: 32400,
             token: token.into(),
+            ..Default::default()
         }
     }
 
@@ -1616,6 +1677,7 @@ mod tests {
         assert!(retoken(&anon, &[resource(r#"{"provides":"server","accessToken":"x"}"#)]).is_empty());
     }
 
+    /// The primary in the **LEGACY shape** — see [`source`] above.
     fn primary(machine_id: &str, address: &str, port: i64, token: &str) -> ServerRef {
         ServerRef {
             name: "Mac mini".into(),
@@ -1623,6 +1685,7 @@ mod tests {
             address: address.into(),
             port,
             token: token.into(),
+            ..Default::default()
         }
     }
 
@@ -1682,6 +1745,7 @@ mod tests {
                 address: "192.168.0.10".into(),
                 port: 32400,
                 token: "tok-own".into(),
+                ..Default::default()
             },
             user: UserRef { uuid: uuid.into(), title: "stored".into(), token: "tok-user".into(), ..Default::default() },
             home_users: vec![

@@ -211,6 +211,20 @@ pub(crate) struct DevServer {
     pub(crate) host: String,
     #[serde(default = "default_port")]
     pub(crate) port: i64,
+    /// `"http"` (the default) or `"https"` — the scheme this server is reached at.
+    ///
+    /// **This is how an https origin is exercised headlessly**, without a plex.tv account that has
+    /// one and without a television that can reach it: write `"scheme": "https"` here and the
+    /// whole control plane below `plex::register_origin` sees a TLS origin. Everything the origin
+    /// model changed is otherwise invisible from outside the app, because every real origin today
+    /// is `http://`.
+    ///
+    /// A value that is neither fails the WHOLE trigger to deserialize, which
+    /// [`parse_servers`] turns into a logged error rather than a silently dropped server —
+    /// deliberately: a typo'd scheme that quietly meant `http` would be a run grading the thing it
+    /// was armed to test as working.
+    #[serde(default)]
+    pub(crate) scheme: crate::plex::Scheme,
     /// This identity's per-(user,server) access token **for this server**. A shared server is a
     /// separate authority: the account token gets a 401 from it, which is the whole reason one
     /// `plxnative-token` cannot express two servers. A SECRET — never logged.
@@ -276,7 +290,20 @@ impl DevServer {
     /// every server that passes this with `s.port as c_int`, and this file is a hand-written JSON
     /// blob under `/tmp` — an out-of-range `i64` wraps in that cast into a port nobody wrote down.
     pub(crate) fn usable(&self) -> bool {
-        !self.host.is_empty() && !self.token.is_empty() && crate::plex::probe::dial_port(self.port).is_some()
+        !self.token.is_empty() && self.origin().is_some()
+    }
+
+    /// **Where this server is** — the [`crate::plex::Origin`] to register it at, `None` when the
+    /// trigger did not write enough to dial.
+    ///
+    /// The port goes through `probe::dial_port` for the reason [`DevServer::usable`] gives: this
+    /// is a hand-written JSON blob under `/tmp`, and `port as i32` wraps an out-of-range `i64`
+    /// into a plausible-looking one.
+    pub(crate) fn origin(&self) -> Option<crate::plex::Origin> {
+        if self.host.is_empty() {
+            return None;
+        }
+        crate::plex::probe::dial_port(self.port).map(|p| crate::plex::Origin::new(self.scheme, &self.host, p))
     }
 }
 
@@ -563,6 +590,36 @@ mod tests {
         let got = super::read("devtest-empty");
         let _ = std::fs::remove_file(p);
         assert_eq!(got.as_deref(), Some(""), "an empty trigger must not read as absent");
+    }
+
+    /// **How an https origin is exercised without a plex.tv account that has one.** The
+    /// `plxnative-servers` trigger is the only surface that can inject a server the app did not
+    /// discover, so it is also the only way any lane or the integrator can put a TLS origin
+    /// through `plex::register_origin` headlessly.
+    ///
+    /// The default is `http`, because that is what every server this app has ever talked to is and
+    /// what every overlay written before this field meant.
+    #[test]
+    fn a_dev_server_scheme_defaults_to_http_and_can_be_told_https() {
+        let one = |json: &str| super::parse_servers(json).expect("parses").pop().expect("one server");
+
+        let plain = one(r#"{"machine_id":"m","host":"10.0.0.2","port":32400,"token":"t"}"#);
+        assert_eq!(plain.scheme, crate::plex::Scheme::Http, "an overlay that says nothing means http");
+        assert_eq!(plain.origin().expect("dialable").base(), "http://10.0.0.2:32400");
+
+        let tls = one(r#"{"machine_id":"m","host":"nas.hash.plex.direct","port":32400,"token":"t","scheme":"https"}"#);
+        assert!(tls.origin().expect("dialable").is_tls());
+        assert_eq!(tls.origin().unwrap().base(), "https://nas.hash.plex.direct:32400");
+        assert!(tls.usable());
+
+        // A scheme this app does not speak fails the WHOLE trigger, loudly — the caller logs the
+        // parse error. Silently meaning `http` would be a run grading the very thing it was armed
+        // to test as working.
+        assert!(super::parse_servers(r#"{"host":"h","token":"t","scheme":"ftp"}"#).is_err());
+
+        // and the port narrowing still applies: an out-of-range one costs the server, not the run
+        let wrapped = one(r#"{"machine_id":"m","host":"10.0.0.2","port":4294999696,"token":"t"}"#);
+        assert!(wrapped.origin().is_none() && !wrapped.usable(), "32400 is what that number wraps to");
     }
 
     /// The wire format the harness writes: a JSON ARRAY of servers, and — because a human arming

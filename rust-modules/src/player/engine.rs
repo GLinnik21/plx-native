@@ -636,7 +636,12 @@ pub(crate) fn start_bufferfeed(mt: &MainThread) -> bool {
 
     if stream {
         let su = crate::plex::StreamUrl::parse(&url); // the typed layer's URL splitter
-        let (host, port, path) = (su.host, su.port, su.path);
+        // `host()` is the origin's BARE host — a v6 literal arrives here unbracketed, which is
+        // what `stream.rs` needs and is not what the URL carried. The scheme is deliberately
+        // dropped: this transport speaks cleartext only, so an https target would fail at the
+        // socket rather than be silently downgraded here.
+        let (host, port) = (su.host().to_owned(), su.port());
+        let path = su.path;
         log(&format!("stream: host={host} port={port} path={}", &path[..path.len().min(80)]));
         // Two-lane feed: the demuxer routes es=1 video to aq_video and es=2 audio to
         // aq_audio, each with its own cap + feeder.
