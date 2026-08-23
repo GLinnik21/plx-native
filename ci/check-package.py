@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import flavor  # noqa: E402  — ci/flavor.py, the one descriptor transform
+import flavor  # noqa: E402  — ci/flavor.py, which DECIDES a flavour's id and title
 
 ROOT = Path(__file__).resolve().parent.parent
 FAILURES: list[str] = []

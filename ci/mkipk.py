@@ -17,8 +17,12 @@ television. Every id in the archive — the control `Package:`, `packageinfo.jso
 directory is additionally what the installed binary reads to learn which install it is
 (`paths::app_id`). They are asserted equal here and again in `ci/check-package.py`.
 
-This module also SYNTHESISES the two descriptors an ipk must carry and a scp-based dev loop never
-needed, both derived from `pkg/appinfo.json` so the version stays single-sourced:
+This module also writes THREE things the ipk carries and a scp-based dev loop never needed. The
+first two are SYNTHESISED from `pkg/appinfo.json`, so the version stays single-sourced; the third
+is a TRANSFORM of the tracked `pkg/resources/` tree, which carries no version and no id at all —
+and that is a gate rather than a convention (`ci/check-package.py` fails a localized descriptor
+with any third property). Only the first is load-bearing for installation; the third is metadata
+whose absence registers an app perfectly well and costs it its language.
 
   * `usr/palm/packages/<id>/packageinfo.json` — webOS's *package* descriptor, distinct from the
     *application* descriptor `appinfo.json`. `com.webos.appInstallService` reads it to learn which
@@ -70,7 +74,7 @@ import tarfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import flavor  # noqa: E402  — ci/flavor.py, the one descriptor transform
+import flavor  # noqa: E402  — ci/flavor.py, which DECIDES a flavour's id and title
 
 # Any fixed epoch works; 2010-01-01 is safely inside the range old opkg builds accept.
 EPOCH = 1262304000
