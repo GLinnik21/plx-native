@@ -661,6 +661,54 @@ Required headers (also accepted as query params) for the session to appear in
 - `X-Plex-Product`, `X-Plex-Version`, `X-Plex-Platform`, `X-Plex-Device-Name` — cosmetic but recommended
 - `X-Plex-Token`
 
+**The list above is the MINIMUM, and it is not what a real client sends.** It was written as
+"what PMS needs to attribute a session" and then read for years as "the identity set", which is
+how this app came to send a strict subset of it. The **official Plex webOS client** sends the
+following on every request, and this is the set to match — each one is a separate answer PMS and
+plex.tv can key on, not decoration:
+
+| header | what it carries | why it is not cosmetic |
+|---|---|---|
+| `X-Plex-Client-Identifier` | stable device id | the identity every other field hangs off; generate once, persist forever |
+| `X-Plex-Product` | the app's product name | groups sessions and devices in the account's device list |
+| `X-Plex-Version` | the app's own version | what a server-side "please update" notice keys on |
+| `X-Plex-Platform` | the platform name (`webOS`) | one half of the platform identity |
+| **`X-Plex-Platform-Version`** | the **firmware** release (`4.5`, `6.5.2`, …) | the other half. Plex gates behaviour on FIRMWARE, not on platform — this is how a server tells a webOS 4 set from a webOS 11 one |
+| `X-Plex-Device` | the device class | |
+| `X-Plex-Device-Name` | the user-visible name in *Authorized Devices* | what the account owner reads when deciding what to revoke |
+| **`X-Plex-Model`** | the panel model | |
+| **`X-Plex-Device-Vendor`** | `LG` | |
+| **`X-Plex-Device-Screen-Resolution`** | the screen geometry | a client that never reports it is invisible to any server-side sizing decision |
+| **`X-Plex-Language`** | the UI language tag | selects the language of server-returned strings and of metadata where a server has several |
+| **`X-Plex-Features: external-media,indirect-media`** | two capability opt-ins | a client OPTS IN to shapes the server will not otherwise offer it. **What each flag unlocks is not verified in this repo** — it is copied from the official webOS client's request, which is evidence that the string is right and not evidence of what it does. Treat it as: send exactly this, do not reason from it |
+| `X-Plex-Provides` | what this client offers (`player`, …) | how it appears as a cast target |
+| `X-Plex-Token` | the per-server access token | |
+
+**Two things this table is not.** It is not a census of what this app sends, and the count of new
+rows is not worth carrying — the **bolded** rows are the ones this reference omitted until
+2026-08-23, and the bold is the list. That is a documentation gap rather than a discovery, and the
+source is **the official Plex webOS client's own requests** —
+tier: another client's observed behaviour, which proves what Plex's own app sends and does not by
+itself prove what a server does with each field. Two are worth separating on that basis.
+`X-Plex-Platform-Version` is the one with a mechanism you can reason about — Plex demonstrably gates
+client behaviour on firmware, and platform alone cannot express "webOS 4.5 versus webOS 11".
+`X-Plex-Features` is the opposite: it is the field whose absence is least visible from the client,
+because nothing errors — the server simply never offers a shape you did not claim to handle — and
+also the one whose exact effect this repo has **not** measured. Settling that needs a live A/B
+against a PMS, which nobody has run.
+
+**What THIS app sends is a subset of the table, and the two must not be read as one.**
+`rust-modules/src/plex/client.rs::playback_identity` (constants in `plex/identity.rs`) emits nine
+fields: `X-Plex-Client-Identifier`, `-Product`, `-Version`, `-Platform`, `-Platform-Version`,
+`-Device`, `-Device-Name`, `-Model` and `-Provides`, plus the token. The four capability and locale
+fields — **`X-Plex-Device-Vendor`, `X-Plex-Device-Screen-Resolution`, `X-Plex-Language` and
+`X-Plex-Features`** — appear nowhere in the tree today. The table is the target; this paragraph is
+the state.
+
+They are appended as **query parameters** rather than headers because the raw-socket transport in
+`stream.rs` writes its own request line — PMS accepts either, which is what the "(also accepted as
+query params)" above means and why that spelling is not a compromise.
+
 Client behavior expected by PMS (matches official clients):
 
 - send `state=playing` every ~10 s with current `time`

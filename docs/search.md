@@ -8,15 +8,6 @@ went. If you read one section of this file before touching text entry, make it �
 reach. Plex Discover / Watchlist / the "Movies & Shows on Plex" catalog are deliberately absent —
 see §6.
 
-> **Status, so this does not read as a shipped-feature description.** The route, the pill, the
-> `ui/search/` split and `search.rs`'s types are in the tree; the **drawing and the fetch are not
-> yet** — `ui/search/`'s `draw` bodies are `{}`, `search::pump` lands nothing, and `Client::search`
-> therefore still has zero callers. Everything below §1 and §2 describes the design those seams were
-> cut for, in the present tense, because that is what the seams commit to. §3 is different: it is
-> **finished research**, and none of it depends on the screen being built. The one-line check for
-> whether this note is stale is whether `plex/mod.rs`'s "no callers yet" admission still names
-> `search`.
-
 ---
 
 ## 1. The screen
