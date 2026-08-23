@@ -2,6 +2,14 @@
 //! (posters/pms/player) allocate an `HttpStream` and pass `&hs`; this operates on it
 //! in place. Header/chunk parsing is bounds-checked (no OOB).
 //!
+//! The host is a **name or an address literal of either family**, resolved through `getaddrinfo`
+//! ([`resolve`]) and dialled down the whole returned chain ([`connect_any`]). It used to be four
+//! decimal octets parsed by hand into a `sockaddr_in`, which made a hostname and every IPv6 server
+//! not "degraded" but impossible — the shape of the gap LG's checklist #43 CASE2 asks about, and
+//! the reason `plex::probe` ranks a `plex.direct` name below the dotted quad behind it. What is
+//! still missing is TLS: this speaks cleartext, so an `https://` origin remains `net.rs`'s
+//! (libcurl's) job, and that is now the ONLY thing separating the two transports.
+//!
 //! Failures the return value cannot carry are reported to the event log instead: a non-2xx
 //! response (in [`http_open`], where the code is known and the socket is about to close) and a
 //! body that came up short of its `Content-Length` ([`short_body_line`]). Neither changes what any
@@ -26,6 +34,16 @@ pub struct HttpStream {
     /// interrupt (wakes the reader, keeps the number allocated), and exactly one closer via
     /// `take_fd`'s swap. See `http_shutdown` / `http_close`.
     fd: AtomicI32,
+    /// "A teardown asked this stream to stop" — set by [`http_shutdown`], cleared at the top of
+    /// every [`http_open`].
+    ///
+    /// It exists because resolving gave the open something it never had: a NEXT address to try
+    /// after a failed `connect`. A handshake aborted by `shutdown(2)` and an address that is simply
+    /// dead are the same value at `connect`'s return, so without this latch a teardown fired during
+    /// attempt 1 of 2 is answered by dialling attempt 2 — the interrupt silently consumed, and a
+    /// brand-new connection handed back to a caller that was being torn down. Reading the fd cannot
+    /// stand in for it: between two attempts the fd is legitimately -1.
+    interrupted: AtomicI32,
     buf: [u8; 65536],
     blen: c_int,
     bpos: c_int,
@@ -70,6 +88,11 @@ impl HttpStream {
     fn take_fd(&self) -> c_int {
         self.fd.swap(-1, Ordering::AcqRel)
     }
+    /// Has a teardown asked this open to stop? See the field.
+    #[inline]
+    fn interrupted(&self) -> bool {
+        self.interrupted.load(Ordering::Acquire) != 0
+    }
     /// Reset every field EXCEPT `fd`. `http_open` used to `write_bytes`-memset the whole
     /// struct, which wrote the ATOMIC fd non-atomically — and momentarily as 0, i.e. stdin —
     /// while another thread could be loading it in `http_shutdown`. `fd` is reset separately
@@ -77,8 +100,14 @@ impl HttpStream {
     ///
     /// `buf` is deliberately NOT cleared: it is only ever read within `[bpos, blen)`, both of
     /// which are reset here, so zeroing 64 KB on every request was pure cost.
+    ///
+    /// `interrupted` IS reset here, and through its atomic store like `fd` — it is per-request
+    /// state, and the window it leaves open is the correct one: a `http_shutdown` landing between
+    /// this reset and the connect loop is a teardown of the open now starting, which is exactly
+    /// what the latch is for.
     #[inline]
     fn reset_fields(&mut self) {
+        self.interrupted.store(0, Ordering::Release);
         self.blen = 0;
         self.bpos = 0;
         self.content_length = -1;
@@ -216,17 +245,103 @@ unsafe fn hs_next_chunk(hs: &mut HttpStream) -> Option<i64> {
     if any { Some(sz) } else { None }
 }
 
-/// How long to wait for the TCP handshake. Without this the app inherits the kernel's SYN-retry
-/// budget (~2 min on Linux), during which the 60fps SDL loop is fully blocked — an unreachable
-/// PMS (box rebooting, TV on a different VLAN, DHCP re-lease) froze the whole UI rather than
-/// failing. Every PMS request in a chain paid it again.
-const CONNECT_TIMEOUT_MS: c_int = 2000;
+/// Strip the optional whitespace (RFC 9110 §5.6.3's `OWS` — spaces and horizontal tabs only) from
+/// both ends of a header token.
+fn trim_ows(v: &[u8]) -> &[u8] {
+    let a = v.iter().take_while(|b| **b == b' ' || **b == b'\t').count();
+    let v = &v[a..];
+    let b = v.iter().rev().take_while(|b| **b == b' ' || **b == b'\t').count();
+    &v[..v.len() - b]
+}
+
+/// Is this response body framed with the `chunked` transfer coding?
+///
+/// This used to be `find_ci(hdr, b"\r\ntransfer-encoding: chunked")` — an exact compare against one
+/// spelling, so every legal variation of the same header missed and the body was then read as
+/// close-delimited with its chunk-size lines left INLINE in it. Silent corruption, not a failure:
+/// `Transfer-Encoding:chunked` (no space, which the grammar allows — OWS is optional after the
+/// colon), `Transfer-Encoding: Chunked` (the VALUE is case-insensitive too, RFC 9110 §10.1.4, and
+/// `find_ci` folding the whole needle only made that one work by accident), a list such as
+/// `gzip, chunked`, or a second `Transfer-Encoding` line, since the field is a list that a sender
+/// may split across lines (RFC 9110 §5.3).
+///
+/// So: walk every `Transfer-Encoding` line, split each on commas, and ask whether any token IS
+/// `chunked`. That is deliberately more permissive than the grammar — RFC 9112 §6.1 requires
+/// chunked to be the FINAL coding, so `chunked, gzip` is malformed — but a recipient that refuses
+/// to see the chunk framing a sender did apply reads the sizes as body bytes, which is the worse of
+/// the two failures by a distance.
+///
+/// The value offset is `NEEDLE.len()`, never a written-out number. `Content-Length`'s parse three
+/// lines down still carries a hand-counted `p + 17`, which is correct and is one edit away from not
+/// being — the literal and the constant that indexes past it cannot drift apart if only one of them
+/// exists.
+fn header_is_chunked(hdr: &[u8]) -> bool {
+    const NEEDLE: &[u8] = b"\r\ntransfer-encoding:";
+    let mut at = 0usize;
+    while let Some(p) = find_ci(&hdr[at..], NEEDLE) {
+        let vs = at + p + NEEDLE.len();
+        // The value runs to the end of the line; a header block always carries its final CRLF, so
+        // the fallback to `hdr.len()` is only reachable on a truncated one.
+        let end = hdr[vs..].iter().position(|&b| b == b'\r' || b == b'\n').map_or(hdr.len(), |i| vs + i);
+        if hdr[vs..end].split(|&b| b == b',').any(|t| trim_ows(t).eq_ignore_ascii_case(b"chunked")) {
+            return true;
+        }
+        at = end; // strictly greater than `at` (the needle is non-empty), so this terminates
+    }
+    false
+}
+
+/// How long the handshake phase of ONE open may take, across EVERY address the host resolved to.
+///
+/// Without a bound at all the app inherits the kernel's SYN-retry budget (~2 min on Linux), during
+/// which the 60fps SDL loop is fully blocked — an unreachable PMS (box rebooting, TV on a different
+/// VLAN, DHCP re-lease) froze the whole UI rather than failing, and every PMS request in a chain
+/// paid it again.
+///
+/// **2000 ms was a LAN number**, and it was the right one while the only dialable host was a
+/// dotted quad on the same subnet. It is the wrong one now the host can be a name on the public
+/// internet: Linux's first SYN retransmit is at 1 s, so one lost SYN plus a trans-continental RTT
+/// already spends it, and a server that would have answered gets reported unreachable. 8000 ms
+/// covers three SYN attempts (t = 0, 1, 3 s) and part of the fourth wait, which is about where a
+/// handshake that has not completed is not going to.
+///
+/// **Be clear about who pays for that today, because it is not who it is chosen for.** No caller
+/// hands this module a public-internet name yet: `auth::dial_target` still admits only an IPv4
+/// literal over plain HTTP, so every host that reaches here is a dotted quad on the LAN. What the
+/// raise actually buys *today* is a 4× longer main-loop freeze when the LAN server is down — a PMS
+/// rebooting, the set moved to another VLAN — and what it buys is paid back the day a name is
+/// dialled. It is a forward-looking number, on purpose and by instruction, and it is the one line
+/// here to re-examine if that day gets further away rather than closer.
+///
+/// **One number, and it is deliberately NOT derived from the address.** RFC1918 is not "local" in
+/// Plex's sense — a NAT'd server reached over a VPN is private and far, and a `plex.direct` name
+/// resolves to a LAN address — so an address cannot tell you which connection tier you are on.
+/// Choosing a probe ORDER, and how much patience each tier is worth, is `plex::probe`'s policy;
+/// this layer owes exactly one honest ceiling on how long the main loop can be held.
+///
+/// **It is the budget for the whole chain, not per address**, so the worst-case freeze is this
+/// number however many addresses the resolver returned — a count this app does not control. The
+/// cost of that choice is that a first address which silently blackholes SYNs can spend the budget
+/// before a later one is tried. The common shape does not: an address with no route (the usual
+/// "this network has no IPv6 at all") fails `connect(2)` synchronously with ENETUNREACH in ~0 ms
+/// and costs the chain nothing, and `AI_ADDRCONFIG` keeps that list from being offered in the first
+/// place. Doing better than serial-with-a-shared-deadline means the concurrent attempts of Happy
+/// Eyeballs (RFC 8305), which a blocking module with no thread of its own cannot run.
+const CONNECT_TIMEOUT_MS: c_int = 8000;
 
 /// `connect(2)` bounded by `timeout_ms`. Flips the socket to non-blocking for the handshake,
 /// waits on `poll(POLLOUT)`, then reads `SO_ERROR` to learn the real outcome (a writable socket
 /// does NOT mean success), and restores blocking mode so every read path below is unchanged.
 /// Returns 0 on a connected socket, -1 otherwise. The caller owns closing `fd`.
-unsafe fn connect_timeout(fd: c_int, sa: &libc::sockaddr_in, timeout_ms: c_int) -> c_int {
+///
+/// The address arrives as a `(*const sockaddr, socklen_t)` pair rather than a `&sockaddr_in`
+/// because it now comes out of `getaddrinfo` and may be a `sockaddr_in6`: the pair IS the
+/// `addrinfo`'s own `ai_addr`/`ai_addrlen`, forwarded without a copy and without this function
+/// having to know or test the family. A non-positive `timeout_ms` (the chain budget already spent)
+/// is clamped to 0 rather than passed on — `poll` reads a NEGATIVE timeout as "block forever",
+/// which would turn an exhausted budget into the unbounded wait this whole function removes.
+unsafe fn connect_timeout(fd: c_int, sa: *const libc::sockaddr, salen: libc::socklen_t,
+                          timeout_ms: c_int) -> c_int {
     let flags = libc::fcntl(fd, libc::F_GETFL, 0);
     if flags < 0 {
         return -1;
@@ -238,8 +353,7 @@ unsafe fn connect_timeout(fd: c_int, sa: &libc::sockaddr_in, timeout_ms: c_int) 
     if libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) < 0 {
         return -1;
     }
-    let len = std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
-    if libc::connect(fd, sa as *const _ as *const libc::sockaddr, len) == 0 {
+    if libc::connect(fd, sa, salen) == 0 {
         return restore(0); // connected immediately (loopback / same host)
     }
     if errno() != libc::EINPROGRESS {
@@ -247,7 +361,8 @@ unsafe fn connect_timeout(fd: c_int, sa: &libc::sockaddr_in, timeout_ms: c_int) 
     }
     let mut pfd = libc::pollfd { fd, events: libc::POLLOUT, revents: 0 };
     // EINTR must not be treated as a timeout: retry with the remaining budget.
-    let mut left = timeout_ms;
+    let mut left = timeout_ms.max(0); // never negative — that is `poll`'s "wait forever"
+
     loop {
         let r = libc::poll(&mut pfd, 1, left);
         if r > 0 {
@@ -271,9 +386,179 @@ unsafe fn connect_timeout(fd: c_int, sa: &libc::sockaddr_in, timeout_ms: c_int) 
     restore(0)
 }
 
-pub(crate) fn http_open(hs: *mut HttpStream, ip: *const c_char, port: c_int,
+/// An address list from `getaddrinfo`, freed on drop — including on the early return every failed
+/// `connect` in [`connect_any`] can take. Only ever constructed around a NON-NULL head, because
+/// `freeaddrinfo(NULL)` is not a documented no-op the way `free(NULL)` is.
+struct AddrList {
+    head: *mut libc::addrinfo,
+}
+
+impl Drop for AddrList {
+    fn drop(&mut self) {
+        unsafe { libc::freeaddrinfo(self.head) };
+    }
+}
+
+/// The bytes to hand `getaddrinfo` as its node: a v6 literal WITHOUT its brackets.
+///
+/// The brackets belong to the URI authority grammar (RFC 3986 §3.2.2) — which is where they are
+/// needed, in the `Host:` header and in a URL, and why `plex::probe::host_of` hands one back
+/// bracketed. The resolver takes an ADDRESS, not an authority: `getaddrinfo("[::1]", …)` is
+/// EAI_NONAME. Stripping here rather than asking every caller to remember means a bracketed host
+/// cannot silently become "that server does not resolve", which is a failure nothing in the log
+/// would distinguish from a real DNS failure.
+fn resolver_node(host: &str) -> &str {
+    match host.strip_prefix('[') {
+        Some(rest) => rest.strip_suffix(']').unwrap_or(rest),
+        None => host,
+    }
+}
+
+/// Is `host` an address LITERAL rather than a name? Decides only which `getaddrinfo` flag is used —
+/// see [`resolve`], where the distinction is load-bearing.
+///
+/// `IpAddr`'s parse is the whole test, and it is strict in the way this needs: exactly four octets
+/// for v4 (so `1.2.3` and `999.1.2.3` are not addresses, matching the hand-rolled parse this
+/// replaced). A v6 literal may carry a `%zone` suffix — `fe80::1%eth0` — which `IpAddr` does not
+/// parse but every resolver here does accept, so the zone is cut before asking.
+fn is_numeric_host(host: &str) -> bool {
+    let bare = host.split('%').next().unwrap_or(host);
+    bare.parse::<std::net::IpAddr>().is_ok()
+}
+
+/// The `Host:` header value for a request — built from what the CALLER named, and never from the
+/// address it resolved to.
+///
+/// Emitting the address is what the code did before there was any resolution, when the two could
+/// not differ. They differ now, and a numeric `Host:` breaks name-based virtual hosting outright:
+/// a reverse proxy in front of a PMS routes on this header, and a server that answers
+/// `plex.example.org` has no vhost named `203.0.113.9`. It is also the value a TLS SNI would have
+/// to agree with if https ever lands here.
+///
+/// A v6 literal is BRACKETED (RFC 9110 §7.2's `Host` → RFC 3986 §3.2.2's `IP-literal`), which is
+/// the exact opposite of what [`resolver_node`] hands the resolver. The two live one function apart
+/// so the asymmetry is something you can see rather than something you have to remember.
+fn host_header(host: &str, port: c_int) -> String {
+    let bare = resolver_node(host);
+    if bare.contains(':') {
+        format!("[{bare}]:{port}") // an IPv6 literal, (re-)bracketed for the authority
+    } else {
+        format!("{bare}:{port}")
+    }
+}
+
+/// Resolve an (already unbracketed) host and port into a connect-order address list.
+///
+/// `AF_UNSPEC` + `SOCK_STREAM`, so the ORDER is the system's own destination-address policy
+/// (RFC 6724 under glibc) rather than a family this file picks — which is what makes IPv6 work at
+/// all here instead of merely being expressible.
+///
+/// The flags are the whole subtlety:
+///
+/// * A **numeric literal takes `AI_NUMERICHOST`**, and that is a correctness fix rather than an
+///   optimisation. `AI_ADDRCONFIG` suppresses AF_INET6 results on a host whose only IPv6 address is
+///   loopback, so `getaddrinfo("::1", …, AI_ADDRCONFIG)` legitimately resolves to NOTHING — which
+///   would make every v6 literal, and this file's own loopback tests, unresolvable on a perfectly
+///   healthy machine. A literal has nothing to configure-filter in any case: the caller named one
+///   exact address. Keeping the old dotted-quad fast path free is the side effect — no NSS module
+///   is loaded and no packet is sent, so the per-seek AVIO reopen still costs what the hand-rolled
+///   octet parse did.
+/// * A **name takes `AI_ADDRCONFIG`**, which is precisely what that flag is for: do not ask for an
+///   AAAA on a set with no IPv6 address of its own, and do not return one it could never reach.
+/// * Both take **`AI_NUMERICSERV`**: the service is always our own decimal port, so there is no
+///   reason to let it fall through to an `/etc/services` lookup.
+///
+/// `None` for every resolver failure. EAI_NONAME (a name that does not exist) and EAI_AGAIN (a
+/// resolver that did not answer) are genuinely different facts, but [`http_open`] reports a flat
+/// -1 whatever went wrong, so the distinction is logged at the call site rather than returned.
+///
+/// **This call is BLOCKING and nothing in this file can interrupt it.** Every other wait in an open
+/// is bounded — `CONNECT_TIMEOUT_MS` for the handshake, `SO_RCVTIMEO` for the read — and every one
+/// of them can be cut short by `http_shutdown`, because there is a descriptor published for it to
+/// shoot. There is none here: `getaddrinfo` owns its sockets. A NAME whose DNS server is not
+/// answering therefore holds the caller for the resolver's own budget, which under glibc is
+/// `timeout` × `attempts` × nameservers and defaults to 5 s × 2 each — far past anything this
+/// module bounds, and on the main thread that is the 60 fps loop. It does not touch the path this
+/// app takes TODAY, because a literal never reaches the resolver's network side at all
+/// (`AI_NUMERICHOST`), which is what keeps the existing dotted-quad callers exactly as fast and
+/// exactly as interruptible as they were. It becomes real the moment a name is dialled from the
+/// main thread. The levers, none of them this file's to pull: resolve off the main thread, or set
+/// `RES_OPTIONS=timeout:2 attempts:1` at boot (glibc reads it at `res_init`).
+unsafe fn resolve(host: &str, port: c_int) -> Option<AddrList> {
+    // The port is range-checked HERE and not left to `AI_NUMERICSERV`, because the two platforms
+    // disagree and the disagreement is SILENT. Darwin rejects an out-of-range numeric service;
+    // glibc parses it with `strtoul`, applies no range check at all, and hands back
+    // `htons(70000)` — port 4464. That is bit for bit the truncation `(port as u16).to_be()` used
+    // to do, so trusting the resolver would have MOVED this bug rather than fixed it, and moved it
+    // somewhere worse: `cargo test` runs on Darwin, so the platform that silently truncates is
+    // exactly the one no host test can see. A request that lands on a real service at the wrong
+    // port reports nothing anywhere.
+    if !(0..=65535).contains(&port) {
+        return None;
+    }
+    let node = std::ffi::CString::new(host).ok()?;
+    let service = std::ffi::CString::new(port.to_string()).ok()?;
+    let mut hints: libc::addrinfo = std::mem::zeroed();
+    hints.ai_family = libc::AF_UNSPEC;
+    hints.ai_socktype = libc::SOCK_STREAM;
+    hints.ai_flags = libc::AI_NUMERICSERV
+        | if is_numeric_host(host) { libc::AI_NUMERICHOST } else { libc::AI_ADDRCONFIG };
+    let mut res: *mut libc::addrinfo = std::ptr::null_mut();
+    if libc::getaddrinfo(node.as_ptr(), service.as_ptr(), &hints, &mut res) != 0 || res.is_null() {
+        return None;
+    }
+    Some(AddrList { head: res })
+}
+
+/// Dial down the address chain until one answers, within `budget_ms` for the WHOLE walk. Returns
+/// the connected fd — also left PUBLISHED in `hs` — or -1 with `hs` closed.
+///
+/// Trying only the first address would be today's single-address limit wearing a resolver. A name
+/// with an A and an AAAA, or one behind two front ends, is routinely reachable on the second when
+/// it is not on the first; walking the chain is most of what resolving is FOR.
+///
+/// Two of this file's invariants ride on every iteration, not just the first:
+///
+/// * **The fd is published into `hs` BEFORE `connect`**, which is what makes the open interruptible
+///   at all — see [`http_open`]'s note, where the behaviour is measured on the TV's kernel with
+///   `tools/sockprobe.c` and is NOT what the Darwin host these tests run on does.
+/// * **Every failed attempt is retired through [`close_owned`], never a bare `close`.** A bare
+///   close leaves a stale fd NUMBER armed in the atomic for the next `http_shutdown` to shoot after
+///   the kernel has recycled it into some other thread's socket, and leaves `take_fd` nothing to
+///   return.
+///
+/// And the walk stops on [`HttpStream::interrupted`], which is the field's entire reason to exist:
+/// answering a teardown by dialling the next address would undo the interruptibility the early
+/// publish is there to give.
+unsafe fn connect_any(hs: &HttpStream, head: *const libc::addrinfo, budget_ms: c_int) -> c_int {
+    let started = std::time::Instant::now();
+    let mut ai = head;
+    while !ai.is_null() {
+        let a = &*ai;
+        ai = a.ai_next;
+        let fd = libc::socket(a.ai_family, a.ai_socktype, a.ai_protocol);
+        if fd < 0 {
+            continue; // a family the kernel will not give us (no IPv6 in this build) — try the next
+        }
+        hs.set_fd(fd); // PUBLISHED before connect, per attempt — see the doc above
+        // Clamped to the budget before the subtraction, so what `connect_timeout` is handed is in
+        // [0, budget] whatever the clock did — a `u128` cast of a negative budget would otherwise
+        // come back enormous and hand the LAST attempt an unbounded-looking wait.
+        let spent = started.elapsed().as_millis().min(budget_ms.max(0) as u128) as c_int;
+        if connect_timeout(fd, a.ai_addr, a.ai_addrlen, budget_ms.max(0) - spent) == 0 {
+            return fd;
+        }
+        close_owned(hs); // published, so it must be RETIRED
+        if hs.interrupted() {
+            break; // a teardown, not a dead address: do not answer it by dialling the next one
+        }
+    }
+    -1
+}
+
+pub(crate) fn http_open(hs: *mut HttpStream, host: *const c_char, port: c_int,
                             path: *const c_char, extra: *const c_char, method: &str) -> c_int {
-    if hs.is_null() || ip.is_null() || path.is_null() {
+    if hs.is_null() || host.is_null() || path.is_null() {
         return -1;
     }
     unsafe {
@@ -281,14 +566,30 @@ pub(crate) fn http_open(hs: *mut HttpStream, ip: *const c_char, port: c_int,
         hs.reset_fields();
         hs.set_fd(-1);
 
-        let fd = libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0);
-        if fd < 0 {
-            return -1;
-        }
-        // PUBLISHED HERE, before connect — which makes the whole open interruptible by
-        // `http_shutdown`, and is why every failure path below must retire it through
-        // `close_owned` rather than a bare `close`: a bare close leaves a stale number armed in
-        // the atomic for the next interrupt to shoot, and leaves `take_fd` nothing to return.
+        let host_s = CStr::from_ptr(host).to_string_lossy();
+        let path_s = CStr::from_ptr(path).to_string_lossy();
+
+        // Resolve FIRST, before any descriptor exists: the address family to open is the resolver's
+        // answer, not this file's assumption, which is the whole of what makes an AF_INET6
+        // connection possible. It also means an unresolvable host now fails with no socket ever
+        // created — where the hand-rolled octet parse it replaced failed one step later, after
+        // `socket()`, and had to retire an fd on the way out.
+        let list = match resolve(resolver_node(&host_s), port) {
+            Some(l) => l,
+            None => {
+                // The host is on the line because "which name failed to resolve" is the only
+                // question this failure raises, and it is not a secret the way a query string is
+                // (`log_endpoint`) — `player::engine` and `plex::servers` already log `host=…:port`.
+                crate::log(&format!("stream: {method} {} DNS FAILED host={host_s}",
+                                    log_endpoint(&path_s)));
+                return -1;
+            }
+        };
+        // PUBLISHED BEFORE CONNECT, on every attempt (`connect_any` does it) — which makes the
+        // whole open interruptible by `http_shutdown`, and is why every failure path there and
+        // below must retire it through `close_owned` rather than a bare `close`: a bare close
+        // leaves a stale number armed in the atomic for the next interrupt to shoot, and leaves
+        // `take_fd` nothing to return.
         //
         // This was tried once and REVERTED (docs/async-model-decision.md): it made every reopen
         // interruptible while the pump was firing `http_shutdown` to service a SEEK, which cost
@@ -302,30 +603,26 @@ pub(crate) fn http_open(hs: *mut HttpStream, ip: *const c_char, port: c_int,
         // question could not be settled by reading or by `cargo test`. If that ever stops holding,
         // publishing after `connect_timeout` still buys the 15 s `SO_RCVTIMEO` window, which is
         // the bulk of the win.
-        hs.set_fd(fd);
-        let mut sa: libc::sockaddr_in = std::mem::zeroed();
-        sa.sin_family = libc::AF_INET as libc::sa_family_t;
-        sa.sin_port = (port as u16).to_be(); // htons
-        // numeric dotted-quad -> in_addr (network byte order). No DNS, matching C.
-        let ip_str = CStr::from_ptr(ip).to_string_lossy();
-        let mut oct = [0u8; 4];
-        let mut k = 0;
-        for part in ip_str.split('.') {
-            if k >= 4 { k = 5; break; }
-            match part.parse::<u8>() {
-                Ok(v) => { oct[k] = v; k += 1; }
-                Err(_) => { k = 5; break; }
-            }
+        //
+        // Also the path a teardown takes: `http_shutdown` aborts the handshake, and `connect_any`
+        // reports the failure one poll later — and, seeing the interrupt latch, stops walking
+        // rather than answering the teardown with the next address.
+        //
+        // The latch is read on BOTH sides of the walk, which is what makes "a shutdown anywhere in
+        // an open aborts that open" true rather than nearly true. Before: `resolve` holds no
+        // descriptor, so a teardown during it has nothing to shoot and would otherwise be answered
+        // by connecting anyway. After: `connect_any` has a window of its own between `socket()` and
+        // the publish, and — on Darwin, per `tools/sockprobe.c` — an aborted handshake can even
+        // report SUCCESS, which no `connect` return value would catch.
+        if hs.interrupted() {
+            return -1; // torn down while resolving; no descriptor was ever created
         }
-        if k != 4 {
-            close_owned(hs); // published now, so it must be RETIRED, never bare-closed
-            return -1;
+        let fd = connect_any(hs, list.head, CONNECT_TIMEOUT_MS);
+        if fd < 0 {
+            return -1; // every attempt retired its own fd; `hs` is closed
         }
-        sa.sin_addr.s_addr = u32::from_ne_bytes(oct); // memory bytes = [a,b,c,d]
-        // Also the path a teardown takes: `http_shutdown` aborts the handshake and this
-        // reports the failure one poll later instead of after CONNECT_TIMEOUT_MS.
-        if connect_timeout(fd, &sa, CONNECT_TIMEOUT_MS) < 0 {
-            close_owned(hs);
+        if hs.interrupted() {
+            close_owned(hs); // connected through a teardown: retire it rather than send on it
             return -1;
         }
         let one: c_int = 1;
@@ -344,16 +641,16 @@ pub(crate) fn http_open(hs: *mut HttpStream, ip: *const c_char, port: c_int,
                          std::mem::size_of::<libc::timeval>() as libc::socklen_t);
 
         // build + send the request (default Accept only if caller set none)
-        let path_s = CStr::from_ptr(path).to_string_lossy();
-        let ip_s = CStr::from_ptr(ip).to_string_lossy();
         let extra_s: String = if extra.is_null() {
             String::new()
         } else {
             CStr::from_ptr(extra).to_string_lossy().into_owned()
         };
         let accept = if extra_s.to_ascii_lowercase().contains("accept:") { "" } else { "Accept: */*\r\n" };
+        // `Host:` is the ORIGIN, never the address `connect_any` reached — see `host_header`.
+        let host_hdr = host_header(&host_s, port);
         let req = format!(
-            "{method} {path_s} HTTP/1.1\r\nHost: {ip_s}:{port}\r\nUser-Agent: plxnative/0.1\r\n{accept}{extra_s}Connection: close\r\n\r\n"
+            "{method} {path_s} HTTP/1.1\r\nHost: {host_hdr}\r\nUser-Agent: plxnative/0.1\r\n{accept}{extra_s}Connection: close\r\n\r\n"
         );
         let bytes = req.as_bytes();
         let mut off = 0usize;
@@ -435,7 +732,7 @@ pub(crate) fn http_open(hs: *mut HttpStream, ip: *const c_char, port: c_int,
             hs.content_length = std::str::from_utf8(&v[..ndig]).ok()
                 .and_then(|s| s.parse::<i64>().ok()).unwrap_or(-1);
         }
-        if find_ci(hdr, b"\r\ntransfer-encoding: chunked").is_some() {
+        if header_is_chunked(hdr) {
             hs.chunked = 1;
         }
 
@@ -555,12 +852,18 @@ pub(crate) fn http_close(hs: *mut HttpStream) {
 /// (which `close(2)` does not — that was the 15 s freeze on BACK during a stall) and leaves the
 /// descriptor allocated, so its number cannot be recycled into another thread's socket while
 /// the reader is still touching it. The reader then sees EOF and closes it itself.
+///
+/// It also LATCHES the interrupt, unconditionally — including when the fd is already -1, which is
+/// the point. A `connect_any` walk between two attempts holds no descriptor, so a teardown landing
+/// in that window has nothing to shut down and would otherwise be lost entirely; the latch is what
+/// stops the next address from being dialled. See [`HttpStream::interrupted`].
 pub(crate) fn http_shutdown(hs: *mut HttpStream) {
     if hs.is_null() {
         return;
     }
     let _gate = FD_GATE.lock().unwrap_or_else(|e| e.into_inner());
     unsafe {
+        (*hs).interrupted.store(1, Ordering::Release);
         // Re-read UNDER the gate. The `take_fd` swap alone makes exactly one caller close, but it
         // does not make this pair atomic: read the number, lose the CPU, and by the time the
         // syscall runs the owner may have closed it and another thread's `socket()` may have been
@@ -706,6 +1009,42 @@ mod tests {
         sa
     }
 
+    fn sockaddr6(ip: std::net::Ipv6Addr, port: u16) -> libc::sockaddr_in6 {
+        let mut sa: libc::sockaddr_in6 = unsafe { std::mem::zeroed() };
+        sa.sin6_family = libc::AF_INET6 as libc::sa_family_t;
+        sa.sin6_port = port.to_be();
+        sa.sin6_addr = libc::in6_addr { s6_addr: ip.octets() };
+        sa
+    }
+
+    /// `connect_timeout` for a v4 address. The real function takes the `(*const sockaddr,
+    /// socklen_t)` pair straight out of an `addrinfo`, because the address may now be either
+    /// family; the tests below predate that and say what they mean with a `sockaddr_in`.
+    unsafe fn connect_v4(fd: c_int, sa: &libc::sockaddr_in, timeout_ms: c_int) -> c_int {
+        connect_timeout(fd, sa as *const _ as *const libc::sockaddr,
+                        std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t, timeout_ms)
+    }
+
+    unsafe fn connect_v6(fd: c_int, sa: &libc::sockaddr_in6, timeout_ms: c_int) -> c_int {
+        connect_timeout(fd, sa as *const _ as *const libc::sockaddr,
+                        std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t, timeout_ms)
+    }
+
+    /// One `addrinfo` node pointing at a caller-owned `sockaddr`, for testing [`connect_any`]'s
+    /// walk without a resolver in the loop. The chain a real DNS answer produces is not something a
+    /// test can arrange on demand — which address a name yields, and in what order, is the
+    /// machine's business — so the walk is graded on a list built by hand instead.
+    fn ainfo(family: c_int, sa: *mut libc::sockaddr, len: libc::socklen_t,
+             next: *mut libc::addrinfo) -> libc::addrinfo {
+        let mut ai: libc::addrinfo = unsafe { std::mem::zeroed() };
+        ai.ai_family = family;
+        ai.ai_socktype = libc::SOCK_STREAM;
+        ai.ai_addr = sa;
+        ai.ai_addrlen = len;
+        ai.ai_next = next;
+        ai
+    }
+
     /// Regression: `connect(2)` was called blocking with no deadline, so an unreachable PMS
     /// froze the 60fps main loop for the kernel's SYN-retry budget (~2 min), once per request.
     /// 192.0.2.0/24 is TEST-NET-1 (RFC 5737) — guaranteed non-routable, so the handshake can
@@ -716,7 +1055,7 @@ mod tests {
         let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
         assert!(fd >= 0);
         let t0 = Instant::now();
-        let r = unsafe { connect_timeout(fd, &sa, 300) };
+        let r = unsafe { connect_v4(fd, &sa, 300) };
         let waited = t0.elapsed();
         unsafe { libc::close(fd) };
         assert_eq!(r, -1, "an unroutable host must fail, not connect");
@@ -731,7 +1070,7 @@ mod tests {
         let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
         assert!(fd >= 0);
         let t0 = Instant::now();
-        let r = unsafe { connect_timeout(fd, &sa, 5_000) };
+        let r = unsafe { connect_v4(fd, &sa, 5_000) };
         let waited = t0.elapsed();
         unsafe { libc::close(fd) };
         assert_eq!(r, -1, "SO_ERROR must be consulted — a writable socket is not a connected one");
@@ -743,12 +1082,19 @@ mod tests {
     /// hold end-to-end, and it is the invariant a future interruptible-open design has to keep.
     #[test]
     fn every_failed_open_retires_its_fd_and_leaks_nothing() {
-        let ip_bad = std::ffi::CString::new("999.1.2.3").unwrap(); // rejected after socket()
         let ip_refused = std::ffi::CString::new("127.0.0.1").unwrap(); // nothing listens on :1
         let path = std::ffi::CString::new("/x").unwrap();
 
+        // The first case used to be the dotted quad `999.1.2.3`, rejected by the hand parse after
+        // `socket()`. That parse is gone, and sending the same string on would have made this
+        // OFFLINE suite do a DNS lookup: `999.1.2.3` is not an address, so it goes to the resolver
+        // as a NAME — where a network with NXDOMAIN hijacking answers it with a real web server
+        // (and the open then SUCCEEDS, failing this test), and a network with a dead resolver
+        // spends glibc's whole `timeout × attempts × nameservers` budget inside a ~0.3 s suite.
+        // An out-of-range port is the same early exit — refused in `resolve`, before any socket —
+        // and it cannot leave the machine.
         for (label, ip, port) in [
-            ("malformed dotted-quad", &ip_bad, 80),
+            ("port out of range", &ip_refused, 70_000),
             ("refused connection", &ip_refused, 1),
         ] {
             let mut hs = http_stream_boxed();
@@ -786,7 +1132,7 @@ mod tests {
         let port = srv.local_addr().unwrap().port();
         let sa = sockaddr([127, 0, 0, 1], port);
         let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
-        assert_eq!(unsafe { connect_timeout(fd, &sa, 2_000) }, 0);
+        assert_eq!(unsafe { connect_v4(fd, &sa, 2_000) }, 0);
         let _peer = srv.accept().expect("accept"); // held open: nothing will ever be sent
         let (tx, rx) = mpsc::channel();
         let reader = std::thread::spawn(move || {
@@ -866,7 +1212,7 @@ mod tests {
         let sa = sockaddr([127, 0, 0, 1], port);
         let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
         assert!(fd >= 0);
-        let r = unsafe { connect_timeout(fd, &sa, 2_000) };
+        let r = unsafe { connect_v4(fd, &sa, 2_000) };
         assert_eq!(r, 0, "a listening socket must connect");
         let fl = unsafe { libc::fcntl(fd, libc::F_GETFL, 0) };
         assert_eq!(fl & libc::O_NONBLOCK, 0, "O_NONBLOCK leaked out of the handshake");
@@ -894,11 +1240,61 @@ mod tests {
 
     /// `http_open` a GET against a loopback port, handing back the stream AND its verdict.
     fn open_against(port: u16) -> (Box<HttpStream>, c_int) {
-        let ip = std::ffi::CString::new("127.0.0.1").unwrap();
+        open_host_against("127.0.0.1", port)
+    }
+
+    /// …and the same for a host that is not the v4 loopback literal — a name, a bracketed v6
+    /// literal, a bare one.
+    fn open_host_against(host: &str, port: u16) -> (Box<HttpStream>, c_int) {
+        let h = std::ffi::CString::new(host).unwrap();
         let path = std::ffi::CString::new("/x").unwrap();
         let mut hs = http_stream_boxed();
-        let rv = http_open(&mut *hs, ip.as_ptr(), port as c_int, path.as_ptr(), std::ptr::null(), "GET");
+        let rv = http_open(&mut *hs, h.as_ptr(), port as c_int, path.as_ptr(), std::ptr::null(), "GET");
         (hs, rv)
+    }
+
+    /// A one-shot server that hands the REQUEST back to the test as well as answering it — the
+    /// only way to grade a header we emit rather than one we parse.
+    fn one_shot_echo(bind: &str, resp: Vec<u8>)
+        -> std::io::Result<(u16, std::thread::JoinHandle<Vec<u8>>)> {
+        use std::io::{Read, Write};
+        let srv = std::net::TcpListener::bind(bind)?;
+        let port = srv.local_addr().unwrap().port();
+        let h = std::thread::spawn(move || {
+            let mut req = Vec::new();
+            if let Ok((mut sk, _)) = srv.accept() {
+                let mut b = [0u8; 2048];
+                if let Ok(n) = sk.read(&mut b) {
+                    req.extend_from_slice(&b[..n]);
+                }
+                let _ = sk.write_all(&resp);
+            }
+            req
+        });
+        Ok((port, h))
+    }
+
+    /// The `Host:` line of a captured request, without its CRLF.
+    fn host_line(req: &[u8]) -> String {
+        let text = String::from_utf8_lossy(req);
+        text.split("\r\n")
+            .find(|l| l.to_ascii_lowercase().starts_with("host:"))
+            .unwrap_or("<no Host header>")
+            .to_string()
+    }
+
+    /// Can this machine use the IPv6 loopback at all? A container or a set with IPv6 compiled out
+    /// cannot, and the v6 cases below are then not failing — they are unrunnable. Say so on the
+    /// output rather than passing quietly, because a test that reports success having never opened
+    /// an AF_INET6 socket is exactly the false green this file's own notes warn about.
+    fn v6_loopback_or_skip(what: &str) -> Option<std::net::TcpListener> {
+        match std::net::TcpListener::bind("[::1]:0") {
+            Ok(l) => Some(l),
+            Err(e) => {
+                eprintln!("SKIPPED {what}: this host has no usable IPv6 loopback ({e})");
+                None
+            }
+        }
     }
 
     /// Regression: the header block was parsed as STRICT UTF-8 (`from_utf8(…).unwrap_or("")`), so a
@@ -1025,6 +1421,315 @@ mod tests {
                    "both headers present — the chunked framing wins, the length means nothing");
         let e = short_body_line("GET", "/x", 900, 5000, true, true).expect("reported");
         assert!(e.contains("want=?"), "a chunked transfer owes no stated length: {e}");
+    }
+
+
+    /// The v6 sibling of the two connect tests above, on a real AF_INET6 socket: a live `::1`
+    /// listener connects and is handed back BLOCKING (every read path below depends on that, and
+    /// `connect_timeout` restores the flags itself), and a `::1` port with no listener is refused
+    /// at once rather than waited out. Neither is inferrable from the v4 pair — a family this file
+    /// never opened before is exactly where a wrong `socklen_t` or a stray `sockaddr_in` cast shows
+    /// up, and it shows up as a `connect` that fails for a reason nothing logs.
+    #[test]
+    fn a_v6_listener_connects_blocking_and_a_v6_refusal_is_immediate() {
+        let Some(srv) = v6_loopback_or_skip("the AF_INET6 connect pair") else { return };
+        let port = srv.local_addr().unwrap().port();
+
+        let sa = sockaddr6(std::net::Ipv6Addr::LOCALHOST, port);
+        let fd = unsafe { libc::socket(libc::AF_INET6, libc::SOCK_STREAM, 0) };
+        assert!(fd >= 0, "AF_INET6 sockets must be creatable — the loopback bound above");
+        assert_eq!(unsafe { connect_v6(fd, &sa, 2_000) }, 0, "a listening ::1 socket must connect");
+        let fl = unsafe { libc::fcntl(fd, libc::F_GETFL, 0) };
+        assert_eq!(fl & libc::O_NONBLOCK, 0, "O_NONBLOCK leaked out of the v6 handshake");
+        unsafe { libc::close(fd) };
+
+        let sa = sockaddr6(std::net::Ipv6Addr::LOCALHOST, 1); // nothing listens on ::1:1
+        let fd = unsafe { libc::socket(libc::AF_INET6, libc::SOCK_STREAM, 0) };
+        let t0 = Instant::now();
+        let r = unsafe { connect_v6(fd, &sa, 5_000) };
+        let waited = t0.elapsed();
+        unsafe { libc::close(fd) };
+        assert_eq!(r, -1, "SO_ERROR must be consulted on v6 too — a writable socket is not connected");
+        assert!(waited.as_millis() < 2_000, "a refusal should be immediate, waited {waited:?}");
+    }
+
+    /// The bracket asymmetry, which is the single easiest thing to get backwards here: the URI
+    /// authority carries them (RFC 3986 §3.2.2, and so `Host:` does — RFC 9110 §7.2), the RESOLVER
+    /// does not. `getaddrinfo("[::1]", …)` is EAI_NONAME, so passing the authority form through
+    /// would make every IPv6 server read as "does not resolve".
+    #[test]
+    fn a_v6_literal_is_bracketed_for_the_host_header_and_bare_for_the_resolver() {
+        assert_eq!(resolver_node("[2001:db8::1]"), "2001:db8::1");
+        assert_eq!(resolver_node("2001:db8::1"), "2001:db8::1", "already bare: unchanged");
+        assert_eq!(resolver_node("nas.local"), "nas.local");
+        assert_eq!(resolver_node("192.0.2.10"), "192.0.2.10");
+
+        assert_eq!(host_header("2001:db8::1", 32400), "[2001:db8::1]:32400",
+                   "a bare v6 literal must be bracketed for the authority");
+        assert_eq!(host_header("[2001:db8::1]", 32400), "[2001:db8::1]:32400",
+                   "…and one that arrived bracketed must not be double-bracketed");
+        assert_eq!(host_header("nas.local", 32400), "nas.local:32400");
+        assert_eq!(host_header("192.0.2.10", 32400), "192.0.2.10:32400");
+        assert_eq!(host_header("::1", 80), "[::1]:80");
+    }
+
+    /// Which `getaddrinfo` flag a host takes turns on this, and getting it wrong is silent: a
+    /// literal misfiled as a name goes to DNS (and, under `AI_ADDRCONFIG`, can resolve to nothing
+    /// at all), while a name misfiled as a literal fails outright under `AI_NUMERICHOST`.
+    #[test]
+    fn an_address_literal_is_told_apart_from_a_name() {
+        for a in ["127.0.0.1", "192.0.2.10", "::1", "2001:db8::1", "fe80::1%en0"] {
+            assert!(is_numeric_host(a), "{a} is an address literal");
+        }
+        for n in ["nas.local", "plex.example.org", "localhost", "999.1.2.3", "1.2.3", "1.2.3.4.5"] {
+            assert!(!is_numeric_host(n), "{n} is not an address literal");
+        }
+    }
+
+    /// `AI_ADDRCONFIG` suppresses AF_INET6 results on a host whose only IPv6 address is loopback —
+    /// which is most developer machines — so a v6 LITERAL must not be resolved under it. This is
+    /// the assertion behind `resolve`'s flag split; without it `::1` resolves to nothing on a
+    /// perfectly healthy machine and every v6 case below fails for a reason that looks like ours.
+    /// Both of these are purely local: `AI_NUMERICHOST` sends no packet and loads no NSS module.
+    #[test]
+    fn an_address_literal_resolves_without_a_resolver() {
+        assert!(unsafe { resolve("127.0.0.1", 80) }.is_some(), "a v4 literal must resolve");
+        assert!(unsafe { resolve("::1", 80) }.is_some(),
+                "a v6 literal must resolve — if this fails, AI_ADDRCONFIG leaked onto a literal");
+        assert!(unsafe { resolve("2001:db8::1", 80) }.is_some(), "a non-loopback v6 literal too");
+
+        // An out-of-range port FAILS instead of wrapping into a plausible one — 70000 used to dial
+        // 4464. Note what this is asserting: `resolve`'s OWN range check, not `AI_NUMERICSERV`'s.
+        // Darwin rejects the service string and glibc does not, so had this been left to the
+        // resolver the assertion would have passed here and the app would still have truncated on
+        // the television. It is the shape this file's own notes warn about — a green host run about
+        // a platform difference — and it was caught in review, not by the suite.
+        assert!(unsafe { resolve("127.0.0.1", 70_000) }.is_none(),
+                "an out-of-range port must fail, not truncate into a dialable one");
+        assert!(unsafe { resolve("127.0.0.1", 65_536) }.is_none(), "…one past the top");
+        assert!(unsafe { resolve("127.0.0.1", -1) }.is_none(), "…nor a negative one");
+        assert!(unsafe { resolve("127.0.0.1", 65_535) }.is_some(), "…and the top itself is fine");
+    }
+
+    /// IPv6 end to end, which is checklist #43 CASE2: a listener on `::1`, an AF_INET6 socket
+    /// opened because the RESOLVER said so, a 200 read back, and — the half a connect alone cannot
+    /// show — a bracketed `Host:` on the wire. Both spellings of the host reach the same server,
+    /// since `plex::probe::host_of` hands back the bracketed one.
+    #[test]
+    fn a_v6_literal_connects_and_sends_a_bracketed_host_header() {
+        let Some(listener) = v6_loopback_or_skip("the IPv6 end-to-end open") else { return };
+        drop(listener); // proven bindable; `one_shot_echo` needs the address for itself
+
+        for host in ["::1", "[::1]"] {
+            let (port, h) = one_shot_echo("[::1]:0", b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi".to_vec())
+                .expect("bind ::1");
+            let (mut hs, rv) = open_host_against(host, port);
+            assert_eq!(rv, 0, "{host}: an IPv6 server must open");
+            assert_eq!(hs.status, 200, "{host}");
+
+            let mut buf = [0u8; 8];
+            let n = http_read(&mut *hs, buf.as_mut_ptr(), buf.len() as c_int);
+            assert_eq!(&buf[..n.max(0) as usize], b"hi", "{host}: the body must come back intact");
+            http_close(&mut *hs);
+
+            let req = h.join().unwrap();
+            assert_eq!(host_line(&req), format!("Host: [::1]:{port}"),
+                       "{host}: the authority form is bracketed whichever spelling was handed in");
+        }
+    }
+
+    /// A NAME, which is the other half of the limitation being removed — and the three things that
+    /// have to hold at once for one to work. `localhost` resolves to both families on every machine
+    /// this runs on, while the listener is bound to 127.0.0.1 ONLY, so on a host that offers `::1`
+    /// first this only passes by WALKING past a refused address to a live one.
+    ///
+    /// And `Host:` must carry the name. Sending the address it resolved to instead is what breaks
+    /// name-based virtual hosting, and it is invisible from the connect: the TCP session is
+    /// identical either way.
+    #[test]
+    fn a_hostname_resolves_and_the_host_header_carries_the_name_not_the_address() {
+        let (port, h) = one_shot_echo("127.0.0.1:0", b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec())
+            .expect("bind 127.0.0.1");
+        let (mut hs, rv) = open_host_against("localhost", port);
+        assert_eq!(rv, 0, "a name the system resolves must open — this is the whole DNS gap");
+        assert_eq!(hs.status, 200);
+        http_close(&mut *hs);
+
+        let req = h.join().unwrap();
+        assert_eq!(host_line(&req), format!("Host: localhost:{port}"),
+                   "the Host header is the ORIGIN; a resolved address here breaks vhosting");
+    }
+
+    /// The v4 literal path still says what it always said — the regression guard for every existing
+    /// caller, all of which hand `http_open` a dotted quad.
+    #[test]
+    fn a_v4_literal_still_sends_its_own_address_as_the_host_header() {
+        let (port, h) = one_shot_echo("127.0.0.1:0", b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec())
+            .expect("bind");
+        let (mut hs, rv) = open_against(port);
+        assert_eq!(rv, 0);
+        http_close(&mut *hs);
+        assert_eq!(host_line(&h.join().unwrap()), format!("Host: 127.0.0.1:{port}"));
+    }
+
+    /// Resolving to several addresses and dialling only the first is the old single-address limit
+    /// wearing a resolver. The chain here is built by hand rather than resolved, because which
+    /// addresses a name yields and in what order is the machine's business and not something a test
+    /// can arrange: a REFUSED v6 loopback port first, a live v4 listener second. It is also a
+    /// mixed-family chain on purpose — the socket family comes from each node, so a walk that
+    /// assumed AF_INET would open the wrong socket for the first, and one that assumed AF_INET6
+    /// would open the wrong socket for the second.
+    #[test]
+    fn the_whole_address_chain_is_walked_until_one_connects() {
+        let srv = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = srv.local_addr().unwrap().port();
+
+        let mut dead = sockaddr6(std::net::Ipv6Addr::LOCALHOST, 1); // nothing listens on ::1:1
+        let mut live = sockaddr([127, 0, 0, 1], port);
+        let mut second = ainfo(libc::AF_INET, &mut live as *mut _ as *mut libc::sockaddr,
+                               std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
+                               std::ptr::null_mut());
+        let first = ainfo(libc::AF_INET6, &mut dead as *mut _ as *mut libc::sockaddr,
+                          std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t,
+                          &mut second);
+
+        let hs = http_stream_boxed();
+        let fd = unsafe { connect_any(&hs, &first, 2_000) };
+        assert!(fd >= 0, "the walk stopped at the first dead address instead of trying the second");
+        assert_eq!(hs.fd(), fd, "the connected fd must be left PUBLISHED for http_shutdown to reach");
+        let _peer = srv.accept().expect("the live address must actually have been dialled");
+        unsafe { close_owned(&hs) };
+    }
+
+    /// …and a chain with nothing live fails as one failure, leaving no descriptor behind: every
+    /// attempt has to be retired through `close_owned`, not bare-closed and not simply abandoned.
+    #[test]
+    fn a_chain_with_no_live_address_fails_closed_and_leaks_nothing() {
+        let before = open_fd_count();
+        for _ in 0..64 {
+            let mut a = sockaddr([127, 0, 0, 1], 1);
+            let mut b = sockaddr([127, 0, 0, 1], 1);
+            let mut second = ainfo(libc::AF_INET, &mut b as *mut _ as *mut libc::sockaddr,
+                                   std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
+                                   std::ptr::null_mut());
+            let first = ainfo(libc::AF_INET, &mut a as *mut _ as *mut libc::sockaddr,
+                              std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
+                              &mut second);
+            let hs = http_stream_boxed();
+            assert_eq!(unsafe { connect_any(&hs, &first, 2_000) }, -1, "nothing here can connect");
+            assert_eq!(hs.fd(), -1, "a spent walk must leave the stream CLOSED, not published");
+        }
+        // Same slack, and the same reason, as `every_failed_open_retires_its_fd_and_leaks_nothing`:
+        // `open_fd_count` is PROCESS-wide and this suite runs in parallel, so the sibling socket
+        // tests hold descriptors open across this window and the reading drifts by a handful either
+        // way — measured at +9 against a first draft that allowed +8, on a run with nothing wrong.
+        // The separation is what makes the gate mean something rather than the tightness: 64 rounds
+        // of a two-address walk leak 128 descriptors if a single `close_owned` is missed, which is
+        // most of an order of magnitude clear of the noise.
+        let after = open_fd_count();
+        assert!(after <= before + 24, "the walk leaked descriptors: {before} -> {after}");
+    }
+
+    /// A teardown mid-open must not be ANSWERED by dialling the next address — that would consume
+    /// the interrupt and hand a caller being torn down a brand-new connection, quietly undoing the
+    /// interruptibility the publish-before-connect invariant exists to give.
+    ///
+    /// The latch is armed here instead of raced, deliberately: `shutdown(2)` aborting a handshake in
+    /// progress is TRUE on the TV's kernel and NOT on the Darwin host these tests run on
+    /// (`tools/sockprobe.c`), so timing the real interrupt would be asserting the host's behaviour.
+    /// What is portable, and what actually decides the outcome, is the branch — a failed attempt
+    /// plus a latched interrupt stops the walk — and `http_shutdown` is the real API that arms it,
+    /// including with the fd already retired, which is the between-attempts window.
+    #[test]
+    fn an_interrupted_walk_does_not_dial_the_next_address() {
+        let srv = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        srv.set_nonblocking(true).expect("nonblocking accept");
+        let port = srv.local_addr().unwrap().port();
+
+        let mut dead = sockaddr([127, 0, 0, 1], 1);
+        let mut live = sockaddr([127, 0, 0, 1], port);
+        let mut second = ainfo(libc::AF_INET, &mut live as *mut _ as *mut libc::sockaddr,
+                               std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
+                               std::ptr::null_mut());
+        let first = ainfo(libc::AF_INET, &mut dead as *mut _ as *mut libc::sockaddr,
+                          std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
+                          &mut second);
+
+        let mut hs = http_stream_boxed();
+        http_shutdown(&mut *hs); // a teardown with no descriptor to shoot: the latch is the point
+        assert!(hs.interrupted(), "http_shutdown must latch even when the fd is already -1");
+
+        assert_eq!(unsafe { connect_any(&hs, &first, 2_000) }, -1, "an interrupted walk fails");
+        assert_eq!(hs.fd(), -1);
+        assert!(matches!(srv.accept(), Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock),
+                "the second address was dialled anyway — the teardown was answered with a connection");
+    }
+
+    /// …and the latch is per-request state: the next `http_open` on the same stream must not
+    /// inherit the last teardown, or one interrupted open would poison the reused struct for good.
+    /// (`player::engine` pre-allocates its streams and reopens them for the life of a playback.)
+    #[test]
+    fn a_new_open_clears_the_interrupt_from_the_last_one() {
+        let (port, h) = one_shot_server(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec());
+        let mut hs = http_stream_boxed();
+        http_shutdown(&mut *hs);
+        assert!(hs.interrupted());
+
+        let ip = std::ffi::CString::new("127.0.0.1").unwrap();
+        let path = std::ffi::CString::new("/x").unwrap();
+        let rv = http_open(&mut *hs, ip.as_ptr(), port as c_int, path.as_ptr(), std::ptr::null(), "GET");
+        assert_eq!(rv, 0, "a stale interrupt must not fail the next open");
+        assert!(!hs.interrupted(), "the latch belongs to one request");
+        http_close(&mut *hs);
+        h.join().unwrap();
+    }
+
+    /// The chunked detection was `find_ci(hdr, b"\r\ntransfer-encoding: chunked")` — one exact
+    /// spelling, single space, single token. Every other legal way to write the same header missed,
+    /// and a miss is not a failure: the body is then read as close-delimited with the chunk-size
+    /// lines left INLINE in it, i.e. silent corruption of whatever the caller parses next.
+    #[test]
+    fn chunked_is_recognised_however_the_header_is_spelled() {
+        let hdr = |te: &str| format!("HTTP/1.1 200 OK\r\n{te}\r\n\r\n").into_bytes();
+        for te in [
+            "Transfer-Encoding: chunked",   // the one spelling that already worked
+            "Transfer-Encoding:chunked",    // OWS after the colon is OPTIONAL (RFC 9110 §5.6.3)
+            "Transfer-Encoding:   chunked", // …and may be more than one
+            "Transfer-Encoding: chunked ",  // trailing OWS is not part of the value
+            "Transfer-Encoding: Chunked",   // the VALUE is case-insensitive too (§10.1.4)
+            "transfer-encoding: CHUNKED",
+            "Transfer-Encoding: gzip, chunked",   // the legal list form: chunked applied LAST
+            "Transfer-Encoding: chunked, gzip",   // malformed per §6.1, but the framing IS chunked
+            "Transfer-Encoding: gzip\r\nTransfer-Encoding: chunked", // a list split across lines
+        ] {
+            assert!(header_is_chunked(&hdr(te)), "missed: {te}");
+        }
+        for te in [
+            "Transfer-Encoding: gzip",
+            "Transfer-Encoding: chunkedy",   // a token that merely starts the same way
+            "Transfer-Encoding: xchunked",
+            "Content-Length: 5",
+            "X-Chunked: chunked",            // not the field this decides on
+        ] {
+            assert!(!header_is_chunked(&hdr(te)), "false positive: {te}");
+        }
+        // Termination, not just correctness: a block whose last line has no CRLF must still end the
+        // scan rather than spin on the same offset.
+        assert!(!header_is_chunked(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip"));
+        assert!(header_is_chunked(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked"));
+        assert!(!header_is_chunked(b""));
+    }
+
+    /// …and the spelling reaches the READ path, not merely the predicate. A server answering
+    /// `Transfer-Encoding:chunked` (no space) used to hand its caller `4\r\nabcd\r\n0\r\n\r\n`
+    /// verbatim — a body that parses as neither JSON nor a media stream, from a healthy server.
+    #[test]
+    fn a_chunked_body_spelled_without_a_space_is_still_decoded() {
+        let (port, h) = one_shot_server(
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding:chunked\r\n\r\n4\r\nabcd\r\n3\r\nefg\r\n0\r\n\r\n".to_vec());
+        let body = http_get("127.0.0.1", port as c_int, "/x", None).expect("a 200 must open");
+        assert_eq!(body.as_slice(), b"abcdefg", "the chunk framing was left in the body");
+        h.join().unwrap();
     }
 
     /// The constraint the reporting is bound by: it is observability only. A server that promises
