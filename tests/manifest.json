@@ -1344,7 +1344,45 @@
         "reaches_eos": true
       },
       "_eof_note": "THE ONLY case in either tier that is supposed to run out, and the only one that may name pipe_h264_ac3_short.mkv. Every other clip in both packs is sized so it CANNOT hit EOF inside a case's window (make_fixtures.py trap 9's second half), because a finish tears the session down under assertions that were only ever about playing. run_secs is 60 against a 20 s clip: _resolve_fixtures SKIPS this case when the fixture is longer than 0.6 * run_secs, so a pack regenerated with --secs/--quick skips it instead of failing it as a player regression.",
-      "_replay_note": "THE SECOND HALF OF #46 — starting the same content AGAIN after it finished — is NOT graded here, and it is an app gap rather than a test gap. This tier's only entry into the player is /tmp/plxnative-playurl, read behind app.rs's one-shot `auto_tried` latch (app.rs, the autoplay block), so a boot gets exactly one playback; on EOS finish_playback -> exit_player leaves the player, and with no Plex session there is no detail page, no Play control and no key path back in. engine::start_bufferfeed already re-reads dev::playurl() whenever route::url() is empty, so the app-side change is small — a re-armable entry (drop the latch while playurl is armed and the route left the player, or a plxnative-replay trigger) — and the case here then grows one assertion: a second `load:` line and a second climb from ~0. Until then #46 stays UNTESTED in docs/lg-self-checklist.md for its replay half; what this case does establish is the precondition, that a completed stream ends and tears down cleanly rather than freezing on the last frame."
+      "_replay_note": "#46's REPLAY half is `pipe_replay_after_eos` below, which plays this same clip, lets it end, and starts it again. This case stays separate and grades the FINISH alone: the two failures are different — a stream that never ends, and a stream that ends and cannot be restarted — and collapsing them into one case would report either as the other."
+    },
+    {
+      "name": "pipe_replay_after_eos",
+      "fixture": "pipe_h264_ac3_short.mkv",
+      "title": "the same 20 s clip played to its end and then STARTED AGAIN — LG #46",
+      "covers": [
+        "replay-after-completion",
+        "end-of-stream",
+        "playurl re-entry",
+        "start_bufferfeed re-reads the declaration"
+      ],
+      "declare": {
+        "vcodec": "h264",
+        "acodec": "ac3",
+        "fps": 24.0
+      },
+      "run_secs": 100,
+      "operations": [
+        {
+          "op": "play"
+        }
+      ],
+      "expect": {
+        "codec": "h264",
+        "video_size": "720x480",
+        "load_video": "H264",
+        "load_audio": "AC3",
+        "load_dovi": "none",
+        "min_pos_climb_s": 8,
+        "require_video_bound": true,
+        "no_playing_error": true,
+        "server_opens_min": 2,
+        "reaches_eos": true,
+        "replays": 1
+      },
+      "_replay_note": "LG App Self Checklist #46, both halves, and the ONE case in either tier that plays the same media twice in one boot. `expect.replays` is the whole mechanism: the harness writes it into `/tmp/plxnative-replay`, and `app.rs` re-arms its one-shot `auto_tried` latch that many times when a `plxnative-playurl` playback reaches EOS — so the number the app is told and the number `a_replayed` grades cannot drift apart. A COUNTER rather than a lifted latch, because `auto_tried` also guards the autoplay+playidx arm, which fetches a catalog item; an unconditionally re-armable latch would loop a real playback forever.",
+      "_wire_note": "`server_opens_min: 2` is not decoration and is the assertion no log line can give. The second playback must fetch the clip AGAIN — `teardown` closed the socket and cleared the URL — so a 'replay' that somehow reused the first session's bytes would still satisfy the two `load:` lines and the position drop, and would be caught here, on the fixture server's own counter. It is a floor, not an equality: a `Range` reopen inside either viewing is permitted.",
+      "_climb_note": "`a_replayed` wants the position to FALL and then climb, which is the only signal that separates a restart from a session that carried on. A `min_pos_climb_s` of 8 alone cannot see it: one 20 s viewing satisfies that on its own, which is why the drop is asserted separately rather than by raising the climb floor to 30."
     },
     {
       "name": "pipe_h264_aac_mp4",

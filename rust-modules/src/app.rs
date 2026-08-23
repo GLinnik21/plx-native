@@ -1108,6 +1108,59 @@ fn page_of(r: Route) -> Route {
 /// on the frame the picker hands over to Home — instantly, with no Home to flash through.
 const COLDSTART_RESTORE_MS: u32 = 500;
 
+/// How many times a finished `plxnative-playurl` playback may start itself AGAIN — the
+/// `/tmp/plxnative-replay` trigger's content, as a number (LG App Self Checklist #46).
+///
+/// A named function rather than a closure at the one call site, for `note_global_press`'s reason
+/// one step removed: the call site is inside the SDL event loop, which no host test can enter, and
+/// this half touches no SDL at all. Splitting it puts the parsing under `make check` instead of
+/// leaving it gradeable only by a television — which matters more here than it looks, because
+/// EVERY value this returns is a plausible one and a misparse is invisible on the panel: 0 reads
+/// as "the replay arm is missing from this binary" and 2 reads as a loop.
+///
+/// `None` (no file) is 0 — the one-shot behaviour every other boot has always had. An EMPTY file
+/// is 1, which is the whole idiom of this trigger surface (`touch` it and get the obvious thing).
+/// An explicit `0` is honoured, so a script can arm the file and turn it off without deleting it.
+/// Anything unparseable is 1 rather than 0: this file is armed by hand, and answering a typo with
+/// "silently do nothing" is how a green run comes to mean the opposite of what it says.
+fn replay_budget(raw: Option<&str>) -> u32 {
+    match raw {
+        None => 0,
+        Some(s) => match s.trim() {
+            "" => 1,
+            t => t.parse::<u32>().unwrap_or(1),
+        },
+    }
+}
+
+#[cfg(test)]
+mod replay_budget_tests {
+    #[test]
+    fn absent_is_one_shot_and_empty_is_one_replay() {
+        assert_eq!(super::replay_budget(None), 0, "no trigger must change nothing");
+        assert_eq!(super::replay_budget(Some("")), 1);
+        assert_eq!(super::replay_budget(Some("  ")), 1);
+    }
+
+    #[test]
+    fn a_number_is_honoured_including_a_deliberate_zero() {
+        assert_eq!(super::replay_budget(Some("1")), 1);
+        assert_eq!(super::replay_budget(Some("3")), 3);
+        assert_eq!(super::replay_budget(Some(" 2 ")), 2);
+        // An armed-but-off file, so a script can stop replaying without deleting the trigger.
+        assert_eq!(super::replay_budget(Some("0")), 0);
+    }
+
+    #[test]
+    fn a_typo_replays_once_rather_than_silently_doing_nothing() {
+        // The file is armed by hand. Answering `-1` or `one` with 0 would make the case fail as
+        // "the app never re-entered the player", i.e. as a missing feature rather than a typo.
+        for bad in ["one", "-1", "1.5", "999999999999999999999"] {
+            assert_eq!(super::replay_budget(Some(bad)), 1, "{bad}");
+        }
+    }
+}
+
 /// The cold-start restore and the running record, in one call per frame.
 ///
 /// The restore is resolved and the recorder is opened by the SAME condition — the boot sequence
@@ -4580,6 +4633,22 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         let mut nav_pending: Option<NavReq> = None;
 
         let mut auto_tried = false;
+        // dev: `/tmp/plxnative-replay[=N]` — how many times a finished `plxnative-playurl`
+        // playback may be started AGAIN (LG App Self Checklist #46, "replay after completion").
+        //
+        // A COUNTER re-arming `auto_tried`, rather than the latch being lifted: `auto_tried` also
+        // guards the `autoplay`+`playidx` arm below, which does a `request_play_movie` +
+        // `load_detail_now`, so an unconditionally re-armable latch would re-fetch a catalog item
+        // on every player exit and loop a real playback forever. Bounded and opt-in instead — an
+        // absent file is 0, which leaves every existing boot byte-identical, and every pipeline
+        // case but the one that asks for a replay is untouched.
+        //
+        // Why the app needs this at all: the synthetic tier boots with NO Plex session, so after a
+        // stream ends there is no detail page, no Play control and no key path back into the
+        // player. Everything else was already in place — `teardown` clears the URL and `ended` on a
+        // real stop, and `engine::start_bufferfeed` re-reads `dev::playurl()` whenever
+        // `route::url()` is empty — so a replay is a second trip through the entry below.
+        let mut replay_left: u32 = replay_budget(crate::dev::read("replay").as_deref());
         let mut grid_tried = false;
         let mut seek_tried = false;
         // /tmp/plxnative-autoseek seek script (see the parse site): pending steps, the tick of
@@ -5773,6 +5842,23 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             if matches!(route, Route::Player { .. }) && crate::player::ended() {
                 finish_playback(mt, &mut route, &mut play_from, &mut refresh_hubs_at, &mut hud.nav, &mut trail);
                 held_key.sym = 0; // async route flip: don't repeat a still-held key into detail/home
+                // dev: REPLAY AFTER COMPLETION (#46). `finish_playback` has just left the player —
+                // an Up Next handoff would have RETURNED there, and `matches!` below is what tells
+                // the two apart, so a replay can never cut into an auto-advance chain. Re-arming
+                // `auto_tried` sends the next frame back through the `playurl` entry, which calls
+                // `route::clear_url()` and lets `start_bufferfeed` read the trigger again.
+                //
+                // The trigger is read once at boot (`replay_left`), so this cannot be turned into
+                // an endless loop by a file appearing mid-run, and `dev::flag` is `false` at
+                // COMPILE time in a release build.
+                if replay_left > 0
+                    && !matches!(route, Route::Player { .. })
+                    && crate::dev::flag("playurl")
+                {
+                    replay_left -= 1;
+                    auto_tried = false;
+                    log(&format!("replay: starting the finished stream again ({replay_left} left)"));
+                }
             }
             // Up Next countdown elapsed → start the queued episode on its own. Beside the EOS
             // handoff so the whole auto-advance chain reads in one place.

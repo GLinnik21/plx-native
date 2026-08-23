@@ -357,15 +357,17 @@ used: **libcurl** (`net.rs`) does the plex.tv account/login TLS+DNS that the raw
   `pass` / `stall` (accept, hold open, answer nothing — the case that turns a join into a parked
   frame loop) / `blackhole` / `reject` / `delay:<ms>` / **`rate:<kbps>`**. Any mode scopes to
   matching requests — `stall@/:/timeline` freezes the progress reporter while video keeps
-  streaming, which is what makes a clean experiment possible. Modes apply to connections ALREADY
+  streaming, which is what makes a clean experiment possible. **That sentence was FALSE for as
+  long as it existed and became true on 2026-08-23**: `serve_conn` consulted the scope-aware
+  `applies()` to decide reject/blackhole, then handed `relay` a bare `Mode.split`, which throws
+  the scope away — so a scoped mode really applied to every open connection, media stream
+  included, which is the exact opposite of what a scope is for. Both halves are scope-aware now
+  and `tests/test_harness.py` pins it. Modes apply to connections ALREADY
   OPEN, so a POST can be frozen mid-flight. **`rate:` is the newest and it is a SPEED rather than a
   fault**: one token bucket for the whole proxy (a link is shared), decimal kilobits, live under an
   open transfer, so the four legs of LG checklist item #43 CASE1 — 512 Kbps → 1 Mbps → 7 Mbps →
   17.5 Mbps — are one scripted run instead of four launches, and #14's degrading link is
-  measurable rather than anecdotal. **The SCOPE was honoured only at ACCEPT until 2026-08-23** —
-  `relay` consulted a scope-less `Mode.split`, so `stall@/:/timeline` really froze every open
-  connection including the media stream, which is the opposite of what the scope exists for; both
-  halves are now scope-aware and `tests/test_harness.py` pins it. `tools/netcond.py --selftest`
+  measurable rather than anecdotal. `tools/netcond.py --selftest`
   proves the shaper against a loopback transfer with no television in the room. Point the app at it by editing `PMS_PORT` in the gitignored `src/config.local.h` and
   `make deploy` (host/port are compiled into `main.c`). **Pick a port Plex is not already on** — it
   binds `127.0.0.1:32401` itself, and the more specific bind wins, so the proxy is silently bypassed.
@@ -375,7 +377,20 @@ used: **libcurl** (`net.rs`) does the plex.tv account/login TLS+DNS that the raw
   path, so start netcond BEFORE going headless, and treat "netcond logs nothing" as this, not as a
   quiet TV.
   Measured with it 2026-07-29: teardown's join of the `/:/timeline` reporter parked the main loop
-  **6974 ms**; after moving that join onto the scrobble worker, BACK→teardown is **0.5 s**. NB a
+  **6974 ms**; after moving that join onto the scrobble worker, BACK→teardown is **0.5 s**.
+  **That run was taken while the scope bug above was live, so the proxy was stalling EVERY
+  connection and not only the reporter's — and the number and the conclusion both survive it,
+  for a reason worth writing down rather than re-deriving.** The finding was recorded as
+  `THREADJOIN timeline 6974ms` (`task::join` emits one NAMED line per join), so the attribution
+  came from the instrument and not from inferring a total; and `timeline` is the only join that
+  COULD have parked whatever else was stalled, because `engine::teardown`'s step 1 deliberately
+  wakes the other two before joining them — `http_shutdown` on the demux socket, `aq_abort` on
+  both AU lanes — while the reporter's POST had no such wake, `stream`'s one-shot wrappers boxing
+  their socket privately. The before and after were taken the same way, so the 14x is
+  apples-to-apples. What CANNOT be claimed from that session is the thing the scope sentence
+  promises — that video kept streaming while the reporter was frozen. It is a property of the tool
+  today and was not a property of that run; re-running it scoped (and seeing `demux`/`media` at 0
+  beside it) is a device job nobody has done. NB a
   request occasionally fails through the proxy that succeeds direct (seen once on `POST /playQueues`)
   — confirm any new failure against a direct run before believing it.
 - `tools/sockprobe.c` — standalone ARM diagnostic (`make sockprobe`, scp, run, delete) for socket
@@ -712,13 +727,17 @@ floor — which is what stopped the item being answerable only as "pieces are co
 closed the `4k-h264` library gap on this tier (`8-bit-hevc` was already closed by
 `pipe_hevc_aac_mp4` and the gap list had not caught up; a generated clip closes neither gap's real
 half, which is a PMS DECISION on such an item). The same day added the one clip in
-either pack that is MEANT to run out (`pipe_finish_eos`, 20 s), for #46's completion half. Still
+either pack that is MEANT to run out (`pipe_finish_eos` and `pipe_replay_after_eos`, 20 s), which
+is #46 END TO END — the second of those restarts the finished stream through
+`/tmp/plxnative-replay[=N]`, a bounded counter re-arming `app.rs`'s one-shot autoplay latch, and
+grades the re-entry COUNT, a second `load:` line, a second fetch off the fixture server and a
+media position that falls and then climbs. Still
 uncovered: HLG, HDR10+, DV P5/P7, Atmos, the
-4096-wide edge and any refusal above it, the REPLAY half of #46, and the transcode INPUT space
-(three server cases on one AV1 item stand in for 17 codecs). Two of those are app gaps, not test
-gaps — `devcaps` ignores the table's `maxFrameRate`, so the profile sent to PMS bounds no frame
-rate at all; and nothing can re-enter the player after a stream finishes without a Plex item behind
-it, because `plxnative-playurl` sits behind `app.rs`'s one-shot `auto_tried` latch. Three things about it
+4096-wide edge and any refusal above it, a USER-driven replay (a Play control on a detail page is
+server-tier by construction), and the transcode INPUT space
+(three server cases on one AV1 item stand in for 17 codecs). One of those is an app gap, not a test
+gap — `devcaps` ignores the table's `maxFrameRate`, so the profile sent to PMS bounds no frame
+rate at all. Three things about it
 are worth knowing before reading a result. **(1)** The declaration is the interesting half and the
 main false-PASS risk: `engine`'s `_ =>` arm maps an unrecognised audio codec to `"AC3"` and a
 non-`hevc` video codec to the H264 payload, so a trigger that was never read produces exactly the
@@ -902,7 +921,12 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   `{"url":…,"vcodec":…,"acodec":…,"fps":…,"dovi":{…},"atmos":…}`, which is what the pipeline test
   tier drives and the only way to declare HEVC / `"AC3 PLUS"` / Dolby for a stream no PMS chose;
   it also ENTERS the player on its own from a boot with no session, since there is no home grid to
-  press OK on), **`sample.h264` / `sample.h265`** (feed the player a local raw Annex-B sample instead of
+  press OK on), **`/tmp/plxnative-replay[=N]`** (once a `playurl` stream reaches EOS,
+  start it AGAIN, N times — LG checklist #46's replay half; a COUNTER rather than a lifted latch
+  because `auto_tried` also guards the autoplay+playidx arm, which fetches a catalog item, so an
+  unconditionally re-armable latch would loop a real playback forever. Absent = 0 = the one-shot
+  behaviour every other boot has),
+  **`sample.h264` / `sample.h265`** (feed the player a local raw Annex-B sample instead of
   streaming — the two names that predate the `plxnative-` prefix, and since the flavour split the
   last two runtime surfaces to stop being pinned to a shared `/tmp`: they resolve through the
   install's own root like everything else, `$(make -s print-rundir)/sample.h264`),

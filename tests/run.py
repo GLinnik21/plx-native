@@ -129,6 +129,8 @@ ALL_TRIGGERS = [
     "plxnative-heroidx", "plxnative-pickuser",
     # itemmenu snaps into the grid and opens the press-and-hold card context menu (route=itemmenu)
     "plxnative-itemmenu",
+    # playurl is the synthetic tier's entry; replay is how many times a FINISHED one restarts (#46)
+    "plxnative-playurl", "plxnative-replay",
 ]
 
 # the type=43 spam filter (mirrors: grep -vaE "smp_cb type=43 num=0 str=$")
@@ -689,6 +691,13 @@ def triggers_for_case(case, url_base=None):
         spec = dict(case.get("declare", {}))
         spec["url"] = f"{url_base}/{case['fixture']}"
         files = [("plxnative-playurl", json.dumps(spec, separators=(",", ":")))]
+        # `plxnative-replay=<n>` — how many times a FINISHED playback restarts itself (LG #46).
+        # Keyed off `expect.replays`, so the number the app is TOLD and the number the harness
+        # GRADES are one statement rather than two that nothing keeps in step. Absent => the
+        # trigger is not written at all, which is the one-shot behaviour every other case wants.
+        n = case.get("expect", {}).get("replays", 0)
+        if n:
+            files.append(("plxnative-replay", str(n)))
     else:
         files = [("plxnative-play", case["rk"])]  # the robust play trigger (fetches any rk)
     for op in case["operations"]:
@@ -1142,6 +1151,60 @@ def a_server_wire(delta, min_opens, min_range):
         return False, (f"{ranges} ranged (206) request(s), need >={min_range} — the seek never "
                        f"reached the demuxer's Range reopen")
     return True, f"server saw {opens} open(s), {ranges} ranged"
+
+
+def a_replayed(lines, want):
+    """The finished stream STARTED AGAIN, and the second run really played — LG #46's second half.
+
+    Three signals, and each is worthless without the other two:
+
+      * `replay: starting the finished stream again` exactly `want` times (`app.rs`, at the EOS
+        site). COUNTED, not merely found: a replay that fires more often than the case armed is a
+        loop, and a loop satisfies every other assertion here while meaning the opposite.
+      * at least `want + 1` `load:` lines. `engine::start_bufferfeed` writes one per SESSION and
+        `teardown` clears the URL, so a second line is what says `dev::playurl()` was re-read and
+        the payload rebuilt — the thing that distinguishes a real restart from a pipeline that
+        never tore down.
+      * the media position FELL and then climbed again. A replay that resumed where the first run
+        ended would produce both lines above and no second viewing; the drop is the only evidence
+        that the stream restarted rather than continued.
+
+    The position series is the same `pos=` heartbeat every other case reads, deliberately: a binary
+    that stopped emitting it fails here the way it fails everywhere else, instead of passing this
+    case by having nothing left to contradict.
+    """
+    fired = [ln for ln in lines if "replay: starting the finished stream again" in ln]
+    if len(fired) != want:
+        why = ("the app never re-entered the player — is `plxnative-replay` armed, and does this "
+               "binary carry the replay arm at all?" if not fired
+               else "a replay that fires more often than it was asked to is a loop")
+        return False, f"{len(fired)} `replay:` line(s), want {want} — {why}"
+    loads = [ln for ln in lines if RE_LOAD.search(ln)]
+    if len(loads) < want + 1:
+        return False, (f"{len(loads)} `load:` line(s) for {want} replay(s) — the second playback "
+                       f"never rebuilt its payload, so the pipeline was never restarted")
+    ts = [t for t, _ in playpos_secs(lines)]
+    if len(ts) < 2:
+        return False, f"only {len(ts)} media-position sample(s); a replay cannot be seen in them"
+    # The DROP, as the deepest fall anywhere in the series — so a case replaying twice still reads
+    # as one number, and a single late sample cannot hide it.
+    peak, drop = ts[0], 0
+    for t in ts:
+        peak = max(peak, t)
+        drop = max(drop, peak - t)
+    if drop < 5:
+        return False, (f"the media position never fell (peak {max(ts)}s, deepest drop {drop}s) — "
+                       f"the `replay:` line fired but playback carried on from where it was")
+    # ...and it CLIMBED after falling, which is the second viewing rather than a restart that
+    # stalled at the join. Measured from the last sample at or below the drop's floor.
+    floor = min(ts)
+    tail = ts[max(i for i, t in enumerate(ts) if t == floor):]
+    climb = max(tail) - min(tail)
+    if climb < 5:
+        return False, (f"the position fell {drop}s but only climbed {climb}s afterwards — the "
+                       f"replay restarted and then did not play")
+    return True, (f"{want} replay(s), {len(loads)} `load:` line(s), position fell {drop}s then "
+                  f"climbed {climb}s over {len(ts)} samples")
 
 
 def a_finished(lines):
@@ -2107,17 +2170,22 @@ def _resolve_fixtures(cases, root):
                              f"the pack longer (`make fixtures-pipeline FIXTURES_ARGS=--secs=<n>`)")
                 continue
             # ...and the opposite bound, for `reaches_eos` alone. That case has to boot the app,
-            # join the stream and then play the WHOLE clip at 1x inside its cap, so the clip must
-            # be comfortably shorter than the cap rather than merely shorter: 0.6 leaves 40% of the
-            # window for close+launch+pre-roll, against a boot-to-playing measured well under 15 s.
-            # A `--secs`-regenerated pack is the realistic way to trip this, and it must skip —
-            # `a_finished` failing on a 300 s clip reads as the app freezing on the last frame.
-            if c.get("expect", {}).get("reaches_eos"):
+            # join the stream and then play the WHOLE clip at 1x inside its cap — ONCE PER VIEWING,
+            # so a case that also replays needs the clip `replays + 1` times over. The clip must be
+            # comfortably shorter than the cap rather than merely shorter: 0.6 leaves 40% of the
+            # window for close+launch and one pre-roll per viewing, against a boot-to-playing
+            # measured well under 15 s. A `--secs`-regenerated pack is the realistic way to trip
+            # this, and it must skip — `a_finished` failing on a 300 s clip reads as the app
+            # freezing on the last frame, and `a_replayed` failing on one reads as the replay arm
+            # being absent from the binary.
+            exp = c.get("expect", {})
+            if exp.get("reaches_eos"):
                 cap = c.get("run_secs", 30)
-                if dur > cap * 0.6:
+                views = 1 + exp.get("replays", 0)
+                if dur * views > cap * 0.6:
                     c["skip"] = (f"{name} is {dur:.0f}s and this case must play it to the END "
-                                 f"within a {cap}s cap — rebuild the pack at its declared length "
-                                 f"(`make fixtures-pipeline`, no --secs/--quick)")
+                                 f"{views}x within a {cap}s cap — rebuild the pack at its declared "
+                                 f"length (`make fixtures-pipeline`, no --secs/--quick)")
                     continue
             why = _declaration_mismatch(c, streams)
             if why:
@@ -2148,6 +2216,8 @@ def evaluate_pipeline(case, lines, srv_delta):
         results.append(("audio_lane", *a_audio_lane(lines, exp["audio_stream_index"])))
     if exp.get("reaches_eos"):
         results.append(("finished", *a_finished(lines)))
+    if exp.get("replays"):
+        results.append(("replayed", *a_replayed(lines, exp["replays"])))
     if exp.get("no_playing_error", True):
         results.append(("no_error", *a_no_error(lines)))
 

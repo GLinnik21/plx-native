@@ -21,7 +21,7 @@ how a green run means nothing.
 | cost | ~0.7 GB, a few minutes to build; seconds per case | ~3 GB, ~20 minutes to build; ten to twenty minutes to run |
 
 ```sh
-./tests/run.py                  # the synthetic tier — 19 cases, ~6 min, needs nothing
+./tests/run.py                  # the synthetic tier — 20 cases, ~7 min, needs nothing
 ./tests/run.py --server         # the library-backed 21, through the whole Plex chain
 ```
 
@@ -67,12 +67,12 @@ cells, §*The resolution × codec matrix* below), and one clip played to its **e
 
 Still uncovered, and worth knowing before quoting a green run: **HLG, HDR10+, DV P5/P7, Atmos**
 (the `atmos` declaration field exists and no case sets it), the **4096-wide edge** and any file
-that must be *refused* for exceeding it, the **replay** half of playing something to its end, and
-the whole **transcode input space** — three server cases on one AV1 item stand in for 17 video
-codecs. Two of those are app gaps rather than test gaps: `devcaps` reads the table's width and
-height and explicitly ignores `maxFrameRate`, so the profile sent to PMS carries no frame-rate
-limitation at all; and there is no way to re-enter the player after a stream finishes without a
-Plex item behind it (see §*Playing to the END*).
+that must be *refused* for exceeding it, a **user-driven** replay (as opposed to the trigger-driven
+one below — a Play control on a detail page is server-tier by construction), and the whole
+**transcode input space** — three server cases on one AV1 item stand in for 17 video codecs. One of
+those is an app gap rather than a test gap: `devcaps` reads the table's width and height and
+explicitly ignores `maxFrameRate`, so the profile sent to PMS carries no frame-rate limitation at
+all.
 
 - `manifest.json` — the test matrix, and **installation-independent**: the triggers each case
   needs, the expected log signals, and the *shape* of the item it needs (`item`, a symbolic key
@@ -679,7 +679,7 @@ here grades); the 4096-wide edge the device table claims, and any refusal above 
 non-24p rung — the frame-rate axis is `pipe_h264_1080p5994` and `pipe_hevc_4k_60fps`, at 1080p and
 4K only.
 
-### Playing to the END (LG #46, first half)
+### Playing to the END, and then again (LG #46)
 
 `pipe_finish_eos` is **the only case in either tier that is supposed to run out**. Every other clip
 in both packs is sized so it *cannot* hit EOF inside a case's window (`make_fixtures.py` trap 9's
@@ -690,14 +690,30 @@ gates that on `eos_pushed && pos >= dur - 1s`, so a truncated transfer does not 
 `stop_bufferfeed: torn down`. The order is the assertion — every stop tears the engine down, the
 harness's own close included.
 
-**The second half of #46 — starting the same content *again* — is not graded, and it is an app gap
-rather than a test gap.** This tier's only entry into the player is `plxnative-playurl`, read behind
-`app.rs`'s one-shot `auto_tried` latch, so a boot gets exactly one playback; on EOS
-`finish_playback` → `exit_player` leaves the player, and with no Plex session there is no detail
-page, no Play control and no key path back in. `engine::start_bufferfeed` already re-reads
-`dev::playurl()` whenever `route::url()` is empty, so the app-side change is small — a re-armable
-entry — and the case then grows one assertion: a second `load:` line and a second climb from ~0.
-Until then #46's replay half stays **untested** in `docs/lg-self-checklist.md`.
+**And the second half — starting the same content *again* — is `pipe_replay_after_eos`**, which
+plays the same clip, lets it end, and restarts it. That needed an app change and got the smallest
+one that works: `/tmp/plxnative-replay[=N]` re-arms `app.rs`'s one-shot `auto_tried` latch N times
+when a `plxnative-playurl` playback reaches EOS, so the next frame goes back through the entry it
+booted through. Everything else was already in place — `teardown` clears the URL and the `ended`
+flag on a real stop, and `engine::start_bufferfeed` re-reads `dev::playurl()` whenever
+`route::url()` is empty.
+
+A **counter**, not a lifted latch: `auto_tried` also guards the `autoplay`+`playidx` arm, which
+does a `request_play_movie` + `load_detail_now`, so an unconditionally re-armable latch would
+re-fetch a catalog item on every player exit and loop a real playback forever. An absent trigger is
+0, which leaves every other boot byte-identical, and `replay_budget` (host-tested) is what turns
+the file's contents into that number.
+
+The `replayed` assertion wants **three** things, because each is worthless alone: the `replay:`
+line exactly N times (counted — more often than asked is a loop, and a loop satisfies everything
+else); at least N+1 `load:` lines (one per session, so the second says the declaration really was
+re-read); and the media position **falling and then climbing again** (a replay that resumed where
+the first run stopped would produce both lines above and no second viewing). `server_opens_min: 2`
+is the wire-side half: the second viewing has to fetch the clip again, which no log line can prove.
+
+Two things it still does not cover: **replay driven by a user** rather than by a trigger — that is
+a Play control on a detail page, so it belongs to the server tier — and replay of a **transcode**,
+which has a server session behind it that a synthetic clip has no equivalent for.
 
 **`serve_fixtures.py`, and why not `python3 -m http.server`.** The demuxer seeks by closing the
 socket and reopening with `Range: bytes=<n>-`, and `stream.rs` accepts any 2xx. A server that

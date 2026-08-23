@@ -499,14 +499,102 @@ class CompletionCase(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("froze", why)
 
-    def test_the_manifest_carries_exactly_one_eos_case_and_it_owns_its_fixture(self):
+    def test_only_a_case_that_asks_to_reach_the_end_may_name_the_short_clip(self):
+        """The rule is not "exactly one case", which is what it said while there was one — it is
+        that a case graded through a TEARDOWN has to have asked for one. The short clip ends inside
+        every window, so any case naming it without `reaches_eos` would have its assertions cut off
+        by a finish it never declared."""
         cases = _manifest()["pipeline_cases"]
         eos = [c for c in cases if c["expect"].get("reaches_eos")]
-        self.assertEqual(len(eos), 1, f"expected one completion case, got {[c['name'] for c in eos]}")
-        others = [c["name"] for c in cases
-                  if c["fixture"] == eos[0]["fixture"] and c is not eos[0]]
-        self.assertFalse(others, f"the short clip ENDS mid-window; {others} would be graded "
+        self.assertTrue(eos, "no case reaches EOS — LG #46 has nothing behind it")
+        short = {c["fixture"] for c in eos}
+        self.assertEqual(len(short), 1, f"the completion cases disagree on which clip ends: {short}")
+        strays = [c["name"] for c in cases
+                  if c["fixture"] in short and not c["expect"].get("reaches_eos")]
+        self.assertFalse(strays, f"the short clip ENDS mid-window; {strays} would be graded "
                                  f"through a teardown they never asked for")
+
+    def test_the_replay_case_grades_both_halves_of_46(self):
+        """#46 is "replay AFTER completion", so the case that grades the replay must also be the
+        one that reaches the end — a replay asserted without a finish behind it would pass on a
+        stream that was merely restarted mid-play."""
+        cases = _manifest()["pipeline_cases"]
+        replays = [c for c in cases if c["expect"].get("replays")]
+        self.assertEqual(len(replays), 1, f"expected one replay case, got {[c['name'] for c in replays]}")
+        c = replays[0]
+        self.assertTrue(c["expect"].get("reaches_eos"), f"{c['name']} replays without finishing")
+        # The second viewing must fetch the clip again — `teardown` closed the socket and cleared
+        # the URL — so a floor of 2 opens is the wire-side half of the same assertion.
+        self.assertGreaterEqual(c["expect"].get("server_opens_min", 0), 2, c["name"])
+
+    def test_the_replay_trigger_carries_the_number_the_case_grades(self):
+        """One statement, not two: `expect.replays` is what the harness writes into
+        `plxnative-replay` AND what `a_replayed` counts, so they cannot drift."""
+        c = next(c for c in _manifest()["pipeline_cases"] if c["expect"].get("replays"))
+        files = dict(run.triggers_for_case(c, url_base="http://192.0.2.10:8020"))
+        self.assertEqual(files.get("plxnative-replay"), str(c["expect"]["replays"]))
+        # ...and every other case must NOT arm it, or a one-shot boot silently becomes a loop.
+        for other in _manifest()["pipeline_cases"]:
+            if other["expect"].get("replays"):
+                continue
+            self.assertNotIn("plxnative-replay",
+                             dict(run.triggers_for_case(other, url_base="http://192.0.2.10:8020")),
+                             other["name"])
+
+    def test_a_replay_is_seen_as_a_fall_then_a_climb(self):
+        """The three signals, and the three near-misses that each look like a pass."""
+        rep = "replay: starting the finished stream again (0 left)\n"
+        load = 'load: v=H264 a="AC3" fps=24.000 dv=present:0 P0/0 el:0 atmos:0\n'
+        pos = [f"loop=60 route=player overlay=none pos={t}s vtick=5\n" for t in (2, 10, 19)]
+        pos2 = [f"loop=60 route=player overlay=none pos={t}s vtick=5\n" for t in (1, 9, 18)]
+        good = [load] + pos + [rep, load] + pos2
+        ok, why = run.a_replayed(good, 1)
+        self.assertTrue(ok, why)
+
+        # (a) the app never re-entered — no `replay:` line at all.
+        ok, why = run.a_replayed([load] + pos, 1)
+        self.assertFalse(ok)
+        self.assertIn("never re-entered", why)
+        # (b) it fired more often than asked: a loop, which every other signal would accept.
+        ok, why = run.a_replayed([load] + pos + [rep, load] + pos2 + [rep, load] + pos2, 1)
+        self.assertFalse(ok)
+        self.assertIn("loop", why)
+        # (c) it fired and the payload was never rebuilt — one `load:` for one replay.
+        ok, why = run.a_replayed([load] + pos + [rep] + pos2, 1)
+        self.assertFalse(ok)
+        self.assertIn("rebuilt its payload", why)
+        # (d) it fired, reloaded, and playback CARRIED ON rather than restarting.
+        carried = [f"loop=60 route=player overlay=none pos={t}s vtick=5\n" for t in (20, 28, 37)]
+        ok, why = run.a_replayed([load] + pos + [rep, load] + carried, 1)
+        self.assertFalse(ok)
+        self.assertIn("never fell", why)
+        # (e) it restarted and then stalled at the join — a fall with no second viewing.
+        stalled = ["loop=60 route=player overlay=none pos=0s vtick=5\n"] * 3
+        ok, why = run.a_replayed([load] + pos + [rep, load] + stalled, 1)
+        self.assertFalse(ok)
+        self.assertIn("did not play", why)
+
+    def test_a_pack_too_short_to_be_played_twice_skips_the_replay_case(self):
+        """The EOS bound is per VIEWING: a clip that fits once inside the cap need not fit twice."""
+        case = {"name": "rep", "fixture": "c.mkv", "run_secs": 60,
+                "expect": {"reaches_eos": True, "replays": 1, "min_pos_climb_s": 8}}
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "c.mkv"), "wb") as f:
+                f.write(b"\0" * 16)
+            saved = run._probe_fixture
+            try:
+                # 25 s fits once inside 60 * 0.6 = 36, and twice does not.
+                run._probe_fixture = lambda p: (25.0, [("video", "h264"), ("audio", "ac3")])
+                run._resolve_fixtures([case], d)
+                self.assertIn("skip", case)
+                self.assertIn("2x", case["skip"])
+                once = dict(case)
+                once.pop("skip", None)
+                once["expect"] = dict(case["expect"], replays=0)
+                run._resolve_fixtures([once], d)
+                self.assertNotIn("skip", once)
+            finally:
+                run._probe_fixture = saved
 
     def test_a_pack_too_long_to_finish_skips_rather_than_fails(self):
         """A `--secs`/`--quick` regeneration is the realistic way to break this, and `a_finished`

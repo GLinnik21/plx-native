@@ -949,7 +949,10 @@ fn teardown(mt: &MainThread, for_reload: bool) {
     // joins it before posting `stopped` — so the last `playing` report still lands first, but the
     // MAIN thread stops paying for it. It parked the frame loop for the remainder of SO_RCVTIMEO
     // whenever that POST had stalled (measured: `THREADJOIN timeline 6974ms`, tools/netcond.py in
-    // `stall@/:/timeline`). Safe to outlive the Engine: the reporter names no Engine field, only
+    // `stall@/:/timeline` — whose scope was broken until 2026-08-23, so that run stalled EVERY
+    // connection. The named `THREADJOIN` line is what keeps the attribution good, and step 1 above
+    // is why: demux and the AU lanes are woken before they are joined, so `timeline` was the only
+    // one that could park). Safe to outlive the Engine: the reporter names no Engine field, only
     // SHARED atomics and its own owned `rk`.
     if !for_reload {
         crate::route::scrobble_stop(final_report, eng.report_th.take());
