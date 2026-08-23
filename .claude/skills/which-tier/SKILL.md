@@ -38,8 +38,9 @@ minutes of television for a pipeline the change cannot reach.)
 **For UI-only work the check is CAPTURES, LOOKED AT.** A shot nobody opens has verified nothing.
 
 **2. Reading a bare `./tests/run.py` as the suite it used to be.** The default **inverted on
-2026-08-22**. A bare run is now the **12-case synthetic tier** — generated clips served off your
-Mac through `/tmp/plxnative-playurl`, **no Plex anywhere**. The 21 library-backed cases are
+2026-08-22**. A bare run is now the **synthetic tier** — generated clips served off your
+Mac through `/tmp/plxnative-playurl`, **no Plex anywhere** (19 cases as of 2026-08-23; ask
+`./tests/run.py --list` rather than trusting a number written down here). The 21 library-backed cases are
 `./tests/run.py --server`; `--fps` and `--fps-player` imply `--server` (their scenes navigate a
 real signed-in Home and would otherwise grade a QR screen). `--pipeline` still parses — it names
 the default — and pairing it with `--server`/`--fps` is refused rather than silently resolved.
