@@ -65,6 +65,22 @@
 //! `com.webos.service.ime/*` methods, all in ACGs this app does not hold — it is granted
 //! `["public"]`), and a physical USB or Bluetooth keyboard (`/dev/input` is not mounted into our
 //! jail; `remote.rs` documents the general case).
+//!
+//! ## Text that ARRIVES correctly and DRAWS as boxes (measured 2026-08-23)
+//!
+//! This module is byte-transparent and the tests below pin that — a full-width `＼`, a CJK run and
+//! a Hangul syllable all reach the query as themselves. **They then render as `.notdef` boxes**,
+//! because `pkg/appfont*.ttf` is a SUBSET: 2853 codepoints, Latin + Cyrillic + Greek, with no CJK,
+//! no Hangul and no full-width forms (`tools/cut-inter.py` cuts it; `text.rs` has no per-glyph
+//! fallback — its `DROIDSANS` path is a whole-font last resort for a MISSING file, not a chain).
+//!
+//! So a reader debugging "my search shows boxes" can stop here: the text arrived, and the gap is
+//! the font, one layer down. It is recorded in this module because this is where that question
+//! gets asked first, and because it is the half of LG checklist rows #15/#16 that no amount of
+//! correctness in this file can answer — the rows are about what is ON THE PANEL, and a Korean or
+//! Japanese query is unreadable in the field, in the "No results for …" line, and anywhere else the
+//! query is echoed. Fixing it is a font decision (a wider cut, or a real fallback chain), not a
+//! text-input one, and it is not in this module's gift.
 #![allow(dead_code)]
 
 use crate::app::SDL_WINDOW_INPUT_FOCUS;
@@ -386,9 +402,72 @@ fn decode_text_at(ev: &[u8], off: usize) -> String {
     // NUL-terminated INSIDE a fixed array: the terminator is the length, and everything after it
     // is whatever the last, longer commit left behind.
     let n = field.iter().position(|&b| b == 0).unwrap_or(field.len());
+    // The two edges of a codepoint the fixed array may have CUT — see `drop_cut_tail`. The tail
+    // rule is conditional on the array being FULL (`n == TEXT_CAP`), which is the signature of a
+    // cut; the head rule is unconditional, because no UTF-8 string may begin with a continuation
+    // byte under any circumstances. Deliberately NOT `n == field.len()`, which is also true when
+    // the CALLER's buffer ran out before `text[32]` did — a short buffer is the reader's limit,
+    // not the panel's, and there is nothing to say the panel cut anything at all.
+    let text = drop_orphan_head(&field[..n]);
+    let text = if n == TEXT_CAP { drop_cut_tail(text) } else { text };
     // Lossy, never `from_utf8`: a single bad byte would otherwise discard the whole commit — and
     // an IME that emits one is a keystroke the user typed, not an attack.
-    String::from_utf8_lossy(&field[..n]).into_owned()
+    String::from_utf8_lossy(text).into_owned()
+}
+
+/// Drop a trailing UTF-8 sequence that is well-formed so far but CUT SHORT by the end of the
+/// buffer. Everything else — a lone continuation byte, an overlong or out-of-range lead, a
+/// surrogate — is left for `from_utf8_lossy` to answer with U+FFFD, because a replacement character
+/// is the only visible signal that something arrived broken and it must not be swallowed.
+///
+/// **This is LG checklist row #16** (`docs/lg-self-checklist.md` §2), which asks that the character
+/// which arrives be the character that was pressed. `text[32]` is a fixed array, so a commit that
+/// fills it is cut at a BYTE, and that cut lands mid-codepoint for any query that is not pure
+/// ASCII. Decoded lossily, the surviving half becomes a `` the user never typed, in their search
+/// field — exactly the substitution the row is about. Nothing can recover the character (its other
+/// half is not in this event), so the honest answer is the text that WAS whole.
+///
+/// **The classification is `std`'s, not ours.** `Utf8Error::error_len() == None` is precisely
+/// "valid so far, ended mid-sequence", and `valid_up_to()` is where to cut — where a hand-rolled
+/// lead-byte width table accepts `0xC0`, `0xF5..=0xF7` and surrogate pairs as merely "incomplete"
+/// and deletes real corruption without a trace. Only the LAST sequence is offered to it (walk back
+/// at most four bytes to the first non-continuation byte; no sequence is longer), so an interior
+/// error earlier in the commit cannot suppress the tail rule.
+///
+/// **Belt-and-braces for a case this project has not settled.** Stock SDL2 fills `text[32]` with
+/// `SDL_utf8strlcpy`, which truncates on a character boundary and always terminates — so on stock
+/// SDL this branch is unreachable, and `encode_event` cuts on a boundary too, which is why nothing
+/// the simulator or the `txt:` token can drive reaches it either. Whether **LG's fork** does the
+/// same is a question for the television's own `libSDL2`, not for a header or another client:
+/// `.claude/skills/decompile-tv-lib/` is how the `+16 inputSource` offset above was settled, and it
+/// is how this would be. Until then the branch costs one comparison and cannot make a correct
+/// commit wrong.
+fn drop_cut_tail(b: &[u8]) -> &[u8] {
+    for back in 1..=b.len().min(4) {
+        let i = b.len() - back;
+        if b[i] & 0xC0 == 0x80 {
+            continue; // a continuation byte — the sequence it belongs to starts further back
+        }
+        return match std::str::from_utf8(&b[i..]) {
+            Err(e) if e.error_len().is_none() => &b[..i],
+            _ => b,
+        };
+    }
+    b // nothing but continuation bytes: garbage, and `from_utf8_lossy`'s to answer
+}
+
+/// The other edge of the same cut: drop a leading run of continuation bytes.
+///
+/// If the panel really does split a codepoint at `text[32]`, the half [`drop_cut_tail`] discards
+/// arrives at the START of the NEXT commit — orphaned, with its lead byte in the event before it.
+/// Left alone those bytes are one U+FFFD each, which is the row-#16 substitution again, one
+/// character later; dropping the head is what makes the rule whole rather than one-sided.
+///
+/// Unconditional, and safe to be: **no UTF-8 string may begin with a continuation byte**, so this
+/// can only ever remove bytes that were already unreadable — never a character the user typed.
+fn drop_orphan_head(b: &[u8]) -> &[u8] {
+    let n = b.iter().take_while(|&&c| c & 0xC0 == 0x80).count();
+    &b[n..]
 }
 
 // ---------------------------------------------------------------------------------------
@@ -452,11 +531,129 @@ mod tests {
     fn invalid_utf8_is_replaced_rather_than_panicking() {
         let s = decode_text_at(&ev_with(16, b"a\xffb"), 16);
         assert_eq!(s, "a\u{fffd}b");
-        // A lone continuation byte, and a truncated multi-byte sequence cut by the array's end.
-        assert_eq!(decode_text_at(&ev_with(16, b"\x80"), 16), "\u{fffd}");
-        let mut ev = ev_with(16, &[b'y'; TEXT_CAP]);
-        ev[16 + TEXT_CAP - 1] = 0xe2; // the head of a 3-byte codepoint, with no room for its tail
-        assert!(decode_text_at(&ev, 16).ends_with('\u{fffd}'));
+        // A bad byte in the MIDDLE keeps its replacement whatever surrounds it — it is neither
+        // edge of a cut, so neither trim rule can claim it. (A LEADING continuation byte is the
+        // orphan case and IS dropped; `a_commit_orphaned_from_its_lead_byte_is_dropped_rather_
+        // than_replaced` owns that, and `\x80` alone belongs to it rather than here.)
+        assert_eq!(decode_text_at(&ev_with(16, b"x\x80y"), 16), "x\u{fffd}y");
+        assert_eq!(decode_text_at(&ev_with(16, b"x\xc0y"), 16), "x\u{fffd}y");
+    }
+
+    /// **Row #16: a codepoint the fixed array CUT must not arrive as a character nobody typed.**
+    /// `text[32]` has no room for the tail of a sequence that starts at its last byte, so a lossy
+    /// decode puts a `` in the user's query — the exact substitution the checklist row is about.
+    /// The whole prefix is kept; only the half codepoint goes.
+    #[test]
+    fn a_codepoint_cut_by_the_end_of_the_field_is_dropped_not_replaced() {
+        // Each width of lead byte, cut at every point that leaves it incomplete.
+        for (lead, whole) in [(0xc3u8, "é"), (0xe5, "千"), (0xf0, "🎬")] {
+            let need = whole.len();
+            for kept in 1..need {
+                let mut raw = vec![b'y'; TEXT_CAP - kept];
+                raw.extend_from_slice(&whole.as_bytes()[..kept]);
+                assert_eq!(raw.len(), TEXT_CAP);
+                let got = decode_text_at(&ev_with(16, &raw), 16);
+                assert_eq!(got, "y".repeat(TEXT_CAP - kept), "lead {lead:#x}, {kept} of {need} bytes");
+                assert!(!got.contains('\u{fffd}'), "a cut must not invent a character");
+            }
+            // …and the same codepoint that FITS is untouched, which is what proves the rule cuts
+            // only what was actually truncated.
+            let mut raw = vec![b'y'; TEXT_CAP - need];
+            raw.extend_from_slice(whole.as_bytes());
+            assert_eq!(decode_text_at(&ev_with(16, &raw), 16), format!("{}{whole}", "y".repeat(TEXT_CAP - need)));
+        }
+    }
+
+    /// A TERMINATED commit is as long as the panel meant it to be, so a malformed tail inside one
+    /// is genuine garbage and keeps the defensive replacement — the cut rule must not swallow it.
+    /// Neither may a SHORT BUFFER be read as a cut: that is the caller's limit, not the panel's.
+    #[test]
+    fn a_bad_tail_before_a_terminator_still_replaces_rather_than_vanishing() {
+        // `ab` + a bare 3-byte lead + NUL: nothing cut this, the byte is simply wrong.
+        assert_eq!(decode_text_at(&ev_with(16, b"ab\xe5\0"), 16), "ab\u{fffd}");
+        // …and a buffer that ends mid-codepoint is the READER running out, so the tail rule stays
+        // off and the bad byte is still reported.
+        assert_eq!(decode_text_at(&ev_with(16, "é".as_bytes())[..17], 16), "\u{fffd}");
+    }
+
+    /// **A byte no cut could have produced keeps its replacement.** The rule is "valid so far,
+    /// ended mid-sequence" and nothing looser — a hand-rolled lead-byte width table calls all of
+    /// these merely incomplete and deletes them, which turns real corruption from the panel's IME
+    /// into a silent shortening with no signal at all. `std::str::from_utf8` draws the line.
+    #[test]
+    fn corruption_that_is_not_a_cut_is_reported_rather_than_deleted() {
+        for (name, tail) in [
+            ("overlong lead", &[0xC0u8][..]),
+            ("out-of-range lead", &[0xF5][..]),
+            ("never-a-lead byte", &[0xFF][..]),
+            ("surrogate half", &[0xED, 0xA0][..]),
+        ] {
+            let mut raw = vec![b'y'; TEXT_CAP - tail.len()];
+            raw.extend_from_slice(tail);
+            let got = decode_text_at(&ev_with(16, &raw), 16);
+            assert!(got.contains('\u{fffd}'), "{name} must survive as a replacement, got {got:?}");
+        }
+    }
+
+    /// The other edge of the same cut: a commit ORPHANED from its lead byte — the remainder of a
+    /// codepoint the previous event was cut inside — must not arrive as one U+FFFD per byte, which
+    /// is the row-#16 substitution again, one character later.
+    #[test]
+    fn a_commit_orphaned_from_its_lead_byte_is_dropped_rather_than_replaced() {
+        // "🎬" is F0 9F 8E AC; cut after F0, the next commit opens with its three tail bytes.
+        assert_eq!(decode_text_at(&ev_with(16, b"\x9f\x8e\xacstar"), 16), "star");
+        // …and a commit that is nothing BUT an orphaned remainder yields nothing, rather than one
+        // replacement character per byte.
+        assert_eq!(decode_text_at(&ev_with(16, b"\x80"), 16), "");
+        // …and a commit that legitimately STARTS with a multi-byte character is untouched.
+        assert_eq!(decode_text_at(&ev_with(16, "🎬star".as_bytes()), 16), "🎬star");
+    }
+
+    /// **Capital and small letters transfer as themselves.** The panel's Shift/Caps is resolved on
+    /// the television — it commits the CASED character — so the app's whole obligation is to carry
+    /// the bytes through without touching them, and this is what proves it does. (A decoder that
+    /// normalised case would be invisible until someone searched for a title that differs only by
+    /// it.) Deliberately cites no checklist row number: `docs/lg-self-checklist.md` records no such
+    /// row, and a number this repo cannot corroborate does not belong in a permanent comment.
+    #[test]
+    fn letter_case_transfers_exactly_as_the_panel_committed_it() {
+        for s in ["A", "a", "Wallace", "WALLACE", "wallace", "WaLlAcE", "Ç", "ç", "Ä", "ä"] {
+            assert_eq!(decode_text_at(&ev_with(16, s.as_bytes()), 16), s);
+            assert_eq!(decode_text_at(&encode_event(s), TEXT_OFF), s);
+        }
+    }
+
+    /// **Row #16, its own worked example.** The checklist names the full-width `＼` (U+FF3C) and
+    /// asks that it not arrive as a backslash — the substitution a keyboard stack makes when it
+    /// folds full-width forms to ASCII, and the one a byte-oriented decoder makes when it reads one
+    /// of the three bytes of a full-width form on its own.
+    ///
+    /// The `lookalike` column is not a second assertion (the equality above already implies it);
+    /// it is the table saying what each row is FOR, so the next reader can tell a deliberate pair
+    /// from an arbitrary one. The rest are the characters a VKB commonly substitutes or a layer
+    /// below eats — the shell and URL metacharacters, and the quote pair a keyboard "smartens".
+    #[test]
+    fn a_full_width_character_is_not_folded_to_its_ascii_lookalike() {
+        for (typed, _lookalike) in [
+            ("＼", "\\"), // U+FF3C FULLWIDTH REVERSE SOLIDUS — the row's own example
+            ("￥", "\\"), // U+FFE5, the same key on a JP panel, and the same wrong answer
+            ("／", "/"),
+            ("：", ":"),
+            ("　", " "),  // U+3000 IDEOGRAPHIC SPACE
+            ("“", "\""),
+            ("’", "'"),
+            ("－", "-"),
+        ] {
+            let got = decode_text_at(&ev_with(16, typed.as_bytes()), 16);
+            assert_eq!(got, typed, "the character pressed must be the character that arrives");
+            assert_eq!(decode_text_at(&encode_event(typed), TEXT_OFF), typed);
+        }
+        // The ASCII originals still arrive as themselves — nothing here rewrites in either
+        // direction. `\` is the one the row calls out, and the rest are what a URL layer or a
+        // shell would eat if anything on the path were not byte-transparent.
+        for s in ["\\", "/", "&", "%", "+", "#", "?", "=", "\"", "'", "<", ">", " ", "\t"] {
+            assert_eq!(decode_text_at(&ev_with(16, s.as_bytes()), 16), s);
+        }
     }
 
     /// A buffer that ends before (or inside) the text field is an answer, not a fault. `SDL_Event`
