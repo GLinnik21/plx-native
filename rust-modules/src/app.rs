@@ -1651,6 +1651,10 @@ fn modal_of(r: Route) -> Modal {
 fn apply_more_action(a: crate::ui::more_menu::Action) {
     match a {
         crate::ui::more_menu::Action::ToggleStats => crate::ui::stats::toggle(),
+        // A rung of the playback-quality ladder — a routing POLICY, not a number handed to a
+        // running stream. Not deferred either: `route::set_quality` re-asks the routing question
+        // for the playback on screen and reloads only when the answer changed.
+        crate::ui::more_menu::Action::SetQuality(q) => crate::route::set_quality(q),
         crate::ui::more_menu::Action::None => {}
     }
 }

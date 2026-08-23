@@ -260,7 +260,7 @@ asked for is how to read what shipped.
 | 6 | **TLS control plane.** New `http.rs` façade — `Scheme::Http` → `stream.rs` unchanged, `Scheme::Https` → curl. Generalise `net.rs:131` `perform`: per-call timeout (its `TIMEOUT=25` is right for an API call and fatal for media), `CUSTOMREQUEST` for the PUT verb it has never had, persistent handle **only if** `HTTPHEADER`/`POSTFIELDS`/`POST` are explicitly cleared each call (`auth.rs:285` is a header-less call that would otherwise read freed memory). | 1–1½ d | Any https-only share browses |
 | 7 | **TLS media plane.** Second `dynlib!` table (`curl_multi_*`, all probed PRESENT); `AvioState` gains a source enum; `read_cb`/`seek_cb` dispatch; pump `curl_multi` **from inside `read_cb`** so the demux thread self-polls its abort flag and teardown collapses to "set the flag, join". Preserve the seek abort guard (`ff.rs:1288`) verbatim. The two existing abort-guard tests construct `AvioState` by literal, so this breaks them at compile time — extend them. | 2–4 d | Any share plays |
 | 8 **STARTED** — the shelf heading can name a source (deliverable C), and `HubRow.source` is `""` at both construction sites, so nothing is reachable until this step populates it | **N servers live** — the Sources list as a library-toolbar chip with a two-level panel (§6), `sourceTitle` as the row subtitle, attribution in **text not artwork** (a corner badge fails the one-mark-per-tile rule — see §6). Four structural hazards: `install_pms` fetches hubs and sections **blocking on the main thread**, so fanning out over N servers freezes boot; `pms::fetch_build` is an all-or-nothing `?` chain, so one dead share blanks Home; `ensure_sections` early-returns while non-empty, which is the only thing keeping the page mailbox sound; and `install_pms` must split into *identity change* (wipe all) vs *server activation* (wipe nothing). Continue Watching is the one shelf that should merge (by `lastViewedAt`, which `pms.rs:307` already sorts). | 2–4 d | The product |
-| 9 **LANDED, UNVERIFIABLE** | **Relay policy.** There is no bitrate field to clamp: `TranscodeSpec` has none and `maxVideoBitrate` is a literal on the re-encode branch only. Respecting relay's 2 Mbps means **forcing a transcode decision** in `build_stream` — a policy change, not a parameter. | ½–1 d | Correctness on relay |
+| 9 **LANDED, UNVERIFIABLE** | **Relay policy.** The relay clamps no bitrate: `maxVideoBitrate` is a literal on the re-encode branch only. (`TranscodeSpec` gained a `ceiling` field on 2026-08-23 for the USER's ladder — same mechanism, different input; the relay still names no rate.) Respecting relay's 2 Mbps means **forcing a transcode decision** in `build_stream` — a policy change, not a parameter. | ½–1 d | Correctness on relay |
 
 **Shortest path to seeing the share on screen: 0 → 1 → 4**, plus enough of 2/3 to keep the caches
 honest. Steps 6–7 are what make it robust for *any* share rather than this one.
@@ -423,9 +423,10 @@ them is 4's second half, the race and `activate_best`.
   with nothing on any surface saying why. The policy denies **direct play and the container remux**,
   leaving the re-encode — the only flavor whose query lets the server pick a rate. Denying the
   remux is the half that is easy to miss: it copies the codecs and deliberately sends no cap, so it
-  is the same 31 Mbit/s one layer down. It is a **branch, never a parameter** — `TranscodeSpec` has
-  no bitrate field, a cap is meaningless on direct play, and the server is the only party that knows
-  the tunnel's real ceiling. `route::build_stream` consults it beside the codec gates.
+  is the same 31 Mbit/s one layer down. It is a **branch, and for the relay never also a parameter**
+  — a cap is meaningless on direct play, and the server is the only party that knows the tunnel's
+  real ceiling. (`TranscodeSpec` grew a `ceiling` field on 2026-08-23, spent by the user-chosen
+  quality ladder through this same two-flag policy; nothing about the relay tier changed.) `route::build_stream` consults it beside the codec gates.
   **Unverified against a real relay, and not verifiable from this account** — see §7 question 5;
   what is asserted is the shape, not the 2 Mbps.
 
