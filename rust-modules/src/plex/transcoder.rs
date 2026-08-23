@@ -76,12 +76,19 @@ impl LinkPolicy {
 ///   the same bytes at the same rate one layer down, and stalls identically. Denying it leaves
 ///   the re-encode, which is the only flavor whose whole point is that the server picks the rate.
 ///
-/// **Not a parameter, deliberately.** [`TranscodeSpec`] has no bitrate field and this does not add
-/// one. A cap is meaningless on direct play — no encoder is running to obey it — and on the
-/// re-encode branch the server already receives an upper bound it is free to come in far under.
-/// The relay's real ceiling is known to the server, which is on the other end of the tunnel and
-/// applies it; the policy's whole job is to stop asking for the two flavors that leave it no way
-/// to.
+/// **Not a parameter, deliberately — THIS policy sends no number at all.** A cap is meaningless on
+/// direct play (no encoder is running to obey it) and on the re-encode branch the server already
+/// receives an upper bound it is free to come in far under. The relay's real ceiling is known to
+/// the server, which is on the other end of the tunnel and applies it; this policy's whole job is
+/// to stop asking for the two flavors that leave it no way to.
+///
+/// This paragraph used to end "[`TranscodeSpec`] has no bitrate field and this does not add one",
+/// and the spec grew [`Ceiling`] on 2026-08-23 — so read it as being about the RELAY, which is
+/// what it always was. A **user-chosen** ceiling (`route::Quality`) is a different input through
+/// the identical mechanism: `route::quality_policy` returns this same [`LinkPolicy`],
+/// `route::flavors_allowed` composes the two so the stricter wins per flavor, and only then does a
+/// number reach `transcode_query`. Nothing about the relay tier changed — it still denies both
+/// flavors unconditionally and still names no rate.
 ///
 /// **No relay connection has ever been observed by this codebase.** `includeRelay=1` has been on
 /// the `/resources` query since the first login and every relay connection was then discarded

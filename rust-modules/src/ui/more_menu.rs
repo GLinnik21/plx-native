@@ -44,8 +44,14 @@
 //!
 //! It is a ROUTING policy, not a number handed to the transcoder: over-ceiling content loses direct
 //! play *and* the container remux, which is the only way a cap can bind at all. The whole argument
-//! is [`crate::route::Quality`]'s doc. It takes effect on the NEXT resolve — nothing here reshapes
-//! a stream already on the wire.
+//! is [`crate::route::Quality`]'s doc.
+//!
+//! It binds every future play, **and it re-decides the one on screen** — because this menu is the
+//! ladder's only entry point, so a rung that waited for the next play would be a control that
+//! visibly does nothing everywhere it can be reached. `route::set_quality` re-asks the routing
+//! question with the new rung and reloads only when the answer changed; picking a HIGHER rung than
+//! the picture already satisfies does nothing at all. That is a user-initiated switch and not an
+//! adaptive one — nothing measures a link or moves a rung on its own.
 #![allow(non_upper_case_globals)]
 use crate::ui::consts::*;
 use crate::ui::popover::Popover;
@@ -156,7 +162,10 @@ pub fn open() {
     table().set_sections(vec![options, quality], 0, false);
     // ROWS *is* the index→action map, so it must stay one-to-one with what was built above.
     debug_assert_eq!(rows.len() as i32, table().n_rows());
-    unsafe { addr_of_mut!(ROWS).write(rows) };
+    // ASSIGN, never `ptr::write`: `ROWS` owns its `Vec` now, and `write` does not drop what was
+    // there — so every `…` press leaked the previous row list. (The `&'static [Action]` this
+    // replaced had nothing to drop, which is why the old spelling was correct and this one is not.)
+    unsafe { *addr_of_mut!(ROWS) = rows };
     pop().open();
 }
 
@@ -219,12 +228,18 @@ fn panel_rect() -> Rect {
     let px = SCR_W - 80.0 - pw;
     let bottom = SCR_H - 316.0; // ~28px above the discs, as track_menu
     // The ceiling was 320 while this menu held one row, and it was invisible then. With the
-    // Quality ladder beside it the natural height is ~560, so a 320 cap put four of nine rows on
-    // screen and silently scrolled the rest — a picker whose options you cannot see is a picker
-    // that reads as broken. 596 is the room there actually is: the panel is anchored to `bottom`
-    // and grows UPWARD, so this is `bottom` minus the 168 the design leaves at the top of the
-    // frame. Past that it scrolls, which is what `TableView` is for.
-    let ph = table().measured_height().clamp(120.0, bottom - 168.0);
+    // Quality ladder beside it `measured_height()` is 600 — two headers, seven rows, a divider,
+    // AND the table's own top/bottom padding — so a 320 cap put four of nine rows on screen and
+    // silently scrolled the rest, which is a picker whose options you cannot see.
+    //
+    // The cap is a FRACTION of the room the panel has rather than a subtraction from it: the panel
+    // is anchored at `bottom` and grows upward, so `bottom` IS the space, and 0.86 of it leaves a
+    // clear margin at the top of the frame while comfortably clearing 600. Reaching for a
+    // `bottom - <margin>` literal is what put the first version of this line 4px UNDER the content
+    // — the margin was derived from the 560 of content and forgot the 40 of padding, so the last
+    // rung was clipped until you scrolled: the same symptom, one row deep instead of five. Past
+    // the cap it scrolls, which is what `TableView` is for.
+    let ph = table().measured_height().clamp(120.0, bottom * 0.86);
     Rect::new(px, bottom - ph, pw, ph)
 }
 

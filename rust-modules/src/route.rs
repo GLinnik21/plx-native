@@ -64,10 +64,16 @@ struct Session {
     /// scratch, and a rebuild that read the LIVE selection instead would change the encode's
     /// resolution mid-film while the Load payload built for the old one stayed configured.
     ///
-    /// So a rung picked during playback lands on the NEXT play, not on this one — which is also
-    /// the honest statement of what this unit does and does not do: a ceiling is chosen per
-    /// playback, never adapted within one.
+    /// **[`set_quality`] is the ONE writer that may move it mid-film**, and that is the whole
+    /// distinction: an explicit pick is new information about what the link can carry, while a
+    /// seek is not, so a seek rebuilds from what is stored here and a pick replaces it (and asks
+    /// the pump for a fresh transcode when the answer actually changed). Nothing measures a link
+    /// or moves a rung on its own — the adaptive switch is not here.
     cur_ceiling: Option<crate::plex::Ceiling>,
+    /// What the resolve measured the playing source at — `(kbps, w, h)`, `0` where nobody said.
+    /// The input [`set_quality`] re-runs [`quality_policy`] on when a rung is picked mid-film, so
+    /// that decision is made from the same numbers `build_stream` used rather than from a guess.
+    cur_src: (i64, i64, i64),
     /// ratingKey of the currently-playing item (movie or episode), so an audio-track
     /// switch can force a fresh transcode of the same item.
     cur_rk: String,
@@ -186,6 +192,7 @@ impl Session {
         cur_remux: false,
         cur_no_video_copy: false,
         cur_ceiling: None,
+        cur_src: (0, 0, 0),
         cur_rk: String::new(),
         cur_sid: ServerId::UNSET,
         cur_audio_sid: 0,
@@ -648,11 +655,25 @@ use crate::cbuf::set as set_c; // shared fixed-C-buffer write (the session's HUD
 ///
 /// # The ladder, and why these rungs
 ///
-/// LG's App Self Checklist #43 CASE1 asks that the resolution follow the link, and its own legs
-/// are 512 Kbps / 1 Mbps / 7 Mbps / 17.5 Mbps. Each rung below sits under one of them, so a user
-/// on any of those legs has a pick that fits, and each pairs a rate with the frame it makes sense
-/// at — a rung that halves the rate and keeps 4K asks the server for something it cannot make look
-/// like anything.
+/// A standard descending ladder, each rung pairing a rate with the frame that rate can actually
+/// carry — a rung that halves the rate and keeps 4K asks the server for something it cannot make
+/// look like anything.
+///
+/// **A rung is a CONTENT rate; the checklist's legs are LINK rates, and the two are not the same
+/// number.** LG's #43 CASE1 exercises 512 Kbps / 1 Mbps / 7 Mbps / 17.5 Mbps, and the useful
+/// question is which rung a user on each leg would pick — the one comfortably *below* it, since
+/// the leg has to carry the stream plus everything else on the line:
+///
+/// | link leg | the rung that fits |
+/// |---|---|
+/// | 17.5 Mbit/s | `1080p · 8 Mbps` (`P1080High`'s 20 does NOT fit — it is the rung for an uncapped LAN) |
+/// | 7 Mbit/s | `720p · 4 Mbps` |
+/// | 1 Mbit/s | `480p · 720 kbps` |
+/// | 512 Kbit/s | **nothing** — it is below this ladder's floor, and no rung here pretends otherwise |
+///
+/// That last row is the honest one and it is why this table exists: three of these rungs carried a
+/// comment claiming to sit "under" a leg they are numerically above, which would have sent the
+/// next person tuning them to trust a false justification.
 ///
 /// **Auto is the default and must stay a pure no-op**, which is what the regression test at the
 /// foot of this file pins: with `Auto` selected, every routing decision and every query byte is
@@ -662,15 +683,15 @@ pub(crate) enum Quality {
     /// No ceiling: today's routing, unchanged. The default, and the only rung most people want.
     #[default]
     Auto,
-    /// 1080p at 20 Mbps — inside the checklist's 17.5 Mbit/s leg once the link is the bound.
+    /// 1080p at 20 Mbps — the "cap the 4K rips, keep everything else" rung, for an uncapped link.
     P1080High,
-    /// 1080p at 8 Mbps — under the 7 Mbit/s leg.
+    /// 1080p at 8 Mbps — the rung for the checklist's 17.5 Mbit/s leg.
     P1080,
-    /// 720p at 4 Mbps.
+    /// 720p at 4 Mbps — the rung for the 7 Mbit/s leg.
     P720,
-    /// 720p at 2 Mbps — under the 1 Mbit/s leg once overhead is counted.
+    /// 720p at 2 Mbps.
     P720Low,
-    /// 480p at 720 kbps — under the 512 Kbit/s leg.
+    /// 480p at 720 kbps — the floor, and the rung for the 1 Mbit/s leg.
     P480,
 }
 
@@ -731,16 +752,48 @@ pub(crate) fn quality() -> Quality {
     Quality::from_index(QUALITY.load(Ordering::Relaxed))
 }
 
-/// Select a rung. Takes effect on the NEXT resolve — a play, or a transcode restart
-/// ([`retranscode`], which a seek or a track switch already runs). It does not reshape a stream
-/// already on the wire; that is the mid-session adaptive switch this unit deliberately does not
-/// attempt.
+/// Select a rung. MAIN THREAD (it writes the session).
+///
+/// It binds every FUTURE resolve, and it also re-decides the playback already on screen — because
+/// the ladder's only entry point is the player's own `…` menu, so a rung that bound nothing until
+/// the next play would be a control that visibly does nothing everywhere it can be reached.
+///
+/// **The re-decision is the same one [`build_stream`] made**, re-asked with the new rung against
+/// the numbers that resolve measured ([`Session::cur_src`]) — not a blanket reload:
+///
+/// * Nothing playing, or the rung is the one already in force → the preference, and nothing else.
+/// * The new rung still ADMITS this source and it is direct-playing → nothing to do. Picking
+///   "1080p · 20 Mbps" while direct-playing a 5 Mbit/s file must not start an encoder.
+/// * Otherwise the flavour on the wire is no longer the one this rung allows, so the session's
+///   ceiling moves and the pump is asked for a fresh transcode at the current position. That is
+///   `request_transcode_refresh` — the identical path a subtitle-burn change already takes
+///   (`commit_subtitle_selection`), gated in `player::pump` on a session that is actually
+///   `Playing`, so it is inert during a pre-roll.
+///
+/// This is a USER-initiated switch, and it is not the adaptive one: nothing here measures a link
+/// or changes a rung on its own. `Session::cur_ceiling`'s doc has the other half — a SEEK still
+/// rebuilds from the stored ceiling, so only an explicit pick can move it mid-film.
 pub(crate) fn set_quality(q: Quality) {
     let i = QUALITY_LADDER.iter().position(|&r| r == q).unwrap_or(0) as u8;
     QUALITY.store(i, Ordering::Relaxed);
     // The picker's checkmark moves on this and on nothing else — a settled popover presents no
     // frames, so without this the row would still read as the old rung until the next keypress.
     crate::ui::idle::invalidate();
+    let ceiling = q.ceiling();
+    if cur_rk().is_empty() || cur_ceiling() == ceiling {
+        return;
+    }
+    let (kbps, w, h) = session().cur_src;
+    let admits = quality_policy(q, kbps, w, h).direct_play;
+    session_mut(|s| s.cur_ceiling = ceiling);
+    if admits && !is_transcoding() {
+        return; // the picture on screen already satisfies the new rung
+    }
+    crate::player::log(&format!(
+        "quality: {} picked — source {kbps}kbps {w}x{h}; re-transcoding this playback",
+        q.label()
+    ));
+    crate::player::request_transcode_refresh();
 }
 
 /// **What the user's chosen ceiling allows a plan to ask for** — the same two flags
@@ -1128,14 +1181,53 @@ impl ResolveEnv {
             sub_sid: cur_sub_sid(),
             cached_item: crate::metadata::cached_playing(sid, rk),
             quality: quality(),
-            // Same filter `cached_playing` applies, and for the same reason: a ratingKey names an
-            // item only within one server, so a bare-rk match against a colliding item on the
-            // other machine would hand the ceiling the WRONG file's bitrate.
-            src_kbps: crate::metadata::current()
-                .filter(|d| crate::plex::same_item((d.sid, &d.rk), (sid, rk)))
-                .map(|d| d.bitrate)
-                .unwrap_or(0),
+            src_kbps: crate::metadata::current().filter(|d| detail_describes(d, sid, rk)).map_or(0, source_kbps),
         }
+    }
+}
+
+/// Does the loaded detail describe the leaf `rk` is about to play?
+///
+/// **Its own ratingKey, OR its on-deck episode's** — and the second half is not an optimisation.
+/// A SHOW's `Detail.rk` is the show's key while the play `rk` is the EPISODE's, so an rk-only test
+/// (which is all `cached_playing` needs, because it is fetching stream lists a show container does
+/// not have) never matches on the commonest path in the app: press Play on a show page. With a
+/// rung selected that put every episode in the library into the "unmeasured, fail closed" bucket
+/// while [`playback_preview`] — which reads the same `Detail`'s numbers directly — still promised
+/// Direct Play for it. Two answers to one question, which is the mismatch that preview exists to
+/// prevent.
+///
+/// The show's technical fields ARE the on-deck episode's: `metadata::fetch_item_streams` backfills
+/// them from exactly the leaf `playback_preview` answers for. An episode reached some OTHER way (a
+/// season list, Up Next) still measures 0 and still fails closed — honest, and the residue that
+/// `PlayingItem` carrying its own bitrate would close (`ResolveEnv::src_kbps`).
+///
+/// The SERVER half of the test is load-bearing on both arms: a ratingKey names an item only within
+/// one server, so a bare-rk match against a colliding item on the other machine would hand the
+/// ceiling the wrong file's bitrate.
+fn detail_describes(d: &crate::metadata::Detail, sid: ServerId, rk: &str) -> bool {
+    crate::plex::same_item((d.sid, &d.rk), (sid, rk))
+        || d.on_deck.as_ref().is_some_and(|ep| crate::plex::same_item((d.sid, &ep.rk), (sid, rk)))
+}
+
+/// The source rate to judge against a ceiling, in kbps: **the VIDEO stream's own**, falling back
+/// to the whole-file figure.
+///
+/// The distinction is the units the ceiling is spent in. `Ceiling::max_kbps` ships as
+/// `maxVideoBitrate`, which bounds the VIDEO lane alone, while `Detail::bitrate` is `Media[0]`'s
+/// whole-stream number — video plus every audio track. Comparing the second against the first
+/// makes each rung bite about one AC-3 track early: a 7.9 Mbit/s video beside a 640 kbit/s track
+/// measures 8.5 and loses direct play to the "1080p · 8 Mbps" rung, for an encode that would then
+/// be capped at a rate its video already met.
+///
+/// `Detail::video` is the stream's own record and carries its own bitrate; it is `None` for a show
+/// that never got an episode backfill and for an audio-only part, and PMS omits the field often
+/// enough that the whole-file fallback has to stay. Falling back is the conservative direction,
+/// which is the right one here — see [`crate::plex::Ceiling::admits`].
+fn source_kbps(d: &crate::metadata::Detail) -> i64 {
+    match d.video.as_ref().map(|v| v.bitrate) {
+        Some(b) if b > 0 => b,
+        _ => d.bitrate,
     }
 }
 
@@ -1186,6 +1278,10 @@ pub(crate) struct Plan {
     /// straight from `env.quality.ceiling()`, for the same reason `sid` is copied from the env:
     /// the worker must not re-read a preference the main thread can move underneath it.
     pub ceiling: Option<crate::plex::Ceiling>,
+    /// What this plan MEASURED the source at — `(kbps, w, h)`, any of them `0` for "nobody said".
+    /// Carried so [`set_quality`] can re-ask [`quality_policy`] for the item already playing when
+    /// the user picks a different rung, instead of guessing. See [`Session::cur_src`].
+    pub src_measure: (i64, i64, i64),
     /// demuxer stream ordinal to feed (direct-play, non-default track). None = leave as-is.
     pub feed_audio_ordinal: Option<i32>,
     /// the subtitle stream the server already had selected for this part (0 = none/off), so the
@@ -1360,6 +1456,16 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveE
     // `quality_policy` and `Quality`.
     let quality = quality_policy(env.quality, env.src_kbps, src_w, src_h);
     let allowed = flavors_allowed(link, quality);
+    // The ceiling and the source it was judged against ride EVERY plan, including the direct-play
+    // one that returns below. That is not bookkeeping: `set_quality` re-asks this same question
+    // when the user picks a rung mid-film, and `retranscode` — which a track switch reaches from a
+    // DIRECT PLAY (`player/pump.rs`'s own comment says so) — spends `cur_ceiling` on the encode it
+    // then starts. Setting these only on the transcode branch left both reading `None`/zero for
+    // every direct play, so the first audio switch after picking "480p · 720 kbps" re-encoded at
+    // 4K/60 Mbps: the rung silently discarded on the one path where an encoder was actually
+    // running.
+    plan.ceiling = env.quality.ceiling();
+    plan.src_measure = (env.src_kbps, src_w, src_h);
     if !quality.direct_play {
         // Worth its own line for the reason the Dolby Vision one above is: from the outside this
         // is an ordinary h264/AAC MKV going to the transcoder for no visible reason, and the two
@@ -2057,6 +2163,7 @@ fn apply_plan(plan: Plan, rk: &str) {
             cur_remux: plan.remux,
             cur_no_video_copy: plan.no_video_copy,
             cur_ceiling: plan.ceiling,
+            cur_src: plan.src_measure,
             // The two halves of the playing item's identity, installed together and by the same
             // writer — a ratingKey means nothing without the server it is a key ON. Everything
             // after this point (the track PUT, a transcode seek, the retranscode, the stop, and
@@ -2366,6 +2473,69 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ---- the two reads that FEED the ceiling: which detail describes the leaf, and at what rate
+
+    /// **Press Play on a SHOW page and the detail's `rk` is the show's, not the episode's.** An
+    /// rk-only test therefore missed on the commonest path in the app, `src_kbps` fell to 0, and
+    /// `Ceiling::admits` fails closed — so with any rung selected every episode in the library
+    /// lost direct play, while `playback_preview` (reading the same `Detail`'s numbers directly)
+    /// still promised Direct Play for it. Two answers to one question.
+    ///
+    /// The server half is graded on both arms: a ratingKey names an item only within one server.
+    #[test]
+    fn the_loaded_detail_describes_its_own_key_and_its_on_deck_episodes() {
+        let a = crate::plex::ServerId::from_raw(1);
+        let b = crate::plex::ServerId::from_raw(2);
+        let show = crate::metadata::Detail {
+            sid: a,
+            rk: "100".into(),
+            on_deck: Some(crate::metadata::Episode { rk: "205".into(), ..Default::default() }),
+            ..Default::default()
+        };
+        assert!(detail_describes(&show, a, "100"), "its own key");
+        assert!(detail_describes(&show, a, "205"), "the episode Play would actually start");
+        assert!(!detail_describes(&show, a, "206"), "a different episode is not this one");
+        // …and neither key may match across servers, or the ceiling judges the wrong file
+        assert!(!detail_describes(&show, b, "100"));
+        assert!(!detail_describes(&show, b, "205"));
+        // a movie has no on-deck episode and must still answer for itself
+        let movie = crate::metadata::Detail { sid: a, rk: "7".into(), ..Default::default() };
+        assert!(detail_describes(&movie, a, "7"));
+        assert!(!detail_describes(&movie, a, "100"));
+    }
+
+    /// **The ceiling is spent as `maxVideoBitrate`, so it must be judged against the VIDEO rate.**
+    /// `Detail::bitrate` is the whole-file figure — video plus every audio track — and comparing
+    /// that against a video-only cap makes each rung bite about one AC-3 track early. The video
+    /// stream's own number is preferred where PMS sent one; the whole-file figure is the fallback,
+    /// which is the conservative direction and so the right one.
+    #[test]
+    fn the_source_rate_is_the_video_streams_own_where_the_server_gave_one() {
+        let with_video = crate::metadata::Detail {
+            bitrate: 8540, // 7900 video + a 640 kbps AC-3 track
+            video: Some(crate::metadata::Stream { bitrate: 7900, ..Default::default() }),
+            ..Default::default()
+        };
+        assert_eq!(source_kbps(&with_video), 7900);
+        // …which is what keeps it under an 8 Mbps rung its VIDEO does in fact fit
+        assert!(quality_policy(Quality::P1080, source_kbps(&with_video), 1920, 1080).direct_play);
+        assert!(!quality_policy(Quality::P1080, with_video.bitrate, 1920, 1080).direct_play,
+            "the whole-file figure is what made the rung bite early — this is the bug, pinned");
+
+        // no video record (a show with no episode backfill, an audio-only part) → whole-file
+        let bare = crate::metadata::Detail { bitrate: 8540, ..Default::default() };
+        assert_eq!(source_kbps(&bare), 8540);
+        // a video record PMS gave no bitrate for is not a measurement of 0 — fall back
+        let unmeasured_stream = crate::metadata::Detail {
+            bitrate: 8540,
+            video: Some(crate::metadata::Stream::default()),
+            ..Default::default()
+        };
+        assert_eq!(source_kbps(&unmeasured_stream), 8540);
+        // nothing said at all stays 0, which `Ceiling::admits` fails closed on
+        assert_eq!(source_kbps(&crate::metadata::Detail::default()), 0);
     }
 
     // ---- pick_dp_audio: the direct-play audio selection ladder ------------------------------
