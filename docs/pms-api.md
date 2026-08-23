@@ -394,6 +394,7 @@ These are on the FULL item fetch only — `/library/sections/{id}/all` returns `
 **Refusing direct play is not the same as getting a re-encode, and on the file that matters most
 the difference is the whole bug.** `/video/:/transcode/universal/decision` was driven directly with
 this app's own re-encode query — `directPlay=0&directStream=1&videoResolution=3840x2160&maxVideoBitrate=60000`
+(those two values are what the query still sends at the ladder's default `Quality::Auto`; a selected rung replaces them)
 plus the dev TV's capability profile — against each of the three profiles:
 
 | item | `Part.decision` | the VIDEO stream's own `decision` | output carries DOVI? |

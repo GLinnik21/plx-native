@@ -160,9 +160,12 @@ fires **only** when the server produced a credits marker — without one, the ep
 starts instantly, with no tile, no countdown, and no way to cancel. Fix shape: project each row to a
 lean struct on the worker exactly as `route.rs:403` `up_next_of` already does.
 
-**G. Quality is one hard-coded rung.** `maxVideoBitrate=60000` at `3840x2160`, and `TranscodeSpec` has
-no field to vary it. No picker, no ladder, no "Original" row (source bitrate/width/height/`videoResolution`
-aren't in the DTO), no direct-play/direct-stream policy toggles, no version picker (`mediaIndex` is
+**G. Quality is one hard-coded rung.** ~~`maxVideoBitrate=60000` at `3840x2160`, and `TranscodeSpec` has
+no field to vary it. No picker, no ladder~~ — **LANDED 2026-08-23 (PR #57): `route::Quality` is a
+five-rung ladder in the `…` popover, `TranscodeSpec` carries `Ceiling`, and Auto is byte-identical
+to the old literals. Every duplicate of this row further down the file is likewise historical.**
+Still open, all of it: no "Original" row (source bitrate/width/height/`videoResolution` reach
+`Detail` but not `PlayingItem`), no direct-play/direct-stream policy toggles, no version picker (`mediaIndex` is
 hard-coded 0 while `docs/pms-api.md` §4 explicitly warns not to take `Media[0]` blindly), no way back
 to direct play mid-session, and a failed direct play dead-ends instead of falling back to transcode.
 
