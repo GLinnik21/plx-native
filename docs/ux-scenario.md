@@ -183,9 +183,12 @@ DOWN from the hero enters the shelves; DOWN again steps between them; LEFT/RIGHT
 The focused card grows, and its title and a status line appear beneath it — here *"2 hr 6 min
 left"*, which is the resume state. A watched item carries a check mark in its corner.
 
-**OK on a card in *Continue Watching* resumes it directly.** OK on a card in any other shelf opens
-its detail page. That difference is intentional: the deck is a list of things already in progress,
-and one press is the whole point of it.
+**OK on a card in *Continue Watching* plays it directly** — as does OK on any card that is itself an
+episode, wherever it sits. OK on any other card opens that item's page. The difference is
+intentional: the deck is a list of things already in progress, and one press is the whole point of
+it. A card that is a **show** or a **season** opens its page, resolves it, and fires that page's
+Play only once the right item has actually loaded — never blindly, because a failed fetch would
+otherwise play whatever page was open before.
 
 **BACK** from the shelves returns focus to the hero row; BACK at the hero row raises the exit alert
 (§5.9).
