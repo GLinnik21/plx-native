@@ -335,6 +335,59 @@ pub fn publish_probe_result(id: ServerId, outcome: Outcome) {
     crate::ui::idle::invalidate();
 }
 
+/// Publish what a generic PMS request proved, but only if the slot still names the exact client
+/// lifecycle that performed it. The pointer distinguishes an address re-point; `token_gen`
+/// distinguishes an in-place retoken/profile change. Both are checked while [`WRITE`] excludes
+/// registration and revocation, closing the check-then-publish race a caller-side validation has.
+///
+/// A generic failure cannot distinguish HTTP status from transport/parse failure. Preserve a
+/// concurrently-published [`Outcome::Unauthorized`] under the same lock; success is definitive.
+/// The returned outcome is the canonical value the caller should mirror into its local view.
+pub fn publish_reachability_if_current(
+    id: ServerId,
+    expected: &'static Client,
+    token_gen: u32,
+    ok: bool,
+) -> Option<Outcome> {
+    let _w = WRITE.lock().unwrap_or_else(|e| e.into_inner());
+    let i = id.index()?;
+    let current = client_for(id)?;
+    if !std::ptr::eq(current, expected) || current.token_gen() != token_gen {
+        return None;
+    }
+    let outcome = if ok {
+        Outcome::Reachable
+    } else if probe_of_code(PROBES[i].load(Ordering::Acquire)) == Some(Outcome::Unauthorized) {
+        Outcome::Unauthorized
+    } else {
+        Outcome::Unreachable
+    };
+    PROBES[i].store(probe_code(outcome), Ordering::Release);
+    crate::ui::idle::invalidate();
+    Some(outcome)
+}
+
+/// Record a self-reported machine name only for the lifecycle that supplied it. Discovery may
+/// finish after a re-point/profile switch, and a plain id-only [`describe_name`] would then file
+/// the old server's answer under the replacement client occupying that slot.
+pub fn describe_name_if_current(id: ServerId, expected: &'static Client, token_gen: u32, name: &str) -> bool {
+    let _w = WRITE.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(i) = id.index() else { return false };
+    let Some(current) = client_for(id) else { return false };
+    if !std::ptr::eq(current, expected) || current.token_gen() != token_gen {
+        return false;
+    }
+    let old = facts(id);
+    let merged = ServerFacts {
+        name: pick(name, old.map(|f| f.name.as_str())),
+        handle: old.map(|f| f.handle.clone()).unwrap_or_default(),
+        owned: old.map(|f| f.owned).unwrap_or(true),
+    };
+    FACTS[i].store(Box::into_raw(Box::new(merged)), Ordering::Release);
+    crate::ui::idle::invalidate();
+    true
+}
+
 /// Record what the roster says about a server. Idempotent and additive: a field given as empty
 /// KEEPS whatever was already known, so a later describer that learned only the machine name (the
 /// server naming itself over `GET /`) cannot blank an owner handle plex.tv already supplied — and

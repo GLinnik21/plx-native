@@ -33,7 +33,7 @@
 //! second call.
 use crate::plex::{SectionQuery, ServerId};
 use crate::pms::{parse_item, PmsMovie};
-use std::panic::catch_unwind;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr::{addr_of, addr_of_mut};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Mutex;
@@ -140,6 +140,7 @@ impl BrowseSource {
     /// Record a generic PMS request that answered or did not. A failed request cannot distinguish
     /// HTTP status from transport/parse failure, so it preserves an Unauthorized result supplied
     /// by the identity prober; a successful request is enough evidence to clear any failure.
+    #[cfg(test)]
     pub(crate) fn set_reachable(&mut self, ok: bool) {
         // A generic PMS request folds status/transport/parse errors into one `None`, so it cannot
         // disprove the more specific 401 the identity prober already observed. Only a successful
@@ -150,16 +151,11 @@ impl BrowseSource {
         } else if self.state != SourceState::Unauthorized {
             self.state = SourceState::Unreachable;
         }
-        if let Some(client) = crate::plex::client_for(self.sid) {
-            let outcome = if ok {
-                crate::plex::probe::Outcome::Reachable
-            } else if self.state == SourceState::Unauthorized {
-                crate::plex::probe::Outcome::Unauthorized
-            } else {
-                crate::plex::probe::Outcome::Unreachable
-            };
-            crate::plex::publish_probe_result(client.id(), outcome);
-        }
+    }
+    /// Mirror the registry's canonical result after it atomically merged a generic request with
+    /// any more-specific identity-probe answer.
+    fn set_probe_outcome(&mut self, outcome: crate::plex::probe::Outcome) {
+        self.state = source_state(Some(outcome));
     }
 }
 
@@ -363,6 +359,10 @@ const IN_FLIGHT: [&AtomicBool; 4] = [&FETCHING, &GENRE_FETCHING, &LETTERS_FETCHI
 static mut RETRY_CD: u32 = 0;
 
 struct PageResult {
+    /// Exact registry lifecycle the worker dialled. Section/query generations do not move when a
+    /// slot is re-pointed or retokened, so both pointer identity and token generation are needed.
+    client: &'static crate::plex::Client,
+    token_gen: u32,
     gen: u32,
     sec: usize,
     start: usize,
@@ -598,6 +598,12 @@ fn sync_roster() {
 /// ([`maybe_discover`]), which costs the main thread nothing and lets a dead share simply arrive
 /// as `reachable: false`.
 pub(crate) fn ensure_sections() -> usize {
+    ensure_sections_with(|client| client.sections().map(|mc| project_sections(&mc)))
+}
+
+fn ensure_sections_with(
+    fetch: impl FnOnce(&crate::plex::Client) -> Option<Vec<(i64, String, SecKind)>>,
+) -> usize {
     sync_roster();
     let cur_sid = crate::plex::current_server();
     let Some(si) = sources().iter().position(|s| s.sid == cur_sid) else {
@@ -606,15 +612,17 @@ pub(crate) fn ensure_sections() -> usize {
     if sources()[si].sections_done {
         return sections().len();
     }
-    let found = catch_unwind(|| {
-        crate::plex::client_for(cur_sid).and_then(|c| c.sections()).map(|mc| project_sections(&mc))
-    })
-    .unwrap_or(None);
+    let Some(client) = crate::plex::client_for(cur_sid) else { return sections().len() };
+    let token_gen = client.token_gen();
+    let found = catch_unwind(AssertUnwindSafe(|| fetch(client))).unwrap_or(None);
     let ok = found.is_some();
+    let Some(outcome) = crate::plex::publish_reachability_if_current(cur_sid, client, token_gen, ok) else {
+        return sections().len();
+    };
     append_sections(si, found.unwrap_or_default());
     if let Some(s) = source_mut(si) {
         s.sections_done = ok;
-        s.set_reachable(ok);
+        s.set_probe_outcome(outcome);
         s.retry_cd = if ok { 0 } else { SRC_RETRY_CD };
     }
     sections().len()
@@ -820,27 +828,34 @@ fn activate_source_of(_i: usize) {
     // was a single server. Kept as a named no-op rather than deleted at the call site so the next
     // person to reach for a re-point here finds this note first.
 }
-/// Record what a request to section `i`'s server just proved about it. See the call in [`pump`].
-fn mark_source_reachable(i: usize, ok: bool) {
-    let Some(src) = sections().get(i).map(|s| s.src) else { return };
-    let Some(s) = source_mut(src) else { return };
-    let next = if ok {
-        SourceState::Reachable
-    } else if s.state == SourceState::Unauthorized {
-        SourceState::Unauthorized
-    } else {
-        SourceState::Unreachable
-    };
-    if s.state == next {
-        return;
+/// Record what a request proved only if the source still names the exact client lifecycle that
+/// performed it. The registry merges the generic bit with identity-probe state while holding its
+/// writer lock, then returns the canonical outcome for this local projection.
+fn mark_source_reachable(
+    src: usize,
+    client: &'static crate::plex::Client,
+    token_gen: u32,
+    ok: bool,
+) -> bool {
+    if sources().get(src).map(|s| s.sid) != Some(client.id()) {
+        return false;
     }
-    s.set_reachable(ok);
+    let Some(outcome) = crate::plex::publish_reachability_if_current(client.id(), client, token_gen, ok) else {
+        return false;
+    };
+    let Some(s) = source_mut(src).filter(|s| s.sid == client.id()) else { return false };
+    let next = source_state(Some(outcome));
+    if s.state == next {
+        return true;
+    }
+    s.set_probe_outcome(outcome);
     // A server that has come back is worth re-asking properly (its library list may have moved on);
     // one that has gone means the Sources list must dim its group NOW rather than at the next press.
     if ok {
         s.retry_cd = 0;
     }
     crate::ui::idle::invalidate();
+    true
 }
 
 // ---- the TAB projection: which sections get a pill in the shared top strip -------------------
@@ -1801,16 +1816,21 @@ fn land_discovery() {
     if epoch != EPOCH.load(Ordering::SeqCst) {
         return; // the account changed under it — every index means something else now
     }
-    let current = sources()
-        .get(si)
-        .filter(|s| s.sid == landing.client.id())
-        .and_then(|s| crate::plex::client_for(s.sid))
-        .is_some_and(|client| std::ptr::eq(client, landing.client) && client.token_gen() == landing.token_gen);
-    if !current {
+    let ok = match &landing.what {
+        SrcWhat::Sections(list) => list.is_some(),
+        SrcWhat::Counts(counts) => !counts.is_empty(),
+    };
+    let prior_state = sources().get(si).map(|s| s.state);
+    if !mark_source_reachable(si, landing.client, landing.token_gen, ok) {
         return; // same slot, different origin/token/profile: every byte belongs to the old lifecycle
     }
+    let client = landing.client;
+    let token_gen = landing.token_gen;
     let SrcLanding { name, what, .. } = landing;
     if !name.is_empty() {
+        if !crate::plex::describe_server_name_if_current(client.id(), client, token_gen, &name) {
+            return;
+        }
         if let Some(s) = source_mut(si) {
             s.name = name.clone();
         }
@@ -1822,20 +1842,15 @@ fn land_discovery() {
         // opposite, and that derivation is the one `ServerFacts::owned` documents as wrong: a share
         // whose `sourceTitle` plex.tv did not send has no handle and is still a share, so every one
         // of those flipped to "ours" the instant its friendly name landed.
-        if let Some(s) = sources().get(si) {
-            crate::plex::describe_server_name(s.sid, &name);
-        }
     }
     match what {
         SrcWhat::Sections(list) => {
             let ok = list.is_some();
             append_sections(si, list.unwrap_or_default());
             if let Some(s) = source_mut(si) {
-                let was = s.reachable();
                 s.sections_done = ok;
-                s.set_reachable(ok);
                 s.retry_cd = if ok { 0 } else { SRC_RETRY_CD };
-                if was != ok {
+                if prior_state != Some(s.state) {
                     SRC_FACTS_GEN.fetch_add(1, Ordering::SeqCst); // the group dims, or comes back
                 }
             }
@@ -1928,8 +1943,14 @@ pub(crate) fn pump() -> bool {
         // a fact about NOW in both directions — a served page says the server is answering, a
         // failed one says it is not — and it is deliberately not gated on the query generation:
         // whether the machine replied does not depend on which listing was asked for.
-        mark_source_reachable(r.sec, r.total >= 0);
-        if r.total < 0 {
+        let lifecycle_ok = sections()
+            .get(r.sec)
+            .map(|section| section.src)
+            .is_some_and(|src| mark_source_reachable(src, r.client, r.token_gen, r.total >= 0));
+        if !lifecycle_ok {
+            // Query generation alone survives a re-point/retoken/profile reset. The result was
+            // fetched with another lifecycle, so neither its reachability nor its rows apply.
+        } else if r.total < 0 {
             // the fetch FAILED (network/parse) — leave the store exactly as it was and back
             // off before retrying (a wiped-to-"empty" store here was a review-confirmed bug:
             // one wifi hiccup blanked a populated grid permanently)
@@ -2033,6 +2054,8 @@ fn maybe_spawn() {
     // would answer with whatever is current by then, and the sid is stamped onto every row this
     // parses, so a row is only ever addressable as `(sid, rk)` — see `pms::PmsMovie::sid`.
     let Some(sid) = section_sid(c) else { return };
+    let Some(client) = crate::plex::client_for(sid) else { return };
+    let token_gen = client.token_gen();
     FETCHING.store(true, Ordering::SeqCst);
     let spawned = crate::task::spawn_small("page", move || {
         let result = catch_unwind(|| {
@@ -2044,7 +2067,7 @@ fn maybe_spawn() {
                 size: PAGE as i64,
                 include_meta,
             };
-            let mc = crate::plex::client_for(sid).and_then(|cl| cl.section_items_query(&q));
+            let mc = client.section_items_query(&q);
             let Some(mc) = mc else {
                 return (Vec::new(), -1i64, None); // FAILURE sentinel — pump leaves the store alone
             };
@@ -2071,8 +2094,16 @@ fn maybe_spawn() {
         // mailbox filled outside the guard so a panicking fetch still lands; single-flight
         // (FETCHING) means no monotone race — pump clears the flag when it takes this
         let (items, total, sorts) = result;
-        *PAGE_RESULT.lock().unwrap_or_else(|e| e.into_inner()) =
-            Some(PageResult { gen, sec: sec_idx, start, items, total, sorts });
+        *PAGE_RESULT.lock().unwrap_or_else(|e| e.into_inner()) = Some(PageResult {
+            client,
+            token_gen,
+            gen,
+            sec: sec_idx,
+            start,
+            items,
+            total,
+            sorts,
+        });
     });
     if !spawned {
         // the flag is cleared ONLY inside a successful mailbox take, and nothing will fill that
@@ -2131,11 +2162,31 @@ mod tests {
         crate::plex::reset_servers_for_test();
         reset();
         let sid = crate::plex::register_for_test("browse-life", "10.0.0.1", 32400, "old", "cid");
+        assert!(crate::plex::set_current(sid));
         let mut source = a_source("original", "", true);
         source.sid = sid;
         source.sections_done = false;
         seed_sources(vec![source]);
         (RegisteredCleanup, sid, crate::plex::client_for(sid).unwrap())
+    }
+
+    fn registered_page_source() -> (RegisteredCleanup, ServerId, &'static crate::plex::Client) {
+        let (cleanup, sid, client) = registered_source();
+        if let Some(source) = source_mut(0) {
+            source.sections_done = true;
+            source.counts_done = true;
+        }
+        append_sections(0, vec![(1, "Movies".into(), SecKind::Movie)]);
+        (cleanup, sid, client)
+    }
+
+    fn registered_resident_page_source() -> (RegisteredCleanup, ServerId, &'static crate::plex::Client) {
+        let (cleanup, sid, client) = registered_page_source();
+        let state = state_mut(0).unwrap();
+        state.fetch = SecFetch::Ready;
+        state.total = 1;
+        state.items = vec![Some(PmsMovie::default())];
+        (cleanup, sid, client)
     }
 
     fn queue_success_from(client: &'static crate::plex::Client, token_gen: u32) {
@@ -2148,6 +2199,21 @@ mod tests {
         *SRC_RESULT.lock().unwrap_or_else(|e| e.into_inner()) =
             Some((EPOCH.load(Ordering::SeqCst), 0, landing));
         land_discovery();
+    }
+
+    fn queue_page_from(client: &'static crate::plex::Client, token_gen: u32) {
+        *PAGE_RESULT.lock().unwrap_or_else(|e| e.into_inner()) = Some(PageResult {
+            client,
+            token_gen,
+            gen: GEN.load(Ordering::SeqCst),
+            sec: 0,
+            start: 0,
+            items: Vec::new(),
+            total: 0,
+            sorts: None,
+        });
+        FETCHING.store(true, Ordering::SeqCst);
+        pump();
     }
 
     #[test]
@@ -2215,6 +2281,101 @@ mod tests {
         assert!(sections().is_empty());
     }
 
+    #[test]
+    fn a_page_landing_from_before_a_same_slot_repoint_is_inert() {
+        let _g = crate::testlock::serial();
+        let (_cleanup, sid, old) = registered_resident_page_source();
+        let old_gen = old.token_gen();
+        assert_eq!(crate::plex::register_for_test("browse-life", "10.0.0.2", 32400, "new", "cid"), sid);
+        crate::plex::publish_probe_result(sid, crate::plex::probe::Outcome::Unauthorized);
+
+        queue_page_from(old, old_gen);
+        assert_eq!(crate::plex::server_probe_result(sid), Some(crate::plex::probe::Outcome::Unauthorized));
+        assert_eq!(sources()[0].state, SourceState::Unauthorized);
+        assert_eq!(states()[0].total, 1, "old-origin page must not replace the new lifecycle's rows");
+        assert_eq!(states()[0].items.len(), 1);
+    }
+
+    #[test]
+    fn a_page_landing_from_before_an_in_place_retoken_is_inert() {
+        let _g = crate::testlock::serial();
+        let (_cleanup, sid, old) = registered_resident_page_source();
+        let old_gen = old.token_gen();
+        assert_eq!(crate::plex::register_for_test("browse-life", "10.0.0.1", 32400, "new", "cid"), sid);
+        assert!(std::ptr::eq(old, crate::plex::client_for(sid).unwrap()));
+        crate::plex::publish_probe_result(sid, crate::plex::probe::Outcome::Unauthorized);
+
+        queue_page_from(old, old_gen);
+        assert_eq!(crate::plex::server_probe_result(sid), Some(crate::plex::probe::Outcome::Unauthorized));
+        assert_eq!(sources()[0].state, SourceState::Unauthorized);
+        assert_eq!(states()[0].total, 1);
+        assert_eq!(states()[0].items.len(), 1);
+    }
+
+    #[test]
+    fn a_page_landing_from_before_a_profile_reset_is_inert() {
+        let _g = crate::testlock::serial();
+        let (_cleanup, sid, old) = registered_resident_page_source();
+        let old_gen = old.token_gen();
+        crate::plex::revoke_for_profile_switch();
+        assert_eq!(crate::plex::register_for_test("browse-life", "10.0.0.1", 32400, "profile", "cid"), sid);
+        crate::plex::finish_profile_switch(&[sid]);
+        crate::plex::publish_probe_result(sid, crate::plex::probe::Outcome::Unreachable);
+
+        queue_page_from(old, old_gen);
+        assert_eq!(crate::plex::server_probe_result(sid), Some(crate::plex::probe::Outcome::Unreachable));
+        assert_eq!(sources()[0].state, SourceState::Unreachable);
+        assert_eq!(states()[0].total, 1);
+        assert_eq!(states()[0].items.len(), 1);
+    }
+
+    #[test]
+    fn blocking_section_discovery_discards_a_same_slot_repoint_during_the_request() {
+        let _g = crate::testlock::serial();
+        let (_cleanup, sid, old) = registered_source();
+        let count = ensure_sections_with(|client| {
+            assert!(std::ptr::eq(client, old));
+            assert_eq!(crate::plex::register_for_test("browse-life", "10.0.0.2", 32400, "new", "cid"), sid);
+            Some(vec![(1, "Stale Movies".into(), SecKind::Movie)])
+        });
+
+        assert_eq!(count, 0);
+        assert!(sections().is_empty(), "the old origin's section table must not land");
+        assert_eq!(crate::plex::server_probe_result(sid), None, "the replacement lifecycle stays unprobed");
+    }
+
+    #[test]
+    fn blocking_section_discovery_discards_an_in_place_retoken_during_the_request() {
+        let _g = crate::testlock::serial();
+        let (_cleanup, sid, old) = registered_source();
+        crate::plex::publish_probe_result(sid, crate::plex::probe::Outcome::Unauthorized);
+        let old_gen = old.token_gen();
+        let count = ensure_sections_with(|client| {
+            assert!(std::ptr::eq(client, old));
+            assert_eq!(crate::plex::register_for_test("browse-life", "10.0.0.1", 32400, "new", "cid"), sid);
+            Some(vec![(1, "Stale Movies".into(), SecKind::Movie)])
+        });
+
+        assert_ne!(old.token_gen(), old_gen);
+        assert_eq!(count, 0);
+        assert!(sections().is_empty());
+        assert_eq!(crate::plex::server_probe_result(sid), Some(crate::plex::probe::Outcome::Unauthorized));
+    }
+
+    #[test]
+    fn blocking_section_failure_preserves_an_auth_401_published_during_the_request() {
+        let _g = crate::testlock::serial();
+        let (_cleanup, sid, _) = registered_source();
+        let count = ensure_sections_with(|_| {
+            crate::plex::publish_probe_result(sid, crate::plex::probe::Outcome::Unauthorized);
+            None
+        });
+
+        assert_eq!(count, 0);
+        assert_eq!(crate::plex::server_probe_result(sid), Some(crate::plex::probe::Outcome::Unauthorized));
+        assert_eq!(sources()[0].state, SourceState::Unauthorized, "browse mirrors the canonical merged answer");
+    }
+
     /// Regression: `reset()` dropped the three result mailboxes but left the single-flight
     /// flags set, and those are cleared ONLY inside a successful mailbox take. Sequence:
     /// scroll Library so a page fetch spawns → BACK to Home (pump stops running) → the worker
@@ -2257,7 +2418,7 @@ mod tests {
     // `STATES` seeded and `SECTIONS` empty, `maybe_spawn` returns before it can reach the network,
     // so nothing here spawns a worker.
 
-    /// One default section state, no section table (see above), and the mailbox emptied.
+    /// One default state with no section table, used by store-only tests that never land a page.
     fn seed_one_section() {
         reset();
         *PAGE_RESULT.lock().unwrap_or_else(|e| e.into_inner()) = None;
@@ -2265,7 +2426,10 @@ mod tests {
     }
     /// Land what a worker would post for the CURRENT query: `total < 0` is the failure sentinel.
     fn land_page(total: i64, items: usize) {
+        let client = crate::plex::client();
         let r = PageResult {
+            client,
+            token_gen: client.token_gen(),
             gen: GEN.load(Ordering::SeqCst),
             sec: 0,
             start: 0,
@@ -2284,7 +2448,7 @@ mod tests {
     #[test]
     fn a_failed_first_page_leaves_the_section_failed_and_not_loading() {
         let _g = crate::testlock::serial();
-        seed_one_section();
+        let _cleanup = registered_page_source().0;
         land_page(-1, 0);
         assert_eq!(fetch_state(), SecFetch::Failed);
         assert!(!loading_initial(), "the grid must stop spinning on a failure");
@@ -2296,7 +2460,7 @@ mod tests {
     #[test]
     fn a_served_page_leaves_the_section_ready() {
         let _g = crate::testlock::serial();
-        seed_one_section();
+        let _cleanup = registered_page_source().0;
         land_page(3, 3);
         assert_eq!(fetch_state(), SecFetch::Ready);
         assert!(!loading_initial());
@@ -2311,7 +2475,7 @@ mod tests {
     #[test]
     fn an_empty_but_successful_listing_is_ready_not_failed() {
         let _g = crate::testlock::serial();
-        seed_one_section();
+        let _cleanup = registered_page_source().0;
         land_page(0, 0);
         assert_eq!(fetch_state(), SecFetch::Ready);
         assert_eq!(total(), 0, "an empty library is an answer, not a fault");
@@ -2325,7 +2489,7 @@ mod tests {
     #[test]
     fn a_requery_clears_a_previous_failure() {
         let _g = crate::testlock::serial();
-        seed_one_section();
+        let _cleanup = registered_page_source().0;
         land_page(-1, 0);
         assert_eq!(fetch_state(), SecFetch::Failed);
         requery();
@@ -2908,16 +3072,16 @@ mod tests {
         append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie)]);
         assert!(sources()[1].sections_done, "discovery is done — it will never re-ask by itself");
 
-        mark_source_reachable(1, false); // a page for THEIR library did not come back
+        source_mut(1).unwrap().set_reachable(false); // a page for THEIR library did not come back
         assert!(!sources()[1].reachable(), "their group dims");
         assert!(sources()[0].reachable(), "…and ours is untouched — it answered");
 
-        mark_source_reachable(1, true); // …and it comes back
+        source_mut(1).unwrap().set_reachable(true); // …and it comes back
         assert!(sources()[1].reachable());
         assert_eq!(sources()[1].retry_cd, 0, "a server that answered is worth re-asking at once");
 
         source_mut(1).unwrap().state = SourceState::Unauthorized;
-        mark_source_reachable(1, true);
+        source_mut(1).unwrap().set_reachable(true);
         assert_eq!(sources()[1].state, SourceState::Reachable, "a successful page clears a known 401");
         reset();
     }
@@ -3126,10 +3290,19 @@ mod tests {
     #[test]
     fn a_stale_failure_landing_does_not_blame_the_current_query() {
         let _g = crate::testlock::serial();
-        seed_one_section();
+        let (_cleanup, _, client) = registered_page_source();
         let stale = GEN.load(Ordering::SeqCst);
         bump_gen(); // the query moved on under the in-flight fetch
-        let r = PageResult { gen: stale, sec: 0, start: 0, items: Vec::new(), total: -1, sorts: None };
+        let r = PageResult {
+            client,
+            token_gen: client.token_gen(),
+            gen: stale,
+            sec: 0,
+            start: 0,
+            items: Vec::new(),
+            total: -1,
+            sorts: None,
+        };
         *PAGE_RESULT.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
         pump();
         assert_eq!(fetch_state(), SecFetch::Loading, "the current query has not answered yet — it has not failed");
