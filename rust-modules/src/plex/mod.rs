@@ -82,7 +82,8 @@ pub use origin::{Origin, Scheme};
 pub use servers::{
     client, client_for, client_opt, count as server_count, current as current_server, describe as describe_server,
     describe_name as describe_server_name, facts as server_facts, ids as server_ids, install, register, register_origin,
-    roster_gen as server_roster_gen, same_item, set_current, ServerFacts, ServerId, MAX_SERVERS,
+    probe_result as server_probe_result, publish_probe_result, roster_gen as server_roster_gen, same_item, set_current,
+    ServerFacts, ServerId, MAX_SERVERS,
 };
 // Sign-out. `pub(crate)` like the function itself: retiring the whole table is `auth::sign_out`'s
 // to call and nothing else's — a caller that merely wants to stop using a server wants

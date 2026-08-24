@@ -1164,8 +1164,28 @@ fn activate_candidate(plan: &ProbePlan, c: &Candidate, origin: &Origin) {
     // publication every time or the new client silently returns to UNKNOWN.
     if let Some(client) = crate::plex::client_for(id) {
         client.set_link(c.location);
+        // First activation is already usable while the rest of the race settles. Publish the same
+        // fact now; the per-server settlement below repeats it with the final winning tier.
+        crate::plex::publish_probe_result(id, Outcome::Reachable);
     }
     crate::plex::describe_server(id, &plan.name, plan.source_title.as_deref().unwrap_or_default(), plan.owned);
+}
+
+/// Publish a completed server race onto the already-registered slot for that machine. A newly
+/// granted server that never verified an address has no slot yet and is deliberately ignored:
+/// probe failure is not authority to register an unverified endpoint. A retained/offline source,
+/// however, is already registered from its cached verified origin and receives the new state.
+fn publish_server_probe(plan: &ProbePlan, outcome: Outcome, tier: Option<probe::Location>) {
+    let Some((id, client)) = crate::plex::server_ids()
+        .filter_map(|id| crate::plex::client_for(id).map(|client| (id, client)))
+        .find(|(_, client)| client.machine_id() == plan.machine_id)
+    else {
+        return;
+    };
+    if let Some(link) = tier {
+        client.set_link(link);
+    }
+    crate::plex::publish_probe_result(id, outcome);
 }
 
 /// Legacy synchronous seam for the older acceptance fixtures. Production uses
@@ -1224,6 +1244,7 @@ fn resolve_roster_using(
     resources: &[Resource],
     probe_one: &mut dyn FnMut(&ProbePlan) -> Reach,
     between_servers: &mut dyn FnMut(),
+    observe: &mut dyn FnMut(&ProbePlan, Outcome, Option<probe::Location>),
 ) -> Resolved {
     let mut servers: Vec<&Resource> = resources.iter().filter(|r| r.is_server()).collect();
     if servers.is_empty() {
@@ -1240,7 +1261,17 @@ fn resolve_roster_using(
             between_servers();
         }
         let plan = probe::plan(r);
-        match probe_one(&plan) {
+        let reach = probe_one(&plan);
+        let (outcome, tier) = match &reach {
+            Reach::At(c, _) => (Outcome::Reachable, Some(c.location)),
+            Reach::Refused => (Outcome::Unauthorized, None),
+            Reach::No => (Outcome::Unreachable, None),
+        };
+        // Publish one aggregate result per server, after all of its direct/relay candidates have
+        // settled. In particular a 401 remains distinct from silence, while wrong-machine-only
+        // races fold to Unreachable because no address verified this server.
+        observe(&plan, outcome, tier);
+        match reach {
             Reach::At(c, origin) => {
                 let s = SourceRef {
                     machine_id: plan.machine_id.clone(),
@@ -1297,12 +1328,13 @@ fn resolve_roster_using(
 #[cfg(test)]
 fn resolve_roster(resources: &[Resource], dial: &dyn Fn(&Origin) -> (i32, Vec<u8>)) -> Resolved {
     let mut probe_one = |plan: &ProbePlan| probe_server(plan, dial);
-    resolve_roster_using(resources, &mut probe_one, &mut || {})
+    resolve_roster_using(resources, &mut probe_one, &mut || {}, &mut |_, _, _| {})
 }
 
 fn resolve_roster_live(
     resources: &[Resource],
     activate: &mut dyn FnMut(&ProbePlan, &Candidate, &Origin),
+    observe: &mut dyn FnMut(&ProbePlan, Outcome, Option<probe::Location>),
 ) -> Resolved {
     let dial: ProbeDial = Arc::new(get_identity);
     let spawn = |_index: usize, job: ProbeJob| crate::task::spawn_small("probe", job);
@@ -1319,6 +1351,7 @@ fn resolve_roster_live(
         resources,
         &mut probe_one,
         &mut || std::thread::sleep(SERVER_GAP),
+        observe,
     )
 }
 
@@ -1351,7 +1384,10 @@ fn discover_and_store(ac: &AccountClient, epoch: u64) -> Discovery {
     let mut activate = |plan: &ProbePlan, c: &Candidate, origin: &Origin| {
         let _ = with_live_epoch(epoch, || activate_candidate(plan, c, origin));
     };
-    let resolved = resolve_roster_live(&resources, &mut activate);
+    let mut observe = |plan: &ProbePlan, outcome: Outcome, tier: Option<probe::Location>| {
+        let _ = with_live_epoch(epoch, || publish_server_probe(plan, outcome, tier));
+    };
+    let resolved = resolve_roster_live(&resources, &mut activate, &mut observe);
     let found = match resolved {
         Resolved::NoServers => return Discovery::NoServers,
         Resolved::None { refused: true } => return Discovery::Refused,
@@ -1560,7 +1596,10 @@ pub fn refresh_roster() {
         let mut activate = |plan: &ProbePlan, c: &Candidate, origin: &Origin| {
             let _ = with_live_epoch(epoch, || activate_candidate(plan, c, origin));
         };
-        let found = match resolve_roster_live(&resources, &mut activate) {
+        let mut observe = |plan: &ProbePlan, outcome: Outcome, tier: Option<probe::Location>| {
+            let _ = with_live_epoch(epoch, || publish_server_probe(plan, outcome, tier));
+        };
+        let found = match resolve_roster_live(&resources, &mut activate, &mut observe) {
             Resolved::Reached(f) => f,
             // "no server answered" is not evidence that the grant is gone: the friend's box may
             // simply be off. Dropping the roster here would make an offline share un-browsable
@@ -2337,10 +2376,50 @@ mod tests {
                 Reach::No
             },
             &mut || gaps += 1,
+            &mut |_, _, _| {},
         );
         assert!(matches!(resolved, Resolved::None { refused: false }));
         assert_eq!(order, ["owned", "shared-m", "shared-u"]);
         assert_eq!(gaps, 2, "three serial servers have exactly two inter-server gaps");
+    }
+
+    #[test]
+    fn every_server_settlement_publishes_its_specific_state_and_winning_tier() {
+        let resources = vec![
+            resource(r#"{"name":"yes","clientIdentifier":"yes","provides":"server","owned":true}"#),
+            resource(r#"{"name":"denied","clientIdentifier":"denied","provides":"server","owned":false}"#),
+            resource(r#"{"name":"off","clientIdentifier":"off","provides":"server","owned":false}"#),
+        ];
+        let winner = Candidate {
+            url: "https://remote.example.test:32400".into(),
+            scheme: Scheme::Https,
+            location: probe::Location::Remote,
+            address: "203.0.113.9".into(),
+            port: 32400,
+            ipv6: false,
+        };
+        let origin = winner.origin().expect("fixture origin");
+        let mut observed = Vec::new();
+        let resolved = resolve_roster_using(
+            &resources,
+            &mut |plan| match plan.machine_id.as_str() {
+                "yes" => Reach::At(winner.clone(), origin.clone()),
+                "denied" => Reach::Refused,
+                _ => Reach::No,
+            },
+            &mut || {},
+            &mut |plan, outcome, tier| observed.push((plan.machine_id.clone(), outcome, tier)),
+        );
+
+        assert!(matches!(resolved, Resolved::Reached(ref roster) if roster.len() == 1));
+        assert_eq!(
+            observed,
+            vec![
+                ("yes".into(), Outcome::Reachable, Some(probe::Location::Remote)),
+                ("denied".into(), Outcome::Unauthorized, None),
+                ("off".into(), Outcome::Unreachable, None),
+            ]
+        );
     }
 
     #[test]

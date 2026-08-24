@@ -61,11 +61,9 @@ const SRC_RETRY_CD: u32 = 600; // ~10 s at 60 fps
 /// `/api/v2/resources` fixes, and telling the user their friend's server is unreachable sends them
 /// to look at a router for something that was never a network fault.
 ///
-/// **This enum is a CONTRACT, landed on its own.** One lane renders it and another populates it, so
-/// it exists before either: the renderer cannot reference a type living in an unmerged branch, and
-/// two lanes cannot own one definition. Today only the two ends of the old bool are ever stored —
-/// [`Self::NotProbed`] and [`Self::Unauthorized`] are constructible and unwritten, exactly so that
-/// the behaviour of this commit is unchanged.
+/// Auth's server-race settlement populates all four states through the registry. Ordinary browse
+/// requests still carry only the old answered/did-not-answer bit; they may clear a failure with a
+/// success, but cannot erase the more specific 401 without another identity probe.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub(crate) enum SourceState {
     /// Registered, never dialled. Distinct from [`Self::Unreachable`]: a source nobody has tried is
@@ -78,18 +76,6 @@ pub(crate) enum SourceState {
     /// Answered with 401. A token problem, never a network one — the remedy is a fresh
     /// `/api/v2/resources`, not another address.
     ///
-    /// **Unconstructed in production on purpose, and the attribute is the handover note.** Nothing
-    /// can produce this until the prober that tells 401 apart is wired in; when it is, the `expect`
-    /// becomes unfulfilled and the build fails until the line is deleted — which is the point, and
-    /// is why this is not a permanently-silent `allow`.
-    ///
-    /// `cfg_attr(not(test), …)` because the tests below DO construct it — pinning that an
-    /// answered-but-refused server is not drawn as unreachable — and under `--tests` the variant is
-    /// therefore live, which would make the expectation unfulfilled immediately.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "contract variant: written once the racing prober lands, and this attribute goes with it")
-    )]
     Unauthorized,
     /// Did not answer: refused, timed out, or unresolvable.
     Unreachable,
@@ -122,15 +108,14 @@ pub(crate) struct BrowseSource {
     /// dims whole and still reads `On`, because nothing was unpinned. Hiding it would read as a
     /// revoked share.
     ///
-    /// Was a `bool`; see [`SourceState`] for why it is not any more, and note that today only its
-    /// two former values are ever written. **Read it through [`BrowseSource::reachable`] and write
-    /// it through [`BrowseSource::set_reachable`]** unless you genuinely mean one of the new
-    /// states — that is what keeps this widening from changing behaviour.
+    /// Was a `bool`; see [`SourceState`] for why it is not any more. Auth publishes the precise
+    /// discovery result through the server registry; ordinary browse requests write their coarser
+    /// answer through [`BrowseSource::set_reachable`].
     pub(crate) state: SourceState,
-    /// Which tier of connection actually won — local, remote, or Plex's relay tunnel. `None` until
-    /// something probes, which is **everything, today**: `Client::set_link` has no production
-    /// caller, so the one consumer of this fact (`route`'s relay policy) has never seen a value.
-    /// Landed here with the state it belongs beside, unwritten, for the same contract reason.
+    /// Which tier of connection actually won — local, remote, or Plex's relay tunnel. Restored
+    /// from the persisted winner at boot and replaced by auth when a new race settles. The Sources
+    /// list only renders it beside [`SourceState::Reachable`], so an offline source retains the
+    /// route metadata needed for retry/playback policy without claiming that route works now.
     pub(crate) tier: Option<crate::plex::probe::Location>,
     /// its `/library/sections` has landed — sections are appended exactly once per source
     sections_done: bool,
@@ -152,11 +137,40 @@ impl BrowseSource {
     pub(crate) fn reachable(&self) -> bool {
         !matches!(self.state, SourceState::Unreachable)
     }
-    /// Record a dial that answered or did not — the only writer today, and the one that keeps this
-    /// commit behaviour-identical. A prober that can tell 401 apart sets [`BrowseSource::state`]
-    /// directly instead; this deliberately cannot express [`SourceState::Unauthorized`].
+    /// Record a generic PMS request that answered or did not. A failed request cannot distinguish
+    /// HTTP status from transport/parse failure, so it preserves an Unauthorized result supplied
+    /// by the identity prober; a successful request is enough evidence to clear any failure.
     pub(crate) fn set_reachable(&mut self, ok: bool) {
-        self.state = if ok { SourceState::Reachable } else { SourceState::Unreachable };
+        // A generic PMS request folds status/transport/parse errors into one `None`, so it cannot
+        // disprove the more specific 401 the identity prober already observed. Only a successful
+        // request clears Unauthorized; the auth coordinator can explicitly replace it with a
+        // later aggregate Unreachable result through the registry.
+        if ok {
+            self.state = SourceState::Reachable;
+        } else if self.state != SourceState::Unauthorized {
+            self.state = SourceState::Unreachable;
+        }
+        if let Some(client) = crate::plex::client_for(self.sid) {
+            let outcome = if ok {
+                crate::plex::probe::Outcome::Reachable
+            } else if self.state == SourceState::Unauthorized {
+                crate::plex::probe::Outcome::Unauthorized
+            } else {
+                crate::plex::probe::Outcome::Unreachable
+            };
+            crate::plex::publish_probe_result(client.id(), outcome);
+        }
+    }
+}
+
+fn source_state(outcome: Option<crate::plex::probe::Outcome>) -> SourceState {
+    match outcome {
+        None => SourceState::NotProbed,
+        Some(crate::plex::probe::Outcome::Reachable) => SourceState::Reachable,
+        Some(crate::plex::probe::Outcome::Unauthorized) => SourceState::Unauthorized,
+        Some(crate::plex::probe::Outcome::WrongServer | crate::plex::probe::Outcome::Unreachable) => {
+            SourceState::Unreachable
+        }
     }
 }
 
@@ -493,6 +507,16 @@ fn sync_roster() {
             // already have a name for is deliberately not followed: a machine name changing under
             // an open panel is churn, not news.
             Some(s) => {
+                if let Some(client) = crate::plex::client_for(sid) {
+                    let state = source_state(crate::plex::server_probe_result(sid));
+                    let tier = client.link();
+                    if s.state != state || s.tier != tier {
+                        s.state = state;
+                        s.tier = tier;
+                        SRC_FACTS_GEN.fetch_add(1, Ordering::SeqCst);
+                        crate::ui::idle::invalidate();
+                    }
+                }
                 if s.name.is_empty() || s.handle.is_empty() {
                     if let Some(f) = crate::plex::server_facts(sid) {
                         if s.name.is_empty() {
@@ -524,6 +548,7 @@ fn sync_roster() {
                 // the frames between registration and the roster landing.
                 let owned = f.map(|f| f.owned).unwrap_or(true);
                 let (name, handle) = f.map(|f| (f.name.clone(), f.handle.clone())).unwrap_or_default();
+                let client = crate::plex::client_for(sid);
                 (*addr_of_mut!(SOURCES)).push(BrowseSource {
                     sid,
                     machine_id: machine_of(sid),
@@ -534,8 +559,8 @@ fn sync_roster() {
                     // source that failed, and the whole group would otherwise open dimmed. That
                     // is `NotProbed`, which `reachable()` answers `true` for — the seed this
                     // replaced was a literal `true`, and the two say the same thing here.
-                    state: SourceState::NotProbed,
-                    tier: None,
+                    state: source_state(crate::plex::server_probe_result(sid)),
+                    tier: client.and_then(|c| c.link()),
                     sections_done: false,
                     counts_done: false,
                     retry_cd: 0,
@@ -1114,9 +1139,8 @@ pub(crate) struct SrcGroup {
     /// [`SrcGroup::reachable`]; widening what it can be told is what lets that renderer grow a
     /// third and fourth word without this projection changing again.
     pub(crate) state: SourceState,
-    /// Which tier won — local, remote or relay. `None` until something probes, which is everything
-    /// today. The Sources list is the surface that should say it: "relay" explains a 2 Mbit/s
-    /// ceiling that otherwise reads as a broken server.
+    /// Which tier won — local, remote or relay. The Sources list is the surface that should say it:
+    /// "relay" explains a 2 Mbit/s ceiling that otherwise reads as a broken server.
     pub(crate) tier: Option<crate::plex::probe::Location>,
 }
 
@@ -2816,11 +2840,51 @@ mod tests {
         assert_eq!(s.state, SourceState::Unreachable);
         assert!(!s.reachable(), "the ONLY state that dims a group");
 
-        // Answered-but-refused is a token problem, not a network one — so it does NOT dim, and it
-        // is not something `set_reachable` can even express. Both halves are the point.
+        // Answered-but-refused is a token problem, not a network failure. The legacy reachability
+        // question therefore remains true, while `ui::source_list` matches Unauthorized directly
+        // and dims/disables the group because there is nothing browsable behind that credential.
         s.state = SourceState::Unauthorized;
-        assert!(s.reachable(), "it answered; the group is not 'not reachable'");
+        s.set_reachable(false);
+        assert_eq!(s.state, SourceState::Unauthorized, "a status-folded request cannot erase a known 401");
+        assert!(s.reachable(), "it answered; this old bool projection is only the network question");
         reset();
+    }
+
+    #[test]
+    fn registry_probe_state_and_tier_seed_and_update_the_browse_source() {
+        let _g = crate::testlock::serial();
+        struct Cleanup;
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                reset();
+                crate::plex::reset_servers_for_test();
+            }
+        }
+        crate::plex::reset_servers_for_test();
+        reset();
+        let _cleanup = Cleanup;
+
+        let sid = crate::plex::register_for_test("mach-A", "10.0.0.1", 32400, "tok", "cid");
+        crate::plex::client_for(sid).unwrap().set_link(crate::plex::probe::Location::Remote);
+        sync_roster();
+        assert_eq!(sources()[0].state, SourceState::NotProbed, "a restored tier is not a current probe answer");
+        assert_eq!(sources()[0].tier, Some(crate::plex::probe::Location::Remote));
+
+        crate::plex::publish_probe_result(sid, crate::plex::probe::Outcome::Unauthorized);
+        sync_roster();
+        assert_eq!(sources()[0].state, SourceState::Unauthorized);
+        assert_eq!(sources()[0].tier, Some(crate::plex::probe::Location::Remote), "cached route metadata is retained");
+
+        crate::plex::client_for(sid).unwrap().set_link(crate::plex::probe::Location::Relay);
+        crate::plex::publish_probe_result(sid, crate::plex::probe::Outcome::Reachable);
+        sync_roster();
+        assert_eq!(sources()[0].state, SourceState::Reachable);
+        assert_eq!(sources()[0].tier, Some(crate::plex::probe::Location::Relay));
+
+        crate::plex::publish_probe_result(sid, crate::plex::probe::Outcome::Unreachable);
+        sync_roster();
+        assert_eq!(sources()[0].state, SourceState::Unreachable);
+        assert_eq!(sources()[0].tier, Some(crate::plex::probe::Location::Relay), "offline does not erase the last route");
     }
 
     /// The same mapping on the projection the renderer actually sees, because `SrcGroup` carries

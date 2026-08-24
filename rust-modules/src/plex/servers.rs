@@ -64,7 +64,8 @@
 
 use super::client::Client;
 use super::origin::Origin;
-use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicUsize, Ordering};
+use super::probe::Outcome;
+use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicU8, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 /// Slot ceiling. A Plex account's server list is a handful (own + shared); past this, a
@@ -162,6 +163,10 @@ static SLOTS: [AtomicPtr<Client>; MAX_SERVERS] = [const { AtomicPtr::new(std::pt
 /// [`ServerFacts`] per slot, published and leaked exactly as `SLOTS` is. A null slot is a server
 /// nobody has described yet — which is the honest state on a boot that never reached plex.tv.
 static FACTS: [AtomicPtr<ServerFacts>; MAX_SERVERS] = [const { AtomicPtr::new(std::ptr::null_mut()) }; MAX_SERVERS];
+/// The last aggregate identity-probe result for each live server. Zero means this origin has not
+/// been probed in the current identity/address lifecycle. Unlike [`FACTS`], this is replaced rather
+/// than merged: a fresh successful probe is current evidence, as is a later timeout or 401.
+static PROBES: [AtomicU8; MAX_SERVERS] = [const { AtomicU8::new(PROBE_UNKNOWN) }; MAX_SERVERS];
 /// Slots populated so far — the high-water mark, MONOTONE for the life of the process. A revoked
 /// slot keeps its number (see the module doc), so this is not the number of servers: that is the
 /// population count of [`ACTIVE`].
@@ -184,6 +189,27 @@ static FLOOR: AtomicUsize = AtomicUsize::new(0);
 static CURRENT: AtomicU32 = AtomicU32::new(ServerId::UNSET.0 as u32);
 /// Writers only (register / re-point / reset). Readers never take it — that is the whole point.
 static WRITE: Mutex<()> = Mutex::new(());
+
+const PROBE_UNKNOWN: u8 = 0;
+
+fn probe_code(outcome: Outcome) -> u8 {
+    match outcome {
+        Outcome::Reachable => 1,
+        Outcome::Unauthorized => 2,
+        Outcome::WrongServer => 3,
+        Outcome::Unreachable => 4,
+    }
+}
+
+fn probe_of_code(code: u8) -> Option<Outcome> {
+    match code {
+        1 => Some(Outcome::Reachable),
+        2 => Some(Outcome::Unauthorized),
+        3 => Some(Outcome::WrongServer),
+        4 => Some(Outcome::Unreachable),
+        _ => None,
+    }
+}
 
 // ---- reads: the hot path ----
 
@@ -285,6 +311,28 @@ pub fn facts(id: ServerId) -> Option<&'static ServerFacts> {
     // SAFETY: identical to `client_for`'s — a slot holds null or a `Box::into_raw` pointer that is
     // never freed, published Release and read Acquire.
     (!p.is_null()).then(|| unsafe { &*p })
+}
+
+/// The last aggregate probe result for this live server, or `None` when nobody has probed its
+/// current identity/address lifecycle. Candidate-level wrong-machine answers are normally folded
+/// into [`Outcome::Unreachable`] by the coordinator; the full enum is encoded so this boundary
+/// remains total if another prober publishes its raw answer in the future.
+pub fn probe_result(id: ServerId) -> Option<Outcome> {
+    let i = id.index()?;
+    client_for(id)?;
+    probe_of_code(PROBES.get(i)?.load(Ordering::Acquire))
+}
+
+/// Publish what the completed server race proved. The winning tier is the neighbouring
+/// [`Client::link`](super::client::Client::link) fact and is written by the same auth coordinator.
+/// A no-op for an inactive/unknown slot, so a late auth worker cannot resurrect a revoked source.
+pub fn publish_probe_result(id: ServerId, outcome: Outcome) {
+    let _w = WRITE.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(i) = id.index().filter(|_| client_for(id).is_some()) else { return };
+    PROBES[i].store(probe_code(outcome), Ordering::Release);
+    // The Sources list follows this atomic from `browse::sync_roster`; wake an idle frame so the
+    // new word/tier is visible immediately rather than at the two-second keepalive.
+    crate::ui::idle::invalidate();
 }
 
 /// Record what the roster says about a server. Idempotent and additive: a field given as empty
@@ -445,14 +493,9 @@ pub fn register_origin(machine_id: &str, origin: &Origin, token: &str) -> Server
 /// 1. The public [`register`] resolves the device id through `session::load`, which MINTS AND
 ///    PERSISTS a uuid when there is none. A host test must not write one.
 /// 2. [`register`] also fires [`serverinfo::refresh`](super::serverinfo::refresh), which spawns a
-///    `task::spawn_small` worker that really opens a socket — on a **256 KiB** stack. In a DEBUG
-///    build `stream::http_stream_boxed` builds its 64 KiB `HttpStream` as a stack temporary before
-///    it reaches the heap (the optimizer elides that in the `--release` build the television
-///    ships, and only there), so that worker needs somewhere north of 192 KiB on ARM64 and more
-///    than 256 KiB on x86-64. A test that calls [`register`] therefore aborts the whole suite with
-///    `thread '<unknown>' has overflowed its stack` — on Linux only, in a thread libtest never
-///    named, at whatever test happened to be printing. `make check` passed on the dev Mac while CI
-///    failed twice.
+///    worker that really opens a socket. Tests of the registry must not acquire that unrelated
+///    network side effect or depend on worker scheduling. (`stream::http_stream_boxed` now zeros
+///    its 64 KiB buffer directly on the heap; this seam remains necessary for isolation.)
 ///
 /// So: **no test in this crate may call [`register`] or [`register_origin`]**. The two seams here
 /// are the whole test surface, and neither loads a session nor spawns anything.
@@ -501,6 +544,9 @@ fn register_lazy(machine_id: &str, origin: &Origin, token: &str, client_id: &dyn
             // before publishing the replacement; later sign-out/profile revocation can only walk
             // the current pointer stored in this slot and cannot discover superseded clients.
             c.set_token("");
+            // The old origin's answer says nothing about the replacement. The activation that
+            // proved this address writes its result after `register_origin` returns.
+            PROBES[id.0 as usize].store(PROBE_UNKNOWN, Ordering::Release);
             publish(id, Client::new(id, mid, origin.clone(), token, &client_id()));
             ROSTER_GEN.fetch_add(1, Ordering::AcqRel);
         } else {
@@ -517,6 +563,7 @@ fn register_lazy(machine_id: &str, origin: &Origin, token: &str, client_id: &dyn
         return ServerId::UNSET;
     }
     let id = ServerId(n as u16);
+    PROBES[n].store(PROBE_UNKNOWN, Ordering::Release);
     publish(id, Client::new(id, machine_id, origin.clone(), token, &client_id()));
     COUNT.store(n + 1, Ordering::Release); // after the pointer: a visible count implies a live slot
     activate(id);
@@ -560,6 +607,11 @@ pub(crate) fn revoke_for_profile_switch() {
     for id in &live {
         if let Some(c) = client_for(*id) {
             c.set_token("");
+        }
+        if let Some(i) = id.index() {
+            // A token outcome belongs to one profile. The next profile starts at NotProbed until
+            // its own request or roster race says otherwise.
+            PROBES[i].store(PROBE_UNKNOWN, Ordering::Release);
         }
     }
     let keep_mask = keep
@@ -635,6 +687,9 @@ pub(crate) fn revoke_all() {
         if let Some(c) = client_for(id) {
             c.set_token("");
         }
+        if let Some(i) = id.index() {
+            PROBES[i].store(PROBE_UNKNOWN, Ordering::Release);
+        }
     }
     // CURRENT first: for the instant between these two stores a reader must never see an id whose
     // slot the floor has already killed, which is the one state `client()`'s `expect` would take.
@@ -666,6 +721,9 @@ pub(crate) fn reset_for_test() {
     }
     for f in FACTS.iter() {
         f.store(std::ptr::null_mut(), Ordering::Release);
+    }
+    for p in PROBES.iter() {
+        p.store(PROBE_UNKNOWN, Ordering::Release);
     }
     COUNT.store(0, Ordering::Release);
     ACTIVE.store(0, Ordering::Release);
@@ -794,6 +852,29 @@ mod tests {
         let same: *const Client = c;
         assert_eq!(reg_at(&tls, "tok-b"), id);
         assert!(std::ptr::eq(client_for(id).unwrap(), same), "unchanged origin, unchanged pointer");
+    }
+
+    /// Probe state belongs to the registry slot, beside the address and tier it describes. It is
+    /// unknown before the first race, follows later aggregate answers including 401, and is reset
+    /// when a new origin replaces the old one because the old answer is no evidence about it.
+    #[test]
+    fn aggregate_probe_results_follow_a_slot_and_reset_on_repoint() {
+        let _g = fresh();
+        let id = reg("mach-A", "10.0.0.1", "tok-a");
+        assert_eq!(probe_result(id), None);
+
+        publish_probe_result(id, Outcome::Reachable);
+        assert_eq!(probe_result(id), Some(Outcome::Reachable));
+        publish_probe_result(id, Outcome::Unauthorized);
+        assert_eq!(probe_result(id), Some(Outcome::Unauthorized));
+
+        assert_eq!(reg("mach-A", "10.0.0.9", "tok-a"), id);
+        assert_eq!(probe_result(id), None, "a replacement origin has not been probed yet");
+        publish_probe_result(id, Outcome::Unreachable);
+        assert_eq!(probe_result(id), Some(Outcome::Unreachable));
+
+        revoke_for_profile_switch();
+        assert_eq!(probe_result(id), None, "a different profile's token starts unprobed");
     }
 
     /// A different server is a NEW slot, never a silent retarget of the old one — the singleton's
