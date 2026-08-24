@@ -375,8 +375,15 @@ struct PageResult {
 static PAGE_RESULT: Mutex<Option<PageResult>> = Mutex::new(None);
 // menu-data landings carry the table EPOCH so a landing spawned before a [`reset`] (profile
 // switch) can never populate the NEW user's state at the same index
-static GENRE_RESULT: Mutex<Option<(u32, usize, Vec<GenreEntry>)>> = Mutex::new(None);
-static LETTER_RESULT: Mutex<Option<(u32, usize, Vec<(String, i64)>)>> = Mutex::new(None);
+struct DirectoryResult<T> {
+    epoch: u32,
+    sec: usize,
+    client: &'static crate::plex::Client,
+    token_gen: u32,
+    list: Vec<T>,
+}
+static GENRE_RESULT: Mutex<Option<DirectoryResult<GenreEntry>>> = Mutex::new(None);
+static LETTER_RESULT: Mutex<Option<DirectoryResult<(String, i64)>>> = Mutex::new(None);
 
 /// What a source-discovery worker brings back, per SOURCE — named by its index, which appending
 /// can never move.
@@ -616,14 +623,20 @@ fn ensure_sections_with(
     let token_gen = client.token_gen();
     let found = catch_unwind(AssertUnwindSafe(|| fetch(client))).unwrap_or(None);
     let ok = found.is_some();
-    let Some(outcome) = crate::plex::publish_reachability_if_current(cur_sid, client, token_gen, ok) else {
+    let committed = crate::plex::commit_reachability_if_current(cur_sid, client, token_gen, ok, None, |outcome| {
+        if sources().get(si).map(|s| s.sid) != Some(client.id()) {
+            return false;
+        }
+        append_sections(si, found.unwrap_or_default());
+        if let Some(s) = source_mut(si) {
+            s.sections_done = ok;
+            s.set_probe_outcome(outcome);
+            s.retry_cd = if ok { 0 } else { SRC_RETRY_CD };
+        }
+        true
+    });
+    if committed != Some(true) {
         return sections().len();
-    };
-    append_sections(si, found.unwrap_or_default());
-    if let Some(s) = source_mut(si) {
-        s.sections_done = ok;
-        s.set_probe_outcome(outcome);
-        s.retry_cd = if ok { 0 } else { SRC_RETRY_CD };
     }
     sections().len()
 }
@@ -831,18 +844,14 @@ fn activate_source_of(_i: usize) {
 /// Record what a request proved only if the source still names the exact client lifecycle that
 /// performed it. The registry merges the generic bit with identity-probe state while holding its
 /// writer lock, then returns the canonical outcome for this local projection.
-fn mark_source_reachable(
+fn apply_source_outcome(
     src: usize,
     client: &'static crate::plex::Client,
-    token_gen: u32,
-    ok: bool,
+    outcome: crate::plex::probe::Outcome,
 ) -> bool {
     if sources().get(src).map(|s| s.sid) != Some(client.id()) {
         return false;
     }
-    let Some(outcome) = crate::plex::publish_reachability_if_current(client.id(), client, token_gen, ok) else {
-        return false;
-    };
     let Some(s) = source_mut(src).filter(|s| s.sid == client.id()) else { return false };
     let next = source_state(Some(outcome));
     if s.state == next {
@@ -851,7 +860,7 @@ fn mark_source_reachable(
     s.set_probe_outcome(outcome);
     // A server that has come back is worth re-asking properly (its library list may have moved on);
     // one that has gone means the Sources list must dim its group NOW rather than at the next press.
-    if ok {
+    if outcome == crate::plex::probe::Outcome::Reachable {
         s.retry_cd = 0;
     }
     crate::ui::idle::invalidate();
@@ -1559,7 +1568,7 @@ pub(crate) fn set_genre(idx: Option<usize>) {
 fn kick_directory<T: Send + 'static>(
     done: bool,
     flag: &'static AtomicBool,
-    mail: &'static Mutex<Option<(u32, usize, Vec<T>)>>,
+    mail: &'static Mutex<Option<DirectoryResult<T>>>,
     dir: &'static str,
     project: fn(&crate::plex::LibrarySection) -> Option<T>,
 ) {
@@ -1570,6 +1579,8 @@ fn kick_directory<T: Send + 'static>(
     // the SERVER this section lives on, captured on the main thread (`browse.rs`'s standing rule:
     // never resolve the current server inside a worker)
     let Some(sid) = section_sid(c) else { return };
+    let Some(client) = crate::plex::client_for(sid) else { return };
+    let token_gen = client.token_gen();
     if flag.swap(true, Ordering::SeqCst) {
         return;
     }
@@ -1578,16 +1589,15 @@ fn kick_directory<T: Send + 'static>(
     let spawned = crate::task::spawn_small("directory", move || {
         let list = catch_unwind(|| {
             let mut v = Vec::new();
-            if let Some(client) = crate::plex::client_for(sid) {
-                if let Some(mc) = client.section_directory(key, dir) {
-                    v.extend(mc.directory.iter().filter_map(project));
-                }
+            if let Some(mc) = client.section_directory(key, dir) {
+                v.extend(mc.directory.iter().filter_map(project));
             }
             v
         })
         .unwrap_or_default();
         // mailbox filled outside the guard so a panicking fetch still lands (empty)
-        *mail.lock().unwrap_or_else(|e| e.into_inner()) = Some((sgen, c, list));
+        *mail.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some(DirectoryResult { epoch: sgen, sec: c, client, token_gen, list });
     });
     if !spawned {
         // `land_directory` clears the single-flight when it takes the mailbox, and nothing is
@@ -1602,18 +1612,24 @@ fn kick_directory<T: Send + 'static>(
 /// shape: a section appended by another source since the spawn cannot have moved this index.
 fn land_directory<T>(
     flag: &'static AtomicBool,
-    mail: &'static Mutex<Option<(u32, usize, Vec<T>)>>,
+    mail: &'static Mutex<Option<DirectoryResult<T>>>,
     apply: impl FnOnce(&'static mut SecState, Vec<T>),
 ) {
-    if let Some((sgen, sec, list)) = mail.lock().unwrap_or_else(|e| e.into_inner()).take() {
+    if let Some(result) = mail.lock().unwrap_or_else(|e| e.into_inner()).take() {
         // a menu's value list arriving repopulates an open Sort/Filter popover (`ui::idle`)
         crate::ui::idle::invalidate();
         flag.store(false, Ordering::SeqCst);
-        if sgen == EPOCH.load(Ordering::SeqCst) {
-            if let Some(st) = state_mut(sec) {
-                apply(st, list);
-            }
+        if result.epoch != EPOCH.load(Ordering::SeqCst) {
+            return;
         }
+        let DirectoryResult { sec, client, token_gen, list, .. } = result;
+        let _ = crate::plex::commit_if_current(client.id(), client, token_gen, || {
+            if section_sid(sec) == Some(client.id()) {
+                if let Some(st) = state_mut(sec) {
+                    apply(st, list);
+                }
+            }
+        });
     }
 }
 
@@ -1816,72 +1832,77 @@ fn land_discovery() {
     if epoch != EPOCH.load(Ordering::SeqCst) {
         return; // the account changed under it — every index means something else now
     }
-    let ok = match &landing.what {
+    let SrcLanding { client, token_gen, name, what } = landing;
+    let ok = match &what {
         SrcWhat::Sections(list) => list.is_some(),
         SrcWhat::Counts(counts) => !counts.is_empty(),
     };
     let prior_state = sources().get(si).map(|s| s.state);
-    if !mark_source_reachable(si, landing.client, landing.token_gen, ok) {
-        return; // same slot, different origin/token/profile: every byte belongs to the old lifecycle
-    }
-    let client = landing.client;
-    let token_gen = landing.token_gen;
-    let SrcLanding { name, what, .. } = landing;
-    if !name.is_empty() {
-        if !crate::plex::describe_server_name_if_current(client.id(), client, token_gen, &name) {
-            return;
-        }
-        if let Some(s) = source_mut(si) {
-            s.name = name.clone();
-        }
-        SRC_FACTS_GEN.fetch_add(1, Ordering::SeqCst); // the group's header exists now
-        // …and back into the registry, so anything else that asks about this server gets the same
-        // answer without a second `GET /`. `owned` is carried through unchanged: this describer
-        // learned a name, not a grant — which is what `describe_server_name` is FOR. It used to
-        // recompute it here as `handle.is_empty()`, three lines under a comment claiming the
-        // opposite, and that derivation is the one `ServerFacts::owned` documents as wrong: a share
-        // whose `sourceTitle` plex.tv did not send has no handle and is still a share, so every one
-        // of those flipped to "ours" the instant its friendly name landed.
-    }
-    match what {
-        SrcWhat::Sections(list) => {
-            let ok = list.is_some();
-            append_sections(si, list.unwrap_or_default());
-            if let Some(s) = source_mut(si) {
-                s.sections_done = ok;
-                s.retry_cd = if ok { 0 } else { SRC_RETRY_CD };
-                if prior_state != Some(s.state) {
-                    SRC_FACTS_GEN.fetch_add(1, Ordering::SeqCst); // the group dims, or comes back
+    let fact_name = (!name.is_empty()).then_some(name.as_str());
+    let committed = crate::plex::commit_reachability_if_current(
+        client.id(),
+        client,
+        token_gen,
+        ok,
+        fact_name,
+        |outcome| {
+            if !apply_source_outcome(si, client, outcome) {
+                return false;
+            }
+            if !name.is_empty() {
+                if let Some(s) = source_mut(si) {
+                    s.name = name.clone();
                 }
+                SRC_FACTS_GEN.fetch_add(1, Ordering::SeqCst); // the group's header exists now
+                // The registry fact was committed beside the probe while WRITE is still held, so
+                // a re-point cannot file this old lifecycle's name under a replacement client.
+                // Ownership is carried through unchanged by the registry: this answer learned a
+                // machine name, not a sharing grant.
             }
-            if !ok {
-                // The machine name, never a token or an address — this line is what a user sends us.
-                let who = sources().get(si).map(|s| s.name.clone()).unwrap_or_default();
-                crate::log(&format!("browse: source {si} ({who}) did not answer — its group reads unreachable"));
+            if prior_state != sources().get(si).map(|s| s.state) {
+                SRC_FACTS_GEN.fetch_add(1, Ordering::SeqCst); // the group dims, or comes back
             }
-        }
-        SrcWhat::Counts(counts) => {
-            // EMPTY is a failure, not an answer: the worker pushes one entry per request that
-            // succeeded, so a server that stopped answering mid-probe yields nothing. Latching
-            // `counts_done` on that would leave those rows reading "Films" for the rest of the
-            // session with no way to fix it — `maybe_discover` skips a done source and
-            // `recheck_shares` only re-arms unreachable ones.
-            let ok = !counts.is_empty();
-            unsafe {
-                for s in (*addr_of_mut!(SECTIONS)).iter_mut().filter(|s| s.src == si) {
-                    if let Some((_, n)) = counts.iter().find(|(k, _)| *k == s.key) {
-                        s.count = *n;
+            match what {
+                SrcWhat::Sections(list) => {
+                    let ok = list.is_some();
+                    append_sections(si, list.unwrap_or_default());
+                    if let Some(s) = source_mut(si) {
+                        s.sections_done = ok;
+                        s.retry_cd = if ok { 0 } else { SRC_RETRY_CD };
+                    }
+                    if !ok {
+                        // The machine name, never a token or an address — this line is what a user sends us.
+                        let who = sources().get(si).map(|s| s.name.clone()).unwrap_or_default();
+                        crate::log(&format!(
+                            "browse: source {si} ({who}) did not answer — its group reads unreachable"
+                        ));
+                    }
+                }
+                SrcWhat::Counts(counts) => {
+                    // EMPTY is a failure, not an answer: the worker pushes one entry per request
+                    // that succeeded, so a server that stopped answering mid-probe yields nothing.
+                    let ok = !counts.is_empty();
+                    unsafe {
+                        for s in (*addr_of_mut!(SECTIONS)).iter_mut().filter(|s| s.src == si) {
+                            if let Some((_, n)) = counts.iter().find(|(k, _)| *k == s.key) {
+                                s.count = *n;
+                            }
+                        }
+                    }
+                    if ok {
+                        SRC_FACTS_GEN.fetch_add(1, Ordering::SeqCst); // "Films" becomes "185 films"
+                    }
+                    if let Some(s) = source_mut(si) {
+                        s.counts_done = ok;
+                        s.retry_cd = if ok { 0 } else { SRC_RETRY_CD };
                     }
                 }
             }
-            if ok {
-                SRC_FACTS_GEN.fetch_add(1, Ordering::SeqCst); // "Films" becomes "185 films"
-            }
-            if let Some(s) = source_mut(si) {
-                s.counts_done = ok;
-                s.retry_cd = if ok { 0 } else { SRC_RETRY_CD };
-            }
+            true
         }
+    );
+    if committed != Some(true) {
+        return; // same slot, different origin/token/profile: every byte belongs to the old lifecycle
     }
 }
 
@@ -1943,48 +1964,54 @@ pub(crate) fn pump() -> bool {
         // a fact about NOW in both directions — a served page says the server is answering, a
         // failed one says it is not — and it is deliberately not gated on the query generation:
         // whether the machine replied does not depend on which listing was asked for.
-        let lifecycle_ok = sections()
-            .get(r.sec)
-            .map(|section| section.src)
-            .is_some_and(|src| mark_source_reachable(src, r.client, r.token_gen, r.total >= 0));
-        if !lifecycle_ok {
-            // Query generation alone survives a re-point/retoken/profile reset. The result was
-            // fetched with another lifecycle, so neither its reachability nor its rows apply.
-        } else if r.total < 0 {
-            // the fetch FAILED (network/parse) — leave the store exactly as it was and back
-            // off before retrying (a wiped-to-"empty" store here was a review-confirmed bug:
-            // one wifi hiccup blanked a populated grid permanently)
-            unsafe { RETRY_CD = 120 }; // ~2s at 60fps
-            // …but SAY SO. The store staying put is why nothing else in this landing can record
-            // the failure, and for a first page that meant `total` stayed -1 and the grid spun
-            // forever. Blamed on the same generation gate as a success: a landing from a query the
-            // user has already replaced describes a listing nobody is looking at any more.
-            if r.gen == GEN.load(Ordering::SeqCst) {
-                if let Some(st) = state_mut(r.sec) {
-                    st.fetch = SecFetch::Failed;
-                }
-            }
-        } else if r.gen == GEN.load(Ordering::SeqCst) {
-            if let Some(st) = state_mut(r.sec) {
-                // the server answered: Ready even at totalSize 0 — an empty library is an answer,
-                // never a fault (`StatusKind::Empty`'s rule, and `SecFetch`'s)
-                st.fetch = SecFetch::Ready;
-                if let Some(sorts) = r.sorts {
-                    if st.sorts.is_empty() {
-                        st.sorts = sorts;
+        if let Some(src) = sections().get(r.sec).map(|section| section.src) {
+            let client = r.client;
+            let token_gen = r.token_gen;
+            let _ = crate::plex::commit_reachability_if_current(
+                client.id(),
+                client,
+                token_gen,
+                r.total >= 0,
+                None,
+                |outcome| {
+                    if !apply_source_outcome(src, client, outcome) {
+                        return false;
                     }
-                }
-                if st.total != r.total {
-                    st.total = r.total;
-                    st.items.resize_with(st.total as usize, || None);
-                }
-                for (k, m) in r.items.into_iter().enumerate() {
-                    if let Some(slot) = st.items.get_mut(r.start + k) {
-                        *slot = Some(m);
+                    if r.total < 0 {
+                        // the fetch FAILED (network/parse) — leave the store exactly as it was and
+                        // back off before retrying; one wifi hiccup must not blank a populated grid
+                        unsafe { RETRY_CD = 120 }; // ~2s at 60fps
+                        // A failure is blamed only on the query it actually fetched.
+                        if r.gen == GEN.load(Ordering::SeqCst) {
+                            if let Some(st) = state_mut(r.sec) {
+                                st.fetch = SecFetch::Failed;
+                            }
+                        }
+                    } else if r.gen == GEN.load(Ordering::SeqCst) {
+                        if let Some(st) = state_mut(r.sec) {
+                            // the server answered: Ready even at totalSize 0 — an empty library is
+                            // an answer, never a fault (`StatusKind::Empty`'s rule)
+                            st.fetch = SecFetch::Ready;
+                            if let Some(sorts) = r.sorts {
+                                if st.sorts.is_empty() {
+                                    st.sorts = sorts;
+                                }
+                            }
+                            if st.total != r.total {
+                                st.total = r.total;
+                                st.items.resize_with(st.total as usize, || None);
+                            }
+                            for (k, m) in r.items.into_iter().enumerate() {
+                                if let Some(slot) = st.items.get_mut(r.start + k) {
+                                    *slot = Some(m);
+                                }
+                            }
+                            changed = true;
+                        }
                     }
+                    true
                 }
-                changed = true;
-            }
+            );
         }
     }
     maybe_spawn();
@@ -2189,6 +2216,16 @@ mod tests {
         (cleanup, sid, client)
     }
 
+    fn registered_directory_source() -> (RegisteredCleanup, ServerId, &'static crate::plex::Client) {
+        let (cleanup, sid, client) = registered_page_source();
+        let state = state_mut(0).unwrap();
+        state.genres = vec![GenreEntry { id: "new".into(), title: "New Genre".into() }];
+        state.letters = vec![("N".into(), 7)];
+        state.genres_done = false;
+        state.letters_done = false;
+        (cleanup, sid, client)
+    }
+
     fn queue_success_from(client: &'static crate::plex::Client, token_gen: u32) {
         let landing = SrcLanding {
             client,
@@ -2214,6 +2251,44 @@ mod tests {
         });
         FETCHING.store(true, Ordering::SeqCst);
         pump();
+    }
+
+    fn queue_directories_from(client: &'static crate::plex::Client, token_gen: u32) {
+        let epoch = EPOCH.load(Ordering::SeqCst);
+        *GENRE_RESULT.lock().unwrap_or_else(|e| e.into_inner()) = Some(DirectoryResult {
+            epoch,
+            sec: 0,
+            client,
+            token_gen,
+            list: vec![GenreEntry { id: "stale".into(), title: "Stale Genre".into() }],
+        });
+        *LETTER_RESULT.lock().unwrap_or_else(|e| e.into_inner()) = Some(DirectoryResult {
+            epoch,
+            sec: 0,
+            client,
+            token_gen,
+            list: vec![("S".into(), 99)],
+        });
+        GENRE_FETCHING.store(true, Ordering::SeqCst);
+        LETTERS_FETCHING.store(true, Ordering::SeqCst);
+        land_directory(&GENRE_FETCHING, &GENRE_RESULT, |st, list| {
+            st.genres_done = true;
+            st.genres = list;
+        });
+        land_directory(&LETTERS_FETCHING, &LETTER_RESULT, |st, list| {
+            st.letters_done = true;
+            st.letters = list;
+        });
+    }
+
+    fn assert_new_directories_survive() {
+        let state = states().first().unwrap();
+        assert_eq!(state.genres.len(), 1);
+        assert_eq!(state.genres[0].id, "new");
+        assert_eq!(state.genres[0].title, "New Genre");
+        assert_eq!(state.letters, vec![("N".into(), 7)]);
+        assert!(!state.genres_done);
+        assert!(!state.letters_done);
     }
 
     #[test]
@@ -2327,6 +2402,88 @@ mod tests {
         assert_eq!(sources()[0].state, SourceState::Unreachable);
         assert_eq!(states()[0].total, 1);
         assert_eq!(states()[0].items.len(), 1);
+    }
+
+    #[test]
+    fn a_repoint_requested_after_validation_waits_for_the_local_page_commit() {
+        let _g = crate::testlock::serial();
+        let (_cleanup, sid, client) = registered_resident_page_source();
+        let token_gen = client.token_gen();
+        let (start_tx, start_rx) = std::sync::mpsc::channel();
+        let (attempt_tx, attempt_rx) = std::sync::mpsc::channel();
+        let committed = std::sync::Arc::new(AtomicBool::new(false));
+        let seen = committed.clone();
+        let repoint = std::thread::spawn(move || {
+            start_rx.recv().unwrap();
+            attempt_tx.send(()).unwrap();
+            assert_eq!(crate::plex::register_for_test("browse-life", "10.0.0.2", 32400, "new", "cid"), sid);
+            assert!(seen.load(Ordering::SeqCst), "repoint returned before the browse commit released WRITE");
+        });
+
+        let applied = crate::plex::commit_reachability_if_current(
+            sid,
+            client,
+            token_gen,
+            true,
+            None,
+            |outcome| {
+                assert!(crate::plex::write_held_for_test(), "local page mutation must execute under WRITE");
+                start_tx.send(()).unwrap();
+                attempt_rx.recv().unwrap(); // the other thread is now about to take WRITE
+                assert!(apply_source_outcome(0, client, outcome));
+                state_mut(0).unwrap().total = 2;
+                committed.store(true, Ordering::SeqCst);
+                true
+            },
+        );
+        assert_eq!(applied, Some(true));
+        repoint.join().unwrap();
+        assert_eq!(states()[0].total, 2);
+        assert!(!std::ptr::eq(client, crate::plex::client_for(sid).unwrap()));
+    }
+
+    #[test]
+    fn directory_landings_from_before_a_same_slot_repoint_are_inert() {
+        let _g = crate::testlock::serial();
+        let (_cleanup, sid, old) = registered_directory_source();
+        let old_gen = old.token_gen();
+        assert_eq!(crate::plex::register_for_test("browse-life", "10.0.0.2", 32400, "new", "cid"), sid);
+        queue_directories_from(old, old_gen);
+        assert_new_directories_survive();
+    }
+
+    #[test]
+    fn directory_landings_from_before_an_in_place_retoken_are_inert() {
+        let _g = crate::testlock::serial();
+        let (_cleanup, sid, old) = registered_directory_source();
+        let old_gen = old.token_gen();
+        assert_eq!(crate::plex::register_for_test("browse-life", "10.0.0.1", 32400, "new", "cid"), sid);
+        queue_directories_from(old, old_gen);
+        assert_new_directories_survive();
+    }
+
+    #[test]
+    fn directory_landings_from_before_a_profile_reset_are_inert() {
+        let _g = crate::testlock::serial();
+        let (_cleanup, sid, old) = registered_directory_source();
+        let old_gen = old.token_gen();
+        crate::plex::revoke_for_profile_switch();
+        assert_eq!(crate::plex::register_for_test("browse-life", "10.0.0.1", 32400, "profile", "cid"), sid);
+        crate::plex::finish_profile_switch(&[sid]);
+        queue_directories_from(old, old_gen);
+        assert_new_directories_survive();
+    }
+
+    #[test]
+    fn directory_landings_for_the_current_lifecycle_commit_both_menus() {
+        let _g = crate::testlock::serial();
+        let (_cleanup, _, client) = registered_directory_source();
+        queue_directories_from(client, client.token_gen());
+        let state = states().first().unwrap();
+        assert_eq!(state.genres[0].id, "stale");
+        assert_eq!(state.letters, vec![("S".into(), 99)]);
+        assert!(state.genres_done);
+        assert!(state.letters_done);
     }
 
     #[test]

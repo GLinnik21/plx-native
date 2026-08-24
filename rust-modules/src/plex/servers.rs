@@ -342,19 +342,18 @@ pub fn publish_probe_result(id: ServerId, outcome: Outcome) {
 ///
 /// A generic failure cannot distinguish HTTP status from transport/parse failure. Preserve a
 /// concurrently-published [`Outcome::Unauthorized`] under the same lock; success is definitive.
-/// The returned outcome is the canonical value the caller should mirror into its local view.
-pub fn publish_reachability_if_current(
+/// The callback receives that canonical outcome and commits the caller's local view before the
+/// lock is released. `name`, when present, is merged into the same lifecycle transaction.
+pub fn commit_reachability_if_current<R>(
     id: ServerId,
     expected: &'static Client,
     token_gen: u32,
     ok: bool,
-) -> Option<Outcome> {
-    let _w = WRITE.lock().unwrap_or_else(|e| e.into_inner());
-    let i = id.index()?;
-    let current = client_for(id)?;
-    if !std::ptr::eq(current, expected) || current.token_gen() != token_gen {
-        return None;
-    }
+    name: Option<&str>,
+    commit: impl FnOnce(Outcome) -> R,
+) -> Option<R> {
+    let w = WRITE.lock().unwrap_or_else(|e| e.into_inner());
+    let i = current_lifecycle_index(id, expected, token_gen)?;
     let outcome = if ok {
         Outcome::Reachable
     } else if probe_of_code(PROBES[i].load(Ordering::Acquire)) == Some(Outcome::Unauthorized) {
@@ -363,29 +362,44 @@ pub fn publish_reachability_if_current(
         Outcome::Unreachable
     };
     PROBES[i].store(probe_code(outcome), Ordering::Release);
+    if let Some(name) = name.filter(|name| !name.is_empty()) {
+        let old = facts(id);
+        let merged = ServerFacts {
+            name: pick(name, old.map(|f| f.name.as_str())),
+            handle: old.map(|f| f.handle.clone()).unwrap_or_default(),
+            owned: old.map(|f| f.owned).unwrap_or(true),
+        };
+        FACTS[i].store(Box::into_raw(Box::new(merged)), Ordering::Release);
+    }
+    // The callback is deliberately inside WRITE: registration/revocation cannot move the client
+    // between this validation and the caller's local rows/state commit. It must not re-enter the
+    // registry; callers keep it to their own main-thread stores.
+    let committed = commit(outcome);
+    drop(w);
     crate::ui::idle::invalidate();
-    Some(outcome)
+    Some(committed)
 }
 
-/// Record a self-reported machine name only for the lifecycle that supplied it. Discovery may
-/// finish after a re-point/profile switch, and a plain id-only [`describe_name`] would then file
-/// the old server's answer under the replacement client occupying that slot.
-pub fn describe_name_if_current(id: ServerId, expected: &'static Client, token_gen: u32, name: &str) -> bool {
+/// Commit lifecycle-bound data that does not itself prove reachability (menu directories, for
+/// example). Validation and callback share [`WRITE`] for the same reason as
+/// [`commit_reachability_if_current`]. The callback must not re-enter this registry.
+pub fn commit_if_current<R>(
+    id: ServerId,
+    expected: &'static Client,
+    token_gen: u32,
+    commit: impl FnOnce() -> R,
+) -> Option<R> {
     let _w = WRITE.lock().unwrap_or_else(|e| e.into_inner());
-    let Some(i) = id.index() else { return false };
-    let Some(current) = client_for(id) else { return false };
-    if !std::ptr::eq(current, expected) || current.token_gen() != token_gen {
-        return false;
-    }
-    let old = facts(id);
-    let merged = ServerFacts {
-        name: pick(name, old.map(|f| f.name.as_str())),
-        handle: old.map(|f| f.handle.clone()).unwrap_or_default(),
-        owned: old.map(|f| f.owned).unwrap_or(true),
-    };
-    FACTS[i].store(Box::into_raw(Box::new(merged)), Ordering::Release);
-    crate::ui::idle::invalidate();
-    true
+    current_lifecycle_index(id, expected, token_gen)?;
+    Some(commit())
+}
+
+/// Resolve one exact lifecycle. Caller holds [`WRITE`], so pointer and generation cannot move
+/// between this check and its critical-section commit.
+fn current_lifecycle_index(id: ServerId, expected: &'static Client, token_gen: u32) -> Option<usize> {
+    let i = id.index()?;
+    let current = client_for(id)?;
+    (std::ptr::eq(current, expected) && current.token_gen() == token_gen).then_some(i)
 }
 
 /// Record what the roster says about a server. Idempotent and additive: a field given as empty
@@ -785,6 +799,12 @@ pub(crate) fn reset_for_test() {
     // into slots the walk starts above — a table that reads as empty however much is in it.
     FLOOR.store(0, Ordering::Release);
     CURRENT.store(ServerId::UNSET.0 as u32, Ordering::Release);
+}
+
+/// Assert from a cross-module lifecycle test that its local commit callback still owns WRITE.
+#[cfg(test)]
+pub(crate) fn write_held_for_test() -> bool {
+    WRITE.try_lock().is_err()
 }
 
 #[cfg(test)]
