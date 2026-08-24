@@ -1175,17 +1175,38 @@ fn activate_candidate(plan: &ProbePlan, c: &Candidate, origin: &Origin) {
 /// granted server that never verified an address has no slot yet and is deliberately ignored:
 /// probe failure is not authority to register an unverified endpoint. A retained/offline source,
 /// however, is already registered from its cached verified origin and receives the new state.
-fn publish_server_probe(plan: &ProbePlan, outcome: Outcome, tier: Option<probe::Location>) {
+#[derive(Clone)]
+struct SettledProbe {
+    machine_id: String,
+    outcome: Outcome,
+    tier: Option<probe::Location>,
+}
+
+fn settled_probe(plan: &ProbePlan, outcome: Outcome, tier: Option<probe::Location>) -> SettledProbe {
+    SettledProbe { machine_id: plan.machine_id.clone(), outcome, tier }
+}
+
+fn publish_settled_probe(probe: &SettledProbe) {
     let Some((id, client)) = crate::plex::server_ids()
         .filter_map(|id| crate::plex::client_for(id).map(|client| (id, client)))
-        .find(|(_, client)| client.machine_id() == plan.machine_id)
+        .find(|(_, client)| client.machine_id() == probe.machine_id)
     else {
         return;
     };
-    if let Some(link) = tier {
+    if let Some(link) = probe.tier {
         client.set_link(link);
     }
-    crate::plex::publish_probe_result(id, outcome);
+    crate::plex::publish_probe_result(id, probe.outcome);
+}
+
+fn publish_settled_probes(probes: &[SettledProbe]) {
+    for probe in probes {
+        publish_settled_probe(probe);
+    }
+}
+
+fn publish_server_probe(plan: &ProbePlan, outcome: Outcome, tier: Option<probe::Location>) {
+    publish_settled_probe(&settled_probe(plan, outcome, tier));
 }
 
 /// Legacy synchronous seam for the older acceptance fixtures. Production uses
@@ -1596,10 +1617,12 @@ pub fn refresh_roster() {
         let mut activate = |plan: &ProbePlan, c: &Candidate, origin: &Origin| {
             let _ = with_live_epoch(epoch, || activate_candidate(plan, c, origin));
         };
-        let mut observe = |plan: &ProbePlan, outcome: Outcome, tier: Option<probe::Location>| {
-            let _ = with_live_epoch(epoch, || publish_server_probe(plan, outcome, tier));
-        };
-        let found = match resolve_roster_live(&resources, &mut activate, &mut observe) {
+        let mut settled = Vec::new();
+        let found = match resolve_roster_live(&resources, &mut activate, &mut |plan, outcome, tier| {
+            let probe = settled_probe(plan, outcome, tier);
+            settled.push(probe.clone());
+            let _ = with_live_epoch(epoch, || publish_settled_probe(&probe));
+        }) {
             Resolved::Reached(f) => f,
             // "no server answered" is not evidence that the grant is gone: the friend's box may
             // simply be off. Dropping the roster here would make an offline share un-browsable
@@ -1654,6 +1677,10 @@ pub fn refresh_roster() {
                 let primary = sources.iter().position(|s| s.machine_id == server.machine_id);
                 let installed = install_roster(&sources, primary);
                 crate::plex::finish_profile_switch(&installed);
+                // `revoke_for_profile_switch` deliberately resets every old profile's probe fact.
+                // Restore this refresh's completed per-machine answers only after the final slots
+                // and tokens are installed, so the Sources list never falls back to NotProbed.
+                publish_settled_probes(&settled);
             }
             Some((sources.len(), persisted, usable_refresh))
         });
@@ -2420,6 +2447,52 @@ mod tests {
                 ("off".into(), Outcome::Unreachable, None),
             ]
         );
+    }
+
+    #[test]
+    fn a_changed_refresh_republishes_reached_unauthorized_and_offline_after_registry_replacement() {
+        let _g = crate::testlock::serial();
+        crate::plex::reset_servers_for_test();
+        let old = [
+            crate::plex::register_for_test("yes", "10.0.0.1", 32400, "old", "cid"),
+            crate::plex::register_for_test("denied", "10.0.0.2", 32400, "old", "cid"),
+            crate::plex::register_for_test("off", "10.0.0.3", 32400, "old", "cid"),
+        ];
+        for id in old {
+            crate::plex::publish_probe_result(id, Outcome::Reachable);
+        }
+
+        // The changed=true refresh path resets every old profile fact before installing the final
+        // roster. These registrations stand in for install_roster without its network side effect.
+        crate::plex::revoke_for_profile_switch();
+        let installed = [
+            crate::plex::register_for_test("yes", "10.0.0.1", 32400, "new", "cid"),
+            crate::plex::register_for_test("denied", "10.0.0.2", 32400, "new", "cid"),
+            crate::plex::register_for_test("off", "10.0.0.3", 32400, "new", "cid"),
+        ];
+        crate::plex::client_for(installed[0]).unwrap().set_link(probe::Location::Remote);
+        crate::plex::client_for(installed[1]).unwrap().set_link(probe::Location::Local);
+        crate::plex::client_for(installed[2]).unwrap().set_link(probe::Location::Relay);
+        crate::plex::finish_profile_switch(&installed);
+        assert!(installed.iter().all(|&id| crate::plex::server_probe_result(id).is_none()));
+
+        publish_settled_probes(&[
+            SettledProbe {
+                machine_id: "yes".into(),
+                outcome: Outcome::Reachable,
+                tier: Some(probe::Location::Remote),
+            },
+            SettledProbe { machine_id: "denied".into(), outcome: Outcome::Unauthorized, tier: None },
+            SettledProbe { machine_id: "off".into(), outcome: Outcome::Unreachable, tier: None },
+        ]);
+
+        assert_eq!(crate::plex::server_probe_result(installed[0]), Some(Outcome::Reachable));
+        assert_eq!(crate::plex::server_probe_result(installed[1]), Some(Outcome::Unauthorized));
+        assert_eq!(crate::plex::server_probe_result(installed[2]), Some(Outcome::Unreachable));
+        assert_eq!(crate::plex::client_for(installed[0]).unwrap().link(), Some(probe::Location::Remote));
+        assert_eq!(crate::plex::client_for(installed[1]).unwrap().link(), Some(probe::Location::Local));
+        assert_eq!(crate::plex::client_for(installed[2]).unwrap().link(), Some(probe::Location::Relay));
+        crate::plex::reset_servers_for_test();
     }
 
     #[test]

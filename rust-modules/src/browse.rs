@@ -174,6 +174,18 @@ fn source_state(outcome: Option<crate::plex::probe::Outcome>) -> SourceState {
     }
 }
 
+fn source_snapshot(sid: ServerId) -> Option<(SourceState, Option<crate::plex::probe::Location>)> {
+    let client = crate::plex::client_for(sid)?;
+    let token_gen = client.token_gen();
+    // Probe publication follows set_link, so read the acquire-backed result before the tier. The
+    // second lookup rejects a re-point or in-place retoken between those two reads.
+    let state = source_state(crate::plex::server_probe_result(sid));
+    let tier = client.link();
+    crate::plex::client_for(sid)
+        .filter(|now| std::ptr::eq(*now, client) && now.token_gen() == token_gen)
+        .map(|_| (state, tier))
+}
+
 // ---- section table (discovered per source) ---------------------------------------------------
 
 /// One browsable library section (movie or show), from one source's `GET /library/sections`.
@@ -373,6 +385,10 @@ static LETTER_RESULT: Mutex<Option<(u32, usize, Vec<(String, i64)>)>> = Mutex::n
 /// sections are discovered on the main thread ([`ensure_sections`]) and so never reach a worker at
 /// that phase; without this its group header would be the one blank line in the panel.
 struct SrcLanding {
+    /// Exact registry lifecycle the worker dialled. Slot id alone survives both re-point and
+    /// profile changes; pointer identity catches the former and token_gen catches in-place retoken.
+    client: &'static crate::plex::Client,
+    token_gen: u32,
     /// `GET /`'s `friendlyName`, or "" when it was already known or the server did not answer
     name: String,
     what: SrcWhat,
@@ -507,9 +523,7 @@ fn sync_roster() {
             // already have a name for is deliberately not followed: a machine name changing under
             // an open panel is churn, not news.
             Some(s) => {
-                if let Some(client) = crate::plex::client_for(sid) {
-                    let state = source_state(crate::plex::server_probe_result(sid));
-                    let tier = client.link();
+                if let Some((state, tier)) = source_snapshot(sid) {
                     if s.state != state || s.tier != tier {
                         s.state = state;
                         s.tier = tier;
@@ -548,7 +562,7 @@ fn sync_roster() {
                 // the frames between registration and the roster landing.
                 let owned = f.map(|f| f.owned).unwrap_or(true);
                 let (name, handle) = f.map(|f| (f.name.clone(), f.handle.clone())).unwrap_or_default();
-                let client = crate::plex::client_for(sid);
+                let Some((state, tier)) = source_snapshot(sid) else { continue };
                 (*addr_of_mut!(SOURCES)).push(BrowseSource {
                     sid,
                     machine_id: machine_of(sid),
@@ -559,8 +573,8 @@ fn sync_roster() {
                     // source that failed, and the whole group would otherwise open dimmed. That
                     // is `NotProbed`, which `reachable()` answers `true` for — the seed this
                     // replaced was a literal `true`, and the two say the same thing here.
-                    state: source_state(crate::plex::server_probe_result(sid)),
-                    tier: client.and_then(|c| c.link()),
+                    state,
+                    tier,
                     sections_done: false,
                     counts_done: false,
                     retry_cd: 0,
@@ -810,7 +824,14 @@ fn activate_source_of(_i: usize) {
 fn mark_source_reachable(i: usize, ok: bool) {
     let Some(src) = sections().get(i).map(|s| s.src) else { return };
     let Some(s) = source_mut(src) else { return };
-    if s.reachable() == ok {
+    let next = if ok {
+        SourceState::Reachable
+    } else if s.state == SourceState::Unauthorized {
+        SourceState::Unauthorized
+    } else {
+        SourceState::Unreachable
+    };
+    if s.state == next {
         return;
     }
     s.set_reachable(ok);
@@ -1690,55 +1711,53 @@ fn maybe_discover() {
     }
     let Some((si, sid, job, want_name)) = pick else { return };
 
+    let Some(client) = crate::plex::client_for(sid) else { return };
+    let token_gen = client.token_gen();
     let epoch = EPOCH.load(Ordering::SeqCst);
     let is_sections = matches!(job, SrcJob::Sections);
     SRC_FETCHING.store(true, Ordering::SeqCst);
-    // `sid` is captured HERE, on the main thread. The worker resolves it through `client_for`
-    // and never reads `client()` — a worker that asked for "the current server" would dial
-    // whichever one the user happened to be browsing by the time it got scheduled.
+    // The exact client is captured HERE, on the main thread. It is leaked and therefore safe for
+    // the worker to retain, while the landing's pointer+token generation rejects results from an
+    // origin/profile lifecycle the slot has since replaced.
     let spawned = crate::task::spawn_small("sources", move || {
         let landing = catch_unwind(|| {
             // the server naming ITSELF, so a roster that never reached plex.tv still heads its
             // group with a machine name. One request, once, per source.
             let name = if want_name {
-                crate::plex::client_for(sid).and_then(|c| c.friendly_name()).unwrap_or_default()
+                client.friendly_name().unwrap_or_default()
             } else {
                 String::new()
             };
             let what = match job {
-                SrcJob::Sections => SrcWhat::Sections(
-                    crate::plex::client_for(sid).and_then(|c| c.sections()).map(|mc| project_sections(&mc)),
-                ),
+                SrcJob::Sections => SrcWhat::Sections(client.sections().map(|mc| project_sections(&mc))),
                 SrcJob::Counts(keys) => {
                     let mut out = Vec::new();
-                    if let Some(c) = crate::plex::client_for(sid) {
-                        for k in keys {
-                            // size=0: PMS answers with `totalSize` and no items at all, so a
-                            // library's count costs a header rather than a page.
-                            let q = SectionQuery {
-                                section_key: k,
-                                sort: "",
-                                filters: &[],
-                                start: 0,
-                                size: 0,
-                                include_meta: false,
-                            };
-                            if let Some(mc) = c.section_items_query(&q) {
-                                out.push((k, mc.total_size));
-                            }
+                    for k in keys {
+                        // size=0: PMS answers with `totalSize` and no items at all, so a
+                        // library's count costs a header rather than a page.
+                        let q = SectionQuery {
+                            section_key: k,
+                            sort: "",
+                            filters: &[],
+                            start: 0,
+                            size: 0,
+                            include_meta: false,
+                        };
+                        if let Some(mc) = client.section_items_query(&q) {
+                            out.push((k, mc.total_size));
                         }
                     }
                     SrcWhat::Counts(out)
                 }
             };
-            SrcLanding { name, what }
+            SrcLanding { client, token_gen, name, what }
         })
         .unwrap_or_else(|_| {
             // a panicking fetch is a FAILURE of the job it was doing, never a success of another:
             // reporting a panicked count probe as a failed section list would drop the source's
             // whole library list on the floor.
             let what = if is_sections { SrcWhat::Sections(None) } else { SrcWhat::Counts(Vec::new()) };
-            SrcLanding { name: String::new(), what }
+            SrcLanding { client, token_gen, name: String::new(), what }
         });
         *SRC_RESULT.lock().unwrap_or_else(|e| e.into_inner()) = Some((epoch, si, landing));
     });
@@ -1782,7 +1801,15 @@ fn land_discovery() {
     if epoch != EPOCH.load(Ordering::SeqCst) {
         return; // the account changed under it — every index means something else now
     }
-    let SrcLanding { name, what } = landing;
+    let current = sources()
+        .get(si)
+        .filter(|s| s.sid == landing.client.id())
+        .and_then(|s| crate::plex::client_for(s.sid))
+        .is_some_and(|client| std::ptr::eq(client, landing.client) && client.token_gen() == landing.token_gen);
+    if !current {
+        return; // same slot, different origin/token/profile: every byte belongs to the old lifecycle
+    }
+    let SrcLanding { name, what, .. } = landing;
     if !name.is_empty() {
         if let Some(s) = source_mut(si) {
             s.name = name.clone();
@@ -2092,6 +2119,37 @@ fn maybe_spawn() {
 mod tests {
     use super::*;
 
+    struct RegisteredCleanup;
+    impl Drop for RegisteredCleanup {
+        fn drop(&mut self) {
+            reset();
+            crate::plex::reset_servers_for_test();
+        }
+    }
+
+    fn registered_source() -> (RegisteredCleanup, ServerId, &'static crate::plex::Client) {
+        crate::plex::reset_servers_for_test();
+        reset();
+        let sid = crate::plex::register_for_test("browse-life", "10.0.0.1", 32400, "old", "cid");
+        let mut source = a_source("original", "", true);
+        source.sid = sid;
+        source.sections_done = false;
+        seed_sources(vec![source]);
+        (RegisteredCleanup, sid, crate::plex::client_for(sid).unwrap())
+    }
+
+    fn queue_success_from(client: &'static crate::plex::Client, token_gen: u32) {
+        let landing = SrcLanding {
+            client,
+            token_gen,
+            name: "stale-name".into(),
+            what: SrcWhat::Sections(Some(vec![(99, "Stale Library".into(), SecKind::Movie)])),
+        };
+        *SRC_RESULT.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some((EPOCH.load(Ordering::SeqCst), 0, landing));
+        land_discovery();
+    }
+
     #[test]
     fn an_equal_size_profile_roster_replaces_the_inactive_source_instead_of_appending() {
         let _g = crate::testlock::serial();
@@ -2110,6 +2168,51 @@ mod tests {
 
         reset();
         crate::plex::reset_servers_for_test();
+    }
+
+    #[test]
+    fn a_discovery_landing_from_before_a_same_slot_repoint_is_inert() {
+        let _g = crate::testlock::serial();
+        let (_cleanup, sid, old) = registered_source();
+        let old_gen = old.token_gen();
+        assert_eq!(crate::plex::register_for_test("browse-life", "10.0.0.2", 32400, "new", "cid"), sid);
+        crate::plex::publish_probe_result(sid, crate::plex::probe::Outcome::Unauthorized);
+
+        queue_success_from(old, old_gen);
+        assert_eq!(crate::plex::server_probe_result(sid), Some(crate::plex::probe::Outcome::Unauthorized));
+        assert_eq!(sources()[0].name, "original");
+        assert!(sections().is_empty(), "old-origin rows must not enter the new lifecycle");
+    }
+
+    #[test]
+    fn a_discovery_landing_from_before_an_in_place_retoken_is_inert() {
+        let _g = crate::testlock::serial();
+        let (_cleanup, sid, old) = registered_source();
+        let old_gen = old.token_gen();
+        assert_eq!(crate::plex::register_for_test("browse-life", "10.0.0.1", 32400, "new", "cid"), sid);
+        assert!(std::ptr::eq(old, crate::plex::client_for(sid).unwrap()), "retoken stays in place");
+        crate::plex::publish_probe_result(sid, crate::plex::probe::Outcome::Unauthorized);
+
+        queue_success_from(old, old_gen);
+        assert_eq!(crate::plex::server_probe_result(sid), Some(crate::plex::probe::Outcome::Unauthorized));
+        assert_eq!(sources()[0].name, "original");
+        assert!(sections().is_empty());
+    }
+
+    #[test]
+    fn a_discovery_landing_from_before_a_profile_reset_is_inert() {
+        let _g = crate::testlock::serial();
+        let (_cleanup, sid, old) = registered_source();
+        let old_gen = old.token_gen();
+        crate::plex::revoke_for_profile_switch();
+        assert_eq!(crate::plex::register_for_test("browse-life", "10.0.0.1", 32400, "profile", "cid"), sid);
+        crate::plex::finish_profile_switch(&[sid]);
+        crate::plex::publish_probe_result(sid, crate::plex::probe::Outcome::Unreachable);
+
+        queue_success_from(old, old_gen);
+        assert_eq!(crate::plex::server_probe_result(sid), Some(crate::plex::probe::Outcome::Unreachable));
+        assert_eq!(sources()[0].name, "original");
+        assert!(sections().is_empty());
     }
 
     /// Regression: `reset()` dropped the three result mailboxes but left the single-flight
@@ -2812,6 +2915,10 @@ mod tests {
         mark_source_reachable(1, true); // …and it comes back
         assert!(sources()[1].reachable());
         assert_eq!(sources()[1].retry_cd, 0, "a server that answered is worth re-asking at once");
+
+        source_mut(1).unwrap().state = SourceState::Unauthorized;
+        mark_source_reachable(1, true);
+        assert_eq!(sources()[1].state, SourceState::Reachable, "a successful page clears a known 401");
         reset();
     }
 
@@ -2958,7 +3065,7 @@ mod tests {
     #[test]
     fn an_empty_count_landing_does_not_latch_the_probe_off() {
         let _g = crate::testlock::serial();
-        seed_sources(vec![a_source("mac-mini", "", true)]);
+        let (_cleanup, _, client) = registered_source();
         append_sections(0, vec![(1, "Movies".into(), SecKind::Movie)]);
         if let Some(s) = source_mut(0) {
             s.counts_done = false;
@@ -2966,19 +3073,34 @@ mod tests {
         let epoch = EPOCH.load(Ordering::SeqCst);
 
         // nothing came back
-        *SRC_RESULT.lock().unwrap_or_else(|e| e.into_inner()) =
-            Some((epoch, 0, SrcLanding { name: String::new(), what: SrcWhat::Counts(Vec::new()) }));
+        *SRC_RESULT.lock().unwrap_or_else(|e| e.into_inner()) = Some((
+            epoch,
+            0,
+            SrcLanding {
+                client,
+                token_gen: client.token_gen(),
+                name: String::new(),
+                what: SrcWhat::Counts(Vec::new()),
+            },
+        ));
         land_discovery();
         assert!(!sources()[0].counts_done, "an empty answer must leave the probe armed");
         assert_eq!(sections()[0].count, -1);
 
         // …and the real one does land, and does latch
-        *SRC_RESULT.lock().unwrap_or_else(|e| e.into_inner()) =
-            Some((epoch, 0, SrcLanding { name: String::new(), what: SrcWhat::Counts(vec![(1, 185)]) }));
+        *SRC_RESULT.lock().unwrap_or_else(|e| e.into_inner()) = Some((
+            epoch,
+            0,
+            SrcLanding {
+                client,
+                token_gen: client.token_gen(),
+                name: String::new(),
+                what: SrcWhat::Counts(vec![(1, 185)]),
+            },
+        ));
         land_discovery();
         assert!(sources()[0].counts_done);
         assert_eq!(sections()[0].count, 185, "the row can say \"185 films\" now");
-        reset();
     }
 
     /// With one source the projection is the identity map, which is what makes a single-server
