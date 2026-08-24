@@ -1,224 +1,153 @@
-# LG App Self Checklist — where this app stands, item by item
+# LG App Self Checklist — measured state, item by item
 
-**The checklist is a submission DOCUMENT, not a rubric you grade yourself against privately.** LG
-names it as *the* required document for a webOS TV submission (NetCast used a "Technical Note"
-instead), and its own preamble sets the marking rule:
+**The checklist is a submission document, not an internal confidence score.** LG names it as a
+required webOS TV submission document, and its own preamble requires every item to be marked Pass or
+N/A before submission. An unrun item cannot honestly be marked Pass; a Fail must be debugged before
+submission.
 
-> All test items must have either a "Pass" or "N/A" result before submitting. If an item is marked
-> as "Pass" when its result is supposed to be "N/A" and/or if an item is marked as "N/A" when it is
-> supposed to be "Pass", the app can be rejected for not providing accurate information. In case
-> there is an item marked as "Fail", the app must be submitted post debugging.
+Checklist version 5.0 (updated 2022-09-27), 53 items. Status taken **2026-08-24** against integrated
+HEAD `7b71721c`.
 
-So **"we never tested it" is not a markable state.** That is the real reason the untested column
-below matters as much as the failing one: an honest submission cannot mark those Pass, and marking
-them Pass anyway is itself a documented rejection ground.
+Native eligibility is no longer the open question this file used to describe. Seller Lounge accepts
+this IPK as **File Type: Native** and asks for its native SDK version, chipset and resolution; see
+`docs/distribution.md` §2. The remaining questions are QA and submission-readiness questions.
 
-Checklist version 5.0 (updated 2022-09-27), 53 items. This file records **our** status against it.
-Read `docs/distribution.md` §2 first for the eligibility question this document deliberately sets
-aside — LG's live `appinfo.json` reference still says of `type` that *"Only `web` is allowed
-currently"*, and whether a native ipk is submittable at all is unsettled.
+## 1. Integrated-plan completion is not LG submission readiness
 
-Status taken 2026-08-23. **Bump this line in the same edit that changes any row below** — it is the only sentence in the file nothing else restates, so a stale one silently discounts the newest rows as older than they are, which is what it was doing for the four entries dated 2026-08-23 (#14, #43 CASE1, #46, #50/51).
+The Claude integration plan is complete in this tree: T2/T4/T3/T3b and PR #60 are present. Its
+measured gates are:
 
----
+- host `make check`: **1163/1163** tests passed;
+- harness unit suite: **53/53** passed;
+- `--no-default-features`: green;
+- ARM cross-build: green;
+- firmware compatibility: **OK for webOS 4.4.2 through 11.2.0**;
+- exact television/debug build: synthetic **20/20**, server **21/21**, and `--fps-player`
+  **16/16**.
 
-## 1. The four that FAIL, and why
+Those results prove a great deal about this exact integrated implementation. They do **not** turn an
+unrun LG item into Pass, do not substitute for Store-distribution evidence, and do not resolve a
+submission-policy conflict. The exact television run was the debug build; the release configuration
+was type-checked and cross-built, not silently treated as the same artefact.
 
-### #43 CASE1 — resolution must change with network speed
+## 2. Submission blockers — NOT DONE
 
-**Still FAILS, and since 2026-08-23 (PR #57) for a narrower reason.** There is no adaptive bitrate
-anywhere: nothing measures the link, so no rung ever moves on its own — which is precisely what this
-item asks for. What the app now has is a USER-chosen ceiling (`route::Quality` — Auto plus five
-rungs, in the player's `…` popover) that is a routing policy rather than a parameter: an
-over-ceiling source loses direct play *and* the container remux, leaving the one flavour whose query
-the server can come in under, and `route::set_quality` re-decides the playback already on screen. So
-"one direct-play-vs-transcode decision at start, held for the session" is no longer true — a user
-can change it mid-film; a *measurement* cannot.
+### #43 CASE1 — resolution must change with network speed: FAIL
 
-The item's own legs are 512 Kbps → 1 Mbps → 7 Mbps → 17.5 Mbps with the remark *"buffering should
-not occur constantly"*; the two slow legs would still buffer continuously with nobody touching the
-picker. Closing it needs the measurement half plus a device pass over those four legs
-(`tools/netcond.py` is where the legs become reproducible).
+Automatic mid-session adaptive bitrate is not implemented. The app has a user-selected quality
+ceiling (`route::Quality`: Auto plus five rungs), and changing it re-decides the playback already on
+screen. Nothing measures the link and moves the rung automatically.
 
-**The legs can now be PRODUCED, which they could not before 2026-08-23** — `tools/netcond.py`
-gained a `rate:<kbps>` mode, so `echo rate:512 > /tmp/netcond.mode` throttles the link the app is
-streaming over, live, under an already-open transfer, and `rate:512@/library/parts` throttles the
-media stream while leaving the control calls at full speed. That does not move this item off the
-FAIL list — the defect is the absent ABR, not the absent instrument — but it turns "the two slow
-legs would buffer continuously" from a prediction into something measurable, and it is the same
-instrument #14 needs.
+The required 512 Kbps, 1 Mbps, 7 Mbps and 17.5 Mbps legs are reproducible with
+`tools/netcond.py`'s `rate:<kbps>` mode, but they cannot pass today without a person operating the
+picker. Closing this item requires link measurement, automatic live switching, and then a device run
+over all four legs. A user ceiling is not ABR.
 
-### #43 CASE2 — IPv6
+### #53 — factory reset, then execute the app: EXTERNAL EVIDENCE UNAVAILABLE
 
-Implemented, not yet device-accepted. `stream.rs` resolves with `AF_UNSPEC`, walks the whole
-`getaddrinfo` chain, keeps IPv6 literals bare for the resolver and bracketed in URLs, and has host
-tests for both address families. A real IPv6 PMS playback run is still owed before this row is Pass.
+Native Store submission is possible, but this item cannot be answered with a Developer Mode or
+Homebrew sideload: a factory reset removes that installation route. It needs an actual
+Store-distributed build, followed by factory reset, install/restore through the supported
+distribution channel, and launch. That distribution evidence is not available yet, so this row is
+Open rather than N/A.
 
-### #20 / #43 / #47 — a tester cannot reach a server at all
+### Root BACK on the entry page: POLICY CONFLICT
 
-The former lab blocker is implemented, not yet device-accepted. `auth.rs` ranks all granted
-connection URLs; `http.rs` routes HTTPS PMS control through libcurl, `curlio.rs` carries HTTPS
-media, and `stream.rs` resolves hostnames plus IPv4/IPv6 for plaintext origins. There is no manual
-server entry by design: the television chooses per profile from servers configured through Plex.
-An actual remote/relay browse-and-play session on the QA firmware is still required for Pass.
+This is a submission-policy blocker in addition to the numbered checklist. The current app raises
+its Cancel/Exit confirmation at Home root. The webOS 23–25 submission expectation says entry-page
+BACK must show the television Home screen. Closing it requires either native-specific Seller Lounge
+or Native SDK evidence that native apps are exempt, or a code change followed by device
+verification. The existing exit alert is not evidence of compliance.
 
-### #53 — factory reset → execute app
+## 3. Device evidence still unknown — do not mark Pass
 
-Undefined for a sideloaded app: a factory reset removes Developer Mode and the Homebrew Channel
-along with it. Meaningless in our distribution model, unanswerable in LG's.
-
----
-
-## 2. The items nobody has run
-
-Not failures — *unknowns*, and unmarkable. Every one of these is a device session, mostly not code.
-
-| # | Item | What is actually unknown |
+| # | Item | Evidence still required |
 | --- | --- | --- |
-| 3 | Reboot | The whole matrix: remote power off/on, AC unplug/replug, Recent List behaviour, playback resumed after reboot. `handlesRelaunch: false` is set and its consequences are untested. |
-| 14 | Abnormal end | Wired vs wireless × static vs dynamic IP. The DEGRADING-link half is now producible with `tools/netcond.py`'s `rate:<kbps>` (see #43 CASE1 above); the wired/wireless and static/dynamic axes still need a bench. |
-| 16 | Keyboard character fidelity | The item's own example — does `\` arrive as typed? |
-| 17 | Keyboard linked buttons | The LG VKB's Voice Search and its siblings. |
-| 26 | General (IR) remote | Every key. Everything here has only ever been driven with the Magic Remote — see §4, which is why this one is not a formality. |
-| 36 / 39 | HOME and LIVE keys | Assumed system-handled; never observed. HOME is scancode 269, unbound. |
-| 40 | Unsupported keys | `Key::Other` swallows them so it is *probably* safe, but unproven. |
-| 46 | Replay after completion | **Runnable since 2026-08-23**, on the synthetic tier: `./tests/run.py --filter pipe_replay_after_eos` plays a 20 s clip to its end and starts it again, asserting the `EOS reached → ended` / `stop_bufferfeed: torn down` pair, one re-entry (counted — more is a loop), a second `load:` line, a second fetch off the fixture server, and a media position that FALLS and then climbs. Device-run pending. What it does not answer: a replay the USER drives — a Play control on a detail page, which is server-tier — and replay of a transcode, which has a server session behind it. Needed one app change, `/tmp/plxnative-replay[=N]` (`app.rs`), which is a bounded counter re-arming the existing one-shot autoplay latch and is compiled out of a release build with the rest of `devtriggers`. |
-| 50 / 51 | Resolution × codec | **Runnable as the matrix the item asks for since 2026-08-23**, on the synthetic tier: eight cells, SD 720×480 / HD 1280×720 / FHD 1920×1080 / UHD 3840×2160 × {h264, hevc}, each grading the demuxed raster EXACTLY (`expect.video_size`) rather than through a width floor. Device-run pending. What the matrix does not answer: the 4096-wide edge the device table claims and any refusal above it, HDR at any rung but UHD/HEVC, and — because these are generated clips — a PMS *decision* on any of these shapes. |
-| 13 | LockUp / LatchUp | No known instance; never formally exercised. |
-| 22 | Search CASE2 | A query in a language the app does not support. |
+| 3 | Reboot / lifecycle | Run the native **16-case lifecycle matrix**: remote power off/on, AC unplug/replug, Recent List close/relaunch, and both launch paths. Verify the saved page is restored and an interrupted playback returns to Detail/Resume rather than autoplay. `handlesRelaunch: false` and `nativeLifeCycleInterfaceVersion: 2` do not answer native behaviour by themselves. |
+| 13 | LockUp / LatchUp | Run the exact **4-hour continuous soak**: `plxnative-homeosc` grid sweep for 1 h, full-length playback for 2 h, then `plxnative-navosc` route bounce for 1 h. Check `fuser` liveness and the crash log at every hand-off. Time accumulated during unrelated testing is not this evidence. |
+| 14 | Abnormal end | Run wired and wireless, each with static and dynamic IP, while applying the reproducible `rate:` and `blackhole` failure modes. The proxy can create the condition; it cannot reconfigure the television's network. |
+| 15 | Keyboard cursor/editing | On the LG VKB, verify cursor movement and editing with `<` and `>` rather than inferring SDL event delivery from the host simulator. |
+| 16 | Keyboard character fidelity | Type the checklist's literal `\` example and verify case transfer on the television. |
+| 17 | Keyboard linked buttons | Exercise Voice Search and the LG VKB's other linked buttons on the television. |
+| 20 / 43 | Remote server reachability | With the LAN route blocked, sign in, browse and play from the account's remote server. Record the winning HTTPS `plex.direct` origin in the event log. HTTPS control, TLS media, relay fallback and persisted per-server state are implemented, but this exact acceptance run is still owed. |
+| 43 CASE2 | IPv6 | Browse and play over a **v6-only route**. `AF_UNSPEC`, IPv6 URL bracketing and both address families are implemented and host-tested; that is not an on-device IPv6 playback result. |
+| 22 CASE2 | Unsupported-language search | Enter a CJK query and visually verify Han/Kana/Hangul text rather than tofu. The bundled fallback font and per-run fallback renderer are host-gated; RTL remains explicitly outside that claim. |
+| 26 | General IR remote | Capture every physical button on a standard IR remote, slowly and in recorded order, and decode the raw scancode/symbol pairs. The Magic Remote capture is complete; the IR remote is not. |
+| 36 / 39 | HOME and LIVE keys | Include HOME and LIVE in that capture and record what the platform actually delivers or consumes. They are intentionally not guessed or bound from web keycodes. |
+| 40 | Unsupported keys | Sweep unsupported keys on normal routes and during playback; verify they move no focus, wake no player HUD, and cancel no armed press. Host invariants do not observe the real remote or video HUD. |
 
----
+### Unnumbered release evidence still owed
 
-## 3. Passing, with the evidence
+These are not converted into numbered checklist failures, but they remain explicit release risks:
+
+- cancel an in-flight DNS lookup and an in-flight TLS handshake on the television, proving prompt
+  teardown with no stranded worker;
+- resolve and play a hostname through the app's glibc NSS path. LG libcurl's c-ares result does not
+  prove glibc NSS works inside the native jail;
+- measure the integrated build's worst-path `VmHWM` through playback with the CJK fallback exercised
+  and confirm it remains below `requiredMemory: 160`. The earlier approximately 152 MiB peak predates
+  the fully exercised bundled CJK face and is not sufficient evidence for this build;
+- install the packaged IPK — **install, not deploy** — switch the set to Korean, and verify the
+  launcher/listing keeps `PlxNative debug` while using the Korean description. Re-check after reboot
+  for SAM caching and try the documented region-qualified resource layouts if bare `ko` is ignored.
+
+## 4. Newly device-passing on 2026-08-24
+
+| # | Item | Measured basis |
+| --- | --- | --- |
+| 46 | Replay after completion | **Pass on this television.** The synthetic suite ran `pipe_finish_eos` and `pipe_replay_after_eos`: the 20 s clip reached `EOS reached → ended`, tore down, re-entered exactly once, produced a second Load and fixture fetch, and its media position fell and climbed again. This proves trigger-driven direct-play replay; user-driven and transcode replay remain useful extra coverage, not a reason to erase this measured result. |
+| 50 / 51 | Resolution × codec | **Pass on this television.** All eight SD 720×480 / HD 1280×720 / FHD 1920×1080 / UHD 3840×2160 × {H.264, HEVC} cells passed, each grading exact `expect.video_size`. The 4096-wide boundary, refusal above it, and a real PMS decision for generated-only shapes remain outside this matrix. |
+
+The complete debug-device evidence behind those rows is broader than the two checklist closures:
+
+- synthetic **20/20** proves transport, demux, feed, codec declarations, EOS/replay, seek, frame-rate
+  fixtures, and the exact resolution matrix;
+- server **21/21** proves the live Plex selection path, direct play/transcode decisions, PlayQueue,
+  track selection, markers, resume and timeline reporting for the configured library;
+- `--fps-player` **16/16** proves every configured UI and player performance scene met its gate on
+  this television.
+
+Synthetic and server tiers are complements. A future run with skipped server shapes must report the
+skips; a partial green count is not equivalent to 21/21.
+
+## 5. Other passing items and their evidence
 
 | # | Item | Basis |
 | --- | --- | --- |
-| 1, 2 | Execution, main screen | Launches and reaches Home; UI authored at 1920×1080 inside a 5% overscan frame (`consts::MARGIN_X` 96 / `MARGIN_Y` 54), asserted per screen by `no_required_content_enters_the_safe_area_exclusion_zone`. Splash is 1920×1080 PNG. **This row claimed a pass on the wrong arithmetic until 2026-08-23** — see §4. |
-| 6 | Correct text | `text::elide` for overflow, `ui/text_view.rs` for long-form scroll. **Was failing until 2026-08-22** — see §4. |
-| 7 | Focus / mouse-over | Idle, focused and **selected** states are distinct, and as of 2026-08-23 that is an OBSERVATION rather than a belief: audited screen by screen in the simulator at 1920×1080. The tab strip carries all three at once (idle = bare label, focused = bright white capsule, selected = subtle plated capsule); a `TableView` row does the same (idle plain, selected ✓, focused white pill); a card separates idle from focused by scale, drop shadow and the caption band that only the focused tile draws. Nothing needed changing. |
-| 8 | Flickering | No known flicker; the Dolby Vision Profile 5 pulse is fixed (`docs/dolby-vision.md` §4). |
-| 9 | Full-size video | Video track and video plane are both full-panel 1920×1080; no margins. |
-| 21 | Sign out | `ui/account_menu.rs` → `auth::sign_out`. |
-| 27–31, 33 | Magic Remote, pointer, OK, wheel, navigation | Pointer and click path device-proven; wheel at `app.rs:4794`. |
-| 37 | BACK key | Returns through the route trail; at Home's root raises `ui/exit_alert.rs` rather than quitting silently. |
-| 38 | EXIT key | **Bound 2026-08-22** to scancode 505 and device-verified: press → `EXIT key: terminating` → `fuser` reports NONE. |
-| 45 (remote half) | Playback control keys | **Bound 2026-08-22.** See §4. |
-| 48 | Subtitles | Text and image (PGS/VobSub) both render. **Was failing until 2026-08-22** — see §4. |
-| 49 | Resume | Server-side `viewOffset`; the harness resets it per case via `/:/unscrobble`. |
+| 1, 2 | Execution, main screen | Repeated device-suite launches reached the intended route. The 1920×1080 UI is held inside the 5% overscan frame by `MARGIN_X` 96 / `MARGIN_Y` 54 and the composed-geometry host gate. The splash is 1920×1080 and uses the app surface rather than a black field. |
+| 6 | Correct text | `text::elide`, long-form scrolling, synthesized music-note glyphs, and the bundled CJK fallback cover the implemented scripts. The separate CJK visual acceptance run in §3 is still owed; this row does not claim RTL support. |
+| 7 | Focus / mouse-over | Idle, focused and selected states are distinct and were audited screen by screen at 1920×1080; the 16/16 FPS run exercised the integrated focus/transition scenes. |
+| 8 | Flickering | No flicker was observed in the completed device matrices; the known Dolby Vision Profile 5 pulse is fixed. |
+| 9 | Full-size video | Video track and plane are full-panel 1920×1080 with no application margin. |
+| 21 | Sign out | `ui/account_menu.rs` reaches `auth::sign_out`; session removal is host-gated. |
+| 27–31, 33 | Magic Remote, pointer, OK, wheel, navigation | Pointer/click and wheel paths are device-proven; the Magic Remote raw capture contains 336 real key lines. |
+| 37 | BACK within the app | BACK returns through the route trail. Home-root behaviour is the separate policy blocker in §2 and is not hidden by this Pass. |
+| 38 | EXIT key | Scancode 505 is bound and device-verified: press → `EXIT key: terminating` → no process. |
+| 45 (remote half) | Playback control keys | Native scancodes for play/pause, stop, rewind and fast-forward are bound and device-proven. The absence of an on-screen transport row is documented in the submitted UX scenario rather than disguised as an implementation gap. |
+| 48 | Subtitles | The server matrix passed text and image subtitle paths; music-note coverage is bundled. Subtitle-appearance settings are N/A because the app exposes none. |
+| 49 | Resume | The server matrix passed the PMS-backed `viewOffset` resume path; the harness resets state through `/:/unscrobble`. |
 
----
+## 6. Decisions and N/A items
 
-## 4. What changed on 2026-08-22, and what it teaches
+**#41 — language setting.** N/A on the item's own precondition because the app exposes no in-app
+language selector. The implemented halves are still useful: localized `appinfo.json` resources cover
+launcher/listing metadata, and a validated inherited POSIX locale becomes `X-Plex-Language` for PMS
+metadata. Their Korean television acceptance recipe remains open in §3; implementation is not being
+misreported as observation.
 
-Four items moved, and every one of them moved because somebody **looked at the panel** rather than
-at the code. That is the transferable lesson: none of these was visible in a green test run.
+**#45 — on-screen transport controls.** The product deliberately uses a remote-driven, state-only
+transport HUD rather than a focusable Play/Pause/Stop/FF/RW row. The compliance description belongs
+in `docs/ux-scenario.md`, which is what the checklist tells QA to consult for movement details.
 
-**#48 and #6 — subtitles rendered `.notdef` tofu.** A capture of the Family Guy theme showed
-`▯NO GLYPH▯ It seems today / That all you see ▯NO GLYPH▯`. Subtitle convention wraps a SUNG line in
-a music note, and Inter has none of U+2669–U+266C (2849 codepoints, none of them these). Neither
-does the television: `/usr/share/fonts/DroidSans.ttf` has 911 and none either, so no fallback chain
-to a system face fixed it. `tools/cut-inter.py` now synthesizes the four glyphs.
+Genuinely N/A: #4 advertisement · #11 BACK UI button · #12 EXIT UI button · #18 terms · #19 sign-up
+(account creation happens on plex.tv) · #23 adult authentication · #24 / #25 payment · #32 colour
+keys (unused) · #35 MMRC-only restriction · #42 in-app UI sound control (there is no UI audio) · #44
+full/original screen toggle · #47 live/real-time TV streaming · #48 subtitle appearance settings ·
+#52 DRM.
 
-**#45 — the transport keys were bound to the wrong namespace.** `WCODE_DPAD_LEFT`/`_RIGHT` =
-412/417 were never the D-pad and had never fired. 412/413/415/417 are the CEA-2014-A / LG **web**
-keyCodes; the app receives native scancodes. Settled twice over — LG's own evdev→scancode table at
-offset `0x92840` of the TV's `libSDL2-2.0.so.0.4.1`, and 336 real key lines off the remote, which
-show the D-pad at 80/79/81/82 and no 412/417 at any point. Fast-forward (451), rewind (452),
-play/pause (261), exit (505), the real stop codes (120/260) and the real channel rocker (300/301)
-are now bound.
+## 7. Release verdict at this snapshot
 
-**#2 — the splash was 63% black**, against LG's *"The splash screen should not be black."*
-`mkicons.py --splash-lift=` raises the black point; cut with the app's own `theme::SURFACE_APP`,
-which also makes the splash match the first frame the app draws.
-
-**Not a numbered item, but it was wrong:** `requiredMemory` was 60 against a measured 152 MiB peak,
-and webOS substitutes a default of **120** when the field is absent — so 60 asked for less headroom
-than declaring nothing. Now 160. `docs/distribution.md` §6.10 has the measurements.
-
----
-
-## 4b. #2's OTHER half, and how it read as a pass for a year (2026-08-23)
-
-**The overscan row of §3 was marked Pass on arithmetic that says the opposite of what it claims.**
-It read *"`MARGIN_X` 90 (4.7%), inside the 5% overscan frame"* — but a 4.7% margin puts content
-NEARER the edge than a 5% one, i.e. six pixels inside the exclusion zone, on every screen at once.
-The sentence is the whole failure: nobody had ever measured a screen, so a number that sounded
-reassuring stood in for a measurement, exactly as the splash's "63% black" did until somebody looked.
-
-**And the vertical bound did not exist at all.** There was no `MARGIN_Y` anywhere in the tree, so
-nothing bounded the top or bottom of anything, and four places were outside the frame by more than
-the horizontal margin ever was: the shared top tab bar and profile chip (18px), the detail page's
-pinned compact title (14px, and 32 for a square clearLogo, which spills upward as paint), the
-Library's A–Z rail (**32px**, the worst in the app), and the Home / Library / Person scroll reveals,
-which settled a focused card's caption 24 / 16 / 40px off the bottom edge.
-
-Both margins are now `ui/consts.rs` tokens (96 / 54) and — the half that matters — the requirement
-is a host test rather than a literal:
-`no_required_content_enters_the_safe_area_exclusion_zone` grades the COMPOSED rect of every screen
-and panel against `consts::SAFE`, so a future audit can move a token, or give one screen a
-correction of its own, without the test having to be rewritten to permit it. "Required" is doing
-work in that sentence: a full-bleed backdrop, a page ground, a scrim, a focus glow and a shelf
-peeking off the bottom edge are all *supposed* to reach the panel edge.
-
-**One design cost, recorded because it is a trade rather than a fix.** Dropping the top bar 18px
-grows the tab band's backdrop-blur region by the same 18 rows of a ~1470px-wide grab, which is
-enough to put `widgets::GLASS_TRACK_MAX` outside `gfx::GLASS_REGION_BUDGET`. That constant is now
-the `min` of its two constraints instead of the "must not touch" rule alone, so the glass material
-comes off a strip wider than ~656px rather than ~848. The product's own strip is 572px, so today's
-bar is unaffected and a library with one more section still keeps it; two more would drop to the
-flat capsule, which is a designed, shipped alternative rather than a break. If that is judged too
-tight, the lever is the measured budget (`docs/glass-hardware-budget.md` §11, which already records
-the region term as ~4x conservative on the direct source path), not the frame.
-
-**LG publishes two numbers and they disagree.** The developer guide's overscan page states a **20px**
-margin; the checklist item says "overscan frame", which by broadcast convention is **5%**. This app
-is graded against 5%, because a layout that satisfies 5% satisfies 20px and not the other way round.
-
----
-
-## 5. The two items that are decisions, not defects
-
-**#45 — there is no on-screen transport button row, and there will not be one.** The item reads as
-demanding Play / Pause / Stop / FF / RW / Previous / Next as focusable UI buttons. This app is
-Apple-TV-idiom: transport is driven from the remote, and the HUD shows STATE — a small mark beside
-the elapsed clock, rewind / pause / fast-forward / a two-second play mark, and nothing at all while
-playing steadily. The owner's decision, recorded because a future reader of the checklist will
-otherwise try to "fix" it.
-
-**The compliance route is the UX scenario document, not code.** Item 45's own remark is *"refer to
-UX scenario for movement details"*, so the UX scenario submitted to Seller Lounge is what QA grades
-the transport against. That makes writing it carefully load-bearing rather than a formality — and
-it is the same escape hatch for #10, #42 and #2, which all cite it.
-
-**#41 — the app UI is English-only.** N/A on the item's own precondition (no in-app language
-setting), but a Korean tester on a Korean set still sees English display literals. The cheap halves
-are implemented: locale-specific `appinfo.json` resources cover launcher/listing metadata, and a
-validated inherited POSIX locale conditionally becomes `X-Plex-Language` for PMS metadata. What is
-unknown is whether each TV firmware refreshes the localized descriptor and exports its menu locale
-to the jailed native process; that needs the Korean-set device recipe in `docs/distribution.md`.
-
----
-
-## 6. Genuinely N/A
-
-#4 advertisement · #11 BACK *UI button* (webOS: optional; we have none) · #12 EXIT *UI button*
-(optional; the KEY is bound) · #18 terms · #19 sign-up (account creation happens on plex.tv) ·
-#23 adult authentication · #24 / #25 payment · #32 colour keys (unused) · #35 MMRC-only
-restriction (we are not MMRC-only) · #44 full/original screen toggle (no such control) · #47
-real-time streaming (no live TV) · #52 DRM.
-
-Two worth stating carefully, because they are the easiest to mis-mark: **#42 sound** — there is no
-UI audio at all (no `SDL_mixer`, no BGM, no effects), so only video audio is in scope and there is
-no in-app sound on/off; and **#48's second half** — subtitle appearance settings are N/A because we
-expose none, and our client-rendered subtitles also ignore the TV's own subtitle settings.
-
----
-
-## 7. The defect class behind two of the fixes
-
-The ♪ bug is the visible tip of something larger and it is worth recording as its own risk:
-**any codepoint outside Inter's coverage tofus identically.** CJK, Hebrew, Arabic and Thai titles
-and subtitles all would, and a Plex library with foreign-language content is not exotic. The
-television ships `DroidSansFallback.ttf` precisely for this. A per-glyph fallback chain in
-`text.rs` is real work, but it is the same defect, it hits the same two items (#6, #48), and
-nothing in the host suite can see it.
+The integrated implementation and its automated/device suites are green. The LG submission is
+**not ready**: automatic ABR is absent, Store factory-reset evidence is unavailable, root BACK is in
+policy conflict, and the unrun device evidence in §3 cannot honestly be marked Pass. Keep those two
+statements separate when reporting plan completion.
