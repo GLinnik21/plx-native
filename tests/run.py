@@ -2441,6 +2441,18 @@ def rate_stats(vals):
             "robust_min": robust_min, "head": head, "tail": tail, "drift": tail - head}
 
 
+def fps_scene_needs_token(scene, has_shared_server=False):
+    """Whether this scene must cross the signed-in boot gate.
+
+    A fresh debug install has no stored session. Every route-specific FPS scene except the login
+    spinner therefore needs the same temporary test identity as the player tier; otherwise the app
+    correctly lands on QR sign-in and the harness misreports zero samples for Home/Detail/etc. A
+    shared-server scene also needs the primary credential even if a future one intentionally uses
+    the login route.
+    """
+    return has_shared_server or scene.get("route") != "login"
+
+
 def run_fps_scene(scene, cfg, token):
     name = scene["name"]
     tv = cfg["tv"]
@@ -2449,7 +2461,6 @@ def run_fps_scene(scene, cfg, token):
     loop_floor = scene["loop_floor"]
     warmup = scene.get("warmup_s", 5)
     run_secs = scene.get("run_secs", 18)
-    is_player = scene.get("tier", "ui") == "player"
     tag = route + (f"/{overlay}" if overlay else "")
     print(f"\n=== fps:{name}  (route={tag}, loop_floor {loop_floor}/s) ===")
 
@@ -2467,10 +2478,10 @@ def run_fps_scene(scene, cfg, token):
     # round-trip via extra= so its value stays off stdout, exactly like the playback cases.
     extras = []
     srv_json = shared_servers_json(cfg, scene)
-    # A UI-tier scene normally needs no PMS token (it draws whatever the boot lands on), but a scene
-    # about the SECOND server needs the first one's credentials to get past the boot gate to Home at
-    # all — otherwise it sits on the QR sign-in screen and grades a route it never reached.
-    if (is_player or srv_json) and cfg.get("inject_token"):
+    # Route-specific scenes need to cross the signed-in boot gate even on a fresh debug install.
+    # The login spinner is the one deliberate exception: its contract is the signed-out route.
+    # A scene about the SECOND server needs the primary credential for the same reason.
+    if fps_scene_needs_token(scene, bool(srv_json)) and cfg.get("inject_token"):
         extras.append(f"printf '%s' '{token}' > {RUNDIR}/plxnative-token")
     if srv_json:
         extras.append(f"printf '%s' {sh_squote(srv_json)} > {RUNDIR}/plxnative-servers")

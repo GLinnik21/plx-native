@@ -101,6 +101,17 @@ class ItemResolution(unittest.TestCase):
         self.assertNotIn("skip", entries[2])
 
 
+class FpsIdentity(unittest.TestCase):
+    def test_every_route_except_login_gets_the_temporary_test_identity(self):
+        """FPS evidence must not depend on this debug install having been signed in by hand."""
+        for route in ("home", "detail", "itemmenu", "person", "library", "search", "account", "player"):
+            scene = {"route": route, "tier": "player" if route == "player" else "ui"}
+            self.assertTrue(run.fps_scene_needs_token(scene), route)
+        self.assertFalse(run.fps_scene_needs_token({"route": "login", "tier": "ui"}))
+        self.assertTrue(run.fps_scene_needs_token({"route": "login", "tier": "ui"}, True),
+                        "a shared-server scene still needs its primary credential")
+
+
 class LoadManifest(unittest.TestCase):
     """The whole overlay merge, against the real tracked matrix."""
 
