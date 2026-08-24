@@ -240,6 +240,9 @@ pub(crate) struct Person {
     /// never renders a "loading" state for the header, because a header that is complete without a
     /// biography must not flicker a spinner into a space it will never fill.
     pub(crate) profiled: bool,
+    /// Exact registry identity this source vector was built from. Background roster refresh can
+    /// add/remove/re-point while a page remains open, without going through `install_pms::reset`.
+    roster_gen: u32,
 }
 
 impl Person {
@@ -461,9 +464,8 @@ fn supersede() {
 /// plex.tv; a `ServerId` that names no slot ([`ServerId::UNSET`]) is not a source at all, since
 /// there is nothing to dial and no mailbox to land in.
 ///
-/// **Read ONCE, here, on the main thread.** The roster only moves on a login or a profile switch
-/// and both call [`reset`]; a person page lives for seconds. Re-reading it per frame would buy a
-/// share appearing mid-page at the cost of `pms.rs`'s whole `sync_roster` dance.
+/// Read on open and whenever the registry generation moves. The roster is tiny; rebuilding only at
+/// that explicit boundary prevents an open page retaining a revoked share or missing a new one.
 fn sources(origin: ServerId, key: &str, name: &str) -> Vec<Src> {
     let mut out: Vec<Src> = Vec::new();
     for sid in crate::plex::server_ids().chain(std::iter::once(origin)) {
@@ -646,6 +648,7 @@ pub(crate) fn open(sid: ServerId, key: &str, guid: &str, name: &str, thumb: &str
             srcs,
             landed: false,
             profiled: false,
+            roster_gen: crate::plex::server_roster_gen(),
         });
         // A page with NO source at all has already answered — see `resettle`'s fold. Deriving it
         // here rather than hardcoding `landed: false` is what keeps that rule in one place.
@@ -750,7 +753,7 @@ pub(crate) fn loading() -> bool {
 /// Returns true when the store just changed — the screen re-clamps its focus and rebuilds its
 /// cached header strings on it.
 pub(crate) fn pump() -> bool {
-    let mut changed = false;
+    let mut changed = sync_roster();
     for i in 0..NFETCH {
         unsafe {
             if RETRY_CD[i] > 0 {
@@ -776,6 +779,28 @@ pub(crate) fn pump() -> bool {
         maybe_spawn(i);
     }
     changed
+}
+
+/// Rebuild an open page's per-source projection at an exact registry identity boundary. Header
+/// profile facts survive; server-derived shelves and every old worker/mailbox do not.
+fn sync_roster() -> bool {
+    let gen = crate::plex::server_roster_gen();
+    let Some((old, sid, key, name)) = current().map(|p| (p.roster_gen, p.sid, p.key.clone(), p.name.clone())) else {
+        return false;
+    };
+    if old == gen {
+        return false;
+    }
+    supersede();
+    let srcs = sources(sid, &key, &name);
+    let Some(p) = (unsafe { (*addr_of_mut!(CURRENT)).as_mut() }) else { return false };
+    p.srcs = srcs;
+    p.shelves = Default::default();
+    p.landed = false;
+    p.roster_gen = gen;
+    resettle(p);
+    crate::ui::idle::invalidate();
+    true
 }
 
 /// Which server, and which entry of [`Person::srcs`], mailbox `i` belongs to. `None` when the page
@@ -1157,6 +1182,29 @@ mod tests {
     /// `None`) and every test below drives the mailbox by hand.
     const S0: ServerId = ServerId::from_raw(0);
     const S1: ServerId = ServerId::from_raw(1);
+
+    #[test]
+    fn an_open_person_rebuilds_exact_sources_when_the_profile_roster_changes() {
+        let _g = crate::testlock::serial();
+        crate::plex::reset_servers_for_test();
+        reset();
+        let a = crate::plex::register_for_test("person-a", "127.0.0.1", 1, "a", "cid");
+        let b = crate::plex::register_for_test("person-b", "127.0.0.1", 2, "b", "cid");
+        open(a, "7", "plex://person/7", "Actor", "");
+        assert_eq!(current().unwrap().srcs.iter().map(|s| s.sid).collect::<Vec<_>>(), [a, b]);
+
+        let old_gen = GEN.load(Ordering::SeqCst);
+        land(fx(b, K_MEDIA).unwrap(), old_gen, media(vec![movie_on(b, "4")], Vec::new()));
+        crate::plex::revoke_for_profile_switch();
+        let c = crate::plex::register_for_test("person-c", "127.0.0.1", 3, "c", "cid");
+        assert!(sync_roster());
+        assert_eq!(current().unwrap().srcs.iter().map(|s| s.sid).collect::<Vec<_>>(), [a, c]);
+        assert!(FETCH[fx(b, K_MEDIA).unwrap()].slot.lock().unwrap().is_none(), "old-share mail was superseded");
+        assert!(current().unwrap().shelves.iter().all(|s| s.items.is_empty()));
+
+        reset();
+        crate::plex::reset_servers_for_test();
+    }
 
     /// A [`Landing::Media`] payload the way a worker builds one — totals = lens, i.e. an uncapped
     /// response.

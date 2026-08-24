@@ -10,15 +10,15 @@
 //!
 //! Three rules, each earned:
 //!
-//! 1. **Drop a `local` connection on a NON-owned server unless `publicAddressMatches`.**
+//! 1. **Gate a `local` connection on a NON-owned server unless `publicAddressMatches`.**
 //!    `Connection.local` means "this address is RFC1918", *not* "you are on that LAN" — the share
 //!    advertises the OWNER's `172.20.x.x`. Dialling it from here costs the full 8 s TLS connect
 //!    deadline before the public candidate gets a turn, and the worse outcome is that it succeeds:
 //!    `172.20.x.x` may be a *different machine on our own LAN*. TLS and the identity response make
-//!    that success safe to reject; neither makes the sequential 8 s stall useful. The whole
-//!    connection therefore goes before candidates are built. `publicAddressMatches` is the field
-//!    that means what `local` looks like it means — with it true we really are behind the same NAT,
-//!    so the address is ours to use.
+//!    that success safe to reject. Keep the advertised TLS URI, whose certificate and identity can
+//!    authenticate the answer, but never synthesize its plaintext twin. `publicAddressMatches` is
+//!    the field that means what `local` looks like it means — with it true we really are behind the
+//!    same NAT, so the plaintext address is ours to use too.
 //! 2. **No plain-HTTP candidate when the owner set `httpsRequired`.** It is their setting; a plain
 //!    request to such a server is a refusal, not a connection.
 //! 3. **Rank local → remote → relay, and TLS before plaintext inside a tier.** The location order
@@ -40,16 +40,17 @@
 //!   [`Outcome::WrongServer`] and the candidate is discarded, not retried. `/identity` is the right
 //!   probe path: it is unauthenticated, so it answers 200 to anything — useless as a token test and
 //!   perfect as a reachability + identity test.
-//! - **Treat `401` as its own state, never as "unreachable"** ([`Outcome::Unauthorized`]). The
-//!   `accessToken` is per (user, server) and carries the sharing grant; when it stops working the
-//!   answer is to refetch `/api/v2/resources`, not to try the next address — every other address of
-//!   that server will fail identically, and reporting "can't reach nas-home" for what is a token
-//!   problem sends the user to look at their friend's router.
+//! - **Treat `401` as its own state, never as "unreachable"** ([`Outcome::Unauthorized`]). A
+//!   parallel direct candidate—or the relay fallback—may still verify the machine, so one response
+//!   does not stop the race. If no candidate verifies, the `accessToken` or access policy is the
+//!   final problem: refetch `/api/v2/resources` rather than reporting "can't reach nas-home" and
+//!   sending the user to their friend's router.
 //!
-//! The racing itself (parallel dial, first good wins, cancel the rest) lands with the transport
-//! work; it belongs above this file, which stays a function of the resource alone.
+//! The racing itself (parallel dial, first good activates, final best may re-point once) lives in
+//! `auth.rs`; it belongs above this file, which stays a function of the resource alone.
 use super::account::{Connection, Resource};
 use super::origin::{url_host, Origin};
+use serde::{Deserialize, Serialize};
 /// `Scheme` lives in [`super::origin`] — it is a property of an ORIGIN, and this module only
 /// RANKS it (see the third sort key in [`candidates`]). Re-exported so `probe::Scheme` keeps
 /// resolving for every caller that reads it as a ranking axis.
@@ -57,7 +58,8 @@ pub use super::origin::Scheme;
 
 /// Where an address sits relative to us. The ranking axis every Plex client agrees on, ordered
 /// best-first by declaration so the derived `Ord` *is* the preference.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Location {
     /// Same LAN — no internet needed, and the only tier that survives the WAN going away.
     Local,
@@ -135,8 +137,9 @@ pub enum Outcome {
     Reachable,
     /// Answered, but as a different machine. Discard the candidate; do not retry it.
     WrongServer,
-    /// 401 — a token problem, not a reachability problem. Every other address of this server will
-    /// answer identically, so stop probing it and refetch `/api/v2/resources`.
+    /// 401 — an authorization/access-policy answer, not silence. The live coordinator still lets
+    /// parallel origins and the relay fallback settle; this becomes the final reason only if none
+    /// of them verifies the requested machine.
     Unauthorized,
     /// No answer: refused, timed out, or unresolvable. The only outcome the next candidate can fix.
     Unreachable,
@@ -159,13 +162,11 @@ pub fn dial_port(p: i64) -> Option<i32> {
     (1..=65535).contains(&p).then_some(p as i32)
 }
 
-/// Is there anything here to dial at all? An address and valid port are the mechanical half; rule
-/// 1 is the policy half. It drops a share's unmatched private-LAN connection WHOLE so neither its
-/// TLS uri nor its plaintext twin can spend a sequential deadline before a public candidate.
-fn is_usable(res: &Resource, c: &Connection) -> bool {
-    !c.address.is_empty()
-        && dial_port(c.port).is_some()
-        && !(c.local && !res.owned && !res.public_address_matches)
+/// Is there anything here to dial at all? Only the mechanical half lives here: an address and a
+/// valid port. Rule 1 is applied while candidates are emitted, because it keeps a connection's
+/// advertised TLS URI while suppressing only its synthesized plaintext twin.
+fn is_usable(c: &Connection) -> bool {
+    !c.address.is_empty() && dial_port(c.port).is_some()
 }
 
 fn tier(c: &Connection) -> Location {
@@ -243,8 +244,10 @@ fn is_numeric_address(a: &str) -> bool {
 /// Each surviving connection yields its advertised `uri` (verbatim — the `plex.direct` hostname's
 /// hash label is the *certificate's* UUID, so it cannot be rebuilt from the machine id, and https to
 /// the bare IP fails validation by design), plus a synthesized `http://{address}:{port}` twin unless
-/// something refuses it: `httpsRequired` (rule 2) or a relay connection. Rule 1 acts earlier and
-/// drops an unsafe/expensive shared-LAN connection whole, before either candidate is built.
+/// something refuses it: `httpsRequired` (rule 2), a relay connection, or an unmatched private-LAN
+/// connection advertised by somebody else's server. Rule 1 gates only that plaintext twin: the
+/// advertised TLS URI survives because certificate and `machineIdentifier` verification can reject
+/// a stranger without sending it a credential.
 ///
 /// That twin was once the point of the whole file — the only candidate the app's transport could
 /// dial. It is the FALLBACK now: the advertised https uri leads its tier, and the twin is what
@@ -256,7 +259,7 @@ fn is_numeric_address(a: &str) -> bool {
 /// not a thing that exists — synthesizing one would only spend a probe slot proving that.
 pub fn candidates(res: &Resource) -> Vec<Candidate> {
     let mut out: Vec<Candidate> = Vec::new();
-    for c in res.connections.iter().filter(|c| is_usable(res, c)) {
+    for c in res.connections.iter().filter(|c| is_usable(c)) {
         let location = tier(c);
         let ipv6 = c.ipv6 || c.address.contains(':');
         let mut push = |url: String, scheme: Scheme| {
@@ -275,10 +278,14 @@ pub fn candidates(res: &Resource) -> Vec<Candidate> {
                 ipv6,
             });
         };
+        let unmatched_shared_lan = c.local && !res.owned && !res.public_address_matches;
         if !c.uri.is_empty() {
-            push(c.uri.trim_end_matches('/').to_string(), scheme_of(&c.uri, &c.protocol));
+            let scheme = scheme_of(&c.uri, &c.protocol);
+            if !(unmatched_shared_lan && scheme == Scheme::Http) {
+                push(c.uri.trim_end_matches('/').to_string(), scheme);
+            }
         }
-        if !c.relay {
+        if !c.relay && !unmatched_shared_lan {
             push(format!("http://{}:{}", host_for_url(&c.address), c.port), Scheme::Http);
         }
     }
@@ -353,18 +360,35 @@ mod tests {
         )
     }
 
-    /// **Rule 1: the share's `local` connection goes whole.** TLS proves a stranger at that address
-    /// is not the wanted machine; it does not make a sequential 8 s timeout useful. The public
-    /// candidate is the first one worth spending a deadline on.
+    /// **Rule 1: an unmatched shared-LAN connection keeps only its authenticated candidate.** The
+    /// synthesized plaintext twin could hand a request to a stranger at the same RFC1918 address;
+    /// the advertised TLS URI is safe to probe because both its certificate and `/identity` must
+    /// name the server we asked for.
     #[test]
-    fn a_shares_unmatched_local_connection_is_never_a_probe_slot() {
+    fn a_shares_unmatched_local_connection_keeps_tls_but_never_plaintext() {
         let cs = candidates(&shared_server());
 
         assert!(
-            !cs.iter().any(|c| c.address == "10.9.9.7" || c.location == Location::Local),
-            "neither candidate from the OWNER's LAN may consume a deadline: {cs:#?}"
+            cs.iter().any(|c| {
+                c.url == "https://172-20-4-7.hash2.plex.direct:32400"
+                    && c.address == "10.9.9.7"
+                    && c.location == Location::Local
+            }),
+            "the advertised TLS URI remains an identity-verified probe: {cs:#?}"
         );
-        assert_eq!(cs.len(), 4, "two remote connections, an uri and an http twin each: {cs:#?}");
+        assert!(
+            !cs.iter().any(|c| c.url == "http://10.9.9.7:32400"),
+            "the unsafe plaintext twin from the owner's LAN must not exist: {cs:#?}"
+        );
+        assert_eq!(cs.len(), 5, "one guarded LAN TLS candidate plus two remote pairs: {cs:#?}");
+
+        let mut advertised_plain = shared_server();
+        advertised_plain.connections[0].uri = "http://10.9.9.7:32400".into();
+        advertised_plain.connections[0].protocol = "http".into();
+        assert!(
+            !candidates(&advertised_plain).iter().any(|c| c.address == "10.9.9.7"),
+            "an advertised plaintext URI is no safer than the synthesized twin"
+        );
 
         // **TLS leads.** It is the only connection a certificate can authenticate, the only one an
         // owner's *Require secure connections* leaves standing, and the only one that reaches a
@@ -618,37 +642,33 @@ mod tests {
         assert!(!p.owned);
         assert_eq!(p.name, "nas-home", "the machine name — settings surfaces only");
         assert_eq!(p.source_title.as_deref(), Some("friend"), "the handle the rest of the UI says");
-        assert_eq!(p.candidates.len(), 4);
+        assert_eq!(p.candidates.len(), 5);
     }
 
-    /// **The gate is rule 1's, and it applies to the connection WHOLE.** Stated on the predicate
-    /// rather than only through `candidates`, because ownership and `publicAddressMatches` each
-    /// independently make a `local` address ours, and a non-`local` address was never in question.
+    /// Ownership and `publicAddressMatches` each make a private-LAN plaintext twin safe again.
+    /// Without either fact only the advertised TLS URI survives.
     #[test]
-    fn only_a_non_owned_unmatched_lan_connection_is_unusable() {
-        let lan = |local: bool| Connection { address: "10.0.0.9".into(), port: 32400, local, ..Default::default() };
-        let res = |owned: bool, pam: bool| Resource {
-            owned,
-            public_address_matches: pam,
-            ..Default::default()
-        };
+    fn ownership_or_a_public_address_match_restores_the_plain_lan_twin() {
+        let has_plain_lan = |r: &Resource| candidates(r).iter().any(|c| c.url == "http://10.9.9.7:32400");
 
-        assert!(!is_usable(&res(false, false), &lan(true)), "a share's LAN address is the OWNER's");
-        assert!(is_usable(&res(false, true), &lan(true)), "…unless we are behind the same NAT");
-        assert!(is_usable(&res(true, false), &lan(true)), "…and our OWN LAN address is always ours");
-        assert!(is_usable(&res(false, false), &lan(false)), "a public address was never rule 1's business");
+        let mut share = shared_server();
+        assert!(!has_plain_lan(&share), "an unmatched share keeps only its authenticated URI");
+        share.public_address_matches = true;
+        assert!(has_plain_lan(&share), "behind the same NAT, the private address really is ours");
+        share.public_address_matches = false;
+        share.owned = true;
+        assert!(has_plain_lan(&share), "our own LAN address is always ours");
     }
 
-    /// `is_usable` composes mechanical dialability with rule 1; this test isolates the mechanical
-    /// half on an owned resource so the policy cannot mask it.
+    /// `is_usable` is deliberately only the mechanical gate. Candidate emission applies rule 1
+    /// later because one connection can yield one safe URI and one unsafe plaintext twin.
     #[test]
     fn a_connection_still_needs_an_address_and_a_dialable_port() {
         let c = |addr: &str, port: i64| Connection { address: addr.into(), port, ..Default::default() };
-        let res = Resource { owned: true, ..Default::default() };
-        assert!(is_usable(&res, &c("10.0.0.9", 32400)));
-        assert!(is_usable(&res, &c("nas.example.internal", 1)));
-        assert!(!is_usable(&res, &c("", 32400)), "nothing to dial");
-        assert!(!is_usable(&res, &c("10.0.0.9", 0)), "no port a socket could take");
-        assert!(!is_usable(&res, &c("10.0.0.9", 4_294_999_696)), "the wrap that reads as 32400");
+        assert!(is_usable(&c("10.0.0.9", 32400)));
+        assert!(is_usable(&c("nas.example.internal", 1)));
+        assert!(!is_usable(&c("", 32400)), "nothing to dial");
+        assert!(!is_usable(&c("10.0.0.9", 0)), "no port a socket could take");
+        assert!(!is_usable(&c("10.0.0.9", 4_294_999_696)), "the wrap that reads as 32400");
     }
 }

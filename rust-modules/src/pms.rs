@@ -870,7 +870,8 @@ fn lock_srcs() -> std::sync::MutexGuard<'static, Vec<Src>> {
     SRCS.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// What the source table was last built from — the registry's size and the pinned-library set.
+/// What the source table was last built from — the registry's exact roster generation and the
+/// pinned-library set.
 /// Either moving rebuilds it, which is how a share the roster layer has just registered, or a
 /// library the user has just pinned, reaches Home without anyone having to call in.
 static SEEN: AtomicU64 = AtomicU64::new(u64::MAX);
@@ -1041,14 +1042,15 @@ fn roster() -> Vec<(ServerId, String)> {
 /// A cheap fingerprint of what [`roster`] would return, so [`sync_roster`] can skip the rebuild on
 /// the frames — almost all of them — where nothing has changed.
 ///
-/// **Two atomic loads and no allocation.** The inputs are the registry's size and the section
-/// table, and the pinned set is a projection of the second — `toggle_pin`, `append_sections` and
+/// **Two atomic loads and no allocation.** The inputs are the registry's exact roster generation
+/// and the section table. Count was insufficient: replacing active slot 1 with slot 2 leaves the
+/// same number and otherwise aliases the old roster forever. The pinned set is a projection of the second — `toggle_pin`, `append_sections` and
 /// `reset` all bump `SECTIONS_GEN`, so that counter already moves whenever the pinned set can.
 /// Folding the pinned SERVERS in by hand meant walking `browse`'s table and building two `Vec`s
 /// here, on a path `pump` runs every loop iteration — ~60×/s including on a settled Home, which is
 /// the screen `ui::idle` was tuned down to ~1% of a core on.
 fn roster_key() -> u64 {
-    ((crate::plex::server_count() as u64) << 32) | crate::browse::sections_gen() as u64
+    ((crate::plex::server_roster_gen() as u64) << 32) | crate::browse::sections_gen() as u64
 }
 
 /// Bring the source table in line with the roster: a surviving source keeps everything it has
@@ -1990,6 +1992,28 @@ mod tests {
         assert_eq!(hub_count(), 0, "both un-rostered sources' shelves are gone");
         assert!(lock_srcs().is_empty());
         reset();
+    }
+
+    #[test]
+    fn an_equal_size_roster_replacement_has_a_different_cache_key_and_source_table() {
+        let _g = crate::testlock::serial();
+        crate::plex::reset_servers_for_test();
+        reset();
+        let a = crate::plex::register_for_test("pms-a", "127.0.0.1", 1, "a", "cid");
+        let b = crate::plex::register_for_test("pms-b", "127.0.0.1", 2, "b", "cid");
+        sync_roster();
+        let before = roster_key();
+        assert_eq!(lock_srcs().iter().map(|s| s.sid).collect::<Vec<_>>(), [a, b]);
+
+        crate::plex::revoke_for_profile_switch();
+        let c = crate::plex::register_for_test("pms-c", "127.0.0.1", 3, "c", "cid");
+        assert_eq!(crate::plex::server_count(), 2, "the replacement deliberately preserves count");
+        assert_ne!(roster_key(), before, "the exact registry generation, not count, keys Home");
+        sync_roster();
+        assert_eq!(lock_srcs().iter().map(|s| s.sid).collect::<Vec<_>>(), [a, c]);
+
+        reset();
+        crate::plex::reset_servers_for_test();
     }
 
     /// **The pin's grain is a LIBRARY, and `/hubs` is a whole-SERVER request.** So the server-level

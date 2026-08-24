@@ -1,11 +1,12 @@
 # Shared (non-owned) Plex servers — how Plex structures them, and how to integrate one
 
-**Status:** design note, 2026-08-11; landed-work section refreshed 2026-08-13. Written after being
+**Status:** design note, 2026-08-11; landed-work section refreshed 2026-08-23. Written after being
 granted access to a friend's server. Everything in §2 was **measured live** against that server,
 from the dev Mac *and* from the TV itself. Everything in §1 is Plex's model as documented by its own
 client libraries. §5's plan is sequenced; **§9 is the record of what has actually landed**, and it
-is the section to read before starting a step — several of them are now partly done, and one (the
-relay policy, step 9) is done ahead of the transport work that can exercise it.
+is the section to read before starting a step. The HTTPS transport and the raced direct/relay
+discovery policy are now landed in the integration worktrees; their real-TV behavior remains a
+device verification item rather than an unimplemented transport.
 
 **Anonymisation — read this before adding an example anywhere in the repo.** Addresses, ports,
 tokens, machine identifiers, the owner's username and their library names are deliberately **not**
@@ -111,7 +112,9 @@ which this repo already builds, at `rust-modules/src/plex/timeline.rs:56`.
 - The connection recipe: filter `provides ∋ server` → rank → probe candidates in parallel →
   **verify `machineIdentifier` on the probe response** before accepting it → treat `401` as its own
   state (token problem, refetch `/resources`) rather than "unreachable". python-plexapi additionally
-  **drops every `local` connection on a non-owned resource** (`myplex.py`), and §2 shows exactly why.
+  **drops every `local` connection on a non-owned resource** (`myplex.py`). This client keeps only an
+  advertised HTTPS URI for such a connection: TLS plus the identity response can authenticate it,
+  while an advertised or synthesized plaintext form is suppressed. §2 shows exactly why.
 
 ---
 
@@ -130,12 +133,11 @@ connection**, per-server `accessToken` present). The share advertises three conn
 Three findings, each load-bearing:
 
 **(a) `local: true` is a trap.** The flag means "this address is RFC1918", not "*you* are on that
-LAN" — `publicAddressMatches` is the field that means the latter, and it is `false` here. Our
-current selector (`auth::choose_local_connection`) filters on `c.local && !c.relay` (plus an IPv4
-guard added 2026-08-14, §9), so if it ever reached this resource it would pick the owner's
-`172.20.x.x` and hang for 8 seconds — or, worse, reach a *different machine* on our own LAN at that
-address. This is why the probe must verify
-`machineIdentifier`, and why non-owned `local` connections should be dropped outright.
+LAN" — `publicAddressMatches` is the field that means the latter, and it is `false` here. The old
+selector (`auth::choose_local_connection`) picked the owner's `172.20.x.x` and hung for 8 seconds —
+or, worse, could reach a *different machine* on our own LAN at that address. The current policy
+suppresses plaintext for that unmatched shared-LAN connection, but retains its advertised HTTPS
+URI and accepts it only after certificate and `machineIdentifier` verification.
 
 **(b) The per-server token is mandatory, and provably so.** Against the share's
 `/library/sections`: our own server's token → **401**; a garbage token → **401**; the share's
@@ -177,13 +179,10 @@ answered (§9); they are kept because the collision table below is only readable
 `Connection.uri` were parsed and never read. **Fixed** — the roster DTOs are widened and
 null-tolerant (§9).
 
-**`owned` is a preference, not a wall — and this part is STILL LIVE.** `auth.rs` tries owned servers
-first and falls back to any server, but the real filter is `c.local && !c.relay &&
-!c.address.is_empty()` on *both* passes (now `auth::choose_local_connection`, plus the IPv4 guard of
-§9), so a remote-only server dies with *"no server with a local connection (remote-only can't be
-reached)"*. `probe.rs` knows better and nothing calls it
-yet: **the 8-second trap of §2(a) is still what the running app would do.** This line is step 4's
-whole reason to exist.
+**`owned` is a preference, not a wall — FIXED.** The old chooser filtered both passes on
+`c.local && !c.relay && !c.address.is_empty()`, so a remote-only server died before any transport
+could try it. The live path now uses `probe.rs`, orders owned then `publicAddressMatches`, races
+eligible direct candidates within one server, and holds relay for a second phase.
 
 **One server, forever — FIXED.** `plex/client.rs` held a `static PLEX: OnceLock<Client>` whose host
 and port froze at the first `install`, so a second `install` naming a *different* server was
@@ -255,7 +254,7 @@ asked for is how to read what shipped.
 | 1 **LANDED** | **Server registry** — shipped with N slots rather than the one this row asked for; the ceiling is `MAX_SERVERS = 16`. New `plex/servers.rs`: `ServerId(u16)`, `Server`, `Conn{scheme,…}`, a `CLIENTS` table + `CURRENT`. `install` registers slot 1; `client()`/`client_opt()` keep their signatures and now mean "the current server". `TOKEN_GEN` moves **into** `Client`. Zero call-site changes. Note `client()` is hot — `posters::poster_key` calls it three times per key per tile per frame, so use an atomic-pointer table, not an `RwLock`. | ½–1 d | Foundation |
 | 2 | **Thread `ServerId` through the stored structs** — `PmsMovie`, `BrowseSection`, `Detail`, `PlayingItem`, `Person`, `Pslot`, `trail::Node`, `ResolveEnv`/`Plan`, `UpNext`/`QueueRow`. Every rk equality test becomes a pair. The rule is **capture at the spawn site**, never read the current server inside a worker (`ResolveEnv`'s doc is the template and gives the general form of it; the `browse.rs:576` citation this row gave does not survive — that line has moved and carries no such comment). Behaviour change: none. | 2–3 d | The mechanical diff |
 | 3 | **Move the ~30 call sites onto `client_for(sid)`.** `posters.rs:452` becomes `client_for(slot.sid)?.fetch_built(&key)` — **token-free**, because the poster key already ends in `with_token(…)` and `get_bytes` would append a second one. Ship gate: byte-identical event log across `tests/run.py`. | 1 d | Correctness |
-| 4 **HALF LANDED — the policy, not the race** | **Probe + race.** New `plex/probe.rs`: drop `local` on `!owned` unless `publicAddressMatches` (§2a); drop http when `httpsRequired`; otherwise synthesize `http://{addr}:{port}` **— this is the step that makes the current share work**; rank local→remote→relay; probe in parallel; **verify `machineIdentifier`**; treat 401 as its own state. `auth.rs:379-418` becomes `ingest()` + `activate_best()`, keeping today's scan as a fallback. Pump it where `pms::pump` lives (route-gated), not beside `route::pump_play`, and call `ui::idle::invalidate()` on any landing that repaints. | 1–1½ d | **The share becomes reachable** |
+| 4 **LANDED** | **Probe + race.** `plex/probe.rs` retains the advertised HTTPS URI but suppresses plaintext for unmatched non-owned LAN connections (§2a), drops HTTP when `httpsRequired`, and ranks local→remote→relay. `auth.rs` races candidates within one server, verifies `machineIdentifier`, activates the first verified answer, may re-point once to the final best score, and persists only that winner. Servers remain serial with a 4 s gap; relay is a second phase; `401` is the final reason only when no candidate verifies. | 1–1½ d | **The share becomes reachable** |
 | 5 | **Persist the registry; boot from the hint.** `session.rs` gains `servers: Vec<ServerRec>` + `current_machine_id`, every field `#[serde(default)]`, legacy `ServerRef` still written for one release. A corrupt `servers` array must not fail the whole `Session` parse — that is a silent sign-out at every boot. No timestamps: this TV's wall clock is ~3 h skewed. | 1 d | Fast boot |
 | 6 **LANDED** | **TLS control plane.** Shipped as `rust-modules/src/http.rs`: `Scheme::Http` keeps the raw `stream.rs` arm, while `Scheme::Https` uses `net.rs`/libcurl. The curl request surface now carries per-call deadlines, a bounded response sink, body-less `CUSTOMREQUEST` PUT, HTTP(S)-only redirect policy for the public QR fetch, and one fresh easy handle per call so no request state can survive into the next. Probe ranking is TLS-first, status remains distinct from reachability, and every PMS/account request conditionally carries the validated inherited locale as `X-Plex-Language`. | 1–1½ d | Any https-only share browses |
 | 7 **LANDED** | **TLS media plane.** Shipped as `rust-modules/src/curlio.rs`: the second `dynlib!` table (seven `curl_multi_*`, device-probed PRESENT and inventory-confirmed on all 14 releases; `curl_multi_poll`/`curl_multi_wakeup` probed ABSENT and therefore banned — they first appear at 7.4.0, so binding them would have emptied the table on four of the nine gated releases), `AvioState`'s source enum, the `read_cb`/`seek_cb` dispatch, the preserved seek abort guard and the two extended abort-guard tests, all as this row asked. **One deviation, deliberate:** teardown is a **wake pipe** handed to `curl_multi_wait` as an application-owned extra fd, NOT `curl_multi` pumped from inside `read_cb`. The row's outcome — teardown collapses to "set the flag, join" — is preserved, and that is the reason: self-polling puts a 10–100 ms floor on every teardown, while a byte on a pipe wakes a blocked wait at once. The one gap the pipe cannot close is a thread already inside `curl_multi_perform` doing SYNCHRONOUS name resolution; the dev set reports `AsynchDNS`, and the designed fallback (our own `getaddrinfo` + `CURLOPT_RESOLVE`, hostname untouched so SNI and certificate identity survive) is written into `curlio`'s module doc and deliberately not built. With step 6 present, ordinary HTTPS browse/play now reaches this source; `plxnative-servers` and `plxnative-playurl` remain the isolation routes for device diagnosis. | 2–4 d | Any share plays |
@@ -349,10 +348,10 @@ from "the unwatched angle", which `23f28ce6` replaced with the white tick over a
    from the ssh shell's). Prove by logging the resolved address on the first remote request.
 4. **TLS on 256 KB stacks, concurrently** — `task::spawn_small`'s stack, with seven worker kinds
    each doing a handshake. Device-verify under a full Home + library scroll.
-5. **Relay end to end** has never been observed by this codebase: `includeRelay=1` has been
-   requested forever and every relay connection unconditionally discarded (`auth.rs:396`). The
-   2 Mbps cap and port 8443 are documentation, not measurement. **A policy now exists in code
-   anyway** (`plex::link_policy`, §9) and is unverified for exactly this reason — and it cannot be
+5. **Relay end to end** has never been observed by this codebase. Discovery now holds relay
+   candidates for a second phase after every direct candidate settles, and the chosen tier feeds
+   `plex::link_policy`; the 2 Mbps cap and port 8443 are still documentation, not measurement. It
+   cannot be
    verified from here even deliberately: **this account's share advertises no relay connection at
    all** (§2), so there is nothing to dial. Confirming it needs a server that is genuinely
    relay-only — an owner behind CGNAT, or one who turns their port forward off for an afternoon.
@@ -385,14 +384,12 @@ re-read cannot recover.
 
 ---
 
-## 9. What has landed (2026-08-13 → 2026-08-14)
+## 9. What has landed (2026-08-13 → 2026-08-23)
 
-Seven host-testable units, `make check` at **424 passed** and `make` (ARM) green throughout. **One
-sentence dominates all of it: none of this has a caller in the live sign-in path.**
-`auth::choose_local_connection` still filters `c.local && !c.relay` on both passes, so the 8-second
-trap of §2(a) is **exactly as live in the running app as it was on 2026-08-11**, and the app still
-browses one server. This is foundation plus a policy layer, not the feature — the step that connects
-them is 4's second half, the race and `activate_best`.
+The host-testable foundation is now connected to the live sign-in and warm-boot paths. Discovery
+races candidates within each server, keeps servers serial, restores the winning connection tier on
+boot, and refreshes the persisted roster without letting a superseded sign-in/profile/sign-out flow
+publish old credentials. Historical test totals below are snapshots; re-derive the current count.
 
 **The data layer**
 
@@ -413,9 +410,10 @@ them is 4's second half, the race and `activate_best`.
   per frame) — and the full account now lives where implementers will meet it, in
   **`rust-modules/src/plex/CLAUDE.md`**.
 - **`plex/probe.rs` — the connection policy, pure.** No socket, no thread, no clock, so all of it is
-  host-testable on Darwin. Builds and ranks candidate origins: drops a `local` connection on a
-  non-owned server unless `publicAddressMatches`, suppresses every plain-http candidate when the
-  owner set `httpsRequired`, and ranks local → remote → relay. It also carries, as doc, the two rules
+  host-testable on Darwin. Builds and ranks candidate origins: for a non-owned unmatched local
+  connection it retains only the advertised HTTPS URI and suppresses both advertised and synthesized
+  plaintext; it suppresses every plain-HTTP candidate when the owner set `httpsRequired`, and ranks
+  local → remote → relay. It also carries, as doc, the two rules
   a real prober must honour and this module cannot: verify `machineIdentifier` on the response before
   accepting a connection, and treat `401` as its own state rather than "unreachable".
 - **The relay policy — `plex::link_policy`, plus `Client::set_link`/`link()` to carry the fact.**
@@ -430,14 +428,10 @@ them is 4's second half, the race and `activate_best`.
   **Unverified against a real relay, and not verifiable from this account** — see §7 question 5;
   what is asserted is the shape, not the 2 Mbps.
 
-- **The sign-in chooser keeps to IPv4** (`auth::choose_local_connection`, extracted from
-  `discover_and_store` so the rule is gradeable at all). This one is a REGRESSION THIS WORK CAUSED
-  and did not notice for three commits: adding `includeIPv6=1` to the roster query means plex.tv now
-  offers v6 connections, and the live chooser takes the FIRST `local` match and **persists** it —
-  so a server listing its LAN v6 ahead of its v4 would have signed in "successfully" to an empty
-  Home and written that address into the session file, making every later boot start there too.
-  `stream.rs::http_open` parses a dotted quad by hand (`AF_INET`, no DNS), so a v6 literal is not
-  slower, it is undialable. Found by review, not by the suite; the suite can see it now.
+- **The old sign-in chooser kept to IPv4.** That guard prevented an undialable v6 origin from being
+  persisted when `stream.rs` still built `sockaddr_in` by hand. Both control transports now resolve
+  names and IPv6, and discovery persists only an origin whose `/identity` answer named the expected
+  machine. The historical regression remains worth recording; the old chooser does not remain live.
 
 **The screens and the harness**
 
@@ -470,8 +464,9 @@ could not see the bug:
   it still arriving.
 - The relay policy is graded from **both ends**: the pure answer per tier, and a server whose only
   advertised address is a relay, run through `probe::candidates` so that the ranking and the policy
-  are pinned to the same `Location` vocabulary. An unknown link is asserted to restrict **nothing** —
-  that is the case every play takes today, so a wrong answer there would be wrong for everybody.
+  are pinned to the same `Location` vocabulary. An unknown link is asserted to restrict **nothing**
+  for a freshly constructed/legacy client; discovery and session restore now publish the measured
+  tier after each registration or re-point.
 
 ## 10. The section table goes multi-server, and gets its Source chip (deliverable A)
 
@@ -481,10 +476,10 @@ Step 1's registry now has its first real consumer, and deliverable A of the desi
   from, and `BrowseSource` is the granted roster projected out of `plex::server_ids()` — the §3 table's
   verified collision (both servers have a section `1`) is what the address closes. Every fetch goes
   through `client_for(sid)` **captured at the spawn site**; nothing reads `client()` inside a worker.
-- **It grows by APPEND, never by rebuild**, and that is the whole soundness argument. A page landing
-  is blamed on a section INDEX, so a table that reshuffled under an in-flight fetch would splice one
-  library's items into another's store. `ensure_sections`'s early-return used to be the only thing
-  preventing that; appending replaces it and holds for every source, not only for the second call.
+- **It grows by APPEND while the roster is stable; grant removal uses the existing whole-store
+  identity reset.** A page landing is blamed on a section INDEX, so compacting the table under an
+  in-flight fetch would splice one library's items into another's store. New sources therefore
+  append, while an exact active-id change supersedes every landing before rebuilding.
   Two generations now, each with a crisp job: `SECTIONS_GEN` (shape — bumped by an append, what the
   label caches key on) and `EPOCH` (identity — bumped by `reset` alone, what index-blamed landings
   gate on, so one source's append cannot discard another's answer).
@@ -508,33 +503,18 @@ Step 1's registry now has its first real consumer, and deliverable A of the desi
   can land in either order. `/tmp/plxnative-servers` gained a `handle` field, and `run.py` fills it
   from the resource's `sourceTitle`, so a two-source run is gradeable headlessly.
 
-- **Picking a library on another server MOVES the app's current server** (`browse::set_cur` →
-  `activate_source_of`), which is §5's named *cheap variant* — one active server at a time — and it
-  is here because without it the Sources list is a trap. `PmsMovie` carries no `ServerId`, so a
-  borrowed card's poster is fetched from `client()` and its ratingKey is resolved through `client()`;
-  ratingKeys are server-local, so OK on a friend's card would quietly open, and PLAY, a different
-  title of yours with the same number. Moving `current` makes all of them agree. What it costs is
-  stated rather than hidden: Home's catalog belongs to the server it came from, so it is dropped and
-  re-armed (`pms::reset`; `pms::pump` refetches asynchronously), the person page's shelves with it,
-  and `route`'s cached `machineIdentifier` is forgotten so the next PlayQueue names the right
-  machine. The poster memo needs no help — it compares a token generation and two servers never
-  share one.
+- **The temporary current-server seam is retired.** Stored rows carry `ServerId`, request paths
+  resolve through `client_for(sid)`, and Home merges per-source shelves without moving the session's
+  primary. Registry/profile replacement is an exact active-id boundary: removed shares disappear
+  from Browse, Search and Home even when another share replaces them at the same count.
 
-**Still open, and what retires that seam:** threading `ServerId` through `PmsMovie` and the other
-stored structs (§5 step 2) and moving the ~30 call sites onto `client_for` (step 3). Until then Home
-is single-source, which is also why deliverable C's merged shelves are not drawn.
+**Not verified on device.** Host tests and the ARM cross-build grade the identity, race, sparse
+roster and persistence rules; the screens and real legacy TLS backend still need the §9 TV recipe.
 
-**Not verified on device.** The host suite is 431 and `make` (ARM, dev and RELEASE) links, but every
-screen described above is drawn by a television nobody had while this landed. The PR carries the
-recipe.
-
-**Next.** The line that stood here said step 2 (`ServerId` through the stored structs) was the next
-mechanical diff, and that "the registry holds one server because nobody registers a second one".
-Both halves are now out of date: step 2 landed, so an item is a `(ServerId, key)` pair everywhere
-one is stored, and `install_pms` registers every granted server at boot, so the registry routinely
-holds more than one. What remains is the probe RACE and `activate_best` (step 4's second half) —
-addresses are ranked and identity-verified today, but still dialled in sequence rather than
-concurrently.
+**Current next step.** Direct candidates now race with absolute tier-specific deadlines, relay is a
+second phase, the coordinator activates the first verified origin and may re-point once to the final
+best score, and the winning origin/tier are persisted. The remaining work is device evidence and
+the separately ruled UI/packaging follow-ups, not a sequential `activate_best` implementation.
 
 ## 11. Watch state follows the TITLE (2026-08-21)
 

@@ -3197,7 +3197,7 @@ mod tests {
     /// A `ServerId` naming a slot nothing is registered in — so `client_for` answers `None` and
     /// `build_stream` takes its no-client exit without opening a socket.
     fn unregistered_sid() -> ServerId {
-        let id = ServerId::from_raw(crate::plex::server_count() as u16 + 1);
+        let id = ServerId::from_raw((crate::plex::MAX_SERVERS - 1) as u16);
         assert!(crate::plex::client_for(id).is_none(), "the test needs an EMPTY slot");
         id
     }
@@ -3233,8 +3233,9 @@ mod tests {
     #[test]
     fn the_machine_id_cache_is_scoped_to_the_server_that_taught_it() {
         let _g = fresh_registry();
-        let a = ServerId::from_raw(crate::plex::server_count() as u16 + 1);
-        let b = ServerId::from_raw(crate::plex::server_count() as u16 + 2);
+        let a = ServerId::from_raw((crate::plex::MAX_SERVERS - 2) as u16);
+        let b = ServerId::from_raw((crate::plex::MAX_SERVERS - 1) as u16);
+        assert!(crate::plex::client_for(a).is_none() && crate::plex::client_for(b).is_none());
 
         apply_plan(Plan { sid: a, machine_id: "MACHINE-A".into(), ..Default::default() }, "rk-a");
         assert_eq!(ResolveEnv::snapshot(a, "rk-a").machine_id, "MACHINE-A", "its own server reuses it");

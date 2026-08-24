@@ -90,13 +90,12 @@ impl LinkPolicy {
 /// number reach `transcode_query`. Nothing about the relay tier changed — it still denies both
 /// flavors unconditionally and still names no rate.
 ///
-/// **No relay connection has ever been observed by this codebase.** `includeRelay=1` has been on
-/// the `/resources` query since the first login and every relay connection was then discarded
-/// unconditionally (`auth::choose_local_connection` filters `c.local && !c.relay`), so nothing here
-/// has ever dialled one. The 2 Mbit/s figure and the port-8443 convention are Plex's documentation, not our
-/// measurement, and this policy is **unverified against a real relay** — `docs/shared-servers.md`
-/// §7 question 5. What is asserted is the shape, not the number: whatever the ceiling turns out to
-/// be, only the server can apply it, and only if an encoder runs.
+/// **No relay connection has been observed on a device by this codebase.** Before discovery racing,
+/// the old chooser discarded every relay. Relay is now a second-phase candidate, but the 2 Mbit/s
+/// figure and port-8443 convention remain Plex documentation rather than our measurement, and this
+/// policy is **unverified against a real relay** — `docs/shared-servers.md` §7 question 5. What is
+/// asserted is the shape, not the number: whatever the ceiling turns out to be, only the server can
+/// apply it, and only if an encoder runs.
 pub fn link_policy(link: Option<Location>) -> LinkPolicy {
     match link {
         Some(Location::Relay) => LinkPolicy { direct_play: false, remux: false },

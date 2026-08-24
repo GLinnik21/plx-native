@@ -237,6 +237,18 @@ pub(crate) fn install(item_sid: ServerId, item_rk: &str, list: Vec<AltCopy>) {
     crate::ui::idle::invalidate();
 }
 
+/// Drop copies whose grant left the live registry while this detail page remained mounted.
+/// Called only when the registry generation moves, so the ordinary per-frame path pays nothing.
+pub(crate) fn prune_inactive() {
+    let list = unsafe { &mut *addr_of_mut!(COPIES) };
+    let before = list.len();
+    list.retain(|c| crate::plex::client_for(c.sid).is_some());
+    if list.len() != before {
+        close();
+        crate::ui::idle::invalidate();
+    }
+}
+
 /// How many distinct SOURCES hold this item. The gate is stated in sources rather than in copies
 /// because that is the design's own wording — two copies in two libraries of ONE server is not
 /// "also available *elsewhere*", and the row that would name the other one has nowhere to send you

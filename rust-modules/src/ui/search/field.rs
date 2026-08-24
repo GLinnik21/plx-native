@@ -422,6 +422,8 @@ fn join<S: AsRef<str>>(v: &[S]) -> String {
 struct Key {
     /// registered slots: a share being added, and the count [`scope_text`] gates on
     servers: usize,
+    /// exact roster identity: count alone aliases an equal-size `{A,B}` → `{A,C}` replacement
+    roster: u32,
     /// `browse`'s section-table shape — the LIBRARY titles a share is NAMED by ([`Scope::label`])
     sections: u32,
     /// one bit per slot: did it last answer. `browse`'s flag flips mid-session, and it is the
@@ -442,6 +444,7 @@ impl Key {
         let srcs = crate::browse::sources();
         let mut k = Key {
             servers: crate::plex::server_count(),
+            roster: crate::plex::server_roster_gen(),
             sections: crate::browse::sections_gen(),
             live: 0,
             facts: [0; crate::plex::MAX_SERVERS],
@@ -552,9 +555,9 @@ fn build(key: Key) -> ScopeState {
 /// pointer and only *then* stores the count ("after the pointer: a visible count implies a live
 /// slot"), and nothing in a shipped build ever nulls a slot back — so every id `server_ids` yields
 /// resolves to a `Client`. It still does now that a sign-out RETIRES slots, because the retirement
-/// is a floor on that same walk and not a hole in it: `server_ids` and `client_for` turn away
-/// exactly the same ids. Keeping the filter implied a registered-but-undialable state the registry
-/// does not permit, which is a worse thing to leave inside a projection than one fewer branch.
+/// is reflected by that same walk; profile visibility may contain holes, but `server_ids` and
+/// `client_for` turn away exactly the same inactive ids. Keeping the filter implied a
+/// registered-but-undialable state the registry does not permit.
 pub(super) fn sources() -> (usize, Option<&'static str>) {
     with_scope(|s| (s.n, s.name))
 }
@@ -891,8 +894,8 @@ mod tests {
     /// mid-session, and is the difference between "Searching …" and "… unreachable"), and the FACTS
     /// address, which is a generation only because `plex::servers` never frees a description.
     ///
-    /// The other two are read straight out of the counters that define them (`server_count` and the
-    /// section table's own generation) and cannot drift from what they stand for.
+    /// The remaining inputs are read straight out of the counters that define them (the exact
+    /// registry generation/count and the section table generation).
     ///
     /// This grades [`Key::read`] and never [`with_scope`]: building the projection measures and
     /// elides text, and there is no font on the host tier.
@@ -924,9 +927,26 @@ mod tests {
         let after = Key::read();
         assert_ne!(before, after, "a description landing must rebuild the line that speaks it");
         assert_eq!(
-            (after.servers, after.live, after.sections),
-            (before.servers, before.live, before.sections),
+            (after.servers, after.roster, after.live, after.sections),
+            (before.servers, before.roster, before.live, before.sections),
             "…through the facts address, which is the only input that changed"
         );
+    }
+
+    #[test]
+    fn an_undescribed_equal_count_roster_replacement_moves_the_memo_key() {
+        let _g = fresh_registry();
+        let a = crate::plex::register_for_test("scope-a", "10.0.0.1", 32400, "a", "cid");
+        crate::plex::register_for_test("scope-b", "10.0.0.2", 32400, "b", "cid");
+        crate::browse::seed_sources_for_test(2, true);
+        let before = Key::read();
+
+        crate::plex::revoke_for_profile_switch();
+        crate::plex::register_for_test("scope-c", "10.0.0.3", 32400, "c", "cid");
+        let after = Key::read();
+        assert_eq!((before.servers, after.servers), (2, 2));
+        assert_ne!(before.roster, after.roster, "the active machine set changed at the same count");
+        assert_eq!(crate::plex::server_ids().next(), Some(a));
+        assert_ne!(before, after);
     }
 }

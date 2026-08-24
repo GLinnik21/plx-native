@@ -82,13 +82,13 @@ pub use origin::{Origin, Scheme};
 pub use servers::{
     client, client_for, client_opt, count as server_count, current as current_server, describe as describe_server,
     describe_name as describe_server_name, facts as server_facts, ids as server_ids, install, register, register_origin,
-    same_item, set_current, ServerFacts, ServerId, MAX_SERVERS,
+    roster_gen as server_roster_gen, same_item, set_current, ServerFacts, ServerId, MAX_SERVERS,
 };
 // Sign-out. `pub(crate)` like the function itself: retiring the whole table is `auth::sign_out`'s
 // to call and nothing else's — a caller that merely wants to stop using a server wants
 // `set_current`, and one that wants to forget a share wants plex.tv to stop granting it.
 #[allow(unused_imports)]
-pub(crate) use servers::revoke_all;
+pub(crate) use servers::{finish_profile_switch, revoke_all, revoke_for_profile_switch};
 // The registry as a TEST FIXTURE, for suites outside this module (`route.rs` grades which server a
 // `/:/timeline` POST reaches). `register_for_test` skips the `session::load` the public `register`
 // does — that call mints and PERSISTS a device uuid, which a host test has no business writing —

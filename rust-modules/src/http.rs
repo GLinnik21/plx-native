@@ -33,9 +33,10 @@
 //! each folded away half the answer: the first two returned `Option<Vec<u8>>`, collapsing every
 //! non-2xx into the same `None` a refused connection produces, and the third returned the status
 //! with the body dropped. That collapse is precisely the bug [`crate::plex::probe::Outcome`] exists
-//! to prevent: a `401` is a TOKEN problem — every other address of that server answers identically
-//! — while a refusal is a REACHABILITY problem, and reporting the first as the second sends a user
-//! to look at their friend's router. `auth::get_identity` had already had to hand-roll its own
+//! to prevent: a final `401` after the parallel direct and relay candidates settle is a TOKEN or
+//! access-policy problem, while a refusal is a REACHABILITY problem, and reporting the first as
+//! the second sends a user to look at their friend's router. `auth::get_identity` had already had
+//! to hand-roll its own
 //! open/read/close to keep the two apart; it calls this instead now, and gets the same answer over
 //! either transport. The three wrappers had no other callers and went with the change.
 //!
@@ -117,7 +118,7 @@ pub(crate) const ACCEPT_JSON: &str = "Accept: application/json";
 enum BodyPolicy {
     Api,
     Bulk,
-    Capped(usize),
+    Probe { max: usize, timeout_s: i32 },
 }
 
 /// **The one entry point.** One request to `origin` for `path`, over whichever transport that
@@ -140,16 +141,18 @@ pub(crate) fn request_bulk(origin: &Origin, path: &str, method: Method, headers:
     request_with(origin, path, method, headers, BodyPolicy::Bulk)
 }
 
-/// A small untrusted response that must never allocate beyond `max_body`. Used by discovery's
-/// unauthenticated `/identity` probe before the answering machine has been accepted as the server.
-pub(crate) fn request_capped(
+/// A bounded discovery probe. The caller chooses 5 s for a local candidate and 10 s for a remote
+/// or relay candidate; this façade carries that policy into either transport without either arm
+/// trying to infer locality from an address.
+pub(crate) fn request_probe(
     origin: &Origin,
     path: &str,
     method: Method,
     headers: &[&str],
     max_body: usize,
+    timeout_s: i32,
 ) -> Option<Reply> {
-    request_with(origin, path, method, headers, BodyPolicy::Capped(max_body))
+    request_with(origin, path, method, headers, BodyPolicy::Probe { max: max_body, timeout_s })
 }
 
 fn request_with(
@@ -194,8 +197,25 @@ fn plaintext(origin: &Origin, path: &str, method: Method, headers: &[&str], body
     let extra_ptr = extra_c.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
 
     let mut hs = crate::stream::http_stream_boxed();
-    let opened =
-        crate::stream::http_open(&mut *hs, host_c.as_ptr(), origin.port(), path_c.as_ptr(), extra_ptr, method.as_str());
+    let opened = match body_policy {
+        BodyPolicy::Probe { timeout_s, .. } => crate::stream::http_open_probe(
+            &mut *hs,
+            host_c.as_ptr(),
+            origin.port(),
+            path_c.as_ptr(),
+            extra_ptr,
+            method.as_str(),
+            timeout_s.saturating_mul(1000),
+        ),
+        _ => crate::stream::http_open(
+            &mut *hs,
+            host_c.as_ptr(),
+            origin.port(),
+            path_c.as_ptr(),
+            extra_ptr,
+            method.as_str(),
+        ),
+    };
     // Read the status BEFORE anything else: a non-2xx open has already closed the socket, and the
     // code survives on the struct (`http_open` says so where it closes). That is the whole reason
     // this arm is a composition rather than a wrapper call.
@@ -214,11 +234,11 @@ fn plaintext(origin: &Origin, path: &str, method: Method, headers: &[&str], body
             // exactly-full body followed by EOF from a body that is actually too large, without
             // ever extending `body` past the cap.
             let room = match body_policy {
-                BodyPolicy::Capped(max) => max.saturating_sub(body.len()),
+                BodyPolicy::Probe { max, .. } => max.saturating_sub(body.len()),
                 BodyPolicy::Api | BodyPolicy::Bulk => chunk.len(),
             };
             let want = match body_policy {
-                BodyPolicy::Capped(_) => chunk.len().min(room.saturating_add(1)),
+                BodyPolicy::Probe { .. } => chunk.len().min(room.saturating_add(1)),
                 BodyPolicy::Api | BodyPolicy::Bulk => chunk.len(),
             };
             let n = crate::stream::http_read(&mut *hs, chunk.as_mut_ptr(), want as i32);
@@ -229,7 +249,7 @@ fn plaintext(origin: &Origin, path: &str, method: Method, headers: &[&str], body
             if n == 0 {
                 break;
             }
-            if matches!(body_policy, BodyPolicy::Capped(_)) && n as usize > room {
+            if matches!(body_policy, BodyPolicy::Probe { .. }) && n as usize > room {
                 overflowed = true;
                 break;
             }
@@ -270,7 +290,15 @@ fn tls(origin: &Origin, path: &str, method: Method, headers: &[&str], body_polic
     let (timeouts, max_body) = match body_policy {
         BodyPolicy::Api => (crate::net::API, None),
         BodyPolicy::Bulk => (crate::net::BULK, None),
-        BodyPolicy::Capped(max) => (crate::net::API, Some(max)),
+        BodyPolicy::Probe { max, timeout_s } => (
+            crate::net::Timeouts {
+                connect_s: timeout_s as _,
+                total_s: timeout_s as _,
+                low_speed_bps: 0,
+                low_speed_s: 0,
+            },
+            Some(max),
+        ),
     };
     // PMS redirects are responses, never instructions: the path already carries a token. Keeping
     // `FOLLOWLOCATION` off also makes the TLS arm's 3xx semantics match the plaintext arm.
@@ -348,7 +376,7 @@ mod tests {
         });
 
         let origin = Origin::http("127.0.0.1", port as i32);
-        assert!(request_capped(&origin, "/identity", Method::Get, &[ACCEPT_JSON], 4).is_none());
+        assert!(request_probe(&origin, "/identity", Method::Get, &[ACCEPT_JSON], 4, 1).is_none());
         server.join().expect("server");
     }
 }

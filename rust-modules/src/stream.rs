@@ -565,7 +565,36 @@ unsafe fn connect_any(hs: &HttpStream, head: *const libc::addrinfo, budget_ms: c
 }
 
 pub(crate) fn http_open(hs: *mut HttpStream, host: *const c_char, port: c_int,
-                            path: *const c_char, extra: *const c_char, method: &str) -> c_int {
+                       path: *const c_char, extra: *const c_char, method: &str) -> c_int {
+    http_open_with_timeouts(hs, host, port, path, extra, method, CONNECT_TIMEOUT_MS, 15_000, 10_000)
+}
+
+/// [`http_open`] with the whole-chain connect and stalled-I/O ceiling selected by the caller.
+/// Candidate discovery is the one caller that knows whether a connection is local or remote; the
+/// ordinary request path keeps [`CONNECT_TIMEOUT_MS`] and never infers a tier from an address.
+pub(crate) fn http_open_probe(
+    hs: *mut HttpStream,
+    host: *const c_char,
+    port: c_int,
+    path: *const c_char,
+    extra: *const c_char,
+    method: &str,
+    timeout_ms: c_int,
+) -> c_int {
+    http_open_with_timeouts(hs, host, port, path, extra, method, timeout_ms, timeout_ms, timeout_ms)
+}
+
+fn http_open_with_timeouts(
+    hs: *mut HttpStream,
+    host: *const c_char,
+    port: c_int,
+    path: *const c_char,
+    extra: *const c_char,
+    method: &str,
+    connect_timeout_ms: c_int,
+    recv_timeout_ms: c_int,
+    send_timeout_ms: c_int,
+) -> c_int {
     if hs.is_null() || host.is_null() || path.is_null() {
         return -1;
     }
@@ -625,7 +654,7 @@ pub(crate) fn http_open(hs: *mut HttpStream, host: *const c_char, port: c_int,
         if hs.interrupted() {
             return -1; // torn down while resolving; no descriptor was ever created
         }
-        let fd = connect_any(hs, list.head, CONNECT_TIMEOUT_MS);
+        let fd = connect_any(hs, list.head, connect_timeout_ms.max(1));
         if fd < 0 {
             return -1; // every attempt retired its own fd; `hs` is closed
         }
@@ -636,14 +665,22 @@ pub(crate) fn http_open(hs: *mut HttpStream, host: *const c_char, port: c_int,
         let one: c_int = 1;
         libc::setsockopt(fd, libc::IPPROTO_TCP, libc::TCP_NODELAY,
                          &one as *const _ as *const c_void, 4);
-        // cap a stalled recv so teardown can't hang (matches the C's 15s SO_RCVTIMEO)
-        let tv = libc::timeval { tv_sec: 15, tv_usec: 0 };
+        // Candidate probes carry their tier budget through this same seam. This is an inactivity
+        // ceiling rather than a perfect wall clock (the coordinator owns that), but it prevents a
+        // late worker from sitting in a stalled read long after its result was expired.
+        let tv = libc::timeval {
+            tv_sec: (recv_timeout_ms.max(1) / 1000) as libc::time_t,
+            tv_usec: ((recv_timeout_ms.max(1) % 1000) * 1000) as libc::suseconds_t,
+        };
         libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_RCVTIMEO,
                          &tv as *const _ as *const c_void,
                          std::mem::size_of::<libc::timeval>() as libc::socklen_t);
         // …and the send side, which had no bound at all: a peer that stops reading blocks the
         // request write for as long as its window stays shut.
-        let stv = libc::timeval { tv_sec: 10, tv_usec: 0 };
+        let stv = libc::timeval {
+            tv_sec: (send_timeout_ms.max(1) / 1000) as libc::time_t,
+            tv_usec: ((send_timeout_ms.max(1) % 1000) * 1000) as libc::suseconds_t,
+        };
         libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_SNDTIMEO,
                          &stv as *const _ as *const c_void,
                          std::mem::size_of::<libc::timeval>() as libc::socklen_t);
@@ -898,9 +935,9 @@ pub(crate) fn http_shutdown(hs: *mut HttpStream) {
 // They were the Plex control plane's transport, and each folded away half of the answer:
 // `http_get`/`http_post` returned `Option<Vec<u8>>`, collapsing every non-2xx into the same `None`
 // a refused connection produces, and `http_put` returned the status with the body dropped. That
-// collapse is precisely what `plex::probe::Outcome` exists to prevent — a `401` is a TOKEN problem
-// (every other address of that server answers identically) while a refusal is a REACHABILITY one,
-// and reporting the first as the second sends a user to look at their friend's router.
+// collapse is precisely what `plex::probe::Outcome` exists to prevent — a final `401` after the
+// direct/relay candidates settle is a TOKEN or access-policy problem, while a refusal is a
+// REACHABILITY one, and reporting the first as the second sends a user to their friend's router.
 // `auth::get_identity` had already had to hand-roll its own open/read/close for that reason.
 //
 // Their replacement is `crate::http`, the one door that dispatches a control-plane request on its

@@ -474,8 +474,15 @@ pub(crate) fn query_gen() -> u32 {
 /// `friendlyName` land at different times, in either order, and a source whose header was blank
 /// when it was adopted must be able to fill in later.
 fn sync_roster() {
+    let live: Vec<ServerId> = crate::plex::server_ids().collect();
+    if sources().iter().any(|s| !live.contains(&s.sid)) {
+        // Roster removal is an identity boundary, not a failed fetch. The section/state arrays are
+        // indexed by source position, so compacting them piecemeal would re-file every later row;
+        // the existing whole-store reset is the safe removal primitive and supersedes landings.
+        reset();
+    }
     let known = sources().len();
-    for sid in crate::plex::server_ids() {
+    for sid in live {
         // matched on the SLOT, not on position: the roster and this table happen to be appended in
         // the same order today, and that is an invariant nobody outside this loop would know to
         // keep. The list is a handful of servers, so the scan costs nothing.
@@ -2060,6 +2067,26 @@ fn maybe_spawn() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_equal_size_profile_roster_replaces_the_inactive_source_instead_of_appending() {
+        let _g = crate::testlock::serial();
+        crate::plex::reset_servers_for_test();
+        reset();
+        let a = crate::plex::register_for_test("browse-a", "127.0.0.1", 1, "a", "cid");
+        let b = crate::plex::register_for_test("browse-b", "127.0.0.1", 2, "b", "cid");
+        sync_roster();
+        assert_eq!(sources().iter().map(|s| s.sid).collect::<Vec<_>>(), [a, b]);
+
+        crate::plex::revoke_for_profile_switch();
+        let c = crate::plex::register_for_test("browse-c", "127.0.0.1", 3, "c", "cid");
+        assert_eq!(crate::plex::server_count(), 2, "the replacement deliberately preserves count");
+        sync_roster();
+        assert_eq!(sources().iter().map(|s| s.sid).collect::<Vec<_>>(), [a, c]);
+
+        reset();
+        crate::plex::reset_servers_for_test();
+    }
 
     /// Regression: `reset()` dropped the three result mailboxes but left the single-flight
     /// flags set, and those are cleared ONLY inside a successful mailbox take. Sequence:

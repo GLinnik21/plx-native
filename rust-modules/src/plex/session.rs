@@ -1,13 +1,15 @@
 //! Persisted login session — what makes the client **offline-first**. After the one-time online
-//! login (account token → server discovery → profile switch), the chosen server's *local* address
-//! and the profile's token are written here, so every later boot connects straight to the LAN
-//! server over plain HTTP with no internet needed. Lives in the writable app dir (device-only;
-//! never in the repo). The token fields are secrets — this file's contents are never logged.
+//! login (account token → server discovery → profile switch), the chosen server's verified
+//! [`Origin`] and the profile's token are written here. A later boot can therefore resume the same
+//! LAN, remote, or relay HTTP(S) origin without plex.tv; offline operation remains possible when
+//! that stored origin is reachable. Lives in the writable app dir (device-only; never in the
+//! repo). The token fields are secrets — this file's contents are never logged.
 //!
 //! ## One server, and then the ROSTER
 //!
 //! [`Session::server`] is still the primary — the one address `can_go_local` runs on and the one
-//! `app.rs` boots against — and it is untouched. Beside it, [`Session::sources`] records **every**
+//! `app.rs` boots against — and refresh keeps its origin/tier aligned with the roster. Beside it,
+//! [`Session::sources`] records **every**
 //! server discovery reached, ours and every share, each with its own address and its own
 //! per-(user, server) token, because a shared server is a separate authority that answers 401 to
 //! anybody else's credential (`docs/shared-servers.md` §2b). A single-server account writes one
@@ -17,6 +19,7 @@
 //! (root `CLAUDE.md`), so a stored "last seen" would be a number that cannot be compared with
 //! anything and would invite an expiry rule built on it.
 use super::origin::Origin;
+use super::probe::Location;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::sync::Mutex;
@@ -196,10 +199,10 @@ pub struct HomeUserRef {
     pub admin: bool,
 }
 
-/// The PRIMARY server's coordinates — the one `can_go_local` boots on. `address`:`port` is reached
-/// over plain HTTP by the existing PMS socket (offline-capable); `token` is that server's access
-/// token (fallback when no managed-user token is set). Every server, including this one, is also
-/// in [`Session::sources`].
+/// The PRIMARY server's coordinates — the one `can_go_local` boots on. `origin` is the verified
+/// HTTP(S) authority; `address`:`port` remains its diagnostic/legacy fallback. `token` is that
+/// server's access token (fallback when no managed-user token is set). Every server, including
+/// this one, is also in [`Session::sources`].
 #[derive(Serialize, Deserialize, Default, Clone)]
 #[serde(default)] // a missing field costs that field, never the session — see [`HomeUserRef`]
 pub struct ServerRef {
@@ -210,6 +213,11 @@ pub struct ServerRef {
     pub address: String,
     pub port: i64,
     pub token: String,
+    /// The connection tier that won the last completed probe. `None` in legacy files and whenever
+    /// an address was restored without being re-probed. Lenient on disk: an unknown future tier is
+    /// lost as metadata, never allowed to make the primary session fail to parse.
+    #[serde(default, deserialize_with = "de_soft_location")]
+    pub tier: Option<Location>,
     /// **Where this server is, as a URL** — `"http://192.0.2.10:32400"`. Written since the origin
     /// model landed; **empty in every file written before it**, which is the whole reason
     /// [`ServerRef::origin`] has a fallback rather than an `Option`.
@@ -264,7 +272,8 @@ pub struct SourceRef {
     /// False ⇒ shared with us. A preference (ours sorts first, ours is `current`), never a wall.
     pub owned: bool,
     /// The address that answered `/identity` with the right `machineIdentifier` — not the first
-    /// one advertised. A share's `local` address is the OWNER's LAN and is never this.
+    /// one advertised. An unmatched share's advertised local address may be this only through its
+    /// TLS URI, after certificate and machine-identity verification; its plaintext form is gated.
     ///
     /// **Diagnostic metadata, and the LEGACY fallback.** It is what [`SourceRef::describe`] prints
     /// and what the Sources panel says; it is *not* what a connection is built from — that is
@@ -274,6 +283,10 @@ pub struct SourceRef {
     /// This identity's per-(user, server) `accessToken` for THIS server. A secret — never logged.
     /// Our own server's token gets a 401 from a share, which is why one token cannot serve both.
     pub token: String,
+    /// The winning connection tier. It is restored onto `Client::link` only after registration,
+    /// because re-pointing publishes a fresh client whose link starts unknown.
+    #[serde(default, deserialize_with = "de_soft_location")]
+    pub tier: Option<Location>,
     /// **Where this server is, as a URL** — the [`Origin`] the probe accepted, serialized. Empty
     /// in every file written before the field existed; [`SourceRef::origin`] falls back to
     /// `http://{address}:{port}` for those, which is what they meant. See [`ServerRef::origin`]
@@ -421,6 +434,17 @@ where
         // a null, an object, a string: not a list, so there is no list. Not an error.
         _ => Vec::new(),
     })
+}
+
+/// A persisted tier is diagnostic/policy metadata, not a credential gate. Missing, null,
+/// malformed, or from a newer build therefore means "unknown" rather than failing the enclosing
+/// `ServerRef` (which would turn one hand edit into a silent sign-out).
+fn de_soft_location<'de, D>(d: D) -> Result<Option<Location>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let Ok(v) = serde_json::Value::deserialize(d) else { return Ok(None) };
+    Ok(serde_json::from_value::<Option<Location>>(v).unwrap_or(None))
 }
 
 impl Session {
@@ -585,7 +609,7 @@ pub fn current_profile_key() -> String {
 
 /// **The one lock this file has**, and the only authority over it. Every public entry point in
 /// this module takes it, so a read-modify-write held across [`update`] is atomic against every
-/// other writer there is: the server-roster worker (`auth::refresh_roster_online`), the
+/// other writer there is: the server-roster worker (`auth::refresh_roster`), the
 /// who's-watching roster worker (`auth::start_switch`), the profile-switch and sign-in saves on
 /// the main thread (`auth::take_ready`, `auth`'s login thread), and the search-recents flush
 /// worker (`ui::search::recents`).
@@ -939,6 +963,31 @@ mod tests {
         assert_eq!(s.source("bbbb2222").unwrap().origin().unwrap().base(), "http://203.0.113.9:31234");
     }
 
+    /// Tier persistence is additive: old files have no field, and a value written by a future
+    /// build must not make the PRIMARY fail to parse (which would route a signed-in TV to QR).
+    #[test]
+    fn a_stored_tier_round_trips_and_unknown_tiers_degrade_to_unknown() {
+        let legacy: Session = serde_json::from_str(two_server_json()).expect("the legacy shape parses");
+        assert_eq!(legacy.server.tier, None);
+        assert!(legacy.sources.iter().all(|s| s.tier.is_none()));
+
+        let json = r#"{"client_id":"c","server":{"address":"192.0.2.10","port":32400,
+                      "token":"t","tier":"future-tier"},
+                    "sources":[{"machine_id":"m","address":"192.0.2.10","port":32400,
+                      "token":"t","tier":"relay"}]}"#;
+        let s: Session = serde_json::from_str(json).expect("an unknown primary tier is soft metadata");
+        assert!(s.can_go_local(), "unknown tier metadata cannot silently sign the device out");
+        assert_eq!(s.server.tier, None);
+        assert_eq!(s.sources[0].tier, Some(super::super::probe::Location::Relay));
+
+        let encoded = serde_json::to_value(ServerRef {
+            tier: Some(super::super::probe::Location::Remote),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(encoded["tier"], "remote", "the file stays human-readable and stable");
+    }
+
     /// The other side of the gate: once an origin IS written down it is what gets dialled, and it
     /// beats the address pair beside it. That is not a tie-break for its own sake — for an https
     /// server the two genuinely differ (the certificate is issued for the `plex.direct` NAME, not
@@ -1178,7 +1227,7 @@ mod tests {
     /// written once by the QR sign-in and never replaced by a profile switch — so a roster refresh
     /// made with it answers about the owner, and installing those per-server tokens while a managed
     /// profile is signed in swaps identities under them. For a RESTRICTED profile it also re-adds
-    /// the shares `auth::retoken` had correctly dropped, which is a re-grant and not a refresh.
+    /// the shares `auth::retoken` had correctly made tokenless, which is a re-grant and not a refresh.
     #[test]
     fn only_the_account_owners_own_profile_may_refresh_the_roster_with_the_account_token() {
         let home = |uuid: &str| Session {

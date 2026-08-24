@@ -94,23 +94,24 @@ The whole shared-source feature rests on keeping these apart:
   machine*. It changes while nobody touches anything, and it is never a reason to forget the grant
   or the pin.
 
-Collapsing any two of them produces a specific wrong behaviour rather than a vague one. A `401` read
-as "unreachable" sends the user to look at their friend's router when the fix is to refetch
-`/resources` (every other address of that server will answer identically). An unreachable server
-read as un-granted drops the source out of the Sources list, so there is nothing left to retry.
+Collapsing any two of them produces a specific wrong behaviour rather than a vague one. A `401` is
+the final answer only when no parallel direct or fallback relay candidate verifies the machine; at
+that point reading it as "unreachable" sends the user to the router when the fix is to refetch
+`/resources` or correct the access policy. An unreachable server read as un-granted drops the
+source out of the Sources list, so there is nothing left to retry.
 A pinned-but-dead source drawn as a shelf is a spinner that never ends — the design's answer is that
 a dead source is **absent** from Home and states itself in its own library section instead.
 
 ## Gotchas that bite (all verified in code)
 
-- **`Connection.local` does not mean what it looks like, and the cost is 8 seconds.** It means "this
-  address is RFC1918", NOT "you are on that LAN" — a share advertises the *owner's* `172.20.x.x`.
-  `publicAddressMatches` is the field that means the latter. `probe.rs` drops a `local` connection
-  on a non-owned server unless that flag is set, because dialling it costs an 8 s timeout — and the
-  worse outcome is that it SUCCEEDS, against a different machine of ours at that address. That is
-  also why a probe must **verify `machineIdentifier` on the response** before accepting a
-  connection, and why `probe.rs` is pure (no socket, no clock): the rules are then gradeable on the
-  dev Mac, which is the only tier that can grade them at all.
+- **`Connection.local` does not mean what it looks like, and the cost is a probe deadline.** It means
+  "this address is RFC1918", NOT "you are on that LAN" — a share advertises the *owner's*
+  `172.20.x.x`. `publicAddressMatches` is the field that means the latter. For an unmatched
+  non-owned connection, `probe.rs` retains only an advertised HTTPS URI and suppresses plaintext:
+  TLS plus the `/identity` response can authenticate the answer, while plaintext could succeed
+  against a different machine at the same address on our LAN. That is also why a probe must
+  **verify `machineIdentifier` on the response** before accepting a connection, and why `probe.rs`
+  is pure (no socket, no clock): the rules are then gradeable on the dev Mac.
 - **A ceiling is answered by the transcode FLAVOR *first*, and only then by a parameter.** Plex's
   relay is a ~2 Mbit/s tunnel, so `transcoder::link_policy` denies direct play *and* the container
   remux over one — the remux is the half that is easy to miss, since it copies the codecs and

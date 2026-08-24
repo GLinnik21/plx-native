@@ -92,11 +92,17 @@ fn slot(id: ServerId) -> Option<usize> {
 /// the failed playback or the panel row belongs to. `Unknown` for a server that has not answered
 /// yet, and for an id that names nothing.
 pub(crate) fn subscription_of(id: ServerId) -> Subscription {
+    if super::client_for(id).is_none() {
+        return Subscription::Unknown;
+    }
     slot(id).map(|i| Subscription::from_u8(SUBSCRIPTION[i].load(Relaxed))).unwrap_or(Subscription::Unknown)
 }
 
 /// [`version`] for a NAMED server; "" while unknown.
 pub(crate) fn version_of(id: ServerId) -> String {
+    if super::client_for(id).is_none() {
+        return String::new();
+    }
     let Some(i) = slot(id) else { return String::new() };
     VERSION.lock().map(|g| g[i].clone()).unwrap_or_default()
 }
@@ -347,6 +353,12 @@ mod tests {
         store(past_end, Subscription::Yes, "nowhere");
         assert_eq!(subscription_of(a), Subscription::Yes);
         assert_eq!(subscription_of(b), Subscription::No, "no write landed in a real slot");
+
+        assert!(servers::set_current(a));
+        servers::revoke_for_profile_switch();
+        assert_eq!(subscription_of(a), Subscription::Yes, "the current shell still names this server");
+        assert_eq!(subscription_of(b), Subscription::Unknown, "an inactive sparse slot exposes no old subscription");
+        assert_eq!(version_of(b), "", "nor its old build string");
     }
 
     /// **This is an async LANDING, so it owes the frame gate a poke.** The answer arrives on a

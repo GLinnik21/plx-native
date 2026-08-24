@@ -404,6 +404,11 @@ const NSRC: usize = crate::plex::MAX_SERVERS;
 /// `wallace`.
 static GEN: AtomicU32 = AtomicU32::new(0);
 
+/// Registry identity generation last observed by the frame-loop store. This catches sparse
+/// membership changes and same-slot re-points alike; both supersede cached answers and workers
+/// aimed at the previous origin/profile.
+static VISIBLE: AtomicU32 = AtomicU32::new(0);
+
 /// The claim that source `i`'s fetch is out. Released by the mailbox take — the only event that
 /// knows the fetch is over — so anything that ends one by another route must release it itself:
 /// [`supersede`] drops the mailbox the take would have come from, and a refused `spawn_small` never
@@ -497,22 +502,20 @@ impl Source {
 
 static mut SRC: [Source; NSRC] = [const { Source::EMPTY }; NSRC];
 
-/// The registry slots this store fans out over, as a RANGE — **the one place a raw `ServerId`
-/// becomes an index into [`SRC`]/[`SLOT`]/[`IN_FLIGHT`]** (see [`NSRC`]).
+/// The registry slots this store fans out over — **the one place a raw `ServerId` becomes an index
+/// into [`SRC`]/[`SLOT`]/[`IN_FLIGHT`]** (see [`NSRC`]).
 ///
-/// **A window, not a prefix, and that is not a refinement — `0..server_count()` was wrong.** Slot
+/// **Exact ids, not a prefix or a range.** Slot
 /// numbers are permanent and a sign-out RETIRES the departing account's slots without renumbering
 /// what registers after them (`plex::servers`' module doc), so after signing into a second account
 /// the live roster is `2..3` and not `0..1`: a prefix would have asked the revoked slots (which
 /// resolve to no client at all) and never asked the server the user is actually signed in to.
-/// The live window is contiguous by construction, which is what lets [`live_sources`] stay a
-/// borrow of the array rather than a collected `Vec` of references.
-fn slots() -> std::ops::Range<usize> {
-    let mut ids = crate::plex::server_ids();
-    let Some(first) = ids.next() else { return 0..0 };
-    let lo = first.raw() as usize;
-    let hi = (lo + 1 + ids.count()).min(NSRC);
-    lo.min(hi)..hi
+/// A profile switch can additionally deactivate only the middle slot, so even that post-sign-out
+/// window is not necessarily contiguous. Collecting at most 16 indices is the honest shape.
+fn slots() -> Vec<usize> {
+    crate::plex::server_ids()
+        .filter_map(|id| ((id.raw() as usize) < NSRC).then_some(id.raw() as usize))
+        .collect()
 }
 
 /// How many sources this store fans out over — the width of [`slots`].
@@ -560,6 +563,16 @@ fn supersede() {
 /// Advance the debounce and land whatever arrived. Called once a frame from the screen's update.
 /// Returns whether anything changed, so the caller can re-clamp focus.
 pub(crate) fn pump(dt: f32) -> bool {
+    let live = slots();
+    let visible = crate::plex::server_roster_gen();
+    let roster_changed = VISIBLE.swap(visible, Ordering::SeqCst) != visible;
+    if roster_changed {
+        // This is an identity boundary, not merely a changed source count. Clear every answer and
+        // generation so a slot reactivated for another profile cannot surface rows fetched with
+        // the credential it held before it was hidden.
+        supersede();
+        unsafe { (*addr_of_mut!(SHELVES)).clear() };
+    }
     unsafe {
         if *addr_of!(ARMED) {
             let s = &mut *addr_of_mut!(SETTLE);
@@ -572,9 +585,8 @@ pub(crate) fn pump(dt: f32) -> bool {
             }
         }
     }
-    let live = slots();
     let mut landed = false;
-    for i in live.clone() {
+    for i in live.iter().copied() {
         unsafe {
             let cd = &mut (*addr_of_mut!(SRC))[i].retry_cd;
             if *cd > 0 {
@@ -604,13 +616,14 @@ pub(crate) fn pump(dt: f32) -> bool {
     if landed {
         rebuild();
     }
-    let state = state_from(live_sources(), terms(query()).is_some());
+    let sources = live_sources(&live);
+    let state = state_from_refs(&sources, terms(query()).is_some());
     let moved = state != self::state();
     if moved {
         crate::log(&format!("search: q='{}' state={}", query().trim(), state.name()));
         unsafe { *addr_of_mut!(STATE) = state };
     }
-    if !landed && !moved {
+    if !landed && !moved && !roster_changed {
         return false;
     }
     // every landing repaints, the failure branch included: without this the screen sits on a
@@ -659,22 +672,20 @@ fn record(i: usize, what: Option<Projection>) {
     }
 }
 
-/// The LIVE registry slots, as a slice — the one place a raw `static mut` array becomes a borrow.
-/// The whole array is taken first and sliced after, because `&(*addr_of!(SRC))[r]` autorefs the raw
-/// pointer's target implicitly, which rustc denies outright (`dangerous_implicit_autorefs`).
-///
-/// [`slots`] is a window rather than a prefix (see its doc), so this slices with it: the records
-/// belonging to an account that signed out sit BELOW the window and must not reach the merge or the
-/// verdict.
-fn live_sources() -> &'static [Source] {
+/// The LIVE registry slots as exact references into the raw main-thread store. Taking the whole
+/// array first avoids an implicit autoref of the raw pointer (`dangerous_implicit_autorefs`).
+/// Collecting is necessary because profile visibility may contain holes.
+fn live_sources(live: &[usize]) -> Vec<&'static Source> {
     let all: &'static [Source; NSRC] = unsafe { &*addr_of!(SRC) };
-    &all[slots()]
+    live.iter().map(|&i| &all[i]).collect()
 }
 
 /// Recompute the merged shelves from every source's last answer. The [`State`] is NOT set here —
 /// [`pump`] recomputes that every frame, landing or no landing (see the note there).
 fn rebuild() {
-    let shelves = merge(live_sources());
+    let live = slots();
+    let sources = live_sources(&live);
+    let shelves = merge_refs(&sources);
     let items: usize = shelves.iter().map(|s| s.items.len()).sum();
     crate::log(&format!("search: q='{}' shelves={} items={}", query().trim(), shelves.len(), items));
     unsafe { *addr_of_mut!(SHELVES) = shelves };
@@ -684,6 +695,11 @@ fn rebuild() {
 /// no source can bury another (module doc). Pure, so the ordering rule is graded on the host rather
 /// than inferred from a screenshot with two servers plugged in.
 fn merge(sources: &[Source]) -> Vec<Shelf> {
+    let sources: Vec<&Source> = sources.iter().collect();
+    merge_refs(&sources)
+}
+
+fn merge_refs(sources: &[&Source]) -> Vec<Shelf> {
     let mut out = Vec::new();
     for (k, kind) in KINDS.iter().enumerate() {
         // only a source that ANSWERED contributes: one still pending has nothing to say yet, and
@@ -744,6 +760,11 @@ fn merge(sources: &[Source]) -> Vec<Shelf> {
 /// spinner there would never end. A friend's server being off is not a reason to tell someone their
 /// own library's search failed, which is why one answer beats any number of failures.
 fn state_from(sources: &[Source], asking: bool) -> State {
+    let sources: Vec<&Source> = sources.iter().collect();
+    state_from_refs(&sources, asking)
+}
+
+fn state_from_refs(sources: &[&Source], asking: bool) -> State {
     if !asking {
         return State::Idle;
     }
@@ -754,7 +775,7 @@ fn state_from(sources: &[Source], asking: bool) -> State {
             sources.iter().filter(|s| is_answered(s)).any(|s| s.items.iter().any(|v| !v.is_empty()));
         return if has_items { State::Ready } else { State::Searching };
     }
-    if sources.iter().any(is_answered) {
+    if sources.iter().any(|s| is_answered(s)) {
         return State::Ready;
     }
     State::Failed
@@ -902,6 +923,7 @@ fn tag_hit(t: &crate::plex::Tag, sid: ServerId) -> TagHit {
 /// else. Called beside `browse::reset()`.
 pub(crate) fn reset() {
     supersede();
+    VISIBLE.store(crate::plex::server_roster_gen(), Ordering::SeqCst);
     unsafe {
         (*addr_of_mut!(QUERY)).clear();
         (*addr_of_mut!(SHELVES)).clear();
@@ -952,7 +974,7 @@ mod tests {
         }
     }
 
-    /// **The fan-out is a WINDOW into the mailboxes, not a prefix of them.** Slot numbers are
+    /// **The fan-out is the exact live-id set, not a prefix of the mailboxes.** Slot numbers are
     /// permanent and a sign-out retires the departing account's without renumbering what registers
     /// after them, so the `0..server_count()` this used to walk would have asked two slots that
     /// resolve to no client at all and never asked the server the user had just signed in to: a
@@ -961,18 +983,18 @@ mod tests {
     fn signing_into_a_second_account_searches_its_slots_and_not_the_retired_ones() {
         let _g = fresh();
         register(2);
-        assert_eq!(slots(), 0..2);
+        assert_eq!(slots(), vec![0, 1]);
 
         crate::plex::revoke_all();
-        assert_eq!(slots(), 0..0, "there is nothing to ask while signed out");
+        assert!(slots().is_empty(), "there is nothing to ask while signed out");
         assert_eq!(nsrc(), 0);
-        assert!(live_sources().is_empty(), "and the retired records reach neither the merge nor the verdict");
+        assert!(live_sources(&slots()).is_empty(), "and the retired records reach neither the merge nor the verdict");
 
         let sid = crate::plex::register_for_test("search-test-next", "127.0.0.1", 1, "tok", "cid-search-test");
         assert_eq!(sid.raw(), 2, "the next account gets a fresh slot, above the retired ones");
-        assert_eq!(slots(), 2..3, "and the window follows it rather than starting at 0");
+        assert_eq!(slots(), vec![2], "and the live id follows it rather than starting at 0");
         assert_eq!(nsrc(), 1);
-        assert_eq!(live_sources().len(), 1);
+        assert_eq!(live_sources(&slots()).len(), 1);
     }
 
     /// A registered loopback slot. The port is never dialled — `hold_off` parks every spawn — so
@@ -982,7 +1004,36 @@ mod tests {
         for i in 0..n {
             crate::plex::register_for_test(&format!("search-test-{i}"), "127.0.0.1", 1, "tok", "cid-search-test");
         }
+        // Test setup finishes before any seeded mailbox/status. Production learns this boundary
+        // from its first pump; fixtures that inject a landing directly must mark the just-built
+        // roster as already observed so that first pump grades the landing rather than setup.
+        VISIBLE.store(crate::plex::server_roster_gen(), Ordering::SeqCst);
         assert_eq!(nsrc(), n);
+    }
+
+    #[test]
+    fn a_profile_hole_searches_exact_live_ids_and_supersedes_the_previous_profiles_answers() {
+        let _g = fresh();
+        register(3);
+        hold_off();
+        unsafe {
+            (*addr_of_mut!(QUERY)).push_str("wallace");
+            (*addr_of_mut!(SRC))[0].status = Status::Answered;
+            *addr_of_mut!(SHELVES) = vec![Shelf { kind: Kind::Movie, items: vec![media("old-profile")] }];
+            *addr_of_mut!(STATE) = State::Ready;
+        }
+
+        crate::plex::revoke_for_profile_switch();
+        let restored = crate::plex::register_for_test("search-test-2", "127.0.0.1", 1, "new", "cid-search-test");
+        assert_eq!(restored.raw(), 2);
+        assert_eq!(slots(), vec![0, 2], "the inactive middle share is not replaced by a range");
+
+        assert!(pump(0.0), "membership changed the result state and therefore repaints");
+        assert_eq!(state(), State::Searching);
+        assert!(shelves().is_empty(), "old-profile tiles disappear before a new source lands");
+        let live = live_sources(&slots());
+        assert_eq!(live.len(), 2);
+        assert!(live.iter().all(|s| s.status == Status::Pending), "old-profile answers were superseded");
     }
 
     fn hub(id: &str, kind: &str) -> Hub {

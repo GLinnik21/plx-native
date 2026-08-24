@@ -2024,8 +2024,10 @@ pub(crate) fn pump_detail() -> bool {
 // `guid` — which only the fetch can supply — and because a page with no guid (a server that sent
 // none) must cost nothing at all.
 static ALT_GEN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static ALT_ROSTER_GEN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 struct AltResult {
     gen: u32,
+    roster_gen: u32,
     /// The SERVER the resolve was asked for — the other half of `rk`, and carried for exactly the
     /// reason [`SeasonResult::sid`] is. A `ratingKey` is a server-local integer dense from 1
     /// (docs/shared-servers.md §1), so leaving OUR film 4 and opening the SHARE's film 4 while a
@@ -2063,6 +2065,8 @@ static ALT_SLOT: std::sync::Mutex<Option<AltResult>> = std::sync::Mutex::new(Non
 fn request_alt_sources(sid: crate::plex::ServerId, rk: &str, guid: &str) {
     use std::sync::atomic::Ordering;
     let gen = ALT_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+    let roster_gen = crate::plex::server_roster_gen();
+    ALT_ROSTER_GEN.store(roster_gen, Ordering::SeqCst);
     *ALT_SLOT.lock().unwrap_or_else(|e| e.into_inner()) = None;
     if guid.is_empty() {
         return; // nothing portable to match on; the panel stays absent
@@ -2079,7 +2083,7 @@ fn request_alt_sources(sid: crate::plex::ServerId, rk: &str, guid: &str) {
         // metadata id — not an address, a token or a machine — so it is safe to log, and it is the
         // only string that identifies WHICH lookup this was.
         crate::log(&format!("altsrc: asked {n} source(s) for {guid} -> {} copy(ies)", list.len()));
-        *ALT_SLOT.lock().unwrap_or_else(|e| e.into_inner()) = Some(AltResult { gen, sid, rk, list });
+        *ALT_SLOT.lock().unwrap_or_else(|e| e.into_inner()) = Some(AltResult { gen, roster_gen, sid, rk, list });
     });
 }
 
@@ -2116,9 +2120,15 @@ fn resolve_alt_sources(others: &[crate::plex::ServerId], guid: &str) -> Vec<crat
 /// MAIN THREAD, once a frame. Hands a landed cross-source resolve to the panel's store.
 pub(crate) fn pump_alt_sources() {
     use std::sync::atomic::Ordering;
+    let roster_gen = crate::plex::server_roster_gen();
+    if ALT_ROSTER_GEN.swap(roster_gen, Ordering::SeqCst) != roster_gen {
+        ALT_GEN.fetch_add(1, Ordering::SeqCst);
+        *ALT_SLOT.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        crate::ui::alt_sources::prune_inactive();
+    }
     let taken = ALT_SLOT.lock().unwrap_or_else(|e| e.into_inner()).take();
     let Some(r) = taken else { return };
-    if r.gen != ALT_GEN.load(Ordering::SeqCst) {
+    if r.gen != ALT_GEN.load(Ordering::SeqCst) || r.roster_gen != roster_gen {
         return; // superseded: the page moved on while this was in flight
     }
     // `install` re-checks the (server, rk) PAIR against the page actually mounted — this generation
@@ -2867,7 +2877,14 @@ mod tests {
             ]
         };
         let land = |gen: u32, sid: crate::plex::ServerId, rk: &str| {
-            *ALT_SLOT.lock().unwrap() = Some(AltResult { gen, sid, rk: rk.to_string(), list: copies() });
+            ALT_ROSTER_GEN.store(crate::plex::server_roster_gen(), Ordering::SeqCst);
+            *ALT_SLOT.lock().unwrap() = Some(AltResult {
+                gen,
+                roster_gen: crate::plex::server_roster_gen(),
+                sid,
+                rk: rk.to_string(),
+                list: copies(),
+            });
         };
 
         // our film 4 is the mounted page and its resolve is out…
@@ -2895,6 +2912,34 @@ mod tests {
         assert!(!crate::ui::alt_sources::is_available(), "a landing from a superseded resolve is dropped");
 
         crate::ui::alt_sources::reset(crate::plex::ServerId::UNSET, "");
+    }
+
+    #[test]
+    fn an_alt_source_from_a_revoked_slot_is_pruned_and_its_inflight_result_is_discarded() {
+        let _serial = crate::testlock::serial();
+        crate::plex::reset_servers_for_test();
+        let a = crate::plex::register_for_test("alt-a", "127.0.0.1", 1, "a", "cid");
+        let b = crate::plex::register_for_test("alt-b", "127.0.0.1", 2, "b", "cid");
+        let copies = vec![
+            crate::ui::alt_sources::AltCopy { sid: a, rk: "4".into(), ..Default::default() },
+            crate::ui::alt_sources::AltCopy { sid: b, rk: "9".into(), ..Default::default() },
+        ];
+        crate::ui::alt_sources::reset(a, "4");
+        crate::ui::alt_sources::install(a, "4", copies.clone());
+        assert!(crate::ui::alt_sources::is_available());
+
+        let old_roster = crate::plex::server_roster_gen();
+        ALT_ROSTER_GEN.store(old_roster, Ordering::SeqCst);
+        let gen = ALT_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+        *ALT_SLOT.lock().unwrap() = Some(AltResult { gen, roster_gen: old_roster, sid: a, rk: "4".into(), list: copies });
+        crate::plex::revoke_for_profile_switch();
+        crate::plex::register_for_test("alt-c", "127.0.0.1", 3, "c", "cid");
+
+        pump_alt_sources();
+        assert!(!crate::ui::alt_sources::is_available(), "the removed source neither stays cached nor re-lands");
+
+        crate::ui::alt_sources::reset(crate::plex::ServerId::UNSET, "");
+        crate::plex::reset_servers_for_test();
     }
 
     /// The whole detail mailbox in one serial test — the statics are global, so splitting this

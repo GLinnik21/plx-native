@@ -33,7 +33,9 @@ pub fn init() {
 pub fn update(dt: f32) {
     let s = scene();
     s.spin_ms += dt * 1000.0;
-    // A retry mints a new pin (hence a new QR) — release the cached texture so it re-uploads.
+    // A retry that needs a new account sign-in enters Creating (hence a new QR); a discovery-only
+    // retry stays in Discovering and deliberately keeps the already-authorized account credential.
+    // Release the cached texture only for the former so its replacement can upload.
     // The GL texture has to be DELETED, not merely forgotten: `ensure_qr_tex` allocates a fresh id
     // on every miss (`img_upload_rgba` never reuses the old one), so zeroing the handle alone
     // orphaned a full 400x400-ish RGBA QR bitmap per sign-in retry, with nothing left holding its

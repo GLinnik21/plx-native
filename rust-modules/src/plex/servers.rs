@@ -48,7 +48,9 @@
 //! its live per-server tokens and the next account browsed, searched and built Home from BOTH.
 //! [`revoke_all`] raises a [`FLOOR`]: every slot below it is dead — invisible to [`ids`], resolved
 //! to `None` by [`client_for`], and blanked to an empty token so a `&'static Client` grabbed before
-//! the sign-out cannot dial with the old one either.
+//! the sign-out cannot dial with the old one either. [`revoke_for_profile_switch`] uses the same
+//! token blanking without raising the floor: it temporarily deactivates this account's slots, then
+//! the newly granted roster reactivates only the machines that profile may use.
 //!
 //! **A revoked slot number is never handed out again**, not even to the same `machineIdentifier`.
 //! [`ServerId`]'s whole contract is that it names one server for the life of the process — it sits
@@ -161,16 +163,22 @@ static SLOTS: [AtomicPtr<Client>; MAX_SERVERS] = [const { AtomicPtr::new(std::pt
 /// nobody has described yet — which is the honest state on a boot that never reached plex.tv.
 static FACTS: [AtomicPtr<ServerFacts>; MAX_SERVERS] = [const { AtomicPtr::new(std::ptr::null_mut()) }; MAX_SERVERS];
 /// Slots populated so far — the high-water mark, MONOTONE for the life of the process. A revoked
-/// slot keeps its number (see the module doc), so this is not the number of servers: that is
-/// [`count`], which is this minus [`FLOOR`].
+/// slot keeps its number (see the module doc), so this is not the number of servers: that is the
+/// population count of [`ACTIVE`].
 static COUNT: AtomicUsize = AtomicUsize::new(0);
+/// Which slots in the current account window are granted to the active profile. A profile switch
+/// can remove one share without retiring every slot number above it; inactive clients stay leaked
+/// but resolve to nothing, and their token is blanked before this bit is cleared.
+static ACTIVE: AtomicU32 = AtomicU32::new(0);
+/// Monotone epoch of the active roster's identity. It moves when a slot appears/disappears or is
+/// re-pointed, even when the active COUNT stays the same, so cached fan-out stores can distinguish
+/// `{0,1}` from `{0,2}` and can discard work aimed at a superseded origin.
+static ROSTER_GEN: AtomicU32 = AtomicU32::new(1);
 /// The first slot that still belongs to the signed-in account. Raised to [`COUNT`] by
 /// [`revoke_all`]; everything below it is a credential of an account that has left.
 ///
-/// One number rather than a flag per slot, because revocation is all-or-nothing: it is a SIGN-OUT,
-/// and there is no such thing as forgetting one server of an account you are still using. That is
-/// also what keeps the live roster CONTIGUOUS — `FLOOR..COUNT` — which the stores that index a flat
-/// array by [`ServerId::raw`] (`crate::search`) walk as a window.
+/// A sign-out raises this past the whole account window. Profile visibility is separate in
+/// [`ACTIVE`], because a managed user may be granted only a subset of the owner's servers.
 static FLOOR: AtomicUsize = AtomicUsize::new(0);
 /// The current/primary server as a raw `ServerId` — what `client()` answers with.
 static CURRENT: AtomicU32 = AtomicU32::new(ServerId::UNSET.0 as u32);
@@ -190,7 +198,7 @@ static WRITE: Mutex<()> = Mutex::new(());
 /// microsecond earlier anyway.
 pub fn client_for(id: ServerId) -> Option<&'static Client> {
     let i = id.index()?;
-    if i < FLOOR.load(Ordering::Relaxed) {
+    if i < FLOOR.load(Ordering::Relaxed) || ACTIVE.load(Ordering::Acquire) & (1u32 << i) == 0 {
         return None;
     }
     let p = SLOTS.get(i)?.load(Ordering::Acquire);
@@ -240,11 +248,15 @@ pub fn client_opt() -> Option<&'static Client> {
 /// How many servers are registered **and still ours** — a sign-out takes the whole table down to
 /// zero (see [`revoke_all`]).
 ///
-/// Not a slot bound: slot numbers are permanent, so the live window is `FLOOR..COUNT` and the
-/// caller that wants slot NUMBERS wants [`ids`]. Reading this as `0..count()` is exactly how a
-/// query gets fanned out over the previous account's slots while the current account's go unasked.
+/// Not a slot bound: slot numbers are permanent and profile visibility can be sparse. The caller
+/// that wants slot NUMBERS wants [`ids`]; reading this as `0..count()` can hit an inactive share or
+/// miss a live slot above it.
 pub fn count() -> usize {
-    COUNT.load(Ordering::Acquire).saturating_sub(FLOOR.load(Ordering::Acquire))
+    ACTIVE.load(Ordering::Acquire).count_ones() as usize
+}
+
+pub fn roster_gen() -> u32 {
+    ROSTER_GEN.load(Ordering::Acquire)
 }
 
 /// Every LIVE slot, in registration order — **the granted roster**, since a server is only
@@ -252,11 +264,14 @@ pub fn count() -> usize {
 /// Registration order matters to the one caller (`browse`'s section table appends in it, and the
 /// session server registers first), so this is an ordered walk and not a set.
 ///
-/// The range starts at [`FLOOR`], not at 0: a sign-out retires the slots below it without
+/// The walk starts at [`FLOOR`], not at 0: a sign-out retires the slots below it without
 /// renumbering anything registered after (the module doc says why numbers are never reused).
 pub fn ids() -> impl Iterator<Item = ServerId> {
     let hi = COUNT.load(Ordering::Acquire);
-    (FLOOR.load(Ordering::Acquire).min(hi)..hi).map(|i| ServerId(i as u16))
+    let active = ACTIVE.load(Ordering::Acquire);
+    (FLOOR.load(Ordering::Acquire).min(hi)..hi)
+        .filter(move |&i| active & (1u32 << i) != 0)
+        .map(|i| ServerId(i as u16))
 }
 
 /// What the roster says about one server, `None` until something has described it — and `None`
@@ -265,9 +280,7 @@ pub fn ids() -> impl Iterator<Item = ServerId> {
 /// machine name and the person who shared it on screen, off a slot nothing can dial.
 pub fn facts(id: ServerId) -> Option<&'static ServerFacts> {
     let i = id.index()?;
-    if i < FLOOR.load(Ordering::Relaxed) {
-        return None;
-    }
+    client_for(id)?;
     let p = FACTS.get(i)?.load(Ordering::Acquire);
     // SAFETY: identical to `client_for`'s — a slot holds null or a `Box::into_raw` pointer that is
     // never freed, published Release and read Acquire.
@@ -345,6 +358,29 @@ fn same_server(c: &Client, machine_id: &str, origin: &Origin) -> bool {
 fn publish(id: ServerId, c: Client) {
     let p = Box::into_raw(Box::new(c));
     SLOTS[id.0 as usize].store(p, Ordering::Release);
+}
+
+/// Read a populated slot without applying profile visibility. Writers use this only while holding
+/// [`WRITE`] so a profile-switch re-registration can find and reactivate the same machine id after
+/// its old token was blanked. Slots below [`FLOOR`] are never searched: those belong to an account
+/// that signed out and must never be adopted by the next one.
+fn populated(id: ServerId) -> Option<&'static Client> {
+    let i = id.index()?;
+    let p = SLOTS.get(i)?.load(Ordering::Acquire);
+    (!p.is_null()).then(|| unsafe { &*p })
+}
+
+/// Publish one populated slot into the active profile's roster. Pointer/token writes happen first;
+/// the Release bit is what makes them reachable through [`client_for`].
+fn activate(id: ServerId) {
+    let Some(i) = id.index() else { return };
+    let bit = 1u32 << i;
+    if ACTIVE.fetch_or(bit, Ordering::Release) & bit == 0 {
+        ROSTER_GEN.fetch_add(1, Ordering::AcqRel);
+    }
+    if !current().is_set() {
+        CURRENT.store(id.0 as u32, Ordering::Release);
+    }
 }
 
 /// Register (or update) a server, returning its stable id — or [`ServerId::UNSET`] when the table
@@ -438,12 +474,16 @@ pub(crate) fn register_origin_with_client_id(
 fn register_lazy(machine_id: &str, origin: &Origin, token: &str, client_id: &dyn Fn() -> String) -> ServerId {
     let _w = WRITE.lock().unwrap_or_else(|e| e.into_inner());
     let n = COUNT.load(Ordering::Acquire);
-    // LIVE slots only. A revoked slot for this very machine is not adopted: the previous account's
-    // grant on it is dead, and the number belongs to that account's stores forever (module doc).
-    let found = ids().find(|&id| client_for(id).is_some_and(|c| same_server(c, machine_id, origin)));
+    let floor = FLOOR.load(Ordering::Acquire).min(n);
+    // Search every populated slot in THIS account's window, including one deactivated by a profile
+    // switch. Reusing that machine's stable id is how repeated profile changes avoid consuming the
+    // 16-slot table; a sign-out raises FLOOR, so a previous account's slot is never considered.
+    let found = (floor..n)
+        .map(|i| ServerId(i as u16))
+        .find(|&id| populated(id).is_some_and(|c| same_server(c, machine_id, origin)));
 
     if let Some(id) = found {
-        let c = client_for(id).expect("the matched slot is populated");
+        let c = populated(id).expect("the matched slot is populated");
         // Keep an id we already know: a legacy address-keyed call must not blank it.
         let mid = if machine_id.is_empty() { c.machine_id() } else { machine_id };
         if c.origin() != origin || c.machine_id() != mid {
@@ -457,10 +497,16 @@ fn register_lazy(machine_id: &str, origin: &Origin, token: &str, client_id: &dyn
             // worth saying, which is the only way a headless run armed with `{"scheme":"https"}`
             // can be told from an http one at all. See `Origin::log_form`.
             crate::log(&format!("plex: server slot {} re-pointed to {}", id.0, origin.log_form()));
+            // The pointer is leaked, so a worker may retain it forever. Defang that old reference
+            // before publishing the replacement; later sign-out/profile revocation can only walk
+            // the current pointer stored in this slot and cannot discover superseded clients.
+            c.set_token("");
             publish(id, Client::new(id, mid, origin.clone(), token, &client_id()));
+            ROSTER_GEN.fetch_add(1, Ordering::AcqRel);
         } else {
             c.set_token(token); // in place — every reference already handed out follows along
         }
+        activate(id);
         return id;
     }
 
@@ -473,15 +519,11 @@ fn register_lazy(machine_id: &str, origin: &Origin, token: &str, client_id: &dyn
     let id = ServerId(n as u16);
     publish(id, Client::new(id, machine_id, origin.clone(), token, &client_id()));
     COUNT.store(n + 1, Ordering::Release); // after the pointer: a visible count implies a live slot
+    activate(id);
     // Address only — the machineIdentifier is a permanent household fingerprint (see `ui::stats`)
     // and the event log is what users send us. `log_form` rather than `base`, for the reason the
     // re-point line above gives.
     crate::log(&format!("plex: server slot {} registered at {}", id.0, origin.log_form()));
-    if !current().is_set() {
-        // Release: this store is what makes the `publish` above reachable through `client()`, so it
-        // must not be seen before it (see `current()`).
-        CURRENT.store(id.0 as u32, Ordering::Release);
-    }
     id
 }
 
@@ -498,6 +540,79 @@ pub fn install(origin: &Origin, token: &str) {
     let id = register_origin("", origin, token);
     set_current(id); // the session path always retargets: this is now the server we are using
     // (`register` already refreshed this server's self-description — see its doc.)
+}
+
+/// **Profile switch.** Blank every live token and hide every non-current slot before the new
+/// profile's grants are registered. Unlike [`revoke_all`], this does not raise [`FLOOR`]:
+/// registering a machine the new profile may use reactivates its stable slot, while an omitted
+/// share stays invisible and its previously handed-out `Client` stays tokenless.
+///
+/// The current slot remains visible but tokenless until its new grant is installed. Keeping that
+/// shell is load-bearing for the lock-free `client()` contract: a reader that sampled CURRENT just
+/// before this write must still resolve the slot rather than panic. The switch response already
+/// proved this primary machine is granted to the new profile, so the caller immediately re-tokens
+/// it while holding auth's activation gate.
+pub(crate) fn revoke_for_profile_switch() {
+    let _w = WRITE.lock().unwrap_or_else(|e| e.into_inner());
+    let live: Vec<ServerId> = ids().collect();
+    let keep = current();
+    let keep_live = client_for(keep).is_some();
+    for id in &live {
+        if let Some(c) = client_for(*id) {
+            c.set_token("");
+        }
+    }
+    let keep_mask = keep
+        .index()
+        .filter(|_| keep_live)
+        .map_or(0, |i| 1u32 << i);
+    ACTIVE.store(keep_mask, Ordering::Release);
+    ROSTER_GEN.fetch_add(1, Ordering::AcqRel);
+    if !keep_live {
+        CURRENT.store(ServerId::UNSET.0 as u32, Ordering::Release);
+    }
+    if !live.is_empty() {
+        crate::log(&format!("plex: {} server(s) revoked — profile changed", live.len()));
+    }
+    crate::ui::idle::invalidate();
+}
+
+/// Finish a profile/roster replacement with exactly the slots the caller just installed.
+///
+/// [`revoke_for_profile_switch`] temporarily retains `current` as a tokenless shell so a reader
+/// which sampled its id immediately before the revoke cannot resolve a vanished slot. Once the
+/// replacement grants have been published, that bridge must be removed: the old primary may no
+/// longer be granted at all. This is the commit point that turns the temporary union into the
+/// authoritative roster and, when necessary, moves `current` to the first installed survivor.
+pub(crate) fn finish_profile_switch(installed: &[ServerId]) {
+    let _w = WRITE.lock().unwrap_or_else(|e| e.into_inner());
+    let floor = FLOOR.load(Ordering::Acquire);
+    let mut exact = 0u32;
+    let mut first = ServerId::UNSET;
+    for &id in installed {
+        let Some(i) = id.index() else { continue };
+        if i < floor || populated(id).is_none() {
+            continue;
+        }
+        exact |= 1u32 << i;
+        if !first.is_set() {
+            first = id;
+        }
+    }
+
+    let old_current = current();
+    let keep_current = old_current.index().is_some_and(|i| exact & (1u32 << i) != 0);
+    let next = if keep_current { old_current } else { first };
+
+    // Every installed slot was already activated, so publishing the new CURRENT first cannot
+    // point at a hidden slot. Removing the bridge second avoids the inverse window: CURRENT still
+    // naming the just-hidden old primary, which would make `client_opt()` transiently return None.
+    CURRENT.store(next.0 as u32, Ordering::Release);
+    let old = ACTIVE.swap(exact, Ordering::AcqRel);
+    if old != exact {
+        ROSTER_GEN.fetch_add(1, Ordering::AcqRel);
+        crate::ui::idle::invalidate();
+    }
 }
 
 /// **Sign-out.** Retire every registered server: `client()` answers with nothing again, [`ids`]
@@ -524,7 +639,9 @@ pub(crate) fn revoke_all() {
     // CURRENT first: for the instant between these two stores a reader must never see an id whose
     // slot the floor has already killed, which is the one state `client()`'s `expect` would take.
     CURRENT.store(ServerId::UNSET.0 as u32, Ordering::Release);
+    ACTIVE.store(0, Ordering::Release);
     FLOOR.store(n, Ordering::Release);
+    ROSTER_GEN.fetch_add(1, Ordering::AcqRel);
     if n > floor {
         crate::log(&format!("plex: {} server(s) revoked — signed out", n - floor));
     }
@@ -551,6 +668,8 @@ pub(crate) fn reset_for_test() {
         f.store(std::ptr::null_mut(), Ordering::Release);
     }
     COUNT.store(0, Ordering::Release);
+    ACTIVE.store(0, Ordering::Release);
+    ROSTER_GEN.store(1, Ordering::Release);
     // The floor goes back with the count, or every test after one that signed out would register
     // into slots the walk starts above — a table that reads as empty however much is in it.
     FLOOR.store(0, Ordering::Release);
@@ -784,13 +903,16 @@ mod tests {
         assert_eq!(count(), 1);
         assert_eq!(client_for(id).unwrap().machine_id(), "mach-A");
         assert_eq!(stale.host(), "10.0.0.1", "the replaced client is still readable, not freed");
+        assert_eq!(token_of(stale), "", "a superseded leaked client cannot retain a credential");
 
         // and once known, the id is what identifies it — the same server at a new address
         // re-points that slot rather than appending
+        let adopted: &'static Client = client_for(id).unwrap();
         let moved = reg("mach-A", "10.0.0.9", "tok-a");
         assert_eq!(moved, id);
         assert_eq!(count(), 1);
         assert_eq!(client_for(id).unwrap().host(), "10.0.0.9");
+        assert_eq!(token_of(adopted), "", "every re-point defangs the pointer it supersedes");
     }
 
     /// **Signing out takes the servers with it.** Nothing here can be freed, so the leak that
@@ -821,6 +943,53 @@ mod tests {
         // reason these are leaked — but it can no longer dial as anybody
         assert_eq!(inflight.host(), "10.0.0.2");
         assert_eq!(token_of(inflight), "", "a worker mid-request must not carry the old credential");
+    }
+
+    #[test]
+    fn a_profile_switch_reactivates_only_the_new_profiles_granted_servers() {
+        let _g = fresh();
+        let ours = reg("mach-A", "10.0.0.1", "owner-a");
+        let share = reg("mach-B", "10.0.0.2", "owner-b");
+        let old_ours: &'static Client = client_for(ours).unwrap();
+        let old_share: &'static Client = client_for(share).unwrap();
+
+        revoke_for_profile_switch();
+
+        assert_eq!(count(), 1, "the current slot remains as a lock-free tokenless shell");
+        assert_eq!(ids().collect::<Vec<_>>(), vec![ours]);
+        assert_eq!(token_of(client_for(ours).unwrap()), "");
+        assert!(client_for(share).is_none());
+        assert_eq!(token_of(old_ours), "");
+        assert_eq!(token_of(old_share), "", "an omitted share loses the old profile's credential");
+
+        let again = reg("mach-A", "10.0.0.1", "managed-a");
+        assert_eq!(again, ours, "a profile switch preserves the machine's stable slot");
+        assert_eq!(ids().collect::<Vec<_>>(), vec![ours]);
+        assert_eq!(token_of(client_for(ours).unwrap()), "managed-a");
+        assert!(client_for(share).is_none(), "the ungranted share stays out of every roster walk");
+        assert_eq!(token_of(old_share), "", "and even a stale reference remains defanged");
+        assert!(std::ptr::eq(client(), client_for(ours).unwrap()));
+    }
+
+    #[test]
+    fn a_removed_primary_shell_disappears_after_the_surviving_roster_is_committed() {
+        let _g = fresh();
+        let gone = reg("mach-A", "10.0.0.1", "owner-a");
+        let survivor = reg("mach-B", "10.0.0.2", "owner-b");
+        let stale_gone: &'static Client = client_for(gone).unwrap();
+
+        revoke_for_profile_switch();
+        assert_eq!(ids().collect::<Vec<_>>(), vec![gone], "the old current is only a temporary shell");
+        assert_eq!(reg("mach-B", "10.0.0.2", "fresh-b"), survivor);
+        set_current(survivor);
+        finish_profile_switch(&[survivor]);
+
+        assert_eq!(count(), 1);
+        assert_eq!(ids().collect::<Vec<_>>(), vec![survivor]);
+        assert!(client_for(gone).is_none(), "a revoked primary is absent from the authoritative roster");
+        assert_eq!(token_of(stale_gone), "", "its already-issued reference stays defanged");
+        assert!(std::ptr::eq(client(), client_for(survivor).unwrap()));
+        assert_eq!(token_of(client()), "fresh-b");
     }
 
     /// The account that signs in next gets FRESH slot numbers, even for a machine the previous
