@@ -1418,6 +1418,62 @@
       }
     },
     {
+      "name": "pipe_h264_aac_resolution_spike",
+      "fixture": "pipe_h264_aac_resolution_spike.mkv",
+      "title": "one Starfish Load: 720p -> 1080p -> 720p H.264/AAC",
+      "covers": [
+        "adaptiveResolution",
+        "single-Load-resolution-change",
+        "boundary-frame-cadence"
+      ],
+      "declare": {
+        "vcodec": "h264",
+        "acodec": "aac",
+        "fps": 24.0
+      },
+      "run_secs": 35,
+      "operations": [
+        {
+          "op": "play"
+        }
+      ],
+      "gst_trace": {
+        "debug": "lxvideosink:6",
+        "frame_pattern": "gst_lx_videosink_render:.*\\[PLAYING\\] received buffer"
+      },
+      "expect": {
+        "codec": "h264",
+        "video_size": "1280x720",
+        "load_video": "H264",
+        "load_audio": "AAC",
+        "load_dovi": "none",
+        "load_fps": 24.0,
+        "load_fps_rational": "24/1",
+        "min_pos_climb_s": 20,
+        "require_video_bound": true,
+        "no_playing_error": true,
+        "load_count_exact": 1,
+        "require_audio_feed_ready": true,
+        "no_reload": true,
+        "server_opens_exact": 1,
+        "server_range_opens_exact": 0,
+        "starfish_resolution_sequence": [
+          "1280x720",
+          "1920x1080",
+          "1280x720"
+        ],
+        "resolution_boundaries_s": [
+          8,
+          16
+        ],
+        "gst_boundary_window_ms": 1000,
+        "gst_boundary_gap_floor_ms": 120,
+        "gst_boundary_gap_p99_multiplier": 3.0,
+        "gst_first_frame_max_ms": 125
+      },
+      "_note": "The file changes SPS/PPS/IDR in-band at media 8 s and 16 s while the case requires exactly one `load:` and forbids both app reload paths. Starfish type-4 source-info callbacks prove the coded-size sequence; GST is armed only for lxvideosink's per-picture cadence because the 5 Hz `vtick` heartbeat cannot measure frame-boundary stalls. `feed a#… reply=O` proves at least one AAC AU reached and was accepted by Starfish — readiness, not an assertion that a loudspeaker was audible. The 35 s cap observes both transitions plus 19 s of post-roll but cannot reach this 60 s clip's EOS. Exact server counters reject an invisible demux reopen just as exact Load count rejects an invisible Starfish replacement."
+    },
+    {
       "name": "pipe_seek_mp4",
       "fixture": "pipe_h264_aac_mp4.mp4",
       "title": "in-place seek inside mp4 — the mov demuxer's index, not matroska's cues",

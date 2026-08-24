@@ -325,7 +325,22 @@ impl Client {
 
     /// GET → parse the `{ "MediaContainer": … }` envelope into the flat container.
     pub(super) fn get_json(&self, path_no_token: &str) -> Option<MediaContainer> {
-        let body = self.body_2xx_bulk(path_no_token, &[ACCEPT_JSON])?;
+        self.get_json_with_headers(path_no_token, &[])
+    }
+
+    /// JSON request with operation-specific headers. The universal transcoder uses the documented
+    /// `X-Plex-Session-Identifier` header as its logical playback identity while its legacy
+    /// `session=` query value owns a replaceable encoder; the real PMS probe establishes that the
+    /// two fields are independent. All ordinary callers stay on [`get_json`](Self::get_json).
+    pub(super) fn get_json_with_headers(
+        &self,
+        path_no_token: &str,
+        headers: &[&str],
+    ) -> Option<MediaContainer> {
+        let mut request_headers = Vec::with_capacity(headers.len() + 1);
+        request_headers.push(ACCEPT_JSON);
+        request_headers.extend_from_slice(headers);
+        let body = self.body_2xx_bulk(path_no_token, &request_headers)?;
         match serde_json::from_slice::<Envelope>(&body) {
             Ok(e) => Some(e.media_container),
             Err(e) => {

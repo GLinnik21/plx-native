@@ -653,7 +653,9 @@ def layout_lines(key, spec, dur, ep=None):
         hdr = "DOVI P8.1 (HDR10 BL) PQ BT2020"
     elif v.get("hdr"):
         hdr = "HDR10 PQ BT2020"
-    lines.append("V0 %s %s %s %gFPS %ds" % (v["codec"].upper(), v["size"], hdr,
+    sizes = (" -> ".join(spec["resolution_spike"]["sequence"])
+             if spec.get("resolution_spike") else v["size"])
+    lines.append("V0 %s %s %s %gFPS %ds" % (v["codec"].upper(), sizes, hdr,
                                             v.get("fps", FPS), dur))
     for i, a in enumerate(spec.get("audio", [])):
         lines.append("A%d %s %s %s%s"
@@ -1128,6 +1130,29 @@ PIPE_SHAPES = {
         "subs": [],
     },
     # -----------------------------------------------------------------------------------
+    # ONE LOAD, THREE CODED RASTERS. This is not another cell in the static matrix above:
+    # the file changes SPS in-band at 8 s and 16 s while the Starfish session stays loaded.
+    # The long final leg is deliberate. The device case runs for 35 s, so it observes both
+    # boundaries plus ample post-roll without reaching EOF and introducing a teardown into a
+    # test whose subject is the live decoder reconfiguration.
+    "pipe_h264_aac_resolution_spike": {
+        "kind": "clip", "ext": "mkv", "builder": "resolution_spike",
+        "duration": PIPE_SECS, "rate": 0.04,
+        "declare": {"vcodec": "h264", "acodec": "aac", "fps": float(FPS), "atmos": False},
+        # `video.size` is the container/header's initial raster. `resolution_spike` is the
+        # stronger per-frame claim, verified by decoding every frame and inspecting the two
+        # boundary packets for in-band SPS/PPS/IDR NALs. A NEW_EXTRADATA side datum alone is
+        # insufficient: ff.rs forwards packet NALs and does not consume that side datum.
+        "video": {"codec": "h264", "size": "1280x720", "crf": 21},
+        "resolution_spike": {
+            "sequence": ["1280x720", "1920x1080", "1280x720"],
+            "boundaries_s": [8.0, 16.0],
+        },
+        "audio": [{"codec": "aac", "ch": 2, "lang": "eng", "br": "192k", "pitch": 233,
+                   "default": True, "title": "AAC 2.0 English"}],
+        "subs": [],
+    },
+    # -----------------------------------------------------------------------------------
     # ...and the one shape in either pack that is SUPPOSED to run out — LG item #46.
     "pipe_h264_ac3_short": {
         # 20 s, and the short length IS the feature: every other clip in both packs is sized so
@@ -1283,6 +1308,7 @@ PIPE_MBIT = {
     "pipe_hevc_eac3_480p": 1.34,        # 0.96 video + 0.38 E-AC-3
     "pipe_hevc_eac3_720p": 2.50,        # 2.12 + 0.38
     "pipe_hevc_eac3_1080p": 4.90,       # 4.52 + 0.38
+    "pipe_h264_aac_resolution_spike": 4.40,  # 8s 720p + 8s 1080p + long 720p tail, AAC
     "pipe_h264_ac3_short": 1.71,        # = pipe_h264_ac3_480p, of which it is a 20 s copy
 }
 
@@ -1518,6 +1544,103 @@ def build_generic(ctx, key, spec, dur, ep, dest, work, video_only=False):
     return lines
 
 
+def resolution_spike_plan(spec, dur):
+    """`[(size, seconds), ...]` for an in-band coded-resolution fixture.
+
+    The full shape owns ABSOLUTE 8 s / 16 s boundaries because the device assertion names those
+    media times. A shortened `--quick`/`--secs` build still has to be structurally useful, so only
+    a SHORTER run scales the boundaries into its duration. A longer development build retains the
+    real boundaries rather than quietly moving what the manifest will grade.
+    """
+    spike = spec["resolution_spike"]
+    bounds = [float(x) for x in spike["boundaries_s"]]
+    if dur < spec["duration"]:
+        scale = float(dur) / float(spec["duration"])
+        bounds = [x * scale for x in bounds]
+    cuts = [0.0] + bounds + [float(dur)]
+    if len(spike["sequence"]) + 1 != len(cuts):
+        raise Fail("resolution_spike sequence/boundary count mismatch")
+    plan = [(size, cuts[i + 1] - cuts[i]) for i, size in enumerate(spike["sequence"])]
+    if any(secs <= 0 for _, secs in plan):
+        raise Fail("resolution_spike has a non-positive segment at duration %s" % dur)
+    return plan
+
+
+def build_resolution_spike(ctx, key, spec, dur, ep, dest, work):
+    """H.264 720p -> 1080p -> 720p inside one Matroska video track.
+
+    One encoder cannot change dimensions in place, so each raster is encoded as an Annex-B
+    elementary segment whose first AU carries IDR + repeated SPS/PPS. Concatenating those byte
+    streams and remuxing the result as ONE track preserves the parameter sets in the boundary
+    packets while the raw-H264 demuxer generates one continuous 24 fps timestamp lattice. Audio
+    is generated once at final mux time, so it has no splice or timestamp reset at either video
+    boundary. `verify_resolution_spike` proves all of those properties from the finished MKV.
+    """
+    if spec["video"]["codec"] != "h264" or spec["ext"] != "mkv":
+        raise Fail("resolution_spike currently requires H.264 in Matroska")
+    if len(spec.get("audio", [])) != 1 or spec["audio"][0]["codec"] != "aac":
+        raise Fail("resolution_spike currently requires one continuous AAC track")
+
+    lines = layout_lines(key, spec, dur, ep)
+    fps = spec["video"].get("fps", FPS)
+    elementary = []
+    for i, (size, seg_secs) in enumerate(resolution_spike_plan(spec, dur)):
+        vw, vh = (int(x) for x in size.split("x"))
+        seg_lines = lines + ["SEGMENT %d %s" % (i + 1, size)]
+        banner = banner_png(work / ("banner_%s_res%d.png" % (key, i)),
+                            seg_lines, fit_scale(seg_lines, vw, vh))
+        raw = work / ("%s_res%d.h264" % (key, i))
+        argv = ["ffmpeg", "-y", "-v", "error", "-nostdin",
+                "-t", _g(seg_secs), "-f", "lavfi",
+                "-i", "testsrc2=size=%s:rate=%s" % (size, _rate_arg(fps)),
+                "-i", str(banner)]
+        fc = ("[0:v][1:v]overlay=(W-w)/2:H/12," + CHAIN_SDR + "[v]")
+        argv += ["-filter_complex", fc, "-map", "[v]"]
+        argv += venc_args(spec["video"])
+        # x264 repeats parameter sets at every IDR. The first IDR of segment 2/3 is the coded
+        # size change Starfish must consume; without repeat-headers the host decoder can learn
+        # the new extradata through packet side data while ff.rs cannot, a dangerous false fixture.
+        # No B-frames: the raw-H264 demuxer has no container timestamps, so the final copy mux
+        # assigns one monotonic 24 Hz PTS/DTS sequence with `setts`. Decode order then equals
+        # presentation order; leaving B-frames in would make a syntactically monotonic file whose
+        # PTS described decode order, exactly the timing ambiguity this fixture exists to remove.
+        argv += ["-bf", "0", "-x264-params",
+                 "repeat-headers=1:keyint=48:min-keyint=48:scenecut=0:bframes=0",
+                 "-an", "-sn", "-t", _g(seg_secs), "-f", "h264", str(raw)]
+        run(argv)
+        elementary.append(raw)
+
+    joined = work / (key + "_joined.h264")
+    with joined.open("wb") as out:
+        for raw in elementary:
+            with raw.open("rb") as src:
+                shutil.copyfileobj(src, out)
+
+    a = spec["audio"][0]
+    argv = ["ffmpeg", "-y", "-v", "error", "-nostdin",
+            "-fflags", "+genpts", "-r", _rate_arg(fps), "-f", "h264", "-i", str(joined),
+            "-t", _g(dur), "-f", "lavfi", "-i", audio_graph(a["ch"], a["pitch"], dur),
+            "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy",
+            "-bsf:v", "setts=pts=N:dts=N:duration=1:time_base=1/%s" % _rate_arg(fps),
+            "-c:a:0", "aac", "-b:a:0", a["br"], "-ac:a:0", str(a["ch"]),
+            "-metadata:s:a:0", "language=" + a["lang"],
+            "-metadata:s:a:0", "title=" + a.get("title", ""),
+            "-disposition:v:0", "default", "-disposition:a:0", "default",
+            # The default mux interleave can let the raw-H264 input run tens of seconds ahead
+            # of the generated AAC input. That is a valid Matroska file but not a useful player
+            # fixture: the bounded video AU queue then blocks the demuxer before it can expose
+            # audio. Wait for both streams at every interleave decision so packet file order
+            # follows their common content timeline.
+            "-max_interleave_delta", "0",
+            "-metadata", "title=" + container_title(key, spec),
+            "-metadata", "description=" + "\n".join(lines),
+            "-metadata", "comment=" + "\n".join(lines),
+            "-t", _g(dur), str(dest)]
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    run(argv)
+    return lines
+
+
 def build_dovi(ctx, key, spec, dur, ep, dest, work):
     """Dolby Vision profile 8.1, synthesized end to end — no donor file involved.
 
@@ -1618,6 +1741,241 @@ def _rate(s):
         return float(n) / float(d) if float(d) else 0.0
     except (ValueError, ZeroDivisionError):
         return 0.0
+
+
+def _frame_pts(frame):
+    """Best available presentation timestamp from one ffprobe `-show_frames` object."""
+    for key in ("best_effort_timestamp_time", "pts_time", "pkt_pts_time"):
+        try:
+            return float(frame[key])
+        except (KeyError, TypeError, ValueError):
+            pass
+    return None
+
+
+def collapse_resolution_frames(frames):
+    """Ordered `(width, height, first_pts, key_frame)` runs from decoded video frames."""
+    runs = []
+    for frame in frames:
+        try:
+            size = int(frame["width"]), int(frame["height"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        pts = _frame_pts(frame)
+        if pts is None:
+            continue
+        if not runs or runs[-1][:2] != size:
+            runs.append((size[0], size[1], pts, bool(int(frame.get("key_frame") or 0))))
+    return runs
+
+
+def _ffprobe_data_bytes(text):
+    """Turn ffprobe's offset/hex/ASCII dump for one packet back into bytes."""
+    out = bytearray()
+    for line in (text or "").splitlines():
+        if ":" not in line:
+            continue
+        # `00000000: 0000 0004 ....  ....` — the double space separates hex from ASCII.
+        hex_side = line.split(":", 1)[1].strip().split("  ", 1)[0]
+        compact = "".join(hex_side.split())
+        if compact and len(compact) % 2 == 0 and re.fullmatch(r"[0-9a-fA-F]+", compact):
+            out.extend(bytes.fromhex(compact))
+    return bytes(out)
+
+
+def h264_nal_types(data):
+    """NAL types from either Annex-B or the generated Matroska's 4-byte AVCC packets."""
+    types = []
+    if b"\x00\x00\x01" in data[:8]:
+        starts = []
+        i = 0
+        while i + 3 <= len(data):
+            if data[i:i + 4] == b"\x00\x00\x00\x01":
+                starts.append(i + 4)
+                i += 4
+            elif data[i:i + 3] == b"\x00\x00\x01":
+                starts.append(i + 3)
+                i += 3
+            else:
+                i += 1
+        return [data[p] & 0x1f for p in starts if p < len(data)]
+    i = 0
+    while i + 4 <= len(data):
+        size = int.from_bytes(data[i:i + 4], "big")
+        i += 4
+        if size <= 0 or i + size > len(data):
+            break
+        types.append(data[i] & 0x1f)
+        i += size
+    return types
+
+
+def boundary_packet_nals(path, boundary_s):
+    """NAL types in the key packet nearest one expected resolution boundary."""
+    start = max(0.0, boundary_s - 0.20)
+    try:
+        doc = json.loads(run([
+            "ffprobe", "-v", "error", "-select_streams", "v:0",
+            "-read_intervals", "%s%%%s" % (_g(start), _g(boundary_s + 0.20)),
+            "-show_packets", "-show_data",
+            "-show_entries", "packet=pts_time,flags,data", "-of", "json", str(path),
+        ]))
+    except (Fail, ValueError):
+        return []
+    candidates = []
+    for packet in doc.get("packets", []):
+        try:
+            pts = float(packet["pts_time"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if "K" in (packet.get("flags") or ""):
+            candidates.append((abs(pts - boundary_s), packet))
+    if not candidates:
+        return []
+    return h264_nal_types(_ffprobe_data_bytes(min(candidates, key=lambda x: x[0])[1].get("data")))
+
+
+def physical_av_interleave(packets, video_index, audio_index):
+    """Maximum PTS separation while walking packets in physical file order.
+
+    Per-track timestamps can be immaculate in a catastrophically ordered Matroska file. The
+    player has one bounded queue per lane and a single demux thread, so ten seconds of video blocks
+    that thread before it reaches the audio stored later. `packet.pos` is the evidence that matters
+    here: sort by byte position explicitly rather than depending on how a particular ffprobe build
+    chooses to print packets.
+    """
+    wanted = {int(video_index), int(audio_index)}
+    rows = []
+    counts = {int(video_index): 0, int(audio_index): 0}
+    for ordinal, packet in enumerate(packets):
+        try:
+            stream = int(packet["stream_index"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if stream not in wanted:
+            continue
+        try:
+            pos = int(packet["pos"])
+            pts = float(packet["pts_time"])
+        except (KeyError, TypeError, ValueError):
+            raise ValueError("an A/V packet lacks physical position or presentation timestamp")
+        rows.append((pos, ordinal, stream, pts))
+        counts[stream] += 1
+    if any(counts[index] < 2 for index in wanted):
+        raise ValueError("physical packet walk did not find both A/V streams")
+
+    latest = {}
+    max_skew = 0.0
+    for _pos, _ordinal, stream, pts in sorted(rows):
+        latest[stream] = pts
+        if wanted <= latest.keys():
+            max_skew = max(max_skew, abs(latest[video_index] - latest[audio_index]))
+    return max_skew, counts
+
+
+def verify_resolution_spike(path, spec, dur, rec, problems):
+    """Prove the dynamic raster, boundary AUs and continuous A/V timestamps from the file."""
+    try:
+        doc = json.loads(run([
+            "ffprobe", "-v", "error", "-select_streams", "v:0", "-show_frames",
+            "-show_entries", "frame=best_effort_timestamp_time,pts_time,width,height,key_frame",
+            "-of", "json", str(path),
+        ]))
+        frames = doc.get("frames", [])
+    except (Fail, ValueError):
+        frames = []
+    runs = collapse_resolution_frames(frames)
+    got_sequence = ["%dx%d" % (w, h) for w, h, _, _ in runs]
+    want_sequence = list(spec["resolution_spike"]["sequence"])
+    expected_plan = resolution_spike_plan(spec, dur)
+    expected_bounds = []
+    at = 0.0
+    for _, seconds in expected_plan[:-1]:
+        at += seconds
+        expected_bounds.append(at)
+    rec["resolution_spike"] = {
+        "sequence": got_sequence,
+        "boundaries_s": [round(x[2], 3) for x in runs[1:]],
+        "boundary_keyframes": [x[3] for x in runs[1:]],
+    }
+    if got_sequence != want_sequence:
+        problems.append("decoded resolution sequence %s, wanted %s"
+                        % (" -> ".join(got_sequence) or "none", " -> ".join(want_sequence)))
+    if len(runs) == len(want_sequence):
+        fps = float(spec["declare"]["fps"])
+        tolerance = max(0.010, 2.0 / fps)
+        for i, (run_info, want_at) in enumerate(zip(runs[1:], expected_bounds), 1):
+            if abs(run_info[2] - want_at) > tolerance:
+                problems.append("resolution boundary %d at %.3fs, wanted %.3fs (+-%.3fs)"
+                                % (i, run_info[2], want_at, tolerance))
+            if not run_info[3]:
+                problems.append("resolution boundary %d does not begin on a keyframe" % i)
+
+        pts = [_frame_pts(f) for f in frames]
+        pts = [x for x in pts if x is not None]
+        steps = [b - a for a, b in zip(pts, pts[1:])]
+        want_step = 1.0 / fps
+        rec["resolution_spike"]["decoded_frames"] = len(pts)
+        rec["resolution_spike"]["video_max_step_ms"] = round(max(steps, default=0) * 1000, 3)
+        if not steps or any(x <= 0 for x in steps):
+            problems.append("video presentation timestamps are absent, duplicate or decreasing")
+        elif max(abs(x - want_step) for x in steps) > 0.003:
+            problems.append("video timestamp step departs from %.3fms (range %.3f..%.3fms)"
+                            % (want_step * 1000, min(steps) * 1000, max(steps) * 1000))
+
+        for i, boundary in enumerate(expected_bounds, 1):
+            nals = boundary_packet_nals(path, boundary)
+            rec["resolution_spike"]["boundary_%d_nals" % i] = nals
+            missing = {5, 7, 8} - set(nals)  # IDR, SPS, PPS
+            if missing:
+                problems.append("resolution boundary %d packet NALs %s; missing %s — SPS/PPS must "
+                                "be in-band, not only NEW_EXTRADATA"
+                                % (i, nals, sorted(missing)))
+
+    try:
+        adoc = json.loads(run([
+            "ffprobe", "-v", "error", "-select_streams", "a:0", "-show_packets",
+            "-show_entries", "packet=pts_time,duration_time", "-of", "json", str(path),
+        ]))
+        audio = [(float(p["pts_time"]), float(p.get("duration_time") or 0))
+                 for p in adoc.get("packets", []) if p.get("pts_time") not in (None, "N/A")]
+    except (Fail, ValueError, KeyError):
+        audio = []
+    gaps = [b[0] - a[0] for a, b in zip(audio, audio[1:])]
+    rec["resolution_spike"]["audio_packets"] = len(audio)
+    rec["resolution_spike"]["audio_max_step_ms"] = round(max(gaps, default=0) * 1000, 3)
+    if len(audio) < 2 or any(x <= 0 for x in gaps):
+        problems.append("AAC timestamps are absent, duplicate or decreasing")
+    elif max(gaps) > 0.050:
+        problems.append("AAC timestamp discontinuity: maximum packet step %.3fms" % (max(gaps) * 1000))
+    elif audio[0][0] > 0.100 or audio[-1][0] + audio[-1][1] < dur - 0.100:
+        problems.append("AAC does not span the clip continuously (%.3fs..%.3fs, wanted ~0..%ss)"
+                        % (audio[0][0], audio[-1][0] + audio[-1][1], dur))
+
+    # Timestamp continuity alone does not prove that a bounded streaming demuxer can reach both
+    # tracks. Check physical packet order as well: a badly muxed file may store most video first
+    # and most audio afterwards while every per-track PTS remains perfect.
+    try:
+        pdoc = json.loads(run([
+            "ffprobe", "-v", "error", "-show_packets", "-show_streams",
+            "-show_entries", "stream=index,codec_type:packet=stream_index,pts_time,pos",
+            "-of", "json", str(path),
+        ]))
+        by_type = {s.get("codec_type"): int(s["index"]) for s in pdoc.get("streams", [])
+                   if s.get("codec_type") in ("video", "audio")}
+        max_interleave, packet_counts = physical_av_interleave(
+            pdoc.get("packets", []), by_type["video"], by_type["audio"])
+    except (Fail, ValueError, KeyError) as e:
+        max_interleave, packet_counts = None, {}
+        problems.append("cannot verify physical A/V packet interleave: %s" % e)
+    rec["resolution_spike"]["physical_packet_counts"] = {
+        str(index): count for index, count in sorted(packet_counts.items())
+    }
+    rec["resolution_spike"]["packet_interleave_max_ms"] = (
+        round(max_interleave * 1000, 3) if max_interleave is not None else None)
+    if max_interleave is not None and max_interleave > 0.250:
+        problems.append("physical A/V packet interleave drifts by %.3fms (maximum 250ms)"
+                        % (max_interleave * 1000))
 
 
 def verify(key, spec, dur, path, ep=None):
@@ -1759,6 +2117,8 @@ def verify(key, spec, dur, path, ep=None):
             if "Dolby Vision RPU Data" not in sd:
                 problems.append("no in-band Dolby Vision RPU Data on the first frame "
                                 "(dovi_tool inject-rpu did not land)")
+        if spec.get("resolution_spike"):
+            verify_resolution_spike(path, spec, dur, rec, problems)
 
     want_audio = spec.get("audio", [])
     rec["audio"] = [{"codec": s.get("codec_name"), "channels": s.get("channels"),
@@ -2269,6 +2629,8 @@ def main(argv=None):
             try:
                 if spec.get("builder") == "dovi":
                     lines = build_dovi(ctx, k, spec, dur, ep, dest, work)
+                elif spec.get("builder") == "resolution_spike":
+                    lines = build_resolution_spike(ctx, k, spec, dur, ep, dest, work)
                 else:
                     lines = build_generic(ctx, k, spec, dur, ep, dest, work)
             except Fail as e:

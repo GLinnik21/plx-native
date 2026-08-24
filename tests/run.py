@@ -130,7 +130,7 @@ ALL_TRIGGERS = [
     # itemmenu snaps into the grid and opens the press-and-hold card context menu (route=itemmenu)
     "plxnative-itemmenu",
     # playurl is the synthetic tier's entry; replay is how many times a FINISHED one restarts (#46)
-    "plxnative-playurl", "plxnative-replay",
+    "plxnative-playurl", "plxnative-replay", "plxnative-gstlog", "plxnative-quality",
 ]
 
 # the type=43 spam filter (mirrors: grep -vaE "smp_cb type=43 num=0 str=$")
@@ -685,9 +685,9 @@ def triggers_for_case(case, url_base=None):
         # JSON, whole-file — dev::PlayUrl. `separators` drops the spaces `json.dumps` would put
         # after ':' and ',': they are legal JSON and the parser takes them, but this string is
         # about to be printed in the case header and pasted into issues, and short is legible.
-        # Nothing here can contain an apostrophe (a URL from `lan_ip()` plus codec names plus
-        # numbers), which is what makes it safe through apply_triggers' single-quoted printf —
-        # pinned on both sides, in tests/test_harness.py and in dev.rs's own suite.
+        # Today's fields contain no apostrophe (a URL from `lan_ip()` plus codec names plus
+        # numbers), and apply_triggers still shell-quotes the complete value rather than making
+        # that incidental property the remote command's security boundary.
         spec = dict(case.get("declare", {}))
         spec["url"] = f"{url_base}/{case['fixture']}"
         files = [("plxnative-playurl", json.dumps(spec, separators=(",", ":")))]
@@ -699,7 +699,17 @@ def triggers_for_case(case, url_base=None):
         if n:
             files.append(("plxnative-replay", str(n)))
     else:
-        files = [("plxnative-play", case["rk"])]  # the robust play trigger (fetches any rk)
+        # Pin the routing contract instead of inheriting whatever the person last selected on the
+        # television. The established PMS matrix grades direct-play/remux/progressive transcode,
+        # so its default is Original; a future adaptive case opts in with `"quality": "auto"`.
+        # This trigger is an in-memory override and never changes the persisted user preference.
+        files = [
+            ("plxnative-play", case["rk"]),  # the robust play trigger (fetches any rk)
+            ("plxnative-quality", case.get("quality", "original")),
+        ]
+    gst_debug = case.get("gst_trace", {}).get("debug")
+    if gst_debug:
+        files.append(("plxnative-gstlog", gst_debug))
     for op in case["operations"]:
         kind = op["op"]
         if kind == "seek" and op.get("mode") == "rapid":
@@ -775,12 +785,16 @@ def apply_triggers(tv, files, extra=None):
     parts = [f"mkdir -p {RUNDIR} && chmod 1777 {RUNDIR}"]
     # wipe every trigger, keeping only the append-only logs (events/stderr/crash)
     parts.append(f'for f in {RUNDIR}/plxnative-*; do case "$f" in *.log) ;; *) rm -f "$f";; esac; done')
+    # GST_DEBUG_FILE_OVERWRITE is honoured only once libpf installs its logger. Remove the old
+    # trace here as well, before launch, so an app that fails before that point cannot be graded
+    # against the previous case's perfectly plausible per-frame log.
+    if any(name == "plxnative-gstlog" for name, _ in files):
+        parts.append(f"rm -f {RUNDIR}/plxnative-gst.log")
     for name, content in files:
         if content is None:
             parts.append(f"touch {RUNDIR}/{name}")
         else:
-            # single-quote the content; rks / "0,6" / "mkv" never contain quotes
-            parts.append(f"printf '%s' '{content}' > {RUNDIR}/{name}")
+            parts.append(f"printf '%s' {sh_squote(content)} > {RUNDIR}/{name}")
     for cmd in ([extra] if isinstance(extra, str) else (extra or [])):
         if cmd:
             parts.append(cmd)
@@ -835,6 +849,17 @@ RE_ALANE = re.compile(r"ff: v=#0 .*\ba=#(-?\d+)")
 # The RATIONAL the Load payload's esInfo actually carries — `engine::fps_rational`'s output, as
 # opposed to the float that went into it. Emitted on every playback that declares a non-zero rate.
 RE_ESINFO = re.compile(r"esInfo: videoFps (\d+/\d+)")
+# GStreamer's monotonic debug timestamp. GST is used only for lxvideosink's per-picture cadence;
+# Starfish type 4 below is the coded-resolution authority.
+RE_GST_CLOCK = re.compile(r"(?<!\d)(\d+):(\d{2}):(\d{2})\.(\d{1,9})(?!\d)")
+# Starfish callback type 4 is the decoder's source-info event. Unlike LG's GST caps logger, it
+# reports every coded-size transition on the measured firmware (including a return to an earlier
+# size), so it is the authoritative dynamic-resolution signal for this gate.
+RE_SMP_SOURCE_INFO = re.compile(r"smp_cb type=4 num=-?\d+ str=(\{.*\})")
+# The audio feeder logs the first four attempts and every 200th thereafter. reply=O is Starfish
+# accepting a compressed audio AU: not proof a loudspeaker made sound, but the strongest event-log
+# readiness fact available and exactly what the badly interleaved first fixture never reached.
+RE_AUDIO_FEED = re.compile(r"\bfeed a#(\d+)\s+sz=(\d+)\s+fed=(-?\d+)\s+reply=(.)\s+qbytes=(\d+)")
 # the media URL carries the secret X-Plex-Token; strip it from anything we print/log.
 RE_TOKEN = re.compile(r"(X-Plex-Token=)[^&\s]+")
 
@@ -1135,7 +1160,159 @@ def a_audio_lane(lines, want_idx):
                              f"{hit.string.strip()}")
 
 
-def a_server_wire(delta, min_opens, min_range):
+def a_load_count(lines, want):
+    """An adaptive coded-size change must stay inside one Starfish Load/session."""
+    got = sum(bool(RE_LOAD.search(ln)) for ln in lines)
+    return got == want, f"saw {got} Load declaration(s), want exactly {want}"
+
+
+def a_audio_feed_ready(lines):
+    """At least one compressed audio AU reached and was accepted by Starfish."""
+    attempts = [m for line in lines for m in [RE_AUDIO_FEED.search(line)] if m]
+    accepted = [m for m in attempts if m.group(4) == "O"]
+    if accepted:
+        last = accepted[-1]
+        return True, (f"Starfish accepted audio feed a#{last.group(1)} "
+                      f"({last.group(2)} bytes, pts={int(last.group(3)) / 1e9:.3f}s)")
+    if attempts:
+        replies = "".join(m.group(4) for m in attempts)
+        return False, f"audio feed was attempted but no logged AU was accepted (replies={replies})"
+    return False, "no `feed a#… reply=O` line — the audio lane never reached Starfish"
+
+
+def _source_info_shape(node):
+    """Find the `video.width/height` pair inside a type-4 JSON envelope."""
+    if not isinstance(node, dict):
+        return None
+    video = node.get("video")
+    if isinstance(video, dict):
+        try:
+            return f"{int(video['width'])}x{int(video['height'])}"
+        except (KeyError, TypeError, ValueError):
+            pass
+    for value in node.values():
+        shape = _source_info_shape(value)
+        if shape:
+            return shape
+    return None
+
+
+def starfish_resolution_sequence(lines):
+    """Collapsed WxH sequence from valid Starfish source-info callbacks."""
+    got = []
+    for line in lines:
+        match = RE_SMP_SOURCE_INFO.search(line)
+        if not match:
+            continue
+        try:
+            shape = _source_info_shape(json.loads(match.group(1)))
+        except json.JSONDecodeError:
+            continue
+        if shape and (not got or got[-1] != shape):
+            got.append(shape)
+    return got
+
+
+def a_starfish_resolution_sequence(lines, want):
+    """The decoder itself must observe every in-band coded-size transition."""
+    got = starfish_resolution_sequence(lines)
+    return got == want, (f"Starfish source-info {' -> '.join(got) if got else '<none>'}; "
+                         f"want exactly {' -> '.join(want)}")
+
+
+def a_no_reload(lines):
+    """Reject either reload path even when a later session recovers and otherwise passes."""
+    bad = next((ln for ln in lines
+                if "reload_at:" in ln or "reload_transcode:" in ln), None)
+    return bad is None, ("no reload path entered" if bad is None else
+                         f"session reloaded :: {bad.strip()}")
+
+
+def gst_clock_ms(line):
+    """GStreamer debug's H:MM:SS.nanoseconds clock as milliseconds, or None."""
+    m = RE_GST_CLOCK.search(line)
+    if not m:
+        return None
+    hours, minutes, seconds = (int(m.group(i)) for i in range(1, 4))
+    nanos = int(m.group(4).ljust(9, "0"))
+    return ((hours * 60 + minutes) * 60 + seconds) * 1000.0 + nanos / 1_000_000.0
+
+
+def gst_frame_times(lines, pattern):
+    """Sorted unique per-picture sink timestamps selected by a case-owned regex."""
+    selector = re.compile(pattern, re.IGNORECASE)
+    return sorted({stamp for line in lines if selector.search(line)
+                   for stamp in [gst_clock_ms(line)] if stamp is not None})
+
+
+def _nearest_rank(values, percentile):
+    if not values:
+        return None
+    ordered = sorted(values)
+    rank = max(1, int((percentile * len(ordered) + 99) // 100))
+    return ordered[min(rank, len(ordered)) - 1]
+
+
+def a_gst_resolution_trace(lines, exp, trace):
+    """Bound presentation gaps around the fixture's known content-time transitions.
+
+    This deliberately grades LG's own pipeline clock, not the app's 5 Hz position heartbeat.
+    Source-info callbacks grade the exact resolution sequence separately; LG's GST caps logger did
+    not repeat the returning 720p caps event on the measured firmware. The fixture owns its 8/16 s
+    boundaries, so the first presented-picture clock plus those content offsets is a stronger and
+    firmware-independent cadence reference.
+    """
+    try:
+        frames = gst_frame_times(lines, trace["frame_pattern"])
+    except (KeyError, re.error) as e:
+        return False, f"invalid GST trace selector: {e}"
+
+    if len(frames) < 3:
+        return False, f"only {len(frames)} per-picture GST timestamp(s)"
+
+    gaps = [(frames[i - 1], frames[i], frames[i] - frames[i - 1])
+            for i in range(1, len(frames))]
+    try:
+        boundary_times = [frames[0] + float(seconds) * 1000.0
+                          for seconds in exp["resolution_boundaries_s"]]
+    except (KeyError, TypeError, ValueError) as e:
+        return False, f"invalid resolution boundary declaration: {e}"
+    window = float(exp.get("gst_boundary_window_ms", 1000))
+    first_max = float(exp.get("gst_first_frame_max_ms", 125))
+    boundary_gaps = []
+    for boundary in boundary_times:
+        after = next((t for t in frames if t >= boundary), None)
+        if after is None:
+            return False, f"no presented picture after content boundary at {boundary:.3f} ms"
+        if after - boundary > first_max:
+            return False, (f"first picture after {boundary:.3f} ms content boundary took "
+                           f"{after - boundary:.3f} ms, limit {first_max:g} ms")
+        near = [gap for left, right, gap in gaps
+                if right >= boundary - window and left <= boundary + window]
+        if not near:
+            return False, f"no picture intervals around content boundary at {boundary:.3f} ms"
+        boundary_gaps.append(max(near))
+
+    baseline = [gap for left, right, gap in gaps
+                if all(right < boundary - window or left > boundary + window
+                       for boundary in boundary_times)]
+    baseline_p99 = _nearest_rank(baseline, 99)
+    if baseline_p99 is None:
+        # A short captured trace can consist entirely of the two boundary windows. The declared
+        # source rate is still a conservative reference, while the absolute floor remains binding.
+        baseline_p99 = 1000.0 / float(exp.get("load_fps", 24.0))
+    limit = max(float(exp.get("gst_boundary_gap_floor_ms", 120)),
+                baseline_p99 * float(exp.get("gst_boundary_gap_p99_multiplier", 3.0)))
+    worst = max(boundary_gaps, default=0.0)
+    if worst > limit:
+        return False, (f"boundary picture gap {worst:.3f} ms exceeds {limit:.3f} ms "
+                       f"(off-boundary p99 {baseline_p99:.3f} ms)")
+    return True, (f"GST {len(frames)} pictures; boundary max {worst:.3f} ms <= {limit:.3f} ms "
+                  f"(off-boundary p99 "
+                  f"{baseline_p99:.3f} ms)")
+
+
+def a_server_wire(delta, min_opens, min_range, exact_opens=None, exact_range=None):
     """What the fixture SERVER saw — the one assertion no log line can give.
 
     A seek that never reaches the demuxer's `seek_cb` never issues a `Range` request, and from the
@@ -1145,6 +1322,10 @@ def a_server_wire(delta, min_opens, min_range):
     the silent corruption this tier's server exists to make impossible.
     """
     opens, ranges = delta
+    if exact_opens is not None and opens != exact_opens:
+        return False, f"the fixture server served {opens} body/bodies, want exactly {exact_opens}"
+    if exact_range is not None and ranges != exact_range:
+        return False, f"the fixture server saw {ranges} ranged request(s), want exactly {exact_range}"
     if opens < min_opens:
         return False, f"the fixture server served {opens} body/bodies, need >={min_opens}"
     if ranges < min_range:
@@ -2219,7 +2400,7 @@ def _resolve_fixtures(cases, root):
         c["path"] = path
 
 
-def evaluate_pipeline(case, lines, srv_delta):
+def evaluate_pipeline(case, lines, srv_delta, gst_lines=None):
     """Every assertion for a pipeline case. Returns (passed, [(label, ok, evidence)]).
 
     A separate function rather than a flag threaded through `evaluate`, for one concrete reason:
@@ -2230,6 +2411,12 @@ def evaluate_pipeline(case, lines, srv_delta):
     exp = case["expect"]
     results = [("stream_path", *a_stream_path(lines, case["fixture"]))]
     results.append(("load_decl", *a_load_decl(lines, exp)))
+    if "load_count_exact" in exp:
+        results.append(("load_count", *a_load_count(lines, exp["load_count_exact"])))
+    if exp.get("require_audio_feed_ready"):
+        results.append(("audio_feed", *a_audio_feed_ready(lines)))
+    if exp.get("no_reload"):
+        results.append(("no_reload", *a_no_reload(lines)))
     if "codec" in exp:
         results.append(("codec", *a_codec(lines, exp["codec"], exp.get("min_video_width", 0),
                                           exp.get("video_size"))))
@@ -2245,6 +2432,12 @@ def evaluate_pipeline(case, lines, srv_delta):
         results.append(("replayed", *a_replayed(lines, exp["replays"])))
     if exp.get("no_playing_error", True):
         results.append(("no_error", *a_no_error(lines)))
+    if "starfish_resolution_sequence" in exp:
+        results.append(("starfish_resolution", *a_starfish_resolution_sequence(
+            lines, exp["starfish_resolution_sequence"])))
+    if "resolution_boundaries_s" in exp:
+        results.append(("gst_cadence", *a_gst_resolution_trace(
+            gst_lines or [], exp, case.get("gst_trace", {}))))
 
     for op in case.get("operations", []):
         if op["op"] == "seek" and op.get("mode") == "rapid":
@@ -2254,8 +2447,15 @@ def evaluate_pipeline(case, lines, srv_delta):
 
     # Last, so its evidence sits next to the seek assertion it corroborates.
     results.append(("server_wire", *a_server_wire(
-        srv_delta, exp.get("server_opens_min", 1), exp.get("server_range_opens_min", 0))))
+        srv_delta, exp.get("server_opens_min", 1), exp.get("server_range_opens_min", 0),
+        exp.get("server_opens_exact"), exp.get("server_range_opens_exact"))))
     return all(ok for _, ok, _ in results), results
+
+
+def pull_runtime_log(tv, name):
+    """Read a case-owned diagnostic after playback; an absent/unreadable trace grades empty."""
+    proc = ssh(tv, f"cat {RUNDIR}/{name}", timeout=30)
+    return proc.stdout.splitlines() if proc.returncode == 0 else []
 
 
 def run_pipeline_case(case, cfg, srv, url_base, verbose):
@@ -2288,14 +2488,19 @@ def run_pipeline_case(case, cfg, srv, url_base, verbose):
         now = srv.stats()
         return evaluate_pipeline(c, ls, (now[0] - before[0], now[1] - before[1]))
 
-    early = not cfg.get("no_early")
+    # GST_DEBUG_FILE is not tailed by run-stream, so its assertions can be graded only after the
+    # run. Never let the event-log-only partial grade stop an instrumented case early.
+    early = not cfg.get("no_early") and not case.get("gst_trace")
     print(f"    run-stream (cap {run_secs}s{'' if early else ', early exit off'}) ...")
     lines, elapsed, stopped_early, settled = stream_case(case, cfg, run_secs, early=early,
                                                          evaluator=grade)
     after = srv.stats()
     delta = (after[0] - before[0], after[1] - before[1])
 
-    passed, results = evaluate_pipeline(case, lines, delta)
+    gst_lines = pull_runtime_log(tv, "plxnative-gst.log") if case.get("gst_trace") else None
+    if gst_lines is not None:
+        print(f"    GST trace: {len(gst_lines)} line(s)")
+    passed, results = evaluate_pipeline(case, lines, delta, gst_lines=gst_lines)
     report_case(passed, results, elapsed, run_secs, stopped_early, settled, verbose)
     if delta[0] == 0:
         # Every case that reaches the television opens at least one body. Zero means the TV never
@@ -2473,6 +2678,12 @@ def run_fps_scene(scene, cfg, token):
             files.append((tname, str(scene["rk"])))
         else:
             files.append((tname, str(tval)))
+    # Player FPS baselines were calibrated on the established Original route. Pin that route just
+    # as the server matrix does; otherwise a persisted Auto choice turns this into an HLS encoder
+    # benchmark and makes the number describe a different workload. Future adaptive FPS scenes
+    # opt in explicitly with `"quality": "auto"`.
+    if scene.get("tier") == "player":
+        files.append(("plxnative-quality", scene.get("quality", "original")))
     # clears every plxnative-* (incl. plxnative-profile) then writes this scene's. Player-tier
     # scenes actually decode video, so they need the test-user token too — appended to the same
     # round-trip via extra= so its value stays off stdout, exactly like the playback cases.

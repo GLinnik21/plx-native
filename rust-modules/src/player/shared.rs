@@ -264,6 +264,11 @@ pub(crate) struct Shared {
     pub video_w: AtomicI32,
     pub video_h: AtomicI32,
     pub duration_ns: AtomicI64,               // was g_mkv.duration_ns (published)
+    /// Latest normalized HLS timestamps successfully enqueued for each elementary stream. These
+    /// are content-timeline facts (not queue byte counts) used to derive buffered media time.
+    /// `-1` means the lane has not produced an AU in this session.
+    pub hls_video_tail_ns: AtomicI64,
+    pub hls_audio_tail_ns: AtomicI64,
     // set once the pipeline has drained to true end-of-stream (EOS pushed AND the last fed frame
     // has been presented). app.rs polls player::ended() to tear the player down at the credits.
     pub ended: AtomicBool,
@@ -414,6 +419,8 @@ impl Shared {
             video_w: AtomicI32::new(0),
             video_h: AtomicI32::new(0),
             duration_ns: AtomicI64::new(0),
+            hls_video_tail_ns: AtomicI64::new(-1),
+            hls_audio_tail_ns: AtomicI64::new(-1),
             ended: AtomicBool::new(false),
             hs_ptr: AtomicPtr::new(std::ptr::null_mut()),
         }
@@ -484,6 +491,8 @@ impl Shared {
         *self.track_names.lock().unwrap() = TrackNames::new();
         self.file_size.store(0, Ordering::Relaxed);
         self.duration_ns.store(0, Ordering::Relaxed);
+        self.hls_video_tail_ns.store(-1, Ordering::Relaxed);
+        self.hls_audio_tail_ns.store(-1, Ordering::Relaxed);
         self.ended.store(false, Ordering::Relaxed);
         self.hs_ptr.store(std::ptr::null_mut(), Ordering::Release);
     }

@@ -669,7 +669,10 @@ pub(crate) fn start_bufferfeed(mt: &MainThread) -> bool {
             // `teardown(true) + start_bufferfeed()` (reload_at / reload_transcode /
             // switch_audio_native), which respawns this thread with the new value.
             let acodec = crate::route::stream_acodec();
-            stream_th = crate::task::spawn("demux", move || crate::ff::demux(origin, path, acodec, aqp, aqap, hsp));
+            let abr = crate::route::hls_abr_control();
+            stream_th = crate::task::spawn("demux", move || {
+                crate::ff::demux(origin, path, acodec, abr, aqp, aqap, hsp)
+            });
             if stream_th.is_none() {
                 // Nothing will ever fill the AU queues, so there is no session to start. `hs` is
                 // about to drop with this early return, so retract the pointer first — the pump

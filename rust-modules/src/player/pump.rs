@@ -28,6 +28,10 @@ fn take_coalesced() -> u32 {
     TX.seek_reqs.swap(0, Relaxed).saturating_sub(1)
 }
 
+fn prime_before_play(rebase_pending: bool, segmented_hls: bool) -> bool {
+    rebase_pending || segmented_hls
+}
+
 /// Place the webOS 5+ exported window: source frame -> on-screen rect.
 ///
 /// No-op on the ACB path. `src` is the frame being FED and `dst` where it lands, and the pair is
@@ -316,10 +320,13 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
             // `>= Streaming`, so without it the last frames never drain and Up Next never fires.
             eng.stage = Stage::Streaming;
         }
-        // A fresh Load for a seek/resume (rebase_pending) primes before Play so the clock does
-        // not free-run through the demux av_seek reopen gap (fast-forward on resume). Initial
-        // play-from-0 has no such gap — Play immediately.
-        if eng.rebase_pending {
+        // A fresh Load for a seek/resume primes before Play so the clock does not free-run through
+        // the demux reopen gap. Segmented HLS needs the same gate even at offset zero: its video
+        // and AAC arrive through independent queues, and starting Starfish's audio-master clock
+        // before AAC is present produced silent initial playback that recovered only after a seek
+        // (the seek path already primed both lanes). Progressive initial play keeps its proven
+        // immediate-start behavior.
+        if prime_before_play(eng.rebase_pending, crate::route::is_segmented_hls()) {
             eng.prime_play = true;
             super::log("SMP loadCompleted (priming before Play)");
         } else {
@@ -430,5 +437,18 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
             SHARED.ended.store(true, Relaxed);
             super::log(&format!("EOS reached: playpos={}s/{}s → ended", pos / 1_000_000_000, dur / 1_000_000_000));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::prime_before_play;
+
+    #[test]
+    fn segmented_hls_primes_both_lanes_even_without_a_seek() {
+        assert!(prime_before_play(false, true));
+        assert!(prime_before_play(true, true));
+        assert!(prime_before_play(true, false));
+        assert!(!prime_before_play(false, false));
     }
 }

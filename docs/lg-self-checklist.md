@@ -6,7 +6,7 @@ N/A before submission. An unrun item cannot honestly be marked Pass; a Fail must
 submission.
 
 Checklist version 5.0 (updated 2022-09-27), 53 items. Status taken **2026-08-24** against the
-integrated code-and-harness state through `7b71721c`.
+integrated release candidate documented by this commit.
 
 Native eligibility is no longer the open question this file used to describe. Seller Lounge accepts
 this IPK as **File Type: Native** and asks for its native SDK version, chipset and resolution; see
@@ -17,12 +17,12 @@ this IPK as **File Type: Native** and asks for its native SDK version, chipset a
 The Claude integration plan is complete in this tree: T2/T4/T3/T3b and PR #60 are present. Its
 measured gates are:
 
-- host `make check`: **1163/1163** tests passed;
-- harness unit suite: **53/53** passed;
+- host `make check`: **1215/1215** tests passed;
+- harness unit suite: **62/62** passed;
 - `--no-default-features`: green;
 - ARM cross-build: green;
 - firmware compatibility: **OK for webOS 4.4.2 through 11.2.0**;
-- exact television/debug build: synthetic **20/20**, server **21/21**, and `--fps-player`
+- exact television/debug build: synthetic **21/21**, server **21/21**, and `--fps-player`
   **16/16**.
 
 Those results prove a great deal about this exact integrated implementation. They do **not** turn an
@@ -30,18 +30,7 @@ unrun LG item into Pass, do not substitute for Store-distribution evidence, and 
 submission-policy conflict. The exact television run was the debug build; the release configuration
 was type-checked and cross-built, not silently treated as the same artefact.
 
-## 2. Submission blockers — NOT DONE
-
-### #43 CASE1 — resolution must change with network speed: FAIL
-
-Automatic mid-session adaptive bitrate is not implemented. The app has a user-selected quality
-ceiling (`route::Quality`: Auto plus five rungs), and changing it re-decides the playback already on
-screen. Nothing measures the link and moves the rung automatically.
-
-The required 512 Kbps, 1 Mbps, 7 Mbps and 17.5 Mbps legs are reproducible with
-`tools/netcond.py`'s `rate:<kbps>` mode, but they cannot pass today without a person operating the
-picker. Closing this item requires link measurement, automatic live switching, and then a device run
-over all four legs. A user ceiling is not ABR.
+## 2. Remaining submission blockers — NOT DONE
 
 ### #53 — factory reset, then execute the app: EXTERNAL EVIDENCE UNAVAILABLE
 
@@ -95,12 +84,13 @@ These are not converted into numbered checklist failures, but they remain explic
 
 | # | Item | Measured basis |
 | --- | --- | --- |
+| 43 CASE1 | Adaptive resolution under four shaped links | **Pass on this television.** Auto starts from a conservative 720 Kbps/480p request, measures segment throughput, PMS production time and normalized A/V buffer time, and primes a separately named fixed-rendition encoder before switching. `tools/netcond.py` produced the required results: 512 Kbps → 320 Kbps / actual 320×134; 1 Mbps → 720 Kbps / actual 480×200; 7 Mbps → 4 Mbps / actual 1280×536; 17.5 Mbps → 8 Mbps / actual 1920×804. A live high-to-512 Kbps collapse jumped directly to the sustainable floor rather than downloading oversized intermediate rungs. All switches stayed inside one Starfish Load, the full 1:40:03 duration remained stable, and a mid-movie seek resumed on the correct HLS segment. |
 | 46 | Replay after completion | **Pass on this television.** The synthetic suite ran `pipe_finish_eos` and `pipe_replay_after_eos`: the 20 s clip reached `EOS reached → ended`, tore down, re-entered exactly once, produced a second Load and fixture fetch, and its media position fell and climbed again. This proves trigger-driven direct-play replay; user-driven and transcode replay remain useful extra coverage, not a reason to erase this measured result. |
 | 50 / 51 | Resolution × codec | **Pass on this television.** All eight SD 720×480 / HD 1280×720 / FHD 1920×1080 / UHD 3840×2160 × {H.264, HEVC} cells passed, each grading exact `expect.video_size`. The 4096-wide boundary, refusal above it, and a real PMS decision for generated-only shapes remain outside this matrix. |
 
 The complete debug-device evidence behind those rows is broader than the two checklist closures:
 
-- synthetic **20/20** proves transport, demux, feed, codec declarations, EOS/replay, seek, frame-rate
+- synthetic **21/21** proves transport, demux, feed, codec declarations, EOS/replay, seek, frame-rate
   fixtures, and the exact resolution matrix;
 - server **21/21** proves the live Plex selection path, direct play/transcode decisions, PlayQueue,
   track selection, markers, resume and timeline reporting for the configured library;
@@ -148,6 +138,6 @@ full/original screen toggle · #47 live/real-time TV streaming · #48 subtitle a
 ## 7. Release verdict at this snapshot
 
 The integrated implementation and its automated/device suites are green. The LG submission is
-**not ready**: automatic ABR is absent, Store factory-reset evidence is unavailable, root BACK is in
-policy conflict, and the unrun device evidence in §3 cannot honestly be marked Pass. Keep those two
-statements separate when reporting plan completion.
+**not ready**: Store factory-reset evidence is unavailable, root BACK is in policy conflict, and the
+unrun device evidence in §3 cannot honestly be marked Pass. Automatic ABR and LG #43 CASE1 are no
+longer blockers. Keep plan completion and submission readiness separate when reporting status.

@@ -171,6 +171,32 @@ pub(crate) fn read(_name: &str) -> Option<String> {
     None
 }
 
+/// A test-only playback policy override from `plxnative-quality`.
+///
+/// The server matrix grades established direct-play/remux/transcode routes. It must not silently
+/// become an Auto-HLS matrix because the television happened to persist that user preference in
+/// an earlier run. This is deliberately an in-memory boot override: writing the session would
+/// make a test change the owner's real preference. Unknown and empty values fail closed by
+/// producing no override.
+pub(crate) fn playback_quality_override() -> Option<crate::plex::session::PlaybackQuality> {
+    let value = read("quality")?;
+    parse_playback_quality(&value)
+}
+
+fn parse_playback_quality(value: &str) -> Option<crate::plex::session::PlaybackQuality> {
+    use crate::plex::session::PlaybackQuality;
+    match value {
+        "auto" => Some(PlaybackQuality::Auto),
+        "original" => Some(PlaybackQuality::Original),
+        "1080p_20_mbps" => Some(PlaybackQuality::P1080High),
+        "1080p_8_mbps" => Some(PlaybackQuality::P1080),
+        "720p_4_mbps" => Some(PlaybackQuality::P720),
+        "720p_2_mbps" => Some(PlaybackQuality::P720Low),
+        "480p_720_kbps" => Some(PlaybackQuality::P480),
+        _ => None,
+    }
+}
+
 /// A raw dev payload in the runtime root, by bare NAME — only `sample.h264` and `sample.h265`,
 /// which predate the `plxnative-` prefix and feed the player a local Annex-B sample instead of a
 /// stream. Everything else here is `plxnative-<name>`; these two are the exception, so they get
@@ -499,16 +525,18 @@ pub(crate) fn playurl() -> Option<Result<PlayUrl, String>> {
 pub(crate) fn any_trigger_present() -> bool {
     std::fs::read_dir(crate::paths::runtime_dir())
         .ok()
-        .map(|rd| {
-            rd.filter_map(|e| e.ok()).any(|e| {
-                if !e.file_type().map(|t| t.is_file()).unwrap_or(false) {
-                    return false;
-                }
-                let n = e.file_name().to_string_lossy().into_owned();
-                n.starts_with("plxnative-") && !DIAG.contains(&n.as_str())
-            })
-        })
+        .map(|rd| rd.filter_map(|e| e.ok()).any(|e| is_armed_trigger(&e)))
         .unwrap_or(false)
+}
+
+#[cfg(feature = "devtriggers")]
+fn is_armed_trigger(entry: &std::fs::DirEntry) -> bool {
+    if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+        return false;
+    }
+    let name = entry.file_name();
+    let name = name.to_string_lossy();
+    name.starts_with("plxnative-") && !DIAG.contains(&name.as_ref())
 }
 #[cfg(not(feature = "devtriggers"))]
 pub(crate) fn any_trigger_present() -> bool {
@@ -535,6 +563,24 @@ fn path(name: &str) -> std::path::PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn quality_trigger_accepts_only_persisted_policy_spellings() {
+        use crate::plex::session::PlaybackQuality;
+
+        assert_eq!(super::parse_playback_quality("auto"), Some(PlaybackQuality::Auto));
+        assert_eq!(
+            super::parse_playback_quality("original"),
+            Some(PlaybackQuality::Original)
+        );
+        assert_eq!(
+            super::parse_playback_quality("720p_4_mbps"),
+            Some(PlaybackQuality::P720)
+        );
+        for invalid in ["", "Auto", "720p", "unlimited"] {
+            assert_eq!(super::parse_playback_quality(invalid), None, "{invalid}");
+        }
+    }
+
     /// The DIAG list must name every log the app writes, or that log permanently suppresses the
     /// boot picker. This asserts the property against the paths the code actually opens rather
     /// than against a copy of the list, so adding another log sink without listing it fails here.
@@ -563,14 +609,18 @@ mod tests {
         if !super::ENABLED {
             return; // a release build reads nothing
         }
-        // `any_trigger_present` scans the WHOLE runtime root, so it sees every other test's
-        // triggers too — `empty_trigger_is_some_not_none` arms a real one in the same directory.
-        // The runtime root is a crate global in exactly the sense `testlock` exists for.
+        // Test the exact entry rather than scanning the whole host /tmp. Developers legitimately
+        // keep captured TV artifacts there, and their names are intentionally outside DIAG.
         let _g = crate::testlock::serial();
         let d = crate::paths::in_runtime_dir("plxnative-notatrigger");
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
-        let armed = super::any_trigger_present();
+        let entry = std::fs::read_dir(d.parent().unwrap())
+            .unwrap()
+            .filter_map(Result::ok)
+            .find(|entry| entry.path() == d)
+            .unwrap();
+        let armed = super::is_armed_trigger(&entry);
         let _ = std::fs::remove_dir_all(&d);
         assert!(!armed, "a directory named {} read as an armed trigger", d.display());
     }

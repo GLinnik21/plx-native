@@ -14,7 +14,7 @@
 //! scan (caller falls back to the local codec heuristic / skips the codec override).
 use super::client::{Client, QueryBuilder, StreamUrl};
 use super::models::MediaContainer;
-use super::params::{Ceiling, TranscodeSpec};
+use super::params::{Ceiling, TranscodeDelivery, TranscodeSpec};
 use super::probe::Location;
 
 /// The AUDIO codec set the buffer-feed PIPELINE decodes. This is the software half of a
@@ -154,7 +154,7 @@ pub fn link_policy(link: Option<Location>) -> LinkPolicy {
 ///
 /// The Load payload cannot drift whatever PMS chooses: `route.rs` reads the OUTPUT codecs off
 /// the /decision response (`decision_codecs`) and describes those, not the profile's wish.
-fn profile_for(caps: &crate::devcaps::Caps) -> String {
+fn profile_for_delivery(caps: &crate::devcaps::Caps, delivery: TranscodeDelivery) -> String {
     let dp_video = if caps.hevc { "h264,hevc" } else { "h264" };
     // The chain's head is the ONE encode-target definition, `Caps::encode_vcodec` — the same
     // accessor route.rs's /decision-unreachable Load-payload guess and retranscode read, so the
@@ -170,20 +170,35 @@ fn profile_for(caps: &crate::devcaps::Caps) -> String {
     // ac3 first — the preferred ENCODE target — then the rest of the caps subset as copy lanes.
     let target_audio =
         ["ac3", "eac3", "aac"].into_iter().filter(|c| caps.audio_has(c)).collect::<Vec<_>>().join(",");
+    let target = match delivery {
+        TranscodeDelivery::ProgressiveMkv => format!(
+            "add-transcode-target(type=videoProfile&context=streaming&protocol=http\
+             &container=matroska&videoCodec={target_video}&audioCodec={target_audio})"
+        ),
+        // This is the exact narrow target measured against the configured PMS. HLS adaptation is
+        // encoder-session replacement, so this target intentionally exposes one H.264/AAC
+        // rendition rather than advertising codecs whose in-session switch behaviour is unknown.
+        TranscodeDelivery::FixedHls { .. } =>
+            "add-transcode-target(type=videoProfile&context=streaming&protocol=hls\
+             &container=mpegts&videoCodec=h264&audioCodec=aac)".to_string(),
+    };
     format!(
         "add-direct-play-profile(type=videoProfile&container=mkv,mp4&videoCodec={dp_video}\
          &audioCodec={dp_audio}&subtitleCodec=srt,subrip,ass,ssa)\
          +add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.width&value={w}&replace=true)\
          +add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.height&value={h}&replace=true)\
          +add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.bitDepth&value=10&replace=true)\
-         +add-transcode-target(type=videoProfile&context=streaming&protocol=http\
-         &container=matroska&videoCodec={target_video}&audioCodec={target_audio})",
+         +{target}",
     )
 }
 
+fn profile_for(caps: &crate::devcaps::Caps) -> String {
+    profile_for_delivery(caps, TranscodeDelivery::ProgressiveMkv)
+}
+
 /// The profile for THIS device — [`profile_for`] over the boot-probed caps snapshot.
-fn profile_extra() -> String {
-    profile_for(crate::devcaps::caps())
+fn profile_extra(delivery: TranscodeDelivery) -> String {
+    profile_for_delivery(crate::devcaps::caps(), delivery)
 }
 
 impl Client {
@@ -218,12 +233,15 @@ impl Client {
         // only on the re-encode flavor — a REMUX is a copy by definition, so the two can never
         // both be true (`build_stream` derives `remux` from a gate this flag has already failed).
         // See [`TranscodeSpec::no_video_copy`] for the measurement.
-        let copy_ok = !(s.no_video_copy && !s.remux);
+        let hls = matches!(s.delivery, TranscodeDelivery::FixedHls { .. });
+        debug_assert!(!(hls && s.remux), "fixed HLS is an encoded rendition, never a remux");
+        let copy_ok = !hls && !(s.no_video_copy && !s.remux);
+        let protocol = if hls { "hls" } else { "http" };
         let mut q = QueryBuilder::new("")
             .str("path", &format!("/library/metadata/{}", s.rating_key))
             .int("mediaIndex", 0)
             .int("partIndex", 0)
-            .str("protocol", "http")
+            .str("protocol", protocol)
             .int("directPlay", 0)
             .int("directStream", copy_ok as i64);
         // the one block the two flavors differ in: container-only REMUX copies the codecs
@@ -231,10 +249,10 @@ impl Client {
         // playback is bound by, so an undecodable source goes to the profile's HEVC target
         // instead of downscaled H264.
         //
-        // **The ceiling is the PARAMETER half of a decision already taken.** `None` is Auto and
-        // resolves to [`Ceiling::NATIVE_4K`] — the literal pair this line has always sent, so the
-        // default query is byte-identical to yesterday's. A `Some` is the user's pick off
-        // `route::Quality`'s ladder, and it can only be spent here because `route::quality_policy`
+        // **The ceiling is the PARAMETER half of a decision already taken.** `None` is Original
+        // and resolves to [`Ceiling::NATIVE_4K`] — the literal pair this line has always sent, so
+        // that migration-safe path is byte-identical to yesterday's. A `Some` is the user's fixed
+        // pick or Auto controller rung, and it can only be spent here because `route::quality_policy`
         // has already denied direct play and the remux for this source: a number is meaningless on
         // a flavor where no encoder runs to read it (`TranscodeSpec`'s own doc, and `link_policy`'s
         // for the relay case that first established the shape).
@@ -243,13 +261,26 @@ impl Client {
         // than becoming a hole: `quality_policy` admits a remux only for a source it measured
         // under the ceiling, so those bytes are already inside the bound. A cap here would do the
         // one thing the remux exists to avoid — force the re-encode.
-        q = if s.remux {
+        q = if s.remux && !hls {
             q.int("directStreamAudio", 1)
         } else {
             let c = s.ceiling.unwrap_or(Ceiling::NATIVE_4K);
-            q.str("videoResolution", &c.resolution()).int("maxVideoBitrate", c.max_kbps)
+            let q = q.str("videoResolution", &c.resolution()).int("maxVideoBitrate", c.max_kbps);
+            match s.delivery {
+                TranscodeDelivery::ProgressiveMkv => q,
+                TranscodeDelivery::FixedHls { seconds_per_segment } => q
+                    .int("videoBitrate", c.max_kbps)
+                    .int("peakBitrate", c.max_kbps)
+                    .int("autoAdjustQuality", 0)
+                    .int("secondsPerSegment", seconds_per_segment as i64)
+                    .int("videoQuality", 100)
+                    .int("mediaBufferSize", 20971)
+                    .int("fastSeek", 1),
+            }
         };
-        if !copy_ok {
+        if hls {
+            q = q.int("directStreamAudio", 0);
+        } else if !copy_ok {
             // the audio lane keeps its own permission, so this costs a VIDEO encoder and nothing
             // else — an AC3/E-AC3 track the pipeline already decodes is still copied through
             q = q.int("directStreamAudio", 1);
@@ -259,11 +290,13 @@ impl Client {
             // burned in (Plex's default decision for our profile — no soft-sub support advertised)
             q = q.int("subtitleStreamID", s.subtitle_stream_id).int("subtitleSize", 100).str("subtitles", "burn");
         }
-        q = q.str("session", s.session).str("X-Plex-Session-Identifier", s.session);
+        q = q
+            .str("session", s.encoder_session)
+            .str("X-Plex-Session-Identifier", s.session);
         q = self
             .playback_identity(q)
             .str("X-Plex-Client-Profile-Name", "Generic")
-            .str("X-Plex-Client-Profile-Extra", &profile_extra());
+            .str("X-Plex-Client-Profile-Extra", &profile_extra(s.delivery));
         if s.offset_secs >= 0 {
             q = q.int("offset", s.offset_secs);
         }
@@ -290,7 +323,7 @@ impl Client {
         let q = self
             .playback_identity(q)
             .str("X-Plex-Client-Profile-Name", "Generic")
-            .str("X-Plex-Client-Profile-Extra", &profile_extra());
+            .str("X-Plex-Client-Profile-Extra", &profile_extra(TranscodeDelivery::ProgressiveMkv));
         self.get_json(&q.build())
     }
 
@@ -300,12 +333,21 @@ impl Client {
     /// through route::apply_decision_codecs — the payload has to describe what the server
     /// will actually send.
     pub fn transcode_decision(&self, spec: &TranscodeSpec) -> Option<MediaContainer> {
-        self.get_json(&format!("/video/:/transcode/universal/decision?{}", self.transcode_query(spec)))
+        let path = format!(
+            "/video/:/transcode/universal/decision?{}",
+            self.transcode_query(spec)
+        );
+        let session_header = format!("X-Plex-Session-Identifier: {}", spec.session);
+        self.get_json_with_headers(&path, &[&session_header])
     }
 
-    /// The start.mkv stream target for `spec` — same params as the registering decision.
+    /// The delivery-matched stream target for `spec` — same params as the registering decision.
     pub fn transcode_start_url(&self, spec: &TranscodeSpec) -> StreamUrl {
-        let path = format!("/video/:/transcode/universal/start.mkv?{}", self.transcode_query(spec));
+        let endpoint = match spec.delivery {
+            TranscodeDelivery::ProgressiveMkv => "start.mkv",
+            TranscodeDelivery::FixedHls { .. } => "start.m3u8",
+        };
+        let path = format!("/video/:/transcode/universal/{endpoint}?{}", self.transcode_query(spec));
         StreamUrl { origin: self.origin.clone(), path: self.with_token(&path) }
     }
 
@@ -329,7 +371,7 @@ impl Client {
 
 #[cfg(test)]
 mod tests {
-    use super::{link_policy, Ceiling, Client, Location, LinkPolicy, TranscodeSpec};
+    use super::{link_policy, Ceiling, Client, Location, LinkPolicy, TranscodeDelivery, TranscodeSpec};
     use crate::devcaps::Caps;
     use crate::plex::{Origin, ServerId};
 
@@ -343,6 +385,8 @@ mod tests {
         TranscodeSpec {
             rating_key: "5",
             session: "s1",
+            encoder_session: "s1",
+            delivery: super::TranscodeDelivery::ProgressiveMkv,
             remux,
             no_video_copy,
             audio_stream_id: 0,
@@ -455,6 +499,59 @@ mod tests {
         assert_eq!(remuxed, a_client().transcode_query(&spec(true, false)), "the ceiling is inert on a remux");
     }
 
+    /// The four coupled HLS choices are one typed delivery: protocol, fixed-session controls,
+    /// capability target and start endpoint. A half-converted request is worse than a refusal —
+    /// PMS can answer it with a valid container the selected demux path cannot consume.
+    #[test]
+    fn fixed_hls_is_one_coherent_wire_contract() {
+        let mut s = spec(false, false);
+        s.delivery = TranscodeDelivery::FixedHls { seconds_per_segment: 2 };
+        s.ceiling = Some(Ceiling { max_kbps: 720, max_w: 854, max_h: 480 });
+
+        let c = a_client();
+        let q = c.transcode_query(&s);
+        for required in [
+            "protocol=hls",
+            "directStream=0",
+            "directStreamAudio=0",
+            "videoResolution=854x480",
+            "videoBitrate=720",
+            "maxVideoBitrate=720",
+            "peakBitrate=720",
+            "autoAdjustQuality=0",
+            "secondsPerSegment=2",
+        ] {
+            assert!(q.contains(required), "missing {required}: {q}");
+        }
+        assert!(!q.contains("protocol=http"), "one protocol only: {q}");
+        assert!(c.transcode_start_url(&s).to_url().contains("/start.m3u8?"));
+
+        let profile = super::profile_for_delivery(
+            &Caps { hevc: true, hevc_max: (4096, 2176), vp9: true, audio: "aac,ac3,eac3".into() },
+            s.delivery,
+        );
+        let target = target_of(&profile);
+        assert!(target.contains("protocol=hls"), "{target}");
+        assert!(target.contains("container=mpegts"), "{target}");
+        assert_eq!(list_of(target, "videoCodec="), ["h264"]);
+        assert_eq!(list_of(target, "audioCodec="), ["aac"]);
+    }
+
+    #[test]
+    fn the_probe_builder_keeps_the_two_session_wires_explicit() {
+        let mut s = spec(false, false);
+        s.delivery = TranscodeDelivery::FixedHls { seconds_per_segment: 2 };
+        s.session = "playback-stable";
+        s.encoder_session = "encoder-next";
+        let q = a_client().transcode_query(&s);
+        assert!(q.contains("session=encoder-next"), "{q}");
+        assert!(q.contains("X-Plex-Session-Identifier=playback-stable"), "{q}");
+        assert!(!q.contains("session=playback-stable"), "{q}");
+        // Production deliberately couples these values per encoder: the real simultaneous-
+        // session spike proved a shared X-Plex id kills the old encoder before prime completes.
+        // This test remains because the redacted protocol probe must still express mismatches.
+    }
+
     // ---- the relay policy ---------------------------------------------------------------
 
     /// Relay denies BOTH flavors that put the file's own bytes on the wire. Direct play is the
@@ -523,7 +620,7 @@ mod tests {
     /// caps — the same hevc-capable panel this rule was written on.
     #[test]
     fn the_transcode_target_never_strands_a_server_without_plex_pass() {
-        let p = super::profile_extra();
+        let p = super::profile_extra(super::TranscodeDelivery::ProgressiveMkv);
         let target = target_of(&p);
         let video = list_of(target, "videoCodec=");
         assert!(video.contains(&"h264".to_string()),

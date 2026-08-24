@@ -22,6 +22,7 @@ synthetic): the invariants being checked — every case ends with an `rk` or a `
 skips only its owner — are properties of the tracked matrix as it actually stands, and a case added
 tomorrow that breaks one of them should fail here rather than on the television.
 """
+import importlib.util
 import json
 import os
 import shutil
@@ -32,6 +33,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 
 TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(TESTS_DIR)
@@ -42,6 +44,11 @@ sys.path.insert(0, TESTS_DIR)
 sys.path.append(os.path.join(REPO_ROOT, "tools"))
 import netcond  # noqa: E402
 import run  # noqa: E402  (path juggling above is the point)
+
+_FIXTURE_GEN_SPEC = importlib.util.spec_from_file_location(
+    "plx_make_fixtures", os.path.join(TESTS_DIR, "fixtures", "make_fixtures.py"))
+fixturegen = importlib.util.module_from_spec(_FIXTURE_GEN_SPEC)
+_FIXTURE_GEN_SPEC.loader.exec_module(fixturegen)
 
 
 def _manifest():
@@ -264,10 +271,12 @@ class PipelineTier(unittest.TestCase):
              "expect": {}}), 55)
 
     def test_the_trigger_payload_is_json_the_app_can_read_and_the_shell_cannot_break(self):
-        """`apply_triggers` writes trigger content through a single-quoted `printf` with NO
-        escaping, so ONE apostrophe anywhere in this string ends the quoting and hands the rest to
-        the television's shell as a command. JSON's own syntax has none; this pins that the values
-        we compose carry none either. Its twin lives in rust-modules/src/dev.rs."""
+        """Pin both the app-readable JSON and today's compact, pasteable payload vocabulary.
+
+        `apply_triggers` now quotes arbitrary apostrophes too, so this is no longer the command's
+        security boundary; the no-apostrophe property remains useful for copied case headers and
+        has a twin in rust-modules/src/dev.rs.
+        """
         for c in self._pipeline_cases():
             files = run.triggers_for_case(c, url_base="http://192.0.2.10:8020")
             self.assertEqual(files[0][0], "plxnative-playurl")
@@ -278,11 +287,19 @@ class PipelineTier(unittest.TestCase):
             for k, v in c.get("declare", {}).items():
                 self.assertEqual(spec[k], v)
 
-    def test_the_integration_trigger_is_untouched(self):
-        """One function, two heads — so pin that the head this tier did not touch still writes the
-        ratingKey trigger and nothing else."""
+    def test_the_integration_tier_pins_original_quality(self):
+        """The PMS matrix must not inherit an Auto preference from an earlier TV run."""
         files = run.triggers_for_case({"rk": "1234", "operations": [{"op": "play"}]})
-        self.assertEqual(files, [("plxnative-play", "1234")])
+        self.assertEqual(files, [
+            ("plxnative-play", "1234"),
+            ("plxnative-quality", "original"),
+        ])
+
+    def test_an_integration_case_can_explicitly_grade_auto(self):
+        files = run.triggers_for_case({
+            "rk": "1234", "quality": "auto", "operations": [{"op": "play"}],
+        })
+        self.assertEqual(dict(files)["plxnative-quality"], "auto")
 
     def test_a_declaration_that_was_never_read_fails_rather_than_passing(self):
         """THE false-PASS this tier is most exposed to: the engine's fallthrough arm produces
@@ -360,6 +377,123 @@ class PipelineTier(unittest.TestCase):
                 run.TV_HOST_FILE = saved_host
         finally:
             run.MANIFEST_LOCAL = saved
+
+
+class ResolutionSpike(unittest.TestCase):
+    """The offline half of a single-Load 720p -> 1080p -> 720p device experiment."""
+
+    @staticmethod
+    def _case():
+        return next(c for c in _manifest()["pipeline_cases"]
+                    if c["name"] == "pipe_h264_aac_resolution_spike")
+
+    @staticmethod
+    def _gst_line(ms, payload):
+        whole = int(ms // 1000)
+        nanos = int(round((ms - whole * 1000) * 1_000_000))
+        return f"0:00:{whole:02d}.{nanos:09d} 123 GST_DEBUG {payload}"
+
+    def _good_trace(self):
+        return [self._gst_line(
+                    500 + i * (1000 / 24),
+                    "gst_lx_videosink_render:<lxvideosink0> [PLAYING] received buffer")
+                for i in range(410)]
+
+    @staticmethod
+    def _source_info(width, height):
+        return ('smp_cb type=4 num=0 str={"context":"test","video":'
+                f'{{"width":{width},"height":{height}}}}}')
+
+    def test_manifest_requires_one_load_one_wire_open_and_no_reload(self):
+        c = self._case()
+        self.assertEqual(c["run_secs"], 35)
+        self.assertEqual(c["expect"]["starfish_resolution_sequence"],
+                         ["1280x720", "1920x1080", "1280x720"])
+        self.assertEqual(c["expect"]["resolution_boundaries_s"], [8, 16])
+        self.assertEqual(c["expect"]["load_count_exact"], 1)
+        self.assertTrue(c["expect"]["require_audio_feed_ready"])
+        self.assertTrue(c["expect"]["no_reload"])
+        self.assertEqual(c["expect"]["server_opens_exact"], 1)
+        self.assertEqual(c["expect"]["server_range_opens_exact"], 0)
+        files = dict(run.triggers_for_case(c, url_base="http://192.0.2.10:8020"))
+        self.assertEqual(files["plxnative-gstlog"], c["gst_trace"]["debug"])
+        self.assertEqual(files["plxnative-gstlog"], "lxvideosink:6")
+
+    def test_apply_triggers_removes_a_stale_trace_before_arming(self):
+        saved = run.RUNDIR
+        run.RUNDIR = "/tmp/com.beb.plxnative.debug"
+        try:
+            with mock.patch.object(run, "ssh") as ssh:
+                run.apply_triggers("192.0.2.20", [("plxnative-gstlog", "GST_EVENT:6")])
+            command = ssh.call_args.args[1]
+            self.assertIn("rm -f /tmp/com.beb.plxnative.debug/plxnative-gst.log", command)
+            self.assertIn("plxnative-gstlog", command)
+        finally:
+            run.RUNDIR = saved
+
+    def test_exact_session_and_wire_counts_reject_hidden_reopens(self):
+        load = 'load: v=H264 a="AAC" fps=24.000 dv=present:0 P0/0 el:0 atmos:0'
+        self.assertTrue(run.a_load_count([load], 1)[0])
+        self.assertFalse(run.a_load_count([load, load], 1)[0])
+        self.assertTrue(run.a_no_reload([load])[0])
+        self.assertFalse(run.a_no_reload([load, "reload_at: 8000ms"])[0])
+        self.assertTrue(run.a_server_wire((1, 0), 1, 0, 1, 0)[0])
+        self.assertFalse(run.a_server_wire((2, 1), 1, 0, 1, 0)[0])
+
+    def test_audio_readiness_requires_an_accepted_starfish_feed(self):
+        accepted = "feed a#4 sz=512 fed=42666667 reply=O qbytes=1024"
+        rejected = "feed a#1 sz=512 fed=0 reply=B qbytes=2048"
+        self.assertTrue(run.a_audio_feed_ready([accepted])[0])
+        self.assertFalse(run.a_audio_feed_ready([rejected])[0])
+        self.assertFalse(run.a_audio_feed_ready([])[0])
+
+    def test_starfish_source_info_requires_the_exact_resolution_sequence(self):
+        c = self._case()
+        lines = [self._source_info(1280, 720),
+                 ('smp_cb type=4 num=0 str={"sourceInfo":{"context":"test","video":'
+                  '{"width":1920,"height":1080}}}'),
+                 self._source_info(1280, 720)]
+        want = c["expect"]["starfish_resolution_sequence"]
+        self.assertTrue(run.a_starfish_resolution_sequence(lines, want)[0])
+        self.assertFalse(run.a_starfish_resolution_sequence(lines[:-1], want)[0])
+
+    def test_physical_packet_verifier_rejects_a_track_stored_in_one_lump(self):
+        good = [
+            {"stream_index": 0, "pts_time": "0.000", "pos": "100"},
+            {"stream_index": 1, "pts_time": "0.000", "pos": "200"},
+            {"stream_index": 1, "pts_time": "0.021", "pos": "300"},
+            {"stream_index": 0, "pts_time": "0.042", "pos": "400"},
+            {"stream_index": 1, "pts_time": "0.043", "pos": "500"},
+            {"stream_index": 0, "pts_time": "0.083", "pos": "600"},
+        ]
+        skew, counts = fixturegen.physical_av_interleave(list(reversed(good)), 0, 1)
+        self.assertLess(skew, 0.050)  # input order is irrelevant; byte `pos` is the authority
+        self.assertEqual(counts, {0: 3, 1: 3})
+
+        lumped = [
+            {"stream_index": 0, "pts_time": f"{i / 10:.1f}", "pos": str(i * 100)}
+            for i in range(11)
+        ] + [
+            {"stream_index": 1, "pts_time": f"{i / 10:.1f}", "pos": str(2000 + i * 100)}
+            for i in range(11)
+        ]
+        skew, _ = fixturegen.physical_av_interleave(lumped, 0, 1)
+        self.assertGreaterEqual(skew, 1.0)
+        with self.assertRaises(ValueError):
+            fixturegen.physical_av_interleave(lumped[:4], 0, 1)
+
+    def test_gst_trace_accepts_metronomic_boundaries(self):
+        c = self._case()
+        ok, why = run.a_gst_resolution_trace(self._good_trace(), c["expect"], c["gst_trace"])
+        self.assertTrue(ok, why)
+
+    def test_gst_trace_rejects_a_boundary_stall(self):
+        c = self._case()
+        stalled = [ln for ln in self._good_trace()
+                   if "received buffer" not in ln or not (8500 <= run.gst_clock_ms(ln) <= 8800)]
+        ok, why = run.a_gst_resolution_trace(stalled, c["expect"], c["gst_trace"])
+        self.assertFalse(ok)
+        self.assertIn("first picture", why)
 
 
 class DefaultTier(unittest.TestCase):

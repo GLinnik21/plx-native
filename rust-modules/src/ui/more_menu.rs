@@ -22,7 +22,8 @@
 //! `On`/`Off` at the row's trailing edge. It is a STATE, not a destination: a chevron would promise
 //! a page behind the row and there is none.
 //!
-//! **Quality** is the [`crate::route::Quality`] ladder — Auto plus a few rungs — and its rows carry
+//! **Quality** is the [`crate::route::Quality`] ladder — Original, fixed rungs, and Auto once its
+//! playback readiness gate opens — and its rows carry
 //! [`Row::checked`]'s LEADING checkmark, which means "the active one of several". That is the same
 //! design-system rule from the other side: **a mark says where you are and a word says what is set,
 //! and no row says both**, which is why a rung's rate rides inside its own label rather than in a
@@ -43,8 +44,10 @@
 //! # What a picked rung does, and what it deliberately does not
 //!
 //! It is a ROUTING policy, not a number handed to the transcoder: over-ceiling content loses direct
-//! play *and* the container remux, which is the only way a cap can bind at all. The whole argument
-//! is [`crate::route::Quality`]'s doc.
+//! play *and* the container remux, which is the only way a cap can bind at all. Original preserves
+//! the source unchanged. Auto is exposed only through `route::auto_quality_ready()`, the named
+//! fail-closed gate owned by the integrated HLS prime/swap path. The whole argument is
+//! [`crate::route::Quality`]'s doc.
 //!
 //! It binds every future play, **and it re-decides the one on screen** — because this menu is the
 //! ladder's only entry point, so a rung that waited for the next play would be a control that
@@ -76,7 +79,7 @@ static mut TABLE: TableView = TableView::new(); // main-thread only
 /// mapping cannot drift from what was drawn. (`account_menu`'s rationale, and its bug.)
 ///
 /// An owned `Vec` rather than the `&'static [Action]` it was, because the Quality section's rows
-/// are BUILT from `route::QUALITY_LADDER` rather than written out here. Main-thread only, like
+/// are BUILT from `route::available_quality_ladder` rather than written out here. Main-thread only, like
 /// `TABLE` beside it, and read through `addr_of!` for the same reason — never as `&ROWS`.
 static mut ROWS: Vec<Action> = Vec::new();
 
@@ -108,7 +111,7 @@ pub fn is_open() -> bool {
 /// the debug assert in [`open`] is what would catch one being added on one side only.
 fn rows_for() -> Vec<Action> {
     let mut v = vec![Action::ToggleStats];
-    v.extend(crate::route::QUALITY_LADDER.iter().map(|q| Action::SetQuality(*q)));
+    v.extend(crate::route::available_quality_ladder().iter().map(|q| Action::SetQuality(*q)));
     v
 }
 
@@ -237,8 +240,9 @@ fn panel_rect() -> Rect {
     let px = crate::ui::player_hud::CTRL_RIGHT - pw;
     let bottom = SCR_H - 316.0; // ~28px above the discs, as track_menu
     // The ceiling was 320 while this menu held one row, and it was invisible then. With the
-    // Quality ladder beside it `measured_height()` is 600 — two headers, seven rows, a divider,
-    // AND the table's own top/bottom padding — so a 320 cap put four of nine rows on screen and
+    // Quality ladder beside it `measured_height()` can reach 600 when Auto is enabled — two
+    // headers, seven rows, a divider, AND the table's own top/bottom padding — so a 320 cap put
+    // four of nine rows on screen and
     // silently scrolled the rest, which is a picker whose options you cannot see.
     //
     // The cap is a FRACTION of the room the panel has rather than a subtraction from it: the panel
@@ -282,17 +286,22 @@ mod tests {
         for a in rows_for() {
             assert!(!label(a).is_empty(), "{a:?} would draw a blank row");
         }
+        // The full persisted ladder must keep finished UI copy even if the readiness gate is
+        // deliberately closed again for a future protocol regression.
+        for q in crate::route::QUALITY_LADDER {
+            assert!(!label(Action::SetQuality(q)).is_empty(), "{q:?} would draw a blank row when enabled");
+        }
     }
 
     #[test]
     fn a_selection_maps_to_its_row() {
         let rows = rows_for();
         assert_eq!(action_at(&rows, 0), Action::ToggleStats);
-        // …and the Quality section follows the Options one, in `route::QUALITY_LADDER` order.
+        // …and the Quality section follows the Options one, in the available ladder order.
         // `sel` is ONE flat index over both sections, so this is the join that a section split
         // could quietly break: row 1 must be the ladder's head, not its second rung.
         assert_eq!(action_at(&rows, 1), Action::SetQuality(crate::route::Quality::Auto));
-        for (i, q) in crate::route::QUALITY_LADDER.iter().enumerate() {
+        for (i, q) in crate::route::available_quality_ladder().iter().enumerate() {
             assert_eq!(action_at(&rows, 1 + i as i32), Action::SetQuality(*q));
         }
     }

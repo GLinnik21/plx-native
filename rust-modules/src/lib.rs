@@ -9,6 +9,7 @@
 //! else is Rust-internal (the per-module `repr(C)` shapes are migration legacy, not ABI).
 mod app; // plex_run — the Rust app core / event loop (the entry inverted from main.c)
 mod aq;
+mod abr; // client-managed fixed-session HLS controller: estimate, propose, prime, then commit
 mod cbuf; // fixed NUL-terminated C-string buffer read/write (shared by pms/route/posters)
 mod coldstart; // where the app was when it last stopped, persisted — the COLD-start restore (LG checklist #3)
 mod auth; // plex.tv login/boot flow controller (PIN/QR → discovery → who's-watching → install)
@@ -24,6 +25,7 @@ mod ff; // THE demuxer — the FFmpeg 9.0 this app BUNDLES and pins (majors 63/6
 mod focusprobe; // dev: one diffable line naming everything app.rs's key ladder can move, logged when it changes
 mod fontcov; // which codepoints a font file can draw, read from its cmap — text.rs's fallback chain, and the host gate that stops tofu shipping
 mod gfx;
+mod hls; // strict parser/auth/timeline for the measured one-variant PMS HLS shape
 mod http; // the ONE door out of the control plane: dispatch a Plex REST request on its origin's scheme (stream.rs for http, net.rs/libcurl for https)
 #[cfg(feature = "devtriggers")]
 mod hwcnt; // direct userspace Mali r12p0 vinstr reader for the phase profiler

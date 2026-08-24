@@ -5,10 +5,29 @@
 //! protocol carries a per-playback session id on every request, distinguishes a container-only
 //! REMUX from a re-encode, and reports PlayQueue + stream-selection ids on the timeline.
 
-/// One universal-transcoder request (decision registration + start.mkv). Mirrors
+/// The wire/container contract for one universal-transcoder session.
+///
+/// This is carried beside the request instead of inferred from its eventual URL: the capability
+/// profile, decision query, start endpoint and demux strategy are one choice and must never drift
+/// independently. Fixed HLS is deliberately a single-rendition session on the measured PMS; an
+/// adaptive quality change primes a replacement encoder session rather than pretending that the
+/// one-entry master playlist is client-selectable ABR.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum TranscodeDelivery {
+    /// The established progressive Matroska stream (`start.mkv`).
+    #[default]
+    ProgressiveMkv,
+    /// A fixed rendition delivered as a complete HLS VOD playlist of MPEG-TS segments.
+    FixedHls { seconds_per_segment: u8 },
+}
+
+/// One universal-transcoder request (decision registration + the delivery's start endpoint). Mirrors
 /// `route::universal_base`: the CURRENT audio/subtitle selection rides every transcode of the
-/// item, and `session` is the per-playback id shared with the timeline
-/// (`X-Plex-Session-Identifier == session=`, byte-for-byte, so /status/sessions correlates).
+/// item. `session` is the PMS playback/timeline wire id; `encoder_session` owns the physical
+/// transcoder. The mismatch probe measured the two independently, but the simultaneous-encoder
+/// TV spike proved PMS cannot prime a replacement while it shares the old X-Plex id. Production
+/// therefore keeps them equal for each encoder; the app's stable playback generation is internal
+/// and an adaptive replacement changes both wire fields together.
 ///
 /// **A ceiling is answered by choosing the FLAVOR, and only then by asking for a number.** The
 /// only bitrate literal in the whole spec is `maxVideoBitrate`, on the RE-ENCODE branch of
@@ -39,8 +58,13 @@
 /// and 4 pin that a remux is only ever reached for a source under it.
 pub struct TranscodeSpec<'a> {
     pub rating_key: &'a str,
-    /// The per-playback opaque session id (`route::sess()`).
+    /// The active encoder's PMS playback/timeline wire id.
     pub session: &'a str,
+    /// Physical universal-transcoder identity. Production keeps it equal to `session`; the two
+    /// fields remain explicit because the protocol probe and fixtures grade their wire roles.
+    pub encoder_session: &'a str,
+    /// The coupled profile/query/endpoint/demux contract for this encoder session.
+    pub delivery: TranscodeDelivery,
     /// true = container-only remux (the source codecs are direct-playable, the container
     /// isn't): copy video+audio into progressive MKV, no re-encode, keeps 4K/HDR.
     /// false = full re-encode to the profile's HEVC/AC3 target at up to 4K.
@@ -75,8 +99,8 @@ pub struct TranscodeSpec<'a> {
     /// Restart the encode at this offset (seconds); < 0 = fresh start (no `&offset=`).
     pub offset_secs: i64,
     /// The bound this playback's RE-ENCODE may not exceed — the user's pick off the quality
-    /// ladder. `None` = Auto, and Auto is byte-identical to what this query has always sent
-    /// ([`Ceiling::NATIVE_4K`]), which is what makes the default path a pure regression gate.
+    /// ladder or Auto controller's current rung. `None` = Original/unrestricted and resolves to
+    /// the historical [`Ceiling::NATIVE_4K`] query values.
     ///
     /// Read on the re-encode branch **only**, and that is not an oversight: see the type doc
     /// above. By the time a `Some` reaches here, `route::quality_policy` has already refused the
@@ -101,10 +125,9 @@ pub struct Ceiling {
 }
 
 impl Ceiling {
-    /// What the re-encode branch has asked for since it existed: the panel's own native 4K at a
-    /// rate high enough to be no bound in practice. This is the `None`/Auto substitute, so it is
-    /// also the pin that says "Auto changed nothing" — `transcoder`'s tests assert the query it
-    /// produces byte for byte.
+    /// What the re-encode branch asked for before user ceilings existed: the panel's own native 4K
+    /// at a rate high enough to be no bound in practice. This is the `None`/Original substitute;
+    /// Auto always supplies an explicit bootstrap or controller rung.
     pub const NATIVE_4K: Ceiling = Ceiling { max_kbps: 60000, max_w: 3840, max_h: 2160 };
 
     /// `videoResolution`'s value for this bound.
@@ -157,8 +180,9 @@ pub struct StreamSelection {
 }
 
 /// One `/:/timeline` progress report (POST — the spec verb). `play_queue_*` empty = omit;
-/// `*_stream_id` 0 = omit. The session id must equal the transcode `session=` (see
-/// [`TranscodeSpec`]) so the server correlates the report with the stream.
+/// `*_stream_id` 0 = omit. PMS exposes timeline playback and encoder ownership independently,
+/// but active HLS playback reports the current encoder's coupled wire identity so they remain
+/// correlated.
 pub struct TimelineReport<'a> {
     pub rating_key: &'a str,
     pub state: TimelineState,

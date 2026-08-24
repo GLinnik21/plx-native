@@ -4333,6 +4333,12 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         // auto-select that roster tile once it's up (headless exercise of the who's-watching flow).
         let mut pick_user: Option<usize> = crate::dev::read("pickuser").and_then(|s| s.parse().ok());
         let session = crate::plex::session::load();
+        // Install-wide playback preference, restored before any route can resolve a stream.
+        // A legacy file with no value resolves to Original; a new file can choose Auto only
+        // through route's explicit readiness gate (session::load records that decision once).
+        crate::route::restore_quality(
+            crate::dev::playback_quality_override().unwrap_or_else(|| session.playback_quality()),
+        );
         let boot_to = if crate::dev::flag("login") {
             crate::auth::start_login();
             log("boot: /tmp/plxnative-login — starting QR login");
@@ -6343,6 +6349,14 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // route (Login while creating/waiting/discovering/error, Profiles while picking/switching).
             if matches!(route, Route::Login | Route::Profiles) {
                 if let Some(c) = crate::auth::take_ready() {
+                    // A sign-out followed by a fresh sign-in can replace the session without
+                    // restarting the process. Re-read only at this one credentials handoff so the
+                    // old account's in-memory preference cannot leak into the new session.
+                    let saved = crate::plex::session::peek();
+                    crate::route::restore_quality(
+                        crate::dev::playback_quality_override()
+                            .unwrap_or_else(|| saved.playback_quality()),
+                    );
                     install_pms(&c.origin, &c.token, c.tier);
                     // the fourth store an identity change must not survive, beside the
                     // `browse`/`pms`/`person` resets `install_pms` performs: a new user must never

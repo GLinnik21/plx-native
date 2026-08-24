@@ -626,8 +626,13 @@ Byte-range serving works, so seek-by-range is available to the player.
 | `audioChannels` | 6 | downmix decision |
 | `Part[].size`, `Part[].duration` | | progress math, buffering hints |
 
-If direct play fails, the fallback is the HLS transcode endpoint
-(`/video/:/transcode/universal/start.m3u8`) — out of scope for this doc.
+Auto quality uses the HLS transcode endpoint
+(`/video/:/transcode/universal/start.m3u8`). The measured PMS exposes one fixed rendition per
+encoder session, so PlxNative performs adaptation by priming a separately named encoder and
+committing only after one complete candidate segment is decodable and sustainable. The accepted
+playlist subset, session-ID precedence, safe probe tooling and redacted live evidence are documented
+in `docs/pms-hls-protocol-probe.md`. Original and the five user-selected fixed rungs remain on the
+progressive direct-play/start.mkv paths described above.
 
 ---
 

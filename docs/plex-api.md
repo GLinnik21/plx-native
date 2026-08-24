@@ -27,7 +27,17 @@ Sections: Movies=1, TV Shows=2, Music=3. Default response is XML; send `Accept: 
 Decide per item from `Media[0]` codecs: if `videoCodec` is one the TV decodes (h264) AND `audioCodec` is ac3 AND `container` is mkv → **direct-play** the part URL:
 `http://{host}:32400{Part.key}?X-Plex-Token=` (Content-Length delimited, byte-Range seek — the existing pipeline).
 
-Otherwise (HEVC/AV1, MP4/AAC/EAC3/TrueHD, etc.) → **TRANSCODE, and request it AS PROGRESSIVE MKV so the EXISTING MKV+H264+AC3 pipeline plays it unchanged — no HLS/TS/DASH demuxer needed:**
+Otherwise (HEVC/AV1, MP4/AAC/EAC3/TrueHD, etc.) the delivery depends on the persisted quality mode:
+
+- **Original or a fixed rung:** request the progressive MKV transcode below. This remains the
+  proven manual-quality path.
+- **Auto:** request fixed-rendition HLS/MPEG-TS with H.264/AAC. PlxNative downloads one segment at a
+  time through a fresh FFmpeg context, normalizes its timestamps onto the movie timeline, measures
+  network/production/buffer headroom, and transactionally replaces the PMS encoder when another
+  rung is sustainable. The restricted playlist contract and measured server behavior are in
+  `docs/pms-hls-protocol-probe.md`; DASH remains unsupported.
+
+Progressive fixed-quality request:
 ```
 GET /video/:/transcode/universal/start.mkv
   ?path=/library/metadata/{ratingKey}

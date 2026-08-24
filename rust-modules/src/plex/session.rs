@@ -102,6 +102,7 @@ pub(crate) fn redirect_for_test(p: Option<std::path::PathBuf>) {
 pub struct Session {
     /// Stable `X-Plex-Client-Identifier` — generated once, reused forever (plex.tv binds the pin
     /// and the authorized-device entry to it).
+    #[serde(default)]
     pub client_id: String,
     /// plex.tv account token (for online: re-discovery, home-users, switch). Not used for PMS.
     #[serde(default)]
@@ -169,6 +170,55 @@ pub struct Session {
     /// search term would sign the device out on every boot.
     #[serde(default, deserialize_with = "de_soft_vec")]
     pub recent_searches: Vec<RecentSearches>,
+    /// The install's playback-quality preference. `None` is deliberately distinct from an
+    /// explicit value: every session written before this field existed lands there and must keep
+    /// the old **Original** behaviour rather than being migrated onto automatic playback.
+    ///
+    /// A newly-created session writes an explicit default through [`PlaybackQuality::fresh_default`].
+    /// That default may become Auto only when the playback owner exposes a positive readiness
+    /// gate. The integrated HLS prime/swap path opens it for fresh installs; old files remain
+    /// Original because their absent field is not reinterpreted. Unknown or malformed future
+    /// values soften to `None`, and therefore Original,
+    /// instead of making the credentials file fail to parse.
+    #[serde(default, deserialize_with = "de_soft_playback_quality")]
+    pub(crate) playback_quality: Option<PlaybackQuality>,
+}
+
+/// The persisted playback-quality modes. The spelling on disk is explicit rather than derived
+/// from Rust variant names: these strings are a file-format contract and must survive refactors.
+#[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PlaybackQuality {
+    /// Automatic adaptation. It is offered only after the playback readiness gate opens.
+    #[serde(rename = "auto")]
+    Auto,
+    /// No ceiling: the source's original quality and the legacy playback behaviour.
+    #[default]
+    #[serde(rename = "original")]
+    Original,
+    /// 1080p at 20 Mbps — cap large 4K sources while preserving high-rate HD.
+    #[serde(rename = "1080p_20_mbps")]
+    P1080High,
+    /// 1080p at 8 Mbps.
+    #[serde(rename = "1080p_8_mbps")]
+    P1080,
+    /// 720p at 4 Mbps.
+    #[serde(rename = "720p_4_mbps")]
+    P720,
+    /// 720p at 2 Mbps.
+    #[serde(rename = "720p_2_mbps")]
+    P720Low,
+    /// 480p at 720 kbps.
+    #[serde(rename = "480p_720_kbps")]
+    P480,
+}
+
+impl PlaybackQuality {
+    /// A missing field in an OLD file is handled by [`Session::playback_quality`] and is always
+    /// Original. This is only for a genuinely NEW file, where Auto is allowed to become the
+    /// default after (and only after) its whole playback path declares itself ready.
+    pub(crate) fn fresh_default(auto_ready: bool) -> Self {
+        if auto_ready { Self::Auto } else { Self::Original }
+    }
 }
 
 /// One profile's search history.
@@ -447,7 +497,31 @@ where
     Ok(serde_json::from_value::<Option<Location>>(v).unwrap_or(None))
 }
 
+/// Playback quality is a preference, not a credential gate. A value written by a newer build or
+/// damaged by a hand edit therefore degrades to the legacy-safe Original mode rather than making
+/// the enclosing [`Session`] disappear.
+fn de_soft_playback_quality<'de, D>(d: D) -> Result<Option<PlaybackQuality>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let Ok(v) = serde_json::Value::deserialize(d) else { return Ok(None) };
+    Ok(serde_json::from_value::<Option<PlaybackQuality>>(v).unwrap_or(None))
+}
+
 impl Session {
+    /// The effective persisted playback quality. Absence is the literal legacy migration rule:
+    /// builds that predate the field played Original, so they continue to play Original.
+    pub(crate) fn playback_quality(&self) -> PlaybackQuality {
+        self.playback_quality.unwrap_or(PlaybackQuality::Original)
+    }
+
+    /// Record an explicit user choice while leaving every unrelated session field intact.
+    pub(crate) fn with_playback_quality(&self, quality: PlaybackQuality) -> Self {
+        let mut next = self.clone();
+        next.playback_quality = Some(quality);
+        next
+    }
+
     /// True once we have a LAN server + a usable PMS token — i.e. we can run offline.
     ///
     /// The PORT is part of "we have a server", and this is the only gate in front of it: every
@@ -661,13 +735,28 @@ pub fn peek() -> Session {
 
 /// [`peek`] with the lock already held — the read half every entry point here shares.
 fn peek_locked() -> Session {
+    parsed_locked().unwrap_or_default()
+}
+
+/// The first parsable candidate, retaining whether a persisted session existed at all. `Session`
+/// alone cannot carry that fact: a real legacy file may validly deserialize to the same empty
+/// fields as `Default`, including no `client_id`.
+fn parsed_locked() -> Option<Session> {
     // First candidate that both EXISTS and PARSES wins. Parse is part of the test on purpose: a
     // half-written file at a preferred location must not shadow a good one further down the list.
     auth_paths()
         .iter()
         .filter_map(|p| std::fs::read(p).ok())
         .find_map(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default()
+}
+
+/// Seed a quality only for a genuinely absent file. A parsable legacy file remains distinguishable
+/// even when it omitted `client_id`; otherwise opening the Auto gate in a future build would turn
+/// that old install into a fresh one merely because its identifier also needed repair.
+fn seed_fresh_quality(s: &mut Session, persisted: bool, auto_ready: bool) {
+    if !persisted && s.playback_quality.is_none() {
+        s.playback_quality = Some(PlaybackQuality::fresh_default(auto_ready));
+    }
 }
 
 /// Load the persisted session, ensuring a stable `client_id` exists (generated + saved on first
@@ -675,7 +764,10 @@ fn peek_locked() -> Session {
 /// Falls back to the pre-relocation path once and re-saves at the new one (migration).
 pub fn load() -> Session {
     let _io = io();
-    let mut s: Session = peek_locked();
+    let parsed = parsed_locked();
+    let persisted = parsed.is_some();
+    let mut s = parsed.unwrap_or_default();
+    seed_fresh_quality(&mut s, persisted, crate::route::auto_quality_ready());
     if s.client_id.is_empty() {
         s.client_id = new_client_id();
         save_locked(&s);
@@ -986,6 +1078,73 @@ mod tests {
         })
         .unwrap();
         assert_eq!(encoded["tier"], "remote", "the file stays human-readable and stable");
+    }
+
+    /// A missing quality field is an OLD install, not an invitation to adopt a new default. The
+    /// literal is deliberately pre-feature JSON; serialising today's `Session` would always write
+    /// whatever today's struct thinks and could not grade the migration boundary.
+    #[test]
+    fn a_legacy_session_with_no_quality_stays_original() {
+        let s: Session = serde_json::from_str(two_server_json()).expect("the legacy file parses");
+        assert_eq!(s.playback_quality, None, "absence remains distinguishable on disk");
+        assert_eq!(s.playback_quality(), PlaybackQuality::Original, "legacy playback does not become Auto");
+    }
+
+    /// Quality is a preference beside credentials, never a reason to discard them. This is the
+    /// scalar counterpart of the roster/tier soft parsers: unknown future names, null and the
+    /// wrong JSON shape all keep the session and conservatively mean Original.
+    #[test]
+    fn invalid_or_future_quality_is_soft_and_conservative() {
+        for value in [r#""future_auto_v2""#, "null", r#"{"mode":"auto"}"#, "42"] {
+            let json = format!(
+                r#"{{"client_id":"c","account_token":"acct",
+                     "server":{{"address":"192.168.0.10","port":32400,"token":"t"}},
+                     "playback_quality":{value}}}"#
+            );
+            let s: Session = serde_json::from_str(&json).expect("bad preference metadata cannot fail credentials");
+            assert_eq!(s.account_token, "acct");
+            assert!(s.can_go_local());
+            assert_eq!(s.playback_quality(), PlaybackQuality::Original, "{value}");
+        }
+    }
+
+    #[test]
+    fn every_explicit_quality_mode_round_trips_by_stable_name() {
+        let cases = [
+            (PlaybackQuality::Auto, "auto"),
+            (PlaybackQuality::Original, "original"),
+            (PlaybackQuality::P1080High, "1080p_20_mbps"),
+            (PlaybackQuality::P1080, "1080p_8_mbps"),
+            (PlaybackQuality::P720, "720p_4_mbps"),
+            (PlaybackQuality::P720Low, "720p_2_mbps"),
+            (PlaybackQuality::P480, "480p_720_kbps"),
+        ];
+        for (quality, wire) in cases {
+            let s = Session { playback_quality: Some(quality), ..Session::default() };
+            let json = serde_json::to_value(&s).unwrap();
+            assert_eq!(json["playback_quality"], wire);
+            let again: Session = serde_json::from_value(json).unwrap();
+            assert_eq!(again.playback_quality(), quality);
+        }
+    }
+
+    #[test]
+    fn a_fresh_install_defaults_to_auto_only_after_readiness() {
+        assert_eq!(PlaybackQuality::fresh_default(false), PlaybackQuality::Original);
+        assert_eq!(PlaybackQuality::fresh_default(true), PlaybackQuality::Auto);
+
+        let mut absent = Session::default();
+        seed_fresh_quality(&mut absent, false, true);
+        assert_eq!(absent.playback_quality, Some(PlaybackQuality::Auto),
+            "only the no-file path may adopt a newly ready Auto default");
+
+        // Literal legacy JSON with neither field. Its empty client id will be repaired by `load`,
+        // but that is not evidence of a fresh install and must not seed Auto even after readiness.
+        let mut legacy: Session = serde_json::from_str(r#"{"account_token":"still-a-real-file"}"#).unwrap();
+        seed_fresh_quality(&mut legacy, true, true);
+        assert!(legacy.client_id.is_empty());
+        assert_eq!(legacy.playback_quality, None);
+        assert_eq!(legacy.playback_quality(), PlaybackQuality::Original);
     }
 
     /// The other side of the gate: once an origin IS written down it is what gets dialled, and it
@@ -1371,6 +1530,60 @@ mod tests {
         std::fs::write(t.tmp(), b"{}").unwrap();
         clear();
         assert!(!t.file().exists() && !t.tmp().exists());
+    }
+
+    #[test]
+    fn a_quality_choice_persists_without_replacing_other_session_state() {
+        let _g = crate::testlock::serial();
+        let _t = TempSession::new("quality");
+        let mut s = signed_in();
+        s.sources.push(SourceRef {
+            machine_id: "server-a".into(),
+            token: "server-token".into(),
+            address: "192.168.0.10".into(),
+            port: 32400,
+            ..Default::default()
+        });
+        save(&s);
+
+        assert!(update(|cur| Some(cur.with_playback_quality(PlaybackQuality::P720))));
+        let landed = peek();
+        assert_eq!(landed.playback_quality(), PlaybackQuality::P720);
+        assert_eq!(landed.account_token, "acct");
+        assert_eq!(landed.sources.len(), 1);
+        assert_eq!(landed.sources[0].machine_id, "server-a");
+    }
+
+    #[test]
+    fn loading_legacy_json_without_an_id_repairs_only_the_id_not_the_quality() {
+        let _g = crate::testlock::serial();
+        let t = TempSession::new("legacy-no-id");
+        std::fs::write(t.file(), br#"{"account_token":"legacy-account"}"#).unwrap();
+
+        let loaded = load();
+        assert!(!loaded.client_id.is_empty(), "the ordinary identifier repair still happens");
+        assert_eq!(loaded.account_token, "legacy-account");
+        assert_eq!(loaded.playback_quality(), PlaybackQuality::Original);
+        assert_eq!(loaded.playback_quality, None,
+            "a parsable old file is not fresh and must not acquire a default choice");
+
+        let saved: Session = serde_json::from_slice(&std::fs::read(t.file()).unwrap()).unwrap();
+        assert_eq!(saved.playback_quality(), PlaybackQuality::Original);
+        assert_eq!(saved.playback_quality, None);
+    }
+
+    #[test]
+    fn loading_with_no_file_records_the_gated_fresh_default() {
+        let _g = crate::testlock::serial();
+        let t = TempSession::new("fresh-quality");
+        assert!(!t.file().exists());
+
+        let loaded = load();
+        assert_eq!(loaded.playback_quality, Some(PlaybackQuality::Auto),
+            "the production readiness gate gives only a genuinely fresh install Auto");
+        let saved: Session = serde_json::from_slice(&std::fs::read(t.file()).unwrap()).unwrap();
+        assert_eq!(saved.playback_quality, Some(PlaybackQuality::Auto),
+            "freshness is decided once and stored explicitly");
     }
 
     /// **Two writers, one file, and neither may lose the other's work.** Each thread runs exactly

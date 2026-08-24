@@ -19,6 +19,7 @@ use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_uchar, c_void};
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Mutex;
+use std::time::Instant;
 
 static FD_GATE: Mutex<()> = Mutex::new(());
 
@@ -197,33 +198,85 @@ pub(crate) fn hs_content_length(hs: *const HttpStream) -> i64 { unsafe { (*hs).c
 pub(crate) fn hs_status(hs: *const HttpStream) -> c_int { unsafe { (*hs).status } }
 
 /// one raw body byte (buffered first, then socket) — for chunk framing
-unsafe fn hs_getb(hs: &mut HttpStream) -> Option<u8> {
+/// Internal read result reserved for a caller-owned wall-clock deadline. Ordinary callers never
+/// see it: [`http_read`] has no deadline and retains its historical `-1` error result.
+pub(crate) const HTTP_READ_DEADLINE: c_int = -2;
+
+/// `recv(2)` with an optional absolute wall-clock ceiling. A relative socket timeout is not
+/// enough for an ABR candidate: every successful dribble resets `SO_RCVTIMEO`, so a transfer that
+/// can no longer meet its segment-production budget could still monopolize the demux thread
+/// forever. Polling against the original deadline makes progress consume the budget rather than
+/// renew it.
+unsafe fn recv_until(
+    fd: c_int,
+    dst: *mut c_void,
+    n: usize,
+    deadline: Option<Instant>,
+) -> isize {
+    let Some(deadline) = deadline else {
+        return libc::recv(fd, dst, n, 0);
+    };
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            return HTTP_READ_DEADLINE as isize;
+        }
+        let left_us = deadline.saturating_duration_since(now).as_micros();
+        let timeout_ms = ((left_us.saturating_add(999) / 1_000)
+            .min(c_int::MAX as u128)) as c_int;
+        let mut pfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+        let ready = libc::poll(&mut pfd, 1, timeout_ms.max(1));
+        if ready == 0 {
+            return HTTP_READ_DEADLINE as isize;
+        }
+        if ready < 0 {
+            if errno() == libc::EINTR {
+                continue;
+            }
+            return -1;
+        }
+        let r = libc::recv(fd, dst, n, libc::MSG_DONTWAIT);
+        if r < 0 {
+            let e = errno();
+            if e == libc::EINTR || e == libc::EAGAIN || e == libc::EWOULDBLOCK {
+                continue;
+            }
+        }
+        return r;
+    }
+}
+
+unsafe fn hs_getb(hs: &mut HttpStream, deadline: Option<Instant>) -> Result<Option<u8>, c_int> {
     if (hs.bpos as usize) < (hs.blen as usize) {
         let b = hs.buf[hs.bpos as usize];
         hs.bpos += 1;
-        return Some(b);
+        return Ok(Some(b));
     }
     let fd = hs.fd();
     if fd < 0 {
-        return None;
+        return Ok(None);
     }
     let mut b: u8 = 0;
-    let r = libc::recv(fd, &mut b as *mut u8 as *mut c_void, 1, 0);
+    let r = recv_until(fd, &mut b as *mut u8 as *mut c_void, 1, deadline);
     if r == 1 {
-        Some(b)
+        Ok(Some(b))
     } else {
         if r == 0 {
             close_owned(hs);
         }
-        None
+        if r < 0 { Err(r as c_int) } else { Ok(None) }
     }
 }
 
 /// next chunk-size line (skips trailing CRLF + extensions). Some(0)=last chunk.
-unsafe fn hs_next_chunk(hs: &mut HttpStream) -> Option<i64> {
+unsafe fn hs_next_chunk(
+    hs: &mut HttpStream,
+    deadline: Option<Instant>,
+) -> Result<Option<i64>, c_int> {
     let mut b;
     loop {
-        b = hs_getb(hs)?;
+        let Some(next) = hs_getb(hs, deadline)? else { return Ok(None) };
+        b = next;
         if b != b'\r' && b != b'\n' {
             break;
         }
@@ -239,18 +292,18 @@ unsafe fn hs_next_chunk(hs: &mut HttpStream) -> Option<i64> {
         };
         sz = sz * 16 + d;
         any = true;
-        match hs_getb(hs) {
+        match hs_getb(hs, deadline)? {
             Some(x) => b = x,
-            None => return if any { Some(sz) } else { None },
+            None => return Ok(if any { Some(sz) } else { None }),
         }
     }
     while b != b'\n' {
-        match hs_getb(hs) {
+        match hs_getb(hs, deadline)? {
             Some(x) => b = x,
             None => break,
         }
     }
-    if any { Some(sz) } else { None }
+    Ok(if any { Some(sz) } else { None })
 }
 
 /// Strip the optional whitespace (RFC 9110 §5.6.3's `OWS` — spaces and horizontal tabs only) from
@@ -801,16 +854,32 @@ fn http_open_with_timeouts(
 }
 
 pub(crate) fn http_read(hs: *mut HttpStream, dst: *mut c_uchar, n: c_int) -> c_int {
+    http_read_until(hs, dst, n, None)
+}
+
+/// [`http_read`] with an optional absolute deadline. This is intentionally not expressed as a
+/// socket option: `SO_RCVTIMEO` is an inactivity bound and restarts after every successful recv,
+/// while an ABR prime owns one finite wall-clock budget for the complete segment.
+pub(crate) fn http_read_until(
+    hs: *mut HttpStream,
+    dst: *mut c_uchar,
+    n: c_int,
+    deadline: Option<Instant>,
+) -> c_int {
     if hs.is_null() || dst.is_null() || n <= 0 {
         return if n == 0 { 0 } else { -1 };
     }
     unsafe {
         let hs = &mut *hs;
+        if deadline.is_some_and(|at| Instant::now() >= at) {
+            return HTTP_READ_DEADLINE;
+        }
         let n = n as usize;
         if hs.chunked != 0 {
             if hs.chunk_left <= 0 {
-                match hs_next_chunk(hs) {
-                    Some(cs) if cs > 0 => hs.chunk_left = cs,
+                match hs_next_chunk(hs, deadline) {
+                    Ok(Some(cs)) if cs > 0 => hs.chunk_left = cs,
+                    Err(e) => return e,
                     _ => {
                         close_owned(hs);
                         return 0;
@@ -827,9 +896,17 @@ pub(crate) fn http_read(hs: *mut HttpStream, dst: *mut c_uchar, n: c_int) -> c_i
                     hs.bpos += take as c_int;
                     got += take;
                 } else if hs.fd() >= 0 {
-                    let r = libc::recv(hs.fd(), dst.add(got) as *mut c_void, want - got, 0);
+                    let r = recv_until(
+                        hs.fd(),
+                        dst.add(got) as *mut c_void,
+                        want - got,
+                        deadline,
+                    );
                     if r < 0 {
                         if errno() == libc::EINTR { continue; }
+                        if got == 0 {
+                            return r as c_int;
+                        }
                         break;
                     }
                     if r == 0 { close_owned(hs); break; }
@@ -861,10 +938,10 @@ pub(crate) fn http_read(hs: *mut HttpStream, dst: *mut c_uchar, n: c_int) -> c_i
             return 0;
         }
         loop {
-            let r = libc::recv(hs.fd(), dst as *mut c_void, n, 0);
+            let r = recv_until(hs.fd(), dst as *mut c_void, n, deadline);
             if r < 0 {
                 if errno() == libc::EINTR { continue; }
-                return -1;
+                return r as c_int;
             }
             if r == 0 { close_owned(hs); return 0; }
             hs.consumed += r as i64;
@@ -971,6 +1048,30 @@ pub(crate) fn http_stream_boxed() -> Box<HttpStream> {
 mod tests {
     use super::*;
     use std::time::Instant;
+
+    #[test]
+    fn an_absolute_read_deadline_beats_the_socket_inactivity_timeout() {
+        use std::os::fd::AsRawFd;
+        let (reader, _silent_peer) = std::os::unix::net::UnixStream::pair().expect("socket pair");
+        let mut byte = 0u8;
+        let started = Instant::now();
+        let deadline = started + std::time::Duration::from_millis(80);
+        let r = unsafe {
+            recv_until(
+                reader.as_raw_fd(),
+                &mut byte as *mut u8 as *mut c_void,
+                1,
+                Some(deadline),
+            )
+        };
+        let took = started.elapsed();
+        assert_eq!(r, HTTP_READ_DEADLINE as isize);
+        assert!(
+            took >= std::time::Duration::from_millis(50)
+                && took < std::time::Duration::from_secs(2),
+            "absolute deadline took {took:?}"
+        );
+    }
 
     /// One `GET /x` at a loopback port, through the door the control plane actually uses.
     ///

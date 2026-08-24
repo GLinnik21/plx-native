@@ -5,7 +5,7 @@
 //! Rebuilt FROM the live `route.rs`/`threads.rs` (task #26): the timeline carries the
 //! per-playback session id, PlayQueue ids, and the SELECTED audio/subtitle stream ids, so
 //! /status/sessions shows the right track and the Direct Play vs Transcode badge
-//! (correlated by `X-Plex-Session-Identifier == transcode session=`).
+//! (correlated by the active encoder's coupled `X-Plex-Session-Identifier == session=`).
 use super::client::{Client, QueryBuilder};
 use super::params::TimelineReport;
 use super::servers::ServerId;

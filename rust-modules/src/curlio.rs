@@ -207,6 +207,9 @@ fn allowed_redirect_protocols(url: &[u8]) -> c_long {
 /// next perform. 200 ms is therefore a *timer resolution*, not a teardown cost, and while bytes
 /// are flowing the wait returns on socket activity long before it.
 const WAIT_MS: c_int = 200;
+/// Internal result used only by the segmented ABR prime. Ordinary [`CurlSource::read`] callers
+/// retain the public three-way contract (>0 bytes, 0 EOF, -1 failure/teardown).
+pub(crate) const READ_DEADLINE: c_int = -2;
 
 /// `CURLOPT_CONNECTTIMEOUT`, seconds. Matches `stream.rs`'s `CONNECT_TIMEOUT_MS` intent.
 const CONNECT_TIMEOUT_S: c_long = 15;
@@ -816,12 +819,27 @@ impl CurlSource {
     /// teardown** — the same three-way return `stream::http_read` gives. `ff.rs` preserves curl's
     /// negative result as an I/O error rather than collapsing a truncated transfer into EOF.
     pub(crate) fn read(&mut self, dst: &mut [u8]) -> c_int {
+        self.read_until(dst, None)
+    }
+
+    /// Deliver bytes within one caller-owned absolute wall-clock budget. libcurl's low-speed
+    /// options detect a stalled movie transfer, but they deliberately do not bound total time;
+    /// an ABR upshift candidate is different because it becomes unusable once producing one
+    /// segment takes more than 80% of that segment's media duration.
+    pub(crate) fn read_until(
+        &mut self,
+        dst: &mut [u8],
+        deadline: Option<std::time::Instant>,
+    ) -> c_int {
         if dst.is_empty() {
             return 0;
         }
         loop {
             if self.abort.is_set() || self.poisoned || !self.readable {
                 return -1;
+            }
+            if deadline.is_some_and(|at| std::time::Instant::now() >= at) {
+                return READ_DEADLINE;
             }
             if self.xfer.pending() > 0 {
                 let n = std::cmp::min(dst.len(), self.xfer.pending());
@@ -845,7 +863,17 @@ impl CurlSource {
             if self.xfer.pending() > 0 || self.done {
                 continue;
             }
-            match multi_wait(self.multi, &self.abort, WAIT_MS) {
+            let wait_ms = deadline.map_or(WAIT_MS, |at| {
+                let left_us = at
+                    .saturating_duration_since(std::time::Instant::now())
+                    .as_micros();
+                ((left_us.saturating_add(999) / 1_000)
+                    .min(WAIT_MS as u128)) as c_int
+            });
+            if wait_ms <= 0 {
+                return READ_DEADLINE;
+            }
+            match multi_wait(self.multi, &self.abort, wait_ms) {
                 Wait::Woken if self.abort.is_set() => return -1,
                 Wait::Failed(rc) => {
                     self.fail_multi_wait(rc);
@@ -1535,6 +1563,24 @@ mod tests {
             assert!(
                 started.elapsed() < std::time::Duration::from_secs(5),
                 "the low-speed floor is {LOW_SPEED_TIME_S}s; the pipe must beat it by an order of magnitude"
+            );
+        });
+    }
+
+    #[test]
+    fn an_abr_deadline_ends_a_stalled_curl_read_without_poisoning_the_source_as_eof() {
+        let Some(_gate) = curl_gate() else { return };
+        with_server(RangeMode::Stall, |port, _, _| {
+            let mut src = CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0).expect("open");
+            let started = std::time::Instant::now();
+            let deadline = started + std::time::Duration::from_millis(120);
+            let mut b = [0u8; 32];
+            assert_eq!(src.read_until(&mut b, Some(deadline)), READ_DEADLINE);
+            let took = started.elapsed();
+            assert!(
+                took >= std::time::Duration::from_millis(80)
+                    && took < std::time::Duration::from_secs(2),
+                "deadline wait took {took:?}"
             );
         });
     }

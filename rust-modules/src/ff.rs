@@ -445,9 +445,11 @@ pub const AVMEDIA_TYPE_SUBTITLE: c_int = 3;
 // were declared and never read; their values shift between FFmpeg majors, so each one was a
 // constant to re-derive and assert in order to prove nothing.
 pub const AV_CODEC_ID_AAC: c_int = 0x15002;
+pub const AV_CODEC_ID_H264: c_int = 27;
 // FF_API_XVMC and FF_API_VOXWARE both died before FFmpeg 6, which is why these differ from the
 // values the n3.3 televisions use (28 / 174 / 0x15029).
 pub const AV_CODEC_ID_HEVC: c_int = 172;
+pub const AV_PKT_FLAG_KEY: c_int = 1;
 pub const AVSEEK_FLAG_BACKWARD: c_int = 1;
 pub const AVERROR_EOF: c_int = -541478725;
 pub const AVERROR_EAGAIN: c_int = -11;
@@ -1442,6 +1444,15 @@ struct AvioState {
     /// FFmpeg may heal it through `seek_cb`; only an operation that still returns failure may
     /// publish it to the player.
     io_failed: bool,
+    /// Time spent inside successful body reads only. Request setup, PMS JIT production, TTFB and
+    /// demux/probe work intentionally stay out of this network-rate clock and remain in the
+    /// enclosing segment's total acquisition clock.
+    body_active_us: u64,
+    body_bytes: u64,
+    /// Only ABR candidate segments carry a wall-clock deadline. The active movie and every
+    /// progressive stream retain their transport's normal stall budgets.
+    deadline: Option<std::time::Instant>,
+    deadline_expired: bool,
 }
 
 impl AvioState {
@@ -1482,16 +1493,29 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
             s.latch_abort();
             return AVERROR_EOF;
         }
+        if s.deadline.is_some_and(|at| std::time::Instant::now() >= at) {
+            s.deadline_expired = true;
+            return AVERROR_EOF;
+        }
         // Both sources use the same three-way return — >0 bytes, 0 clean end, <0 error — so the
         // EOF decision below stays one branch rather than one per transport.
+        let read_started = std::time::Instant::now();
         let r = match &mut s.src {
-            Src::Socket { hs, .. } => crate::stream::http_read(*hs, dst as *mut c_uchar, n),
+            Src::Socket { hs, .. } => {
+                crate::stream::http_read_until(*hs, dst as *mut c_uchar, n, s.deadline)
+            }
             // The null/length guard `stream::http_read` does for itself. `from_raw_parts_mut`
             // requires a non-null pointer even for a zero-length slice, and libavformat is not
             // contractually barred from asking for nothing.
             Src::Curl(_) if dst.is_null() || n <= 0 => 0,
-            Src::Curl(cs) => cs.read(std::slice::from_raw_parts_mut(dst, n as usize)),
+            Src::Curl(cs) => {
+                cs.read_until(std::slice::from_raw_parts_mut(dst, n as usize), s.deadline)
+            }
         };
+        if r == crate::stream::HTTP_READ_DEADLINE || r == crate::curlio::READ_DEADLINE {
+            s.deadline_expired = true;
+            return AVERROR_EOF;
+        }
         if r < 0 {
             // Teardown was handled above through the AU flag and remains EOF. A curl source's
             // negative result here is therefore a real transport/range failure. Keep it distinct
@@ -1506,6 +1530,10 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
         if r == 0 {
             return AVERROR_EOF;
         }
+        s.body_active_us = s
+            .body_active_us
+            .saturating_add(read_started.elapsed().as_micros().max(1) as u64);
+        s.body_bytes = s.body_bytes.saturating_add(r as u64);
         s.off += r as i64;
         // Bytes actually delivered to the demuxer, for the diagnostics read-out. Counted HERE
         // rather than from the socket so it means "what libavformat received": a connection that
@@ -1591,6 +1619,12 @@ unsafe fn pts_ns(pkt: *const AVPacket, st: *mut AVStream) -> i64 {
         return 0;
     }
     av_rescale_q(t, stream_time_base(st), NS_TB)
+}
+
+#[inline]
+unsafe fn pts_ns_opt(pkt: *const AVPacket, st: *mut AVStream) -> Option<i64> {
+    let t = if (*pkt).pts != AV_NOPTS_VALUE { (*pkt).pts } else { (*pkt).dts };
+    (t != AV_NOPTS_VALUE).then(|| av_rescale_q(t, stream_time_base(st), NS_TB))
 }
 
 unsafe fn free_ptr(p: *mut c_void) {
@@ -1879,6 +1913,998 @@ fn adts_header(freq_idx: u8, chan_cfg: u8, payload_len: usize) -> [u8; 7] {
     ]
 }
 
+#[derive(Default)]
+struct H264ParamSets {
+    sps: Vec<u8>,
+    pps: Vec<u8>,
+}
+
+fn annexb_start(data: &[u8], from: usize) -> Option<(usize, usize)> {
+    let mut i = from;
+    while i + 3 <= data.len() {
+        if data[i..].starts_with(&[0, 0, 1]) {
+            return Some((i, 3));
+        }
+        if i + 4 <= data.len() && data[i..].starts_with(&[0, 0, 0, 1]) {
+            return Some((i, 4));
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Validate an MPEG-TS H.264 packet as Annex-B, retain its in-band SPS/PPS and prepend whichever
+/// set is missing on an IDR. The progressive demuxer cannot be reused here: it interprets the
+/// first `00 00 00 01` as an AVCC length of one and corrupts the access unit.
+fn ts_h264_access_unit(data: &[u8], params: &mut H264ParamSets, out: &mut Vec<u8>) -> Result<bool, &'static str> {
+    out.clear();
+    let Some((first, _)) = annexb_start(data, 0) else { return Err("H.264 packet is not Annex-B") };
+    if first != 0 {
+        return Err("bytes precede the first Annex-B start code");
+    }
+
+    let mut cursor = 0;
+    let mut is_key = false;
+    let mut has_sps = false;
+    let mut has_pps = false;
+    while let Some((start, prefix)) = annexb_start(data, cursor) {
+        let payload = start + prefix;
+        if payload >= data.len() {
+            return Err("empty Annex-B NAL");
+        }
+        let end = annexb_start(data, payload).map_or(data.len(), |(next, _)| next);
+        let nal_type = data[payload] & 0x1f;
+        match nal_type {
+            5 => is_key = true,
+            7 => {
+                params.sps.clear();
+                params.sps.extend_from_slice(&[0, 0, 0, 1]);
+                params.sps.extend_from_slice(&data[payload..end]);
+                has_sps = true;
+            }
+            8 => {
+                params.pps.clear();
+                params.pps.extend_from_slice(&[0, 0, 0, 1]);
+                params.pps.extend_from_slice(&data[payload..end]);
+                has_pps = true;
+            }
+            _ => {}
+        }
+        cursor = end;
+        if cursor >= data.len() {
+            break;
+        }
+    }
+
+    if is_key {
+        if !has_sps {
+            if params.sps.is_empty() {
+                return Err("IDR has no in-band or cached SPS");
+            }
+            out.extend_from_slice(&params.sps);
+        }
+        if !has_pps {
+            if params.pps.is_empty() {
+                return Err("IDR has no in-band or cached PPS");
+            }
+            out.extend_from_slice(&params.pps);
+        }
+    }
+    out.extend_from_slice(data);
+    Ok(is_key)
+}
+
+fn packet_has_adts(data: &[u8]) -> bool {
+    data.len() >= 7 && data[0] == 0xff && data[1] & 0xf6 == 0xf0
+}
+
+fn adts_duration_ns(data: &[u8]) -> Option<i64> {
+    if !packet_has_adts(data) {
+        return None;
+    }
+    const RATES: [i64; 13] = [
+        96_000, 88_200, 64_000, 48_000, 44_100, 32_000, 24_000, 22_050, 16_000, 12_000,
+        11_025, 8_000, 7_350,
+    ];
+    let rate = *RATES.get(((data[2] >> 2) & 0x0f) as usize)?;
+    let blocks = i64::from((data[6] & 0x03) + 1);
+    Some(1_024_i64.saturating_mul(blocks).saturating_mul(1_000_000_000) / rate)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HlsExit {
+    Aborted,
+    NotReady,
+    PrimeExpired,
+    Failed(&'static str),
+}
+
+fn hls_open_source(
+    resource: &crate::hls::Resource,
+    request_path: &str,
+    aq: *mut AuQueue,
+    hs: *mut HttpStream,
+) -> Result<(Src, i64), HlsExit> {
+    if unsafe { crate::aq::aq_is_aborted(aq) } {
+        return Err(HlsExit::Aborted);
+    }
+    let origin = &resource.origin;
+    if origin.is_tls() {
+        let reservation = crate::curlio::CurlSource::reserve_open().map_err(|e| {
+            if e == crate::curlio::OpenErr::Aborted { HlsExit::Aborted } else { HlsExit::Failed("HTTPS reservation failed") }
+        })?;
+        if unsafe { crate::aq::aq_is_aborted(aq) } {
+            return Err(HlsExit::Aborted);
+        }
+        let url = format!("{}{}", origin.base(), request_path);
+        let cs = crate::curlio::CurlSource::open_reserved(&url, 0, reservation).map_err(|e| {
+            if let crate::curlio::OpenErr::Status(status) = e {
+                SHARED.dg_http_status.store(status, Ordering::Relaxed);
+                if status == 404 {
+                    return HlsExit::NotReady;
+                }
+            }
+            if e == crate::curlio::OpenErr::Aborted { HlsExit::Aborted } else { HlsExit::Failed("HTTPS request failed") }
+        })?;
+        let (status, size) = (cs.status(), cs.size());
+        SHARED.dg_http_status.store(status, Ordering::Relaxed);
+        SHARED.file_size.store(size, Ordering::Release);
+        Ok((Src::Curl(cs), size))
+    } else {
+        let host = CString::new(origin.host()).map_err(|_| HlsExit::Failed("invalid PMS host"))?;
+        let path = CString::new(request_path).map_err(|_| HlsExit::Failed("invalid HLS request path"))?;
+        unsafe {
+            crate::stream::http_close(hs);
+            if crate::stream::http_open(
+                hs,
+                host.as_ptr(),
+                origin.port() as c_int,
+                path.as_ptr(),
+                std::ptr::null(),
+                "GET",
+            ) != 0
+            {
+                SHARED.dg_http_status.store(crate::stream::hs_status(hs), Ordering::Relaxed);
+                return if crate::aq::aq_is_aborted(aq) {
+                    Err(HlsExit::Aborted)
+                } else if crate::stream::hs_status(hs) == 404 {
+                    Err(HlsExit::NotReady)
+                } else {
+                    Err(HlsExit::Failed("HTTP request failed"))
+                };
+            }
+            let status = crate::stream::hs_status(hs);
+            let size = crate::stream::hs_content_length(hs);
+            SHARED.dg_http_status.store(status, Ordering::Relaxed);
+            SHARED.file_size.store(size, Ordering::Release);
+            Ok((Src::Socket { hs, host, port: origin.port() as c_int, path }, size))
+        }
+    }
+}
+
+fn hls_source_read(src: &mut Src, aq: *mut AuQueue, dst: &mut [u8]) -> Result<usize, HlsExit> {
+    if unsafe { crate::aq::aq_is_aborted(aq) } {
+        if let Src::Curl(cs) = src {
+            cs.abort();
+        }
+        return Err(HlsExit::Aborted);
+    }
+    let read = match src {
+        Src::Socket { hs, .. } => crate::stream::http_read(*hs, dst.as_mut_ptr(), dst.len() as c_int),
+        Src::Curl(cs) => cs.read(dst),
+    };
+    if read < 0 {
+        Err(HlsExit::Failed("HLS response body failed"))
+    } else {
+        Ok(read as usize)
+    }
+}
+
+fn hls_fetch_text(
+    resource: &crate::hls::Resource,
+    auth: &crate::hls::InheritedAuth,
+    aq: *mut AuQueue,
+    hs: *mut HttpStream,
+) -> Result<(String, u128), HlsExit> {
+    const MAX_PLAYLIST_BYTES: usize = 1024 * 1024;
+    let request_path = auth.request_path(resource).map_err(|_| HlsExit::Failed("playlist credential rejected"))?;
+    let started = std::time::Instant::now();
+    let (mut src, size) = hls_open_source(resource, &request_path, aq, hs)?;
+    if size > MAX_PLAYLIST_BYTES as i64 {
+        return Err(HlsExit::Failed("playlist exceeds size cap"));
+    }
+    let mut body = Vec::with_capacity(if size > 0 { size as usize } else { 4096 });
+    let mut chunk = [0u8; 16 * 1024];
+    loop {
+        let n = hls_source_read(&mut src, aq, &mut chunk)?;
+        if n == 0 {
+            break;
+        }
+        if body.len().saturating_add(n) > MAX_PLAYLIST_BYTES {
+            return Err(HlsExit::Failed("playlist exceeds size cap"));
+        }
+        body.extend_from_slice(&chunk[..n]);
+    }
+    let elapsed = started.elapsed().as_millis();
+    String::from_utf8(body)
+        .map(|text| (text, elapsed))
+        .map_err(|_| HlsExit::Failed("playlist is not UTF-8"))
+}
+
+fn hls_wait(aq: *mut AuQueue, duration: std::time::Duration) -> Result<(), HlsExit> {
+    let deadline = std::time::Instant::now() + duration;
+    while std::time::Instant::now() < deadline {
+        if unsafe { crate::aq::aq_is_aborted(aq) } {
+            return Err(HlsExit::Aborted);
+        }
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        std::thread::sleep(left.min(std::time::Duration::from_millis(50)));
+    }
+    Ok(())
+}
+
+/// One MPEG-TS segment's entirely private FFmpeg state. PMS HLS segments are independent decode
+/// units; retaining an AVFormatContext across them teaches libavformat a byte stream that does not
+/// exist and makes timestamp resets/container EOF ambiguous. The custom AVIO remains transport-
+/// owned exactly as in the progressive path, but every field here is retired at the segment
+/// boundary before the next request starts.
+struct HlsInput {
+    state: Box<AvioState>,
+    avio: *mut AVIOContext,
+    fmt: *mut AVFormatContext,
+    pkt: *mut AVPacket,
+}
+
+impl Drop for HlsInput {
+    fn drop(&mut self) {
+        unsafe {
+            if !self.pkt.is_null() {
+                av_packet_free(&mut self.pkt);
+            }
+            if !self.fmt.is_null() {
+                avformat_close_input(&mut self.fmt);
+            }
+            free_avio(self.avio);
+        }
+        // `state` deliberately drops last: AVIO's opaque pointer names it until `free_avio`.
+        let _ = &self.state;
+    }
+}
+
+unsafe fn hls_input(
+    src: Src,
+    size: i64,
+    aq: *mut AuQueue,
+    deadline: Option<std::time::Instant>,
+) -> Result<HlsInput, HlsExit> {
+    let mut input = HlsInput {
+        state: Box::new(AvioState {
+            src,
+            aq,
+            off: 0,
+            size,
+            io_failed: false,
+            body_active_us: 0,
+            body_bytes: 0,
+            deadline,
+            deadline_expired: false,
+        }),
+        avio: std::ptr::null_mut(),
+        fmt: std::ptr::null_mut(),
+        pkt: std::ptr::null_mut(),
+    };
+    let buf = av_malloc(64 * 1024) as *mut u8;
+    if buf.is_null() {
+        return Err(HlsExit::Failed("segment AVIO buffer allocation failed"));
+    }
+    input.avio = avio_alloc_context(
+        buf,
+        64 * 1024,
+        0,
+        &mut *input.state as *mut AvioState as *mut c_void,
+        Some(read_cb),
+        None,
+        // A segment is a forward-only object. Letting libavformat seek would generate hidden
+        // Range requests and could accidentally splice bytes from a different encoder object.
+        None,
+    );
+    if input.avio.is_null() {
+        free_ptr(buf as *mut c_void);
+        return Err(HlsExit::Failed("segment AVIO allocation failed"));
+    }
+    input.fmt = avformat_alloc_context();
+    if input.fmt.is_null() {
+        return Err(HlsExit::Failed("segment format allocation failed"));
+    }
+    (*input.fmt).pb = input.avio;
+    let opened = avformat_open_input(
+        &mut input.fmt,
+        std::ptr::null(),
+        std::ptr::null_mut(),
+        std::ptr::null_mut(),
+    );
+    if opened < 0 || input.fmt.is_null() {
+        if input.state.deadline_expired {
+            return Err(HlsExit::PrimeExpired);
+        }
+        return Err(HlsExit::Failed("segment open/probe failed"));
+    }
+    if avformat_find_stream_info(input.fmt, std::ptr::null_mut()) < 0 {
+        if input.state.deadline_expired {
+            return Err(HlsExit::PrimeExpired);
+        }
+        return Err(HlsExit::Failed("segment stream discovery failed"));
+    }
+    input.pkt = av_packet_alloc();
+    if input.pkt.is_null() {
+        return Err(HlsExit::Failed("segment packet allocation failed"));
+    }
+    Ok(input)
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SegmentTransfer {
+    bytes: u64,
+    active_us: u64,
+    total_us: u64,
+    audio_expected: bool,
+}
+
+struct HlsAu {
+    data: Vec<u8>,
+    pts_ns: i64,
+    key: c_int,
+    es: c_int,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AudioStamp {
+    au: usize,
+    raw_ns: Option<i64>,
+    duration_ns: Option<i64>,
+}
+
+/// MPEG-TS may put a PES timestamp on the second AAC access unit while the first unit carries
+/// only its frame duration. Resolve those holes inside one complete segment before mapping the
+/// audio lane onto the normalized content timeline. We never borrow video PTS or wall time.
+fn resolve_audio_stamps(stamps: &mut [AudioStamp]) -> Result<usize, &'static str> {
+    let missing = stamps.iter().filter(|stamp| stamp.raw_ns.is_none()).count();
+    if stamps.is_empty() || missing == 0 {
+        return Ok(missing);
+    }
+
+    // A timestamped predecessor plus its own duration determines this packet's start.
+    for index in 1..stamps.len() {
+        if stamps[index].raw_ns.is_none() {
+            if let (Some(previous), Some(duration)) =
+                (stamps[index - 1].raw_ns, stamps[index - 1].duration_ns)
+            {
+                stamps[index].raw_ns = previous.checked_add(duration);
+            }
+        }
+    }
+    // A timestamped successor minus this packet's duration determines a leading hole.
+    for index in (0..stamps.len().saturating_sub(1)).rev() {
+        if stamps[index].raw_ns.is_none() {
+            if let (Some(next), Some(duration)) =
+                (stamps[index + 1].raw_ns, stamps[index].duration_ns)
+            {
+                stamps[index].raw_ns = next.checked_sub(duration);
+            }
+        }
+    }
+    // A segment with no PES timestamp at all still has an exact AAC frame clock. Anchor its
+    // first frame locally at zero; SegmentClock supplies the content-time base.
+    if stamps[0].raw_ns.is_none() && stamps.iter().all(|stamp| stamp.raw_ns.is_none()) {
+        stamps[0].raw_ns = Some(0);
+        for index in 1..stamps.len() {
+            if let (Some(previous), Some(duration)) =
+                (stamps[index - 1].raw_ns, stamps[index - 1].duration_ns)
+            {
+                stamps[index].raw_ns = previous.checked_add(duration);
+            }
+        }
+    }
+    if stamps.iter().any(|stamp| stamp.raw_ns.is_none()) {
+        return Err("AAC timestamp hole has no duration anchor");
+    }
+    if stamps
+        .windows(2)
+        .any(|pair| pair[1].raw_ns.expect("resolved") < pair[0].raw_ns.expect("resolved"))
+    {
+        return Err("AAC timestamps move backwards");
+    }
+    Ok(missing)
+}
+
+struct HlsSegmentOutput {
+    aus: Vec<HlsAu>,
+    transfer: SegmentTransfer,
+    video_width: i32,
+    video_height: i32,
+    video_tail_ns: i64,
+    audio_tail_ns: Option<i64>,
+}
+
+unsafe fn hls_demux_segment(
+    segment: &crate::hls::Segment,
+    auth: &crate::hls::InheritedAuth,
+    clock: &mut crate::hls::SegmentClock,
+    aq: *mut AuQueue,
+    hs: *mut HttpStream,
+    acodec: &str,
+    deadline: Option<std::time::Instant>,
+) -> Result<HlsSegmentOutput, HlsExit> {
+    if crate::aq::aq_is_aborted(aq) {
+        return Err(HlsExit::Aborted);
+    }
+    let path = auth
+        .request_path(&segment.resource)
+        .map_err(|_| HlsExit::Failed("segment credential rejected"))?;
+    let request_started = std::time::Instant::now();
+    let retry_budget = segment
+        .duration
+        .saturating_mul(3)
+        .saturating_add(std::time::Duration::from_secs(2))
+        .clamp(std::time::Duration::from_secs(3), std::time::Duration::from_secs(15));
+    let mut not_ready_retries = 0u32;
+    let (src, size) = loop {
+        match hls_open_source(&segment.resource, &path, aq, hs) {
+            Ok(opened) => break opened,
+            Err(HlsExit::NotReady) if request_started.elapsed() < retry_budget => {
+                not_ready_retries = not_ready_retries.saturating_add(1);
+                hls_wait(aq, std::time::Duration::from_millis(250))?;
+            }
+            Err(HlsExit::NotReady) => return Err(HlsExit::Failed("HLS segment was not produced in time")),
+            Err(error) => return Err(error),
+        }
+    };
+    let body_started = std::time::Instant::now();
+    let mut input = hls_input(src, size, aq, deadline)?;
+    let probe_done = std::time::Instant::now();
+    let streams = (*input.fmt).streams;
+    let vi = av_find_best_stream(
+        input.fmt,
+        AVMEDIA_TYPE_VIDEO,
+        -1,
+        -1,
+        std::ptr::null_mut(),
+        0,
+    );
+    let ai = audio_stream_matching(input.fmt, acodec).unwrap_or_else(|| {
+        av_find_best_stream(
+            input.fmt,
+            AVMEDIA_TYPE_AUDIO,
+            -1,
+            -1,
+            std::ptr::null_mut(),
+            0,
+        )
+    });
+    if vi < 0 {
+        return Err(HlsExit::Failed("HLS segment has no video stream"));
+    }
+    let vst = *streams.add(vi as usize);
+    let vcp = stream_codecpar(vst);
+    if (*vcp).codec_id != AV_CODEC_ID_H264 {
+        return Err(HlsExit::Failed("HLS segment video is not H.264"));
+    }
+    let aac_adts = if ai >= 0 {
+        let acp = stream_codecpar(*streams.add(ai as usize));
+        if (*acp).codec_id != AV_CODEC_ID_AAC {
+            return Err(HlsExit::Failed("HLS segment audio is not AAC"));
+        }
+        adts_params(acp)
+    } else {
+        None
+    };
+
+    let video_width = (*vcp).width;
+    let video_height = (*vcp).height;
+    if video_width <= 0 || video_height <= 0 {
+        return Err(HlsExit::Failed("HLS segment has invalid video dimensions"));
+    }
+    let mut params = H264ParamSets::default();
+    let mut aubuf = Vec::with_capacity(4 * 1024 * 1024);
+    let mut video_packets = 0usize;
+    let mut audio_packets = 0usize;
+    let mut audio_stamps = Vec::new();
+    let mut first_au_at = None;
+    let mut aus = Vec::new();
+    let mut video_tail_ns = -1;
+    let mut audio_tail_ns = None;
+
+    loop {
+        input.state.io_failed = false;
+        let read = av_read_frame(input.fmt, input.pkt);
+        if read < 0 {
+            if input.state.deadline_expired {
+                return Err(HlsExit::PrimeExpired);
+            }
+            if input.state.io_failed {
+                return Err(HlsExit::Failed("segment body transport failed"));
+            }
+            break;
+        }
+        let si = (*input.pkt).stream_index;
+        if si == vi {
+            let Some(raw_pts) = pts_ns_opt(input.pkt, vst) else {
+                av_packet_unref(input.pkt);
+                return Err(HlsExit::Failed("HLS video packet has no timestamp"));
+            };
+            let is_key = ts_h264_access_unit(
+                std::slice::from_raw_parts((*input.pkt).data, (*input.pkt).size.max(0) as usize),
+                &mut params,
+                &mut aubuf,
+            )
+            .map_err(HlsExit::Failed)?;
+            if video_packets == 0 && !is_key {
+                av_packet_unref(input.pkt);
+                return Err(HlsExit::Failed("HLS segment does not begin with an IDR"));
+            }
+            let pts = clock.normalize_video(raw_pts).0.saturating_mul(1_000_000);
+            aus.push(HlsAu {
+                data: aubuf.clone(),
+                pts_ns: pts,
+                key: if is_key { 1 } else { 0 },
+                es: 1,
+            });
+            video_tail_ns = video_tail_ns.max(pts);
+            video_packets += 1;
+            first_au_at.get_or_insert_with(std::time::Instant::now);
+            av_packet_unref(input.pkt);
+        } else if si == ai && FEED_AUDIO.load(Ordering::Relaxed) {
+            let ast = *streams.add(ai as usize);
+            let raw_pts = pts_ns_opt(input.pkt, ast);
+            let packet_duration = ((*input.pkt).duration > 0)
+                .then(|| av_rescale_q((*input.pkt).duration, stream_time_base(ast), NS_TB))
+                .filter(|duration| *duration > 0);
+            let aac_duration = aac_adts.and_then(|(freq_idx, _)| {
+                const RATES: [i64; 13] = [
+                    96_000, 88_200, 64_000, 48_000, 44_100, 32_000, 24_000, 22_050, 16_000,
+                    12_000, 11_025, 8_000, 7_350,
+                ];
+                RATES
+                    .get(freq_idx as usize)
+                    .map(|rate| 1_024_i64.saturating_mul(1_000_000_000) / rate)
+            });
+            let raw = std::slice::from_raw_parts((*input.pkt).data, (*input.pkt).size.max(0) as usize);
+            let duration_ns = packet_duration.or_else(|| adts_duration_ns(raw)).or(aac_duration);
+            let data = if packet_has_adts(raw) {
+                raw.to_vec()
+            } else if let Some((freq_idx, chan_cfg)) = aac_adts {
+                let mut framed = Vec::with_capacity(7 + raw.len());
+                framed.extend_from_slice(&adts_header(freq_idx, chan_cfg, raw.len()));
+                framed.extend_from_slice(raw);
+                framed
+            } else {
+                av_packet_unref(input.pkt);
+                return Err(HlsExit::Failed("AAC packet is neither ADTS nor reframable"));
+            };
+            let au = aus.len();
+            aus.push(HlsAu { data, pts_ns: 0, key: 1, es: 2 });
+            audio_stamps.push(AudioStamp {
+                au,
+                raw_ns: raw_pts,
+                duration_ns,
+            });
+            audio_packets += 1;
+            av_packet_unref(input.pkt);
+        } else {
+            av_packet_unref(input.pkt);
+        }
+        if crate::aq::aq_is_aborted(aq) {
+            return Err(HlsExit::Aborted);
+        }
+    }
+    if deadline.is_some_and(|at| std::time::Instant::now() >= at) {
+        return Err(HlsExit::PrimeExpired);
+    }
+
+    if video_packets == 0 {
+        return Err(HlsExit::Failed("HLS segment produced no video access units"));
+    }
+    let synthesized_audio = resolve_audio_stamps(&mut audio_stamps).map_err(HlsExit::Failed)?;
+    for stamp in &audio_stamps {
+        let pts = clock
+            .normalize_audio(stamp.raw_ns.expect("audio stamps resolved"))
+            .0
+            .saturating_mul(1_000_000);
+        aus[stamp.au].pts_ns = pts;
+        audio_tail_ns = Some(audio_tail_ns.map_or(pts, |tail: i64| tail.max(pts)));
+    }
+    // Every AU in this independently decodable segment has been read successfully. Buffer health
+    // is the end of decoded content, not the start timestamp of the final video frame; using the
+    // latter made a complete 2 s / 24 fps segment look 42 ms short and forced an immediate drop.
+    let segment_end_ns = clock.end().0.saturating_mul(1_000_000);
+    video_tail_ns = video_tail_ns.max(segment_end_ns);
+    if audio_packets > 0 {
+        audio_tail_ns = Some(audio_tail_ns.map_or(segment_end_ns, |tail| tail.max(segment_end_ns)));
+    }
+    let first_ms = first_au_at
+        .map(|at| at.duration_since(request_started).as_millis())
+        .unwrap_or_default();
+    let transfer = SegmentTransfer {
+        bytes: input.state.body_bytes,
+        active_us: input.state.body_active_us,
+        total_us: request_started.elapsed().as_micros().max(1) as u64,
+        audio_expected: ai >= 0 && FEED_AUDIO.load(Ordering::Relaxed),
+    };
+    crate::player::log(&format!(
+        "hls: segment={} bytes={} raster={}x{} v={} a={} tail_skew_ms={} audio_pts_recovered={} not_ready={} open_probe_ms={} first_au_ms={} total_ms={}",
+        segment.sequence,
+        transfer.bytes,
+        video_width,
+        video_height,
+        video_packets,
+        audio_packets,
+        audio_tail_ns.map_or(0, |audio| (video_tail_ns - audio) / 1_000_000),
+        synthesized_audio,
+        not_ready_retries,
+        probe_done.duration_since(body_started).as_millis(),
+        first_ms,
+        transfer.total_us / 1_000,
+    ));
+    Ok(HlsSegmentOutput {
+        aus,
+        transfer,
+        video_width,
+        video_height,
+        video_tail_ns,
+        audio_tail_ns,
+    })
+}
+
+fn hls_feed_segment(
+    output: &HlsSegmentOutput,
+    aq: *mut AuQueue,
+    aqa: *mut AuQueue,
+) -> Result<(), HlsExit> {
+    // A candidate is demuxed before it owns the playback session. Publish the decoded raster only
+    // when these AUs actually cross the commit/feed boundary; otherwise a rejected off-screen
+    // candidate lies to diagnostics and to every consumer of the active stream dimensions.
+    SHARED.video_w.store(output.video_width, Ordering::Relaxed);
+    SHARED.video_h.store(output.video_height, Ordering::Relaxed);
+    for au in &output.aus {
+        let queue = if au.es == 1 { aq } else { aqa };
+        if crate::aq::aq_push(
+            queue,
+            au.data.as_ptr(),
+            au.data.len() as c_int,
+            au.pts_ns,
+            au.key,
+            au.es,
+        ) != 0
+        {
+            return Err(HlsExit::Aborted);
+        }
+        if au.es == 1 {
+            PUSHED_ANY.store(true, Ordering::Relaxed);
+            SHARED.hls_video_tail_ns.store(au.pts_ns, Ordering::Release);
+        } else {
+            SHARED.hls_audio_tail_ns.store(au.pts_ns, Ordering::Release);
+        }
+    }
+    Ok(())
+}
+
+fn hls_raster_within(width: i32, height: i32, rung: crate::abr::Rung) -> bool {
+    let (max_width, max_height) = rung.raster();
+    width > 0
+        && height > 0
+        && width <= i32::from(max_width)
+        && height <= i32::from(max_height)
+}
+
+struct HlsCursor {
+    auth: crate::hls::InheritedAuth,
+    media: crate::hls::Resource,
+    tracker: crate::hls::MediaTracker,
+    pending: std::collections::VecDeque<crate::hls::Segment>,
+    ended: bool,
+    target_duration_secs: u64,
+    start_applied: bool,
+}
+
+fn hls_cursor_open(
+    origin: &crate::plex::Origin,
+    path: &str,
+    aq: *mut AuQueue,
+    hs: *mut HttpStream,
+) -> Result<HlsCursor, HlsExit> {
+    let master_resource = crate::hls::Resource::new(origin.clone(), path)
+        .map_err(|_| HlsExit::Failed("invalid HLS master URL"))?;
+    let auth = crate::hls::InheritedAuth::capture(&master_resource)
+        .map_err(|_| HlsExit::Failed("HLS master has no unique credential"))?;
+    let (master_text, master_ms) = hls_fetch_text(&master_resource, &auth, aq, hs)?;
+    let master = crate::hls::parse_master(&master_resource, &master_text)
+        .map_err(|e| {
+            crate::player::log(&format!("hls: master rejected: {e}"));
+            HlsExit::Failed("HLS master rejected")
+        })?;
+    crate::player::log(&format!(
+        "hls: master one-variant bandwidth={} fetch_ms={master_ms}",
+        master.variant.bandwidth
+    ));
+    Ok(HlsCursor {
+        auth,
+        media: master.variant.resource,
+        tracker: crate::hls::MediaTracker::default(),
+        pending: std::collections::VecDeque::new(),
+        ended: false,
+        target_duration_secs: 1,
+        start_applied: false,
+    })
+}
+
+fn hls_cursor_next(
+    cursor: &mut HlsCursor,
+    aq: *mut AuQueue,
+    hs: *mut HttpStream,
+) -> Result<Option<crate::hls::Segment>, HlsExit> {
+    loop {
+        if let Some(segment) = cursor.pending.pop_front() {
+            return Ok(Some(segment));
+        }
+        if cursor.ended {
+            return Ok(None);
+        }
+        let (media_text, media_ms) = hls_fetch_text(&cursor.media, &cursor.auth, aq, hs)?;
+        let media = crate::hls::parse_media(&cursor.media, &media_text)
+            .map_err(|e| {
+                crate::player::log(&format!("hls: media rejected: {e}"));
+                HlsExit::Failed("HLS media playlist rejected")
+            })?;
+        cursor.target_duration_secs = media.target_duration_secs;
+        let start_index = media.preferred_start_index().map_err(|_| {
+            HlsExit::Failed("HLS start offset is outside the supported timeline")
+        })?;
+        let total_ns = i64::try_from(media.total_duration().map_err(|_| {
+            HlsExit::Failed("HLS playlist duration overflow")
+        })?.as_nanos()).map_err(|_| HlsExit::Failed("HLS playlist duration overflow"))?;
+        SHARED.duration_ns.store(total_ns, Ordering::Relaxed);
+        let mut refresh = cursor.tracker.apply(&media).map_err(|e| {
+            crate::player::log(&format!("hls: refresh rejected: {e}"));
+            HlsExit::Failed("HLS media refresh rejected")
+        })?;
+        let mut skipped = 0usize;
+        if !cursor.start_applied {
+            let first_sequence = media
+                .segments
+                .get(start_index)
+                .map(|segment| segment.sequence)
+                .unwrap_or_else(|| {
+                    media
+                        .media_sequence
+                        .saturating_add(media.segments.len() as u64)
+                });
+            let before = refresh.new_segments.len();
+            refresh.new_segments.retain(|segment| segment.sequence >= first_sequence);
+            skipped = before.saturating_sub(refresh.new_segments.len());
+            cursor.start_applied = true;
+        }
+        crate::player::log(&format!(
+            "hls: refresh new={} skipped={} total_ms={} end={} fetch_ms={media_ms}",
+            refresh.new_segments.len(),
+            skipped,
+            total_ns / 1_000_000,
+            refresh.end_list
+        ));
+        cursor.pending.extend(refresh.new_segments);
+        cursor.ended = refresh.end_list;
+        if cursor.pending.is_empty() && !cursor.ended {
+            let poll = std::time::Duration::from_millis(
+                cursor.target_duration_secs.saturating_mul(500).clamp(250, 1_000),
+            );
+            hls_wait(aq, poll)?;
+        }
+    }
+}
+
+fn hls_buffer_snapshot(output: Option<&HlsSegmentOutput>) -> crate::abr::BufferSnapshot {
+    let mut video = SHARED.hls_video_tail_ns.load(Ordering::Acquire);
+    let mut audio = SHARED.hls_audio_tail_ns.load(Ordering::Acquire);
+    let mut audio_expected = audio >= 0;
+    if let Some(candidate) = output {
+        video = video.max(candidate.video_tail_ns);
+        if let Some(tail) = candidate.audio_tail_ns {
+            audio = audio.max(tail);
+        }
+        audio_expected |= candidate.transfer.audio_expected;
+    }
+    // Starfish consumes a zero-based feed after a resume/seek while `playpos_ns` is already on the
+    // movie timeline (`disp_base + fed PTS`). Translate both demux tails by the same display base
+    // before the controller compares them; raw FFmpeg PTS still never cross this boundary.
+    let display_base = SHARED.disp_base.load(Ordering::Relaxed).max(0);
+    crate::abr::BufferSnapshot {
+        playback: crate::abr::MediaTimeMs(
+            SHARED.playpos_ns.load(Ordering::Relaxed).max(0) / 1_000_000,
+        ),
+        video_tail: crate::abr::MediaTimeMs(video.max(0).saturating_add(display_base) / 1_000_000),
+        audio_tail: (audio >= 0).then_some(crate::abr::MediaTimeMs(
+            audio.max(0).saturating_add(display_base) / 1_000_000,
+        )),
+        audio_expected,
+    }
+}
+
+fn hls_segment_sample(
+    output: &HlsSegmentOutput,
+    duration: std::time::Duration,
+) -> Option<crate::abr::SegmentSample> {
+    let duration_ms = u32::try_from(duration.as_millis()).ok()?;
+    crate::abr::SegmentSample::new(
+        output.transfer.bytes,
+        output.transfer.active_us,
+        output.transfer.total_us,
+        duration_ms,
+        hls_buffer_snapshot(Some(output)),
+    )
+}
+
+fn hls_demux(
+    origin: &crate::plex::Origin,
+    path: &str,
+    acodec: &str,
+    abr: Option<(crate::route::HlsAbrControl, String)>,
+    aq: *mut AuQueue,
+    aqa: *mut AuQueue,
+    hs: *mut HttpStream,
+) -> Result<(), HlsExit> {
+    let mut cursor = hls_cursor_open(origin, path, aq, hs)?;
+    let mut timeline = crate::hls::SegmentTimeline::default();
+    let mut adaptive = abr.map(|(control, encoder)| {
+        (control, encoder, crate::abr::Controller::bootstrap(), 0u64)
+    });
+
+    while let Some(segment) = hls_cursor_next(&mut cursor, aq, hs)? {
+        let mut clock = timeline
+            .begin(segment.duration)
+            .map_err(|_| HlsExit::Failed("HLS content timeline overflow"))?;
+        let output = unsafe {
+            hls_demux_segment(&segment, &cursor.auth, &mut clock, aq, hs, acodec, None)?
+        };
+        hls_feed_segment(&output, aq, aqa)?;
+        timeline.commit(clock);
+
+        let Some((control, active_encoder, controller, generation)) = adaptive.as_mut() else {
+            continue;
+        };
+        let Some(sample) = hls_segment_sample(&output, segment.duration) else {
+            crate::player::log("abr: ignoring invalid segment timing sample");
+            continue;
+        };
+        let crate::abr::Decision::Prime(proposal) = controller.observe(sample) else {
+            continue;
+        };
+        let candidate_started = std::time::Instant::now();
+        *generation = generation.saturating_add(1);
+        let offset_secs = SHARED
+            .disp_base
+            .load(Ordering::Relaxed)
+            .max(0)
+            .saturating_add(timeline.end().0.saturating_mul(1_000_000))
+            / 1_000_000_000;
+        let Some(primed) = control.prime(
+            active_encoder,
+            proposal,
+            *generation,
+            offset_secs,
+        ) else {
+            controller.reject(proposal);
+            crate::player::log("abr: candidate registration rejected; staying on current rung");
+            continue;
+        };
+        let candidate_url = crate::plex::StreamUrl::parse(&primed.url);
+        if candidate_url.origin != *origin {
+            control.abandon(&primed.encoder_session);
+            controller.reject(proposal);
+            crate::player::log("abr: candidate changed origin; rejected");
+            continue;
+        }
+        let mut candidate = match hls_cursor_open(&candidate_url.origin, &candidate_url.path, aq, hs) {
+            Ok(candidate) => candidate,
+            Err(_) => {
+                control.abandon(&primed.encoder_session);
+                controller.reject(proposal);
+                crate::player::log("abr: candidate master failed; staying on current rung");
+                continue;
+            }
+        };
+        let candidate_segment = match hls_cursor_next(&mut candidate, aq, hs) {
+            Ok(Some(segment)) => segment,
+            _ => {
+                control.abandon(&primed.encoder_session);
+                controller.reject(proposal);
+                crate::player::log("abr: candidate produced no segment; staying on current rung");
+                continue;
+            }
+        };
+        let candidate_deadline = crate::abr::candidate_prime_budget(
+            proposal,
+            candidate_segment.duration,
+        )
+        .and_then(|budget| candidate_started.checked_add(budget));
+        let mut candidate_clock = match timeline.begin(candidate_segment.duration) {
+            Ok(clock) => clock,
+            Err(_) => {
+                control.abandon(&primed.encoder_session);
+                controller.reject(proposal);
+                return Err(HlsExit::Failed("HLS candidate timeline overflow"));
+            }
+        };
+        let candidate_output = match unsafe {
+            hls_demux_segment(
+                &candidate_segment,
+                &candidate.auth,
+                &mut candidate_clock,
+                aq,
+                hs,
+                acodec,
+                candidate_deadline,
+            )
+        } {
+            Ok(output) => output,
+            Err(HlsExit::PrimeExpired) => {
+                control.abandon(&primed.encoder_session);
+                controller.reject(proposal);
+                crate::player::log(
+                    "abr: upshift candidate exceeded prime deadline; staying on current rung",
+                );
+                continue;
+            }
+            Err(_) => {
+                control.abandon(&primed.encoder_session);
+                controller.reject(proposal);
+                crate::player::log("abr: candidate segment failed; staying on current rung");
+                continue;
+            }
+        };
+        let raster_ready = hls_raster_within(
+            candidate_output.video_width,
+            candidate_output.video_height,
+            proposal.rung,
+        );
+        let ready = raster_ready
+            && hls_segment_sample(&candidate_output, candidate_segment.duration)
+                .is_some_and(|candidate_sample| controller.candidate_ready(proposal, candidate_sample));
+        if !ready {
+            control.abandon(&primed.encoder_session);
+            controller.reject(proposal);
+            if raster_ready {
+                crate::player::log("abr: candidate lacked measured headroom; staying on current rung");
+            } else {
+                crate::player::log(&format!(
+                    "abr: candidate raster {}x{} exceeds {}x{}; staying on current rung",
+                    candidate_output.video_width,
+                    candidate_output.video_height,
+                    proposal.rung.raster().0,
+                    proposal.rung.raster().1,
+                ));
+            }
+            continue;
+        }
+        if !control.commit(active_encoder, &primed.encoder_session) {
+            controller.reject(proposal);
+            return Err(HlsExit::Aborted);
+        }
+        hls_feed_segment(&candidate_output, aq, aqa)?;
+        timeline.commit(candidate_clock);
+        let previous = std::mem::replace(active_encoder, primed.encoder_session);
+        control.retire(previous);
+        controller.commit(proposal);
+        cursor = candidate;
+        crate::player::log(&format!(
+            "abr: committed {:?} to {}kbps {}x{}",
+            proposal.direction,
+            proposal.rung.kbps(),
+            proposal.rung.raster().0,
+            proposal.rung.raster().1,
+        ));
+    }
+    Ok(())
+}
+
 /// The demux thread body (spawned by `engine::start_bufferfeed`).
 ///
 /// Takes an [`Origin`](crate::plex::Origin) rather than a `(host, port)` pair because **the scheme
@@ -1887,7 +2913,15 @@ fn adts_header(freq_idx: u8, chan_cfg: u8, payload_len: usize) -> [u8; 7] {
 /// what keeps the `plex.direct` hostname TLS validates against intact all the way down here
 /// (`plex/origin.rs`). `hs` is still passed on both paths — it is the Engine's, and it stays
 /// unused (fd = -1, published as `SHARED.hs_ptr`) when the origin turns out to be https.
-pub(crate) fn demux(origin: crate::plex::Origin, path: String, acodec: String, aq: SendPtr<AuQueue>, aqa: SendPtr<AuQueue>, hs: SendPtr<HttpStream>) {
+pub(crate) fn demux(
+    origin: crate::plex::Origin,
+    path: String,
+    acodec: String,
+    abr: Option<(crate::route::HlsAbrControl, String)>,
+    aq: SendPtr<AuQueue>,
+    aqa: SendPtr<AuQueue>,
+    hs: SendPtr<HttpStream>,
+) {
     PUSHED_ANY.store(false, Ordering::Relaxed);
     // Refuse rather than read a struct whose shape we do not know (see `boot`). EOF must still be
     // set on both lanes or `pump` waits forever on a queue nothing will ever fill — the same
@@ -1903,6 +2937,53 @@ pub(crate) fn demux(origin: crate::plex::Origin, path: String, acodec: String, a
     let aq_p = aq.0; // VIDEO lane (also the AVIO abort ptr + EOF marker)
     let aqa_p = aqa.0; // AUDIO lane (es=2) — always a distinct queue on the ff (two-lane) path
     let hs_p = hs.0;
+    if path
+        .split_once('?')
+        .map_or(path.as_str(), |(plain, _)| plain)
+        .to_ascii_lowercase()
+        .ends_with(".m3u8")
+    {
+        crate::player::log("hls: segmented demux start");
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            hls_demux(&origin, &path, &acodec, abr, aq_p, aqa_p, hs_p)
+        }));
+        match outcome {
+            Ok(Ok(())) | Ok(Err(HlsExit::Aborted)) => {}
+            Ok(Err(HlsExit::Failed(why))) => {
+                crate::player::log(&format!("hls: demux failed: {why}"));
+                if PUSHED_ANY.load(Ordering::Relaxed) {
+                    SHARED.demux_io_failed.store(true, Ordering::Release);
+                } else {
+                    SHARED.demux_failed.store(true, Ordering::Release);
+                }
+            }
+            Ok(Err(HlsExit::NotReady)) => {
+                crate::player::log("hls: demux failed: playlist resource was not ready");
+                if PUSHED_ANY.load(Ordering::Relaxed) {
+                    SHARED.demux_io_failed.store(true, Ordering::Release);
+                } else {
+                    SHARED.demux_failed.store(true, Ordering::Release);
+                }
+            }
+            Ok(Err(HlsExit::PrimeExpired)) => {
+                crate::player::log("hls: demux failed: unexpected active-stream prime deadline");
+                SHARED.demux_io_failed.store(true, Ordering::Release);
+            }
+            Err(_) => {
+                crate::player::log("hls: demux panicked");
+                SHARED.demux_failed.store(true, Ordering::Release);
+            }
+        }
+        if !PUSHED_ANY.load(Ordering::Relaxed)
+            && !unsafe { crate::aq::aq_is_aborted(aq_p) }
+        {
+            SHARED.demux_failed.store(true, Ordering::Release);
+        }
+        crate::aq::aq_set_eof(aq_p);
+        crate::aq::aq_set_eof(aqa_p);
+        crate::player::log("hls: segmented demux ended");
+        return;
+    }
     let port = origin.port() as c_int;
     // `host()` is the origin's BARE host — a v6 literal arrives unbracketed, which is what
     // `stream.rs` wants; `base()` re-brackets it, which is what a URL needs. Both spellings come
@@ -2010,7 +3091,17 @@ pub(crate) fn demux(origin: crate::plex::Origin, path: String, acodec: String, a
                 )
             };
 
-            let mut state = Box::new(AvioState { src, aq: aq_p, off: 0, size, io_failed: false });
+            let mut state = Box::new(AvioState {
+                src,
+                aq: aq_p,
+                off: 0,
+                size,
+                io_failed: false,
+                body_active_us: 0,
+                body_bytes: 0,
+                deadline: None,
+                deadline_expired: false,
+            });
             let buf = av_malloc(65536) as *mut u8;
             if buf.is_null() {
                 crate::player::log("ff: av_malloc failed");
@@ -2441,6 +3532,14 @@ pub(crate) fn demux(origin: crate::plex::Origin, path: String, acodec: String, a
 mod tests {
     use super::*;
 
+    #[test]
+    fn an_abr_candidate_must_decode_within_the_proposed_raster() {
+        assert!(hls_raster_within(1_280, 536, crate::abr::Rung::P720));
+        assert!(hls_raster_within(1_280, 720, crate::abr::Rung::P720));
+        assert!(!hls_raster_within(1_920, 804, crate::abr::Rung::P720));
+        assert!(!hls_raster_within(0, 720, crate::abr::Rung::P720));
+    }
+
     /// Build a length-prefixed (AVCC-style) packet: 4-byte big-endian length + payload, repeated.
     fn avcc(nals: &[&[u8]]) -> Vec<u8> {
         let mut v = Vec::new();
@@ -2631,6 +3730,87 @@ mod tests {
         assert!(out.is_empty(), "size < nls + 1 must bail before the walk");
     }
 
+    // -- MPEG-TS elementary-stream framing -----------------------------------------------
+
+    #[test]
+    fn a_ts_idr_keeps_in_band_parameter_sets_without_avcc_conversion() {
+        let packet = [
+            0, 0, 0, 1, 0x67, 0x42, 0x00, // SPS
+            0, 0, 1, 0x68, 0xce, // PPS
+            0, 0, 0, 1, 0x65, 0xaa, // IDR
+        ];
+        let mut sets = H264ParamSets::default();
+        let mut out = Vec::new();
+        assert_eq!(ts_h264_access_unit(&packet, &mut sets, &mut out), Ok(true));
+        assert_eq!(out, packet);
+        assert!(!sets.sps.is_empty());
+        assert!(!sets.pps.is_empty());
+    }
+
+    #[test]
+    fn a_leading_missing_aac_timestamp_is_backfilled_from_frame_duration() {
+        let mut stamps = [
+            AudioStamp { au: 3, raw_ns: None, duration_ns: Some(21_333_333) },
+            AudioStamp { au: 4, raw_ns: Some(900_000_000), duration_ns: Some(21_333_333) },
+            AudioStamp { au: 5, raw_ns: None, duration_ns: Some(21_333_333) },
+        ];
+        assert_eq!(resolve_audio_stamps(&mut stamps), Ok(2));
+        assert_eq!(stamps[0].raw_ns, Some(878_666_667));
+        assert_eq!(stamps[2].raw_ns, Some(921_333_333));
+    }
+
+    #[test]
+    fn a_timestamp_free_aac_segment_uses_only_its_frame_clock() {
+        let mut stamps = [
+            AudioStamp { au: 0, raw_ns: None, duration_ns: Some(20_000_000) },
+            AudioStamp { au: 1, raw_ns: None, duration_ns: Some(20_000_000) },
+            AudioStamp { au: 2, raw_ns: None, duration_ns: Some(20_000_000) },
+        ];
+        assert_eq!(resolve_audio_stamps(&mut stamps), Ok(3));
+        assert_eq!(stamps.iter().map(|stamp| stamp.raw_ns).collect::<Vec<_>>(), [Some(0), Some(20_000_000), Some(40_000_000)]);
+    }
+
+    #[test]
+    fn an_unanchored_aac_timestamp_hole_fails_closed() {
+        let mut stamps = [
+            AudioStamp { au: 0, raw_ns: Some(0), duration_ns: None },
+            AudioStamp { au: 1, raw_ns: None, duration_ns: None },
+        ];
+        assert_eq!(resolve_audio_stamps(&mut stamps), Err("AAC timestamp hole has no duration anchor"));
+    }
+
+    #[test]
+    fn a_later_ts_idr_recovers_cached_parameter_sets() {
+        let first = [0, 0, 1, 0x67, 1, 0, 0, 1, 0x68, 2, 0, 0, 1, 0x65, 3];
+        let later = [0, 0, 1, 0x65, 4];
+        let mut sets = H264ParamSets::default();
+        let mut out = Vec::new();
+        ts_h264_access_unit(&first, &mut sets, &mut out).unwrap();
+        assert_eq!(ts_h264_access_unit(&later, &mut sets, &mut out), Ok(true));
+        assert!(out.starts_with(&[0, 0, 0, 1, 0x67, 1, 0, 0, 0, 1, 0x68, 2]));
+        assert!(out.ends_with(&later));
+    }
+
+    #[test]
+    fn a_ts_idr_without_any_parameter_sets_is_rejected() {
+        let mut sets = H264ParamSets::default();
+        let mut out = Vec::new();
+        assert_eq!(
+            ts_h264_access_unit(&[0, 0, 1, 0x65, 4], &mut sets, &mut out),
+            Err("IDR has no in-band or cached SPS")
+        );
+    }
+
+    #[test]
+    fn adts_detection_accepts_a_real_header_but_not_arbitrary_ff_bytes() {
+        let mut frame = adts_header(3, 2, 11).to_vec();
+        frame.extend_from_slice(&[0; 11]);
+        assert!(packet_has_adts(&frame));
+        assert!(!packet_has_adts(&[0xff, 0x00, 0, 0, 0, 0, 0]));
+        assert_eq!(adts_duration_ns(&frame), Some(21_333_333));
+        assert_eq!(adts_duration_ns(&[0xff, 0x00, 0, 0, 0, 0, 0]), None);
+    }
+
     // -- the AVIO callbacks under teardown -------------------------------------------------
     //
     // These drive `read_cb`/`seek_cb` directly, which works on the host precisely because neither
@@ -2764,6 +3944,8 @@ mod tests {
             let mut st = AvioState {
                 src: Src::Socket { hs: &mut *hs, host: ip, port: port as c_int, path },
                 aq: &mut *aq, off: 0, size: 8, io_failed: false,
+                body_active_us: 0, body_bytes: 0,
+                deadline: None, deadline_expired: false,
             };
             let op = &mut st as *mut AvioState as *mut c_void;
 
@@ -2796,6 +3978,8 @@ mod tests {
             let mut st = AvioState {
                 src: Src::Socket { hs: &mut *hs, host: ip, port: port as c_int, path },
                 aq: &mut *aq, off: 0, size: 8, io_failed: false,
+                body_active_us: 0, body_bytes: 0,
+                deadline: None, deadline_expired: false,
             };
             let op = &mut st as *mut AvioState as *mut c_void;
             let mut dst = [0u8; 8];
@@ -2815,6 +3999,38 @@ mod tests {
             crate::stream::http_close(&mut *hs);
             crate::aq::aq_destroy(&mut *aq);
         });
+    }
+
+    #[test]
+    fn an_expired_candidate_deadline_stops_before_touching_its_transport() {
+        let mut aq = crate::aq::aq_new(1 << 20);
+        let mut st = AvioState {
+            // A null stream would crash if dispatch were reached; the deadline must settle first.
+            src: Src::Socket {
+                hs: std::ptr::null_mut(),
+                host: CString::new("unused").unwrap(),
+                port: 1,
+                path: CString::new("/unused").unwrap(),
+            },
+            aq: &mut *aq,
+            off: 0,
+            size: -1,
+            io_failed: false,
+            body_active_us: 0,
+            body_bytes: 0,
+            deadline: Some(std::time::Instant::now()),
+            deadline_expired: false,
+        };
+        let mut dst = [0u8; 8];
+        let result = read_cb(
+            &mut st as *mut AvioState as *mut c_void,
+            dst.as_mut_ptr(),
+            dst.len() as c_int,
+        );
+        assert_eq!(result, AVERROR_EOF);
+        assert!(st.deadline_expired);
+        assert!(!st.io_failed, "a rejected prime is not an active-stream transport failure");
+        crate::aq::aq_destroy(&mut *aq);
     }
 
     // -- the same two invariants, with libcurl under the AVIO instead of a socket ------------
@@ -2856,7 +4072,11 @@ mod tests {
             let (cs, mut aq) = opened_curl_with_aborted_lane(port);
             assert_eq!(accepts.load(Ordering::Acquire), 1, "fixture: exactly one connection so far");
             assert_eq!(requests.load(Ordering::Acquire), 1, "fixture: and exactly one request");
-            let mut st = AvioState { src: Src::Curl(cs), aq: &mut *aq, off: 0, size: 8, io_failed: false };
+            let mut st = AvioState {
+                src: Src::Curl(cs), aq: &mut *aq, off: 0, size: 8, io_failed: false,
+                body_active_us: 0, body_bytes: 0,
+                deadline: None, deadline_expired: false,
+            };
             let op = &mut st as *mut AvioState as *mut c_void;
 
             let rv = seek_cb(op, 4, SEEK_SET);
@@ -2879,7 +4099,11 @@ mod tests {
         let Some(_gate) = curl_gate() else { return };
         with_counting_listener(|port, accepts, requests| {
             let (cs, mut aq) = opened_curl_with_aborted_lane(port);
-            let mut st = AvioState { src: Src::Curl(cs), aq: &mut *aq, off: 0, size: 8, io_failed: false };
+            let mut st = AvioState {
+                src: Src::Curl(cs), aq: &mut *aq, off: 0, size: 8, io_failed: false,
+                body_active_us: 0, body_bytes: 0,
+                deadline: None, deadline_expired: false,
+            };
             let op = &mut st as *mut AvioState as *mut c_void;
             let mut dst = [0u8; 8];
             let mut reads = Vec::new();
@@ -2920,7 +4144,11 @@ mod tests {
                 .expect("fixture: open");
             cs.fail_multi_for_test();
             let mut aq = crate::aq::aq_new(1 << 20);
-            let mut st = AvioState { src: Src::Curl(cs), aq: &mut *aq, off: 0, size: 8, io_failed: false };
+            let mut st = AvioState {
+                src: Src::Curl(cs), aq: &mut *aq, off: 0, size: 8, io_failed: false,
+                body_active_us: 0, body_bytes: 0,
+                deadline: None, deadline_expired: false,
+            };
             let op = &mut st as *mut AvioState as *mut c_void;
             let mut dst = [0u8; 8];
 
