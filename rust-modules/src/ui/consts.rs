@@ -112,7 +112,7 @@ pub const SDLK_ESCAPE: c_uint = 27;
 pub const SDLK_PAGEUP: c_uint = 75 | (1 << 30);
 pub const SDLK_PAGEDOWN: c_uint = 78 | (1 << 30);
 /// Backspace and Clear — **the system keyboard's own two edit keys**, and the reason they are named
-/// here rather than left as literals in the screens that read text.
+/// here rather than left as literals in the one screen that reads text.
 ///
 /// The television's on-screen panel does not edit the field itself. It commits printable characters
 /// as `SDL_TEXTINPUT` and then forwards every EDIT intent to the app as an ordinary key, expecting
@@ -223,13 +223,10 @@ pub fn is_back(sym: c_uint, wcode: c_uint) -> bool {
 /// [`Key::Other`] is every press `classify` does not name, which includes spellings the ladder
 /// still tests by hand where it needs them: the CH▲/CH▼ rocker ([`WCODE_CH_UP_KEY`]/
 /// [`WCODE_CH_DOWN_KEY`] and the `SDLK_PAGE*` syms, in the Library's paging arm via [`page_dir`]),
-/// the system keyboard's edit keys ([`SDLK_BACKSPACE`]/[`SDLK_CLEAR`], read by the two screens that
-/// own a text field — `ui::search::key` and `ui::library::key`, the Sources panel's address row,
-/// each gated on its own editing state and each returning whether it took the press, so a third
-/// field joins the same door rather than adding one) and the digits the who's-watching PIN keypad
-/// types from. **So `Other` does NOT mean unbound and must never be made inert** — [`is_bound`] is
-/// the predicate that answers *is this press one the app binds at all*, and it is a strict superset
-/// of `classify != Other`.
+/// the system keyboard's edit keys ([`SDLK_BACKSPACE`]/[`SDLK_CLEAR`], read inside the Search
+/// screen) and the digits the who's-watching PIN keypad types from. **So `Other` does NOT mean
+/// unbound and must never be made inert** — [`is_bound`] is the predicate that answers *is this
+/// press one the app binds at all*, and it is a strict superset of `classify != Other`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Key {
     Up,
