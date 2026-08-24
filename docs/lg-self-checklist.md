@@ -5,8 +5,8 @@ required webOS TV submission document, and its own preamble requires every item 
 N/A before submission. An unrun item cannot honestly be marked Pass; a Fail must be debugged before
 submission.
 
-Checklist version 5.0 (updated 2022-09-27), 53 items. Status taken **2026-08-24** against integrated
-HEAD `7b71721c`.
+Checklist version 5.0 (updated 2022-09-27), 53 items. Status taken **2026-08-24** against the
+integrated code-and-harness state through `7b71721c`.
 
 Native eligibility is no longer the open question this file used to describe. Seller Lounge accepts
 this IPK as **File Type: Native** and asks for its native SDK version, chipset and resolution; see
