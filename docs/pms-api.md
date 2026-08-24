@@ -182,8 +182,8 @@ the spec but **this server does not emit it on `Role[]`** — treat 0 as unknown
   `{key: "<id>", title, thumb, fastKey: "/library/sections/2/all?actor=691"}` (51 on Movies, 56
   on TV Shows here). NB the rows key the id as **`key`/`title`**, not `id`/`tag` — a different
   shape from the tag arrays above. This is the *Categories → by Actor* browse axis.
-- **Headshots are absolute `https://metadata-static.plex.tv/…` URLs**, which the raw-socket
-  client can never fetch (it resolves names now, but has no TLS). They render anyway because `image_transcode_path`
+- **Headshots are absolute `https://metadata-static.plex.tv/…` URLs**. They still render through
+  the PMS photo transcoder rather than through the app's PMS-origin HTTP client: `image_transcode_path`
   passes the whole URL as `url=` to `/photo/:/transcode` and **the server does the TLS** — the
   same path posters take. Never invent another image route for them.
 

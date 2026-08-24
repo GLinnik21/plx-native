@@ -1038,6 +1038,6 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   `closeByAppId`), and `/tmp/plxnative-noexitconfirm` restores it for a script that wants it. Text
   entry is the **television's own keyboard**, raised by plain `SDL_StartTextInput` — the backend is
   in LG's Wayland driver, not the webOS extension API, which is why `SDL_webOS.h` looks like it has
-  no keyboard. The field, the shelves and every trap in that seam are **`docs/search.md`**, whose
-  status note says which halves are in the tree yet. Search is **server-only** by decision — Plex
+  no keyboard. The field, shelves, test seams and every trap in that path are documented in
+  **`docs/search.md`**. Search is **server-only** by decision — Plex
   Discover / Watchlist catalog results are out of scope.

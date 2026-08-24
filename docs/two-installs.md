@@ -145,7 +145,7 @@ was a bare literal in C, so no selftest could have seen it — the guarantee abo
 the languages it names.
 
 **One descriptor transform, and the stable one is asserted to be the identity.** `ci/flavor.py`
-patches the tracked `pkg/appinfo.json` rather than duplicating it: exactly two of its fourteen
+patches the tracked `pkg/appinfo.json` rather than duplicating it: exactly two of its fifteen
 fields may move (`id`, `title`), and the selftest asserts the set of moved keys is exactly that, so
 widening it is a decision somebody has to make on purpose. The stable transform coming out
 byte-identical is what guarantees the released artifact's sha256 — the entire integrity story,

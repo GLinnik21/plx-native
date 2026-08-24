@@ -951,10 +951,17 @@ pub(crate) fn http_shutdown(hs: *mut HttpStream) {
 /// http_open assigns a real fd. The player engine pre-allocates the demux/cue sockets
 /// before the worker threads open them; a plain zeroed box leaves fd = 0, and a
 /// teardown before (or without) http_open would then close(0) the process's stdin —
-/// and free fd 0 for a later socket() to reuse and be wrongly closed. (Box: 64KB.)
+/// and free fd 0 for a later socket() to reuse and be wrongly closed. The zero fill is written
+/// directly into the heap allocation: spelling this as `Box::new(mem::zeroed())` materialises a
+/// 64 KiB temporary on debug-build worker stacks before moving it into the box.
 pub(crate) fn http_stream_boxed() -> Box<HttpStream> {
-    // `set_fd` takes &self now (the field is atomic), so the binding no longer needs `mut`.
-    let hs: Box<HttpStream> = Box::new(unsafe { std::mem::zeroed() });
+    let mut slot = Box::<HttpStream>::new_uninit();
+    // SAFETY: every HttpStream field has an all-zero valid representation (integers, bytes and
+    // AtomicI32), and the allocation is exclusively owned and still MaybeUninit here. Writing the
+    // bytes through its heap pointer avoids constructing the large value on this worker's stack.
+    unsafe { std::ptr::write_bytes(slot.as_mut_ptr(), 0, 1) };
+    // SAFETY: the preceding write initialized every byte of the allocation.
+    let hs = unsafe { slot.assume_init() };
     hs.set_fd(-1);
     hs
 }

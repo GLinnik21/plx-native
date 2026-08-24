@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Which install a package is for — the ONE transform from the tracked descriptors to a flavour's.
+"""Which install a package is for — a transform from the tracked descriptors to a flavour's.
 
 Two builds of this app live on one television: `stable` is what users install
 (`com.beb.plxnative` — the id in every release, every manifest and the webosbrew channel listing),
@@ -7,12 +7,12 @@ and `debug` is the day-to-day developer build beside it (`com.beb.plxnative.debu
 launcher tile, its own sign-in and its own `/tmp` root. The Makefile's FLAVOR block is the account
 of why; this file is the part that has to be identical in three places at once.
 
-**PATCH, DO NOT DUPLICATE.** `pkg/appinfo.json` has 14 fields and exactly TWO of them may differ
-between flavours: `id` and `title`. The other twelve — `type`, `main`, `transparent`,
+**PATCH, DO NOT DUPLICATE.** `pkg/appinfo.json` has 15 fields and exactly TWO of them may differ
+between flavours: `id` and `title`. The other thirteen — `type`, `main`, `transparent`,
 `requiredMemory`, `nativeLifeCycleInterfaceVersion`, `handlesRelaunch`, `splashBackground`,
-`iconColor`, `vendor`, `version` and the two icon FILENAMES — are behaviour-critical and must never
-drift. A second checked-in descriptor would drift on them the first time one was edited, and would
-put the version in a fifth file that `ci/bump-version.py`, `ci/check-package.py` and
+`iconColor`, `vendor`, `version`, `appDescription` and the two icon FILENAMES — are
+behaviour-critical and must never drift. A second checked-in descriptor would drift on them the
+first time one was edited, and would put the version in a fifth file that `ci/bump-version.py`, `ci/check-package.py` and
 `release.yml`'s tag guard all already read. The selftest asserts the set of moved keys is exactly
 `{id, title}`, so widening it is a decision somebody has to make on purpose.
 
