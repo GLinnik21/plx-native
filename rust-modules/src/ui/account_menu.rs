@@ -15,10 +15,12 @@
 //! an empty `UserRef`, so every surface deciding on its emptiness told a signed-in owner they were
 //! signed out — this popover headed itself "Account", and the chip that opens it says "Sign in".
 //!
-//! **The chip is still on the sentinel** (`ui/widgets.rs:117` `profile_chip`, `title.is_empty()`),
-//! so the two surfaces currently disagree on one screen. It is a one-block change — word the label
-//! and the avatar initial from `Session::account(current().as_ref())` inside the generation-keyed
-//! cache — left out of this pass only because that file belongs to another change in flight.
+//! **The chip was still on the sentinel** — `ui/widgets.rs`'s `profile_chip` labelled itself from
+//! `title.is_empty()`, so on a single-user account the two surfaces disagreed on one screen: the
+//! menu headed itself with the owner's name while the chip that opens it said "Sign in". Fixed
+//! 2026-08-23, and fixed by MOVING THE WORDS HERE rather than by writing the same match a second
+//! time: [`chip_label`] is the one resolver, this module owns it beside the rows it has to agree
+//! with, and the chip calls it. Two surfaces cannot drift on a question only one of them answers.
 #![allow(non_upper_case_globals)]
 use crate::plex::session::Account;
 use crate::ui::consts::*;
@@ -78,6 +80,30 @@ fn rows_for(acc: &Account) -> &'static [Action] {
         (false, _) => &[Action::SignIn],
         (true, true) => &[Action::ChangeProfile, Action::SignOut],
         (true, false) => &[Action::SignOut],
+    }
+}
+
+/// **What the profile CHIP calls the user** — the unfurled name beside the avatar, and the initial
+/// inside it (its first character).
+///
+/// It lives here, not in `ui::widgets`, because it is a statement about the ACCOUNT and it has to
+/// agree with the menu the chip opens. Every arm is one of this module's own answers:
+///
+/// - a name — the active managed profile, else the persisted roster's owner ([`Account::name`]);
+/// - signed in and nameless — [`HEADER_FALLBACK`], the same word the menu heads itself with, which
+///   is a missing NAME and not a missing user;
+/// - signed out — the label of the one row the menu then offers, so the chip and the menu behind it
+///   cannot say different things about the same press.
+///
+/// **The bug this replaced** was the chip deciding all three from `current().title.is_empty()`. An
+/// account **without Plex Home** never gets a profile written at all, so that title is empty for a
+/// signed-in owner and the chip offered them "Sign in" — which is the first thing a reviewer on a
+/// fresh test account sees, and the last thing they should.
+pub(crate) fn chip_label(acc: &Account) -> String {
+    match (&acc.name, acc.signed_in) {
+        (Some(n), _) => n.clone(),
+        (None, true) => HEADER_FALLBACK.to_string(),
+        (None, false) => label(Action::SignIn).to_string(),
     }
 }
 
@@ -377,6 +403,29 @@ mod tests {
         crate::plex::session::set_current(restore); // BEFORE the asserts: a failure must not leak
         assert_eq!(picked, "Kid");
         assert_eq!(cleared, "Gleb");
+    }
+
+    /// **The chip and the menu, on one account state.** The chip used to answer this from
+    /// `current().title.is_empty()` and so told a signed-in owner with no Plex Home to sign in; the
+    /// menu behind that same press already headed itself "Gleb" and offered "Sign out". One
+    /// resolver now, and this is the test that says the two agree.
+    #[test]
+    fn the_chip_and_its_menu_say_the_same_thing_about_the_account() {
+        // THE BUG: single-user account, empty active profile, named by the roster's admin entry
+        let s = local(Session { account_token: "acct".into(), home_users: vec![owner("Gleb")], ..Default::default() });
+        let acc = s.account(Some(&UserRef::default()));
+        assert_eq!(chip_label(&acc), "Gleb");
+        assert_eq!(chip_label(&acc), menu(&s, Some(&UserRef::default())).0, "chip and header, one name");
+        assert!(!rows_for(&acc).contains(&Action::SignIn), "…and the menu never offered Sign in");
+
+        // signed in, no roster has ever landed: a missing NAME, not a missing user
+        let nameless = local(Session { account_token: "acct".into(), ..Default::default() }).account(None);
+        assert_eq!(chip_label(&nameless), HEADER_FALLBACK);
+
+        // signed out: the chip says exactly what the one row behind it says
+        let out = Session::default().account(None);
+        assert_eq!(chip_label(&out), label(Action::SignIn));
+        assert_eq!(rows_for(&out), &[Action::SignIn]);
     }
 
     /// Every row set maps position → action by the list it drew, and anything off the end is None

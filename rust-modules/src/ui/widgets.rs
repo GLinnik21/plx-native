@@ -2046,11 +2046,29 @@ pub(crate) fn profile_chip(p: Painter) {
     if chip.as_ref().map(|c| c.0 != gen).unwrap_or(true) {
         let cur = crate::plex::session::current();
         let thumb = cur.as_ref().map(|u| u.thumb.clone()).unwrap_or_default();
-        let title = cur.as_ref().map(|u| u.title.clone()).unwrap_or_default();
-        let initial =
-            title.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default();
-        // signed out: the menu behind the chip offers Sign in, so the expanded chip says so too
-        let label = if title.is_empty() { "Sign in".to_string() } else { title };
+        // **The ACCOUNT, never the active profile alone.** An account with no Plex Home never gets
+        // a profile written, so `current()` is a bare `UserRef` — empty title, empty thumb — for a
+        // signed-in owner and for a signed-out device alike. This control decided all three of its
+        // words from that emptiness until 2026-08-23 and so offered "Sign in" to a signed-in owner,
+        // which is the first thing a reviewer on a fresh single-user account sees.
+        //
+        // `peek`, not `load`: drawing a chip must never be able to WRITE the session file
+        // (`load` mints a client id and saves). It is a file read, and it is inside the cache —
+        // once per profile GENERATION, not per frame, which is exactly the shape `session::peek`'s
+        // own "do not add a per-frame reader" note asks for.
+        let acc = crate::plex::session::peek().account(cur.as_ref());
+        // ONE resolver, in the module that owns the menu this chip opens — see
+        // [`crate::ui::account_menu::chip_label`]. The chip and its menu are two surfaces on one
+        // question, and the bug above is what a second copy of the answer costs.
+        let label = crate::ui::account_menu::chip_label(&acc);
+        // …and the avatar's letter comes off the SAME name, so a chip reading "Gleb" can never
+        // carry somebody else's initial. No name = no letter, and the generic person glyph below.
+        let initial = acc
+            .name
+            .as_deref()
+            .and_then(|n| n.chars().next())
+            .map(|c| c.to_uppercase().to_string())
+            .unwrap_or_default();
         let name = CString::new(crate::text::elide(&label, CHIP_NAME_MAX, theme::size::BODY, 1, false))
             .unwrap_or_default();
         let nw = crate::text::text_width(name.as_ptr(), theme::size::BODY, 1);
@@ -2104,7 +2122,8 @@ pub(crate) fn profile_chip(p: Painter) {
     if !drew {
         p.rect_sheened(r, d * 0.5, theme::CONTROL_IDLE_FILL, theme::CONTROL_IDLE_FILL);
         if initial_c.as_bytes().is_empty() {
-            // signed out (no session) — a generic person glyph; the menu behind it offers Sign in
+            // nobody to name — signed out, or signed in with no roster landed yet. A generic
+            // person glyph either way; the unfurled label above is what tells the two apart.
             crate::ui::icons::draw(p, crate::ui::icons::Icon::User, r.inset(14.0), theme::TEXT_SECONDARY);
         } else {
             let ty = crate::text::text_vcenter_y(theme::size::HEADLINE, 1, r.y + d * 0.5);
