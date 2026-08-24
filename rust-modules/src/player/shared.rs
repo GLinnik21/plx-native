@@ -215,6 +215,14 @@ pub(crate) struct Shared {
     /// Unlike `demux_failed`, this is not gated on a zero-frame start: a truncated live transfer
     /// is an error rather than a successful early EOF.
     pub demux_io_failed: AtomicBool,
+    /// A sustained progressive Auto/Original starvation measurement (kbps), published by the
+    /// demux worker and consumed once by the main-thread pump. `0` means no transition pending.
+    /// One atomic carries both signal and evidence, so a reset cannot leave a stale companion
+    /// value behind for the next playback.
+    pub auto_fallback_kbps: AtomicI64,
+    /// Sustained HLS evidence says the actual source is safe again. Consumed by the main-thread
+    /// pump exactly like `auto_fallback_kbps`; zero means no recovery transaction is pending.
+    pub auto_recover_kbps: AtomicI64,
     /// WHY the demuxer found nothing to feed, when the answer is "the stream itself": the server
     /// delivered audio streams and no video stream. Issue #22's whole shape — a transcode target
     /// the server cannot honour makes PMS drop the video track, and `ff: no video stream` alone
@@ -264,9 +272,10 @@ pub(crate) struct Shared {
     pub video_w: AtomicI32,
     pub video_h: AtomicI32,
     pub duration_ns: AtomicI64,               // was g_mkv.duration_ns (published)
-    /// Latest normalized HLS timestamps successfully enqueued for each elementary stream. These
-    /// are content-timeline facts (not queue byte counts) used to derive buffered media time.
-    /// `-1` means the lane has not produced an AU in this session.
+    /// Latest normalized timestamps successfully enqueued for each elementary stream. HLS writes
+    /// its segment-normalized zero-based timeline; progressive Original writes absolute movie
+    /// PTS. Their consumers apply the matching display-base rule. These are content-time facts
+    /// (not queue byte counts); `-1` means the lane has not produced an AU in this session/seek.
     pub hls_video_tail_ns: AtomicI64,
     pub hls_audio_tail_ns: AtomicI64,
     // set once the pipeline has drained to true end-of-stream (EOS pushed AND the last fed frame
@@ -359,6 +368,23 @@ pub(crate) struct Shared {
     /// "there is no sound": the pipeline was never asked for any.
     pub dg_load_v: AtomicU8,
     pub dg_load_a: AtomicU8,
+    /// Auto-quality facts written by the demux worker and read only by Stats for Nerds.
+    /// Mode: 0 inactive, 1 progressive Original watchdog, 2 fixed-session HLS controller.
+    pub dg_abr_mode: AtomicU8,
+    /// Current Original source requirement or active HLS rung, in kbit/s.
+    pub dg_abr_kbps: AtomicI64,
+    /// Latest measured body throughput and normalized content reserve. `-1` means no complete
+    /// measurement exists yet. Production ratio is total segment acquisition / media duration in
+    /// per-mille; it is meaningful for HLS only.
+    pub dg_abr_net_kbps: AtomicI64,
+    pub dg_abr_buffer_ms: AtomicI64,
+    pub dg_abr_ratio_pm: AtomicI64,
+    /// Last controller action plus its candidate rung. The action is intentionally sticky so a
+    /// photograph taken after a swap still explains why the current rendition changed.
+    pub dg_abr_action: AtomicU8,
+    pub dg_abr_target_kbps: AtomicI64,
+    /// Consecutive Original windows in which both rate and reserve were low (0..=2).
+    pub dg_abr_bad_windows: AtomicU8,
     /// `vp_place` return, and the size it was called with. `i32::MIN` = never called.
     pub dg_place_rv: AtomicI32,
     pub dg_placed_w: AtomicI32,
@@ -386,6 +412,14 @@ impl Shared {
             dg_fed_a_pts: AtomicI64::new(0),
             dg_load_v: AtomicU8::new(0),
             dg_load_a: AtomicU8::new(0),
+            dg_abr_mode: AtomicU8::new(0),
+            dg_abr_kbps: AtomicI64::new(0),
+            dg_abr_net_kbps: AtomicI64::new(-1),
+            dg_abr_buffer_ms: AtomicI64::new(-1),
+            dg_abr_ratio_pm: AtomicI64::new(-1),
+            dg_abr_action: AtomicU8::new(0),
+            dg_abr_target_kbps: AtomicI64::new(0),
+            dg_abr_bad_windows: AtomicU8::new(0),
             dg_place_rv: AtomicI32::new(i32::MIN),
             dg_placed_w: AtomicI32::new(0),
             dg_placed_h: AtomicI32::new(0),
@@ -409,6 +443,8 @@ impl Shared {
             pb_state: AtomicU8::new(PlaybackState::Idle as u8),
             demux_failed: AtomicBool::new(false),
             demux_io_failed: AtomicBool::new(false),
+            auto_fallback_kbps: AtomicI64::new(0),
+            auto_recover_kbps: AtomicI64::new(0),
             demux_no_video: AtomicBool::new(false),
             load_failed: AtomicBool::new(false),
             desired_sub_idx: AtomicI32::new(-1),
@@ -449,6 +485,14 @@ impl Shared {
         self.dg_fed_a_pts.store(0, Ordering::Relaxed);
         self.dg_load_v.store(0, Ordering::Relaxed);
         self.dg_load_a.store(0, Ordering::Relaxed);
+        self.dg_abr_mode.store(0, Ordering::Relaxed);
+        self.dg_abr_kbps.store(0, Ordering::Relaxed);
+        self.dg_abr_net_kbps.store(-1, Ordering::Relaxed);
+        self.dg_abr_buffer_ms.store(-1, Ordering::Relaxed);
+        self.dg_abr_ratio_pm.store(-1, Ordering::Relaxed);
+        self.dg_abr_action.store(0, Ordering::Relaxed);
+        self.dg_abr_target_kbps.store(0, Ordering::Relaxed);
+        self.dg_abr_bad_windows.store(0, Ordering::Relaxed);
         self.dg_place_rv.store(i32::MIN, Ordering::Relaxed);
         self.dg_placed_w.store(0, Ordering::Relaxed);
         self.dg_placed_h.store(0, Ordering::Relaxed);
@@ -476,6 +520,8 @@ impl Shared {
         self.pb_state.store(PlaybackState::Idle as u8, Ordering::Relaxed);
         self.demux_failed.store(false, Ordering::Relaxed);
         self.demux_io_failed.store(false, Ordering::Relaxed);
+        self.auto_fallback_kbps.store(0, Ordering::Relaxed);
+        self.auto_recover_kbps.store(0, Ordering::Relaxed);
         self.demux_no_video.store(false, Ordering::Relaxed);
         self.load_failed.store(false, Ordering::Relaxed);
         // NB: desired_sub_idx is NOT reset here — like desired_audio_idx it persists across
@@ -607,9 +653,29 @@ mod tests {
         s.seen_frame.store(true, Ordering::Relaxed);
         s.frames.store(9, Ordering::Relaxed);
         s.demux_io_failed.store(true, Ordering::Relaxed);
+        s.auto_fallback_kbps.store(4_000, Ordering::Relaxed);
+        s.auto_recover_kbps.store(60_000, Ordering::Relaxed);
+        s.dg_abr_mode.store(2, Ordering::Relaxed);
+        s.dg_abr_kbps.store(2_000, Ordering::Relaxed);
+        s.dg_abr_net_kbps.store(4_000, Ordering::Relaxed);
+        s.dg_abr_buffer_ms.store(2_800, Ordering::Relaxed);
+        s.dg_abr_ratio_pm.store(500, Ordering::Relaxed);
+        s.dg_abr_action.store(5, Ordering::Relaxed);
+        s.dg_abr_target_kbps.store(4_000, Ordering::Relaxed);
+        s.dg_abr_bad_windows.store(2, Ordering::Relaxed);
         s.reset_session();
         assert!(!s.seen_frame.load(Ordering::Relaxed), "a reload/stop blanks the plane — say so");
         assert_eq!(s.frames.load(Ordering::Relaxed), 0, "and the two must be reset together");
         assert!(!s.demux_io_failed.load(Ordering::Relaxed), "a new session must not inherit an I/O failure");
+        assert_eq!(s.auto_fallback_kbps.load(Ordering::Relaxed), 0, "a new session must not inherit an Auto fallback");
+        assert_eq!(s.auto_recover_kbps.load(Ordering::Relaxed), 0, "a new session must not inherit an Auto recovery");
+        assert_eq!(s.dg_abr_mode.load(Ordering::Relaxed), 0);
+        assert_eq!(s.dg_abr_kbps.load(Ordering::Relaxed), 0);
+        assert_eq!(s.dg_abr_net_kbps.load(Ordering::Relaxed), -1);
+        assert_eq!(s.dg_abr_buffer_ms.load(Ordering::Relaxed), -1);
+        assert_eq!(s.dg_abr_ratio_pm.load(Ordering::Relaxed), -1);
+        assert_eq!(s.dg_abr_action.load(Ordering::Relaxed), 0);
+        assert_eq!(s.dg_abr_target_kbps.load(Ordering::Relaxed), 0);
+        assert_eq!(s.dg_abr_bad_windows.load(Ordering::Relaxed), 0);
     }
 }

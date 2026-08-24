@@ -78,6 +78,20 @@ struct Session {
     /// The input [`set_quality`] re-runs [`quality_policy`] on when a rung is picked mid-film, so
     /// that decision is made from the same numbers `build_stream` used rather than from a guess.
     cur_src: (i64, i64, i64),
+    /// Whole Part transport bitrate, including audio. Auto's progressive watchdog compares the
+    /// live socket against this rather than `cur_src.0` (video only), because the wire has to carry
+    /// both lanes. `0` means PMS did not provide one and disables the watchdog fail-safely.
+    cur_transport_kbps: i64,
+    /// This exact playback is Auto preserving Original on a direct Remote and therefore needs the
+    /// progressive transfer watchdog. Local Original never needs it; HLS owns its own controller.
+    cur_auto_remote_original: bool,
+    /// The zero-encode flavor Auto may return to after a remote link recovers. Kept even while
+    /// HLS is active: the HLS worker owns only measurements, while the main thread owns the
+    /// codec/session transition back to this exact source declaration.
+    auto_original: Option<AutoOriginalCandidate>,
+    /// Debug pipeline-tier substitute for PMS's fixed-rendition endpoints. Empty in every
+    /// production plan; see [`arm_auto_fixture`].
+    auto_fixture_base: String,
     /// ratingKey of the currently-playing item (movie or episode), so an audio-track
     /// switch can force a fresh transcode of the same item.
     cur_rk: String,
@@ -199,6 +213,10 @@ impl Session {
         cur_no_video_copy: false,
         cur_ceiling: None,
         cur_src: (0, 0, 0),
+        cur_transport_kbps: 0,
+        cur_auto_remote_original: false,
+        auto_original: None,
+        auto_fixture_base: String::new(),
         cur_rk: String::new(),
         cur_sid: ServerId::UNSET,
         cur_audio_sid: 0,
@@ -324,6 +342,33 @@ pub(crate) struct HlsAbrControl {
     audio_stream_id: i64,
     subtitle_stream_id: i64,
     seconds_per_segment: u8,
+    pub(crate) initial_rung: crate::abr::Rung,
+    fixture_base: String,
+    original_probe_url: String,
+    original_source_kbps: u32,
+}
+
+/// Everything needed to restore Auto's zero-video-encode state after HLS. `probe_url` is always
+/// the actual file URL; `direct` says whether that URL itself is playable or whether PMS must
+/// container-remux it while copying the video.
+#[derive(Clone)]
+struct AutoOriginalCandidate {
+    probe_url: String,
+    direct: bool,
+    vcodec: String,
+    acodec: String,
+    fps: f64,
+    dovi: crate::metadata::Dovi,
+    immersive: bool,
+    audio_sid: i64,
+    audio_ordinal: Option<i32>,
+    subtitle_ordinal: Option<i32>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AutoOriginalReload {
+    Direct,
+    Remux,
 }
 
 pub(crate) struct PrimedHls {
@@ -332,6 +377,21 @@ pub(crate) struct PrimedHls {
 }
 
 impl HlsAbrControl {
+    pub(crate) fn can_recover_original(&self) -> bool {
+        !self.original_probe_url.is_empty() && self.original_source_kbps > 0
+    }
+
+    /// Sample the actual source file. The URL remains inside this control object and is never
+    /// logged or surfaced to diagnostics because it contains the PMS token.
+    pub(crate) fn probe_original(&self) -> Option<crate::curlio::ThroughputSample> {
+        let target = remote_probe_target_bytes(i64::from(self.original_source_kbps))?;
+        crate::curlio::sample_throughput(&self.original_probe_url, target, REMOTE_PROBE_BUDGET)
+    }
+
+    pub(crate) fn original_source_kbps(&self) -> u32 {
+        self.original_source_kbps
+    }
+
     /// Register a distinct fixed-rendition encoder at the current content boundary. The old
     /// encoder remains active and readable; this only returns the candidate's master URL.
     pub(crate) fn prime(
@@ -343,6 +403,18 @@ impl HlsAbrControl {
     ) -> Option<PrimedHls> {
         if !is_active_encoder(expected_encoder) {
             return None;
+        }
+        if !self.fixture_base.is_empty() {
+            let encoder_session = format!("{}-abr-{generation}", self.logical_session);
+            return Some(PrimedHls {
+                url: format!(
+                    "{}/{}/master.m3u8?offset={}&X-Plex-Token=fixture-only",
+                    self.fixture_base.trim_end_matches('/'),
+                    proposal.rung.kbps(),
+                    offset_secs.max(0),
+                ),
+                encoder_session,
+            });
         }
         let client = crate::plex::client_for(self.sid)?;
         let encoder_session = format!("{}-abr-{generation}", self.logical_session);
@@ -378,6 +450,9 @@ impl HlsAbrControl {
     /// case the candidate is stopped and never becomes live. Retiring the old encoder is separate
     /// so the media worker can enqueue the primed AUs without blocking on that control request.
     pub(crate) fn commit(&self, expected_encoder: &str, candidate: &str) -> bool {
+        if !self.fixture_base.is_empty() {
+            return replace_active_encoder(expected_encoder, candidate);
+        }
         let Some(client) = crate::plex::client_for(self.sid) else { return false };
         if !replace_active_encoder(expected_encoder, candidate) {
             let _ = client.transcode_stop(candidate);
@@ -387,6 +462,9 @@ impl HlsAbrControl {
     }
 
     pub(crate) fn retire(&self, encoder: String) {
+        if !self.fixture_base.is_empty() {
+            return;
+        }
         let Some(client) = crate::plex::client_for(self.sid) else { return };
         let worker_encoder = encoder.clone();
         if crate::task::spawn_small_keeping("abr-stop", move || {
@@ -404,6 +482,9 @@ impl HlsAbrControl {
     }
 
     pub(crate) fn abandon(&self, candidate: &str) {
+        if !self.fixture_base.is_empty() {
+            return;
+        }
         if let Some(client) = crate::plex::client_for(self.sid) {
             let _ = client.transcode_stop(candidate);
         }
@@ -423,6 +504,7 @@ pub(crate) fn hls_abr_control() -> Option<(HlsAbrControl, String)> {
     if encoder.is_empty() {
         return None;
     }
+    let original = session().auto_original.as_ref();
     Some((
         HlsAbrControl {
             sid: cur_sid(),
@@ -431,9 +513,189 @@ pub(crate) fn hls_abr_control() -> Option<(HlsAbrControl, String)> {
             audio_stream_id: cur_audio_sid(),
             subtitle_stream_id: cur_sub_sid(),
             seconds_per_segment,
+            initial_rung: cur_ceiling()
+                .and_then(crate::abr::Rung::from_ceiling)
+                .unwrap_or(crate::abr::Rung::P480),
+            fixture_base: session().auto_fixture_base.clone(),
+            original_probe_url: original.map(|c| c.probe_url.clone()).unwrap_or_default(),
+            original_source_kbps: original
+                .and_then(|_| u32::try_from(session().cur_transport_kbps).ok())
+                .unwrap_or(0),
         },
         encoder,
     ))
+}
+
+/// Main-thread capture for a progressive demux worker. `Some` is the complete authorization to
+/// turn sustained starvation into an HLS replacement; the worker never reads route's mutable
+/// session directly.
+pub(crate) fn auto_original_watch() -> Option<u32> {
+    let s = session();
+    if quality() != Quality::Auto
+        || !s.cur_auto_remote_original
+        || !matches!(s.cur_delivery, crate::plex::TranscodeDelivery::ProgressiveMkv)
+    {
+        return None;
+    }
+    u32::try_from(s.cur_transport_kbps).ok().filter(|&kbps| kbps > 0)
+}
+
+/// Arm the no-Plex pipeline tier for the same Original→HLS transaction production uses. The only
+/// substitution is URL allocation: [`HlsAbrControl`] maps a rung to fixture playlists rather than
+/// asking PMS to create an encoder. Transport, FFmpeg, buffer measurement, the controller, pump
+/// handoff and Starfish are unchanged, which makes a mid-request bandwidth profile testable on a
+/// TV without a library, account, token, or external server.
+pub(crate) fn arm_auto_fixture(original_url: &str, source_kbps: u32, hls_base: &str) {
+    session_mut(|s| {
+        s.url = original_url.to_owned();
+        s.cur_rk = "__auto_fixture__".into();
+        s.sess = "auto-fixture".into();
+        s.cur_delivery = crate::plex::TranscodeDelivery::ProgressiveMkv;
+        s.cur_ceiling = None;
+        s.cur_transport_kbps = i64::from(source_kbps);
+        s.cur_auto_remote_original = true;
+        s.auto_original = Some(AutoOriginalCandidate {
+            probe_url: original_url.to_owned(),
+            direct: true,
+            vcodec: "h264".into(),
+            acodec: "aac".into(),
+            fps: 0.0,
+            dovi: crate::metadata::Dovi::NONE,
+            immersive: false,
+            audio_sid: 0,
+            audio_ordinal: None,
+            subtitle_ordinal: None,
+        });
+        s.auto_fixture_base = hls_base.trim_end_matches('/').to_owned();
+    });
+    install_active_encoder("");
+    crate::player::log(&format!(
+        "auto fixture: Original source={}kbps armed",
+        source_kbps
+    ));
+}
+
+/// Main-thread half of the progressive watchdog transaction. The demux worker has stopped at a
+/// packet boundary and published the sustained measured rate; atomically move the route to a
+/// fixed HLS rung chosen from that evidence, then build the replacement encoder at the current
+/// movie position. The caller performs the fresh Starfish Load only when this returns a URL.
+pub(crate) fn fallback_auto_to_hls(measured_kbps: u32, offset_secs: i64) -> Option<String> {
+    if auto_original_watch().is_none() || cur_rk().is_empty() {
+        return None;
+    }
+    let rung = crate::abr::original_fallback_rung(measured_kbps);
+    let fixture_base = session().auto_fixture_base.clone();
+    session_mut(|s| {
+        s.cur_auto_remote_original = false;
+        s.cur_remux = false;
+        s.cur_delivery = crate::plex::TranscodeDelivery::FixedHls { seconds_per_segment: 2 };
+        s.cur_ceiling = Some(rung.ceiling());
+    });
+    crate::player::log(&format!(
+        "auto: Original became unsustainable at {measured_kbps}kbps; switching to {}kbps {}x{} HLS",
+        rung.kbps(),
+        rung.raster().0,
+        rung.raster().1,
+    ));
+    if !fixture_base.is_empty() {
+        let encoder = format!("auto-fixture-{}", rung.kbps());
+        let url = format!(
+            "{}/{}/master.m3u8?X-Plex-Token=fixture-only",
+            fixture_base.trim_end_matches('/'),
+            rung.kbps(),
+        );
+        session_mut(|s| {
+            s.url = url.clone();
+            s.tsession = encoder.clone();
+            s.stream_vcodec = "h264".into();
+            s.stream_acodec = "aac".into();
+        });
+        install_active_encoder(&encoder);
+        return Some(url);
+    }
+    retranscode(offset_secs)
+}
+
+/// Main-thread half of HLS→Original recovery. The demux worker has already required sustained
+/// top-rung health plus two successful probes of the actual source file. Re-check the route and
+/// atomically retire the encoder identity before changing any playback declaration.
+pub(crate) fn recover_auto_to_original(offset_secs: i64) -> Option<AutoOriginalReload> {
+    let automatic = quality() == Quality::Auto;
+    if !matches!(quality(), Quality::Auto | Quality::Original) || !is_transcoding() {
+        return None;
+    }
+    let candidate = session().auto_original.clone()?;
+    let expected_encoder = ACTIVE_ENCODER.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    if expected_encoder.is_empty() {
+        return None;
+    }
+
+    if candidate.direct {
+        if !replace_active_encoder(&expected_encoder, "") {
+            return None;
+        }
+        session_mut(|s| {
+            s.url = candidate.probe_url.clone();
+            s.tsession.clear();
+            s.cur_remux = false;
+            s.cur_delivery = crate::plex::TranscodeDelivery::ProgressiveMkv;
+            s.cur_no_video_copy = false;
+            s.cur_ceiling = None;
+            s.cur_auto_remote_original = automatic;
+            s.cur_audio_sid = candidate.audio_sid;
+            s.stream_vcodec = candidate.vcodec.clone();
+            s.stream_acodec = candidate.acodec.clone();
+            s.stream_fps = candidate.fps;
+            s.stream_dovi = candidate.dovi;
+            s.stream_immersive = candidate.immersive;
+        });
+        crate::player::set_audio_track(candidate.audio_ordinal.unwrap_or(-1));
+        crate::player::request_subtitle(candidate.subtitle_ordinal.unwrap_or(-1));
+        retire_replaced_encoder(expected_encoder);
+        crate::player::log(if automatic {
+            "auto: recovered Original direct play; retiring HLS encoder"
+        } else {
+            "quality: Original restored direct play; retiring HLS encoder"
+        });
+        return Some(AutoOriginalReload::Direct);
+    }
+
+    session_mut(|s| {
+        s.cur_remux = true;
+        s.cur_delivery = crate::plex::TranscodeDelivery::ProgressiveMkv;
+        s.cur_no_video_copy = false;
+        s.cur_ceiling = None;
+        s.cur_auto_remote_original = automatic;
+        s.cur_audio_sid = candidate.audio_sid;
+        s.stream_vcodec = candidate.vcodec.clone();
+        s.stream_acodec = candidate.acodec.clone();
+        s.stream_fps = 0.0;
+        s.stream_dovi = crate::metadata::Dovi::NONE;
+        s.stream_immersive = false;
+    });
+    retranscode_as(offset_secs, true)?;
+    crate::player::log(if automatic {
+        "auto: recovered Original remux; video remains copied"
+    } else {
+        "quality: Original restored remux; video remains copied"
+    });
+    Some(AutoOriginalReload::Remux)
+}
+
+fn retire_replaced_encoder(encoder: String) {
+    if encoder.is_empty() || !session().auto_fixture_base.is_empty() {
+        return;
+    }
+    let Some(client) = cur_client() else { return };
+    let worker = encoder.clone();
+    if crate::task::spawn_small_keeping("abr-original-stop", move || {
+        let ok = client.transcode_stop(&worker);
+        crate::player::log(&format!("abr: retired HLS encoder for Original ok={}", ok as i32));
+    })
+    .is_none()
+    {
+        let _ = client.transcode_stop(&encoder);
+    }
 }
 /// true while this playback is a server transcode (a live transcode session exists). Cheap
 /// in-place check — the pump polls it every tick, so no String clone here.
@@ -851,8 +1113,9 @@ use crate::cbuf::set as set_c; // shared fixed-C-buffer write (the session's HUD
 /// **Original is the migration-safe default and must stay a pure no-op**, which is what the
 /// regression test at the foot of this file pins: with `Original` selected, every routing
 /// decision and every query byte is what it was before this type existed. Auto is a distinct
-/// persisted mode, offered and restored only behind [`auto_quality_ready`]; the gate is now open
-/// because its fixed-session HLS, candidate-prime and encoder-swap path has landed.
+/// persisted mode, offered and restored only behind [`auto_quality_ready`]; its top state is an
+/// unmodified Original on Local or a measured direct Remote, with fixed-session HLS as the
+/// constrained-link path.
 pub(crate) use crate::plex::session::PlaybackQuality as Quality;
 
 /// The ladder IN ORDER, best first. The ONE place row order lives, so the picker's index mapping
@@ -987,28 +1250,58 @@ pub(crate) fn set_quality(q: Quality) {
     // The picker's checkmark moves on this and on nothing else — a settled popover presents no
     // frames, so without this the row would still read as the old rung until the next keypress.
     crate::ui::idle::invalidate();
-    let delivery = if q == Quality::Auto {
+    // An exact direct/remux candidate survives both fixed-rung and HLS transitions. An explicit
+    // Original pick is an instruction to restore that native declaration now, not merely remove a
+    // bitrate cap and start another encoder. Leave the current route intact until the pump owns
+    // the same-position codec-changing reload.
+    if q == Quality::Original
+        && is_transcoding()
+        && session().auto_original.is_some()
+    {
+        crate::player::log("quality: Original picked — restoring the native source");
+        crate::player::request_original_recovery();
+        return;
+    }
+    let location = crate::plex::client_for(cur_sid()).and_then(|client| client.link());
+    // A direct Remote already on screen is itself stronger evidence than a second prefix fetch:
+    // selecting Auto must not start an encoder under a movie which is currently arriving as
+    // Original. A fresh Remote play is measured in `build_stream`; an existing transcode has no
+    // such original-file observation and stays on HLS.
+    let auto_original = q == Quality::Auto
+        && (location == Some(crate::plex::probe::Location::Local)
+            || (location == Some(crate::plex::probe::Location::Remote)
+                && (!is_transcoding() || is_remux())));
+    let auto_remote_original = q == Quality::Auto
+        && location == Some(crate::plex::probe::Location::Remote)
+        && auto_original;
+    let adaptive = auto_uses_hls(q, auto_original);
+    let delivery = if adaptive {
         crate::plex::TranscodeDelivery::FixedHls { seconds_per_segment: 2 }
     } else {
         crate::plex::TranscodeDelivery::ProgressiveMkv
     };
-    let ceiling = if q == Quality::Auto {
+    let ceiling = if adaptive {
         Some(crate::plex::Ceiling { max_kbps: 720, max_w: 854, max_h: 480 })
     } else {
         q.ceiling()
     };
-    if cur_rk().is_empty() || (cur_ceiling() == ceiling && cur_delivery() == delivery) {
+    if cur_rk().is_empty() {
         return;
     }
+    let route_unchanged = cur_ceiling() == ceiling && cur_delivery() == delivery;
     let (kbps, w, h) = session().cur_src;
-    let admits = quality_policy(q, kbps, w, h).direct_play;
+    let admits = quality_policy(q, auto_original, kbps, w, h).direct_play;
     session_mut(|s| {
         s.cur_ceiling = ceiling;
         s.cur_delivery = delivery;
+        s.cur_auto_remote_original = auto_remote_original;
         if matches!(delivery, crate::plex::TranscodeDelivery::FixedHls { .. }) {
             s.cur_remux = false;
         }
     });
+    if route_unchanged {
+        return;
+    }
     if admits && !is_transcoding() {
         return; // the picture on screen already satisfies the new rung
     }
@@ -1027,8 +1320,9 @@ pub(crate) fn set_quality(q: Quality) {
 /// PURE, and the whole routing half of this feature is here:
 ///
 /// * **Original restricts nothing** — the migration regression gate.
-/// * **Auto always selects the encoded HLS path**. Its initial 480p ceiling is installed by
-///   `build_stream`; later ceilings are owned by the segment controller, never this policy.
+/// * **Auto includes Original as its top state.** `auto_original` is true immediately on a
+///   verified LAN and only after a bounded file-throughput measurement on a direct Remote. A
+///   relay, an unknown link, or an inconclusive/slow Remote measurement selects encoded HLS.
 /// * A source MEASURED under the rung keeps both fast paths. Picking "1080p · 8 Mbps" must not
 ///   send a 3 Mbit/s 720p episode to an encoder; there is nothing there to fix.
 /// * Anything else loses BOTH — direct play *and* the remux, for the one reason `link_policy`
@@ -1041,15 +1335,73 @@ pub(crate) fn set_quality(q: Quality) {
 /// measured is to route it where the server applies the bound for you. That is the opposite of
 /// [`video_direct_plays`]'s unknown-passes rule, and deliberately so: a device bound is a
 /// capability, a user ceiling is an instruction.
-fn quality_policy(q: Quality, src_kbps: i64, src_w: i64, src_h: i64) -> crate::plex::LinkPolicy {
+fn quality_policy(
+    q: Quality,
+    auto_original: bool,
+    src_kbps: i64,
+    src_w: i64,
+    src_h: i64,
+) -> crate::plex::LinkPolicy {
     if q == Quality::Auto {
-        return crate::plex::LinkPolicy { direct_play: false, remux: false };
+        return if auto_uses_hls(q, auto_original) {
+            crate::plex::LinkPolicy { direct_play: false, remux: false }
+        } else {
+            crate::plex::LinkPolicy::UNRESTRICTED
+        };
     }
     match q.ceiling() {
         None => crate::plex::LinkPolicy::UNRESTRICTED,
         Some(c) if c.admits(src_kbps, src_w, src_h) => crate::plex::LinkPolicy::UNRESTRICTED,
         Some(_) => crate::plex::LinkPolicy { direct_play: false, remux: false },
     }
+}
+
+fn auto_uses_hls(q: Quality, auto_original: bool) -> bool {
+    q == Quality::Auto && !auto_original
+}
+
+const REMOTE_PROBE_MIN_BYTES: usize = 512 * 1024;
+const REMOTE_PROBE_MAX_BYTES: usize = 8 * 1024 * 1024;
+const REMOTE_PROBE_BUDGET: std::time::Duration = std::time::Duration::from_secs(4);
+
+/// One second of source bytes, bounded so a tiny encode still exercises TCP beyond its opening
+/// burst and a high-rate remux does not add an unbounded startup download.
+fn remote_probe_target_bytes(source_kbps: i64) -> Option<usize> {
+    let kbps = usize::try_from(source_kbps).ok().filter(|&v| v > 0)?;
+    Some(kbps.saturating_mul(125).clamp(REMOTE_PROBE_MIN_BYTES, REMOTE_PROBE_MAX_BYTES))
+}
+
+/// Original needs 35% margin over the whole-file average. Average bitrate is not a peak bound;
+/// spending the entire measured link on it would merely postpone starvation.
+fn remote_original_sustainable(source_kbps: i64, sample: crate::curlio::ThroughputSample) -> bool {
+    let Ok(source) = u32::try_from(source_kbps) else { return false };
+    crate::abr::original_sustainable(
+        source,
+        u32::try_from(sample.kbps()).unwrap_or(u32::MAX),
+        sample.target_reached,
+    )
+}
+
+fn measure_remote_original(url: &str, source_kbps: i64) -> bool {
+    let Some(target) = remote_probe_target_bytes(source_kbps) else {
+        crate::player::log("auto: remote Original unavailable — source bitrate is unknown; using HLS");
+        return false;
+    };
+    let sample = crate::curlio::sample_throughput(url, target, REMOTE_PROBE_BUDGET);
+    let Some(sample) = sample else {
+        crate::player::log("auto: remote Original probe failed or timed out; using HLS");
+        return false;
+    };
+    let measured = sample.kbps();
+    let original = remote_original_sustainable(source_kbps, sample);
+    crate::player::log(&format!(
+        "auto: remote Original probe source={source_kbps}kbps sample={}KiB/{}ms measured={measured}kbps complete={} -> {}",
+        sample.bytes / 1024,
+        sample.elapsed.as_millis(),
+        sample.target_reached as i32,
+        if original { "Original" } else { "HLS" },
+    ));
+    original
 }
 
 /// **Two ceilings mean the stricter one**, per flavor, and this is the only place the two are put
@@ -1503,9 +1855,9 @@ pub(crate) struct Plan {
     /// pixels ARE (a Dolby Vision base layer we cannot display), never for a size or codec one:
     /// those the server's own caps already express, and a copy that satisfies them is a free win.
     pub no_video_copy: bool,
-    /// The fixed quality ceiling this plan resolved under (`None` = [`Quality::Original`]; Auto
-    /// begins at its explicit 480p bootstrap rung) — installed as
-    /// [`Session::cur_ceiling`] so a seek or a track switch rebuilds the SAME query. Copied
+    /// The fixed quality ceiling this plan resolved under (`None` = Original, including Auto's
+    /// proven Original state; adaptive Auto begins at its explicit 480p bootstrap rung) —
+    /// installed as [`Session::cur_ceiling`] so a seek or a track switch rebuilds the SAME query. Copied
     /// straight from `env.quality.ceiling()`, for the same reason `sid` is copied from the env:
     /// the worker must not re-read a preference the main thread can move underneath it.
     pub ceiling: Option<crate::plex::Ceiling>,
@@ -1513,6 +1865,13 @@ pub(crate) struct Plan {
     /// Carried so [`set_quality`] can re-ask [`quality_policy`] for the item already playing when
     /// the user picks a different rung, instead of guessing. See [`Session::cur_src`].
     pub src_measure: (i64, i64, i64),
+    /// Whole-file wire rate used by Auto's runtime Original watchdog (video + audio).
+    pub transport_kbps: i64,
+    /// This plan admitted Original specifically on a measured direct Remote link.
+    pub auto_remote_original: bool,
+    /// A measured Remote can begin on HLS and later recover. Preserve the exact no-video-encode
+    /// source declaration even when this plan's immediate output is H264/AAC HLS.
+    auto_original: Option<AutoOriginalCandidate>,
     /// demuxer stream ordinal to feed (direct-play, non-default track). None = leave as-is.
     pub feed_audio_ordinal: Option<i32>,
     /// the subtitle stream the server already had selected for this part (0 = none/off), so the
@@ -1679,41 +2038,19 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveE
     // (direct play, and the uncapped container remux) can be asked for over one. Unrestricted on
     // every other tier and on a server whose link nobody has recorded, which is all of them today.
     // The reasoning, and what is measured versus documented, is at `plex::link_policy`.
-    let link = crate::plex::link_policy(client.link());
+    let location = client.link();
+    let link = crate::plex::link_policy(location);
     // …and what the USER has asked for, on top of what the link allows. Same two flags, composed
     // by AND, so the STRICTER of the two always wins: a relay link cannot be loosened by picking a
     // high rung, and a low rung is not rescued by a fast link. The reasoning — and why a ceiling
     // has to arrive HERE, before a flavor is chosen, rather than as a number on the spec — is at
     // `quality_policy` and `Quality`.
-    let quality = quality_policy(env.quality, env.src_kbps, src_w, src_h);
-    let allowed = flavors_allowed(link, quality);
-    // The ceiling and the source it was judged against ride EVERY plan, including the direct-play
-    // one that returns below. That is not bookkeeping: `set_quality` re-asks this same question
-    // when the user picks a rung mid-film, and `retranscode` — which a track switch reaches from a
-    // DIRECT PLAY (`player/pump.rs`'s own comment says so) — spends `cur_ceiling` on the encode it
-    // then starts. Setting these only on the transcode branch left both reading `None`/zero for
-    // every direct play, so the first audio switch after picking "480p · 720 kbps" re-encoded at
-    // 4K/60 Mbps: the rung silently discarded on the one path where an encoder was actually
-    // running.
-    if env.quality == Quality::Auto {
-        plan.delivery = crate::plex::TranscodeDelivery::FixedHls { seconds_per_segment: 2 };
-        plan.ceiling = Some(crate::plex::Ceiling { max_kbps: 720, max_w: 854, max_h: 480 });
-    } else {
-        plan.ceiling = env.quality.ceiling();
-    }
-    plan.src_measure = (env.src_kbps, src_w, src_h);
-    if !quality.direct_play {
-        // Worth its own line for the reason the Dolby Vision one above is: from the outside this
-        // is an ordinary h264/AAC MKV going to the transcoder for no visible reason, and the two
-        // numbers that explain it (the rung, and what the source measured) appear nowhere else in
-        // the log. `0` for the bitrate means nobody measured it — see `ResolveEnv::src_kbps`.
-        crate::player::log(&format!(
-            "route: quality ceiling {} — source {}kbps {src_w}x{src_h}; denying direct play + remux, re-encoding",
-            env.quality.label(),
-            env.src_kbps
-        ));
-    }
-    let directplay = if !allowed.direct_play {
+    // Auto tentatively admits Original. A direct Remote earns that admission below with an
+    // actual-file sample; Local gets it immediately, while Relay is still denied independently
+    // by `link`. Fixed rungs retain their ordinary ceiling policy.
+    let tentative_quality = quality_policy(env.quality, true, env.src_kbps, src_w, src_h);
+    let mut allowed = flavors_allowed(link, tentative_quality);
+    let mut directplay = if !allowed.direct_play {
         false
     } else if !video_dp {
         // The buffer-feed pipeline only decodes what the Load payload declares — H264/H265,
@@ -1734,6 +2071,128 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveE
     } else {
         server_decision(client, rk, &session).unwrap_or_else(|| crate::plex::is_dp_audio(acodec))
     };
+
+    // A container-only remux also preserves the original video and avoids the GPU, so it belongs
+    // to Auto's Original state and must pass the same remote bandwidth gate as direct play.
+    let remux_candidate = video_dp && allowed.remux && !no_video_copy;
+    let source_transport_kbps = plan
+        .playing
+        .as_ref()
+        .map(|p| p.bitrate)
+        .filter(|&v| v > 0)
+        .unwrap_or(env.src_kbps);
+    // Keep the exact zero-video-encode flavour before a fixed rung or Auto's immediate HLS decision
+    // overwrites `directplay`. Recovery must restore the source declaration which WOULD have been
+    // installed, not derive one later from the transcode currently on screen. Manual Original needs
+    // it too: after a fixed rung with a burned subtitle, returning to Original must restore direct
+    // play and the client-rendered subtitle rather than build another encoder. Remote Auto also
+    // uses the candidate as the target of its throughput probes.
+    if matches!(env.quality, Quality::Auto | Quality::Original)
+        && matches!(
+            location,
+            Some(crate::plex::probe::Location::Local) | Some(crate::plex::probe::Location::Remote)
+        )
+        && (directplay || remux_candidate)
+        && !part.is_empty()
+    {
+        let (aidx, achosen, asid) = audio_sel
+            .as_ref()
+            .map(|(idx, codec, sid)| (*idx, codec.clone(), *sid))
+            .unwrap_or((-1, acodec.to_string(), 0));
+        let direct = directplay;
+        let fps = if direct {
+            plan.playing.as_ref().map(|p| p.video_fps).unwrap_or(0.0)
+        } else {
+            0.0
+        };
+        let immersive = direct
+            && plan
+                .playing
+                .as_ref()
+                .and_then(|p| {
+                    if aidx >= 0 {
+                        p.audio.get(aidx as usize)
+                    } else {
+                        p.audio.iter().find(|a| a.selected)
+                    }
+                })
+                .is_some_and(|a| a.has_atmos());
+        let audio_ordinal = if direct && aidx >= 0 {
+            Some(
+                plan.playing
+                    .as_ref()
+                    .map(|p| crate::metadata::audio_ordinal(&p.audio, aidx as usize))
+                    .unwrap_or(aidx),
+            )
+        } else {
+            None
+        };
+        let subtitle_ordinal = direct
+            .then(|| plan.playing.as_ref().and_then(|p| pick_dp_subtitle(&p.subs)).map(|(_, ord)| ord))
+            .flatten();
+        plan.auto_original = Some(AutoOriginalCandidate {
+            probe_url: client.direct_play_url(part, &session).to_url(),
+            direct,
+            vcodec: vcodec.to_string(),
+            acodec: achosen,
+            fps,
+            dovi: if direct { dovi } else { crate::metadata::Dovi::NONE },
+            immersive,
+            audio_sid: asid,
+            audio_ordinal,
+            subtitle_ordinal,
+        });
+    }
+    let auto_original = if env.quality != Quality::Auto {
+        false
+    } else {
+        match location {
+            Some(crate::plex::probe::Location::Local) => directplay || remux_candidate,
+            Some(crate::plex::probe::Location::Remote) if plan.auto_original.is_some() => {
+                measure_remote_original(
+                    &plan.auto_original.as_ref().expect("checked").probe_url,
+                    source_transport_kbps,
+                )
+            }
+            Some(crate::plex::probe::Location::Remote)
+            | Some(crate::plex::probe::Location::Relay)
+            | None => false,
+        }
+    };
+    let adaptive = auto_uses_hls(env.quality, auto_original);
+    if adaptive {
+        allowed = flavors_allowed(
+            link,
+            quality_policy(env.quality, false, env.src_kbps, src_w, src_h),
+        );
+        directplay = false;
+        plan.delivery = crate::plex::TranscodeDelivery::FixedHls { seconds_per_segment: 2 };
+        plan.ceiling = Some(crate::plex::Ceiling { max_kbps: 720, max_w: 854, max_h: 480 });
+        crate::player::log(&format!(
+            "route: Auto adaptive — source {source_transport_kbps}kbps {src_w}x{src_h}; starting HLS"
+        ));
+    } else {
+        plan.ceiling = env.quality.ceiling();
+        if env.quality == Quality::Auto {
+            crate::player::log(&format!(
+                "route: Auto Original — source {source_transport_kbps}kbps {src_w}x{src_h}; no video encode"
+            ));
+        }
+    }
+    // The ceiling and source measurement ride every plan so seeks and track changes rebuild the
+    // same flavor instead of silently dropping the user's choice.
+    plan.src_measure = (env.src_kbps, src_w, src_h);
+    plan.transport_kbps = source_transport_kbps;
+    plan.auto_remote_original = env.quality == Quality::Auto
+        && location == Some(crate::plex::probe::Location::Remote)
+        && auto_original;
+    if env.quality != Quality::Auto && !tentative_quality.direct_play {
+        crate::player::log(&format!(
+            "route: quality ceiling {} — source {}kbps {src_w}x{src_h}; denying direct play + remux, re-encoding",
+            env.quality.label(),
+            env.src_kbps
+        ));
+    }
     if (directplay || rk.is_empty()) && !part.is_empty() {
         // direct-play: the pipeline decodes the SOURCE codecs natively, so the Load payload uses
         // them (h264/hevc + the chosen audio track's codec). If a specific track was picked
@@ -2117,10 +2576,18 @@ pub(crate) fn playback_preview(d: &crate::metadata::Detail) -> Option<Preview> {
     // promise "Direct Play" for a source the rung is about to send to an encoder, which is the
     // exact mismatch this preview's doc says it exists to avoid. `d.bitrate`/`width`/`height` are
     // `Media[0]`'s, i.e. the same numbers `ResolveEnv` hands the resolve.
-    Some(if p != Preview::Converts && !quality_policy(quality(), d.bitrate, d.width, d.height).direct_play {
-        Preview::Converts
-    } else {
-        p
+    let location = crate::plex::client_for(d.sid).and_then(|client| client.link());
+    // A detail page has not downloaded the file yet, so it reports what can preserve the source,
+    // not a fictitious failed bandwidth result. Remote Auto is measured at Play. Relay remains a
+    // conversion because its independent link policy refuses both original-rate flavors.
+    let policy = flavors_allowed(
+        crate::plex::link_policy(location),
+        quality_policy(quality(), true, d.bitrate, d.width, d.height),
+    );
+    Some(match p {
+        Preview::DirectPlay if !policy.direct_play => Preview::Converts,
+        Preview::Remux if !policy.remux => Preview::Converts,
+        _ => p,
     })
 }
 
@@ -2420,6 +2887,10 @@ fn apply_plan(plan: Plan, rk: &str) {
             cur_no_video_copy: plan.no_video_copy,
             cur_ceiling: plan.ceiling,
             cur_src: plan.src_measure,
+            cur_transport_kbps: plan.transport_kbps,
+            cur_auto_remote_original: plan.auto_remote_original,
+            auto_original: plan.auto_original,
+            auto_fixture_base: String::new(),
             // The two halves of the playing item's identity, installed together and by the same
             // writer — a ratingKey means nothing without the server it is a key ON. Everything
             // after this point (the track PUT, a transcode seek, the retranscode, the stop, and
@@ -2477,26 +2948,42 @@ fn apply_plan(plan: Plan, rk: &str) {
 /// unchanged). Sets `url` + `tsession`, runs /decision, and returns the new start.mkv URL
 /// (the demux re-opens it from byte 0), or None.
 pub(crate) fn retranscode(offset_secs: i64) -> Option<String> {
+    retranscode_as(offset_secs, false)
+}
+
+fn retranscode_as(offset_secs: i64, remux: bool) -> Option<String> {
     let c = cur_client()?;
     let rk = cur_rk();
     if rk.is_empty() {
         return None;
     }
+    // Resolve every fallible recovery input before publishing the new route. A missing candidate
+    // must leave the still-playing HLS session untouched, not strand it behind a remux marker.
+    let remux_codecs = if remux {
+        let s = session();
+        Some((s.src_vcodec.clone(), s.auto_original.as_ref()?.acodec.clone()))
+    } else {
+        None
+    };
     // NB: `tsession` becomes this synthetic marker while the transcoder QUERY keeps riding the
     // per-playback sess() — matching the shipped behavior (is_transcoding()/stop key off
     // `tsession`; the server session correlation stays on sess()). The two deliberately DISAGREE
     // from here on, which is why collecting the fields into one struct did not merge them.
-    let session = format!("plxnative-{rk}");
+    let marker = format!("plxnative-{rk}");
     session_mut(|s| {
-        s.cur_remux = false;
-        s.tsession = session;
+        s.cur_remux = remux;
+        s.tsession = marker;
     });
-    // the transcode output is the profile target's head (`Caps::encode_vcodec` — the ONE
-    // definition, shared with build_stream's guess and profile_for) + AC3 — record it so a
-    // pipeline RELOAD (audio switch) builds a Load payload matching the re-encoded stream. A
-    // guess: apply_decision_codecs below replaces it with the server's actual output, but it
-    // must still track devcaps, not the dev TV (issue #22's bug class).
-    set_stream_codecs(crate::devcaps::caps().encode_vcodec(), "ac3");
+    // Record the delivery's target before the decision request. The decision replaces this guess
+    // with the actual output, but a failed/unparseable decision must still build the right Load:
+    // segmented HLS is H264/AAC, while progressive MKV follows the device codec chain + AC3.
+    if let Some((vcodec, acodec)) = remux_codecs {
+        set_stream_codecs(&vcodec, &acodec);
+    } else if matches!(cur_delivery(), crate::plex::TranscodeDelivery::FixedHls { .. }) {
+        set_stream_codecs("h264", "aac");
+    } else {
+        set_stream_codecs(crate::devcaps::caps().encode_vcodec(), "ac3");
+    }
     put_selection(cur_sid(), cur_part_id(), cur_audio_sid(), cur_sub_sid()); // drives the encode + burn
     let qsess = sess();
     let expected_encoder = ACTIVE_ENCODER.lock().unwrap_or_else(|e| e.into_inner()).clone();
@@ -2505,7 +2992,7 @@ pub(crate) fn retranscode(offset_secs: i64) -> Option<String> {
             &rk,
             &qsess,
             &qsess,
-            false,
+            remux,
             is_no_video_copy(),
             offset_secs.max(0),
             cur_audio_sid(),
@@ -2567,6 +3054,12 @@ pub(crate) fn switch_audio(stream_id: i64, offset_secs: i64) -> Option<String> {
 /// direct-playable; else a server re-transcode with that stream selected. `idx` is the
 /// CONTAINER audio ordinal (the menu converts its row via metadata::audio_ordinal).
 pub(crate) fn commit_audio_selection(idx: i32, codec: &str, stream_id: i64) {
+    // The recovery declaration captures one exact source/audio pairing. Once the user changes
+    // that pairing while HLS is live, do not later resurrect the old track behind their back.
+    // A new playback (or selecting Auto again from Original) can establish a fresh candidate.
+    if matches!(cur_delivery(), crate::plex::TranscodeDelivery::FixedHls { .. }) {
+        session_mut(|s| s.auto_original = None);
+    }
     if !is_transcoding() && crate::plex::is_dp_audio(codec) {
         // record the pick: the timeline then reports the stream that actually plays, and a
         // later transcode event (subtitle burn refresh / transcode seek) keeps this track
@@ -2585,6 +3078,19 @@ pub(crate) fn commit_audio_selection(idx: i32, codec: &str, stream_id: i64) {
 /// and select the burn stream for any transcode of the item — refreshing a live transcode so the
 /// server re-burns (or drops) it.
 pub(crate) fn commit_subtitle_selection(sub_idx: i32, stream_id: i64) {
+    // As with audio, a non-Off subtitle may require server burn-in and is not interchangeable
+    // with the direct declaration captured at playback start. Off is always safe to carry back.
+    if matches!(cur_delivery(), crate::plex::TranscodeDelivery::FixedHls { .. }) {
+        session_mut(|s| {
+            if sub_idx < 0 {
+                if let Some(candidate) = s.auto_original.as_mut() {
+                    candidate.subtitle_ordinal = None;
+                }
+            } else {
+                s.auto_original = None;
+            }
+        });
+    }
     crate::player::request_subtitle(sub_idx);
     set_subtitle(stream_id);
     if is_transcoding() {
@@ -2650,7 +3156,7 @@ mod tests {
 
     // ---- the QUALITY ceiling as a ROUTING policy --------------------------------------------
     //
-    // These grade `flavors_allowed(link_policy(link), quality_policy(q, kbps, w, h))`, which is
+    // These grade `flavors_allowed(link_policy(link), quality_policy(q, auto_original, …))`, which is
     // the expression `build_stream` itself evaluates — not a re-derivation of it. `build_stream`
     // is unreachable from the host (it needs a `Client` and a PMS), and the composition is the
     // half that can silently go wrong, so it is the half that is factored out and pinned.
@@ -2663,7 +3169,11 @@ mod tests {
 
     /// What `build_stream` computes, spelled once.
     fn allowed(link: Option<crate::plex::probe::Location>, q: Quality, src: (i64, i64, i64)) -> crate::plex::LinkPolicy {
-        flavors_allowed(crate::plex::link_policy(link), quality_policy(q, src.0, src.1, src.2))
+        let auto_original = q == Quality::Auto && link == Some(crate::plex::probe::Location::Local);
+        flavors_allowed(
+            crate::plex::link_policy(link),
+            quality_policy(q, auto_original, src.0, src.1, src.2),
+        )
     }
 
     /// **GATE 1 — Original changes nothing, for any source, on any link.** It is the migration and
@@ -2671,17 +3181,22 @@ mod tests {
     /// Note the unmeasured row in particular — `Ceiling::admits` fails CLOSED, and that rule must
     /// not be reachable at all without a fixed rung selected.
     #[test]
-    fn original_leaves_routing_exactly_where_it_was_and_auto_selects_the_encoder() {
+    fn original_is_unchanged_and_auto_original_is_an_explicit_measured_state() {
         for src in [UHD_REMUX, HD_BIG, HD_SMALL, UNMEASURED] {
             assert_eq!(
-                quality_policy(Quality::Original, src.0, src.1, src.2),
+                quality_policy(Quality::Original, false, src.0, src.1, src.2),
                 crate::plex::LinkPolicy::UNRESTRICTED,
                 "Original must restrict nothing, and {src:?} is not an exception"
             );
             assert_eq!(
-                quality_policy(Quality::Auto, src.0, src.1, src.2),
+                quality_policy(Quality::Auto, false, src.0, src.1, src.2),
                 crate::plex::LinkPolicy { direct_play: false, remux: false },
-                "Auto must route every source through its fixed-session HLS owner"
+                "Auto without a positive Original measurement must use HLS"
+            );
+            assert_eq!(
+                quality_policy(Quality::Auto, true, src.0, src.1, src.2),
+                crate::plex::LinkPolicy::UNRESTRICTED,
+                "Auto's proven Original state must not start an encoder"
             );
             // …and composed, on every link tier, Original is exactly what the link alone said.
             for link in [None, Some(crate::plex::probe::Location::Local),
@@ -2705,6 +3220,37 @@ mod tests {
         assert_eq!(quality_ladder_for(true)[..2], [Quality::Auto, Quality::Original]);
         assert!(auto_quality_ready(), "the integrated HLS prime/swap path owns production Auto");
         assert_eq!(supported_quality(Quality::Auto), Quality::Auto);
+    }
+
+    #[test]
+    fn remote_original_requires_a_complete_sample_with_thirty_five_percent_headroom() {
+        let fast = crate::curlio::ThroughputSample {
+            bytes: 1_000_000,
+            elapsed: std::time::Duration::from_millis(500),
+            target_reached: true,
+        };
+        assert_eq!(fast.kbps(), 16_000);
+        assert!(remote_original_sustainable(10_000, fast));
+
+        let marginal = crate::curlio::ThroughputSample {
+            bytes: 1_000_000,
+            elapsed: std::time::Duration::from_millis(800),
+            target_reached: true,
+        };
+        assert!(!remote_original_sustainable(10_000, marginal));
+        assert!(!remote_original_sustainable(
+            10_000,
+            crate::curlio::ThroughputSample { target_reached: false, ..fast }
+        ));
+        assert!(!remote_original_sustainable(0, fast));
+    }
+
+    #[test]
+    fn remote_probe_samples_one_second_but_has_strict_memory_bounds() {
+        assert_eq!(remote_probe_target_bytes(0), None);
+        assert_eq!(remote_probe_target_bytes(720), Some(REMOTE_PROBE_MIN_BYTES));
+        assert_eq!(remote_probe_target_bytes(8_000), Some(1_000_000));
+        assert_eq!(remote_probe_target_bytes(200_000), Some(REMOTE_PROBE_MAX_BYTES));
     }
 
     /// **GATE 2 — under-ceiling content keeps the fast paths.** Picking "1080p · 8 Mbps" must not
@@ -2770,7 +3316,9 @@ mod tests {
                 );
                 // and on an unrestricted link the answer is the user's policy, unchanged
                 for link in [None, Some(crate::plex::probe::Location::Local), Some(crate::plex::probe::Location::Remote)] {
-                    assert_eq!(allowed(link, q, src), quality_policy(q, src.0, src.1, src.2),
+                    let auto_original = q == Quality::Auto
+                        && link == Some(crate::plex::probe::Location::Local);
+                    assert_eq!(allowed(link, q, src), quality_policy(q, auto_original, src.0, src.1, src.2),
                         "link {link:?} altered rung {q:?} on {src:?}");
                 }
             }
@@ -2822,8 +3370,8 @@ mod tests {
         };
         assert_eq!(source_kbps(&with_video), 7900);
         // …which is what keeps it under an 8 Mbps rung its VIDEO does in fact fit
-        assert!(quality_policy(Quality::P1080, source_kbps(&with_video), 1920, 1080).direct_play);
-        assert!(!quality_policy(Quality::P1080, with_video.bitrate, 1920, 1080).direct_play,
+        assert!(quality_policy(Quality::P1080, false, source_kbps(&with_video), 1920, 1080).direct_play);
+        assert!(!quality_policy(Quality::P1080, false, with_video.bitrate, 1920, 1080).direct_play,
             "the whole-file figure is what made the rung bite early — this is the bug, pinned");
 
         // no video record (a show with no episode backfill, an audio-only part) → whole-file
@@ -3398,6 +3946,8 @@ mod tests {
     /// are what move.
     #[test]
     fn the_preview_tells_a_container_remux_apart_from_a_re_encode() {
+        let _g = fresh_registry();
+        restore_quality(Quality::Original);
         fn item(vcodec: &str, part: &str, acodec: &str) -> crate::metadata::Detail {
             crate::metadata::Detail {
                 vcodec: vcodec.to_string(),
@@ -3522,6 +4072,338 @@ mod tests {
         apply_plan(plan, "rk-7");
         assert_eq!(cur_sid(), sid, "the installed identity is the captured one");
         assert_eq!(cur_rk(), "rk-7", "and its other half");
+    }
+
+    #[test]
+    fn only_a_measured_remote_auto_original_arms_the_progressive_watchdog() {
+        let _g = fresh_registry();
+        restore_quality(Quality::Auto);
+        apply_plan(
+            Plan {
+                transport_kbps: 28_000,
+                auto_remote_original: true,
+                ..Default::default()
+            },
+            "rk-auto",
+        );
+        assert_eq!(auto_original_watch(), Some(28_000));
+        session_mut(|s| s.cur_auto_remote_original = false);
+        assert_eq!(auto_original_watch(), None, "HLS and Local Original do not use this watchdog");
+        restore_quality(Quality::Original);
+        reset_session();
+    }
+
+    #[test]
+    fn hls_controller_starts_at_the_rung_the_runtime_fallback_selected() {
+        let _g = fresh_registry();
+        restore_quality(Quality::Auto);
+        apply_plan(
+            Plan {
+                tsession: "encoder-1".into(),
+                delivery: crate::plex::TranscodeDelivery::FixedHls { seconds_per_segment: 2 },
+                ceiling: Some(crate::abr::Rung::P720Low.ceiling()),
+                ..Default::default()
+            },
+            "rk-auto",
+        );
+        let (control, encoder) = hls_abr_control().expect("Auto HLS control");
+        assert_eq!(control.initial_rung, crate::abr::Rung::P720Low);
+        assert_eq!(encoder, "encoder-1");
+        restore_quality(Quality::Original);
+        reset_session();
+        install_active_encoder("");
+    }
+
+    #[test]
+    fn hls_recovery_restores_the_exact_direct_source_and_rearms_its_watchdog() {
+        let _g = fresh_registry();
+        restore_quality(Quality::Auto);
+        apply_plan(
+            Plan {
+                url: "https://example.invalid/hls/master.m3u8".into(),
+                tsession: "encoder-1".into(),
+                delivery: crate::plex::TranscodeDelivery::FixedHls { seconds_per_segment: 2 },
+                ceiling: Some(crate::abr::Rung::P1080High.ceiling()),
+                transport_kbps: 28_000,
+                auto_original: Some(AutoOriginalCandidate {
+                    probe_url: "https://example.invalid/source.mkv".into(),
+                    direct: true,
+                    vcodec: "hevc".into(),
+                    acodec: "eac3".into(),
+                    fps: 23.976,
+                    dovi: crate::metadata::Dovi::NONE,
+                    immersive: true,
+                    audio_sid: 42,
+                    audio_ordinal: Some(1),
+                    subtitle_ordinal: Some(2),
+                }),
+                ..Default::default()
+            },
+            "rk-auto",
+        );
+        assert_eq!(recover_auto_to_original(120), Some(AutoOriginalReload::Direct));
+        assert_eq!(url(), "https://example.invalid/source.mkv");
+        assert!(!is_transcoding());
+        assert_eq!(cur_delivery(), crate::plex::TranscodeDelivery::ProgressiveMkv);
+        assert_eq!(cur_ceiling(), None);
+        assert_eq!(stream_vcodec(), "hevc");
+        assert_eq!(stream_acodec(), "eac3");
+        assert_eq!(auto_original_watch(), Some(28_000));
+        assert_eq!(crate::player::desired_sub_idx(), 2);
+        restore_quality(Quality::Original);
+        reset_session();
+        install_active_encoder("");
+        crate::player::reset_audio_track();
+        crate::player::reset_subtitle();
+    }
+
+    #[test]
+    fn manually_picking_original_restores_native_dolby_vision_instead_of_retranscoding() {
+        let _g = fresh_registry();
+        restore_quality(Quality::Auto);
+        apply_plan(
+            Plan {
+                url: "https://example.invalid/hls/master.m3u8".into(),
+                tsession: "encoder-1".into(),
+                delivery: crate::plex::TranscodeDelivery::FixedHls { seconds_per_segment: 2 },
+                ceiling: Some(crate::abr::Rung::P1080High.ceiling()),
+                transport_kbps: 28_000,
+                auto_original: Some(AutoOriginalCandidate {
+                    probe_url: "https://example.invalid/source.mkv".into(),
+                    direct: true,
+                    vcodec: "hevc".into(),
+                    acodec: "eac3".into(),
+                    fps: 23.976,
+                    dovi: p8(),
+                    immersive: true,
+                    audio_sid: 42,
+                    audio_ordinal: Some(1),
+                    subtitle_ordinal: None,
+                }),
+                ..Default::default()
+            },
+            "rk-auto",
+        );
+
+        set_quality(Quality::Original);
+        assert_eq!(quality(), Quality::Original);
+        assert!(
+            matches!(cur_delivery(), crate::plex::TranscodeDelivery::FixedHls { .. }),
+            "the pump owns the pending codec-changing reload; the menu must not pre-mutate it"
+        );
+        assert_eq!(recover_auto_to_original(120), Some(AutoOriginalReload::Direct));
+        assert_eq!(url(), "https://example.invalid/source.mkv");
+        assert_eq!(stream_vcodec(), "hevc");
+        assert_eq!(stream_dovi(), p8(), "the native Load must regain its Dolby Vision declaration");
+        assert!(!is_transcoding());
+        assert_eq!(auto_original_watch(), None, "manual Original is not adaptive after the jump");
+
+        reset_session();
+        install_active_encoder("");
+        crate::player::reset_audio_track();
+        crate::player::reset_subtitle();
+    }
+
+    /// Local Auto begins on Original, but it must retain the same source candidate as Remote:
+    /// after the user selects any fixed rung, Manual Original needs the exact direct/remux
+    /// declaration to return to. Without it the Local route has no recovery target and asks for
+    /// one more encoder.
+    #[test]
+    fn local_auto_preserves_the_candidate_needed_to_leave_a_fixed_rung() {
+        let _g = fresh_registry();
+        restore_quality(Quality::Auto);
+        let sid = crate::plex::register_for_test(
+            "machine-local",
+            "<peer-host-1>.example.invalid",
+            32400,
+            "token",
+            "test-client-id",
+        );
+        crate::plex::client_for(sid)
+            .expect("server installed")
+            .set_link(crate::plex::probe::Location::Local);
+        apply_plan(
+            Plan {
+                sid,
+                url: "https://example.invalid/source.mkv".into(),
+                delivery: crate::plex::TranscodeDelivery::ProgressiveMkv,
+                ceiling: None,
+                src_measure: (6_381, 3_832, 2_152),
+                auto_original: Some(AutoOriginalCandidate {
+                    probe_url: "https://example.invalid/source.mkv".into(),
+                    direct: true,
+                    vcodec: "hevc".into(),
+                    acodec: "aac".into(),
+                    fps: 25.0,
+                    dovi: crate::metadata::Dovi::NONE,
+                    immersive: false,
+                    audio_sid: 14_778,
+                    audio_ordinal: Some(0),
+                    subtitle_ordinal: None,
+                }),
+                ..Default::default()
+            },
+            "rk-local-original",
+        );
+
+        assert!(
+            session().auto_original.is_some(),
+            "the route contract must be testable without network by asserting the plan/candidate path"
+        );
+
+        reset_session();
+        restore_quality(Quality::Original);
+        crate::plex::reset_servers_for_test();
+    }
+
+    /// The exact remote-control sequence from a 4K Original session: Manual 1080p replaces it
+    /// with a capped encoder, and Manual Original must use the preserved source candidate to
+    /// return to direct play. The bad old route kept the progressive-transcode flavor and asked
+    /// for one more encoder refresh, because the recovery branch only recognized Fixed HLS.
+    #[test]
+    fn manual_original_after_a_fixed_rung_returns_to_the_native_source() {
+        let _g = fresh_registry();
+        restore_quality(Quality::Auto);
+        apply_plan(
+            Plan {
+                url: "https://example.invalid/source.mkv".into(),
+                tsession: String::new(),
+                delivery: crate::plex::TranscodeDelivery::ProgressiveMkv,
+                ceiling: None,
+                src_measure: (6_381, 3_832, 2_152),
+                transport_kbps: 6_381,
+                auto_original: Some(AutoOriginalCandidate {
+                    probe_url: "https://example.invalid/source.mkv".into(),
+                    direct: true,
+                    vcodec: "hevc".into(),
+                    acodec: "aac".into(),
+                    fps: 25.0,
+                    dovi: crate::metadata::Dovi::NONE,
+                    immersive: false,
+                    audio_sid: 14_778,
+                    audio_ordinal: Some(0),
+                    subtitle_ordinal: None,
+                }),
+                ..Default::default()
+            },
+            "rk-manual-original",
+        );
+        install_active_encoder("");
+
+        set_quality(Quality::P1080High);
+        assert_eq!(quality(), Quality::P1080High);
+        assert_eq!(
+            cur_ceiling(),
+            Some(crate::plex::Ceiling { max_kbps: 20_000, max_w: 1920, max_h: 1080 }),
+            "a 3832x2152 source cannot fit the 1080p rung, so this pick legitimately starts a cap"
+        );
+        assert!(
+            crate::player::pending_transcode_refresh(),
+            "the fixed rung still asks the pump for an encoder reload"
+        );
+        // The route state the pump owns after that first transition lands.
+        session_mut(|s| {
+            s.tsession = "encoder-1080".into();
+            s.cur_remux = false;
+            s.cur_no_video_copy = false;
+        });
+        install_active_encoder("encoder-1080");
+
+        set_quality(Quality::Original);
+        assert_eq!(quality(), Quality::Original);
+        assert!(
+            !crate::player::pending_transcode_refresh(),
+            "Original must not build another capped encoder"
+        );
+        assert_eq!(
+            cur_delivery(),
+            crate::plex::TranscodeDelivery::ProgressiveMkv,
+            "the pending recovery owns the route; the pump will perform the native reload"
+        );
+        assert_eq!(
+            recover_auto_to_original(27),
+            Some(AutoOriginalReload::Direct),
+            "the pump must restore the exact direct source at the current position"
+        );
+        assert_eq!(url(), "https://example.invalid/source.mkv");
+        assert_eq!(stream_vcodec(), "hevc");
+        assert_eq!(stream_acodec(), "aac");
+        assert!(!is_transcoding());
+        assert_eq!(cur_ceiling(), None);
+        assert_eq!(
+            cur_delivery(),
+            crate::plex::TranscodeDelivery::ProgressiveMkv
+        );
+        assert_eq!(auto_original_watch(), None, "manual Original is not adaptive");
+
+        reset_session();
+        install_active_encoder("");
+        crate::player::reset_audio_track();
+        crate::player::reset_subtitle();
+    }
+
+    /// Manual Original is not Auto, but it is still a zero-encode route and must be recoverable
+    /// after the user temporarily selects a fixed rung. This is the Depeche Mode shape: Original
+    /// direct-play → 480p burned-subtitle transcode → Original.
+    #[test]
+    fn manual_original_after_a_fixed_rung_with_a_subtitle_returns_to_direct_play() {
+        let _g = fresh_registry();
+        restore_quality(Quality::Original);
+        apply_plan(
+            Plan {
+                url: "https://example.invalid/source.mkv".into(),
+                tsession: String::new(),
+                delivery: crate::plex::TranscodeDelivery::ProgressiveMkv,
+                ceiling: None,
+                src_measure: (6_381, 3_832, 2_152),
+                transport_kbps: 6_381,
+                auto_original: Some(AutoOriginalCandidate {
+                    probe_url: "https://example.invalid/source.mkv".into(),
+                    direct: true,
+                    vcodec: "hevc".into(),
+                    acodec: "aac".into(),
+                    fps: 25.0,
+                    dovi: crate::metadata::Dovi::NONE,
+                    immersive: false,
+                    audio_sid: 14_778,
+                    audio_ordinal: Some(0),
+                    subtitle_ordinal: Some(3),
+                }),
+                ..Default::default()
+            },
+            "rk-manual-original-subtitle",
+        );
+        install_active_encoder("");
+
+        set_quality(Quality::P480);
+        session_mut(|s| {
+            s.tsession = "encoder-480".into();
+            s.cur_remux = false;
+            s.cur_no_video_copy = false;
+        });
+        install_active_encoder("encoder-480");
+
+        set_quality(Quality::Original);
+        assert_eq!(
+            cur_delivery(),
+            crate::plex::TranscodeDelivery::ProgressiveMkv,
+            "Original requests the native reload; it must not build another capped encoder"
+        );
+        assert_eq!(
+            recover_auto_to_original(938),
+            Some(AutoOriginalReload::Direct),
+            "a burned fixed rung must still return to the exact direct source"
+        );
+        assert_eq!(url(), "https://example.invalid/source.mkv");
+        assert_eq!(stream_vcodec(), "hevc");
+        assert_eq!(stream_acodec(), "aac");
+        assert!(!is_transcoding());
+        assert_eq!(crate::player::desired_sub_idx(), 3, "the subtitle returns to client rendering");
+
+        reset_session();
+        install_active_encoder("");
+        crate::player::reset_audio_track();
+        crate::player::reset_subtitle();
     }
 
     /// The `/identity` cache is keyed to the server that taught it. It feeds

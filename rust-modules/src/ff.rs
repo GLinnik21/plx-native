@@ -2728,6 +2728,31 @@ fn hls_buffer_snapshot(output: Option<&HlsSegmentOutput>) -> crate::abr::BufferS
     }
 }
 
+/// Progressive Original uses absolute movie PTS, unlike offset-zero HLS, so no display-base
+/// translation belongs here. Both lanes must have produced post-open/post-seek timestamps before
+/// an A/V stream can claim a buffer duration; otherwise the absent lane is exactly the starvation
+/// the metric is meant to notice, but not yet enough evidence to start an encoder.
+fn progressive_buffered_ms(audio_expected: bool) -> Option<i64> {
+    let video = SHARED.hls_video_tail_ns.load(Ordering::Acquire);
+    if video < 0 {
+        return None;
+    }
+    let audio = SHARED.hls_audio_tail_ns.load(Ordering::Acquire);
+    let tail = if audio_expected {
+        if audio < 0 {
+            return None;
+        }
+        video.min(audio)
+    } else {
+        video
+    };
+    Some(
+        tail.saturating_sub(SHARED.playpos_ns.load(Ordering::Relaxed).max(0))
+            .max(0)
+            / 1_000_000,
+    )
+}
+
 fn hls_segment_sample(
     output: &HlsSegmentOutput,
     duration: std::time::Duration,
@@ -2742,6 +2767,46 @@ fn hls_segment_sample(
     )
 }
 
+fn publish_hls_abr_sample(sample: crate::abr::SegmentSample) {
+    SHARED.dg_abr_net_kbps.store(i64::from(sample.network_kbps()), Ordering::Relaxed);
+    SHARED.dg_abr_buffer_ms.store(sample.buffer.buffered_ms(), Ordering::Relaxed);
+    SHARED.dg_abr_ratio_pm.store(i64::from(sample.production_ratio_pm()), Ordering::Relaxed);
+}
+
+fn publish_hls_abr_action(proposal: crate::abr::Proposal, committed: Option<bool>) {
+    use crate::abr::Direction::{Down, Up};
+    let action = match (proposal.direction, committed) {
+        (Down, None) => crate::player::ABR_ACTION_PRIME_DOWN,
+        (Up, None) => crate::player::ABR_ACTION_PRIME_UP,
+        (Down, Some(true)) => crate::player::ABR_ACTION_COMMIT_DOWN,
+        (Up, Some(true)) => crate::player::ABR_ACTION_COMMIT_UP,
+        (Down, Some(false)) => crate::player::ABR_ACTION_REJECT_DOWN,
+        (Up, Some(false)) => crate::player::ABR_ACTION_REJECT_UP,
+    };
+    SHARED.dg_abr_action.store(action, Ordering::Relaxed);
+    SHARED.dg_abr_target_kbps.store(i64::from(proposal.rung.kbps()), Ordering::Relaxed);
+}
+
+fn reject_hls_abr(controller: &mut crate::abr::Controller, proposal: crate::abr::Proposal) {
+    controller.reject(proposal);
+    publish_hls_abr_action(proposal, Some(false));
+}
+
+fn start_original_probe(
+    control: &crate::route::HlsAbrControl,
+    tx: std::sync::mpsc::Sender<(u32, bool)>,
+) -> bool {
+    let control = control.clone();
+    crate::task::spawn_small("abr-original-probe", move || {
+        let probe = control.probe_original();
+        let measured = probe
+            .map(|p| u32::try_from(p.kbps()).unwrap_or(u32::MAX))
+            .unwrap_or(0);
+        let complete = probe.is_some_and(|p| p.target_reached);
+        let _ = tx.send((measured, complete));
+    })
+}
+
 fn hls_demux(
     origin: &crate::plex::Origin,
     path: &str,
@@ -2751,10 +2816,33 @@ fn hls_demux(
     aqa: *mut AuQueue,
     hs: *mut HttpStream,
 ) -> Result<(), HlsExit> {
+    if let Some((control, _)) = abr.as_ref() {
+        SHARED.dg_abr_mode.store(crate::player::ABR_MODE_HLS, Ordering::Relaxed);
+        SHARED.dg_abr_kbps.store(i64::from(control.initial_rung.kbps()), Ordering::Relaxed);
+        SHARED.dg_abr_net_kbps.store(-1, Ordering::Relaxed);
+        SHARED.dg_abr_buffer_ms.store(-1, Ordering::Relaxed);
+        SHARED.dg_abr_ratio_pm.store(-1, Ordering::Relaxed);
+        SHARED.dg_abr_action.store(crate::player::ABR_ACTION_STEADY, Ordering::Relaxed);
+        SHARED.dg_abr_target_kbps.store(0, Ordering::Relaxed);
+        SHARED.dg_abr_bad_windows.store(0, Ordering::Relaxed);
+    }
     let mut cursor = hls_cursor_open(origin, path, aq, hs)?;
     let mut timeline = crate::hls::SegmentTimeline::default();
+    let (probe_tx, probe_rx) = std::sync::mpsc::channel::<(u32, bool)>();
     let mut adaptive = abr.map(|(control, encoder)| {
-        (control, encoder, crate::abr::Controller::bootstrap(), 0u64)
+        let initial = control.initial_rung;
+        let recovery = control
+            .can_recover_original()
+            .then(|| crate::abr::OriginalRecovery::new(control.original_source_kbps()))
+            .flatten();
+        (
+            control,
+            encoder,
+            crate::abr::Controller::starting_at(initial),
+            recovery,
+            false,
+            0u64,
+        )
     });
 
     while let Some(segment) = hls_cursor_next(&mut cursor, aq, hs)? {
@@ -2767,17 +2855,82 @@ fn hls_demux(
         hls_feed_segment(&output, aq, aqa)?;
         timeline.commit(clock);
 
-        let Some((control, active_encoder, controller, generation)) = adaptive.as_mut() else {
+        let Some((control, active_encoder, controller, recovery, probe_inflight, generation)) =
+            adaptive.as_mut()
+        else {
             continue;
         };
         let Some(sample) = hls_segment_sample(&output, segment.duration) else {
             crate::player::log("abr: ignoring invalid segment timing sample");
             continue;
         };
-        let crate::abr::Decision::Prime(proposal) = controller.observe(sample) else {
+        publish_hls_abr_sample(sample);
+        let decision = controller.observe(sample);
+
+        if *probe_inflight {
+            if let Ok((measured, complete)) = probe_rx.try_recv() {
+                *probe_inflight = false;
+                let still_safe = decision == crate::abr::Decision::Stay
+                    && controller.current() == crate::abr::Rung::P1080High
+                    && sample.buffer.buffered_ms() >= i64::from(sample.media_duration_ms());
+                let ready = recovery.as_mut().is_some_and(|gate| {
+                    gate.observe_probe(measured, complete && still_safe)
+                });
+                crate::player::log(&format!(
+                    "abr: Original recovery probe measured={}kbps complete={} current_safe={} ready={}",
+                    measured,
+                    complete as i32,
+                    still_safe as i32,
+                    ready as i32,
+                ));
+                if ready {
+                    SHARED
+                        .dg_abr_action
+                        .store(crate::player::ABR_ACTION_RECOVER_ORIGINAL, Ordering::Relaxed);
+                    SHARED
+                        .auto_recover_kbps
+                        .store(i64::from(measured.max(1)), Ordering::Release);
+                    crate::player::log(&format!(
+                        "abr: source sustainable again at {}kbps; requesting Original",
+                        measured,
+                    ));
+                    break;
+                }
+                SHARED
+                    .dg_abr_action
+                    .store(crate::player::ABR_ACTION_STEADY, Ordering::Relaxed);
+                SHARED.dg_abr_target_kbps.store(0, Ordering::Relaxed);
+            }
+        }
+
+        if decision == crate::abr::Decision::Stay {
+            let probe_due = !*probe_inflight
+                && recovery
+                .as_mut()
+                .is_some_and(|gate| gate.probe_due(controller.current(), sample));
+            if probe_due {
+                SHARED
+                    .dg_abr_action
+                    .store(crate::player::ABR_ACTION_PROBE_ORIGINAL, Ordering::Relaxed);
+                SHARED.dg_abr_target_kbps.store(
+                    i64::from(control.original_source_kbps()),
+                    Ordering::Relaxed,
+                );
+                if start_original_probe(control, probe_tx.clone()) {
+                    *probe_inflight = true;
+                    crate::player::log("abr: checking actual Original in parallel with HLS");
+                } else {
+                    let _ = recovery.as_mut().map(|gate| gate.observe_probe(0, false));
+                    SHARED
+                        .dg_abr_action
+                        .store(crate::player::ABR_ACTION_STEADY, Ordering::Relaxed);
+                    SHARED.dg_abr_target_kbps.store(0, Ordering::Relaxed);
+                }
+            }
             continue;
-        };
-        let candidate_started = std::time::Instant::now();
+        }
+        let crate::abr::Decision::Prime(proposal) = decision else { continue };
+        publish_hls_abr_action(proposal, None);
         *generation = generation.saturating_add(1);
         let offset_secs = SHARED
             .disp_base
@@ -2791,14 +2944,14 @@ fn hls_demux(
             *generation,
             offset_secs,
         ) else {
-            controller.reject(proposal);
+            reject_hls_abr(controller, proposal);
             crate::player::log("abr: candidate registration rejected; staying on current rung");
             continue;
         };
         let candidate_url = crate::plex::StreamUrl::parse(&primed.url);
         if candidate_url.origin != *origin {
             control.abandon(&primed.encoder_session);
-            controller.reject(proposal);
+            reject_hls_abr(controller, proposal);
             crate::player::log("abr: candidate changed origin; rejected");
             continue;
         }
@@ -2806,7 +2959,7 @@ fn hls_demux(
             Ok(candidate) => candidate,
             Err(_) => {
                 control.abandon(&primed.encoder_session);
-                controller.reject(proposal);
+                reject_hls_abr(controller, proposal);
                 crate::player::log("abr: candidate master failed; staying on current rung");
                 continue;
             }
@@ -2815,21 +2968,28 @@ fn hls_demux(
             Ok(Some(segment)) => segment,
             _ => {
                 control.abandon(&primed.encoder_session);
-                controller.reject(proposal);
+                reject_hls_abr(controller, proposal);
                 crate::player::log("abr: candidate produced no segment; staying on current rung");
                 continue;
             }
         };
-        let candidate_deadline = crate::abr::candidate_prime_budget(
+        // Candidate transport deadlines belong to media SEGMENTS, not PMS session creation. A
+        // remote PMS may spend a second registering the encoder and returning its master/media
+        // playlists before the first media byte is requested. Charging that setup against a
+        // two-second segment's budget made every healthy upshift time out. The cold first segment
+        // gets the bounded warm-up budget; the immediately following segment gets the strict 80%
+        // production budget below. Neither includes control-plane or playlist latency.
+        let candidate_deadline = crate::abr::candidate_warmup_budget(
             proposal,
             candidate_segment.duration,
         )
-        .and_then(|budget| candidate_started.checked_add(budget));
-        let mut candidate_clock = match timeline.begin(candidate_segment.duration) {
+        .and_then(|budget| std::time::Instant::now().checked_add(budget));
+        let mut staged_timeline = timeline;
+        let mut candidate_clock = match staged_timeline.begin(candidate_segment.duration) {
             Ok(clock) => clock,
             Err(_) => {
                 control.abandon(&primed.encoder_session);
-                controller.reject(proposal);
+                reject_hls_abr(controller, proposal);
                 return Err(HlsExit::Failed("HLS candidate timeline overflow"));
             }
         };
@@ -2847,37 +3007,103 @@ fn hls_demux(
             Ok(output) => output,
             Err(HlsExit::PrimeExpired) => {
                 control.abandon(&primed.encoder_session);
-                controller.reject(proposal);
+                reject_hls_abr(controller, proposal);
                 crate::player::log(
-                    "abr: upshift candidate exceeded prime deadline; staying on current rung",
+                    "abr: upshift candidate warm-up exceeded deadline; staying on current rung",
                 );
                 continue;
             }
             Err(_) => {
                 control.abandon(&primed.encoder_session);
-                controller.reject(proposal);
+                reject_hls_abr(controller, proposal);
                 crate::player::log("abr: candidate segment failed; staying on current rung");
                 continue;
             }
         };
-        let raster_ready = hls_raster_within(
-            candidate_output.video_width,
-            candidate_output.video_height,
-            proposal.rung,
-        );
+        staged_timeline.commit(candidate_clock);
+        let mut candidate_outputs =
+            vec![(candidate_output, candidate_clock, candidate_segment.duration)];
+
+        // PMS's measured FixedSession HLS starts a fresh decoder+encoder for every candidate.
+        // Segment zero therefore measures cold start, not the production cadence the replacement
+        // will sustain. Retain it as the first decodable content after the switch, but grade an
+        // immediately following segment with the strict 80%-of-duration budget. Both remain
+        // private until the encoder identity is atomically committed below.
+        if proposal.direction == crate::abr::Direction::Up {
+            let graded_segment = match hls_cursor_next(&mut candidate, aq, hs) {
+                Ok(Some(segment)) => segment,
+                _ => {
+                    control.abandon(&primed.encoder_session);
+                    reject_hls_abr(controller, proposal);
+                    crate::player::log(
+                        "abr: upshift candidate produced no graded segment; staying on current rung",
+                    );
+                    continue;
+                }
+            };
+            let mut graded_clock = match staged_timeline.begin(graded_segment.duration) {
+                Ok(clock) => clock,
+                Err(_) => {
+                    control.abandon(&primed.encoder_session);
+                    reject_hls_abr(controller, proposal);
+                    return Err(HlsExit::Failed("HLS candidate timeline overflow"));
+                }
+            };
+            let graded_deadline = crate::abr::candidate_prime_budget(
+                proposal,
+                graded_segment.duration,
+            )
+            .and_then(|budget| std::time::Instant::now().checked_add(budget));
+            let graded_output = match unsafe {
+                hls_demux_segment(
+                    &graded_segment,
+                    &candidate.auth,
+                    &mut graded_clock,
+                    aq,
+                    hs,
+                    acodec,
+                    graded_deadline,
+                )
+            } {
+                Ok(output) => output,
+                Err(HlsExit::PrimeExpired) => {
+                    control.abandon(&primed.encoder_session);
+                    reject_hls_abr(controller, proposal);
+                    crate::player::log(
+                        "abr: upshift candidate lacked steady production headroom; staying on current rung",
+                    );
+                    continue;
+                }
+                Err(_) => {
+                    control.abandon(&primed.encoder_session);
+                    reject_hls_abr(controller, proposal);
+                    crate::player::log(
+                        "abr: candidate graded segment failed; staying on current rung",
+                    );
+                    continue;
+                }
+            };
+            staged_timeline.commit(graded_clock);
+            candidate_outputs.push((graded_output, graded_clock, graded_segment.duration));
+        }
+
+        let raster_ready = candidate_outputs.iter().all(|(output, _, _)| {
+            hls_raster_within(output.video_width, output.video_height, proposal.rung)
+        });
+        let (graded_output, _, graded_duration) = candidate_outputs.last().expect("candidate output");
         let ready = raster_ready
-            && hls_segment_sample(&candidate_output, candidate_segment.duration)
+            && hls_segment_sample(graded_output, *graded_duration)
                 .is_some_and(|candidate_sample| controller.candidate_ready(proposal, candidate_sample));
         if !ready {
             control.abandon(&primed.encoder_session);
-            controller.reject(proposal);
+            reject_hls_abr(controller, proposal);
             if raster_ready {
                 crate::player::log("abr: candidate lacked measured headroom; staying on current rung");
             } else {
                 crate::player::log(&format!(
                     "abr: candidate raster {}x{} exceeds {}x{}; staying on current rung",
-                    candidate_output.video_width,
-                    candidate_output.video_height,
+                    graded_output.video_width,
+                    graded_output.video_height,
                     proposal.rung.raster().0,
                     proposal.rung.raster().1,
                 ));
@@ -2885,14 +3111,18 @@ fn hls_demux(
             continue;
         }
         if !control.commit(active_encoder, &primed.encoder_session) {
-            controller.reject(proposal);
+            reject_hls_abr(controller, proposal);
             return Err(HlsExit::Aborted);
         }
-        hls_feed_segment(&candidate_output, aq, aqa)?;
-        timeline.commit(candidate_clock);
+        for (output, _, _) in &candidate_outputs {
+            hls_feed_segment(output, aq, aqa)?;
+        }
+        timeline = staged_timeline;
         let previous = std::mem::replace(active_encoder, primed.encoder_session);
         control.retire(previous);
         controller.commit(proposal);
+        SHARED.dg_abr_kbps.store(i64::from(proposal.rung.kbps()), Ordering::Relaxed);
+        publish_hls_abr_action(proposal, Some(true));
         cursor = candidate;
         crate::player::log(&format!(
             "abr: committed {:?} to {}kbps {}x{}",
@@ -2918,6 +3148,7 @@ pub(crate) fn demux(
     path: String,
     acodec: String,
     abr: Option<(crate::route::HlsAbrControl, String)>,
+    auto_original_kbps: Option<u32>,
     aq: SendPtr<AuQueue>,
     aqa: SendPtr<AuQueue>,
     hs: SendPtr<HttpStream>,
@@ -2984,6 +3215,20 @@ pub(crate) fn demux(
         crate::player::log("hls: segmented demux ended");
         return;
     }
+    if let Some(source_kbps) = auto_original_kbps {
+        // Auto deliberately begins by trying Original. Publish that state before the first
+        // measurement window completes so Stats for Nerds says what the policy is doing instead
+        // of looking inactive during the exact startup interval a user is trying to diagnose.
+        SHARED.dg_abr_mode.store(crate::player::ABR_MODE_ORIGINAL, Ordering::Relaxed);
+        SHARED.dg_abr_kbps.store(i64::from(source_kbps), Ordering::Relaxed);
+        SHARED.dg_abr_net_kbps.store(-1, Ordering::Relaxed);
+        SHARED.dg_abr_buffer_ms.store(-1, Ordering::Relaxed);
+        SHARED.dg_abr_ratio_pm.store(-1, Ordering::Relaxed);
+        SHARED.dg_abr_action.store(crate::player::ABR_ACTION_STEADY, Ordering::Relaxed);
+        SHARED.dg_abr_target_kbps.store(0, Ordering::Relaxed);
+        SHARED.dg_abr_bad_windows.store(0, Ordering::Relaxed);
+    }
+    let mut original_watch = auto_original_kbps.and_then(crate::abr::OriginalWatchdog::new);
     let port = origin.port() as c_int;
     // `host()` is the origin's BARE host — a v6 literal arrives unbracketed, which is what
     // `stream.rs` wants; `base()` re-brackets it, which is what a URL needs. Both spellings come
@@ -3342,6 +3587,17 @@ pub(crate) fn demux(
                 // reload. Seeking here needs no interrupt at all, so nothing can race it.
                 let seek_ns = SHARED.seek_to_ns.swap(-1, Ordering::Acquire);
                 if seek_ns >= 0 {
+                    // These are content from the old seek epoch until the first new packets land.
+                    // Reset both the buffer facts and the transfer-window hysteresis together so
+                    // a seek cannot splice old reserve into a new low-rate observation.
+                    SHARED.hls_video_tail_ns.store(-1, Ordering::Release);
+                    SHARED.hls_audio_tail_ns.store(-1, Ordering::Release);
+                    if let Some(watch) = original_watch.as_mut() {
+                        watch.reset(state.body_bytes, state.body_active_us);
+                        SHARED.dg_abr_net_kbps.store(-1, Ordering::Relaxed);
+                        SHARED.dg_abr_buffer_ms.store(-1, Ordering::Relaxed);
+                        SHARED.dg_abr_bad_windows.store(0, Ordering::Relaxed);
+                    }
                     let ts = av_rescale_q(seek_ns, NS_TB, stream_time_base(vst));
                     let sr = av_seek_frame(fmt, vi, ts, AVSEEK_FLAG_BACKWARD);
                     crate::player::log(&format!("ff: seek {}s rv={sr}", seek_ns / 1_000_000_000));
@@ -3379,8 +3635,7 @@ pub(crate) fn demux(
                             head
                         ));
                     }
-                    PUSHED_ANY.store(true, Ordering::Relaxed);
-                    crate::aq::aq_push(
+                    let pushed = crate::aq::aq_push(
                         aq_p,
                         aubuf.as_ptr(),
                         aubuf.len() as c_int,
@@ -3389,20 +3644,29 @@ pub(crate) fn demux(
                         1,
                     );
                     av_packet_unref(pkt);
+                    if pushed != 0 {
+                        break;
+                    }
+                    PUSHED_ANY.store(true, Ordering::Relaxed);
+                    SHARED.hls_video_tail_ns.store(pts, Ordering::Release);
                 } else if si == ai && FEED_AUDIO.load(Ordering::Relaxed) {
                     let ast = *streams.add(ai as usize);
                     let pts = pts_ns(pkt, ast);
-                    if let Some((freq_idx, chan_cfg)) = aac_adts {
+                    let pushed = if let Some((freq_idx, chan_cfg)) = aac_adts {
                         // prepend a 7-byte ADTS header so LG's decoder can frame the raw AAC
                         let plen = (*pkt).size as usize;
                         let mut framed = Vec::with_capacity(7 + plen);
                         framed.extend_from_slice(&adts_header(freq_idx, chan_cfg, plen));
                         framed.extend_from_slice(std::slice::from_raw_parts((*pkt).data, plen));
-                        crate::aq::aq_push(aqa_p, framed.as_ptr(), framed.len() as c_int, pts, 1, 2);
+                        crate::aq::aq_push(aqa_p, framed.as_ptr(), framed.len() as c_int, pts, 1, 2)
                     } else {
-                        crate::aq::aq_push(aqa_p, (*pkt).data, (*pkt).size, pts, 1, 2); // AUDIO lane
-                    }
+                        crate::aq::aq_push(aqa_p, (*pkt).data, (*pkt).size, pts, 1, 2) // AUDIO lane
+                    };
                     av_packet_unref(pkt);
+                    if pushed != 0 {
+                        break;
+                    }
+                    SHARED.hls_audio_tail_ns.store(pts, Ordering::Release);
                 } else if let Some(sub_pos) = sub_streams.iter().position(|(sidx, _, _)| *sidx == si) {
                     // Subtitle packet. Push a cue for EVERY text track (tagged with its file-order
                     // index), NOT just the selected one, so a mid-play track switch is instant —
@@ -3462,6 +3726,40 @@ pub(crate) fn demux(
                     av_packet_unref(pkt);
                 } else {
                     av_packet_unref(pkt);
+                }
+                if !SHARED.seeking.load(Ordering::Relaxed) {
+                    if let Some(watch) = original_watch.as_mut() {
+                        let audio_expected = ai >= 0 && FEED_AUDIO.load(Ordering::Relaxed);
+                        if let Some(observation) = watch.observe(
+                            state.body_bytes,
+                            state.body_active_us,
+                            progressive_buffered_ms(audio_expected),
+                        ) {
+                            SHARED.dg_abr_net_kbps.store(
+                                i64::from(observation.measured_kbps),
+                                Ordering::Relaxed,
+                            );
+                            SHARED.dg_abr_buffer_ms.store(
+                                observation.buffered_ms,
+                                Ordering::Relaxed,
+                            );
+                            SHARED.dg_abr_bad_windows.store(
+                                observation.bad_windows,
+                                Ordering::Relaxed,
+                            );
+                            if observation.fallback {
+                                crate::player::log(&format!(
+                                    "auto: Original watchdog sustained measured={}kbps buffer={}ms -> HLS",
+                                    observation.measured_kbps, observation.buffered_ms,
+                                ));
+                                SHARED.auto_fallback_kbps.store(
+                                    i64::from(observation.measured_kbps.max(1)),
+                                    Ordering::Release,
+                                );
+                                break;
+                            }
+                        }
+                    }
                 }
                 if crate::aq::aq_is_aborted(aq_p) {
                     break;

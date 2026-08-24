@@ -79,6 +79,162 @@ impl Rung {
     fn above(self) -> Self {
         LADDER[(self.index() + 1).min(LADDER.len() - 1)]
     }
+
+    /// Recover the controller's starting rung from the exact ceiling stored in the playback
+    /// route. Auto owns only these canonical values; an arbitrary/manual ceiling is not an ABR
+    /// state and therefore has no answer here.
+    pub(crate) fn from_ceiling(ceiling: crate::plex::Ceiling) -> Option<Self> {
+        LADDER.iter().copied().find(|rung| rung.ceiling() == ceiling)
+    }
+}
+
+/// A runtime Original failure is not an unknown-link bootstrap: the direct transfer has just
+/// measured the link. Start the replacement at the highest rung with 35% measured headroom, so a
+/// 4 Mbit/s cap enters at 2 Mbit/s/720p rather than needlessly flashing the 240p emergency floor.
+pub(crate) fn original_fallback_rung(measured_kbps: u32) -> Rung {
+    sustainable_rung(measured_kbps, 135)
+}
+
+/// The same admission rule at startup and during HLS recovery: the measured source prefix must
+/// complete and carry the whole-file average with 35% peak/headroom reserve. The live watchdog
+/// owns later link collapses, so startup need not reserve a second, redundant 50% margin.
+pub(crate) fn original_sustainable(source_kbps: u32, measured_kbps: u32, complete: bool) -> bool {
+    source_kbps > 0
+        && complete
+        && u64::from(measured_kbps).saturating_mul(1_000)
+            >= u64::from(source_kbps).saturating_mul(1_350)
+}
+
+const ORIGINAL_RECOVERY_TOP_SAMPLES: u8 = 3;
+const ORIGINAL_RECOVERY_GOOD_PROBES: u8 = 2;
+
+/// Slow, explicit HLS→Original gate. HLS throughput and PMS encoder cadence are not evidence for
+/// the differently-shaped source request, so this object merely schedules probes after the top
+/// rung has built a safe buffer and then requires two successful actual-source measurements.
+pub(crate) struct OriginalRecovery {
+    source_kbps: u32,
+    top_samples: u8,
+    good_probes: u8,
+}
+
+impl OriginalRecovery {
+    pub(crate) fn new(source_kbps: u32) -> Option<Self> {
+        (source_kbps > 0).then_some(Self { source_kbps, top_samples: 0, good_probes: 0 })
+    }
+
+    pub(crate) fn probe_due(&mut self, current: Rung, sample: SegmentSample) -> bool {
+        let healthy = current == Rung::P1080High
+            && sample.buffer.buffered_ms() >= i64::from(sample.media_duration_ms);
+        if !healthy {
+            self.top_samples = 0;
+            self.good_probes = 0;
+            return false;
+        }
+        self.top_samples = self.top_samples.saturating_add(1);
+        if self.top_samples < ORIGINAL_RECOVERY_TOP_SAMPLES {
+            return false;
+        }
+        self.top_samples = 0;
+        true
+    }
+
+    pub(crate) fn observe_probe(&mut self, measured_kbps: u32, complete: bool) -> bool {
+        if original_sustainable(self.source_kbps, measured_kbps, complete) {
+            self.good_probes = self.good_probes.saturating_add(1);
+        } else {
+            self.good_probes = 0;
+        }
+        self.good_probes >= ORIGINAL_RECOVERY_GOOD_PROBES
+    }
+}
+
+const ORIGINAL_WINDOW_US: u64 = 750_000;
+const ORIGINAL_LOW_BUFFER_MS: i64 = 3_500;
+const ORIGINAL_REQUIRED_HEADROOM_PM: u64 = 1_100;
+const ORIGINAL_BAD_WINDOWS: u8 = 2;
+
+/// One completed runtime-Original measurement window. The demuxer logs the exact evidence and
+/// publishes `measured_kbps` to the main thread when `fallback` becomes true.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct OriginalObservation {
+    pub(crate) measured_kbps: u32,
+    pub(crate) buffered_ms: i64,
+    pub(crate) bad_windows: u8,
+    pub(crate) fallback: bool,
+}
+
+/// Hysteresis for Auto's Original state.
+///
+/// The transfer counters contain successful body-read time only, while `buffered_ms` is content
+/// time in the one normalized movie timeline. Either signal alone lies: a shaped socket can look
+/// slow while a large reserve makes it harmless, and a temporarily small queue can occur while a
+/// fast reader is refilling it. Two complete 750 ms windows must say both "below the source's
+/// requirement" and "less than 3.5 seconds remain" before the expensive encoder transition.
+pub(crate) struct OriginalWatchdog {
+    source_kbps: u32,
+    last_bytes: u64,
+    last_active_us: u64,
+    bad_windows: u8,
+}
+
+impl OriginalWatchdog {
+    pub(crate) fn new(source_kbps: u32) -> Option<Self> {
+        (source_kbps > 0).then_some(Self {
+            source_kbps,
+            last_bytes: 0,
+            last_active_us: 0,
+            bad_windows: 0,
+        })
+    }
+
+    pub(crate) fn reset(&mut self, bytes: u64, active_us: u64) {
+        self.last_bytes = bytes;
+        self.last_active_us = active_us;
+        self.bad_windows = 0;
+    }
+
+    pub(crate) fn observe(
+        &mut self,
+        bytes: u64,
+        active_us: u64,
+        buffered_ms: Option<i64>,
+    ) -> Option<OriginalObservation> {
+        if bytes < self.last_bytes || active_us < self.last_active_us {
+            self.reset(bytes, active_us);
+            return None;
+        }
+        let active_delta = active_us - self.last_active_us;
+        if active_delta < ORIGINAL_WINDOW_US {
+            return None;
+        }
+        let byte_delta = bytes - self.last_bytes;
+        self.last_bytes = bytes;
+        self.last_active_us = active_us;
+        let Some(buffered_ms) = buffered_ms else {
+            self.bad_windows = 0;
+            return None;
+        };
+        if byte_delta == 0 {
+            self.bad_windows = 0;
+            return None;
+        }
+        let measured_kbps = (byte_delta.saturating_mul(8_000) / active_delta)
+            .min(u64::from(u32::MAX)) as u32;
+        let rate_bad = u64::from(measured_kbps).saturating_mul(1_000)
+            < u64::from(self.source_kbps).saturating_mul(ORIGINAL_REQUIRED_HEADROOM_PM);
+        let buffer_bad = buffered_ms <= ORIGINAL_LOW_BUFFER_MS;
+        if rate_bad && buffer_bad {
+            self.bad_windows = self.bad_windows.saturating_add(1);
+        } else {
+            self.bad_windows = 0;
+        }
+        Some(OriginalObservation {
+            measured_kbps,
+            buffered_ms,
+            bad_windows: self.bad_windows,
+            fallback: self.bad_windows >= ORIGINAL_BAD_WINDOWS,
+        })
+    }
 }
 
 /// Tail timestamps from the demuxer after normalization. `audio_expected` distinguishes genuinely
@@ -134,15 +290,19 @@ impl SegmentSample {
             })
     }
 
-    fn network_kbps(self) -> u32 {
+    pub(crate) fn network_kbps(self) -> u32 {
         (self.bytes.saturating_mul(8_000) / self.active_fetch_us)
             .min(u64::from(u32::MAX)) as u32
+    }
+
+    pub(crate) fn media_duration_ms(self) -> u32 {
+        self.media_duration_ms
     }
 
     /// Per-mille total acquisition time / content duration. This includes PMS JIT production and
     /// TTFB; a two-second segment arriving in 1.9 seconds has almost no production headroom even
     /// if its response body crosses the LAN quickly.
-    fn production_ratio_pm(self) -> u32 {
+    pub(crate) fn production_ratio_pm(self) -> u32 {
         (self.total_fetch_us.saturating_mul(1_000)
             / u64::from(self.media_duration_ms).saturating_mul(1_000))
             .min(u64::from(u32::MAX)) as u32
@@ -185,6 +345,25 @@ pub(crate) fn candidate_prime_budget(
     ))
 }
 
+/// A new PMS encoder's first segment includes decoder/encoder cold start and is not a
+/// steady-state production sample. Give that one warm-up segment a bounded 1.5 content-duration
+/// window, then apply [`candidate_prime_budget`] to the following segment before committing the
+/// encoder. The proposal gate already requires at least three segments of reserve, so the warm-up
+/// plus the graded segment still fits inside the buffer available when an upshift starts.
+/// Downshifts keep their established recovery behavior and do not acquire a deadline here.
+pub(crate) fn candidate_warmup_budget(
+    proposal: Proposal,
+    media_duration: std::time::Duration,
+) -> Option<std::time::Duration> {
+    if proposal.direction == Direction::Down {
+        return None;
+    }
+    let micros = media_duration.as_micros().saturating_mul(3) / 2;
+    Some(std::time::Duration::from_micros(
+        micros.min(u128::from(u64::MAX)) as u64,
+    ))
+}
+
 /// Integer-only estimator and transaction state. Current-session samples decide whether to
 /// propose. Candidate-session measurements decide whether that proposal may commit.
 pub(crate) struct Controller {
@@ -196,14 +375,22 @@ pub(crate) struct Controller {
     samples_on_rung: u8,
     up_good: u8,
     cooldown: u8,
+    production_bad_windows: u8,
     last_buffer_ms: Option<i64>,
 }
 
 impl Controller {
     /// Unknown links start at 480p/720 kbit/s. P240 remains available as the emergency floor.
+    #[cfg(test)]
     pub(crate) fn bootstrap() -> Self {
+        Self::starting_at(Rung::P480)
+    }
+
+    /// The active encoder already exists at `current` (including a runtime Original fallback
+    /// chosen from its measured link), so the controller must begin from that exact wire state.
+    pub(crate) fn starting_at(current: Rung) -> Self {
         Self {
-            current: Rung::P480,
+            current,
             pending: None,
             fast_network_kbps: 0,
             slow_network_kbps: 0,
@@ -211,11 +398,11 @@ impl Controller {
             samples_on_rung: 0,
             up_good: 0,
             cooldown: 0,
+            production_bad_windows: 0,
             last_buffer_ms: None,
         }
     }
 
-    #[cfg(test)]
     pub(crate) fn current(&self) -> Rung {
         self.current
     }
@@ -250,7 +437,12 @@ impl Controller {
         // only when the content buffer is actually draining.
         let immediate_network = network.min(self.fast_network_kbps);
         let network_bad = immediate_network < self.current.kbps().saturating_mul(11) / 10;
-        let production_bad = ratio > 1_100 && draining;
+        if ratio > 1_100 && draining {
+            self.production_bad_windows = self.production_bad_windows.saturating_add(1);
+        } else {
+            self.production_bad_windows = 0;
+        }
+        let production_bad = self.production_bad_windows >= 3;
         if buffered < segment || network_bad || production_bad {
             self.up_good = 0;
             // A measured link collapse must not walk the ladder one oversized encoder at a time:
@@ -330,8 +522,9 @@ impl Controller {
         self.pending = None;
         self.samples_on_rung = 0;
         self.up_good = 0;
+        self.production_bad_windows = 0;
         self.cooldown = match proposal.direction {
-            Direction::Down => 1,
+            Direction::Down => 8,
             Direction::Up => 3,
         };
         self.last_buffer_ms = None;
@@ -344,6 +537,7 @@ impl Controller {
         }
         self.pending = None;
         self.up_good = 0;
+        self.production_bad_windows = 0;
         self.cooldown = 1;
         true
     }
@@ -446,6 +640,65 @@ mod tests {
     }
 
     #[test]
+    fn original_watchdog_requires_two_slow_low_buffer_windows() {
+        let mut watchdog = OriginalWatchdog::new(28_000).unwrap();
+        let bytes_per_window = 375_000; // 4,000 kbit/s over 750 ms
+        assert!(watchdog.observe(bytes_per_window, 749_999, Some(3_000)).is_none());
+        let first = watchdog
+            .observe(bytes_per_window, ORIGINAL_WINDOW_US, Some(3_000))
+            .unwrap();
+        assert_eq!(first.measured_kbps, 4_000);
+        assert!(!first.fallback, "one shaped window is jitter, not a mode switch");
+        let second = watchdog
+            .observe(bytes_per_window * 2, ORIGINAL_WINDOW_US * 2, Some(2_500))
+            .unwrap();
+        assert!(second.fallback, "the sustained 4 Mbit/s cap cannot carry a 28 Mbit/s file");
+    }
+
+    #[test]
+    fn original_watchdog_ignores_slow_reads_while_the_content_reserve_is_healthy() {
+        let mut watchdog = OriginalWatchdog::new(28_000).unwrap();
+        let bytes = 375_000;
+        for window in 1..=4 {
+            let observation = watchdog
+                .observe(
+                    bytes * window,
+                    ORIGINAL_WINDOW_US * window,
+                    Some(8_000),
+                )
+                .unwrap();
+            assert!(!observation.fallback);
+        }
+    }
+
+    #[test]
+    fn a_recovered_window_clears_original_fallback_hysteresis() {
+        let mut watchdog = OriginalWatchdog::new(10_000).unwrap();
+        let slow_bytes = 375_000;
+        assert!(!watchdog
+            .observe(slow_bytes, ORIGINAL_WINDOW_US, Some(2_000))
+            .unwrap()
+            .fallback);
+        let fast_bytes = slow_bytes + 1_875_000; // 20 Mbit/s for the next window
+        assert!(!watchdog
+            .observe(fast_bytes, ORIGINAL_WINDOW_US * 2, Some(2_000))
+            .unwrap()
+            .fallback);
+        assert!(!watchdog
+            .observe(fast_bytes + slow_bytes, ORIGINAL_WINDOW_US * 3, Some(2_000))
+            .unwrap()
+            .fallback);
+    }
+
+    #[test]
+    fn measured_runtime_fallback_avoids_an_unnecessarily_low_bootstrap() {
+        assert_eq!(original_fallback_rung(512), Rung::P240);
+        assert_eq!(original_fallback_rung(4_000), Rung::P720Low);
+        assert_eq!(original_fallback_rung(7_000), Rung::P720);
+        assert_eq!(Rung::from_ceiling(Rung::P720Low.ceiling()), Some(Rung::P720Low));
+    }
+
+    #[test]
     fn realtime_jit_blocks_upshift_without_forcing_a_downshift() {
         let mut controller = Controller::bootstrap();
         for _ in 0..10 {
@@ -512,9 +765,60 @@ mod tests {
     fn draining_jit_session_downshifts_but_stable_jit_does_not() {
         let mut controller = Controller::bootstrap();
         assert_eq!(controller.observe(sample(20_000, 1_200, 8_000)), Decision::Stay);
+        assert_eq!(controller.observe(sample(20_000, 1_200, 6_000)), Decision::Stay);
+        assert_eq!(controller.observe(sample(20_000, 1_200, 4_000)), Decision::Stay);
+        assert_eq!(controller.observe(sample(20_000, 1_200, 2_000)),
+            Decision::Prime(Proposal { rung: Rung::P240, direction: Direction::Down }));
+    }
+
+    #[test]
+    fn original_recovery_requires_two_spaced_actual_source_probes() {
+        let mut gate = OriginalRecovery::new(28_000).unwrap();
+        for n in 1..=ORIGINAL_RECOVERY_TOP_SAMPLES {
+            assert_eq!(
+                // A real-time JIT encoder must not block escape to the GPU-free Original path.
+                gate.probe_due(Rung::P1080High, sample(60_000, 2_000, 10_000)),
+                n == ORIGINAL_RECOVERY_TOP_SAMPLES,
+            );
+        }
+        assert!(!gate.observe_probe(60_000, true));
+        for n in 1..=ORIGINAL_RECOVERY_TOP_SAMPLES {
+            assert_eq!(
+                gate.probe_due(Rung::P1080High, sample(60_000, 500, 10_000)),
+                n == ORIGINAL_RECOVERY_TOP_SAMPLES,
+            );
+        }
+        assert!(gate.observe_probe(60_000, true));
+    }
+
+    #[test]
+    fn original_recovery_resets_below_the_top_or_after_a_failed_probe() {
+        let mut gate = OriginalRecovery::new(28_000).unwrap();
+        for _ in 0..ORIGINAL_RECOVERY_TOP_SAMPLES {
+            assert!(!gate.probe_due(Rung::P1080, sample(60_000, 500, 10_000)));
+        }
+        for _ in 1..ORIGINAL_RECOVERY_TOP_SAMPLES {
+            assert!(!gate.probe_due(Rung::P1080High, sample(60_000, 500, 10_000)));
+        }
+        assert!(gate.probe_due(Rung::P1080High, sample(60_000, 500, 10_000)));
+        assert!(!gate.observe_probe(60_000, true));
+        assert!(!gate.observe_probe(30_000, true));
+        assert!(!gate.observe_probe(60_000, false));
+    }
+
+    #[test]
+    fn a_downshift_holds_long_enough_to_avoid_immediate_top_rung_flapping() {
+        let mut controller = Controller::starting_at(Rung::P1080High);
+        let Decision::Prime(down) = controller.observe(sample(12_000, 500, 8_000)) else {
+            panic!("the collapsed link must propose a downshift")
+        };
+        assert!(controller.commit(down));
+        for _ in 0..9 {
+            assert_eq!(controller.observe(sample(60_000, 400, 10_000)), Decision::Stay);
+        }
         assert_eq!(
-            controller.observe(sample(20_000, 1_200, 6_000)),
-            Decision::Prime(Proposal { rung: Rung::P240, direction: Direction::Down })
+            controller.observe(sample(60_000, 400, 10_000)),
+            Decision::Prime(Proposal { rung: Rung::P1080High, direction: Direction::Up }),
         );
     }
 
@@ -533,8 +837,16 @@ mod tests {
         let media = std::time::Duration::from_millis(2_002);
         let up = Proposal { rung: Rung::P720Low, direction: Direction::Up };
         let down = Proposal { rung: Rung::P240, direction: Direction::Down };
-        assert_eq!(candidate_prime_budget(up, media), Some(std::time::Duration::from_micros(1_601_600)));
+        assert_eq!(
+            candidate_prime_budget(up, media),
+            Some(std::time::Duration::from_micros(1_601_600))
+        );
+        assert_eq!(
+            candidate_warmup_budget(up, media),
+            Some(std::time::Duration::from_micros(3_003_000))
+        );
         assert_eq!(candidate_prime_budget(down, media), None);
+        assert_eq!(candidate_warmup_budget(down, media), None);
     }
 
     #[test]

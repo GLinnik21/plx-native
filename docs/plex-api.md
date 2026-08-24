@@ -31,10 +31,21 @@ Otherwise (HEVC/AV1, MP4/AAC/EAC3/TrueHD, etc.) the delivery depends on the pers
 
 - **Original or a fixed rung:** request the progressive MKV transcode below. This remains the
   proven manual-quality path.
-- **Auto:** request fixed-rendition HLS/MPEG-TS with H.264/AAC. PlxNative downloads one segment at a
-  time through a fresh FFmpeg context, normalizes its timestamps onto the movie timeline, measures
-  network/production/buffer headroom, and transactionally replaces the PMS encoder when another
-  rung is sustainable. The restricted playlist contract and measured server behavior are in
+- **Auto:** Original is the top rung. A verified Local link uses it immediately; a direct Remote
+  samples a bounded prefix of the actual Part and uses direct play or a codec-preserving remux only
+  when measured throughput is at least 1.35× the whole-file bitrate. Relay, unknown/failed samples,
+  and slower Remote links request fixed-rendition HLS/MPEG-TS with H.264/AAC. A Remote that began
+  on Original remains watched: two 750 ms transfer windows below the whole-file requirement while
+  less than 3.5 seconds of normalized A/V content remain trigger a same-position HLS replacement.
+  The first rung is chosen from that live rate (a 4 Mbit/s link starts at 2 Mbit/s/720p), rather
+  than blindly dropping to the emergency floor. PlxNative then
+  downloads one segment at a time, normalizes timestamps, measures network/production/buffer
+  headroom, and transactionally replaces the PMS encoder when another rung is sustainable. The
+  top HLS rung is not the terminal state: after stable top-rung production, two spaced bounded
+  probes of the actual source must each re-establish the same 1.35× headroom before a fresh Load
+  returns to direct play (or codec-preserving remux) and retires the video encoder. The Original
+  watchdog is re-armed, so another sustained collapse can fall back again. The
+  restricted playlist contract and measured server behavior are in
   `docs/pms-hls-protocol-probe.md`; DASH remains unsupported.
 
 Progressive fixed-quality request:

@@ -1418,6 +1418,50 @@
       }
     },
     {
+      "name": "pipe_auto_original_slow_recover",
+      "fixture": "pipe_h264_aac_mp4.mp4",
+      "title": "no-Plex Auto: Original -> 4 Mbps collapse -> HLS -> recovered Original",
+      "covers": [
+        "runtime-original-watchdog",
+        "mid-transfer-network-profile",
+        "original-to-hls-handoff",
+        "abr-recovery",
+        "original-recovery"
+      ],
+      "declare": {
+        "vcodec": "h264",
+        "acodec": "aac",
+        "fps": 24.0
+      },
+      "auto_network": {
+        "source_kbps": 8000
+      },
+      "network_profile": [
+        {"until_s": 1.5, "kbps": 40000},
+        {"until_s": 15.0, "kbps": 4000},
+        {"until_s": 120.0, "kbps": 40000}
+      ],
+      "run_secs": 80,
+      "operations": [
+        {"op": "play"}
+      ],
+      "expect": {
+        "codec": "h264",
+        "min_video_width": 1900,
+        "load_video": "H264",
+        "load_audio": "AAC",
+        "load_dovi": "none",
+        "min_pos_climb_s": 35,
+        "require_video_bound": true,
+        "no_playing_error": true,
+        "load_count_exact": 3,
+        "auto_fallback_max_kbps": 5000,
+        "abr_recovery_min_kbps": 20000,
+        "server_opens_min": 8
+      },
+      "_network_note": "The fixture server starts its phase clock on the first response body, not app launch: 40 Mbps permits Original to establish, 4 Mbps drains an 8 Mbps source until the two-window watchdog replaces it, then 40 Mbps gives the real HLS controller enough segment/network/production headroom to reach its top rung and pass two actual-source probes before returning to Original. The four pipe_abr_* two-second files are independently decodable candidate segments; no Plex token, library item, decision endpoint or transcoder participates."
+    },
+    {
       "name": "pipe_h264_aac_resolution_spike",
       "fixture": "pipe_h264_aac_resolution_spike.mkv",
       "title": "one Starfish Load: 720p -> 1080p -> 720p H.264/AAC",

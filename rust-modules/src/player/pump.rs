@@ -6,7 +6,7 @@ use super::shared::Stage;
 use super::{ffi, ACB_OK, SHARED, TX};
 use crate::task::MainThread;
 use std::os::raw::c_char;
-use std::sync::atomic::Ordering::{Relaxed, Release};
+use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
 /// Publish the one value the HUD renders from. Pure derivation off signals the workers already
 /// maintain — no new cross-thread plumbing, and it runs on every path out of `pump` (including
@@ -119,6 +119,43 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
     if unsafe { ffi::sf_ready(mt) } == 0 {
         set_state(PlaybackState::Connecting);
         return;
+    }
+    // Auto began on a proven-fast direct Remote, but the live transfer later lost both rate and
+    // content reserve. The demuxer has stopped cleanly at a packet boundary; replace the route and
+    // pipeline at the current movie position. This precedes the generic producer-death gates so
+    // the intentional handoff cannot be mistaken for EOF/Error.
+    let fallback_kbps = SHARED.auto_fallback_kbps.swap(0, Acquire);
+    if fallback_kbps > 0 {
+        let secs = (SHARED.playpos_ns.load(Relaxed) / 1_000_000_000).max(0);
+        let measured_kbps = u32::try_from(fallback_kbps).unwrap_or(u32::MAX);
+        if crate::route::fallback_auto_to_hls(measured_kbps, secs).is_some() {
+            super::engine::reload_transcode(mt, secs * 1_000_000_000);
+            return;
+        }
+        super::log("auto: Original watchdog handoff was stale or the HLS rebuild failed");
+        SHARED.demux_io_failed.store(true, Relaxed);
+    }
+    // The symmetric Auto handoff. The HLS worker stopped only after two successful probes of the
+    // actual source; restore either direct play (source seek + native payload) or a zero-video-
+    // encode remux (offset transcode + matching payload). Both replace the Engine, so return.
+    let recover_kbps = SHARED.auto_recover_kbps.swap(0, Acquire);
+    if recover_kbps > 0 {
+        let pos_ns = SHARED.playpos_ns.load(Relaxed).max(0);
+        let secs = pos_ns / 1_000_000_000;
+        match crate::route::recover_auto_to_original(secs) {
+            Some(crate::route::AutoOriginalReload::Direct) => {
+                super::engine::reload_at(mt, pos_ns);
+                return;
+            }
+            Some(crate::route::AutoOriginalReload::Remux) => {
+                super::engine::reload_transcode(mt, pos_ns);
+                return;
+            }
+            None => {
+                super::log("auto: Original recovery handoff was stale or the source rebuild failed");
+                SHARED.demux_io_failed.store(true, Relaxed);
+            }
+        }
     }
     // The producer died before publishing a duration: the EOS path is gated on `duration_ns > 0`
     // so it can NEVER fire, and the player used to sit on a black screen forever with no error

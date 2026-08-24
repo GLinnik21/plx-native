@@ -4056,6 +4056,12 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
     // its GStreamer is lazily initialised, so this is early enough and a later arming would be
     // read by nobody. It is the only instrument that can see inside the closed Dolby Vision chain.
     crate::dev::arm_gst_logging();
+    // Playback tests photograph the television as well as grading its log. This keeps the same
+    // ABR/pipeline evidence visible for every automated playback, rather than depending on the
+    // previous manual toggle surviving into a new session.
+    if crate::dev::flag("stats") {
+        crate::ui::stats::open();
+    }
     // THE main-thread token, minted once — this function IS the SDL main thread. Everything that
     // touches the ACB/Starfish seam or the Engine slot takes it by reference, and `&MainThread` is
     // !Send, so `task::spawn` rejects any closure that captured one. See `task::MainThread`.

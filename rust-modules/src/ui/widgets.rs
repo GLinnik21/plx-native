@@ -2919,6 +2919,10 @@ pub enum Tone {
 }
 
 /// One line of a [`FieldList`]. `val: None` makes it a SECTION heading rather than a pair.
+///
+/// Diagnostics are the one FieldList consumer that deliberately opts out of elision: its values
+/// are support evidence, so they wrap to as many measured lines as they need. The diagnostic panel
+/// owns the resulting height; every other FieldList caller continues to pass fixed frames.
 pub struct Field {
     pub key: &'static str,
     pub val: Option<String>,
@@ -2951,6 +2955,9 @@ pub const FIELD_ROW_H: f32 = 36.0;
 pub const FIELD_KEY_W: f32 = 178.0;
 /// Width a [`FieldList`] column needs: the key gutter plus room for the longest value.
 pub const FIELD_COL_W: f32 = FIELD_KEY_W + theme::space::MD + 292.0;
+/// The value column used by [`FieldList`]. Exposed so an owner can measure wrapped rows against
+/// exactly the width the list draws.
+pub const FIELD_VAL_W: f32 = 292.0;
 
 pub struct FieldList<'a> {
     pub fields: &'a [Field],
@@ -2966,14 +2973,44 @@ impl<'a> FieldList<'a> {
     pub fn height(n: usize) -> f32 {
         n as f32 * FIELD_ROW_H
     }
+
+    /// How many wrapped lines each value needs. Pure character geometry, independent of the live
+    /// font: this is a support read-out, whose invariant is "nothing is hidden", not a typographic
+    /// layout that must predict SDL's exact advance widths. A conservative average advance keeps
+    /// the panel tall enough on every face while the device itself does the real pixel wrap.
+    pub fn wrapped_line_count(fields: &[Field], width: f32) -> usize {
+        let value_width = ((width - FIELD_KEY_W - theme::space::MD) / BODY_AVG_ADVANCE)
+            .max(1.0)
+            .floor() as usize;
+        fields
+            .iter()
+            .map(|field| match &field.val {
+                None => 1,
+                Some(value) => value
+                    .split_whitespace()
+                    .fold((0usize, 0usize), |(lines, len), word| {
+                        let need = word.chars().count() + bool::from(len > 0) as usize;
+                        if len + need > value_width {
+                            (lines + 1 + usize::from(len > 0), word.chars().count())
+                        } else {
+                            (lines, len + need)
+                        }
+                    })
+                    .0
+                    .saturating_add(usize::from(!value.is_empty())),
+            })
+            .sum()
+    }
 }
+
+const BODY_AVG_ADVANCE: f32 = 15.0;
 
 impl View for FieldList<'_> {
     fn draw(&self, _e: &Env, p: Painter) {
         let vx = self.frame.x + FIELD_KEY_W + theme::space::MD;
         let vw = (self.frame.w - FIELD_KEY_W - theme::space::MD).max(0.0);
-        for (i, f) in self.fields.iter().enumerate() {
-            let y = self.frame.y + i as f32 * FIELD_ROW_H;
+        let mut y = self.frame.y;
+        for f in self.fields.iter() {
             match &f.val {
                 // a section heading spans the whole width and carries no value
                 None => {
@@ -2993,13 +3030,8 @@ impl View for FieldList<'_> {
                             .draw(p, Rect::new(self.frame.x, y, FIELD_KEY_W, FIELD_ROW_H));
                     }
                     let ink = if f.tone == Tone::Fault { theme::DANGER } else { theme::TEXT_PRIMARY };
-                    // ELIDE. Every other bounded-width text site in `ui/` does, and this one has a
-                    // value it cannot bound: the exported windowId is a compositor-assigned
-                    // char[64], which at this size is ~3x the value column and would run off the
-                    // card — on the one firmware family that cannot be tested here. `elide` is
-                    // memoised by (string, budget, size, bold) and the panel re-formats at 2 Hz.
-                    let bold = i32::from(f.tone == Tone::Fault);
-                    let v = crate::text::elide(v, vw, theme::size::BODY, bold, false);
+                    // WRAP, never elide: this read-out is support evidence, and a hidden suffix
+                    // can be the exact fact the photograph was taken to capture.
                     if let Ok(cs) = CString::new(v.as_str()) {
                         let mut l = Label::new(cs.as_ptr(), theme::size::BODY, ink);
                         if f.tone == Tone::Fault {
@@ -3009,6 +3041,16 @@ impl View for FieldList<'_> {
                     }
                 }
             }
+            y += match &f.val {
+                None => FIELD_ROW_H,
+                Some(_) => {
+                    let lines = FieldList::wrapped_line_count(
+                        std::slice::from_ref(f),
+                        self.frame.w,
+                    );
+                    lines as f32 * FIELD_ROW_H
+                }
+            };
         }
     }
 }

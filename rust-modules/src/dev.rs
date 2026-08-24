@@ -40,7 +40,7 @@
 // `test` as well as the feature: `any_trigger_present` is the only caller and it is cfg'd out of a
 // release build, but the test below asserts this list's contents and runs with default features.
 #[cfg(any(feature = "devtriggers", test))]
-const DIAG: [&str; 18] = [
+const DIAG: [&str; 19] = [
     "plxnative-events.log",
     "plxnative-stderr.log",
     "plxnative-crash.log",
@@ -73,6 +73,9 @@ const DIAG: [&str; 18] = [
     // from under the very session being measured.
     "plxnative-gstlog",
     "plxnative-gst.log",
+    // The forced Stats-for-nerds overlay. It only changes presentation, and grading a playback
+    // case without the read-out risks a failure whose evidence was never put on screen.
+    "plxnative-stats",
 ];
 
 /// Is the trigger `name` (bare, without the `plxnative-` prefix) present?
@@ -441,6 +444,15 @@ pub(crate) struct PlayUrl {
     /// Dolby Atmos, for the payload's `contents.immersive` node.
     #[serde(default)]
     pub(crate) atmos: bool,
+    /// Pipeline-tier Auto watchdog seam: whole Original wire bitrate. Zero leaves the ordinary
+    /// Plex-free one-shot playback unchanged.
+    #[serde(default)]
+    pub(crate) auto_source_kbps: u32,
+    /// Same-origin fixture HLS root used after the synthetic Original becomes unsustainable.
+    /// Present only in debug/test artifacts; production playback obtains replacement URLs from
+    /// PMS through `HlsAbrControl`.
+    #[serde(default)]
+    pub(crate) auto_hls_base: String,
 }
 
 /// The four DV fields the Load payload actually decides on — [`crate::metadata::Dovi`]'s
@@ -878,6 +890,21 @@ mod tests {
         let dv = p.dovi.to_dovi();
         assert!(!dv.present);
         assert_eq!(dv, crate::metadata::Dovi::NONE, "an absent dovi node must be silence itself");
+    }
+
+    /// The synthetic Auto case carries only public fixture coordinates and a declared source
+    /// rate. Keep that cross-language seam pinned separately from the ordinary declaration: a
+    /// parser that silently defaults either field would play Original forever and make the TV
+    /// network-profile case grade the wrong path.
+    #[test]
+    fn the_auto_fixture_fields_reach_the_runtime_verbatim() {
+        let p = super::parse_playurl(
+            r#"{"url":"http://192.0.2.10:8020/original.mp4","vcodec":"h264","acodec":"aac",
+                "auto_source_kbps":8000,"auto_hls_base":"http://192.0.2.10:8020/__abr"}"#,
+        )
+        .unwrap();
+        assert_eq!(p.auto_source_kbps, 8_000);
+        assert_eq!(p.auto_hls_base, "http://192.0.2.10:8020/__abr");
     }
 
     /// `present` is DERIVED, so it cannot disagree with the profile in either direction.

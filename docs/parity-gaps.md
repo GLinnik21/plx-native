@@ -164,11 +164,17 @@ lean struct on the worker exactly as `route.rs:403` `up_next_of` already does.
 no field to vary it. No picker, no ladder~~ — **LANDED 2026-08-24: `route::Quality` has Original,
 five fixed rungs and Auto in the `…` popover; `TranscodeSpec` carries `Ceiling`; the choice persists
 in `Session`. Legacy/malformed/missing values stay Original, while a fresh install starts on Auto.
-Auto uses measured fixed-session HLS and replaces a PMS encoder only after its first segment has
-been decoded and has passed network, production and content-buffer headroom gates.**
+Auto treats Original as its top state: Local admits it immediately and direct Remote requires a
+bounded actual-file sample with 1.35× whole-file bitrate headroom. Otherwise Auto uses measured
+fixed-session HLS and replaces a PMS encoder only after candidate media has passed network,
+production and content-buffer headroom gates. A direct Remote that slows after startup is watched
+continuously and moves to HLS at the current position only after two low-rate, low-content-buffer
+windows; HLS then retains the ordinary slow-up/fast-down controller.**
 Still open: no direct-play/direct-stream policy toggles, no version picker (`mediaIndex` is
-hard-coded 0 while `docs/pms-api.md` §4 explicitly warns not to take `Media[0]` blindly), no way back
-to direct play mid-session, and a failed direct play dead-ends instead of falling back to transcode.
+hard-coded 0 while `docs/pms-api.md` §4 explicitly warns not to take `Media[0]` blindly), and a
+failed direct play dead-ends instead of falling back to transcode. Auto now does have a measured
+way back mid-session: stable top-rung HLS plus two successful source probes restores Original and
+re-arms the runtime watchdog.
 
 ---
 
@@ -1196,7 +1202,7 @@ player, transport and tracks auditors, and is counted once in the themes above.
 *Already implemented here: 14 reference features.*
 
 - **~~There is no Quality picker anywhere in the app~~ — LANDED 2026-08-23 (PR #57)** — was `blocker` / `medium`  
-  **Read the row below as the gap it WAS.** The picker exists: `route::Quality`, Auto plus five rungs, drawn as a second SECTION of the existing `…` overflow popover (`ui/more_menu.rs`) rather than a second modal. The choice persists as `Session::playback_quality`; legacy sessions remain Original and fresh installs start on Auto. Fixed rungs continue through the proven progressive path. Auto uses segmented HLS, measures transfer rate, segment-production ratio and normalized A/V buffer duration, and transactionally replaces one fixed-rendition PMS encoder with another without issuing a new Starfish Load. LG #43 CASE1 is device-passing; see `docs/lg-self-checklist.md`.
+  **Read the row below as the gap it WAS.** The picker exists: `route::Quality`, Auto plus five rungs, drawn as a second SECTION of the existing `…` overflow popover (`ui/more_menu.rs`) rather than a second modal. The choice persists as `Session::playback_quality`; legacy sessions remain Original and fresh installs start on Auto. Fixed rungs continue through the proven progressive path. Auto first preserves Original on Local or on a direct Remote whose bounded actual-file sample has 1.35× bitrate headroom; otherwise it uses segmented HLS, measures transfer rate, segment-production ratio and normalized A/V buffer duration, and transactionally replaces one fixed-rendition PMS encoder with another without issuing a new Starfish Load. LG #43 CASE1 is device-passing; see `docs/lg-self-checklist.md`.
 
   Plex HTPC opens a full-screen Quality modal from the transport and lets the user pick a bitrate/resolution tier mid-playback. We have no such screen, no such control, and no such concept: the in-player overlays are exactly Menu (audio/subs), Info and Chapters, and the transport's right-hand control row holds exactly two focusable discs (Subtitles, Audio).  
   *Where:* New ui/quality_menu.rs composed from ui/popover.rs + ui/table.rs (exactly the pattern ui/track_menu.rs uses); a fifth `Overlay::Quality` in app.rs:579-584 with its key/pointer arms alongside app.rs:1216-1330 and app.rs:2142-2160; the commit routed into route.rs beside `commit_audio_selection` (route.rs:922-935). No new PMS endpoint — it re-registers through the existing `/video/:/transcode/universal/decision` + `start.mkv` (plex/transcoder.rs:129-137).  

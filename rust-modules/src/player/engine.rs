@@ -510,6 +510,13 @@ pub(crate) fn start_bufferfeed(mt: &MainThread) -> bool {
                 crate::route::set_url(&url);
                 crate::route::set_stream_declaration(
                     &p.vcodec, &p.acodec, p.fps, p.dovi.to_dovi(), p.atmos);
+                if p.auto_source_kbps > 0 && !p.auto_hls_base.is_empty() {
+                    crate::route::arm_auto_fixture(
+                        &p.url,
+                        p.auto_source_kbps,
+                        &p.auto_hls_base,
+                    );
+                }
             }
             // Log and fall through rather than refuse: the next candidate may well be armed. The
             // harness grades this as a failure anyway, because the `load:` line below will not say
@@ -670,8 +677,9 @@ pub(crate) fn start_bufferfeed(mt: &MainThread) -> bool {
             // switch_audio_native), which respawns this thread with the new value.
             let acodec = crate::route::stream_acodec();
             let abr = crate::route::hls_abr_control();
+            let auto_original = crate::route::auto_original_watch();
             stream_th = crate::task::spawn("demux", move || {
-                crate::ff::demux(origin, path, acodec, abr, aqp, aqap, hsp)
+                crate::ff::demux(origin, path, acodec, abr, auto_original, aqp, aqap, hsp)
             });
             if stream_th.is_none() {
                 // Nothing will ever fill the AU queues, so there is no session to start. `hs` is

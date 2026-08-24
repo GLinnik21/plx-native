@@ -1152,6 +1152,42 @@ PIPE_SHAPES = {
                    "default": True, "title": "AAC 2.0 English"}],
         "subs": [],
     },
+    # Four independently decodable two-second MPEG-TS segments for the no-Plex Auto network-profile
+    # case. `serve_fixtures.py` exposes each at both bitrate rungs sharing its raster, so the real
+    # HLS controller can prime/swap fixed sessions without a PMS. Shortness is intentional here:
+    # these are HLS segment bodies, never top-level playback fixtures.
+    "pipe_abr_240p": {
+        "kind": "clip", "ext": "ts", "duration": 2, "rate": 0.02, "hls_segment": True,
+        "declare": {"vcodec": "h264", "acodec": "aac", "fps": float(FPS), "atmos": False},
+        "video": {"codec": "h264", "size": "426x240", "crf": 23},
+        "audio": [{"codec": "aac", "ch": 2, "lang": "eng", "br": "96k", "pitch": 180,
+                   "default": True, "title": "AAC 2.0 English"}],
+        "subs": [],
+    },
+    "pipe_abr_480p": {
+        "kind": "clip", "ext": "ts", "duration": 2, "rate": 0.03, "hls_segment": True,
+        "declare": {"vcodec": "h264", "acodec": "aac", "fps": float(FPS), "atmos": False},
+        "video": {"codec": "h264", "size": "854x480", "crf": 22},
+        "audio": [{"codec": "aac", "ch": 2, "lang": "eng", "br": "128k", "pitch": 200,
+                   "default": True, "title": "AAC 2.0 English"}],
+        "subs": [],
+    },
+    "pipe_abr_720p": {
+        "kind": "clip", "ext": "ts", "duration": 2, "rate": 0.05, "hls_segment": True,
+        "declare": {"vcodec": "h264", "acodec": "aac", "fps": float(FPS), "atmos": False},
+        "video": {"codec": "h264", "size": "1280x720", "crf": 21},
+        "audio": [{"codec": "aac", "ch": 2, "lang": "eng", "br": "160k", "pitch": 220,
+                   "default": True, "title": "AAC 2.0 English"}],
+        "subs": [],
+    },
+    "pipe_abr_1080p": {
+        "kind": "clip", "ext": "ts", "duration": 2, "rate": 0.08, "hls_segment": True,
+        "declare": {"vcodec": "h264", "acodec": "aac", "fps": float(FPS), "atmos": False},
+        "video": {"codec": "h264", "size": "1920x1080", "crf": 20},
+        "audio": [{"codec": "aac", "ch": 2, "lang": "eng", "br": "192k", "pitch": 240,
+                   "default": True, "title": "AAC 2.0 English"}],
+        "subs": [],
+    },
     # -----------------------------------------------------------------------------------
     # ...and the one shape in either pack that is SUPPOSED to run out — LG item #46.
     "pipe_h264_ac3_short": {
@@ -1309,6 +1345,10 @@ PIPE_MBIT = {
     "pipe_hevc_eac3_720p": 2.50,        # 2.12 + 0.38
     "pipe_hevc_eac3_1080p": 4.90,       # 4.52 + 0.38
     "pipe_h264_aac_resolution_spike": 4.40,  # 8s 720p + 8s 1080p + long 720p tail, AAC
+    "pipe_abr_240p": 0.32,
+    "pipe_abr_480p": 0.72,
+    "pipe_abr_720p": 4.00,
+    "pipe_abr_1080p": 20.0,
     "pipe_h264_ac3_short": 1.71,        # = pipe_h264_ac3_480p, of which it is a 20 s copy
 }
 
@@ -1835,6 +1875,20 @@ def boundary_packet_nals(path, boundary_s):
     return h264_nal_types(_ffprobe_data_bytes(min(candidates, key=lambda x: x[0])[1].get("data")))
 
 
+def first_key_packet_nals(path):
+    """NAL types in an independent segment's first key packet, irrespective of TS PTS offset."""
+    try:
+        doc = json.loads(run([
+            "ffprobe", "-v", "error", "-select_streams", "v:0",
+            "-show_packets", "-show_data",
+            "-show_entries", "packet=flags,data", "-of", "json", str(path),
+        ]))
+    except (Fail, ValueError):
+        return []
+    packet = next((p for p in doc.get("packets", []) if "K" in (p.get("flags") or "")), None)
+    return h264_nal_types(_ffprobe_data_bytes((packet or {}).get("data")))
+
+
 def physical_av_interleave(packets, video_index, audio_index):
     """Maximum PTS separation while walking packets in physical file order.
 
@@ -2024,7 +2078,7 @@ def verify(key, spec, dur, path, ep=None):
     want_desc = "\n".join(layout_lines(key, spec, int(round(measured)) or dur, ep))
     got_desc = tags.get("description") or tags.get("comment")
     rec["description_ok"] = (got_desc or "").strip() == want_desc.strip()
-    if not rec["description_ok"]:
+    if not rec["description_ok"] and not spec.get("hls_segment"):
         problems.append("container description does not match the burned-in layout "
                         "(got %r)" % ((got_desc or "")[:60]))
 
@@ -2051,7 +2105,7 @@ def verify(key, spec, dur, path, ep=None):
             # `hvc1` vs `hev1` decides whether some players will touch the file at all, and
             # it is one `-tag:v` away from wrong. A hev1 copy of this shape verified clean.
             problems.append("codec tag %r, wanted %r" % (s.get("codec_tag_string"), v["tag"]))
-        if not (s.get("disposition") or {}).get("default"):
+        if not (s.get("disposition") or {}).get("default") and not spec.get("hls_segment"):
             problems.append("video track is not flagged default (real library files are)")
         want_codec = VCODEC_NAME[v["codec"]]
         if s.get("codec_name") != want_codec:
@@ -2119,6 +2173,13 @@ def verify(key, spec, dur, path, ep=None):
                                 "(dovi_tool inject-rpu did not land)")
         if spec.get("resolution_spike"):
             verify_resolution_spike(path, spec, dur, rec, problems)
+        if spec.get("hls_segment"):
+            nals = first_key_packet_nals(path)
+            rec["video"]["first_key_nals"] = nals
+            missing = {5, 7, 8} - set(nals)
+            if missing:
+                problems.append("independent HLS segment first key packet NALs %s; missing %s"
+                                % (nals, sorted(missing)))
 
     want_audio = spec.get("audio", [])
     rec["audio"] = [{"codec": s.get("codec_name"), "channels": s.get("channels"),
@@ -2139,12 +2200,12 @@ def verify(key, spec, dur, path, ep=None):
             if lang != w["lang"]:
                 problems.append("audio[%d] language %r, wanted %r" % (i, lang, w["lang"]))
             dflt = bool((got.get("disposition") or {}).get("default"))
-            if dflt != bool(w.get("default")):
+            if dflt != bool(w.get("default")) and not spec.get("hls_segment"):
                 problems.append("audio[%d] default=%s, wanted %s" % (i, dflt, bool(w.get("default"))))
             # Track titles are checked for MATROSKA only: mp4 does not carry a per-track
             # title through this path, which is why the mp4 shape declares none. A spec
             # field nothing reads back is a claim, and this file had three of them.
-            if spec["ext"] != "mp4" and w.get("title"):
+            if spec["ext"] not in ("mp4", "ts") and w.get("title"):
                 title = (got.get("tags") or {}).get("title")
                 if title != w["title"]:
                     problems.append("audio[%d] title %r, wanted %r" % (i, title, w["title"]))

@@ -626,13 +626,24 @@ Byte-range serving works, so seek-by-range is available to the player.
 | `audioChannels` | 6 | downmix decision |
 | `Part[].size`, `Part[].duration` | | progress math, buffering hints |
 
-Auto quality uses the HLS transcode endpoint
-(`/video/:/transcode/universal/start.m3u8`). The measured PMS exposes one fixed rendition per
-encoder session, so PlxNative performs adaptation by priming a separately named encoder and
-committing only after one complete candidate segment is decodable and sustainable. The accepted
-playlist subset, session-ID precedence, safe probe tooling and redacted live evidence are documented
-in `docs/pms-hls-protocol-probe.md`. Original and the five user-selected fixed rungs remain on the
-progressive direct-play/start.mkv paths described above.
+Auto first tries to avoid an encoder entirely. Local uses Original immediately. On a direct Remote,
+PlxNative samples a bounded prefix of the actual Part and admits direct play or a codec-preserving
+remux only with 1.35× headroom over `Media[0].bitrate`; missing/slow/inconclusive measurements and
+Relay fall back to the HLS transcode endpoint (`/video/:/transcode/universal/start.m3u8`). The
+progressive path continues measuring successful body-read time and normalized A/V buffer time, so
+a later bandwidth collapse can replace Original with HLS at the current position. Two consecutive
+750 ms low-rate/low-buffer windows are required; the measured rate selects the first safe rung.
+The
+measured PMS exposes one fixed rendition per encoder session, so PlxNative performs HLS adaptation
+by priming a separately named encoder and committing only after complete candidate media is
+decodable and sustainable. Three consecutive draining JIT-overrun segments are required before a
+production-only downshift, and a downshift holds for several segments before another upshift, so a
+single slow PMS segment cannot flap 20→8→20 Mbit/s. Once the top HLS rung is stable, two spaced
+bounded probes of the actual Part must each pass the same 1.5× rule before the app returns to direct
+play or codec-preserving remux and retires the HLS encoder. The accepted playlist subset,
+session-ID precedence, safe probe tooling
+and redacted live evidence are documented in `docs/pms-hls-protocol-probe.md`. Original and the five
+user-selected fixed rungs remain on the progressive direct-play/start.mkv paths described above.
 
 ---
 

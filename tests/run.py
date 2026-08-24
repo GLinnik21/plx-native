@@ -691,6 +691,13 @@ def triggers_for_case(case, url_base=None):
         spec = dict(case.get("declare", {}))
         spec["url"] = f"{url_base}/{case['fixture']}"
         files = [("plxnative-playurl", json.dumps(spec, separators=(",", ":")))]
+        files.append(("plxnative-stats", None))
+        auto = case.get("auto_network")
+        if auto:
+            spec["auto_source_kbps"] = int(auto["source_kbps"])
+            spec["auto_hls_base"] = f"{url_base}/__abr"
+            files[0] = ("plxnative-playurl", json.dumps(spec, separators=(",", ":")))
+            files.append(("plxnative-quality", "auto"))
         # `plxnative-replay=<n>` — how many times a FINISHED playback restarts itself (LG #46).
         # Keyed off `expect.replays`, so the number the app is TOLD and the number the harness
         # GRADES are one statement rather than two that nothing keeps in step. Absent => the
@@ -706,6 +713,7 @@ def triggers_for_case(case, url_base=None):
         files = [
             ("plxnative-play", case["rk"]),  # the robust play trigger (fetches any rk)
             ("plxnative-quality", case.get("quality", "original")),
+            ("plxnative-stats", None),
         ]
     gst_debug = case.get("gst_trace", {}).get("debug")
     if gst_debug:
@@ -1164,6 +1172,43 @@ def a_load_count(lines, want):
     """An adaptive coded-size change must stay inside one Starfish Load/session."""
     got = sum(bool(RE_LOAD.search(ln)) for ln in lines)
     return got == want, f"saw {got} Load declaration(s), want exactly {want}"
+
+
+RE_AUTO_FALLBACK = re.compile(r"auto: Original watchdog sustained measured=(\d+)kbps buffer=(\d+)ms -> HLS")
+RE_ABR_UP = re.compile(r"abr: committed Up to (\d+)kbps (\d+)x(\d+)")
+RE_AUTO_RECOVERY_REQUEST = re.compile(r"abr: source sustainable again at (\d+)kbps; requesting Original")
+RE_AUTO_RECOVERED = re.compile(r"auto: recovered Original (direct play|remux)")
+
+
+def a_auto_network_recovery(lines, max_fallback_kbps, min_recovered_kbps):
+    """One offline TV session saw Original collapse, HLS recover, then Original return."""
+    fallback = next(((i, RE_AUTO_FALLBACK.search(line)) for i, line in enumerate(lines)
+                     if RE_AUTO_FALLBACK.search(line)), None)
+    if fallback is None:
+        return False, "no Original watchdog fallback line"
+    index, match = fallback
+    measured, buffered = int(match.group(1)), int(match.group(2))
+    if measured > max_fallback_kbps:
+        return False, (f"fallback measured {measured}kbps, want <= {max_fallback_kbps}kbps "
+                       f"for the shaped leg :: {match.string.strip()}")
+    recovered = [(i, int(m.group(1)), m.string.strip())
+                 for i, line in enumerate(lines[index + 1:], start=index + 1)
+                 for m in [RE_ABR_UP.search(line)] if m]
+    hit = next((row for row in recovered if row[1] >= min_recovered_kbps), None)
+    if hit is None:
+        got = max((kbps for _, kbps, _ in recovered), default=0)
+        return False, (f"fallback happened at {measured}kbps/{buffered}ms, but recovery reached "
+                       f"only {got}kbps (want >= {min_recovered_kbps})")
+    requested = next(((i, m) for i, line in enumerate(lines[hit[0] + 1:], start=hit[0] + 1)
+                      for m in [RE_AUTO_RECOVERY_REQUEST.search(line)] if m), None)
+    if requested is None:
+        return False, f"HLS recovered to {hit[1]}kbps, but never requested Original"
+    recovered = next((m for line in lines[requested[0] + 1:]
+                      for m in [RE_AUTO_RECOVERED.search(line)] if m), None)
+    if recovered is None:
+        return False, "Original was requested after recovery, but the route never committed it"
+    return True, (f"Original fell at {measured}kbps/{buffered}ms; HLS reached {hit[1]}kbps; "
+                  f"source measured {requested[1].group(1)}kbps; recovered {recovered.group(1)}")
 
 
 def a_audio_feed_ready(lines):
@@ -2367,6 +2412,14 @@ def _resolve_fixtures(cases, root):
         if not os.path.isfile(path):
             c["skip"] = f"no fixture {name!r} in {root} — run `make fixtures-pipeline`"
             continue
+        if c.get("auto_network"):
+            abr_names = ["pipe_abr_240p.ts", "pipe_abr_480p.ts",
+                         "pipe_abr_720p.ts", "pipe_abr_1080p.ts"]
+            missing = [n for n in abr_names if not os.path.isfile(os.path.join(root, n))]
+            if missing:
+                c["skip"] = ("Auto network profile is missing segment fixtures "
+                             f"{', '.join(missing)} — run `make fixtures-pipeline`")
+                continue
         probe = _probe_fixture(path)
         if probe is not None:
             dur, streams = probe
@@ -2413,6 +2466,9 @@ def evaluate_pipeline(case, lines, srv_delta, gst_lines=None):
     results.append(("load_decl", *a_load_decl(lines, exp)))
     if "load_count_exact" in exp:
         results.append(("load_count", *a_load_count(lines, exp["load_count_exact"])))
+    if "auto_fallback_max_kbps" in exp:
+        results.append(("auto_network", *a_auto_network_recovery(
+            lines, exp["auto_fallback_max_kbps"], exp["abr_recovery_min_kbps"])))
     if exp.get("require_audio_feed_ready"):
         results.append(("audio_feed", *a_audio_feed_ready(lines)))
     if exp.get("no_reload"):
@@ -2475,6 +2531,7 @@ def run_pipeline_case(case, cfg, srv, url_base, verbose):
     print(f"    covers: {', '.join(case.get('covers', []))}")
 
     make(["kill", f"TV={tv}"], timeout=40)
+    srv.set_network_profile(case.get("network_profile"))
     files = triggers_for_case(case, url_base=url_base)
     apply_triggers(tv, files)
     print("    triggers: " + ", ".join(n + ("=" + c if c is not None else "") for n, c in files))

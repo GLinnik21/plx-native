@@ -182,6 +182,9 @@ const CURLOPT_SSL_VERIFYHOST: c_int = 81;
 const CURLOPT_BUFFERSIZE: c_int = 98;
 const CURLOPT_NOSIGNAL: c_int = 99;
 const CURLOPT_TCP_NODELAY: c_int = 121;
+/// Millisecond total-request deadline. Present since curl 7.16.2, well below the 7.53.1 webOS
+/// floor. Ordinary movie transfers deliberately do not set it; the short Auto preflight does.
+const CURLOPT_TIMEOUT_MS: c_int = 155;
 /// The numeric protocol options are the compatibility surface for this project's curl floor.
 /// Their `_STR` replacements are newer than webOS 4.5's libcurl 7.53.1.
 const CURLOPT_PROTOCOLS: c_int = 181;
@@ -335,6 +338,13 @@ impl OpenReservation {
         Some(OpenReservation { abort: Some(abort) })
     }
 
+    /// A short independent transfer which must not replace the demuxer's teardown target. Auto's
+    /// remote-original preflight can run while the outgoing player still owns [`ACTIVE`]; putting
+    /// this handle there would make teardown wake the probe instead of the movie.
+    fn private() -> Option<OpenReservation> {
+        Some(OpenReservation { abort: Some(Abort::new()?) })
+    }
+
     fn into_abort(mut self) -> Arc<Abort> {
         self.abort.take().expect("a reservation is consumed once")
     }
@@ -424,6 +434,8 @@ pub(crate) enum OpenErr {
     Unavailable,
     /// Teardown fired while the open was in flight.
     Aborted,
+    /// A caller-owned bounded preflight expired. Ordinary media opens have no such deadline.
+    Deadline,
     /// A `CURLcode` — DNS, TLS, connect, low-speed. Named the way `net.rs` names them.
     Transport(c_int),
     /// A `CURLMcode` from the multi interface itself. This is local transport machinery failing,
@@ -563,6 +575,15 @@ impl CurlSource {
         at: i64,
         reservation: OpenReservation,
     ) -> Result<Box<CurlSource>, OpenErr> {
+        Self::open_with_reservation_until(url, at, reservation, None)
+    }
+
+    fn open_with_reservation_until(
+        url: &str,
+        at: i64,
+        reservation: OpenReservation,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<Box<CurlSource>, OpenErr> {
         let url_c = CString::new(url).map_err(|_| OpenErr::Local)?;
         let ua = CString::new(crate::plex::identity::user_agent()).map_err(|_| OpenErr::Local)?;
         let multi = unsafe { curl_multi_init() };
@@ -587,12 +608,20 @@ impl CurlSource {
             readable: false,
             poisoned: false,
         });
-        src.start(at)?;
+        src.start_until(at, deadline)?;
         Ok(src)
     }
 
     /// Attach a fresh easy handle at byte `at` and pump until its headers are complete.
     fn start(&mut self, at: i64) -> Result<(), OpenErr> {
+        self.start_until(at, None)
+    }
+
+    fn start_until(
+        &mut self,
+        at: i64,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<(), OpenErr> {
         self.stop();
         if self.multi_failed {
             // A CURLM error describes this multi handle, not the remote byte range. Rebuild the
@@ -655,6 +684,14 @@ impl CurlSource {
             crate::net::curl_easy_setopt_long(easy, CURLOPT_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS);
             crate::net::curl_easy_setopt_long(easy, CURLOPT_REDIR_PROTOCOLS, redirect_protocols);
             crate::net::curl_easy_setopt_long(easy, CURLOPT_CONNECTTIMEOUT, CONNECT_TIMEOUT_S);
+            if let Some(at) = deadline {
+                let left_ms = at
+                    .saturating_duration_since(std::time::Instant::now())
+                    .as_millis()
+                    .max(1)
+                    .min(c_long::MAX as u128) as c_long;
+                crate::net::curl_easy_setopt_long(easy, CURLOPT_TIMEOUT_MS, left_ms);
+            }
             crate::net::curl_easy_setopt_long(easy, CURLOPT_LOW_SPEED_LIMIT, 1);
             crate::net::curl_easy_setopt_long(easy, CURLOPT_LOW_SPEED_TIME, LOW_SPEED_TIME_S);
             crate::net::curl_easy_setopt_long(easy, CURLOPT_NOPROGRESS, 1);
@@ -677,11 +714,23 @@ impl CurlSource {
             if self.abort.is_set() {
                 return Err(OpenErr::Aborted);
             }
+            if deadline.is_some_and(|at| std::time::Instant::now() >= at) {
+                return Err(OpenErr::Deadline);
+            }
             self.perform()?;
             if self.xfer.headers_done || self.done {
                 break;
             }
-            match multi_wait(self.multi, &self.abort, WAIT_MS) {
+            let wait_ms = deadline.map_or(WAIT_MS, |at| {
+                let left_us = at
+                    .saturating_duration_since(std::time::Instant::now())
+                    .as_micros();
+                ((left_us.saturating_add(999) / 1_000).min(WAIT_MS as u128)) as c_int
+            });
+            if wait_ms <= 0 {
+                return Err(OpenErr::Deadline);
+            }
+            match multi_wait(self.multi, &self.abort, wait_ms) {
                 Wait::Woken if self.abort.is_set() => return Err(OpenErr::Aborted),
                 Wait::Failed(rc) => {
                     self.fail_multi_wait(rc);
@@ -947,6 +996,59 @@ impl CurlSource {
     pub(crate) fn fail_multi_for_test(&mut self) {
         self.fail_multi_wait(1);
     }
+}
+
+/// A bounded sample of the actual remote file used by Auto before it commits to Original.
+/// `elapsed` covers body reads only; DNS/TLS/header latency is bounded by the same outer deadline
+/// but is not confused with sustainable byte throughput.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ThroughputSample {
+    pub(crate) bytes: u64,
+    pub(crate) elapsed: std::time::Duration,
+    pub(crate) target_reached: bool,
+}
+
+impl ThroughputSample {
+    pub(crate) fn kbps(self) -> u64 {
+        let us = self.elapsed.as_micros().max(1);
+        ((u128::from(self.bytes) * 8 * 1_000) / us).min(u128::from(u64::MAX)) as u64
+    }
+}
+
+/// Read at most `target_bytes` from a URL before `budget` expires, without taking over the live
+/// demuxer's abort registry. The caller owns the policy; this function reports only observation.
+/// Dropping the source stops the request as soon as the sample is complete, so the prefix is not
+/// retained and the remainder of the movie is never downloaded here.
+pub(crate) fn sample_throughput(
+    url: &str,
+    target_bytes: usize,
+    budget: std::time::Duration,
+) -> Option<ThroughputSample> {
+    if target_bytes == 0 || budget.is_zero() || !available() {
+        return None;
+    }
+    let deadline = std::time::Instant::now().checked_add(budget)?;
+    let reservation = OpenReservation::private()?;
+    let mut src = CurlSource::open_with_reservation_until(url, 0, reservation, Some(deadline)).ok()?;
+    let started = std::time::Instant::now();
+    let mut bytes = 0usize;
+    let mut chunk = [0u8; 64 * 1024];
+    while bytes < target_bytes {
+        let want = chunk.len().min(target_bytes - bytes);
+        let n = src.read_until(&mut chunk[..want], Some(deadline));
+        if n <= 0 {
+            break;
+        }
+        bytes = bytes.saturating_add(n as usize);
+    }
+    if bytes == 0 {
+        return None;
+    }
+    Some(ThroughputSample {
+        bytes: bytes as u64,
+        elapsed: started.elapsed(),
+        target_reached: bytes >= target_bytes,
+    })
 }
 
 impl Drop for CurlSource {

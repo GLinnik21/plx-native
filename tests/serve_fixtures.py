@@ -51,12 +51,24 @@ import socket
 import socketserver
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler
 
 # `bytes=<n>-` and `bytes=<n>-<m>`. The app only ever sends the open-ended form, but a closed range
 # is what a browser sends when someone points one at this server to check a fixture by hand, and
 # answering it wrongly there would look like a server bug while debugging a real one.
 RE_RANGE = re.compile(r"^bytes=(\d+)-(\d*)$")
+RE_ABR_PLAYLIST = re.compile(r"^/__abr/(320|720|2000|4000|8000|20000)/(master|media)\.m3u8$")
+RE_ABR_SEGMENT = re.compile(r"^/__abr/(320|720|2000|4000|8000|20000)/segment\.ts$")
+ABR_FIXTURE = {
+    "320": "pipe_abr_240p.ts", "720": "pipe_abr_480p.ts",
+    "2000": "pipe_abr_720p.ts", "4000": "pipe_abr_720p.ts",
+    "8000": "pipe_abr_1080p.ts", "20000": "pipe_abr_1080p.ts",
+}
+ABR_RASTER = {
+    "320": "426x240", "720": "854x480", "2000": "1280x720",
+    "4000": "1280x720", "8000": "1920x1080", "20000": "1920x1080",
+}
 
 
 class FixtureHandler(BaseHTTPRequestHandler):
@@ -74,7 +86,8 @@ class FixtureHandler(BaseHTTPRequestHandler):
         `..` out of the string — the filter form is the one that keeps being wrong.
         """
         target = self.path.split("?", 1)[0].split("#", 1)[0]
-        rel = target.lstrip("/")
+        seg = RE_ABR_SEGMENT.match(target)
+        rel = ABR_FIXTURE[seg.group(1)] if seg else target.lstrip("/")
         full = os.path.realpath(os.path.join(self.server.root, rel))
         if full != self.server.root and not full.startswith(self.server.root + os.sep):
             return None
@@ -97,7 +110,40 @@ class FixtureHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self._serve(body=True)
 
+    def _abr_playlist(self):
+        target = self.path.split("?", 1)[0].split("#", 1)[0]
+        match = RE_ABR_PLAYLIST.match(target)
+        if not match:
+            return None
+        kbps, kind = match.groups()
+        if kind == "master":
+            text = ("#EXTM3U\n#EXT-X-VERSION:3\n"
+                    f"#EXT-X-STREAM-INF:BANDWIDTH={int(kbps) * 1000},RESOLUTION={ABR_RASTER[kbps]}\n"
+                    "media.m3u8\n")
+        else:
+            rows = ["#EXTM3U", "#EXT-X-VERSION:3", "#EXT-X-TARGETDURATION:2",
+                    "#EXT-X-MEDIA-SEQUENCE:0"]
+            for sequence in range(90):
+                # Each backing file is an independent MPEG-TS program with an IDR and in-band
+                # SPS/PPS at its head, matching the measured PMS segment contract.
+                rows.extend(("#EXTINF:2.0,", f"segment.ts?sequence={sequence}"))
+            rows.append("#EXT-X-ENDLIST")
+            text = "\n".join(rows) + "\n"
+        return text.encode("utf-8")
+
     def _serve(self, body):
+        playlist = self._abr_playlist()
+        if playlist is not None:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/vnd.apple.mpegurl")
+            self.send_header("Content-Length", str(len(playlist)))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.close_connection = True
+            if body:
+                self.server.count(False)
+                self.server.write_body(self.wfile, playlist)
+            return
         path = self._resolve()
         if path is None:
             return self._fail(404, "Not Found")
@@ -137,10 +183,10 @@ class FixtureHandler(BaseHTTPRequestHandler):
                 f.seek(start)
                 left = length
                 while left > 0:
-                    chunk = f.read(min(262144, left))
+                    chunk = f.read(min(self.server.chunk_size(), left))
                     if not chunk:
                         break
-                    self.wfile.write(chunk)
+                    self.server.write_body(self.wfile, chunk)
                     left -= len(chunk)
         except (BrokenPipeError, ConnectionResetError):
             # The demuxer closes mid-body on every seek and on teardown. That is the protocol here,
@@ -160,7 +206,47 @@ class FixtureServer(socketserver.ThreadingTCPServer):
         # `stats()` is the only reader — it wants totals. A list of per-request tuples grew for
         # the life of the run and read as though something consulted it.
         self.n_opens = self.n_ranged = 0
+        self.rate_profile = []
+        self.rate_started = None
         super().__init__((bind, port), FixtureHandler)
+
+    def set_network_profile(self, profile):
+        """Install one case-local wall-clock rate schedule: [{until_s, kbps}, ...].
+
+        The clock begins on the first response body, not when the harness starts the app, so SSH,
+        boot and Load latency cannot consume the fast leg before the television opens the file.
+        Empty restores the ordinary unshaped fixture server.
+        """
+        cleaned = []
+        for leg in profile or []:
+            until_s, kbps = float(leg["until_s"]), int(leg["kbps"])
+            if until_s <= 0 or kbps <= 0 or (cleaned and until_s <= cleaned[-1][0]):
+                raise ValueError(f"invalid network-profile leg: {leg!r}")
+            cleaned.append((until_s, kbps))
+        with self.lock:
+            self.rate_profile = cleaned
+            self.rate_started = None
+
+    def _rate_kbps(self):
+        with self.lock:
+            if not self.rate_profile:
+                return None
+            now = time.monotonic()
+            if self.rate_started is None:
+                self.rate_started = now
+            elapsed = now - self.rate_started
+            return next((kbps for until_s, kbps in self.rate_profile if elapsed < until_s),
+                        self.rate_profile[-1][1])
+
+    def chunk_size(self):
+        return 64 * 1024 if self._rate_kbps() is not None else 262144
+
+    def write_body(self, stream, data):
+        stream.write(data)
+        stream.flush()
+        kbps = self._rate_kbps()
+        if kbps is not None:
+            time.sleep(len(data) * 8 / (kbps * 1000.0))
 
     def note(self, msg):
         if self.sink:

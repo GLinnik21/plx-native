@@ -23,6 +23,7 @@ skips only its owner — are properties of the tracked matrix as it actually sta
 tomorrow that breaks one of them should fail here rather than on the television.
 """
 import importlib.util
+import io
 import json
 import os
 import shutil
@@ -44,6 +45,7 @@ sys.path.insert(0, TESTS_DIR)
 sys.path.append(os.path.join(REPO_ROOT, "tools"))
 import netcond  # noqa: E402
 import run  # noqa: E402  (path juggling above is the point)
+import serve_fixtures  # noqa: E402
 
 _FIXTURE_GEN_SPEC = importlib.util.spec_from_file_location(
     "plx_make_fixtures", os.path.join(TESTS_DIR, "fixtures", "make_fixtures.py"))
@@ -293,6 +295,7 @@ class PipelineTier(unittest.TestCase):
         self.assertEqual(files, [
             ("plxnative-play", "1234"),
             ("plxnative-quality", "original"),
+            ("plxnative-stats", None),
         ])
 
     def test_an_integration_case_can_explicitly_grade_auto(self):
@@ -795,6 +798,97 @@ class CompletionCase(unittest.TestCase):
                 run._resolve_fixtures([short], d)
                 self.assertNotIn("skip", short)
                 self.assertEqual(short["path"], path)
+            finally:
+                run._probe_fixture = saved
+
+
+class AutoNetworkProfile(unittest.TestCase):
+    """The no-Plex TV case drives one live fast→slow→fast response schedule."""
+
+    def _case(self):
+        return next(c for c in _manifest()["pipeline_cases"]
+                    if c["name"] == "pipe_auto_original_slow_recover")
+
+    def test_trigger_carries_auto_policy_source_rate_and_same_origin_hls_root(self):
+        files = dict(run.triggers_for_case(self._case(), url_base="http://192.0.2.10:8020"))
+        self.assertEqual(files["plxnative-quality"], "auto")
+        spec = json.loads(files["plxnative-playurl"])
+        self.assertEqual(spec["auto_source_kbps"], 8000)
+        self.assertEqual(spec["auto_hls_base"], "http://192.0.2.10:8020/__abr")
+        self.assertEqual(spec["url"], "http://192.0.2.10:8020/pipe_h264_aac_mp4.mp4")
+
+    def test_assertion_requires_fallback_top_rung_then_committed_original(self):
+        down = "auto: Original watchdog sustained measured=3998kbps buffer=2900ms -> HLS"
+        up = "abr: committed Up to 20000kbps 1920x1080"
+        request = "abr: source sustainable again at 60321kbps; requesting Original"
+        committed = "auto: recovered Original direct play; retiring HLS encoder"
+        ok, why = run.a_auto_network_recovery([down, up, request, committed], 5000, 20000)
+        self.assertTrue(ok, why)
+        self.assertFalse(run.a_auto_network_recovery([up, down, request, committed], 5000, 20000)[0],
+                         "an old/earlier upshift is not recovery from this collapse")
+        self.assertFalse(run.a_auto_network_recovery([down, up], 5000, 20000)[0],
+                         "the top transcode rung is not Original recovery")
+        self.assertFalse(run.a_auto_network_recovery([down, up, request], 5000, 20000)[0],
+                         "a requested transition is not a committed route")
+        self.assertFalse(run.a_auto_network_recovery([
+            "auto: Original watchdog sustained measured=7000kbps buffer=2000ms -> HLS",
+            up,
+            request,
+            committed,
+        ], 5000, 20000)[0], "the shaped 4 Mbit/s leg must be measured, not merely assumed")
+
+    def test_case_declares_a_real_mid_transfer_slow_leg_and_recovery_leg(self):
+        legs = self._case()["network_profile"]
+        self.assertGreater(legs[0]["kbps"], legs[1]["kbps"])
+        self.assertEqual(legs[1]["kbps"], 4000)
+        self.assertGreater(legs[2]["kbps"], legs[1]["kbps"])
+        self.assertLess(legs[0]["until_s"], legs[1]["until_s"])
+        self.assertLess(legs[1]["until_s"], legs[2]["until_s"])
+
+    def test_one_open_body_changes_rate_fast_slow_fast(self):
+        """The schedule changes underneath one response, as a router limit does."""
+        server = serve_fixtures.FixtureServer.__new__(serve_fixtures.FixtureServer)
+        server.lock = threading.Lock()
+        server.rate_profile = []
+        server.rate_started = None
+        server.set_network_profile([
+            {"until_s": 0.02, "kbps": 40000},
+            {"until_s": 0.12, "kbps": 4000},
+            {"until_s": 1.00, "kbps": 40000},
+        ])
+
+        class Clock:
+            now = 0.0
+
+            def sleep(self, seconds):
+                self.now += seconds
+
+        clock = Clock()
+        body = io.BytesIO()
+        with mock.patch.object(serve_fixtures.time, "monotonic", side_effect=lambda: clock.now), \
+             mock.patch.object(serve_fixtures.time, "sleep", side_effect=clock.sleep) as sleeps:
+            for _ in range(4):
+                server.write_body(body, b"x" * (64 * 1024))
+
+        delays = [call.args[0] for call in sleeps.call_args_list]
+        self.assertEqual(len(body.getvalue()), 4 * 64 * 1024)
+        self.assertEqual(len(delays), 4)
+        self.assertAlmostEqual(delays[0], 64 * 1024 * 8 / 40_000_000, places=6)
+        self.assertAlmostEqual(delays[1], delays[0], places=6)
+        self.assertAlmostEqual(delays[2], 64 * 1024 * 8 / 4_000_000, places=6)
+        self.assertAlmostEqual(delays[3], delays[0], places=6)
+
+    def test_missing_private_hls_segments_skip_instead_of_failing_on_the_tv(self):
+        case = {"name": "abr", "fixture": "main.mkv", "auto_network": {"source_kbps": 8000},
+                "expect": {"min_pos_climb_s": 1}}
+        with tempfile.TemporaryDirectory() as root:
+            with open(os.path.join(root, "main.mkv"), "wb") as stream:
+                stream.write(b"x")
+            saved = run._probe_fixture
+            try:
+                run._probe_fixture = lambda _path: None
+                run._resolve_fixtures([case], root)
+                self.assertIn("segment fixtures", case["skip"])
             finally:
                 run._probe_fixture = saved
 

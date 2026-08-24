@@ -1525,6 +1525,10 @@ pub(crate) struct PlayingItem {
     /// class — docs/plex-pass-audit.md, closing section).
     pub(crate) width: i64,
     pub(crate) height: i64,
+    /// Whole-file bitrate in kbps (`Media[0].bitrate`). Auto uses this—not merely the video
+    /// stream's rate—when deciding whether a remote connection has enough headroom to carry the
+    /// original file, because the transport also has to carry audio and container overhead.
+    pub(crate) bitrate: i64,
     /// The played leaf's Dolby Vision layering — the direct-play gate's other refusal, beside the
     /// frame size above and for the same reason: the smart-DP branch never asks PMS, so a file
     /// whose base layer we cannot display correctly (Profile 5, or a dual-layer Profile 7) would
@@ -1588,6 +1592,7 @@ pub(crate) fn cached_playing(sid: crate::plex::ServerId, rk: &str) -> Option<Pla
         video_fps: d.video_fps,
         width: d.width,
         height: d.height,
+        bitrate: d.bitrate,
         dovi: d.dovi,
         markers: d.markers.clone(),
         chapters: d.chapters.clone(),
@@ -1615,11 +1620,23 @@ pub(crate) fn fetch_playing_item(sid: crate::plex::ServerId, rk: &str) -> Option
     let (audio, subs, video_fps, dovi) = (st.audio, st.subs, st.fps, st.dovi);
     // the frame size rides the same PRIMARY version the streams come from (route.rs's
     // direct-play gate tests it against the device bound — see the field doc)
-    let (width, height) = it
+    let (width, height, bitrate) = it
         .as_ref()
-        .and_then(|it| it.primary_media().map(|m| (m.width, m.height)))
-        .unwrap_or((0, 0));
-    Some(PlayingItem { sid, rk: rk.to_string(), audio, subs, video_fps, width, height, dovi, markers, chapters })
+        .and_then(|it| it.primary_media().map(|m| (m.width, m.height, m.bitrate)))
+        .unwrap_or((0, 0, 0));
+    Some(PlayingItem {
+        sid,
+        rk: rk.to_string(),
+        audio,
+        subs,
+        video_fps,
+        width,
+        height,
+        bitrate,
+        dovi,
+        markers,
+        chapters,
+    })
 }
 
 /// Retire BOTH descriptions of the item that was playing, together.

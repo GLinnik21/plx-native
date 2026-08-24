@@ -81,6 +81,20 @@ use std::sync::atomic::{AtomicBool, AtomicI32, Ordering::Relaxed};
 pub(crate) static SHARED: Shared = Shared::new();
 pub(crate) static TX: Transport = Transport::new();
 static ACB_OK: AtomicBool = AtomicBool::new(false); // was the g_acb availability flag
+
+// Diagnostics-only Auto state. These codes cross the demux/UI thread boundary through atomics;
+// named constants keep the writer and the photograph formatter from growing separate vocabularies.
+pub(crate) const ABR_MODE_ORIGINAL: u8 = 1;
+pub(crate) const ABR_MODE_HLS: u8 = 2;
+pub(crate) const ABR_ACTION_STEADY: u8 = 1;
+pub(crate) const ABR_ACTION_PRIME_DOWN: u8 = 2;
+pub(crate) const ABR_ACTION_PRIME_UP: u8 = 3;
+pub(crate) const ABR_ACTION_COMMIT_DOWN: u8 = 4;
+pub(crate) const ABR_ACTION_COMMIT_UP: u8 = 5;
+pub(crate) const ABR_ACTION_REJECT_DOWN: u8 = 6;
+pub(crate) const ABR_ACTION_REJECT_UP: u8 = 7;
+pub(crate) const ABR_ACTION_PROBE_ORIGINAL: u8 = 8;
+pub(crate) const ABR_ACTION_RECOVER_ORIGINAL: u8 = 9;
 // Kodi in-place seek (flush + reopen + re-anchor the decode position + sendSegmentEvent, NO
 // reload/decoder re-init → no HDR-mode popup, no A/V-resync glitch). On webOS<11 (this 4.5)
 // setTimeToDecode returns 0, so feed_stream falls back to the content-info path
@@ -451,6 +465,14 @@ pub(crate) struct Diag {
     pub video_h: i32,
     pub pos_ns: i64,
     pub dur_ns: i64,
+    pub abr_mode: u8,
+    pub abr_kbps: i64,
+    pub abr_net_kbps: i64,
+    pub abr_buffer_ms: i64,
+    pub abr_ratio_pm: i64,
+    pub abr_action: u8,
+    pub abr_target_kbps: i64,
+    pub abr_bad_windows: u8,
 }
 
 impl Diag {
@@ -546,6 +568,14 @@ pub(crate) fn diag() -> Diag {
         video_h: SHARED.video_h.load(Relaxed),
         pos_ns: SHARED.playpos_ns.load(Relaxed),
         dur_ns: SHARED.duration_ns.load(Relaxed),
+        abr_mode: SHARED.dg_abr_mode.load(Relaxed),
+        abr_kbps: SHARED.dg_abr_kbps.load(Relaxed),
+        abr_net_kbps: SHARED.dg_abr_net_kbps.load(Relaxed),
+        abr_buffer_ms: SHARED.dg_abr_buffer_ms.load(Relaxed),
+        abr_ratio_pm: SHARED.dg_abr_ratio_pm.load(Relaxed),
+        abr_action: SHARED.dg_abr_action.load(Relaxed),
+        abr_target_kbps: SHARED.dg_abr_target_kbps.load(Relaxed),
+        abr_bad_windows: SHARED.dg_abr_bad_windows.load(Relaxed),
     }
 }
 
@@ -607,6 +637,21 @@ pub(crate) fn set_audio_track(idx: i32) {
 pub(crate) fn request_transcode_refresh() {
     SHARED.pending_retranscode.store(true, Relaxed);
     SHARED.sub_cues.lock().unwrap().clear(); // burned/absent in the fresh transcode
+}
+
+/// Whether a route change has scheduled an encoder rebuild. Test-visible so route policy can be
+/// graded independently of the pump's frame timing.
+#[cfg(test)]
+pub(crate) fn pending_transcode_refresh() -> bool {
+    SHARED.pending_retranscode.load(Relaxed)
+}
+
+/// Request the main-thread HLS→Original pipeline replacement. Used by an explicit Original pick;
+/// the adaptive worker publishes through the same atomic after its source probes pass.
+pub(crate) fn request_original_recovery() {
+    SHARED.auto_recover_kbps.store(1, std::sync::atomic::Ordering::Release);
+    SHARED.pending_retranscode.store(false, Relaxed);
+    SHARED.sub_cues.lock().unwrap().clear();
 }
 
 // ---- client-rendered subtitles (direct-play only; a transcode carries no subs) ----

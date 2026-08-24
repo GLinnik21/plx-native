@@ -75,7 +75,7 @@
 //! string onto this panel, so adding a field is a deliberate edit to the one file that carries
 //! these rules.
 use crate::ui::label::Label;
-use crate::ui::widgets::{Field, FieldList, FIELD_COL_W};
+use crate::ui::widgets::{Field, FieldList, FIELD_COL_W, FIELD_ROW_H};
 use crate::ui::{theme, Env, Painter, Rect, View};
 use std::ffi::CString;
 use std::ptr::addr_of_mut;
@@ -102,6 +102,14 @@ pub(crate) fn enabled() -> bool {
 pub(crate) fn toggle() {
     ON.fetch_xor(true, Ordering::Relaxed);
     kick();
+}
+
+/// Force it on for an automated playback run. Unlike [`toggle`], this is idempotent so an already
+/// visible read-out keeps its sample cadence and does not reset the panel's clock.
+pub(crate) fn open() {
+    if !ON.swap(true, Ordering::Relaxed) {
+        kick();
+    }
 }
 
 /// Force it off. The only caller is the leave-playback ritual — a diagnostics panel that survived
@@ -371,8 +379,11 @@ fn frames_str(d: &crate::player::Diag, now: u32) -> String {
     }
 }
 
-/// RIGHT — the source and the build. What was asked for, and what the app is made of.
+/// RIGHT — the source and either build identity or Auto's live policy state. Auto uses the
+/// YouTube-style names a reader already knows: current/optimal quality, connection speed, network
+/// activity, and buffer health, with the app-specific decision state below them.
 fn right_column(d: &crate::player::Diag) -> Vec<Field> {
+    let adaptive = d.abr_mode != 0;
     let mut v = Vec::with_capacity(COLUMN_ROWS);
     v.push(Field::section("STREAM"));
     // What the server IS: release + Plex Pass — issue #22's blind spot (docs/plex-pass-audit.md).
@@ -405,28 +416,115 @@ fn right_column(d: &crate::player::Diag) -> Vec<Field> {
         (w, h) => format!("{w}x{h}"),
     })
     .fault(d.video_w == 0));
-    v.push(Field::new(
-        "Position",
-        format!(
-            "{} / {}",
-            crate::ui::fmt::clock(d.pos_ns / 1_000_000),
-            if d.dur_ns > 0 { crate::ui::fmt::clock(d.dur_ns / 1_000_000) } else { "unknown".into() }
-        ),
-    ));
+    if !adaptive {
+        v.push(Field::new(
+            "Position",
+            format!(
+                "{} / {}",
+                crate::ui::fmt::clock(d.pos_ns / 1_000_000),
+                if d.dur_ns > 0 { crate::ui::fmt::clock(d.dur_ns / 1_000_000) } else { "unknown".into() }
+            ),
+        ));
+    }
     // The two lanes' high-water fed PTS, differenced. Instantaneous and exact where the totals
     // are blind: a skew that keeps growing is the audio lane starving behind the video one, and a
     // skew near zero says both are keeping up and any missing sound is downstream of us.
     v.push(Field::new("A/V skew", skew(d)).fault(skew_bad(d)));
-    v.push(Field::section("BUILD"));
-    let (fmtv, codv, utlv) = crate::ff::majors();
-    v.push(
-        Field::new(
-            "FFmpeg fmt/cod/util",
-            if fmtv == 0 { "NOT BOUND".to_string() } else { format!("{fmtv} / {codv} / {utlv}") },
-        )
-        .fault(fmtv == 0),
-    );
+    if adaptive {
+        v.push(Field::section("AUTO QUALITY"));
+        v.push(Field::new("Current / Optimal", abr_quality(d)));
+        v.push(Field::new("Connection Speed", abr_connection_speed(d)));
+        v.push(Field::new("Network Activity", abr_network_activity(d)));
+        v.push(Field::new("Buffer Health", abr_buffer_health(d)));
+        v.push(Field::new("Decision", abr_decision(d)));
+    } else {
+        v.push(Field::section("BUILD"));
+        let (fmtv, codv, utlv) = crate::ff::majors();
+        v.push(
+            Field::new(
+                "FFmpeg fmt/cod/util",
+                if fmtv == 0 { "NOT BOUND".to_string() } else { format!("{fmtv} / {codv} / {utlv}") },
+            )
+            .fault(fmtv == 0),
+        );
+    }
     v
+}
+
+/// Auto owns a small canonical ladder; spelling the raster beside its nominal rate makes it
+/// immediately obvious whether the observed decoded frame agrees with the requested rendition.
+fn abr_raster(kbps: i64) -> &'static str {
+    match kbps {
+        320 => "240p",
+        720 => "480p",
+        2_000 | 4_000 => "720p",
+        8_000 | 20_000 => "1080p",
+        _ => "unknown raster",
+    }
+}
+
+fn abr_rate(kbps: i64) -> String {
+    if kbps <= 0 {
+        "unknown".to_string()
+    } else if kbps >= 1_000 {
+        format!("{:.1} Mbps", kbps as f64 / 1_000.0)
+    } else {
+        format!("{kbps} kbps")
+    }
+}
+
+fn abr_quality(d: &crate::player::Diag) -> String {
+    match d.abr_mode {
+        crate::player::ABR_MODE_ORIGINAL => format!("Original · {} source", abr_rate(d.abr_kbps)),
+        crate::player::ABR_MODE_HLS => {
+            format!("HLS {} · {}", abr_rate(d.abr_kbps), abr_raster(d.abr_kbps))
+        }
+        _ => "inactive".to_string(),
+    }
+}
+
+fn abr_connection_speed(d: &crate::player::Diag) -> String {
+    if d.abr_net_kbps < 0 {
+        return "waiting for first sample".to_string();
+    }
+    format!("{} body rate", abr_rate(d.abr_net_kbps))
+}
+
+fn abr_network_activity(d: &crate::player::Diag) -> String {
+    if d.abr_mode != crate::player::ABR_MODE_HLS || d.abr_ratio_pm < 0 {
+        return "progressive transfer".to_string();
+    }
+    format!("segment fetch {:.2}x media time", d.abr_ratio_pm as f64 / 1_000.0)
+}
+
+fn abr_buffer_health(d: &crate::player::Diag) -> String {
+    if d.abr_buffer_ms < 0 {
+        return "waiting for first sample".to_string();
+    }
+    format!("{:.1} s", d.abr_buffer_ms as f64 / 1_000.0)
+}
+
+fn abr_decision(d: &crate::player::Diag) -> String {
+    if d.abr_mode == crate::player::ABR_MODE_ORIGINAL {
+        return match d.abr_bad_windows {
+            0 => "watching · link sustainable".to_string(),
+            1 => "low rate + buffer · 1/2".to_string(),
+            n => format!("fallback requested · {n}/2"),
+        };
+    }
+    let target = abr_rate(d.abr_target_kbps);
+    match d.abr_action {
+        crate::player::ABR_ACTION_STEADY => "steady".to_string(),
+        crate::player::ABR_ACTION_PRIME_DOWN => format!("priming down to {target}"),
+        crate::player::ABR_ACTION_PRIME_UP => format!("priming up to {target}"),
+        crate::player::ABR_ACTION_COMMIT_DOWN => format!("changed down to {target}"),
+        crate::player::ABR_ACTION_COMMIT_UP => format!("changed up to {target}"),
+        crate::player::ABR_ACTION_REJECT_DOWN => format!("kept current · rejected {target}"),
+        crate::player::ABR_ACTION_REJECT_UP => format!("kept current · rejected {target}"),
+        crate::player::ABR_ACTION_PROBE_ORIGINAL => "checking Original link".to_string(),
+        crate::player::ABR_ACTION_RECOVER_ORIGINAL => "switching back to Original".to_string(),
+        _ => "starting".to_string(),
+    }
 }
 
 /// AUs per second per lane since the previous sample, as ` · +24/+0 /s`. Empty until there IS a
@@ -569,12 +667,18 @@ const HEAD_H: f32 = 152.0;
 /// land on the scrubber's rects THROUGH an opaque card — which was the only reason the click path
 /// needed a close-on-click arm at all.
 fn panel_rect() -> Rect {
-    // FIXED at the row budget rather than measured from the current rows. Two reasons: the chart
-    // lives in whatever the right column does not use, so a height measured from the rows would
-    // end above it — which is exactly how the chart first shipped drawing outside the card — and
-    // a panel that resizes as rows come and go is a panel that moves under the camera.
+    // Measured on every snapshot. Values may wrap, so the fixed row budget is only the floor.
+    // The cap keeps the read-out inside the safe area; the two-column split keeps long diagnostic
+    // text visible without covering the whole frame.
     let w = 2.0 * FIELD_COL_W + theme::space::MD + 2.0 * PAD;
-    let h = HEAD_H + FieldList::height(COLUMN_ROWS) + PAD;
+    let left = unsafe { &*addr_of_mut!(LEFT) };
+    let right = unsafe { &*addr_of_mut!(RIGHT) };
+    let extra_rows = (FieldList::wrapped_line_count(left, FIELD_COL_W).saturating_sub(left.len())
+        + FieldList::wrapped_line_count(right, FIELD_COL_W).saturating_sub(right.len()))
+        as f32;
+    let rows = FieldList::height(COLUMN_ROWS) + extra_rows * FIELD_ROW_H;
+    let max_h = crate::ui::player_hud::CTRL_Y - MARGIN - PAD;
+    let h = (HEAD_H + rows + PAD).min(max_h);
     // x on the app's own side margin, not [`MARGIN`]: the panel's whole output format is a
     // PHOTOGRAPH of a television, so it is the one overlay that must sit inside the overscan frame
     // even though nothing on it is pressable. 60 cleared it vertically and missed it by 36 across.
@@ -625,16 +729,18 @@ pub(crate) fn draw() {
     }
 
     let top = frame.y + HEAD_H;
-    let h = FieldList::height(COLUMN_ROWS);
+    let h = frame.h - HEAD_H - PAD;
     let rx = inner + FIELD_COL_W + theme::space::MD;
     FieldList::new(unsafe { &*addr_of_mut!(LEFT) }, Rect::new(inner, top, FIELD_COL_W, h)).draw(&e, p);
     FieldList::new(unsafe { &*addr_of_mut!(RIGHT) }, Rect::new(rx, top, FIELD_COL_W, h)).draw(&e, p);
 
     // The chart, in the right column's own slack. The two columns are deliberately unequal — the
     // stall discriminators all live on the left — so this costs no height at all.
-    let used = unsafe { (*addr_of_mut!(RIGHT)).len() };
-    let cy = top + FieldList::height(used) + theme::space::XS;
-    draw_chart(p, Rect::new(rx, cy, FIELD_COL_W, FieldList::height(COLUMN_ROWS - used) - theme::space::XS));
+    let right = unsafe { &*addr_of_mut!(RIGHT) };
+    let cy = top + FieldList::wrapped_line_count(right, FIELD_COL_W) as f32 * FIELD_ROW_H
+        + theme::space::XS;
+    let chart_h = (frame.h - (cy - frame.y) - PAD).max(0.0);
+    draw_chart(p, Rect::new(rx, cy, FIELD_COL_W, chart_h - theme::space::XS));
 }
 
 /// The fed-rate chart: one bar per sample, video over audio, sharing a y scale so the two lanes are
@@ -688,12 +794,18 @@ mod tests {
     #[test]
     fn neither_column_outgrows_the_page() {
         // Both video-plane shapes: the exported path carries two extra rows that ACB does not, so
-        // the wider one is the one that has to fit.
+        // the wider one is the one that has to fit. Both right-column shapes matter too: Auto
+        // trades static rows for its three live policy rows rather than changing the budget.
         for vp in [crate::player::VP_ACB, crate::player::VP_EXPORTED, crate::player::VP_NONE] {
-            let d = crate::player::Diag { vp_mode: vp, ..Default::default() };
-            let l = left_column(&d, (0, 0, 0), 1_000);
-            assert!(l.len() <= COLUMN_ROWS, "left at vp={vp}: {}", l.len());
-            assert!(right_column(&d).len() <= COLUMN_ROWS, "right at vp={vp}");
+            for abr_mode in [0, crate::player::ABR_MODE_ORIGINAL, crate::player::ABR_MODE_HLS] {
+                let d = crate::player::Diag { vp_mode: vp, abr_mode, ..Default::default() };
+                let l = left_column(&d, (0, 0, 0), 1_000);
+                assert!(l.len() <= COLUMN_ROWS, "left at vp={vp}: {}", l.len());
+                assert!(
+                    right_column(&d).len() <= COLUMN_ROWS,
+                    "right at vp={vp} abr={abr_mode}",
+                );
+            }
         }
     }
 
@@ -740,13 +852,83 @@ mod tests {
     /// rows in the RIGHT column would take the chart's slack, the chart would stop drawing, and
     /// nothing would fail. Grade the band directly.
     #[test]
-    fn the_chart_keeps_a_drawable_band() {
-        let d = crate::player::Diag::default();
-        let used = right_column(&d).len();
-        let slack = FieldList::height(COLUMN_ROWS - used) - theme::space::XS;
-        assert!(slack >= 40.0, "right column leaves the chart only {slack} px — it will not draw");
-        let band = (slack - 22.0) * 0.5 - 4.0;
-        assert!(band >= 20.0, "each lane gets {band} px — too thin to read in a photograph");
+    fn every_row_fits_the_fixed_diagnostic_budget() {
+        for vp in [crate::player::VP_ACB, crate::player::VP_EXPORTED, crate::player::VP_NONE] {
+            for abr_mode in [0, crate::player::ABR_MODE_ORIGINAL, crate::player::ABR_MODE_HLS] {
+                let d = crate::player::Diag { vp_mode: vp, abr_mode, ..Default::default() };
+                let left = left_column(&d, (0, 0, 0), 1_000);
+                let right = right_column(&d);
+                assert!(
+                    left.len() <= COLUMN_ROWS && right.len() <= COLUMN_ROWS,
+                    "vp={vp} abr={abr_mode}: diagnostic rows exceeded the fixed budget",
+                );
+            }
+        }
+    }
+
+    /// Auto's panel is the human-readable contract for the policy atomics. Pin both phases: the
+    /// Original watchdog must expose the evidence accumulating toward fallback, and segmented
+    /// HLS must expose its active rung, production cadence and most recent committed move.
+    #[test]
+    fn auto_quality_explains_its_measurement_and_decision() {
+        let val = |rows: &[Field], key: &str| {
+            rows.iter()
+                .find(|f| f.key == key)
+                .and_then(|f| f.val.as_deref())
+                .unwrap_or("missing")
+                .to_string()
+        };
+
+        let original = crate::player::Diag {
+            abr_mode: crate::player::ABR_MODE_ORIGINAL,
+            abr_kbps: 11_356,
+            abr_net_kbps: 4_016,
+            abr_buffer_ms: 2_820,
+            abr_bad_windows: 1,
+            ..Default::default()
+        };
+        let rows = right_column(&original);
+        assert_eq!(val(&rows, "Current / Optimal"), "Original · 11.4 Mbps source");
+        assert_eq!(val(&rows, "Connection Speed"), "4.0 Mbps body rate");
+        assert_eq!(val(&rows, "Buffer Health"), "2.8 s");
+        assert_eq!(val(&rows, "Decision"), "low rate + buffer · 1/2");
+        assert!(rows.iter().any(|f| f.key == "AUTO QUALITY"));
+        assert!(!rows.iter().any(|f| f.key == "Position" || f.key == "BUILD"));
+
+        let hls = crate::player::Diag {
+            abr_mode: crate::player::ABR_MODE_HLS,
+            abr_kbps: 4_000,
+            abr_net_kbps: 12_400,
+            abr_buffer_ms: 6_250,
+            abr_ratio_pm: 420,
+            abr_action: crate::player::ABR_ACTION_COMMIT_UP,
+            abr_target_kbps: 4_000,
+            ..Default::default()
+        };
+        let rows = right_column(&hls);
+        assert_eq!(val(&rows, "Current / Optimal"), "HLS 4.0 Mbps · 720p");
+        assert_eq!(val(&rows, "Connection Speed"), "12.4 Mbps body rate");
+        assert_eq!(val(&rows, "Network Activity"), "segment fetch 0.42x media time");
+        assert_eq!(val(&rows, "Buffer Health"), "6.2 s");
+        assert_eq!(val(&rows, "Decision"), "changed up to 4.0 Mbps");
+
+        let probing = crate::player::Diag {
+            abr_mode: crate::player::ABR_MODE_HLS,
+            abr_action: crate::player::ABR_ACTION_PROBE_ORIGINAL,
+            ..Default::default()
+        };
+        assert_eq!(val(&right_column(&probing), "Decision"), "checking Original link");
+        let recovering = crate::player::Diag {
+            abr_mode: crate::player::ABR_MODE_HLS,
+            abr_action: crate::player::ABR_ACTION_RECOVER_ORIGINAL,
+            ..Default::default()
+        };
+        assert_eq!(val(&right_column(&recovering), "Decision"), "switching back to Original");
+
+        let ordinary = right_column(&crate::player::Diag::default());
+        assert!(ordinary.iter().any(|f| f.key == "Position"));
+        assert!(ordinary.iter().any(|f| f.key == "BUILD"));
+        assert!(!ordinary.iter().any(|f| f.key == "AUTO QUALITY"));
     }
 
     /// …and it must leave the MAJORITY of the picture visible, or it is the full-screen card
