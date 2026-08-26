@@ -77,7 +77,18 @@ pub(crate) struct OriginalRecovery {
     /// [`CapacityEstimate::demote_to_prior`].
     probe: CapacityEstimate,
     features: bool,
+    /// The switch history AS CAPTURED on the main thread when this worker started. It is the
+    /// BASE, never mutated: [`OriginalRecovery::advance_to`] carries the worker's own clock and
+    /// the two are combined at the point of use, so advancing cannot double-count however often
+    /// the caller ticks it.
     history: TransitionHistory,
+    /// Wall time since that capture. The visible-switch penalty HALVES every
+    /// `visible_switch_decay_ms`, which is the whole of this controller's hysteresis — and until
+    /// this field existed the caller passed a literal 0, so `since_last_ms` never advanced, the
+    /// penalty never decayed, and Original stayed unreachable for the rest of a playback after
+    /// two mode switches. The decay RATE is policy and is unchanged; this is only the clock that
+    /// drives it, which was stopped.
+    elapsed_ms: u64,
     healthy_samples: u8,
     probes: u8,
 }
@@ -95,9 +106,18 @@ impl OriginalRecovery {
             probe: CapacityEstimate::default(),
             features,
             history,
+            elapsed_ms: 0,
             healthy_samples: 0,
             probes: 0,
         })
+    }
+
+    /// Advance the switch-penalty clock to `elapsed_ms` since construction. ABSOLUTE, not a
+    /// delta, so calling it every segment and calling it once are the same thing — the caller
+    /// owns the clock (this module is integer-only and deterministic by contract) and cannot
+    /// corrupt the decay by ticking at an irregular rate.
+    pub(crate) fn advance_to(&mut self, elapsed_ms: u64) {
+        self.elapsed_ms = elapsed_ms;
     }
 
     pub(crate) fn probes(&self) -> u8 {
@@ -148,7 +168,7 @@ impl OriginalRecovery {
             production: ProductionEstimate::default(),
             buffer,
             remaining_ms,
-            history: self.history,
+            history: self.history.advanced_by(self.elapsed_ms),
             original_feasible: true,
             original_features: self.features,
             // Recovery asks about a source that is NOT currently being read, so there is no live

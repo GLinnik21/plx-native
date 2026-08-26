@@ -1183,6 +1183,61 @@ fn repeated_visible_switches_stop_paying_for_themselves() {
     );
 }
 
+/// The visible-switch penalty halves on a CLOCK, and until 2026-08-26 that clock was stopped.
+/// The caller passed a literal `0` for elapsed time and the history was frozen into the gate at
+/// construction, so a playback that had already switched twice could never return to Original
+/// however long it subsequently ran clean — the hysteresis became a latch.
+///
+/// Differential by construction: with `advance_to` a no-op, the second half of this asserts
+/// `Recover` against the `NotWorthIt` the first half just established on identical evidence.
+#[test]
+fn the_visible_switch_penalty_decays_on_the_worker_clock() {
+    let policy = AbrPolicy::measured();
+    let flapping = TransitionHistory { visible_switches: 5, since_last_ms: Some(2_000) };
+    let good = probe(90_000, true);
+
+    let mut at_once = OriginalRecovery::new(28_000, policy, false, flapping).unwrap();
+    assert_eq!(
+        at_once.observe_probe(good, healthy_buffer(), &healthy_hls(), 600_000),
+        RecoveryVerdict::NotWorthIt,
+        "the fifth switch two seconds ago is still expensive",
+    );
+
+    let mut later = OriginalRecovery::new(28_000, policy, false, flapping).unwrap();
+    // Six half-lives, so the penalty is under 2% of its opening value. The RATE is policy and is
+    // not under test here; that the clock advances at all is.
+    later.advance_to(policy.visible_switch_decay_ms.saturating_mul(6));
+    assert_eq!(
+        later.observe_probe(good, healthy_buffer(), &healthy_hls(), 600_000),
+        RecoveryVerdict::Recover,
+        "the same evidence, once the penalty has decayed, is worth acting on",
+    );
+}
+
+/// `advance_to` is ABSOLUTE, not a delta. The caller ticks it once per segment and segments do
+/// not arrive on a regular cadence, so a delta API would make the decay depend on how often it
+/// happened to be called — which is a property of the link, not of the switch history.
+#[test]
+fn advancing_the_switch_clock_is_idempotent_in_the_value_not_the_call_count() {
+    let policy = AbrPolicy::measured();
+    let flapping = TransitionHistory { visible_switches: 5, since_last_ms: Some(2_000) };
+    let good = probe(90_000, true);
+    let target = policy.visible_switch_decay_ms.saturating_mul(6);
+
+    let mut once = OriginalRecovery::new(28_000, policy, false, flapping).unwrap();
+    once.advance_to(target);
+
+    let mut many = OriginalRecovery::new(28_000, policy, false, flapping).unwrap();
+    for _ in 0..40 {
+        many.advance_to(target);
+    }
+    assert_eq!(
+        once.observe_probe(good, healthy_buffer(), &healthy_hls(), 600_000),
+        many.observe_probe(good, healthy_buffer(), &healthy_hls(), 600_000),
+        "forty ticks to the same instant is one tick to that instant",
+    );
+}
+
 /// A whole-file average is a LOWER BOUND on demand. The requirement carries VBR headroom, so a
 /// link that merely matches the average is already at risk before any busy scene arrives.
 #[test]

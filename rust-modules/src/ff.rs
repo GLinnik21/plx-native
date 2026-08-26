@@ -2621,6 +2621,15 @@ fn hls_raster_within(width: i32, height: i32, rung: crate::abr::Rung) -> bool {
 }
 
 struct HlsCursor {
+    /// Whether this cursor's media playlist is the one describing WHAT IS PLAYING.
+    ///
+    /// A candidate cursor opened during a quality transaction reads a freshly created encoder
+    /// session, whose playlist lists only the segments PMS has produced so far — so its
+    /// `total_duration()` is a fraction of the film's. Publishing that clobbers
+    /// `SHARED.duration_ns`, and on a reject nothing ever restores it: the remaining-playback
+    /// estimate, the HUD's total and the scrobble all inherit the truncated number for the rest
+    /// of the playback. The candidate is promoted to publishing at the moment it is committed.
+    publishes_duration: bool,
     auth: crate::hls::InheritedAuth,
     media: crate::hls::Resource,
     tracker: crate::hls::MediaTracker,
@@ -2635,6 +2644,7 @@ fn hls_cursor_open(
     path: &str,
     aq: *mut AuQueue,
     hs: *mut HttpStream,
+    publishes_duration: bool,
 ) -> Result<HlsCursor, HlsExit> {
     let master_resource = crate::hls::Resource::new(origin.clone(), path)
         .map_err(|_| HlsExit::Failed("invalid HLS master URL"))?;
@@ -2651,6 +2661,7 @@ fn hls_cursor_open(
         master.variant.bandwidth
     ));
     Ok(HlsCursor {
+        publishes_duration,
         auth,
         media: master.variant.resource,
         tracker: crate::hls::MediaTracker::default(),
@@ -2686,7 +2697,9 @@ fn hls_cursor_next(
         let total_ns = i64::try_from(media.total_duration().map_err(|_| {
             HlsExit::Failed("HLS playlist duration overflow")
         })?.as_nanos()).map_err(|_| HlsExit::Failed("HLS playlist duration overflow"))?;
-        SHARED.duration_ns.store(total_ns, Ordering::Relaxed);
+        if cursor.publishes_duration {
+            SHARED.duration_ns.store(total_ns, Ordering::Relaxed);
+        }
         let mut refresh = cursor.tracker.apply(&media).map_err(|e| {
             crate::player::log(&format!("hls: refresh rejected: {e}"));
             HlsExit::Failed("HLS media refresh rejected")
@@ -3193,18 +3206,23 @@ fn hls_demux(
         SHARED.dg_abr_target_kbps.store(0, Ordering::Relaxed);
         SHARED.dg_abr_bad_windows.store(0, Ordering::Relaxed);
     }
-    let mut cursor = hls_cursor_open(origin, path, aq, hs)?;
+    let mut cursor = hls_cursor_open(origin, path, aq, hs, true)?;
     let mut timeline = crate::hls::SegmentTimeline::default();
     let (probe_tx, probe_rx) = std::sync::mpsc::channel::<crate::abr::CapacityObservation>();
+    // The origin of the visible-switch decay clock: the main thread's `since_last_ms` capture
+    // is a value AS OF NOW, and this is now. `OriginalRecovery::advance_to` in the segment loop
+    // moves it forward from here.
+    let history_since = std::time::Instant::now();
     let mut adaptive = abr.map(|(control, encoder)| {
         let initial = control.initial_rung;
         let catalog = control.catalog;
         let prior = control.prior;
-        // **Observation only (plan I0-H).** The suspected defect is that the argument below is
-        // literally `0`, so the two-minute decay of the visible-switch penalty never advances and
-        // Original becomes unreachable after two mode switches. Logging what is ACTUALLY passed
-        // makes that readable off a device run instead of inferable from source; the repair is
-        // increment I4's, not this line's.
+        // The main thread's capture is the STARTING point and this is the moment it was taken,
+        // so 0 is correct HERE and was never the defect. The defect was that it stayed 0: the
+        // history was frozen into the recovery gate at construction and nothing advanced it
+        // again, so the visible-switch penalty never decayed and Original stayed unreachable for
+        // the rest of the playback after two mode switches. `recovery.advance_to` in the segment
+        // loop below is the clock; this line is only its origin.
         let advanced_ms: u64 = 0;
         crate::player::log(&format!(
             "abr: history switches={} since_last={} advanced={}ms",
@@ -3289,6 +3307,10 @@ fn hls_demux(
         else {
             continue;
         };
+        // ABSOLUTE elapsed, not a delta, so an irregular segment cadence cannot skew the decay.
+        if let Some(gate) = recovery.as_mut() {
+            gate.advance_to(history_since.elapsed().as_millis() as u64);
+        }
         let Some(sample) = hls_segment_sample(&output, segment.duration) else {
             crate::player::log("abr: ignoring invalid segment timing sample");
             continue;
@@ -3441,7 +3463,7 @@ fn hls_demux(
                 crate::player::log("abr: candidate changed origin; rejected");
             continue;
         }
-        let mut candidate = match hls_cursor_open(&candidate_url.origin, &candidate_url.path, aq, hs) {
+        let mut candidate = match hls_cursor_open(&candidate_url.origin, &candidate_url.path, aq, hs, false) {
             Ok(candidate) => candidate,
             Err(_) => {
                 control.abandon(&primed.encoder_session);
@@ -3631,6 +3653,9 @@ fn hls_demux(
         controller.commit(proposal);
         SHARED.dg_abr_kbps.store(i64::from(proposal.rung.kbps()), Ordering::Relaxed);
         publish_hls_abr_action(proposal, Some(true));
+        // Promoted: from here this cursor IS the playback, so its playlist is the one that may
+        // speak for the film's duration.
+        candidate.publishes_duration = true;
         cursor = candidate;
         crate::player::log(&format!(
             "abr: committed {:?} to {}kbps {}x{}",
