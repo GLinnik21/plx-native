@@ -35,6 +35,22 @@ def load_guard(root):
     return mod
 
 
+# Files whose PURPOSE is to contain secret-shaped strings: a test for a secret detector has to
+# carry things that look like secrets, and a detector's own regexes have to spell the shapes they
+# match. The shape rules cannot tell those from a leak and never will, so they are listed here --
+# in the tool, where adding one is a visible diff in a security file -- rather than being waved
+# through by a marker comment any file could grow. The LITERAL check still applies to them in
+# full: this suppresses the heuristics, not the gate.
+#
+# Nothing else belongs here. If a source file trips a shape rule, the answer is almost always to
+# use a placeholder, not to add the file.
+SHAPE_RULE_FIXTURES = frozenset({
+    ".claude/hooks/outbound-guard.py",
+    ".claude/hooks/outbound-guard-test.py",
+    "tools/test_pms_hls_probe.py",
+})
+
+
 def git_files(root, mode):
     args = ["git", "-C", root, "diff", "--cached", "--name-only", "--diff-filter=ACMR"]
     out = subprocess.run(args, capture_output=True, text=True).stdout.split()
@@ -67,6 +83,16 @@ def main(argv):
         print("scrub-gate: no files to check.")
         return 0
 
+    # The shape rules -- private-range IPv4, token-shaped runs, 40-hex machine ids -- fire on
+    # PLAUSIBLE values, not on known ones, so without this they also fire on every RFC1918 address
+    # a test fixture invents and every placeholder docs/shared-servers.md publishes on purpose.
+    # `default_published` answers "is this value already in a tracked file", which is exactly the
+    # question that separates a leak from a stand-in. The PreToolUse hook has always passed it;
+    # this gate did not, and flagged six lines of its own test harness on the first real run.
+    # A gate that cries wolf on the files it is meant to wave through is a gate people stop
+    # reading, which is the failure mode that produced the leak this tool exists to prevent.
+    published = guard.default_published(root)
+
     print(f"scrub-gate: {len(secrets)} private literal(s) from "
           f"{len(guard.PRIVATE_FILES)} declared file(s); {len(files)} file(s) to check")
     blocked = []
@@ -76,8 +102,13 @@ def main(argv):
         except OSError as e:
             print(f"  SKIP     {os.path.relpath(f, root)} ({e.strerror})")
             continue
-        hits = guard.findings(body, secrets)
         rel = os.path.relpath(f, root)
+        if rel in SHAPE_RULE_FIXTURES:
+            # Literal matches only -- the shape heuristics are meaningless on a file of fixtures.
+            hits = [h for h in guard.findings(body, secrets, published)
+                    if not (isinstance(h, (tuple, list)) and len(h) > 1 and h[1] == "shape rule")]
+        else:
+            hits = guard.findings(body, secrets, published)
         if hits:
             labels = sorted({h[0] if isinstance(h, (tuple, list)) else str(h) for h in hits})
             print(f"  BLOCKED  {rel}: {len(hits)} match(es) from {', '.join(labels)}")

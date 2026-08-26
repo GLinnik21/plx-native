@@ -340,6 +340,29 @@ def plausible_secret(v):
     return not (PLACEHOLDER.match(v) or v.lower() in GENERIC or v.startswith("$"))
 
 
+def variable_reference(text, match):
+    """Is this `X-Plex-Token` value a NAME the same text defines, rather than a secret?
+
+    `{"X-Plex-Token": auth_token}` in source is a reference; `X-Plex-Token=<a-real-20-char-token>`
+    is a leak. Both match TOKEN_KV, and "looks like an identifier" cannot separate them -- a real
+    Plex token is twenty alphanumerics and matches that too.
+
+    Two conditions, and BOTH are required. The value must be UNQUOTED, because a quoted string
+    after the key is a literal whatever it spells. And the same text must assign that exact name
+    at statement level, which is what a variable has and a secret does not: for a real token to
+    pass here the file would have to open a line with the token itself followed by `=`, i.e. use
+    it as a variable name.
+
+    This exists because `tools/scrub-gate.py` reads FILE CONTENT rather than command text, and on
+    its first real run it refused `tests/run.py` -- the harness's own source -- over two variable
+    references. A gate that cries wolf on the files it is meant to wave through is a gate people
+    stop reading, which is precisely the failure that produced the leak it was built to prevent.
+    """
+    if match.start(2) > 0 and text[match.start(2) - 1] in "\"'":
+        return False
+    return re.search(r"(?m)^\s*%s\s*=(?!=)" % re.escape(match.group(2)), text) is not None
+
+
 def mixed_run(v):
     """A Plex-token-shaped run: 20 alnum with a digit, a lowercase AND an uppercase in it."""
     return (any(c.isdigit() for c in v) and any(c.islower() for c in v)
@@ -366,7 +389,7 @@ def findings(text, secrets, published=None):
             note("the literal value of %s" % label, "exact match on a gitignored value")
 
     for m in TOKEN_KV.finditer(text):
-        if plausible_secret(m.group(2)):
+        if plausible_secret(m.group(2)) and not variable_reference(text, m):
             note("an %s= parameter with a real-looking value" % m.group(1), "shape rule")
             break
     for m in URL_TOKEN.finditer(text):

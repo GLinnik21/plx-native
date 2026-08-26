@@ -318,6 +318,49 @@ def secrets_case():
     return ok
 
 
+def variable_reference_case():
+    """The TOKEN_KV shape rule must pass a variable REFERENCE and still catch every literal.
+
+    Added when `tools/scrub-gate.py` refused `tests/run.py` -- the test harness's own source --
+    because it passes an auth token around in a variable called `auth_token`. The suppression has
+    to be narrow enough that none of the leak shapes below get through it.
+    """
+    import importlib.util, os
+    spec = importlib.util.spec_from_file_location("g", os.path.join(os.path.dirname(
+        os.path.abspath(__file__)), "outbound-guard.py"))
+    g = importlib.util.module_from_spec(spec); spec.loader.exec_module(g)
+
+    REAL = "sK3xY9zQ2mNpL7vR1tB4"          # 20 chars, exactly a Plex token's shape
+    cases = [
+        # (should_flag, text, why)
+        (False, 'auth_token = fetch()\nheaders = {"X-Plex-Token": auth_token}',
+         "an unquoted name the file assigns is a reference"),
+        (False, 'tok = env()\nurl = "?X-Plex-Token=" + tok',
+         "same, through concatenation"),
+        (True, 'headers = {"X-Plex-Token": "%s"}' % REAL,
+         "a QUOTED literal is a leak however it is spelled"),
+        (True, "curl 'https://pms/library?X-Plex-Token=%s'" % REAL,
+         "an unquoted literal nothing assigns is a leak"),
+        (True, 'auth_token = fetch()\nheaders = {"X-Plex-Token": "%s"}' % REAL,
+         "a quoted literal beside an unrelated assignment is still a leak"),
+        (True, "X-Plex-Token=%s" % REAL,
+         "bare, no surrounding source at all"),
+    ]
+    ok = True
+    for want, text, why in cases:
+        hits = g.findings(text, [])
+        got = any("X-Plex-Token" in what for what, _ in hits)
+        if got != want:
+            ok = False
+            print("  FAIL  variable_reference: expected %s, got %s -- %s"
+                  % ("FLAG" if want else "PASS", "FLAG" if got else "PASS", why))
+    # And the assignment escape must not be reachable by naming a variable after a real token.
+    contrived = '%s = 1\nheaders = {"X-Plex-Token": %s}' % (REAL, REAL)
+    if any("X-Plex-Token" in what for what, _ in g.findings(contrived, [])):
+        pass                              # flagged: fine, stricter than required
+    return ok
+
+
 def main():
     fails = 0
     for want, cmd in CASES:
@@ -327,7 +370,7 @@ def main():
             print("  FAIL  expected %s, got %s: %s"
                   % ("BLOCK" if want else "ALLOW", "BLOCK" if got else "ALLOW",
                      cmd.replace("\n", "\\n")[:110]))
-    helpers = (file_payload_case, secrets_case, refusal_case)
+    helpers = (file_payload_case, secrets_case, refusal_case, variable_reference_case)
     for fn in helpers:
         if not fn():
             fails += 1

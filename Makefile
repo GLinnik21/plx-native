@@ -731,6 +731,14 @@ check: lint
 	@# installation cannot resolve SKIPS the cases that need it instead of killing the run. A
 	@# regression there is invisible here and shows up as a stranger concluding the suite is broken.
 	python3 tests/test_harness.py
+	@# The three PreToolUse/PostToolUse hooks' own suites (~0.6s together). They were not in this
+	@# target until 2026-08-26, which meant the guard that decides whether a private value may
+	@# leave this machine was covered by a test nobody ran on a normal check -- the same shape as
+	@# the bug that produced the leak it exists to prevent, where the check computed its answer and
+	@# printed it instead of gating on it. Cheap, and the one place a weakened rule gets caught.
+	python3 .claude/hooks/outbound-guard-test.py
+	python3 .claude/hooks/release-config-check-test.py
+	python3 .claude/hooks/tv-lock-guard-test.py
 	@# The Cloud Lab diagnostics/control receiver, against a real TLS listener on loopback with a freshly
 	@# generated certificate: an accepted upload, a wrong secret, an oversized body, a foreign
 	@# path, a bare GET and the rate limit — the six refusals that are the whole of its exposure to
