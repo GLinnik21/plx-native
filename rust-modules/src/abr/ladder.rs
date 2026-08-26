@@ -1,0 +1,328 @@
+use super::*;
+
+/// Auto's request ladder — **the ACTUATOR set, not a settings menu**.
+///
+/// Six of these are byte-for-byte aligned with `route::Quality`'s canonical fixed rungs, because a
+/// user who picks "1080p · 8 Mbps" by hand and Auto arriving at the same operating point must send
+/// the same request. The rest exist only for Auto: `P240` is an emergency floor, and the six
+/// 1080p rungs between 6 and 18 Mbps are the resolution this controller needs to spend a measured
+/// link instead of rounding it down to the next power of two — a 17.5 Mbit/s link that had to
+/// choose between 8 and 20 Mbps spent 12 Mbit/s of it on nothing.
+///
+/// `Uhd` is the one entry whose REQUEST is not its output. See [`HlsActuatorCatalog`]: PMS holds
+/// 1920x1080 up to a 21,750 kbps ask and switches to 3840x2160 at 22,000, so the request is the
+/// actuator and the raster is the measured consequence. It is also the one rung
+/// [`HlsActuatorCatalog::feasible`] can remove: no device decodes every raster.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Rung {
+    P240,
+    P480,
+    P720Low,
+    P720,
+    P1080M6,
+    P1080,
+    P1080M10,
+    P1080M12,
+    P1080M14,
+    P1080M16,
+    P1080M18,
+    P1080High,
+    Uhd,
+}
+
+pub(crate) const LADDER: [Rung; 13] = [
+    Rung::P240,
+    Rung::P480,
+    Rung::P720Low,
+    Rung::P720,
+    Rung::P1080M6,
+    Rung::P1080,
+    Rung::P1080M10,
+    Rung::P1080M12,
+    Rung::P1080M14,
+    Rung::P1080M16,
+    Rung::P1080M18,
+    Rung::P1080High,
+    Rung::Uhd,
+];
+
+/// **How much reserve the dev rung pin waits for before it transacts.** Six segments.
+///
+/// A TOOL constant, not ABR policy: nothing outside [`Controller::pinned_to`] reads it and it
+/// takes no part in any decision an unpinned build makes. It exists because a candidate
+/// transaction runs inline on the demux worker and costs roughly 2.3 segments of unrefilled
+/// playback (`candidate_warmup_budget` + `candidate_prime_budget`), while `candidate_ready`
+/// requires two segments of reserve to still be there afterwards. Propose with less and the
+/// transaction drains the reserve below its own acceptance test, the candidate is rejected, and
+/// the pin re-proposes forever without ever landing — which is not a hypothetical: the closed-loop
+/// plant reproduced exactly that livelock the first time this was written without a gate.
+///
+/// Consequence worth knowing before using the pin: at the top of the ladder the reachable reserve
+/// is under three segments (`abr/sim.rs`), so a pin cannot be satisfied there from a standing
+/// start. Pin UPWARD from the bootstrap rung, which is how measurement step M4 is written.
+pub(crate) const PIN_MIN_RESERVE_SEGMENTS: i64 = 6;
+
+impl Rung {
+    pub(crate) const fn kbps(self) -> u32 {
+        match self {
+            Rung::P240 => 320,
+            Rung::P480 => 720,
+            Rung::P720Low => 2_000,
+            Rung::P720 => 4_000,
+            Rung::P1080M6 => 6_000,
+            Rung::P1080 => 8_000,
+            Rung::P1080M10 => 10_000,
+            Rung::P1080M12 => 12_000,
+            Rung::P1080M14 => 14_000,
+            Rung::P1080M16 => 16_000,
+            Rung::P1080M18 => 18_000,
+            Rung::P1080High => 20_000,
+            Rung::Uhd => 22_000,
+        }
+    }
+
+    pub(crate) const fn raster(self) -> (u16, u16) {
+        match self {
+            Rung::P240 => (426, 240),
+            Rung::P480 => (854, 480),
+            Rung::P720Low | Rung::P720 => (1280, 720),
+            Rung::P1080M6
+            | Rung::P1080
+            | Rung::P1080M10
+            | Rung::P1080M12
+            | Rung::P1080M14
+            | Rung::P1080M16
+            | Rung::P1080M18
+            | Rung::P1080High => (1920, 1080),
+            Rung::Uhd => (3840, 2160),
+        }
+    }
+
+    /// The ladder entry whose REQUEST is exactly `kbps`, or `None`. Actuator identity by the
+    /// number that goes on the wire as the ceiling, which is stable across catalog re-measurement
+    /// — unlike `planning`/`expected_wire_kbps`, which moves when somebody probes the server, and
+    /// unlike the UI quality enum, which has no mid-1080p points at all
+    /// (`plex::session::PlaybackQuality`). Used only by the dev rung pin (I0-D).
+    pub(crate) fn from_request_kbps(kbps: u32) -> Option<Rung> {
+        LADDER.into_iter().find(|r| r.kbps() == kbps)
+    }
+
+    pub(crate) fn ceiling(self) -> crate::plex::Ceiling {
+        let (width, height) = self.raster();
+        crate::plex::Ceiling {
+            max_kbps: i64::from(self.kbps()),
+            max_w: i64::from(width),
+            max_h: i64::from(height),
+        }
+    }
+
+    fn index(self) -> usize {
+        LADDER.iter().position(|r| *r == self).unwrap_or(0)
+    }
+
+    pub(super) fn below(self) -> Self {
+        LADDER[self.index().saturating_sub(1)]
+    }
+
+    /// Recover the controller's starting rung from the exact ceiling stored in the playback
+    /// route. Auto owns only these canonical values; an arbitrary/manual ceiling is not an ABR
+    /// state and therefore has no answer here.
+    pub(crate) fn from_ceiling(ceiling: crate::plex::Ceiling) -> Option<Self> {
+        LADDER.iter().copied().find(|rung| rung.ceiling() == ceiling)
+    }
+}
+
+/// One PMS operating point. `request_kbps` is what goes on the wire as the ceiling; the other two
+/// are what the server was measured to DO with it, and they are separate fields precisely because
+/// the request is not a promise in either direction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct HlsCandidate {
+    pub(crate) rung: Rung,
+    pub(crate) request_kbps: u32,
+    pub(crate) expected_wire_kbps: u32,
+    /// Relative PMS transcoding work, per mille of the 1080p/20 Mbps point. **Two values are
+    /// measured and the rest are an ordering assumption**, which matters when reading a refusal:
+    /// the 1080p high point produced segments at a 0.21 production ratio and the 4K point at 0.44,
+    /// i.e. **the wire cost rose 4% while the server's work roughly doubled** — so 1000 and 2100
+    /// are evidence. Everything else is estimated from RASTER, with only a slight slope across
+    /// bitrate at one raster, because that is where a video encoder's cost actually is: decode,
+    /// scale and per-pixel analysis dominate, while rate control at a fixed size is nearly free.
+    /// The 4K measurement supports exactly that reading — 2.1x the work for the same 1080p-class
+    /// bitrate. Used only comparatively ("would this candidate cost the server more than the one
+    /// now running"), never as a predicted absolute time.
+    pub(crate) production_load_pm: u32,
+}
+
+/// The compact actuator catalog: the fixed request values, and beside each one what this PMS was
+/// measured to produce for it.
+///
+/// **The 4K entry is the reason this type exists rather than a bare `Rung::kbps()` call.** Measured
+/// against the probe's Generic HLS / H.264 / AAC profile: a request of up to 21,750 kbps with a
+/// 3840x2160 ceiling stays 1920x1080 and the decision tops out near 20,011 kbps, while 22,000
+/// kbps flips the output to 3840x2160 advertised at about 20,895 kbps — and every request from 22
+/// to 60 Mbps produced that same output. So asking for 20,895 does NOT get 4K, and asking for
+/// 22,000 does not get 22 Mbit/s of bits. Both halves have to be stored, or the controller spends
+/// a budget it does not have on a raster it did not ask for.
+///
+/// None of it is a claim about Plex in general — it is this server, this profile, this media
+/// shape, taken by `tools/pms-hls-probe.py` (see `docs/pms-hls-protocol-probe.md`). A different
+/// PMS may hold a different boundary, which is survivable exactly because the transaction in
+/// [`Controller::candidate_ready`] grades the actual segment rather than trusting this table.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct HlsActuatorCatalog {
+    candidates: [HlsCandidate; 13],
+    /// Feasibility, not preference: the widest raster the DEVICE's own codec table admits. A
+    /// candidate above it is removed before anything is scored, because no utility weight should
+    /// have to outvote a decoder that cannot decode.
+    raster_limit: (u16, u16),
+    /// The source's own raster, for the smallest-sufficient-box rule in [`Self::admits`]. `(0, 0)`
+    /// when the server did not say, which means "no bound".
+    source: (u16, u16),
+}
+
+impl HlsActuatorCatalog {
+    pub(crate) const fn measured() -> Self {
+        const fn point(rung: Rung, expected_wire_kbps: u32, production_load_pm: u32) -> HlsCandidate {
+            HlsCandidate {
+                rung,
+                request_kbps: rung.kbps(),
+                expected_wire_kbps,
+                production_load_pm,
+            }
+        }
+        Self {
+            candidates: [
+                point(Rung::P240, 320, 90),
+                point(Rung::P480, 720, 180),
+                point(Rung::P720Low, 2_000, 420),
+                point(Rung::P720, 4_000, 450),
+                point(Rung::P1080M6, 6_000, 900),
+                point(Rung::P1080, 8_000, 930),
+                point(Rung::P1080M10, 10_000, 950),
+                point(Rung::P1080M12, 12_000, 970),
+                point(Rung::P1080M14, 14_000, 980),
+                point(Rung::P1080M16, 16_000, 990),
+                point(Rung::P1080M18, 18_000, 995),
+                point(Rung::P1080High, 20_011, 1_000),
+                point(Rung::Uhd, 20_895, 2_100),
+            ],
+            raster_limit: (u16::MAX, u16::MAX),
+            source: (0, 0),
+        }
+    }
+
+    /// Restrict the catalog to rasters this playback can actually use. Both bounds matter and they
+    /// are different questions: `device` is what the SoC decodes (`devcaps`, the television's own
+    /// table), and `source` is the picture that exists — asking PMS to UPSCALE a 1080p master to
+    /// 4K buys nothing and costs the measured 2.1x of server work, so a candidate wider than the
+    /// source is infeasible rather than merely unattractive.
+    /// **A zero on either axis means NOBODY SAID, and is treated as unbounded** — not as a
+    /// forbidden zero-pixel picture. PMS omits source dimensions often enough that the other
+    /// reading would empty the catalog and park Auto on whatever the floor happens to be, which is
+    /// the opposite of what a missing field justifies. (This is the mirror image of
+    /// `plex::Ceiling::admits`, where an unmeasured source fails CLOSED — deliberately: there, `0`
+    /// is being asked to honour an explicit user instruction, and here it is being asked to
+    /// forbid a device capability nobody has contradicted.)
+    pub(crate) fn limited_to(mut self, device: (u16, u16), source: (u16, u16)) -> Self {
+        fn axis(value: u16) -> u16 {
+            if value == 0 { u16::MAX } else { value }
+        }
+        self.raster_limit = (axis(device.0), axis(device.1));
+        self.source = source;
+        self
+    }
+
+    /// Does the DEVICE decode this raster? A hard bound, and the only unconditional one.
+    fn decodable(&self, candidate: HlsCandidate) -> bool {
+        let (width, height) = candidate.rung.raster();
+        width <= self.raster_limit.0 && height <= self.raster_limit.1
+    }
+
+    /// Is this box big enough that PMS would not scale the source down at all?
+    fn covers_source(&self, candidate: HlsCandidate) -> bool {
+        let (width, height) = candidate.rung.raster();
+        self.source.0 > 0 && self.source.1 > 0 && width >= self.source.0 && height >= self.source.1
+    }
+
+    /// **A rung's raster is a BOUNDING BOX, not a target**, and reading it as a target is a bug
+    /// this shipped for one afternoon: PMS fits the source inside the box and never upscales, so
+    /// the per-axis test that seemed obvious — box must not exceed the source on either axis —
+    /// threw away every 1080p rung for a 1918x802 scope film, which is to say for most films.
+    /// Measured on the television against a real library item: Auto capped at 4 Mbps / 720p on a
+    /// gigabit LAN, and the log looked healthy while it did it.
+    ///
+    /// The rule that survives both readings is **the smallest sufficient box**: keep every box that
+    /// actually constrains the source (those are real quality steps), keep the smallest box that
+    /// covers it (that is "do not scale at all"), and drop the larger ones — a bigger box buys the
+    /// same picture and, for the 4K point, would price it with a production load measured on an
+    /// output this source cannot produce.
+    fn admits(&self, candidate: HlsCandidate) -> bool {
+        if !self.decodable(candidate) {
+            return false;
+        }
+        if !self.covers_source(candidate) {
+            return true;
+        }
+        // Dominance is compared on the BOX, never on the bitrate: the six 1080p rungs share one
+        // raster and differ only in bits, so a bitrate comparison here would keep the cheapest of
+        // them and silently delete the other five.
+        let (width, height) = candidate.rung.raster();
+        !self.candidates.iter().any(|other| {
+            let (other_w, other_h) = other.rung.raster();
+            let strictly_smaller =
+                other_w <= width && other_h <= height && (other_w < width || other_h < height);
+            strictly_smaller && self.decodable(*other) && self.covers_source(*other)
+        })
+    }
+
+    /// Every candidate this playback may move to, cheapest first. The current rung is deliberately
+    /// NOT filtered by [`Self::candidate`] — a state already running has to remain describable
+    /// even when a later feasibility bound would exclude it.
+    pub(crate) fn feasible(&self) -> impl Iterator<Item = HlsCandidate> + '_ {
+        self.candidates.iter().copied().filter(move |c| self.admits(*c))
+    }
+
+    pub(crate) fn candidate(self, rung: Rung) -> HlsCandidate {
+        self.candidates
+            .iter()
+            .copied()
+            .find(|candidate| candidate.rung == rung)
+            .unwrap_or(HlsCandidate {
+                rung,
+                request_kbps: rung.kbps(),
+                expected_wire_kbps: rung.kbps(),
+                production_load_pm: 1_000,
+            })
+    }
+
+    /// The best FEASIBLE actuator whose measured output fits the budget — chosen directly, so a
+    /// jump from 8 Mbps to a 15 Mbit/s budget primes the 14 Mbps encoder once instead of walking
+    /// 10, 12, 14 and paying three encoder creations for one move.
+    pub(crate) fn best_for_budget(&self, safe_budget_kbps: u32) -> Option<HlsCandidate> {
+        self.feasible()
+            .filter(|candidate| candidate.expected_wire_kbps <= safe_budget_kbps)
+            .max_by_key(|candidate| candidate.expected_wire_kbps)
+    }
+
+    /// The same selection with the PMS production estimate applied as a second, independent
+    /// constraint (see [`ProductionEstimate::predicted_ratio_pm`]). This is what stops a fast link
+    /// in front of a loaded server from committing 4K: the network says yes and the server's own
+    /// measured cadence says it would fall behind real time.
+    pub(crate) fn best_sustainable(
+        &self,
+        safe_budget_kbps: u32,
+        production: &ProductionEstimate,
+        current: HlsCandidate,
+        policy: &AbrPolicy,
+    ) -> Option<HlsCandidate> {
+        self.feasible()
+            .filter(|candidate| candidate.expected_wire_kbps <= safe_budget_kbps)
+            .filter(|candidate| {
+                production
+                    .predicted_ratio_pm(*candidate, current, policy)
+                    .is_none_or(|ratio| ratio <= policy.production_safe_pm)
+            })
+            .max_by_key(|candidate| candidate.expected_wire_kbps)
+    }
+}
+

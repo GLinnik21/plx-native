@@ -3,12 +3,22 @@
 **What Auto is:** a hybrid throughput/buffer controller with probabilistic risk estimation and
 utility-based Original/HLS mode selection. Shorter: a risk-aware stochastic ABR controller.
 
-Everything below lives in `rust-modules/src/abr.rs` (the policy, host-tested), with three call
+Everything below lives in `rust-modules/src/abr/` (the policy, host-tested), with three call
 sites that own facts rather than decisions: `route.rs` (feasibility, the bootstrap probe, the
 main-thread halves of both visible transitions), `ff.rs` (the measurements and the transaction),
 and `ui/stats.rs` (the read-out). The protocol constraint this is all built on — one PMS encoder
 session has one fixed rendition — is `docs/pms-hls-protocol-probe.md`, and it is what makes a
 quality change a **transaction** rather than a request.
+
+The module is split by **decision stage**, in the order the pipeline above runs them: `units.rs`
+and `ladder.rs` are the shared vocabulary (`MediaTimeMs`, `Rung`, `LADDER`, the actuator catalog);
+`plant.rs` is what the world does (buffer, production ratio, starvation horizon); `estimate.rs` is
+what we believe about it (capacity, observation quality, per-segment samples); `viability.rs` and
+`mode.rs` are the comparisons; `controller.rs` is the transaction that acts; `bootstrap.rs` is cold
+start; `original.rs` is the direct-play path and its watchdog. Everything is re-exported flat from
+`mod.rs`, so `abr::Rung` is still the name the rest of the crate uses. `plant.rs` is deliberately
+**separate** from `sim.rs`'s copy of the same queue geometry — the two disagreeing is a test, not a
+duplication to be folded away.
 
 This note is the design and its reasoning. It is not a status report; `docs/parity-gaps.md` tracks
 what is verified on a television.
@@ -289,7 +299,7 @@ numbers used. `ui/stats.rs` carries the same state as the on-screen read-out for
 
 ## 12. Where the tests are, and what they cannot see
 
-`rust-modules/src/abr.rs`'s test module grades the whole model on the host: the estimators
+`rust-modules/src/abr/tests.rs` grades the whole model on the host: the estimators
 (dispersion, weighting, staleness, priors), the starvation arithmetic, candidate selection including
 the 4K veto and the feasibility filter, all three Original exits, the recovery confidence ladder,
 transition hysteresis, the bootstrap table, and the lifecycle resets. It is pure integer arithmetic,

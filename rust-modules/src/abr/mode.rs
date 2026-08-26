@@ -1,0 +1,261 @@
+use super::*;
+
+/// The two states Auto can be in. They are not two ends of one ladder: Original is a different
+/// pipeline with different costs and a different failure mode, and the whole reason this is an
+/// enum rather than a top rung is that "the highest bitrate" and "no server video encoding at
+/// all" are not comparable by bitrate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ModeKind {
+    Original,
+    Hls,
+}
+
+/// Visible mode switches already spent in this playback. Captured on the main thread when a worker
+/// starts, then advanced by the worker's own elapsed time — there is no shared clock between them
+/// and inventing one would be a race for no gain.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct TransitionHistory {
+    pub(crate) visible_switches: u32,
+    pub(crate) since_last_ms: Option<u64>,
+}
+
+impl TransitionHistory {
+    pub(crate) fn advanced_by(self, elapsed_ms: u64) -> Self {
+        Self {
+            visible_switches: self.visible_switches,
+            since_last_ms: self.since_last_ms.map(|ms| ms.saturating_add(elapsed_ms)),
+        }
+    }
+
+    /// The decaying half of the switch cost. Halves every [`AbrPolicy::visible_switch_decay_ms`],
+    /// so hysteresis comes from history rather than from a fixed sample-count cooldown — one
+    /// switch is a decision, a fourth one inside two minutes has to buy a lot to be worth it.
+    fn penalty(self, policy: &AbrPolicy) -> i64 {
+        if self.visible_switches == 0 {
+            return 0;
+        }
+        let base = policy
+            .visible_switch_penalty
+            .saturating_mul(i64::from(self.visible_switches));
+        let Some(since) = self.since_last_ms else { return base };
+        let halvings = since / policy.visible_switch_decay_ms.max(1);
+        base >> halvings.min(16)
+    }
+}
+
+/// **Asymmetric, because the transitions are.** An HLS rung change is a background prime the
+/// viewer never sees; leaving Original tears down a direct-play session and re-Loads the pipeline;
+/// returning to Original does the same and additionally bets that a link which just failed will
+/// hold. A single "switch cost" constant cannot say that.
+pub(crate) fn transition_cost(
+    from: ModeKind,
+    to: ModeKind,
+    history: TransitionHistory,
+    policy: &AbrPolicy,
+) -> i64 {
+    if from == to {
+        return 0;
+    }
+    policy.visible_switch_cost + history.penalty(policy)
+}
+
+/// One candidate state, scored. Kept as its component terms rather than a bare total because the
+/// event log prints them: "Original lost" is not a diagnosis, "Original lost 40 of quality to 60
+/// of transition cost with 90 s left" is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ModeUtility {
+    pub(crate) quality: i64,
+    pub(crate) features: i64,
+    pub(crate) risk: i64,
+    pub(crate) server: i64,
+    pub(crate) transition: i64,
+    pub(crate) total: i64,
+}
+
+/// Everything the mode comparison needs, gathered once so both callers — the Original watchdog
+/// deciding whether to leave, and the HLS controller deciding whether to return — run the SAME
+/// formula on the same inputs.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ModeInputs {
+    pub(crate) current: ModeKind,
+    pub(crate) source_kbps: u32,
+    /// Delivery evidence for the SOURCE request — a bootstrap or recovery probe, or the live
+    /// progressive transfer. Not interchangeable with the HLS estimate; see
+    /// [`CapacityEstimate::demote_to_prior`].
+    pub(crate) source_delivery: CapacityEstimate,
+    pub(crate) hls_delivery: CapacityEstimate,
+    pub(crate) production: ProductionEstimate,
+    pub(crate) buffer: BufferEstimate,
+    pub(crate) remaining_ms: i64,
+    pub(crate) history: TransitionHistory,
+    /// Feasibility, decided elsewhere and passed in as a fact: codec support, subtitle burn-in,
+    /// relay, and whether PMS offered a playable source URL at all.
+    pub(crate) original_feasible: bool,
+    /// The source carries something a transcode would destroy — Dolby Vision, Atmos, lossless
+    /// audio. Makes the Original bonus about THIS file.
+    pub(crate) original_features: bool,
+    /// **How long the deficit has persisted, in measurement windows.** A dip is noise and a regime
+    /// change is not, and only elapsed time tells them apart: without this term the utility
+    /// comparison sees a 40-second starvation horizon identically whether the link wobbled once or
+    /// has been short for ten seconds straight. It raises Original's risk, so a deficit that will
+    /// not go away eventually loses the argument on its own — before starvation is imminent, and
+    /// without a hard counter deciding anything.
+    pub(crate) persistent_deficit_windows: u8,
+}
+
+/// Benefit accrues over the remaining playback; cost is paid once, now. Below the policy horizon
+/// the benefit is scaled linearly, which is the whole of "do not reload with twenty seconds left"
+/// — no threshold, no special case, and it degrades smoothly rather than at a cliff.
+pub(crate) fn benefit_scale_pm(remaining_ms: i64, policy: &AbrPolicy) -> i64 {
+    if remaining_ms <= 0 {
+        return 0;
+    }
+    let horizon = policy.benefit_horizon_ms.max(1);
+    (remaining_ms.min(horizon) * 1_000) / horizon
+}
+
+pub(crate) fn scaled(value: i64, scale_pm: i64) -> i64 {
+    value * scale_pm / 1_000
+}
+
+/// Quality score of an HLS operating point, in the same units as
+/// [`AbrPolicy::original_quality_bonus`]. Concave on purpose: 2 to 4 Mbit/s is a transformation of
+/// the picture, 18 to 20 is not, and a linear score would happily pay a visible reload for the
+/// second one.
+pub(crate) fn hls_quality_score(candidate: HlsCandidate) -> i64 {
+    match candidate.expected_wire_kbps {
+        0..=500 => 0,
+        501..=1_000 => 10,
+        1_001..=2_500 => 25,
+        2_501..=5_000 => 40,
+        5_001..=7_000 => 50,
+        7_001..=9_000 => 58,
+        9_001..=13_000 => 66,
+        13_001..=17_000 => 72,
+        _ => 76,
+    }
+}
+
+pub(crate) fn hls_utility(
+    candidate: HlsCandidate,
+    current: HlsCandidate,
+    inputs: &ModeInputs,
+    policy: &AbrPolicy,
+) -> ModeUtility {
+    let scale = benefit_scale_pm(inputs.remaining_ms, policy);
+    let risk = candidate_risk(
+        candidate,
+        current,
+        &inputs.hls_delivery,
+        &inputs.production,
+        &inputs.buffer,
+        policy,
+    );
+    let quality = scaled(hls_quality_score(candidate), scale);
+    let server = policy.server_cost_weight * i64::from(candidate.production_load_pm) / 1_000;
+    let transition = transition_cost(inputs.current, ModeKind::Hls, inputs.history, policy);
+    let risk_cost = policy.risk_weight * i64::from(risk.score);
+    ModeUtility {
+        quality,
+        features: 0,
+        risk: risk_cost,
+        server,
+        transition,
+        total: quality - risk_cost - server - transition,
+    }
+}
+
+pub(crate) fn original_utility(inputs: &ModeInputs, policy: &AbrPolicy) -> Option<ModeUtility> {
+    if !inputs.original_feasible {
+        return None;
+    }
+    let scale = benefit_scale_pm(inputs.remaining_ms, policy);
+    // Original's requirement is the source's, with VBR headroom, and its delivery evidence is the
+    // source probe's — never the HLS estimate, which measured a different request.
+    let requirement = source_requirement_kbps(inputs.source_kbps, policy);
+    let horizon = starvation_horizon(
+        inputs.buffer.buffered_ms,
+        requirement,
+        inputs.source_delivery.conservative_kbps(),
+    );
+    let mut score = match horizon.seconds {
+        None => 0,
+        Some(seconds) if seconds >= policy.starvation_safe_secs => 2,
+        Some(seconds) if seconds >= policy.starvation_fallback_secs => 10,
+        Some(seconds) if seconds >= policy.starvation_fallback_secs / 2 => 25,
+        Some(_) => 60,
+    };
+    if inputs.source_delivery.samples == 0 {
+        score += 20; // no measurement of THIS request is not the same as a good one
+    }
+    // Persistence, priced. Four points per window, so about nine seconds of continuous shortfall
+    // costs Original the argument even while starvation is still a minute away — and a single
+    // wobble, which resets the counter, costs nothing.
+    score += u32::from(inputs.persistent_deficit_windows.min(15)).saturating_mul(4);
+    let quality = scaled(
+        policy.original_quality_bonus + i64::from(hls_quality_score(
+            HlsActuatorCatalog::measured().candidate(Rung::P1080High),
+        )),
+        scale,
+    );
+    let features = scaled(
+        if inputs.original_features { policy.original_feature_bonus } else { 0 },
+        scale,
+    );
+    let transition = transition_cost(inputs.current, ModeKind::Original, inputs.history, policy);
+    let risk_cost = policy.risk_weight * i64::from(score);
+    Some(ModeUtility {
+        quality,
+        features,
+        // Original asks the server for no video encoding at all — the one term where it wins
+        // outright, and the reason a healthy LAN should never be transcoding.
+        server: 0,
+        risk: risk_cost,
+        transition,
+        total: quality + features - risk_cost - transition,
+    })
+}
+
+/// Why a mode comparison came out the way it did — logged verbatim, so "why did Auto choose this"
+/// is answerable from the event log alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ModeReason {
+    /// Original wins on utility and its delivery evidence supports it.
+    OriginalWorthIt,
+    /// Original is technically impossible here (codec, burn-in, relay, no source URL).
+    OriginalInfeasible,
+    /// Feasible, but the sums say no — usually a visible switch costing more than the remaining
+    /// playback can earn back.
+    OriginalNotWorthIt,
+    /// No HLS candidate is feasible at all, so there is nothing to compare against.
+    NoHlsCandidate,
+}
+
+/// **The selection step: argmax over the feasible states.** Deliberately only two contenders —
+/// Original, and the single best HLS candidate the budget and the server allow — because the rung
+/// question was already answered upstream by the safe budget, and re-litigating it here as a
+/// thirteen-way utility comparison would let a quality curve override a measured capacity bound.
+pub(crate) fn choose_mode(
+    inputs: &ModeInputs,
+    current_hls: HlsCandidate,
+    best_hls: Option<HlsCandidate>,
+    policy: &AbrPolicy,
+) -> (ModeKind, ModeReason, ModeUtility, Option<ModeUtility>) {
+    let original = original_utility(inputs, policy);
+    let hls = best_hls.map(|candidate| hls_utility(candidate, current_hls, inputs, policy));
+    match (original, hls) {
+        (Some(orig), Some(h)) if orig.total > h.total => {
+            (ModeKind::Original, ModeReason::OriginalWorthIt, orig, Some(h))
+        }
+        (Some(orig), Some(h)) => (ModeKind::Hls, ModeReason::OriginalNotWorthIt, h, Some(orig)),
+        (Some(orig), None) => (ModeKind::Original, ModeReason::NoHlsCandidate, orig, None),
+        (None, Some(h)) => (ModeKind::Hls, ModeReason::OriginalInfeasible, h, None),
+        (None, None) => (
+            ModeKind::Hls,
+            ModeReason::NoHlsCandidate,
+            ModeUtility::default(),
+            None,
+        ),
+    }
+}
+
