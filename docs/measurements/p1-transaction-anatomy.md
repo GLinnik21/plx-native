@@ -105,7 +105,7 @@ no server think-time between the request and the first body byte, so a near-zero
 instrument working rather than stuck. **The field's purpose — isolating PMS just-in-time
 production as its own term — cannot be exercised on this tier at all.**
 
-## 6. The fixture pack is EXACTLY CBR, so nothing here can identify a size model
+## 6. Every segment at a rung is the same file, so nothing here can identify a size model
 
 Per-rung media rate from `abr: sample`:
 
@@ -126,13 +126,40 @@ Per-rung media rate from `abr: sample`:
 n = 553 samples over 11 rungs. delivered/requested 0.80x .. 1.92x (2.4x span).
 
 Not "approximately constant" — **identically** constant, to the kilobit, at every rung over 553
-samples. The board's §2 finding that this corpus has zero VBR is confirmed from a second
-direction, and it means the tau-form and A-form statistics coincide EXACTLY here: no
-size-dispersion question is testable on this tier until VBR fixtures land.
+samples. And the mechanism is sharper than an encoder setting.
 
-The cause is in the generator, not the pack: the source is `testsrc2` (a near-static pattern) and
-the rate-targeted shapes encode with `-b:v X -maxrate X -bufsize 2X`, which is CBR. A rung's
-segments have no reason to differ and they do not.
+**Every segment at a rung is the SAME FILE.** `serve_fixtures.py`'s media playlist advertises 90
+segments per rung, but `_resolve` maps `segment.ts?sequence=N` to `ABR_FIXTURE[rung]` and
+**discards N**, so all 90 requests return one clip, byte for byte. Across all 11 logs, 593 logged
+segments carry exactly **10 distinct byte sizes**, and each of the ten is precisely a file size in
+`$FIXTURES_OUT/pipeline`:
+
+| bytes | occurrences | file |
+|---:|---:|---|
+| 128 592 | 11 | `pipe_abr_240p.ts` |
+| 345 356 | 101 | `pipe_abr_480p.ts` |
+| 795 992 | 90 | `pipe_abr_720p.ts` (rungs 2000 AND 4000) |
+| 1 774 344 | 68 | `pipe_abr_1080p_6m.ts` |
+| 2 316 348 | 12 | `pipe_abr_1080p_8m.ts` |
+| 2 786 912 | 7 | `pipe_abr_1080p_10m.ts` |
+| 3 621 632 | 25 | `pipe_abr_1080p_14m.ts` |
+| 3 956 084 | 5 | `pipe_abr_1080p_16m.ts` |
+| 4 344 116 | 11 | `pipe_abr_1080p_18m.ts` |
+| 4 614 084 | 263 | `pipe_abr_1080p_20m.ts` |
+
+**This is R7's "the n=366 fit is 10 data points", with the mechanism named.** It is not that the
+encoder happens to produce even segments — a CRF or VBR setting would change nothing while one
+file answers every sequence number. `bytes` is not merely collinear with `rung`; it is a FUNCTION
+of it, exactly, with ten values. No amount of playback on this tier adds a degree of freedom.
+
+An earlier draft of this section attributed the flatness to `-b:v X -maxrate X -bufsize 2X` being
+CBR. That is true of the encode and is not the operative cause: it explains why each clip is the
+size it is, not why 90 segments share it.
+
+**What fixing it requires** is therefore more than an encoder flag. Each rung needs a clip long
+enough to cut into real segments, the server has to honour the sequence number, and only then does
+the source's complexity variation reach the wire as size variation. Sizes vary within a rung only
+when those three land together.
 
 Two further properties, both known and both reproduced independently here:
 
@@ -147,7 +174,8 @@ Two further properties, both known and both reproduced independently here:
 
 * Whether §3's mixed-byte explanation is right. It needs queue-composition logging.
 * Anything about JIT, the production fold, or a real control plane (§4, §5).
-* Anything about VBR, or any size model (§6).
+* Anything about VBR, or any size model (§6). The tier has 10 distinct segment sizes
+  in total, and that is a property of the server, not of how much it is run.
 * `max_commits` remains window-length sensitive: `pipe_abr_slow_start_then_fast` scored 8 changes
   here against 7 in the I1 baseline, same gate, same binary family. It is still not a grader, and
   `early_exit_allowed` now refuses to grade it on a truncated window at all.
