@@ -1,0 +1,96 @@
+text cache: key len 106 exceeds the 95-byte prefix (fine, klen-keyed)
+altsrc: asked 2 source(s) for plex://movie/659eea0148cee3ee85e48609 -> 1 copy(ies)
+[7839] key type=0x300 raw=000300009f1e0000010000000200000001000000280000000d000000000000000900000004cdb7ff01000000c5adecf5
+[7928] key type=0x301 raw=01030000f81e0000010000000200000000000000280000000d00000000000000090000002ccdb7ff01000000c5adecf5
+loop=55 route=detail fps=46
+playqueue: id=2178 item=2101329 remaining=0 rows=1 next=-
+route: dolby vision P8 (bl_compat=1 el=0) — declaring DolbyHdrInfo (trackType=single profileId=8); direct play
+[8692] key type=0x300 raw=00030000f4210000010000000200000001000000520000005200004000000000090000002ccdb7ff01000000c5adecf5
+[8777] key type=0x301 raw=0103000049220000010000000200000000000000520000005200004000000000090000002ccdb7ff01000000c5adecf5
+loop=59 route=player overlay=none fps=60
+[9110] key type=0x300 raw=00030000962300000100000002000000010000004f0000004f00004000000000090000002ccdb7ff01000000c5adecf5
+[9213] key type=0x301 raw=01030000fc2300000100000002000000000000004f0000004f00004000000000090000002ccdb7ff01000000c5adecf5
+[9259] key type=0x300 raw=000300002b2400000100000002000000010000004f0000004f00004000000000090000002ccdb7ff01000000c5adecf5
+auto: remote Original probe source=25264kbps sample=3083KiB/528ms measured=47846kbps complete=1
+route: Auto Original — source 25264kbps 3840x2160; no video encode
+audio: dolby atmos — declaring contents.immersive=ATMOS
+playing item: rk=5469 audio=3 subs=5 markers=1 chapters=39
+esInfo: videoFps 24/1 + adaptiveResolution (src 24.000)
+dv: sourceInfo contents.DolbyHdrInfo profileId=8 trackType=single encryptionType=clear (codec H265)
+atmos: sourceInfo contents.immersive=ATMOS
+load: v=H265 a="AC3 PLUS" fps=24.000 dv=present:1 P8/1 el:0 atmos:1
+stream: https://<SHARED-SERVER>:<PORT> path=/library/parts/8681/1784719790/file.mkv?X-Plex-Session-Identifier=<SESSION>
+SMP: calling Load (uid=NULL)
+SMP: media thread spawned, stream=1
+[9396] key type=0x301 raw=01030000b42400000100000002000000000000004f0000004f00004000000000090000002ccdb7ff01000000c5adecf5
+[9543] key type=0x300 raw=0003000047250000010000000200000001000000280000000d00000000000000090000002ccdb7ff01000000c5adecf5
+smp_cb type=13 num=1 str=
+smp_cb type=14 num=0 str=1
+smp_cb type=5 num=0 str=0 video/x-h265 (null) (null) 3840 2160 (null) 60.000000 0 0 0
+smp_cb type=15 num=0 str=1
+smp_cb type=8 num=0 str=audio/x-eac3 (null) (null) 0.000000 0 (null) 0 0 0 0 (null) 0 (null) 0 ATMOS
+[9619] key type=0x301 raw=0103000092250000010000000200000000000000280000000d00000000000000090000002ccdb7ff01000000c5adecf5
+smp_cb type=17 num=0 str=
+smp_cb type=35 num=1 str=
+smp_cb type=22 num=0 str=true
+SMP loadCompleted
+SMP loadCompleted (priming before Play)
+ff: open https status=200 clen=25036888793
+SMP: Load returned ok=1
+loop=58 route=player overlay=more fps=58
+ff: container names 7/8 tracks (a=3 s=5)
+ff: v=#0 codec=hevc codec_id=172 3840x2160 trc=2 pri=2 spc=2 dovi=P8 level=6 bl_compat=1 rpu=1 el=0 bl=1 a=#3 dur_ns=7928096000000
+ff: sub tracks=[#4:text,#5:text,#6:text,#7:text,#8:text] selected=-1
+ff: param_sets=105 bytes nal_len=4 is_hevc=true
+[10452] key type=0x300 raw=00030000d4280000010000000200000001000000280000000d00000000000000090000002ccdb7ff01000000c5adecf5
+[10587] key type=0x301 raw=010300005b290000010000000200000000000000280000000d00000000000000090000002ccdb7ff01000000c5adecf5
+loop=58 route=player overlay=none fps=59
+ff: seek 526s rv=0
+auth: '<peer-name-2>' probe timed out at <lan-ip-1>:32400
+auth: reached "<peer-name-2>" <SHARED-SERVER-IP>:26937 (shared by <peer-owner-1>) via https://<SHARED-SERVER>:<PORT>
+auth: roster refresh dropped — session identity changed while probing
+net: curl rc=28 — timed out
+ff: stripped HDR10+ SEI #1 (55 bytes)
+ff: AU#0 size=334494 key=true head=[00 00 00 01 40 01 0c 01 ff ff 22 20 00 00 03 00 b0 00 00 03 00 00 03 00 96 18 b0 24 00 00 00 01 42 01 01 22 20 00 00 03]
+rebase: first post-seek keyframe pts=525583000000 -> pts_shift=-525583000000
+feed reply="{"returnValue":"Ok"}
+"
+feed v#1 sz=334494 fed=0 reply=O qbytes=0
+feed reply="{"returnValue":"Ok"}
+"
+feed a#1 sz=3072 fed=17000000 reply=O qbytes=21504
+feed reply="{"returnValue":"Ok"}
+"
+feed a#2 sz=3072 fed=49000000 reply=O qbytes=18432
+feed a#3 sz=3072 fed=81000000 reply=O qbytes=15360
+feed a#4 sz=3072 fed=113000000 reply=O qbytes=12288
+smp_cb type=7 num=0 str={"track":-1,"dualMono":false,"immersive":"ATMOS"}
+
+ff: stripped HDR10+ SEI #2 (55 bytes)
+ff: stripped HDR10+ SEI #3 (55 bytes)
+feed v#2 sz=166940 fed=83999999 reply=O qbytes=10497
+feed v#3 sz=10497 fed=41999999 reply=O qbytes=0
+feed v#4 sz=153668 fed=166999999 reply=O qbytes=9077
+primed: v=749ms a=817ms -> Play
+smp_cb type=42 num=0 str=�.G�
+smp_cb type=4 num=0 str={"context":"_UXxSY18RRMwCpC","content":"movie","video":{"frameRate":0,"scanType":"VIDEO_PROGRESSIVE","width":3840,"height":2160,"bitRate":0,"adaptive":true,"path":"network","pixelAspectRatio":{"width":1,"height":1},"afd":16,"rotation":0,"data3D":{"originalPattern":"2d","currentPattern":"2d","typeLR":"LR"},"hfr":false,"hdrType":"DolbyVision"}}
+
+SMP context/mediaId=_UXxSY18RRMwCpC
+SMP sourceInfoRaw captured (345 bytes)
+smp_cb type=26 num=0 str=true
+SMP ACB bound id=_UXxSY18RRMwCpC
+acb setMediaAudioData rv=1 payload={"audio":{"immersive":"ATMOS"},"context":"_UXxSY18RRMwCpC"}
+atmos: acb setMediaAudioData rv=1
+acb_cb ev=1 reply=
+acb_cb ev=1 reply=
+auto: Original -> HLS ImminentStarvation measured=42365kbps safe=21182kbps need=34106kbps buf=85ms slope=113ms/s starve=0 windows=1 target=22000kbps
+auto: Original became unsustainable at 21182kbps; switching to 14000kbps 1920x1080 HLS
+ff: demux ended
+select streams: part=8681 audio=33733 sub=0 -> HTTP 200
+decision output: v=h264 a=aac
+retranscode rk=5469 audio=33733 sub=0 offset=526 -> transcode start
+reload_transcode: fresh Load at offset 526s
+smp_cb type=23 num=0 str=true
+stop_bufferfeed: torn down
+esInfo: videoFps 24/1 + adaptiveResolution (src 24.000)
+dv: DolbyHdrInfo P8 NOT sent — payload video codec is H264, not H265
