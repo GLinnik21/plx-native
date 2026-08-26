@@ -40,8 +40,9 @@ pub enum Action {
     SignOut,
     /// **Lab builds only** — snapshot the diagnostic ring and upload it (`crate::lab`). It is in
     /// this menu because it must be reachable with the D-PAD ALONE: the remote trigger is a colour
-    /// button whose code is not known on LG's SDL fork, and the LG Cloud Test Lab virtual remote
-    /// may not offer one at all (`docs/lab-diagnostics.md` §7). Never offered in any other build —
+    /// button (BLUE, `wcode` 489 on the dev set), and an LG Cloud Test Lab virtual remote may not
+    /// offer colour buttons at all — nor is that code guaranteed on a set nobody here has touched
+    /// (`docs/lab-diagnostics.md` §7). Never offered in any other build —
     /// [`crate::lab::menu_row_enabled`] is `false` at compile time.
     SendDiagnostics,
 }

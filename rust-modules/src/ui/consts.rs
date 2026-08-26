@@ -367,12 +367,17 @@ pub fn page_dir(sym: c_uint, wcode: c_uint) -> Option<c_int> {
 /// press in flight. The invariant is *a press consumed by neither a route-specific handler nor the
 /// global key ladder must produce no global side effect*, and this is its guard.
 ///
-/// **Four sources, because the map has four and not one:**
+/// **Five sources in a lab build, four in every other, because the map has never been one:**
 /// 1. [`classify`] — every named [`Key`].
-/// 2. [`page_dir`] — the Library pager, a SEPARATE predicate (see its doc).
-/// 3. [`SDLK_BACKSPACE`] / [`SDLK_CLEAR`] — the television keyboard's own edit keys, read inside
+/// 2. **The Lab Diagnostics trigger** ([`crate::lab::is_trigger_key`]) — a key this build really
+///    does bind, read from `lab.json` rather than written here. `false` at COMPILE time in every
+///    build without the `lab-diagnostics` feature, which is every build anyone can install. It has
+///    to be in this predicate or pressing it would also wake the player HUD and abort an armed
+///    click — the exact pair of side effects this function exists to withhold.
+/// 3. [`page_dir`] — the Library pager, a SEPARATE predicate (see its doc).
+/// 4. [`SDLK_BACKSPACE`] / [`SDLK_CLEAR`] — the television keyboard's own edit keys, read inside
 ///    the Search screen (`ui::search::key`), which the classifier never sees.
-/// 4. An ASCII digit **in `sym`** — the who's-watching PIN keypad types straight from the remote's
+/// 5. An ASCII digit **in `sym`** — the who's-watching PIN keypad types straight from the remote's
 ///    number buttons (`ui::profiles`' own `digit_of`, which owns that behaviour).
 ///
 /// **The `sym` field ONLY, and that is a deliberate divergence from `digit_of`, which also reads

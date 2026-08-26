@@ -15,15 +15,21 @@
 //!
 //! # Why the trigger codes are configuration
 //!
-//! **Nobody knows what the BLUE button sends on LG's SDL fork.** `docs/remote-keys.md` §2 is the
-//! complete measured map and no colour key is in it; the fork's own evdev→scancode table maps
-//! `KEY_RED`/`KEY_YELLOW`/`KEY_BLUE` (evdev 398/400/401) to **nothing at all**, while `KEY_GREEN`
-//! (399) maps to scancode 504 — so the colour keys are not a uniform family on this firmware and
-//! the real codes are whatever LG's own private evdev range emits. That is a device question
-//! (`docs/lab-diagnostics.md` §7). Rather than guess in a constant, the trigger is a LIST in this
-//! file: a lab session can try another code by repacking, and the account-menu row works with the
-//! D-pad alone in the meantime. The app logs every press's raw bytes unconditionally, so the first
-//! successful upload by any route carries the answer.
+//! **The codes ARE known now** — BLUE is `wcode` **489** (486 RED / 487 GREEN / 488 YELLOW,
+//! `sym` 0), measured on the dev set 2026-08-26 and recorded in `docs/remote-keys.md` §9. The
+//! trigger is a LIST in this file anyway, for two reasons that outlived the measurement.
+//!
+//! **One: the offline answer was WRONG, not merely missing.** The fork's evdev→scancode table maps
+//! `KEY_RED`/`KEY_YELLOW`/`KEY_BLUE` (evdev 398/400/401) to nothing at all, and `KEY_GREEN` (399)
+//! to a scancode 504 that this remote never sends — so the one colour key that looked derivable
+//! from a desk was derivable incorrectly. The real codes come from LG's private evdev range
+//! (289–292), which no table could have singled out.
+//!
+//! **Two: that is one remote on one firmware.** A Cloud Test Lab set may spell the buttons
+//! differently, or its virtual remote may not offer them at all — which is why the account-menu
+//! row reaches the same upload with the D-pad alone. And the app logs every press's raw bytes
+//! unconditionally, so the first successful upload by any route re-answers the question for
+//! whatever set it came from. `docs/lab-diagnostics.md` §7 is the full account.
 use serde::Deserialize;
 use std::sync::OnceLock;
 

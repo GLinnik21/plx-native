@@ -46,10 +46,11 @@ And two constraints that shape everything below:
 * **No `/tmp` trigger can be armed on a lab set.** The whole `dev.rs` surface assumes ssh. On Cloud
   Test Lab the *only* channel into the device is **the .ipk we upload**. So per-session
   configuration has to ride in the package.
-* **The colour buttons are UNBOUND AND UNMEASURED.** `docs/remote-keys.md` §2 is the full map and
-  BLUE is not in it; §6 lists the colour buttons among the *unsupported* keys the app deliberately
-  ignores. Nobody has ever captured what wcode BLUE sends on this fork, and it is not derivable
-  from a desk — see §7 below.
+* **The colour buttons are UNBOUND, and until this feature nobody had measured them.**
+  `docs/remote-keys.md` §2 is the full map and no colour key was in it; §6 lists them among the
+  *unsupported* keys the app deliberately ignores. They are measured now — BLUE is `wcode` **489**
+  (486 RED / 487 GREEN / 488 YELLOW, `sym` 0, dev set 2026-08-26) — and the trigger stayed
+  configuration anyway, for the reason §7 gives: that is ONE remote on ONE firmware.
 
 ---
 
@@ -151,8 +152,10 @@ budget is declared in `appinfo.json`, which is why both caps exist rather than a
 
 **The trigger** (`app.rs`, one arm in the global key ladder, `#[cfg]`-gated):
 
-* BLUE, matched against `trigger_wcodes` **from the config** rather than a constant — because we do
-  not yet know the code (§7) and a lab session must be able to try a list without a rebuild.
+* BLUE (`wcode` 489, measured — §7), matched against `trigger_wcodes` **from the config** rather
+  than a constant, so a lab session can try another code with a repack instead of a rebuild. That
+  mattered more when the code was unknown; it still matters, because the measurement is one remote
+  on one firmware.
 * **A fallback that needs only the D-pad**, since a Cloud Test Lab virtual remote may not offer
   colour keys at all: a new row in `ui::account_menu` (`Action::SendDiagnostics`, lab builds only) —
   reachable by ordinary navigation on Home, and a `TableView` row is the idiom that module already
@@ -240,14 +243,23 @@ button on this set already comes from — BACK is evdev 303, PLAY is 207, the ch
 402/403. Whatever the physical BLUE button emits is somewhere in that space, and **no table can say
 which**: the table says what a code would translate to, never which code a button sends.
 
-Two further facts only hardware settles: whether webOS's key access policy delivers colour keys to
-a native app at all (BACK needs `SDL_WEBOS_ACCESS_POLICY_KEYS_BACK`, set in `main.c`), and whether
-the Cloud Test Lab virtual remote even has the buttons.
+**And the hardware settled it, the same day.** Pressing all four on the dev set with the log open
+gave `wcode` **486 RED / 487 GREEN / 488 YELLOW / 489 BLUE**, `sym` 0 — LG's private range as
+predicted, from evdev 289–292, and matched in `wcode` like every other remote button above 300.
+Note what that means for the table above: `KEY_GREEN`→504 was the ONE colour code that looked
+answerable offline, and it is a code this remote never sends. The offline answer was not merely
+incomplete, it was wrong. No key access policy was needed either: unlike BACK, which requires
+`SDL_WEBOS_ACCESS_POLICY_KEYS_BACK` in `main.c`, the colour keys arrive unasked.
+
+One question is still open and only a lab set can close it: **whether the Cloud Test Lab virtual
+remote offers colour buttons at all.**
 
 **The design absorbs every outcome**, which is why none of this blocked the build:
 
 * the trigger is a **list in `lab.json`** (`trigger_wcodes` / `trigger_syms`), so trying another
-  code is a repack, not a rebuild — and `plxnative-lab start --trigger 406,504,403` writes it;
+  code is a repack, not a rebuild — `plxnative-lab start --trigger 489,488` writes it. It stays a
+  list now that the codes are known, because 486–489 is one remote on one firmware and a rented
+  set may spell them differently or not send them at all;
 * the **account-menu and player-overflow rows** reach the same upload with the D-pad alone, which
   is the path that always works;
 * the app logs every press's raw 48 bytes unconditionally, and those lines are in the ring — so
@@ -255,9 +267,9 @@ the Cloud Test Lab virtual remote even has the buttons.
   own key binding. The recipe is `docs/remote-keys.md` §7, run through this bridge instead of over
   ssh.
 
-The default in `plxnative-lab start` is `406`, which is a guess (it is the CEA-2014 / webOS
-web-runtime keycode for BLUE, and 406 is producible on this fork from evdev 491) and is documented
-as one.
+The default in `plxnative-lab start` is **489**, the measured BLUE. `406` survives only as a unit
+test's fixture in `lab/config.rs` — it was the original guess (the CEA-2014 / webOS web-runtime
+keycode for BLUE) and it was wrong, which is the whole lesson of this section.
 
 ## 8. Receiver — `tools/plxnative-lab`, python3 stdlib only
 
@@ -317,7 +329,10 @@ plxnative-lab stop                        # mapping removed
 `LAB=1` sets `RUST_FEATFLAGS += --features lab-diagnostics` and its own `RUST_TDIR=target-lab` —
 the Makefile already documents that exact escape hatch for a non-standard feature set, and cargo
 does not hash its output, so a shared target dir would hand back a non-lab `.a` and report it fresh.
-`ci/mkipk.py` stages `pkg/lab.json` **only when it exists and `LAB=1`**; `ci/check-package.py` gains
+`pkg/lab.json` reaches the payload through the **Makefile** — `LAB_FILES` is empty unless `LAB` is
+set, `APP_FILES` includes it, and the `ipk` recipe's `cp $(APP_FILES) $(STAGE)/` does the rest;
+`ci/mkipk.py` names it nowhere and needs no change. Its EXISTENCE is enforced earlier, by
+`lab-guard`. `ci/check-package.py` gains
 the inverse assertion — **a non-lab package containing `lab.json`, or a lab build on the stable app
 id, is a packaging error**, which is where this class of mistake gets caught rather than in review.
 `pkg/lab.json` is gitignored and added to `PRIVATE_FILES` in `.claude/hooks/outbound-guard.py`
@@ -347,12 +362,15 @@ the ring to disk, a web UI, and promoting Direct Play / Direct Stream / Transcod
 
 **Verified, all on the host, no television:**
 
-* `make check` is green in both configurations — 1265 tests without the feature, 1290 with it. The
-  new ones cover the ring's two caps and its `dropped` delta, the `lab.json` parse and each refusal
-  it names, the four scrub rewrites and the outright refusal, the document's JSONL shape (including
-  a record carrying a newline and a quote), the gzip member's CRC and trailers against the standard
-  check value, the toast's single-flight flag and its expiry, and that the toast sits inside the
-  safe area and clear of the stats panel.
+* `make check` is green in both configurations. **Take the counts yourself** — this repository has
+  rotted four written test counts already and the fifth is not going to be this one:
+  `cd rust-modules && cargo +nightly test --lib -- --list | grep -c ': test'`, with and without
+  `--features lab-diagnostics`. What the feature's own tests cover: the ring's two caps and its
+  `dropped` delta, the `lab.json` parse and each refusal it names, the five scrub rewrites and the
+  outright refusal (including the bare address and the household name the device test found), the
+  document's JSONL shape with a record carrying a newline and a quote, the gzip member's CRC and
+  trailers against the standard check value, the toast's single-flight flag and its expiry, and
+  that the toast sits inside the safe area and clear of the stats panel.
 * All four feature configurations type-check clean under `warnings = "deny"`: default,
   `--no-default-features`, `+lab-diagnostics`, and `--no-default-features +lab-diagnostics`.
 * `tools/plxnative-lab selftest` — a real TLS listener with a freshly generated certificate, a real
@@ -367,20 +385,33 @@ the ring to disk, a web UI, and promoting Direct Play / Direct Stream / Transcod
   reports its external address, and `lab.plxnative.com` resolves to exactly that address. Checked
   by `plxnative-lab selftest`'s closing note and by `status`'s `dns_matches`.
 
-**NOT verified, and each needs hardware:**
+**Verified ON THE DEV TELEVISION** (LG 49SM9000PLA, webOS 4.10.2), 2026-08-26, under the
+`tv-lock`, `make LAB=1 FLAVOR=debug deploy`:
 
-* A real UPnP `AddPortMapping` on the Keenetic, and an inbound connection through it. Discovery and
-  the external address are proven; the mapping itself has never been created.
-* `CURLOPT_PINNEDPUBLICKEY` against the **television's** libcurl 7.53.1/OpenSSL 1.0.2. It is
-  documented from 7.39 and works on the Mac's curl; the pin arm has never run on ARM.
-* The colour button — every word of §7.
-* Anything about the ARM cross-build of this feature: `make LAB=1` has not been run against the
-  NDK, and the `fw-compat-reviewer` pass that `net.rs`'s new option warrants has not been done.
-* The `.ipk` path: `ci/check-package.py`'s two new assertions have not been executed, because no
-  lab package has been built.
+* **A physical BLUE press on the Magic Remote produced an upload.** `lab: snapshot seq=1
+  reason=key route=profiles` then `lab: uploaded seq=1 10718B -> 3510B (gzip) status=200`. A RED
+  press right after it did nothing, which is the selectivity half.
+* **`CURLOPT_PINNEDPUBLICKEY` works against the television's own libcurl 7.53.1/OpenSSL 1.0.2** —
+  that upload is the proof, and it is the one thing no host run could show.
+* **The ARM cross-build**: `make LAB=1 FLAVOR=debug` builds clean through the NDK, and
+  `tools/fwcompat.py` is unchanged at OK 4.4.2 → 11.2.0 (see the LAB-ELF note below).
+* **The envelope's device block is real**: `status` read webOS 4.10.2 and the board and model
+  strings off the set, so `webos::device()`'s `device_info.json` parse works on hardware.
+* **The toast renders on the panel**, photographed over the who's-watching screen.
+* **The public leg**, via a phone off the LAN entirely — §12, which is the whole account.
+* And the **`fw-compat-reviewer`** pass `net.rs`'s new option warrants has been done: it found the
+  fail-open pin (`CURLOPT_PINNEDPUBLICKEY`'s return code was discarded, so a libcurl that refused
+  the option would have sent the upload with neither pinning nor CA verification) and the
+  per-upload `dlopen` of libz. Both fixed; the review is otherwise PASS.
 
-The next step is the dev television — `make LAB=1 FLAVOR=debug deploy` under the `tv-lock`, with a
-receiver on the LAN — before an hour of Cloud Test Lab is spent on any of it.
+**Still NOT verified:**
+
+* **The `.ipk` path.** `ci/check-package.py`'s two new assertions have never executed, because no
+  lab package has been built — every device run so far went through `make deploy`. That is the gap
+  Cloud Test Lab actually walks through, since it installs a package rather than scp-ing a binary.
+* **A Cloud Test Lab set itself**: whether its virtual remote offers a colour button at all, and
+  whether that set's libcurl and CA-less pinning behave like the dev set's. The account-menu row
+  exists precisely so the answer to the first does not matter.
 
 **The LAB ELF is graded by hand, and by nobody else.** `.github/workflows/ci.yml` builds and grades
 the DEFAULT configuration only, so `make LAB=1`'s binary — the one that actually flies to Cloud

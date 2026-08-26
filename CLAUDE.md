@@ -368,16 +368,21 @@ which the linking section explains is load-bearing rather than tidy.
   one-consumer AU FIFO with byte-cap backpressure. Both are Rust ports of the deleted C headers;
   the hand-rolled `mkv.rs` demuxer they fed is retired — `ff.rs` is the only demux path.)
 - `rust-modules/src/dynlib.rs` — the runtime library binder (`dlopen`, by SONAME candidate list or
-  by absolute path). Three callers, for three different reasons: `net.rs` binds **curl** by candidate
-  list because its SONAME moves between releases; `ff.rs` binds the **bundled FFmpeg** by
-  absolute path because ours ships beside the binary, on no library search path — not because any
+  by absolute path). **Four** callers in a lab build and three in every other, each for its own
+  reason: `net.rs` binds **curl** by candidate list because its SONAME moves between releases;
+  `ff.rs` binds the **bundled FFmpeg** by absolute path because ours ships beside the binary, on
+  no library search path — not because any
   version varies; and `curlio.rs` binds **`curl_multi_*` in a SECOND table of its own**, from the
   same candidate list, because `load_into` is all-or-nothing and a set missing one multi symbol
   must still be able to SIGN IN. That table is frozen to the oldest supported set:
   `curl_multi_poll`/`curl_multi_wakeup` resolve on the dev Mac, are absent on the dev television,
   and first appear at webOS 7.4.0 — so binding them would have emptied this table on four of the
-  nine gated releases. (**ACB** is the same idea but not this module: `src/starfish.c` is C and does its
-  own `dlopen`.) Replaced `stub/`, which is deleted. `tools/fwcompat.py` grades the result;
+  nine gated releases. The fourth is `lab/zlib.rs`, which binds **one** symbol — `compress2` — in
+  a table of its own so that a television without libz degrades to an uncompressed upload rather
+  than emptying anybody else's table; it exists only in a `lab-diagnostics` build, which is not the
+  default set, so an ordinary binary really does have three. (**ACB** is the same idea but not this
+  module: `src/starfish.c` is C and does its own `dlopen`.) Replaced `stub/`, which is deleted.
+  `tools/fwcompat.py` grades the result;
   `docs/webos5-port.md` is the full account.
 - `pkg/` — deployable payload: `appinfo.json` (native app manifest), `plxnative` binary, icons,
   `appfont*.ttf`, and the prebuilt `.ipk`.

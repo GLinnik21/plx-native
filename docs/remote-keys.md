@@ -7,8 +7,12 @@ This file is what LG's App Self Checklist rows **26** (general / IR remote), **3
 **39** (LIVE), **40** (unsupported keys) and **45** (playback control keys) cite;
 `docs/lg-self-checklist.md` is the status of those rows, this is the evidence under them.
 
-Status taken 2026-08-23. **Nothing below was measured on a television in this pass** — the device
-half is either quoted from a dated earlier session or marked as a recipe still to run. What *was*
+Status taken 2026-08-26. **Everything below is offline work — read out of the harvested `libSDL2`
+or quoted from a dated earlier session — WITH ONE EXCEPTION: §9's colour-button row was measured on
+the dev set on 2026-08-26**, by pressing all four buttons with the log open. That exception matters
+in both directions: it is the only device-fresh table here, and it is also the row that proves the
+offline method can be *wrong* rather than merely incomplete (the translation table's one answer for
+a colour key, `KEY_GREEN`→504, is a code the real remote never sends). What *was*
 done offline is read out of the television's own harvested `libSDL2`, which is stated where used.
 
 ---
@@ -268,7 +272,10 @@ belong to no arm:
 
 Both are now behind **`ui::consts::is_bound(sym, wcode)`**, which is §2's map expressed as one
 predicate: `classify` names a `Key`, **or** `page_dir` answers, **or** the sym is backspace/Clear,
-**or** the **sym** is an ASCII digit. The guarded half lives in `app.rs::note_global_press`, split
+**or** the **sym** is an ASCII digit — **or**, in a Lab Diagnostics build only, the press is that
+build's configured upload trigger (`crate::lab::is_trigger_key`, `false` at compile time in every
+build anyone can install; `docs/lab-diagnostics.md`). The guarded half lives in
+`app.rs::note_global_press`, split
 out so `make check` can grade it — `begin_fresh_press` itself calls `hide_cursor`, a webOS-only SDL
 symbol, and a host test that reaches it fails at `ld` rather than at an assertion.
 

@@ -84,15 +84,21 @@ but a photograph could show it (`gfx.rs`, at the `glBlendFuncSeparate` call).
 
 `cargo +$(RUST_NIGHTLY) test --lib`, preceded by `make lint` (three **named** clippy lints —
 `ifs_same_cond`, `same_functions_in_if_condition`, `if_same_then_else` — the shadowed-branch gate),
-and followed by two host checks that are easy to forget are in here: `python3 ci/flavor.py
+and followed by **three** host checks that are easy to forget are in here: `python3 ci/flavor.py
 --selftest` (the flavour transform, whose central assertion is that the STABLE transform is the
-identity) and `python3 tests/test_harness.py` (pins `run.py`'s skip partition — the path a full
-`manifest.local.json` never enters).
+identity), `python3 tests/test_harness.py` (pins `run.py`'s skip partition — the path a full
+`manifest.local.json` never enters), and `python3 tools/plxnative-lab selftest` (the Lab
+Diagnostics receiver: a real TLS listener on loopback, one accepted upload and six refusals — the
+whole of what that tool exposes to the public internet, and the only gate it has, since nothing in
+cargo can see a python file).
 
-**It is not sub-second; the figure that circulates is one of its four parts.** Measured end to end
-on the dev Mac, warm, 2026-08-23: **3.8 s**. The ~0.3 s everybody quotes is `cargo test --lib`
-alone. The number is worth having only so a four-second wait does not read as a hang — nothing here
-is expensive enough to argue about, and every part of it is free next to waking a television.
+**It is not sub-second, and the figure that circulates is one of its five parts.** The ~0.3 s
+everybody quotes is `cargo test --lib` alone; end to end it is now well over ten seconds warm, most
+of the growth being suite size and **~7 s of the lab selftest, which is mostly two DELIBERATE
+rate-limit waits** — so a ten-second-plus pause there is the target working, not a hang. (That step
+also SSDP-probes the LAN to report whether a UPnP gateway is present; still no television, still no
+lock.) Do not write a new number here: measure it if you need one — this file has already carried a
+`3.8 s` that four separate additions made wrong.
 
 **Do not quote a test count.** Three have already rotted in the docs, one within a single commit.
 Count it yourself if you need the number:
