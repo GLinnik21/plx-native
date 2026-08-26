@@ -1,9 +1,15 @@
 # Adaptive playback: the Phase 3 specification
 
-**Status: DERIVATION, not yet implemented.** Nothing here has landed. This is the document the
-plan's §6 calls for and the one its "independent adversarial review before Phase 4" is meant to
-attack. Where it and `docs/adaptive-playback-plan.md` disagree about a formula, this one is later
-and cites its evidence; where it is silent, the plan governs.
+**Status: DERIVATION, REVIEWED, NOT READY FOR PHASE 4.** Nothing here has landed. This is the
+document the plan's §6 calls for. Where it and `docs/adaptive-playback-plan.md` disagree about a
+formula, this one is later and cites its evidence; where it is silent, the plan governs.
+
+> **It has now had the adversarial review the plan mandates, and it did not pass.** Five seats,
+> each attacked by an independent refuter: **13 findings survived, 7 were killed**, and **6 of the
+> survivors block Phase 4**. The full record, including the killed attacks and the refuters'
+> corrections to their own seats, is `docs/measurements/p3-spec-review.md`. Every surviving
+> finding is answered in place below, in the section it lands on, marked **[R-blocked]** where it
+> is still open. **§3, §4, §5 and §7 all changed. Do not implement from the pre-review text.**
 
 **The rule this document is written under**, from the standing directive: every quantity used to
 make a decision must be classifiable as one of
@@ -18,12 +24,20 @@ cooldowns, utility weights or rung-walking rules. §7 applies that test to all e
 tunables, one at a time, and it is the part of this document most likely to be wrong.
 
 **What is derivable today and what is not.** The SIZE half of the admission problem is settled
-host-side (`docs/measurements/p2h-pms-ladder.md`). The TIME half — the per-segment intercept and
-the per-byte transport cost on a real link — is not, because the measurement apparatus has the PMS
-on the same machine and no link at all. §4 is therefore written with those two as named parameters
-whose *estimation* is specified and whose *values* are a device job. That is deliberate: a
-specification that hid the gap behind a plausible constant would be the thing this whole effort
-exists to stop.
+host-side (`docs/measurements/p2h-pms-ladder.md`) — with the two limits §3 now carries. The TIME
+half — the per-segment intercept and the per-byte transport cost on a real link — is not, because
+the measurement apparatus has the PMS on the same machine and no link at all.
+
+**[R-blocked]** An earlier draft of this paragraph said §4's two parameters were written as
+"named parameters whose *estimation* is specified". **That was false and is withdrawn.** No
+estimator for `o0_us` or `tau_ps` appears anywhere in this document or the plan — no form, no
+window, no update law, no cold-start value, no bound — and `O₀` is not even a scalar (§2 measures
+three regimes for it while §4's arithmetic takes one number with no regime selector). Until §2a
+exists, **§4 cannot be implemented**, and every shape decision an implementer would have to invent
+is exactly the class of number the directive bans. What is already available to build it from:
+`SegmentSample` carries `total_fetch_us` **and** `active_fetch_us` beside `bytes`
+(`abr/estimate.rs`), so `total − active` and `active / bytes` are a two-parameter decomposition
+that exists today and nobody has specified an estimator over.
 
 ---
 
@@ -86,11 +100,30 @@ It takes three regimes:
 | after a seek | ≈ 6 quanta, ≈ 660 ms, **exactly one segment** | index 900 and 1800 cost 654 and 663 ms; the next segments cost 111 and 208 |
 | source the encoder does not handle | rises with the rung, to 862 ms median / 1 306 ms max | the 4K HEVC item, rungs ≥ 12000 |
 
-The fixture tier's `O₀ = 17.76 ms` describes a static file server and is **12× low** for
-deployment. Any margin calibrated against it is calibrated against the wrong apparatus.
+**[corrected]** An earlier draft said "the fixture tier's `O₀ = 17.76 ms` ... is **12× low** for
+deployment". **Both halves were wrong and the pairing that produced them was the real defect.**
+`17.76 ms` does not appear anywhere in this repository — it comes from the planning file, from a
+fit on a corpus the repo's own measurement doc says is not comparable. The repository's actual
+joint fit, post-fixture-rebuild, is **`τ` = 21.40 ns/byte with `O₀` = 687.95 ms**
+(`docs/measurements/p1-transaction-anatomy.md:203`) — so the fixture tier's intercept is **larger**
+than the real PMS's ~214 ms, not 12× smaller. The draft had taken `τ` from that joint fit and
+`O₀` from a different one, which is not a combination either fit supports: in `A = O₀ + bytes·τ`
+the two are estimated together and only travel together.
 
-**`τ` is not measurable on the host apparatus and is not specified here.** The device tier owns
-it. It ships in **picoseconds per byte** (`i64`): in ms/byte the measured value is 5.85e-5, which
+**Three intercept/slope estimates exist. None of them may be mixed, and none is the deployment
+value:**
+
+| source | `O₀` | `τ` | apparatus |
+|---|---:|---:|---|
+| planning file | 17.76 ms | 58.51 ns/byte | pre-rebuild fixture corpus, 10 effective points |
+| `p1-transaction-anatomy.md:203` | 687.95 ms | 21.40 ns/byte | post-rebuild fixture corpus |
+| `p2h-pms-ladder.md` §5 | k · 108 ms, k ∈ {1,2,3} | not measurable | real PMS, no link |
+
+`p1` says outright that its own `τ` is unsettled — 33.30 on the first five logs against 21.40 on
+eleven, a 1.56× swing, with a cluster-robust SE of 15.29 that puts it ~1.4σ from zero.
+
+**`τ` is not measurable on the host apparatus and no value is specified here.** The device tier
+owns it. It ships in **picoseconds per byte** (`i64`): in ms/byte the value is 5.85e-5, which
 truncates to integer **0** and divides by zero in the demux worker (R20).
 
 ## 3. How big is the next segment
@@ -119,10 +152,53 @@ So, for rungs at or above 2000 kbps:
 bytes_j  ≤  σ · W_j · D / 8000            σ = 0.85, W in bit/s, D in ms, bytes in bytes
 ```
 
-**Classification.** `W_j` is (2) directly measured, per transaction, from a playlist the
-transaction **already fetches and already logs** (`ff.rs`, `hls: master one-variant bandwidth=`).
-`D` is (2). `σ` is (2) — a measured structural ceiling, and the single most fragile number in this
-document: one server, three items, four windows. §8 says what would falsify it.
+**Classification, and [R-blocked] the availability split the earlier draft got wrong.** `D` is
+(2). `σ` is (2). `W_j` is (2) — but the draft's "the transaction already fetches and already logs
+it before deciding anything" is true of **one** decision and false of the other, and the two are
+the two halves of admission:
+
+| decision | where | is `W_j` available? |
+|---|---|---|
+| **validate** — commit this primed candidate, or reject it | `Controller::candidate_ready`, after `ff.rs`'s `hls_cursor_open(candidate_url, …)` | **yes.** The candidate's master playlist has been fetched and its `BANDWIDTH` parsed and logged. |
+| **select** — which rung to prime at all | `Controller::observe`, at the `Proposal { rung: target }` sites | **no.** A rung's `BANDWIDTH` cannot be read without first creating a PMS encoder session for it. |
+
+So §4's rule **can** be evaluated at the validation point and **cannot** be evaluated over the
+ladder at selection time. Worse, the number is not even *retained* for the rung that does have
+one — it is formatted into a log string and dropped.
+
+Two consequences, and the second is not resolved:
+
+* The rule below belongs at `candidate_ready`, which is where the transaction already grades a
+  real segment. That is a good home for it, not a compromise.
+* **Selection still needs a per-rung rate and this document does not supply one.** The catalog's
+  `expected_wire_kbps` is the input R1 killed (`p2h` §6: +5.2% to +31.6% error, item-dependent,
+  and non-injective — 18000 and 20000 both declare 16 150). The obvious repair is to **memoise
+  `W_j` per rung as each is primed**, with the catalog as a cold-start prior, so a rung's rate is
+  right from its second visit onward — but that never reaches a rung this playback has never
+  visited, which is exactly the selection case. Alternatively `/decision` can be probed per
+  candidate for 13–18 ms warm (`p2h` §5), which does reach it, at the cost of a control-plane
+  round trip per candidate per evaluation. **Neither is specified here. Phase 4 cannot pick one
+  by itself without inventing policy.**
+
+**How much evidence `σ` actually rests on**, stated properly because the earlier draft's "1 120
+segments" did the rhetorical work of a large sample:
+
+* The 1 120 are **28 (window, rung) cells over ~160 media indices**, not 1 120 trials. Adjacent
+  rungs are strongly rank-correlated by index (Pearson r 0.60–1.00), and rungs 18000 and 20000 are
+  the same encoder session — all 40/40 `(bytes, duration, declared)` triples identical in both
+  movie windows, so **80 rows are literal copies of 80 others** (1 040 non-duplicate).
+* **The per-window maximum is usually one scene**, not forty draws: media index 11 sets it at 10
+  of 11 movie-opening rungs, index 1201/1208 at 7 of 11 movie-40min rungs.
+* **Rung coverage is uneven where it matters most.** Rungs 4000, 12000 and 22000 have 4 windows
+  and 3 items; the other eight rungs ≥ 2000 have 2 windows and **one film** — 640 of the 1 120
+  segments (57%). **Rung 2000 — the boundary of the rule — is one item, 80 segments**, and it
+  holds the corpus's third-largest `s` (0.8424). The episode is the item that breaks the bound at
+  720 (1.155, the worst overshoot in the corpus) and it is **absent from rung 2000 entirely**.
+
+None of that moves `σ` — the maximum and the exceedance count are unchanged, and an attack arguing
+`σ` is merely an extreme order statistic whose expectation grows like `ln n` was **tested and
+killed** (`p3-spec-review.md`). It changes what may be claimed for it. §8 carries the remedy, and
+it is not the one the earlier draft named.
 
 **Two alternatives were tested and rejected**, which is why this one is not merely the tidiest:
 
@@ -145,16 +221,54 @@ A rung is **sustainable** when one segment's acquisition fits inside the media i
 A_j ≤ D
 ```
 
-The existing `prod ≤ 1000` test is exactly this — `production_ratio_pm` is
-`total_fetch_us·1000 / (media_duration_ms·1000)`, the two thousands cancel, and the comparison is
-`total_fetch_us / media_duration_ms ≤ 1000`. It should be spelled without the division at all:
+**[corrected] There is no `prod ≤ 1000` test in the shipped code.** An earlier draft called the
+rewrite below "free" on the strength of one, taking the plan's `prod ≤ 1000 ⟺ A ≤ D` — which is a
+true statement about the *quantity* — and reading it as a shipped *comparison*. Grepped, the three
+real boundaries are:
+
+| site | gate |
+|---|---|
+| `abr/controller.rs:328` | `ratio_pm <= production_safe_pm` (**750**) |
+| `abr/controller.rs:363` | `sample.production_ratio_pm() <= 800` — **a bare literal**, in `candidate_ready`, the one comparison that admits or refuses every upshift |
+| `abr/ladder.rs:341` | `ratio <= production_safe_pm` (**750**) |
+| `abr/viability.rs:42-43` | `> production_max_pm` (**1100**), and `> production_safe_pm` (750) |
+
+So replacing any of them with `A ≤ D` is a **threshold change**, not a rewrite, and the 800 in
+`candidate_ready` is an undocumented literal that §7's table never audited because it is not a
+field of `AbrPolicy`. Whichever site is meant, the identity still argues for spelling the
+comparison without division —
 
 ```rust
 total_fetch_us <= media_duration_ms * 1_000
 ```
 
-Integer division currently floors, so `prod ≤ 1000` admits `A < 1.001·D` — a 2 ms drain per
-segment, 3.6 s of reserve per hour. The rewrite is free and removes the rounding question.
+— because integer division floors, so a `≤ 1000` form admits `A < 1.001·D`, a 2 ms drain per
+segment and 3.6 s of reserve per hour. But it is a behaviour change and must land as one.
+
+### [R-blocked] The rule as stated cannot upshift, because the reserve is not in it
+
+`A_j ≤ D` charged **per segment at the worst case** is stateless in `B`. The reserve is the only
+physical reason a buffered player may run a rung whose *peak* exceeds the link, and it appears
+nowhere on the admission side — only in §5's downshift deadline. Since `W_j` is a target **average**
+and `σ·W_j` is a **peak**, requiring every segment's peak to fit inside `D` demands the link carry
+the peak continuously, which is strictly stronger than sustainability.
+
+The measured gap is large: at high rungs on easy content the *median* delivered rate is 0.14–0.26
+of declared, so a rule keyed on the peak refuses rungs the link would carry comfortably for long
+stretches.
+
+**Two overstatements from the seat that raised this are withdrawn on the refuter's recomputation**
+and should not be repeated: "settles three ladder steps low" matches neither measured window (the
+mean-affordable rung at a 6 Mbit/s link is the ladder *top* on the easy window and rung 10000 on
+the hard one), and the 2.80× is **not** deliverable headroom being wasted — the same film's 40-min
+window aggregates 12 674 kbps at rung 22000 against that same link, so a rule that spent it would
+guarantee a collapse at the difficulty change.
+
+That is the real shape of the problem, and it is why the fix is not simply "use the median": the
+correct condition has to admit on the **average** while proving the **peak** is survivable *out of
+the reserve* for the length of a hard passage. Writing that condition needs the `B_after`
+relaxation model §1 records as unavailable in closed form. **It is not written here, and until it
+is, §4 admits far too little.**
 
 ### The shipped integer form
 
@@ -216,8 +330,28 @@ bound on `bytes_j` rather than a ratio to `bytes_i`. It is retained here only be
 
 The plan conflates them, which is why the emergency path looked like the only path (R23).
 
-**Trigger — when to reconsider at all.** `¬sustainable(current)` under §4, or `draining()`. This
-was never written down anywhere.
+**Trigger — when to reconsider at all.** **[R-blocked] The earlier draft listed only
+`¬sustainable(current)` and `draining()`. Both are distress conditions, so from a healthy state —
+current rung sustainable, reserve flat — neither fires, the target rule is never evaluated, and
+the controller can never climb.** The section opened by blaming the plan for making the emergency
+path look like the only path (R23) and then made it literally the only one.
+
+The trigger set has **three** members and the third was missing:
+
+| trigger | fires when | direction |
+|---|---|---|
+| unsustainable | `¬sustainable(current)` under §4 | down |
+| draining | `draining()` — the magnitude test, not a sign test | down |
+| **periodic review** | **the steady state: a healthy rung, on a cadence** | **up** |
+
+The third is what makes climbing reachable at all, and this document does **not** specify it — not
+its cadence, not its reserve precondition, not its interaction with the anti-flap cost. The plan's
+N7 does keep a `safe_budget`-driven upshift proposal with a reserve gate and `&& !draining`, and
+this document's precedence rule says the plan governs where this is silent, so **Phase 4 built
+from the plan will still climb**. But §5 claims to be the exhaustive statement of "when to
+reconsider at all" and is not, and an implementer reading it as exhaustive would ship a controller
+that boots at the bootstrap rung and stays there on any comfortably fast link — with no distress
+trace for a test to catch, because nothing distressing happens.
 
 **Target — which rung to move to.** The highest rung that is sustainable under §4 at the current
 `Ô₀`/`τ` estimates. Chosen directly, never "one rung up": a jump from 8 to a 15 Mbit/s budget
@@ -263,14 +397,32 @@ Not a review pass — part of the specification.
 
 ## 7. Every shipped tunable, against the classification rule
 
-Eighteen fields in `AbrPolicy::measured()`. This is the table the directive demands, and the
-honest summary is that **six can be derived or deleted now, five need one device lease, and seven
-are product choices that must be argued as choices rather than tuned.**
+**[R-blocked] This table audits the eighteen fields of `AbrPolicy::measured()`, and that is not
+the same set as "the quantities that decide".** At least **33 more** decision constants sit inside
+the very utility sum this table is adjudicating, none of them fields of that struct and none of
+them audited here:
+
+* `hls_quality_score`'s bucket table — 8 boundaries and 9 values (`abr/mode.rs:127-135`). **This
+  is the numeraire every row below is denominated in**, and it is unclassified.
+* Original's risk ladder — `{2,10,25,60}`, `/2`, `+20`, `×4`, `min 15` (`abr/mode.rs:181-194`).
+* HLS's risk ladder — `{0,1,4,12,40}`, `+20`, `+30`, and the `uncertainty_pm >= 500` gate
+  (`abr/viability.rs:43-59`).
+* The bare `800` in `candidate_ready` (§4), which is not in any struct at all.
+
+So the directive's test has been applied to 18 of at least 51, and the omitted ones are inside the
+sum. **Executing this table in full would leave every term of `total` at `abr/mode.rs:164`
+classified while its unit of account is undefined.** The audit below stands as far as it goes; it
+does not go as far as it claimed.
+
+**The census in the next sentence was also wrong.** "Six derive or delete, five need a lease, seven
+are product choices" sums to 18 but does not partition the table: only two rows carry a device
+verdict, and three rows carry a verdict in none of the three named classes — and those three are
+precisely the coefficients of the sum. Read the table, not the summary.
 
 | field | today | verdict |
 |---|---:|---|
 | `production_safe_pm` | 750 | **Derive.** A 25% margin on the `A ≤ D` boundary. Under §4 the margin is the conformal quantile on `A`, not a constant. |
-| `production_max_pm` | 1 100 | **Delete.** It admits a rung 10% *past* real time, which provably drains. The boundary is 1000, exactly, and §4 spells it without division. |
+| `production_max_pm` | 1 100 | **Delete — but it is load-bearing, and this table did not say where.** It admits a rung 10% *past* real time, which provably drains, so the verdict stands; but it is read at `abr/viability.rs:42` inside `candidate_risk`, so deleting it is a change to the risk score and not a dead-constant removal. Phase 4 must handle that, and §4's replacement boundary is a threshold change at whichever of the three real sites is meant (§4). |
 | `production_floor_pm` | 250 | **Replace with a measurement.** This is `O₀` as a per-mille of `D`. Measured: 107 pm on an easy source (§2) — the constant is 2.3× high. It also stops being a "floor": it is the intercept. |
 | `vbr_allowance_pm` | 1 350 | **Delete on the HLS path**, where §3's `σ` against the declared rate replaces it. **Keep on the Original path**, where the source file's own peak-over-average is still unmeasured. |
 | `stale_half_life_ms` | 30 000 | **Device.** How fast confidence should decay is how fast link capacity actually changes. |
@@ -285,8 +437,8 @@ are product choices that must be argued as choices rather than tuned.**
 | `visible_switch_decay_ms` | 120 000 | **Product choice.** |
 | `original_quality_bonus` | 40 | **Open, and the ledger it feeds is dead as specified** (R5): "quality step" on a bitrate ladder does not respect `transcode ≤ source`, so an 8.5 Mbit/s 1080p source scores three steps below a 20 Mbit/s transcode of itself. Quality must be relative to the source and concave. |
 | `original_feature_bonus` | 25 | Same. DV/Atmos must be represented explicitly, not through a bitrate proxy. |
-| `risk_weight` | 2 | **Delete.** Under §4 the risk term is a probability with units, not a score in `{1,4,12,40} + 20 + 30`. A weight exists only to make a score commensurable, and a probability already is. |
-| `server_cost_weight` | 4 | **Keep, and re-measure.** The trade is real (2.1× the work for 4% more bits) but `production_load_pm` is a per-item quantity stored as a per-server constant, and is inert below its own floor for the modal item at every rung (`p2h` §6b). |
+| `risk_weight` | 2 | **[R-blocked] The "delete" verdict is WITHDRAWN.** A probability is dimensionless and the other terms of the sum are quality points, so a probability is precisely *not* commensurable with them — it needs a price in points, which is the coefficient being deleted. And this specification constructs no probability anywhere: turning §4's per-segment exceedance into a *stall* probability needs the `B_after` relaxation model §1 records as unavailable. `risk_weight` is also the exchange rate for **both** ledgers (`abr/mode.rs:157` and `:206`), not just the HLS one this table quotes. Verdict: **keep, reclassified as a product choice** — the price of risk in quality points — until something produces a probability. |
+| `server_cost_weight` | 4 | **Keep, and re-measure — but not on the premium quoted here.** "2.1× the work for 4% more bits" is the ratio of two catalog entries (`P1080High` 20 011 and `Uhd` 20 895), and `p2h` §6 measures that the app never obtains the first of them: under the request the app really sends, rung 20000 declares 16 150, so the real trade is **2.1× work for 29% more bits**. The premium is off by 6.6×, and it is the entire justification for the weight. `production_load_pm` is separately a per-item quantity stored as a per-server constant, inert below its own floor for the modal item at every rung. |
 
 ## 8. What blocks Phase 4
 
@@ -303,18 +455,40 @@ are product choices that must be argued as choices rather than tuned.**
 
 **Needs no device, and is not done:**
 
-* **`σ` on a second server.** It is the load-bearing number of §3 and it rests on one PMS.
-  Falsified by: any segment above `0.85·W` at a rung ≥ 2000 on another server. This is a host-only
-  run and it should happen before anything is built on §3.
+* **A second ITEM at the thin rungs, on THIS server** — which the earlier draft got wrong by
+  asking only for a second *server*. Eight of the eleven rungs ≥ 2000 rest on one film, including
+  rung **2000**, the boundary of the rule, and the item that breaks the bound one rung below it
+  (the episode, 1.155 at 720) is absent from rung 2000 entirely. `tools/pms-rung-sweep.py`
+  defaults to the full 13-rung ladder, so this needs no `--rungs` and no second server: it is one
+  host-only command per additional item. **Do this first — it is cheaper than the second server
+  and it closes the hole that a second-server run would faithfully reproduce.**
+* **`σ` on a second server**, after that. Falsified by any segment above `0.85·W` at a rung ≥ 2000.
+* **An estimator for `O₀` and `τ`** (§2a, which does not exist). Without it §4 is not
+  implementable at all, whatever the device measures.
 * **A bound for rungs 320 and 720**, where §3 does not hold.
 * **The `B_after` relaxation model** from the queue's actual byte list, graded on R18's residuals.
 * **λ and `P(revert)` are not available at all** (R6): four events, dispersion index 10.8, and a
   95% CI of width 0.6. The mode-comparison rule must degrade gracefully without them rather than
   wait for them.
 
-**Process:** the plan requires an independent adversarial review of this document before any of
-Phase 4 is written. The four seats that reviewed the plan — probability, control theory, decision
-theory, numerics — found that the mathematics survived and everything estimated from the corpus did
-not. This document has a different exposure: its structural claims are now measured, and its
-weakest points are §3's single-server `σ`, §7's seven product choices, and the fact that §4 cannot
-be evaluated at all until the device supplies two numbers.
+**Process — done, and the answer was no.** The review the plan requires has run: five seats, each
+attacked by an independent refuter, 13 findings surviving and 7 killed
+(`docs/measurements/p3-spec-review.md`). I predicted the weakest points would be §3's
+single-server `σ`, §7's product choices, and §4's two missing numbers. **`σ` itself survived** — an
+attack arguing it is merely an extreme order statistic was recomputed and killed. What actually
+broke was structural and I had not anticipated any of it: §5 could not climb, §4 had no reserve
+term, §3's key input is unavailable at the decision that needs it, §7 audited one struct instead of
+the decision surface, and two of my "delete" verdicts were wrong.
+
+**Six findings block Phase 4** and are marked **[R-blocked]** above. In order of what has to be
+answered first:
+
+1. **§2a — an estimator for `O₀` and `τ`.** Nothing downstream is implementable without it.
+2. **§4's reserve term.** Needs the `B_after` relaxation model from §1, which is unwritten.
+3. **§5's periodic upshift trigger** — cadence, reserve precondition, anti-flap interaction.
+4. **§3's selection-time rate** — memoise per rung, or probe `/decision` per candidate. Pick one.
+5. **§7's real scope** — the 33 constants inside the utility sum, starting with the quality
+   bucket table that is its unit of account.
+6. **A probability, or `risk_weight` stays** — and on current evidence it stays.
+
+A second review is warranted once those are answered, on the same terms.
