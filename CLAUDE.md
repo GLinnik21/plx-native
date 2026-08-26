@@ -764,7 +764,7 @@ answers "is the PLAYER broken" — charging a PMS, a token and a filled-in overl
 (what it cannot see is three paragraphs down). The server tier is still the right shape for what it
 grades — SELECTION: `/decision`, direct-play vs transcode, track menus from PMS metadata, markers,
 resume, the `/:/timeline` reporter — which is also why it needs somebody's library.
-**The synthetic tier is the PLAYER PIPELINE, with no Plex anywhere.** A generated clip (`make fixtures-pipeline`, ~0.7 GB flat in
+**The synthetic tier is the PLAYER PIPELINE, with no Plex anywhere.** A generated clip (`make fixtures-pipeline`, ~0.85 GB flat in
 `$FIXTURES_OUT/pipeline`) is served off the dev Mac by `tests/serve_fixtures.py` and played through
 **`/tmp/plxnative-playurl`**, one JSON object carrying the URL *and the Load payload declaration*.
 It needs a TV address and nothing else — no token, no ratingKey, no `manifest.local.json`, no
