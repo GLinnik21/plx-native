@@ -1459,12 +1459,37 @@ class AbrTriggers(unittest.TestCase):
 class AbrLadderFixtures(unittest.TestCase):
     """MATHEMATICAL INVARIANT: every rung the route can request resolves to a distinct clip."""
 
-    def test_every_mid_and_high_rung_has_its_own_rate_targeted_clip(self):
+    def test_every_rung_has_its_own_rate_targeted_clip(self):
         """The reachable reserve is `queue_bytes / media_rate`, so rungs that share a file report
-        the same reserve and measurement step M4 can measure nothing."""
-        ladder = [r for r in serve_fixtures.ABR_FIXTURE if int(r) >= 6000]
-        files = [serve_fixtures.ABR_FIXTURE[r] for r in ladder]
+        the same reserve and measurement step M4 can measure nothing.
+
+        SCOPED TO >= 6000 until 2026-08-26, and the gap it left was measured: rungs 2000 and 4000
+        both mapped to `pipe_abr_720p.ts` and delivered the identical 3 183 kbps, so the ladder
+        was non-monotone in relief there and an adjacent-pair experiment across that step measured
+        nothing at all. Every rung now has its own clip, so the check covers every rung.
+        """
+        files = list(serve_fixtures.ABR_FIXTURE.values())
         self.assertEqual(len(set(files)), len(files), f"rungs share a clip: {sorted(files)}")
+
+    def test_every_rung_is_rate_targeted_not_quality_targeted(self):
+        """A CRF clip's bitrate is a CONSEQUENCE, so the rung does not deliver what it names.
+
+        Measured before this was enforced: the four low rungs ran 1.57x to 1.90x of their own
+        request while the rate-targeted ones sat inside 1.14x, which is most of the 2.4x
+        nominal/delivered spread that refuted the admission rule (board finding R1).
+        """
+        shapes = fixturegen.TIERS["pipeline"]["shapes"]
+        for rung, rel in sorted(serve_fixtures.ABR_FIXTURE.items(), key=lambda kv: int(kv[0])):
+            with self.subTest(rung=rung):
+                video = shapes[rel[: -len(".ts")]]["video"]
+                self.assertIn("vbr", video,
+                              f"rung {rung} is encoded to a QUALITY ({video.get('crf')}), so what "
+                              "it delivers is whatever that happens to cost")
+                audio = sum(int(str(a.get("br", "0k")).rstrip("k") or 0)
+                            for a in shapes[rel[: -len(".ts")]].get("audio", []))
+                self.assertEqual(video["vbr"] + audio, int(rung),
+                                 f"rung {rung}'s video target plus its audio track must sum to "
+                                 "the rung, or the muxed stream misses the rung it names")
 
     def test_the_generator_declares_every_clip_the_server_serves(self):
         shapes = fixturegen.TIERS["pipeline"]["shapes"]

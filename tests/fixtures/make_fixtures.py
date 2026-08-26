@@ -1168,7 +1168,7 @@ PIPE_SHAPES = {
         "kind": "clip", "ext": "ts", "duration": 12, "rate": 0.02, "hls_segment": True,
         "hls_segments": 6,
         "declare": {"vcodec": "h264", "acodec": "aac", "fps": float(FPS), "atmos": False},
-        "video": {"codec": "h264", "size": "426x240", "crf": 23},
+        "video": {"codec": "h264", "size": "426x240", "vbr": 320 - 96},
         "audio": [{"codec": "aac", "ch": 2, "lang": "eng", "br": "96k", "pitch": 180,
                    "default": True, "title": "AAC 2.0 English"}],
         "subs": [],
@@ -1177,7 +1177,7 @@ PIPE_SHAPES = {
         "kind": "clip", "ext": "ts", "duration": 12, "rate": 0.03, "hls_segment": True,
         "hls_segments": 6,
         "declare": {"vcodec": "h264", "acodec": "aac", "fps": float(FPS), "atmos": False},
-        "video": {"codec": "h264", "size": "854x480", "crf": 22},
+        "video": {"codec": "h264", "size": "854x480", "vbr": 720 - 128},
         "audio": [{"codec": "aac", "ch": 2, "lang": "eng", "br": "128k", "pitch": 200,
                    "default": True, "title": "AAC 2.0 English"}],
         "subs": [],
@@ -1186,7 +1186,21 @@ PIPE_SHAPES = {
         "kind": "clip", "ext": "ts", "duration": 12, "rate": 0.05, "hls_segment": True,
         "hls_segments": 6,
         "declare": {"vcodec": "h264", "acodec": "aac", "fps": float(FPS), "atmos": False},
-        "video": {"codec": "h264", "size": "1280x720", "crf": 21},
+        "video": {"codec": "h264", "size": "1280x720", "vbr": 2000 - 160},
+        "audio": [{"codec": "aac", "ch": 2, "lang": "eng", "br": "160k", "pitch": 220,
+                   "default": True, "title": "AAC 2.0 English"}],
+        "subs": [],
+    },
+    # Rung 4000's OWN clip. It shared `pipe_abr_720p` until 2026-08-26, so rungs 2000 and 4000
+    # delivered the identical 3 183 kbps (measured — `docs/measurements/p1-transaction-anatomy.md`
+    # §6): the ladder was non-monotone in relief there and an adjacent-pair experiment across that
+    # step measured nothing. Same raster as rung 2000 BY DESIGN — ABR_RASTER puts both at
+    # 1280x720, so what separates the two rungs is the bitrate and only the bitrate.
+    "pipe_abr_720p_4m": {
+        "kind": "clip", "ext": "ts", "duration": 12, "rate": 0.05, "hls_segment": True,
+        "hls_segments": 6,
+        "declare": {"vcodec": "h264", "acodec": "aac", "fps": float(FPS), "atmos": False},
+        "video": {"codec": "h264", "size": "1280x720", "vbr": 4000 - 160},
         "audio": [{"codec": "aac", "ch": 2, "lang": "eng", "br": "160k", "pitch": 220,
                    "default": True, "title": "AAC 2.0 English"}],
         "subs": [],
@@ -1379,7 +1393,8 @@ PIPE_MBIT = {
     "pipe_h264_aac_resolution_spike": 4.40,  # 8s 720p + 8s 1080p + long 720p tail, AAC
     "pipe_abr_240p": 0.32,
     "pipe_abr_480p": 0.72,
-    "pipe_abr_720p": 4.00,
+    "pipe_abr_720p": 2.00,
+    "pipe_abr_720p_4m": 4.00,
     "pipe_abr_1080p": 20.0,
     # Rate-targeted, so these are the TARGET rather than an estimate: video `vbr` plus the
     # 192 kbps audio track, i.e. the rung's own request. That is the point of them.
@@ -2166,6 +2181,25 @@ def verify(key, spec, dur, path, ep=None):
 
     if measured > 0:
         rec["bitrate_mbit"] = round(rec["size_bytes"] * 8 / measured / 1e6, 2)
+        # A RATE-TARGETED shape has to land on its target, and this is the only place that can be
+        # checked against the file rather than against the ffmpeg arguments. It exists because
+        # nothing else notices a `crf` -> `vbr` change: the duration, raster, codec and track
+        # layout are all identical either way, so a stale quality-targeted clip is skipped as
+        # "already correct" and the rung quietly keeps delivering the wrong bitrate. Measured
+        # 2026-08-26: the rate-targeted clips land at 0.90-1.14x of target while the three
+        # quality-targeted ones sat at 1.58-1.90x, so the band below separates them with room.
+        # It is wide because what is measured here is SEGMENT 0, not the whole clip, and real
+        # per-segment variation is up to 1.20x peak-to-peak by design.
+        want = spec["video"].get("vbr")
+        if want:
+            want_mbit = (want + sum(int(str(a.get("br", "0k")).rstrip("k") or 0)
+                                    for a in spec.get("audio", []))) / 1000.0
+            ratio = rec["bitrate_mbit"] / want_mbit if want_mbit else 0
+            if not 0.70 <= ratio <= 1.30:
+                problems.append("bitrate %.2f Mbit against a %.2f Mbit target (%.2fx) — this "
+                                "clip is not encoded to its rate, so the rung it serves does not "
+                                "deliver its own bitrate"
+                                % (rec["bitrate_mbit"], want_mbit, ratio))
         floor = spec.get("min_mbit")
         if floor and rec["bitrate_mbit"] < floor:
             problems.append("%.2f Mbit/s, wanted at least %.2f — a rapid-seek case grades "

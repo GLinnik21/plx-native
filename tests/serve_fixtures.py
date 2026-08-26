@@ -84,7 +84,7 @@ RE_SEQUENCE = re.compile(r"(?:^|&)sequence=(\d+)")
 # falling behind. Production cadence is measurement step M3's job, against a real PMS.
 ABR_FIXTURE = {
     "320": "pipe_abr_240p.ts", "720": "pipe_abr_480p.ts",
-    "2000": "pipe_abr_720p.ts", "4000": "pipe_abr_720p.ts",
+    "2000": "pipe_abr_720p.ts", "4000": "pipe_abr_720p_4m.ts",
     "6000": "pipe_abr_1080p_6m.ts", "8000": "pipe_abr_1080p_8m.ts",
     "10000": "pipe_abr_1080p_10m.ts", "12000": "pipe_abr_1080p_12m.ts",
     "14000": "pipe_abr_1080p_14m.ts", "16000": "pipe_abr_1080p_16m.ts",
