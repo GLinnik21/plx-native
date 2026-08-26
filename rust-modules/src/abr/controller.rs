@@ -213,6 +213,19 @@ impl Controller {
         let draining = self.buffer.draining();
         let segment = i64::from(sample.media_duration_ms);
 
+        // **Computed HERE, above every early return, and only read below.** The budget is a pure
+        // function of the four estimators, all of which this call has already updated, so its
+        // value is identical wherever between here and the decision it is taken — nothing in
+        // between mutates an input. Where it was computed mattered anyway, because three paths
+        // return before reaching the decision: a transaction in flight, and both arms of the dev
+        // pin. On a pinned run that is EVERY sample after the pin is reached, and the measured
+        // consequence was that 397 of 527 `abr: steady` lines reported `safe=0kbps` — the central
+        // quantity of the admission rule, unobservable on three quarters of the corpus, on
+        // exactly the runs designed to characterise a rung.
+        let safe_budget =
+            hls_safe_budget(&self.delivery, &self.production, &self.buffer, &self.policy);
+        self.last_safe_budget_kbps = safe_budget;
+
         if self.pending.is_some() {
             return Decision::Stay;
         }
@@ -251,9 +264,6 @@ impl Controller {
         let network_bad = immediate_network < current_candidate.expected_wire_kbps;
         let production_bad =
             current_risk.production_risk && self.buffer.draining_samples >= 8;
-        let safe_budget =
-            hls_safe_budget(&self.delivery, &self.production, &self.buffer, &self.policy);
-        self.last_safe_budget_kbps = safe_budget;
         let buffer_bad = buffered < segment || self.buffer.starving();
         if buffer_bad || network_bad || production_bad {
             self.stable_samples = 0;

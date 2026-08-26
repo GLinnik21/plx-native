@@ -35,7 +35,7 @@ def collect(paths):
     logs = []
     for p in paths:
         logs += sorted(glob.glob(os.path.join(p, "*.log"))) if os.path.isdir(p) else [p]
-    tx, samples = [], []
+    tx, samples, segs = [], [], []
     for path in logs:
         lines = open(path, encoding="utf-8", errors="replace").read().splitlines()
         case = os.path.basename(path)[:-4]
@@ -45,7 +45,10 @@ def collect(paths):
         for s in run.abr_samples(lines):
             s["_case"] = case
             samples.append(s)
-    return logs, tx, samples
+        for s in run.hls_segments(lines):
+            s["_case"] = case
+            segs.append(s)
+    return logs, tx, samples, segs
 
 
 def thousands(n):
@@ -146,7 +149,94 @@ def section_rates(samples, sweep, **_):
           f"({max(ratios) / min(ratios):.1f}x span).")
 
 
-SECTIONS = {"cost": section_cost, "drain": section_drain, "ceiling": section_ceiling,
+def section_fit(segs, **_):
+    """Fit `A = O0 + bytes * tau` and report what the corpus can actually identify.
+
+    The board's R7: the original n=366 fit was TEN data points, because `bytes` was an exact
+    function of `rung` -- one fixture file answered every sequence number. An OLS standard error
+    computed over 366 rows is then a fiction, so this reports the CLUSTER count beside it and a
+    cluster-robust standard error, clustering on the byte size itself. If the two SEs are far
+    apart, the naive one is measuring repetition rather than evidence.
+    """
+    import math
+    rows = [(s["bytes"], s["total_ms"]) for s in segs
+            if s.get("bytes") and s.get("total_ms")]
+    if len(rows) < 3:
+        print("not enough segments to fit"); return
+    n = len(rows)
+    clusters = {}
+    for b, a in rows:
+        clusters.setdefault(b, []).append(a)
+    mx = sum(b for b, _ in rows) / n
+    my = sum(a for _, a in rows) / n
+    sxx = sum((b - mx) ** 2 for b, _ in rows)
+    if sxx == 0:
+        print("every segment is the same size — nothing to fit"); return
+    tau = sum((b - mx) * (a - my) for b, a in rows) / sxx
+    o0 = my - tau * mx
+    resid = [(a - (o0 + tau * b)) for b, a in rows]
+    dof = max(1, n - 2)
+    s2 = sum(r * r for r in resid) / dof
+    se_naive = math.sqrt(s2 / sxx)
+    # Cluster-robust (CR0), clustering on byte size: sum of per-cluster score outer products.
+    meat = 0.0
+    for b, group in clusters.items():
+        gi = sum((b - mx) * (a - (o0 + tau * b)) for a in group)
+        meat += gi * gi
+    se_cluster = math.sqrt(meat) / sxx if sxx else float("inf")
+    print(f"* n = {n} segments in **{len(clusters)} distinct byte sizes** "
+          f"(the effective sample for this fit)")
+    print(f"* `tau` = {tau * 1e6:.2f} ns/byte, `O0` = {o0:.2f} ms")
+    print(f"* SE(tau): naive {se_naive * 1e6:.2f} ns/byte, "
+          f"cluster-robust {se_cluster * 1e6:.2f} ns/byte "
+          f"({se_cluster / se_naive:.2f}x wider)" if se_naive else "")
+    if tau > 0:
+        print(f"* implied demux+link capacity `1/tau` = {8 / (tau * 1000):.1f} Mbit/s")
+    else:
+        print("* **tau is NEGATIVE** — more bytes taking less time, which is not physical. The "
+              "corpus does not identify this model; it is not a slow link, it is no signal.")
+    if abs(tau) < se_cluster:
+        print("* **tau is inside its own robust standard error**, so it is not distinguishable "
+              "from zero at any conventional level.")
+    if len(clusters) < 30:
+        print(f"* CAVEAT: {len(clusters)} clusters. CR0 is biased DOWNWARD in small-cluster "
+              "samples, so the robust SE above is optimistic — the true uncertainty is worse "
+              "than printed, not better.")
+    print(f"* byte range {min(b for b, _ in rows):,} .. {max(b for b, _ in rows):,} "
+          f"({max(b for b, _ in rows) / max(1, min(b for b, _ in rows)):.1f}x)".replace(",", " "))
+
+
+def section_ratios(samples, **_):
+    """MEASURED byte ratio between adjacent rungs, against the ratio their NAMES imply.
+
+    Board finding R1: the admission rule scored 9/23 coverage against a nominal 0.90, and all 14
+    misses were unsafe, because it used `R_t / R_i` -- the CATALOG rates -- while delivered over
+    nominal spanned 2.4x. The rule needs measured per-rung sizes. This is where they come from,
+    and the `error` column is what the nominal form would have been wrong by on each step.
+    """
+    import statistics
+    byrung = {}
+    for s in samples:
+        byrung.setdefault(s["current_kbps"], []).append(s["media_kbps"])
+    rungs = sorted(byrung)
+    if len(rungs) < 2:
+        print("fewer than two rungs observed — no adjacent pair to measure"); return
+    print("| step | measured ratio | nominal ratio | error |")
+    print("|---|---:|---:|---:|")
+    worst = 1.0
+    for lo, hi in zip(rungs, rungs[1:]):
+        m = statistics.median(byrung[hi]) / statistics.median(byrung[lo])
+        nom = hi / lo
+        err = m / nom
+        worst = max(worst, max(err, 1 / err))
+        flag = "**" if abs(err - 1) > 0.10 else ""
+        print(f"| {lo} -> {hi} | {m:.3f}x | {nom:.3f}x | {flag}{err:.3f}x{flag} |")
+    print(f"\nWorst disagreement between measured and nominal: **{worst:.2f}x**. Anything above "
+          "1.10x is a step where an admission rule built on catalog rates is materially wrong "
+          "about how much bigger the next rung's segments are.")
+
+
+SECTIONS = {"cost": section_cost, "fit": section_fit, "ratios": section_ratios, "drain": section_drain, "ceiling": section_ceiling,
             "control": section_control, "rates": section_rates}
 
 
@@ -158,8 +248,8 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     sweep = load_sweep()
-    logs, tx, samples = collect(args.paths)
-    if not tx and not samples:
+    logs, tx, samples, segs = collect(args.paths)
+    if not tx and not samples and not segs:
         print("no `abr: tx` or `abr: sample` lines found — wrong logs, or the format moved "
               "and tests/run.py's regexes no longer match it.", file=sys.stderr)
         return 1
@@ -167,7 +257,7 @@ def main(argv=None):
           f"{', '.join(os.path.basename(p) for p in logs)} -->\n")
     for name in (args.section or sorted(SECTIONS)):
         print(f"### {name}\n")
-        SECTIONS[name](tx=tx, samples=samples, sweep=sweep)
+        SECTIONS[name](tx=tx, samples=samples, segs=segs, sweep=sweep)
         print()
     return 0
 

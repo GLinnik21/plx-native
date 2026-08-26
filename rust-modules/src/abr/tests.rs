@@ -1183,6 +1183,32 @@ fn repeated_visible_switches_stop_paying_for_themselves() {
     );
 }
 
+/// The safe budget must be PUBLISHED on every observed segment, including the ones where the
+/// controller returns before deciding anything.
+///
+/// It was computed after three early returns — a transaction in flight, and both arms of the dev
+/// pin — so on a pinned run, which is every census case, `last_safe_budget_kbps` kept whatever it
+/// held before the pin was reached. Measured on the device corpus: 397 of 527 `abr: steady` lines
+/// reported `safe=0kbps`, i.e. the central quantity of the admission rule was unobservable on
+/// three quarters of the samples, on exactly the runs whose purpose is to characterise a rung.
+///
+/// Differential: with the computation back below the early return this asserts a positive budget
+/// against the zero it was initialised with.
+#[test]
+fn a_pinned_controller_still_publishes_its_safe_budget() {
+    let mut pinned = controller_at(Rung::P1080High).pinned_to(Some(Rung::P1080High));
+    assert_eq!(pinned.telemetry().safe_budget_kbps, 0, "nothing observed yet");
+    for _ in 0..4 {
+        assert!(matches!(pinned.observe(sample(40_000, 300, 30_000)), Decision::Stay),
+                "already at the pin, so there is nothing to propose\u{2014}but a sample was still taken");
+    }
+    assert!(
+        pinned.telemetry().safe_budget_kbps > 0,
+        "a pinned controller updated every estimator from that segment and then reported no \
+         budget at all, which is what made three quarters of the census corpus unreadable",
+    );
+}
+
 /// The visible-switch penalty halves on a CLOCK, and until 2026-08-26 that clock was stopped.
 /// The caller passed a literal `0` for elapsed time and the history was frozen into the gate at
 /// construction, so a playback that had already switched twice could never return to Original
