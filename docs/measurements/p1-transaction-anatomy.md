@@ -179,3 +179,88 @@ Two further properties, both known and both reproduced independently here:
 * `max_commits` remains window-length sensitive: `pipe_abr_slow_start_then_fast` scored 8 changes
   here against 7 in the I1 baseline, same gate, same binary family. It is still not a grader, and
   `early_exit_allowed` now refuses to grade it on a truncated window at all.
+
+---
+
+# Addendum — the same tier after the fixture rebuild
+
+**Second device session, 2026-08-27**, same binary family, 11 pipeline cases, `--no-early`.
+`11 passed, 0 failed`. Scrubbed logs in `p1b-logs/` beside this file; every table below is
+`tools/abr-tx-report.py` run against them.
+
+This is the "after" for §6. The pack changed in three ways on 2026-08-26: the server honours the
+HLS sequence number, each rung is cut into six real segments, and all twelve rungs are
+rate-targeted rather than three of them being quality-targeted.
+
+## The corpus can now identify the transport model — barely
+
+### fit
+
+* n = 627 segments in **50 distinct byte sizes** (the effective sample for this fit)
+* `tau` = 21.40 ns/byte, `O0` = 687.95 ms
+* SE(tau): naive 6.71 ns/byte, cluster-robust 15.29 ns/byte (2.28x wider)
+* implied demux+link capacity `1/tau` = 373.9 Mbit/s
+* byte range 88 736 .. 5 460 460 (61.5x)
+
+Against the same fit on the pre-fix corpus (`p1-logs/`): **`tau` = -11.72 ns/byte, 10 clusters,
+robust SE 50.04** — a negative slope, meaning more bytes taking less time, inside a standard error
+four times wider than the naive one. That was not a slow link, it was no signal.
+
+**Do not read 21.40 ns/byte as a settled number.** On the first five logs of this same run it was
+33.30; on all eleven it is 21.40, a 1.56x swing, and the robust SE of 15.29 puts the estimate at
+about 1.4 sigma. What has changed is that the sign is physical and the model is estimable at all.
+It is also NOT comparable to the `58.51 ns/byte` from `docs/adaptive-playback-plan.md` — that fit
+came from a different corpus with a deliberately varied link, and the two differ by 2.7x for
+reasons that have not been investigated.
+
+## R1's byte-ratio gate, which was the acceptance test
+
+### ratios
+
+| step | measured ratio | nominal ratio | error |
+|---|---:|---:|---:|
+| 320 -> 720 | 2.089x | 2.250x | 0.928x |
+| 720 -> 2000 | 2.776x | 2.778x | 0.999x |
+| 2000 -> 4000 | 1.975x | 2.000x | 0.987x |
+| 4000 -> 6000 | 1.394x | 1.500x | 0.929x |
+| 6000 -> 8000 | 1.401x | 1.333x | 1.050x |
+| 8000 -> 10000 | 1.287x | 1.250x | 1.029x |
+| 10000 -> 14000 | 1.359x | 1.400x | 0.970x |
+| 14000 -> 16000 | 1.135x | 1.143x | 0.993x |
+| 16000 -> 20000 | 1.217x | 1.250x | 0.974x |
+
+Worst disagreement between measured and nominal: **1.08x**. Anything above 1.10x is a step where an admission rule built on catalog rates is materially wrong about how much bigger the next rung's segments are.
+
+Before: worst disagreement **2.00x**, with four of ten steps outside +/-10% — the `2000 -> 4000`
+step measured **1.000x against a nominal 2.000x**, so a rule built on catalog rates believed the
+next rung's segments were twice as big when they were byte-identical. After: **1.08x worst, zero
+steps outside +/-10%.**
+
+The four bad steps were exactly the four quality-targeted rungs. So a large part of the 2.4x
+nominal/delivered spread that refuted the admission rule (board finding R1) was **an artefact of
+this fixture pack rather than a fact about PMS**, and R1's conclusion — measured sizes, never
+catalog rates — survives on its own merits rather than on that number.
+
+## What the re-rating did to the CONTROLLER
+
+`pipe_abr_slow_start_then_fast` failed `abr_shape` on the pre-fix pack (8 rung changes against a
+bound of 5) and passes here. Nothing in the controller changed between the two runs. The plausible
+reading is that rungs which deliver what they claim stop provoking corrective moves — but the case
+is also the one the board flagged as window-length sensitive and run-to-run noisy (7 then 3 commits
+on identical inputs), so **one observation is not a measurement of that effect** and it is recorded
+rather than claimed.
+
+## An artefact the rebuild introduced, stated rather than discovered later
+
+The pack **loops** a 12 s clip, so the byte series is periodic with period 6. It is visible in the
+acf: on this corpus `pipe_abr_pin_320` shows `rho(A) = -0.213` with `Q = 33.8` against
+`rho(tau) = +0.028` with `Q = 4.3` — the dependence in `A` IS that cycle, and dividing by bytes
+removes it exactly. Real media does not repeat every six segments. A longer clip lengthens the
+period at proportional disk cost; six was chosen against a 183 MB budget for the ABR portion.
+
+## Still not settled by this tier
+
+Everything §4 and §5 listed: no JIT, no real control plane (`prime` remains 0 ms on every
+transaction), no production term. Plus the over-grant gate, which needs a device run on a binary
+carrying the hoisted `safe=` telemetry — the one used here predates it, so `abr: steady` still
+reports `safe=0kbps` on the pinned runs.
