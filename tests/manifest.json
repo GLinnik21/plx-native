@@ -1459,7 +1459,136 @@
         "abr_recovery_min_kbps": 20000,
         "server_opens_min": 8
       },
-      "_network_note": "The fixture server starts its phase clock on the first response body, not app launch: 40 Mbps permits Original to establish, 4 Mbps drains an 8 Mbps source until the two-window watchdog replaces it, then 40 Mbps gives the real HLS controller enough segment/network/production headroom to reach its top rung and pass two actual-source probes before returning to Original. The four pipe_abr_* two-second files are independently decodable candidate segments; no Plex token, library item, decision endpoint or transcoder participates."
+      "_network_note": "The fixture server starts its phase clock on the first response body, not app launch: 40 Mbps permits Original to establish, 4 Mbps drains an 8 Mbps source until the starvation horizon closes and the risk model replaces it, then 40 Mbps gives the real HLS controller enough segment/network/production headroom to climb while a bounded source probe re-measures the actual file. Recovery is decided by the probe's uncertainty-discounted rate against the source's VBR-adjusted requirement, NOT by reaching a particular rung first, so the rung the ladder happens to be on when the probe fires is not graded. The four pipe_abr_* two-second files are independently decodable candidate segments; no Plex token, library item, decision endpoint or transcoder participates."
+    },
+    {
+      "name": "pipe_abr_slow_start_then_fast",
+      "fixture": "pipe_h264_aac_mp4.mp4",
+      "title": "no-Plex Auto: 2 Mbps start -> 40 Mbps link, climbing by SKIPPING rungs",
+      "covers": [
+        "abr-upshift",
+        "intermediate-rung-skipping",
+        "mid-transfer-network-profile"
+      ],
+      "declare": {"vcodec": "h264", "acodec": "aac", "fps": 24.0},
+      "auto_network": {"source_kbps": 60000},
+      "network_profile": [
+        {"until_s": 10.0, "kbps": 2000},
+        {"until_s": 240.0, "kbps": 40000}
+      ],
+      "run_secs": 90,
+      "operations": [{"op": "play"}],
+      "expect": {
+        "codec": "h264",
+        "load_video": "H264",
+        "load_audio": "AAC",
+        "min_pos_climb_s": 30,
+        "require_video_bound": true,
+        "no_playing_error": true,
+        "abr_shape": {
+          "floor_kbps": 10000,
+          "max_commits": 5
+        }
+      },
+      "_network_note": "The plan's rung-SKIPPING requirement, graded directly. A 60 Mbit/s source can never be Original here, so Auto is in HLS from the first segment; the link then opens by a factor of twenty. The 13-point catalog means walking it would cost eight or nine encoder transactions, each a visible quality change and each a separately named PMS session -- so `max_commits: 5` is the assertion, and `floor_kbps` is what stops a controller that simply refuses to climb from passing it. Both bounds are needed: either alone is satisfiable by doing nothing."
+    },
+    {
+      "name": "pipe_abr_steady_modest_link",
+      "fixture": "pipe_h264_aac_mp4.mp4",
+      "title": "no-Plex Auto: a flat 6 Mbps link is not spent like a 40 Mbps one",
+      "covers": [
+        "abr-steady-state",
+        "safe-budget",
+        "mid-transfer-network-profile"
+      ],
+      "declare": {"vcodec": "h264", "acodec": "aac", "fps": 24.0},
+      "auto_network": {"source_kbps": 60000},
+      "network_profile": [
+        {"until_s": 240.0, "kbps": 6000}
+      ],
+      "run_secs": 75,
+      "operations": [{"op": "play"}],
+      "expect": {
+        "codec": "h264",
+        "load_video": "H264",
+        "load_audio": "AAC",
+        "min_pos_climb_s": 25,
+        "require_video_bound": true,
+        "no_playing_error": true,
+        "abr_shape": {
+          "ceiling_kbps": 8000,
+          "floor_kbps": 2000,
+          "settle_max_kbps": 6000
+        }
+      },
+      "_network_note": "The OVERREACH guard, and the only case here that can fail on the controller being too eager rather than too timid. A client that spends a 6 Mbit/s link reaching for 20 still plays -- it rebuffers, recovers, and passes every other assertion in this file -- so `ceiling_kbps` is the assertion no position climb can stand in for. `floor_kbps` pins the other side: it must still leave the 720 Kbps bootstrap rung, or 'never overreached' is trivially true."
+    },
+    {
+      "name": "pipe_abr_brief_dropout",
+      "fixture": "pipe_h264_aac_mp4.mp4",
+      "title": "no-Plex Auto: a 3 s near-stall mid-stream, then full speed again",
+      "covers": [
+        "abr-downshift",
+        "regime-change",
+        "abr-upshift",
+        "mid-transfer-network-profile"
+      ],
+      "declare": {"vcodec": "h264", "acodec": "aac", "fps": 24.0},
+      "auto_network": {"source_kbps": 60000},
+      "network_profile": [
+        {"until_s": 20.0, "kbps": 40000},
+        {"until_s": 23.0, "kbps": 200},
+        {"until_s": 240.0, "kbps": 40000}
+      ],
+      "run_secs": 90,
+      "operations": [{"op": "play"}],
+      "expect": {
+        "codec": "h264",
+        "load_video": "H264",
+        "load_audio": "AAC",
+        "min_pos_climb_s": 30,
+        "require_video_bound": true,
+        "no_playing_error": true,
+        "abr_shape": {
+          "settle_min_kbps": 8000
+        }
+      },
+      "_network_note": "A transient, which is the shape an EWMA gets wrong in both directions: too much memory and the 200 Kbps window is ignored until the buffer is gone, too little and the link is written off for the rest of the film. The assertion is the RECOVERY (`settle_min_kbps`), because the downshift itself is easy and correct -- what the regime-change reset in `CapacityEstimate::update` exists for is making sure one 200 Kbps observation does not stay blended into the estimate afterwards. Verified in the same run by `no_playing_error`: the reserve is supposed to absorb three seconds."
+    },
+    {
+      "name": "pipe_abr_oscillating_link",
+      "fixture": "pipe_h264_aac_mp4.mp4",
+      "title": "no-Plex Auto: a link flipping 20/3 Mbps must not flip the picture with it",
+      "covers": [
+        "abr-hysteresis",
+        "transition-cost",
+        "mid-transfer-network-profile"
+      ],
+      "declare": {"vcodec": "h264", "acodec": "aac", "fps": 24.0},
+      "auto_network": {"source_kbps": 60000},
+      "network_profile": [
+        {"until_s": 12.0, "kbps": 20000},
+        {"until_s": 20.0, "kbps": 3000},
+        {"until_s": 28.0, "kbps": 20000},
+        {"until_s": 36.0, "kbps": 3000},
+        {"until_s": 44.0, "kbps": 20000},
+        {"until_s": 240.0, "kbps": 3000}
+      ],
+      "run_secs": 90,
+      "operations": [{"op": "play"}],
+      "expect": {
+        "codec": "h264",
+        "load_video": "H264",
+        "load_audio": "AAC",
+        "min_pos_climb_s": 30,
+        "require_video_bound": true,
+        "no_playing_error": true,
+        "abr_shape": {
+          "max_commits": 8,
+          "ceiling_kbps": 20000
+        }
+      },
+      "_network_note": "Five link changes in 44 s. A controller with no transition cost tracks every one of them, which is five to ten visible quality changes to the person watching and five to ten separately named PMS encoder sessions -- correct by every instantaneous measure and wrong as a product. `max_commits` grades the DECAYING switch penalty (`visible_switch_penalty` halving every `visible_switch_decay_ms`): the first move is cheap, the fourth inside two minutes has to buy a lot. It is deliberately not 1 -- refusing to move at all on a link that really does collapse is the opposite failure, and `no_playing_error` plus the position climb are what stop that passing."
     },
     {
       "name": "pipe_h264_aac_resolution_spike",

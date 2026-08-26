@@ -4352,7 +4352,19 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         } else if !dev_token.is_empty() {
             // `Origin::http` names the assumption out loud: the host and port compiled into the
             // C shim are a plaintext address, with no scheme to read off them.
-            install_pms(&crate::plex::Origin::http(&host_s, pms_port), &dev_token, None);
+            //
+            // The tier is classified from that address rather than left `None`. There is no
+            // plex.tv connection list on this path to read a `local` flag off, and `None` means
+            // "nothing has said" — which left every automated run unable to reach Auto's Original
+            // bootstrap, since `abr::bootstrap` is only consulted once a tier exists. See
+            // `probe::configured_tier` for why address shape is honest enough here.
+            let tier = crate::plex::probe::configured_tier(&host_s);
+            log(&format!("boot: dev token — link={tier:?} (classified from the configured address)"));
+            install_pms(
+                &crate::plex::Origin::http(&host_s, pms_port),
+                &dev_token,
+                Some(tier),
+            );
             BootTo::Home
         } else if session.can_go_local() {
             if session.home_users.len() > 1 && (!automated_boot() || pick_user.is_some()) {

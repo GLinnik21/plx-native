@@ -111,3 +111,7 @@ tests/fixtures/**/*.mkv
 tests/fixtures/**/*.mp4
 tests/fixtures/**/*.sup
 tests/fixtures/fixtures.json
+
+# Python bytecode from the host-side test/tooling scripts.
+__pycache__/
+*.pyc

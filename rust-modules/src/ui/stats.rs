@@ -75,7 +75,7 @@
 //! string onto this panel, so adding a field is a deliberate edit to the one file that carries
 //! these rules.
 use crate::ui::label::Label;
-use crate::ui::widgets::{Field, FieldList, FIELD_COL_W, FIELD_ROW_H};
+use crate::ui::widgets::{Field, FieldList, FIELD_COL_W};
 use crate::ui::{theme, Env, Painter, Rect, View};
 use std::ffi::CString;
 use std::ptr::addr_of_mut;
@@ -136,10 +136,16 @@ fn kick() {
 /// thrashes it, which is a measured cost in this repo rather than a worry. And a number that
 /// changes between the viewfinder and the shutter is a number the report cannot be trusted on.
 const SAMPLE_MS: u32 = 500;
-/// Rows per column. The budget, not a preference: the panel is sized to exactly this and never
+/// Rows in the read-out. The budget, not a preference: the panel is sized to exactly this and never
 /// scrolls — a read-out you have to scroll is two photographs and a chance of missing the line
 /// that mattered. A new field costs an existing one.
-const COLUMN_ROWS: usize = 14;
+///
+/// It was TWO columns of 14 until 2026-08-26, and the arrangement had outgrown the space it was
+/// given: the last rows drew below the card, on top of the transport. One column of composed lines
+/// carries the same evidence in about three quarters of the area, and a row that answers one
+/// question with three facts (`Load completed · 8 callbacks · HTTP 200 · 576 kB`) reads faster
+/// across a room than three rows that each answer a third of it.
+const PANEL_ROWS: usize = 13;
 
 /// The previous sample's fed totals and the tick they were taken at — what turns two totals into
 /// a RATE. Without it the panel can only say "1180 AUs have been fed", which stays true and stays
@@ -163,9 +169,8 @@ static mut HIST_V: [u16; HIST_N] = [0; HIST_N];
 static mut HIST_A: [u16; HIST_N] = [0; HIST_N];
 static mut HIST_HEAD: usize = 0;
 static mut NEXT_SAMPLE: u32 = 0;
-static mut LEFT: Vec<Field> = Vec::new();
-static mut RIGHT: Vec<Field> = Vec::new();
-static mut HEAD: [String; 3] = [String::new(), String::new(), String::new()];
+static mut ROWS: Vec<Field> = Vec::new();
+static mut HEAD: [String; 2] = [String::new(), String::new()];
 
 /// Re-sample if the hold has expired. Main-thread only (it is called from the frame loop).
 pub(crate) fn update(now: u32) {
@@ -178,18 +183,17 @@ pub(crate) fn update(now: u32) {
     }
     unsafe {
         addr_of_mut!(NEXT_SAMPLE).write(now.wrapping_add(SAMPLE_MS));
-        // ONE sample feeding both columns. Calling `diag()` per column would let the left one
-        // report "no frames" beside a right-hand position taken a moment later — a panel that
-        // tells a story that never happened is worse than no panel.
+        // ONE sample feeding the whole panel. Calling `diag()` per block would let one row report
+        // "no frames" beside a position taken a moment later — a panel that tells a story that
+        // never happened is worse than no panel.
         let d = crate::player::diag();
         let prev = addr_of_mut!(PREV_FED).read();
         // `.replace()`, NOT `.write()`. `<*mut T>::write` is `ptr::write` — it overwrites without
-        // DROPPING what was there, and these three own heap: two `Vec<Field>` and three `String`s
-        // plus every row's value. At 2 Hz that orphaned ~1.4 KB and ~23 allocations every sample,
-        // on a panel explicitly designed to be left up for the length of a film.
+        // DROPPING what was there, and both own heap: a `Vec<Field>` and three `String`s plus
+        // every row's value. At 2 Hz that orphaned ~1.4 KB and ~23 allocations every sample, on a
+        // panel explicitly designed to be left up for the length of a film.
         drop(addr_of_mut!(HEAD).replace(header(&d, now)));
-        drop(addr_of_mut!(LEFT).replace(left_column(&d, prev, now)));
-        drop(addr_of_mut!(RIGHT).replace(right_column(&d)));
+        drop(addr_of_mut!(ROWS).replace(rows(&d, prev, now)));
         addr_of_mut!(PREV_FED).write((d.fed_v, d.fed_a, now));
         // the same two rates the Fed row prints, kept as a ring so the chart can show their shape
         let (rv, ra) = fed_rates(&d, prev, now).unwrap_or((0, 0));
@@ -202,24 +206,32 @@ pub(crate) fn update(now: u32) {
     crate::ui::idle::invalidate();
 }
 
-fn header(d: &crate::player::Diag, now: u32) -> [String; 3] {
+/// The two head lines: **who this build is** and **what the pipeline thinks it is doing**.
+///
+/// It was THREE — build, firmware, verdict — and the draw only ever emits two, which is how the
+/// verdict came to be missing from the panel entirely on 2026-08-26: the firmware line took the
+/// verdict's slot and drew in its bold face, so a photograph of a FAILED playback showed the
+/// firmware where the failure reason should have been. Two lines produced and two drawn, so the
+/// array's length is the contract rather than a comment.
+fn header(d: &crate::player::Diag, now: u32) -> [String; 2] {
     let w = crate::webos::info();
     let os = if w.major == 0 {
-        "webOS unknown — /var/run/nyx/os_info.json unreadable".to_string()
+        "webOS unknown — os_info.json unreadable".to_string()
     } else {
-        format!("webOS {} · {} · api {}", w.release, w.codename, w.api)
+        format!("webOS {} · api {}", w.release, w.api)
     };
     let (_, _, vw, vh) = crate::surface::viewport();
     [
         // via `plex::identity`, not a literal + `env!`: that module exists precisely so the
         // product name and version cannot disagree between surfaces, and this one is photographed.
+        // The firmware CODENAME is dropped — it identifies the release no better than the release
+        // number does, and this line has to fit beside it.
         format!(
-            "{} {} · {}",
+            "{} {} · {} · {os} · surface {vw}x{vh}",
             crate::plex::identity::PRODUCT,
             crate::plex::identity::VERSION,
             if cfg!(feature = "devtriggers") { "dev" } else { "release" }
         ),
-        format!("{os} · surface {vw}x{vh}"),
         playback_line(d, now),
     ]
 }
@@ -258,91 +270,182 @@ fn playback_line(d: &crate::player::Diag, now: u32) -> String {
     s.to_string()
 }
 
-/// LEFT — the stall discriminators, in the order a maintainer reads them. Everything here answers
-/// "how far did this playback get before it stopped?", top to bottom.
-fn left_column(d: &crate::player::Diag, prev: (i64, i64, u32), now: u32) -> Vec<Field> {
-    let mut v = Vec::with_capacity(COLUMN_ROWS);
-    v.push(Field::section("VIDEO PLANE"));
-    v.push(Field::new("Mode", d.vp_mode_str()).fault(d.vp_mode == crate::player::VP_NONE));
-    if d.vp_mode == crate::player::VP_EXPORTED {
-        // webOS 5+. No window means decoded frames have nowhere to land; no placement means the
-        // window exists and was never given geometry. Both present as "buffering forever".
-        v.push(Field::new(
-            "Window",
-            if d.window_id.is_empty() { "NONE — cannot bind".into() } else { d.window_id.clone() },
+/// The whole read-out, in the order a maintainer reads it: **what the model decided, then what the
+/// pipeline did with it.** One column of composed lines.
+///
+/// The ordering rule is worth keeping. The top block is Auto's own state — the panel's most common
+/// question by far is "why is the picture this quality", and that is answered by the controller's
+/// inputs, not by a callback count. The bottom block is the stall discriminators, unchanged in
+/// content: every fault predicate the two-column version carried is still here, OR-ed onto the row
+/// that now states its facts.
+fn rows(d: &crate::player::Diag, prev: (i64, i64, u32), now: u32) -> Vec<Field> {
+    let mut v = Vec::with_capacity(PANEL_ROWS);
+
+    // ---- what is playing -----------------------------------------------------------------
+    // What the server IS: release + Plex Pass — issue #22's blind spot (docs/plex-pass-audit.md).
+    // "Server sent audio only" is a different report on a server that CANNOT encode video than on
+    // one that should have. Never a fault tone: a free server is a fact, not an error.
+    // (Name/address/machineIdentifier stay banned; a release number identifies nothing.)
+    v.push(Field::new(
+        "Source",
+        format!(
+            "{} · {}",
+            match (crate::route::is_transcoding(), crate::route::is_remux()) {
+                (false, _) => "direct play",
+                (true, true) => "remux (copy)",
+                (true, false) => "transcode (re-encode)",
+            },
+            server_line(&crate::plex::serverinfo::version(), crate::plex::serverinfo::subscription()),
+        ),
+    ));
+    // SOURCE codec → what the Load payload actually declared. The arrow is the point: this repo's
+    // documented silent-audio bug is a payload built from the source rather than from the
+    // /decision OUTPUT, and it is invisible in either half on its own.
+    v.push(Field::new(
+        "Video",
+        chain(crate::route::source_vcodec(), crate::route::stream_vcodec(), d.load_v_str()),
+    ));
+    // …and the same for audio, where `needAudio:false` is a COMPLETE explanation for silence:
+    // the pipeline was never asked for any.
+    v.push(
+        Field::new("Audio", chain(crate::route::source_acodec(), crate::route::stream_acodec(), d.load_a_str()))
+            .fault(d.load_a == 0 && d.load_v != 0),
+    );
+    // Raster, position and the two lanes' fed-PTS difference on one line — three facts about the
+    // same stream. A skew that keeps growing is the audio lane starving behind the video one; a
+    // skew near zero says both keep up and any missing sound is downstream of us.
+    v.push(
+        Field::new(
+            "Frame",
+            format!(
+                "{} · {} / {} · A/V {}",
+                match (d.video_w, d.video_h) {
+                    (0, _) | (_, 0) => "stream never opened".to_string(),
+                    (w, h) => format!("{w}x{h}"),
+                },
+                crate::ui::fmt::clock(d.pos_ns / 1_000_000),
+                if d.dur_ns > 0 { crate::ui::fmt::clock(d.dur_ns / 1_000_000) } else { "?".into() },
+                skew(d),
+            ),
         )
-        .fault(d.window_id.is_empty()));
-        // `rv == 0` is "the seam had no window or no symbol", NOT "SDL refused" — worded so a
-        // reader is not sent looking for a rejection that never happened.
-        v.push(
-            Field::new("Placed", match d.place_rv {
+        .fault(d.video_w == 0 || skew_bad(d)),
+    );
+
+    // ---- the controller ------------------------------------------------------------------
+    abr_rows(d, &mut v);
+
+    // ---- how far the pipeline got --------------------------------------------------------
+    // The video plane, whichever seam this firmware uses. On webOS 5+ no window means decoded
+    // frames have nowhere to land and no placement means the window was never given geometry;
+    // both present as "buffering forever". On webOS 4 `acb_bind` returns void, so "bind sent" —
+    // the panel must not claim a confirmation the API does not give.
+    let (plane, plane_bad) = plane_line(d);
+    v.push(Field::new("Plane", plane).fault(plane_bad));
+    // Load, its callbacks and the transport on one line. A completed Load with zero callbacks is
+    // the pipeline never speaking to us; a LATCHED error is it speaking once and refusing — which
+    // read as a perfectly healthy panel before there was a row for it. The HTTP half splits "the
+    // bytes never arrived" from "bytes arrived and nothing parsed".
+    v.push(
+        Field::new(
+            "Pipeline",
+            format!(
+                "Load {} · {} · {}",
+                if d.load_failed {
+                    "REFUSED"
+                } else if d.load_completed {
+                    "completed"
+                } else {
+                    "waiting"
+                },
+                match (d.cb_count, d.cb_err) {
+                    (0, _) => "no callbacks".to_string(),
+                    (n, 0) => format!("{n} callbacks"),
+                    (n, e) => format!("{n} cb · ERR {e} @ {}", d.cb_err_at),
+                },
+                match (d.http_status, d.net_rx) {
+                    (0, _) => "no connection".to_string(),
+                    (st, rx) => format!("HTTP {st} · {}", mb(rx)),
+                },
+            ),
+        )
+        .fault(
+            d.load_failed
+                || d.cb_err != 0
+                || (d.cb_count == 0 && d.load_completed)
+                || (d.http_status != 0 && !(200..300).contains(&d.http_status)),
+        ),
+    );
+    // The demux → feed lane, end to end. `NOTHING demuxed` is its own sentence rather than a
+    // separate row, because a stopped producer and a stopped consumer are read together.
+    //
+    // The fed AU TOTALS are deliberately not here. They are the one pair on the old panel that
+    // said nothing a neighbouring row does not say better: whether anything ever fed is
+    // `NOTHING demuxed` (and this row's fault tint), and whether the two lanes are in step is the
+    // Frame row's A/V skew, in seconds rather than in counts you have to subtract yourself.
+    let (cv, ca) = crate::player::aq_caps();
+    v.push(
+        Field::new(
+            "Feed",
+            format!(
+                "{} · queue {:.1}/{:.1} · {:.2}/{:.1} MB",
+                if d.pushed_any { fed_rate(d, prev, now) } else { "NOTHING demuxed".to_string() },
+                mb_f(d.aq_video),
+                mb_f(cv),
+                mb_f(d.aq_audio),
+                mb_f(ca),
+            ),
+        )
+        .fault(!d.pushed_any || (d.fed_v == 0 && d.load_completed) || d.feed_is_fault()),
+    );
+    // CARRIES THE CLOCK. A photograph has no time axis: "Load completed, 0 frames" is innocent at
+    // two seconds and damning at four minutes, and only this row can tell them apart. The feed
+    // state rides along because it is the sentence that says WHY the count is not moving.
+    v.push(
+        Field::new("Frames", format!("{} · {}", frames_str(d, now), d.feed_state_str()))
+            .fault(!d.seen_frame && d.load_completed && since(d.load_at, now) > STALL_MS),
+    );
+    v
+}
+
+/// The video plane's whole state as one sentence, and whether it is a fault. Split out because the
+/// two seams answer with different facts and the row must not grow a branch per firmware.
+fn plane_line(d: &crate::player::Diag) -> (String, bool) {
+    // The firmware family is dropped from the two healthy labels — `vp_mode_str`'s
+    // "(webOS 4)" / "(webOS 5+)" restates what the header's own `webOS 4.10.2` already says, and
+    // it is 11 characters this row does not have. The FAULT arm keeps its full sentence.
+    let mode = match d.vp_mode {
+        crate::player::VP_EXPORTED => "exported window",
+        crate::player::VP_ACB => "ACB",
+        _ => d.vp_mode_str(),
+    };
+    match d.vp_mode {
+        crate::player::VP_EXPORTED => {
+            let win = if d.window_id.is_empty() { "NO WINDOW".to_string() } else { d.window_id.clone() };
+            // `rv == 0` is "the seam had no window or no symbol", NOT "SDL refused" — worded so a
+            // reader is not sent looking for a rejection that never happened.
+            let placed = match d.place_rv {
                 i32::MIN => "not placed".to_string(),
-                0 => "FAILED (rv=0)".to_string(),
+                0 => "PLACE FAILED (rv=0)".to_string(),
                 rv => format!("src {}x{} rv={rv}", d.placed_w, d.placed_h),
-            })
-            .fault(d.place_rv == i32::MIN || d.place_rv == 0),
-        );
-    } else if d.vp_mode == crate::player::VP_ACB {
-        // ABSORBS the old `Stage` row. On the exported path Stage restated `Load` verbatim (the
-        // same block sets load_completed, then Playing, then Streaming two lines later); its real
-        // four-step content only ever existed here. `acb_bind` returns void, so "bind sent" — the
-        // panel must not claim a confirmation the API does not give.
-        v.push(
-            Field::new("ACB", match (d.acb_ok, d.stage) {
+            };
+            (
+                format!("{mode} · {win} · {placed}"),
+                d.window_id.is_empty() || d.place_rv == i32::MIN || d.place_rv == 0,
+            )
+        }
+        crate::player::VP_ACB => (
+            format!("{mode} · {}", match (d.acb_ok, d.stage) {
                 (false, _) => "NOT AVAILABLE",
                 (true, 0) => "init'd · NOT bound",
                 (true, 1) => "bind sent",
                 _ => "streaming",
-            })
-            .fault(!d.acb_ok),
-        );
+            }),
+            !d.acb_ok,
+        ),
+        // `VP_NONE` and anything unrecognised: there is no video path at all, which is always a
+        // fault and is the first row a reader should reach on a set that shows no picture.
+        crate::player::VP_NONE | _ => (mode.to_string(), true),
     }
-    v.push(Field::section("PIPELINE"));
-    v.push(
-        Field::new(
-            "Load",
-            if d.load_failed { "REFUSED" } else if d.load_completed { "completed" } else { "waiting" },
-        )
-        .fault(d.load_failed),
-    );
-    // A completed Load with zero callbacks is the pipeline never speaking to us. A LATCHED error
-    // is the pipeline speaking once and refusing — which today reads as a perfectly healthy panel.
-    v.push(
-        Field::new("Callbacks", match (d.cb_count, d.cb_err) {
-            (0, _) => "none".to_string(),
-            (n, 0) => format!("{n} · no error"),
-            (n, e) => format!("{n} · ERR {e} @ {}", d.cb_err_at),
-        })
-        .fault(d.cb_err != 0 || (d.cb_count == 0 && d.load_completed)),
-    );
-    // The transport, which the panel was blind to entirely. Splits "the bytes never arrived" from
-    // "bytes arrived and nothing parsed" — a class no other row can reach.
-    v.push(
-        Field::new("HTTP", match (d.http_status, d.net_rx) {
-            (0, _) => "— · no connection".to_string(),
-            (st, rx) => format!("{st} · {}", mb(rx)),
-        })
-        .fault(d.http_status != 0 && !(200..300).contains(&d.http_status)),
-    );
-    v.push(Field::new("Demuxed", if d.pushed_any { "yes" } else { "NOTHING" }).fault(!d.pushed_any));
-    v.push(Field::new("Fed v/a", format!("{} / {}", d.fed_v, d.fed_a)).fault(d.fed_v == 0 && d.load_completed));
-    v.push(Field::new("Feed rate", fed_rate(d, prev, now)));
-    v.push(Field::new("Feed v", d.feed_state_str()).fault(d.feed_is_fault()));
-    // CARRIES THE CLOCK. A photograph has no time axis: "Load completed, 0 frames" is innocent at
-    // two seconds and damning at four minutes, and only this row can tell them apart.
-    v.push(
-        Field::new("Frames", frames_str(d, now))
-            .fault(!d.seen_frame && d.load_completed && since(d.load_at, now) > STALL_MS),
-    );
-    // No fault tint: pinned at the cap is the HEALTHY steady state under the feed-ahead throttle.
-    let (cv, ca) = crate::player::aq_caps();
-    v.push(Field::new(
-        "Buffered v/a",
-        // ONE unit for the group. Four `mb()` runs is the honest spelling but it does not fit the
-        // value column, and eliding a number is worse than sharing its unit.
-        format!("{:.1}/{:.1} · {:.2}/{:.1} MB", mb_f(d.aq_video), mb_f(cv), mb_f(d.aq_audio), mb_f(ca)),
-    ));
-    v
 }
 
 /// Milliseconds since an SDL-tick stamp, 0 when never stamped or the clock wrapped.
@@ -379,86 +482,126 @@ fn frames_str(d: &crate::player::Diag, now: u32) -> String {
     }
 }
 
-/// RIGHT — the source and either build identity or Auto's live policy state. Auto uses the
-/// YouTube-style names a reader already knows: current/optimal quality, connection speed, network
-/// activity, and buffer health, with the app-specific decision state below them.
-fn right_column(d: &crate::player::Diag) -> Vec<Field> {
-    let adaptive = d.abr_mode != 0;
-    let mut v = Vec::with_capacity(COLUMN_ROWS);
-    v.push(Field::section("STREAM"));
-    // What the server IS: release + Plex Pass — issue #22's blind spot (docs/plex-pass-audit.md).
-    // "Server sent audio only" is a different report on a server that CANNOT encode video than on
-    // one that should have, and this row is what lets a photograph make that distinction. Never a
-    // fault tone in any state: a free server is a fact about the server, not an error — and
-    // "not yet queried" is boot ordering, not a failure. (Name/address/machineIdentifier stay
-    // banned; a release number + one subscription bit identify nothing.)
-    v.push(Field::new(
-        "Server",
-        server_line(&crate::plex::serverinfo::version(), crate::plex::serverinfo::subscription()),
-    ));
-    v.push(Field::new("Source", match (crate::route::is_transcoding(), crate::route::is_remux()) {
-        (false, _) => "direct play",
-        (true, true) => "remux (copy)",
-        (true, false) => "transcode (re-encode)",
-    }));
-    // SOURCE codec → what the Load payload actually declared. The arrow is the point: this repo's
-    // documented silent-audio bug is a payload built from the source rather than from the
-    // /decision OUTPUT, and it is invisible in either half on its own.
-    v.push(Field::new("Video", chain(crate::route::source_vcodec(), crate::route::stream_vcodec(), d.load_v_str())));
-    // …and the same for audio, where `needAudio:false` is a COMPLETE explanation for silence:
-    // the pipeline was never asked for any.
-    v.push(
-        Field::new("Audio", chain(crate::route::source_acodec(), crate::route::stream_acodec(), d.load_a_str()))
-            .fault(d.load_a == 0 && d.load_v != 0),
-    );
-    v.push(Field::new("Frame", match (d.video_w, d.video_h) {
-        (0, _) | (_, 0) => "unknown — stream never opened".to_string(),
-        (w, h) => format!("{w}x{h}"),
-    })
-    .fault(d.video_w == 0));
-    if !adaptive {
-        v.push(Field::new(
-            "Position",
-            format!(
-                "{} / {}",
-                crate::ui::fmt::clock(d.pos_ns / 1_000_000),
-                if d.dur_ns > 0 { crate::ui::fmt::clock(d.dur_ns / 1_000_000) } else { "unknown".into() }
-            ),
-        ));
-    }
-    // The two lanes' high-water fed PTS, differenced. Instantaneous and exact where the totals
-    // are blind: a skew that keeps growing is the audio lane starving behind the video one, and a
-    // skew near zero says both are keeping up and any missing sound is downstream of us.
-    v.push(Field::new("A/V skew", skew(d)).fault(skew_bad(d)));
-    if adaptive {
-        v.push(Field::section("AUTO QUALITY"));
-        v.push(Field::new("Current / Optimal", abr_quality(d)));
-        v.push(Field::new("Connection Speed", abr_connection_speed(d)));
-        v.push(Field::new("Network Activity", abr_network_activity(d)));
-        v.push(Field::new("Buffer Health", abr_buffer_health(d)));
-        v.push(Field::new("Decision", abr_decision(d)));
-    } else {
-        v.push(Field::section("BUILD"));
+/// **Auto's own state — the model, not a summary of it.** Five rows that are, in order, the four
+/// inputs the controller actually decides on and then the decision: the operating point, the
+/// delivery estimate WITH its uncertainty, the buffer with its slope and starvation horizon, the
+/// PMS production constraint kept separate from the network one, and the utility verdict with its
+/// reason code.
+///
+/// It is deliberately not the YouTube naming any more. Those names ("Connection Speed", "Network
+/// Activity") describe a client that picks a rendition off a ladder by throughput, which is not
+/// what this app does — and a read-out that borrows them cannot say the two things this controller
+/// is FOR: that delivery and production are separate constraints, and that an estimate carries its
+/// own confidence. A panel photographed to explain a decision has to name the decision's terms.
+///
+/// A non-Auto playback has no model, so the block collapses to the FFmpeg binding — the one fact
+/// that is worth a row when nothing is adapting, and a fault when the bundled libraries did not
+/// load at all.
+fn abr_rows(d: &crate::player::Diag, v: &mut Vec<Field>) {
+    if d.abr_mode == 0 {
         let (fmtv, codv, utlv) = crate::ff::majors();
         v.push(
             Field::new(
-                "FFmpeg fmt/cod/util",
-                if fmtv == 0 { "NOT BOUND".to_string() } else { format!("{fmtv} / {codv} / {utlv}") },
+                "FFmpeg",
+                if fmtv == 0 {
+                    "NOT BOUND".to_string()
+                } else {
+                    format!("fmt {fmtv} · cod {codv} · util {utlv}")
+                },
             )
             .fault(fmtv == 0),
         );
+        return;
     }
-    v
+    v.push(Field::new("Quality", abr_quality(d)));
+    v.push(Field::new("Link", abr_link(d)));
+    v.push(Field::new("Buffer", abr_buffer(d)).fault(d.abr_starve_secs >= 0));
+    v.push(Field::new("Server load", abr_server_load(d)));
+    v.push(Field::new("Decision", abr_decision(d)));
+}
+
+/// The delivery estimate as the model holds it: what selection may SPEND, what was measured, how
+/// much the estimate distrusts itself, and how many observations are behind it.
+///
+/// The safe budget leads because it is the number the choice is actually made with — it is the
+/// measured rate already discounted for uncertainty, for a server behind real time and for a
+/// reserve below the floor, so a reader who sees `safe 4.0 Mbps` beside `measured 21.4 Mbps` is
+/// looking straight at the reason a fast link is not being spent.
+fn abr_link(d: &crate::player::Diag) -> String {
+    if d.abr_net_kbps < 0 {
+        return "waiting for first measurement".to_string();
+    }
+    let mut s = if d.abr_safe_kbps >= 0 {
+        format!("safe {} · measured {}", abr_rate(d.abr_safe_kbps), abr_rate(d.abr_net_kbps))
+    } else {
+        format!("measured {}", abr_rate(d.abr_net_kbps))
+    };
+    if d.abr_unc_pm >= 0 {
+        // Per-mille in the model, per-cent on the panel: nobody reads a photograph in per-mille.
+        s.push_str(&format!(" ±{}%", d.abr_unc_pm / 10));
+    }
+    if d.abr_samples >= 0 {
+        s.push_str(&format!(" · n={}", d.abr_samples));
+    }
+    s
+}
+
+/// The buffer as DYNAMICS rather than a level: how much content is banked, which way it is going,
+/// and — the number the whole fallback rule is written in — how long until it runs out.
+///
+/// `no deficit` is not the same claim as "safe forever": it is the model saying the drain rate is
+/// not positive, so `T_starve = B·R/(R−C)` has no root and there is no horizon to print.
+fn abr_buffer(d: &crate::player::Diag) -> String {
+    if d.abr_buffer_ms < 0 {
+        return "waiting for first measurement".to_string();
+    }
+    format!(
+        "{:.1} s · {:+.1} s/s · {}",
+        d.abr_buffer_ms as f64 / 1_000.0,
+        d.abr_slope_ms_per_s as f64 / 1_000.0,
+        match d.abr_starve_secs {
+            n if n >= 0 => format!("starves in {n} s"),
+            _ => "no deficit".to_string(),
+        }
+    )
+}
+
+/// The PMS production constraint, which is a different resource from the link and is the reason
+/// 4K can be refused on a network that would carry it: the measured 4K point costs 4% more wire
+/// and 110% more server.
+///
+/// Measured is what the last segment cost as a multiple of its own media duration; predicted is
+/// what the current candidate is expected to cost, extrapolated through the raster-driven load
+/// model. Both above 1.0x means the encoder is at or behind real time and will drain any buffer.
+fn abr_server_load(d: &crate::player::Diag) -> String {
+    if d.abr_mode != crate::player::ABR_MODE_HLS || d.abr_ratio_pm < 0 {
+        return "no encoder — progressive transfer".to_string();
+    }
+    let mut s = format!("{:.2}x measured", d.abr_ratio_pm as f64 / 1_000.0);
+    if d.abr_pred_pm >= 0 {
+        s.push_str(&format!(" · {:.2}x predicted", d.abr_pred_pm as f64 / 1_000.0));
+    }
+    s
 }
 
 /// Auto owns a small canonical ladder; spelling the raster beside its nominal rate makes it
 /// immediately obvious whether the observed decoded frame agrees with the requested rendition.
+///
+/// Resolved through `abr::Rung` itself rather than a table restated here. It WAS a table, and it
+/// went stale the moment the ladder grew from six actuators to thirteen: every new 1080p rung
+/// printed `unknown raster` on the one surface whose whole purpose is being photographed by someone
+/// diagnosing a television nobody here owns.
 fn abr_raster(kbps: i64) -> &'static str {
-    match kbps {
-        320 => "240p",
-        720 => "480p",
-        2_000 | 4_000 => "720p",
-        8_000 | 20_000 => "1080p",
+    let Ok(kbps) = u32::try_from(kbps) else { return "unknown raster" };
+    let Some(rung) = crate::abr::LADDER.iter().find(|r| r.kbps() == kbps) else {
+        return "unknown raster";
+    };
+    match rung.raster() {
+        (426, 240) => "240p",
+        (854, 480) => "480p",
+        (1280, 720) => "720p",
+        (1920, 1080) => "1080p",
+        (3840, 2160) => "4K",
         _ => "unknown raster",
     }
 }
@@ -473,47 +616,45 @@ fn abr_rate(kbps: i64) -> String {
     }
 }
 
+/// The operating point, and — the half that is new — the one the MODEL would choose for this link
+/// if hysteresis were free. Reading them together is the difference between "this is 4 Mbps" and
+/// "this is 4 Mbps and the model agrees that is all the link is worth", which are the two answers
+/// a viewer asking why the picture is soft actually needs to tell apart.
 fn abr_quality(d: &crate::player::Diag) -> String {
     match d.abr_mode {
-        crate::player::ABR_MODE_ORIGINAL => format!("Original · {} source", abr_rate(d.abr_kbps)),
+        crate::player::ABR_MODE_ORIGINAL => format!("Original · source {}", abr_rate(d.abr_kbps)),
         crate::player::ABR_MODE_HLS => {
-            format!("HLS {} · {}", abr_rate(d.abr_kbps), abr_raster(d.abr_kbps))
+            let now = format!("HLS {} · {}", abr_rate(d.abr_kbps), abr_raster(d.abr_kbps));
+            match d.abr_optimal_kbps {
+                // Not "the top rung" — the best SUSTAINABLE one, which on a slow link is below
+                // what is playing and is then the read-out saying a downshift is coming.
+                n if n >= 0 && n != d.abr_kbps => {
+                    format!("{now} → best {} · {}", abr_rate(n), abr_raster(n))
+                }
+                n if n >= 0 => format!("{now} (best available)"),
+                _ => now,
+            }
         }
-        _ => "inactive".to_string(),
+        _ => "fixed — no adaptation".to_string(),
     }
-}
-
-fn abr_connection_speed(d: &crate::player::Diag) -> String {
-    if d.abr_net_kbps < 0 {
-        return "waiting for first sample".to_string();
-    }
-    format!("{} body rate", abr_rate(d.abr_net_kbps))
-}
-
-fn abr_network_activity(d: &crate::player::Diag) -> String {
-    if d.abr_mode != crate::player::ABR_MODE_HLS || d.abr_ratio_pm < 0 {
-        return "progressive transfer".to_string();
-    }
-    format!("segment fetch {:.2}x media time", d.abr_ratio_pm as f64 / 1_000.0)
-}
-
-fn abr_buffer_health(d: &crate::player::Diag) -> String {
-    if d.abr_buffer_ms < 0 {
-        return "waiting for first sample".to_string();
-    }
-    format!("{:.1} s", d.abr_buffer_ms as f64 / 1_000.0)
 }
 
 fn abr_decision(d: &crate::player::Diag) -> String {
     if d.abr_mode == crate::player::ABR_MODE_ORIGINAL {
+        // The count is CONSECUTIVE MEASUREMENT WINDOWS whose starvation horizon sits inside the
+        // unsafe band — "how long has this been going on" — and the read-out says that rather than
+        // `n/2`. There is no denominator to print any more: a fallback is decided by the horizon in
+        // seconds and by utility, not by reaching a fixed number of bad windows, and a fraction
+        // implies a countdown that would be a lie in both directions (an imminent starvation acts
+        // on the FIRST window; a shortfall with a deep reserve never acts at all).
         return match d.abr_bad_windows {
             0 => "watching · link sustainable".to_string(),
-            1 => "low rate + buffer · 1/2".to_string(),
-            n => format!("fallback requested · {n}/2"),
+            1 => "shortfall · 1 window".to_string(),
+            n => format!("shortfall · {n} windows"),
         };
     }
     let target = abr_rate(d.abr_target_kbps);
-    match d.abr_action {
+    let action = match d.abr_action {
         crate::player::ABR_ACTION_STEADY => "steady".to_string(),
         crate::player::ABR_ACTION_PRIME_DOWN => format!("priming down to {target}"),
         crate::player::ABR_ACTION_PRIME_UP => format!("priming up to {target}"),
@@ -524,6 +665,30 @@ fn abr_decision(d: &crate::player::Diag) -> String {
         crate::player::ABR_ACTION_PROBE_ORIGINAL => "checking Original link".to_string(),
         crate::player::ABR_ACTION_RECOVER_ORIGINAL => "switching back to Original".to_string(),
         _ => "starting".to_string(),
+    };
+    // The reason code and the risk score. The whole point of the rewrite is that a decision is
+    // EXPLAINABLE, and until now the only place that explanation existed was the event log — which
+    // is exactly the surface a user photographing their television cannot reach.
+    let mut s = action;
+    if d.abr_risk >= 0 {
+        s.push_str(&format!(" · risk {}", d.abr_risk));
+    }
+    if let Some(why) = abr_why_text(d.abr_why) {
+        s.push_str(" · ");
+        s.push_str(why);
+    }
+    s
+}
+
+/// The reason code in words a reader who has never seen this codebase can act on. `None` for
+/// "nothing has decided yet", which is a real state at the top of a playback rather than a fault.
+fn abr_why_text(why: u8) -> Option<&'static str> {
+    match why {
+        crate::player::ABR_WHY_SAFE_BUDGET => Some("link has room"),
+        crate::player::ABR_WHY_UNSAFE_STATE => Some("link too slow"),
+        crate::player::ABR_WHY_PRODUCTION => Some("server behind"),
+        crate::player::ABR_WHY_BUFFER => Some("reserve low"),
+        _ => None,
     }
 }
 
@@ -651,12 +816,19 @@ fn mb(b: i64) -> String {
 // ---- drawing ----------------------------------------------------------------------------------
 
 const MARGIN: f32 = 60.0;
-const PAD: f32 = 28.0;
-/// Height of the header block. It is a SUM, not a guess: title (16 + 40) + two caption lines
-/// (2 x 28) + the verdict (32) + air. It was 122 once and the verdict line drew straight through
-/// the first section heading — the columns start at exactly this offset, so it has to clear the
-/// last thing the header draws, not the last thing it is nominally made of.
-const HEAD_H: f32 = 152.0;
+const PAD: f32 = 24.0;
+/// Height of the header block. It is a SUM, not a guess: title band (14 + 36) + one identity
+/// caption (26) + the verdict (30) + air. The rows start at exactly this offset, so it has to
+/// clear the last thing the header DRAWS, not the last thing it is nominally made of — it was 122
+/// once and the verdict line drew straight through the first row.
+///
+/// It carries one caption line where it carried two: the build and the firmware are one sentence
+/// now, which is how they are read anyway ("PlxNative 0.4.1 dev on webOS 4.10.2").
+const HEAD_H: f32 = 116.0;
+/// The fed-rate chart's band, reserved by [`panel_rect`] so the rows and the chart cannot overlap
+/// — the chart used to be laid out in "whatever the right column had left", which is a quantity
+/// that goes negative the moment the other column is the short one.
+const CHART_H: f32 = 66.0;
 
 /// The panel's box, SIZED TO ITS CONTENT rather than to the screen.
 ///
@@ -667,18 +839,18 @@ const HEAD_H: f32 = 152.0;
 /// land on the scrubber's rects THROUGH an opaque card — which was the only reason the click path
 /// needed a close-on-click arm at all.
 fn panel_rect() -> Rect {
-    // Measured on every snapshot. Values may wrap, so the fixed row budget is only the floor.
-    // The cap keeps the read-out inside the safe area; the two-column split keeps long diagnostic
-    // text visible without covering the whole frame.
-    let w = 2.0 * FIELD_COL_W + theme::space::MD + 2.0 * PAD;
-    let left = unsafe { &*addr_of_mut!(LEFT) };
-    let right = unsafe { &*addr_of_mut!(RIGHT) };
-    let extra_rows = (FieldList::wrapped_line_count(left, FIELD_COL_W).saturating_sub(left.len())
-        + FieldList::wrapped_line_count(right, FIELD_COL_W).saturating_sub(right.len()))
-        as f32;
-    let rows = FieldList::height(COLUMN_ROWS) + extra_rows * FIELD_ROW_H;
+    // Measured on every snapshot rather than fixed at the budget: values may wrap, so
+    // [`PANEL_ROWS`] is only the floor. `wrapped_line_count` is the SAME rule the list draws with
+    // (`widgets::value_lines`), which is what makes this height correct rather than approximately
+    // correct — it was two rules before, and the rows the measure reserved but the paint never
+    // emitted fell out of the bottom of the card onto the transport.
+    let w = FIELD_COL_W + 2.0 * PAD;
+    let rows = unsafe { &*addr_of_mut!(ROWS) };
+    let lines = FieldList::wrapped_line_count(rows, FIELD_COL_W).max(PANEL_ROWS);
+    // The cap is the safe area, not a content decision — but the panel is now sized so that
+    // reaching it means something has gone wrong with the content, not with the layout.
     let max_h = crate::ui::player_hud::CTRL_Y - MARGIN - PAD;
-    let h = (HEAD_H + rows + PAD).min(max_h);
+    let h = (HEAD_H + FieldList::height(lines) + CHART_H + PAD).min(max_h);
     // x on the app's own side margin, not [`MARGIN`]: the panel's whole output format is a
     // PHOTOGRAPH of a television, so it is the one overlay that must sit inside the overscan frame
     // even though nothing on it is pressable. 60 cleared it vertically and missed it by 36 across.
@@ -712,35 +884,28 @@ pub(crate) fn draw() {
             .bold()
             .draw(p, Rect::new(inner, frame.y + theme::space::SM, iw, 40.0));
     }
-    for (i, (line, ink)) in
-        [(&head[0], theme::TEXT_TERTIARY), (&head[1], theme::TEXT_SECONDARY)].into_iter().enumerate()
-    {
-        if let Ok(cs) = CString::new(line.as_str()) {
-            Label::new(cs.as_ptr(), theme::size::CAPTION, ink)
-                .draw(p, Rect::new(inner, frame.y + 56.0 + i as f32 * 28.0, iw, 28.0));
-        }
+    // Build + firmware as ONE identity line. Two lines was one more than the fact needs.
+    if let Ok(cs) = CString::new(head[0].as_str()) {
+        Label::new(cs.as_ptr(), theme::size::CAPTION, theme::TEXT_TERTIARY)
+            .draw(p, Rect::new(inner, frame.y + 52.0, iw, 26.0));
     }
     // the verdict — the one line that says what the pipeline thinks it is doing
-    if let Ok(cs) = CString::new(head[2].as_str()) {
-        let ink = if head[2].starts_with("Playback error") { theme::DANGER } else { theme::TEXT_PRIMARY };
+    if let Ok(cs) = CString::new(head[1].as_str()) {
+        let ink = if head[1].starts_with("Playback error") { theme::DANGER } else { theme::TEXT_PRIMARY };
         Label::new(cs.as_ptr(), theme::size::BODY, ink)
             .bold()
-            .draw(p, Rect::new(inner, frame.y + 112.0, iw, 32.0));
+            .draw(p, Rect::new(inner, frame.y + 80.0, iw, 30.0));
     }
 
     let top = frame.y + HEAD_H;
-    let h = frame.h - HEAD_H - PAD;
-    let rx = inner + FIELD_COL_W + theme::space::MD;
-    FieldList::new(unsafe { &*addr_of_mut!(LEFT) }, Rect::new(inner, top, FIELD_COL_W, h)).draw(&e, p);
-    FieldList::new(unsafe { &*addr_of_mut!(RIGHT) }, Rect::new(rx, top, FIELD_COL_W, h)).draw(&e, p);
+    let rows = unsafe { &*addr_of_mut!(ROWS) };
+    FieldList::new(rows, Rect::new(inner, top, FIELD_COL_W, frame.h - HEAD_H - PAD)).draw(&e, p);
 
-    // The chart, in the right column's own slack. The two columns are deliberately unequal — the
-    // stall discriminators all live on the left — so this costs no height at all.
-    let right = unsafe { &*addr_of_mut!(RIGHT) };
-    let cy = top + FieldList::wrapped_line_count(right, FIELD_COL_W) as f32 * FIELD_ROW_H
-        + theme::space::XS;
-    let chart_h = (frame.h - (cy - frame.y) - PAD).max(0.0);
-    draw_chart(p, Rect::new(rx, cy, FIELD_COL_W, chart_h - theme::space::XS));
+    // The chart sits in the band `panel_rect` reserved for it, under the rows. Its top is measured
+    // from the SAME line count the list drew with, so a wrapped row pushes it down instead of
+    // being drawn over by it.
+    let cy = top + FieldList::height(FieldList::wrapped_line_count(rows, FIELD_COL_W));
+    draw_chart(p, Rect::new(inner, cy, FIELD_COL_W, (frame.y + frame.h - PAD - cy).max(0.0)));
 }
 
 /// The fed-rate chart: one bar per sample, video over audio, sharing a y scale so the two lanes are
@@ -788,24 +953,71 @@ mod tests {
     use super::*;
     use crate::ui::consts::{SCR_H, SCR_W};
 
-    /// The budget is the design (see [`COLUMN_ROWS`]) — a column that outgrows it does not scroll,
-    /// it draws off the bottom of a panel someone is about to photograph. `_serial` because both
-    /// builders read crate-global playback state.
+    /// The budget is the design (see [`PANEL_ROWS`]) — a read-out that outgrows it does not
+    /// scroll, it draws off the bottom of a panel someone is about to photograph.
     #[test]
-    fn neither_column_outgrows_the_page() {
-        // Both video-plane shapes: the exported path carries two extra rows that ACB does not, so
-        // the wider one is the one that has to fit. Both right-column shapes matter too: Auto
-        // trades static rows for its three live policy rows rather than changing the budget.
+    fn the_read_out_never_outgrows_its_budget() {
+        // Every video-plane shape and every Auto shape: the exported path states more about the
+        // plane than ACB does, and Auto trades the FFmpeg row for its five model rows — neither
+        // may change the budget.
         for vp in [crate::player::VP_ACB, crate::player::VP_EXPORTED, crate::player::VP_NONE] {
             for abr_mode in [0, crate::player::ABR_MODE_ORIGINAL, crate::player::ABR_MODE_HLS] {
                 let d = crate::player::Diag { vp_mode: vp, abr_mode, ..Default::default() };
-                let l = left_column(&d, (0, 0, 0), 1_000);
-                assert!(l.len() <= COLUMN_ROWS, "left at vp={vp}: {}", l.len());
-                assert!(
-                    right_column(&d).len() <= COLUMN_ROWS,
-                    "right at vp={vp} abr={abr_mode}",
-                );
+                let v = rows(&d, (0, 0, 0), 1_000);
+                assert!(v.len() <= PANEL_ROWS, "vp={vp} abr={abr_mode}: {} rows", v.len());
             }
+        }
+    }
+
+    /// **Every row must fit on ONE line**, which is what makes the panel short. A row that wraps
+    /// still draws correctly (`widgets::value_lines` is shared by the measure and the paint), so
+    /// nothing is hidden and nothing overflows — but it costs a row of budget silently, and the
+    /// composed lines are written to fit. Grade the composition, not just the count.
+    #[test]
+    fn every_composed_row_fits_one_line() {
+        // The widest realistic values: a three-stage codec chain, a 4K raster with a position and
+        // a skew, and the full model line with every optional part present.
+        let d = crate::player::Diag {
+            vp_mode: crate::player::VP_EXPORTED,
+            abr_mode: crate::player::ABR_MODE_HLS,
+            video_w: 3_840,
+            video_h: 2_160,
+            pos_ns: 3_600_000_000_000,
+            dur_ns: 7_200_000_000_000,
+            fed_v_pts: 10_400_000_000,
+            fed_a_pts: 10_000_000_000,
+            abr_kbps: 20_000,
+            abr_optimal_kbps: 22_000,
+            abr_net_kbps: 21_400,
+            abr_safe_kbps: 17_600,
+            abr_unc_pm: 200,
+            abr_samples: 12,
+            abr_buffer_ms: 12_000,
+            abr_slope_ms_per_s: -250,
+            abr_starve_secs: 48,
+            abr_ratio_pm: 950,
+            abr_pred_pm: 1_050,
+            abr_risk: 3,
+            abr_why: crate::player::ABR_WHY_PRODUCTION,
+            abr_action: crate::player::ABR_ACTION_PRIME_DOWN,
+            abr_target_kbps: 14_000,
+            cb_count: 812,
+            http_status: 200,
+            net_rx: 13_000_000,
+            pushed_any: true,
+            fed_v: 5_000,
+            fed_a: 4_800,
+            window_id: "_Window_Id_0".to_string(),
+            place_rv: 1,
+            placed_w: 3_840,
+            placed_h: 2_160,
+            load_completed: true,
+            ..Default::default()
+        };
+        for f in rows(&d, (4_400, 4_000, 500), 1_000) {
+            let Some(val) = f.val.as_deref() else { continue };
+            let lines = crate::ui::widgets::value_lines(val, FIELD_COL_W);
+            assert_eq!(lines.len(), 1, "`{}` wraps to {} lines: {val}", f.key, lines.len());
         }
     }
 
@@ -817,13 +1029,15 @@ mod tests {
         // `load_at` a full stall-window in the past: a Load that completed SECONDS ago with no
         // frame is the fault. The same session one tick after Load is NOT — see the test below.
         let d = crate::player::Diag { load_completed: true, load_at: 1_000, ..Default::default() };
-        let rows = left_column(&d, (0, 0, 0), 1_000 + STALL_MS + 1);
-        let faults: Vec<_> = rows
+        let v = rows(&d, (0, 0, 0), 1_000 + STALL_MS + 1);
+        let faults: Vec<_> = v
             .iter()
             .filter(|f| f.tone == crate::ui::widgets::Tone::Fault)
             .map(|f| f.key)
             .collect();
-        for expect in ["Mode", "Callbacks", "Demuxed", "Fed v/a", "Frames"] {
+        // One row per thing that did not happen: no video path, a Load with no callbacks, nothing
+        // demuxed or fed, and no frame long after the Load completed.
+        for expect in ["Plane", "Pipeline", "Feed", "Frames"] {
             assert!(faults.contains(&expect), "{expect} should read as a fault; got {faults:?}");
         }
     }
@@ -833,7 +1047,7 @@ mod tests {
     /// and it is why the click path needs no close-on-click arm.
     #[test]
     fn the_panel_clears_the_transport() {
-        let bottom = MARGIN + HEAD_H + FieldList::height(COLUMN_ROWS) + PAD;
+        let bottom = MARGIN + HEAD_H + FieldList::height(PANEL_ROWS) + CHART_H + PAD;
         assert!(
             bottom < crate::ui::player_hud::CTRL_Y,
             "panel bottom {bottom} overlaps the control row at {}",
@@ -847,88 +1061,137 @@ mod tests {
         assert!(crate::ui::consts::inside_safe(p), "the read-out is photographed — it must clear the overscan frame");
     }
 
-    /// **The chart can be deleted by a green suite.** `draw_chart` returns silently below 40 px,
-    /// and `neither_column_outgrows_the_page` grades only `len() <= COLUMN_ROWS` — so two extra
-    /// rows in the RIGHT column would take the chart's slack, the chart would stop drawing, and
-    /// nothing would fail. Grade the band directly.
+    /// **The chart used to be deletable by a green suite.** `draw_chart` returns silently below
+    /// 40 px, and it was laid out in "whatever the right column had left" — so two extra rows
+    /// anywhere took its slack, it stopped drawing, and nothing failed. Its band is RESERVED by
+    /// `panel_rect` now; this grades that the reservation actually survives to the draw.
     #[test]
-    fn every_row_fits_the_fixed_diagnostic_budget() {
+    fn the_chart_keeps_its_band_whatever_the_rows_do() {
         for vp in [crate::player::VP_ACB, crate::player::VP_EXPORTED, crate::player::VP_NONE] {
             for abr_mode in [0, crate::player::ABR_MODE_ORIGINAL, crate::player::ABR_MODE_HLS] {
                 let d = crate::player::Diag { vp_mode: vp, abr_mode, ..Default::default() };
-                let left = left_column(&d, (0, 0, 0), 1_000);
-                let right = right_column(&d);
-                assert!(
-                    left.len() <= COLUMN_ROWS && right.len() <= COLUMN_ROWS,
-                    "vp={vp} abr={abr_mode}: diagnostic rows exceeded the fixed budget",
-                );
+                let v = rows(&d, (0, 0, 0), 1_000);
+                // Exactly `panel_rect`'s arithmetic and `draw`'s, so the assertion is about the
+                // band the chart actually gets rather than about a restatement that could agree
+                // with neither: the panel GROWS with wrapped lines, so the reservation survives.
+                let lines = FieldList::wrapped_line_count(&v, FIELD_COL_W);
+                let h = HEAD_H + FieldList::height(lines.max(PANEL_ROWS)) + CHART_H + PAD;
+                let band = h - PAD - HEAD_H - FieldList::height(lines);
+                assert!(band >= 40.0, "vp={vp} abr={abr_mode}: chart band is {band}px, it would not draw");
             }
         }
     }
 
-    /// Auto's panel is the human-readable contract for the policy atomics. Pin both phases: the
-    /// Original watchdog must expose the evidence accumulating toward fallback, and segmented
-    /// HLS must expose its active rung, production cadence and most recent committed move.
+    /// Auto's block is the human-readable contract for the model's atomics — the five rows are the
+    /// controller's own inputs and its verdict, and this pins what each of them SAYS. Both phases:
+    /// the Original watchdog must expose the evidence accumulating toward a fallback, and
+    /// fixed-session HLS must expose its operating point, both resource constraints and the reason
+    /// the last decision went the way it did.
     #[test]
-    fn auto_quality_explains_its_measurement_and_decision() {
-        let val = |rows: &[Field], key: &str| {
-            rows.iter()
-                .find(|f| f.key == key)
-                .and_then(|f| f.val.as_deref())
-                .unwrap_or("missing")
-                .to_string()
+    fn the_model_block_states_every_input_it_decides_on() {
+        let val = |v: &[Field], key: &str| {
+            v.iter().find(|f| f.key == key).and_then(|f| f.val.as_deref()).unwrap_or("missing").to_string()
+        };
+        let build = |d: &crate::player::Diag| {
+            let mut v = Vec::new();
+            abr_rows(d, &mut v);
+            v
         };
 
         let original = crate::player::Diag {
             abr_mode: crate::player::ABR_MODE_ORIGINAL,
             abr_kbps: 11_356,
             abr_net_kbps: 4_016,
+            abr_safe_kbps: 3_800,
+            abr_unc_pm: 180,
+            abr_samples: 5,
             abr_buffer_ms: 2_820,
+            abr_slope_ms_per_s: -900,
+            abr_starve_secs: 3,
             abr_bad_windows: 1,
             ..Default::default()
         };
-        let rows = right_column(&original);
-        assert_eq!(val(&rows, "Current / Optimal"), "Original · 11.4 Mbps source");
-        assert_eq!(val(&rows, "Connection Speed"), "4.0 Mbps body rate");
-        assert_eq!(val(&rows, "Buffer Health"), "2.8 s");
-        assert_eq!(val(&rows, "Decision"), "low rate + buffer · 1/2");
-        assert!(rows.iter().any(|f| f.key == "AUTO QUALITY"));
-        assert!(!rows.iter().any(|f| f.key == "Position" || f.key == "BUILD"));
+        let v = build(&original);
+        assert_eq!(val(&v, "Quality"), "Original · source 11.4 Mbps");
+        assert_eq!(val(&v, "Link"), "safe 3.8 Mbps · measured 4.0 Mbps ±18% · n=5");
+        // Level, direction and horizon: the buffer is DYNAMICS, and the fallback rule is written
+        // in the third of those three numbers.
+        assert_eq!(val(&v, "Buffer"), "2.8 s · -0.9 s/s · starves in 3 s");
+        assert_eq!(val(&v, "Server load"), "no encoder — progressive transfer");
+        // Windows, with no denominator: there is no fixed count to reach any more, so a fraction
+        // would promise a countdown that does not exist in either direction.
+        assert_eq!(val(&v, "Decision"), "shortfall · 1 window");
+        assert_eq!(
+            val(&build(&crate::player::Diag { abr_bad_windows: 4, ..original }), "Decision"),
+            "shortfall · 4 windows",
+        );
+        // A horizon at all is a fault tint — that is the row a reader must reach first.
+        assert_eq!(
+            v.iter().find(|f| f.key == "Buffer").unwrap().tone,
+            crate::ui::widgets::Tone::Fault,
+        );
 
         let hls = crate::player::Diag {
             abr_mode: crate::player::ABR_MODE_HLS,
             abr_kbps: 4_000,
+            abr_optimal_kbps: 10_000,
             abr_net_kbps: 12_400,
+            abr_safe_kbps: 11_000,
+            abr_unc_pm: 200,
+            abr_samples: 7,
             abr_buffer_ms: 6_250,
+            abr_slope_ms_per_s: 120,
+            abr_starve_secs: -1,
             abr_ratio_pm: 420,
+            abr_pred_pm: 900,
+            abr_risk: 0,
+            abr_why: crate::player::ABR_WHY_SAFE_BUDGET,
             abr_action: crate::player::ABR_ACTION_COMMIT_UP,
             abr_target_kbps: 4_000,
             ..Default::default()
         };
-        let rows = right_column(&hls);
-        assert_eq!(val(&rows, "Current / Optimal"), "HLS 4.0 Mbps · 720p");
-        assert_eq!(val(&rows, "Connection Speed"), "12.4 Mbps body rate");
-        assert_eq!(val(&rows, "Network Activity"), "segment fetch 0.42x media time");
-        assert_eq!(val(&rows, "Buffer Health"), "6.2 s");
-        assert_eq!(val(&rows, "Decision"), "changed up to 4.0 Mbps");
+        let v = build(&hls);
+        // Current AND what the model would pick — the pair is the point.
+        assert_eq!(val(&v, "Quality"), "HLS 4.0 Mbps · 720p → best 10.0 Mbps · 1080p");
+        assert_eq!(val(&v, "Link"), "safe 11.0 Mbps · measured 12.4 Mbps ±20% · n=7");
+        assert_eq!(val(&v, "Buffer"), "6.2 s · +0.1 s/s · no deficit");
+        assert_eq!(val(&v, "Server load"), "0.42x measured · 0.90x predicted");
+        assert_eq!(val(&v, "Decision"), "changed up to 4.0 Mbps · risk 0 · link has room");
+
+        // Every actuator on the ladder names its raster, including the ones added after this panel
+        // was written — the failure mode is a photograph reading `unknown raster`.
+        for rung in crate::abr::LADDER {
+            let probe = crate::player::Diag {
+                abr_mode: crate::player::ABR_MODE_HLS,
+                abr_kbps: i64::from(rung.kbps()),
+                abr_optimal_kbps: -1,
+                ..Default::default()
+            };
+            assert!(!val(&build(&probe), "Quality").contains("unknown"), "{rung:?} has no raster name");
+        }
 
         let probing = crate::player::Diag {
             abr_mode: crate::player::ABR_MODE_HLS,
+            abr_risk: -1,
             abr_action: crate::player::ABR_ACTION_PROBE_ORIGINAL,
             ..Default::default()
         };
-        assert_eq!(val(&right_column(&probing), "Decision"), "checking Original link");
+        assert_eq!(val(&build(&probing), "Decision"), "checking Original link");
         let recovering = crate::player::Diag {
             abr_mode: crate::player::ABR_MODE_HLS,
+            abr_risk: -1,
             abr_action: crate::player::ABR_ACTION_RECOVER_ORIGINAL,
             ..Default::default()
         };
-        assert_eq!(val(&right_column(&recovering), "Decision"), "switching back to Original");
+        assert_eq!(val(&build(&recovering), "Decision"), "switching back to Original");
 
-        let ordinary = right_column(&crate::player::Diag::default());
-        assert!(ordinary.iter().any(|f| f.key == "Position"));
-        assert!(ordinary.iter().any(|f| f.key == "BUILD"));
-        assert!(!ordinary.iter().any(|f| f.key == "AUTO QUALITY"));
+        // A fixed rung has no model at all — the block collapses to the one fact worth a row.
+        let fixed = build(&crate::player::Diag::default());
+        assert_eq!(fixed.len(), 1);
+        assert_eq!(fixed[0].key, "FFmpeg");
+        for absent in ["Quality", "Link", "Buffer", "Server load", "Decision"] {
+            assert!(!fixed.iter().any(|f| f.key == absent), "{absent} must not draw without Auto");
+        }
     }
 
     /// …and it must leave the MAJORITY of the picture visible, or it is the full-screen card
@@ -939,9 +1202,12 @@ mod tests {
     /// again, shrink the type instead.
     #[test]
     fn it_leaves_most_of_the_picture_visible() {
-        let a = (2.0 * FIELD_COL_W + theme::space::MD + 2.0 * PAD)
-            * (HEAD_H + FieldList::height(COLUMN_ROWS) + PAD);
+        let a = (FIELD_COL_W + 2.0 * PAD)
+            * (HEAD_H + FieldList::height(PANEL_ROWS) + CHART_H + PAD);
         let pct = 100.0 * a / (SCR_W * SCR_H);
+        // One column at 30px rows costs about 27% where two at 36px cost 34%. The ceiling stays
+        // where it was rather than being tightened onto today's number: a row added tomorrow
+        // should cost a row, not a redesign.
         assert!(pct < 40.0, "panel covers {pct:.0}% of the screen");
     }
 
@@ -952,21 +1218,24 @@ mod tests {
     fn a_stalled_audio_lane_is_visible_even_though_its_total_is_large() {
         let d = crate::player::Diag {
             load_completed: true,
+            pushed_any: true,
             fed_v: 5_000,
             fed_a: 4_000,          // large, and unmoved since the previous sample
             fed_v_pts: 60_000_000_000,
             fed_a_pts: 30_000_000_000, // 30 s behind
             ..Default::default()
         };
-        let rows = left_column(&d, (4_400, 4_000, 500), 1_000);
-        let rate = rows.iter().find(|f| f.key == "Feed rate").expect("Feed rate row");
-        assert_eq!(rate.val.as_deref(), Some("1200 fps · 0/s"), "the rate must show the dead lane");
-        let fed = rows.iter().find(|f| f.key == "Fed v/a").expect("Fed row");
-        assert_ne!(fed.tone, crate::ui::widgets::Tone::Fault, "video IS feeding — that row is not the fault");
+        let v = rows(&d, (4_400, 4_000, 500), 1_000);
+        let feed = v.iter().find(|f| f.key == "Feed").expect("Feed row");
+        let val = feed.val.as_deref().unwrap_or_default();
+        assert!(val.contains("1200 fps · 0/s"), "the rate must show the dead lane: {val}");
 
-        let sk = right_column(&d).into_iter().find(|f| f.key == "A/V skew").expect("skew row");
-        assert_eq!(sk.val.as_deref(), Some("+30.0 s"));
-        assert_eq!(sk.tone, crate::ui::widgets::Tone::Fault, "30 s of skew is a fault");
+        // The skew rides the Frame row — same stream, and it is read beside the raster and the
+        // position rather than as a number on its own.
+        let frame = v.iter().find(|f| f.key == "Frame").expect("Frame row");
+        let fv = frame.val.as_deref().unwrap_or_default();
+        assert!(fv.contains("A/V +30.0 s"), "{fv}");
+        assert_eq!(frame.tone, crate::ui::widgets::Tone::Fault, "30 s of skew is a fault");
     }
 
     /// The clock is what makes "no frames" mean something. One tick after `loadCompleted` a
@@ -979,15 +1248,15 @@ mod tests {
         // branch ("none yet") where it asserts the running clock ("none in 0 s") and flake.
         let _g = crate::testlock::serial();
         let d = crate::player::Diag { load_completed: true, load_at: 1_000, ..Default::default() };
-        let fresh = left_column(&d, (0, 0, 0), 1_100);
+        let fresh = rows(&d, (0, 0, 0), 1_100);
         let f = fresh.iter().find(|f| f.key == "Frames").unwrap();
         assert_ne!(f.tone, crate::ui::widgets::Tone::Fault, "0.1 s after Load is not a stall");
-        assert_eq!(f.val.as_deref(), Some("none in 0 s"));
+        assert!(f.val.as_deref().unwrap().starts_with("none in 0 s"));
 
-        let stalled = left_column(&d, (0, 0, 0), 1_000 + STALL_MS + 4_000);
+        let stalled = rows(&d, (0, 0, 0), 1_000 + STALL_MS + 4_000);
         let f = stalled.iter().find(|f| f.key == "Frames").unwrap();
         assert_eq!(f.tone, crate::ui::widgets::Tone::Fault, "12 s after Load with no frame IS");
-        assert_eq!(f.val.as_deref(), Some("none in 12 s"));
+        assert!(f.val.as_deref().unwrap().starts_with("none in 12 s"));
     }
 
     /// A paused picture is not a stalled one. The verdict line disarms its stall clock while
@@ -1002,12 +1271,12 @@ mod tests {
         let long_after = 1_000 + STALL_MS + 8_000;
 
         crate::player::TX.paused.store(true, Ordering::Relaxed);
-        let paused = left_column(&d, (0, 0, 0), long_after);
+        let paused = rows(&d, (0, 0, 0), long_after);
         crate::player::TX.paused.store(false, Ordering::Relaxed);
-        let playing = left_column(&d, (0, 0, 0), long_after);
+        let playing = rows(&d, (0, 0, 0), long_after);
 
         let f = |v: &Vec<Field>| v.iter().find(|f| f.key == "Frames").unwrap().val.clone().unwrap();
-        assert_eq!(f(&paused), "190", "paused: just the count");
+        assert!(f(&paused).starts_with("190 · "), "paused: just the count, {}", f(&paused));
         assert!(f(&playing).contains("frozen"), "playing and not advancing IS frozen: {}", f(&playing));
     }
 
@@ -1016,18 +1285,23 @@ mod tests {
     #[test]
     fn the_http_row_splits_the_open_failures() {
         let row = |d: &crate::player::Diag| {
-            left_column(d, (0, 0, 0), 1_000).into_iter().find(|f| f.key == "HTTP").unwrap()
+            rows(d, (0, 0, 0), 1_000).into_iter().find(|f| f.key == "Pipeline").unwrap()
         };
         let none = row(&crate::player::Diag::default());
-        assert_eq!(none.val.as_deref(), Some("— · no connection"));
+        assert!(none.val.as_deref().unwrap().ends_with("no connection"));
 
         let refused = row(&crate::player::Diag { http_status: 401, ..Default::default() });
-        assert_eq!(refused.val.as_deref(), Some("401 · 0 B"));
+        assert!(refused.val.as_deref().unwrap().contains("HTTP 401 · 0 B"));
         assert_eq!(refused.tone, crate::ui::widgets::Tone::Fault);
 
         // answered fine and delivered bytes — the fault is downstream, and this row says so
-        let ok = row(&crate::player::Diag { http_status: 200, net_rx: 13_000_000, ..Default::default() });
-        assert_eq!(ok.val.as_deref(), Some("200 · 12.4 MB"));
+        let ok = row(&crate::player::Diag {
+            http_status: 200,
+            net_rx: 13_000_000,
+            cb_count: 4,
+            ..Default::default()
+        });
+        assert!(ok.val.as_deref().unwrap().contains("HTTP 200 · 12.4 MB"));
         assert_ne!(ok.tone, crate::ui::widgets::Tone::Fault);
     }
 
@@ -1049,8 +1323,8 @@ mod tests {
     #[test]
     fn a_latched_pipeline_error_outranks_a_healthy_callback_count() {
         let d = crate::player::Diag { cb_count: 812, cb_err: 18, cb_err_at: 4, load_completed: true, ..Default::default() };
-        let row = left_column(&d, (0, 0, 0), 1_000).into_iter().find(|f| f.key == "Callbacks").unwrap();
-        assert_eq!(row.val.as_deref(), Some("812 · ERR 18 @ 4"));
+        let row = rows(&d, (0, 0, 0), 1_000).into_iter().find(|f| f.key == "Pipeline").unwrap();
+        assert!(row.val.as_deref().unwrap().contains("812 cb · ERR 18 @ 4"));
         assert_eq!(row.tone, crate::ui::widgets::Tone::Fault);
     }
 
@@ -1127,8 +1401,10 @@ mod tests {
     /// tone is a property of the ROW, fixed at build time, so it is assertable regardless.)
     #[test]
     fn the_server_row_is_never_a_fault() {
+        // It shares the Source row now — the delivery kind and the server that produced it are one
+        // sentence — so the assertion is that THAT row never carries the tint.
         let d = crate::player::Diag::default();
-        let row = right_column(&d).into_iter().find(|f| f.key == "Server").expect("Server row");
+        let row = rows(&d, (0, 0, 0), 1_000).into_iter().find(|f| f.key == "Source").expect("Source row");
         assert_ne!(row.tone, crate::ui::widgets::Tone::Fault);
     }
 
@@ -1146,11 +1422,19 @@ mod tests {
     #[test]
     fn an_unknown_firmware_is_named_as_unknown() {
         let _g = crate::testlock::serial();
-        let line = &header(&crate::player::Diag::default(), 1_000)[1];
+        let head = header(&crate::player::Diag::default(), 1_000);
+        // The firmware rides the IDENTITY line now (head[0]); head[1] is the verdict, and the two
+        // being one array is what stops the firmware taking the verdict's slot again.
+        let line = &head[0];
         if crate::webos::info().major == 0 {
             assert!(line.contains("unknown"), "{line}");
         } else {
-            assert!(line.starts_with("webOS "), "{line}");
+            assert!(line.contains("webOS "), "{line}");
         }
+        assert!(line.contains("surface "), "the identity line carries the drawable: {line}");
+        // The verdict is a PLAYBACK state, never a firmware string — the regression this pins is
+        // the firmware line being drawn where the failure reason belongs.
+        assert!(!head[1].contains("webOS"), "the verdict slot must not carry the firmware: {}", head[1]);
+        assert_eq!(head[1], "Idle", "a default Diag with no session is Idle");
     }
 }

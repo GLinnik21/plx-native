@@ -164,17 +164,21 @@ lean struct on the worker exactly as `route.rs:403` `up_next_of` already does.
 no field to vary it. No picker, no ladder~~ — **LANDED 2026-08-24: `route::Quality` has Original,
 five fixed rungs and Auto in the `…` popover; `TranscodeSpec` carries `Ceiling`; the choice persists
 in `Session`. Legacy/malformed/missing values stay Original, while a fresh install starts on Auto.
-Auto treats Original as its top state: Local admits it immediately and direct Remote requires a
+Auto treats Original as a separate MODE compared by utility rather than as a top rung (rewritten
+2026-08-25; `docs/adaptive-playback.md`): Local admits it immediately and direct Remote requires a
 bounded actual-file sample with 1.35× whole-file bitrate headroom. Otherwise Auto uses measured
 fixed-session HLS and replaces a PMS encoder only after candidate media has passed network,
 production and content-buffer headroom gates. A direct Remote that slows after startup is watched
-continuously and moves to HLS at the current position only after two low-rate, low-content-buffer
-windows; HLS then retains the ordinary slow-up/fast-down controller.**
+continuously and moves to HLS at the current position on a starvation horizon in seconds —
+immediately when a stall is imminent, on a deficit that persists and that the utility comparison
+agrees with, or on an emergency reserve guard; HLS then selects continuously from a safe budget,
+skipping intermediate rungs in both directions.**
 Still open: no direct-play/direct-stream policy toggles, no version picker (`mediaIndex` is
 hard-coded 0 while `docs/pms-api.md` §4 explicitly warns not to take `Media[0]` blindly), and a
 failed direct play dead-ends instead of falling back to transcode. Auto now does have a measured
-way back mid-session: stable top-rung HLS plus two successful source probes restores Original and
-re-arms the runtime watchdog.
+way back mid-session, and it needs neither the top rung nor a fixed number of probes: spaced
+bounded source probes, gated on a deep and refilling reserve, re-establish the 1.35× requirement to
+the estimate's own confidence, and the recovered playback stays watched by the same rule.
 
 ---
 
@@ -1256,9 +1260,9 @@ player, transport and tracks auditors, and is counted once in the themes above.
   *Verified:* CONFIRMED. Read draw_hud in full (ui/player_hud.rs:333-486): scrim, StatusOverlay, title/context block, the ControlSlot row, scrubber, two clocks, pause/spinner glyph, Info(/Chapters) TabPills — nothing about the stream. Movie context line is year·rating·runtime (route.rs:785-787); episode line is the S/E kicker (ui/player_hud.rs:371-377). No HD/4K badge anywhere else in the app either: the only `widgets::badge` call sites are ui/info_panel.rs:265-277 (rating/Dolby/CC/SDH/AD) and ui/detail.rs:1593 (accessibility chips); the detail About block lists Released/Run Time/Rated/Regions only (ui/deta
 
 - **~~No "automatically adjust quality"~~ — LANDED and device-passing 2026-08-24** — was `minor` / `large`
-  PMS protocol probing established that this server exposes one fixed rendition per HLS encoder, not a client-selectable master ladder or an autonomously changing rendition. `hls.rs` therefore parses the measured safe subset of the master/media playlists; `ff.rs` opens a fresh FFmpeg context per MPEG-TS segment and maps every segment onto one content timeline; `abr.rs` combines throughput EWMA, segment-fetch/media-duration ratio and normalized A/V buffer duration. Downshifts fail fast on any critical signal, while upshifts require sustained agreement from all three.
+  PMS protocol probing established that this server exposes one fixed rendition per HLS encoder, not a client-selectable master ladder or an autonomously changing rendition. `hls.rs` therefore parses the measured safe subset of the master/media playlists; `ff.rs` opens a fresh FFmpeg context per MPEG-TS segment and maps every segment onto one content timeline; `abr.rs` owns the policy. **The controller was rewritten on 2026-08-25** — it was three signals with fast-down/slow-up counter gates, and it is now feasibility filtering, estimates that carry their own uncertainty, a starvation horizon in seconds, and utility-based Original/HLS mode selection. Design: `docs/adaptive-playback.md`.
   A quality change is a transaction: create a separately named PMS encoder, download and validate one complete decodable candidate segment, then publish/feed it and retire the old encoder. Rejected candidates leave the active rung unchanged. Speculative upshifts have an absolute 80%-of-segment production deadline in both socket and libcurl transports; a measured link collapse jumps directly to the sustainable rung rather than walking oversized intermediate encoders.
-  *Verified:* host controller, parser, transport-deadline, timestamp and lifecycle tests pass. On the television, 512 Kbps / 1 Mbps / 7 Mbps / 17.5 Mbps settled at 320 Kbps / 720 Kbps / 4 Mbps / 8 Mbps with actual decoded rasters changing accordingly, inside one Starfish Load. Full duration, seek, A/V priming and a live high-to-512 Kbps collapse were also exercised. Protocol evidence and limitations are in `docs/pms-hls-protocol-probe.md`.
+  *Verified:* host controller, parser, transport-deadline, timestamp and lifecycle tests pass — and the rewrite's model (estimators, starvation arithmetic, the 4K production veto, all three Original exits, the recovery confidence ladder, hysteresis, the bootstrap table) is host-graded too. On the television, 512 Kbps / 1 Mbps / 7 Mbps / 17.5 Mbps settled at 320 Kbps / 720 Kbps / 4 Mbps / 8 Mbps with actual decoded rasters changing accordingly, inside one Starfish Load — **on the six-rung ladder of that day**; the 17.5 Mbit/s leg would land on the 10 Mbps rung today, which is the one settle value the rewrite is expected to change and has NOT been re-measured on a device. Full duration, seek, A/V priming and a live high-to-512 Kbps collapse were also exercised. Protocol evidence and limitations are in `docs/pms-hls-protocol-probe.md`.
 
 - **~~No quality preference is persisted~~, and no local-vs-remote distinction** — `minor` / `small`
   Plex clients keep separate local and remote quality preferences. We now persist one install-wide mode (Auto / Original / fixed rung) and apply it to future plays, but do not keep separate local and remote choices.

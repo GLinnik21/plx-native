@@ -817,25 +817,103 @@ class AutoNetworkProfile(unittest.TestCase):
         self.assertEqual(spec["auto_hls_base"], "http://192.0.2.10:8020/__abr")
         self.assertEqual(spec["url"], "http://192.0.2.10:8020/pipe_h264_aac_mp4.mp4")
 
-    def test_assertion_requires_fallback_top_rung_then_committed_original(self):
-        down = "auto: Original watchdog sustained measured=3998kbps buffer=2900ms -> HLS"
+    def test_assertion_requires_a_measured_collapse_then_a_committed_original(self):
+        down = ("auto: Original -> HLS ImminentStarvation measured=3998kbps safe=3198kbps "
+                "need=10800kbps buf=2900ms slope=-1200ms/s starve=4 windows=1 target=2000kbps")
         up = "abr: committed Up to 20000kbps 1920x1080"
         request = "abr: source sustainable again at 60321kbps; requesting Original"
         committed = "auto: recovered Original direct play; retiring HLS encoder"
         ok, why = run.a_auto_network_recovery([down, up, request, committed], 5000, 20000)
         self.assertTrue(ok, why)
-        self.assertFalse(run.a_auto_network_recovery([up, down, request, committed], 5000, 20000)[0],
-                         "an old/earlier upshift is not recovery from this collapse")
+        self.assertIn("ImminentStarvation", why, "the reason code is the field worth reporting")
+        # The rung the ladder happens to be on when the probe fires is NOT graded any more: PMS
+        # producing 20 Mbit/s of H.264 says the server can encode, not that the link can carry the
+        # remux, and on this fixture the probe gate (three healthy segments) usually beats the
+        # ladder (five). What must still hold is the ORDER: collapse, then probe, then route.
+        self.assertTrue(run.a_auto_network_recovery([down, request, committed], 5000, 20000)[0],
+                        "recovery from a middle rung is the design, not a failure")
+        self.assertFalse(run.a_auto_network_recovery([request, committed, down], 5000, 20000)[0],
+                         "a probe that predates the collapse is not recovery from it")
         self.assertFalse(run.a_auto_network_recovery([down, up], 5000, 20000)[0],
                          "the top transcode rung is not Original recovery")
         self.assertFalse(run.a_auto_network_recovery([down, up, request], 5000, 20000)[0],
                          "a requested transition is not a committed route")
+        self.assertFalse(run.a_auto_network_recovery(
+            [down,
+             up,
+             "abr: source sustainable again at 12000kbps; requesting Original",
+             committed], 5000, 20000)[0],
+            "the probe that justified the return must clear the bar the case sets")
         self.assertFalse(run.a_auto_network_recovery([
-            "auto: Original watchdog sustained measured=7000kbps buffer=2000ms -> HLS",
+            down.replace("measured=3998kbps", "measured=7000kbps"),
             up,
             request,
             committed,
         ], 5000, 20000)[0], "the shaped 4 Mbit/s leg must be measured, not merely assumed")
+
+    def test_the_rung_shape_assertion_can_fail_on_overreach_not_only_on_stalling(self):
+        """`a_abr_shape` exists for the failure every other assertion here is blind to.
+
+        A controller that spends a 6 Mbit/s link reaching for 20 Mbit/s still plays: it rebuffers,
+        recovers, climbs, and satisfies the position climb, the codec, the Load declaration and
+        `no_playing_error`. Only a CEILING can see it -- so the first thing to grade is that the
+        ceiling actually rejects something.
+        """
+        steady = lambda kbps: f"abr: steady current={kbps}kbps safe=9000kbps pending=0kbps"
+        modest = [steady(720), steady(2000), steady(4000), steady(4000)]
+        ok, why = run.a_abr_shape(modest, {"ceiling_kbps": 8000, "floor_kbps": 2000})
+        self.assertTrue(ok, why)
+        self.assertIn("settled 4000kbps", why)
+
+        greedy = modest + [steady(20000)]
+        self.assertFalse(run.a_abr_shape(greedy, {"ceiling_kbps": 8000})[0],
+                         "20 Mbit/s on a link graded for 8 is exactly what the ceiling is for")
+
+        # …and the opposite failure, which a ceiling alone would pass with flying colours.
+        parked = [steady(720)] * 6
+        self.assertFalse(run.a_abr_shape(parked, {"floor_kbps": 2000})[0],
+                         "a controller parked on the bootstrap rung never overreaches either")
+
+        # The flap guard reads COMMITS, not the steady lines: a link that really collapses should
+        # move, and the bound is on how often, not on whether.
+        flapping = [steady(20000)]
+        for _ in range(5):
+            flapping += ["abr: committed Down to 3000kbps 1280x536",
+                         "abr: committed Up to 20000kbps 1920x1080"]
+        self.assertFalse(run.a_abr_shape(flapping, {"max_commits": 8})[0],
+                         "ten visible quality changes is the product failure this bound names")
+        self.assertTrue(run.a_abr_shape(
+            [steady(20000), "abr: committed Down to 3000kbps 1280x536"], {"max_commits": 8})[0],
+            "moving once on a real collapse is correct and must not trip the flap guard")
+
+        # A run with no controller at all must FAIL rather than vacuously pass: an empty trail
+        # satisfies every bound above by containing nothing.
+        self.assertFalse(run.a_abr_shape(["nothing to do with abr"], {"ceiling_kbps": 8000})[0],
+                         "no `abr: steady` line means the controller never ran")
+
+        # Settle bounds are read from the LAST steady line, not from the extremes.
+        recovering = [steady(20000), steady(320), steady(320), steady(16000)]
+        self.assertTrue(run.a_abr_shape(recovering, {"settle_min_kbps": 8000})[0])
+        self.assertFalse(run.a_abr_shape(recovering[:-1], {"settle_min_kbps": 8000})[0],
+                         "a run that ended on the floor did not recover, whatever it reached before")
+
+    def test_every_shaped_abr_case_grades_something_a_position_climb_cannot(self):
+        """Each new profile must carry at least one `abr_shape` bound.
+
+        Without one the case is an expensive way to assert that playback works -- which the rest of
+        this tier already does, on a healthy link, in less time.
+        """
+        shaped = [c for c in _manifest()["pipeline_cases"] if c["name"].startswith("pipe_abr_")]
+        self.assertGreaterEqual(len(shaped), 4, "the bad-network profiles are missing")
+        for case in shaped:
+            with self.subTest(case["name"]):
+                self.assertIn("network_profile", case, "a shaped case must shape the link")
+                bounds = case["expect"].get("abr_shape") or {}
+                self.assertTrue(bounds, "no abr_shape bound — this case grades nothing new")
+                self.assertTrue(
+                    set(bounds) <= {"ceiling_kbps", "floor_kbps", "max_commits",
+                                    "settle_min_kbps", "settle_max_kbps"},
+                    f"unknown abr_shape key in {case['name']}: {sorted(bounds)}")
 
     def test_case_declares_a_real_mid_transfer_slow_leg_and_recovery_leg(self):
         legs = self._case()["network_profile"]

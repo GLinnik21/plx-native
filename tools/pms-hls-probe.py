@@ -899,8 +899,12 @@ def probe(args):
             uris = _playlist_uris(media_text)
             report["media"] = {"child_count": len(uris)}
             if uris:
+                sample_limit = 1 if args.auto else args.fixed_segments
                 report["segments"] = [
-                    _segment_sample(_safe_child(media_url, uris[0]), token, 0, client_id)
+                    _segment_sample(
+                        _safe_child(media_url, uris[index]), token, index, client_id
+                    )
+                    for index in range(min(sample_limit, len(uris)))
                 ]
                 if args.auto:
                     duration_ms = len(uris) * 2000
@@ -1000,6 +1004,12 @@ def main():
         help="sequential two-second segments to request for each bandwidth leg",
     )
     parser.add_argument(
+        "--fixed-segments",
+        type=int,
+        default=4,
+        help="segments to sample in fixed mode",
+    )
+    parser.add_argument(
         "--pace",
         type=float,
         default=0.0,
@@ -1035,7 +1045,13 @@ def main():
         parser.error("--bandwidth-sequence must contain only comma-separated integers")
     if not args.bandwidth_sequence:
         parser.error("--bandwidth-sequence must not be empty")
-    if args.bitrate <= 0 or args.segments_per_bandwidth <= 0 or args.pace < 0 or args.offset < 0:
+    if (
+        args.bitrate <= 0
+        or args.segments_per_bandwidth <= 0
+        or args.fixed_segments <= 0
+        or args.pace < 0
+        or args.offset < 0
+    ):
         parser.error(
             "bitrate and segment count must be positive; pace and offset must be non-negative"
         )

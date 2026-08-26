@@ -95,6 +95,14 @@ pub(crate) const ABR_ACTION_REJECT_DOWN: u8 = 6;
 pub(crate) const ABR_ACTION_REJECT_UP: u8 = 7;
 pub(crate) const ABR_ACTION_PROBE_ORIGINAL: u8 = 8;
 pub(crate) const ABR_ACTION_RECOVER_ORIGINAL: u8 = 9;
+/// Why the controller last moved (or declined to) — `crate::abr::HlsReason` as a code, so the
+/// read-out can name the CONSTRAINT that bound rather than only the action it produced. `0` is
+/// "nothing has decided yet", which is a real state at the top of a playback and not a fault.
+pub(crate) const ABR_WHY_NONE: u8 = 0;
+pub(crate) const ABR_WHY_SAFE_BUDGET: u8 = 1;
+pub(crate) const ABR_WHY_UNSAFE_STATE: u8 = 2;
+pub(crate) const ABR_WHY_PRODUCTION: u8 = 3;
+pub(crate) const ABR_WHY_BUFFER: u8 = 4;
 // Kodi in-place seek (flush + reopen + re-anchor the decode position + sendSegmentEvent, NO
 // reload/decoder re-init → no HDR-mode popup, no A/V-resync glitch). On webOS<11 (this 4.5)
 // setTimeToDecode returns 0, so feed_stream falls back to the content-info path
@@ -473,6 +481,15 @@ pub(crate) struct Diag {
     pub abr_action: u8,
     pub abr_target_kbps: i64,
     pub abr_bad_windows: u8,
+    pub abr_safe_kbps: i64,
+    pub abr_optimal_kbps: i64,
+    pub abr_unc_pm: i64,
+    pub abr_samples: i64,
+    pub abr_slope_ms_per_s: i64,
+    pub abr_starve_secs: i64,
+    pub abr_pred_pm: i64,
+    pub abr_risk: i64,
+    pub abr_why: u8,
 }
 
 impl Diag {
@@ -576,6 +593,15 @@ pub(crate) fn diag() -> Diag {
         abr_action: SHARED.dg_abr_action.load(Relaxed),
         abr_target_kbps: SHARED.dg_abr_target_kbps.load(Relaxed),
         abr_bad_windows: SHARED.dg_abr_bad_windows.load(Relaxed),
+        abr_safe_kbps: SHARED.dg_abr_safe_kbps.load(Relaxed),
+        abr_optimal_kbps: SHARED.dg_abr_optimal_kbps.load(Relaxed),
+        abr_unc_pm: SHARED.dg_abr_unc_pm.load(Relaxed),
+        abr_samples: SHARED.dg_abr_samples.load(Relaxed),
+        abr_slope_ms_per_s: SHARED.dg_abr_slope_ms_per_s.load(Relaxed),
+        abr_starve_secs: SHARED.dg_abr_starve_secs.load(Relaxed),
+        abr_pred_pm: SHARED.dg_abr_pred_pm.load(Relaxed),
+        abr_risk: SHARED.dg_abr_risk.load(Relaxed),
+        abr_why: SHARED.dg_abr_why.load(Relaxed),
     }
 }
 

@@ -58,17 +58,34 @@ from http.server import BaseHTTPRequestHandler
 # is what a browser sends when someone points one at this server to check a fixture by hand, and
 # answering it wrongly there would look like a server bug while debugging a real one.
 RE_RANGE = re.compile(r"^bytes=(\d+)-(\d*)$")
-RE_ABR_PLAYLIST = re.compile(r"^/__abr/(320|720|2000|4000|8000|20000)/(master|media)\.m3u8$")
-RE_ABR_SEGMENT = re.compile(r"^/__abr/(320|720|2000|4000|8000|20000)/segment\.ts$")
+# Every rung `abr::LADDER` can propose for a 1080p source, so a controller that skips intermediate
+# encoders cannot land on a 404 and have it graded as a rejected candidate. The 4K point (22000) is
+# deliberately absent: it is feasible only for a UHD source, and this pack's clip is 1080p.
+ABR_RUNGS = "320|720|2000|4000|6000|8000|10000|12000|14000|16000|18000|20000"
+RE_ABR_PLAYLIST = re.compile(rf"^/__abr/({ABR_RUNGS})/(master|media)\.m3u8$")
+RE_ABR_SEGMENT = re.compile(rf"^/__abr/({ABR_RUNGS})/segment\.ts$")
+# Four clips cover thirteen rungs: what a rung asks PMS for is a BITRATE CEILING, and the raster is
+# the consequence. The controller's own acceptance test is `hls_raster_within` — the decoded picture
+# must fit the rung's raster, not equal it — so serving the 1080p clip for every 1080p-class rung is
+# the same shape the real server produces, not a shortcut.
 ABR_FIXTURE = {
     "320": "pipe_abr_240p.ts", "720": "pipe_abr_480p.ts",
     "2000": "pipe_abr_720p.ts", "4000": "pipe_abr_720p.ts",
-    "8000": "pipe_abr_1080p.ts", "20000": "pipe_abr_1080p.ts",
+    "6000": "pipe_abr_1080p.ts", "8000": "pipe_abr_1080p.ts",
+    "10000": "pipe_abr_1080p.ts", "12000": "pipe_abr_1080p.ts",
+    "14000": "pipe_abr_1080p.ts", "16000": "pipe_abr_1080p.ts",
+    "18000": "pipe_abr_1080p.ts", "20000": "pipe_abr_1080p.ts",
 }
 ABR_RASTER = {
-    "320": "426x240", "720": "854x480", "2000": "1280x720",
-    "4000": "1280x720", "8000": "1920x1080", "20000": "1920x1080",
+    "320": "426x240", "720": "854x480", "2000": "1280x720", "4000": "1280x720",
+    "6000": "1920x1080", "8000": "1920x1080", "10000": "1920x1080",
+    "12000": "1920x1080", "14000": "1920x1080", "16000": "1920x1080",
+    "18000": "1920x1080", "20000": "1920x1080",
 }
+assert set(ABR_FIXTURE) == set(ABR_RUNGS.split("|")) == set(ABR_RASTER), (
+    "a rung the route can request but this server cannot answer reads on the TV as a rejected "
+    "candidate, which is indistinguishable from a real refusal"
+)
 
 
 class FixtureHandler(BaseHTTPRequestHandler):

@@ -1174,41 +1174,107 @@ def a_load_count(lines, want):
     return got == want, f"saw {got} Load declaration(s), want exactly {want}"
 
 
-RE_AUTO_FALLBACK = re.compile(r"auto: Original watchdog sustained measured=(\d+)kbps buffer=(\d+)ms -> HLS")
+# The fallback line carries its whole basis since 2026-08-25 — the reason code, the rate, the
+# requirement it was measured against, and the reserve — so this reads the two fields it grades and
+# reports the reason, which is the field that says WHICH rule fired.
+RE_AUTO_FALLBACK = re.compile(
+    r"auto: Original -> HLS (\w+) measured=(\d+)kbps safe=(\d+)kbps need=(\d+)kbps buf=(-?\d+)ms")
 RE_ABR_UP = re.compile(r"abr: committed Up to (\d+)kbps (\d+)x(\d+)")
 RE_AUTO_RECOVERY_REQUEST = re.compile(r"abr: source sustainable again at (\d+)kbps; requesting Original")
 RE_AUTO_RECOVERED = re.compile(r"auto: recovered Original (direct play|remux)")
 
 
 def a_auto_network_recovery(lines, max_fallback_kbps, min_recovered_kbps):
-    """One offline TV session saw Original collapse, HLS recover, then Original return."""
+    """One offline TV session saw Original collapse, HLS carry the film, then Original return.
+
+    `min_recovered_kbps` grades the SOURCE PROBE that justified the return, not a rung the HLS
+    ladder had to reach first. Requiring the top rung was the old gate's shape and it measured the
+    wrong resource: PMS producing 20 Mbit/s of H.264 says the server can encode, and says nothing
+    about whether the link can carry the remux. An upshift is still reported when one happened,
+    because it is useful context — but the probe can legitimately fire from a middle rung, and on
+    this fixture it usually does (the ladder needs five segments to climb, the probe gate three).
+    """
     fallback = next(((i, RE_AUTO_FALLBACK.search(line)) for i, line in enumerate(lines)
                      if RE_AUTO_FALLBACK.search(line)), None)
     if fallback is None:
-        return False, "no Original watchdog fallback line"
+        return False, "no Original -> HLS fallback line"
     index, match = fallback
-    measured, buffered = int(match.group(1)), int(match.group(2))
+    reason, measured, buffered = match.group(1), int(match.group(2)), int(match.group(5))
     if measured > max_fallback_kbps:
         return False, (f"fallback measured {measured}kbps, want <= {max_fallback_kbps}kbps "
                        f"for the shaped leg :: {match.string.strip()}")
-    recovered = [(i, int(m.group(1)), m.string.strip())
-                 for i, line in enumerate(lines[index + 1:], start=index + 1)
-                 for m in [RE_ABR_UP.search(line)] if m]
-    hit = next((row for row in recovered if row[1] >= min_recovered_kbps), None)
-    if hit is None:
-        got = max((kbps for _, kbps, _ in recovered), default=0)
-        return False, (f"fallback happened at {measured}kbps/{buffered}ms, but recovery reached "
-                       f"only {got}kbps (want >= {min_recovered_kbps})")
-    requested = next(((i, m) for i, line in enumerate(lines[hit[0] + 1:], start=hit[0] + 1)
+    upshifts = [int(m.group(1)) for line in lines[index + 1:]
+                for m in [RE_ABR_UP.search(line)] if m]
+    requested = next(((i, m) for i, line in enumerate(lines[index + 1:], start=index + 1)
                       for m in [RE_AUTO_RECOVERY_REQUEST.search(line)] if m), None)
     if requested is None:
-        return False, f"HLS recovered to {hit[1]}kbps, but never requested Original"
+        return False, (f"Original fell at {measured}kbps/{buffered}ms ({reason}) and HLS reached "
+                       f"{max(upshifts, default=0)}kbps, but Original was never requested again")
+    source_kbps = int(requested[1].group(1))
+    if source_kbps < min_recovered_kbps:
+        return False, (f"the recovery probe measured only {source_kbps}kbps "
+                       f"(want >= {min_recovered_kbps}) :: {requested[1].string.strip()}")
     recovered = next((m for line in lines[requested[0] + 1:]
                       for m in [RE_AUTO_RECOVERED.search(line)] if m), None)
     if recovered is None:
         return False, "Original was requested after recovery, but the route never committed it"
-    return True, (f"Original fell at {measured}kbps/{buffered}ms; HLS reached {hit[1]}kbps; "
-                  f"source measured {requested[1].group(1)}kbps; recovered {recovered.group(1)}")
+    return True, (f"Original fell at {measured}kbps/{buffered}ms ({reason}); HLS reached "
+                  f"{max(upshifts, default=0)}kbps; source probe {source_kbps}kbps; "
+                  f"recovered {recovered.group(1)}")
+
+
+RE_ABR_STEADY = re.compile(r"abr: steady current=(\d+)kbps")
+RE_ABR_COMMIT = re.compile(r"abr: committed (Up|Down) to (\d+)kbps (\d+)x(\d+)")
+
+
+def a_abr_shape(lines, spec):
+    """Grade the RUNGS a shaped link produced, rather than only the Original<->HLS transition.
+
+    `a_auto_network_recovery` above grades one event. This grades the whole trajectory, which is
+    what a bad-network profile is actually testing, and it is the only assertion here that can fail
+    on the controller being TOO EAGER: a link that carries 4 Mbit/s and a client that spends the
+    whole film reaching for 20 both "play", and only a ceiling can tell them apart.
+
+    Four independent bounds, each optional, each answering one question a profile poses:
+
+    * ``ceiling_kbps`` -- no rung above this was ever active. The overreach guard.
+    * ``floor_kbps`` -- some rung at or above this WAS active. The under-reach guard: a controller
+      that parks on 320 Kbps forever also never stalls, and would pass every other assertion here.
+    * ``max_commits`` -- at most this many committed rung changes. The FLAP guard, and the one that
+      grades the decaying transition penalty: an oscillating link must not produce a commit per
+      oscillation, because each one is a visible quality change to the person watching.
+    * ``settle_min_kbps`` / ``settle_max_kbps`` -- where it ENDED. Bounds rather than a value,
+      because the ladder has 13 points and a link between two of them may legitimately settle on
+      either; a profile that wants an exact rung sets both to it.
+
+    Read from ``abr: steady``, not from the commits, because the STARTING rung is not a commit and
+    a case whose whole point is "it never moved" would otherwise have nothing to read at all.
+    """
+    visited = [int(m.group(1)) for line in lines for m in [RE_ABR_STEADY.search(line)] if m]
+    if not visited:
+        return False, "no `abr: steady` line — the HLS controller never ran"
+    commits = [(m.group(1), int(m.group(2)), f"{m.group(3)}x{m.group(4)}")
+               for line in lines for m in [RE_ABR_COMMIT.search(line)] if m]
+    trail = " -> ".join(f"{d[0].lower()}{kbps}" for d, kbps, _ in
+                        ((c[0], c[1], c[2]) for c in commits)) or "no changes"
+    story = (f"rungs {min(visited)}..{max(visited)}kbps, settled {visited[-1]}kbps, "
+             f"{len(commits)} change(s): {trail}")
+
+    ceiling = spec.get("ceiling_kbps")
+    if ceiling is not None and max(visited) > ceiling:
+        return False, f"reached {max(visited)}kbps on a link graded for <= {ceiling}kbps :: {story}"
+    floor = spec.get("floor_kbps")
+    if floor is not None and max(visited) < floor:
+        return False, f"never reached {floor}kbps on a link that carries it :: {story}"
+    cap = spec.get("max_commits")
+    if cap is not None and len(commits) > cap:
+        return False, f"{len(commits)} rung changes, want <= {cap} :: {story}"
+    lo, hi = spec.get("settle_min_kbps"), spec.get("settle_max_kbps")
+    if lo is not None and visited[-1] < lo:
+        return False, f"settled at {visited[-1]}kbps, want >= {lo}kbps :: {story}"
+    if hi is not None and visited[-1] > hi:
+        return False, f"settled at {visited[-1]}kbps, want <= {hi}kbps :: {story}"
+    return True, story
 
 
 def a_audio_feed_ready(lines):
@@ -2469,6 +2535,8 @@ def evaluate_pipeline(case, lines, srv_delta, gst_lines=None):
     if "auto_fallback_max_kbps" in exp:
         results.append(("auto_network", *a_auto_network_recovery(
             lines, exp["auto_fallback_max_kbps"], exp["abr_recovery_min_kbps"])))
+    if "abr_shape" in exp:
+        results.append(("abr_shape", *a_abr_shape(lines, exp["abr_shape"])))
     if exp.get("require_audio_feed_ready"):
         results.append(("audio_feed", *a_audio_feed_ready(lines)))
     if exp.get("no_reload"):

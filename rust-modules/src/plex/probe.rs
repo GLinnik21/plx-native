@@ -181,6 +181,58 @@ fn tier(c: &Connection) -> Location {
     }
 }
 
+/// The tier of an origin that arrived WITHOUT a plex.tv connection list to read a flag off — the
+/// `plxnative-token` boot, whose host and port are compiled into the C shim. Before this existed
+/// that path passed `None`, which is "nothing has said" and is the one answer that is certainly
+/// wrong: it left [`Client::link`](super::client::Client::link) unknown, so `abr::bootstrap` never
+/// ran and **Auto could not choose Original on a gigabit LAN** — on the exact boot path the device
+/// harness and `tools/tv-session.sh` use, i.e. every automated run.
+///
+/// It is the same rule [`tier`] already applies, not a new one: `Connection.local` is itself an
+/// RFC1918 address-shape test (see this module's note and `plex/CLAUDE.md`), so answering it here
+/// from the address is answering it the way plex.tv would have. `Relay` is unreachable by
+/// construction — a relay is a plex.tv-brokered tunnel, and nobody hand-configures one.
+///
+/// **Address shape is weaker evidence than a probe, and deliberately so.** A private literal
+/// reached through a VPN is not on this LAN, and this will call it `Local` anyway. That is
+/// affordable exactly here: a wrong `Local` starts Original, and `OriginalModeController` measures
+/// the very first 750 ms window and leaves on the starvation horizon — the mechanism that exists
+/// for a link which turns out not to carry the source. A wrong `Remote` costs one bounded startup
+/// probe. Neither can strand a playback, which is why this guesses rather than blocking the boot on
+/// a measurement.
+pub fn configured_tier(host: &str) -> Location {
+    let h = host.trim().trim_start_matches('[').trim_end_matches(']');
+    if let Ok(v4) = h.parse::<std::net::Ipv4Addr>() {
+        return if v4.is_private() || v4.is_loopback() || v4.is_link_local() {
+            Location::Local
+        } else {
+            Location::Remote
+        };
+    }
+    if let Ok(v6) = h.parse::<std::net::Ipv6Addr>() {
+        let [first, ..] = v6.segments();
+        // Hand-rolled rather than `is_unique_local`/`is_unicast_link_local`, which are still
+        // unstable: ULA is `fc00::/7`, link-local is `fe80::/10`.
+        let ula = first & 0xfe00 == 0xfc00;
+        let link_local = first & 0xffc0 == 0xfe80;
+        return if v6.is_loopback() || ula || link_local {
+            Location::Local
+        } else {
+            Location::Remote
+        };
+    }
+    // A name, not a literal. `.local` is mDNS (RFC 6762), which is link-scoped by definition of the
+    // protocol; `localhost` is reserved to the loopback (RFC 6761). Anything else is a name this
+    // function cannot resolve without a socket, and `Remote` is the answer that pays for a probe
+    // instead of assuming.
+    let lower = h.to_ascii_lowercase();
+    if lower == "localhost" || lower.ends_with(".local") || lower.ends_with(".localhost") {
+        Location::Local
+    } else {
+        Location::Remote
+    }
+}
+
 /// The scheme a `uri` actually names — read off the string rather than trusting `protocol`, because
 /// the `uri` is what we would dial and the two need not agree.
 fn scheme_of(uri: &str, protocol: &str) -> Scheme {

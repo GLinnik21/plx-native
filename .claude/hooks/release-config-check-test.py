@@ -7,8 +7,9 @@ runs while five agents are editing in parallel worktrees, and a test that shelle
 would queue behind whichever lane is building. The hook is therefore split so that everything
 decided BEFORE the 0.55 s subprocess, and everything done with its output after, is pure:
 `rust_src_target` (does this payload deserve a check), `verdict` (is that exit code a broken build
-or an unusable toolchain), `first_error` (which line to quote when it could not run), `trim` (what
-reaches the model), `nightly` (which toolchain), `timeout_secs` (the cap).
+or an unusable toolchain), `target_dir` (where cargo builds), `first_error` (which line to quote
+when it could not run), `trim` (what reaches the model), `nightly` (which toolchain),
+`timeout_secs` (the cap).
 
 WHAT THIS FILE STRUCTURALLY CANNOT GRADE, and so must be done by hand after any change to
 `run_check`, `report` or `main`: that the hook actually reaches exit 2 on a real break. Splice a
@@ -124,6 +125,16 @@ DENIED_LINT = ("error: unused import: `crate::dev`\n"
                "  = note: `-D unused-imports` implied by `-D warnings`\n"
                "error: could not compile `plxnative-modules` (lib) due to 1 previous error")
 
+# The real SMB output from 2026-08-25, which is the case this pair of patterns is ordered for: it
+# ends in `could not compile`, so a `COMPILE_FAIL`-first reading calls a healthy tree broken.
+SMB_NO_LOCK = (
+    "error: incremental compilation: could not create session directory lock file: Operation not "
+    "supported (os error 45)\n"
+    "  |\n"
+    "  = note: the filesystem for the incremental path at /repo/rust-modules/target/debug/"
+    "incremental/… does not appear to support locking, consider changing the incremental path\n"
+    "error: could not compile `plxnative-modules` (build script) due to 1 previous error")
+
 VERDICTS = [
     ("ok", 0, "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.55s"),
     ("ok", 0, ""),
@@ -132,6 +143,21 @@ VERDICTS = [
     ("unusable", 1, "error: toolchain 'nightly-2026-07-02' is not installed"),
     ("unusable", 127, "error: could not run cargo: [Errno 2] No such file or directory: 'cargo'"),
     ("unusable", 1, "error: failed to acquire package cache lock"),
+    ("unusable", 101, SMB_NO_LOCK),                     # a build DIRECTORY fault, not a code fault
+    ("unusable", 101, "error: failed to create directory `/full/target/debug`\n"
+                      "error: could not compile `plxnative-modules` (lib) due to 1 previous error"),
+    ("unusable", 101, "error: No space left on device (os error 28)\n"
+                      "error: could not compile `plxnative-modules` (lib) due to 1 previous error"),
+]
+
+# Where the artifacts go. An explicit CARGO_TARGET_DIR wins (the escape hatch back to the crate's
+# own `target/`); otherwise one shared directory under $TMPDIR, because this checkout can sit on a
+# filesystem cargo cannot lock — see the hook's WHERE IT BUILDS.
+TARGET_DIRS = [
+    ("/somewhere/else", {"CARGO_TARGET_DIR": "/somewhere/else", "TMPDIR": "/tmp/x"}, None),
+    ("/somewhere/else", {"CARGO_TARGET_DIR": "  /somewhere/else  "}, None),
+    (os.path.join("/tmp/x", hook.TARGET_DIR_NAME), {"TMPDIR": "/tmp/x"}, None),
+    (os.path.join("/tmp/x", hook.TARGET_DIR_NAME), {"CARGO_TARGET_DIR": "   "}, "/tmp/x"),
 ]
 
 # `first_error` picks the line quoted in the "could not run the check" note. The first NON-EMPTY
@@ -176,6 +202,17 @@ def main():
         if got != want:
             fails += 1
             print(f"  FAIL  verdict({rc}) expected {want}, got {got}: {out.splitlines()[:1]}")
+
+    for want, env, tmp in TARGET_DIRS:
+        got = hook.target_dir(env, tmp)
+        if got != want:
+            fails += 1
+            print(f"  FAIL  target_dir({env}, {tmp!r}) expected {want!r}, got {got!r}")
+    # No TMPDIR at all must still land somewhere absolute rather than beside the sources.
+    fallback = hook.target_dir({}, None)
+    if not os.path.isabs(fallback) or not fallback.endswith(hook.TARGET_DIR_NAME):
+        fails += 1
+        print(f"  FAIL  target_dir with no TMPDIR gave {fallback!r}")
 
     for want, out in FIRST_ERROR:
         got = hook.first_error(out)
@@ -234,7 +271,7 @@ def main():
         fails += 1
         print("  FAIL  dev::latched_flag! not found — the failure message cites a macro that is gone")
 
-    total = len(CASES) + len(VERDICTS) + len(FIRST_ERROR) + 11
+    total = len(CASES) + len(VERDICTS) + len(TARGET_DIRS) + len(FIRST_ERROR) + 12
     print(f"release-config-check: {total - fails}/{total} checks correct")
     return 1 if fails else 0
 

@@ -383,8 +383,30 @@ pub(crate) struct Shared {
     /// photograph taken after a swap still explains why the current rendition changed.
     pub dg_abr_action: AtomicU8,
     pub dg_abr_target_kbps: AtomicI64,
-    /// Consecutive Original windows in which both rate and reserve were low (0..=2).
+    /// Consecutive Original windows whose starvation horizon sat inside the unsafe band.
     pub dg_abr_bad_windows: AtomicU8,
+    /// **The controller's own model state**, published beside the measurements above so the
+    /// read-out shows what the DECISION was made on rather than what a reader can infer. Every
+    /// one is `-1` until the controller has produced it; `crate::abr::ControllerTelemetry` is the
+    /// single struct they are all taken from, in one go, so the panel can never show a budget
+    /// from one sample beside an uncertainty from the next.
+    ///
+    /// Safe budget (what selection may actually spend), the operating point the model would pick
+    /// for this link ignoring hysteresis, the delivery estimate's own dispersion and sample count,
+    /// the buffer's slope, its starvation horizon in seconds (`-1` = no deficit, so no horizon),
+    /// the predicted production cost of the current candidate, and the risk score.
+    pub dg_abr_safe_kbps: AtomicI64,
+    pub dg_abr_optimal_kbps: AtomicI64,
+    pub dg_abr_unc_pm: AtomicI64,
+    pub dg_abr_samples: AtomicI64,
+    pub dg_abr_slope_ms_per_s: AtomicI64,
+    pub dg_abr_starve_secs: AtomicI64,
+    pub dg_abr_pred_pm: AtomicI64,
+    pub dg_abr_risk: AtomicI64,
+    /// Why the last steady-state decision went the way it did — `crate::player::ABR_WHY_*`, `0`
+    /// while nothing has decided anything. The plan's reason code, on the surface a user
+    /// photographs rather than only in the event log.
+    pub dg_abr_why: AtomicU8,
     /// `vp_place` return, and the size it was called with. `i32::MIN` = never called.
     pub dg_place_rv: AtomicI32,
     pub dg_placed_w: AtomicI32,
@@ -420,6 +442,15 @@ impl Shared {
             dg_abr_action: AtomicU8::new(0),
             dg_abr_target_kbps: AtomicI64::new(0),
             dg_abr_bad_windows: AtomicU8::new(0),
+            dg_abr_safe_kbps: AtomicI64::new(-1),
+            dg_abr_optimal_kbps: AtomicI64::new(-1),
+            dg_abr_unc_pm: AtomicI64::new(-1),
+            dg_abr_samples: AtomicI64::new(-1),
+            dg_abr_slope_ms_per_s: AtomicI64::new(0),
+            dg_abr_starve_secs: AtomicI64::new(-1),
+            dg_abr_pred_pm: AtomicI64::new(-1),
+            dg_abr_risk: AtomicI64::new(-1),
+            dg_abr_why: AtomicU8::new(0),
             dg_place_rv: AtomicI32::new(i32::MIN),
             dg_placed_w: AtomicI32::new(0),
             dg_placed_h: AtomicI32::new(0),
@@ -493,6 +524,15 @@ impl Shared {
         self.dg_abr_action.store(0, Ordering::Relaxed);
         self.dg_abr_target_kbps.store(0, Ordering::Relaxed);
         self.dg_abr_bad_windows.store(0, Ordering::Relaxed);
+        self.dg_abr_safe_kbps.store(-1, Ordering::Relaxed);
+        self.dg_abr_optimal_kbps.store(-1, Ordering::Relaxed);
+        self.dg_abr_unc_pm.store(-1, Ordering::Relaxed);
+        self.dg_abr_samples.store(-1, Ordering::Relaxed);
+        self.dg_abr_slope_ms_per_s.store(0, Ordering::Relaxed);
+        self.dg_abr_starve_secs.store(-1, Ordering::Relaxed);
+        self.dg_abr_pred_pm.store(-1, Ordering::Relaxed);
+        self.dg_abr_risk.store(-1, Ordering::Relaxed);
+        self.dg_abr_why.store(0, Ordering::Relaxed);
         self.dg_place_rv.store(i32::MIN, Ordering::Relaxed);
         self.dg_placed_w.store(0, Ordering::Relaxed);
         self.dg_placed_h.store(0, Ordering::Relaxed);

@@ -262,8 +262,11 @@ existing gated pair's attribute and its `fn` orphaned the attribute onto the new
 comment, and `density_max_sweep`'s two arms collided — `error[E0428]`, only under
 `--no-default-features`, with the whole host suite green throughout. A PostToolUse hook,
 **`.claude/hooks/release-config-check.py`**, now runs exactly that `cargo check` after a Rust edit
-— 0.55 s warm, sharing `target/` because cargo keys unit fingerprints by feature set — so the usual
-case is caught for you. Confirm it is wired in `.claude/settings.json` before relying on it, run
+— 0.55 s warm, because cargo keys unit fingerprints by feature set and the two configurations
+coexist in one tree — so the usual case is caught for you. That tree is **`$TMPDIR`**, not the
+crate's own `target/`: this checkout can live on a network mount, and cargo cannot take its
+incremental-session lock there (`os error 45`), which failed EVERY edit with a "RELEASE-CONFIG
+BREAK" that was really a filesystem answer. Set `CARGO_TARGET_DIR` to override. Confirm it is wired in `.claude/settings.json` before relying on it, run
 the command by hand before shipping regardless, and prefer `crate::dev::latched_flag!` over
 hand-rolling a `#[cfg]`/`#[cfg(not)]` pair.
 

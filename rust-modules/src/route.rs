@@ -92,6 +92,18 @@ struct Session {
     /// Debug pipeline-tier substitute for PMS's fixed-rendition endpoints. Empty in every
     /// production plan; see [`arm_auto_fixture`].
     auto_fixture_base: String,
+    /// **Visible mode switches this playback has already shown the viewer**, and when the last one
+    /// was. Lives here, on the main thread, because it has to OUTLIVE the demux workers: each
+    /// Original↔HLS transition replaces the engine, so a counter held by a worker would reset to
+    /// zero on exactly the event it exists to count, and flapping would be invisible to the very
+    /// controller meant to prevent it. Captured into each worker at spawn
+    /// ([`crate::abr::TransitionHistory`]) and advanced there by the worker's own elapsed time.
+    auto_switches: u32,
+    auto_last_switch: Option<std::time::Instant>,
+    /// The startup probe's measurement, kept so a mode transition can hand the next worker a
+    /// starting estimate instead of an empty one. Explicitly a weak prior, never a measurement of
+    /// the request it is handed to — see [`crate::abr::CapacityEstimate::demote_to_prior`].
+    auto_prior_kbps: u32,
     /// ratingKey of the currently-playing item (movie or episode), so an audio-track
     /// switch can force a fresh transcode of the same item.
     cur_rk: String,
@@ -217,6 +229,9 @@ impl Session {
         cur_auto_remote_original: false,
         auto_original: None,
         auto_fixture_base: String::new(),
+        auto_switches: 0,
+        auto_last_switch: None,
+        auto_prior_kbps: 0,
         cur_rk: String::new(),
         cur_sid: ServerId::UNSET,
         cur_audio_sid: 0,
@@ -346,6 +361,18 @@ pub(crate) struct HlsAbrControl {
     fixture_base: String,
     original_probe_url: String,
     original_source_kbps: u32,
+    /// This playback's actuator set, with the device's decode bound and the source raster already
+    /// applied — so the worker cannot propose a rendition that could never decode or that would
+    /// only make PMS upscale.
+    pub(crate) catalog: crate::abr::HlsActuatorCatalog,
+    /// The startup probe as a weak prior for the live estimator, when there was one.
+    pub(crate) prior: Option<crate::abr::CapacityEstimate>,
+    /// Visible switches already spent, so anti-flapping survives the engine replacement that each
+    /// switch performs.
+    pub(crate) history: crate::abr::TransitionHistory,
+    /// The source carries something no transcode can give back (Dolby Vision, Atmos). Makes
+    /// Original's utility bonus about this file rather than about Original in general.
+    pub(crate) original_features: bool,
 }
 
 /// Everything needed to restore Auto's zero-video-encode state after HLS. `probe_url` is always
@@ -491,6 +518,64 @@ impl HlsAbrControl {
     }
 }
 
+/// **The feasibility filter, as one object the worker cannot argue with.** Built from two
+/// independent facts and nothing else: what this device's own codec table says it decodes
+/// (`devcaps`, which exists because "4K yes" was once a constant describing one television), and
+/// what raster the source actually has. Neither is a preference and neither belongs in a utility
+/// weight — a candidate outside these bounds is removed before anything is scored.
+fn auto_catalog() -> crate::abr::HlsActuatorCatalog {
+    let caps = crate::devcaps::caps();
+    let device = (
+        u16::try_from(caps.hevc_max.0).unwrap_or(u16::MAX),
+        u16::try_from(caps.hevc_max.1).unwrap_or(u16::MAX),
+    );
+    let (_, width, height) = session().cur_src;
+    let source = (
+        u16::try_from(width).unwrap_or(u16::MAX),
+        u16::try_from(height).unwrap_or(u16::MAX),
+    );
+    crate::abr::HlsActuatorCatalog::measured().limited_to(device, source)
+}
+
+/// Visible switches spent so far, aged. Read on the main thread at worker spawn; the worker
+/// advances it with its own clock from there.
+fn auto_history() -> crate::abr::TransitionHistory {
+    let s = session();
+    crate::abr::TransitionHistory {
+        visible_switches: s.auto_switches,
+        since_last_ms: s
+            .auto_last_switch
+            .map(|at| u64::try_from(at.elapsed().as_millis()).unwrap_or(u64::MAX)),
+    }
+}
+
+/// Record that the viewer just saw a mode change. Called by BOTH halves of the transaction, which
+/// is the point: a fallback and a recovery are equally visible, and it is their ALTERNATION that
+/// the penalty exists to price.
+fn note_visible_switch() {
+    session_mut(|s| {
+        s.auto_switches = s.auto_switches.saturating_add(1);
+        s.auto_last_switch = Some(std::time::Instant::now());
+    });
+}
+
+/// The source-probe measurement this playback already paid for, as a weak prior. `None` once it is
+/// too old to mean anything or when there never was one.
+fn auto_prior() -> Option<crate::abr::CapacityEstimate> {
+    let kbps = session().auto_prior_kbps;
+    (kbps > 0).then(|| crate::abr::CapacityEstimate::from_prior(kbps))
+}
+
+/// Does this playback's source carry something a transcode cannot give back? Dolby Vision and
+/// Atmos are the two that matter here, and both are recorded on the Original candidate rather than
+/// inferred from the stream now playing (which, mid-HLS, is a re-encode of them).
+fn auto_original_features() -> bool {
+    session()
+        .auto_original
+        .as_ref()
+        .is_some_and(|candidate| candidate.dovi.profile > 0 || candidate.immersive)
+}
+
 /// Main-thread capture immediately before spawning the HLS demux worker.
 pub(crate) fn hls_abr_control() -> Option<(HlsAbrControl, String)> {
     if quality() != Quality::Auto {
@@ -521,15 +606,27 @@ pub(crate) fn hls_abr_control() -> Option<(HlsAbrControl, String)> {
             original_source_kbps: original
                 .and_then(|_| u32::try_from(session().cur_transport_kbps).ok())
                 .unwrap_or(0),
+            catalog: auto_catalog(),
+            prior: auto_prior(),
+            history: auto_history(),
+            original_features: auto_original_features(),
         },
         encoder,
     ))
 }
 
 /// Main-thread capture for a progressive demux worker. `Some` is the complete authorization to
-/// turn sustained starvation into an HLS replacement; the worker never reads route's mutable
-/// session directly.
-pub(crate) fn auto_original_watch() -> Option<u32> {
+/// turn sustained starvation into an HLS replacement, plus everything the decision needs; the
+/// worker never reads route's mutable session directly.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct AutoOriginalWatch {
+    pub(crate) source_kbps: u32,
+    pub(crate) catalog: crate::abr::HlsActuatorCatalog,
+    pub(crate) history: crate::abr::TransitionHistory,
+    pub(crate) features: bool,
+}
+
+pub(crate) fn auto_original_watch() -> Option<AutoOriginalWatch> {
     let s = session();
     if quality() != Quality::Auto
         || !s.cur_auto_remote_original
@@ -537,7 +634,13 @@ pub(crate) fn auto_original_watch() -> Option<u32> {
     {
         return None;
     }
-    u32::try_from(s.cur_transport_kbps).ok().filter(|&kbps| kbps > 0)
+    let source_kbps = u32::try_from(s.cur_transport_kbps).ok().filter(|&kbps| kbps > 0)?;
+    Some(AutoOriginalWatch {
+        source_kbps,
+        catalog: auto_catalog(),
+        history: auto_history(),
+        features: auto_original_features(),
+    })
 }
 
 /// Arm the no-Plex pipeline tier for the same Original→HLS transaction production uses. The only
@@ -552,6 +655,11 @@ pub(crate) fn arm_auto_fixture(original_url: &str, source_kbps: u32, hls_base: &
         s.sess = "auto-fixture".into();
         s.cur_delivery = crate::plex::TranscodeDelivery::ProgressiveMkv;
         s.cur_ceiling = None;
+        // The fixture clip IS 1080p, and saying so is load-bearing rather than cosmetic: an unknown
+        // source raster is treated as unbounded (`HlsActuatorCatalog::limited_to`), which would make
+        // the 4K actuator feasible — and `tests/serve_fixtures.py` deliberately serves no 22000
+        // rung, so the candidate would 404 and read on the TV as a rejected encoder.
+        s.cur_src = (i64::from(source_kbps), 1_920, 1_080);
         s.cur_transport_kbps = i64::from(source_kbps);
         s.cur_auto_remote_original = true;
         s.auto_original = Some(AutoOriginalCandidate {
@@ -576,14 +684,20 @@ pub(crate) fn arm_auto_fixture(original_url: &str, source_kbps: u32, hls_base: &
 }
 
 /// Main-thread half of the progressive watchdog transaction. The demux worker has stopped at a
-/// packet boundary and published the sustained measured rate; atomically move the route to a
-/// fixed HLS rung chosen from that evidence, then build the replacement encoder at the current
-/// movie position. The caller performs the fresh Starfish Load only when this returns a URL.
+/// packet boundary and published its CONSERVATIVE delivery estimate — not the last window's raw
+/// rate, which is one sample of a distribution; atomically move the route to the best HLS state
+/// that estimate sustains, then build the replacement encoder at the current movie position. The
+/// caller performs the fresh Starfish Load only when this returns a URL.
 pub(crate) fn fallback_auto_to_hls(measured_kbps: u32, offset_secs: i64) -> Option<String> {
     if auto_original_watch().is_none() || cur_rk().is_empty() {
         return None;
     }
-    let rung = crate::abr::original_fallback_rung(measured_kbps);
+    let rung = crate::abr::original_fallback_rung(
+        measured_kbps,
+        &auto_catalog(),
+        &crate::abr::AbrPolicy::measured(),
+    );
+    session_mut(|s| s.auto_prior_kbps = measured_kbps);
     let fixture_base = session().auto_fixture_base.clone();
     session_mut(|s| {
         s.cur_auto_remote_original = false;
@@ -611,14 +725,24 @@ pub(crate) fn fallback_auto_to_hls(measured_kbps: u32, offset_secs: i64) -> Opti
             s.stream_acodec = "aac".into();
         });
         install_active_encoder(&encoder);
+        note_visible_switch();
         return Some(url);
     }
-    retranscode(offset_secs)
+    // Counted only on the paths that really produce a replacement URL. A switch that failed to
+    // build is not one the viewer saw, and the anti-flapping penalty prices what they SAW — the
+    // pump turns a `None` here into a playback error, not into a mode change.
+    let url = retranscode(offset_secs);
+    if url.is_some() {
+        note_visible_switch();
+    }
+    url
 }
 
-/// Main-thread half of HLS→Original recovery. The demux worker has already required sustained
-/// top-rung health plus two successful probes of the actual source file. Re-check the route and
-/// atomically retire the encoder identity before changing any playback declaration.
+/// Main-thread half of HLS→Original recovery. The demux worker has already established, from
+/// probes of the actual source file, that its uncertainty-discounted delivery estimate clears the
+/// source's VBR-adjusted requirement AND that the switch is worth its visible cost for the
+/// playback that remains. Re-check the route and atomically retire the encoder identity before
+/// changing any playback declaration.
 pub(crate) fn recover_auto_to_original(offset_secs: i64) -> Option<AutoOriginalReload> {
     let automatic = quality() == Quality::Auto;
     if !matches!(quality(), Quality::Auto | Quality::Original) || !is_transcoding() {
@@ -629,6 +753,15 @@ pub(crate) fn recover_auto_to_original(offset_secs: i64) -> Option<AutoOriginalR
     if expected_encoder.is_empty() {
         return None;
     }
+    // Both directions count — the anti-flapping penalty prices the ALTERNATION, so a recovery that
+    // goes unrecorded makes the next fallback look like a first offence. Counted on the paths that
+    // actually commit, for the reason `fallback_auto_to_hls` states: a transition that failed to
+    // build is not one the viewer saw.
+    let counted = |automatic: bool| {
+        if automatic {
+            note_visible_switch();
+        }
+    };
 
     if candidate.direct {
         if !replace_active_encoder(&expected_encoder, "") {
@@ -657,6 +790,7 @@ pub(crate) fn recover_auto_to_original(offset_secs: i64) -> Option<AutoOriginalR
         } else {
             "quality: Original restored direct play; retiring HLS encoder"
         });
+        counted(automatic);
         return Some(AutoOriginalReload::Direct);
     }
 
@@ -679,6 +813,7 @@ pub(crate) fn recover_auto_to_original(offset_secs: i64) -> Option<AutoOriginalR
     } else {
         "quality: Original restored remux; video remains copied"
     });
+    counted(automatic);
     Some(AutoOriginalReload::Remux)
 }
 
@@ -1371,37 +1506,36 @@ fn remote_probe_target_bytes(source_kbps: i64) -> Option<usize> {
     Some(kbps.saturating_mul(125).clamp(REMOTE_PROBE_MIN_BYTES, REMOTE_PROBE_MAX_BYTES))
 }
 
-/// Original needs 35% margin over the whole-file average. Average bitrate is not a peak bound;
-/// spending the entire measured link on it would merely postpone starvation.
-fn remote_original_sustainable(source_kbps: i64, sample: crate::curlio::ThroughputSample) -> bool {
-    let Ok(source) = u32::try_from(source_kbps) else { return false };
-    crate::abr::original_sustainable(
-        source,
-        u32::try_from(sample.kbps()).unwrap_or(u32::MAX),
-        sample.target_reached,
-    )
-}
-
-fn measure_remote_original(url: &str, source_kbps: i64) -> bool {
+/// **One bounded measurement of the actual file, as an observation and nothing more.** It reports
+/// bytes, active duration and whether the target was reached, because all three decide how much
+/// the measurement is worth: a 40 KiB read that finished instantly honestly reports a huge rate
+/// and proves nothing. What it does NOT do is decide anything — [`crate::abr::bootstrap`] owns the
+/// admission rule, so the policy is stated once and is host-testable without a network.
+///
+/// `None` means there is nothing to reason from (no source bitrate, or the transfer never
+/// returned), which is deliberately distinct from a completed slow probe.
+fn measure_remote_original(
+    url: &str,
+    source_kbps: i64,
+) -> Option<crate::abr::CapacityObservation> {
     let Some(target) = remote_probe_target_bytes(source_kbps) else {
         crate::player::log("auto: remote Original unavailable — source bitrate is unknown; using HLS");
-        return false;
+        return None;
     };
-    let sample = crate::curlio::sample_throughput(url, target, REMOTE_PROBE_BUDGET);
-    let Some(sample) = sample else {
-        crate::player::log("auto: remote Original probe failed or timed out; using HLS");
-        return false;
-    };
+    let sample = crate::curlio::sample_throughput(url, target, REMOTE_PROBE_BUDGET)?;
     let measured = sample.kbps();
-    let original = remote_original_sustainable(source_kbps, sample);
     crate::player::log(&format!(
-        "auto: remote Original probe source={source_kbps}kbps sample={}KiB/{}ms measured={measured}kbps complete={} -> {}",
+        "auto: remote Original probe source={source_kbps}kbps sample={}KiB/{}ms measured={measured}kbps complete={}",
         sample.bytes / 1024,
         sample.elapsed.as_millis(),
         sample.target_reached as i32,
-        if original { "Original" } else { "HLS" },
     ));
-    original
+    Some(crate::abr::CapacityObservation {
+        kbps: u32::try_from(measured).unwrap_or(u32::MAX),
+        bytes: u64::try_from(sample.bytes).unwrap_or(0),
+        active_us: u64::try_from(sample.elapsed.as_micros()).unwrap_or(u64::MAX),
+        completed: sample.target_reached,
+    })
 }
 
 /// **Two ceilings mean the stricter one**, per flavor, and this is the only place the two are put
@@ -1856,7 +1990,9 @@ pub(crate) struct Plan {
     /// those the server's own caps already express, and a copy that satisfies them is a free win.
     pub no_video_copy: bool,
     /// The fixed quality ceiling this plan resolved under (`None` = Original, including Auto's
-    /// proven Original state; adaptive Auto begins at its explicit 480p bootstrap rung) —
+    /// proven Original state; adaptive Auto begins at whatever rung [`crate::abr::bootstrap`]
+    /// returned — 480p when nothing about the link is knowable for free, otherwise the catalog
+    /// entry its bounded source probe pays for) —
     /// installed as [`Session::cur_ceiling`] so a seek or a track switch rebuilds the SAME query. Copied
     /// straight from `env.quality.ceiling()`, for the same reason `sid` is copied from the env:
     /// the worker must not re-read a preference the main thread can move underneath it.
@@ -1869,6 +2005,10 @@ pub(crate) struct Plan {
     pub transport_kbps: i64,
     /// This plan admitted Original specifically on a measured direct Remote link.
     pub auto_remote_original: bool,
+    /// What the startup probe measured, kept so the live estimator can be SEEDED with it instead
+    /// of starting from nothing — and so a later mode transition can hand the next worker the same
+    /// evidence. `0` when this plan never probed (Local, Relay, a fixed rung, or Original).
+    pub auto_prior_kbps: u32,
     /// A measured Remote can begin on HLS and later recover. Preserve the exact no-video-encode
     /// source declaration even when this plan's immediate output is H264/AAC HLS.
     auto_original: Option<AutoOriginalCandidate>,
@@ -2143,22 +2283,55 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveE
             subtitle_ordinal,
         });
     }
-    let auto_original = if env.quality != Quality::Auto {
-        false
-    } else {
-        match location {
-            Some(crate::plex::probe::Location::Local) => directplay || remux_candidate,
-            Some(crate::plex::probe::Location::Remote) if plan.auto_original.is_some() => {
-                measure_remote_original(
-                    &plan.auto_original.as_ref().expect("checked").probe_url,
-                    source_transport_kbps,
-                )
-            }
-            Some(crate::plex::probe::Location::Remote)
-            | Some(crate::plex::probe::Location::Relay)
-            | None => false,
-        }
+    // **Cold start, decided in one place.** Feasibility first (is Original even possible for this
+    // item), then the link's own class, then — on a direct Remote only — one bounded measurement.
+    // `abr::bootstrap` owns the policy; this site owns only the facts it needs.
+    let bootstrap_catalog = crate::abr::HlsActuatorCatalog::measured().limited_to(
+        (
+            u16::try_from(crate::devcaps::caps().hevc_max.0).unwrap_or(u16::MAX),
+            u16::try_from(crate::devcaps::caps().hevc_max.1).unwrap_or(u16::MAX),
+        ),
+        (
+            u16::try_from(src_w).unwrap_or(u16::MAX),
+            u16::try_from(src_h).unwrap_or(u16::MAX),
+        ),
+    );
+    let policy = crate::abr::AbrPolicy::measured();
+    let original_feasible = (directplay || remux_candidate) && plan.auto_original.is_some();
+    let link_kind = match location {
+        Some(crate::plex::probe::Location::Local) => Some(crate::abr::LinkKind::Local),
+        Some(crate::plex::probe::Location::Remote) => Some(crate::abr::LinkKind::Remote),
+        Some(crate::plex::probe::Location::Relay) => Some(crate::abr::LinkKind::Relay),
+        None => None,
     };
+    let decision = match (env.quality, link_kind) {
+        (Quality::Auto, Some(link)) => {
+            // The probe is the only expensive input, so it is only taken where it can change the
+            // answer: a direct Remote with a feasible Original. Local needs no proof and Relay
+            // cannot be talked into carrying a remux.
+            let probe = (link == crate::abr::LinkKind::Remote && original_feasible)
+                .then(|| {
+                    measure_remote_original(
+                        &plan.auto_original.as_ref().expect("feasible implies present").probe_url,
+                        source_transport_kbps,
+                    )
+                })
+                .flatten();
+            Some(crate::abr::bootstrap(
+                link,
+                original_feasible,
+                u32::try_from(source_transport_kbps).unwrap_or(0),
+                probe,
+                &bootstrap_catalog,
+                &policy,
+            ))
+        }
+        _ => None,
+    };
+    if let Some(decision) = decision.as_ref() {
+        plan.auto_prior_kbps = decision.prior.map(|prior| prior.slow_kbps).unwrap_or(0);
+    }
+    let auto_original = decision.as_ref().is_some_and(|d| d.original);
     let adaptive = auto_uses_hls(env.quality, auto_original);
     if adaptive {
         allowed = flavors_allowed(
@@ -2167,9 +2340,15 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveE
         );
         directplay = false;
         plan.delivery = crate::plex::TranscodeDelivery::FixedHls { seconds_per_segment: 2 };
-        plan.ceiling = Some(crate::plex::Ceiling { max_kbps: 720, max_w: 854, max_h: 480 });
+        let rung = decision
+            .as_ref()
+            .map(|d| d.rung)
+            .unwrap_or(crate::abr::Rung::P480);
+        plan.ceiling = Some(rung.ceiling());
         crate::player::log(&format!(
-            "route: Auto adaptive — source {source_transport_kbps}kbps {src_w}x{src_h}; starting HLS"
+            "route: Auto adaptive — source {source_transport_kbps}kbps {src_w}x{src_h}; starting {}kbps HLS ({:?})",
+            rung.kbps(),
+            decision.as_ref().map(|d| d.reason),
         ));
     } else {
         plan.ceiling = env.quality.ceiling();
@@ -2891,6 +3070,11 @@ fn apply_plan(plan: Plan, rk: &str) {
             cur_auto_remote_original: plan.auto_remote_original,
             auto_original: plan.auto_original,
             auto_fixture_base: String::new(),
+            // A NEW playback starts a new switch history: the count exists to stop this film
+            // flapping, and inheriting the last one's would price a first decision as a fourth.
+            auto_switches: 0,
+            auto_last_switch: None,
+            auto_prior_kbps: plan.auto_prior_kbps,
             // The two halves of the playing item's identity, installed together and by the same
             // writer — a ratingKey means nothing without the server it is a key ON. Everything
             // after this point (the track PUT, a transcode seek, the retranscode, the stop, and
@@ -3222,27 +3406,50 @@ mod tests {
         assert_eq!(supported_quality(Quality::Auto), Quality::Auto);
     }
 
+    /// The cold-start admission rule now lives in `abr::bootstrap`, and this grades the composition
+    /// this file is responsible for: a curl sample turned into an observation, and the LINK CLASS
+    /// deciding whether the probe is consulted at all.
     #[test]
     fn remote_original_requires_a_complete_sample_with_thirty_five_percent_headroom() {
-        let fast = crate::curlio::ThroughputSample {
-            bytes: 1_000_000,
-            elapsed: std::time::Duration::from_millis(500),
-            target_reached: true,
+        let policy = crate::abr::AbrPolicy::measured();
+        let catalog = crate::abr::HlsActuatorCatalog::measured();
+        let observation = |bytes: u64, ms: u64, complete: bool| crate::abr::CapacityObservation {
+            kbps: u32::try_from(
+                crate::curlio::ThroughputSample {
+                    bytes,
+                    elapsed: std::time::Duration::from_millis(ms),
+                    target_reached: complete,
+                }
+                .kbps(),
+            )
+            .unwrap(),
+            bytes: bytes as u64,
+            active_us: ms * 1_000,
+            completed: complete,
         };
-        assert_eq!(fast.kbps(), 16_000);
-        assert!(remote_original_sustainable(10_000, fast));
-
-        let marginal = crate::curlio::ThroughputSample {
-            bytes: 1_000_000,
-            elapsed: std::time::Duration::from_millis(800),
-            target_reached: true,
+        let fast = observation(1_000_000, 500, true);
+        assert_eq!(fast.kbps, 16_000);
+        let go = |source, probe| {
+            crate::abr::bootstrap(
+                crate::abr::LinkKind::Remote,
+                true,
+                source,
+                Some(probe),
+                &catalog,
+                &policy,
+            )
+            .original
         };
-        assert!(!remote_original_sustainable(10_000, marginal));
-        assert!(!remote_original_sustainable(
-            10_000,
-            crate::curlio::ThroughputSample { target_reached: false, ..fast }
-        ));
-        assert!(!remote_original_sustainable(0, fast));
+        assert!(go(10_000, fast));
+        assert!(!go(10_000, observation(1_000_000, 800, true)), "10 Mbit/s of 12.5 is not headroom");
+        assert!(!go(10_000, observation(1_000_000, 500, false)), "a truncated probe proves a floor");
+        assert!(!go(0, fast), "an unknown source bitrate cannot be reasoned about");
+        // ...and neither of the other two link classes consults a probe at all.
+        for link in [crate::abr::LinkKind::Local, crate::abr::LinkKind::Relay] {
+            let decision =
+                crate::abr::bootstrap(link, true, 10_000, None, &catalog, &policy);
+            assert_eq!(decision.original, link == crate::abr::LinkKind::Local);
+        }
     }
 
     #[test]
@@ -4086,9 +4293,9 @@ mod tests {
             },
             "rk-auto",
         );
-        assert_eq!(auto_original_watch(), Some(28_000));
+        assert_eq!(auto_original_watch().map(|w| w.source_kbps), Some(28_000));
         session_mut(|s| s.cur_auto_remote_original = false);
-        assert_eq!(auto_original_watch(), None, "HLS and Local Original do not use this watchdog");
+        assert!(auto_original_watch().is_none(), "HLS and Local Original do not use this watchdog");
         restore_quality(Quality::Original);
         reset_session();
     }
@@ -4148,7 +4355,7 @@ mod tests {
         assert_eq!(cur_ceiling(), None);
         assert_eq!(stream_vcodec(), "hevc");
         assert_eq!(stream_acodec(), "eac3");
-        assert_eq!(auto_original_watch(), Some(28_000));
+        assert_eq!(auto_original_watch().map(|w| w.source_kbps), Some(28_000));
         assert_eq!(crate::player::desired_sub_idx(), 2);
         restore_quality(Quality::Original);
         reset_session();
@@ -4196,7 +4403,7 @@ mod tests {
         assert_eq!(stream_vcodec(), "hevc");
         assert_eq!(stream_dovi(), p8(), "the native Load must regain its Dolby Vision declaration");
         assert!(!is_transcoding());
-        assert_eq!(auto_original_watch(), None, "manual Original is not adaptive after the jump");
+        assert!(auto_original_watch().is_none(), "manual Original is not adaptive after the jump");
 
         reset_session();
         install_active_encoder("");
@@ -4334,7 +4541,7 @@ mod tests {
             cur_delivery(),
             crate::plex::TranscodeDelivery::ProgressiveMkv
         );
-        assert_eq!(auto_original_watch(), None, "manual Original is not adaptive");
+        assert!(auto_original_watch().is_none(), "manual Original is not adaptive");
 
         reset_session();
         install_active_encoder("");

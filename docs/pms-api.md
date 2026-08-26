@@ -631,18 +631,22 @@ PlxNative samples a bounded prefix of the actual Part and admits direct play or 
 remux only with 1.35× headroom over `Media[0].bitrate`; missing/slow/inconclusive measurements and
 Relay fall back to the HLS transcode endpoint (`/video/:/transcode/universal/start.m3u8`). The
 progressive path continues measuring successful body-read time and normalized A/V buffer time, so
-a later bandwidth collapse can replace Original with HLS at the current position. Two consecutive
-750 ms low-rate/low-buffer windows are required; the measured rate selects the first safe rung.
-The
+a later bandwidth collapse can replace Original with HLS at the current position — decided on a
+starvation horizon in seconds (`T_starve = B·R/(R−C)`) rather than on a window count, and the
+conservative estimate, not the last window's raw rate, selects the replacement rung directly however
+far down the ladder it is. The
 measured PMS exposes one fixed rendition per encoder session, so PlxNative performs HLS adaptation
 by priming a separately named encoder and committing only after complete candidate media is
-decodable and sustainable. Three consecutive draining JIT-overrun segments are required before a
-production-only downshift, and a downshift holds for several segments before another upshift, so a
-single slow PMS segment cannot flap 20→8→20 Mbit/s. Once the top HLS rung is stable, two spaced
-bounded probes of the actual Part must each pass the same 1.5× rule before the app returns to direct
-play or codec-preserving remux and retires the HLS encoder. The accepted playlist subset,
-session-ID precedence, safe probe tooling
-and redacted live evidence are documented in `docs/pms-hls-protocol-probe.md`. Original and the five
+decodable and sustainable. Network delivery and PMS production are estimated separately and neither
+can override the other, so a server falling behind real time discounts the budget with no network
+evidence at all; hysteresis is a per-switch penalty decaying over the playback's own transition
+history rather than a hold-down counter, so a single slow PMS segment cannot flap 20→8→20 Mbit/s.
+Returning to Original requires neither the top rung nor a fixed number of probes: bounded probes of
+the actual Part are spaced and gated on a deep, refilling reserve plus spare capacity in the HLS
+evidence, and each updates an estimate whose own uncertainty decides whether the 1.35× requirement
+is met. The accepted playlist subset, session-ID precedence, safe probe tooling
+and redacted live evidence are documented in `docs/pms-hls-protocol-probe.md`, and the controller
+itself in `docs/adaptive-playback.md`. Original and the five
 user-selected fixed rungs remain on the progressive direct-play/start.mkv paths described above.
 
 ---

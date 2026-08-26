@@ -99,15 +99,29 @@ cross-origin children and ambiguous path forms fail closed. Each TS segment owns
 context. Segment-local FFmpeg timestamps never reach the controller: video and audio are normalized
 onto one millisecond content timeline, including seek/start offsets and recovered AAC frame clocks.
 
-The controller combines three signals: body-byte throughput, total segment acquisition time divided
+The controller measures three things: body-byte throughput, total segment acquisition time divided
 by media duration (which catches a JIT transcoder running near or below real time), and buffered
-content duration `min(video_tail, audio_tail) - playback_position`. A downshift needs any critical
-signal to fail and a measured link collapse jumps directly to its sustainable rung. An upshift
-requires sustained agreement from every signal, then has an absolute prime deadline equal to 80%
-of one segment in both raw-socket and libcurl reads; after that point the same production gate could
-not accept it, so the candidate is abandoned before it can drain the active playback reserve.
+content duration `min(video_tail, audio_tail) - playback_position`. **What it does with them was
+rewritten on 2026-08-25** and this paragraph used to describe the earlier rule — "a downshift needs
+any critical signal to fail, an upshift requires sustained agreement from every signal" — which is
+no longer how either direction is decided. Today the three become a delivery estimate with
+uncertainty, a PMS production estimate, and a buffer level plus slope; those become a starvation
+horizon in seconds and a per-candidate risk; and the target is chosen from a continuous safe budget
+against an empirical actuator catalog. `docs/adaptive-playback.md` is the design. The transaction
+described in this section is unchanged, including the absolute prime deadline equal to 80% of one
+segment in both raw-socket and libcurl reads — after that point the same production gate could not
+accept the candidate, so it is abandoned before it can drain the active playback reserve.
 
-On the target LG television, the four shaped links settled as follows:
+One measurement in this document is a property of the SERVER and one is a property of the CLIENT's
+ladder, and the second one moved. The bitrate/raster boundary below is the server's and stands. The
+settle table is the client's and was taken when Auto had six actuators: on today's thirteen the
+17.5 Mbit/s leg lands on the 10 Mbps rung rather than 8 (there was nothing between 8 and 20 to
+choose then, so 12 Mbit/s of a measured link went unspent), and it reaches it in two moves rather
+than one. Read the table as what that ladder did on those links, not as what today's ladder would
+do.
+
+On the target LG television, the four shaped links settled as follows (six-rung ladder,
+2026-08-24):
 
 | shaped link | committed request | decoded video |
 |---|---:|---:|
@@ -115,6 +129,27 @@ On the target LG television, the four shaped links settled as follows:
 | 1 Mbps | 720 Kbps | 480×200 |
 | 7 Mbps | 4 Mbps | 1280×536 |
 | 17.5 Mbps | 8 Mbps | 1920×804 |
+
+## The bitrate ceiling is an actuator, not a promise
+
+A follow-up leg measured what this PMS does with the top of the range, and both halves matter to a
+client that has to spend a budget:
+
+| request | resolution ceiling | decision / actual |
+|---:|---|---|
+| ≤ 21,750 kbps | 3840×2160 | 1920×1080, decision reaching about 20,011 kbps |
+| 22,000 kbps | 3840×2160 | **3840×2160**, advertised about 20,895 kbps |
+| 22,000 – 60,000 kbps | 3840×2160 | the same 3840×2160 output |
+
+So the raster changes at a request boundary the wire rate does not follow: asking for 20,895 kbps
+gets 1080p, and asking for 22,000 does not get 22 Mbit/s of bits. The production cost is the other
+half — the 1080p point produced segments at a 0.21 acquisition ratio and the 4K point at 0.44, i.e.
+**4% more bits for roughly double the server's work**, which is why the client models delivery and
+production as two independent constraints rather than one bitrate budget.
+
+As with everything else here, this is one PMS, one client profile and one media shape. It is not a
+claim about a universal Plex maximum, and the client's transaction grades the actual segment rather
+than trusting the table.
 
 All resolution changes stayed inside one Starfish Load. A 720p→1080p→720p fixture independently
 proved that the LG pipeline accepts in-band H.264 parameter-set/raster changes on one Load. The live

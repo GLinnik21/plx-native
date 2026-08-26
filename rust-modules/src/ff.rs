@@ -2773,6 +2773,95 @@ fn publish_hls_abr_sample(sample: crate::abr::SegmentSample) {
     SHARED.dg_abr_ratio_pm.store(i64::from(sample.production_ratio_pm()), Ordering::Relaxed);
 }
 
+/// One line per steady-state decision, carrying everything the decision was made ON. Nothing here
+/// is a name, an address, a title or a token — it is rates, milliseconds and per-mille — which is
+/// what makes it safe to paste into an issue thread. `abr::Controller::telemetry` assembles it, so
+/// the values logged are the values used rather than a second reading taken at the log site.
+/// **The model's own state, published on EVERY segment.**
+///
+/// Split out of [`log_hls_abr_steady`] on 2026-08-26, and the split is the whole point. Both used
+/// to be one function called only on `Decision::Stay` — so the panel's safe budget, uncertainty,
+/// buffer slope, starvation horizon, risk score and reason code were refreshed **only on segments
+/// where the controller decided to do nothing**. Every segment where those numbers were
+/// interesting — a short horizon, a server behind real time, a reserve about to run out — is by
+/// definition a segment that returned `Prime`, and skipped the publish.
+///
+/// The visible symptom was `risk 0` essentially always, which reads as "the model never sees any
+/// risk" rather than "the panel is only ever shown the quiet samples". The LOG line stays on the
+/// `Stay` path, because it is titled `abr: steady` and a steady line on a segment that primed a
+/// candidate would be a false statement about what happened.
+fn publish_hls_abr_model(t: &crate::abr::ControllerTelemetry) {
+    // Bound first and stored on ONE line each, deliberately: `shared.rs`'s writer guard greps the
+    // literal `dg_<field>.store(`, so a `SHARED\n    .dg_x\n    .store(` that rustfmt produces
+    // reads to it exactly like a field NOTHING writes — which is the bug that guard exists to catch.
+    let rel = Ordering::Relaxed;
+    let optimal = t.optimal.map(|c| i64::from(c.rung.kbps())).unwrap_or(-1);
+    let starve = t.risk.starvation_seconds.map(i64::from).unwrap_or(-1);
+    let pred = t.risk.production_ratio_pm.map(i64::from).unwrap_or(-1);
+    SHARED.dg_abr_safe_kbps.store(i64::from(t.safe_budget_kbps), rel);
+    SHARED.dg_abr_optimal_kbps.store(optimal, rel);
+    SHARED.dg_abr_unc_pm.store(i64::from(t.delivery.uncertainty_pm), rel);
+    SHARED.dg_abr_samples.store(i64::from(t.delivery.samples), rel);
+    SHARED.dg_abr_slope_ms_per_s.store(t.buffer.slope_ms_per_s, rel);
+    SHARED.dg_abr_starve_secs.store(starve, rel);
+    SHARED.dg_abr_pred_pm.store(pred, rel);
+    SHARED.dg_abr_risk.store(i64::from(t.risk.score), rel);
+    SHARED.dg_abr_why.store(abr_why_code(t.reason), rel);
+}
+
+/// The once-a-segment event-log line, on the do-nothing path only. Its counterpart is
+/// [`publish_hls_abr_model`]; both read ONE `telemetry()` at the call site, so the line and the
+/// panel can never describe two different segments.
+fn log_hls_abr_steady(t: &crate::abr::ControllerTelemetry, remaining_ms: i64) {
+    crate::player::log(&format!(
+        "abr: steady current={}kbps safe={}kbps pending={}kbps fast={}kbps slow={}kbps unc={}pm n={} \
+         buf={}ms slope={}ms/s prod={}pm/{}pm risk={} starve={} left={}s reason={:?}",
+        t.current.kbps(),
+        t.safe_budget_kbps,
+        t.pending.map(|p| p.rung.kbps()).unwrap_or(0),
+        t.delivery.fast_kbps,
+        t.delivery.slow_kbps,
+        t.delivery.uncertainty_pm,
+        t.delivery.samples,
+        t.buffer.buffered_ms,
+        t.buffer.slope_ms_per_s,
+        t.production.ratio_pm,
+        t.risk.production_ratio_pm.unwrap_or(0),
+        t.risk.score,
+        t.risk
+            .starvation_seconds
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        remaining_ms / 1_000,
+        t.reason,
+    ));
+}
+
+/// The controller's reason enum as the read-out's code. A `match` rather than a cast, so a new
+/// [`crate::abr::HlsReason`] variant is a compile error here instead of silently reading as one of
+/// the four the panel already names.
+fn abr_why_code(reason: Option<crate::abr::DecisionReason>) -> u8 {
+    use crate::abr::{DecisionReason::Hls, HlsReason as R};
+    match reason {
+        None => crate::player::ABR_WHY_NONE,
+        Some(Hls(R::SafeBudgetIncrease)) => crate::player::ABR_WHY_SAFE_BUDGET,
+        Some(Hls(R::UnsafeCurrentState)) => crate::player::ABR_WHY_UNSAFE_STATE,
+        Some(Hls(R::ProductionConstraint)) => crate::player::ABR_WHY_PRODUCTION,
+        Some(Hls(R::BufferConstraint)) => crate::player::ABR_WHY_BUFFER,
+    }
+}
+
+/// Content still to play, from the one published duration and position. Feeds the utility model's
+/// benefit scaling: a visible mode switch has to earn back its cost out of what is LEFT, which is
+/// why "twenty seconds remaining" needs no special case anywhere below.
+fn remaining_playback_ms() -> i64 {
+    let duration = SHARED.duration_ns.load(Ordering::Relaxed);
+    if duration <= 0 {
+        return 0;
+    }
+    (duration - SHARED.playpos_ns.load(Ordering::Relaxed).max(0)).max(0) / 1_000_000
+}
+
 fn publish_hls_abr_action(proposal: crate::abr::Proposal, committed: Option<bool>) {
     use crate::abr::Direction::{Down, Up};
     let action = match (proposal.direction, committed) {
@@ -2792,18 +2881,30 @@ fn reject_hls_abr(controller: &mut crate::abr::Controller, proposal: crate::abr:
     publish_hls_abr_action(proposal, Some(false));
 }
 
+/// Sample the actual source file off-thread. The whole observation crosses the channel — bytes and
+/// active duration as well as the rate — because the estimator weights a measurement by how much
+/// of the link it actually exercised, and a rate alone cannot say.
 fn start_original_probe(
     control: &crate::route::HlsAbrControl,
-    tx: std::sync::mpsc::Sender<(u32, bool)>,
+    tx: std::sync::mpsc::Sender<crate::abr::CapacityObservation>,
 ) -> bool {
     let control = control.clone();
     crate::task::spawn_small("abr-original-probe", move || {
         let probe = control.probe_original();
-        let measured = probe
-            .map(|p| u32::try_from(p.kbps()).unwrap_or(u32::MAX))
-            .unwrap_or(0);
-        let complete = probe.is_some_and(|p| p.target_reached);
-        let _ = tx.send((measured, complete));
+        let observation = probe
+            .map(|p| crate::abr::CapacityObservation {
+                kbps: u32::try_from(p.kbps()).unwrap_or(u32::MAX),
+                bytes: u64::try_from(p.bytes).unwrap_or(0),
+                active_us: u64::try_from(p.elapsed.as_micros()).unwrap_or(u64::MAX),
+                completed: p.target_reached,
+            })
+            .unwrap_or(crate::abr::CapacityObservation {
+                kbps: 0,
+                bytes: 0,
+                active_us: 0,
+                completed: false,
+            });
+        let _ = tx.send(observation);
     })
 }
 
@@ -2828,22 +2929,39 @@ fn hls_demux(
     }
     let mut cursor = hls_cursor_open(origin, path, aq, hs)?;
     let mut timeline = crate::hls::SegmentTimeline::default();
-    let (probe_tx, probe_rx) = std::sync::mpsc::channel::<(u32, bool)>();
+    let (probe_tx, probe_rx) = std::sync::mpsc::channel::<crate::abr::CapacityObservation>();
     let mut adaptive = abr.map(|(control, encoder)| {
         let initial = control.initial_rung;
+        let catalog = control.catalog;
+        let prior = control.prior;
         let recovery = control
             .can_recover_original()
-            .then(|| crate::abr::OriginalRecovery::new(control.original_source_kbps()))
+            .then(|| {
+                crate::abr::OriginalRecovery::new(
+                    control.original_source_kbps(),
+                    crate::abr::AbrPolicy::measured(),
+                    control.original_features,
+                    // The worker's own clock takes over from here; the main thread's capture is
+                    // the starting point, not a live view.
+                    control.history.advanced_by(0),
+                )
+            })
             .flatten();
         (
             control,
             encoder,
-            crate::abr::Controller::starting_at(initial),
+            crate::abr::Controller::starting_at(initial, prior, catalog),
             recovery,
             false,
             0u64,
+            // A latched `Recover` verdict, waiting for a quiescent segment to act on.
+            0u32,
         )
     });
+    // A pause is the one gap where wall-clock time passes with nothing measured, so it is the one
+    // place an estimate really goes stale — backpressure with a full buffer is the healthy case and
+    // must not be aged. Tracked here because the demux worker sees the flag but not the event.
+    let mut paused_since: Option<std::time::Instant> = None;
 
     while let Some(segment) = hls_cursor_next(&mut cursor, aq, hs)? {
         let mut clock = timeline
@@ -2855,8 +2973,15 @@ fn hls_demux(
         hls_feed_segment(&output, aq, aqa)?;
         timeline.commit(clock);
 
-        let Some((control, active_encoder, controller, recovery, probe_inflight, generation)) =
-            adaptive.as_mut()
+        let Some((
+            control,
+            active_encoder,
+            controller,
+            recovery,
+            probe_inflight,
+            generation,
+            recover_kbps,
+        )) = adaptive.as_mut()
         else {
             continue;
         };
@@ -2864,50 +2989,98 @@ fn hls_demux(
             crate::player::log("abr: ignoring invalid segment timing sample");
             continue;
         };
+        // A pause between two segments really is unmeasured wall-clock time. Age the estimate by
+        // it rather than letting a rate measured before the interruption decide what happens after.
+        let paused_now = crate::player::TX.paused.load(Ordering::Relaxed);
+        match (paused_now, paused_since) {
+            (true, None) => paused_since = Some(std::time::Instant::now()),
+            (false, Some(since)) => {
+                paused_since = None;
+                let elapsed = u64::try_from(since.elapsed().as_millis()).unwrap_or(u64::MAX);
+                controller.on_resume(elapsed);
+                crate::player::log(&format!(
+                    "abr: resumed after {elapsed}ms paused; delivery estimate aged"
+                ));
+            }
+            _ => {}
+        }
         publish_hls_abr_sample(sample);
+        let remaining_ms = remaining_playback_ms();
         let decision = controller.observe(sample);
+        // ONE telemetry read for both: the panel must never show a safe budget from this segment
+        // beside a risk score from the next. The MODEL is published whatever was decided — the
+        // segments worth looking at are the ones that decided to move — while the `abr: steady`
+        // LINE stays on the do-nothing path, because that is what it says happened.
+        let telemetry = controller.telemetry();
+        publish_hls_abr_model(&telemetry);
+        if matches!(decision, crate::abr::Decision::Stay) {
+            log_hls_abr_steady(&telemetry, remaining_ms);
+        }
 
+        // **A verdict and a moment are two different things**, and conflating them cost a device
+        // run: the probe's `completed` flag describes the TRANSFER, while "is this a good moment to
+        // tear the pipeline down" describes the HLS session. Feeding the session's state in as the
+        // transfer's completeness threw away a 32 Mbit/s measurement of the source because the HLS
+        // controller happened to propose a rung change on the same segment — and with the estimate
+        // never learning it, Auto stayed on HLS for the rest of the film. So the observation goes
+        // in as measured, and a `Recover` verdict WAITS for a quiescent segment.
         if *probe_inflight {
-            if let Ok((measured, complete)) = probe_rx.try_recv() {
+            if let Ok(probe) = probe_rx.try_recv() {
                 *probe_inflight = false;
-                let still_safe = decision == crate::abr::Decision::Stay
-                    && controller.current() == crate::abr::Rung::P1080High
-                    && sample.buffer.buffered_ms() >= i64::from(sample.media_duration_ms());
-                let ready = recovery.as_mut().is_some_and(|gate| {
-                    gate.observe_probe(measured, complete && still_safe)
+                let delivery = controller.delivery();
+                let verdict = recovery.as_mut().map(|gate| {
+                    gate.observe_probe(probe, controller.buffer(), &delivery, remaining_ms)
                 });
                 crate::player::log(&format!(
-                    "abr: Original recovery probe measured={}kbps complete={} current_safe={} ready={}",
-                    measured,
-                    complete as i32,
-                    still_safe as i32,
-                    ready as i32,
+                    "abr: Original probe #{} measured={}kbps {}KiB/{}ms complete={} left={}s verdict={:?}",
+                    recovery.as_ref().map(|gate| gate.probes()).unwrap_or(0),
+                    probe.kbps,
+                    probe.bytes / 1024,
+                    probe.active_us / 1_000,
+                    probe.completed as i32,
+                    remaining_ms / 1_000,
+                    verdict,
                 ));
-                if ready {
+                if verdict == Some(crate::abr::RecoveryVerdict::Recover) {
+                    *recover_kbps = probe.kbps.max(1);
+                }
+                if *recover_kbps == 0 {
                     SHARED
                         .dg_abr_action
-                        .store(crate::player::ABR_ACTION_RECOVER_ORIGINAL, Ordering::Relaxed);
-                    SHARED
-                        .auto_recover_kbps
-                        .store(i64::from(measured.max(1)), Ordering::Release);
-                    crate::player::log(&format!(
-                        "abr: source sustainable again at {}kbps; requesting Original",
-                        measured,
-                    ));
-                    break;
+                        .store(crate::player::ABR_ACTION_STEADY, Ordering::Relaxed);
+                    SHARED.dg_abr_target_kbps.store(0, Ordering::Relaxed);
                 }
-                SHARED
-                    .dg_abr_action
-                    .store(crate::player::ABR_ACTION_STEADY, Ordering::Relaxed);
-                SHARED.dg_abr_target_kbps.store(0, Ordering::Relaxed);
             }
         }
 
+        // The switch itself needs a quiescent session: no candidate transaction in flight and a
+        // reserve to tear down against. The verdict is latched, so waiting for that moment costs
+        // nothing and discards no evidence.
+        if *recover_kbps > 0
+            && decision == crate::abr::Decision::Stay
+            && sample.buffer.buffered_ms() >= i64::from(sample.media_duration_ms())
+        {
+            SHARED
+                .dg_abr_action
+                .store(crate::player::ABR_ACTION_RECOVER_ORIGINAL, Ordering::Relaxed);
+            SHARED
+                .auto_recover_kbps
+                .store(i64::from(*recover_kbps), Ordering::Release);
+            crate::player::log(&format!(
+                "abr: source sustainable again at {}kbps; requesting Original",
+                recover_kbps,
+            ));
+            break;
+        }
+
         if decision == crate::abr::Decision::Stay {
+            let current_candidate = controller.catalog().candidate(controller.current());
+            let buffer = controller.buffer();
+            let delivery = controller.delivery();
             let probe_due = !*probe_inflight
-                && recovery
-                .as_mut()
-                .is_some_and(|gate| gate.probe_due(controller.current(), sample));
+                && recovery.as_mut().is_some_and(|gate| {
+                    gate.probe_due(current_candidate, sample, buffer, &delivery, remaining_ms)
+                });
             if probe_due {
                 SHARED
                     .dg_abr_action
@@ -2920,11 +3093,13 @@ fn hls_demux(
                     *probe_inflight = true;
                     crate::player::log("abr: checking actual Original in parallel with HLS");
                 } else {
-                    let _ = recovery.as_mut().map(|gate| gate.observe_probe(0, false));
+                    // The probe thread was refused. That is an ABSENT measurement, so nothing
+                    // enters the estimate — recording a zero would be inventing a dead link.
                     SHARED
                         .dg_abr_action
                         .store(crate::player::ABR_ACTION_STEADY, Ordering::Relaxed);
                     SHARED.dg_abr_target_kbps.store(0, Ordering::Relaxed);
+                    crate::player::log("abr: Original probe thread refused; no measurement taken");
                 }
             }
             continue;
@@ -3148,7 +3323,7 @@ pub(crate) fn demux(
     path: String,
     acodec: String,
     abr: Option<(crate::route::HlsAbrControl, String)>,
-    auto_original_kbps: Option<u32>,
+    auto_original: Option<crate::route::AutoOriginalWatch>,
     aq: SendPtr<AuQueue>,
     aqa: SendPtr<AuQueue>,
     hs: SendPtr<HttpStream>,
@@ -3215,12 +3390,12 @@ pub(crate) fn demux(
         crate::player::log("hls: segmented demux ended");
         return;
     }
-    if let Some(source_kbps) = auto_original_kbps {
+    if let Some(watch) = auto_original.as_ref() {
         // Auto deliberately begins by trying Original. Publish that state before the first
         // measurement window completes so Stats for Nerds says what the policy is doing instead
         // of looking inactive during the exact startup interval a user is trying to diagnose.
         SHARED.dg_abr_mode.store(crate::player::ABR_MODE_ORIGINAL, Ordering::Relaxed);
-        SHARED.dg_abr_kbps.store(i64::from(source_kbps), Ordering::Relaxed);
+        SHARED.dg_abr_kbps.store(i64::from(watch.source_kbps), Ordering::Relaxed);
         SHARED.dg_abr_net_kbps.store(-1, Ordering::Relaxed);
         SHARED.dg_abr_buffer_ms.store(-1, Ordering::Relaxed);
         SHARED.dg_abr_ratio_pm.store(-1, Ordering::Relaxed);
@@ -3228,7 +3403,18 @@ pub(crate) fn demux(
         SHARED.dg_abr_target_kbps.store(0, Ordering::Relaxed);
         SHARED.dg_abr_bad_windows.store(0, Ordering::Relaxed);
     }
-    let mut original_watch = auto_original_kbps.and_then(crate::abr::OriginalWatchdog::new);
+    let mut original_watch = auto_original.and_then(|watch| {
+        crate::abr::OriginalModeController::new(
+            watch.source_kbps,
+            crate::abr::AbrPolicy::measured(),
+            watch.catalog,
+            watch.history,
+            watch.features,
+        )
+    });
+    // Same pause rule as the HLS worker: only a real pause is unmeasured time, and only that ages
+    // the estimate. Backpressure with a healthy reserve is the system working.
+    let mut original_paused_since: Option<std::time::Instant> = None;
     let port = origin.port() as c_int;
     // `host()` is the origin's BARE host — a v6 literal arrives unbracketed, which is what
     // `stream.rs` wants; `base()` re-brackets it, which is what a URL needs. Both spellings come
@@ -3593,7 +3779,11 @@ pub(crate) fn demux(
                     SHARED.hls_video_tail_ns.store(-1, Ordering::Release);
                     SHARED.hls_audio_tail_ns.store(-1, Ordering::Release);
                     if let Some(watch) = original_watch.as_mut() {
-                        watch.reset(state.body_bytes, state.body_active_us);
+                        // A PARTIAL reset, and the split is the point: the link did not change
+                        // because the viewer jumped, so the delivery estimate survives — while the
+                        // buffer, the deficit history and the byte counters all describe a position
+                        // that no longer exists.
+                        watch.on_seek(state.body_bytes, state.body_active_us);
                         SHARED.dg_abr_net_kbps.store(-1, Ordering::Relaxed);
                         SHARED.dg_abr_buffer_ms.store(-1, Ordering::Relaxed);
                         SHARED.dg_abr_bad_windows.store(0, Ordering::Relaxed);
@@ -3729,11 +3919,26 @@ pub(crate) fn demux(
                 }
                 if !SHARED.seeking.load(Ordering::Relaxed) {
                     if let Some(watch) = original_watch.as_mut() {
+                        let paused_now = crate::player::TX.paused.load(Ordering::Relaxed);
+                        match (paused_now, original_paused_since) {
+                            (true, None) => {
+                                original_paused_since = Some(std::time::Instant::now())
+                            }
+                            (false, Some(since)) => {
+                                original_paused_since = None;
+                                watch.on_resume(
+                                    u64::try_from(since.elapsed().as_millis())
+                                        .unwrap_or(u64::MAX),
+                                );
+                            }
+                            _ => {}
+                        }
                         let audio_expected = ai >= 0 && FEED_AUDIO.load(Ordering::Relaxed);
                         if let Some(observation) = watch.observe(
                             state.body_bytes,
                             state.body_active_us,
                             progressive_buffered_ms(audio_expected),
+                            remaining_playback_ms(),
                         ) {
                             SHARED.dg_abr_net_kbps.store(
                                 i64::from(observation.measured_kbps),
@@ -3747,13 +3952,42 @@ pub(crate) fn demux(
                                 observation.bad_windows,
                                 Ordering::Relaxed,
                             );
-                            if observation.fallback {
+                            // The rest of the model, on ONE line each — `shared.rs`'s writer guard
+                            // greps `dg_<field>.store(` and a rustfmt-split call reads to it as a
+                            // field nothing writes.
+                            //
+                            // Without these, Original mode published a buffer LEVEL and left the
+                            // slope and the horizon at their reset values, so the panel drew
+                            // `+0.0 s/s · no deficit` — two sentinels, rendered as measurements,
+                            // beside a level that was real. Device-observed 2026-08-26.
+                            let rel = Ordering::Relaxed;
+                            let horizon = observation.horizon_secs.map(i64::from).unwrap_or(-1);
+                            SHARED.dg_abr_slope_ms_per_s.store(observation.slope_ms_per_s, rel);
+                            SHARED.dg_abr_starve_secs.store(horizon, rel);
+                            SHARED.dg_abr_safe_kbps.store(i64::from(observation.conservative_kbps), rel);
+                            if let Some(reason) = observation.fallback {
+                                // The whole basis of a VISIBLE switch, in one line: the rate, the
+                                // requirement it was measured against, the reserve, its direction,
+                                // how many seconds that reserve survives, and which rule fired.
                                 crate::player::log(&format!(
-                                    "auto: Original watchdog sustained measured={}kbps buffer={}ms -> HLS",
-                                    observation.measured_kbps, observation.buffered_ms,
+                                    "auto: Original -> HLS {reason:?} measured={}kbps safe={}kbps need={}kbps buf={}ms slope={}ms/s starve={} windows={} target={}kbps",
+                                    observation.measured_kbps,
+                                    observation.conservative_kbps,
+                                    observation.requirement_kbps,
+                                    observation.buffered_ms,
+                                    observation.slope_ms_per_s,
+                                    observation
+                                        .horizon_secs
+                                        .map(|s| s.to_string())
+                                        .unwrap_or_else(|| "none".to_string()),
+                                    observation.bad_windows,
+                                    observation.target.map(|r| r.kbps()).unwrap_or(0),
                                 ));
+                                // Hand over the CONSERVATIVE estimate, not the last window's raw
+                                // rate: the main thread picks the replacement rung from it, and one
+                                // sample of a noisy distribution is the wrong basis for that.
                                 SHARED.auto_fallback_kbps.store(
-                                    i64::from(observation.measured_kbps.max(1)),
+                                    i64::from(observation.conservative_kbps.max(1)),
                                     Ordering::Release,
                                 );
                                 break;

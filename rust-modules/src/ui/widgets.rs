@@ -2946,18 +2946,25 @@ impl Field {
     }
 }
 
-/// Row pitch. Values are `size::BODY` (28); this is that plus air, and it is what bounds how many
-/// fields the overlay may carry — see `stats::COLUMN_ROWS`.
-pub const FIELD_ROW_H: f32 = 36.0;
+/// Row pitch. Values are [`FIELD_VAL_SZ`]; this is that plus air, and it is what bounds how many
+/// fields the overlay may carry — see `stats::PANEL_ROWS`.
+pub const FIELD_ROW_H: f32 = 30.0;
+/// The value type size. `size::CAPTION` is the design system's couch legibility floor for anything
+/// that must be READ, which is exactly the promise this read-out has to keep; it was `size::BODY`
+/// while the panel carried two columns of fourteen 36px rows, and that arrangement had grown taller
+/// than the space it was given (the last rows drew outside the card, over the transport).
+/// One narrower column of shorter rows fits the same evidence in about half the area.
+pub const FIELD_VAL_SZ: i32 = theme::size::CAPTION;
 /// Width of the key column inside a [`FieldList`] frame. Keys are right-aligned against it and
 /// values start one `space::MD` later, so every value in a column shares an x — which, with the
 /// font's tabular digits (all ten share one advance), is what makes the numbers line up.
-pub const FIELD_KEY_W: f32 = 178.0;
-/// Width a [`FieldList`] column needs: the key gutter plus room for the longest value.
-pub const FIELD_COL_W: f32 = FIELD_KEY_W + theme::space::MD + 292.0;
+pub const FIELD_KEY_W: f32 = 236.0;
 /// The value column used by [`FieldList`]. Exposed so an owner can measure wrapped rows against
-/// exactly the width the list draws.
-pub const FIELD_VAL_W: f32 = 292.0;
+/// exactly the width the list draws. ONE column now, so it can be wide enough that a composed
+/// diagnostic line fits on one row — which is what makes the panel short.
+pub const FIELD_VAL_W: f32 = 688.0;
+/// Width a [`FieldList`] column needs: the key gutter plus room for the longest value.
+pub const FIELD_COL_W: f32 = FIELD_KEY_W + theme::space::MD + FIELD_VAL_W;
 
 pub struct FieldList<'a> {
     pub fields: &'a [Field],
@@ -2974,36 +2981,52 @@ impl<'a> FieldList<'a> {
         n as f32 * FIELD_ROW_H
     }
 
-    /// How many wrapped lines each value needs. Pure character geometry, independent of the live
-    /// font: this is a support read-out, whose invariant is "nothing is hidden", not a typographic
-    /// layout that must predict SDL's exact advance widths. A conservative average advance keeps
-    /// the panel tall enough on every face while the device itself does the real pixel wrap.
+    /// How many wrapped lines each value needs — the SUM of what [`value_lines`] would produce,
+    /// so a measured height and a drawn one can never disagree.
     pub fn wrapped_line_count(fields: &[Field], width: f32) -> usize {
-        let value_width = ((width - FIELD_KEY_W - theme::space::MD) / BODY_AVG_ADVANCE)
-            .max(1.0)
-            .floor() as usize;
         fields
             .iter()
             .map(|field| match &field.val {
                 None => 1,
-                Some(value) => value
-                    .split_whitespace()
-                    .fold((0usize, 0usize), |(lines, len), word| {
-                        let need = word.chars().count() + bool::from(len > 0) as usize;
-                        if len + need > value_width {
-                            (lines + 1 + usize::from(len > 0), word.chars().count())
-                        } else {
-                            (lines, len + need)
-                        }
-                    })
-                    .0
-                    .saturating_add(usize::from(!value.is_empty())),
+                Some(value) => value_lines(value, width).len().max(1),
             })
             .sum()
     }
 }
 
-const BODY_AVG_ADVANCE: f32 = 15.0;
+/// A value split into the lines this list will DRAW, by pure character geometry — independent of
+/// the live font, because this is a support read-out whose invariant is "nothing is hidden", not a
+/// typographic layout that must predict SDL's exact advance widths. A conservative average advance
+/// keeps the panel tall enough on every face while the device does the real pixel wrap.
+///
+/// **It is shared by the measure and the paint, and that is the whole point.** The measure existed
+/// alone until 2026-08-26 while `draw` emitted ONE `Label` per field and then advanced y by the
+/// measured line COUNT — so any value long enough to wrap left a blank band the height of the lines
+/// nobody drew, and pushed every row below it down until the last ones fell outside the panel
+/// entirely, over the transport. Both halves of that were visible on screen and neither was visible
+/// to a test, because the two rules were never compared.
+pub fn value_lines(value: &str, width: f32) -> Vec<String> {
+    let budget = ((width - FIELD_KEY_W - theme::space::MD) / VAL_AVG_ADVANCE).max(1.0).floor() as usize;
+    let mut out: Vec<String> = Vec::new();
+    for word in value.split_whitespace() {
+        match out.last_mut() {
+            // `+ 1` for the space this word would be joined with.
+            Some(line) if line.chars().count() + 1 + word.chars().count() <= budget => {
+                line.push(' ');
+                line.push_str(word);
+            }
+            // A single word longer than the budget still gets its own line rather than being cut:
+            // an elided suffix can be the exact fact the photograph was taken to capture.
+            _ => out.push(word.to_string()),
+        }
+    }
+    out
+}
+
+/// Conservative mean glyph advance at [`FIELD_VAL_SZ`], for [`value_lines`]' character budget. It
+/// tracks the value size and nothing else: 15.0 was measured for `size::BODY` 28, so 24 gets the
+/// same ratio rather than a re-guessed number.
+const VAL_AVG_ADVANCE: f32 = 13.0;
 
 impl View for FieldList<'_> {
     fn draw(&self, _e: &Env, p: Painter) {
@@ -3031,25 +3054,22 @@ impl View for FieldList<'_> {
                     }
                     let ink = if f.tone == Tone::Fault { theme::DANGER } else { theme::TEXT_PRIMARY };
                     // WRAP, never elide: this read-out is support evidence, and a hidden suffix
-                    // can be the exact fact the photograph was taken to capture.
-                    if let Ok(cs) = CString::new(v.as_str()) {
-                        let mut l = Label::new(cs.as_ptr(), theme::size::BODY, ink);
-                        if f.tone == Tone::Fault {
-                            l = l.bold();
+                    // can be the exact fact the photograph was taken to capture. Every line the
+                    // measure reserved is drawn — see `value_lines`.
+                    for (n, line) in value_lines(v, self.frame.w).iter().enumerate() {
+                        if let Ok(cs) = CString::new(line.as_str()) {
+                            let mut l = Label::new(cs.as_ptr(), FIELD_VAL_SZ, ink);
+                            if f.tone == Tone::Fault {
+                                l = l.bold();
+                            }
+                            l.draw(p, Rect::new(vx, y + n as f32 * FIELD_ROW_H, vw, FIELD_ROW_H));
                         }
-                        l.draw(p, Rect::new(vx, y, vw, FIELD_ROW_H));
                     }
                 }
             }
             y += match &f.val {
                 None => FIELD_ROW_H,
-                Some(_) => {
-                    let lines = FieldList::wrapped_line_count(
-                        std::slice::from_ref(f),
-                        self.frame.w,
-                    );
-                    lines as f32 * FIELD_ROW_H
-                }
+                Some(v) => value_lines(v, self.frame.w).len().max(1) as f32 * FIELD_ROW_H,
             };
         }
     }

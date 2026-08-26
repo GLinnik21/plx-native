@@ -57,15 +57,36 @@ two wins, so wire this in `.claude/settings.json` with a `timeout` at least as l
 a dead hook is a missed check, exactly like the lock-wait path — but it is not what the number
 says, and `tv-lock-guard.py` is wired at `timeout: 15`, which would truncate this one hard.
 
-WHY THE SHARED `target/`, AND NOT A PRIVATE `--target-dir`. Cargo keys unit fingerprints by
-feature set, so both configurations coexist in one directory without evicting each other. Measured
-by alternating the two commands with no edit in between, 2026-08-23: after each has run once,
-EVERY subsequent run of either reports `Finished … in 0.03s`. That is the whole reason the number
-above is 0.55 s and not a rebuild. A private target dir was measured the same day — **12.99 s** to
-populate cold and **339 MB** on disk, per worktree — and disk is not a theoretical cost here:
-agents run in parallel `.claude/worktrees/` checkouts — `git worktree list` showed three beside
-this one on 2026-08-23 — and this project has already had a disk fill from per-worktree builds
-(memory `worktree-fleet-hazards`). The price of sharing is the build-directory LOCK, handled below.
+WHERE IT BUILDS: **ONE shared directory under `$TMPDIR`**, not the crate's own `target/` and not a
+private per-lane one. Two separate arguments land on the same answer.
+
+*Shared, not per-lane.* Cargo keys unit fingerprints by feature set AND by package id (which for a
+path package carries its absolute manifest path), so both configurations and every lane coexist in
+one directory without evicting each other. Measured by alternating the two configurations with no
+edit in between, 2026-08-23: after each has run once, EVERY subsequent run of either reports
+`Finished … in 0.03s`. That is the whole reason the number above is 0.55 s and not a rebuild. A
+private target dir was measured the same day — **12.99 s** to populate cold and **339 MB** on disk,
+per worktree — and disk is not a theoretical cost here: agents run in parallel
+`.claude/worktrees/` checkouts (`git worktree list` showed three beside this one on 2026-08-23),
+and this project has already had a disk fill from per-worktree builds (memory
+`worktree-fleet-hazards`). The price of sharing is the build-directory LOCK, handled below.
+
+*`$TMPDIR`, not `rust-modules/target/`.* This checkout can live on a filesystem cargo cannot build
+in. Measured 2026-08-25 with the repo on a **network mount** (`mount` reporting `smbfs`): every edit
+failed the hook with `error: incremental compilation: could not create session directory lock file:
+Operation not supported (os error 45)` followed by `error: could not compile plxnative-modules
+(build script)` — i.e. a **false RELEASE-CONFIG BREAK on a tree that compiles perfectly**, on every
+`.rs` write, reported against whatever the author had just touched. A network mount also costs the
+wall clock this hook's whole budget is measured in: the same host suite that runs in 15 s of CPU
+took 1:17 through the mount, cold. `$TMPDIR` is local by construction on macOS (a per-user
+`/var/folders/…/T`), so the lock works and the bytes are fast.
+Two consequences to know: it is **cleared on reboot**, so the first edit after a restart pays the
+cold 13 s rather than 0.55 s; and it is no longer the directory `make check` populates, so the two
+no longer warm each other (the shared-dir measurement above still holds — between this hook's own
+two configurations, and between lanes). An explicit `CARGO_TARGET_DIR` in the environment WINS, so
+a caller who wants the old behaviour points it at `rust-modules/target` — and `verdict` now files
+this whole class (an unlockable or full build directory) as 'unusable' rather than 'broken', so a
+filesystem the hook cannot build in never again reads as the author's bug.
 
 WHAT IT DELIBERATELY DOES NOT CHECK.
   * **The default feature set.** `make check`, `make lint`, CI and the `rust-analyzer-lsp` plugin
@@ -143,6 +164,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 
 # EVERY byte this hook reads or writes is UTF-8, stated rather than inherited. The interpreter's
@@ -164,8 +186,10 @@ for _stream in (sys.stdout, sys.stderr):
 
 SKIP_ENV = "PLX_RELEASE_CHECK_SKIP"
 TIMEOUT_ENV = "PLX_RELEASE_CHECK_TIMEOUT"
-DEFAULT_TIMEOUT = 90            # warm 0.55s, cold-into-an-empty-dir 13.0s; the rest is lock headroom
-                                # — and it is the budget for BOTH runs together, see main()
+DEFAULT_TIMEOUT = 90            # warm 0.55s, cold-into-an-empty-dir 13.0s — which is now what the
+                                # first edit after a reboot costs, since $TMPDIR does not survive
+                                # one. The rest is lock headroom, and it is the budget for BOTH
+                                # runs together, see main()
 DIAG_CAP = 4000                 # bytes of compiler output forwarded; the reproduce command has the rest
 
 # The tools that can change a source file. NotebookEdit is here for completeness of the set and can
@@ -184,6 +208,26 @@ CARGO_NOISE = re.compile(
 # as well as ordinary type errors.
 COMPILE_FAIL = re.compile(
     r"^error\[E\d+\]|^error: could not compile|^error: aborting due to", re.M)
+
+# ...and what OUTRANKS it. These say the BUILD DIRECTORY could not be used, and cargo reports them
+# through the same `error: could not compile <crate> (build script)` tail as a genuine type error —
+# which is how a repo on an SMB mount turned every edit into a false RELEASE-CONFIG BREAK on
+# 2026-08-25 (`Operation not supported (os error 45)`; the docstring's `$TMPDIR` note is the fix,
+# this is the belt). Checked BEFORE `COMPILE_FAIL`, so the pair is an ordered rule and not two
+# independent tests. A source line echoed into a diagnostic could in principle carry one of these
+# phrases; that direction costs a missed check, which is this hook's own stated safe failure.
+BUILD_DIR_UNUSABLE = re.compile(
+    r"^error: incremental compilation"
+    r"|could not create session directory lock file"
+    r"|does not appear to support locking"
+    r"|failed to acquire package cache lock"
+    r"|No space left on device"
+    r"|failed to create directory", re.M)
+
+# The build directory, shared by every lane and both configurations, on a filesystem cargo can
+# actually lock. See the docstring's WHERE IT BUILDS.
+TARGET_DIR_ENV = "CARGO_TARGET_DIR"
+TARGET_DIR_NAME = "plxnative-relcheck-target"
 
 
 def rust_src_target(payload, root, cwd=None):
@@ -232,14 +276,38 @@ def verdict(returncode, output):
     """'ok' | 'broken' | 'unusable' — the last meaning cargo never got as far as compiling.
 
     PURE. 'unusable' is the fail-open bucket: an uninstalled pinned nightly, no cargo on PATH, a
-    corrupt lock. Those must not be reported to the model as a release-configuration break, because
-    they are not one and the fix is nowhere near the edit.
+    corrupt lock, a build directory cargo cannot lock or fill. Those must not be reported to the
+    model as a release-configuration break, because they are not one and the fix is nowhere near
+    the edit.
+
+    The two patterns are ORDERED, not alternative: a build directory that cannot be used still
+    ends in `error: could not compile …`, so asking `COMPILE_FAIL` first would call it broken code.
     """
     if returncode == 0:
         return "ok"
+    if BUILD_DIR_UNUSABLE.search(output or ""):
+        return "unusable"
     if COMPILE_FAIL.search(output or ""):
         return "broken"
     return "unusable"
+
+
+def target_dir(env=None, tmp=None):
+    """Where cargo should put its artifacts, or None to leave cargo's own default alone. PURE.
+
+    An explicit `CARGO_TARGET_DIR` wins untouched — same rule as `RUSTFLAGS` and `RUST_NIGHTLY`,
+    and the escape hatch for anyone who wants the crate's own `target/` back. Otherwise: one
+    shared directory under `$TMPDIR`, which on macOS is local, per-user, and lockable even when the
+    checkout is not (see the docstring's WHERE IT BUILDS).
+    """
+    env = os.environ if env is None else env
+    explicit = (env.get(TARGET_DIR_ENV) or "").strip()
+    if explicit:
+        return explicit
+    base = (tmp if tmp is not None else env.get("TMPDIR") or "").strip()
+    if not base:
+        base = tempfile.gettempdir()
+    return os.path.join(base, TARGET_DIR_NAME)
 
 
 def first_error(text):
@@ -323,6 +391,16 @@ def run_check(root, flags, toolchain, secs):
     # 'unusable', which is the honest answer: this lane cannot run the check, and that is not a
     # broken build.
     env["RUSTUP_AUTO_INSTALL"] = "0"
+    # Build somewhere cargo can lock. Creating it here rather than trusting cargo is what makes the
+    # fallback honest: if the directory cannot be made, say nothing and let cargo use the crate's
+    # own `target/` exactly as it did before — and `verdict` files the resulting lock failure as
+    # 'unusable' rather than blaming the edit.
+    tdir = target_dir(env)
+    try:
+        os.makedirs(tdir, exist_ok=True)
+        env[TARGET_DIR_ENV] = tdir
+    except OSError:
+        pass
     cmd = ["cargo", f"+{toolchain}", "check", "--lib"] + list(flags)
     try:
         # `encoding`/`errors` EXPLICIT, not `text=True`'s locale default — see the note at the top
@@ -396,8 +474,8 @@ def main():
     t0 = time.monotonic()
     res = run_check(root, ["--no-default-features"], toolchain, secs)
     if res is None:
-        print(f"release-config-check: cargo did not finish in {secs}s — most likely another build "
-              f"holds the target/ lock. Skipped; the next edit re-runs it.")
+        print(f"release-config-check: cargo did not finish in {secs}s — most likely another lane's "
+              f"hook holds the lock on {target_dir()}. Skipped; the next edit re-runs it.")
         return 0
     rc, out = res
     state = verdict(rc, out)

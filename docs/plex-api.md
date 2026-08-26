@@ -31,22 +31,29 @@ Otherwise (HEVC/AV1, MP4/AAC/EAC3/TrueHD, etc.) the delivery depends on the pers
 
 - **Original or a fixed rung:** request the progressive MKV transcode below. This remains the
   proven manual-quality path.
-- **Auto:** Original is the top rung. A verified Local link uses it immediately; a direct Remote
+- **Auto:** Original is a separate playback MODE, not the top rung — it is compared with the HLS
+  ladder by utility, so "no generation loss, no server video encode" can outweigh a higher bitrate
+  and can lose to one with little of the film left to play. A verified Local link uses it
+  immediately; a direct Remote
   samples a bounded prefix of the actual Part and uses direct play or a codec-preserving remux only
   when measured throughput is at least 1.35× the whole-file bitrate. Relay, unknown/failed samples,
   and slower Remote links request fixed-rendition HLS/MPEG-TS with H.264/AAC. A Remote that began
-  on Original remains watched: two 750 ms transfer windows below the whole-file requirement while
-  less than 3.5 seconds of normalized A/V content remain trigger a same-position HLS replacement.
-  The first rung is chosen from that live rate (a 4 Mbit/s link starts at 2 Mbit/s/720p), rather
-  than blindly dropping to the emergency floor. PlxNative then
+  on Original remains watched: every 750 ms window of ACTIVE body-read time re-computes a
+  starvation horizon, and playback leaves Original when that horizon falls inside the fallback
+  band, when a deficit persists across windows and the utility comparison agrees, or on a labelled
+  emergency guard for a reserve under the floor and falling.
+  The replacement rung is the best the conservative estimate sustains — straight there, rather
+  than a walk down the ladder or a drop to the floor. PlxNative then
   downloads one segment at a time, normalizes timestamps, measures network/production/buffer
-  headroom, and transactionally replaces the PMS encoder when another rung is sustainable. The
-  top HLS rung is not the terminal state: after stable top-rung production, two spaced bounded
-  probes of the actual source must each re-establish the same 1.35× headroom before a fresh Load
-  returns to direct play (or codec-preserving remux) and retires the video encoder. The Original
-  watchdog is re-armed, so another sustained collapse can fall back again. The
+  headroom, and transactionally replaces the PMS encoder when another rung is sustainable. HLS is
+  not terminal, and recovery waits for neither the top rung nor a fixed probe count: bounded source
+  probes are spaced and gated on a deep, refilling reserve plus spare capacity in the HLS evidence,
+  and how many are needed is an output of the estimate's confidence — a probe at twice the
+  requirement clears the bar alone, a marginal one must be confirmed. A recovered playback is
+  watched by the same rule, so another sustained collapse falls back again. The
   restricted playlist contract and measured server behavior are in
-  `docs/pms-hls-protocol-probe.md`; DASH remains unsupported.
+  `docs/pms-hls-protocol-probe.md` and the controller in `docs/adaptive-playback.md`;
+  DASH remains unsupported.
 
 Progressive fixed-quality request:
 ```
