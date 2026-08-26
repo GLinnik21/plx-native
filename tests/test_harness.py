@@ -1468,5 +1468,149 @@ class AbrLadderFixtures(unittest.TestCase):
         self.assertEqual(args[args.index("-b:v") + 1], "9808k")
 
 
+
+
+# ---------------------------------------------------------------------------------------------
+# The log-line contract between the Rust app and this harness.
+#
+# These two lines are the ONLY record of what a quality transaction cost and what a segment
+# acquisition was made of, and the app truncates its event log every launch -- so a regex that
+# silently stops matching does not fail loudly, it reports "no samples" and every derived
+# statistic quietly becomes a statement about the empty set.
+#
+# The test is DIFFERENTIAL, not a golden literal: it reads the format strings out of ff.rs and
+# compares the field names and their ORDER against what the regex captures. A frozen example line
+# would keep passing after someone renamed a field in Rust, which is the exact failure this is
+# here to catch.
+# ---------------------------------------------------------------------------------------------
+
+FF_RS = os.path.join(REPO_ROOT, "rust-modules", "src", "ff.rs")
+
+# `name=` in a format string or a regex pattern. Deliberately anchored on the `=`, because that is
+# what both sides actually agree on -- the surrounding placeholder/capture syntax differs.
+_FIELD = re.compile(r"([a-z][a-z0-9_]*)=")
+
+
+def _rust_format_string(source, opening):
+    """The single Rust string literal starting with `opening`, with `\\`-continuations joined.
+
+    Rust eats the newline AND the next line's leading whitespace after a trailing backslash, so
+    the rendered line is what this reconstructs -- not the source layout.
+    """
+    start = source.index(opening)
+    out = []
+    i = start + 1                       # step over the opening quote, or the loop ends at once
+    while i < len(source):
+        ch = source[i]
+        if ch == "\\":
+            nxt = source[i + 1]
+            if nxt == "\n":
+                i += 2
+                while i < len(source) and source[i] in " \t":
+                    i += 1
+                continue
+            out.append(ch + nxt)
+            i += 2
+            continue
+        if ch == '"':
+            break
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+class LogLineContract(unittest.TestCase):
+    """The Rust format string and the harness regex name the same fields, in the same order."""
+
+    def setUp(self):
+        with open(FF_RS, encoding="utf-8") as fh:
+            self.ff = fh.read()
+
+    def _assert_contract(self, opening, pattern, fields, label):
+        rendered = _rust_format_string(self.ff, opening)
+        rust_names = _FIELD.findall(rendered)
+        regex_names = _FIELD.findall(pattern.pattern)
+        self.assertEqual(
+            rust_names,
+            regex_names,
+            f"{label}: ff.rs emits {rust_names} but run.py's regex reads {regex_names}. "
+            "One side was changed without the other; the harness would report 'no samples' "
+            "rather than failing, so this is the only place it can be caught.",
+        )
+        self.assertEqual(
+            pattern.groups,
+            len(fields),
+            f"{label}: {pattern.groups} capture groups but {len(fields)} field names to zip "
+            "them against -- the parser would silently drop or misalign columns.",
+        )
+        # Names and order agreeing does not prove the UNITS do: `decided={}ms` and `decided={}`
+        # carry the same field name. So render the format with placeholder values and require the
+        # regex to match the result -- that pins every literal between the captures, suffixes
+        # included.
+        rendered_line = rendered.replace("{:?}", "Up").replace("{}", "1")
+        self.assertRegex(
+            rendered_line,
+            pattern,
+            f"{label}: the regex does not match ff.rs's own format string rendered with "
+            f"placeholder values -- a separator or a unit suffix differs.\n  {rendered_line}",
+        )
+
+    def test_abr_tx_regex_matches_the_rust_format_string(self):
+        self._assert_contract('"abr: tx {:?}', run.RE_ABR_TX, run.TX_FIELDS, "abr: tx")
+
+    def test_hls_segment_regex_matches_the_rust_format_string(self):
+        self._assert_contract('"hls: segment={}', run.RE_HLS_SEGMENT, run.SEGMENT_FIELDS,
+                              "hls: segment")
+
+    def test_abr_tx_parses_a_committed_upshift(self):
+        line = (
+            "abr: tx Up 4000->6000kbps outcome=committed decided=3065ms total=9563ms "
+            "control=118ms prime=94ms master=12ms media=12ms warmup=2210ms graded=1804ms "
+            "buf_start=24835ms buf_decided=21770ms feed=6498ms buf_fed=24918ms "
+            "buf_end=24918ms cur_acq_before=1583ms net=41200kbps fast=41200kbps "
+            "slow=39800kbps unc=120pm"
+        )
+        rows = run.abr_transactions([line])
+        self.assertEqual(len(rows), 1, "the committed-upshift shape must parse")
+        row = rows[0]
+        self.assertEqual(row["decided_ms"], 3065)
+        self.assertEqual(row["feed_ms"], 6498)
+        self.assertEqual(row["prime_ms"] + row["master_ms"] + row["media_ms"], row["control_ms"],
+                         "the three control legs are a partition of `control=`, not a sample of it")
+
+    def test_abr_tx_reads_none_as_absent_and_never_as_zero(self):
+        line = (
+            "abr: tx Up 4000->6000kbps outcome=prime_refused decided=41ms total=41ms "
+            "control=none prime=none master=none media=none warmup=none graded=none "
+            "buf_start=24835ms buf_decided=24835ms feed=nonems buf_fed=nonems "
+            "buf_end=24835ms cur_acq_before=1583ms net=41200kbps fast=41200kbps "
+            "slow=39800kbps unc=120pm"
+        ).replace("control=none", "control=nonems").replace(
+            "prime=none ", "prime=nonems ").replace("master=none ", "master=nonems ").replace(
+            "media=none ", "media=nonems ").replace("warmup=none ", "warmup=nonems ").replace(
+            "graded=none ", "graded=nonems ")
+        rows = run.abr_transactions([line])
+        self.assertEqual(len(rows), 1, "an early reject still emits a full line")
+        self.assertIsNone(rows[0]["control_ms"], "'none' is absence; 0 would claim it was instant")
+        self.assertIsNone(rows[0]["feed_ms"])
+        self.assertEqual(rows[0]["outcome"], "prime_refused")
+
+    def test_hls_segment_parses_and_keeps_a_missing_ttfb_distinguishable(self):
+        line = (
+            "hls: segment=42 bytes=1048576 raster=1920x1080 v=48 a=94 tail_skew_ms=-12 "
+            "audio_pts_recovered=0 not_ready=1 open_ms=27 ttfb_ms=311 open_probe_ms=340 "
+            "first_au_ms=352 total_ms=1583"
+        )
+        rows = run.hls_segments([line])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["ttfb_ms"], 311)
+        self.assertEqual(rows[0]["open_ms"], 27)
+        self.assertEqual(rows[0]["not_ready"], 1)
+        self.assertEqual(rows[0]["bytes"], 1048576)
+        never = run.hls_segments([line.replace("ttfb_ms=311", "ttfb_ms=-1")])
+        self.assertEqual(never[0]["ttfb_ms"], -1,
+                         "no byte ever arrived is -1, which is not a fast first byte")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

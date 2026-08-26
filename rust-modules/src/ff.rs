@@ -1449,6 +1449,11 @@ struct AvioState {
     /// enclosing segment's total acquisition clock.
     body_active_us: u64,
     body_bytes: u64,
+    /// When the FIRST body byte reached the demuxer. Together with the open above it this splits
+    /// acquisition into connect / server-think / transfer, which is the only way to see PMS
+    /// just-in-time production as its own term: for a JIT encoder the wait before the first byte
+    /// IS the production cost, and it is otherwise indistinguishable from a slow link.
+    first_byte_at: Option<std::time::Instant>,
     /// Only ABR candidate segments carry a wall-clock deadline. The active movie and every
     /// progressive stream retain their transport's normal stall budgets.
     deadline: Option<std::time::Instant>,
@@ -1533,6 +1538,9 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
         s.body_active_us = s
             .body_active_us
             .saturating_add(read_started.elapsed().as_micros().max(1) as u64);
+        if s.first_byte_at.is_none() {
+            s.first_byte_at = Some(std::time::Instant::now());
+        }
         s.body_bytes = s.body_bytes.saturating_add(r as u64);
         s.off += r as i64;
         // Bytes actually delivered to the demuxer, for the diagnostics read-out. Counted HERE
@@ -2186,6 +2194,7 @@ unsafe fn hls_input(
             io_failed: false,
             body_active_us: 0,
             body_bytes: 0,
+            first_byte_at: None,
             deadline,
             deadline_expired: false,
         }),
@@ -2348,9 +2357,17 @@ unsafe fn hls_demux_segment(
         .saturating_add(std::time::Duration::from_secs(2))
         .clamp(std::time::Duration::from_secs(3), std::time::Duration::from_secs(15));
     let mut not_ready_retries = 0u32;
+    // The SUCCESSFUL attempt only. A `NotReady` retry is the server saying the segment does not
+    // exist yet, which is production latency of a different kind and is already counted by
+    // `not_ready=`; folding it in here would make one number mean two things.
+    let open_us;
     let (src, size) = loop {
+        let attempt = std::time::Instant::now();
         match hls_open_source(&segment.resource, &path, aq, hs) {
-            Ok(opened) => break opened,
+            Ok(opened) => {
+                open_us = attempt.elapsed().as_micros() as u64;
+                break opened;
+            }
             Err(HlsExit::NotReady) if request_started.elapsed() < retry_budget => {
                 not_ready_retries = not_ready_retries.saturating_add(1);
                 hls_wait(aq, std::time::Duration::from_millis(250))?;
@@ -2531,7 +2548,8 @@ unsafe fn hls_demux_segment(
         audio_expected: ai >= 0 && FEED_AUDIO.load(Ordering::Relaxed),
     };
     crate::player::log(&format!(
-        "hls: segment={} bytes={} raster={}x{} v={} a={} tail_skew_ms={} audio_pts_recovered={} not_ready={} open_probe_ms={} first_au_ms={} total_ms={}",
+        "hls: segment={} bytes={} raster={}x{} v={} a={} tail_skew_ms={} audio_pts_recovered={} \
+         not_ready={} open_ms={} ttfb_ms={} open_probe_ms={} first_au_ms={} total_ms={}",
         segment.sequence,
         transfer.bytes,
         video_width,
@@ -2541,6 +2559,12 @@ unsafe fn hls_demux_segment(
         audio_tail_ns.map_or(0, |audio| (video_tail_ns - audio) / 1_000_000),
         synthesized_audio,
         not_ready_retries,
+        open_us / 1_000,
+        input
+            .state
+            .first_byte_at
+            .map(|at| at.duration_since(body_started).as_millis() as i64)
+            .unwrap_or(-1),
         probe_done.duration_since(body_started).as_millis(),
         first_ms,
         transfer.total_us / 1_000,
@@ -2959,6 +2983,14 @@ fn publish_hls_abr_action(proposal: crate::abr::Proposal, committed: Option<bool
 /// property of where the samples are taken, not evidence that the cost is small.
 struct TxTrace {
     started: std::time::Instant,
+    /// The control plane is THREE requests, not one near-zero-byte transfer: PMS session
+    /// creation, the master playlist and the media playlist. Logged separately because they
+    /// scale with different things — `prime` is server work and is anti-correlated with link
+    /// speed, while the two playlist fetches are round trips. A single `control=` total cannot
+    /// tell a slow encoder registration from a distant server, and the transaction's fixed
+    /// overhead is estimated from exactly this number.
+    prime_done_ms: Option<i64>,
+    master_done_ms: Option<i64>,
     control_plane_ms: Option<i64>,
     warmup_acq_ms: Option<i64>,
     graded_acq_ms: Option<i64>,
@@ -2982,6 +3014,14 @@ struct TxTrace {
     decided_ms: Option<i64>,
     /// The reserve at the decision, before any candidate segment is fed.
     buf_decided_ms: Option<i64>,
+    /// The post-commit feed of the staged candidate segments, which blocks on `aq_push` against a
+    /// full queue. This is BACKPRESSURE, not transaction cost: it is time the reserve is being
+    /// spent down at exactly the rate playback consumes it, and the segments being pushed are
+    /// already in hand. It used to be inside `decided_ms` — which is why the first published
+    /// figure for an upshift was 9563 ms against a true 3065 ms.
+    feed_ms: Option<i64>,
+    /// The reserve after the feed, so the pre/post pair brackets what the staged segments added.
+    buf_fed_ms: Option<i64>,
 }
 
 impl TxTrace {
@@ -2993,6 +3033,8 @@ impl TxTrace {
     ) -> Self {
         Self {
             started: std::time::Instant::now(),
+            prime_done_ms: None,
+            master_done_ms: None,
             control_plane_ms: None,
             warmup_acq_ms: None,
             graded_acq_ms: None,
@@ -3014,11 +3056,28 @@ impl TxTrace {
             outcome: "UNLABELLED_PATH",
             decided_ms: None,
             buf_decided_ms: None,
+            feed_ms: None,
+            buf_fed_ms: None,
         }
+    }
+
+    fn mark_prime(&mut self) {
+        self.prime_done_ms = Some(self.elapsed_ms());
+    }
+
+    fn mark_master(&mut self) {
+        self.master_done_ms = Some(self.elapsed_ms());
     }
 
     fn mark_control_plane(&mut self) {
         self.control_plane_ms = Some(self.elapsed_ms());
+    }
+
+    /// The post-commit feed, measured from its own start so it is never confused with the
+    /// decision that preceded it.
+    fn mark_feed(&mut self, started: std::time::Instant) {
+        self.feed_ms = Some(i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX));
+        self.buf_fed_ms = Some(hls_buffer_snapshot(None).buffered_ms());
     }
 
     /// Acquisition of one candidate media segment, measured the same way production measures the
@@ -3046,10 +3105,17 @@ impl TxTrace {
 impl Drop for TxTrace {
     fn drop(&mut self) {
         let opt = |v: Option<i64>| v.map(|n| n.to_string()).unwrap_or_else(|| "none".to_string());
+        // The three control-plane legs as DURATIONS, each measured from the end of the one before
+        // it, so they sum to `control=` and none of them silently contains another.
+        let leg = |to: Option<i64>, from: Option<i64>| match (to, from) {
+            (Some(to), Some(from)) => Some(to.saturating_sub(from)),
+            _ => None,
+        };
         crate::player::log(&format!(
-            "abr: tx {:?} {}->{}kbps outcome={} decided={}ms total={}ms control={}ms warmup={}ms \
-             graded={}ms buf_start={}ms buf_decided={}ms buf_end={}ms cur_acq_before={}ms \
-             net={}kbps fast={}kbps slow={}kbps unc={}pm",
+            "abr: tx {:?} {}->{}kbps outcome={} decided={}ms total={}ms control={}ms \
+             prime={}ms master={}ms media={}ms warmup={}ms \
+             graded={}ms buf_start={}ms buf_decided={}ms feed={}ms buf_fed={}ms buf_end={}ms \
+             cur_acq_before={}ms net={}kbps fast={}kbps slow={}kbps unc={}pm",
             self.direction,
             self.from_kbps,
             self.to_kbps,
@@ -3057,10 +3123,15 @@ impl Drop for TxTrace {
             opt(self.decided_ms),
             self.elapsed_ms(),
             opt(self.control_plane_ms),
+            opt(self.prime_done_ms),
+            opt(leg(self.master_done_ms, self.prime_done_ms)),
+            opt(leg(self.control_plane_ms, self.master_done_ms)),
             opt(self.warmup_acq_ms),
             opt(self.graded_acq_ms),
             self.buf_start_ms,
             opt(self.buf_decided_ms),
+            opt(self.feed_ms),
+            opt(self.buf_fed_ms),
             hls_buffer_snapshot(None).buffered_ms(),
             self.cur_acq_before_ms,
             self.net_kbps,
@@ -3361,6 +3432,7 @@ fn hls_demux(
                 crate::player::log("abr: candidate registration rejected; staying on current rung");
             continue;
         };
+        tx.mark_prime();
         let candidate_url = crate::plex::StreamUrl::parse(&primed.url);
         if candidate_url.origin != *origin {
             control.abandon(&primed.encoder_session);
@@ -3379,6 +3451,7 @@ fn hls_demux(
                 continue;
             }
         };
+        tx.mark_master();
         let candidate_segment = match hls_cursor_next(&mut candidate, aq, hs) {
             Ok(Some(segment)) => segment,
             _ => {
@@ -3542,14 +3615,20 @@ fn hls_demux(
             reject_hls_abr(controller, proposal);
             return Err(HlsExit::Aborted);
         }
+        // The decision is MADE here. `finish` is taken before the feed loop below, because that
+        // loop blocks on `aq_push` against a full queue: charging it to the transaction conflates
+        // the cost of deciding with the cost of having decided, and over-states an upshift by
+        // several seconds. `feed=` records it separately.
+        tx.finish("committed");
+        let feed_started = std::time::Instant::now();
         for (output, _, _) in &candidate_outputs {
             hls_feed_segment(output, aq, aqa)?;
         }
+        tx.mark_feed(feed_started);
         timeline = staged_timeline;
         let previous = std::mem::replace(active_encoder, primed.encoder_session);
         control.retire(previous);
         controller.commit(proposal);
-        tx.finish("committed");
         SHARED.dg_abr_kbps.store(i64::from(proposal.rung.kbps()), Ordering::Relaxed);
         publish_hls_abr_action(proposal, Some(true));
         cursor = candidate;
@@ -3784,6 +3863,7 @@ pub(crate) fn demux(
                 io_failed: false,
                 body_active_us: 0,
                 body_bytes: 0,
+                first_byte_at: None,
                 deadline: None,
                 deadline_expired: false,
             });
@@ -4730,7 +4810,7 @@ mod tests {
             let mut st = AvioState {
                 src: Src::Socket { hs: &mut *hs, host: ip, port: port as c_int, path },
                 aq: &mut *aq, off: 0, size: 8, io_failed: false,
-                body_active_us: 0, body_bytes: 0,
+                body_active_us: 0, body_bytes: 0, first_byte_at: None,
                 deadline: None, deadline_expired: false,
             };
             let op = &mut st as *mut AvioState as *mut c_void;
@@ -4764,7 +4844,7 @@ mod tests {
             let mut st = AvioState {
                 src: Src::Socket { hs: &mut *hs, host: ip, port: port as c_int, path },
                 aq: &mut *aq, off: 0, size: 8, io_failed: false,
-                body_active_us: 0, body_bytes: 0,
+                body_active_us: 0, body_bytes: 0, first_byte_at: None,
                 deadline: None, deadline_expired: false,
             };
             let op = &mut st as *mut AvioState as *mut c_void;
@@ -4804,6 +4884,7 @@ mod tests {
             io_failed: false,
             body_active_us: 0,
             body_bytes: 0,
+            first_byte_at: None,
             deadline: Some(std::time::Instant::now()),
             deadline_expired: false,
         };
@@ -4860,7 +4941,7 @@ mod tests {
             assert_eq!(requests.load(Ordering::Acquire), 1, "fixture: and exactly one request");
             let mut st = AvioState {
                 src: Src::Curl(cs), aq: &mut *aq, off: 0, size: 8, io_failed: false,
-                body_active_us: 0, body_bytes: 0,
+                body_active_us: 0, body_bytes: 0, first_byte_at: None,
                 deadline: None, deadline_expired: false,
             };
             let op = &mut st as *mut AvioState as *mut c_void;
@@ -4887,7 +4968,7 @@ mod tests {
             let (cs, mut aq) = opened_curl_with_aborted_lane(port);
             let mut st = AvioState {
                 src: Src::Curl(cs), aq: &mut *aq, off: 0, size: 8, io_failed: false,
-                body_active_us: 0, body_bytes: 0,
+                body_active_us: 0, body_bytes: 0, first_byte_at: None,
                 deadline: None, deadline_expired: false,
             };
             let op = &mut st as *mut AvioState as *mut c_void;
@@ -4932,7 +5013,7 @@ mod tests {
             let mut aq = crate::aq::aq_new(1 << 20);
             let mut st = AvioState {
                 src: Src::Curl(cs), aq: &mut *aq, off: 0, size: 8, io_failed: false,
-                body_active_us: 0, body_bytes: 0,
+                body_active_us: 0, body_bytes: 0, first_byte_at: None,
                 deadline: None, deadline_expired: false,
             };
             let op = &mut st as *mut AvioState as *mut c_void;

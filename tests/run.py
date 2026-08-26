@@ -1256,6 +1256,72 @@ RE_ABR_SEED = re.compile(
 RE_ABR_HISTORY = re.compile(r"abr: history switches=(\d+) since_last=(\S+) advanced=(\d+)ms")
 
 RE_ABR_STEADY = re.compile(r"abr: steady current=(\d+)kbps")
+# The whole transaction, one line per proposal on every exit path. `decided` is the DECISION cost
+# and `feed` is the post-commit backpressure that used to be inside it; `control` is the sum of
+# `prime` + `master` + `media`, which are three separate requests and move for different reasons.
+# Every Option field prints `none` rather than a zero, because "not reached" and "took no time"
+# are different facts and a zero cannot say which.
+_MS = r"(-?\d+|none)"
+RE_ABR_TX = re.compile(
+    r"abr: tx (\w+) (\d+)->(\d+)kbps outcome=(\S+) "
+    r"decided=" + _MS + r"ms total=(-?\d+)ms control=" + _MS + r"ms "
+    r"prime=" + _MS + r"ms master=" + _MS + r"ms media=" + _MS + r"ms "
+    r"warmup=" + _MS + r"ms graded=" + _MS + r"ms "
+    r"buf_start=(-?\d+)ms buf_decided=" + _MS + r"ms feed=" + _MS + r"ms "
+    r"buf_fed=" + _MS + r"ms buf_end=(-?\d+)ms cur_acq_before=(-?\d+)ms "
+    r"net=(\d+)kbps fast=(\d+)kbps slow=(\d+)kbps unc=(\d+)pm"
+)
+TX_FIELDS = (
+    "direction", "from_kbps", "to_kbps", "outcome",
+    "decided_ms", "total_ms", "control_ms", "prime_ms", "master_ms", "media_ms",
+    "warmup_ms", "graded_ms", "buf_start_ms", "buf_decided_ms", "feed_ms", "buf_fed_ms",
+    "buf_end_ms", "cur_acq_before_ms", "net_kbps", "fast_kbps", "slow_kbps", "unc_pm",
+)
+
+# One line per acquired segment. `open_ms` is the successful open only (a NotReady retry is
+# counted by `not_ready` instead), `ttfb_ms` is open-to-first-body-byte -- which for a JIT
+# encoder IS the production term, and is -1 when no byte ever arrived.
+RE_HLS_SEGMENT = re.compile(
+    r"hls: segment=(\d+) bytes=(\d+) raster=(\d+)x(\d+) v=(\d+) a=(\d+) "
+    r"tail_skew_ms=(-?\d+) audio_pts_recovered=(\d+) not_ready=(\d+) "
+    r"open_ms=(\d+) ttfb_ms=(-?\d+) open_probe_ms=(\d+) first_au_ms=(\d+) total_ms=(\d+)"
+)
+SEGMENT_FIELDS = (
+    "sequence", "bytes", "width", "height", "video_packets", "audio_packets",
+    "tail_skew_ms", "audio_pts_recovered", "not_ready",
+    "open_ms", "ttfb_ms", "open_probe_ms", "first_au_ms", "total_ms",
+)
+
+
+def _parsed(pattern, fields, lines, numeric=True):
+    """Every matching line as a dict keyed by `fields`. `none` becomes None, never 0."""
+    out = []
+    for line in lines:
+        m = pattern.search(line)
+        if not m:
+            continue
+        row = {}
+        for name, raw in zip(fields, m.groups()):
+            if raw == "none":
+                row[name] = None
+            elif numeric and (raw.isdigit() or (raw[:1] == "-" and raw[1:].isdigit())):
+                row[name] = int(raw)
+            else:
+                row[name] = raw
+        out.append(row)
+    return out
+
+
+def abr_transactions(lines):
+    """Every `abr: tx` as a dict. One per proposal, commit or reject."""
+    return _parsed(RE_ABR_TX, TX_FIELDS, lines)
+
+
+def hls_segments(lines):
+    """Every `hls: segment` as a dict. One per acquired segment, both streams during a
+    transaction -- so a caller separating current from candidate must do it by sequence."""
+    return _parsed(RE_HLS_SEGMENT, SEGMENT_FIELDS, lines)
+
 RE_ABR_COMMIT = re.compile(r"abr: committed (Up|Down) to (\d+)kbps (\d+)x(\d+)")
 
 
