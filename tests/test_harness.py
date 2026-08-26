@@ -1624,6 +1624,99 @@ class LogLineContract(unittest.TestCase):
                          "no byte ever arrived is -1, which is not a fast first byte")
 
 
+class SharedLinkShaping(unittest.TestCase):
+    """The fixture server's rate limiter must shape the LINK, not each response separately.
+
+    It shaped each response independently until 2026-08-26, so N concurrent transfers each got the
+    full nominal rate. That is what made every Original-probe measurement on this tier
+    inadmissible: a probe runs beside the segment stream, and the pair was measured at 1.89x the
+    rate the profile asked for. These tests are about the arithmetic of `write_body`'s virtual
+    clock, driven through a real server object but writing to an in-memory sink, so they are fast
+    and bind no socket.
+    """
+
+    class _Sink:
+        """Stands in for a socket. `write_body` only ever calls write() and flush()."""
+        def __init__(self):
+            self.n = 0
+
+        def write(self, data):
+            self.n += len(data)
+
+        def flush(self):
+            pass
+
+    def _server(self, kbps):
+        srv = serve_fixtures.FixtureServer.__new__(serve_fixtures.FixtureServer)
+        srv.lock = threading.Lock()
+        srv.rate_profile = [(1e9, kbps)]
+        srv.rate_started = None
+        srv.link_free_at = None
+        return srv
+
+    def _drive(self, srv, writers, chunk, chunks):
+        started = time.monotonic()
+        threads = []
+        for _ in range(writers):
+            sink = self._Sink()
+            th = threading.Thread(
+                target=lambda s=sink: [srv.write_body(s, b"x" * chunk) for _ in range(chunks)])
+            th.start()
+            threads.append(th)
+        for th in threads:
+            th.join()
+        return time.monotonic() - started
+
+    def _delivered_kbps(self, kbps, writers, chunk, chunks):
+        elapsed = self._drive(self._server(kbps), writers, chunk, chunks)
+        return (writers * chunks * chunk * 8) / elapsed / 1000.0
+
+    def test_the_link_is_shared_so_concurrent_writers_cannot_exceed_it(self):
+        """N writers must not deliver N times the link.
+
+        Stated as a ONE-SIDED bound on aggregate throughput, which is the only overhead-robust
+        form. Thread setup and loop overhead can make delivery slower and never faster, so an
+        over-delivery cannot be an artefact of a busy host -- while an under-delivery says nothing
+        about the shaper.
+
+        Two other formulations were tried first and both measure overhead rather than shaping. An
+        elapsed-time ratio between one and two writers reads ~1.5x for a true 2.0x, because the
+        fixed cost does not scale with the writer count. A throughput ratio is worse: at these
+        sizes a single writer is overhead-dominated and under-reads by ~30%, which moves the ratio
+        to 1.36 and is indistinguishable from the defect it is meant to detect.
+
+        Under the per-response shaper this replaced, each writer got the full nominal rate, so
+        three of them delivered about three times the link.
+        """
+        chunk, chunks, nominal = 8192, 12, 4000
+        for writers in (1, 2, 3):
+            with self.subTest(writers=writers):
+                delivered = self._delivered_kbps(nominal, writers, chunk, chunks)
+                self.assertLess(
+                    delivered, nominal * 1.30,
+                    f"{writers} writer(s) delivered {delivered:.0f} kbps over a nominal "
+                    f"{nominal} kbps link — a shared link delivers the same total however many "
+                    "writers there are, so the shaping is per-response (the 1.89x defect)")
+
+    def test_an_unshaped_server_does_not_sleep_at_all(self):
+        srv = self._server(4000)
+        srv.rate_profile = []
+        elapsed = self._drive(srv, 2, 65536, 8)
+        self.assertLess(elapsed, 0.5, "no profile installed means no shaping, at any size")
+
+    def test_an_idle_link_banks_no_credit(self):
+        """`max(now, link_free_at)` — otherwise a pause lets the next chunk through for free."""
+        srv = self._server(1000)
+        srv.write_body(self._Sink(), b"x" * 8192)
+        time.sleep(0.15)
+        started = time.monotonic()
+        srv.write_body(self._Sink(), b"x" * 8192)
+        after_idle = time.monotonic() - started
+        expected = 8192 * 8 / (1000 * 1000.0)
+        self.assertGreater(after_idle, expected * 0.7,
+                           "the chunk after an idle gap was not charged for the link")
+
+
 def abr_shape_keys():
     """The bounds `a_abr_shape` actually implements, read from its SOURCE.
 

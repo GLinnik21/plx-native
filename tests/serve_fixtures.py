@@ -251,6 +251,8 @@ class FixtureServer(socketserver.ThreadingTCPServer):
         self.n_opens = self.n_ranged = 0
         self.rate_profile = []
         self.rate_started = None
+        # The instant the shared link next falls idle. See `write_body`.
+        self.link_free_at = None
         super().__init__((bind, port), FixtureHandler)
 
     def set_network_profile(self, profile):
@@ -269,6 +271,7 @@ class FixtureServer(socketserver.ThreadingTCPServer):
         with self.lock:
             self.rate_profile = cleaned
             self.rate_started = None
+            self.link_free_at = None
 
     def _rate_kbps(self):
         with self.lock:
@@ -319,11 +322,41 @@ class FixtureServer(socketserver.ThreadingTCPServer):
         return 64 * 1024 if self._rate_kbps() is not None else 262144
 
     def write_body(self, stream, data):
+        """Write one chunk, then hold the SHARED link for as long as those bytes would occupy it.
+
+        **This used to sleep per writer**, so two concurrent transfers each got the full nominal
+        rate and the aggregate was N times the link. That is not a small error: it is why every
+        Original-probe measurement taken on this tier was inadmissible, because a probe runs
+        BESIDE the segment stream and the two together were measured at 1.89x the rate the profile
+        asked for. A link is shared; a shaper that is not shared is not a link.
+
+        The model is a serial link with no queue, expressed as a virtual clock: `link_free_at` is
+        the instant the wire next falls idle, a chunk starts when the wire is free (or now, if it
+        already is) and occupies it for exactly `bytes * 8 / rate` seconds. Total time is then
+        total bytes over the rate no matter how the writers interleave, which is the defining
+        property, and it needs no bucket depth or burst allowance -- there is no constant here to
+        justify because there is no constant.
+
+        Interleaving is at CHUNK granularity, which is what a real link does with two flows
+        anyway. The rate is sampled per chunk, so a profile leg that changes mid-transfer applies
+        from the next chunk rather than retroactively.
+        """
         stream.write(data)
         stream.flush()
         kbps = self._rate_kbps()
-        if kbps is not None:
-            time.sleep(len(data) * 8 / (kbps * 1000.0))
+        if kbps is None:
+            return
+        occupancy = len(data) * 8 / (kbps * 1000.0)
+        with self.lock:
+            now = time.monotonic()
+            # `max(now, ...)` is what stops an idle link banking credit, and what lets the clock
+            # recover if a leg drops the rate while a long chunk is already in flight.
+            starts = now if self.link_free_at is None else max(now, self.link_free_at)
+            self.link_free_at = starts + occupancy
+            release = self.link_free_at
+        delay = release - time.monotonic()
+        if delay > 0:
+            time.sleep(delay)
 
     def note(self, msg):
         if self.sink:
