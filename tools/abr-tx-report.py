@@ -236,7 +236,74 @@ def section_ratios(samples, **_):
           "about how much bigger the next rung's segments are.")
 
 
-SECTIONS = {"cost": section_cost, "fit": section_fit, "ratios": section_ratios, "drain": section_drain, "ceiling": section_ceiling,
+# chi-square 0.95 critical values for 1..10 degrees of freedom. Hard-coded because this tool has
+# no scipy and a wrong critical value is worse than none -- these are the only ones it needs.
+CHI2_95 = {1: 3.84, 2: 5.99, 3: 7.81, 4: 9.49, 5: 11.07,
+           6: 12.59, 7: 14.07, 8: 15.51, 9: 16.92, 10: 18.31}
+
+
+def section_acf(segs, **_):
+    """Serial dependence in the acquisition series, PER RUNG, with an effective-sample correction.
+
+    This replaces the plan's coverage gate, which the board (R9) showed cannot fail on this
+    corpus -- every window length 3..29 passes, and detecting the dependence it exists to detect
+    would need about 104 hours of playback. An acf and a Ljung-Box statistic report the same
+    property directly and can be read at any sample size, so long as what is reported is the
+    statistic and not a verdict dressed up as one.
+
+    WHY IT MATTERS: the order-statistic bound P(A_(n+1) > A_(n+1-k)) = k/(n+1) is exact under
+    EXCHANGEABILITY. Positive autocorrelation breaks it in the unsafe direction, because
+    consecutive acquisitions are then more alike than independent draws and the observed maximum
+    understates the tail. `n_eff = n(1-rho)/(1+rho)` is the variance-of-the-mean heuristic, and it
+    is a heuristic -- it is reported so the ratio is visible, never to be silently substituted for
+    n in a bound.
+    """
+    import math
+    def stats(series):
+        n = len(series)
+        mean = sum(series) / n
+        var = sum((x - mean) ** 2 for x in series)
+        if var == 0:
+            return None
+        rho = [sum((series[i] - mean) * (series[i + k] - mean) for i in range(n - k)) / var
+               for k in range(1, 6)]
+        q = n * (n + 2) * sum(r * r / (n - k - 1) for k, r in enumerate(rho) if n - k - 1 > 0)
+        n_eff = n * (1 - rho[0]) / (1 + rho[0]) if rho[0] > -1 else float("nan")
+        return rho[0], q, n_eff
+
+    byrung, bytau = {}, {}
+    for s in segs:
+        case = s.get("_case", "?")
+        byrung.setdefault(case, []).append(s["total_ms"])
+        if s.get("bytes"):
+            # The tau form: MILLISECONDS PER BYTE. A rung change moves `total_ms` because the
+            # segments got bigger, and that level shift reads as autocorrelation in A while saying
+            # nothing about link memory. Dividing it out is the board's R3 claim -- that tau is a
+            # property of the link and the SoC rather than of the rung, so a tau window survives a
+            # commit -- and this is the test of it.
+            bytau.setdefault(case, []).append(s["total_ms"] / s["bytes"])
+    print("| series | n | rho(A) | Q(A) | rho(tau) | Q(tau) | n_eff(tau) | verdict |")
+    print("|---|---:|---:|---:|---:|---:|---:|---|")
+    for name, series in sorted(byrung.items()):
+        n = len(series)
+        if n < 12:
+            continue
+        a, tv = stats(series), stats(bytau.get(name, []))
+        if a and tv:
+            crit = CHI2_95[5]
+            better = "**tau form fixes it**" if a[1] > crit >= tv[1] else (
+                "**both dependent**" if tv[1] > crit else "independent either way")
+            print(f"| {name} | {n} | {a[0]:+.3f} | {a[1]:.1f} | {tv[0]:+.3f} | {tv[1]:.1f} | "
+                  f"{tv[2]:.0f} | {better} |")
+        continue
+
+    print("\n`n_eff` is the variance-of-the-mean heuristic and is REPORTED, not applied. A series "
+          "whose Q exceeds the critical value is one where an order-statistic bound computed from "
+          "its raw n is optimistic, and by roughly the n/n_eff ratio shown.")
+
+
+SECTIONS = {"cost": section_cost, "fit": section_fit, "ratios": section_ratios,
+            "acf": section_acf, "drain": section_drain, "ceiling": section_ceiling,
             "control": section_control, "rates": section_rates}
 
 
