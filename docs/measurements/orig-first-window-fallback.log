@@ -46,8 +46,8 @@ ff: param_sets=105 bytes nal_len=4 is_hevc=true
 [10587] key type=0x301 raw=010300005b290000010000000200000000000000280000000d00000000000000090000002ccdb7ff01000000c5adecf5
 loop=58 route=player overlay=none fps=59
 ff: seek 526s rv=0
-auth: '<peer-name-2>' probe timed out at <lan-ip-1>:32400
-auth: reached "<peer-name-2>" <SHARED-SERVER-IP>:26937 (shared by <peer-owner-1>) via https://<SHARED-SERVER>:<PORT>
+auth: '"<SHARED-SERVER-NAME>"' probe timed out at <SERVER-LAN-IP>:32400
+auth: reached "<SHARED-SERVER-NAME>" <SHARED-SERVER-IP>:26937 (shared by <OWNER> via https://<SHARED-SERVER>:<PORT>
 auth: roster refresh dropped — session identity changed while probing
 net: curl rc=28 — timed out
 ff: stripped HDR10+ SEI #1 (55 bytes)

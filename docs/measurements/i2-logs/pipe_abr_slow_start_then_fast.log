@@ -4,7 +4,7 @@ webos: webOS TV release=4.10.2 codename=goldilocks2-grampians api=4.1.0 major=4
 devcaps: hevc=true 4096x2176 vp9=true audio=aac,ac3,eac3 (device table)
 video driver: wayland
 surface: window=1920x1080 drawable=1920x1080 panel=3840x2160 logical=1920x1080 scale=1.000
-GL: Mali-T820 / OpenGL ES 3.2 v1.r12p0-04rel0.cb5901e2e52329f9302428bb2e5885c3
+GL: Mali-T820 / OpenGL ES 3.2 v1.r12p0-04rel0.<MACHINE-ID>
 egl: display=0x6f9468 draw_surface=0x732228
 egl vendor: ARM
 egl version: 1.4 Midgard-"r12p0-04rel0"
@@ -19,8 +19,8 @@ FB bits: alpha=8 red=8 depth=0 stencil=0 (config alpha=8 depth=0 stencil=0)
 wm sdl=2.0.5 subsys=6 wl_surface=0x6f87a0 wl_display=0x6f3f48 alpha=8
 init_text ok=1
 net: bound libcurl -> libcurl.so.5 (libcurl/7.53.1 OpenSSL/1.0.2p zlib/1.2.11 c-ares/1.12.0 nghttp2/1.26.0; AsynchDNS=yes); threaded-tls=true legacy-locks=Installed
-plex: server slot 0 registered at https://<peer-host-1>.<pd-hash-1>.plex.direct:32400
-plex: server slot 1 registered at https://<peer-host-2>.<pd-hash-2>.plex.direct:26937
+plex: server slot 0 registered at https://<SHARED-SERVER>.plex.direct:32400
+plex: server slot 1 registered at https://<SHARED-SERVER>.plex.direct:<PORT>
 auth: roster restored — 2 server(s) registered
 pms: server 0 version=1.43.3.10896-cb3ebc72d plexPass=true
 hubs: source 0 ok — 4 shelves, 6 in CW
@@ -48,8 +48,8 @@ plex: server slot 0 re-pointed to [fdfb:2aa3:e3b7:0:1818:5f8c:f306:1d34]:32400
 pms: server 0 version=1.43.3.10896-cb3ebc72d plexPass=true
 net: curl rc=7 — transport error
 loop=46 route=home fps=46
-plex: server slot 0 re-pointed to https://<peer-host-1>.<pd-hash-1>.plex.direct:32400
-auth: reached "<peer-name-1>" <pms-host>:32400 (ours) via https://<peer-host-1>.<pd-hash-1>.plex.direct:32400
+plex: server slot 0 re-pointed to https://<SHARED-SERVER>.plex.direct:32400
+auth: reached "<peer-name-1>" <pms-host>:32400 (ours) via https://<SHARED-SERVER>.plex.direct:32400
 pms: server 0 version=1.43.3.10896-cb3ebc72d plexPass=true
 auto fixture: Original source=60000kbps armed
 esInfo: videoFps 24/1 + adaptiveResolution (src 24.000)
@@ -162,14 +162,14 @@ hls: segment=3 bytes=128592 raster=426x240 v=48 a=95 tail_skew_ms=-5 audio_pts_r
 abr: sample current=320kbps media=514kbps net=3923kbps buf=9668ms vbuf=9668ms abuf=9673ms dur=2000ms prod=145pm n=5 decision=stay target=0kbps reason=Some(Hls(BufferConstraint))
 abr: steady current=320kbps safe=953kbps pending=0kbps fast=2154kbps slow=1756kbps unc=457pm n=5 buf=9668ms slope=1098ms/s prod=330pm/330pm risk=0 starve=none left=179s reason=Some(Hls(BufferConstraint))
 abr: checking actual Original in parallel with HLS
-plex: server slot 1 re-pointed to <peer-ip-1>:26937
+plex: server slot 1 re-pointed to <SHARED-SERVER-IP>:26937
 net: curl rc=6 — could not resolve host
 pms: server 1 version=1.43.4.10903-e5521bd8c plexPass=true
 hls: segment=4 bytes=128592 raster=426x240 v=48 a=95 tail_skew_ms=-5 audio_pts_recovered=86 not_ready=0 open_probe_ms=278 first_au_ms=281 total_ms=287
 abr: sample current=320kbps media=514kbps net=3861kbps buf=11460ms vbuf=11460ms abuf=11465ms dur=2000ms prod=143pm n=6 decision=stay target=0kbps reason=Some(Hls(BufferConstraint))
 abr: steady current=320kbps safe=1152kbps pending=0kbps fast=2255kbps slow=1856kbps unc=379pm n=6 buf=11460ms slope=1047ms/s prod=259pm/259pm risk=0 starve=none left=179s reason=Some(Hls(BufferConstraint))
 feed a#200 sz=248 fed=4191000000 reply=O qbytes=96839
-stream: GET /identity DNS FAILED host=plex.main.ldn.in.bx23.net
+stream: GET /identity DNS FAILED host=<SHARED-SERVER-CUSTOM-DOMAIN>
 hls: segment=5 bytes=128592 raster=426x240 v=48 a=95 tail_skew_ms=-5 audio_pts_recovered=86 not_ready=0 open_probe_ms=284 first_au_ms=287 total_ms=292
 abr: sample current=320kbps media=514kbps net=3782kbps buf=13043ms vbuf=13043ms abuf=13048ms dur=2000ms prod=146pm n=7 decision=stay target=0kbps reason=Some(Hls(BufferConstraint))
 abr: steady current=320kbps safe=1329kbps pending=0kbps fast=2331kbps slow=1944kbps unc=316pm n=7 buf=13043ms slope=983ms/s prod=216pm/216pm risk=0 starve=none left=179s reason=Some(Hls(BufferConstraint))
@@ -203,9 +203,9 @@ loop=60 route=player overlay=none pos=4s vtick=5 vgap=201ms fps=60
 hls: segment=1 bytes=345356 raster=854x480 v=48 a=95 tail_skew_ms=-5 audio_pts_recovered=83 not_ready=0 open_probe_ms=1360 first_au_ms=1363 total_ms=1377
 abr: committed Up to 720kbps 854x480
 abr: tx Up 320->720kbps outcome=committed decided=2760ms total=2760ms control=6ms warmup=1374ms graded=1377ms buf_start=21542ms buf_decided=22751ms buf_end=22751ms cur_acq_before=290ms net=3825kbps fast=2505kbps slow=2243kbps unc=200pm
-auth: '<peer-name-2>' probe timed out at <lan-ip-1>:32400
-plex: server slot 1 re-pointed to https://<peer-host-2>.<pd-hash-2>.plex.direct:26937
-auth: reached "<peer-name-2>" <peer-ip-1>:26937 (shared by <peer-owner-1>) via https://<peer-host-2>.<pd-hash-2>.plex.direct:26937
+auth: '"<SHARED-SERVER-NAME>"' probe timed out at <SERVER-LAN-IP>:32400
+plex: server slot 1 re-pointed to https://<SHARED-SERVER>.plex.direct:<PORT>
+auth: reached "<SHARED-SERVER-NAME>" <SHARED-SERVER-IP>:26937 (shared by <OWNER> via https://<SHARED-SERVER>.plex.direct:<PORT>
 auth: roster refresh — 2 server(s)
 net: curl rc=28 — timed out
 pms: server 1 version=1.43.4.10903-e5521bd8c plexPass=true
