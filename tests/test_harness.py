@@ -940,8 +940,18 @@ class AutoNetworkProfile(unittest.TestCase):
         ladder = {320, 720, 2000, 4000, 6000, 8000, 10000, 12000, 14000, 16000, 18000, 20000, 22000}
         for case in census:
             with self.subTest(case["name"]):
-                self.assertNotIn("network_profile", case,
-                                 "a census case must be unshaped: the byte cap is the subject")
+                # Unshaped is the DEFAULT and the intent: the AU queue byte cap is the subject,
+                # and a shaped leg risks measuring the shaper. Two points depart from it because
+                # the pin cannot transact from the top rung, which is where an unshaped link puts
+                # the controller — so they shape the link only to make the run START low. A
+                # departure has to be a single flat leg and has to say why, in the case, rather
+                # than be discovered later in a graph nobody can explain. Whether the queue still
+                # bound is not a manifest rule and cannot be: the measurement checks it.
+                profile = case.get("network_profile")
+                if profile is not None:
+                    self.assertEqual(len(profile), 1, "a shaped census point must be FLAT")
+                    self.assertTrue(case.get("_shaped_reason"),
+                                    "a shaped census point must record why it departs")
                 self.assertIn(case.get("abr_pin"), ladder, "pin must name a real actuator request")
                 self.assertEqual(case["name"], f"pipe_abr_pin_{case['abr_pin']}",
                                  "the name and the pin are two statements of one number")

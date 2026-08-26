@@ -2882,6 +2882,12 @@ def run_pipeline_case(case, cfg, srv, url_base, verbose):
     gst_lines = pull_runtime_log(tv, "plxnative-gst.log") if case.get("gst_trace") else None
     if gst_lines is not None:
         print(f"    GST trace: {len(gst_lines)} line(s)")
+    # The shaper's schedule, for the FINAL grade. `grade()` above also sets it, but only the
+    # early-exit poll calls `grade()` — under `--no-early` it never runs, and the dip metric then
+    # reported "no degraded leg" on cases that plainly had one (observed 2026-08-26 on
+    # pipe_abr_brief_dropout and pipe_abr_oscillating_link). Captured here so the verdict path and
+    # the poll path see the same windows whichever way the case ended.
+    case["_dip_windows"] = srv.dip_windows()
     passed, results = evaluate_pipeline(case, lines, delta, gst_lines=gst_lines)
     report_case(passed, results, elapsed, run_secs, stopped_early, settled, verbose)
     # CHARACTERISATION (plan I0-F/G/H). Printed for any case that ran the HLS controller, never
