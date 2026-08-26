@@ -582,8 +582,23 @@ pub(crate) fn request_pinned(
         // A pinned request replaces CA verification with key pinning — see
         // [`CURLOPT_PINNEDPUBLICKEY`]. Written AFTER the two defaults above so the ordinary path is
         // still one unconditional pair of lines that cannot be reached with the wrong value.
+        //
+        // **THE RETURN CODE IS CHECKED HERE AND NOWHERE ELSE IN THIS FUNCTION, AND THAT ASYMMETRY
+        // IS THE POINT.** Every other `setopt` above fails safe: a libcurl that refuses
+        // `CURLOPT_TIMEOUT` gives a request without a deadline, which is worse but not unsafe. This
+        // one fails OPEN. If the option is rejected — an older libcurl, or a TLS backend whose
+        // pinning support post-dates it, which is neither a symbol nor a library and so is
+        // invisible to `tools/fwcompat.py` — then the two lines under it would still run and the
+        // request would go out with **no pinning and no CA verification at all**, accepting any
+        // certificate anyone cared to present. So an unsupported option is a REFUSAL, before
+        // verification is touched: a lab upload that does not happen costs a log, and one sent to
+        // whoever answered costs the log's contents.
         if let Some(p) = pin_c.as_ref() {
-            curl_easy_setopt_ptr(easy.0, CURLOPT_PINNEDPUBLICKEY, p.as_ptr() as *const c_void);
+            let rc = curl_easy_setopt_ptr(easy.0, CURLOPT_PINNEDPUBLICKEY, p.as_ptr() as *const c_void);
+            if rc != 0 {
+                crate::log(&format!("net: this libcurl refuses CURLOPT_PINNEDPUBLICKEY (rc={rc}) — refusing to send unpinned"));
+                return None;
+            }
             curl_easy_setopt_long(easy.0, CURLOPT_SSL_VERIFYPEER, 0 as c_long);
             curl_easy_setopt_long(easy.0, CURLOPT_SSL_VERIFYHOST, 0 as c_long);
         }

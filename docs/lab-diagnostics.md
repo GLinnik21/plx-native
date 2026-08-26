@@ -382,6 +382,15 @@ the ring to disk, a web UI, and promoting Direct Play / Direct Stream / Transcod
 The next step is the dev television — `make LAB=1 FLAVOR=debug deploy` under the `tv-lock`, with a
 receiver on the LAN — before an hour of Cloud Test Lab is spent on any of it.
 
+**The LAB ELF is graded by hand, and by nobody else.** `.github/workflows/ci.yml` builds and grades
+the DEFAULT configuration only, so `make LAB=1`'s binary — the one that actually flies to Cloud
+Test Lab, and the one a submission candidate is tested in when LAB is composed with RELEASE — never
+reaches the firmware load matrix. Nothing in this feature *should* move `DT_NEEDED` (it adds no
+`#[link]`, no `extern "C"` block, no crate, and touches neither `LIBS_REAL` nor the link line), but
+a transitive entry is exactly the thing only a built ELF can show. Graded by hand on 2026-08-26
+against `make LAB=1 FLAVOR=debug`: **15 DT_NEEDED, OK on 4.4.2 through 11.2.0**, identical to the
+default build. Re-run it after any change here, or give the matrix a LAB leg.
+
 ---
 
 ## 12. The public leg, and the one prober that cannot see it

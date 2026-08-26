@@ -40,9 +40,19 @@ crate::dynlib! {
 
 const Z_OK: c_int = 0;
 
+/// Is the table live? Resolved ONCE for the process.
+///
+/// `load` reaches `dlopen`, and `dynlib::Handle` is deliberately never `dlclose`d — so calling it
+/// per upload leaked a refcount each time, and on a machine with no zlib cost four failed
+/// `dlopen`s per press. `ff::boot` latches its load for the same reason.
+fn loaded() -> bool {
+    static OK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *OK.get_or_init(|| z::load(None).ok())
+}
+
 /// gzip `src`, or `None` if zlib could not be bound (the caller then sends it uncompressed).
 pub(crate) fn gzip(src: &[u8]) -> Option<Vec<u8>> {
-    if !z::load(None).ok() {
+    if !loaded() {
         return None;
     }
     // zlib's own documented worst case, plus the gzip trailer we add.
