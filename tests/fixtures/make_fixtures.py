@@ -612,9 +612,16 @@ CHAIN_PQ = ("format=yuv420p10le,setparams=color_primaries=bt2020:color_trc=smpte
 def venc_args(v):
     c = v["codec"]
     if c == "h264":
+        # `vbr` (kbps) switches from quality-targeted to RATE-TARGETED encoding. Only the ABR
+        # ladder clips use it, and they need it: the reachable buffer ceiling is
+        # `queue_bytes / media_rate`, so a pack whose rungs all decode to the same file cannot
+        # measure a bitrate-dependent ceiling at all — every rung would report the same reserve.
+        # CRF gives a bitrate that is a CONSEQUENCE; this gives one that is an input.
+        rc = (["-b:v", f"{v['vbr']}k", "-maxrate", f"{v['vbr']}k", "-bufsize", f"{2 * v['vbr']}k"]
+              if v.get("vbr") else ["-crf", str(v["crf"])])
         # veryfast, NOT ultrafast: ultrafast silently forces Constrained Baseline (trap 6).
         return ["-c:v", "libx264", "-profile:v", "high", "-level", "4.0",
-                "-preset", "veryfast", "-crf", str(v["crf"]),
+                "-preset", "veryfast", *rc,
                 "-g", "48", "-keyint_min", "48", "-sc_threshold", "0"]
     if c == "hevc":
         xp = (X265_HDR + ":" + X265_GOP) if v.get("hdr") else X265_GOP
@@ -1188,6 +1195,25 @@ PIPE_SHAPES = {
                    "default": True, "title": "AAC 2.0 English"}],
         "subs": [],
     },
+    # The rate-targeted 1080p ladder. One clip per mid/high rung, because the four-clip pack
+    # above serves ONE file for every rung from 6000 up — which is fine for grading which rung a
+    # controller picked, and useless for measuring what that rung costs. The reachable reserve is
+    # `queue_bytes / media_rate` (`docs/adaptive-playback-plan.md` §0.1), so measurement step M4
+    # needs each rung to actually deliver its own bitrate. Video target = rung request minus the
+    # 192 kbps audio track, so the muxed stream lands on the rung's wire rate.
+    #
+    # Cost: eight clips x 2 s x <= 20 Mbit/s is about 25 MB, against a ~0.7 GB pipeline pack.
+    **{
+        f"pipe_abr_1080p_{mbit}m": {
+            "kind": "clip", "ext": "ts", "duration": 2, "rate": 0.08, "hls_segment": True,
+            "declare": {"vcodec": "h264", "acodec": "aac", "fps": float(FPS), "atmos": False},
+            "video": {"codec": "h264", "size": "1920x1080", "vbr": mbit * 1000 - 192},
+            "audio": [{"codec": "aac", "ch": 2, "lang": "eng", "br": "192k", "pitch": 240,
+                       "default": True, "title": "AAC 2.0 English"}],
+            "subs": [],
+        }
+        for mbit in (6, 8, 10, 12, 14, 16, 18)
+    },
     # -----------------------------------------------------------------------------------
     # ...and the one shape in either pack that is SUPPOSED to run out — LG item #46.
     "pipe_h264_ac3_short": {
@@ -1349,6 +1375,9 @@ PIPE_MBIT = {
     "pipe_abr_480p": 0.72,
     "pipe_abr_720p": 4.00,
     "pipe_abr_1080p": 20.0,
+    # Rate-targeted, so these are the TARGET rather than an estimate: video `vbr` plus the
+    # 192 kbps audio track, i.e. the rung's own request. That is the point of them.
+    **{f"pipe_abr_1080p_{mbit}m": float(mbit) for mbit in (6, 8, 10, 12, 14, 16, 18)},
     "pipe_h264_ac3_short": 1.71,        # = pipe_h264_ac3_480p, of which it is a 20 s copy
 }
 

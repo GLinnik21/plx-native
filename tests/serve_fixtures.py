@@ -64,17 +64,30 @@ RE_RANGE = re.compile(r"^bytes=(\d+)-(\d*)$")
 ABR_RUNGS = "320|720|2000|4000|6000|8000|10000|12000|14000|16000|18000|20000"
 RE_ABR_PLAYLIST = re.compile(rf"^/__abr/({ABR_RUNGS})/(master|media)\.m3u8$")
 RE_ABR_SEGMENT = re.compile(rf"^/__abr/({ABR_RUNGS})/segment\.ts$")
-# Four clips cover thirteen rungs: what a rung asks PMS for is a BITRATE CEILING, and the raster is
-# the consequence. The controller's own acceptance test is `hls_raster_within` — the decoded picture
-# must fit the rung's raster, not equal it — so serving the 1080p clip for every 1080p-class rung is
-# the same shape the real server produces, not a shortcut.
+# What a rung asks PMS for is a BITRATE CEILING and the raster is the consequence; the controller's
+# acceptance test is `hls_raster_within` — the decoded picture must FIT the rung's raster, not equal
+# it — so several rungs legitimately share a raster.
+#
+# They must NOT share a FILE, and that is a change from this pack's first shape. Every rung from
+# 6000 up used to serve one `pipe_abr_1080p.ts`, which is sufficient for grading which rung a
+# controller chose and useless for measuring what that rung COSTS: the reachable buffer ceiling is
+# `queue_bytes / media_rate` (`docs/adaptive-playback-plan.md` §0.1), so a pack that delivers the
+# same bytes for 6 Mbit/s and 18 Mbit/s reports the same reserve at both and measurement step M4
+# has nothing to read. The mid/high rungs now serve rate-targeted clips of their own
+# (`make_fixtures.py`'s `vbr` key), one per rung.
+#
+# WHAT IS SYNTHETIC HERE, precisely: the MEDIA is real — really encoded at that bitrate, really
+# demuxed, really fed through the same path as any other segment. What is synthetic is that a
+# rung's clip is generated rather than produced by a PMS transcoder, so it carries no JIT
+# production latency; `network_profile` shapes the transport and nothing here models an encoder
+# falling behind. Production cadence is measurement step M3's job, against a real PMS.
 ABR_FIXTURE = {
     "320": "pipe_abr_240p.ts", "720": "pipe_abr_480p.ts",
     "2000": "pipe_abr_720p.ts", "4000": "pipe_abr_720p.ts",
-    "6000": "pipe_abr_1080p.ts", "8000": "pipe_abr_1080p.ts",
-    "10000": "pipe_abr_1080p.ts", "12000": "pipe_abr_1080p.ts",
-    "14000": "pipe_abr_1080p.ts", "16000": "pipe_abr_1080p.ts",
-    "18000": "pipe_abr_1080p.ts", "20000": "pipe_abr_1080p.ts",
+    "6000": "pipe_abr_1080p_6m.ts", "8000": "pipe_abr_1080p_8m.ts",
+    "10000": "pipe_abr_1080p_10m.ts", "12000": "pipe_abr_1080p_12m.ts",
+    "14000": "pipe_abr_1080p_14m.ts", "16000": "pipe_abr_1080p_16m.ts",
+    "18000": "pipe_abr_1080p_18m.ts", "20000": "pipe_abr_1080p.ts",
 }
 ABR_RASTER = {
     "320": "426x240", "720": "854x480", "2000": "1280x720", "4000": "1280x720",
@@ -82,6 +95,8 @@ ABR_RASTER = {
     "12000": "1920x1080", "14000": "1920x1080", "16000": "1920x1080",
     "18000": "1920x1080", "20000": "1920x1080",
 }
+# What a rung falls back to when its own clip has not been generated yet. See `_resolve`.
+ABR_FALLBACK = "pipe_abr_1080p.ts"
 assert set(ABR_FIXTURE) == set(ABR_RUNGS.split("|")) == set(ABR_RASTER), (
     "a rung the route can request but this server cannot answer reads on the TV as a rejected "
     "candidate, which is indistinguishable from a real refusal"
@@ -105,6 +120,17 @@ class FixtureHandler(BaseHTTPRequestHandler):
         target = self.path.split("?", 1)[0].split("#", 1)[0]
         seg = RE_ABR_SEGMENT.match(target)
         rel = ABR_FIXTURE[seg.group(1)] if seg else target.lstrip("/")
+        if seg and not os.path.isfile(os.path.join(self.server.root, rel)):
+            # A pack built before the per-rung ladder existed has only `pipe_abr_1080p.ts`. Serve
+            # it rather than 404: a 404 on a rung reads to the controller as a REJECTED CANDIDATE,
+            # which is indistinguishable from a real refusal and would make an out-of-date fixture
+            # pack look like a controller bug. Said out loud every time, because the fallback also
+            # silently defeats measurement step M4 — the whole point of the per-rung clips is that
+            # the rungs deliver different bitrates.
+            self.server.note(f"!! {rel} missing — falling back to pipe_abr_1080p.ts; rung "
+                             f"{seg.group(1)} will NOT deliver its own bitrate. "
+                             f"Re-run `make fixtures-pipeline`.")
+            rel = ABR_FALLBACK
         full = os.path.realpath(os.path.join(self.server.root, rel))
         if full != self.server.root and not full.startswith(self.server.root + os.sep):
             return None

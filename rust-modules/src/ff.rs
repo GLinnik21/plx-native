@@ -2837,6 +2837,60 @@ fn log_hls_abr_steady(t: &crate::abr::ControllerTelemetry, remaining_ms: i64) {
     ));
 }
 
+/// **One line per SEGMENT, whatever was decided** — the decision-independent half of the trace.
+///
+/// `abr: steady` cannot serve this purpose and must not be made to: it is emitted only on
+/// `Decision::Stay`, so the segments it omits are exactly the ones where the reserve was lowest
+/// (a drawdown is what produces a downshift). A minimum-buffer statistic read from `abr: steady`
+/// therefore cannot see the trough, and any statistic derived from those lines is an order
+/// statistic over a sample whose membership the policy under test controls — a policy that commits
+/// more often observes less, and reads as an improvement. Plan I0-A.
+///
+/// Every field is a rate, a duration or a per-mille. No name, address, title or token, so this is
+/// safe to paste into an issue thread.
+///
+/// * `buf` — the controller-visible playable reserve, `min(video, audio) - playback`. **The same
+///   quantity the decision path used**, taken from the same `SegmentSample`, never recomputed.
+/// * `vbuf` / `abuf` — the two lanes separately, because the reserve is the MINIMUM of them and
+///   which one binds moves with the rung: the 8 MiB video queue against a multi-Mbit stream
+///   against a 1 MiB audio queue at ~192 kbps. `buf` alone cannot say which ceiling was hit.
+/// * `media` — what the segment actually WAS on the wire, bytes over content duration. This is
+///   the denominator of the reachable reserve and it is NOT `current`: eleven of the thirteen
+///   catalog entries carry the request as their planning rate. Measurement step M4 reads it.
+/// * `net` — delivered rate over ACTIVE transfer time; `prod` — total acquisition over content
+///   duration, so it includes production and TTFB.
+fn log_hls_abr_sample(
+    t: &crate::abr::ControllerTelemetry,
+    sample: crate::abr::SegmentSample,
+    decision: crate::abr::Decision,
+) {
+    use crate::abr::{Decision::Prime, Direction};
+    let (action, target) = match decision {
+        Prime(p) if p.direction == Direction::Up => ("prime_up", p.rung.kbps()),
+        Prime(p) => ("prime_down", p.rung.kbps()),
+        _ => ("stay", 0),
+    };
+    crate::player::log(&format!(
+        "abr: sample current={}kbps media={}kbps net={}kbps buf={}ms vbuf={}ms abuf={} \
+         prod={}pm n={} decision={} target={}kbps reason={:?}",
+        t.current.kbps(),
+        sample.media_kbps(),
+        sample.network_kbps(),
+        sample.buffer.buffered_ms(),
+        sample.buffer.video_buffered_ms(),
+        sample
+            .buffer
+            .audio_buffered_ms()
+            .map(|ms| format!("{ms}ms"))
+            .unwrap_or_else(|| "none".to_string()),
+        sample.production_ratio_pm(),
+        t.delivery.samples,
+        action,
+        target,
+        t.reason,
+    ));
+}
+
 /// The controller's reason enum as the read-out's code. A `match` rather than a cast, so a new
 /// [`crate::abr::HlsReason`] variant is a compile error here instead of silently reading as one of
 /// the four the panel already names.
@@ -2934,6 +2988,22 @@ fn hls_demux(
         let initial = control.initial_rung;
         let catalog = control.catalog;
         let prior = control.prior;
+        // **Observation only (plan I0-H).** The suspected defect is that the argument below is
+        // literally `0`, so the two-minute decay of the visible-switch penalty never advances and
+        // Original becomes unreachable after two mode switches. Logging what is ACTUALLY passed
+        // makes that readable off a device run instead of inferable from source; the repair is
+        // increment I4's, not this line's.
+        let advanced_ms: u64 = 0;
+        crate::player::log(&format!(
+            "abr: history switches={} since_last={} advanced={}ms",
+            control.history.visible_switches,
+            control
+                .history
+                .since_last_ms
+                .map(|ms| ms.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+            advanced_ms,
+        ));
         let recovery = control
             .can_recover_original()
             .then(|| {
@@ -2943,14 +3013,36 @@ fn hls_demux(
                     control.original_features,
                     // The worker's own clock takes over from here; the main thread's capture is
                     // the starting point, not a live view.
-                    control.history.advanced_by(0),
+                    control.history.advanced_by(advanced_ms),
                 )
             })
             .flatten();
+        // **Observation only (plan I0-G).** A seek builds a FRESH controller here, so the live
+        // link estimate does not survive it — the only thing that does is `prior`, whose writer on
+        // the fallback path is the rate measured at the moment Original failed. One line, printed
+        // where the re-seed happens, is what turns that from an argument about source into a
+        // before/after a device run can show. `abr: steady` on either side of the seek carries the
+        // matching slow/fast/unc/n. Nothing is repaired here; that is increment I8.
+        let pin = crate::dev::abr_pin();
+        let controller =
+            crate::abr::Controller::starting_at(initial, prior, catalog).pinned_to(pin);
+        let seeded = controller.telemetry();
+        crate::player::log(&format!(
+            "abr: seed rung={}kbps prior={} slow={}kbps fast={}kbps unc={}pm n={} pin={}",
+            initial.kbps(),
+            prior
+                .map(|p| format!("{}kbps", p.slow_kbps))
+                .unwrap_or_else(|| "none".to_string()),
+            seeded.delivery.slow_kbps,
+            seeded.delivery.fast_kbps,
+            seeded.delivery.uncertainty_pm,
+            seeded.delivery.samples,
+            pin.map(|r| format!("{}kbps", r.kbps())).unwrap_or_else(|| "none".to_string()),
+        ));
         (
             control,
             encoder,
-            crate::abr::Controller::starting_at(initial, prior, catalog),
+            controller,
             recovery,
             false,
             0u64,
@@ -3013,6 +3105,7 @@ fn hls_demux(
         // LINE stays on the do-nothing path, because that is what it says happened.
         let telemetry = controller.telemetry();
         publish_hls_abr_model(&telemetry);
+        log_hls_abr_sample(&telemetry, sample, decision);
         if matches!(decision, crate::abr::Decision::Stay) {
             log_hls_abr_steady(&telemetry, remaining_ms);
         }

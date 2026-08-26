@@ -105,6 +105,22 @@ pub(crate) const LADDER: [Rung; 13] = [
     Rung::Uhd,
 ];
 
+/// **How much reserve the dev rung pin waits for before it transacts.** Six segments.
+///
+/// A TOOL constant, not ABR policy: nothing outside [`Controller::pinned_to`] reads it and it
+/// takes no part in any decision an unpinned build makes. It exists because a candidate
+/// transaction runs inline on the demux worker and costs roughly 2.3 segments of unrefilled
+/// playback (`candidate_warmup_budget` + `candidate_prime_budget`), while `candidate_ready`
+/// requires two segments of reserve to still be there afterwards. Propose with less and the
+/// transaction drains the reserve below its own acceptance test, the candidate is rejected, and
+/// the pin re-proposes forever without ever landing — which is not a hypothetical: the closed-loop
+/// plant reproduced exactly that livelock the first time this was written without a gate.
+///
+/// Consequence worth knowing before using the pin: at the top of the ladder the reachable reserve
+/// is under three segments (`abr/sim.rs`), so a pin cannot be satisfied there from a standing
+/// start. Pin UPWARD from the bootstrap rung, which is how measurement step M4 is written.
+const PIN_MIN_RESERVE_SEGMENTS: i64 = 6;
+
 impl Rung {
     pub(crate) const fn kbps(self) -> u32 {
         match self {
@@ -139,6 +155,15 @@ impl Rung {
             | Rung::P1080High => (1920, 1080),
             Rung::Uhd => (3840, 2160),
         }
+    }
+
+    /// The ladder entry whose REQUEST is exactly `kbps`, or `None`. Actuator identity by the
+    /// number that goes on the wire as the ceiling, which is stable across catalog re-measurement
+    /// — unlike `planning`/`expected_wire_kbps`, which moves when somebody probes the server, and
+    /// unlike the UI quality enum, which has no mid-1080p points at all
+    /// (`plex::session::PlaybackQuality`). Used only by the dev rung pin (I0-D).
+    pub(crate) fn from_request_kbps(kbps: u32) -> Option<Rung> {
+        LADDER.into_iter().find(|r| r.kbps() == kbps)
     }
 
     pub(crate) fn ceiling(self) -> crate::plex::Ceiling {
@@ -897,6 +922,22 @@ impl BufferSnapshot {
         };
         tail.saturating_since(self.playback)
     }
+
+    /// The VIDEO lane's own buffered duration, ignoring audio. Diagnostic only: nothing in the
+    /// controller reads it, and nothing may — [`Self::buffered_ms`] is the quantity every decision
+    /// is made on. It exists because the playable reserve is `min(video, audio)` and the two lanes
+    /// have DIFFERENT ceilings (the video queue is 8 MiB against a multi-Mbit stream, the audio
+    /// queue 1 MiB against ~192 kbps), so which one binds changes with the rung — and a `buf=`
+    /// alone cannot say which. See `docs/adaptive-playback-plan.md` §0.1.
+    pub(crate) fn video_buffered_ms(self) -> i64 {
+        self.video_tail.saturating_since(self.playback)
+    }
+
+    /// The AUDIO lane's own buffered duration, or `None` when this stream has no audio or the lane
+    /// has not yet produced a timestamp. Diagnostic only, as [`Self::video_buffered_ms`].
+    pub(crate) fn audio_buffered_ms(self) -> Option<i64> {
+        self.audio_tail.map(|a| a.saturating_since(self.playback))
+    }
 }
 
 /// **Can the SERVER keep up** — the resource constraint that is not the network.
@@ -1296,6 +1337,20 @@ impl SegmentSample {
 
     pub(crate) fn media_duration_ms(self) -> u32 {
         self.media_duration_ms
+    }
+
+    /// **What this segment actually WAS, on the wire** — delivered bytes over its content
+    /// duration, not what the rung asked PMS for. `kbps` is bits per millisecond, so
+    /// `bits / duration_ms` is already kbps and there is no scale factor here.
+    ///
+    /// It exists because the reachable buffer ceiling is `queue_bytes / media_rate` (plus the feed
+    /// lead), so every question about how deep the reserve can get is a question about THIS number
+    /// and not about `Rung::kbps()`. Eleven of the thirteen catalog entries carry the request as
+    /// their planning rate (`abr.rs`'s catalog note), so the two differ by an unmeasured amount at
+    /// exactly the rungs where the ceiling is tightest. Measurement step M4 reads it.
+    pub(crate) fn media_kbps(self) -> u32 {
+        (self.bytes.saturating_mul(8) / u64::from(self.media_duration_ms))
+            .min(u64::from(u32::MAX)) as u32
     }
 
     /// Per-mille total acquisition time / content duration. This includes PMS JIT production and
@@ -1992,6 +2047,8 @@ pub(crate) struct Controller {
     cooldown: u8,
     last_reason: Option<DecisionReason>,
     last_safe_budget_kbps: u32,
+    /// **Dev-only actuator pin — see [`Self::pinned_to`].** `None` in every production path.
+    pin: Option<Rung>,
 }
 
 impl Controller {
@@ -2021,7 +2078,29 @@ impl Controller {
             cooldown: 0,
             last_reason: None,
             last_safe_budget_kbps: 0,
+            pin: None,
         }
+    }
+
+    /// **Pin the controller to one actuator, for measurement only.** A builder rather than a
+    /// parameter so no existing call site or test moves.
+    ///
+    /// Set from the `plxnative-abrpin` dev trigger, which is compiled out of a release build, so
+    /// this is `None` in every shipped configuration and in every host test that does not ask for
+    /// it. It exists for measurement step M4 (`docs/adaptive-playback-plan.md` §4), which has to
+    /// hold one rung long enough to read a settled reserve at it — and which cannot use the
+    /// playback-quality selector, because a non-Auto quality returns `None` from
+    /// `route::hls_abr_control` before a controller is ever built, and because the quality ladder
+    /// has no mid-1080p points.
+    ///
+    /// **What it does NOT do**: it changes no threshold, no budget and no risk term. Every
+    /// estimator still updates on every segment, `telemetry()` still reports the model's real
+    /// state, and the log lines still say what the model would have wanted. It short-circuits the
+    /// DECISION only, and only after all measurement has been taken — so the numbers M4 reads are
+    /// the numbers an unpinned run would have produced for that rung.
+    pub(crate) fn pinned_to(mut self, pin: Option<Rung>) -> Self {
+        self.pin = pin;
+        self
     }
 
     pub(crate) fn current(&self) -> Rung {
@@ -2120,6 +2199,23 @@ impl Controller {
         }
         if self.cooldown > 0 {
             self.cooldown -= 1;
+        }
+        // The dev pin (`pinned_to`) short-circuits the decision and NOTHING above it: every
+        // estimator has already taken this segment. Reaching the pinned rung goes through the
+        // ordinary prime/validate/commit transaction, so a pinned run exercises the real transport
+        // path rather than a shortcut into it.
+        if let Some(pin) = self.pin {
+            if self.current == pin {
+                return Decision::Stay;
+            }
+            // Wait for a reserve the transaction can be paid out of; see PIN_MIN_RESERVE_SEGMENTS.
+            if buffered < segment.saturating_mul(PIN_MIN_RESERVE_SEGMENTS) {
+                return Decision::Stay;
+            }
+            let direction = if pin.kbps() > self.current.kbps() { Direction::Up } else { Direction::Down };
+            let proposal = Proposal { rung: pin, direction };
+            self.pending = Some(proposal);
+            return Decision::Prime(proposal);
         }
 
         // Fast-down: either current-sustainability signal may fail. A JIT ratio around 1.0 is
@@ -2266,6 +2362,10 @@ impl Controller {
         true
     }
 }
+
+/// The closed-loop plant (I0-B/C). Host-only: it never ships.
+#[cfg(test)]
+mod sim;
 
 #[cfg(test)]
 mod tests {

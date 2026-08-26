@@ -26,6 +26,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -1111,6 +1112,219 @@ class NetcondRate(unittest.TestCase):
         # A quarter of the rate is four times the floor; releasing it has to land well inside that.
         self.assertLess(live_s, self.FLOOR_S * 4,
                         "releasing the mode mid-transfer changed nothing")
+
+
+# ---------------------------------------------------------------------------
+# The ABR observation metrics added by increment I0 of docs/adaptive-playback-plan.md.
+#
+# Classification (plan §8): every test in this block is a MATHEMATICAL INVARIANT or an
+# INTEGRATION test. None of them is a policy-choice test — nothing here asserts that any rung,
+# threshold, cooldown or decision is correct, and nothing here may be given a bound taken from a
+# run of the code it grades.
+# ---------------------------------------------------------------------------
+def _sample_line(current=10000, media=9800, net=40000, buf=8000, vbuf=8000,
+                 abuf="8200ms", prod=300, n=5, decision="stay", target=0):
+    return (f"[  12.345] abr: sample current={current}kbps media={media}kbps net={net}kbps "
+            f"buf={buf}ms vbuf={vbuf}ms abuf={abuf} prod={prod}pm n={n} "
+            f"decision={decision} target={target}kbps reason=None")
+
+
+class AbrTraceMetrics(unittest.TestCase):
+    """MATHEMATICAL INVARIANT: the metrics compute what their names say, on hand-built input."""
+
+    def test_a_sample_line_round_trips_every_field(self):
+        got = run.abr_samples([_sample_line(abuf="none", decision="prime_down", target=4000)])
+        self.assertEqual(len(got), 1)
+        self.assertEqual(got[0]["current_kbps"], 10000)
+        self.assertEqual(got[0]["media_kbps"], 9800)
+        self.assertEqual(got[0]["buf_ms"], 8000)
+        self.assertIsNone(got[0]["abuf_ms"], "a silent lane must be None, not 0")
+        self.assertEqual(got[0]["decision"], "prime_down")
+        self.assertEqual(got[0]["target_kbps"], 4000)
+
+    def test_the_minimum_reserve_is_the_minimum_observed(self):
+        lines = [_sample_line(buf=8000), _sample_line(buf=1200), _sample_line(buf=6000)]
+        self.assertEqual(run.abr_min_buf_ms(run.abr_samples(lines)), 1200)
+        self.assertIsNone(run.abr_min_buf_ms([]), "no samples must read as absent, not as 0")
+
+    def test_min_buf_sees_a_trough_that_the_steady_line_cannot(self):
+        """INTEGRATION, and the whole justification for the new log line.
+
+        `abr: steady` is emitted only on `Decision::Stay`. The lowest-reserve segment of a
+        drawdown is by construction the one that decides to move, so it emits no steady line at
+        all — a minimum read from that source is blind to exactly the sample it is named for.
+        Here the trough is a `prime_down` segment: the metric must see it, and it must be lower
+        than anything the steady-only view could have reported.
+        """
+        lines = [_sample_line(buf=9000), _sample_line(buf=900, decision="prime_down", target=4000),
+                 _sample_line(buf=7000)]
+        steady_only = [s["buf_ms"] for s in run.abr_samples(lines) if s["decision"] == "stay"]
+        self.assertEqual(run.abr_min_buf_ms(run.abr_samples(lines)), 900)
+        self.assertGreater(min(steady_only), 900,
+                           "the fixture no longer exercises the blindness it exists to prove")
+
+    def test_the_dip_metric_reads_delivered_media_not_the_chosen_rung(self):
+        """MATHEMATICAL INVARIANT: `dip_max_kbps` comes from observed transport.
+
+        The dip window is found from `net=` alone, with no knowledge of the injected profile, and
+        the reported number is the `media=` actually delivered inside it. `current=` is held at a
+        constant here precisely so a metric derived from the controller's own choice could not
+        produce the expected value.
+        """
+        lines = ([_sample_line(net=40000, media=9800)] * 3
+                 + [_sample_line(net=3000, media=2100), _sample_line(net=2500, media=1900)]
+                 + [_sample_line(net=40000, media=9800)] * 3)
+        kbps, note = run.abr_dip_max_kbps(run.abr_samples(lines))
+        self.assertEqual(kbps, 2100)
+        self.assertIn("2 segment(s)", note)
+
+    def test_a_run_with_no_dip_reports_absence_rather_than_a_number(self):
+        lines = [_sample_line(net=40000, media=9800)] * 6
+        kbps, note = run.abr_dip_max_kbps(run.abr_samples(lines))
+        self.assertIsNone(kbps)
+        self.assertIn("no segment", note)
+
+    def test_stalls_come_from_the_media_clock_not_from_the_buffer_model(self):
+        """MATHEMATICAL INVARIANT: a stall is `pos=` failing to advance, and nothing else.
+
+        Not the starvation horizon, not `buffered < threshold`, not `starving()`. The series here
+        advances, holds for three beats, advances, holds for one: max 3, total 4.
+        """
+        beats = [1, 2, 3, 3, 3, 3, 4, 5, 5, 6]
+        lines = [f"loop=60 fps=60 pos={p}s" for p in beats]
+        self.assertEqual(run.abr_stalls(lines), (3, 4, len(beats)))
+
+    def test_a_run_too_short_to_judge_reports_absence(self):
+        self.assertEqual(run.abr_stalls(["loop=60 fps=60 pos=1s"]), (None, None, 1))
+
+    def test_raster_changes_count_transitions_not_commits(self):
+        """MATHEMATICAL INVARIANT: eight rungs share 1920x1080 and are eventless to a viewer."""
+        lines = [
+            "abr: committed Up to 8000kbps 1920x1080",
+            "abr: committed Up to 14000kbps 1920x1080",   # same raster: not an event
+            "abr: committed Down to 4000kbps 1280x720",   # a raster band crossing
+            "abr: committed Up to 8000kbps 1920x1080",    # and back
+        ]
+        self.assertEqual(run.abr_raster_changes(lines), 2)
+
+    def test_characterisation_reports_the_three_baseline_observations(self):
+        """INTEGRATION: the text increment I1 records about unmodified HEAD."""
+        lines = [
+            "abr: history switches=2 since_last=41000 advanced=0ms",
+            "abr: seed rung=720kbps prior=2100kbps slow=2100kbps fast=2100kbps unc=500pm n=1 pin=none",
+            _sample_line(current=720, media=700, buf=1958, decision="prime_down", target=320),
+        ]
+        notes = run.abr_characterisation(lines)
+        self.assertTrue(any("first segment" in n and "buf=1958ms" in n for n in notes))
+        self.assertTrue(any("seed:" in n and "prior=2100kbps" in n for n in notes))
+        self.assertTrue(any("advanced=0ms" in n for n in notes), "the decay input must be visible")
+
+    def test_the_shape_story_reports_every_metric_even_with_no_samples(self):
+        """INTEGRATION: a case whose controller never logged a sample must SAY the metrics are
+        blind rather than quietly reporting nothing."""
+        ok, story = run.a_abr_shape(["abr: steady current=8000kbps"], {})
+        self.assertTrue(ok, "no bound was requested, so nothing may fail")
+        self.assertIn("min_buf_ms=n/a", story)
+        self.assertIn("WARNING", story)
+
+
+class AbrLogLineContract(unittest.TestCase):
+    """MATHEMATICAL INVARIANT: the app's format string and this harness's regex are ONE statement.
+
+    They are written in two languages in two files, and nothing but this test keeps them in step.
+    The failure mode is silent and total: rename or reorder a field in `ff.rs` and every metric in
+    `a_abr_shape` reads `n/a` forever, which looks exactly like a controller that never ran. That
+    is the same shape as the stale-regex bug this project has already had once, when the heartbeat
+    fields were renamed and an old log read as "no samples".
+    """
+
+    FF = os.path.join(REPO_ROOT, "rust-modules", "src", "ff.rs")
+
+    def _emitted_fields(self, prefix):
+        """The `name=` fields of the app's format literal for `abr: <prefix>`, in order."""
+        with open(self.FF) as f:
+            src = f.read()
+        start = src.index(f'"abr: {prefix} ')
+        end = src.index('",', start)
+        # A trailing backslash continues a Rust string literal and strips the newline plus the
+        # next line's indentation, so join the same way the compiler does before reading fields.
+        literal = re.sub(r"\\\s*\n\s*", "", src[start:end])
+        return re.findall(r"(\w+)=", literal)
+
+    def _regex_fields(self, pattern):
+        return re.findall(r"(\w+)=", pattern.pattern)
+
+    def test_the_sample_line_emits_exactly_the_fields_the_harness_parses(self):
+        emitted = self._emitted_fields("sample")
+        parsed = self._regex_fields(run.RE_ABR_SAMPLE)
+        self.assertEqual(emitted[: len(parsed)], parsed,
+                         f"ff.rs emits {emitted}, run.py parses {parsed}")
+        self.assertIn("reason", emitted, "the decision reason must stay on the line")
+
+    def test_the_seed_and_history_lines_match_their_regexes(self):
+        for prefix, pattern in (("seed", run.RE_ABR_SEED), ("history", run.RE_ABR_HISTORY)):
+            with self.subTest(line=prefix):
+                self.assertEqual(self._emitted_fields(prefix), self._regex_fields(pattern))
+
+    def test_a_rendered_line_actually_matches(self):
+        """Belt and braces: the field NAMES agreeing is not the same as the line parsing."""
+        self.assertIsNotNone(run.RE_ABR_SAMPLE.search(_sample_line()))
+        self.assertIsNotNone(run.RE_ABR_SAMPLE.search(_sample_line(abuf="none", buf=-1)))
+
+
+class AbrTriggers(unittest.TestCase):
+    """INTEGRATION: the two manifest keys measurement steps M4 and I5/I6 depend on."""
+
+    BASE = {"name": "t", "fixture": "f.ts", "operations": [], "declare": {},
+            "auto_network": {"source_kbps": 60000}}
+
+    def _names(self, case):
+        return dict(run.triggers_for_case(case, url_base="http://h:8020"))
+
+    def test_a_pin_becomes_a_trigger_and_is_absent_by_default(self):
+        self.assertNotIn("plxnative-abrpin", self._names(dict(self.BASE)))
+        self.assertEqual(self._names({**self.BASE, "abr_pin": 14000})["plxnative-abrpin"], "14000")
+
+    def test_the_policy_selector_becomes_a_trigger_and_is_absent_by_default(self):
+        """It must ride the manifest: `apply_triggers` wipes every plxnative-* before each case,
+        so a hand-armed A/B selector cannot survive into the case it is meant to switch."""
+        self.assertNotIn("plxnative-abrpolicy", self._names(dict(self.BASE)))
+        self.assertEqual(
+            self._names({**self.BASE, "abr_policy": "legacy"})["plxnative-abrpolicy"], "legacy")
+
+    def test_no_manifest_case_carries_a_new_abr_bound_yet(self):
+        """POLICY GUARD, not a policy test. Increment I0 adds the metrics and deliberately grades
+        none of them: a bound written before the I1 baseline exists is a number somebody guessed.
+        If a later increment adds one on purpose, delete this test in that commit and say so.
+        """
+        named = [c["name"] for c in _manifest()["cases"]
+                 for k in ("min_buf_ms", "max_stall_s", "raster_changes_max")
+                 if k in c.get("expect", {}).get("abr_shape", {})]
+        self.assertEqual(named, [], f"cases already assert an I0 metric: {named}")
+
+
+class AbrLadderFixtures(unittest.TestCase):
+    """MATHEMATICAL INVARIANT: every rung the route can request resolves to a distinct clip."""
+
+    def test_every_mid_and_high_rung_has_its_own_rate_targeted_clip(self):
+        """The reachable reserve is `queue_bytes / media_rate`, so rungs that share a file report
+        the same reserve and measurement step M4 can measure nothing."""
+        ladder = [r for r in serve_fixtures.ABR_FIXTURE if int(r) >= 6000]
+        files = [serve_fixtures.ABR_FIXTURE[r] for r in ladder]
+        self.assertEqual(len(set(files)), len(files), f"rungs share a clip: {sorted(files)}")
+
+    def test_the_generator_declares_every_clip_the_server_serves(self):
+        shapes = fixturegen.TIERS["pipeline"]["shapes"]
+        for rung, rel in serve_fixtures.ABR_FIXTURE.items():
+            self.assertIn(rel[: -len(".ts")], shapes, f"rung {rung} names an ungenerated clip")
+
+    def test_a_rate_targeted_clip_encodes_to_its_target_not_to_a_quality(self):
+        shape = fixturegen.TIERS["pipeline"]["shapes"]["pipe_abr_1080p_10m"]
+        args = fixturegen.venc_args(shape["video"])
+        self.assertIn("-b:v", args)
+        self.assertNotIn("-crf", args)
+        # rung request minus the 192 kbps audio track, so the muxed stream lands on the rung.
+        self.assertEqual(args[args.index("-b:v") + 1], "9808k")
 
 
 if __name__ == "__main__":

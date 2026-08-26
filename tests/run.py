@@ -698,6 +698,19 @@ def triggers_for_case(case, url_base=None):
             spec["auto_hls_base"] = f"{url_base}/__abr"
             files[0] = ("plxnative-playurl", json.dumps(spec, separators=(",", ":")))
             files.append(("plxnative-quality", "auto"))
+            # Pin Auto's ladder to one actuator for the whole case, by REQUEST rate. Measurement
+            # step M4 needs a rung held long enough to read a settled reserve at it, and the
+            # playback-quality selector cannot do it: a non-Auto quality returns `None` from
+            # `route::hls_abr_control` before a controller exists, and the quality ladder has no
+            # mid-1080p points. Absent => ordinary Auto.
+            if case.get("abr_pin"):
+                files.append(("plxnative-abrpin", str(int(case["abr_pin"]))))
+            # The A/B selector increments I5 and I6 need. It must come through the manifest and
+            # not be armed by hand: `apply_triggers` wipes every plxnative-* in the runtime root
+            # before each case, so a hand-armed trigger cannot survive into the case it is meant
+            # to switch. Inert today — nothing reads it until a second policy path exists.
+            if case.get("abr_policy"):
+                files.append(("plxnative-abrpolicy", str(case["abr_policy"])))
         # `plxnative-replay=<n>` — how many times a FINISHED playback restarts itself (LG #46).
         # Keyed off `expect.replays`, so the number the app is TOLD and the number the harness
         # GRADES are one statement rather than two that nothing keeps in step. Absent => the
@@ -1223,8 +1236,165 @@ def a_auto_network_recovery(lines, max_fallback_kbps, min_recovered_kbps):
                   f"recovered {recovered.group(1)}")
 
 
+# The DECISION-INDEPENDENT per-segment line (`ff.rs::log_hls_abr_sample`, plan I0-A). Every
+# statistic below is read from THIS and never from `abr: steady`, which the app emits only on
+# `Decision::Stay` — so the segments it omits are exactly the ones where the reserve was lowest,
+# and a minimum read from it cannot see the trough it is named for. Worse, it is an order
+# statistic over a sample whose membership the policy under test controls: a policy that commits
+# more often observes less, and reads as an improvement.
+RE_ABR_SAMPLE = re.compile(
+    r"abr: sample current=(\d+)kbps media=(\d+)kbps net=(\d+)kbps buf=(-?\d+)ms "
+    r"vbuf=(-?\d+)ms abuf=(\S+) prod=(\d+)pm n=(\d+) decision=(\S+) target=(\d+)kbps"
+)
+# The re-seed after a fresh controller is built (plan I0-G) and the switch-history state the
+# worker starts from (plan I0-H). Both are characterisation surfaces: I0 reports them, I4 and I8
+# change what they say.
+RE_ABR_SEED = re.compile(
+    r"abr: seed rung=(\d+)kbps prior=(\S+) slow=(\d+)kbps fast=(\d+)kbps unc=(\d+)pm n=(\d+) pin=(\S+)"
+)
+RE_ABR_HISTORY = re.compile(r"abr: history switches=(\d+) since_last=(\S+) advanced=(\d+)ms")
+
 RE_ABR_STEADY = re.compile(r"abr: steady current=(\d+)kbps")
 RE_ABR_COMMIT = re.compile(r"abr: committed (Up|Down) to (\d+)kbps (\d+)x(\d+)")
+
+
+def abr_samples(lines):
+    """Every `abr: sample` as a dict, in order. One per segment, whatever was decided."""
+    out = []
+    for line in lines:
+        m = RE_ABR_SAMPLE.search(line)
+        if not m:
+            continue
+        out.append({
+            "current_kbps": int(m.group(1)), "media_kbps": int(m.group(2)),
+            "net_kbps": int(m.group(3)), "buf_ms": int(m.group(4)),
+            "vbuf_ms": int(m.group(5)),
+            "abuf_ms": None if m.group(6) == "none" else int(m.group(6).rstrip("ms")),
+            "prod_pm": int(m.group(7)), "n": int(m.group(8)),
+            "decision": m.group(9), "target_kbps": int(m.group(10)),
+        })
+    return out
+
+
+def abr_min_buf_ms(samples):
+    """The lowest reserve the pipeline actually reached, in ms. `None` with no samples.
+
+    This is the controller-visible playable reserve — `min(video, audio) - playback`, the same
+    quantity the decision path used, taken from the same segment. It is not recomputed here and
+    there is deliberately no second notion of "buffer" in this harness.
+    """
+    return min((s["buf_ms"] for s in samples), default=None)
+
+
+def abr_binding_lane(samples):
+    """Which lane held the reserve down, counted over the run: 'video', 'audio' or 'n/a'.
+
+    `buf = min(video, audio)`, and which one binds moves with the rung — the 8 MiB video queue
+    against a multi-Mbit stream versus the 1 MiB audio queue at ~192 kbps. A `buf=` alone cannot
+    say which ceiling was hit, and the answer decides whether a measured reserve confirms or
+    refutes the model in `docs/adaptive-playback-plan.md` §0.1.
+    """
+    video = sum(1 for s in samples if s["abuf_ms"] is None or s["vbuf_ms"] <= s["abuf_ms"])
+    audio = sum(1 for s in samples if s["abuf_ms"] is not None and s["abuf_ms"] < s["vbuf_ms"])
+    if not samples:
+        return "n/a"
+    return f"video {video}/{len(samples)}, audio {audio}/{len(samples)}"
+
+
+def abr_dip_max_kbps(samples):
+    """The highest media rate the pipeline actually SUSTAINED while the link was degraded.
+
+    Returns `(kbps, span)` or `(None, reason)`.
+
+    Defined from observed transport, not from the controller's chosen rung. The plan's provisional
+    definition was `min(visited)` — the depth of the ladder's excursion — which is a function of
+    the decision under test and so cannot grade it: a policy is compared against itself. This
+    reads `media=` (delivered bytes over content duration) over the dip instead, which is what the
+    pipeline managed to keep pushing through while the link was bad.
+
+    The dip WINDOW is found observationally too, with no knowledge of the injected profile: the
+    longest contiguous run of segments whose delivered `net=` was under half the run's peak. A
+    case with no such run has no dip and reports `None` rather than a number that would look like
+    a measurement.
+    """
+    if len(samples) < 3:
+        return None, "too few segments to identify a dip"
+    peak = max(s["net_kbps"] for s in samples)
+    threshold = peak // 2
+    best, cur = [], []
+    for s in samples:
+        if s["net_kbps"] < threshold:
+            cur.append(s)
+        else:
+            best, cur = (cur if len(cur) > len(best) else best), []
+    best = cur if len(cur) > len(best) else best
+    if not best:
+        return None, f"no segment fell below half the peak ({threshold}kbps)"
+    return max(s["media_kbps"] for s in best), f"{len(best)} segment(s) under {threshold}kbps"
+
+
+def abr_stalls(lines):
+    """`(max_continuous_s, total_s, samples)` of REAL playback stall, from the 1 Hz `pos=` series.
+
+    A stall is the media clock failing to advance between two consecutive heartbeats. It is NOT
+    the starvation horizon, not `buffered < threshold`, and not the controller's `starving()`
+    boolean — those are the model's opinion about the future, and this is what happened.
+
+    RESOLUTION IS +/-1 s AND CANNOT BE BETTER FROM THIS SOURCE: `pos=` is integer seconds on a
+    once-per-second heartbeat (`RE_POS`), so a sub-second gap is invisible and a 1 s reading may be
+    rounding. Quote it as a floor on stall duration, never as a precise one.
+    """
+    series = [p for p, _ in playpos_secs(lines)]
+    if len(series) < 2:
+        return None, None, len(series)
+    runs, cur = [], 0
+    for before, after in zip(series, series[1:]):
+        if after <= before:
+            cur += 1
+        elif cur:
+            runs.append(cur)
+            cur = 0
+    if cur:
+        runs.append(cur)
+    return (max(runs) if runs else 0), sum(runs), len(series)
+
+
+def abr_raster_changes(lines):
+    """Commits whose raster differs from the previous commit's.
+
+    Eight of the thirteen rungs share 1920x1080 and are eventless to a viewer; four of the twelve
+    adjacent steps cross a raster band and are a different class of event. Counting commits alone
+    cannot tell those apart. NB the app prints the CATALOG raster on its commit line, so this
+    counts intended raster changes; the observed output raster is not yet logged (plan §7.B).
+    """
+    rasters = [f"{m.group(3)}x{m.group(4)}"
+               for line in lines for m in [RE_ABR_COMMIT.search(line)] if m]
+    return sum(1 for a, b in zip(rasters, rasters[1:]) if a != b)
+
+
+def abr_characterisation(lines):
+    """The three baseline observations I1 has to record, as printable text. Never graded.
+
+    * the FIRST segment: its reserve, decision and target (plan §0.3(1) predicts a downshift on
+      every playback, on any link, because one segment of reserve trips `starving()`);
+    * the controller SEED after a fresh construction, which a seek forces (plan §7.G);
+    * the switch-history state and the elapsed time actually passed to its decay (plan §7.H).
+    """
+    out = []
+    samples = abr_samples(lines)
+    if samples:
+        first = samples[0]
+        out.append(f"first segment: buf={first['buf_ms']}ms current={first['current_kbps']}kbps "
+                   f"decision={first['decision']} target={first['target_kbps']}kbps")
+    for m in [RE_ABR_SEED.search(ln) for ln in lines]:
+        if m:
+            out.append(f"seed: rung={m.group(1)}kbps prior={m.group(2)} slow={m.group(3)}kbps "
+                       f"unc={m.group(5)}pm n={m.group(6)} pin={m.group(7)}")
+    for m in [RE_ABR_HISTORY.search(ln) for ln in lines]:
+        if m:
+            out.append(f"history: switches={m.group(1)} since_last={m.group(2)} "
+                       f"advanced={m.group(3)}ms")
+    return out
 
 
 def a_abr_shape(lines, spec):
@@ -1259,6 +1429,34 @@ def a_abr_shape(lines, spec):
                         ((c[0], c[1], c[2]) for c in commits)) or "no changes"
     story = (f"rungs {min(visited)}..{max(visited)}kbps, settled {visited[-1]}kbps, "
              f"{len(commits)} change(s): {trail}")
+
+    # The observed metrics (plan I0-A). REPORTED ALWAYS, asserted only where a case names a bound
+    # — and no case names one in increment I0, deliberately: these exist so I1 can record what
+    # HEAD does, and a bound written before that baseline exists would be a number somebody
+    # guessed. Each comes from observed playback, never from the model under test.
+    samples = abr_samples(lines)
+    min_buf = abr_min_buf_ms(samples)
+    dip_kbps, dip_note = abr_dip_max_kbps(samples)
+    stall_max, stall_total, beats = abr_stalls(lines)
+    rasters = abr_raster_changes(lines)
+    story += (f" | min_buf_ms={min_buf if min_buf is not None else 'n/a'}"
+              f" dip_max_kbps={dip_kbps if dip_kbps is not None else 'n/a'} ({dip_note})"
+              f" max_stall_s={stall_max if stall_max is not None else 'n/a'}"
+              f" (total {stall_total if stall_total is not None else 'n/a'}s over {beats} beats,"
+              f" +/-1s) raster_changes={rasters} lane[{abr_binding_lane(samples)}]"
+              f" segments={len(samples)}")
+    if not samples:
+        story += " | WARNING: no `abr: sample` line — every metric above is blind"
+
+    floor_buf = spec.get("min_buf_ms")
+    if floor_buf is not None and (min_buf is None or min_buf < floor_buf):
+        return False, f"reserve fell to {min_buf}ms, want >= {floor_buf}ms :: {story}"
+    stall_cap = spec.get("max_stall_s")
+    if stall_cap is not None and (stall_max is None or stall_max > stall_cap):
+        return False, f"stalled {stall_max}s, want <= {stall_cap}s :: {story}"
+    raster_cap = spec.get("raster_changes_max")
+    if raster_cap is not None and rasters > raster_cap:
+        return False, f"{rasters} raster change(s), want <= {raster_cap} :: {story}"
 
     ceiling = spec.get("ceiling_kbps")
     if ceiling is not None and max(visited) > ceiling:
@@ -2627,6 +2825,15 @@ def run_pipeline_case(case, cfg, srv, url_base, verbose):
         print(f"    GST trace: {len(gst_lines)} line(s)")
     passed, results = evaluate_pipeline(case, lines, delta, gst_lines=gst_lines)
     report_case(passed, results, elapsed, run_secs, stopped_early, settled, verbose)
+    # CHARACTERISATION (plan I0-F/G/H). Printed for any case that ran the HLS controller, never
+    # graded: these are the three observations increment I1 has to record about UNMODIFIED HEAD,
+    # and later increments are expected to change what they say. Asserting them would pin today's
+    # behaviour as desirable, which is exactly what I0 must not do.
+    notes = abr_characterisation(lines)
+    if notes:
+        print("    characterisation (recorded, not graded):")
+        for note in notes:
+            print(f"       {note}")
     if delta[0] == 0:
         # Every case that reaches the television opens at least one body. Zero means the TV never
         # connected AT ALL, and on macOS the overwhelmingly likely reason is not the app: the
