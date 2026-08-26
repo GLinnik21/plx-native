@@ -2937,6 +2937,140 @@ fn publish_hls_abr_action(proposal: crate::abr::Proposal, committed: Option<bool
     SHARED.dg_abr_target_kbps.store(i64::from(proposal.rung.kbps()), Ordering::Relaxed);
 }
 
+/// **One record per candidate transaction, emitted on EVERY exit path.** Increment I2's
+/// instrumentation; it changes no decision.
+///
+/// A `Drop` guard rather than a log call at each `continue`, because the prime arm has twelve
+/// distinct reject paths (`control.prime` refusing, an origin change, the master playlist, the
+/// media playlist, two demux legs, the timeline, acceptance, the raster check) and a thirteenth
+/// added later would silently stop being measured. Drop cannot be forgotten.
+///
+/// **What it is for.** The claim that a transaction's budget can be derived from the reserve
+/// (`T = B - A_i`) rests on the transaction's real cost, and this project has never measured it:
+/// the only figure anywhere is a *derived* 4600 ms in the host plant, which is a sum of two
+/// UPSHIFT deadlines and describes a two-segment shape a downshift does not have. Worse, neither
+/// deadline covers the control plane — `control.prime`, the master playlist and both
+/// `hls_cursor_next` calls sit outside every budget (`ff.rs`'s own note above the warm-up
+/// deadline says so) — so the leg most likely to dominate is the one nothing bounds.
+///
+/// **Why the drawdown is otherwise invisible.** The prime arm runs INLINE inside the loop that
+/// emits one `abr: sample` per iteration, so no sample is emitted between proposal and commit. A
+/// `min_buf_ms` computed from `abr: sample` cannot see the transaction's cost at all; that is a
+/// property of where the samples are taken, not evidence that the cost is small.
+struct TxTrace {
+    started: std::time::Instant,
+    control_plane_ms: Option<i64>,
+    warmup_acq_ms: Option<i64>,
+    graded_acq_ms: Option<i64>,
+    buf_start_ms: i64,
+    /// Acquisition of the CURRENT stream's segment immediately before the transaction — the
+    /// `resume_cost` the viability claim's admission rule would divide the reserve against.
+    cur_acq_before_ms: i64,
+    net_kbps: u32,
+    fast_kbps: u32,
+    slow_kbps: u32,
+    unc_pm: u32,
+    direction: crate::abr::Direction,
+    from_kbps: u32,
+    to_kbps: u32,
+    outcome: &'static str,
+    /// Elapsed at the moment the commit/reject was DECIDED, which is where the unrefilled cost
+    /// ends. `total` below runs to scope end and so also contains the post-commit feed of the
+    /// staged candidate segments — that blocks on `aq_push` against a full queue, so it is
+    /// backpressure, not transaction cost, and charging it as one over-states the cost by
+    /// several seconds. The two are logged separately for exactly that reason.
+    decided_ms: Option<i64>,
+    /// The reserve at the decision, before any candidate segment is fed.
+    buf_decided_ms: Option<i64>,
+}
+
+impl TxTrace {
+    fn open(
+        proposal: crate::abr::Proposal,
+        from: crate::abr::Rung,
+        sample: crate::abr::SegmentSample,
+        delivery: &crate::abr::CapacityEstimate,
+    ) -> Self {
+        Self {
+            started: std::time::Instant::now(),
+            control_plane_ms: None,
+            warmup_acq_ms: None,
+            graded_acq_ms: None,
+            // The HONEST reserve: `hls_buffer_snapshot(None)` reads only what has actually been
+            // FED, where the `Some(output)` arm folds in a staged candidate tail that has not been.
+            buf_start_ms: hls_buffer_snapshot(None).buffered_ms(),
+            cur_acq_before_ms: i64::from(sample.production_ratio_pm())
+                * i64::from(sample.media_duration_ms())
+                / 1_000,
+            net_kbps: sample.network_kbps(),
+            fast_kbps: delivery.fast_kbps,
+            slow_kbps: delivery.slow_kbps,
+            unc_pm: delivery.uncertainty_pm,
+            direction: proposal.direction,
+            from_kbps: from.kbps(),
+            to_kbps: proposal.rung.kbps(),
+            // If this survives to the log, an exit path forgot `finish` — the record
+            // says so rather than looking like a labelled outcome.
+            outcome: "UNLABELLED_PATH",
+            decided_ms: None,
+            buf_decided_ms: None,
+        }
+    }
+
+    fn mark_control_plane(&mut self) {
+        self.control_plane_ms = Some(self.elapsed_ms());
+    }
+
+    /// Acquisition of one candidate media segment, measured the same way production measures the
+    /// current stream: request to demux complete, backpressure excluded.
+    fn mark_media(&mut self, output: &HlsSegmentOutput, graded: bool) {
+        let acq = i64::try_from(output.transfer.total_us / 1_000).unwrap_or(i64::MAX);
+        if graded {
+            self.graded_acq_ms = Some(acq);
+        } else {
+            self.warmup_acq_ms = Some(acq);
+        }
+    }
+
+    fn finish(&mut self, outcome: &'static str) {
+        self.outcome = outcome;
+        self.decided_ms = Some(self.elapsed_ms());
+        self.buf_decided_ms = Some(hls_buffer_snapshot(None).buffered_ms());
+    }
+
+    fn elapsed_ms(&self) -> i64 {
+        i64::try_from(self.started.elapsed().as_millis()).unwrap_or(i64::MAX)
+    }
+}
+
+impl Drop for TxTrace {
+    fn drop(&mut self) {
+        let opt = |v: Option<i64>| v.map(|n| n.to_string()).unwrap_or_else(|| "none".to_string());
+        crate::player::log(&format!(
+            "abr: tx {:?} {}->{}kbps outcome={} decided={}ms total={}ms control={}ms warmup={}ms \
+             graded={}ms buf_start={}ms buf_decided={}ms buf_end={}ms cur_acq_before={}ms \
+             net={}kbps fast={}kbps slow={}kbps unc={}pm",
+            self.direction,
+            self.from_kbps,
+            self.to_kbps,
+            self.outcome,
+            opt(self.decided_ms),
+            self.elapsed_ms(),
+            opt(self.control_plane_ms),
+            opt(self.warmup_acq_ms),
+            opt(self.graded_acq_ms),
+            self.buf_start_ms,
+            opt(self.buf_decided_ms),
+            hls_buffer_snapshot(None).buffered_ms(),
+            self.cur_acq_before_ms,
+            self.net_kbps,
+            self.fast_kbps,
+            self.slow_kbps,
+            self.unc_pm,
+        ));
+    }
+}
+
 fn reject_hls_abr(controller: &mut crate::abr::Controller, proposal: crate::abr::Proposal) {
     controller.reject(proposal);
     publish_hls_abr_action(proposal, Some(false));
@@ -3205,6 +3339,9 @@ fn hls_demux(
             continue;
         }
         let crate::abr::Decision::Prime(proposal) = decision else { continue };
+        // Records the whole transaction on every exit path, including the twelve rejects. Drop
+        // emits it; nothing below has to remember to.
+        let mut tx = TxTrace::open(proposal, controller.current(), sample, &controller.delivery());
         publish_hls_abr_action(proposal, None);
         *generation = generation.saturating_add(1);
         let offset_secs = SHARED
@@ -3220,14 +3357,16 @@ fn hls_demux(
             offset_secs,
         ) else {
             reject_hls_abr(controller, proposal);
-            crate::player::log("abr: candidate registration rejected; staying on current rung");
+            tx.finish("prime_refused");
+                crate::player::log("abr: candidate registration rejected; staying on current rung");
             continue;
         };
         let candidate_url = crate::plex::StreamUrl::parse(&primed.url);
         if candidate_url.origin != *origin {
             control.abandon(&primed.encoder_session);
             reject_hls_abr(controller, proposal);
-            crate::player::log("abr: candidate changed origin; rejected");
+            tx.finish("origin_changed");
+                crate::player::log("abr: candidate changed origin; rejected");
             continue;
         }
         let mut candidate = match hls_cursor_open(&candidate_url.origin, &candidate_url.path, aq, hs) {
@@ -3235,6 +3374,7 @@ fn hls_demux(
             Err(_) => {
                 control.abandon(&primed.encoder_session);
                 reject_hls_abr(controller, proposal);
+                tx.finish("no_master_playlist");
                 crate::player::log("abr: candidate master failed; staying on current rung");
                 continue;
             }
@@ -3244,10 +3384,14 @@ fn hls_demux(
             _ => {
                 control.abandon(&primed.encoder_session);
                 reject_hls_abr(controller, proposal);
+                tx.finish("no_media_playlist");
                 crate::player::log("abr: candidate produced no segment; staying on current rung");
                 continue;
             }
         };
+        // Everything up to here is CONTROL PLANE — `control.prime`, the master playlist and the
+        // media playlist — and no deadline in this function covers any of it.
+        tx.mark_control_plane();
         // Candidate transport deadlines belong to media SEGMENTS, not PMS session creation. A
         // remote PMS may spend a second registering the encoder and returning its master/media
         // playlists before the first media byte is requested. Charging that setup against a
@@ -3283,6 +3427,7 @@ fn hls_demux(
             Err(HlsExit::PrimeExpired) => {
                 control.abandon(&primed.encoder_session);
                 reject_hls_abr(controller, proposal);
+                tx.finish("warmup_deadline");
                 crate::player::log(
                     "abr: upshift candidate warm-up exceeded deadline; staying on current rung",
                 );
@@ -3291,10 +3436,12 @@ fn hls_demux(
             Err(_) => {
                 control.abandon(&primed.encoder_session);
                 reject_hls_abr(controller, proposal);
+                tx.finish("warmup_failed");
                 crate::player::log("abr: candidate segment failed; staying on current rung");
                 continue;
             }
         };
+        tx.mark_media(&candidate_output, false);
         staged_timeline.commit(candidate_clock);
         let mut candidate_outputs =
             vec![(candidate_output, candidate_clock, candidate_segment.duration)];
@@ -3310,7 +3457,8 @@ fn hls_demux(
                 _ => {
                     control.abandon(&primed.encoder_session);
                     reject_hls_abr(controller, proposal);
-                    crate::player::log(
+                    tx.finish("no_graded_segment");
+                crate::player::log(
                         "abr: upshift candidate produced no graded segment; staying on current rung",
                     );
                     continue;
@@ -3344,6 +3492,7 @@ fn hls_demux(
                 Err(HlsExit::PrimeExpired) => {
                     control.abandon(&primed.encoder_session);
                     reject_hls_abr(controller, proposal);
+                    tx.finish("graded_deadline");
                     crate::player::log(
                         "abr: upshift candidate lacked steady production headroom; staying on current rung",
                     );
@@ -3352,12 +3501,14 @@ fn hls_demux(
                 Err(_) => {
                     control.abandon(&primed.encoder_session);
                     reject_hls_abr(controller, proposal);
-                    crate::player::log(
+                    tx.finish("graded_failed");
+                crate::player::log(
                         "abr: candidate graded segment failed; staying on current rung",
                     );
                     continue;
                 }
             };
+            tx.mark_media(&graded_output, true);
             staged_timeline.commit(graded_clock);
             candidate_outputs.push((graded_output, graded_clock, graded_segment.duration));
         }
@@ -3373,9 +3524,11 @@ fn hls_demux(
             control.abandon(&primed.encoder_session);
             reject_hls_abr(controller, proposal);
             if raster_ready {
+                tx.finish("not_ready");
                 crate::player::log("abr: candidate lacked measured headroom; staying on current rung");
             } else {
-                crate::player::log(&format!(
+                tx.finish("raster_refused");
+                    crate::player::log(&format!(
                     "abr: candidate raster {}x{} exceeds {}x{}; staying on current rung",
                     graded_output.video_width,
                     graded_output.video_height,
@@ -3396,6 +3549,7 @@ fn hls_demux(
         let previous = std::mem::replace(active_encoder, primed.encoder_session);
         control.retire(previous);
         controller.commit(proposal);
+        tx.finish("committed");
         SHARED.dg_abr_kbps.store(i64::from(proposal.rung.kbps()), Ordering::Relaxed);
         publish_hls_abr_action(proposal, Some(true));
         cursor = candidate;

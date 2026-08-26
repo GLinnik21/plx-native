@@ -2836,6 +2836,24 @@ def pull_runtime_log(tv, name):
     return proc.stdout.splitlines() if proc.returncode == 0 else []
 
 
+def save_case_log(cfg, name, lines):
+    """Persist one case's event log, if --save-logs asked for it.
+
+    The app truncates `plxnative-events.log` at every launch and every case relaunches, so the
+    only copy of a trace is the one the harness holds in memory. Increment I2 needs those traces
+    (transaction records, per-segment acquisition) and re-running a device case to recover a log
+    costs a television lease.
+    """
+    outdir = cfg.get("save_logs")
+    if not outdir:
+        return None
+    os.makedirs(outdir, exist_ok=True)
+    path = os.path.join(outdir, f"{name}.log")
+    with open(path, "w") as f:
+        f.write("\n".join(lines) + "\n")
+    return path
+
+
 def run_pipeline_case(case, cfg, srv, url_base, verbose):
     """One pipeline case. A sibling of `run_case` with every PMS step removed.
 
@@ -2889,6 +2907,9 @@ def run_pipeline_case(case, cfg, srv, url_base, verbose):
     # the poll path see the same windows whichever way the case ended.
     case["_dip_windows"] = srv.dip_windows()
     passed, results = evaluate_pipeline(case, lines, delta, gst_lines=gst_lines)
+    saved = save_case_log(cfg, name, lines)
+    if saved:
+        print(f"    log saved: {saved} ({len(lines)} lines)")
     report_case(passed, results, elapsed, run_secs, stopped_early, settled, verbose)
     # CHARACTERISATION (plan I0-F/G/H). Printed for any case that ran the HLS controller, never
     # graded: these are the three observations increment I1 has to record about UNMODIFIED HEAD,
@@ -3291,6 +3312,10 @@ def main():
                          "play-only decision + Load-payload cases). Default: every case. "
                          "NB distinct from fps_scenes' ui|player 'tier'.")
     ap.add_argument("--list", action="store_true", help="list cases and exit")
+    ap.add_argument("--save-logs", metavar="DIR", default=None,
+                    help="write each case's full event log to DIR/<case>.log. The app truncates "
+                         "its log every launch and each case overwrites the previous one, so a "
+                         "trace not captured here is gone when the run ends.")
     ap.add_argument("--tv", default=None, help="override TV IP (default from manifest.local.json)")
     # Deliberately NOT `choices=`: the Makefile's FLAVORS list is the one whitelist, and a second
     # copy here would be the copy that goes stale. A bad value fails on the first `make -s print-*`
@@ -3366,6 +3391,7 @@ def main():
         # synthesize the key for it.
         "pms": manifest.get("pms", {}),
         "no_early": args.no_early,
+        "save_logs": args.save_logs,
     }
     cases = manifest["cases"]
     if args.suite:
