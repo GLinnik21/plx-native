@@ -1312,6 +1312,30 @@ def _parsed(pattern, fields, lines, numeric=True):
     return out
 
 
+def early_exit_allowed(case, cfg):
+    """(may this case stop as soon as every assertion holds, why not) -- the NON-monotone check.
+
+    Early exit is sound only because assertions are monotone once satisfied: more time cannot
+    un-satisfy them. Two kinds of bound break that and must run the full cap.
+
+    `gst_trace`: GST_DEBUG_FILE is not tailed by run-stream, so those assertions can only be
+    graded after the run; an event-log-only partial grade must not end the case first.
+
+    `abr_shape`: its `max_commits` bound COUNTS EVENTS over whatever window it was given, so
+    stopping early does not merely observe less -- it scores lower, in the passing direction. The
+    same binary scored 7 rung changes on a full window while PASSING a 5-bound on an early-exit
+    run of the same case (I1, 2026-08-26), then 8 on a later full window. A bound whose value
+    depends on when grading stopped cannot be graded early in either direction.
+    """
+    if cfg.get("no_early"):
+        return False, ""                      # the operator already said so; no need to explain
+    if case.get("gst_trace"):
+        return False, "gst_trace assertions are graded only after the run"
+    if "abr_shape" in (case.get("expect") or {}):
+        return False, "abr_shape carries a commit COUNT, which is window-length sensitive"
+    return True, ""
+
+
 def abr_transactions(lines):
     """Every `abr: tx` as a dict. One per proposal, commit or reject."""
     return _parsed(RE_ABR_TX, TX_FIELDS, lines)
@@ -2954,9 +2978,9 @@ def run_pipeline_case(case, cfg, srv, url_base, verbose):
         now = srv.stats()
         return evaluate_pipeline(c, ls, (now[0] - before[0], now[1] - before[1]))
 
-    # GST_DEBUG_FILE is not tailed by run-stream, so its assertions can be graded only after the
-    # run. Never let the event-log-only partial grade stop an instrumented case early.
-    early = not cfg.get("no_early") and not case.get("gst_trace")
+    early, why = early_exit_allowed(case, cfg)
+    if not early and why:
+        print(f"    early exit disabled: {why}")
     print(f"    run-stream (cap {run_secs}s{'' if early else ', early exit off'}) ...")
     lines, elapsed, stopped_early, settled = stream_case(case, cfg, run_secs, early=early,
                                                          evaluator=grade)

@@ -23,6 +23,7 @@ skips only its owner — are properties of the tracked matrix as it actually sta
 tomorrow that breaks one of them should fail here rather than on the television.
 """
 import importlib.util
+import inspect
 import io
 import json
 import os
@@ -920,10 +921,11 @@ class AutoNetworkProfile(unittest.TestCase):
                 self.assertIn("network_profile", case, "a shaped case must shape the link")
                 bounds = case["expect"].get("abr_shape") or {}
                 self.assertTrue(bounds, "no abr_shape bound — this case grades nothing new")
-                self.assertTrue(
-                    set(bounds) <= {"ceiling_kbps", "floor_kbps", "max_commits",
-                                    "settle_min_kbps", "settle_max_kbps"},
-                    f"unknown abr_shape key in {case['name']}: {sorted(bounds)}")
+                unknown = set(bounds) - abr_shape_keys()
+                self.assertFalse(
+                    unknown,
+                    f"abr_shape key in {case['name']} that a_abr_shape does not implement: "
+                    f"{sorted(unknown)}. A bound nothing reads is silently never graded.")
 
     def test_every_census_case_is_unshaped_pinned_and_grades_nothing(self):
         """The complementary rule for the M4 census family (plan I0-J / I1-C).
@@ -1438,10 +1440,20 @@ class AbrTriggers(unittest.TestCase):
         none of them: a bound written before the I1 baseline exists is a number somebody guessed.
         If a later increment adds one on purpose, delete this test in that commit and say so.
         """
-        named = [c["name"] for c in _manifest()["cases"]
-                 for k in ("min_buf_ms", "max_stall_s", "raster_changes_max")
-                 if k in c.get("expect", {}).get("abr_shape", {})]
+        # It searched `cases` -- the SERVER tier -- until 2026-08-26, where 0 of 21 carry an
+        # `abr_shape` block at all: the guard could not fire, and the 11 cases that do carry one
+        # live in `pipeline_cases`. Both lists are searched now, so moving a case between tiers
+        # cannot evade it either.
+        manifest = _manifest()
+        lists = [k for k, v in manifest.items() if isinstance(v, list)]
+        named = [f"{k}:{c['name']}.{metric}" for k in lists for c in manifest[k]
+                 for metric in ("min_buf_ms", "max_stall_s", "raster_changes_max")
+                 if metric in (c.get("expect") or {}).get("abr_shape", {})]
         self.assertEqual(named, [], f"cases already assert an I0 metric: {named}")
+        # And the guard must be able to SEE the cases it is guarding, or it is vacuous again.
+        carriers = [c["name"] for k in lists for c in manifest[k]
+                    if "abr_shape" in (c.get("expect") or {})]
+        self.assertTrue(carriers, "no case carries abr_shape -- this guard is searching nothing")
 
 
 class AbrLadderFixtures(unittest.TestCase):
@@ -1610,6 +1622,62 @@ class LogLineContract(unittest.TestCase):
         never = run.hls_segments([line.replace("ttfb_ms=311", "ttfb_ms=-1")])
         self.assertEqual(never[0]["ttfb_ms"], -1,
                          "no byte ever arrived is -1, which is not a fast first byte")
+
+
+def abr_shape_keys():
+    """The bounds `a_abr_shape` actually implements, read from its SOURCE.
+
+    This was a hand-written set of five, and it omitted the three metrics the function has read
+    since increment I0 (`min_buf_ms`, `max_stall_s`, `raster_changes_max`) -- so a case using one
+    of them would have been rejected as an unknown key even though the grader honours it.
+
+    Deriving it from the implementation is the same trick as the log-line contract above, and for
+    the same reason: a restated list drifts silently, and both directions of the drift are bad. An
+    unlisted-but-implemented key blocks a legitimate bound; a listed-but-unimplemented key lets a
+    case declare a bound that nothing ever reads, which passes forever.
+    """
+    src = inspect.getsource(run.a_abr_shape)
+    return set(re.findall(r'spec\.get\("([a-z_]+)"', src))
+
+
+class EarlyExitSoundness(unittest.TestCase):
+    """Early exit is sound only for MONOTONE assertions. These are the exceptions.
+
+    The failure it guards is a false PASS, not a false fail: `max_commits` counts events over
+    whatever window it was given, so a run that stops early scores LOWER and a regression that
+    adds rung changes can slip under the bound. Observed on the real matrix -- 7 changes on a full
+    window, passing a 5-bound early, 8 on a later full window, same binary.
+    """
+
+    def test_abr_shape_never_grades_on_a_partial_window(self):
+        allowed, why = run.early_exit_allowed({"expect": {"abr_shape": {"max_commits": 5}}}, {})
+        self.assertFalse(allowed, "a commit COUNT cannot be graded on a truncated window")
+        self.assertIn("window", why, "the reason has to say why, it appears in the run output")
+
+    def test_gst_trace_never_grades_early(self):
+        allowed, _ = run.early_exit_allowed({"expect": {}, "gst_trace": True}, {})
+        self.assertFalse(allowed)
+
+    def test_an_ordinary_case_still_exits_early(self):
+        allowed, why = run.early_exit_allowed({"expect": {"codec": "h264", "no_error": True}}, {})
+        self.assertTrue(allowed, "early exit is the default and is what keeps the suite quick")
+        self.assertEqual(why, "")
+
+    def test_no_early_needs_no_explanation(self):
+        allowed, why = run.early_exit_allowed({"expect": {}}, {"no_early": True})
+        self.assertFalse(allowed)
+        self.assertEqual(why, "", "the operator asked for it; printing a reason is noise")
+
+    def test_every_manifest_case_with_abr_shape_is_covered(self):
+        """Not a fixture -- the REAL matrix. A case added tomorrow is covered by construction."""
+        with open(os.path.join(REPO_ROOT, "tests", "manifest.json"), encoding="utf-8") as fh:
+            manifest = json.load(fh)
+        cases = [c for c in manifest.get("pipeline_cases", [])
+                 if "abr_shape" in (c.get("expect") or {})]
+        self.assertTrue(cases, "the matrix should still carry abr_shape cases")
+        for case in cases:
+            allowed, _ = run.early_exit_allowed(case, {})
+            self.assertFalse(allowed, f"{case.get('name')} would grade a commit count early")
 
 
 if __name__ == "__main__":
