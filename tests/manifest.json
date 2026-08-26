@@ -1600,7 +1600,7 @@
         "rung-pin"
       ],
       "declare": {"vcodec": "h264", "acodec": "aac", "fps": 24.0},
-      "auto_network": {"source_kbps": 60000},
+      "auto_network": {"source_kbps": 900000},
       "abr_pin": 320,
       "run_secs": 120,
       "operations": [{"op": "play"}],
@@ -1608,12 +1608,12 @@
         "codec": "h264",
         "load_video": "H264",
         "load_audio": "AAC",
-        "min_pos_climb_s": 80,
+        "min_pos_climb_s": 45,
         "require_video_bound": true,
         "no_playing_error": true,
         "abr_shape": {}
       },
-      "_census_note": "Measurement step M4 of docs/adaptive-playback-plan.md, as ONE command: this case writes the play URL, quality=auto and plxnative-abrpin together, so the census needs no manual prerequisite. the bottom of the ladder: the 1 MiB AUDIO queue should bind, not the 8 MiB video one. The link is deliberately UNSHAPED (no network_profile) so the AU queue byte cap is the only limiter -- a shaped leg would measure the shaper instead. `abr_shape: {}` reports every I0 metric and asserts none of them: this case exists to produce evidence, and a bound written before the baseline exists would be a number somebody guessed. min_pos_climb_s is set high on purpose, to stop the harness early-exit ending the case before the reserve has settled; --no-early does the same from the command line."
+      "_census_note": "Measurement step M4 of docs/adaptive-playback-plan.md, as ONE command: this case writes the play URL, quality=auto and plxnative-abrpin together, so the census needs no manual prerequisite. the bottom of the ladder: the 1 MiB AUDIO queue should bind, not the 8 MiB video one. The link is deliberately UNSHAPED (no network_profile) so the AU queue byte cap is the only limiter -- a shaped leg would measure the shaper instead. source_kbps is declared at 900000 for exactly one reason: on an unshaped LAN a 60000 kbps source IS sustainable, so Auto stays on Original and the HLS controller never runs at all (device-observed 2026-08-26 -- the shaped cases only reach HLS because their slow leg forces it). A source no link can carry forces the HLS path without shaping the link. `abr_shape: {}` reports every I0 metric and asserts none of them: this case exists to produce evidence, and a bound written before the baseline exists would be a number somebody guessed. Run it with --no-early: the census needs the FULL window, and a case that satisfied every assertion would otherwise stop as soon as it had. min_pos_climb_s stays below the 60 s entry fixture's own duration, which the harness checks up front."
     },
     {
       "name": "pipe_abr_pin_720",
@@ -1625,7 +1625,10 @@
         "rung-pin"
       ],
       "declare": {"vcodec": "h264", "acodec": "aac", "fps": 24.0},
-      "auto_network": {"source_kbps": 60000},
+      "auto_network": {"source_kbps": 900000},
+      "network_profile": [
+        {"until_s": 600.0, "kbps": 6000}
+      ],
       "abr_pin": 720,
       "run_secs": 120,
       "operations": [{"op": "play"}],
@@ -1633,12 +1636,12 @@
         "codec": "h264",
         "load_video": "H264",
         "load_audio": "AAC",
-        "min_pos_climb_s": 80,
+        "min_pos_climb_s": 45,
         "require_video_bound": true,
         "no_playing_error": true,
         "abr_shape": {}
       },
-      "_census_note": "Measurement step M4 of docs/adaptive-playback-plan.md, as ONE command: this case writes the play URL, quality=auto and plxnative-abrpin together, so the census needs no manual prerequisite. the bootstrap rung, still predicted AUDIO-bound. The link is deliberately UNSHAPED (no network_profile) so the AU queue byte cap is the only limiter -- a shaped leg would measure the shaper instead. `abr_shape: {}` reports every I0 metric and asserts none of them: this case exists to produce evidence, and a bound written before the baseline exists would be a number somebody guessed. min_pos_climb_s is set high on purpose, to stop the harness early-exit ending the case before the reserve has settled; --no-early does the same from the command line."
+      "_census_note": "Measurement step M4 of docs/adaptive-playback-plan.md, as ONE command: this case writes the play URL, quality=auto and plxnative-abrpin together, so the census needs no manual prerequisite. the bootstrap rung, still predicted AUDIO-bound. The link is deliberately UNSHAPED (no network_profile) so the AU queue byte cap is the only limiter -- a shaped leg would measure the shaper instead. source_kbps is declared at 900000 for exactly one reason: on an unshaped LAN a 60000 kbps source IS sustainable, so Auto stays on Original and the HLS controller never runs at all (device-observed 2026-08-26 -- the shaped cases only reach HLS because their slow leg forces it). A source no link can carry forces the HLS path without shaping the link. `abr_shape: {}` reports every I0 metric and asserts none of them: this case exists to produce evidence, and a bound written before the baseline exists would be a number somebody guessed. Run it with --no-early: the census needs the FULL window, and a case that satisfied every assertion would otherwise stop as soon as it had. min_pos_climb_s stays below the 60 s entry fixture's own duration, which the harness checks up front."
     },
     {
       "name": "pipe_abr_pin_2000",
@@ -1650,7 +1653,7 @@
         "rung-pin"
       ],
       "declare": {"vcodec": "h264", "acodec": "aac", "fps": 24.0},
-      "auto_network": {"source_kbps": 60000},
+      "auto_network": {"source_kbps": 900000},
       "abr_pin": 2000,
       "run_secs": 120,
       "operations": [{"op": "play"}],
@@ -1658,12 +1661,12 @@
         "codec": "h264",
         "load_video": "H264",
         "load_audio": "AAC",
-        "min_pos_climb_s": 80,
+        "min_pos_climb_s": 45,
         "require_video_bound": true,
         "no_playing_error": true,
         "abr_shape": {}
       },
-      "_census_note": "Measurement step M4 of docs/adaptive-playback-plan.md, as ONE command: this case writes the play URL, quality=auto and plxnative-abrpin together, so the census needs no manual prerequisite. the far side of the predicted audio/video crossover (~1.66 Mbit/s of wire). The link is deliberately UNSHAPED (no network_profile) so the AU queue byte cap is the only limiter -- a shaped leg would measure the shaper instead. `abr_shape: {}` reports every I0 metric and asserts none of them: this case exists to produce evidence, and a bound written before the baseline exists would be a number somebody guessed. min_pos_climb_s is set high on purpose, to stop the harness early-exit ending the case before the reserve has settled; --no-early does the same from the command line."
+      "_census_note": "Measurement step M4 of docs/adaptive-playback-plan.md, as ONE command: this case writes the play URL, quality=auto and plxnative-abrpin together, so the census needs no manual prerequisite. the far side of the predicted audio/video crossover (~1.66 Mbit/s of wire). The link is deliberately UNSHAPED (no network_profile) so the AU queue byte cap is the only limiter -- a shaped leg would measure the shaper instead. source_kbps is declared at 900000 for exactly one reason: on an unshaped LAN a 60000 kbps source IS sustainable, so Auto stays on Original and the HLS controller never runs at all (device-observed 2026-08-26 -- the shaped cases only reach HLS because their slow leg forces it). A source no link can carry forces the HLS path without shaping the link. `abr_shape: {}` reports every I0 metric and asserts none of them: this case exists to produce evidence, and a bound written before the baseline exists would be a number somebody guessed. Run it with --no-early: the census needs the FULL window, and a case that satisfied every assertion would otherwise stop as soon as it had. min_pos_climb_s stays below the 60 s entry fixture's own duration, which the harness checks up front."
     },
     {
       "name": "pipe_abr_pin_4000",
@@ -1675,7 +1678,10 @@
         "rung-pin"
       ],
       "declare": {"vcodec": "h264", "acodec": "aac", "fps": 24.0},
-      "auto_network": {"source_kbps": 60000},
+      "auto_network": {"source_kbps": 900000},
+      "network_profile": [
+        {"until_s": 600.0, "kbps": 20000}
+      ],
       "abr_pin": 4000,
       "run_secs": 120,
       "operations": [{"op": "play"}],
@@ -1683,12 +1689,12 @@
         "codec": "h264",
         "load_video": "H264",
         "load_audio": "AAC",
-        "min_pos_climb_s": 80,
+        "min_pos_climb_s": 45,
         "require_video_bound": true,
         "no_playing_error": true,
         "abr_shape": {}
       },
-      "_census_note": "Measurement step M4 of docs/adaptive-playback-plan.md, as ONE command: this case writes the play URL, quality=auto and plxnative-abrpin together, so the census needs no manual prerequisite. mid ladder, comfortably video-bound. The link is deliberately UNSHAPED (no network_profile) so the AU queue byte cap is the only limiter -- a shaped leg would measure the shaper instead. `abr_shape: {}` reports every I0 metric and asserts none of them: this case exists to produce evidence, and a bound written before the baseline exists would be a number somebody guessed. min_pos_climb_s is set high on purpose, to stop the harness early-exit ending the case before the reserve has settled; --no-early does the same from the command line."
+      "_census_note": "Measurement step M4 of docs/adaptive-playback-plan.md, as ONE command: this case writes the play URL, quality=auto and plxnative-abrpin together, so the census needs no manual prerequisite. mid ladder, comfortably video-bound. The link is deliberately UNSHAPED (no network_profile) so the AU queue byte cap is the only limiter -- a shaped leg would measure the shaper instead. source_kbps is declared at 900000 for exactly one reason: on an unshaped LAN a 60000 kbps source IS sustainable, so Auto stays on Original and the HLS controller never runs at all (device-observed 2026-08-26 -- the shaped cases only reach HLS because their slow leg forces it). A source no link can carry forces the HLS path without shaping the link. `abr_shape: {}` reports every I0 metric and asserts none of them: this case exists to produce evidence, and a bound written before the baseline exists would be a number somebody guessed. Run it with --no-early: the census needs the FULL window, and a case that satisfied every assertion would otherwise stop as soon as it had. min_pos_climb_s stays below the 60 s entry fixture's own duration, which the harness checks up front."
     },
     {
       "name": "pipe_abr_pin_10000",
@@ -1700,7 +1706,7 @@
         "rung-pin"
       ],
       "declare": {"vcodec": "h264", "acodec": "aac", "fps": 24.0},
-      "auto_network": {"source_kbps": 60000},
+      "auto_network": {"source_kbps": 900000},
       "abr_pin": 10000,
       "run_secs": 120,
       "operations": [{"op": "play"}],
@@ -1708,12 +1714,12 @@
         "codec": "h264",
         "load_video": "H264",
         "load_audio": "AAC",
-        "min_pos_climb_s": 80,
+        "min_pos_climb_s": 45,
         "require_video_bound": true,
         "no_playing_error": true,
         "abr_shape": {}
       },
-      "_census_note": "Measurement step M4 of docs/adaptive-playback-plan.md, as ONE command: this case writes the play URL, quality=auto and plxnative-abrpin together, so the census needs no manual prerequisite. the rung the one existing device datum was taken at (a reserve flat at 11,918 ms). The link is deliberately UNSHAPED (no network_profile) so the AU queue byte cap is the only limiter -- a shaped leg would measure the shaper instead. `abr_shape: {}` reports every I0 metric and asserts none of them: this case exists to produce evidence, and a bound written before the baseline exists would be a number somebody guessed. min_pos_climb_s is set high on purpose, to stop the harness early-exit ending the case before the reserve has settled; --no-early does the same from the command line."
+      "_census_note": "Measurement step M4 of docs/adaptive-playback-plan.md, as ONE command: this case writes the play URL, quality=auto and plxnative-abrpin together, so the census needs no manual prerequisite. the rung the one existing device datum was taken at (a reserve flat at 11,918 ms). The link is deliberately UNSHAPED (no network_profile) so the AU queue byte cap is the only limiter -- a shaped leg would measure the shaper instead. source_kbps is declared at 900000 for exactly one reason: on an unshaped LAN a 60000 kbps source IS sustainable, so Auto stays on Original and the HLS controller never runs at all (device-observed 2026-08-26 -- the shaped cases only reach HLS because their slow leg forces it). A source no link can carry forces the HLS path without shaping the link. `abr_shape: {}` reports every I0 metric and asserts none of them: this case exists to produce evidence, and a bound written before the baseline exists would be a number somebody guessed. Run it with --no-early: the census needs the FULL window, and a case that satisfied every assertion would otherwise stop as soon as it had. min_pos_climb_s stays below the 60 s entry fixture's own duration, which the harness checks up front."
     },
     {
       "name": "pipe_abr_pin_16000",
@@ -1725,7 +1731,7 @@
         "rung-pin"
       ],
       "declare": {"vcodec": "h264", "acodec": "aac", "fps": 24.0},
-      "auto_network": {"source_kbps": 60000},
+      "auto_network": {"source_kbps": 900000},
       "abr_pin": 16000,
       "run_secs": 120,
       "operations": [{"op": "play"}],
@@ -1733,12 +1739,12 @@
         "codec": "h264",
         "load_video": "H264",
         "load_audio": "AAC",
-        "min_pos_climb_s": 80,
+        "min_pos_climb_s": 45,
         "require_video_bound": true,
         "no_playing_error": true,
         "abr_shape": {}
       },
-      "_census_note": "Measurement step M4 of docs/adaptive-playback-plan.md, as ONE command: this case writes the play URL, quality=auto and plxnative-abrpin together, so the census needs no manual prerequisite. predicted 5.85 s: below the 6,000 ms band of starving()'s second arm. The link is deliberately UNSHAPED (no network_profile) so the AU queue byte cap is the only limiter -- a shaped leg would measure the shaper instead. `abr_shape: {}` reports every I0 metric and asserts none of them: this case exists to produce evidence, and a bound written before the baseline exists would be a number somebody guessed. min_pos_climb_s is set high on purpose, to stop the harness early-exit ending the case before the reserve has settled; --no-early does the same from the command line."
+      "_census_note": "Measurement step M4 of docs/adaptive-playback-plan.md, as ONE command: this case writes the play URL, quality=auto and plxnative-abrpin together, so the census needs no manual prerequisite. predicted 5.85 s: below the 6,000 ms band of starving()'s second arm. The link is deliberately UNSHAPED (no network_profile) so the AU queue byte cap is the only limiter -- a shaped leg would measure the shaper instead. source_kbps is declared at 900000 for exactly one reason: on an unshaped LAN a 60000 kbps source IS sustainable, so Auto stays on Original and the HLS controller never runs at all (device-observed 2026-08-26 -- the shaped cases only reach HLS because their slow leg forces it). A source no link can carry forces the HLS path without shaping the link. `abr_shape: {}` reports every I0 metric and asserts none of them: this case exists to produce evidence, and a bound written before the baseline exists would be a number somebody guessed. Run it with --no-early: the census needs the FULL window, and a case that satisfied every assertion would otherwise stop as soon as it had. min_pos_climb_s stays below the 60 s entry fixture's own duration, which the harness checks up front."
     },
     {
       "name": "pipe_abr_pin_20000",
@@ -1750,7 +1756,7 @@
         "rung-pin"
       ],
       "declare": {"vcodec": "h264", "acodec": "aac", "fps": 24.0},
-      "auto_network": {"source_kbps": 60000},
+      "auto_network": {"source_kbps": 900000},
       "abr_pin": 20000,
       "run_secs": 120,
       "operations": [{"op": "play"}],
@@ -1758,12 +1764,12 @@
         "codec": "h264",
         "load_video": "H264",
         "load_audio": "AAC",
-        "min_pos_climb_s": 80,
+        "min_pos_climb_s": 45,
         "require_video_bound": true,
         "no_playing_error": true,
         "abr_shape": {}
       },
-      "_census_note": "Measurement step M4 of docs/adaptive-playback-plan.md, as ONE command: this case writes the play URL, quality=auto and plxnative-abrpin together, so the census needs no manual prerequisite. the decisive point -- is the settled reserve above or below 6,000 ms?. The link is deliberately UNSHAPED (no network_profile) so the AU queue byte cap is the only limiter -- a shaped leg would measure the shaper instead. `abr_shape: {}` reports every I0 metric and asserts none of them: this case exists to produce evidence, and a bound written before the baseline exists would be a number somebody guessed. min_pos_climb_s is set high on purpose, to stop the harness early-exit ending the case before the reserve has settled; --no-early does the same from the command line."
+      "_census_note": "Measurement step M4 of docs/adaptive-playback-plan.md, as ONE command: this case writes the play URL, quality=auto and plxnative-abrpin together, so the census needs no manual prerequisite. the decisive point -- is the settled reserve above or below 6,000 ms?. The link is deliberately UNSHAPED (no network_profile) so the AU queue byte cap is the only limiter -- a shaped leg would measure the shaper instead. source_kbps is declared at 900000 for exactly one reason: on an unshaped LAN a 60000 kbps source IS sustainable, so Auto stays on Original and the HLS controller never runs at all (device-observed 2026-08-26 -- the shaped cases only reach HLS because their slow leg forces it). A source no link can carry forces the HLS path without shaping the link. `abr_shape: {}` reports every I0 metric and asserts none of them: this case exists to produce evidence, and a bound written before the baseline exists would be a number somebody guessed. Run it with --no-early: the census needs the FULL window, and a case that satisfied every assertion would otherwise stop as soon as it had. min_pos_climb_s stays below the 60 s entry fixture's own duration, which the harness checks up front."
     },
     {
       "name": "pipe_h264_aac_resolution_spike",

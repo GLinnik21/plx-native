@@ -1212,7 +1212,7 @@ PIPE_SHAPES = {
                        "default": True, "title": "AAC 2.0 English"}],
             "subs": [],
         }
-        for mbit in (6, 8, 10, 12, 14, 16, 18)
+        for mbit in (6, 8, 10, 12, 14, 16, 18, 20)
     },
     # -----------------------------------------------------------------------------------
     # ...and the one shape in either pack that is SUPPOSED to run out — LG item #46.
@@ -1377,7 +1377,7 @@ PIPE_MBIT = {
     "pipe_abr_1080p": 20.0,
     # Rate-targeted, so these are the TARGET rather than an estimate: video `vbr` plus the
     # 192 kbps audio track, i.e. the rung's own request. That is the point of them.
-    **{f"pipe_abr_1080p_{mbit}m": float(mbit) for mbit in (6, 8, 10, 12, 14, 16, 18)},
+    **{f"pipe_abr_1080p_{mbit}m": float(mbit) for mbit in (6, 8, 10, 12, 14, 16, 18, 20)},
     "pipe_h264_ac3_short": 1.71,        # = pipe_h264_ac3_480p, of which it is a 20 s copy
 }
 

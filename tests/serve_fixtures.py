@@ -87,7 +87,7 @@ ABR_FIXTURE = {
     "6000": "pipe_abr_1080p_6m.ts", "8000": "pipe_abr_1080p_8m.ts",
     "10000": "pipe_abr_1080p_10m.ts", "12000": "pipe_abr_1080p_12m.ts",
     "14000": "pipe_abr_1080p_14m.ts", "16000": "pipe_abr_1080p_16m.ts",
-    "18000": "pipe_abr_1080p_18m.ts", "20000": "pipe_abr_1080p.ts",
+    "18000": "pipe_abr_1080p_18m.ts", "20000": "pipe_abr_1080p_20m.ts",
 }
 ABR_RASTER = {
     "320": "426x240", "720": "854x480", "2000": "1280x720", "4000": "1280x720",
