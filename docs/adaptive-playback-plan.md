@@ -106,7 +106,7 @@ the real ES rate is what step M4 measures):
 | §22 documentation | **adopted** | N17 |
 | §23 scope | **adopted**; its closing "do not optimize for green tests" instruction **amended** | §8.5 |
 
-### 0.3 Two collisions that must be fixed before the controller is used as a tuning baseline
+### 0.3 Three collisions that must be fixed before the controller is used as a tuning baseline
 
 Both are consequences of §0.1 and neither was in the previous plan.
 
@@ -137,8 +137,25 @@ Both are consequences of §0.1 and neither was in the previous plan.
    never observed anything but 2 s. The guard is still denominated in a quantity this client does
    not control, which is the point.
 
-**Normative consequence: any measurement of any other change, taken before these two are fixed,
-measures these instead.** They are increments I3 and I3b and they gate everything downstream.
+3. **The Original path abandons direct play on its FIRST measurement window** — found on a real
+   4K Dolby Vision + Atmos film 2026-08-26, and the most expensive of the three.
+   `auto: Original -> HLS ImminentStarvation measured=42365kbps safe=21182kbps need=34106kbps
+   buf=85ms slope=113ms/s starve=0 windows=1`. The link carried 1.24x the requirement; the
+   first-sample uncertainty floor halved it to 21 182, manufacturing a deficit; with `buf=85ms`
+   one second into playback — and RISING at +113 ms/s — the horizon is ~0 and
+   `OriginalExit::ImminentStarvation` fires, a hard guard with no utility veto and no persistence
+   requirement. `original_fallback_rung` then divides the already-discounted rate by the same 1.35
+   again: 42 365 -> x0.5 -> 21 182 -> /1.35 -> 15 690 -> rung 14 000, **3.0x below measured**.
+   Recovery afterwards needed 1.69x the source and never fired.
+   Full account and the redacted log: `docs/measurements/orig-first-window-fallback.md`.
+
+**All three share one root: the first measurement window is taken while the buffer is definitionally
+near-empty, and a hard guard reads that as an emergency.** (1) costs one rung; (3) costs a playback
+MODE and takes Dolby Vision and Atmos with it.
+
+**Normative consequence: any measurement of any other change, taken before these are fixed,
+measures these instead.** (1) and (2) are increments I3 and I3b and gate everything downstream;
+(3) has no increment yet and is recorded as evidence only.
 
 ---
 
