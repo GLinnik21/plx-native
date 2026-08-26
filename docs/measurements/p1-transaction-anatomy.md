@@ -173,7 +173,10 @@ Two further properties, both known and both reproduced independently here:
 ## What this run did NOT settle
 
 * Whether §3's mixed-byte explanation is right. It needs queue-composition logging.
-* Anything about JIT, the production fold, or a real control plane (§4, §5).
+* Anything about JIT, the production fold, or a real control plane (§4, §5). **Settled
+  host-side since, against the real PMS: `docs/measurements/p2h-pms-ladder.md`.** The
+  control plane is 118 ms rather than this tier's ~6, time to first byte is quantized on a
+  108 ms grid, and production only becomes the constraint on a hard source.
 * Anything about VBR, or any size model (§6). The tier has 10 distinct segment sizes
   in total, and that is a property of the server, not of how much it is run.
 * `max_commits` remains window-length sensitive: `pipe_abr_slow_start_then_fast` scored 8 changes

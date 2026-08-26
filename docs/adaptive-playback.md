@@ -144,7 +144,18 @@ evaluated separately so neither can override the other.
 
 PMS accepts a bitrate ceiling; what it does with it is empirical. `HlsActuatorCatalog` stores the
 request beside the measured output, and the ladder is 13 operating points: 320 / 720 kbps, 2 / 4 /
-6 / 8 / 10 / 12 / 14 / 16 / 18 / 20 Mbps, and the 4K point. Six of them are byte-for-byte the
+6 / 8 / 10 / 12 / 14 / 16 / 18 / 20 Mbps, and the 4K point.
+
+**The "measured output" half of that sentence is now known to be wrong for 12 of the 13, and it is
+wrong for a structural reason rather than a stale one: it is a per-ITEM quantity kept as a
+per-server constant.** Swept across three library items
+(`docs/measurements/p2h-pms-ladder.md`, `tools/pms-rung-sweep.py`), the rate PMS declares is
+5%–32% below the request at every rung but the 4K one and moves with the title; rungs 18000 and
+20000 turn out to be the same encoder session on a 1080p item, byte-identical in 39 of 40
+segments. Every error is an over-estimate, so nothing mis-behaves today — but the replacement is
+free, because the transaction already fetches the true declared rate and logs it before it decides
+anything, and it is a real bound: no segment at any rung above 2000 kbps exceeded 0.85x its own
+declaration in 1 120 observations. Spending it is admission-rule work and has not landed. Six of them are byte-for-byte the
 `route::Quality` rungs a user can pick by hand, because Auto arriving at the same operating point
 must send the same request.
 

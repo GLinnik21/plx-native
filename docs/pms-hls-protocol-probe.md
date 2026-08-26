@@ -151,6 +151,21 @@ As with everything else here, this is one PMS, one client profile and one media 
 claim about a universal Plex maximum, and the client's transaction grades the actual segment rather
 than trusting the table.
 
+> **Corrected 2026-08-27 — the table above is ITEM-specific, and it was read as server-specific.**
+> A full-ladder sweep on three items (`docs/measurements/p2h-pms-ladder.md`) reproduces the
+> *boundary* exactly — 21,750 kbps still returns the lower operating point and 21,999 the higher —
+> but **not the value below it**: on a 1080p 2.39:1 film the lower point declares **16,150 kbps**,
+> not the "about 20,011" recorded here. The 20,011 was that probe's item. The boundary generalises;
+> the rate does not, and `HlsActuatorCatalog::measured()` stored the rate.
+>
+> Two further corrections to the reading, both measured rather than argued. **The resolution
+> ceiling is not what unlocks the higher rate** — 20,000 kbps returns 16,150 with a 3840x2160
+> ceiling and with a 1920x1080 one alike, so "asking for 20,895 gets 1080p" is about the requested
+> BITRATE, not the box. And **"22,000 flips the output to 3840x2160" holds only when the SOURCE is
+> 4K**: on a 1080p master, 22,000 with a 4K ceiling still returns 1918x802, because PMS never
+> upscales. The 4K item in the sweep does return 3840x2160 there, which is what makes the original
+> sentence true of its own measurement and false as a general rule.
+
 All resolution changes stayed inside one Starfish Load. A 720p→1080p→720p fixture independently
 proved that the LG pipeline accepts in-band H.264 parameter-set/raster changes on one Load. The live
 PMS run retained the full 1:40:03 playlist duration instead of exposing only the downloaded tail; a

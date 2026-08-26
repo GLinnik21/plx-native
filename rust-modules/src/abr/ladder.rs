@@ -134,7 +134,9 @@ impl Rung {
 
 /// One PMS operating point. `request_kbps` is what goes on the wire as the ceiling; the other two
 /// are what the server was measured to DO with it, and they are separate fields precisely because
-/// the request is not a promise in either direction.
+/// the request is not a promise in either direction. Read `expected_wire_kbps` with the
+/// correction on [`HlsActuatorCatalog`] beside it: for 11 of 13 rungs it simply repeats
+/// `request_kbps`, and the server declares 5%–32% less.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct HlsCandidate {
     pub(crate) rung: Rung,
@@ -168,6 +170,22 @@ pub(crate) struct HlsCandidate {
 /// shape, taken by `tools/pms-hls-probe.py` (see `docs/pms-hls-protocol-probe.md`). A different
 /// PMS may hold a different boundary, which is survivable exactly because the transaction in
 /// [`Controller::candidate_ready`] grades the actual segment rather than trusting this table.
+///
+/// **`expected_wire_kbps` is WRONG for 12 of these 13 entries, and the reason is that it is a
+/// PER-ITEM quantity stored as a per-server constant.** Swept across the whole ladder on three
+/// library items (`docs/measurements/p2h-pms-ladder.md`, `tools/pms-rung-sweep.py`), the rate
+/// PMS actually declares runs 5.2%–31.6% BELOW the request on every rung but the 4K one, and it
+/// moves with the item: rung 720 declares 547 kbps on one film and 425 on two other titles.
+/// Two entries are worse than merely stale. **The 20,011 above was taken with a 3840x2160
+/// ceiling, and `Rung::P1080High::raster()` is (1920, 1080)** — under the request the app really
+/// sends, that rung declares 16,150, so the table is 23.9% high. It is not the ceiling box that
+/// moved it: requesting 20,000 with EITHER box returns 16,150, which was checked rather than
+/// assumed. And **rungs 18000 and 20000 are the same encoder session** on a 1080p item — same
+/// declared 16,150, and 39 of 40 segments byte-identical by sha256 — so the controller carries
+/// two budgets and two production loads for one stream. All of it is over-estimation, hence
+/// conservative for admission and not a live bug; the fix belongs with the admission rule, since
+/// the transaction ALREADY fetches the true value and logs it (`ff.rs`'s
+/// `hls: master one-variant bandwidth=`) before it decides anything.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct HlsActuatorCatalog {
     candidates: [HlsCandidate; 13],
