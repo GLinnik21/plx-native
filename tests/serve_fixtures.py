@@ -281,6 +281,40 @@ class FixtureServer(socketserver.ThreadingTCPServer):
             return next((kbps for until_s, kbps in self.rate_profile if elapsed < until_s),
                         self.rate_profile[-1][1])
 
+    def rate_windows(self):
+        """The injected schedule as absolute monotonic intervals: `[(start, end, kbps), ...]`.
+
+        This is the PLANT's own account of what it did to the link, and it is the only admissible
+        source for "when was the link degraded" — the harness must not infer a dip from the app's
+        own observations, because a metric derived from the behaviour under test cannot grade it.
+
+        `[]` while unshaped, or before the first response body has started the phase clock (the
+        clock deliberately begins there rather than at app launch, so ssh, boot and Load latency
+        cannot consume the first leg). The last leg extends to infinity, reported as `None`.
+        """
+        with self.lock:
+            if not self.rate_profile or self.rate_started is None:
+                return []
+            base, out, prev = self.rate_started, [], 0.0
+            for until_s, kbps in self.rate_profile:
+                out.append((base + prev, base + until_s, kbps))
+                prev = until_s
+            start, _, kbps = out[-1]
+            out[-1] = (start, None, kbps)
+            return out
+
+    def dip_windows(self):
+        """The degraded intervals of the injected schedule: every leg below the fastest one.
+
+        A profile whose legs are all equal has no dip and returns `[]` — which is the right answer
+        for a flat-link case, and is reported as an absence rather than as a number.
+        """
+        legs = self.rate_windows()
+        if not legs:
+            return []
+        peak = max(kbps for _, _, kbps in legs)
+        return [(a, b, kbps) for a, b, kbps in legs if kbps < peak]
+
     def chunk_size(self):
         return 64 * 1024 if self._rate_kbps() is not None else 262144
 

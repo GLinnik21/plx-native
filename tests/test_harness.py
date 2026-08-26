@@ -899,12 +899,21 @@ class AutoNetworkProfile(unittest.TestCase):
                          "a run that ended on the floor did not recover, whatever it reached before")
 
     def test_every_shaped_abr_case_grades_something_a_position_climb_cannot(self):
-        """Each new profile must carry at least one `abr_shape` bound.
+        """Each shaped profile must carry at least one `abr_shape` bound.
 
         Without one the case is an expensive way to assert that playback works -- which the rest of
         this tier already does, on a healthy link, in less time.
+
+        SCOPED to the shaped family on 2026-08-26, when a second family of `pipe_abr_*` cases
+        appeared: the `pipe_abr_pin_*` census (measurement step M4) is unshaped BY DESIGN, because
+        its subject is the AU queue byte cap and a shaped leg would measure the shaper instead, and
+        it grades nothing BY DESIGN, because it exists to produce the baseline against which a
+        bound could later be written. The old expectation was not wrong, it was under-scoped —
+        every case it was written about still has to satisfy it, and the census family has its own
+        rule in `test_every_census_case_is_unshaped_pinned_and_grades_nothing` below.
         """
-        shaped = [c for c in _manifest()["pipeline_cases"] if c["name"].startswith("pipe_abr_")]
+        shaped = [c for c in _manifest()["pipeline_cases"]
+                  if c["name"].startswith("pipe_abr_") and not c["name"].startswith("pipe_abr_pin_")]
         self.assertGreaterEqual(len(shaped), 4, "the bad-network profiles are missing")
         for case in shaped:
             with self.subTest(case["name"]):
@@ -915,6 +924,40 @@ class AutoNetworkProfile(unittest.TestCase):
                     set(bounds) <= {"ceiling_kbps", "floor_kbps", "max_commits",
                                     "settle_min_kbps", "settle_max_kbps"},
                     f"unknown abr_shape key in {case['name']}: {sorted(bounds)}")
+
+    def test_every_census_case_is_unshaped_pinned_and_grades_nothing(self):
+        """The complementary rule for the M4 census family (plan I0-J / I1-C).
+
+        Three properties, each of which the census is worthless without:
+        UNSHAPED, so the AU queue byte cap is the only limiter; PINNED to an exact actuator by
+        request rate, so the rung being measured is the rung named; and carrying an EMPTY
+        `abr_shape`, so every I0 metric is reported and none is asserted. A bound here would be a
+        number guessed before the measurement that justifies it.
+        """
+        census = [c for c in _manifest()["pipeline_cases"]
+                  if c["name"].startswith("pipe_abr_pin_")]
+        self.assertGreaterEqual(len(census), 5, "the M4 census points are missing")
+        ladder = {320, 720, 2000, 4000, 6000, 8000, 10000, 12000, 14000, 16000, 18000, 20000, 22000}
+        for case in census:
+            with self.subTest(case["name"]):
+                self.assertNotIn("network_profile", case,
+                                 "a census case must be unshaped: the byte cap is the subject")
+                self.assertIn(case.get("abr_pin"), ladder, "pin must name a real actuator request")
+                self.assertEqual(case["name"], f"pipe_abr_pin_{case['abr_pin']}",
+                                 "the name and the pin are two statements of one number")
+                self.assertEqual(case["expect"].get("abr_shape"), {},
+                                 "the census reports metrics and grades none of them")
+                self.assertIn("auto_network", case, "the census must run the Auto HLS path")
+
+    def test_the_census_covers_both_sides_of_the_predicted_binding_crossover(self):
+        """The audio lane is predicted to bind below ~1.66 Mbit/s of wire and the video lane above
+        it, so a census that sampled only one side could not test that prediction at all."""
+        pins = {c["abr_pin"] for c in _manifest()["pipeline_cases"]
+                if c["name"].startswith("pipe_abr_pin_")}
+        self.assertTrue(any(p <= 720 for p in pins), "no predicted audio-bound point")
+        self.assertTrue(any(p >= 10000 for p in pins), "no deep video-bound point")
+        self.assertTrue({16000, 20000} <= pins,
+                        "the 6,000 ms guard collision is only visible at the top rungs")
 
     def test_case_declares_a_real_mid_transfer_slow_leg_and_recovery_leg(self):
         legs = self._case()["network_profile"]
@@ -1123,10 +1166,15 @@ class NetcondRate(unittest.TestCase):
 # run of the code it grades.
 # ---------------------------------------------------------------------------
 def _sample_line(current=10000, media=9800, net=40000, buf=8000, vbuf=8000,
-                 abuf="8200ms", prod=300, n=5, decision="stay", target=0):
+                 abuf="8200ms", dur=2000, prod=300, n=5, decision="stay", target=0):
     return (f"[  12.345] abr: sample current={current}kbps media={media}kbps net={net}kbps "
-            f"buf={buf}ms vbuf={vbuf}ms abuf={abuf} prod={prod}pm n={n} "
+            f"buf={buf}ms vbuf={vbuf}ms abuf={abuf} dur={dur}ms prod={prod}pm n={n} "
             f"decision={decision} target={target}kbps reason=None")
+
+
+def _stamped(lines, stamps):
+    """A `StampedLines` with the arrival times a live run would have recorded."""
+    return run.StampedLines(lines, stamps)
 
 
 class AbrTraceMetrics(unittest.TestCase):
@@ -1141,6 +1189,10 @@ class AbrTraceMetrics(unittest.TestCase):
         self.assertIsNone(got[0]["abuf_ms"], "a silent lane must be None, not 0")
         self.assertEqual(got[0]["decision"], "prime_down")
         self.assertEqual(got[0]["target_kbps"], 4000)
+        self.assertEqual(got[0]["dur_ms"], 2000)
+        # fetch span is derived, never logged: media x dur / net.
+        self.assertAlmostEqual(got[0]["fetch_ms"], 9800 * 2000 / 40000)
+        self.assertIsNone(got[0]["at"], "a plain list carries no arrival stamp")
 
     def test_the_minimum_reserve_is_the_minimum_observed(self):
         lines = [_sample_line(buf=8000), _sample_line(buf=1200), _sample_line(buf=6000)]
@@ -1163,26 +1215,44 @@ class AbrTraceMetrics(unittest.TestCase):
         self.assertGreater(min(steady_only), 900,
                            "the fixture no longer exercises the blindness it exists to prove")
 
-    def test_the_dip_metric_reads_delivered_media_not_the_chosen_rung(self):
-        """MATHEMATICAL INVARIANT: `dip_max_kbps` comes from observed transport.
+    def test_the_dip_window_comes_from_the_shaper_not_from_the_observations(self):
+        """MATHEMATICAL INVARIANT: window from the plant, value from observed transport.
 
-        The dip window is found from `net=` alone, with no knowledge of the injected profile, and
-        the reported number is the `media=` actually delivered inside it. `current=` is held at a
-        constant here precisely so a metric derived from the controller's own choice could not
-        produce the expected value.
+        Six segments arrive one second apart; the shaper declares a degraded leg covering the
+        third and fourth. `net=` is held CONSTANT across all six, so a metric that inferred the
+        dip from the app's own delivery could not find a window at all — which is the property the
+        earlier `net < 0.5 * peak` version lacked. `current=` is constant too, so a metric derived
+        from the controller's chosen rung could not produce the expected value either.
         """
-        lines = ([_sample_line(net=40000, media=9800)] * 3
-                 + [_sample_line(net=3000, media=2100), _sample_line(net=2500, media=1900)]
-                 + [_sample_line(net=40000, media=9800)] * 3)
-        kbps, note = run.abr_dip_max_kbps(run.abr_samples(lines))
+        stamps = [100.0, 101.0, 102.0, 103.0, 104.0, 105.0]
+        media = [9800, 9800, 2100, 1900, 9800, 9800]
+        lines = _stamped([_sample_line(net=40000, media=m) for m in media], stamps)
+        windows = [(101.6, 103.4, 3000)]          # covers the samples at 102 and 103
+        kbps, note = run.abr_dip_max_kbps(run.abr_samples(lines), windows)
         self.assertEqual(kbps, 2100)
         self.assertIn("2 segment(s)", note)
+        self.assertIn("3000kbps", note)
 
-    def test_a_run_with_no_dip_reports_absence_rather_than_a_number(self):
-        lines = [_sample_line(net=40000, media=9800)] * 6
-        kbps, note = run.abr_dip_max_kbps(run.abr_samples(lines))
+    def test_a_segment_that_only_overlaps_the_dip_still_counts(self):
+        """The span is `[at - fetch_ms, at]`: a segment half of which crossed the bad link was
+        affected by it. Here the sample ARRIVES after the leg ends but began inside it."""
+        lines = _stamped([_sample_line(net=1000, media=2000, dur=2000)], [110.0])
+        # fetch = 2000 x 2000 / 1000 = 4000 ms, so the span is [106.0, 110.0].
+        self.assertEqual(run.abr_dip_max_kbps(run.abr_samples(lines), [(104.0, 107.0, 500)])[0],
+                         2000)
+        self.assertIsNone(run.abr_dip_max_kbps(run.abr_samples(lines), [(100.0, 105.0, 500)])[0])
+
+    def test_a_flat_profile_has_no_dip_and_says_so(self):
+        lines = _stamped([_sample_line()] * 6, [float(i) for i in range(6)])
+        kbps, note = run.abr_dip_max_kbps(run.abr_samples(lines), [])
         self.assertIsNone(kbps)
-        self.assertIn("no segment", note)
+        self.assertIn("no degraded leg", note)
+
+    def test_an_unstamped_log_reports_that_it_cannot_be_placed(self):
+        """A plain list (a non-stream_case path) must say why rather than guess."""
+        kbps, note = run.abr_dip_max_kbps(run.abr_samples([_sample_line()]), [(1.0, 2.0, 500)])
+        self.assertIsNone(kbps)
+        self.assertIn("arrival stamp", note)
 
     def test_stalls_come_from_the_media_clock_not_from_the_buffer_model(self):
         """MATHEMATICAL INVARIANT: a stall is `pos=` failing to advance, and nothing else.
@@ -1270,6 +1340,67 @@ class AbrLogLineContract(unittest.TestCase):
         """Belt and braces: the field NAMES agreeing is not the same as the line parsing."""
         self.assertIsNotNone(run.RE_ABR_SAMPLE.search(_sample_line()))
         self.assertIsNotNone(run.RE_ABR_SAMPLE.search(_sample_line(abuf="none", buf=-1)))
+
+
+class ShaperSchedule(unittest.TestCase):
+    """MATHEMATICAL INVARIANT: the plant's account of what it did to the link."""
+
+    def _server(self, profile, started=1000.0):
+        srv = serve_fixtures.FixtureServer.__new__(serve_fixtures.FixtureServer)
+        srv.lock = threading.Lock()
+        srv.rate_profile = [(float(l["until_s"]), int(l["kbps"])) for l in profile]
+        srv.rate_started = started
+        return srv
+
+    def test_legs_become_absolute_intervals_on_the_shared_clock(self):
+        srv = self._server([{"until_s": 20, "kbps": 40000}, {"until_s": 23, "kbps": 200},
+                            {"until_s": 240, "kbps": 40000}])
+        self.assertEqual(srv.rate_windows(),
+                         [(1000.0, 1020.0, 40000), (1020.0, 1023.0, 200),
+                          (1023.0, None, 40000)])
+
+    def test_the_dip_is_every_leg_below_the_fastest(self):
+        """`pipe_abr_oscillating_link`'s shape: alternating legs, ending slow.
+
+        The final leg extends to infinity by construction — a profile's last entry is what the
+        shaper holds for the rest of the run — so its window is open-ended, and a case that ends
+        degraded has a dip that runs to the end of the log. That is the real manifest's shape.
+        """
+        srv = self._server([{"until_s": 12, "kbps": 20000}, {"until_s": 20, "kbps": 3000},
+                            {"until_s": 28, "kbps": 20000}, {"until_s": 36, "kbps": 3000}])
+        self.assertEqual([(a, b) for a, b, _ in srv.dip_windows()],
+                         [(1012.0, 1020.0), (1028.0, None)])
+
+    def test_a_bounded_final_leg_closes_its_window(self):
+        srv = self._server([{"until_s": 20, "kbps": 40000}, {"until_s": 23, "kbps": 200},
+                            {"until_s": 240, "kbps": 40000}])
+        self.assertEqual([(a, b) for a, b, _ in srv.dip_windows()], [(1020.0, 1023.0)])
+
+    def test_a_flat_or_unstarted_profile_has_no_windows(self):
+        self.assertEqual(self._server([{"until_s": 240, "kbps": 6000}]).dip_windows(), [])
+        srv = self._server([{"until_s": 20, "kbps": 40000}, {"until_s": 40, "kbps": 200}])
+        srv.rate_started = None      # no response body yet: the phase clock has not begun
+        self.assertEqual(srv.rate_windows(), [])
+
+
+class StampedLog(unittest.TestCase):
+    """MATHEMATICAL INVARIANT: the arrival clock survives the paths the harness actually uses."""
+
+    def test_stamps_track_lines_and_survive_a_snapshot(self):
+        log = run.StampedLines()
+        log.append("a")
+        log.append("b")
+        self.assertEqual(len(log.stamps), 2)
+        self.assertLessEqual(log.stamps[0], log.stamps[1])
+        snap = log.snapshot()
+        log.append("c")
+        self.assertEqual(list(snap), ["a", "b"], "a snapshot must not follow later appends")
+        self.assertEqual(len(snap.stamps), 2)
+
+    def test_it_is_still_an_ordinary_list_to_every_existing_caller(self):
+        log = run.StampedLines(["loop=60 fps=60 pos=3s"], [1.0])
+        self.assertEqual(run.playpos_secs(log), [(3, "loop=60 fps=60 pos=3s")])
+        self.assertEqual(list(log), ["loop=60 fps=60 pos=3s"])
 
 
 class AbrTriggers(unittest.TestCase):

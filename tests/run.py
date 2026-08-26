@@ -1244,7 +1244,8 @@ def a_auto_network_recovery(lines, max_fallback_kbps, min_recovered_kbps):
 # more often observes less, and reads as an improvement.
 RE_ABR_SAMPLE = re.compile(
     r"abr: sample current=(\d+)kbps media=(\d+)kbps net=(\d+)kbps buf=(-?\d+)ms "
-    r"vbuf=(-?\d+)ms abuf=(\S+) prod=(\d+)pm n=(\d+) decision=(\S+) target=(\d+)kbps"
+    r"vbuf=(-?\d+)ms abuf=(\S+) dur=(\d+)ms prod=(\d+)pm n=(\d+) decision=(\S+) "
+    r"target=(\d+)kbps"
 )
 # The re-seed after a fresh controller is built (plan I0-G) and the switch-history state the
 # worker starts from (plan I0-H). Both are characterisation surfaces: I0 reports them, I4 and I8
@@ -1259,19 +1260,33 @@ RE_ABR_COMMIT = re.compile(r"abr: committed (Up|Down) to (\d+)kbps (\d+)x(\d+)")
 
 
 def abr_samples(lines):
-    """Every `abr: sample` as a dict, in order. One per segment, whatever was decided."""
+    """Every `abr: sample` as a dict, in order. One per segment, whatever was decided.
+
+    `at` is the harness monotonic clock when the line ARRIVED, present only when `lines` came from
+    `stream_case` (a `StampedLines`); `None` otherwise, and every consumer treats that as "cannot
+    be placed on the shaper's timeline" rather than as zero.
+
+    `fetch_ms` is derived, not logged: `media x dur / net` is the transfer's own duration, which
+    with `at` gives the SPAN a segment occupied. That span is what gets intersected with an
+    injected shaper leg.
+    """
+    stamps = getattr(lines, "stamps", None)
     out = []
-    for line in lines:
+    for i, line in enumerate(lines):
         m = RE_ABR_SAMPLE.search(line)
         if not m:
             continue
+        media, net, dur = int(m.group(2)), int(m.group(3)), int(m.group(7))
         out.append({
-            "current_kbps": int(m.group(1)), "media_kbps": int(m.group(2)),
-            "net_kbps": int(m.group(3)), "buf_ms": int(m.group(4)),
+            "current_kbps": int(m.group(1)), "media_kbps": media,
+            "net_kbps": net, "buf_ms": int(m.group(4)),
             "vbuf_ms": int(m.group(5)),
             "abuf_ms": None if m.group(6) == "none" else int(m.group(6).rstrip("ms")),
-            "prod_pm": int(m.group(7)), "n": int(m.group(8)),
-            "decision": m.group(9), "target_kbps": int(m.group(10)),
+            "dur_ms": dur,
+            "prod_pm": int(m.group(8)), "n": int(m.group(9)),
+            "decision": m.group(10), "target_kbps": int(m.group(11)),
+            "at": (stamps[i] if stamps and i < len(stamps) else None),
+            "fetch_ms": (media * dur / net) if net else 0.0,
         })
     return out
 
@@ -1301,36 +1316,45 @@ def abr_binding_lane(samples):
     return f"video {video}/{len(samples)}, audio {audio}/{len(samples)}"
 
 
-def abr_dip_max_kbps(samples):
-    """The highest media rate the pipeline actually SUSTAINED while the link was degraded.
+def abr_dip_max_kbps(samples, dip_windows):
+    """The highest media rate the pipeline SUSTAINED while the injected link was degraded.
 
-    Returns `(kbps, span)` or `(None, reason)`.
+    Returns `(kbps, note)` or `(None, reason)`.
 
-    Defined from observed transport, not from the controller's chosen rung. The plan's provisional
-    definition was `min(visited)` — the depth of the ladder's excursion — which is a function of
-    the decision under test and so cannot grade it: a policy is compared against itself. This
-    reads `media=` (delivered bytes over content duration) over the dip instead, which is what the
-    pipeline managed to keep pushing through while the link was bad.
+    Two independence rules, and the metric is worthless without either:
 
-    The dip WINDOW is found observationally too, with no knowledge of the injected profile: the
-    longest contiguous run of segments whose delivered `net=` was under half the run's peak. A
-    case with no such run has no dip and reports `None` rather than a number that would look like
-    a measurement.
+    * The WINDOW comes from the shaper's own schedule (`FixtureServer.dip_windows`), never from
+      the app's observations. An earlier version of this found the dip by looking for samples
+      whose delivered rate fell below half the run's peak — which put an uncalibrated 0.5 in the
+      middle of a measurement, and made the window a function of the behaviour being measured.
+    * The VALUE is observed delivery (`media=`, bytes over content duration), never the rung the
+      controller chose. A metric derived from the decision under test cannot grade it.
+
+    A sample counts when its TRANSFER SPAN — `[at - fetch_ms, at]` — intersects a degraded leg,
+    which is the "overlapping" sense: a segment half of which crossed the bad link was affected by
+    it. `at` is arrival at the harness and so lags the app by the ssh hop, always in the same
+    direction; the note reports how many samples landed in the window so a suspicious count is
+    visible rather than silently changing the answer.
     """
-    if len(samples) < 3:
-        return None, "too few segments to identify a dip"
-    peak = max(s["net_kbps"] for s in samples)
-    threshold = peak // 2
-    best, cur = [], []
+    if not dip_windows:
+        return None, "no degraded leg in the injected profile"
+    if not samples:
+        return None, "no `abr: sample` line to attribute"
+    if all(s["at"] is None for s in samples):
+        return None, "log lines carry no arrival stamp (not a stream_case run)"
+    hit = []
     for s in samples:
-        if s["net_kbps"] < threshold:
-            cur.append(s)
-        else:
-            best, cur = (cur if len(cur) > len(best) else best), []
-    best = cur if len(cur) > len(best) else best
-    if not best:
-        return None, f"no segment fell below half the peak ({threshold}kbps)"
-    return max(s["media_kbps"] for s in best), f"{len(best)} segment(s) under {threshold}kbps"
+        if s["at"] is None:
+            continue
+        span = (s["at"] - s["fetch_ms"] / 1000.0, s["at"])
+        for a, b, _ in dip_windows:
+            if span[1] >= a and (b is None or span[0] <= b):
+                hit.append(s)
+                break
+    if not hit:
+        return None, f"no segment overlapped the {len(dip_windows)} degraded leg(s)"
+    legs = "/".join(str(k) for _, _, k in dip_windows)
+    return max(s["media_kbps"] for s in hit), f"{len(hit)} segment(s) over leg(s) {legs}kbps"
 
 
 def abr_stalls(lines):
@@ -1397,7 +1421,7 @@ def abr_characterisation(lines):
     return out
 
 
-def a_abr_shape(lines, spec):
+def a_abr_shape(lines, spec, dip_windows=()):
     """Grade the RUNGS a shaped link produced, rather than only the Original<->HLS transition.
 
     `a_auto_network_recovery` above grades one event. This grades the whole trajectory, which is
@@ -1436,7 +1460,7 @@ def a_abr_shape(lines, spec):
     # guessed. Each comes from observed playback, never from the model under test.
     samples = abr_samples(lines)
     min_buf = abr_min_buf_ms(samples)
-    dip_kbps, dip_note = abr_dip_max_kbps(samples)
+    dip_kbps, dip_note = abr_dip_max_kbps(samples, dip_windows)
     stall_max, stall_total, beats = abr_stalls(lines)
     rasters = abr_raster_changes(lines)
     story += (f" | min_buf_ms={min_buf if min_buf is not None else 'n/a'}"
@@ -2014,6 +2038,35 @@ def failed_for_good(case, lines):
     return None
 
 
+class StampedLines(list):
+    """The log as a plain list of strings, plus WHEN each line reached the harness.
+
+    A `list` subclass rather than a second parallel structure, so every existing caller — and
+    there are dozens — keeps treating the log as the list of strings it has always been, while
+    `.stamps[i]` carries the harness monotonic clock reading for `self[i]`.
+
+    It exists to place an app observation on the SHAPER's timeline. The fixture server runs in
+    this process, so its phase clock and these stamps are the same `time.monotonic()`; that is
+    what lets a segment be attributed to an injected leg without asking the controller anything.
+
+    The stamp is ARRIVAL, not emission: it lags the app by the ssh/`tail -F` hop. Sub-second
+    against legs measured in seconds, and the direction is knowable — arrival is always later —
+    but it is a real limit and every consumer says so.
+    """
+
+    def __init__(self, items=(), stamps=()):
+        super().__init__(items)
+        self.stamps = list(stamps)
+
+    def append(self, item):
+        self.stamps.append(time.monotonic())
+        super().append(item)
+
+    def snapshot(self):
+        """A copy carrying its stamps. `list(x)` would silently drop them."""
+        return StampedLines(list(self), list(self.stamps))
+
+
 def _drain(stream, sink, done):
     """Reader thread: filter the type=43 flood at the door so the grader never re-scans it."""
     try:
@@ -2260,7 +2313,7 @@ def stream_case(case, cfg, cap_s, early=True, inject=None, evaluator=None):
                             # own process group: terminating `make` alone would orphan the
                             # sshpass/ssh child and leave the remote tail (and the app) attached.
                             start_new_session=True)
-    lines, done = [], threading.Event()
+    lines, done = StampedLines(), threading.Event()
     threading.Thread(target=_drain, args=(proc.stdout, lines, done), daemon=True).start()
 
     injected = inject is None
@@ -2332,7 +2385,7 @@ def stream_case(case, cfg, cap_s, early=True, inject=None, evaluator=None):
     # while a case is still running, "not there" and "not there yet" are the same thing.
     if not install_ok:
         require_install(list(lines), cfg)
-    return list(lines), time.monotonic() - started, stopped_early, settled
+    return lines.snapshot(), time.monotonic() - started, stopped_early, settled
 
 
 # ---------------------------------------------------------------------------
@@ -2734,7 +2787,10 @@ def evaluate_pipeline(case, lines, srv_delta, gst_lines=None):
         results.append(("auto_network", *a_auto_network_recovery(
             lines, exp["auto_fallback_max_kbps"], exp["abr_recovery_min_kbps"])))
     if "abr_shape" in exp:
-        results.append(("abr_shape", *a_abr_shape(lines, exp["abr_shape"])))
+        # The shaper's own schedule, stashed on the case by `run_pipeline_case` before
+        # grading. The dip window must come from the PLANT, never from the app's observations.
+        results.append(("abr_shape", *a_abr_shape(
+            lines, exp["abr_shape"], case.get("_dip_windows", ()))))
     if exp.get("require_audio_feed_ready"):
         results.append(("audio_feed", *a_audio_feed_ready(lines)))
     if exp.get("no_reload"):
@@ -2808,6 +2864,9 @@ def run_pipeline_case(case, cfg, srv, url_base, verbose):
         """The wire counters are read LIVE, so the early-exit poll grades the same
         `server_wire` the verdict will — a case cannot stop early on a seek whose Range reopen
         has not happened yet."""
+        # Re-read every poll, not once: the shaper's phase clock does not start until the first
+        # response body, so at the moment this case was set up there were no windows to read.
+        c["_dip_windows"] = srv.dip_windows()
         now = srv.stats()
         return evaluate_pipeline(c, ls, (now[0] - before[0], now[1] - before[1]))
 

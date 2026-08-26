@@ -2859,6 +2859,12 @@ fn log_hls_abr_steady(t: &crate::abr::ControllerTelemetry, remaining_ms: i64) {
 ///   catalog entries carry the request as their planning rate. Measurement step M4 reads it.
 /// * `net` — delivered rate over ACTIVE transfer time; `prod` — total acquisition over content
 ///   duration, so it includes production and TTFB.
+/// * `dur` — the segment's CONTENT duration. Two things need it and neither can infer it: the
+///   harness places a segment's transfer span on a timeline as `media x dur / net`, which is how a
+///   sample is attributed to an injected shaper leg without asking the controller anything; and
+///   several of the controller's own guards are denominated in multiples of it
+///   (`buffered >= 3 * segment`), so whether the server honoured the client's 2 s request is a
+///   fact about whether those guards are reachable at all.
 fn log_hls_abr_sample(
     t: &crate::abr::ControllerTelemetry,
     sample: crate::abr::SegmentSample,
@@ -2872,7 +2878,7 @@ fn log_hls_abr_sample(
     };
     crate::player::log(&format!(
         "abr: sample current={}kbps media={}kbps net={}kbps buf={}ms vbuf={}ms abuf={} \
-         prod={}pm n={} decision={} target={}kbps reason={:?}",
+         dur={}ms prod={}pm n={} decision={} target={}kbps reason={:?}",
         t.current.kbps(),
         sample.media_kbps(),
         sample.network_kbps(),
@@ -2883,6 +2889,7 @@ fn log_hls_abr_sample(
             .audio_buffered_ms()
             .map(|ms| format!("{ms}ms"))
             .unwrap_or_else(|| "none".to_string()),
+        sample.media_duration_ms(),
         sample.production_ratio_pm(),
         t.delivery.samples,
         action,
