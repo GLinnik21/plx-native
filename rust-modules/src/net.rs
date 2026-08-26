@@ -121,6 +121,15 @@ const PUBLIC_MAX_REDIRECTS: c_long = 5;
 /// the `dynlib!` table (and therefore nothing about which firmwares this binary starts on) moves
 /// for this. Present since libcurl 7.1; the television's is 7.53.1.
 const CURLOPT_CUSTOMREQUEST: c_int = 10036;
+/// `CURLOPT_PINNEDPUBLICKEY` (OBJECTPOINT + 230) — `"sha256//<base64 of the SPKI's SHA-256>"`.
+///
+/// libcurl 7.39+, against the dev television's 7.53.1, so it reaches every firmware this app
+/// claims. It is checked **independently of** `CURLOPT_SSL_VERIFYPEER`, which is what makes the
+/// one caller possible: the lab receiver ([`crate::lab`]) is a self-signed certificate generated
+/// per session on a developer's Mac, so there is no CA to verify against and the pin is the whole
+/// of the endpoint's identity — a narrower trust root than the television's CA store, not a wider
+/// one. No private key is in this binary; a pin is a hash of a public key.
+const CURLOPT_PINNEDPUBLICKEY: c_int = 10230;
 // curl.h info ids (CURLINFO_LONG = 0x200000).
 const CURLINFO_RESPONSE_CODE: c_int = 0x20_0002;
 const CURL_GLOBAL_ALL: c_long = 3;
@@ -500,12 +509,37 @@ pub(crate) fn request(
     follow_redirects: bool,
     max_body: Option<usize>,
 ) -> Option<Resp> {
+    request_pinned(url, headers, verb, body, t, follow_redirects, max_body, None)
+}
+
+/// [`request`], plus an optional **certificate pin**. One extra parameter rather than a second
+/// transport: everything about a pinned request — the header list, the verb shapes, the bounded
+/// sink, the `CURLcode` naming, the fallback serialisation — is identical, and a copy of this
+/// function would be a second place for all of it to drift.
+///
+/// `pin` is a `CURLOPT_PINNEDPUBLICKEY` value. Passing one also turns CA verification OFF, because
+/// the endpoint it exists for has no CA-issued certificate; see [`CURLOPT_PINNEDPUBLICKEY`].
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn request_pinned(
+    url: &str,
+    headers: &[String],
+    verb: &str,
+    body: Option<&[u8]>,
+    t: Timeouts,
+    follow_redirects: bool,
+    max_body: Option<usize>,
+    pin: Option<&str>,
+) -> Option<Resp> {
     // Every fallible CString is built BEFORE the easy handle exists. The RAII guards below still
     // make later early returns safe, but this ordering also means malformed caller input never
     // enters curl with a half-configured request.
     let verb_c = CString::new(verb).ok()?;
     let url_c = CString::new(url).ok()?;
     let ua = CString::new(crate::plex::identity::user_agent()).ok()?;
+    let pin_c = match pin {
+        Some(p) => Some(CString::new(p).ok()?),
+        None => None,
+    };
     let hdr_owned: Vec<CString> = headers
         .iter()
         .map(|line| CString::new(line.as_str()))
@@ -545,6 +579,14 @@ pub(crate) fn request(
         }
         curl_easy_setopt_long(easy.0, CURLOPT_SSL_VERIFYPEER, 1 as c_long);
         curl_easy_setopt_long(easy.0, CURLOPT_SSL_VERIFYHOST, 2 as c_long);
+        // A pinned request replaces CA verification with key pinning — see
+        // [`CURLOPT_PINNEDPUBLICKEY`]. Written AFTER the two defaults above so the ordinary path is
+        // still one unconditional pair of lines that cannot be reached with the wrong value.
+        if let Some(p) = pin_c.as_ref() {
+            curl_easy_setopt_ptr(easy.0, CURLOPT_PINNEDPUBLICKEY, p.as_ptr() as *const c_void);
+            curl_easy_setopt_long(easy.0, CURLOPT_SSL_VERIFYPEER, 0 as c_long);
+            curl_easy_setopt_long(easy.0, CURLOPT_SSL_VERIFYHOST, 0 as c_long);
+        }
         curl_easy_setopt_long(easy.0, CURLOPT_NOSIGNAL, 1 as c_long);
         curl_easy_setopt_long(easy.0, CURLOPT_CONNECTTIMEOUT, t.connect_s);
         curl_easy_setopt_long(easy.0, CURLOPT_TIMEOUT, t.total_s);
@@ -604,6 +646,7 @@ pub(crate) fn request(
                 77 => "CA bundle could not be read",
                 6 => "could not resolve host",
                 28 => "timed out",
+                90 => "certificate pin did not match (stale lab session?)",
                 _ => "transport error",
             };
             crate::log(&format!("net: curl rc={rc} — {why}"));
@@ -620,6 +663,21 @@ pub fn https_get(url: &str, headers: &[String]) -> Option<Resp> {
 /// Blocking HTTPS POST (`body` may be empty) on the [`API`] deadlines.
 pub fn https_post(url: &str, headers: &[String], body: &[u8]) -> Option<Resp> {
     request(url, headers, "POST", Some(body), API, false, None)
+}
+
+/// Blocking **pinned** HTTPS POST — the one caller is [`crate::lab::upload`], whose receiver is a
+/// self-signed certificate on a developer's Mac. Redirects are OFF (a pinned endpoint that
+/// redirects is not the endpoint) and the response body is capped: the receiver answers a few
+/// dozen bytes of JSON, and this is the one call in the app whose far end is not a Plex service.
+#[cfg(feature = "lab-diagnostics")]
+pub(crate) fn post_pinned(
+    url: &str,
+    headers: &[String],
+    body: &[u8],
+    pin: &str,
+    t: Timeouts,
+) -> Option<Resp> {
+    request_pinned(url, headers, "POST", Some(body), t, false, Some(4096), Some(pin))
 }
 
 /// Redirect-following HTTPS GET for a PUBLIC, credential-free resource. The QR image fetch is the

@@ -71,6 +71,10 @@ pub enum Action {
     ToggleStats,
     /// select a rung of the playback-quality ladder ([`crate::route::set_quality`])
     SetQuality(crate::route::Quality),
+    /// **Lab builds only** — snapshot and upload the diagnostic ring (`crate::lab`). Here as well
+    /// as in `account_menu` because the account menu is unreachable during playback, and playback
+    /// is what a Cloud Test Lab session is usually reproducing.
+    SendDiagnostics,
 }
 
 static mut POP: Popover = Popover::new(); // shared open/appear choreography
@@ -111,6 +115,9 @@ pub fn is_open() -> bool {
 /// the debug assert in [`open`] is what would catch one being added on one side only.
 fn rows_for() -> Vec<Action> {
     let mut v = vec![Action::ToggleStats];
+    if crate::lab::menu_row_enabled() {
+        v.push(Action::SendDiagnostics);
+    }
     v.extend(crate::route::available_quality_ladder().iter().map(|q| Action::SetQuality(*q)));
     v
 }
@@ -121,6 +128,7 @@ fn label(a: Action) -> &'static str {
         // the rung names itself — rate and frame in one string, because the row already carries
         // the picker's leading mark (see this module's doc)
         Action::SetQuality(q) => q.label(),
+        Action::SendDiagnostics => "Send diagnostics",
         Action::None => "",
     }
 }
@@ -135,7 +143,7 @@ fn is_on(a: Action) -> bool {
     match a {
         Action::ToggleStats => crate::ui::stats::enabled(),
         // a rung is not a switch — see `row_for`, which gives it the leading mark instead
-        Action::SetQuality(_) | Action::None => false,
+        Action::SetQuality(_) | Action::SendDiagnostics | Action::None => false,
     }
 }
 

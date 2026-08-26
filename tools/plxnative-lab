@@ -1,0 +1,831 @@
+#!/usr/bin/env python3
+"""plxnative-lab — receive diagnostic snapshots from PlxNative running in LG Cloud Test Lab.
+
+LG rents us physical televisions and gives us a picture and a virtual remote. It gives us no
+console, no ssh, no stdout and no way to download a file, so a bug reproduced on a k8hpp webOS 10
+set is a bug the agent fixing it cannot see one log line of. This is the other half of the bridge
+described in `docs/lab-diagnostics.md`: a small authenticated HTTPS receiver on the developer's
+Mac, reachable from the internet through a TEMPORARY UPnP port mapping on the router, that accepts
+exactly one kind of request — the app's own diagnostic upload — and files it where an agent can
+read it.
+
+    plxnative-lab start            # session + certificate + listener + port mapping
+    plxnative-lab status --json    # what an agent polls
+    plxnative-lab logs --follow    # the snapshots, as JSONL on stdout
+    plxnative-lab stop             # listener down, mapping deleted
+
+Python 3 standard library only, one file, no dependencies — the idiom `tools/netcond.py` and
+`tools/stream-screen.py` already use. `--selftest` proves the whole path against a loopback
+transfer with no television and no router in the room.
+
+# The exposed surface, deliberately tiny
+
+For the life of a session `lab.plxnative.com:<port>` is a port on the public internet that reaches
+this process. So: ONE route (`POST /v1/diag`), a bearer secret checked before the body is read, a
+required and capped `Content-Length`, a socket timeout, a rate limit, a cap on total uploads, no
+filesystem serving, no subprocess, and no downward channel of any kind. Everything else is a bare
+404. The whole server is a few hundred lines on purpose — it is meant to be read end to end.
+
+# Why a self-signed certificate is the stronger choice here
+
+The alternative is a CA-issued certificate for `lab.plxnative.com`, which means ACME plumbing, a
+renewal story and a private key living on a laptop. Instead each session generates its own
+certificate and the app pins its public key (`CURLOPT_PINNEDPUBLICKEY`, checked by libcurl
+independently of CA verification). The device then trusts exactly one key rather than the
+television's entire CA store, no private key ships in the app, and a session's credentials die
+with the session.
+"""
+from __future__ import annotations
+
+import argparse
+import base64
+import gzip
+import hashlib
+import hmac
+import http.client
+import json
+import os
+import re
+import secrets
+import shutil
+import signal
+import socket
+import ssl
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import urllib.parse
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+# ---------------------------------------------------------------------------------------------
+# session state
+# ---------------------------------------------------------------------------------------------
+
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+"""The checkout this tool belongs to, so `pkg/lab.json` lands in the tree that will be packaged
+rather than wherever the shell happened to be. A lane running in a worktree gets ITS worktree."""
+
+HOME = os.path.expanduser(os.environ.get("PLXNATIVE_LAB_HOME", "~/.plxnative-lab"))
+SESSION_FILE = os.path.join(HOME, "session.json")
+UPLOAD_DIR = os.path.join(HOME, "uploads")
+SERVER_LOG = os.path.join(HOME, "receiver.log")
+
+DEFAULT_HOST = "lab.plxnative.com"
+DEFAULT_PORT = 39443
+"""The FIXED external port. Fixed so the app needs no discovery: the endpoint is a constant of the
+lab build, and the only thing that changes per session is the credential."""
+
+MAX_BODY = 4 * 1024 * 1024
+"""Body cap, enforced on the declared Content-Length AND on the bytes actually read. The app's own
+ring is capped at 768 KiB of text, which gzips to tens of kilobytes, so this is orders of magnitude
+of headroom and still nothing a stranger can use to fill a disk."""
+MAX_UPLOADS = 60
+MIN_UPLOAD_GAP_S = 2.0
+SOCKET_TIMEOUT_S = 20
+UPNP_LEASE_S = 3600
+
+
+def _state() -> dict:
+    try:
+        with open(SESSION_FILE) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def _write_state(d: dict) -> None:
+    os.makedirs(HOME, exist_ok=True)
+    tmp = SESSION_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(d, f, indent=2)
+    os.chmod(tmp, 0o600)  # it holds the session secret
+    os.replace(tmp, SESSION_FILE)
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+# ---------------------------------------------------------------------------------------------
+# TLS: a per-session self-signed certificate, and the SPKI pin the app carries
+# ---------------------------------------------------------------------------------------------
+
+
+def make_cert(dirpath: str, hostname: str) -> tuple[str, str]:
+    """Generate `cert.pem` + `key.pem` and return (cert path, `sha256//…` pin).
+
+    Shells out to `openssl`, which is on every macOS and every CI image, rather than adding a
+    crypto dependency to a one-file tool. The key never leaves this directory and the directory is
+    0700; only the PIN — a hash of the public half — is ever handed to the app.
+    """
+    cert = os.path.join(dirpath, "cert.pem")
+    key = os.path.join(dirpath, "key.pem")
+    subprocess.run(
+        ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "7",
+         "-subj", f"/CN={hostname}", "-addext", f"subjectAltName=DNS:{hostname},IP:127.0.0.1",
+         "-keyout", key, "-out", cert],
+        check=True, capture_output=True,
+    )
+    os.chmod(key, 0o600)
+    return cert, spki_pin(cert)
+
+
+def spki_pin(cert_path: str) -> str:
+    """The value libcurl's `CURLOPT_PINNEDPUBLICKEY` wants: base64 of SHA-256 over the DER SPKI."""
+    pub = subprocess.run(["openssl", "x509", "-pubkey", "-noout", "-in", cert_path],
+                         check=True, capture_output=True).stdout
+    der = subprocess.run(["openssl", "pkey", "-pubin", "-outform", "der"],
+                         input=pub, check=True, capture_output=True).stdout
+    return "sha256//" + base64.b64encode(hashlib.sha256(der).digest()).decode()
+
+
+# ---------------------------------------------------------------------------------------------
+# UPnP IGD: a temporary hole, removed on every exit path
+# ---------------------------------------------------------------------------------------------
+
+SSDP_ADDR = ("239.255.255.250", 1900)
+IGD_TYPES = [
+    "urn:schemas-upnp-org:service:WANIPConnection:1",
+    "urn:schemas-upnp-org:service:WANIPConnection:2",
+    "urn:schemas-upnp-org:service:WANPPPConnection:1",
+]
+
+
+class Upnp:
+    """The router's WAN connection service, and the one mapping we own on it.
+
+    Deliberately dumb: discover, add, delete, ask the external address. It holds no state the
+    router does not, so a crashed receiver leaves at most one mapping with a one-hour lease rather
+    than a permanent hole — which is why `AddPortMapping` asks for a lease at all, and why the
+    renewal thread exists to keep it alive only while the process does.
+    """
+
+    def __init__(self, control_url: str, service_type: str):
+        self.control_url = control_url
+        self.service_type = service_type
+
+    @classmethod
+    def discover(cls, timeout: float = 3.0) -> "Upnp | None":
+        msg = (
+            "M-SEARCH * HTTP/1.1\r\n"
+            f"HOST: {SSDP_ADDR[0]}:{SSDP_ADDR[1]}\r\n"
+            'MAN: "ssdp:discover"\r\n'
+            "MX: 2\r\n"
+            "ST: urn:schemas-upnp-org:device:InternetGatewayDevice:1\r\n\r\n"
+        ).encode()
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(timeout)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        locations: list[str] = []
+        try:
+            s.sendto(msg, SSDP_ADDR)
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                try:
+                    data, _ = s.recvfrom(4096)
+                except socket.timeout:
+                    break
+                m = re.search(rb"(?im)^location:\s*(\S+)", data)
+                if m:
+                    loc = m.group(1).decode()
+                    if loc not in locations:
+                        locations.append(loc)
+        finally:
+            s.close()
+        for loc in locations:
+            got = cls._from_description(loc)
+            if got:
+                return got
+        return None
+
+    @classmethod
+    def _from_description(cls, location: str) -> "Upnp | None":
+        try:
+            with urllib.request.urlopen(location, timeout=3) as r:
+                xml = r.read().decode("utf-8", "replace")
+        except Exception:
+            return None
+        for st in IGD_TYPES:
+            # the control URL that belongs to THIS service element, not the first one in the file
+            for block in re.findall(r"<service>(.*?)</service>", xml, re.S):
+                if st in block:
+                    m = re.search(r"<controlURL>(.*?)</controlURL>", block, re.S)
+                    if m:
+                        return cls(urllib.parse.urljoin(location, m.group(1).strip()), st)
+        return None
+
+    def _soap(self, action: str, args: list[tuple[str, str]]) -> str | None:
+        body = "".join(f"<{k}>{v}</{k}>" for k, v in args)
+        env = (
+            '<?xml version="1.0"?>'
+            '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" '
+            's:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">'
+            f'<s:Body><u:{action} xmlns:u="{self.service_type}">{body}</u:{action}></s:Body>'
+            "</s:Envelope>"
+        ).encode()
+        req = urllib.request.Request(
+            self.control_url, data=env,
+            headers={"Content-Type": 'text/xml; charset="utf-8"',
+                     "SOAPAction": f'"{self.service_type}#{action}"'},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return r.read().decode("utf-8", "replace")
+        except Exception:
+            return None
+
+    def add(self, external_port: int, internal_ip: str, internal_port: int, lease: int) -> bool:
+        args = [
+            ("NewRemoteHost", ""), ("NewExternalPort", str(external_port)),
+            ("NewProtocol", "TCP"), ("NewInternalPort", str(internal_port)),
+            ("NewInternalClient", internal_ip), ("NewEnabled", "1"),
+            ("NewPortMappingDescription", "plxnative-lab"), ("NewLeaseDuration", str(lease)),
+        ]
+        if self._soap("AddPortMapping", args) is not None:
+            return True
+        # Several IGDs (Keenetic among the forgiving ones, but not all firmware) refuse a non-zero
+        # lease on a static mapping. A permanent mapping we delete ourselves is the fallback, not
+        # the default: if this process dies hard, a leased mapping expires on its own.
+        args[-1] = ("NewLeaseDuration", "0")
+        return self._soap("AddPortMapping", args) is not None
+
+    def delete(self, external_port: int) -> bool:
+        return self._soap("DeletePortMapping", [
+            ("NewRemoteHost", ""), ("NewExternalPort", str(external_port)), ("NewProtocol", "TCP"),
+        ]) is not None
+
+    def external_ip(self) -> str | None:
+        xml = self._soap("GetExternalIPAddress", [])
+        if not xml:
+            return None
+        m = re.search(r"<NewExternalIPAddress>(.*?)</NewExternalIPAddress>", xml, re.S)
+        return m.group(1).strip() if m else None
+
+    def has_mapping(self, external_port: int) -> bool:
+        return self._soap("GetSpecificPortMappingEntry", [
+            ("NewRemoteHost", ""), ("NewExternalPort", str(external_port)), ("NewProtocol", "TCP"),
+        ]) is not None
+
+
+def lan_ip() -> str:
+    """This machine's address on the LAN the router can reach — the `NewInternalClient` value.
+
+    Taken from a connected UDP socket rather than `gethostbyname(gethostname())`, which on macOS
+    answers `127.0.0.1` as often as not and would map the router's port to the router's own idea of
+    nowhere.
+    """
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("192.0.2.1", 9))  # TEST-NET-1: routed nowhere, and no packet is sent
+        return s.getsockname()[0]
+    except OSError:
+        return "127.0.0.1"
+    finally:
+        s.close()
+
+
+# ---------------------------------------------------------------------------------------------
+# the receiver
+# ---------------------------------------------------------------------------------------------
+
+
+class Receiver(ThreadingHTTPServer):
+    daemon_threads = True
+    # One tester, one television. The cap is not tuning — it bounds how much a stranger who finds
+    # the port can allocate before every thread is busy refusing them.
+    request_queue_size = 8
+
+    def __init__(self, addr, handler, secret: str, session: str):
+        super().__init__(addr, handler)
+        self.secret = secret
+        self.session = session
+        self.lock = threading.Lock()
+        self.uploads = 0
+        self.last_at = 0.0
+        self.rejected = 0
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "plxnative-lab"
+    sys_version = ""
+    protocol_version = "HTTP/1.1"
+    timeout = SOCKET_TIMEOUT_S
+
+    def log_message(self, fmt, *args):
+        """One line per request, to the receiver log, NAMING THE PEER.
+
+        The peer address is not decoration. It is the only thing that distinguishes "the
+        television reached me from the internet" from "something on my own LAN reached me because
+        the router hairpinned" — a distinction that decides whether a Cloud Test Lab session will
+        work at all, and one that cost a round of confusion when this line printed neither.
+        """
+        sys.stderr.write("%s %s %s\n" % (time.strftime("%H:%M:%S"), self.client_address[0],
+                                          fmt % args))
+        sys.stderr.flush()
+
+    def _refuse(self, code: int, why: str) -> None:
+        """Answer and CLOSE.
+
+        The close is load-bearing rather than tidy: a refusal happens before the request body is
+        read (deliberately — an unauthenticated caller must not be able to make this process read
+        four megabytes), so the unread body is still in the socket. On a keep-alive connection the
+        next parse would start in the middle of it and answer `400 Bad request syntax`, which is
+        what the selftest saw before this line existed.
+        """
+        body = json.dumps({"ok": False, "error": why}).encode()
+        self.close_connection = True
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Connection", "close")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+        self.server.rejected += 1
+
+    # Everything that is not the one route is a bare 404 — including HEAD and GET, which have no
+    # business here and whose absence is itself a small piece of hardening.
+    def do_GET(self):
+        self._refuse(404, "not found")
+
+    def do_HEAD(self):
+        self._refuse(404, "not found")
+
+    def do_PUT(self):
+        self._refuse(404, "not found")
+
+    def do_POST(self):
+        if self.path != "/v1/diag":
+            return self._refuse(404, "not found")
+        # AUTH FIRST, before a single byte of body is read: an unauthenticated caller must not be
+        # able to make this process read four megabytes.
+        auth = self.headers.get("Authorization", "")
+        want = "Bearer " + self.server.secret
+        if not hmac.compare_digest(auth, want):
+            return self._refuse(401, "unauthorised")
+        try:
+            length = int(self.headers.get("Content-Length", ""))
+        except ValueError:
+            return self._refuse(411, "content-length required")
+        if length <= 0 or length > MAX_BODY:
+            return self._refuse(413, "body too large")
+        with self.server.lock:
+            now = time.time()
+            if self.server.uploads >= MAX_UPLOADS:
+                return self._refuse(429, "session upload limit reached")
+            if now - self.server.last_at < MIN_UPLOAD_GAP_S:
+                return self._refuse(429, "too fast")
+            self.server.last_at = now
+        body = self.rfile.read(length)
+        if len(body) != length:
+            return self._refuse(400, "short body")
+        encoding = self.headers.get("Content-Encoding", "identity")
+        try:
+            text = gzip.decompress(body) if encoding == "gzip" else body
+        except OSError:
+            return self._refuse(400, "body is not gzip")
+        seq, path = self._file(text)
+        with self.server.lock:
+            self.server.uploads += 1
+        self.log_message("upload seq=%s %d bytes (%s) -> %s", seq, len(body), encoding,
+                         os.path.basename(path))
+        out = json.dumps({"ok": True, "seq": seq}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(out)))
+        self.end_headers()
+        self.wfile.write(out)
+
+    def _file(self, text: bytes) -> tuple[str, str]:
+        """Store the decompressed document, gzipped, under a sortable name. Returns (seq, path)."""
+        os.makedirs(UPLOAD_DIR, exist_ok=True)
+        seq = "?"
+        try:
+            seq = str(json.loads(text.split(b"\n", 1)[0]).get("seq", "?"))
+        except (ValueError, IndexError):
+            pass
+        n = len([f for f in os.listdir(UPLOAD_DIR) if f.endswith(".jsonl.gz")]) + 1
+        path = os.path.join(UPLOAD_DIR, f"{n:04d}-{int(time.time())}.jsonl.gz")
+        with gzip.open(path, "wb") as f:
+            f.write(text)
+        return seq, path
+
+
+def serve(args) -> int:
+    """The background half of `start`. Not meant to be typed by hand."""
+    st = _state()
+    if not st:
+        print("no session", file=sys.stderr)
+        return 1
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(st["cert"], st["key"])
+    srv = Receiver(("0.0.0.0", st["local_port"]), Handler, st["secret"], st["session"])
+    srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+    st["local_port"] = srv.server_address[1]
+    st["pid"] = os.getpid()
+    st["started_at"] = time.time()
+
+    mapped = False
+    igd = None
+    if not st.get("no_upnp"):
+        igd = Upnp.discover()
+        if igd:
+            mapped = igd.add(st["port"], lan_ip(), st["local_port"], UPNP_LEASE_S)
+            st["external_ip"] = igd.external_ip()
+    if st.get("no_upnp"):
+        st["upnp"] = "skipped"          # asked for; the operator owns the mapping
+    else:
+        st["upnp"] = "mapped" if mapped else ("no IGD found" if not igd else "refused by router")
+    st["status"] = "listening"
+    _write_state(st)
+
+    def teardown(*_):
+        # Every exit path, so the port stops being exposed the moment the receiver does: normal
+        # stop, SIGTERM from `plxnative-lab stop`, and Ctrl-C.
+        if mapped and igd:
+            igd.delete(st["port"])
+        s = _state()
+        s["status"] = "stopped"
+        s["upnp"] = "removed" if mapped else s.get("upnp", "none")
+        s.pop("pid", None)
+        _write_state(s)
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, teardown)
+    signal.signal(signal.SIGINT, teardown)
+
+    def renew():
+        while mapped and igd:
+            time.sleep(UPNP_LEASE_S / 2)
+            igd.add(st["port"], lan_ip(), st["local_port"], UPNP_LEASE_S)
+
+    if mapped:
+        threading.Thread(target=renew, daemon=True).start()
+    try:
+        srv.serve_forever()
+    finally:
+        teardown()
+    return 0
+
+
+# ---------------------------------------------------------------------------------------------
+# commands
+# ---------------------------------------------------------------------------------------------
+
+
+def cmd_start(args) -> int:
+    st = _state()
+    if st.get("status") == "listening" and st.get("pid") and _alive(st["pid"]):
+        print("a session is already listening — one at a time. `plxnative-lab stop` first.",
+              file=sys.stderr)
+        return 1
+    os.makedirs(HOME, exist_ok=True)
+    os.chmod(HOME, 0o700)
+    shutil.rmtree(UPLOAD_DIR, ignore_errors=True)
+    cert, pin = make_cert(HOME, args.hostname)
+    session = secrets.token_hex(4)
+    st = {
+        "session": session,
+        "secret": secrets.token_urlsafe(32),
+        "hostname": args.hostname,
+        "port": args.port,
+        "local_port": args.local_port,
+        "cert": cert,
+        "key": os.path.join(HOME, "key.pem"),
+        "pin": pin,
+        "no_upnp": bool(args.no_upnp),
+        "status": "starting",
+        "trigger_wcodes": [int(w) for w in args.trigger.split(",") if w.strip()],
+    }
+    _write_state(st)
+    log = open(SERVER_LOG, "a")
+    subprocess.Popen([sys.executable, os.path.abspath(__file__), "serve"],
+                     stdout=log, stderr=log, start_new_session=True)
+    for _ in range(100):  # up to 10 s for the listener and the port mapping
+        time.sleep(0.1)
+        st = _state()
+        if st.get("status") == "listening":
+            break
+    if st.get("status") != "listening":
+        print("receiver did not come up — see " + SERVER_LOG, file=sys.stderr)
+        return 1
+    out = {
+        "session": st["session"],
+        "endpoint": f"{st['hostname']}:{st['port']}",
+        "local_port": st["local_port"],
+        "upnp": st["upnp"],
+        "external_ip": st.get("external_ip"),
+        "dns_matches": _dns_matches(st),
+        "lab_json": lab_json(st),
+        "next": f"make LAB=1 FLAVOR=debug ipk   # stages pkg/lab.json into the package",
+    }
+    # The file the .ipk carries. Written for you: this is the whole handoff between the two halves
+    # of the feature, and hand-copying four fields is how a lab hour gets spent on a 401.
+    lab_path = os.path.join(REPO, "pkg", "lab.json")
+    os.makedirs(os.path.dirname(lab_path), exist_ok=True)
+    with open(lab_path, "w") as f:
+        json.dump(json.loads(out["lab_json"]), f, indent=2)
+    os.chmod(lab_path, 0o600)
+    out["lab_json_path"] = lab_path
+    print(json.dumps(out, indent=2) if not args.json else json.dumps(out))
+    return 0
+
+
+def lab_json(st: dict) -> str:
+    """Exactly what `pkg/lab.json` must contain — see `rust-modules/src/lab/config.rs`."""
+    return json.dumps({
+        "endpoint": f"{st['hostname']}:{st['port']}",
+        "session": st["session"],
+        "secret": st["secret"],
+        "pin": st["pin"],
+        "trigger_wcodes": st.get("trigger_wcodes", []),
+        "trigger_syms": [],
+    })
+
+
+def _dns_matches(st: dict) -> bool | None:
+    """Does `lab.plxnative.com` actually resolve to the address the router says it has?
+
+    The one cheap check that the whole path exists BEFORE a tester spends a rented lab hour on it.
+    `None` when either half is unknown (no UPnP, no DNS) rather than a confident `False`.
+    """
+    ext = st.get("external_ip")
+    if not ext:
+        return None
+    try:
+        addrs = {a[4][0] for a in socket.getaddrinfo(st["hostname"], None, socket.AF_INET)}
+    except socket.gaierror:
+        return None
+    return ext in addrs
+
+
+def _uploads() -> list[str]:
+    try:
+        return sorted(os.path.join(UPLOAD_DIR, f) for f in os.listdir(UPLOAD_DIR)
+                      if f.endswith(".jsonl.gz"))
+    except OSError:
+        return []
+
+
+def _envelope(path: str) -> dict:
+    try:
+        with gzip.open(path, "rb") as f:
+            return json.loads(f.readline())
+    except (OSError, ValueError):
+        return {}
+
+
+def cmd_status(args) -> int:
+    st = _state()
+    ups = _uploads()
+    env = _envelope(ups[-1]) if ups else {}
+    dev = env.get("device", {})
+    live = bool(st.get("pid") and _alive(st["pid"]))
+    age = None
+    if ups:
+        age = int(time.time() - os.path.getmtime(ups[-1]))
+    out = {
+        "receiver": "listening" if live and st.get("status") == "listening" else "stopped",
+        "endpoint": f"{st.get('hostname', '?')}:{st.get('port', '?')}",
+        "session": st.get("session"),
+        "upnp": st.get("upnp"),
+        "external_ip": st.get("external_ip"),
+        "dns_matches": _dns_matches(st),
+        "tv": "recent upload" if age is not None and age < 300 else
+              ("uploaded" if ups else "not seen"),
+        "uploads": len(ups),
+        "last_upload_age_s": age,
+        "webos": dev.get("webos_release"),
+        "board": dev.get("board"),
+        "model": dev.get("model"),
+        "app_version": (env.get("app") or {}).get("version"),
+        "last_route": env.get("route"),
+        "dropped": env.get("dropped"),
+    }
+    if args.json:
+        print(json.dumps(out))
+    else:
+        for k, v in out.items():
+            print(f"{k}: {v}")
+    return 0
+
+
+def _since_ms(spec: str | None, env: dict) -> int:
+    """`--since 5m` against the RING clock, which is app uptime rather than wall time.
+
+    A record's `t_ms` is milliseconds since the app started, and the envelope's `sent_at_ms` is
+    that same clock at the moment of the snapshot — so "the last five minutes" means the five
+    minutes of app time before the snapshot, which is what the tester actually means.
+    """
+    if not spec:
+        return -1
+    m = re.fullmatch(r"(\d+)([smh])", spec)
+    if not m:
+        raise SystemExit(f"unparseable --since {spec!r} (try 30s, 5m, 1h)")
+    n, unit = int(m.group(1)), m.group(2)
+    ms = n * {"s": 1000, "m": 60_000, "h": 3_600_000}[unit]
+    return max(0, int(env.get("sent_at_ms", 0)) - ms)
+
+
+def _emit(path: str, args) -> None:
+    env = _envelope(path)
+    floor = _since_ms(args.since, env)
+    with gzip.open(path, "rb") as f:
+        for i, raw in enumerate(f):
+            line = raw.decode("utf-8", "replace").rstrip("\n")
+            if i == 0 or floor < 0:
+                print(line)
+                continue
+            try:
+                if json.loads(line).get("t_ms", 0) >= floor:
+                    print(line)
+            except ValueError:
+                print(line)
+    sys.stdout.flush()
+
+
+def cmd_logs(args) -> int:
+    ups = _uploads()
+    if args.seq is not None:
+        ups = [p for p in ups if str(_envelope(p).get("seq")) == str(args.seq)]
+    if not ups and not args.follow:
+        print("no uploads yet", file=sys.stderr)
+        return 1
+    if ups:
+        _emit(ups[-1], args)
+    if not args.follow:
+        return 0
+    seen = set(_uploads())
+    try:
+        while True:
+            time.sleep(1.0)
+            for p in _uploads():
+                if p not in seen:
+                    seen.add(p)
+                    _emit(p, args)
+    except KeyboardInterrupt:
+        return 0
+
+
+def cmd_stop(args) -> int:
+    st = _state()
+    pid = st.get("pid")
+    if pid and _alive(pid):
+        os.kill(pid, signal.SIGTERM)
+        for _ in range(50):
+            time.sleep(0.1)
+            if not _alive(pid):
+                break
+    st = _state()
+    # Verify rather than assume: the whole security argument is that the hole closes with the
+    # session, and "we sent a SIGTERM" is not the same statement as "the mapping is gone".
+    left = None
+    if not st.get("no_upnp"):
+        igd = Upnp.discover(timeout=2.0)
+        if igd:
+            igd.delete(st.get("port", DEFAULT_PORT))
+            left = igd.has_mapping(st.get("port", DEFAULT_PORT))
+    out = {"receiver": "stopped", "upnp_mapping_remains": left,
+           "uploads_kept": len(_uploads()), "uploads_dir": UPLOAD_DIR}
+    print(json.dumps(out) if args.json else "\n".join(f"{k}: {v}" for k, v in out.items()))
+    return 0
+
+
+# ---------------------------------------------------------------------------------------------
+# selftest — the whole path, on loopback, with no television and no router
+# ---------------------------------------------------------------------------------------------
+
+
+def selftest(_args) -> int:
+    fails = []
+
+    def check(name: str, ok: bool, detail: str = "") -> None:
+        print(f"{'ok  ' if ok else 'FAIL'} {name}{(' — ' + detail) if detail else ''}")
+        if not ok:
+            fails.append(name)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        cert, pin = make_cert(tmp, "lab.plxnative.com")
+        check("certificate + SPKI pin", pin.startswith("sha256//") and len(pin) > 50, pin)
+        # the pin is what the app will compare against: recomputing it from the cert must agree
+        check("pin is stable", spki_pin(cert) == pin)
+
+        secret = secrets.token_urlsafe(32)
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(cert, os.path.join(tmp, "key.pem"))
+        global UPLOAD_DIR
+        UPLOAD_DIR = os.path.join(tmp, "uploads")
+        srv = Receiver(("127.0.0.1", 0), Handler, secret, "selftest")
+        srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+        port = srv.server_address[1]
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+        cctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        cctx.check_hostname = False
+        cctx.verify_mode = ssl.CERT_NONE
+
+        def post(body: bytes, headers: dict, path: str = "/v1/diag", method: str = "POST"):
+            c = http.client.HTTPSConnection("127.0.0.1", port, context=cctx, timeout=5)
+            c.request(method, path, body=body, headers=headers)
+            r = c.getresponse()
+            out = (r.status, r.read())
+            c.close()
+            return out
+
+        doc = (json.dumps({"kind": "envelope", "seq": 1, "sent_at_ms": 60000,
+                           "device": {"webos_release": "10.3.1", "board": "k8hpp"}})
+               + "\n" + json.dumps({"t_ms": 59000, "m": "feed v#1 reply=Ok"})).encode()
+        gz = gzip.compress(doc)
+        good = {"Authorization": "Bearer " + secret, "Content-Type": "application/x-ndjson",
+                "Content-Encoding": "gzip", "Content-Length": str(len(gz))}
+
+        st, body = post(gz, good)
+        check("a valid gzip upload is accepted", st == 200 and json.loads(body)["ok"], str(st))
+        check("it is stored decompressed and readable", len(_uploads()) == 1
+              and _envelope(_uploads()[0]).get("seq") == 1)
+
+        time.sleep(MIN_UPLOAD_GAP_S)
+        bad = dict(good, Authorization="Bearer wrong")
+        st, _ = post(gz, bad)
+        check("a wrong secret is refused", st == 401, str(st))
+
+        st, _ = post(gz, dict(good, **{"Content-Length": str(MAX_BODY + 1)}))
+        check("an oversized declared body is refused", st == 413, str(st))
+
+        st, _ = post(b"", {"Authorization": "Bearer " + secret, "Content-Length": "0"})
+        check("an empty body is refused", st == 413, str(st))
+
+        st, _ = post(gz, good, path="/anything-else")
+        check("any other path is 404", st == 404, str(st))
+
+        st, _ = post(b"", {"Content-Length": "0"}, method="GET")
+        check("GET is 404 even with no auth", st == 404, str(st))
+
+        time.sleep(MIN_UPLOAD_GAP_S)
+        post(gz, good)
+        st, _ = post(gz, good)
+        check("a second upload inside the gap is rate-limited", st == 429, str(st))
+
+        check("only the accepted uploads were stored", len(_uploads()) == 2, str(len(_uploads())))
+        srv.shutdown()
+
+    # UPnP is the one half a selftest cannot fake: report what is on this LAN rather than assert.
+    igd = Upnp.discover(timeout=2.0)
+    print(f"note  UPnP IGD on this LAN: {'yes — ' + igd.control_url if igd else 'not found'}")
+    if igd:
+        print(f"note  router says its external address is {igd.external_ip()}")
+    print("\n" + ("SELFTEST FAILED: " + ", ".join(fails) if fails else "selftest passed"))
+    return 1 if fails else 0
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    # `--json` is accepted on BOTH sides of the subcommand — `plxnative-lab --json status` and
+    # `plxnative-lab status --json`. An agent writes the second one and argparse rejects it unless
+    # the flag is on the subparser too, which is a confusing failure for a tool whose whole point
+    # is machine-readable output.
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--json", action="store_true", help="machine-readable output")
+    ap.add_argument("--json", action="store_true", dest="json_pre", help=argparse.SUPPRESS)
+    sub = ap.add_subparsers(dest="cmd", required=True, parser_class=lambda **kw: argparse.ArgumentParser(parents=[common], **kw))
+
+    s = sub.add_parser("start", help="generate a session, listen, and map the port")
+    s.add_argument("--hostname", default=DEFAULT_HOST)
+    s.add_argument("--port", type=int, default=DEFAULT_PORT, help="the FIXED external port")
+    s.add_argument("--local-port", type=int, default=0, help="0 = an ephemeral local port")
+    s.add_argument("--no-upnp", action="store_true", help="assume the mapping already exists")
+    s.add_argument("--trigger", default="489",
+                   help="comma-separated wcodes that fire an upload on the remote. 489 is BLUE, "
+                        "measured on the dev set 2026-08-26 (486 RED / 487 GREEN / 488 YELLOW); "
+                        "one remote, one firmware — docs/remote-keys.md §9")
+    s.set_defaults(fn=cmd_start)
+
+    sub.add_parser("serve", help=argparse.SUPPRESS).set_defaults(fn=serve)
+
+    sub.add_parser("status", help="what the agent polls").set_defaults(fn=cmd_status)
+
+    lg = sub.add_parser("logs", help="print the newest snapshot as JSONL")
+    lg.add_argument("--follow", action="store_true")
+    lg.add_argument("--since", help="only records within this much APP TIME of the snapshot (5m)")
+    lg.add_argument("--seq", help="a specific upload's sequence number")
+    lg.set_defaults(fn=cmd_logs)
+
+    sub.add_parser("stop", help="stop listening and remove the mapping").set_defaults(fn=cmd_stop)
+    sub.add_parser("selftest", help="prove the receiver on loopback").set_defaults(fn=selftest)
+
+    args = ap.parse_args()
+    args.json = args.json or getattr(args, "json_pre", False)
+    for opt in ("since", "seq", "follow"):
+        if not hasattr(args, opt):
+            setattr(args, opt, None)
+    return args.fn(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

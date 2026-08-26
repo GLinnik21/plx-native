@@ -359,6 +359,24 @@ lost.
 
 ## 9. Open, and worth knowing before trusting this file
 
+* **The COLOUR buttons — MEASURED ON THE DEV SET, 2026-08-26.** They are `wcode` **486 RED, 487
+  GREEN, 488 YELLOW, 489 BLUE**, with `sym` **0**, i.e. LG's private range and matched in `wcode`
+  like every other remote button above 300. Provenance in the translation table: evdev 289/290/291/
+  292 -> 486/487/488/489.
+
+  Two things about that are worth carrying, because both would have sent a search in the wrong
+  direction. **The standard evdev colour codes are a dead end on this firmware**: `KEY_RED` (398),
+  `KEY_YELLOW` (400) and `KEY_BLUE` (401) map to **0 — not producible**, and `KEY_GREEN` (399) maps
+  to 504, which is a code **this remote never sends**. So the one colour key that looked answerable
+  offline was answerable *wrongly*. And the four are contiguous, which no reading of the table
+  predicts — 486-489 sit in a block with 480/481 (evdev 293/294) and 482 (BACK, evdev 303), not
+  with each other by colour.
+
+  The app still binds none of them by default (checklist #40 wants them inert), and the presses
+  above confirmed that: four presses, four `key type=0x300` lines, nothing moved. `crate::lab`
+  binds ONE of them in a lab build — `docs/lab-diagnostics.md` §7 — and it is configuration, not a
+  constant, because this measurement is one remote on one firmware.
+
 * **`SDLK_SELECT` is misnamed: `77 | 1<<30` is `SDLK_END`.** `SDL_SCANCODE_SELECT` is 119; 77 sits
   in the `INSERT`/`HOME`/`PAGEUP`/`DELETE`/`END`/`PAGEDOWN` run at 73–78, and the television's table
   confirms it — entry 107 (`KEY_END`) is what produces 77. So `is_ok` accepts a keyboard's **End**

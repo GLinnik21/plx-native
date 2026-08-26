@@ -301,8 +301,15 @@ LIBS_REAL = -lSDL2 -lSDL2_ttf -lGLESv2 -lluna-service2 -lglib-2.0 \
 # reports the dev build "Finished in 0.04s" and leaves the release .a sitting there. `make` then
 # links it with no comment: a release binary shipped as if it were the tested dev one. Measured,
 # not theorised. Separate dirs also let make track each artifact honestly.
-RUST_FEATFLAGS = $(if $(RELEASE),--no-default-features,)
-RUST_TDIR      = target$(if $(RELEASE),-release,)
+#
+# **LAB=1** adds one more feature — `lab-diagnostics`, the Cloud Test Lab bridge
+# (`docs/lab-diagnostics.md`). It is a THIRD configuration, with its own target dir for exactly
+# the reason above, and it composes with RELEASE: `make LAB=1 RELEASE=1 …` is a release-featured
+# binary that can still upload a snapshot, which is the configuration a submission candidate is
+# actually tested in. The feature is not in the default set at all, so no ordinary build and no
+# forgotten flag can produce it.
+RUST_FEATFLAGS = $(if $(RELEASE),--no-default-features,)$(if $(LAB), --features lab-diagnostics,)
+RUST_TDIR      = target$(if $(RELEASE),-release,)$(if $(LAB),-lab,)
 # OVERRIDING RUST_FEATFLAGS BY HAND? PASS RUST_TDIR TOO. This dir is keyed on RELEASE, not on the
 # flag set, so `make RUST_FEATFLAGS=...` alone lands in the SAME target/ as an ordinary build:
 # cargo's staticlib looks up to date, the stamp below deletes pkg/plxnative, and make relinks the
@@ -355,7 +362,7 @@ RUST_CFG       = features:$(RUST_FEATFLAGS)
 # SEE the refusal message the cut-release skill quotes. Without it, asking that question on a
 # different configuration deleted `pkg/plxnative`, the FFmpeg header sentinel and the staged
 # libraries — measured, by a reviewer, mid-review.
-SIDE_EFFECT_FREE = $(QUERY_GOALS) release-guard
+SIDE_EFFECT_FREE = $(QUERY_GOALS) release-guard lab-guard
 PURE_QUERY := $(if $(MAKECMDGOALS),$(if $(filter-out $(SIDE_EFFECT_FREE),$(MAKECMDGOALS)),,yes),)
 ifneq ($(PURE_QUERY),yes)
 ifneq ($(RUST_CFG),$(shell cat $(RUST_STAMP) 2>/dev/null))
@@ -510,9 +517,16 @@ TURBOJPEG_SO := $(firstword $(wildcard $(SYSROOT)/usr/lib/libturbojpeg.so.0.*))
 # under that name and fail an otherwise correct package.)
 APPINFO   = $(if $(filter stable,$(FLAVOR)),pkg/appinfo.json,pkg/.flavor/$(FLAVOR)/appinfo.json)
 ICONS     = $(if $(filter stable,$(FLAVOR)),pkg/icon.png pkg/largeIcon.png,pkg/dev/icon.png pkg/dev/largeIcon.png)
+# `pkg/lab.json` is in this list ONLY under LAB=1, and it is the whole handoff between the two
+# halves of the Lab Diagnostics feature: `tools/plxnative-lab start` writes it (endpoint, session,
+# secret, certificate pin), and the app reads it out of its own install directory at boot, because
+# a Cloud Test Lab set has no ssh and the package is the only channel into it. GITIGNORED, 0600,
+# and in `.claude/hooks/outbound-guard.py`'s PRIVATE_FILES — it carries a live credential.
+LAB_FILES = $(if $(LAB),pkg/lab.json,)
 APP_FILES = pkg/plxnative $(APPINFO) $(ICONS) pkg/splash.png \
             pkg/appfont.ttf pkg/appfont-bold.ttf pkg/appfont-cjk.ttf pkg/OFL.txt \
             THIRD-PARTY-NOTICES.md \
+            $(LAB_FILES) \
             $(FFMPEG_STAGED)
 # appfont-cjk.ttf is the fallback face (Noto Sans CJK KR, tools/cut-noto-cjk.py) and it is the
 # single largest thing in the package — 21 MB raw, ~11 MB of the .ipk. It is PAYLOAD, not an
@@ -575,6 +589,22 @@ deploy: pkg/plxnative $(FFMPEG_STAGED) $(APPINFO) release-guard tv-lock-require
 	$(SSH) 'cd $(APPDIR) && for f in lib*-plx.so.*; do case " $(FFMPEG_SONAMES) " in *" $$f "*) ;; *) rm -f "$$f";; esac; done'
 
 	$(SCP) pkg/plxnative root@$(TV):$(APPDIR)/plxnative.new
+	@# The lab session file, under LAB=1 only. Shipped by deploy as well as by the .ipk so the
+	@# whole path — trigger, snapshot, pinned upload — can be rehearsed on the dev television
+	@# before an hour of Cloud Test Lab is spent on it. A non-LAB deploy REMOVES any file a
+	@# previous lab deploy left behind: a stale session's secret sitting in an app directory is
+	@# the one piece of this feature that outlives the build it belongs to.
+	@# ...and CHMOD it. `pkg/lab.json` is 0600 on the host because it holds a session secret, scp
+	@# preserves that mode, and the app runs JAILED UNDER ITS OWN UID while the file arrives owned
+	@# by root — so the binary cannot read its own configuration and boots `lab: INERT`, which is
+	@# indistinguishable from a build that was never given a session. Measured on the dev set,
+	@# first device run. 0644 is not a downgrade that matters here: the secret is already sitting
+	@# in that app directory, and the jail — not the mode — is what stands between it and anything
+	@# else on the television. (`ci/mkipk.py` normalises payload modes, so the .ipk path never had
+	@# this problem; only deploy did.)
+	@if [ -n "$(LAB)" ]; then $(SCP) pkg/lab.json root@$(TV):$(APPDIR)/lab.json && \
+	   $(SSH) 'chmod 644 $(APPDIR)/lab.json'; \
+	 else $(SSH) 'rm -f $(APPDIR)/lab.json'; fi
 	$(SCP) $(APPINFO) root@$(TV):$(APPDIR)/appinfo.json
 	# Copy the fonts unconditionally: the old `test -f || scp` guard meant a CHANGED font could
 	# never reach the TV, so a font swap looked like it had no effect. They are ~300 KB.
@@ -701,6 +731,13 @@ check: lint
 	@# installation cannot resolve SKIPS the cases that need it instead of killing the run. A
 	@# regression there is invisible here and shows up as a stranger concluding the suite is broken.
 	python3 tests/test_harness.py
+	@# The Lab Diagnostics receiver, against a real TLS listener on loopback with a freshly
+	@# generated certificate: an accepted upload, a wrong secret, an oversized body, a foreign
+	@# path, a bare GET and the rate limit — the six refusals that are the whole of its exposure to
+	@# the public internet. ~5 s, most of it the two deliberate rate-limit waits, and it needs no
+	@# router: the UPnP half reports what is on this LAN rather than asserting anything.
+	@# It runs here because the receiver has no other gate — nothing in cargo can see a python file.
+	python3 tools/plxnative-lab selftest
 
 # `make lint` — the three clippy lints that catch a SHADOWED branch, the one bug class the unit
 # suite structurally cannot reach. `app.rs` shipped a duplicated `else if` whose empty body hid the
@@ -782,6 +819,26 @@ ipk: pkg/plxnative $(APPINFO) release-guard
 # The escape hatch is named rather than absent, because there is one legitimate use — reproducing a
 # user's report against the shipped id with instrumentation on — and a gate with no hatch gets
 # deleted rather than respected.
+# A LAB BUILD IS NEVER THE STABLE ID, and it never ships without its session file.
+#
+# Both halves are the same argument as `release-guard`'s, one feature along. `com.beb.plxnative` is
+# the id users install; a lab-featured binary under it carries an upload endpoint and a bearer
+# secret, which is the one thing in this repository that must never reach a stranger's television.
+# And a LAB build with no `pkg/lab.json` is inert — it boots, logs `lab: INERT`, and answers the
+# button with nothing, which in a rented Cloud Test Lab hour is indistinguishable from the colour
+# key not being delivered at all. Failing here names the command that fixes it.
+release-guard: lab-guard
+lab-guard:
+	@if [ -n "$(LAB)" ] && [ "$(FLAVOR)" = stable ] && [ -z "$(ALLOW_DEV_ON_STABLE)" ]; then \
+	  echo "refusing to put a LAB build on $(APPID_STABLE) — that id is what users install."; \
+	  echo "  developer install:  make LAB=1 $(firstword $(MAKECMDGOALS))          (FLAVOR=$(FLAVOR) is not the default)"; \
+	  exit 1; fi
+	@if [ -n "$(LAB)" ] && [ ! -f pkg/lab.json ]; then \
+	  echo "LAB=1 but pkg/lab.json is missing — the build would ship with no session."; \
+	  echo "  start a receiver first:  tools/plxnative-lab start"; \
+	  echo "  (it writes pkg/lab.json for you; docs/lab-diagnostics.md)"; \
+	  exit 1; fi
+
 release-guard:
 	@if [ "$(FLAVOR)" = stable ] && [ -z "$(RELEASE)" ] && [ -z "$(ALLOW_DEV_ON_STABLE)" ]; then \
 	  echo "refusing to put a DEV build on $(APPID_STABLE) — that id is what users install."; \
@@ -876,7 +933,7 @@ SIM_DIR  ?= /tmp/plxnative-sim
 # (os error 45)" before compiling anything. Point this at a local path and the checkout can stay
 # where it is:  export SIM_TDIR=$HOME/plxnative-sim-target
 SIM_TDIR  ?= rust-modules/target-sim
-SIM_BIN   = $(SIM_TDIR)/debug/plxnative-sim
+SIM_BIN   = $(SIM_TDIR)$(if $(LAB),-lab,)/debug/plxnative-sim
 # Which presented frame `sim-shot` grabs. 200 is comfortably past first paint and the poster
 # fetches on a warm cache; raise it if a shot catches a screen mid-load.
 SIM_FRAME ?= 200
@@ -894,8 +951,14 @@ SIM_ENV = PLXNATIVE_RUNTIME_DIR=$(SIM_DIR) PLXNATIVE_APP_DIR=$(CURDIR)/pkg $(SIM
 SIM_PRE = mkdir -p $(SIM_DIR); test -n "$(SIM_PMS)" || \
           { echo "no PMS host — set SIM_PMS=<ip> or add PMS_HOST to src/config.local.h"; exit 1; }
 
+# LAB=1 adds the Lab Diagnostics feature here too, and that is not a curiosity: it is the only way
+# to exercise the WHOLE upload path — trigger, snapshot, scrub, gzip, pinned TLS POST, receiver —
+# without a television and without opening a port on the router (`tools/plxnative-lab start
+# --hostname 127.0.0.1 --no-upnp`). The simulator reads `lab.json` out of its app dir, which is
+# `pkg/`, which is where `plxnative-lab start` writes it. It has its own target dir for the same
+# reason every other feature set does.
 sim:
-	cargo build --manifest-path rust-modules/Cargo.toml --target-dir $(SIM_TDIR) --features hostsim --bin plxnative-sim
+	cargo build --manifest-path rust-modules/Cargo.toml --target-dir $(SIM_TDIR)$(if $(LAB),-lab,) --features hostsim$(if $(LAB), --features lab-diagnostics,) --bin plxnative-sim
 
 # Interactive: opens a window. Ctrl-C to quit.
 sim-run: sim
@@ -1001,4 +1064,4 @@ fetch-profile:
 	@ls -l pkg/plxnative-*.jsonl 2>/dev/null || echo "no profiler output in $(RUNDIR) on the TV ($(APPID))"
 
 .PHONY: all setup-env deploy run run-stream kill check lint test ipk clean tv-lock-require threadprobe sockprobe logmprobe mali-hwcnt-probe sim sim-run sim-shot sim-token sim-clean macapp macapp-zip fixtures fixtures-quick fixtures-pipeline fetch-profile \
-        release-guard install uninstall $(QUERY_GOALS)
+        release-guard lab-guard install uninstall $(QUERY_GOALS)

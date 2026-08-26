@@ -38,6 +38,12 @@ pub enum Action {
     ChangeProfile,
     SignIn,
     SignOut,
+    /// **Lab builds only** — snapshot the diagnostic ring and upload it (`crate::lab`). It is in
+    /// this menu because it must be reachable with the D-PAD ALONE: the remote trigger is a colour
+    /// button whose code is not known on LG's SDL fork, and the LG Cloud Test Lab virtual remote
+    /// may not offer one at all (`docs/lab-diagnostics.md` §7). Never offered in any other build —
+    /// [`crate::lab::menu_row_enabled`] is `false` at compile time.
+    SendDiagnostics,
 }
 
 /// Header for a session we cannot name — signed in but no roster has landed yet (and the signed-out
@@ -76,10 +82,16 @@ pub fn is_open() -> bool {
 /// offering "Change profile" there dead-ends in an empty who's-watching screen. Signed in, "Sign
 /// in" is a lie, so it is never offered — "Change profile" is, whenever plex.tv can serve a roster.
 fn rows_for(acc: &Account) -> &'static [Action] {
-    match (acc.signed_in, acc.can_switch) {
-        (false, _) => &[Action::SignIn],
-        (true, true) => &[Action::ChangeProfile, Action::SignOut],
-        (true, false) => &[Action::SignOut],
+    // The lab row is a THIRD axis rather than an append, so every row set stays a `&'static`
+    // slice and [`action_at`]'s index mapping keeps working unchanged. Six arms is the price of
+    // not allocating a row vector per open; the alternative was a `Vec` in a static.
+    match (acc.signed_in, acc.can_switch, crate::lab::menu_row_enabled()) {
+        (false, _, false) => &[Action::SignIn],
+        (false, _, true) => &[Action::SignIn, Action::SendDiagnostics],
+        (true, true, false) => &[Action::ChangeProfile, Action::SignOut],
+        (true, true, true) => &[Action::ChangeProfile, Action::SignOut, Action::SendDiagnostics],
+        (true, false, false) => &[Action::SignOut],
+        (true, false, true) => &[Action::SignOut, Action::SendDiagnostics],
     }
 }
 
@@ -112,6 +124,7 @@ fn label(a: Action) -> &'static str {
         Action::ChangeProfile => "Change profile",
         Action::SignIn => "Sign in",
         Action::SignOut => "Sign out",
+        Action::SendDiagnostics => "Send diagnostics",
         Action::None => "",
     }
 }

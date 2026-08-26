@@ -32,6 +32,7 @@ mod hwcnt; // direct userspace Mali r12p0 vinstr reader for the phase profiler
 #[cfg(feature = "devtriggers")]
 mod gpu_timer; // async EXT_disjoint_timer_query timing; no glFinish on the timing path
 mod img;
+mod lab; // Lab Diagnostics: the ring + the pinned upload that get a log off a Cloud Test Lab set
 mod metadata; // item detail data layer (detail page): full metadata + seasons/episodes + cast + related
 mod net; // HTTPS client over the TV's libcurl (plex.tv account/login calls — stream.rs can't do TLS/DNS)
 mod person; // person/actor page data layer: the header handed in by the cast row + /library/people/{id}/media
@@ -90,7 +91,7 @@ mod ui; // retui — retained UI framework; ui/home.rs now owns the home-screen 
 ///
 /// Cheap by construction: the `find` is a no-op scan for the overwhelming majority of lines, and
 /// the log is written a few times a second at most, never per frame.
-fn redact_tokens(m: &str) -> std::borrow::Cow<'_, str> {
+pub(crate) fn redact_tokens(m: &str) -> std::borrow::Cow<'_, str> {
     const KEY: &str = "X-Plex-Token=";
     if !m.contains(KEY) {
         return std::borrow::Cow::Borrowed(m);
@@ -127,8 +128,13 @@ pub(crate) fn log(m: &str) {
     // On the television the root is `/tmp`, so this is byte-for-byte the path it always was —
     // `make run`, `tests/run.py` and every skill recipe still read the same file.
     let p = events_log();
+    let line = redact_tokens(m);
+    // The lab ring taps the log HERE, one call below the redaction, so it is by construction a
+    // strict subset of the file every other tool reads and inherits the credential backstop above.
+    // A compile-time no-op without the `lab-diagnostics` feature — see `crate::lab`.
+    lab::record(&line);
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(p) {
-        let _ = writeln!(f, "{}", redact_tokens(m));
+        let _ = writeln!(f, "{line}");
     }
 }
 

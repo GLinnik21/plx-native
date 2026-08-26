@@ -136,6 +136,26 @@ full one-time setup + troubleshooting.
   fingerprints by feature set and the two configurations coexist in one `target/`. The hazard it
   guards is hand-written `#[cfg(feature = "devtriggers")]` PAIRS, where a spliced-in function
   swallows a neighbour's attribute — `dev::latched_flag!` exists to avoid most of them.
+- **`LAB=1`** adds a THIRD cargo feature, `lab-diagnostics` — **Lab Diagnostics**, the bridge that
+  gets a log off a television in **LG Cloud Test Lab**, where there is no ssh, no console, no
+  stdout and no way to download a file, so the entire `/tmp` trigger surface and every recipe in
+  this file is unreachable. In a lab build `crate::log` also feeds a bounded in-memory ring (4000
+  records / 768 KiB), a configured remote key or a **Send diagnostics** row in the account /
+  player-overflow menu snapshots it together with `player::Diag`, `webos` and `devcaps`, scrubs it
+  again, gzips it and POSTs it over **pinned** TLS to `tools/plxnative-lab` on the dev Mac. Unlike
+  `devtools`/`devtriggers` it is **not in the default set at all**, so it cannot ship by forgetting
+  a flag — and `make LAB=1` refuses the stable id, and refuses to build without the session file
+  `pkg/lab.json` (gitignored, a live secret, in `outbound-guard.py`'s `PRIVATE_FILES`;
+  `ci/check-package.py` refuses any non-LAB package that carries it). The receiver logs the PEER
+  ADDRESS of every request, which is the only thing that tells "the television reached me from the
+  internet" apart from "something on the LAN hairpinned". It composes with `RELEASE=1`
+  and with `make sim`, each getting its own `--target-dir` for the reason every other feature set
+  does. Full account: **`docs/lab-diagnostics.md`**. The trigger is a code LIST in that file rather
+  than a constant, and the reason is worth carrying: the colour buttons are **`wcode` 486 RED /
+  487 GREEN / 488 YELLOW / 489 BLUE** (device-measured 2026-08-26), while the STANDARD evdev
+  colour codes are a dead end on this firmware — `KEY_RED`/`KEY_YELLOW`/`KEY_BLUE` translate to
+  nothing at all and `KEY_GREEN` to a 504 this remote never sends. The one answer that looked
+  derivable offline was derivable WRONG; `docs/remote-keys.md` §9 is the record.
 - Override the TV IP with `make TV=1.2.3.4 …`; the run duration with `make run RUN_SECS=30`.
 
 **Cross-compile toolchain:** the webosbrew **native-toolchain** buildroot NDK —
@@ -363,6 +383,16 @@ which the linking section explains is load-bearing rather than tidy.
   `appfont*.ttf`, and the prebuilt `.ipk`.
 - `ipkroot/` — ipk staging (`ctl/control`, `data/`, `debian-binary`); assembled by `make ipk`.
 - `tools/capture-screen.sh` — pull the TV screen (incl. video plane) to a local image.
+- `tools/plxnative-lab` — the **Lab Diagnostics receiver** (host-side, python3 stdlib only):
+  `start` mints a session (id, bearer secret, self-signed certificate, SPKI pin), writes
+  `pkg/lab.json` for `make LAB=1`, listens on TLS and opens a TEMPORARY **UPnP IGD** mapping on the
+  router for a fixed external port; `status --json` is what an agent polls (receiver, mapping,
+  last-upload age, the webOS/board/model/version of the set that uploaded); `logs [--follow]
+  [--since 5m]` prints the snapshots as JSONL; `stop` removes the mapping and VERIFIES it is gone.
+  One route (`POST /v1/diag`), auth before the body is read, a 4 MiB cap, a rate limit, no
+  filesystem and no subprocess — it is exposed to the public internet for the life of a session
+  and is meant to be read end to end. `tools/plxnative-lab selftest` proves the whole receiver on
+  loopback with no router and no television, and runs inside `make check`.
 - `tools/netcond.py` — **network-conditioning TCP proxy** (host-side), for the failures a healthy LAN
   cannot produce. Sits between the TV and the PMS (`--listen 32499 --target 127.0.0.1:32400`; the PMS
   runs on the dev Mac) and makes the server misbehave on demand via `/tmp/netcond.mode`:
@@ -432,6 +462,11 @@ which the linking section explains is load-bearing rather than tidy.
   die at 2043 threads on `RLIMIT_AS` (the full AArch32 4 GB), 256 KB stacks at 3745 on
   `RLIMIT_NPROC` (3746)**, both EAGAIN, against the app's 31 threads at playback peak. Which limit
   binds depends on the stack size; that is why `task::spawn_small` uses 256 KB.
+- `docs/lab-diagnostics.md` — **Lab Diagnostics, end to end**: why Cloud Test Lab needs it, the
+  topology through the router, the JSONL wire format, the three redaction layers, the pinning
+  scheme (and why a self-signed per-session certificate is the STRONGER choice here), the receiver's
+  hardening list, the `LAB=1` build/deploy loop, the measured colour-key table, and — §11 — exactly
+  what has been proven on the host and what still needs hardware.
 - `docs/dolby-vision.md` — **Dolby Vision + Dolby Atmos, end to end**: what ships per profile, the
   two Load-payload nodes and the binaries they were recovered from, the ACB Atmos forward and the
   `SOUND_ERROR_019` rule it retired, the Profile 5 one-tick stutter with the six hypotheses that

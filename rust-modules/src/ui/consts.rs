@@ -394,6 +394,12 @@ pub fn page_dir(sym: c_uint, wcode: c_uint) -> Option<c_int> {
 /// colour button, a key this app really does bind, so calling it bound is honest.
 pub fn is_bound(sym: c_uint, wcode: c_uint) -> bool {
     classify(sym, wcode) != Key::Other
+        // A LAB build binds one more key — the diagnostics trigger, which is configuration rather
+        // than a constant (`crate::lab::config`). It has to be here or pressing it would also wake
+        // the player HUD and abort an armed click, which is precisely the effect this predicate
+        // exists to withhold from keys the app does not act on. Always `false` in every other
+        // build, at compile time.
+        || crate::lab::is_trigger_key(sym, wcode)
         || page_dir(sym, wcode).is_some()
         || sym == SDLK_BACKSPACE
         || sym == SDLK_CLEAR

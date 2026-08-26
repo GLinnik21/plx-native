@@ -615,6 +615,21 @@ if data_tar.exists():
     # it cannot see these at all: `resources/ko/appinfo.json` contributes the basename
     # `appinfo.json`, which the top-level descriptor already supplies. A resources tree that never
     # reached the archive would pass every other assertion in this file.
+    # **A LAB SESSION FILE IS NEVER IN A PACKAGE THAT IS NOT A LAB PACKAGE, AND NEVER ON THE
+    # STABLE ID AT ALL.** `pkg/lab.json` carries a live bearer secret and an endpoint on the
+    # developer's own router (`docs/lab-diagnostics.md`); it reaches the payload only through
+    # `make LAB=1`, whose `LAB_FILES` adds it. The failure this catches is a leftover: the file is
+    # written by `tools/plxnative-lab start` and is not removed by anything, so the NEXT ordinary
+    # `make ipk` in that tree would ship it if the Makefile's condition were ever loosened — and
+    # the artifact would look completely normal. `LAB` is read from the environment because that
+    # is how `make` was invoked; the assertion is one-directional on purpose (a lab build MAY
+    # contain it, nothing else may).
+    LAB = bool(os.environ.get("LAB"))
+    has_lab = "lab.json" in names
+    check(not has_lab or LAB,
+          "payload carries lab.json only in a LAB=1 build (a live session secret otherwise)")
+    check(not (has_lab and IS_STABLE),
+          "the stable id never carries a lab session file")
     missing = [loc for loc in tracked_locales
                if f'usr/palm/applications/{appinfo["id"]}/resources/{loc}/appinfo.json' not in paths]
     check(not missing,

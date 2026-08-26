@@ -37,6 +37,10 @@ rust-modules/target/
 rust-modules/target-release/
 rust-modules/target-sim/
 rust-modules/target-macapp/
+# `make LAB=1` and `make LAB=1 sim` — the Lab Diagnostics feature set gets its own build trees for
+# the reason every other feature set does (cargo does not hash its output; see the Makefile).
+rust-modules/target-lab/
+rust-modules/target-sim-lab/
 
 # dead prototype dir (code lives in rust-modules/ now)
 rust-poc/
@@ -92,6 +96,11 @@ pkg/.ffabi-ok
 # pkg/ via PLXNATIVE_APP_DIR, so it lands here on a host run; it can hold plex.tv and PMS
 # tokens, and this repository is public.
 pkg/auth.json
+
+# The Lab Diagnostics session file (docs/lab-diagnostics.md), written by `tools/plxnative-lab
+# start` and staged into a `make LAB=1` package. It holds a live bearer secret and the developer's
+# own endpoint; `ci/check-package.py` refuses any non-LAB package that contains it.
+pkg/lab.json
 
 # `make macapp` output: the macOS application bundle, its zip, and the recipient's README copy.
 # Build products, like pkg/plxnative and the .ipk above — and the bundle carries ~10 copied

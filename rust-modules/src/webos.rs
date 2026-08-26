@@ -103,6 +103,74 @@ pub(crate) fn probe() {
         ));
     }
     let _ = INFO.set(info);
+    probe_hw();
+}
+
+// ---- which SET this is, as opposed to which webOS ---------------------------------------------
+
+/// nyx's other file. Same directory, same flat shape, written by the same platform component.
+const DEVICE_INFO: &str = "/var/run/nyx/device_info.json";
+
+/// The hardware, for a report that comes from a television nobody here owns.
+///
+/// [`Info`] answers "which firmware"; this answers "which SET". They are different questions and
+/// the second one has been unanswerable: a webOS 6 playback failure on an OLED and on an LCD of
+/// the same firmware are two bugs, and nothing in a log said which had been seen. The **board** is
+/// the SoC generation (`k8hp`, `o22`, …) and is the field a decode or plane failure actually
+/// correlates with.
+///
+/// Every field is EMPTY when unknown, never a plausible default — same rule as [`Info`], for the
+/// same reason: a snapshot that invents a model is worse than one that admits it does not know.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct Hardware {
+    /// e.g. "49SM9000PLA"
+    pub model: String,
+    /// e.g. "HE_DTV_W19H_AFAAABAA" or the SoC name — whichever key this firmware carries
+    pub board: String,
+    pub hw_revision: String,
+}
+
+static HW: OnceLock<Hardware> = OnceLock::new();
+
+/// What the set is. All-empty when the file could not be read.
+///
+/// `#[allow(dead_code)]` with its reason: the only READER is `lab::snapshot`, which is behind the
+/// `lab-diagnostics` feature, while [`probe_hw`] logs the same record in every build (that line is
+/// the point — a bug report from a set nobody here owns should name the hardware whether or not
+/// the reporter had a lab build). Gating the accessor on the feature instead would leave the
+/// static and the probe unused in the default build, i.e. the same warning one layer down.
+#[allow(dead_code)]
+pub(crate) fn device() -> &'static Hardware {
+    HW.get_or_init(Hardware::default)
+}
+
+/// Pure, and tolerant of which spelling a firmware uses: nyx has carried both snake_case and
+/// camelCase for these keys across releases, and we have exactly one device to check against — so
+/// each field takes the first spelling that answers rather than betting on one.
+fn parse_hw(s: &str) -> Hardware {
+    let first = |keys: &[&str]| -> String {
+        keys.iter().find_map(|k| field(s, k)).unwrap_or_default().to_string()
+    };
+    Hardware {
+        model: first(&["modelName", "model_name", "device_name"]),
+        board: first(&["boardType", "board_type", "platform_code", "chip_name"]),
+        hw_revision: first(&["hardware_revision", "hardwareRevision", "hardware_version"]),
+    }
+}
+
+/// Read it once and log it. Called from [`probe`], so it shares that call's one boot slot.
+fn probe_hw() {
+    let hw = match std::fs::read_to_string(DEVICE_INFO) {
+        Ok(s) => parse_hw(&s),
+        Err(e) => {
+            crate::log(&format!("webos: {DEVICE_INFO} unreadable ({e}) — model/board unknown"));
+            Hardware::default()
+        }
+    };
+    if !hw.model.is_empty() || !hw.board.is_empty() {
+        crate::log(&format!("webos: model={} board={} hw={}", hw.model, hw.board, hw.hw_revision));
+    }
+    let _ = HW.set(hw);
 }
 
 #[cfg(test)]
@@ -154,6 +222,26 @@ mod tests {
         for bad in ["", "{", "{\"webos_release\"", "{\"webos_release\":", "not json at all"] {
             assert_eq!(field(bad, "webos_release"), None, "input {bad:?}");
         }
+    }
+
+    /// Both spellings of the hardware keys resolve, because we have one television to check
+    /// against and nyx has carried both across releases.
+    #[test]
+    fn the_hardware_record_takes_whichever_spelling_the_firmware_uses() {
+        let snake = r#"{"model_name":"49SM9000PLA","board_type":"HE_DTV_W19H","hardware_revision":"1.0"}"#;
+        let camel = r#"{"modelName":"OLED55C1","boardType":"k8hp","hardwareRevision":"2.0"}"#;
+        assert_eq!(parse_hw(snake).model, "49SM9000PLA");
+        assert_eq!(parse_hw(snake).board, "HE_DTV_W19H");
+        assert_eq!(parse_hw(camel).model, "OLED55C1");
+        assert_eq!(parse_hw(camel).board, "k8hp");
+        assert_eq!(parse_hw(camel).hw_revision, "2.0");
+    }
+
+    /// Unknown is EMPTY, never a guess — and never a panic, since this runs during boot.
+    #[test]
+    fn an_unreadable_device_info_yields_an_empty_record() {
+        let hw = parse_hw("not json at all");
+        assert!(hw.model.is_empty() && hw.board.is_empty() && hw.hw_revision.is_empty());
     }
 
     /// Absent key, present file.

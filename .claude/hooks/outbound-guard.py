@@ -210,6 +210,11 @@ PRIVATE_FILES = (
     "src/config.local.h",
     "tests/manifest.local.json",
     "pkg/auth.json",
+    # The Lab Diagnostics session (`docs/lab-diagnostics.md`): a bearer secret, a certificate pin
+    # and an endpoint that is the developer's own static address. Written by
+    # `tools/plxnative-lab start`, staged into a `make LAB=1` package, and gitignored — the exact
+    # shape of thing this hook exists to keep out of a PR body.
+    "pkg/lab.json",
     "local.env",
     ".tv-dpad-pass",
     ".tv-remote-url",

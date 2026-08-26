@@ -1708,6 +1708,9 @@ fn apply_more_action(a: crate::ui::more_menu::Action) {
         // running stream. Not deferred either: `route::set_quality` re-asks the routing question
         // for the playback on screen and reloads only when the answer changed.
         crate::ui::more_menu::Action::SetQuality(q) => crate::route::set_quality(q),
+        // Lab builds only. Nothing about playback changes: the snapshot is taken and the toast
+        // reports, over whatever the player is doing.
+        crate::ui::more_menu::Action::SendDiagnostics => crate::lab::request_upload("menu"),
         crate::ui::more_menu::Action::None => {}
     }
 }
@@ -3064,6 +3067,13 @@ fn key_account(over: BarHost, sym: c_uint, wcode: c_uint, route: &mut Route) {
                 crate::auth::sign_out();
                 *route = Route::Login;
             }
+            // Lab builds only, and it changes no route: the tester stays where they were, and the
+            // toast says what happened. Returning to the page the popover stood on is the same
+            // dismissal `Action::None` does.
+            crate::ui::account_menu::Action::SendDiagnostics => {
+                crate::lab::request_upload("menu");
+                *route = over.route();
+            }
             // …and a dismissal returns to the PAGE the popover is standing on, not to Home. It
             // said Home outright while Home was the only screen whose chip could be pressed.
             crate::ui::account_menu::Action::None => *route = over.route(),
@@ -4051,6 +4061,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
     // (issue #22's bug class; docs/plex-pass-audit.md's closing section). Same contract as
     // above: one file read, cannot fail the boot, falls back to the profile that always shipped.
     crate::devcaps::probe();
+    // …and, in a LAB build only, the diagnostics bridge: read `lab.json` out of the app directory
+    // and start the ring's clock. After the two probes above so its first log line can be read
+    // beside the firmware and codec lines it will be uploaded with; a no-op at compile time in
+    // every build that is not a lab build (`crate::lab`).
+    crate::lab::boot();
     // If armed, hand LG's own media pipeline its logging configuration BEFORE anything can create
     // a player. libpf reads these four environment variables inside `PlayerFactory::create`, and
     // its GStreamer is lazily initialised, so this is early enough and a later arming would be
@@ -4917,6 +4932,16 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     last_input = SDL_GetTicks();
                     begin_fresh_press(key, sym, wcode, last_input, &mut held_key, &mut hud, &mut ptr, &mut ok_armed);
 
+                    // LAB BUILDS ONLY, and above every arm below including the exit alert: the
+                    // diagnostics trigger. It has to outrank the chain because the screen a tester
+                    // most needs a snapshot of is the playback failure read-out, whose own arm
+                    // `continue`s on every key — and because a snapshot changes no app state, so
+                    // there is nothing for a later arm to have wanted first. Compiles to `false`
+                    // in every other build (`crate::lab::key_press`).
+                    if crate::lab::key_press(sym, wcode) {
+                        continue;
+                    }
+
                     // ---- the route-scoped arms, each of which `continue`s once it has taken the
                     // press. That makes the chain itself the priority statement: an earlier guard
                     // subsumes each later one it overlaps with, which the playback-failure guard
@@ -5384,6 +5409,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             crate::ui::account_menu::Action::SignOut => {
                                 crate::auth::sign_out();
                                 route = Route::Login;
+                            }
+                            // the pointer twin of `key_account`'s arm — lab builds only
+                            crate::ui::account_menu::Action::SendDiagnostics => {
+                                crate::lab::request_upload("menu");
+                                route = over.route();
                             }
                             crate::ui::account_menu::Action::None => {
                                 // back to the PAGE the popover is on — the pointer's twin of
@@ -6672,6 +6702,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             }
             // Re-samples on its own 2 Hz hold; a no-op when the panel is off.
             crate::ui::stats::update(now);
+            // …and the lab upload's toast, which expires on a clock rather than a spring.
+            crate::lab::update(now);
             if matches!(route, Route::Player { overlay: Overlay::Info }) {
                 crate::ui::info_panel::update(dt);
             }
@@ -7012,6 +7044,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         }
                     }
                     crate::ui::anim::draw_overlay(); // dev diagnostic overlay (all routes)
+                    // The lab upload read-out, over everything, on every route — including the
+                    // player, where the two branches above diverge and this one must not.
+                    crate::lab::draw();
                     });
                 });
                 fd_pc_draw = if framedrop_on { SDL_GetPerformanceCounter() } else { 0 };
@@ -7068,6 +7103,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 Route::Player { .. } => "player",
                 _ => "home",
             };
+            // The lab envelope's `route` field, from the SAME name the heartbeat and the focus
+            // fingerprint print — a snapshot that disagreed with the log about which screen the
+            // tester was on would be worse than one that omitted the field. Compiles away in every
+            // build that is not a lab build.
+            crate::lab::note_route(rn);
             // dev: the FOCUS FINGERPRINT (`/tmp/plxnative-focus`, see `crate::focusprobe`). One
             // ordered line naming everything the key ladder above can move, logged only when it
             // changes, so a (route x key) characterization run can read what a press did out of the
