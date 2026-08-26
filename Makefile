@@ -739,6 +739,13 @@ check: lint
 	python3 .claude/hooks/outbound-guard-test.py
 	python3 .claude/hooks/release-config-check-test.py
 	python3 .claude/hooks/tv-lock-guard-test.py
+	@# The PMS probe's own offline suite (~3ms). It talks to the maintainer's real server with a
+	@# real token, so its redaction and its session CLEANUP are the two things that must not
+	@# regress -- and both are only covered here. It sat outside this target until 2026-08-27,
+	@# which is the same shape as the hook gap above: a suite that exists, passes, and is never
+	@# run. `pms-rung-sweep.py` drives that probe once per rung, so its pairing rules ride along.
+	python3 tools/test_pms_hls_probe.py
+	python3 tools/test_pms_rung_sweep.py
 	@# The Cloud Lab diagnostics/control receiver, against a real TLS listener on loopback with a freshly
 	@# generated certificate: an accepted upload, a wrong secret, an oversized body, a foreign
 	@# path, a bare GET and the rate limit — the six refusals that are the whole of its exposure to

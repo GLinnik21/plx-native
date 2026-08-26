@@ -604,6 +604,36 @@ def _timeline(origin: str, token: str, rk: str, sessions: SessionPlan, time_ms: 
     return {"status": status, "timing": timing, "bandwidth_changes": _bandwidth_changes(body)}
 
 
+def _sample_indices(child_count: int, explicit, limit: int, offset_seconds: int,
+                    seconds_per_segment: int = 2):
+    """Which media-playlist indices to sample, as an ordered de-duplicated list.
+
+    Two things here are load-bearing rather than convenient.
+
+    **The default origin is the OFFSET, not zero.** A PMS HLS session starts producing at
+    `offset`, but the media playlist it hands back is the whole film indexed from time zero.
+    Sampling from index 0 after a non-zero offset therefore asks the encoder to seek BACKWARDS
+    on its first request, which measures a seek rather than the steady production this probe is
+    reading. Deriving the origin from the offset makes the two agree by construction.
+
+    **Explicit indices are honoured verbatim**, including a far-ahead one, because requesting a
+    segment the encoder has not reached yet is the only way to observe the just-in-time cost the
+    production margin exists to cover. That request is SUPPOSED to be slow; it is the measurement.
+    """
+    if explicit is not None:
+        chosen = [index for index in explicit if 0 <= index < child_count]
+    else:
+        origin = max(0, offset_seconds) // max(1, seconds_per_segment)
+        if origin >= child_count:
+            origin = 0
+        chosen = list(range(origin, min(origin + max(0, limit), child_count)))
+    ordered = []
+    for index in chosen:
+        if index not in ordered:
+            ordered.append(index)
+    return ordered
+
+
 def _segment_sample(url: str, token: str, index: int, client_id: str = CID):
     status, segment, timing = _request(
         url, token, "application/octet-stream", MAX_SEGMENT, client_id=client_id
@@ -900,11 +930,18 @@ def probe(args):
             report["media"] = {"child_count": len(uris)}
             if uris:
                 sample_limit = 1 if args.auto else args.fixed_segments
+                indices = _sample_indices(
+                    len(uris),
+                    None if args.auto else args.segment_indices,
+                    sample_limit,
+                    args.offset,
+                )
+                report["media"]["sampled_indices"] = indices
                 report["segments"] = [
                     _segment_sample(
                         _safe_child(media_url, uris[index]), token, index, client_id
                     )
-                    for index in range(min(sample_limit, len(uris)))
+                    for index in indices
                 ]
                 if args.auto:
                     duration_ms = len(uris) * 2000
@@ -1007,7 +1044,15 @@ def main():
         "--fixed-segments",
         type=int,
         default=4,
-        help="segments to sample in fixed mode",
+        help="segments to sample in fixed mode, counting from the offset's index",
+    )
+    parser.add_argument(
+        "--segment-indices",
+        default=None,
+        help=(
+            "comma-separated media-playlist indices to sample instead of a run from the offset "
+            "(fixed mode only); an index the encoder has not reached measures just-in-time cost"
+        ),
     )
     parser.add_argument(
         "--pace",
@@ -1045,6 +1090,19 @@ def main():
         parser.error("--bandwidth-sequence must contain only comma-separated integers")
     if not args.bandwidth_sequence:
         parser.error("--bandwidth-sequence must not be empty")
+    if args.segment_indices is not None:
+        try:
+            args.segment_indices = [
+                int(value) for value in str(args.segment_indices).split(",") if value != ""
+            ]
+        except ValueError:
+            parser.error("--segment-indices must contain only comma-separated integers")
+        if not args.segment_indices:
+            parser.error("--segment-indices must not be empty")
+        if any(index < 0 for index in args.segment_indices):
+            parser.error("--segment-indices must be non-negative")
+        if args.auto:
+            parser.error("--segment-indices applies to fixed mode only")
     if (
         args.bitrate <= 0
         or args.segments_per_bandwidth <= 0

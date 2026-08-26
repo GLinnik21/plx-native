@@ -337,5 +337,44 @@ class Cleanup(unittest.TestCase):
         self.assertTrue(json.loads(report)["cleanup"]["complete"])
 
 
+class SampleIndices(unittest.TestCase):
+    """`_sample_indices` decides WHICH media time the byte census is taken over.
+
+    Every assertion here is about a comparison that silently stops being paired if the helper
+    drifts: a rung sweep compares `bytes` at the same index across rungs, so two rungs that
+    sample different indices produce a byte RATIO between different scenes and read as an
+    actuator effect.
+    """
+
+    def test_default_run_starts_at_the_offsets_own_index(self):
+        # 1800 s at 2 s per segment is index 900. Starting at 0 would ask the encoder to seek
+        # backwards on its first request, which measures a seek and not steady production.
+        self.assertEqual(
+            probe._sample_indices(4235, None, 4, 1800), [900, 901, 902, 903]
+        )
+
+    def test_zero_offset_is_unchanged_from_the_original_behaviour(self):
+        self.assertEqual(probe._sample_indices(4235, None, 3, 0), [0, 1, 2])
+
+    def test_run_is_clamped_to_the_playlist_rather_than_indexing_past_it(self):
+        self.assertEqual(probe._sample_indices(3, None, 10, 0), [0, 1, 2])
+
+    def test_offset_past_the_end_falls_back_to_the_start(self):
+        self.assertEqual(probe._sample_indices(4, None, 2, 100_000), [0, 1])
+
+    def test_explicit_indices_are_kept_in_order_deduplicated_and_bounded(self):
+        self.assertEqual(
+            probe._sample_indices(1000, [5, 5, 900, 0, 1000, 999], 4, 0), [5, 900, 0, 999]
+        )
+
+    def test_explicit_far_ahead_index_survives_because_it_is_the_measurement(self):
+        # The point of a far-ahead index is that the encoder has NOT produced it. Reordering or
+        # dropping it would silently delete the only just-in-time observation the probe can make.
+        self.assertEqual(probe._sample_indices(4235, [0, 900], 4, 0), [0, 900])
+
+    def test_explicit_indices_override_the_offset_origin(self):
+        self.assertEqual(probe._sample_indices(4235, [7], 4, 1800), [7])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
