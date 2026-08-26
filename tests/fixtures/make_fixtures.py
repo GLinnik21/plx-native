@@ -193,6 +193,7 @@ asserts all three out of the finished files rather than trusting the filter grap
 import argparse
 import json
 import os
+import pathlib
 import re
 import shutil
 import struct
@@ -1164,7 +1165,8 @@ PIPE_SHAPES = {
     # HLS controller can prime/swap fixed sessions without a PMS. Shortness is intentional here:
     # these are HLS segment bodies, never top-level playback fixtures.
     "pipe_abr_240p": {
-        "kind": "clip", "ext": "ts", "duration": 2, "rate": 0.02, "hls_segment": True,
+        "kind": "clip", "ext": "ts", "duration": 12, "rate": 0.02, "hls_segment": True,
+        "hls_segments": 6,
         "declare": {"vcodec": "h264", "acodec": "aac", "fps": float(FPS), "atmos": False},
         "video": {"codec": "h264", "size": "426x240", "crf": 23},
         "audio": [{"codec": "aac", "ch": 2, "lang": "eng", "br": "96k", "pitch": 180,
@@ -1172,7 +1174,8 @@ PIPE_SHAPES = {
         "subs": [],
     },
     "pipe_abr_480p": {
-        "kind": "clip", "ext": "ts", "duration": 2, "rate": 0.03, "hls_segment": True,
+        "kind": "clip", "ext": "ts", "duration": 12, "rate": 0.03, "hls_segment": True,
+        "hls_segments": 6,
         "declare": {"vcodec": "h264", "acodec": "aac", "fps": float(FPS), "atmos": False},
         "video": {"codec": "h264", "size": "854x480", "crf": 22},
         "audio": [{"codec": "aac", "ch": 2, "lang": "eng", "br": "128k", "pitch": 200,
@@ -1180,7 +1183,8 @@ PIPE_SHAPES = {
         "subs": [],
     },
     "pipe_abr_720p": {
-        "kind": "clip", "ext": "ts", "duration": 2, "rate": 0.05, "hls_segment": True,
+        "kind": "clip", "ext": "ts", "duration": 12, "rate": 0.05, "hls_segment": True,
+        "hls_segments": 6,
         "declare": {"vcodec": "h264", "acodec": "aac", "fps": float(FPS), "atmos": False},
         "video": {"codec": "h264", "size": "1280x720", "crf": 21},
         "audio": [{"codec": "aac", "ch": 2, "lang": "eng", "br": "160k", "pitch": 220,
@@ -1188,7 +1192,8 @@ PIPE_SHAPES = {
         "subs": [],
     },
     "pipe_abr_1080p": {
-        "kind": "clip", "ext": "ts", "duration": 2, "rate": 0.08, "hls_segment": True,
+        "kind": "clip", "ext": "ts", "duration": 12, "rate": 0.08, "hls_segment": True,
+        "hls_segments": 6,
         "declare": {"vcodec": "h264", "acodec": "aac", "fps": float(FPS), "atmos": False},
         "video": {"codec": "h264", "size": "1920x1080", "crf": 20},
         "audio": [{"codec": "aac", "ch": 2, "lang": "eng", "br": "192k", "pitch": 240,
@@ -1205,7 +1210,8 @@ PIPE_SHAPES = {
     # Cost: eight clips x 2 s x <= 20 Mbit/s is about 25 MB, against a ~0.7 GB pipeline pack.
     **{
         f"pipe_abr_1080p_{mbit}m": {
-            "kind": "clip", "ext": "ts", "duration": 2, "rate": 0.08, "hls_segment": True,
+            "kind": "clip", "ext": "ts", "duration": 12, "rate": 0.08, "hls_segment": True,
+            "hls_segments": 6,
             "declare": {"vcodec": "h264", "acodec": "aac", "fps": float(FPS), "atmos": False},
             "video": {"codec": "h264", "size": "1920x1080", "vbr": mbit * 1000 - 192},
             "audio": [{"codec": "aac", "ch": 2, "lang": "eng", "br": "192k", "pitch": 240,
@@ -1602,6 +1608,7 @@ def build_generic(ctx, key, spec, dur, ep, dest, work, video_only=False):
     argv += ["-t", str(dur), str(dest)]
     dest.parent.mkdir(parents=True, exist_ok=True)
     run(argv)
+    cut_hls_segments(spec, dur, dest)
 
     # A Plex sidecar is "<video basename>.<lang>.srt" and must carry the video's FINAL
     # basename, which is the library title — not the shape key it was generated under.
@@ -1611,6 +1618,57 @@ def build_generic(ctx, key, spec, dur, ep, dest, work, video_only=False):
             write_srt(dest.parent / (dest.stem + "." + lang2 + ".srt"),
                       0, s["lang"].upper() + " SIDECAR", dur)
     return lines
+
+
+def cut_hls_segments(spec, dur, dest):
+    """Cut an ABR ladder clip into the K independently decodable segments the server hands out.
+
+    **This is the fix for the corpus having ten data points.** `serve_fixtures.py` advertises 90
+    segments per rung but resolved every `sequence=N` to ONE file, so 593 logged segments in the
+    P1 device run carried exactly ten distinct byte sizes -- each of them a file size on disk.
+    `bytes` was not merely collinear with `rung`, it was an exact function of it, and no amount of
+    playback could add a degree of freedom. See `docs/measurements/p1-transaction-anatomy.md` §6.
+
+    The split is a STREAM COPY of the clip this function was just handed, so the encode is
+    untouched and each segment is exactly what the encoder produced for those two seconds. `-g 48`
+    with `-sc_threshold 0` puts an IDR on every 2 s boundary at 24 fps, which is what makes the
+    cut land cleanly; `-reset_timestamps` gives each segment a zero base, matching the measured
+    PMS contract and the existing one-file pack.
+
+    Segment 0 KEEPS THE ORIGINAL NAME. That is deliberate and is what makes this backward
+    compatible: an old pack, `ABR_FALLBACK`, `fixtures.json` and `verify()` all still find the
+    file they expect, and a server that has not learned about the extra segments still serves a
+    correct -- if repetitive -- stream.
+
+    Measured on the current recipe: six real cuts of a 12 s 1080p clip span 2 403 956 to
+    2 757 772 bytes, a 1.15x spread. Quality-targeted encodes give LESS spread, not more (CRF
+    1.07x, VBR-with-headroom 1.09x), because the source complexity is near-constant and those
+    modes smooth what little there is -- so the existing rate-targeted recipe is kept.
+    """
+    count = int(spec.get("hls_segments") or 0)
+    if count < 2:
+        return []
+    seg_secs = float(dur) / count
+    work = dest.parent / (dest.stem + "__cut")
+    work.mkdir(parents=True, exist_ok=True)
+    run(["ffmpeg", "-y", "-v", "error", "-nostdin", "-i", str(dest),
+         "-c", "copy", "-map", "0", "-f", "segment",
+         "-segment_time", _g(seg_secs), "-reset_timestamps", "1",
+         str(work / ("part_%02d." + spec["ext"]))])
+    parts = sorted(work.glob("part_*." + spec["ext"]))
+    if len(parts) < count:
+        raise Fail("splitting %s gave %d segment(s), wanted %d — the GOP length and the segment "
+                   "time disagree, so the cut cannot land on an IDR"
+                   % (dest.name, len(parts), count))
+    written = []
+    for i, part in enumerate(parts[:count]):
+        target = dest if i == 0 else dest.with_name("%s_%02d.%s" % (dest.stem, i, spec["ext"]))
+        part.replace(target)
+        written.append(target)
+    for leftover in work.glob("*"):
+        leftover.unlink()
+    work.rmdir()
+    return written
 
 
 def resolution_spike_plan(spec, dur):
@@ -2079,6 +2137,25 @@ def verify(key, spec, dur, path, ep=None):
     # and a stunted integration one, and `quick` above can only tell those apart once you
     # already know which table to compare it against.
     rec["tier"] = spec["tier"]
+    # An `hls_segments` shape is ENCODED at `duration` and then cut, so the file this verifies
+    # is one segment of it. Checking the pre-cut length here would fail every ABR ladder clip.
+    cuts = int(spec.get("hls_segments") or 0)
+    if cuts >= 2:
+        dur = float(dur) / cuts
+        rec["hls_segments"] = cuts
+        # The SIBLINGS have to be here too, and this check is load-bearing rather than tidy: with
+        # the duration expectation divided by `cuts`, an OLD un-cut 2 s clip measures exactly the
+        # 2 s a cut segment should, passes every other assertion, and is skipped as "already
+        # correct" — which is how the first attempt at this silently regenerated nothing.
+        stem = pathlib.Path(path)
+        missing = [i for i in range(1, cuts)
+                   if not stem.with_name("%s_%02d%s" % (stem.stem, i, stem.suffix)).is_file()]
+        if missing:
+            problems.append("cut into %d segment(s) but %d sibling(s) are absent (%s) — this is "
+                            "an un-cut clip from before the split, and the rung it serves would "
+                            "deliver one byte size for the whole playback"
+                            % (cuts, len(missing),
+                               ", ".join("_%02d" % i for i in missing[:3])))
     tol = max(2.0, dur * 0.03)
     if abs(measured - dur) > tol:
         # DUR_LONGER_MARK: main() reads this exact prefix to tell "the file on disk is

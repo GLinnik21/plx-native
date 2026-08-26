@@ -1624,6 +1624,69 @@ class LogLineContract(unittest.TestCase):
                          "no byte ever arrived is -1, which is not a fast first byte")
 
 
+class AbrSegmentVariation(unittest.TestCase):
+    """A rung must deliver DIFFERENT segments, not one file ninety times.
+
+    The P1 device run logged 593 segments carrying exactly ten distinct byte sizes -- one per
+    fixture file -- because `_resolve` discarded the sequence number. That made `bytes` an exact
+    function of `rung`, which is why the transport model had ten data points to fit however long
+    the suite ran. This is the regression guard for the fix.
+    """
+
+    def _root(self, parts_per_rung):
+        """A throwaway pack: `pipe_abr_240p.ts` plus its `_01.._0N` siblings, distinct sizes."""
+        root = tempfile.mkdtemp()
+        base = serve_fixtures.ABR_FIXTURE["320"]
+        stem, _, ext = base.rpartition(".")
+        for i in range(parts_per_rung):
+            name = base if i == 0 else f"{stem}_{i:02d}.{ext}"
+            with open(os.path.join(root, name), "wb") as fh:
+                fh.write(b"\0" * (1000 + i))          # a distinct size per part
+        self.addCleanup(shutil.rmtree, root, True)
+        return root
+
+    def _server(self, root):
+        srv = serve_fixtures.FixtureServer.__new__(serve_fixtures.FixtureServer)
+        srv.root = os.path.realpath(root)
+        srv.lock = threading.Lock()
+        srv._abr_parts = {}
+        return srv
+
+    def test_a_rung_cycles_through_every_segment_it_has(self):
+        srv = self._server(self._root(6))
+        parts = srv.abr_parts(serve_fixtures.ABR_FIXTURE["320"])
+        self.assertEqual(len(parts), 6, "all six cut segments must be discovered")
+        self.assertEqual(len(set(parts)), 6, "and they must be six DIFFERENT files")
+
+    def test_an_old_single_file_pack_still_works(self):
+        """Segment 0 keeps the unsuffixed name precisely so this stays true."""
+        srv = self._server(self._root(1))
+        parts = srv.abr_parts(serve_fixtures.ABR_FIXTURE["320"])
+        self.assertEqual(parts, [serve_fixtures.ABR_FIXTURE["320"]],
+                         "a pack without the cut siblings must degrade to the old behaviour")
+
+    def test_the_sequence_number_selects_the_segment(self):
+        """The defect in one assertion: sequence 0..5 must not all resolve to one file."""
+        srv = self._server(self._root(6))
+        parts = srv.abr_parts(serve_fixtures.ABR_FIXTURE["320"])
+        picked = [parts[n % len(parts)] for n in range(12)]
+        self.assertEqual(len(set(picked)), 6,
+                         "twelve sequence numbers reached only "
+                         f"{len(set(picked))} distinct file(s) — the sequence is being ignored")
+        self.assertEqual(picked[0], picked[6], "and the cycle must repeat, not run out")
+
+    def test_every_abr_shape_declares_a_cut(self):
+        """Derived from the generator, so a rung added tomorrow cannot quietly serve one file."""
+        shapes = fixturegen.TIERS["pipeline"]["shapes"]
+        served = {rel[: -len(".ts")] for rel in serve_fixtures.ABR_FIXTURE.values()}
+        for key in sorted(served):
+            with self.subTest(key):
+                self.assertGreaterEqual(
+                    int(shapes[key].get("hls_segments") or 0), 2,
+                    f"{key} is served as an ABR rung but is not cut into segments, so that rung "
+                    "delivers one byte size for the whole playback")
+
+
 class SharedLinkShaping(unittest.TestCase):
     """The fixture server's rate limiter must shape the LINK, not each response separately.
 

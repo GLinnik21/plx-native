@@ -64,6 +64,7 @@ RE_RANGE = re.compile(r"^bytes=(\d+)-(\d*)$")
 ABR_RUNGS = "320|720|2000|4000|6000|8000|10000|12000|14000|16000|18000|20000"
 RE_ABR_PLAYLIST = re.compile(rf"^/__abr/({ABR_RUNGS})/(master|media)\.m3u8$")
 RE_ABR_SEGMENT = re.compile(rf"^/__abr/({ABR_RUNGS})/segment\.ts$")
+RE_SEQUENCE = re.compile(r"(?:^|&)sequence=(\d+)")
 # What a rung asks PMS for is a BITRATE CEILING and the raster is the consequence; the controller's
 # acceptance test is `hls_raster_within` — the decoded picture must FIT the rung's raster, not equal
 # it — so several rungs legitimately share a raster.
@@ -119,7 +120,7 @@ class FixtureHandler(BaseHTTPRequestHandler):
         """
         target = self.path.split("?", 1)[0].split("#", 1)[0]
         seg = RE_ABR_SEGMENT.match(target)
-        rel = ABR_FIXTURE[seg.group(1)] if seg else target.lstrip("/")
+        rel = self._abr_segment_file(seg) if seg else target.lstrip("/")
         if seg and not os.path.isfile(os.path.join(self.server.root, rel)):
             # A pack built before the per-rung ladder existed has only `pipe_abr_1080p.ts`. Serve
             # it rather than 404: a 404 on a rung reads to the controller as a REJECTED CANDIDATE,
@@ -135,6 +136,29 @@ class FixtureHandler(BaseHTTPRequestHandler):
         if full != self.server.root and not full.startswith(self.server.root + os.sep):
             return None
         return full if os.path.isfile(full) else None
+
+    def _abr_segment_file(self, seg):
+        """The clip for `segment.ts?sequence=N` at this rung — **N is not ignored any more**.
+
+        It was, until 2026-08-26: every one of the 90 advertised segments resolved to one file,
+        so a rung delivered the same bytes for the whole playback. 593 segments logged in the P1
+        device run carried exactly TEN distinct byte sizes, one per fixture file, which made
+        `bytes` an exact function of `rung` and left the transport model with ten data points to
+        fit. `docs/measurements/p1-transaction-anatomy.md` §6 is the measurement.
+
+        The generator now cuts each rung into `pipe_abr_*.ts` plus `pipe_abr_*_01.ts` .. `_05.ts`
+        and this cycles through them, so a rung delivers six different sizes. Segment 0 keeps the
+        unsuffixed name, which is what lets an OLD pack keep working: if no `_01` exists the list
+        is one long and the behaviour is exactly what it was.
+        """
+        base = ABR_FIXTURE[seg.group(1)]
+        parts = self.server.abr_parts(base)
+        # The sequence lives in the QUERY, which `_resolve` has already stripped off the path it
+        # matched — so it is read from `self.path` here rather than from a capture group.
+        query = self.path.split("?", 1)[1] if "?" in self.path else ""
+        found = RE_SEQUENCE.search(query)
+        sequence = int(found.group(1)) if found else 0
+        return parts[sequence % len(parts)]
 
     def _fail(self, code, why):
         self.server.note(f"-> {code} {why} ({self.path})")
@@ -253,7 +277,30 @@ class FixtureServer(socketserver.ThreadingTCPServer):
         self.rate_started = None
         # The instant the shared link next falls idle. See `write_body`.
         self.link_free_at = None
+        self._abr_parts = {}
         super().__init__((bind, port), FixtureHandler)
+
+    def abr_parts(self, base):
+        """The ordered clip list for one rung: `[base, base_01, base_02, ...]`, cached.
+
+        Discovered from disk rather than declared, so an OLD pack -- which has only the
+        unsuffixed file -- yields a one-element list and behaves exactly as it did before the
+        split existed. That is the whole backward-compatibility story, and it is why the
+        generator gives segment 0 the unsuffixed name.
+        """
+        with self.lock:
+            cached = self._abr_parts.get(base)
+            if cached is not None:
+                return cached
+        stem, _, ext = base.rpartition(".")
+        parts = [base]
+        i = 1
+        while os.path.isfile(os.path.join(self.root, f"{stem}_{i:02d}.{ext}")):
+            parts.append(f"{stem}_{i:02d}.{ext}")
+            i += 1
+        with self.lock:
+            self._abr_parts[base] = parts
+        return parts
 
     def set_network_profile(self, profile):
         """Install one case-local wall-clock rate schedule: [{until_s, kbps}, ...].
