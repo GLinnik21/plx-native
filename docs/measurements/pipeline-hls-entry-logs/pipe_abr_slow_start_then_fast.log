@@ -1,0 +1,449 @@
+install: id=com.beb.plxnative.debug flavour=debug runtime=/tmp/com.beb.plxnative.debug features=dev APPID_env=com.beb.plxnative.debug
+appdir: /media/developer/apps/usr/palm/applications/com.beb.plxnative.debug (from current_exe)
+webos: webOS TV release=4.10.2 codename=goldilocks2-grampians api=4.1.0 major=4
+devcaps: hevc=true 4096x2176 vp9=true audio=aac,ac3,eac3 (device table)
+video driver: wayland
+surface: window=1920x1080 drawable=1920x1080 panel=3840x2160 logical=1920x1080 scale=1.000
+GL: Mali-T820 / OpenGL ES 3.2 v1.r12p0-04rel0.cb5901e2e52329f9302428bb2e5885c3
+egl: display=0x6ff458 draw_surface=0x7380e0
+egl vendor: ARM
+egl version: 1.4 Midgard-"r12p0-04rel0"
+egl client_apis: OpenGL_ES
+egl extensions:  EGL_KHR_config_attribs EGL_KHR_image EGL_KHR_image_base EGL_KHR_fence_sync EGL_KHR_wait_sync EGL_KHR_gl_colorspace EGL_KHR_get_all_proc_addresses EGL_ARM_pixmap_multisample_discard EGL_WL_bind_wayland_display EGL_IMG_context_priority EGL_ARM_pixmap_multisample_discard EGL_KHR_gl_texture_2D_image EGL_KHR_gl_renderbuffer_image EGL_KHR_create_context EGL_KHR_surfaceless_context EGL_KHR_gl_texture_cubemap_image EGL_EXT_create_context_robustness EGL_KHR_cl_event2
+egl procs: eglSetDamageRegionKHR=1 eglSwapBuffersWithDamageKHR=1 eglSwapBuffersWithDamageEXT=1 eglQuerySurface=1 eglSurfaceAttrib=1
+egl surface: 1920x1080 (ok=1/1) swap_behavior=0x3095 BUFFER_DESTROYED (ok=1 err=0x3000) buffer_age=0 (ok=1 err=0x3000)
+egl config: id=1 surface_type=0x0007 (ok=1)          SWAP_BEHAVIOR_PRESERVED_BIT=0
+gl extensions: GL_ARM_rgba8 GL_ARM_mali_shader_binary GL_OES_depth24 GL_OES_depth_texture GL_OES_depth_texture_cube_map GL_OES_packed_depth_stencil GL_OES_rgb8_rgba8 GL_EXT_read_format_bgra GL_OES_compressed_paletted_texture GL_OES_compressed_ETC1_RGB8_texture GL_OES_standard_derivatives GL_OES_EGL_image GL_OES_EGL_image_external GL_OES_EGL_image_external_essl3 GL_OES_EGL_sync GL_OES_texture_npot GL_OES_vertex_half_float GL_OES_required_internalformat GL_OES_vertex_array_object GL_OES_mapbuffer GL_EXT_texture_format_BGRA8888 GL_EXT_texture_rg GL_EXT_texture_type_2_10_10_10_REV GL_OES_fbo_render_mipmap GL_OES_element_index_uint GL_EXT_shadow_samplers GL_OES_texture_compression_astc GL_KHR_texture_compression_astc_ldr GL_KHR_texture_compression_astc_hdr GL_KHR_texture_compression_astc_sliced_3d GL_KHR_debug GL_EXT_occlusion_query_boolean GL_EXT_disjoint_timer_query GL_EXT_blend_minmax GL_EXT_discard_framebuffer GL_OES_get_program_binary GL_OES_texture_3D GL_EXT_texture_storage GL_EXT_multisampled_render_to_texture GL_OES_surfaceless_context GL_OES_texture_stencil8 GL_EXT_shader_pixel_local_storage GL_ARM_shader_framebuffer_fetch GL_ARM_shader_framebuffer_fetch_depth_stencil GL_ARM_mali_program_binary GL_EXT_sRGB GL_EXT_sRGB_write_control GL_EXT_texture_sRGB_decode GL_KHR_blend_equation_advanced GL_KHR_blend_equation_advanced_coherent GL_OES_texture_storage_multisample_2d_array GL_OES_shader_image_atomic GL_EXT_robustness GL_EXT_draw_buffers_indexed GL_OES_draw_buffers_indexed GL_EXT_texture_border_clamp GL_OES_texture_border_clamp GL_EXT_texture_cube_map_array GL_OES_texture_cube_map_array GL_OES_sample_variables GL_OES_sample_shading GL_OES_shader_multisample_interpolation GL_EXT_shader_io_blocks GL_OES_shader_io_blocks GL_EXT_tessellation_shader GL_OES_tessellation_shader GL_EXT_primitive_bounding_box GL_OES_primitive_bounding_box GL_EXT_geometry_shader GL_OES_geometry_shader GL_ANDROID_extension_pack_es31a GL_EXT_gpu_shader5 GL_OES_gpu_shader5 GL_EXT_texture_buffer GL_OES_texture_buffer GL_EXT_copy_image GL_OES_copy_image GL_EXT_color_buffer_half_float GL_EXT_color_buffer_float GL_EXT_YUV_target GL_OVR_multiview GL_OVR_multiview2 GL_OVR_multiview_multisampled_render_to_texture GL_KHR_robustness GL_KHR_robust_buffer_access_behavior GL_EXT_draw_elements_base_vertex GL_OES_draw_elements_base_vertex 
+keyboard: support=1 active=0 focus=0 winflags=0x7
+FB bits: alpha=8 red=8 depth=0 stencil=0 (config alpha=8 depth=0 stencil=0)
+wm sdl=2.0.5 subsys=6 wl_surface=0x6fe4c0 wl_display=0x6fa038 alpha=8
+init_text ok=1
+net: bound libcurl -> libcurl.so.5 (libcurl/7.53.1 OpenSSL/1.0.2p zlib/1.2.11 c-ares/1.12.0 nghttp2/1.26.0; AsynchDNS=yes); threaded-tls=true legacy-locks=Installed
+plex: server slot 0 registered at https://<peer-host-1>.<plex-direct-hash-1>.plex.direct:32400
+plex: server slot 1 registered at https://<peer-host-2>.<plex-direct-hash-2>.plex.direct:26937
+auth: roster restored — 2 server(s) registered
+pms: server 0 version=1.43.3.10896-cb3ebc72d plexPass=true
+hubs: source 0 ok — 4 shelves, 6 in CW
+hubs: source 1 fetching (off-thread)
+browse: roster now 2 source(s)
+pms: server 1 version=1.43.4.10903-e5521bd8c plexPass=true
+pms: nmovies=41 nsections=2
+boot: stored session — local server (offline-capable)
+vplane: ACB (webOS 4.x)
+ptype=10
+acb create=1
+curlio: bound libcurl.so.5 curl_multi_* (7 symbols)
+ff: bound avutil -> libavutil-plx.so.61
+ff: bound avcodec -> libavcodec-plx.so.63
+ff: bound avformat -> libavformat-plx.so.63
+ff: bound swscale -> libswscale-plx.so.10
+ff: avformat=63.1.100 avcodec=63.1.100 avutil=61.1.100
+hubs: landed — 41 items, 5 shelves
+font chain: Base /media/developer/apps/usr/palm/applications/com.beb.plxnative.debug/appfont.ttf codepoints=2853
+LIFECYCLE: foreground (wasPlaying=0)
+LIFECYCLE: foreground (wasPlaying=0)
+hubs: source 1 ok — 1 shelves, 1 in CW
+hubs: landed — 54 items, 6 shelves
+plex: server slot 0 re-pointed to <pms-host>:32400
+net: curl rc=7 — transport error
+pms: server 0 version=1.43.3.10896-cb3ebc72d plexPass=true
+loop=47 route=home fps=48
+plex: server slot 0 re-pointed to https://<peer-host-1>.<plex-direct-hash-1>.plex.direct:32400
+auth: reached "<peer-name-1>" <pms-host>:32400 (ours) via https://<peer-host-1>.<plex-direct-hash-1>.plex.direct:32400
+pms: server 0 version=1.43.3.10896-cb3ebc72d plexPass=true
+auto fixture: Original source=60000kbps armed
+auto fixture: starting in 720kbps 854x480 HLS (no Original phase)
+esInfo: videoFps 24/1 + adaptiveResolution (src 24.000)
+load: v=H264 a="AAC" fps=24.000 dv=present:0 P0/0 el:0 atmos:0
+stream: <pms-host>:54830 path=/__abr/720/master.m3u8?X-Plex-Token=<redacted>
+hls: segmented demux start
+SMP: calling Load (uid=NULL)
+SMP: media thread spawned, stream=1
+hls: master one-variant bandwidth=720000 fetch_ms=5
+abr: history switches=0 since_last=none advanced=0ms
+abr: seed rung=720kbps prior=none slow=0kbps fast=0kbps unc=0pm n=0 pin=none
+hls: refresh new=90 skipped=0 total_ms=180000 end=true fetch_ms=3
+loop=58 route=player overlay=none fps=19
+smp_cb type=13 num=1 str=
+smp_cb type=14 num=0 str=1
+smp_cb type=5 num=0 str=0 video/x-h264 (null) (null) 3840 2160 (null) 60.000000 0 0 0
+smp_cb type=15 num=0 str=1
+smp_cb type=8 num=0 str=audio/mpeg (null) (null) 0.000000 0 (null) 0 0 0 0 (null) 0 (null) 0 
+smp_cb type=17 num=0 str=
+smp_cb type=35 num=1 str=
+smp_cb type=22 num=0 str=true
+SMP loadCompleted
+SMP loadCompleted (priming before Play)
+SMP: Load returned ok=1
+ff: v=#0 codec=h264 codec_id=27 854x480 trc=2 pri=2 spc=2 a=#1 dur_ns=180000000000
+hls: segment=0 bytes=203040 raster=854x480 v=48 a=91 tail_skew_ms=0 audio_pts_recovered=78 not_ready=0 open_ms=2 ttfb_ms=0 open_probe_ms=833 first_au_ms=836 total_ms=843
+abr: sample current=720kbps media=812kbps net=2036kbps buf=2000ms vbuf=2000ms abuf=2000ms dur=2000ms prod=421pm n=1 decision=stay target=0kbps reason=None
+abr: window current=720kbps verdict=filling have=1/19 eps=50pm clamp=0 bound=-1ms demand=-1ms supply=-1ms excess=-1ms sus=0 sur=0 reset=0 bytes=203040 dur=2000ms
+abr: steady current=720kbps safe=1018kbps pending=0kbps fast=2036kbps slow=2036kbps unc=500pm n=1 buf=2000ms slope=1000ms/s prod=421pm/421pm risk=0 starve=none left=180s stable=0 cool=0 onrung=1 draining=0 reason=None
+feed reply="{"returnValue":"Ok"}
+"
+feed v#1 sz=16853 fed=0 reply=O qbytes=136801
+feed reply="{"returnValue":"Ok"}
+"
+feed v#2 sz=3391 fed=82999999 reply=O qbytes=133410
+feed reply="{"returnValue":"Ok"}
+"
+feed v#3 sz=1549 fed=40999999 reply=O qbytes=131861
+feed v#4 sz=2853 fed=124999999 reply=O qbytes=129008
+feed a#1 sz=297 fed=0 reply=O qbytes=31496
+feed a#2 sz=506 fed=21000000 reply=O qbytes=30990
+feed a#3 sz=300 fed=42000000 reply=O qbytes=30690
+feed a#4 sz=397 fed=63000000 reply=O qbytes=30293
+smp_cb type=7 num=0 str={"track":-1,"dualMono":false,"immersive":"none"}
+
+smp_cb type=42 num=0 str=����
+smp_cb type=4 num=0 str={"context":"_9eBC3t2UcXKUn0","content":"movie","video":{"frameRate":24,"scanType":"VIDEO_PROGRESSIVE","width":854,"height":480,"bitRate":0,"adaptive":true,"path":"network","pixelAspectRatio":{"width":1,"height":1},"afd":16,"rotation":0,"data3D":{"originalPattern":"2d","currentPattern":"2d","typeLR":"LR"},"hfr":false,"hdrType":"none","mediaSei":{"displayPrimariesX0":0,"displayPrimariesX1":0,"displayPrimariesX2":0,"displayPrimariesY0":0,"displayPrimariesY1":0,"displayPrimariesY2":0,"whitePointX":0,"whitePointY":0,"minDisplayMasteringLuminance":0,"maxDisplayMasteringLuminance":0,"maxContentLightLevel":0,"maxPicAverageLightLevel":0},"mediaVui":{"transferCharacteristics":1,"colorPrimaries":1,"matrixCoeffs":1}}}
+
+SMP context/mediaId=_9eBC3t2UcXKUn0
+SMP sourceInfoRaw captured (716 bytes)
+SMP ACB bound id=_9eBC3t2UcXKUn0
+acb_cb ev=1 reply=
+egl surface (after 120 presents): buffer_age=2 ok=1 err=0x3000
+loop=58 route=player overlay=none fps=59
+hls: segment=1 bytes=214884 raster=854x480 v=48 a=94 tail_skew_ms=0 audio_pts_recovered=81 not_ready=0 open_ms=2 ttfb_ms=0 open_probe_ms=824 first_au_ms=828 total_ms=835
+abr: sample current=720kbps media=859kbps net=2113kbps buf=4000ms vbuf=4000ms abuf=4000ms dur=2000ms prod=417pm n=2 decision=stay target=0kbps reason=None
+abr: window current=720kbps verdict=filling have=2/19 eps=50pm clamp=0 bound=-1ms demand=-1ms supply=-1ms excess=-1ms sus=0 sur=0 reset=0 bytes=214884 dur=2000ms
+abr: steady current=720kbps safe=1431kbps pending=0kbps fast=2055kbps slow=2045kbps unc=300pm n=2 buf=4000ms slope=1000ms/s prod=419pm/419pm risk=0 starve=none left=180s stable=0 cool=0 onrung=2 draining=0 reason=None
+smp_cb type=26 num=0 str=true
+primed: v=1999ms a=1920ms -> Play
+loop=60 route=player overlay=none fps=60
+setMediaVideoData rv=1 frames=2
+setMediaVideoData sent → window+PLAYING
+acb_cb ev=1 reply=
+acb_cb ev=1 reply=
+acb_cb ev=1 reply=
+hls: segment=2 bytes=200220 raster=854x480 v=48 a=94 tail_skew_ms=0 audio_pts_recovered=81 not_ready=0 open_ms=2 ttfb_ms=0 open_probe_ms=858 first_au_ms=862 total_ms=869
+abr: sample current=720kbps media=800kbps net=1890kbps buf=5710ms vbuf=5710ms abuf=5710ms dur=2000ms prod=434pm n=3 decision=stay target=0kbps reason=None
+abr: window current=720kbps verdict=filling have=3/19 eps=50pm clamp=0 bound=-1ms demand=-1ms supply=-1ms excess=-1ms sus=0 sur=0 reset=0 bytes=200220 dur=2000ms
+abr: steady current=720kbps safe=1620kbps pending=0kbps fast=2013kbps slow=2025kbps unc=200pm n=3 buf=5710ms slope=963ms/s prod=424pm/424pm risk=0 starve=none left=179s stable=0 cool=0 onrung=3 draining=0 reason=None
+feed a#200 sz=335 fed=4298000000 reply=O qbytes=27468
+loop=60 route=player overlay=none pos=0s vtick=5 vgap=201ms fps=60
+hls: segment=3 bytes=206988 raster=854x480 v=48 a=94 tail_skew_ms=0 audio_pts_recovered=81 not_ready=0 open_ms=2 ttfb_ms=0 open_probe_ms=824 first_au_ms=827 total_ms=835
+abr: sample current=720kbps media=827kbps net=2041kbps buf=6918ms vbuf=6918ms abuf=6918ms dur=2000ms prod=417pm n=4 decision=stay target=0kbps reason=None
+abr: window current=720kbps verdict=filling have=4/19 eps=50pm clamp=0 bound=-1ms demand=-1ms supply=-1ms excess=-1ms sus=0 sur=0 reset=0 bytes=206988 dur=2000ms
+abr: steady current=720kbps safe=1621kbps pending=0kbps fast=2020kbps slow=2027kbps unc=200pm n=4 buf=6918ms slope=873ms/s prod=421pm/421pm risk=0 starve=none left=178s stable=0 cool=0 onrung=4 draining=0 reason=None
+plex: server slot 1 re-pointed to <peer-ip-1>:26937
+net: curl rc=6 — could not resolve host
+pms: server 1 version=1.43.4.10903-e5521bd8c plexPass=true
+stream: GET /identity DNS FAILED host=plex.main.ldn.in.bx23.net
+hls: segment=4 bytes=191008 raster=854x480 v=48 a=93 tail_skew_ms=0 audio_pts_recovered=80 not_ready=0 open_ms=2 ttfb_ms=0 open_probe_ms=570 first_au_ms=574 total_ms=580
+abr: sample current=720kbps media=764kbps net=2733kbps buf=8335ms vbuf=8335ms abuf=8335ms dur=2000ms prod=290pm n=5 decision=stay target=0kbps reason=None
+abr: window current=720kbps verdict=filling have=5/19 eps=50pm clamp=0 bound=-1ms demand=-1ms supply=-1ms excess=-1ms sus=0 sur=0 reset=0 bytes=191008 dur=2000ms
+abr: steady current=720kbps safe=1497kbps pending=0kbps fast=2198kbps slow=2115kbps unc=292pm n=5 buf=8335ms slope=831ms/s prod=371pm/371pm risk=0 starve=none left=178s stable=0 cool=0 onrung=5 draining=0 reason=None
+loop=60 route=player overlay=none pos=1s play=1000pm vtick=5 vgap=201ms fps=60
+hls: segment=5 bytes=186684 raster=854x480 v=48 a=98 tail_skew_ms=-69 audio_pts_recovered=85 not_ready=0 open_ms=2 ttfb_ms=0 open_probe_ms=772 first_au_ms=775 total_ms=783
+abr: sample current=720kbps media=746kbps net=1968kbps buf=9543ms vbuf=9543ms abuf=9612ms dur=2000ms prod=391pm n=6 decision=stay target=0kbps reason=None
+abr: window current=720kbps verdict=filling have=6/19 eps=50pm clamp=0 bound=-1ms demand=-1ms supply=-1ms excess=-1ms sus=0 sur=0 reset=0 bytes=186684 dur=2000ms
+abr: steady current=720kbps safe=1676kbps pending=0kbps fast=2140kbps slow=2096kbps unc=200pm n=6 buf=9543ms slope=774ms/s prod=378pm/378pm risk=0 starve=none left=177s stable=0 cool=0 onrung=6 draining=0 reason=None
+abr: checking actual Original in parallel with HLS
+feed v#100 sz=3791 fed=4124999999 reply=O qbytes=552820
+loop=60 route=player overlay=none pos=2s play=1000pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=3s play=1000pm vtick=5 vgap=201ms fps=60
+hls: segment=6 bytes=203040 raster=854x480 v=48 a=91 tail_skew_ms=0 audio_pts_recovered=78 not_ready=0 open_ms=2 ttfb_ms=0 open_probe_ms=1526 first_au_ms=1529 total_ms=1537
+abr: sample current=720kbps media=812kbps net=1072kbps buf=9918ms vbuf=9918ms abuf=9918ms dur=2000ms prod=768pm n=7 decision=stay target=0kbps reason=None
+abr: window current=720kbps verdict=filling have=7/19 eps=50pm clamp=0 bound=-1ms demand=-1ms supply=-1ms excess=-1ms sus=0 sur=0 reset=0 bytes=203040 dur=2000ms
+abr: steady current=720kbps safe=984kbps pending=0kbps fast=1873kbps slow=1968kbps unc=800pm n=7 buf=9918ms slope=627ms/s prod=524pm/524pm risk=0 starve=none left=175s stable=0 cool=0 onrung=7 draining=0 reason=None
+loop=60 route=player overlay=none pos=4s play=992pm vtick=5 vgap=201ms fps=60
+feed a#400 sz=358 fed=8554000000 reply=O qbytes=88881
+hls: segment=7 bytes=214884 raster=854x480 v=48 a=94 tail_skew_ms=0 audio_pts_recovered=81 not_ready=0 open_ms=2 ttfb_ms=0 open_probe_ms=1587 first_au_ms=1591 total_ms=1599
+abr: sample current=720kbps media=859kbps net=1091kbps buf=10335ms vbuf=10335ms abuf=10335ms dur=2000ms prod=799pm n=8 decision=stay target=0kbps reason=None
+abr: window current=720kbps verdict=filling have=8/19 eps=50pm clamp=0 bound=-1ms demand=-1ms supply=-1ms excess=-1ms sus=0 sur=0 reset=0 bytes=214884 dur=2000ms
+abr: steady current=720kbps safe=929kbps pending=0kbps fast=1677kbps slow=1858kbps unc=800pm n=8 buf=10335ms slope=522ms/s prod=627pm/627pm risk=0 starve=none left=174s stable=0 cool=0 onrung=8 draining=0 reason=None
+loop=60 route=player overlay=none pos=5s play=1000pm vtick=5 vgap=201ms fps=60
+auth: 'bx23-ldn' probe timed out at <lan-ip-1>:32400
+plex: server slot 1 re-pointed to https://<peer-host-2>.<plex-direct-hash-2>.plex.direct:26937
+auth: reached "<peer-name-2>" <peer-ip-1>:26937 (shared by <peer-owner-1>) via https://<peer-host-2>.<plex-direct-hash-2>.plex.direct:26937
+auth: roster refresh — 2 server(s)
+net: curl rc=28 — timed out
+pms: server 1 version=1.43.4.10903-e5521bd8c plexPass=true
+feed v#200 sz=2825 fed=8290999999 reply=O qbytes=558556
+loop=60 route=player overlay=none pos=6s play=1000pm vtick=5 vgap=201ms fps=60
+hls: segment=8 bytes=200220 raster=854x480 v=48 a=94 tail_skew_ms=0 audio_pts_recovered=81 not_ready=0 open_ms=2 ttfb_ms=0 open_probe_ms=1631 first_au_ms=1635 total_ms=1643
+abr: sample current=720kbps media=800kbps net=989kbps buf=10710ms vbuf=10710ms abuf=10710ms dur=2000ms prod=821pm n=9 decision=stay target=0kbps reason=None
+abr: window current=720kbps verdict=filling have=9/19 eps=50pm clamp=0 bound=-1ms demand=-1ms supply=-1ms excess=-1ms sus=0 sur=0 reset=0 bytes=200220 dur=2000ms
+abr: steady current=720kbps safe=874kbps pending=0kbps fast=1505kbps slow=1749kbps unc=800pm n=9 buf=10710ms slope=438ms/s prod=699pm/699pm risk=0 starve=none left=172s stable=0 cool=0 onrung=9 draining=0 reason=None
+abr: Original probe #1 measured=1049kbps 512KiB/3997ms complete=0 left=172s verdict=Some(Insufficient)
+timeline playing t=7s/180s
+loop=60 route=player overlay=none pos=7s play=998pm vtick=5 vgap=201ms fps=60
+hls: segment=9 bytes=206988 raster=854x480 v=48 a=94 tail_skew_ms=0 audio_pts_recovered=81 not_ready=0 open_ms=2 ttfb_ms=0 open_probe_ms=563 first_au_ms=567 total_ms=574
+abr: sample current=720kbps media=827kbps net=3004kbps buf=12126ms vbuf=12126ms abuf=12126ms dur=2000ms prod=287pm n=10 decision=stay target=0kbps reason=None
+abr: window current=720kbps verdict=filling have=10/19 eps=50pm clamp=0 bound=-1ms demand=-1ms supply=-1ms excess=-1ms sus=0 sur=0 reset=0 bytes=206988 dur=2000ms
+abr: steady current=720kbps safe=952kbps pending=0kbps fast=1879kbps slow=1905kbps unc=576pm n=10 buf=12126ms slope=505ms/s prod=544pm/544pm risk=0 starve=none left=172s stable=0 cool=0 onrung=10 draining=0 reason=None
+hls: segment=10 bytes=191008 raster=854x480 v=48 a=93 tail_skew_ms=0 audio_pts_recovered=80 not_ready=0 open_ms=2 ttfb_ms=0 open_probe_ms=52 first_au_ms=55 total_ms=62
+abr: sample current=720kbps media=764kbps net=38377kbps buf=14126ms vbuf=14126ms abuf=14126ms dur=2000ms prod=31pm n=11 decision=stay target=0kbps reason=None
+abr: window current=720kbps verdict=filling have=11/19 eps=50pm clamp=0 bound=-1ms demand=-1ms supply=-1ms excess=-1ms sus=0 sur=0 reset=0 bytes=191008 dur=2000ms
+abr: steady current=720kbps safe=1193kbps pending=0kbps fast=2849kbps slow=2386kbps unc=1000pm n=11 buf=14126ms slope=628ms/s prod=351pm/351pm risk=0 starve=none left=172s stable=0 cool=0 onrung=11 draining=0 reason=None
+abr: checking actual Original in parallel with HLS
+hls: segment=11 bytes=186684 raster=854x480 v=48 a=98 tail_skew_ms=-69 audio_pts_recovered=85 not_ready=0 open_ms=2 ttfb_ms=0 open_probe_ms=60 first_au_ms=63 total_ms=70
+abr: sample current=720kbps media=746kbps net=31188kbps buf=15918ms vbuf=15918ms abuf=15987ms dur=2000ms prod=35pm n=12 decision=stay target=0kbps reason=None
+abr: window current=720kbps verdict=filling have=12/19 eps=50pm clamp=0 bound=-1ms demand=-1ms supply=-1ms excess=-1ms sus=0 sur=0 reset=0 bytes=186684 dur=2000ms
+abr: steady current=720kbps safe=1403kbps pending=0kbps fast=3576kbps slow=2807kbps unc=1000pm n=12 buf=15918ms slope=695ms/s prod=232pm/232pm risk=0 starve=none left=171s stable=0 cool=0 onrung=12 draining=0 reason=None
+hls: segment=12 bytes=203040 raster=854x480 v=48 a=91 tail_skew_ms=0 audio_pts_recovered=78 not_ready=0 open_ms=2 ttfb_ms=0 open_probe_ms=85 first_au_ms=88 total_ms=96
+abr: sample current=720kbps media=812kbps net=22123kbps buf=17918ms vbuf=17918ms abuf=17918ms dur=2000ms prod=48pm n=13 decision=stay target=0kbps reason=None
+abr: window current=720kbps verdict=filling have=13/19 eps=50pm clamp=0 bound=-1ms demand=-1ms supply=-1ms excess=-1ms sus=0 sur=0 reset=0 bytes=203040 dur=2000ms
+abr: steady current=720kbps safe=1588kbps pending=0kbps fast=4122kbps slow=3176kbps unc=813pm n=13 buf=17918ms slope=771ms/s prod=163pm/163pm risk=0 starve=none left=171s stable=0 cool=0 onrung=13 draining=0 reason=None
+hls: segment=13 bytes=214884 raster=854x480 v=48 a=94 tail_skew_ms=0 audio_pts_recovered=81 not_ready=0 open_ms=4 ttfb_ms=0 open_probe_ms=87 first_au_ms=93 total_ms=101
+abr: sample current=720kbps media=859kbps net=22797kbps buf=19710ms vbuf=19710ms abuf=19710ms dur=2000ms prod=50pm n=14 decision=stay target=0kbps reason=None
+abr: window current=720kbps verdict=filling have=14/19 eps=50pm clamp=0 bound=-1ms demand=-1ms supply=-1ms excess=-1ms sus=0 sur=0 reset=0 bytes=214884 dur=2000ms
+abr: steady current=720kbps safe=1749kbps pending=0kbps fast=4531kbps slow=3499kbps unc=646pm n=14 buf=19710ms slope=802ms/s prod=120pm/120pm risk=0 starve=none left=171s stable=0 cool=0 onrung=14 draining=0 reason=None
+hls: segment=14 bytes=200220 raster=854x480 v=48 a=94 tail_skew_ms=0 audio_pts_recovered=81 not_ready=0 open_ms=2 ttfb_ms=0 open_probe_ms=86 first_au_ms=89 total_ms=97
+abr: sample current=720kbps media=800kbps net=21666kbps buf=21710ms vbuf=21710ms abuf=21710ms dur=2000ms prod=48pm n=15 decision=stay target=0kbps reason=None
+abr: window current=720kbps verdict=filling have=15/19 eps=50pm clamp=0 bound=-1ms demand=-1ms supply=-1ms excess=-1ms sus=0 sur=0 reset=0 bytes=200220 dur=2000ms
+abr: steady current=720kbps safe=1890kbps pending=0kbps fast=4838kbps slow=3781kbps unc=523pm n=15 buf=21710ms slope=851ms/s prod=93pm/93pm risk=0 starve=none left=171s stable=0 cool=0 onrung=15 draining=0 reason=None
+hls: segment=15 bytes=206988 raster=854x480 v=48 a=94 tail_skew_ms=0 audio_pts_recovered=81 not_ready=0 open_ms=3 ttfb_ms=0 open_probe_ms=88 first_au_ms=92 total_ms=100
+abr: sample current=720kbps media=827kbps net=22179kbps buf=23501ms vbuf=23501ms abuf=23501ms dur=2000ms prod=50pm n=16 decision=stay target=0kbps reason=None
+abr: window current=720kbps verdict=filling have=16/19 eps=50pm clamp=0 bound=-1ms demand=-1ms supply=-1ms excess=-1ms sus=0 sur=0 reset=0 bytes=206988 dur=2000ms
+abr: steady current=720kbps safe=2299kbps pending=0kbps fast=5068kbps slow=4028kbps unc=429pm n=16 buf=23501ms slope=862ms/s prod=76pm/76pm risk=0 starve=none left=171s stable=0 cool=0 onrung=16 draining=0 reason=None
+hls: segment=16 bytes=191008 raster=854x480 v=48 a=93 tail_skew_ms=0 audio_pts_recovered=80 not_ready=0 open_ms=2 ttfb_ms=0 open_probe_ms=63 first_au_ms=67 total_ms=76
+abr: sample current=720kbps media=764kbps net=30586kbps buf=25501ms vbuf=25501ms abuf=25501ms dur=2000ms prod=38pm n=17 decision=stay target=0kbps reason=None
+abr: window current=720kbps verdict=filling have=17/19 eps=50pm clamp=0 bound=-1ms demand=-1ms supply=-1ms excess=-1ms sus=0 sur=0 reset=0 bytes=191008 dur=2000ms
+abr: steady current=720kbps safe=2728kbps pending=0kbps fast=5241kbps slow=4244kbps unc=357pm n=17 buf=25501ms slope=896ms/s prod=61pm/61pm risk=0 starve=none left=171s stable=0 cool=0 onrung=17 draining=0 reason=None
+hls: segment=17 bytes=186684 raster=854x480 v=48 a=98 tail_skew_ms=-69 audio_pts_recovered=85 not_ready=0 open_ms=2 ttfb_ms=0 open_probe_ms=66 first_au_ms=70 total_ms=78
+abr: sample current=720kbps media=746kbps net=29302kbps buf=27501ms vbuf=27501ms abuf=27570ms dur=2000ms prod=39pm n=18 decision=stay target=0kbps reason=None
+abr: window current=720kbps verdict=filling have=18/19 eps=50pm clamp=0 bound=-1ms demand=-1ms supply=-1ms excess=-1ms sus=0 sur=0 reset=0 bytes=186684 dur=2000ms
+abr: steady current=720kbps safe=3107kbps pending=0kbps fast=5370kbps slow=4433kbps unc=299pm n=18 buf=27501ms slope=922ms/s prod=52pm/52pm risk=0 starve=none left=171s stable=0 cool=0 onrung=18 draining=0 reason=None
+hls: segment=18 bytes=203040 raster=854x480 v=48 a=91 tail_skew_ms=0 audio_pts_recovered=78 not_ready=0 open_ms=2 ttfb_ms=0 open_probe_ms=75 first_au_ms=78 total_ms=86
+abr: sample current=720kbps media=812kbps net=27260kbps buf=29293ms vbuf=29293ms abuf=29293ms dur=2000ms prod=43pm n=19 decision=stay target=0kbps reason=None
+abr: window current=720kbps verdict=admit have=19/19 eps=50pm clamp=0 bound=1666ms demand=11037ms supply=38000ms excess=0ms sus=1 sur=1 reset=0 bytes=203040 dur=2000ms
+abr: steady current=720kbps safe=3439kbps pending=0kbps fast=5467kbps slow=4598kbps unc=252pm n=19 buf=29293ms slope=915ms/s prod=48pm/48pm risk=0 starve=none left=171s stable=1 cool=0 onrung=19 draining=0 reason=None
+hls: segment=19 bytes=214884 raster=854x480 v=48 a=94 tail_skew_ms=0 audio_pts_recovered=81 not_ready=0 open_ms=7 ttfb_ms=0 open_probe_ms=88 first_au_ms=98 total_ms=108
+abr: sample current=720kbps media=859kbps net=24009kbps buf=31293ms vbuf=31293ms abuf=31293ms dur=2000ms prod=54pm n=20 decision=stay target=0kbps reason=None
+abr: window current=720kbps verdict=admit have=20/19 eps=50pm clamp=0 bound=1764ms demand=10718ms supply=38000ms excess=0ms sus=1 sur=1 reset=0 bytes=214884 dur=2000ms
+abr: steady current=720kbps safe=3727kbps pending=0kbps fast=5540kbps slow=4743kbps unc=214pm n=20 buf=31293ms slope=936ms/s prod=50pm/50pm risk=0 starve=none left=171s stable=2 cool=0 onrung=20 draining=0 reason=None
+hls: segment=20 bytes=200220 raster=854x480 v=48 a=94 tail_skew_ms=0 audio_pts_recovered=81 not_ready=0 open_ms=2 ttfb_ms=0 open_probe_ms=79 first_au_ms=83 total_ms=91
+abr: sample current=720kbps media=800kbps net=25352kbps buf=33126ms vbuf=33126ms abuf=33126ms dur=2000ms prod=45pm n=21 decision=prime_up target=2000kbps reason=Some(Hls(SafeBudgetIncrease))
+abr: window current=720kbps verdict=admit have=21/19 eps=50pm clamp=0 bound=1643ms demand=9496ms supply=38000ms excess=0ms sus=1 sur=1 reset=0 bytes=200220 dur=2000ms
+hls: master one-variant bandwidth=2000000 fetch_ms=2
+hls: refresh new=90 skipped=0 total_ms=180000 end=true fetch_ms=1
+loop=60 route=player overlay=none pos=8s play=994pm vtick=5 vgap=201ms fps=60
+ff: v=#0 codec=h264 codec_id=27 1280x720 trc=2 pri=2 spc=2 a=#1 dur_ns=180000000000
+hls: segment=0 bytes=555352 raster=1280x720 v=48 a=91 tail_skew_ms=0 audio_pts_recovered=75 not_ready=0 open_ms=1 ttfb_ms=0 open_probe_ms=222 first_au_ms=226 total_ms=253
+feed a#600 sz=351 fed=12746000000 reply=O qbytes=477790
+hls: segment=1 bytes=608368 raster=1280x720 v=48 a=94 tail_skew_ms=0 audio_pts_recovered=77 not_ready=0 open_ms=7 ttfb_ms=0 open_probe_ms=250 first_au_ms=259 total_ms=290
+abr: committed Up to 2000kbps 1280x720
+abr: tx Up 720->2000kbps outcome=committed decided=552ms total=555ms control=6ms prime=0ms master=2ms media=4ms warmup=253ms graded=290ms warmup_dl=3000ms buf_start=33084ms buf_decided=32459ms feed=1ms buf_fed=36417ms buf_end=36417ms cur_acq_before=90ms net=25352kbps fast=5595kbps slow=4870kbps unc=200pm declared=2000kbps graded_bytes=608368
+hls: segment=2 bytes=495192 raster=1280x720 v=48 a=94 tail_skew_ms=0 audio_pts_recovered=77 not_ready=0 open_ms=6 ttfb_ms=0 open_probe_ms=196 first_au_ms=204 total_ms=229
+abr: sample current=2000kbps media=1980kbps net=23105kbps buf=38293ms vbuf=38293ms abuf=38293ms dur=2000ms prod=114pm n=1 decision=stay target=0kbps reason=Some(Hls(SafeBudgetIncrease))
+abr: window current=2000kbps verdict=admit have=23/19 eps=50pm clamp=0 bound=4065ms demand=19372ms supply=38000ms excess=5577ms sus=1 sur=1 reset=0 bytes=495192 dur=2000ms
+abr: steady current=2000kbps safe=11552kbps pending=0kbps fast=23105kbps slow=23105kbps unc=500pm n=1 buf=38293ms slope=1344ms/s prod=56pm/56pm risk=0 starve=none left=170s stable=0 cool=2 onrung=1 draining=0 reason=Some(Hls(SafeBudgetIncrease))
+loop=60 route=player overlay=none pos=9s play=1000pm vtick=5 vgap=201ms fps=60
+hls: segment=3 bytes=569076 raster=1280x720 v=48 a=94 tail_skew_ms=0 audio_pts_recovered=77 not_ready=0 open_ms=2 ttfb_ms=0 open_probe_ms=220 first_au_ms=225 total_ms=254
+abr: sample current=2000kbps media=2276kbps net=23437kbps buf=40126ms vbuf=40126ms abuf=40126ms dur=2000ms prod=127pm n=2 decision=stay target=0kbps reason=Some(Hls(SafeBudgetIncrease))
+abr: window current=2000kbps verdict=admit have=24/19 eps=50pm clamp=0 bound=4671ms demand=20745ms supply=38000ms excess=7603ms sus=1 sur=1 reset=0 bytes=569076 dur=2000ms
+abr: steady current=2000kbps safe=16231kbps pending=0kbps fast=23271kbps slow=23188kbps unc=300pm n=2 buf=40126ms slope=1237ms/s prod=82pm/82pm risk=0 starve=none left=170s stable=0 cool=1 onrung=2 draining=0 reason=Some(Hls(SafeBudgetIncrease))
+hls: segment=4 bytes=463608 raster=1280x720 v=48 a=93 tail_skew_ms=0 audio_pts_recovered=76 not_ready=0 open_ms=2 ttfb_ms=0 open_probe_ms=187 first_au_ms=192 total_ms=215
+abr: sample current=2000kbps media=1854kbps net=23204kbps buf=41918ms vbuf=41918ms abuf=41918ms dur=2000ms prod=107pm n=3 decision=stay target=0kbps reason=Some(Hls(SafeBudgetIncrease))
+abr: window current=2000kbps verdict=admit have=25/19 eps=50pm clamp=0 bound=3806ms demand=15286ms supply=38000ms excess=4766ms sus=1 sur=1 reset=0 bytes=463608 dur=2000ms
+abr: steady current=2000kbps safe=18553kbps pending=0kbps fast=23237kbps slow=23192kbps unc=200pm n=3 buf=41918ms slope=1151ms/s prod=91pm/91pm risk=0 starve=none left=169s stable=1 cool=0 onrung=3 draining=0 reason=Some(Hls(SafeBudgetIncrease))
+hls: segment=5 bytes=543884 raster=1280x720 v=48 a=98 tail_skew_ms=-69 audio_pts_recovered=81 not_ready=0 open_ms=2 ttfb_ms=0 open_probe_ms=219 first_au_ms=224 total_ms=248
+abr: sample current=2000kbps media=2175kbps net=22120kbps buf=43710ms vbuf=43710ms abuf=43779ms dur=2000ms prod=124pm n=4 decision=stay target=0kbps reason=Some(Hls(SafeBudgetIncrease))
+abr: window current=2000kbps verdict=admit have=26/19 eps=50pm clamp=0 bound=4465ms demand=13952ms supply=38000ms excess=4513ms sus=1 sur=1 reset=0 bytes=543884 dur=2000ms
+abr: steady current=2000kbps safe=18339kbps pending=0kbps fast=22678kbps slow=22924kbps unc=200pm n=4 buf=43710ms slope=1087ms/s prod=103pm/103pm risk=0 starve=none left=169s stable=2 cool=0 onrung=4 draining=0 reason=Some(Hls(SafeBudgetIncrease))
+hls: segment=6 bytes=555352 raster=1280x720 v=48 a=91 tail_skew_ms=0 audio_pts_recovered=75 not_ready=0 open_ms=2 ttfb_ms=0 open_probe_ms=224 first_au_ms=228 total_ms=254
+abr: sample current=2000kbps media=2221kbps net=22020kbps buf=45293ms vbuf=45293ms abuf=45293ms dur=2000ms prod=127pm n=5 decision=prime_up target=8000kbps reason=Some(Hls(SafeBudgetIncrease))
+abr: window current=2000kbps verdict=admit have=27/19 eps=50pm clamp=0 bound=4559ms demand=10356ms supply=38000ms excess=2559ms sus=1 sur=1 reset=0 bytes=555352 dur=2000ms
+hls: master one-variant bandwidth=8000000 fetch_ms=2
+hls: refresh new=90 skipped=0 total_ms=180000 end=true fetch_ms=1
+loop=60 route=player overlay=none pos=10s play=993pm vtick=5 vgap=201ms fps=60
+feed v#300 sz=2052 fed=12415999999 reply=O qbytes=5544455
+ff: v=#0 codec=h264 codec_id=27 1920x1080 trc=2 pri=2 spc=2 a=#1 dur_ns=180000000000
+hls: segment=0 bytes=2229680 raster=1920x1080 v=48 a=91 tail_skew_ms=0 audio_pts_recovered=72 not_ready=0 open_ms=6 ttfb_ms=0 open_probe_ms=715 first_au_ms=727 total_ms=829
+loop=59 route=player overlay=none pos=11s play=1030pm vtick=5 vgap=201ms fps=60
+hls: segment=1 bytes=2186816 raster=1920x1080 v=48 a=94 tail_skew_ms=0 audio_pts_recovered=74 not_ready=0 open_ms=2 ttfb_ms=0 open_probe_ms=624 first_au_ms=632 total_ms=735
+loop=60 route=player overlay=none pos=12s play=985pm vtick=5 vgap=201ms fps=61
+feed a#800 sz=401 fed=17066000000 reply=O qbytes=758044
+loop=60 route=player overlay=none pos=13s play=1000pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=14s play=1000pm vtick=5 vgap=201ms fps=60
+feed v#400 sz=2067 fed=16582999999 reply=O qbytes=8418379
+loop=60 route=player overlay=none pos=15s play=1000pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=16s play=1000pm vtick=5 vgap=201ms fps=60
+timeline playing t=17s/180s
+feed a#1000 sz=317 fed=21322000000 reply=O qbytes=696172
+loop=60 route=player overlay=none pos=17s play=1000pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=18s play=999pm vtick=5 vgap=201ms fps=60
+feed v#500 sz=1955 fed=20749999999 reply=O qbytes=8393238
+loop=60 route=player overlay=none pos=19s play=985pm vtick=5 vgap=201ms fps=61
+loop=60 route=player overlay=none pos=20s play=1000pm vtick=5 vgap=201ms fps=60
+feed a#1200 sz=329 fed=25514000000 reply=O qbytes=634218
+loop=60 route=player overlay=none pos=21s play=984pm vtick=5 vgap=201ms fps=61
+loop=59 route=player overlay=none pos=22s play=992pm vtick=5 vgap=201ms fps=59
+feed v#600 sz=2951 fed=24957999999 reply=O qbytes=8427516
+loop=60 route=player overlay=none pos=23s play=1000pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=24s play=1000pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=25s play=1000pm vtick=5 vgap=201ms fps=60
+feed a#1400 sz=369 fed=29834000000 reply=O qbytes=572263
+loop=60 route=player overlay=none pos=26s play=1000pm vtick=5 vgap=201ms fps=60
+feed v#700 sz=1547 fed=29082999999 reply=O qbytes=8409278
+timeline playing t=27s/180s
+loop=60 route=player overlay=none pos=27s play=1000pm vtick=5 vgap=201ms fps=60
+abr: committed Up to 8000kbps 1920x1080
+abr: tx Up 2000->8000kbps outcome=committed decided=1574ms total=17791ms control=5ms prime=0ms master=2ms media=3ms warmup=829ms graded=735ms warmup_dl=3000ms buf_start=45209ms buf_decided=43626ms feed=16216ms buf_fed=31376ms buf_end=31376ms cur_acq_before=254ms net=22020kbps fast=22349kbps slow=22698kbps unc=200pm declared=8000kbps graded_bytes=2186816
+loop=59 route=player overlay=none pos=28s play=989pm vtick=5 vgap=201ms fps=60
+hls: segment=2 bytes=2089808 raster=1920x1080 v=48 a=94 tail_skew_ms=0 audio_pts_recovered=74 not_ready=0 open_ms=2 ttfb_ms=0 open_probe_ms=586 first_au_ms=594 total_ms=689
+loop=60 route=player overlay=none pos=29s play=986pm vtick=5 vgap=201ms fps=61
+feed a#1600 sz=370 fed=34106000000 reply=O qbytes=509868
+loop=60 route=player overlay=none pos=30s play=1000pm vtick=5 vgap=201ms fps=60
+feed v#800 sz=1649 fed=33249999999 reply=O qbytes=8395749
+loop=60 route=player overlay=none pos=31s play=1000pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=32s play=1000pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=33s play=1000pm vtick=5 vgap=201ms fps=60
+feed a#1800 sz=335 fed=38341000000 reply=O qbytes=447928
+loop=60 route=player overlay=none pos=34s play=1000pm vtick=5 vgap=201ms fps=60
+feed v#900 sz=1949 fed=37374999999 reply=O qbytes=8420103
+loop=60 route=player overlay=none pos=35s play=999pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=36s play=998pm vtick=5 vgap=201ms fps=60
+timeline playing t=37s/180s
+loop=60 route=player overlay=none pos=37s play=1024pm vtick=5 vgap=201ms fps=61
+loop=60 route=player overlay=none pos=38s play=986pm vtick=5 vgap=201ms fps=61
+feed a#2000 sz=413 fed=42597000000 reply=O qbytes=384411
+loop=60 route=player overlay=none pos=39s play=1000pm vtick=5 vgap=201ms fps=60
+feed v#1000 sz=5949 fed=41749999999 reply=O qbytes=8403668
+loop=60 route=player overlay=none pos=40s play=984pm vtick=5 vgap=201ms fps=61
+smp_cb type=42 num=0 str=����
+smp_cb type=4 num=0 str={"context":"_9eBC3t2UcXKUn0","content":"movie","video":{"frameRate":24,"scanType":"VIDEO_PROGRESSIVE","width":1280,"height":720,"bitRate":0,"adaptive":true,"path":"network","pixelAspectRatio":{"width":1,"height":1},"afd":16,"rotation":0,"data3D":{"originalPattern":"2d","currentPattern":"2d","typeLR":"LR"},"hdrType":"none","mediaSei":{"displayPrimariesX0":0,"displayPrimariesX1":0,"displayPrimariesX2":0,"displayPrimariesY0":0,"displayPrimariesY1":0,"displayPrimariesY2":0,"whitePointX":0,"whitePointY":0,"minDisplayMasteringLuminance":0,"maxDisplayMasteringLuminance":0,"maxContentLightLevel":0,"maxPicAverageLightLevel":0},"mediaVui":{"transferCharacteristics":1,"colorPrimaries":1,"matrixCoeffs":1}}}
+
+loop=60 route=player overlay=none pos=41s play=999pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=42s play=1000pm vtick=5 vgap=201ms fps=60
+feed a#2200 sz=443 fed=46917000000 reply=O qbytes=320875
+loop=60 route=player overlay=none pos=43s play=1000pm vtick=5 vgap=201ms fps=60
+feed v#1100 sz=7409 fed=45707999999 reply=O qbytes=8429468
+abr: sample current=8000kbps media=8359kbps net=30257kbps buf=17460ms vbuf=17460ms abuf=17460ms dur=2000ms prod=344pm n=6 decision=stay target=0kbps reason=Some(Hls(SafeBudgetIncrease))
+abr: window current=8000kbps verdict=admit have=29/19 eps=50pm clamp=0 bound=1058ms demand=17316ms supply=38000ms excess=0ms sus=1 sur=1 reset=0 bytes=2089808 dur=2000ms
+abr: steady current=8000kbps safe=20425kbps pending=0kbps fast=26303kbps slow=25532kbps unc=200pm n=6 buf=17460ms slope=-2719ms/s prod=141pm/141pm risk=0 starve=none left=135s stable=0 cool=2 onrung=1 draining=1 reason=Some(Hls(SafeBudgetIncrease))
+abr: Original probe #2 measured=21081kbps 7324KiB/2846ms complete=1 left=135s verdict=Some(Insufficient)
+loop=59 route=player overlay=none pos=44s play=991pm vtick=5 vgap=201ms fps=60
+hls: segment=3 bytes=2203548 raster=1920x1080 v=48 a=94 tail_skew_ms=0 audio_pts_recovered=74 not_ready=0 open_ms=2 ttfb_ms=0 open_probe_ms=644 first_au_ms=651 total_ms=752
+loop=60 route=player overlay=none pos=46s play=1188pm vtick=6 vgap=201ms fps=61
+loop=60 route=player overlay=none pos=47s play=999pm vtick=5 vgap=201ms fps=60
+feed a#2400 sz=427 fed=51173000000 reply=O qbytes=256952
+timeline playing t=47s/180s
+loop=60 route=player overlay=none pos=48s play=983pm vtick=5 vgap=201ms fps=61
+feed v#1200 sz=6350 fed=49915999999 reply=O qbytes=8407217
+loop=60 route=player overlay=none pos=49s play=1000pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=50s play=1000pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=51s play=983pm vtick=5 vgap=201ms fps=61
+feed a#2600 sz=431 fed=55365000000 reply=O qbytes=194486
+loop=60 route=player overlay=none pos=52s play=985pm vtick=5 vgap=201ms fps=61
+feed v#1300 sz=14002 fed=54165999999 reply=O qbytes=8420694
+loop=60 route=player overlay=none pos=53s play=999pm vtick=5 vgap=201ms fps=60
+abr: sample current=8000kbps media=8814kbps net=29360kbps buf=10251ms vbuf=10251ms abuf=10251ms dur=2000ms prod=376pm n=7 decision=stay target=0kbps reason=Some(Hls(SafeBudgetIncrease))
+abr: window current=8000kbps verdict=admit have=30/19 eps=50pm clamp=0 bound=1116ms demand=18254ms supply=38000ms excess=0ms sus=1 sur=1 reset=0 bytes=2203548 dur=2000ms
+abr: steady current=8000kbps safe=21573kbps pending=0kbps fast=27831kbps slow=26967kbps unc=200pm n=7 buf=10251ms slope=-2940ms/s prod=229pm/229pm risk=0 starve=none left=126s stable=0 cool=1 onrung=2 draining=2 reason=Some(Hls(SafeBudgetIncrease))
+loop=60 route=player overlay=none pos=54s play=984pm vtick=5 vgap=201ms fps=61
+hls: segment=4 bytes=1951064 raster=1920x1080 v=48 a=93 tail_skew_ms=0 audio_pts_recovered=73 not_ready=0 open_ms=2 ttfb_ms=0 open_probe_ms=541 first_au_ms=548 total_ms=636
+loop=60 route=player overlay=none pos=55s play=1000pm vtick=5 vgap=201ms fps=60
+abr: sample current=8000kbps media=7804kbps net=30741kbps buf=10043ms vbuf=10043ms abuf=10043ms dur=2000ms prod=318pm n=8 decision=stay target=0kbps reason=Some(Hls(SafeBudgetIncrease))
+abr: window current=8000kbps verdict=admit have=31/19 eps=50pm clamp=0 bound=988ms demand=16277ms supply=38000ms excess=0ms sus=1 sur=1 reset=0 bytes=1951064 dur=2000ms
+abr: steady current=8000kbps safe=22705kbps pending=0kbps fast=29286kbps slow=28382kbps unc=200pm n=8 buf=10043ms slope=-2231ms/s prod=262pm/262pm risk=0 starve=none left=124s stable=0 cool=0 onrung=3 draining=3 reason=Some(Hls(SafeBudgetIncrease))
+smp_cb type=42 num=0 str=����
+smp_cb type=4 num=0 str={"context":"_9eBC3t2UcXKUn0","content":"movie","video":{"frameRate":24,"scanType":"VIDEO_PROGRESSIVE","width":1920,"height":1080,"bitRate":0,"adaptive":true,"path":"network","pixelAspectRatio":{"width":1,"height":1},"afd":16,"rotation":0,"data3D":{"originalPattern":"2d","currentPattern":"2d","typeLR":"LR"},"hdrType":"none","mediaSei":{"displayPrimariesX0":0,"displayPrimariesX1":0,"displayPrimariesX2":0,"displayPrimariesY0":0,"displayPrimariesY1":0,"displayPrimariesY2":0,"whitePointX":0,"whitePointY":0,"minDisplayMasteringLuminance":0,"maxDisplayMasteringLuminance":0,"maxContentLightLevel":0,"maxPicAverageLightLevel":0},"mediaVui":{"transferCharacteristics":1,"colorPrimaries":1,"matrixCoeffs":1}}}
+
+feed a#2800 sz=531 fed=59749000000 reply=O qbytes=151623
+loop=60 route=player overlay=none pos=56s play=999pm vtick=5 vgap=201ms fps=60
+hls: segment=5 bytes=2094320 raster=1920x1080 v=48 a=98 tail_skew_ms=-69 audio_pts_recovered=77 not_ready=0 open_ms=1 ttfb_ms=0 open_probe_ms=595 first_au_ms=601 total_ms=700
+feed v#1400 sz=52968 fed=58374999999 reply=O qbytes=8420485
+loop=60 route=player overlay=none pos=57s play=985pm vtick=5 vgap=201ms fps=61
+abr: sample current=8000kbps media=8377kbps net=30019kbps buf=10210ms vbuf=10210ms abuf=10279ms dur=2000ms prod=350pm n=9 decision=stay target=0kbps reason=Some(Hls(SafeBudgetIncrease))
+abr: window current=8000kbps verdict=admit have=32/19 eps=50pm clamp=0 bound=1061ms demand=17019ms supply=38000ms excess=0ms sus=1 sur=1 reset=0 bytes=2094320 dur=2000ms
+abr: steady current=8000kbps safe=23196kbps pending=0kbps fast=29652kbps slow=28995kbps unc=200pm n=9 buf=10210ms slope=-1652ms/s prod=295pm/295pm risk=0 starve=none left=122s stable=0 cool=0 onrung=4 draining=4 reason=Some(Hls(SafeBudgetIncrease))
+timeline playing t=57s/180s
+loop=60 route=player overlay=none pos=58s play=1000pm vtick=5 vgap=201ms fps=60
+hls: segment=6 bytes=2229680 raster=1920x1080 v=48 a=91 tail_skew_ms=0 audio_pts_recovered=72 not_ready=0 open_ms=2 ttfb_ms=0 open_probe_ms=641 first_au_ms=649 total_ms=750
+loop=60 route=player overlay=none pos=59s play=984pm vtick=5 vgap=201ms fps=61
+abr: sample current=8000kbps media=8918kbps net=29813kbps buf=10043ms vbuf=10043ms abuf=10043ms dur=2000ms prod=375pm n=10 decision=stay target=0kbps reason=Some(Hls(SafeBudgetIncrease))
+abr: window current=8000kbps verdict=admit have=33/19 eps=50pm clamp=0 bound=1129ms demand=17740ms supply=38000ms excess=0ms sus=1 sur=1 reset=0 bytes=2229680 dur=2000ms
+abr: steady current=8000kbps safe=23440kbps pending=0kbps fast=29732kbps slow=29301kbps unc=200pm n=10 buf=10043ms slope=-1259ms/s prod=325pm/325pm risk=0 starve=none left=120s stable=0 cool=0 onrung=5 draining=5 reason=Some(Hls(SafeBudgetIncrease))
+loop=60 route=player overlay=none pos=60s play=1000pm vtick=5 vgap=201ms fps=60
+feed a#3000 sz=488 fed=64000000000 reply=O qbytes=145219
+hls: segment=7 bytes=2186816 raster=1920x1080 v=48 a=94 tail_skew_ms=0 audio_pts_recovered=74 not_ready=0 open_ms=2 ttfb_ms=0 open_probe_ms=639 first_au_ms=647 total_ms=742
+feed v#1500 sz=44020 fed=62457999999 reply=O qbytes=8412562
+loop=59 route=player overlay=none pos=61s play=991pm vtick=5 vgap=201ms fps=60
+abr: sample current=8000kbps media=8747kbps net=29078kbps buf=10001ms vbuf=10001ms abuf=10001ms dur=2000ms prod=371pm n=11 decision=stay target=0kbps reason=Some(Hls(SafeBudgetIncrease))
+abr: window current=8000kbps verdict=admit have=34/19 eps=50pm clamp=0 bound=1107ms demand=17093ms supply=38000ms excess=0ms sus=1 sur=1 reset=0 bytes=2186816 dur=2000ms
+abr: steady current=8000kbps safe=23373kbps pending=0kbps fast=29405kbps slow=29217kbps unc=200pm n=11 buf=10001ms slope=-949ms/s prod=342pm/342pm risk=0 starve=none left=118s stable=0 cool=0 onrung=6 draining=6 reason=Some(Hls(SafeBudgetIncrease))
+loop=60 route=player overlay=none pos=62s play=1000pm vtick=5 vgap=201ms fps=60
+hls: segment=8 bytes=2089808 raster=1920x1080 v=48 a=94 tail_skew_ms=0 audio_pts_recovered=74 not_ready=0 open_ms=2 ttfb_ms=0 open_probe_ms=601 first_au_ms=608 total_ms=706
+loop=60 route=player overlay=none pos=63s play=1000pm vtick=5 vgap=201ms fps=60
+abr: sample current=8000kbps media=8359kbps net=29580kbps buf=9835ms vbuf=9835ms abuf=9835ms dur=2000ms prod=353pm n=12 decision=stay target=0kbps reason=Some(Hls(SafeBudgetIncrease))
+abr: window current=8000kbps verdict=admit have=35/19 eps=50pm clamp=0 bound=1058ms demand=16157ms supply=38000ms excess=0ms sus=1 sur=1 reset=0 bytes=2089808 dur=2000ms
+abr: steady current=8000kbps safe=23482kbps pending=0kbps fast=29492kbps slow=29353kbps unc=200pm n=12 buf=9835ms slope=-732ms/s prod=346pm/346pm risk=0 starve=none left=115s stable=0 cool=0 onrung=7 draining=7 reason=Some(Hls(SafeBudgetIncrease))
+loop=60 route=player overlay=none pos=64s play=999pm vtick=5 vgap=201ms fps=60
+feed a#3200 sz=511 fed=68191000000 reply=O qbytes=139628
+hls: segment=9 bytes=2203548 raster=1920x1080 v=48 a=94 tail_skew_ms=0 audio_pts_recovered=74 not_ready=0 open_ms=2 ttfb_ms=0 open_probe_ms=641 first_au_ms=648 total_ms=750
+feed v#1600 sz=42994 fed=66624999999 reply=O qbytes=8418597
+loop=60 route=player overlay=none pos=65s play=1033pm vtick=5 vgap=202ms fps=60
+loop=60 route=player overlay=none pos=66s play=996pm vtick=5 vgap=201ms fps=60
+abr: sample current=8000kbps media=8814kbps net=29205kbps buf=9626ms vbuf=9626ms abuf=9626ms dur=2000ms prod=375pm n=13 decision=stay target=0kbps reason=Some(Hls(SafeBudgetIncrease))
+abr: window current=8000kbps verdict=admit have=36/19 eps=50pm clamp=0 bound=1116ms demand=16755ms supply=38000ms excess=0ms sus=1 sur=1 reset=0 bytes=2203548 dur=2000ms
+abr: steady current=8000kbps safe=23437kbps pending=0kbps fast=29348kbps slow=29297kbps unc=200pm n=13 buf=9626ms slope=-575ms/s prod=356pm/356pm risk=0 starve=none left=113s stable=0 cool=0 onrung=8 draining=8 reason=Some(Hls(SafeBudgetIncrease))
+hls: segment=10 bytes=1951064 raster=1920x1080 v=48 a=93 tail_skew_ms=0 audio_pts_recovered=73 not_ready=0 open_ms=2 ttfb_ms=0 open_probe_ms=554 first_au_ms=562 total_ms=655
+loop=60 route=player overlay=none pos=67s play=996pm vtick=5 vgap=201ms fps=60
+timeline playing t=67s/180s
+abr: sample current=8000kbps media=7804kbps net=30068kbps buf=10001ms vbuf=10001ms abuf=10001ms dur=2000ms prod=327pm n=14 decision=stay target=0kbps reason=Some(Hls(SafeBudgetIncrease))
+abr: window current=8000kbps verdict=admit have=37/19 eps=50pm clamp=0 bound=988ms demand=15232ms supply=38000ms excess=0ms sus=1 sur=1 reset=0 bytes=1951064 dur=2000ms
+abr: steady current=8000kbps safe=23668kbps pending=0kbps fast=29708kbps slow=29586kbps unc=200pm n=14 buf=10001ms slope=-384ms/s prod=345pm/345pm risk=0 starve=none left=112s stable=0 cool=0 onrung=9 draining=9 reason=Some(Hls(SafeBudgetIncrease))
+loop=60 route=player overlay=none pos=68s play=1000pm vtick=5 vgap=201ms fps=60
+hls: segment=11 bytes=2094320 raster=1920x1080 v=48 a=98 tail_skew_ms=-69 audio_pts_recovered=77 not_ready=0 open_ms=1 ttfb_ms=0 open_probe_ms=588 first_au_ms=595 total_ms=691
+feed a#3400 sz=581 fed=72511000000 reply=O qbytes=161431
+loop=60 route=player overlay=none pos=69s play=1000pm vtick=5 vgap=201ms fps=60
+feed v#1700 sz=36100 fed=70749999999 reply=O qbytes=8432131
+abr: sample current=8000kbps media=8377kbps net=30150kbps buf=10210ms vbuf=10210ms abuf=10279ms dur=2000ms prod=345pm n=15 decision=stay target=0kbps reason=Some(Hls(SafeBudgetIncrease))
+abr: window current=8000kbps verdict=admit have=38/19 eps=50pm clamp=0 bound=1061ms demand=15724ms supply=38000ms excess=0ms sus=1 sur=1 reset=0 bytes=2094320 dur=2000ms
+abr: steady current=8000kbps safe=23837kbps pending=0kbps fast=29929kbps slow=29797kbps unc=200pm n=15 buf=10210ms slope=-262ms/s prod=345pm/345pm risk=0 starve=none left=110s stable=0 cool=0 onrung=10 draining=10 reason=Some(Hls(SafeBudgetIncrease))
+loop=60 route=player overlay=none pos=70s play=984pm vtick=5 vgap=201ms fps=61
+hls: segment=12 bytes=2229680 raster=1920x1080 v=48 a=91 tail_skew_ms=0 audio_pts_recovered=72 not_ready=0 open_ms=2 ttfb_ms=0 open_probe_ms=640 first_au_ms=649 total_ms=752
+loop=60 route=player overlay=none pos=71s play=1000pm vtick=5 vgap=201ms fps=60
+abr: sample current=8000kbps media=8918kbps net=29582kbps buf=10001ms vbuf=10001ms abuf=10001ms dur=2000ms prod=376pm n=16 decision=stay target=0kbps reason=Some(Hls(SafeBudgetIncrease))
+abr: window current=8000kbps verdict=admit have=39/19 eps=50pm clamp=0 bound=1063ms demand=16169ms supply=38000ms excess=0ms sus=1 sur=1 reset=0 bytes=2229680 dur=2000ms
+abr: steady current=8000kbps safe=23772kbps pending=0kbps fast=29755kbps slow=29716kbps unc=200pm n=16 buf=10001ms slope=-222ms/s prod=356pm/356pm risk=0 starve=none left=108s stable=0 cool=0 onrung=11 draining=11 reason=Some(Hls(SafeBudgetIncrease))
+loop=60 route=player overlay=none pos=72s play=1000pm vtick=5 vgap=201ms fps=60
+hls: segment=13 bytes=2186816 raster=1920x1080 v=48 a=94 tail_skew_ms=0 audio_pts_recovered=74 not_ready=0 open_ms=2 ttfb_ms=0 open_probe_ms=629 first_au_ms=637 total_ms=740
+feed a#3600 sz=527 fed=76768000000 reply=O qbytes=155073
+loop=60 route=player overlay=none pos=73s play=999pm vtick=5 vgap=201ms fps=60
+feed v#1800 sz=52849 fed=75040999999 reply=O qbytes=8401693
+abr: sample current=8000kbps media=8747kbps net=29481kbps buf=10001ms vbuf=10001ms abuf=10001ms dur=2000ms prod=370pm n=17 decision=stay target=0kbps reason=Some(Hls(SafeBudgetIncrease))
+abr: window current=8000kbps verdict=admit have=40/19 eps=50pm clamp=0 bound=1042ms demand=15637ms supply=38000ms excess=0ms sus=1 sur=1 reset=0 bytes=2186816 dur=2000ms
+abr: steady current=8000kbps safe=23701kbps pending=0kbps fast=29618kbps slow=29627kbps unc=200pm n=17 buf=10001ms slope=-166ms/s prod=361pm/361pm risk=0 starve=none left=106s stable=0 cool=0 onrung=12 draining=12 reason=Some(Hls(SafeBudgetIncrease))
+loop=60 route=player overlay=none pos=74s play=984pm vtick=5 vgap=201ms fps=61
+hls: segment=14 bytes=2089808 raster=1920x1080 v=48 a=94 tail_skew_ms=0 audio_pts_recovered=74 not_ready=0 open_ms=2 ttfb_ms=0 open_probe_ms=592 first_au_ms=600 total_ms=692
+loop=60 route=player overlay=none pos=75s play=984pm vtick=5 vgap=201ms fps=61
+abr: sample current=8000kbps media=8359kbps net=29798kbps buf=9793ms vbuf=9793ms abuf=9793ms dur=2000ms prod=346pm n=18 decision=stay target=0kbps reason=Some(Hls(SafeBudgetIncrease))
+abr: window current=8000kbps verdict=admit have=41/19 eps=50pm clamp=0 bound=969ms demand=14874ms supply=38000ms excess=0ms sus=1 sur=1 reset=0 bytes=2089808 dur=2000ms
+abr: steady current=8000kbps safe=23752kbps pending=0kbps fast=29708kbps slow=29691kbps unc=200pm n=18 buf=9793ms slope=-150ms/s prod=355pm/355pm risk=0 starve=none left=103s stable=0 cool=0 onrung=13 draining=13 reason=Some(Hls(SafeBudgetIncrease))
+loop=60 route=player overlay=none pos=76s play=998pm vtick=5 vgap=201ms fps=60
+hls: segment=15 bytes=2203548 raster=1920x1080 v=48 a=94 tail_skew_ms=0 audio_pts_recovered=74 not_ready=0 open_ms=2 ttfb_ms=0 open_probe_ms=617 first_au_ms=626 total_ms=730
+loop=60 route=player overlay=none pos=77s play=985pm vtick=5 vgap=201ms fps=61
+feed a#3800 sz=542 fed=80959000000 reply=O qbytes=152149
+feed v#1900 sz=28765 fed=79082999999 reply=O qbytes=8412727
+timeline playing t=77s/180s
+loop=60 route=player overlay=none pos=78s play=1000pm vtick=5 vgap=201ms fps=60
+abr: sample current=8000kbps media=8814kbps net=30444kbps buf=9585ms vbuf=9585ms abuf=9585ms dur=2000ms prod=365pm n=19 decision=stay target=0kbps reason=Some(Hls(SafeBudgetIncrease))
+abr: window current=8000kbps verdict=admit have=42/19 eps=50pm clamp=0 bound=1022ms demand=15121ms supply=38000ms excess=0ms sus=1 sur=1 reset=0 bytes=2203548 dur=2000ms
+abr: steady current=8000kbps safe=23978kbps pending=0kbps fast=30076kbps slow=29973kbps unc=200pm n=19 buf=9585ms slope=-138ms/s prod=358pm/358pm risk=0 starve=none left=101s stable=0 cool=0 onrung=14 draining=14 reason=Some(Hls(SafeBudgetIncrease))
+hls: segment=16 bytes=1951064 raster=1920x1080 v=48 a=93 tail_skew_ms=0 audio_pts_recovered=73 not_ready=0 open_ms=2 ttfb_ms=0 open_probe_ms=544 first_au_ms=552 total_ms=641
+loop=60 route=player overlay=none pos=79s play=1000pm vtick=5 vgap=201ms fps=60
+abr: sample current=8000kbps media=7804kbps net=30755kbps buf=10001ms vbuf=10001ms abuf=10001ms dur=2000ms prod=320pm n=20 decision=stay target=0kbps reason=Some(Hls(SafeBudgetIncrease))
+abr: window current=8000kbps verdict=admit have=43/19 eps=50pm clamp=0 bound=904ms demand=14057ms supply=38000ms excess=0ms sus=1 sur=1 reset=0 bytes=1951064 dur=2000ms
+abr: steady current=8000kbps safe=24212kbps pending=0kbps fast=30415kbps slow=30266kbps unc=200pm n=20 buf=10001ms slope=-51ms/s prod=343pm/343pm risk=0 starve=none left=100s stable=0 cool=0 onrung=15 draining=15 reason=Some(Hls(SafeBudgetIncrease))
+loop=60 route=player overlay=none pos=80s play=1000pm vtick=5 vgap=201ms fps=60
+hls: segment=17 bytes=2094320 raster=1920x1080 v=48 a=98 tail_skew_ms=-69 audio_pts_recovered=77 not_ready=0 open_ms=2 ttfb_ms=0 open_probe_ms=610 first_au_ms=618 total_ms=715
+loop=60 route=player overlay=none pos=81s play=1000pm vtick=5 vgap=201ms fps=60
+feed v#2000 sz=53359 fed=83374999999 reply=O qbytes=8407530
+abr: sample current=8000kbps media=8377kbps net=29370kbps buf=10168ms vbuf=10168ms abuf=10237ms dur=2000ms prod=357pm n=21 decision=stay target=0kbps reason=Some(Hls(SafeBudgetIncrease))
+abr: window current=8000kbps verdict=admit have=44/19 eps=50pm clamp=0 bound=960ms demand=14145ms supply=38000ms excess=0ms sus=1 sur=1 reset=0 bytes=2094320 dur=2000ms
+abr: steady current=8000kbps safe=23944kbps pending=0kbps fast=29892kbps slow=29930kbps unc=200pm n=21 buf=10168ms slope=-17ms/s prod=348pm/348pm risk=0 starve=none left=98s stable=1 cool=0 onrung=16 draining=0 reason=Some(Hls(SafeBudgetIncrease))
+feed a#4000 sz=517 fed=85280000000 reply=O qbytes=165039
+loop=60 route=player overlay=none pos=82s play=999pm vtick=5 vgap=201ms fps=60
+hls: segment=18 bytes=2229680 raster=1920x1080 v=48 a=91 tail_skew_ms=0 audio_pts_recovered=72 not_ready=0 open_ms=2 ttfb_ms=0 open_probe_ms=619 first_au_ms=628 total_ms=731
+loop=59 route=player overlay=none pos=83s play=984pm vtick=5 vgap=201ms fps=60
+abr: sample current=8000kbps media=8918kbps net=30913kbps buf=10001ms vbuf=10001ms abuf=10001ms dur=2000ms prod=365pm n=22 decision=stay target=0kbps reason=Some(Hls(SafeBudgetIncrease))
+abr: window current=8000kbps verdict=admit have=45/19 eps=50pm clamp=0 bound=1022ms demand=14459ms supply=38000ms excess=0ms sus=1 sur=1 reset=0 bytes=2229680 dur=2000ms
+abr: steady current=8000kbps safe=24238kbps pending=0kbps fast=30402kbps slow=30298kbps unc=200pm n=22 buf=10001ms slope=-33ms/s prod=354pm/354pm risk=0 starve=none left=96s stable=2 cool=0 onrung=17 draining=0 reason=Some(Hls(SafeBudgetIncrease))
+loop=60 route=player overlay=none pos=84s play=1000pm vtick=5 vgap=201ms fps=60
+hls: segment=19 bytes=2186816 raster=1920x1080 v=48 a=94 tail_skew_ms=0 audio_pts_recovered=74 not_ready=0 open_ms=2 ttfb_ms=0 open_probe_ms=627 first_au_ms=635 total_ms=734
+loop=60 route=player overlay=none pos=85s play=1000pm vtick=5 vgap=201ms fps=60
