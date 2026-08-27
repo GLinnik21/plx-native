@@ -486,14 +486,22 @@ pub(super) fn run(
     let mut buf_ms: i64 = 0;
     let horizon = trace.horizon_ms();
 
-    let point_for = |rung: Rung| -> Result<OperatingPoint, String> {
-        Calibration::point(rung.kbps())
-            .ok_or_else(|| format!("rung {}kbps is UNCALIBRATED — measure it before simulating it", rung.kbps()))
+    // `who` names the code path that asked. A bare "rung N is UNCALIBRATED" says which census point
+    // is missing and NOT how the controller got there, and those are different questions: a rung
+    // reached by `current.below()` on a downshift is a hole in the descent, while one reached by a
+    // proposal is a hole in the climb, and the fix is a different pin either way.
+    let point_for = |rung: Rung, who: &str| -> Result<OperatingPoint, String> {
+        Calibration::point(rung.kbps()).ok_or_else(|| {
+            format!(
+                "rung {}kbps is UNCALIBRATED — measure it before simulating it (reached via {who})",
+                rung.kbps(),
+            )
+        })
     };
 
     while now_ms < horizon {
         let rung = controller.current();
-        let point = point_for(rung)?;
+        let point = point_for(rung, "the rung being played")?;
         let (observed, sample) = step(plant, trace, &point, &mut now_ms, &mut buf_ms, rung.kbps());
         report.stall_ms_total += observed.stall_ms;
         report.stall_ms_max = report.stall_ms_max.max(observed.stall_ms);
@@ -506,7 +514,10 @@ pub(super) fn run(
         }
         let Decision::Prime(proposal) = decision else { continue };
         report.primes += 1;
-        let cand_point = point_for(proposal.rung)?;
+        let cand_point = point_for(proposal.rung, match proposal.direction {
+            Direction::Up => "an UPSHIFT proposal",
+            Direction::Down => "a DOWNSHIFT proposal",
+        })?;
 
         // Decide the outcome FIRST, because the cost of a transaction differs by outcome and the
         // plant may not charge one number for all four legs.
@@ -973,6 +984,76 @@ mod tests {
         );
     }
 
+    /// **The device's own collapse case, closed loop.** `pipe_abr_down_collapse`
+    /// (`tests/manifest.json`): a 40 Mbit/s link that drops to 500 kbps mid-stream.
+    ///
+    /// This is the test the two measurement notes kept asking for and could not have —
+    /// `j3a-window-shadow.md` §5 and `j3-decides.md` §3 both end with *"a real comparison is the
+    /// closed-loop simulator over frozen traces with a stall disqualifier, which has not been
+    /// run"*. It could not be run because `run()` refuses an unmeasured transaction leg and all
+    /// four were `None`; `TransactionModel::measured()` is what unblocked it.
+    ///
+    /// **What it asserts is the SHAPE, not a stall count.** A collapse from the top to 1.25% of the
+    /// link is not survivable without interruption: `B_max(20000)` is ~5 s and one segment then
+    /// costs ~80 s to fetch, so the reserve is gone long before any transaction can complete. The
+    /// device agrees — `abr_shape` on that case records `max_stall_s=34`. Asserting "no stall"
+    /// would be asserting something false, and asserting a NUMBER would be grading the plant
+    /// against itself.
+    ///
+    /// What is gradeable, and what a broken controller would fail:
+    /// 1. it reaches the floor rather than parking somewhere it cannot sustain;
+    /// 2. rung 320 IS sustainable on 500 kbps (383 kbps of media, 1550 ms of acquisition against a
+    ///    2000 ms segment), so once settled the stalling must STOP — a controller that keeps
+    ///    interrupting on a link that can carry its rung is broken in a way this catches;
+    /// 3. the descent terminates. No oscillation, no re-climb into the collapsed link.
+    ///
+    /// **It starts at rung 4000 and not at the top, and the reason is the census rather than the
+    /// controller.** A downshift steps through `current.below()` (`controller.rs`'s fast-down arm),
+    /// and above 4000 the M4 pins took every OTHER rung — 320, 720, 2000, 4000, 10000, 16000,
+    /// 20000 — so `P1080High.below()` is 18000, which no pin ever visited and which `run` rightly
+    /// refuses to invent. 4000 → 2000 → 720 → 320 is the longest descent this census can express.
+    /// **A top-of-ladder collapse therefore remains a device job**, and it is the same six missing
+    /// rungs the disturbance matrix above reports.
+    #[test]
+    fn the_device_collapse_case_descends_to_a_sustainable_rung_and_stops_stalling() {
+        let plant = Plant::default();
+        // A MODEST opening leg, not a fast one, and that is forced by the census too: on a
+        // 40 Mbit/s leg the rule correctly admits a 2000 -> 20000 jump in one move, and the
+        // emergency downshift out of 20000 then targets `current.below()` = 18000 while the
+        // conservative estimate still lags the collapse. 18000 has no pin. 3 Mbit/s keeps the whole
+        // run inside 320/720/2000/4000, which is the part of the ladder the census can express.
+        let trace = Trace::new(&[(20.0, 3_000), (240.0, 500)]);
+        let catalog = super::super::HlsActuatorCatalog::measured()
+            .limited_to((3840, 2176), (1920, 1080));
+        let mut controller = Controller::starting_at(Rung::P720Low, None, catalog);
+        let report = run(&plant, &trace, &mut controller, &TransactionModel::measured())
+            .expect("the descent only visits calibrated rungs");
+
+        assert_eq!(report.final_rung_kbps(), Rung::P240.kbps(), "(1) it must reach the floor");
+
+        // (2) Once on the floor with the collapsed link, no further interruption. Take the tail
+        // strictly after the last commit, so the transaction that arrives there is not counted.
+        let landed_at = report.commits.last().map(|&(at, _)| at).expect("it commits at least once");
+        let tail: Vec<&Observed> =
+            report.samples.iter().filter(|s| s.at_ms > landed_at + plant.segment_ms).collect();
+        assert!(tail.len() >= 10, "not enough settled samples to judge: {}", tail.len());
+        let tail_stall: i64 = tail.iter().map(|s| s.stall_ms).sum();
+        assert_eq!(
+            tail_stall, 0,
+            "still rebuffering {tail_stall}ms on a rung the link can carry — 320 delivers {}kbps \
+             into 500kbps",
+            Calibration::point(320).unwrap().ts_kbps,
+        );
+
+        // (3) The descent terminates and never climbs back into the collapsed link.
+        let after_landing: Vec<u32> =
+            report.commits.iter().filter(|&&(at, _)| at > 20_000).map(|&(_, k)| k).collect();
+        assert!(
+            after_landing.windows(2).all(|w| w[1] <= w[0]),
+            "the controller climbed back into a collapsed link: {after_landing:?}",
+        );
+    }
+
     /// **A link below the bottom of the ladder stalls, and the controller still goes to the floor.**
     ///
     /// The complement of the test above, and it is here so that "no rebuffer" cannot be satisfied by
@@ -989,6 +1070,7 @@ mod tests {
         assert_eq!(report.final_rung_kbps(), Rung::P240.kbps(), "the floor is where it belongs");
         assert!(report.stall_ms_total > 0, "a link under the floor MUST stall; hiding that is worse");
     }
+
 
     /// CHARACTERISATION / BASELINE — not a policy assertion.
     ///
@@ -1012,3 +1094,4 @@ mod tests {
         );
     }
 }
+
