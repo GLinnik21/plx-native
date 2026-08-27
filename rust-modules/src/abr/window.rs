@@ -188,9 +188,10 @@ impl Admission {
 /// **Everything the §4 rule concluded, in one struct, for one event-log line.**
 ///
 /// Assembled inside this module so the numbers logged are the numbers computed, and so that a
-/// clamped window or a short one cannot be read as a verdict. It exists because this increment is
-/// OBSERVE-ONLY: the rule's whole claim is that it tracks the same segments the shipped estimators
-/// see, and that claim is only testable if every term is on the wire.
+/// clamped window or a short one cannot be read as a verdict. It exists because the rule's claim is
+/// that it tracks the same segments the shipped estimators see, and that claim is only testable if
+/// every term is on the wire — which is how it was graded before it was allowed to decide anything
+/// (`docs/measurements/j3a-window-shadow.md`).
 ///
 /// `have < n` is the ordinary state for the first `n` segments of a playback and is reported as
 /// such, with `admission: None`. It is not a failure and must not read as one.

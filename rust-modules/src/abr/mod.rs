@@ -85,9 +85,9 @@ pub(crate) use window::*;
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct AbrPolicy {
     /// **The section 4 admission rule's two explicit choices** -- see [`AdmissionPolicy`]. Both are
-    /// classification (4). Nothing reads them for a DECISION yet: the window shadows the shipped
-    /// path and is reported, so that the rule can be graded against the estimators it replaces on
-    /// a device before anything is moved onto it.
+    /// classification (4), and both now GATE EVERY UPSHIFT: `n = k/eps - 1` is the evidence the
+    /// controller must hold before it may propose one, and the same window decides whether the
+    /// primed candidate commits.
     pub(crate) admission: AdmissionPolicy,
     /// PMS is comfortably ahead of real time below this segment-acquisition ratio. Above it a
     /// candidate may still play, but it has no margin left for a slower scene.
@@ -101,9 +101,6 @@ pub(crate) struct AbrPolicy {
     /// [`ProductionEstimate::predicted_ratio_pm`] scales only the work, and never reads a LAN's
     /// round trips as a struggling encoder.
     pub(crate) production_floor_pm: u32,
-    /// The content reserve an upshift is expected to leave intact. Below it, spend the budget on
-    /// refilling instead of on picture.
-    pub(crate) minimum_buffer_ms: i64,
     /// Below this the next stall is close enough that "wait and see" is no longer a policy.
     pub(crate) emergency_buffer_ms: i64,
     /// **VBR headroom over a whole-file average.** A file averaging 60 Mbit/s contains scenes well
@@ -171,15 +168,13 @@ impl AbrPolicy {
             //
             // `k = 1` takes the window's maximum: the tightest bound available at this eps, and
             // the most sensitive to a single outlier. It is the conservative end of the one axis
-            // that is free once eps is fixed, and it is the right end to start from while the rule
-            // decides nothing. Raising `k` buys a longer proof horizon at the same eps (n = k/eps
-            // - 1) and should be argued from a stated passage length, which this project does not
-            // have yet.
+            // that is free once eps is fixed. Raising `k` buys a longer proof horizon at the same
+            // eps (n = k/eps - 1) and should be argued from a stated passage length, which this
+            // project does not have yet.
             admission: AdmissionPolicy { epsilon_pm: 50, k: 1 },
             production_safe_pm: 750,
             production_max_pm: 1_100,
             production_floor_pm: 250,
-            minimum_buffer_ms: 2_500,
             emergency_buffer_ms: 2_000,
             vbr_allowance_pm: 1_350,
             bootstrap_confidence_pm: 1_350,

@@ -74,9 +74,13 @@ pub(crate) struct Controller {
     pin: Option<Rung>,
     /// **The transferred acquisition window** (`abr/window.rs`, specification §2a/§4).
     ///
-    /// Observed on every segment and reported in telemetry; it decides nothing yet. This is
-    /// deliberately an OBSERVE-ONLY increment: the window has to be shown to track the same
-    /// segments the shipped estimators see, on a device, before a decision is moved onto it.
+    /// **It DECIDES.** [`Self::candidate_ready`] admits an upshift only if this window admits the
+    /// candidate's worst-case byte count, and [`Self::largest_admissible`] will not propose one it
+    /// would refuse.
+    ///
+    /// It shipped observe-only and was graded that way first — 68 device lines, 0 disagreements
+    /// with the specification (`docs/measurements/j3a-window-shadow.md`) — before anything was
+    /// moved onto it. That ordering is the reason to trust it, not a description of what it does.
     acquisitions: AcquisitionWindow,
     /// What the §4 rule WOULD have said about staying on the current rung, recomputed each sample.
     /// Read only by telemetry.
@@ -253,10 +257,15 @@ impl Controller {
             hls_safe_budget(&self.delivery, &self.production, &self.buffer, &self.policy);
         self.last_safe_budget_kbps = safe_budget;
 
-        // **Shadow the §4 admission rule. It decides nothing here.** Observed above every early
-        // return for the same reason `safe_budget` is: a pinned run returns before the decision on
-        // every sample after the pin lands, and a quantity that is only computed on the path it
-        // does not take is unobservable on exactly the runs meant to characterise it.
+        // **Observe the §4 window, and compute its verdict on the CURRENT rung for telemetry.**
+        // The decision this window drives is not taken here — it is taken at the proposal
+        // (`largest_admissible`) and at validation (`candidate_ready`), both of which query a
+        // CANDIDATE's byte count rather than this one.
+        //
+        // Placed above every early return for the same reason `safe_budget` is: a pinned run
+        // returns before the decision on every sample after the pin lands, and a quantity that is
+        // only computed on the path it does not take is unobservable on exactly the runs meant to
+        // characterise it.
         //
         // The query is the CURRENT rung's own byte count, so this answers "is what we are already
         // playing sustainable" — the one admission question that needs no size prediction and no
@@ -467,8 +476,8 @@ impl Controller {
     /// A downshift has no graded segment, so nothing enters from one. That is not a gap: a
     /// downshift is not gated on the window (see [`Self::candidate_ready`]).
     ///
-    /// This changes no decision while the window decides nothing. It changes what the window
-    /// CONTAINS, which is why it lands separately from the verdict that will read it.
+    /// It landed separately from the verdict that reads it, so that the change in what the window
+    /// CONTAINS could be measured on its own. Both are live now.
     pub(crate) fn observe_candidate(&mut self, sample: SegmentSample) {
         self.acquisitions.observe(sample.bytes(), sample.total_fetch_us());
     }

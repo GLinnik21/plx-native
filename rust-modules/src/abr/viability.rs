@@ -67,23 +67,39 @@ pub(crate) fn candidate_risk(
     }
 }
 
-/// The continuous budget the actuator is then chosen FROM — never "one rung up". Three separate
-/// discounts, each with a reason: uncertainty (inside `conservative_kbps`), a server that is
-/// already behind, and a reserve that needs refilling more than the picture needs bits.
+/// The continuous budget the actuator is then chosen FROM — never "one rung up". Two discounts,
+/// each with a reason: uncertainty (inside `conservative_kbps`) and a server that is already
+/// behind.
+///
+/// # [DELETED] The third discount subtracted MILLISECONDS from KILOBITS PER SECOND
+///
+/// ```text
+/// let deficit = policy.minimum_buffer_ms - buffer.buffered_ms;   // milliseconds
+/// budget = budget.saturating_sub(deficit);                       // kilobits per second
+/// ```
+///
+/// There is no reading of that under which the units work. It removed up to
+/// `minimum_buffer_ms` kbps of budget — thousands of kilobits per second — because the *reserve*
+/// was short, and the amount removed had nothing to do with the link. The plan names this deletion
+/// (`I4`, "delete the ms-from-kbps branch") and it is one of the stacked margins whose product put
+/// Auto at 0.24–0.51 of the measured link.
+///
+/// **The intent behind it was real and now has a derived home.** "A reserve that needs refilling
+/// more than the picture needs bits" is §4's condition (2): `B ≥ Σ(T_i − D)⁺`, evaluated against
+/// the reserve in the units of the reserve, on measured acquisitions. Keeping a dimensionally
+/// broken copy of the same idea in the budget would be exactly the double-counting the design rule
+/// forbids — and the copy fires on the *selection* side, where it is invisible.
 pub(crate) fn hls_safe_budget(
     capacity: &CapacityEstimate,
     production: &ProductionEstimate,
     buffer: &BufferEstimate,
     policy: &AbrPolicy,
 ) -> u32 {
+    let _ = buffer; // the reserve is condition (2)'s business, not the budget's — see above
     let mut budget = capacity.conservative_kbps();
     if production.ratio_pm > policy.production_safe_pm {
         budget = budget.saturating_mul(policy.production_safe_pm).max(1)
             / production.ratio_pm.max(1);
-    }
-    if buffer.buffered_ms < policy.minimum_buffer_ms {
-        let deficit = policy.minimum_buffer_ms - buffer.buffered_ms;
-        budget = budget.saturating_sub(u32::try_from(deficit).unwrap_or(u32::MAX));
     }
     budget
 }
@@ -93,14 +109,30 @@ pub(crate) fn hls_safe_budget(
 /// transport that exact budget so it returns to the active encoder before the playback reserve
 /// drains. Downshifts have no such deadline: they are the recovery path when the current rung is
 /// already unsustainable.
+///
+/// **The threshold is READ from the policy, and it used to be a literal `4/5` that silently
+/// stopped matching.** The doc above has always claimed parity with `candidate_ready`, and it was
+/// true while that test was a bare `production_ratio_pm <= 800`. When the §4 admission work
+/// replaced the bare 800 with `production_max_pm` (1100 — "this JIT encoder cannot keep up"), this
+/// literal was left behind, and the two stopped meaning the same thing: the transport aborted a
+/// candidate at 0.8·D that the acceptance test would have admitted up to 1.1·D. Candidates in that
+/// band died at the deadline and never reached the rule at all.
+///
+/// That is a stacked margin of exactly the kind the design rule forbids — one threshold enforced
+/// twice at two different values, the stricter one invisible because it fires in the transport. So
+/// there is one number now and both sites read it.
 pub(crate) fn candidate_prime_budget(
     proposal: Proposal,
     media_duration: std::time::Duration,
+    policy: &AbrPolicy,
 ) -> Option<std::time::Duration> {
     if proposal.direction == Direction::Down {
         return None;
     }
-    let micros = media_duration.as_micros().saturating_mul(4) / 5;
+    let micros = media_duration
+        .as_micros()
+        .saturating_mul(u128::from(policy.production_max_pm))
+        / 1_000;
     Some(std::time::Duration::from_micros(
         micros.min(u128::from(u64::MAX)) as u64,
     ))

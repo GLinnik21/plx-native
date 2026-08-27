@@ -2949,7 +2949,12 @@ fn log_hls_abr_sample(
     ));
 }
 
-/// **One line per segment for the §4 admission rule, which decides nothing yet.**
+/// **One line per segment for the §4 admission rule, on the CURRENT rung.**
+///
+/// The rule decides — at the proposal and at validation, both against a CANDIDATE's byte count.
+/// This line is the same arithmetic asked about what is already playing, which is the question
+/// that needs no size prediction, and it is what made the rule gradeable against the estimators it
+/// replaced before it was allowed to replace them.
 ///
 /// The formatting itself lives on [`crate::abr::AdmissionReadout::log_line`], beside the numbers
 /// it prints and beside the test that pins the exact wire form — this function is only the
@@ -3615,9 +3620,13 @@ fn hls_demux(
                     return Err(HlsExit::Failed("HLS candidate timeline overflow"));
                 }
             };
+            // The deadline is the ACCEPTANCE threshold, read from the same policy
+            // `Controller::candidate_ready` reads. Passing a different number here aborts
+            // candidates the rule would have admitted, invisibly, in the transport.
             let graded_deadline = crate::abr::candidate_prime_budget(
                 proposal,
                 graded_segment.duration,
+                &crate::abr::AbrPolicy::measured(),
             )
             .and_then(|budget| std::time::Instant::now().checked_add(budget));
             let graded_output = match unsafe {

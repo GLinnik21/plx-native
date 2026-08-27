@@ -909,18 +909,112 @@ fn a_budget_jump_skips_the_intermediate_encoders() {
 #[test]
 fn only_upshift_primes_receive_the_exact_acceptance_budget() {
     let media = std::time::Duration::from_millis(2_002);
+    let policy = AbrPolicy::measured();
     let up = Proposal { rung: Rung::P720Low, direction: Direction::Up };
     let down = Proposal { rung: Rung::P240, direction: Direction::Down };
     assert_eq!(
-        candidate_prime_budget(up, media),
-        Some(std::time::Duration::from_micros(1_601_600))
+        candidate_prime_budget(up, media, &policy),
+        Some(std::time::Duration::from_micros(2_202_200))
     );
     assert_eq!(
         candidate_warmup_budget(up, media),
         Some(std::time::Duration::from_micros(3_003_000))
     );
-    assert_eq!(candidate_prime_budget(down, media), None);
+    assert_eq!(candidate_prime_budget(down, media, &policy), None);
     assert_eq!(candidate_warmup_budget(down, media), None);
+}
+
+/// **DIMENSIONAL INVARIANT: the budget is a RATE and the reserve is a DURATION.**
+///
+/// `hls_safe_budget` used to do `budget -= (minimum_buffer_ms - buffered_ms)` — subtracting
+/// milliseconds from kilobits per second, removing up to 2 500 kbps of link because the reserve was
+/// short, by an amount that had nothing to do with the link. This is differential: it cannot pass
+/// against that code, because moving ONLY the reserve moved the answer.
+///
+/// The intent behind that branch is not lost, it is relocated: "the reserve must cover what the
+/// rung will overrun by" is §4's condition (2), evaluated in the units of the reserve against
+/// measured acquisitions.
+#[test]
+fn the_safe_budget_does_not_move_when_only_the_reserve_moves() {
+    let policy = AbrPolicy::measured();
+    let capacity = CapacityEstimate::from_prior(20_000);
+    let production = ProductionEstimate::default();
+    let budgets: Vec<u32> = [0i64, 1_000, 2_499, 2_500, 30_000, 90_000]
+        .iter()
+        .map(|&buffered_ms| {
+            let buffer = BufferEstimate { buffered_ms, ..Default::default() };
+            hls_safe_budget(&capacity, &production, &buffer, &policy)
+        })
+        .collect();
+    assert!(
+        budgets.windows(2).all(|w| w[0] == w[1]),
+        "the reserve changed the budget: {budgets:?} — a duration is being mixed into a rate",
+    );
+    assert!(budgets[0] > 0, "and the budget must not be zero, which would hide the invariant");
+}
+
+/// **A link too fast to be believed must not read as a COLLAPSE.**
+///
+/// `collapse` compared `measured_kbps * 4` with a bare multiply while its own sibling
+/// `CapacityObservation::is_collapse` saturated. Above ~1.07 Gbit/s the product wraps — and an
+/// 865 Gbit/s reading is on record from this television, which is why `clamped_to_evidence`
+/// exists at all. The two configurations disagree about what wrapping DOES: `overflow-checks` is
+/// on under `cargo test` so the host panics, and off in release so the set silently declares a
+/// collapse on the fastest link it has ever seen.
+///
+/// So this test does double duty — on the host it proves the panic is gone, and the assertion
+/// proves the release wrap is gone with it.
+#[test]
+fn an_absurdly_fast_reading_neither_panics_nor_reads_as_a_collapse() {
+    for measured in [u32::MAX, u32::MAX / 2, 865_000_000, 1_073_741_824] {
+        let mut estimate = CapacityEstimate::from_prior(40_000);
+        let slow_before = estimate.slow_kbps;
+        estimate.collapse(measured);
+        assert_eq!(
+            estimate.slow_kbps, slow_before,
+            "{measured}kbps is faster than the prior, so nothing collapsed",
+        );
+        assert_eq!(estimate.fast_kbps, measured, "the fast estimate still takes the reading");
+    }
+}
+
+/// The other side of the same guard: a genuine collapse must still be detected.
+#[test]
+fn a_reading_a_quarter_of_the_prior_still_collapses() {
+    let mut estimate = CapacityEstimate::from_prior(40_000);
+    estimate.collapse(1_000);
+    assert!(estimate.slow_kbps < 40_000, "a 40x drop is a collapse and must lower the slow prior");
+    assert_eq!(estimate.uncertainty_pm, 400);
+}
+
+/// **The graded-segment deadline and the acceptance test are the SAME threshold.**
+///
+/// They were, when both were 0.8·D. The §4 admission work replaced `candidate_ready`'s bare 800
+/// with `production_max_pm`, and the transport's literal `4/5` was left behind — so for a while a
+/// candidate whose graded segment took between 0.8·D and 1.1·D was aborted by the deadline and
+/// never reached the rule that would have admitted it. One threshold, enforced twice at two
+/// values, the stricter one invisible because it fired in `ff.rs`.
+///
+/// This is the test that would have caught it, and it is differential: it fails against any
+/// literal that is not the policy's own number.
+#[test]
+fn the_prime_deadline_is_exactly_the_acceptance_threshold() {
+    let policy = AbrPolicy::measured();
+    let up = Proposal { rung: Rung::P1080, direction: Direction::Up };
+    for media_ms in [1_000u64, 2_000, 4_000, 6_006] {
+        let media = std::time::Duration::from_millis(media_ms);
+        let budget = candidate_prime_budget(up, media, &policy).expect("upshifts get one");
+        // What `candidate_ready` admits: `production_ratio_pm < production_max_pm`, i.e. an
+        // acquisition strictly under `production_max_pm/1000` of the content duration.
+        let admits_up_to_us =
+            u128::from(media_ms) * 1_000 * u128::from(policy.production_max_pm) / 1_000;
+        assert_eq!(
+            u128::from(budget.as_micros() as u64),
+            admits_up_to_us,
+            "at {media_ms}ms the transport aborts at {}us but the rule admits to {admits_up_to_us}us",
+            budget.as_micros(),
+        );
+    }
 }
 
 /// The four shaped links from the device session, re-graded on today's ladder. The 17.5 Mbit/s

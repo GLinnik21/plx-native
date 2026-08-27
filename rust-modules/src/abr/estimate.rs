@@ -76,8 +76,16 @@ impl CapacityEstimate {
 
     /// A sudden low fast estimate invalidates a high slow estimate. The slow value remains as a
     /// weak prior so recovery is possible, but a new candidate must fit the observed regime.
+    ///
+    /// **`saturating_mul`, matching [`CapacityObservation::is_collapse`]'s own arithmetic.** The
+    /// bare `measured_kbps * 4` this replaced wraps above ~1.07 Gbit/s, and that is reachable: an
+    /// **865 Gbit/s** reading is on record from this television, which is exactly why
+    /// `clamped_to_evidence` further down this file exists. The two halves of the split are what
+    /// make it worth fixing rather than filing — `overflow-checks` is ON under `cargo test`, so the
+    /// host PANICS, and OFF in release, so the set WRAPS to a small number and declares a collapse
+    /// on the fastest link it has ever seen. Neither is a rounding error.
     pub(crate) fn collapse(&mut self, measured_kbps: u32) {
-        if self.fast_kbps > 0 && measured_kbps * 4 < self.fast_kbps {
+        if self.fast_kbps > 0 && measured_kbps.saturating_mul(4) < self.fast_kbps {
             self.slow_kbps = measured_kbps.max(self.slow_kbps / 4);
             self.uncertainty_pm = 400;
         }
