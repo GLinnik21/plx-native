@@ -192,6 +192,8 @@ pub(crate) struct AdmissionReadout {
     pub(crate) bound_us: Option<i64>,
     /// Both conditions. `None` while `have < want`.
     pub(crate) admission: Option<Admission>,
+    /// Cumulative [`AcquisitionWindow::reset`] count. Monotone over a playback.
+    pub(crate) resets: u32,
 }
 
 impl AdmissionReadout {
@@ -210,7 +212,10 @@ impl AdmissionReadout {
     /// this says what a rule nobody is listening to would have concluded about it.
     ///
     /// * `have`/`want` — samples held against `n = k/eps - 1`. `have < want` is the ordinary state
-    ///   for the first `n` segments and prints `verdict=filling`, not a failure.
+    ///   for the first `n` segments and prints `verdict=filling`, not a failure. `have` keeps
+    ///   climbing past `want` to [`WINDOW_CAPACITY`] — only the newest `want` are used, so the
+    ///   excess is not evidence being ignored but a reading of how long the window has gone
+    ///   without a reset, which is the context a verdict after a regime change has to be read in.
     /// * `eps` — `k/(n+1)` at the length actually USED. It differs from the requested eps exactly
     ///   when `clamp=1`, which is the only way the guarantee offered is weaker than the one asked.
     /// * `bound` — the k-th largest transferred acquisition, milliseconds: the eps-level ceiling on
@@ -223,6 +228,10 @@ impl AdmissionReadout {
     /// Every unavailable number prints `-1` rather than `0`: while the window is filling those
     /// quantities are NOT COMPUTED, and a zero cannot say the difference — a zero `excess` is a
     /// perfectly ordinary healthy verdict.
+    ///
+    /// `reset` is cumulative and monotone. Without it a regime-change reset shows up only as
+    /// `have` dropping back to 1 with nothing saying why, which is indistinguishable in a captured
+    /// trace from the window having lost its history for some other reason.
     ///
     /// The `bytes` field is the query, which for this shadow is the segment's OWN size — so the
     /// line records the current rung's sustainability, the one admission question needing no size
@@ -241,7 +250,7 @@ impl AdmissionReadout {
         format!(
             "abr: window current={current_kbps}kbps verdict={verdict} have={}/{} eps={}pm \
              clamp={} bound={}ms demand={demand}ms supply={supply}ms excess={excess}ms \
-             sus={} sur={} bytes={bytes} dur={media_duration_ms}ms",
+             sus={} sur={} reset={} bytes={bytes} dur={media_duration_ms}ms",
             self.have,
             self.want,
             self.effective_epsilon_pm,
@@ -249,6 +258,7 @@ impl AdmissionReadout {
             self.bound_us.map(ms).unwrap_or(-1),
             self.admission.map(|a| u8::from(a.sustainable)).unwrap_or(0),
             self.admission.map(|a| u8::from(a.survivable)).unwrap_or(0),
+            self.resets,
         )
     }
 }
@@ -265,11 +275,19 @@ pub(crate) struct AcquisitionWindow {
     ring: [Acquisition; WINDOW_CAPACITY],
     len: usize,
     next: usize,
+    /// How many times [`Self::reset`] has run, for the whole playback.
+    ///
+    /// **It exists because a reset is otherwise invisible in the trace.** `have` simply drops back
+    /// to 1, with nothing saying why, and a reader — or a grader replaying the segment stream —
+    /// cannot tell a legitimate regime-change reset from the window having lost its history for
+    /// some other reason. Monotone, so a drop in `have` WITHOUT this moving is a real defect and
+    /// still reads as one.
+    resets: u32,
 }
 
 impl Default for AcquisitionWindow {
     fn default() -> Self {
-        Self { ring: [Acquisition::default(); WINDOW_CAPACITY], len: 0, next: 0 }
+        Self { ring: [Acquisition::default(); WINDOW_CAPACITY], len: 0, next: 0, resets: 0 }
     }
 }
 
@@ -285,7 +303,10 @@ impl AcquisitionWindow {
     }
 
     pub(crate) fn reset(&mut self) {
-        *self = Self::default();
+        // The counter is the one thing a reset must NOT clear -- it is the record that the reset
+        // happened, and `*self = Self::default()` would erase its own evidence.
+        let resets = self.resets.saturating_add(1);
+        *self = Self { resets, ..Self::default() };
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -401,6 +422,7 @@ impl AcquisitionWindow {
             clamped: policy.is_clamped(),
             bound_us: self.bound_us(query_bytes, policy),
             admission: self.admits(query_bytes, media_duration_ms, reserve_ms, policy),
+            resets: self.resets,
         }
     }
 }
@@ -673,12 +695,12 @@ mod tests {
     /// Canonical full verdict. Read by `tests/test_harness.py`; keep the marker comment.
     const WIRE_ADMIT: &str = // wire-example
         "abr: window current=4000kbps verdict=admit have=3/3 eps=250pm clamp=0 bound=1000ms \
-         demand=2600ms supply=6000ms excess=0ms sus=1 sur=1 bytes=1000 dur=2000ms";
+         demand=2600ms supply=6000ms excess=0ms sus=1 sur=1 reset=0 bytes=1000 dur=2000ms";
 
     /// Canonical filling verdict — every uncomputed number is `-1`, never `0`.
     const WIRE_FILLING: &str = // wire-example
         "abr: window current=720kbps verdict=filling have=1/3 eps=250pm clamp=0 bound=-1ms \
-         demand=-1ms supply=-1ms excess=-1ms sus=0 sur=0 bytes=500 dur=2000ms";
+         demand=-1ms supply=-1ms excess=-1ms sus=0 sur=0 reset=2 bytes=500 dur=2000ms";
 
     #[test]
     fn the_logged_line_is_the_one_the_harness_regex_was_written_against() {
@@ -691,9 +713,29 @@ mod tests {
     fn a_filling_window_logs_minus_one_for_every_uncomputed_term_and_never_zero() {
         // A zero `excess` is a perfectly ordinary HEALTHY verdict, so printing zero here would make
         // "not computed" indistinguishable from "nothing to absorb" in every startup trace.
+        //
+        // Two resets first, so the example carries a non-zero `reset=`: a wire example that only
+        // ever shows the initial value cannot catch a counter that is cleared by the very call it
+        // is meant to count.
         let p = policy(250, 1);
-        let w = window(&[(500, 400_000)]);
+        let mut w = window(&[(500, 400_000), (500, 400_000)]);
+        w.reset();
+        w.reset();
+        w.observe(500, 400_000);
         assert_eq!(w.readout(500, 2_000, 10_000, p).log_line(720, 500, 2_000), WIRE_FILLING);
+    }
+
+    #[test]
+    fn a_reset_counts_itself_and_the_count_survives_the_reset_it_records() {
+        // `*self = Self::default()` is the obvious body and it erases its own evidence -- after
+        // which a `have` dropping to 1 has nothing in the trace to attribute it to.
+        let mut w = window(&[(1_000, 100), (1_000, 200)]);
+        assert_eq!(w.readout(1_000, 2_000, 0, policy(250, 1)).resets, 0);
+        w.reset();
+        w.reset();
+        w.observe(1_000, 300);
+        let r = w.readout(1_000, 2_000, 0, policy(250, 1));
+        assert_eq!((r.resets, r.have), (2, 1), "the history is gone, the record of it is not");
     }
 
     #[test]

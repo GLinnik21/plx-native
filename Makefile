@@ -754,6 +754,7 @@ check: lint
 	@# It runs here because the receiver has no other gate — nothing in cargo can see a python file.
 	python3 tools/plxnative-lab selftest
 	python3 tools/test_abr_transfer_bound.py
+	python3 tools/test_abr_window_grade.py
 	python3 tools/test_scrub_logs.py
 
 # `make lint` — the three clippy lints that catch a SHADOWED branch, the one bug class the unit

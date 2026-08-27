@@ -1346,15 +1346,19 @@ def early_exit_allowed(case, cfg):
 #
 # `verdict=filling` is the ordinary state for the first `n` segments of every playback, and
 # `demand`/`supply`/`excess`/`bound` are `-1` there -- "not computed", not zero.
+#
+# `reset` is a cumulative, monotone count of window resets (one per delivery collapse). It is what
+# makes `have` dropping back to 1 mid-playback ATTRIBUTABLE: without it, a legitimate regime-change
+# reset and a window that lost its history for some other reason are the same two lines.
 RE_ABR_WINDOW = re.compile(
     r"abr: window current=(\d+)kbps verdict=(\S+) have=(\d+)/(\d+) eps=(\d+)pm clamp=(\d+) "
     r"bound=(-?\d+)ms demand=(-?\d+)ms supply=(-?\d+)ms excess=(-?\d+)ms "
-    r"sus=(\d+) sur=(\d+) bytes=(\d+) dur=(\d+)ms"
+    r"sus=(\d+) sur=(\d+) reset=(\d+) bytes=(\d+) dur=(\d+)ms"
 )
 WINDOW_FIELDS = (
     "current_kbps", "verdict", "have", "want", "eps_pm", "clamp",
     "bound_ms", "demand_ms", "supply_ms", "excess_ms",
-    "sustainable", "survivable", "bytes", "dur_ms",
+    "sustainable", "survivable", "resets", "bytes", "dur_ms",
 )
 
 

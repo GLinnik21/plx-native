@@ -586,7 +586,14 @@ the encoder-churn `best_sustainable` exists to avoid. The honest statement is th
 the *rate* a candidate may demand and say nothing about the *raster change* that accompanies a
 large jump, and the utility ledger of §7 is where that cost belongs.
 
-### The shipped integer form
+### [SUPERSEDED] The integer form of the per-segment rule
+
+**This subsection describes the form the two-condition rule above replaced, and it is kept only as
+the overflow analysis for anyone who brings the per-segment test back.** It substitutes §2's
+`A = O₀ + bytes·τ`, and §2a is the reason it is not what ships: there is no estimator for `O₀` or
+`τ` anywhere in this design, because the transfer bound is the exact worst case over every split
+between them and needs neither. Reading this section as the shipped arithmetic — which its former
+title invited — contradicts §2a on the page above it.
 
 Substituting §2 and §3, with `o0_us` the intercept in microseconds and `tau_ps` picoseconds per
 byte:
@@ -622,6 +629,71 @@ for a number the device still owes; see §2.)
 arithmetic: `overflow-checks` is **on** under `cargo test` and **off** in release, so an unsigned
 underflow panics on the Mac and wraps silently on the television. Every term above is `i64`, and
 no subtraction of unsigned quantities appears in the rule.
+
+### The shipped integer form — what `rust-modules/src/abr/window.rs` computes
+
+Two sums over the last `n` samples, in microseconds, and no division except the transfer's own:
+
+```rust
+// T_i(q) = A_i * max(1, q/b_i), CEILED. u128 throughout: (2^64-1)^2 fits u128 exactly and
+// does NOT fit i128, so the signed intermediate an earlier draft used overflows at the top of
+// the input domain -- a host panic under `cargo test`, a silent wrap to a small number (a bound
+// in the UNSAFE direction) in release.
+fn transferred_us(a_us: u64, b: u64, q: u64) -> i64 {
+    if q <= b { return a_us.min(i64::MAX as u64) as i64; }
+    let b = u128::from(b.max(1));
+    (((u128::from(a_us) * u128::from(q)) + b - 1) / b).min(i64::MAX as u128) as i64
+}
+
+let duration_us = media_duration_ms * 1_000;
+let demand_us: i64 = window.map(|s| transferred_us(s.a, s.b, q)).sum();          // saturating
+let excess_us: i64 = window.map(|s| (transferred_us(s.a, s.b, q) - duration_us).max(0)).sum();
+
+let sustainable = demand_us <= duration_us * n;                                  // (1)
+let survivable  = reserve_ms * 1_000 >= excess_us;                               // (2)
+```
+
+**Every accumulation saturates.** Real inputs put `demand_us` near 1e8, but `transferred_us` may
+saturate at `i64::MAX` on a degenerate observation and a plain `+` over 64 of those is the same
+host-panic / device-wrap split described above. The one difference taken is `i64` and is allowed
+to be negative — exactly the case (2) discards — so no unsigned subtraction appears anywhere.
+
+**Both policy numbers are stated as choices and nothing else is chosen.** `ε = 50‰` is one
+exceedance per ~40 s of playback at the 2 s segment this pipeline requests; `k = 1` is the
+conservative end of the one axis `ε` leaves free; `n = k/ε − 1` follows. `WINDOW_CAPACITY = 64` is
+a storage bound, reported through `clamp=` when it binds, and deliberately **not** part of the
+derivation — an earlier draft wrote `n ≤ 32` into the derivation itself, which silently made
+several `(n, k)` settings unreachable.
+
+### [MEASURED 2026-08-27] The shipped arithmetic agrees with this specification on a device
+
+`abr: window` shadows every segment, reading into no decision. `tools/abr-window-grade.py`
+re-derives the whole rule from the app's own lines and compares term by term, with the `prod`
+quantization propagated as an **interval** rather than absorbed into a tolerance:
+
+```
+68 graded lines across three cases, 0 disagreements with the specification
+```
+
+Four things that run established beyond the arithmetic, recorded in full in
+`docs/measurements/j3a-window-shadow.md`:
+
+* **The `A/D ∈ [0.80, 1.05]` band — 0 of 366 samples in the whole prior corpus — was entered.**
+  Observed load spans 0.41–1.26 with means of 0.81 and 1.00.
+* **The two conditions separate in practice, which until now was an argument.** Every refusal at
+  rung 4000 is `sus=0 sur=1` (17 s of reserve, a link that is merely not gaining), and seven
+  segments at rung 20000 are `sus=1 sur=0` — affordable on the average against a 2.2 s reserve that
+  cannot absorb an 8–9 s excess. A single boolean, or a single `4/5` haircut, cannot express either.
+* **The regime-change exposure is `n` segments and no more.** After the shaper leg ends and
+  throughput jumps ~4×, the verdict stays `refuse` for a further 20 segments while the window still
+  holds slow ones. That is the cost of the proof span, not a defect, and it bounds what the one
+  reset path (a delivery collapse) has to be right about.
+* **[FINDING] The rule is SILENT through a collapse and cannot be the collapse response.**
+  `pipe_abr_down_collapse` graded **zero** segments: 23 segments with one reset at segment 13
+  never fill a 19-long window. That is not tunable — `n = k/ε − 1` is forced by the SLO, and
+  `n = 19` at a 2 s segment is **38 s of media**, longer than a collapse takes to resolve. It
+  confirms §5's split: this rule is the trigger and the target, and a *deadline* must fire from the
+  current reserve and the in-flight segment with no window at all.
 
 ### The comparison between two rungs
 
