@@ -1515,7 +1515,7 @@ fn original_beats_the_top_rung_on_utility_at_equal_risk() {
     };
     let current = hd_catalog().candidate(Rung::P1080High);
     let (mode, reason, chosen, other) =
-        choose_mode(&inputs, current, Some(current), &policy);
+        choose_mode(&inputs, current, current, &policy);
     assert_eq!((mode, reason), (ModeKind::Original, ModeReason::OriginalWorthIt));
     assert_eq!(chosen.server, 0, "no server video encoding is the term HLS cannot match");
     assert!(chosen.total > other.expect("both were feasible").total);
@@ -1524,7 +1524,7 @@ fn original_beats_the_top_rung_on_utility_at_equal_risk() {
     let (mode, reason, _, other) = choose_mode(
         &ModeInputs { original_feasible: false, ..inputs },
         current,
-        Some(current),
+        current,
         &policy,
     );
     assert_eq!((mode, reason), (ModeKind::Hls, ModeReason::OriginalInfeasible));

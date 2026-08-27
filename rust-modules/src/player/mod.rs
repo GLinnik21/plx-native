@@ -424,6 +424,11 @@ pub(crate) fn restore_state_for_test(raw: u8) {
 // ---- diagnostics --------------------------------------------------------------------------
 
 pub(crate) use engine::aq_caps;
+/// Test-only: `abr::sim`'s plant pins these against the pipeline's own values so half of `B_max`
+/// cannot drift silently. Nothing in a shipped build reads them — the throttle uses the constants
+/// directly, in `engine`.
+#[cfg(test)]
+pub(crate) use engine::feed_leads_ms;
 pub(crate) use ffi::{VP_ACB, VP_EXPORTED, VP_NONE};
 
 /// One consistent read of everything the on-screen diagnostics overlay shows (`ui::stats`).

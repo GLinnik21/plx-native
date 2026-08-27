@@ -184,7 +184,6 @@ pub(crate) const DRAIN_EPS_MS_PER_S: i64 = 50;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct StarvationHorizon {
     pub(crate) seconds: Option<u32>,
-    pub(crate) drain_per_s: i64,
 }
 
 pub(crate) fn starvation_horizon(
@@ -193,11 +192,14 @@ pub(crate) fn starvation_horizon(
     capacity_kbps: u32,
 ) -> StarvationHorizon {
     if capacity_kbps >= requirement_kbps || requirement_kbps == 0 {
-        return StarvationHorizon { seconds: None, drain_per_s: 0 };
+        return StarvationHorizon { seconds: None };
     }
     let deficit = i64::from(requirement_kbps - capacity_kbps);
-    let drain_per_s = (i64::from(buffer_ms) * i64::from(requirement_kbps)) / i64::from(deficit);
-    let seconds = u32::try_from(drain_per_s / 1_000).ok();
-    StarvationHorizon { seconds, drain_per_s }
+    // **`time_to_empty_ms`, and the name matters.** This was a public field called `drain_per_s`
+    // with no reader anywhere in the crate — and the name asserted the wrong dimension:
+    // `(ms · kbps) / kbps` is MILLISECONDS, which is why the next line divides by 1000 to get
+    // seconds. A rate would not need that division. Dead and mislabelled, so both go.
+    let time_to_empty_ms = (i64::from(buffer_ms) * i64::from(requirement_kbps)) / i64::from(deficit);
+    StarvationHorizon { seconds: u32::try_from(time_to_empty_ms / 1_000).ok() }
 }
 

@@ -138,12 +138,7 @@ impl OriginalRecovery {
         let requirement = source_requirement_kbps(self.source_kbps, &self.policy);
         let assumed = CapacityEstimate::from_prior(requirement.saturating_mul(2));
         let inputs = self.inputs(assumed, buffer, *hls_delivery, remaining_ms);
-        let (mode, _, _, _) = choose_mode(
-            &inputs,
-            current,
-            Some(current),
-            &self.policy,
-        );
+        let (mode, _, _, _) = choose_mode(&inputs, current, current, &self.policy);
         mode == ModeKind::Original
     }
 
@@ -230,7 +225,7 @@ impl OriginalRecovery {
         }
         let inputs = self.inputs(self.probe, buffer, *hls_delivery, remaining_ms);
         let hls = HlsActuatorCatalog::measured().candidate(Rung::P1080High);
-        let (mode, _, _, _) = choose_mode(&inputs, hls, Some(hls), &self.policy);
+        let (mode, _, _, _) = choose_mode(&inputs, hls, hls, &self.policy);
         if mode == ModeKind::Original {
             RecoveryVerdict::Recover
         } else {
@@ -475,7 +470,7 @@ impl OriginalModeController {
             original_features: self.features,
             persistent_deficit_windows: self.deficit_windows,
         };
-        let (mode, _, _, _) = choose_mode(&inputs, candidate, Some(candidate), &self.policy);
+        let (mode, _, _, _) = choose_mode(&inputs, candidate, candidate, &self.policy);
         (mode == ModeKind::Hls).then_some(OriginalExit::SustainedDeficit)
     }
 }

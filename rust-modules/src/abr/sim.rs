@@ -702,11 +702,21 @@ mod tests {
     }
 
     /// MATHEMATICAL INVARIANT: the plant's constants are still the pipeline's.
+    ///
+    /// **All FOUR of them.** `B_max = lead + queue_bytes/rate`, and this test used to pin only the
+    /// two byte caps — so either FEED LEAD could move in `player::engine` and this plant would go
+    /// on modelling a pipeline that no longer exists, silently. That is not a hypothetical failure
+    /// mode here: the operating-point table one level up was hand-transcribed, the fixture pack was
+    /// rebuilt under it, and two of its three points described a television that had stopped
+    /// existing for a month without a single test going red.
     #[test]
     fn the_plant_constants_still_match_the_pipeline() {
         let (video, audio) = crate::player::aq_caps();
         assert_eq!(video as u64, VIDEO_QUEUE_BYTES);
         assert_eq!(audio as u64, AUDIO_QUEUE_BYTES);
+        let (video_lead, audio_lead) = crate::player::feed_leads_ms();
+        assert_eq!(video_lead, VIDEO_LEAD_MS);
+        assert_eq!(audio_lead, AUDIO_LEAD_MS);
     }
 
     /// MATHEMATICAL INVARIANT: dB/dt = C/R_ts - 1, read off the plant.

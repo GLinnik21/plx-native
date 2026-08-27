@@ -227,35 +227,32 @@ pub(crate) enum ModeReason {
     /// Feasible, but the sums say no — usually a visible switch costing more than the remaining
     /// playback can earn back.
     OriginalNotWorthIt,
-    /// No HLS candidate is feasible at all, so there is nothing to compare against.
-    NoHlsCandidate,
 }
 
 /// **The selection step: argmax over the feasible states.** Deliberately only two contenders —
 /// Original, and the single best HLS candidate the budget and the server allow — because the rung
 /// question was already answered upstream by the safe budget, and re-litigating it here as a
 /// thirteen-way utility comparison would let a quality curve override a measured capacity bound.
+/// **`best_hls` is not an `Option`, and making it one cost two unreachable arms and a variant.**
+/// All five call sites pass a candidate (`original.rs:141`, `:233`, `:478`, and two in `tests.rs`);
+/// `HlsActuatorCatalog` always has a floor rung, so "no HLS candidate at all" is not a state this
+/// controller can be in. The `(_, None)` arms could never run and `ModeReason::NoHlsCandidate`
+/// could never be produced — a read-out code for a situation that does not exist, and one of the
+/// two J1 findings a television could not have caught at all.
 pub(crate) fn choose_mode(
     inputs: &ModeInputs,
     current_hls: HlsCandidate,
-    best_hls: Option<HlsCandidate>,
+    best_hls: HlsCandidate,
     policy: &AbrPolicy,
 ) -> (ModeKind, ModeReason, ModeUtility, Option<ModeUtility>) {
     let original = original_utility(inputs, policy);
-    let hls = best_hls.map(|candidate| hls_utility(candidate, current_hls, inputs, policy));
-    match (original, hls) {
-        (Some(orig), Some(h)) if orig.total > h.total => {
-            (ModeKind::Original, ModeReason::OriginalWorthIt, orig, Some(h))
+    let hls = hls_utility(best_hls, current_hls, inputs, policy);
+    match original {
+        Some(orig) if orig.total > hls.total => {
+            (ModeKind::Original, ModeReason::OriginalWorthIt, orig, Some(hls))
         }
-        (Some(orig), Some(h)) => (ModeKind::Hls, ModeReason::OriginalNotWorthIt, h, Some(orig)),
-        (Some(orig), None) => (ModeKind::Original, ModeReason::NoHlsCandidate, orig, None),
-        (None, Some(h)) => (ModeKind::Hls, ModeReason::OriginalInfeasible, h, None),
-        (None, None) => (
-            ModeKind::Hls,
-            ModeReason::NoHlsCandidate,
-            ModeUtility::default(),
-            None,
-        ),
+        Some(orig) => (ModeKind::Hls, ModeReason::OriginalNotWorthIt, hls, Some(orig)),
+        None => (ModeKind::Hls, ModeReason::OriginalInfeasible, hls, None),
     }
 }
 
