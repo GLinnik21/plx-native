@@ -626,6 +626,11 @@ cmd_screen() {
   flat=$(printf '%s' "$reply" | tr -d '\r\n' | tr -s ' ')
   if printf '%s' "$flat" | grep -q '"returnValue": *true'; then
     ok "panel $want ($(printf '%s' "$flat" | sed -n 's/.*"state": *"\([^"]*\)".*/\1/p'))"
+  elif printf '%s' "$flat" | grep -q '"errorCode": *"-101"'; then
+    # -101 "The current state must be 'Active'" means the panel is ALREADY off. Asking for a state
+    # the set is already in is a no-op, not a failure -- and reporting it as one makes every script
+    # that re-asserts screen-off after a relaunch look broken.
+    ok "panel already $want"
   else
     bad "screen $want refused: $flat"; return 1
   fi

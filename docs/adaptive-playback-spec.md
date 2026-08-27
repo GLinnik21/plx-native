@@ -208,6 +208,29 @@ answer than R9's proposed AR(1) correction table, since `p2h` §4 refuted a *sta
 | 29 | 3 | 10.00% | 5.76% | 278 |
 | 40 | 2 | 4.88% | 2.53% | 158 |
 
+### [MEASURED 2026-08-27] The guarantee holds on a stationary link and degrades ~2x off one
+
+The table above is settled links. The `pipe_abr_band_*` sweeps put the first 18 samples ever into
+`A/D ∈ [0.80, 1.05]` and walk the link down a ladder of legs while a pin holds the rung. **On those
+two logs the bound is anti-conservative**: 9.23% against a 4.76% nominal at (20, 1), 16.92% against
+9.52% at (20, 2), 14.89% against 10% at (29, 3).
+
+**The cause is not ambiguous — all 6 violations fall within one window of a link-rate step.** The
+window straddles a leg boundary and carries observations from a link that no longer exists, so
+exchangeability fails by construction rather than by degree.
+
+**A regime-change reset does not rescue it, and the reason is a number worth knowing.**
+`CapacityEstimate`'s existing rule fires on a **4×** move; the sweep's largest step is 3.1×, so it
+never fires and the exceedance is unchanged. A 2× threshold fires but starves the window — 65
+gradable samples fall to 14 — and still leaves 7.14%. There is no stationary regime to reset *to*.
+
+**Pooled over all 382 device acquisitions the bound still holds** — 3.14% against 4.76% at (20, 1),
+6.64% against 10% at (29, 3). So the honest statement of the guarantee carries a precondition:
+`ε = k/(n+1)` on a stationary link, ~2ε on one that is actively degrading. **Do not tighten `ε` to
+compensate.** The exceedance is not a property of `ε`; it is the window describing a link that has
+changed, and a smaller `ε` buys nothing against a non-stationary process. §4's condition (2) is the
+layer that covers it, and measurably did: `A/D` reached **1.73** with no stall.
+
 **What the guarantee does NOT cover, stated because §2's earlier draft is what happens when it is
 not.** Exchangeability covers the statistics. It does not cover the model step: `A_j ≤ T_next` holds
 only if the plant parameters really are those implied by the next observation. That assumption is
@@ -560,9 +583,15 @@ three.
 **Cadence: every segment.** There is nothing to schedule. The admission rule of §4 is a sum and a
 selection over a window of `n ≤ 32`, evaluated where the controller already runs once per segment,
 so a cadence parameter would only be a way of doing *less often* something that costs nothing. The
-window needs no reset across a commit either: §2a transfers by **bytes**, so observations taken at
-the old rung remain valid evidence about the new one — which is the property R3 identified and the
+window needs no reset across a **commit**: §2a transfers by **bytes**, so observations taken at the
+old rung remain valid evidence about the new one — which is the property R3 identified and the
 reason the τ-form was worth keeping.
+
+**[CORRECTED 2026-08-27] That is a claim about a RUNG change and it does not extend to a LINK
+change, which is what the band sweeps measured.** Across a shifting link the window describes a
+link that no longer exists and the ε guarantee runs ~2× loose (§2a). A rung commit remains
+untested — both band cases pin the rung — so the sentence above is still unrefuted in its own
+scope and was over-read the moment it was written down without one.
 
 **Reserve precondition: self-consistency after the transaction.** An upshift is admissible when the
 rung would still be admissible *having paid for the move*:

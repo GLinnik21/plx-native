@@ -105,12 +105,62 @@ it carries is not constant across fixtures; or a third limit takes over between 
 and the video one. **Do not fit a correction to this** — it is a 2.8× spread in a term that is
 otherwise a constant, so something structural is missing and a coefficient would hide it.
 
-## 4. What this run does not answer
+## 4. The unobserved band, entered — and the ε guarantee degrades in it
 
-* **Every rung here is on a comfortably fast link.** Median `A/D` runs 0.01 to 0.37, so the
-  admission rule's excess term is identically zero at every sample and the rule's *refusals* are
-  untested. `docs/adaptive-playback-spec.md` §4 (2) prices exactly that term.
-* **`A/D ∈ [0.80, 1.05]` is still unobserved**, as it was across all 366 prior samples. The
-  `pipe_abr_band_*` cases exist for it.
+The two `pipe_abr_band_*` cases hold a rung while the shaper walks the link down a derived ladder
+of legs. Both passed (`no_playing_error`, `min_pos_climb_s: 40`). **They put 18 samples into
+`A/D ∈ [0.80, 1.05]`, a region that held 0 of 366 samples across every prior measurement**, and
+both went past it into the draining regime:
+
+| case | n | `A/D` range | samples in [0.80, 1.05] |
+|---|---:|---|---:|
+| `band_4000` | 56 | 0.24 – **1.73** | 15 |
+| `band_20000` | 49 | 0.39 – **1.44** | 3 |
+
+**Nothing stalled at `A/D = 1.73`**, sustained across several segments. That is the reserve
+absorbing an unsustainable rung for the length of a hard passage, which is exactly what
+`docs/adaptive-playback-spec.md` §4 (2) prices and what no previous run could demonstrate.
+
+**And the ε guarantee does not hold here.** Grading §2a's order-statistic transfer bound on these
+two logs alone:
+
+| n | k | nominal ε | observed | tested |
+|---:|---:|---:|---:|---:|
+| 20 | 1 | 4.76% | **9.23%** | 65 |
+| 20 | 2 | 9.52% | **16.92%** | 65 |
+| 29 | 3 | 10.00% | **14.89%** | 47 |
+
+About **1.9× anti-conservative**, against a corpus of settled links where the same bound ran
+1.06–5.76% *under* nominal. **The cause is not ambiguous: all 6 violations fall within one window
+of a link-rate step.** The window straddles the shaper's leg boundary and carries observations from
+a link that no longer exists, so exchangeability fails by construction — which is the same
+precondition failure the `pairs` grade documents, seen from the inside.
+
+**A regime-change reset does not rescue it, and the reason is a number.** `CapacityEstimate`'s
+existing rule resets on a **4×** move. The sweep's largest step is 20000 → 6446, which is **3.1×**,
+so the reset never fires and the observed exceedance is unchanged at 9.23%. Dropping the threshold
+to 2× does fire, but starves the window — 65 gradable samples become 14 — and still leaves 7.14%.
+There is no stationary regime to reset *to*: the link is non-stationary by construction here, which
+is what the case was built to produce.
+
+**So the honest statement of the guarantee has a precondition, and the two-layer design is what
+survives it.** Pooled over all **382** device acquisitions the bound still holds — 3.14% against a
+4.76% nominal at (20, 1), and 6.64% against 10% at (29, 3). Restricted to an actively degrading
+link it is ~2× loose. The reserve condition is the layer that catches that, and it did: `A/D` 1.73
+with no stall. **Do not tighten ε to compensate** — the exceedance is not a property of ε, it is
+the window describing a link that has changed, and a smaller ε buys nothing against a
+non-stationary process.
+
+**This refutes a claim made in the specification's §5 two commits before this run**, that "the
+window needs no reset across a commit". That claim was about a RUNG commit and is still untested,
+since a pin holds the rung here. What is now measured is the **link** regime, and there the window
+is the problem rather than the rung.
+
+## 5. What this run does not answer
+
+* **`E_tx(up, reject)` and `E_tx_down` under collapse** — the two device cases the plan ranks 4th
+  and 5th, still unwritten. Downshifts have no deadline at all today.
+* **Whether a rung COMMIT invalidates the transfer window**, as §4 above distinguishes from a link
+  change. Both band cases pin the rung, so nothing here commits.
 * **The residual anomaly of §3**, above.
 * **One server, one client profile, one television**, as always.
