@@ -511,14 +511,55 @@ The trigger set has **three** members and the third was missing:
 | draining | `draining()` — the magnitude test, not a sign test | down |
 | **periodic review** | **the steady state: a healthy rung, on a cadence** | **up** |
 
-The third is what makes climbing reachable at all, and this document does **not** specify it — not
-its cadence, not its reserve precondition, not its interaction with the anti-flap cost. The plan's
-N7 does keep a `safe_budget`-driven upshift proposal with a reserve gate and `&& !draining`, and
-this document's precedence rule says the plan governs where this is silent, so **Phase 4 built
-from the plan will still climb**. But §5 claims to be the exhaustive statement of "when to
-reconsider at all" and is not, and an implementer reading it as exhaustive would ship a controller
-that boots at the bootstrap rung and stays there on any comfortably fast link — with no distress
-trace for a test to catch, because nothing distressing happens.
+### [RESOLVED] The periodic review has no cadence parameter, and its precondition is derived
+
+The third trigger was unspecified — not its cadence, not its reserve precondition, not its
+interaction with the anti-flap cost. §2a and §4 between them remove the need to choose any of the
+three.
+
+**Cadence: every segment.** There is nothing to schedule. The admission rule of §4 is a sum and a
+selection over a window of `n ≤ 32`, evaluated where the controller already runs once per segment,
+so a cadence parameter would only be a way of doing *less often* something that costs nothing. The
+window needs no reset across a commit either: §2a transfers by **bytes**, so observations taken at
+the old rung remain valid evidence about the new one — which is the property R3 identified and the
+reason the τ-form was worth keeping.
+
+**Reserve precondition: self-consistency after the transaction.** An upshift is admissible when the
+rung would still be admissible *having paid for the move*:
+
+```
+admit_up(j)  ⟺  admit(j) evaluated with B replaced by ( B − E_tx_up )
+```
+
+No cooldown, no `stable_samples` counter, no hysteresis constant. A marginal upshift that would
+leave the reserve unable to sustain the rung it just bought is refused **by the same rule that
+admitted it**, which is what a cooldown was approximating. And because §4 (2) charges the *measured*
+excess rather than a multiple of `D`, the precondition is cheap exactly when it should be: on a
+healthy link no segment exceeds `D`, so `Σ(T−D)⁺ = 0` and the term vanishes.
+
+**This is also what dissolves R2.** "The top of the ladder is unreachable for ANY guard of this
+shape" was true of guards that are `Ω(D)` **by construction** — the shipped `buffered ≥ 3·segment`,
+the plan's successor, and every variant — because `B_max ∝ 1/R` crosses a constant multiple of `D`
+at ~15.7 Mbit/s of media. §4's condition (2) is not such a guard: it is `Ω(observed excess)`, which
+is **zero** on a link that is keeping up. Measured against the top-rung corpus, the rule admits
+**35 of 35** states at rung 20000 even after subtracting the full measured upshift transaction
+(`decided` 2 933 + `feed` 1 865 = 4 798 ms), leaving 623 ms of reserve — because the summed excess
+over the window is 0 ms.
+
+**So Phase 0's plant sizing is no longer load-bearing and must not be shipped on R2's authority.**
+The sweep recommended `AQ_VIDEO_BYTES` 8 → 10 MiB plus the graded-reject feed to buy +572 ms of
+ceiling. That was bought to clear a guard this specification no longer contains. The levers may
+still be worth having for other reasons — a bigger reserve absorbs a longer hard passage, which is
+exactly what §4 (2) prices — but "the ladder top is otherwise unreachable" is no longer one of them.
+
+**What is NOT closed by any of this**, and what the `pipe_abr_band_*` cases exist to settle: every
+number above is measured on links that were comfortably fast, where `A/D ≈ 0.35` and the excess
+term is identically zero. The rule's *refusals* are therefore untested. The one state in the corpus
+that resembles a marginal link — `oscillating_link`, `A/D = 0.60` with 25 s of reserve — is admitted
+a **2.98×** byte ratio by (1) ∧ (2), which is either the reserve correctly doing its job or the
+condition being too permissive when the reserve is large and the link is unreliable. **The corpus
+cannot tell those apart**, because `A/D ∈ [0.80, 1.05]` is 0 of 366 samples. That is the band the
+sweeps enter.
 
 **Target — which rung to move to.** The highest rung that is sustainable under §4 at the current
 `Ô₀`/`τ` estimates. Chosen directly, never "one rung up": a jump from 8 to a 15 Mbit/s budget
@@ -655,8 +696,8 @@ broke was structural and I had not anticipated any of it: §5 could not climb, �
 term, §3's key input is unavailable at the decision that needs it, §7 audited one struct instead of
 the decision surface, and two of my "delete" verdicts were wrong.
 
-**Two of the six findings that blocked Phase 4 are now answered**, both by §2a, and neither by the
-route the specification expected. What remains, in the order it has to be answered:
+**Three of the six findings that blocked Phase 4 are now answered**, all three by §2a and what
+follows from it, and none by the route the specification expected. What remains:
 
 1. ~~**§2a — an estimator for `O₀` and `τ`.**~~ **Answered by dissolution.** There is nothing to
    estimate: the transfer bound is closed-form, tight, and parameter-free apart from the SLO `ε`.
@@ -666,9 +707,14 @@ route the specification expected. What remains, in the order it has to be answer
    need the `B_after` relaxation model, which is what made this look blocked. Measured: it turns
    "climbing unreachable" into a 2.6–2.8× admitted byte ratio on a healthy link against a ladder
    that steps 1.4×.
-3. **§5's periodic upshift trigger** — cadence, reserve precondition, anti-flap interaction. **Now
-   the first blocker, and §4 (2) sharpens it**: the reserve condition proves survival only for the
-   window's span, so the re-evaluation interval is load-bearing rather than a free parameter.
+3. ~~**§5's periodic upshift trigger.**~~ **Answered, with no parameter.** Cadence is *every
+   segment* — the rule is a sum over `n ≤ 32` evaluated where the controller already runs, and the
+   window survives a commit because §2a transfers by bytes. The reserve precondition is
+   self-consistency, `admit(j)` re-evaluated at `B − E_tx_up`, which is what a cooldown was
+   approximating. **This also dissolves R2**: the unreachable ladder top was a property of guards
+   that are `Ω(D)` by construction, and §4 (2) is `Ω(observed excess)`, which is zero on a link
+   that is keeping up — 35 of 35 top-rung states admit even after paying the full 4 798 ms
+   transaction. **Consequence: Phase 0's plant sizing must not ship on R2's authority.**
 4. **§3's selection-time rate** — memoise per rung, or probe `/decision` per candidate. Pick one.
    Reduced in scope by §2a's asymmetry: **downshifts need no `W_j` at all**, so this binds only on
    the upshift path.
