@@ -23,6 +23,16 @@ pub(crate) enum HlsReason {
     /// cross-referencing `current=` against the ladder floor by hand — on the one state where the
     /// controller has exhausted everything it can do and the picture is about to stop.
     LadderFloor,
+    /// **The starvation horizon fired.** `T = B*R/(R - C) <= starvation_fallback_secs`: at the
+    /// measured capacity, the reserve runs out inside the fallback window.
+    ///
+    /// It is a separate code from [`UnsafeCurrentState`](Self::UnsafeCurrentState) because the two
+    /// answer different questions and can disagree. That one is `immediate_network < requirement`
+    /// -- a rate comparison with no reserve in it, which fires on a 1% deficit against a full
+    /// buffer. This one is the deadline: how long the do-nothing path has left. A log carrying
+    /// only the first cannot tell a rung that is slightly too dear from one that is about to
+    /// stop.
+    StarvationHorizon,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -38,6 +48,10 @@ pub(crate) enum DecisionReason {
 pub(crate) struct ControllerTelemetry {
     pub(crate) current: Rung,
     pub(crate) safe_budget_kbps: u32,
+    /// The EMERGENCY horizon — `T = B*R/(R - C)` on the MEASURED rate — as `edge=` on the steady
+    /// line. `risk.starvation_seconds` beside it is the same formula on the conservative rate and
+    /// is a planning quantity; this is the one the downshift trigger reads.
+    pub(crate) emergency_horizon_secs: Option<u32>,
     /// What the model would pick for this link RIGHT NOW, ignoring the hysteresis that keeps the
     /// current rung. `None` while nothing is sustainable (a cold start, or a link that cannot
     /// carry the bottom of the ladder). The read-out's "current / optimal" pair.
@@ -104,6 +118,18 @@ pub(crate) struct Controller {
     cooldown: u8,
     last_reason: Option<DecisionReason>,
     last_safe_budget_kbps: u32,
+    /// **The emergency deadline the last decision was taken against**, so the log carries the
+    /// quantity that DECIDED rather than a neighbouring one that did not. `None` means the
+    /// measured rate covers the current rung, which is the healthy state and not a missing
+    /// reading.
+    ///
+    /// It is a second horizon beside `risk.starvation_seconds` on purpose and they can disagree by
+    /// a factor of two: that one is computed on `conservative_kbps()` for the risk score and the
+    /// mode comparison, this one on the measured rate for the eviction decision. Publishing only
+    /// the planning horizon while deciding on the measured one is the exact shape of the trap
+    /// `[[silent-instrument-trap]]` names -- a log full of plausible numbers, none of them the one
+    /// that fired.
+    last_emergency_horizon: Option<u32>,
     /// **Dev-only actuator pin — see [`Self::pinned_to`].** `None` in every production path.
     pin: Option<Rung>,
     /// **The transferred acquisition window** (`abr/window.rs`, specification §2a/§4).
@@ -148,6 +174,7 @@ impl Controller {
             cooldown: 0,
             last_reason: None,
             last_safe_budget_kbps: 0,
+            last_emergency_horizon: None,
             pin: None,
             acquisitions: AcquisitionWindow::default(),
             last_window: AdmissionReadout::default(),
@@ -221,6 +248,7 @@ impl Controller {
         ControllerTelemetry {
             current: self.current,
             safe_budget_kbps: self.last_safe_budget_kbps,
+            emergency_horizon_secs: self.last_emergency_horizon,
             // The SAME selection [`Self::observe`]'s upshift arm makes, including the named
             // admission headroom — so the read-out cannot advertise an operating point the
             // controller would not actually choose. It is the answer to "what is this link worth",
@@ -393,12 +421,55 @@ impl Controller {
         let production_bad =
             current_risk.production_risk && self.buffer.draining_samples >= 8;
         let buffer_bad = buffered < segment || self.buffer.starving();
+        // **The deadline, and the one trigger cold start may not suppress.** `T = B*R/(R - C)`:
+        // at the rate this link is delivering, the reserve empties in `T` seconds. N4's opening
+        // complaint is that a horizon was computed and discarded unread; this is the reader.
+        //
+        // **`C` is the MEASURED rate here, not `conservative_kbps()`, and the difference is the
+        // whole correctness of the exemption below.** Conservatism belongs to ADMISSION -- a rung
+        // you have not tried might be dearer than you think, so plan against a lower bound. It
+        // does not belong to EVICTION, where the claim is that the link in front of you cannot
+        // carry what is already playing, and the evidence for that has to be observed rather than
+        // discounted into existence. `conservative_kbps()` subtracts `uncertainty_pm` capped at
+        // 500, and `uncertainty_pm` is exactly 500 on the first sample of every rung
+        // (`CapacityEstimate::reset_confidence` after each commit) -- a 50% haircut. Compute this
+        // horizon on that and a link delivering PRECISELY what the rung asks reads as a 2x deficit
+        // and fires an emergency on the healthiest possible playback.
+        //
+        // **Why it is then exempt from the cold-start gate, structurally rather than by
+        // preference.** `starvation_horizon` returns `None` whenever `C >= R`, so on a link that
+        // covers the rung it cannot fire at all, however small the reserve is. The cold-start
+        // artefact is a LEVEL -- the transaction just spent the reserve, so `B` is about one
+        // segment -- and `B` appears only in the numerator, multiplied by the drain fraction. A
+        // small `B` with no measured deficit is an INFINITE horizon. `buffered < segment` has no
+        // such protection, which is precisely why the gate below is right for that disjunct and
+        // wrong for this one.
+        //
+        // What the exemption costs, priced rather than asserted: at the cold-start floor of one
+        // 2 s segment the predicate fires at a measured deficit of 10% or more, because
+        // `2 s / 0.1 = 20 s`. A downshift transaction is ~0.7 s of that. At a full `B_max` it is
+        // far slacker -- 8.7 s of reserve at P1080High needs a 44% deficit, and I5's stated
+        // differential (5% at a full P1080High reserve) is 173 s of horizon, nowhere near.
+        let emergency_horizon =
+            starvation_horizon(buffered, current_candidate.expected_wire_kbps, immediate_network);
+        self.last_emergency_horizon = emergency_horizon.seconds;
+        let horizon_bad = emergency_horizon
+            .seconds
+            .is_some_and(|secs| secs <= self.policy.starvation_fallback_secs);
         // The first sample on a rung is the encoder's cold start and the reserve contains only the
         // segment that just arrived. It refines the estimators, but cannot establish a failing
         // steady state: on the measured baseline every playback otherwise downshifted here even on
         // a fast link, solely because `B <= D`. The second sample is live policy again, so a real
         // collapse waits one segment rather than being hidden.
-        if !cold_start && (buffer_bad || network_bad || production_bad) {
+        //
+        // **"Waits one segment" is not a bounded wait, and that is what this gate cost.** A
+        // segment is `bytes / C` of wall time, and `C` is precisely the quantity that has
+        // collapsed. `pipe_abr_down_collapse` (2026-08-27) fired the gate on the first sample of
+        // rung 14000 with `net=498kbps`, `buf=2210ms` and the controller's own `starve=2` on the
+        // same line; the next sample was 58.3 seconds later, and the picture was frozen for 47 of
+        // them. So the gate applies to the disjuncts whose evidence the cold start corrupts, and
+        // the deadline runs whether or not this is the first sample.
+        if horizon_bad || (!cold_start && (buffer_bad || network_bad || production_bad)) {
             self.stable_samples = 0;
             // A measured link collapse must not walk the ladder one oversized encoder at a time.
             // Select the best actuator that fits the new safe budget, still bounded below current.
@@ -414,7 +485,9 @@ impl Controller {
             if target != self.current {
                 let proposal = Proposal { rung: target, direction: Direction::Down };
                 self.pending = Some(proposal);
-                self.last_reason = Some(DecisionReason::Hls(if network_bad {
+                self.last_reason = Some(DecisionReason::Hls(if horizon_bad {
+                    HlsReason::StarvationHorizon
+                } else if network_bad {
                     HlsReason::UnsafeCurrentState
                 } else if production_bad {
                     HlsReason::ProductionConstraint

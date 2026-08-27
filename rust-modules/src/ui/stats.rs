@@ -692,6 +692,10 @@ fn abr_why_text(why: u8) -> Option<&'static str> {
         // the controller has nothing left to try, and a reader watching the picture stop is owed
         // that rather than a fifth thing that sounds like a knob.
         crate::player::ABR_WHY_LADDER_FLOOR => Some("lowest quality"),
+        // The one code that names a DEADLINE rather than a constraint. "link too slow" is already
+        // taken by the rate comparison, and a reader who sees both wants to know which of them is
+        // about to stop the picture.
+        crate::player::ABR_WHY_STARVATION => Some("buffer running out"),
         _ => None,
     }
 }

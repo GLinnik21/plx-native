@@ -992,6 +992,15 @@ mod tests {
         // 18000 and 22000. So the one instrument that can compare policies without a television
         // CANNOT GRADE A FAST LINK, and that is a device job rather than a modelling one.
         //
+        // **The gap has a cost that is now known rather than suspected.** `pipe_abr_down_collapse`
+        // on the television (2026-08-27) failed by committing to rung 14000 and meeting a 500 kbps
+        // link on the very next fetch — the top-of-ladder collapse. Replaying that shape here is
+        // refused at the FIRST step of the descent, because an emergency out of the top targets
+        // `current.below()` = 18000 and no pin ever visited it. So the closed loop could not have
+        // caught that defect and cannot regression-guard the fix; the unit differential in
+        // `abr/tests.rs` and the device case are what grade it. Censusing 18000 is what would
+        // change that, and it is one pin.
+        //
         // Asserted as an exact set on purpose. If it shrinks, somebody censused a rung and this
         // list should shrink with it; if it grows, a profile now reaches a gap nobody accounted
         // for. Either way the reader is told, which a bare skip count does not do.

@@ -80,11 +80,34 @@ which is the same sentence for both and the reason Auto abandoned Original on tw
 file contains scenes above it. `source_requirement_kbps` adds `AbrPolicy::vbr_allowance_pm` (1.35),
 so a link that merely matches the average is already at risk before the first busy scene.
 
+**The same formula is evaluated TWICE, on two different rates, and the split is admission versus
+eviction.** `CandidateRisk::starvation_seconds` — `starve=` on the log — scores every candidate on
+`conservative_kbps()`, because admitting a rung you are not yet playing is a bet and a bet is made
+against a lower bound. The HLS downshift trigger evaluates it on the MEASURED rate instead —
+`edge=` on the log — because evicting the rung already playing is a claim about the link in front
+of you, and that claim has to be observed rather than discounted into existence.
+
+They differ by up to a factor of two, and the difference is not incidental: `uncertainty_pm` sits
+at its 500 cap on the first sample of every rung (`reset_confidence` runs at each commit), so the
+conservative rate there is exactly half the measured one. Score the eviction on it and a link
+delivering *precisely* what the rung asks reads as a 2x deficit — an emergency on the healthiest
+possible playback.
+
+**The eviction horizon runs at cold start, and it is the only trigger that does.** `starvation_
+horizon` returns `None` whenever `C >= R`, so on a link that covers the rung it cannot fire however
+small the reserve is; the reserve appears only in the numerator. The cold-start artefact — the
+transaction just spent the reserve, so `B` is about one segment — therefore cannot manufacture a
+deficit here, which is exactly the protection the bare `buffered < segment` test does not have and
+the reason that one stays gated. What the exemption costs, priced rather than asserted: at a
+one-segment reserve the deadline is reached at a measured deficit of 10%, and at a full `B_max` at
+the top rung it takes 44%.
+
 ## 3. Estimation, with uncertainty as a first-class output
 
 `CapacityEstimate` keeps a fast and a slow rate, a dispersion in per-mille, and a sample count.
-What every decision consumes is `conservative_kbps()` — the slow estimate discounted by its own
-uncertainty — never the mean. Two histories averaging the same number are not the same evidence:
+What every ADMISSION consumes is `conservative_kbps()` — the slow estimate discounted by its own
+uncertainty — never the mean. (The emergency downshift is the one reader of the measured rate; §2
+says why.) Two histories averaging the same number are not the same evidence:
 
 ```text
 59, 60, 61, 60, 60   ->  tight dispersion, small discount
@@ -318,7 +341,8 @@ per-mille only, so a line can be pasted into an issue thread.
 
 ```text
 abr: steady current=8000kbps safe=17600kbps pending=0kbps fast=22000kbps slow=22000kbps unc=200pm
-     n=6 buf=12000ms slope=0ms/s prod=200pm/419pm risk=0 starve=none left=3512s reason=Some(...)
+     n=6 buf=12000ms slope=0ms/s prod=200pm/419pm risk=0 starve=none edge=none left=3512s
+     reason=Some(...)
 auto: Original -> HLS ImminentStarvation measured=3998kbps safe=3198kbps need=10800kbps buf=2900ms
      slope=-1200ms/s starve=4 windows=1 target=2000kbps
 abr: Original probe #2 measured=60321kbps 2048KiB/400ms complete=1 current_safe=1 left=2100s
@@ -327,7 +351,9 @@ abr: Original probe #2 measured=60321kbps 2048KiB/400ms complete=1 current_safe=
 
 Every field in the steady line was an INPUT to the decision published beside it, and the struct is
 assembled by the controller rather than re-read at the log site, so the numbers logged are the
-numbers used. `ui/stats.rs` carries the same state as the on-screen read-out for a photograph.
+numbers used. **`starve=` and `edge=` are the same formula on two different rates and are both
+here for that reason** — §2 — because the downshift reads `edge=`, and a log carrying only the
+planning horizon would show a number that decided nothing next to a decision it did not explain. `ui/stats.rs` carries the same state as the on-screen read-out for a photograph.
 
 ## 12. Where the tests are, and what they cannot see
 

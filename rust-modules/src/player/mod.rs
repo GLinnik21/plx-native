@@ -107,6 +107,11 @@ pub(crate) const ABR_WHY_BUFFER: u8 = 4;
 /// three constraint codes above because it names the ABSENCE of an action rather than the
 /// constraint that chose one: nothing the controller can do will improve this playback.
 pub(crate) const ABR_WHY_LADDER_FLOOR: u8 = 5;
+/// The starvation horizon fired: at the measured capacity the reserve empties inside the fallback
+/// window. Distinct from [`ABR_WHY_UNSAFE_STATE`] because that one is a rate comparison with no
+/// reserve in it — it is true of a rung that is 1% too dear against a full buffer — while this one
+/// is a DEADLINE and is the code a reader sees on the way to a stall.
+pub(crate) const ABR_WHY_STARVATION: u8 = 6;
 // Kodi in-place seek (flush + reopen + re-anchor the decode position + sendSegmentEvent, NO
 // reload/decoder re-init → no HDR-mode popup, no A/V-resync glitch). On webOS<11 (this 4.5)
 // setTimeToDecode returns 0, so feed_stream falls back to the content-info path

@@ -2932,7 +2932,7 @@ fn publish_hls_abr_model(t: &crate::abr::ControllerTelemetry) {
 fn log_hls_abr_steady(t: &crate::abr::ControllerTelemetry, remaining_ms: i64) {
     crate::player::log(&format!(
         "abr: steady current={}kbps safe={}kbps pending={}kbps fast={}kbps slow={}kbps unc={}pm n={} \
-         buf={}ms slope={}ms/s prod={}pm/{}pm risk={} starve={} left={}s \
+         buf={}ms slope={}ms/s prod={}pm/{}pm risk={} starve={} edge={} left={}s \
          stable={} cool={} onrung={} draining={} reason={:?}",
         t.current.kbps(),
         t.safe_budget_kbps,
@@ -2948,6 +2948,14 @@ fn log_hls_abr_steady(t: &crate::abr::ControllerTelemetry, remaining_ms: i64) {
         t.risk.score,
         t.risk
             .starvation_seconds
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        // `edge=` beside `starve=`: the same formula on the MEASURED rate rather than the
+        // conservative one, and the one the emergency downshift actually reads. They differ by up
+        // to 2x on the first sample of every rung, where `uncertainty_pm` is at its 500 cap, so a
+        // reader grading a downshift against `starve=` alone is grading a number that decided
+        // nothing.
+        t.emergency_horizon_secs
             .map(|s| s.to_string())
             .unwrap_or_else(|| "none".to_string()),
         remaining_ms / 1_000,
@@ -3057,6 +3065,7 @@ fn abr_why_code(reason: Option<crate::abr::DecisionReason>) -> u8 {
         Some(Hls(R::ProductionConstraint)) => crate::player::ABR_WHY_PRODUCTION,
         Some(Hls(R::BufferConstraint)) => crate::player::ABR_WHY_BUFFER,
         Some(Hls(R::LadderFloor)) => crate::player::ABR_WHY_LADDER_FLOOR,
+        Some(Hls(R::StarvationHorizon)) => crate::player::ABR_WHY_STARVATION,
     }
 }
 

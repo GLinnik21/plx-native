@@ -1910,3 +1910,139 @@ fn candidate_and_current_observations_share_one_window() {
     assert_eq!(after_current, 1);
     assert_eq!(controller.window_len(), 2);
 }
+
+// ---------------------------------------------------------------------------------------------
+// The emergency deadline, and the two ways it was unreachable
+// ---------------------------------------------------------------------------------------------
+
+/// **The measured defect, as a unit test.** `pipe_abr_down_collapse`, 2026-08-27: the controller
+/// committed to rung 14000 and the link collapsed to 498 kbps during the very next fetch. The
+/// first sample of that rung reported `net=498kbps buf=2210ms` and the controller's own
+/// `starve=2` — and decided `stay`, because I3's cold-start gate covered every trigger. The next
+/// sample arrived **58.3 seconds** later (`total_ms=58301`), and the picture was frozen for 47 of
+/// them.
+///
+/// The reasoning I3 shipped with was that "a real collapse waits one segment rather than being
+/// hidden". A segment is `bytes / C` of wall time and `C` is the quantity that collapsed, so that
+/// wait is unbounded exactly when it is being relied on.
+///
+/// Differential: against the gate as shipped this is `Decision::Stay`.
+#[test]
+fn a_collapse_on_the_first_sample_of_a_rung_is_not_hidden_by_the_cold_start_gate() {
+    let mut controller = controller_at(Rung::P1080M14);
+    let decision = controller.observe(sample(498, 29_150, 2_210));
+    assert!(
+        matches!(decision, Decision::Prime(p) if p.direction == Direction::Down),
+        "a 28x measured rate deficit with 2.2 s of reserve is an emergency on the sample that \
+         observes it, not one segment later; got {decision:?}",
+    );
+    assert_eq!(
+        controller.telemetry().reason,
+        Some(DecisionReason::Hls(HlsReason::StarvationHorizon)),
+        "the deadline is what fired, and the log has to say so",
+    );
+    assert_eq!(
+        controller.telemetry().emergency_horizon_secs,
+        Some(2),
+        "2210ms * 14000 / (14000 - 498) = 2291ms — the same 2 seconds the television published",
+    );
+}
+
+/// **Why the emergency horizon may not be computed on `conservative_kbps()`, which is the form the
+/// risk score uses one line away.**
+///
+/// `uncertainty_pm` is pinned at its 500 cap on the first sample of every rung, so the
+/// conservative rate is exactly HALF the measured one there. On a link delivering precisely what
+/// the rung asks, that reads as a 2x deficit: `T = B * R / (R - R/2) = 2B`, which at a one-segment
+/// cold-start reserve is 3.9 s and fires an emergency on the healthiest playback there is.
+///
+/// Differential in the strict sense — it passes only because the predicate reads the measured
+/// rate. Conservatism belongs to admission, where a rung you have not tried might be dearer than
+/// you think; eviction has the link in front of it and needs no discount.
+#[test]
+fn a_link_delivering_exactly_the_rungs_rate_is_not_an_emergency_at_cold_start() {
+    let mut controller = controller_at(Rung::P1080M14);
+    let decision = controller.observe(sample(14_000, 250, 1_958));
+    assert_eq!(
+        decision,
+        Decision::Stay,
+        "capacity == requirement is an INFINITE horizon; a 500pm confidence discount is not a \
+         measured deficit",
+    );
+    // The counterfactual, written out rather than described: the same reserve and the same
+    // segment, scored on the rate the RISK term uses. `uncertainty_pm` is at its 500 cap here, so
+    // that is half the measured rate — a 2x deficit that was never observed, and a horizon inside
+    // the window. This is the assertion the test exists for; without it, "measured rather than
+    // conservative" is satisfiable by any predicate that happens not to fire.
+    let measured = controller.telemetry().delivery.fast_kbps;
+    let conservative = controller.telemetry().delivery.conservative_kbps();
+    assert_eq!(conservative, measured / 2, "the first sample of a rung is a 500pm discount");
+    let counterfactual = starvation_horizon(1_958, 14_000, conservative).seconds;
+    assert!(
+        counterfactual.is_some_and(|s| s <= AbrPolicy::measured().starvation_fallback_secs),
+        "the conservative form fires here — {counterfactual:?} — which is the defect being avoided",
+    );
+    let measured_horizon = controller.telemetry().emergency_horizon_secs;
+    assert!(
+        measured_horizon.map_or(true, |s| s > AbrPolicy::measured().starvation_fallback_secs * 100),
+        "on the measured rate the horizon is unreachable rather than imminent; got \
+         {measured_horizon:?}",
+    );
+}
+
+/// The exemption priced from the other end, so the cost of ungating is a tested number rather than
+/// a claim in a comment. At the cold-start floor of one 2 s segment the deadline reaches
+/// `starvation_fallback_secs = 20` at a measured deficit of 10% (`2 / 0.1 = 20`), and not before.
+#[test]
+fn the_cold_start_floor_fires_at_a_tenth_of_the_rate_and_not_at_a_twentieth() {
+    let window = AbrPolicy::measured().starvation_fallback_secs;
+
+    // 10% short of the rung's 14 000 kbps, one segment of reserve: T = 2000 * 14000 / 1400 = 20 s,
+    // the window exactly. (`sample` quantizes the rate through a byte count, so the horizon lands
+    // a second under; the claim is the bracket, not the digit.)
+    let mut fires = controller_at(Rung::P1080M14);
+    assert!(
+        matches!(fires.observe(sample(12_600, 250, 2_000)), Decision::Prime(_)),
+        "a tenth short with one segment left is the 20 s deadline",
+    );
+    assert!(fires.telemetry().emergency_horizon_secs.is_some_and(|s| s <= window));
+
+    // 5% short: T = 2000 * 14000 / 700 = 40 s. Twice the window, so nothing fires — and the
+    // cold-start gate then covers the `buffered < segment` disjunct as it always did.
+    let mut holds = controller_at(Rung::P1080M14);
+    assert_eq!(holds.observe(sample(13_300, 250, 2_000)), Decision::Stay);
+    assert!(
+        holds.telemetry().emergency_horizon_secs.is_some_and(|s| s > window),
+        "twice the window is not a deadline; got {:?}",
+        holds.telemetry().emergency_horizon_secs,
+    );
+}
+
+/// **I5's stated host differential**: the emergency predicate must not fire at a full
+/// `B_max(P1080High)` reserve with a 5% deficit. 4 960 ms is the DEVICE census of that rung
+/// (`sim::Calibration::census_buf_ms(20_000)`), not a modelled ceiling, and
+/// `4960 * 20011 / 1001 = 99 s` is nowhere near the 20 s window.
+///
+/// The controller does still descend here, on `network_bad` — a bare rate comparison with no
+/// reserve in it, which N4 deletes as a trigger in a later increment. That is why this asserts the
+/// REASON: it grades the deadline, which is the surface this change moves, and it will keep
+/// grading it when the other trigger goes.
+#[test]
+fn a_five_percent_deficit_against_a_full_top_rung_reserve_is_not_a_deadline() {
+    let mut controller = controller_at(Rung::P1080High);
+    let full = super::sim::Calibration::census_buf_ms(20_000).expect("censused");
+    // 5% short of the top rung's 20 011 kbps expected wire rate.
+    for _ in 0..2 {
+        controller.observe(sample(19_010, 250, full));
+    }
+    assert_eq!(
+        controller.telemetry().emergency_horizon_secs,
+        Some(99),
+        "99 seconds of reserve is not an emergency, and the predicate has to say the number",
+    );
+    assert_ne!(
+        controller.telemetry().reason,
+        Some(DecisionReason::Hls(HlsReason::StarvationHorizon)),
+        "the deadline must not be what moved this rung",
+    );
+}
