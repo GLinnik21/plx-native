@@ -95,16 +95,35 @@ pub(crate) struct ModeInputs {
     /// Feasibility, decided elsewhere and passed in as a fact: codec support, subtitle burn-in,
     /// relay, and whether PMS offered a playable source URL at all.
     pub(crate) original_feasible: bool,
-    /// The source carries something a transcode would destroy — Dolby Vision, Atmos, lossless
-    /// audio. Makes the Original bonus about THIS file.
-    pub(crate) original_features: bool,
+    /// The source carries Dolby Vision — a visible panel-mode change a transcode destroys.
+    /// **Split from one `original_features` boolean** (N16), which was
+    /// `dovi.profile > 0 || immersive` and priced an Atmos-only film identically to a DV one.
+    pub(crate) source_dv: bool,
+    /// The source carries Atmos or lossless audio. See [`Self::source_dv`].
+    pub(crate) source_atmos: bool,
     /// **How long the deficit has persisted, in measurement windows.** A dip is noise and a regime
     /// change is not, and only elapsed time tells them apart: without this term the utility
     /// comparison sees a 40-second starvation horizon identically whether the link wobbled once or
     /// has been short for ten seconds straight. It raises Original's risk, so a deficit that will
     /// not go away eventually loses the argument on its own — before starvation is imminent, and
     /// without a hard counter deciding anything.
-    pub(crate) persistent_deficit_windows: u8,
+    pub(crate) unsafe_deficit_ms: i64,
+}
+
+/// **What this source carries that a transcode would destroy** — one value where there was one
+/// boolean (N16).
+///
+/// `route::auto_original_features` returned `dovi.profile > 0 || immersive`, so the two collapsed
+/// into a single flat bonus and an Atmos-only film bought two visible reloads for a benefit
+/// inaudible on television speakers, priced identically to a Dolby Vision panel-mode change. They
+/// are ORDERED, not equal; see `AbrPolicy::dv_bonus`.
+///
+/// Both are recorded off the Original CANDIDATE rather than inferred from the stream now playing,
+/// which mid-HLS is a re-encode of them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct SourceFeatures {
+    pub(crate) dv: bool,
+    pub(crate) atmos: bool,
 }
 
 /// Benefit accrues over the remaining playback; cost is paid once, now. Below the policy horizon
@@ -192,10 +211,20 @@ pub(crate) fn original_utility(inputs: &ModeInputs, policy: &AbrPolicy) -> Optio
     if inputs.source_delivery.samples == 0 {
         score += 20; // no measurement of THIS request is not the same as a good one
     }
-    // Persistence, priced. Four points per window, so about nine seconds of continuous shortfall
-    // costs Original the argument even while starvation is still a minute away — and a single
-    // wobble, which resets the counter, costs nothing.
-    score += u32::from(inputs.persistent_deficit_windows.min(15)).saturating_mul(4);
+    // **Persistence, priced on the wall clock the policy is now stated in** (N13). It was
+    // `min(windows, 15) * 4`, and a "window" was 750 ms of ACTIVE BODY-READ time — a clock that
+    // stops under backpressure, i.e. exactly when the buffer is healthy.
+    //
+    // **Both endpoints are the old rule's own values**, the same technique N5 used for the network
+    // term: at the threshold that ends the deficit it charges 24, which is what six windows charged
+    // at the six-window threshold, and it saturates at 60, which is what the old `.min(15)` cap
+    // charged — 15/6 of the threshold, so the cap is 2.5x expressed as a multiple rather than as a
+    // second count. No number is introduced; what changes is that it is continuous in elapsed time
+    // instead of stepped in windows, so a deficit lasting 1.5 thresholds is priced between them
+    // rather than at whichever step it lands on.
+    let threshold = policy.sustained_unsafe_deficit_ms.max(1);
+    let held_pm = (inputs.unsafe_deficit_ms.max(0).saturating_mul(1_000) / threshold).min(2_500);
+    score += u32::try_from(60 * held_pm / 2_500).unwrap_or(60);
     // **Original's quality is scored from the SOURCE, not from a synthetic HLS reference** (N14
     // site 3). It was `original_quality_bonus + hls_quality_score(candidate(P1080High))` — a
     // constant 116 whatever it was being compared against, so the structural advantage the policy
@@ -205,8 +234,14 @@ pub(crate) fn original_utility(inputs: &ModeInputs, policy: &AbrPolicy) -> Optio
         policy.original_quality_bonus + i64::from(source_quality_score(inputs, policy)),
         scale,
     );
+    // **Three terms, ordered, where there was one flat bonus behind one boolean** (N16).
+    // `generation_loss_bonus` is unconditional: no re-encode at all is true of every Original, and
+    // pricing it at zero for a plain file while pricing DV and Atmos together at 25 is exactly the
+    // conflation. Only the ORDER of the three is a claim; see `AbrPolicy::dv_bonus`.
     let features = scaled(
-        if inputs.original_features { policy.original_feature_bonus } else { 0 },
+        policy.generation_loss_bonus
+            + if inputs.source_dv { policy.dv_bonus } else { 0 }
+            + if inputs.source_atmos { policy.atmos_bonus } else { 0 },
         scale,
     );
     let transition = transition_cost(inputs.current, ModeKind::Original, inputs.history, policy);

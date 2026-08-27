@@ -407,7 +407,7 @@ pub(crate) struct HlsAbrControl {
     pub(crate) history: crate::abr::TransitionHistory,
     /// The source carries something no transcode can give back (Dolby Vision, Atmos). Makes
     /// Original's utility bonus about this file rather than about Original in general.
-    pub(crate) original_features: bool,
+    pub(crate) original_features: crate::abr::SourceFeatures,
 }
 
 /// Everything needed to restore Auto's zero-video-encode state after HLS. `probe_url` is always
@@ -604,11 +604,15 @@ fn auto_prior() -> Option<crate::abr::CapacityEstimate> {
 /// Does this playback's source carry something a transcode cannot give back? Dolby Vision and
 /// Atmos are the two that matter here, and both are recorded on the Original candidate rather than
 /// inferred from the stream now playing (which, mid-HLS, is a re-encode of them).
-fn auto_original_features() -> bool {
+fn auto_original_features() -> crate::abr::SourceFeatures {
     session()
         .auto_original
         .as_ref()
-        .is_some_and(|candidate| candidate.dovi.profile > 0 || candidate.immersive)
+        .map(|candidate| crate::abr::SourceFeatures {
+            dv: candidate.dovi.profile > 0,
+            atmos: candidate.immersive,
+        })
+        .unwrap_or_default()
 }
 
 /// Main-thread capture immediately before spawning the HLS demux worker.
@@ -658,7 +662,7 @@ pub(crate) struct AutoOriginalWatch {
     pub(crate) source_kbps: u32,
     pub(crate) catalog: crate::abr::HlsActuatorCatalog,
     pub(crate) history: crate::abr::TransitionHistory,
-    pub(crate) features: bool,
+    pub(crate) features: crate::abr::SourceFeatures,
 }
 
 pub(crate) fn auto_original_watch() -> Option<AutoOriginalWatch> {

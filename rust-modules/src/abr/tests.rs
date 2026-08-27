@@ -100,7 +100,7 @@ fn original(source_kbps: u32) -> OriginalModeController {
         AbrPolicy::measured(),
         hd_catalog(),
         TransitionHistory::default(),
-        false,
+        SourceFeatures::default(),
     )
     .unwrap()
 }
@@ -368,10 +368,10 @@ fn an_unknown_reserve_advances_no_estimate_and_no_counter() {
 fn original_windows_shorter_than_the_measurement_window_are_not_evidence() {
     let mut mode = original(28_000);
     assert!(mode
-        .observe(window_bytes(4_000), ORIGINAL_WINDOW_US - 1, Some(3_000), HOUR_MS)
+        .observe_saturated(window_bytes(4_000), ORIGINAL_WINDOW_US - 1, Some(3_000), HOUR_MS)
         .is_none());
     let first = mode
-        .observe(window_bytes(4_000), ORIGINAL_WINDOW_US, Some(3_000), HOUR_MS)
+        .observe_saturated(window_bytes(4_000), ORIGINAL_WINDOW_US, Some(3_000), HOUR_MS)
         .unwrap();
     assert_eq!(first.measured_kbps, 4_000);
     assert_eq!(first.requirement_kbps, 37_800, "28 Mbit/s average + VBR headroom");
@@ -385,7 +385,7 @@ fn a_deficit_with_a_deep_reserve_is_arithmetic_not_an_emergency() {
     let mut mode = original(28_000);
     for window in 1..=4 {
         let observation = mode
-            .observe(
+            .observe_saturated(
                 window_bytes(4_000) * window,
                 ORIGINAL_WINDOW_US * window,
                 Some(60_000),
@@ -416,11 +416,11 @@ fn a_deficit_with_a_deep_reserve_is_arithmetic_not_an_emergency() {
 fn a_collapse_leaves_original_for_the_best_sustainable_state() {
     let mut mode = original(28_000);
     let cold = mode
-        .observe(window_bytes(4_000), ORIGINAL_WINDOW_US, Some(8_000), HOUR_MS)
+        .observe_saturated(window_bytes(4_000), ORIGINAL_WINDOW_US, Some(8_000), HOUR_MS)
         .unwrap();
     assert_eq!(cold.fallback, None, "the first window refines the estimators and decides nothing");
     let observation = mode
-        .observe(window_bytes(4_000) * 2, ORIGINAL_WINDOW_US * 2, Some(5_000), HOUR_MS)
+        .observe_saturated(window_bytes(4_000) * 2, ORIGINAL_WINDOW_US * 2, Some(5_000), HOUR_MS)
         .unwrap();
     assert_eq!(observation.fallback, Some(OriginalExit::ImminentStarvation));
     assert_eq!(observation.target, Some(Rung::P720Low), "3.2 Mbit/s of proven capacity");
@@ -438,7 +438,7 @@ fn a_collapse_leaves_original_for_the_best_sustainable_state() {
 fn the_prime_remnant_is_not_a_starving_reserve() {
     let mut mode = original(25_264);
     let first = mode
-        .observe(window_bytes(42_365), ORIGINAL_WINDOW_US, Some(85), HOUR_MS)
+        .observe_saturated(window_bytes(42_365), ORIGINAL_WINDOW_US, Some(85), HOUR_MS)
         .unwrap();
     // 42_364 rather than 42_365: `window_bytes` truncates, and so does the kbps division
     // back out of it. One kbit/s in forty-two megabits changes nothing here.
@@ -451,12 +451,12 @@ fn the_prime_remnant_is_not_a_starving_reserve() {
         first.conservative_kbps,
     );
     assert_eq!(first.fallback, None, "window 1 may not abandon 4K direct play");
-    assert_eq!(first.bad_windows, 0, "nor may it count toward the sustained-deficit tally");
+    assert_eq!(first.unsafe_deficit_ms, 0, "nor may it count toward the sustained-deficit tally");
 
     // …and the reserve then GROWS, exactly as the film's log showed (+113 ms/s). Nothing about
     // the next window is a deficit either.
     let second = mode
-        .observe(window_bytes(42_365) * 2, ORIGINAL_WINDOW_US * 2, Some(1_200), HOUR_MS)
+        .observe_saturated(window_bytes(42_365) * 2, ORIGINAL_WINDOW_US * 2, Some(1_200), HOUR_MS)
         .unwrap();
     assert_eq!(second.fallback, None, "a filling reserve on a link that covers the file");
 }
@@ -469,7 +469,7 @@ fn a_deficit_that_persists_costs_original_the_argument() {
     let mut exits = Vec::new();
     for window in 1..=14 {
         let observation = mode
-            .observe(
+            .observe_saturated(
                 window_bytes(50_000) * window,
                 ORIGINAL_WINDOW_US * window,
                 Some(30_000),
@@ -506,7 +506,7 @@ fn the_emergency_guard_fires_when_the_reserve_is_gone_anyway() {
     // requirement outright — one sample is discounted by half on principle.
     for window in 1..=2 {
         let healthy = mode
-            .observe(
+            .observe_saturated(
                 window_bytes(60_000) * window,
                 ORIGINAL_WINDOW_US * window,
                 Some(5_000),
@@ -516,7 +516,7 @@ fn the_emergency_guard_fires_when_the_reserve_is_gone_anyway() {
         assert!(healthy.fallback.is_none());
     }
     assert_eq!(
-        mode.observe(
+        mode.observe_saturated(
             window_bytes(60_000) * 3,
             ORIGINAL_WINDOW_US * 3,
             Some(5_000),
@@ -528,7 +528,7 @@ fn the_emergency_guard_fires_when_the_reserve_is_gone_anyway() {
         "60 Mbit/s carries a 28 Mbit/s file, and by now the estimate agrees",
     );
     let collapsed = mode
-        .observe(
+        .observe_saturated(
             window_bytes(60_000) * 4,
             ORIGINAL_WINDOW_US * 4,
             Some(1_500),
@@ -545,7 +545,7 @@ fn the_emergency_guard_fires_when_the_reserve_is_gone_anyway() {
 fn a_reserve_that_covers_the_rest_of_the_film_never_falls_back() {
     let mut mode = original(28_000);
     let observation = mode
-        .observe(window_bytes(1_000), ORIGINAL_WINDOW_US, Some(20_000), 15_000)
+        .observe_saturated(window_bytes(1_000), ORIGINAL_WINDOW_US, Some(20_000), 15_000)
         .unwrap();
     assert!(observation.horizon_secs.unwrap_or(u32::MAX) < 60, "a real deficit");
     assert!(observation.fallback.is_none(), "20 s buffered, 15 s left to play");
@@ -557,7 +557,7 @@ fn a_reserve_that_covers_the_rest_of_the_film_never_falls_back() {
 fn a_seek_keeps_the_link_estimate_and_drops_the_position() {
     let mut mode = original(28_000);
     for window in 1..=3 {
-        mode.observe(
+        mode.observe_saturated(
             window_bytes(50_000) * window,
             ORIGINAL_WINDOW_US * window,
             Some(30_000),
@@ -568,11 +568,11 @@ fn a_seek_keeps_the_link_estimate_and_drops_the_position() {
     mode.on_seek(0, 0);
     assert_eq!(mode.delivery, before, "a seek is not news about the network");
     assert_eq!(mode.buffer, BufferEstimate::default());
-    assert_eq!(mode.deficit_windows, 0);
+    assert_eq!(mode.unsafe_deficit_ms, 0);
     // ...and the counters really did rewind, so the next window measures from zero rather than
     // reading a negative delta as a collapse.
     assert!(mode
-        .observe(window_bytes(50_000), ORIGINAL_WINDOW_US, Some(1_000), HOUR_MS)
+        .observe_saturated(window_bytes(50_000), ORIGINAL_WINDOW_US, Some(1_000), HOUR_MS)
         .is_some());
 }
 
@@ -581,7 +581,7 @@ fn a_seek_keeps_the_link_estimate_and_drops_the_position() {
 fn a_long_pause_turns_the_estimate_into_a_weak_prior() {
     let mut mode = original(28_000);
     for window in 1..=4 {
-        mode.observe(
+        mode.observe_saturated(
             window_bytes(50_000) * window,
             ORIGINAL_WINDOW_US * window,
             Some(30_000),
@@ -713,7 +713,7 @@ fn recovery(source_kbps: u32) -> OriginalRecovery {
     OriginalRecovery::new(
         source_kbps,
         AbrPolicy::measured(),
-        false,
+        SourceFeatures::default(),
         TransitionHistory::default(),
         hd_catalog(),
     )
@@ -764,31 +764,96 @@ fn probe(kbps: u32, completed: bool) -> CapacityObservation {
     CapacityObservation { kbps, bytes: 2_000_000, active_us: 400_000, completed }
 }
 
-/// **A mid-ladder rung with spare capacity may probe.** The old gate required the TOP rung,
-/// which measured the wrong resource: PMS producing 20 Mbit/s of H.264 says the server can
-/// encode, not that the link can carry a 28 Mbit/s remux.
+/// **A mid-ladder rung with spare capacity may probe, once the spacing has ELAPSED.**
+///
+/// Category 8.3. Two changes are folded here and both were the same defect at different layers.
+/// The old gate required the TOP rung, which measured the wrong resource: PMS producing 20 Mbit/s
+/// of H.264 says the SERVER can encode and says nothing about whether the link can carry a
+/// 28 Mbit/s remux. And the spacing counted three HLS SEGMENTS (N13) — a segment duration is a
+/// client REQUEST the server may ignore, and the constant sat behind an `ORIGINAL_` prefix shared
+/// with a counter of 750 ms active-read windows, two unrelated clocks under one name.
+///
+/// Derived rather than counted: the assertion is that nothing probes before `probe_spacing_ms` of
+/// healthy wall clock has accumulated, and that something does at it. `ORIGINAL_PROBE_SPACING`
+/// survives `#[cfg(test)]` so the carry-over can be stated — the new duration IS the old count at
+/// the segment length this pipeline requests, which is why no expectation moves.
 #[test]
-fn original_recovery_probes_from_any_rung_with_measured_headroom() {
+fn original_recovery_probes_from_any_rung_once_the_spacing_has_elapsed() {
+    let policy = AbrPolicy::measured();
+    assert_eq!(
+        policy.probe_spacing_ms,
+        u64::from(ORIGINAL_PROBE_SPACING) * 2_000,
+        "the duration must be the retired count at the requested segment length, or this is a \
+         policy change wearing a unit conversion",
+    );
+
     let mut gate = recovery(28_000);
     let current = hd_catalog().candidate(Rung::P720);
     let spare = CapacityEstimate::from_prior(30_000);
-    for n in 1..=ORIGINAL_PROBE_SPACING {
-        assert_eq!(
-            gate.probe_due(current, &idle_server(), sample(20_000, 500, 10_000), healthy_buffer(), &spare, HOUR_MS),
-            n == ORIGINAL_PROBE_SPACING,
-            "spacing window {n}",
-        );
+    let mut now = 0u64;
+    let mut fired_at = None;
+    for _ in 0..8 {
+        now += 2_000;
+        if gate.probe_due(
+            current, &idle_server(), sample(20_000, 500, 10_000), healthy_buffer(), &spare,
+            HOUR_MS, now,
+        ) {
+            fired_at = Some(now);
+            break;
+        }
     }
+    assert_eq!(
+        fired_at,
+        Some(policy.probe_spacing_ms),
+        "a probe must be due at the spacing and not before it",
+    );
+}
+
+/// **N13: the probe spacing is WALL clock, so a slow link does not wait longer for it.**
+///
+/// Differential by construction. The old rule counted three samples, so three segments of ANY
+/// duration satisfied it; the new one counts milliseconds, so segments twice as long need half as
+/// many. A test that fed both and got the same count would be grading a counter.
+#[test]
+fn the_probe_spacing_is_a_duration_and_not_a_number_of_segments() {
+    let current = hd_catalog().candidate(Rung::P720);
+    let spare = CapacityEstimate::from_prior(30_000);
+    let samples_to_probe = |step_ms: u64| {
+        let mut gate = recovery(28_000);
+        let mut now = 0u64;
+        for n in 1..40 {
+            now += step_ms;
+            if gate.probe_due(
+                current, &idle_server(), sample(20_000, 500, 10_000), healthy_buffer(), &spare,
+                HOUR_MS, now,
+            ) {
+                return n;
+            }
+        }
+        panic!("a healthy link must eventually probe");
+    };
+    let short = samples_to_probe(1_000);
+    let long = samples_to_probe(4_000);
+    assert!(
+        long < short,
+        "the same interval took {short} short segments and {long} long ones — equal counts would \
+         mean the spacing is still a segment count",
+    );
 }
 
 /// No measurable headroom, a thin reserve, or a draining one: no probe, whatever the rung. A
-/// probe reads real bytes over the link the segments need.
+/// probe reads real bytes over the link the segments need, so the gates are about whether spending
+/// it is safe — none of them is a rung and none of them is a count.
+///
+/// The clock is held far past `probe_spacing_ms` throughout, so spacing can never be what refuses:
+/// each assertion is about its own gate.
 #[test]
 fn original_recovery_refuses_to_probe_without_room_to_do_it_safely() {
     let current = hd_catalog().candidate(Rung::P1080High);
     let spare = CapacityEstimate::from_prior(60_000);
     let no_headroom = CapacityEstimate::from_prior(20_011);
-    for _ in 0..ORIGINAL_PROBE_SPACING * 2 {
+    let elapsed = AbrPolicy::measured().probe_spacing_ms * 4;
+    for _ in 0..6 {
         assert!(
             !recovery(28_000).probe_due(
                 current,
@@ -797,6 +862,7 @@ fn original_recovery_refuses_to_probe_without_room_to_do_it_safely() {
                 healthy_buffer(),
                 &no_headroom,
                 HOUR_MS,
+                elapsed,
             ),
             "segments prove a LOWER bound; at the wire rate there is no evidence of more",
         );
@@ -808,6 +874,7 @@ fn original_recovery_refuses_to_probe_without_room_to_do_it_safely() {
                 healthy_buffer(),
                 &spare,
                 HOUR_MS,
+                elapsed,
             ),
             "one segment of reserve is not room to spend on a measurement",
         );
@@ -819,6 +886,7 @@ fn original_recovery_refuses_to_probe_without_room_to_do_it_safely() {
                 BufferEstimate { buffered_ms: 12_000, slope_ms_per_s: -400, ..Default::default() },
                 &spare,
                 HOUR_MS,
+                elapsed,
             ),
             "a draining reserve is not the moment to add a second transfer",
         );
@@ -888,6 +956,7 @@ fn recovery_does_not_pay_for_a_reload_at_the_end_of_a_film() {
                 healthy_buffer(),
                 &spare,
                 8_000,
+                AbrPolicy::measured().probe_spacing_ms * 4,
             ),
             "and it does not spend a probe finding that out",
         );
@@ -1978,7 +2047,7 @@ fn repeated_visible_switches_stop_paying_for_themselves() {
     let calm = OriginalRecovery::new(
         28_000,
         AbrPolicy::measured(),
-        false,
+        SourceFeatures::default(),
         TransitionHistory::default(),
         hd_catalog(),
     )
@@ -1986,7 +2055,7 @@ fn repeated_visible_switches_stop_paying_for_themselves() {
     let flapping = OriginalRecovery::new(
         28_000,
         AbrPolicy::measured(),
-        false,
+        SourceFeatures::default(),
         TransitionHistory { visible_switches: 5, since_last_ms: Some(2_000) },
         hd_catalog(),
     )
@@ -2044,14 +2113,14 @@ fn the_visible_switch_penalty_decays_on_the_worker_clock() {
     let flapping = TransitionHistory { visible_switches: 5, since_last_ms: Some(2_000) };
     let good = probe(90_000, true);
 
-    let mut at_once = OriginalRecovery::new(28_000, policy, false, flapping, hd_catalog()).unwrap();
+    let mut at_once = OriginalRecovery::new(28_000, policy, SourceFeatures::default(), flapping, hd_catalog()).unwrap();
     assert_eq!(
         at_once.observe_probe(good, top_candidate(), &idle_server(), healthy_buffer(), &healthy_hls(), 600_000),
         RecoveryVerdict::NotWorthIt,
         "the fifth switch two seconds ago is still expensive",
     );
 
-    let mut later = OriginalRecovery::new(28_000, policy, false, flapping, hd_catalog()).unwrap();
+    let mut later = OriginalRecovery::new(28_000, policy, SourceFeatures::default(), flapping, hd_catalog()).unwrap();
     // Six half-lives, so the penalty is under 2% of its opening value. The RATE is policy and is
     // not under test here; that the clock advances at all is.
     later.advance_to(policy.visible_switch_decay_ms.saturating_mul(6));
@@ -2072,10 +2141,10 @@ fn advancing_the_switch_clock_is_idempotent_in_the_value_not_the_call_count() {
     let good = probe(90_000, true);
     let target = policy.visible_switch_decay_ms.saturating_mul(6);
 
-    let mut once = OriginalRecovery::new(28_000, policy, false, flapping, hd_catalog()).unwrap();
+    let mut once = OriginalRecovery::new(28_000, policy, SourceFeatures::default(), flapping, hd_catalog()).unwrap();
     once.advance_to(target);
 
-    let mut many = OriginalRecovery::new(28_000, policy, false, flapping, hd_catalog()).unwrap();
+    let mut many = OriginalRecovery::new(28_000, policy, SourceFeatures::default(), flapping, hd_catalog()).unwrap();
     for _ in 0..40 {
         many.advance_to(target);
     }
@@ -2136,7 +2205,7 @@ fn vbr_headroom_makes_the_whole_file_average_a_lower_bound() {
     // which is the whole point: the file contains scenes above its own average.
     let mut mode = original(40_000);
     let observation = mode
-        .observe(window_bytes(41_000), ORIGINAL_WINDOW_US, Some(30_000), HOUR_MS)
+        .observe_saturated(window_bytes(41_000), ORIGINAL_WINDOW_US, Some(30_000), HOUR_MS)
         .unwrap();
     assert!(observation.horizon_secs.is_some(), "a bare average is not headroom");
     assert!(observation.fallback.is_none(), "but 30 s of reserve is not an emergency either");
@@ -2166,8 +2235,9 @@ fn originals_quality_is_scored_from_the_source_and_not_from_a_fabricated_rung() 
         remaining_ms: HOUR_MS,
         history: TransitionHistory::default(),
         original_feasible: true,
-        original_features: false,
-        persistent_deficit_windows: 0,
+        source_dv: false,
+        source_atmos: false,
+        unsafe_deficit_ms: 0,
     };
     let quality_of = |kbps: u32, raster: (u16, u16)| {
         original_utility(
@@ -2225,8 +2295,9 @@ fn originals_risk_shrinks_with_the_playback_it_is_a_risk_to() {
         remaining_ms: HOUR_MS,
         history: TransitionHistory::default(),
         original_feasible: true,
-        original_features: false,
-        persistent_deficit_windows: 0,
+        source_dv: false,
+        source_atmos: false,
+        unsafe_deficit_ms: 0,
     };
     let whole_film = original_utility(&base, &policy).expect("feasible");
     let last_ten_seconds =
@@ -2271,7 +2342,7 @@ fn the_recovery_comparison_can_see_a_loaded_server() {
 
     let spent = TransitionHistory { visible_switches: 3, since_last_ms: Some(0) };
     let gate = || {
-        OriginalRecovery::new(28_000, policy, false, spent, hd_catalog()).expect("feasible")
+        OriginalRecovery::new(28_000, policy, SourceFeatures::default(), spent, hd_catalog()).expect("feasible")
     };
     let (mut idle_gate, mut loaded_gate) = (gate(), gate());
     let verdicts: Vec<(RecoveryVerdict, RecoveryVerdict)> = (0..3)
@@ -2312,7 +2383,7 @@ fn the_probe_gate_weighs_the_rung_the_link_supports_and_not_the_one_it_is_on() {
     // Spent switches, so the comparison is close enough that the ALTERNATIVE decides it.
     let spent = TransitionHistory { visible_switches: 3, since_last_ms: Some(0) };
     let gate = || {
-        OriginalRecovery::new(28_000, policy, false, spent, hd_catalog()).expect("feasible")
+        OriginalRecovery::new(28_000, policy, SourceFeatures::default(), spent, hd_catalog()).expect("feasible")
     };
     let floor = hd_catalog().candidate(Rung::P480);
     // A link with room for the top rung. Sitting at the FLOOR, the honest alternative to Original
@@ -2320,10 +2391,11 @@ fn the_probe_gate_weighs_the_rung_the_link_supports_and_not_the_one_it_is_on() {
     let roomy = healthy_hls();
     let due_at_floor = gate().probe_due(
         floor, &idle_server(), sample(40_000, 200, 20_000), healthy_buffer(), &roomy, HOUR_MS,
+        AbrPolicy::measured().probe_spacing_ms * 4,
     );
     let due_at_top = gate().probe_due(
         top_candidate(), &idle_server(), sample(40_000, 200, 20_000), healthy_buffer(), &roomy,
-        HOUR_MS,
+        HOUR_MS, AbrPolicy::measured().probe_spacing_ms * 4,
     );
     assert_eq!(
         due_at_floor, due_at_top,
@@ -2384,6 +2456,138 @@ fn a_recovery_decision_publishes_the_comparison_it_was_made_on() {
     );
 }
 
+/// **N13: the Original persistence rule is WALL clock, and the two clocks really do diverge.**
+///
+/// Category 8.3. `ORIGINAL_DEFICIT_WINDOWS = 6` counted windows of [`ORIGINAL_WINDOW_US`] ACTIVE
+/// BODY-READ time. Under backpressure — the healthy full-buffer case, where the reader is parked on
+/// purpose — one such window spans unbounded WALL time, so "six windows" named no duration at all,
+/// and the module said so twice in two different units: "about four and a half seconds of real
+/// transfer" in one doc and "about nine seconds" in another, for the same counter.
+///
+/// Differential by construction, and it is the divergence itself that is asserted: two runs deliver
+/// IDENTICAL bytes over identical active-read time, so the retired counter cannot tell them apart,
+/// while their wall clocks differ by 8x. Under unmodified code both fire; under N13 only the one
+/// that really spent the time does.
+///
+/// The direction is the safe one: the wall interval is LONGER under backpressure, so the new rule
+/// is at least as patient as the old, never hastier. The observed ratio on a real link is an M2
+/// measurement nobody has taken.
+#[test]
+fn a_deficit_measured_in_active_read_time_is_not_a_duration() {
+    let policy = AbrPolicy::measured();
+    // **Unsafe but not IMMINENT**, which the fixture has to arrange deliberately: a link far under
+    // the requirement puts the horizon inside `starvation_fallback_secs` within a few windows, and
+    // then `ImminentStarvation` — a hard guard that consults no utility and no persistence — fires
+    // first and this test grades that instead. A deep, almost-flat reserve keeps the horizon in the
+    // band between the two policy horizons, which is the only region `SustainedDeficit` owns.
+    let starved = |n: u64| window_bytes(9_000) * n;
+    let fell = |n: u64| -> i64 { 45_000 - 300 * n as i64 };
+
+    // Wall == active: the saturated reader. This is the case the retired count described.
+    let mut saturated = original(60_000);
+    let mut fired_saturated = None;
+    for n in 1..=10u64 {
+        let obs = saturated.observe(
+            starved(n), ORIGINAL_WINDOW_US * n, Some(fell(n)), HOUR_MS,
+            ORIGINAL_WINDOW_US * n / 1_000,
+        );
+        if let Some(o) = obs {
+            if o.fallback == Some(OriginalExit::SustainedDeficit) {
+                fired_saturated = Some(o.unsafe_deficit_ms);
+                break;
+            }
+        }
+    }
+    let at = fired_saturated.expect("a sustained deficit on a saturated reader must be called");
+    assert!(
+        at >= policy.sustained_unsafe_deficit_ms,
+        "it fired at {at}ms, under its own threshold of {}ms",
+        policy.sustained_unsafe_deficit_ms,
+    );
+
+    // Same bytes, same active time, one EIGHTH of the wall clock — a reader that spent most of
+    // each interval parked on a full buffer would be the other way round; this is the shape that
+    // proves the counter and the duration are different quantities.
+    let mut throttled = original(60_000);
+    let mut fired_throttled = false;
+    for n in 1..=10u64 {
+        let obs = throttled.observe(
+            starved(n), ORIGINAL_WINDOW_US * n, Some(fell(n)), HOUR_MS,
+            ORIGINAL_WINDOW_US * n / 8_000,
+        );
+        fired_throttled |= obs.is_some_and(|o| o.fallback == Some(OriginalExit::SustainedDeficit));
+    }
+    assert!(
+        !fired_throttled,
+        "identical bytes over identical active-read time fired the sustained-deficit exit on one \
+         eighth of the wall clock — which is what a count of active-read windows guarantees, and \
+         what N13 removes",
+    );
+}
+
+/// **N16: three ordered feature bonuses where there was one flat boolean.**
+///
+/// Category 8.3. `route::auto_original_features` returned `dovi.profile > 0 || immersive` and it
+/// was worth a flat 25, so an Atmos-only film bought two visible reloads for a benefit inaudible on
+/// television speakers, priced identically to a Dolby Vision panel-mode change.
+///
+/// **The ORDER is asserted and the magnitudes are not**, because §6.2 says all three rows are
+/// "ordering yes, magnitude no". A test that pinned 13/8/4 would be pinning a rank weighting as if
+/// it were a measurement, and would have to be re-fitted by the first person who measures one.
+///
+/// Differential: unmodified code has a single `original_feature_bonus`, so all four states below
+/// collapse to two values.
+#[test]
+fn the_feature_bonus_is_ordered_and_its_magnitudes_are_not_the_claim() {
+    let policy = AbrPolicy::measured();
+    assert!(
+        policy.dv_bonus > policy.generation_loss_bonus
+            && policy.generation_loss_bonus > policy.atmos_bonus
+            && policy.atmos_bonus > 0,
+        "Dolby Vision is a visible panel-mode change, generation loss is true of every Original, \
+         and Atmos is inaudible on this television's speakers — that ORDER is the whole claim",
+    );
+    assert_eq!(
+        policy.dv_bonus + policy.generation_loss_bonus + policy.atmos_bonus,
+        25,
+        "the total is preserved from the flat bonus, so nothing else in the utility moves",
+    );
+
+    let base = ModeInputs {
+        current: ModeKind::Hls,
+        source_kbps: 28_000,
+        source_raster: (1_920, 1_080),
+        source_delivery: CapacityEstimate::from_prior(200_000),
+        hls_delivery: CapacityEstimate::from_prior(200_000),
+        production: ProductionEstimate::default(),
+        buffer: BufferEstimate { buffered_ms: 8_000, ..Default::default() },
+        remaining_ms: HOUR_MS,
+        history: TransitionHistory::default(),
+        original_feasible: true,
+        source_dv: false,
+        source_atmos: false,
+        unsafe_deficit_ms: 0,
+    };
+    let features = |dv: bool, atmos: bool| {
+        original_utility(&ModeInputs { source_dv: dv, source_atmos: atmos, ..base }, &policy)
+            .expect("feasible")
+            .features
+    };
+    let plain = features(false, false);
+    assert!(
+        plain > 0,
+        "no re-encode at all is a real benefit of EVERY Original, and pricing it at zero for a \
+         plain file while pricing DV and Atmos together at 25 is the conflation N16 names",
+    );
+    assert!(features(true, false) > features(false, true), "DV outranks Atmos");
+    assert!(features(false, true) > plain, "and Atmos is still worth something");
+    assert_eq!(
+        features(true, true),
+        plain + policy.dv_bonus + policy.atmos_bonus,
+        "the three terms compose by addition; nothing double-counts",
+    );
+}
+
 /// Utility is not a bitrate comparison: Original wins from BEHIND on wire rate because it has
 /// no generation loss and asks the server for no video encoding at all.
 #[test]
@@ -2401,8 +2605,9 @@ fn original_beats_the_top_rung_on_utility_at_equal_risk() {
         remaining_ms: HOUR_MS,
         history: TransitionHistory::default(),
         original_feasible: true,
-        original_features: false,
-        persistent_deficit_windows: 0,
+        source_dv: false,
+        source_atmos: false,
+        unsafe_deficit_ms: 0,
     };
     let current = hd_catalog().candidate(Rung::P1080High);
     let (mode, reason, chosen, other) =

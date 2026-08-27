@@ -641,16 +641,18 @@ fn abr_quality(d: &crate::player::Diag) -> String {
 
 fn abr_decision(d: &crate::player::Diag) -> String {
     if d.abr_mode == crate::player::ABR_MODE_ORIGINAL {
-        // The count is CONSECUTIVE MEASUREMENT WINDOWS whose starvation horizon sits inside the
-        // unsafe band — "how long has this been going on" — and the read-out says that rather than
-        // `n/2`. There is no denominator to print any more: a fallback is decided by the horizon in
-        // seconds and by utility, not by reaching a fixed number of bad windows, and a fraction
-        // implies a countdown that would be a lie in both directions (an imminent starvation acts
-        // on the FIRST window; a shortfall with a deep reserve never acts at all).
-        return match d.abr_bad_windows {
-            0 => "watching · link sustainable".to_string(),
-            1 => "shortfall · 1 window".to_string(),
-            n => format!("shortfall · {n} windows"),
+        // **How long has this been going on**, in seconds of WALL clock. It printed a count of
+        // measurement windows, and a window was 750 ms of ACTIVE BODY-READ time — a clock that
+        // stops under backpressure, i.e. exactly when the buffer is healthy — so "3 windows" named
+        // durations an order of magnitude apart and a viewer could not tell which (N13).
+        //
+        // There is still no denominator, for the reason there was not one before: a fallback is
+        // decided by the horizon and by utility, not by reaching a fixed number, and a fraction
+        // would imply a countdown that is a lie in both directions — an imminent starvation acts on
+        // the FIRST window, and a shortfall with a deep reserve never acts at all.
+        return match d.abr_unsafe_deficit_ms {
+            ms if ms <= 0 => "watching · link sustainable".to_string(),
+            ms => format!("shortfall · {}", crate::ui::fmt::secs_short(ms)),
         };
     }
     let target = abr_rate(d.abr_target_kbps);
@@ -1123,7 +1125,7 @@ mod tests {
             abr_buffer_ms: 2_820,
             abr_slope_ms_per_s: -900,
             abr_starve_secs: 3,
-            abr_bad_windows: 1,
+            abr_unsafe_deficit_ms: 1_500,
             ..Default::default()
         };
         let v = build(&original);
@@ -1133,13 +1135,28 @@ mod tests {
         // in the third of those three numbers.
         assert_eq!(val(&v, "Buffer"), "2.8 s · -0.9 s/s · starves in 3 s");
         assert_eq!(val(&v, "Server load"), "no encoder — progressive transfer");
-        // Windows, with no denominator: there is no fixed count to reach any more, so a fraction
-        // would promise a countdown that does not exist in either direction.
-        assert_eq!(val(&v, "Decision"), "shortfall · 1 window");
-        assert_eq!(
-            val(&build(&crate::player::Diag { abr_bad_windows: 4, ..original }), "Decision"),
-            "shortfall · 4 windows",
-        );
+        // **Elapsed WALL time, with no denominator.** It read a count of measurement windows, and
+        // a window was 750 ms of ACTIVE BODY-READ time — a clock that stops under backpressure,
+        // i.e. exactly when the buffer is healthy — so "1 window" named durations an order of
+        // magnitude apart and a viewer could not tell which (N13). Still no denominator, for the
+        // reason there was not one before: a fallback is decided by the horizon and by utility,
+        // and a fraction would promise a countdown that exists in neither direction.
+        assert_eq!(val(&v, "Decision"), "shortfall · 1.5 s");
+        // `Diag` is not `Copy` (it owns a `String`), and the Decision row reads exactly two of its
+        // fields, so a minimal probe states what the row depends on instead of cloning a struct of
+        // thirty.
+        let at = |ms: i64| {
+            val(
+                &build(&crate::player::Diag {
+                    abr_mode: crate::player::ABR_MODE_ORIGINAL,
+                    abr_unsafe_deficit_ms: ms,
+                    ..Default::default()
+                }),
+                "Decision",
+            )
+        };
+        assert_eq!(at(12_000), "shortfall · 12 s");
+        assert_eq!(at(0), "watching · link sustainable");
         // A horizon at all is a fault tint — that is the row a reader must reach first.
         assert_eq!(
             v.iter().find(|f| f.key == "Buffer").unwrap().tone,

@@ -384,7 +384,9 @@ pub(crate) struct Shared {
     pub dg_abr_action: AtomicU8,
     pub dg_abr_target_kbps: AtomicI64,
     /// Consecutive Original windows whose starvation horizon sat inside the unsafe band.
-    pub dg_abr_bad_windows: AtomicU8,
+    /// Wall milliseconds an unsafe Original deficit has held (N13). Was a COUNT of
+    /// 750 ms active-read windows, on a clock that stops under backpressure.
+    pub dg_abr_unsafe_deficit_ms: AtomicI64,
     /// **The controller's own model state**, published beside the measurements above so the
     /// read-out shows what the DECISION was made on rather than what a reader can infer. Every
     /// one is `-1` until the controller has produced it; `crate::abr::ControllerTelemetry` is the
@@ -441,7 +443,7 @@ impl Shared {
             dg_abr_ratio_pm: AtomicI64::new(-1),
             dg_abr_action: AtomicU8::new(0),
             dg_abr_target_kbps: AtomicI64::new(0),
-            dg_abr_bad_windows: AtomicU8::new(0),
+            dg_abr_unsafe_deficit_ms: AtomicI64::new(0),
             dg_abr_safe_kbps: AtomicI64::new(-1),
             dg_abr_optimal_kbps: AtomicI64::new(-1),
             dg_abr_unc_pm: AtomicI64::new(-1),
@@ -523,7 +525,7 @@ impl Shared {
         self.dg_abr_ratio_pm.store(-1, Ordering::Relaxed);
         self.dg_abr_action.store(0, Ordering::Relaxed);
         self.dg_abr_target_kbps.store(0, Ordering::Relaxed);
-        self.dg_abr_bad_windows.store(0, Ordering::Relaxed);
+        self.dg_abr_unsafe_deficit_ms.store(0, Ordering::Relaxed);
         self.dg_abr_safe_kbps.store(-1, Ordering::Relaxed);
         self.dg_abr_optimal_kbps.store(-1, Ordering::Relaxed);
         self.dg_abr_unc_pm.store(-1, Ordering::Relaxed);
@@ -702,7 +704,7 @@ mod tests {
         s.dg_abr_ratio_pm.store(500, Ordering::Relaxed);
         s.dg_abr_action.store(5, Ordering::Relaxed);
         s.dg_abr_target_kbps.store(4_000, Ordering::Relaxed);
-        s.dg_abr_bad_windows.store(2, Ordering::Relaxed);
+        s.dg_abr_unsafe_deficit_ms.store(1_500, Ordering::Relaxed);
         s.reset_session();
         assert!(!s.seen_frame.load(Ordering::Relaxed), "a reload/stop blanks the plane — say so");
         assert_eq!(s.frames.load(Ordering::Relaxed), 0, "and the two must be reset together");
@@ -716,6 +718,6 @@ mod tests {
         assert_eq!(s.dg_abr_ratio_pm.load(Ordering::Relaxed), -1);
         assert_eq!(s.dg_abr_action.load(Ordering::Relaxed), 0);
         assert_eq!(s.dg_abr_target_kbps.load(Ordering::Relaxed), 0);
-        assert_eq!(s.dg_abr_bad_windows.load(Ordering::Relaxed), 0);
+        assert_eq!(s.dg_abr_unsafe_deficit_ms.load(Ordering::Relaxed), 0);
     }
 }

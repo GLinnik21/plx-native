@@ -486,6 +486,57 @@ minimum spacing. Then `worth_probing` asks the utility comparison under an assum
 "twenty seconds left" and "already switched three times" stop the measurement rather than being
 discovered after paying for it.
 
+### 7b. Three clocks wore one prefix, and none of them was wall time
+
+Original's two policy counters were named `ORIGINAL_DEFICIT_WINDOWS` and `ORIGINAL_PROBE_SPACING`,
+and they counted **different things on unrelated clocks** (N13).
+
+| was | counted | is |
+|---|---|---|
+| `ORIGINAL_DEFICIT_WINDOWS = 6` | 750 ms windows of **active body-read** time | `sustained_unsafe_deficit_ms = 4 500`, wall clock |
+| `ORIGINAL_PROBE_SPACING = 3` | **HLS segments** — not an Original window at all | `probe_spacing_ms = 6 000`, wall clock |
+
+The active-read clock **stops under backpressure**, which is the healthy full-buffer case, so a
+six-window rule spanned unbounded wall time and named no duration. The module said as much in two
+places and disagreed with itself: one doc read the counter as "about four and a half seconds of real
+transfer" (right, for that clock) and another as "about nine seconds" (a wall-clock reading of the
+same number). The segment count has the same disease one layer out — a segment duration is a client
+*request* the server may ignore.
+
+**Both numbers are carried across unchanged and the conversion is deliberately not claimed to be
+1:1.** 4 500 is 6 × 750 and 6 000 is 3 × 2 000, so nothing moves at the saturated operating point.
+In the world the wall interval is *longer* under backpressure, so the new rule is **at least as
+patient** as the old and never hastier — the safe direction — and the observed ratio is an M2
+measurement this project has not taken. The 750 ms window survives as the sampling rate; the policy
+is no longer expressed in it.
+
+The persistence term in Original's risk moved with them. It was `min(windows, 15) × 4`; it is now
+continuous in elapsed time, with **both endpoints taken from the old rule** — 24 at the threshold
+that ends the deficit (what six windows charged at six) and 60 at saturation (what the `.min(15)`
+cap charged, i.e. 2.5× the threshold expressed as a multiple rather than as a second count). The
+same technique N5 used for the network term: no number enters, the steps become a ramp.
+
+The diagnostics read-out followed: `shortfall · 3 windows` became `shortfall · 4.5 s`. The old
+string named durations an order of magnitude apart and a viewer could not tell which.
+
+### 7c. What Original preserves, priced in order
+
+`route::auto_original_features` returned `dovi.profile > 0 || immersive` — one boolean worth a flat
+`original_feature_bonus = 25` — so an **Atmos-only film bought two visible reloads for a benefit
+inaudible on television speakers**, priced identically to a Dolby Vision panel-mode change (N16).
+
+It is three terms now: **Dolby Vision** (a visible panel-mode change), **generation loss**
+(unconditional — no re-encode at all is true of *every* Original, and pricing it at zero for a plain
+file was the other half of the conflation), and **Atmos** (last, deliberately). The split is rank
+weights 3:2:1 over the same preserved total of 25, and **only the order is a claim** — §6.2 records
+all three as "ordering yes, magnitude no", so the host test asserts `dv > generation_loss > atmos`
+and the total, never the values. A test pinning 13/8/4 would pin a rank weighting as if it were a
+measurement.
+
+The feature term acts only where utility acts: `SustainedDeficit`, the one exit of the three a
+comparison may veto. `ImminentStarvation` and `EmergencyLowBuffer` are hard guards and return before
+any utility is computed.
+
 ## 8. Bootstrap is a separate decision
 
 At startup every estimator is empty, there is no buffer, and the viewer is looking at a black

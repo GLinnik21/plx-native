@@ -165,9 +165,27 @@ pub(crate) struct AbrPolicy {
     /// What Original is worth over the best HLS rendition, before any risk or cost: no generation
     /// loss, source audio, Dolby Vision and Atmos preserved, and zero server video encoding.
     pub(crate) original_quality_bonus: i64,
-    /// Added when the source actually carries those features, so the bonus is about this file
-    /// rather than about Original in the abstract.
-    pub(crate) original_feature_bonus: i64,
+    /// **What Original preserves about THIS file, split three ways** (N16). It was one flat
+    /// `original_feature_bonus = 25` behind one boolean, `dovi.profile > 0 || immersive` — so an
+    /// Atmos-only film bought two visible reloads for a benefit inaudible on television speakers,
+    /// priced identically to a Dolby Vision panel-mode change.
+    ///
+    /// **The ORDER is the content; the magnitudes are not identifiable** (§6.2 says so for all
+    /// three rows: "ordering yes, magnitude no"). So the split is not three chosen numbers — it is
+    /// rank weights 3:2:1 over the same preserved total of 25, and the only claim being made is
+    /// `dv > generation_loss > atmos`. A host test asserts the ORDERING and the total, never the
+    /// values, so a future measurement can move them without re-fitting anything.
+    ///
+    /// **Dolby Vision first** because it is a visible panel-mode change the viewer can point at.
+    /// **Generation loss second**, and it is the one that applies to EVERY Original — no re-encode
+    /// at all — which is why pricing it at zero for a plain file while pricing DV and Atmos
+    /// together at 25 was the conflation N16 names. **Atmos last** because the plan says out loud
+    /// what the television's own speakers make of it.
+    pub(crate) dv_bonus: i64,
+    /// See [`Self::dv_bonus`]. Applies to every Original, feature flags or not.
+    pub(crate) generation_loss_bonus: i64,
+    /// See [`Self::dv_bonus`]. Last of the three, deliberately.
+    pub(crate) atmos_bonus: i64,
     /// Playback remaining at which a mode's benefit counts in full. Below it the benefit is scaled
     /// down linearly, which is what makes a reload with twenty seconds left lose to doing nothing
     /// without anybody writing `if remaining < 20`. Two minutes: the point of the ramp is to price
@@ -179,6 +197,23 @@ pub(crate) struct AbrPolicy {
     /// Weight on ongoing PMS transcoding work. Small, because a watchable picture beats a tidy
     /// server — but not zero, because 2.1x the work for 4% more bits is a real trade.
     pub(crate) server_cost_weight: i64,
+    /// **How long an unsafe deficit must hold before Original is abandoned on JUDGEMENT** — the
+    /// `SustainedDeficit` exit, the only one of the three a utility comparison may veto.
+    ///
+    /// Wall clock, and that is the whole of N13. It was `ORIGINAL_DEFICIT_WINDOWS = 6` counting
+    /// 750 ms windows of ACTIVE BODY-READ time, a clock that stops under backpressure — i.e.
+    /// exactly when the buffer is healthy — so the rule named no duration. The number is carried
+    /// across unchanged (6 x 750); the CONVERSION is not 1:1 in the world, it is conservative in
+    /// the safe direction (the wall interval is longer under backpressure, so the new rule is at
+    /// least as patient), and the observed ratio is an M2 measurement nobody has taken.
+    pub(crate) sustained_unsafe_deficit_ms: i64,
+    /// **Minimum spacing between source probes**, wall clock (N13). It was
+    /// `ORIGINAL_PROBE_SPACING = 3`, which is not an Original window at all — it counted HLS
+    /// SEGMENTS, on a third clock, behind an `ORIGINAL_` prefix shared with the window counter
+    /// above. 6 000 ms is those three segments at the 2 s duration this pipeline requests, carried
+    /// across so nothing moves; unlike the count, it stays a duration if the server ignores the
+    /// requested segment length.
+    pub(crate) probe_spacing_ms: u64,
 }
 
 impl AbrPolicy {
@@ -216,10 +251,15 @@ impl AbrPolicy {
             visible_switch_penalty: 15,
             visible_switch_decay_ms: 120_000,
             original_quality_bonus: 40,
-            original_feature_bonus: 25,
+            // Rank weights 3:2:1 over the preserved total of 25. Only the ORDER is a claim.
+            dv_bonus: 13,
+            generation_loss_bonus: 8,
+            atmos_bonus: 4,
             benefit_horizon_ms: 120_000,
             risk_weight: 2,
             server_cost_weight: 4,
+            sustained_unsafe_deficit_ms: 4_500,
+            probe_spacing_ms: 6_000,
         }
     }
 }

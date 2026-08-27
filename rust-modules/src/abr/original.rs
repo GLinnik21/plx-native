@@ -44,6 +44,7 @@ pub(crate) fn original_sustainable(
 /// Segments of healthy HLS between two source probes. A probe reads real media bytes over the same
 /// link the segments need, so it is not free: this is the "bounded expensive-probe frequency"
 /// policy, expressed in the only clock the demux worker has.
+#[cfg(test)]
 pub(crate) const ORIGINAL_PROBE_SPACING: u8 = 3;
 
 /// What a completed source probe settled.
@@ -76,7 +77,7 @@ pub(crate) struct OriginalRecovery {
     /// Evidence about the source request specifically. Never seeded from HLS segments; see
     /// [`CapacityEstimate::demote_to_prior`].
     probe: CapacityEstimate,
-    features: bool,
+    features: SourceFeatures,
     /// The switch history AS CAPTURED on the main thread when this worker started. It is the
     /// BASE, never mutated: [`OriginalRecovery::advance_to`] carries the worker's own clock and
     /// the two are combined at the point of use, so advancing cannot double-count however often
@@ -89,7 +90,13 @@ pub(crate) struct OriginalRecovery {
     /// two mode switches. The decay RATE is policy and is unchanged; this is only the clock that
     /// drives it, which was stopped.
     elapsed_ms: u64,
-    healthy_samples: u8,
+    /// **Wall milliseconds of uninterrupted healthy conditions**, reset by any sample that is not
+    /// (N13). It was `healthy_samples: u8` against `ORIGINAL_PROBE_SPACING = 3`, which counted HLS
+    /// SEGMENTS — a third clock, behind an `ORIGINAL_` prefix shared with a counter of 750 ms
+    /// active-read windows, and a segment duration is a client REQUEST the server may ignore.
+    healthy_ms: u64,
+    /// The wall clock at the previous sample, so the accumulation above is elapsed time.
+    last_now_ms: u64,
     probes: u8,
     /// The last comparison this gate made, whole, for the event log — see [`ModeComparison`].
     /// Written by [`Self::observe_probe`] only: `worth_probing` asks a hypothetical ("would a
@@ -108,7 +115,7 @@ impl OriginalRecovery {
     pub(crate) fn new(
         source_kbps: u32,
         policy: AbrPolicy,
-        features: bool,
+        features: SourceFeatures,
         history: TransitionHistory,
         catalog: HlsActuatorCatalog,
     ) -> Option<Self> {
@@ -119,7 +126,8 @@ impl OriginalRecovery {
             features,
             history,
             elapsed_ms: 0,
-            healthy_samples: 0,
+            healthy_ms: 0,
+            last_now_ms: 0,
             probes: 0,
             last_comparison: None,
             catalog,
@@ -227,10 +235,11 @@ impl OriginalRecovery {
             remaining_ms,
             history: self.history.advanced_by(self.elapsed_ms),
             original_feasible: true,
-            original_features: self.features,
+            source_dv: self.features.dv,
+            source_atmos: self.features.atmos,
             // Recovery asks about a source that is NOT currently being read, so there is no live
             // deficit to have persisted. The probe estimate carries all the doubt there is.
-            persistent_deficit_windows: 0,
+            unsafe_deficit_ms: 0,
         }
     }
 
@@ -246,6 +255,7 @@ impl OriginalRecovery {
         buffer: BufferEstimate,
         hls_delivery: &CapacityEstimate,
         remaining_ms: i64,
+        now_ms: u64,
     ) -> bool {
         let segment = i64::from(sample.media_duration_ms);
         // An unreadable reserve is not a deep one. A probe spends the reserve it cannot
@@ -257,18 +267,20 @@ impl OriginalRecovery {
         let refilling = !buffer.draining();
         let spare_capacity =
             hls_delivery.conservative_kbps() > current.expected_wire_kbps;
+        let elapsed = now_ms.saturating_sub(self.last_now_ms);
+        self.last_now_ms = now_ms;
         if !(deep_reserve && refilling && spare_capacity) {
-            self.healthy_samples = 0;
+            self.healthy_ms = 0;
             return false;
         }
-        self.healthy_samples = self.healthy_samples.saturating_add(1);
-        if self.healthy_samples < ORIGINAL_PROBE_SPACING {
+        self.healthy_ms = self.healthy_ms.saturating_add(elapsed);
+        if self.healthy_ms < self.policy.probe_spacing_ms {
             return false;
         }
         if !self.worth_probing(current, production, buffer, hls_delivery, remaining_ms) {
             return false;
         }
-        self.healthy_samples = 0;
+        self.healthy_ms = 0;
         true
     }
 
@@ -321,9 +333,22 @@ impl OriginalRecovery {
 /// wall clock: a reader parked on backpressure with a full buffer is the healthy case and must not
 /// be measured as a slow link.
 pub(crate) const ORIGINAL_WINDOW_US: u64 = 750_000;
-/// Windows spent with the buffer's starvation horizon inside the unsafe band before a sustained
-/// deficit is called. Six windows is about four and a half seconds of real transfer — long enough
-/// that one shaped burst is not a mode switch, short enough to act while the reserve still exists.
+/// **Retired by N13.** Kept as `#[cfg(test)]` because two tests derive their expectations from it,
+/// which is the point: the new duration must be *the same rule on the right clock*, and a test that
+/// says so has to be able to name the old one.
+///
+/// Six windows of [`ORIGINAL_WINDOW_US`] ACTIVE BODY-READ time was the rule, and its own two doc
+/// comments disagreed about the unit — "about four and a half seconds of real transfer" in one
+/// place and "about nine seconds" of wall clock in another, for the same counter. Under
+/// backpressure, the healthy full-buffer case, a 750 ms active window spans unbounded wall time, so
+/// the second reading was not merely imprecise: the rule named no duration at all.
+///
+/// `AbrPolicy::sustained_unsafe_deficit_ms` carries the same 4 500 ms onto the WALL clock. The
+/// conversion is deliberately 1:1 in the number and **is not 1:1 in the world** — under
+/// backpressure the wall interval is longer, so the new rule is at least as patient as the old one
+/// and usually more so. Which is the safe direction (it delays a visible switch, never hastens
+/// one), and the observed ratio is an M2 measurement this project has not taken.
+#[cfg(test)]
 pub(crate) const ORIGINAL_DEFICIT_WINDOWS: u8 = 6;
 
 /// Why Original was abandoned. Three distinct causes, logged by name, because the operator
@@ -333,7 +358,7 @@ pub(crate) enum OriginalExit {
     /// The reserve will not outlast the deficit: [`starvation_horizon`] is inside the policy's
     /// fallback band. Acted on WITHOUT consulting utility — a stall is worse than any switch.
     ImminentStarvation,
-    /// A deficit that has persisted for [`ORIGINAL_DEFICIT_WINDOWS`] and that the utility
+    /// A deficit that has persisted for `AbrPolicy::sustained_unsafe_deficit_ms` and that the utility
     /// comparison agrees is worth a visible switch. This is the one hysteresis applies to.
     SustainedDeficit,
     /// The **labelled emergency guard**: reserve under the emergency floor and falling, whatever
@@ -356,7 +381,9 @@ pub(crate) struct OriginalObservation {
     /// Consecutive windows inside the unsafe horizon band. Published to the diagnostics panel,
     /// where it replaced the old two-window counter and means the same thing to a reader: how long
     /// this has been going on.
-    pub(crate) bad_windows: u8,
+    /// Wall milliseconds the unsafe condition has held, uninterrupted (N13). Was `bad_windows`, a
+    /// count on a clock that stops under backpressure.
+    pub(crate) unsafe_deficit_ms: i64,
     pub(crate) fallback: Option<OriginalExit>,
     /// The HLS state a fallback should land on — the best candidate the CURRENT estimate sustains,
     /// never the bottom of the ladder. `None` when nothing is feasible, which is also the only
@@ -384,10 +411,20 @@ pub(crate) struct OriginalModeController {
     pub(super) delivery: CapacityEstimate,
     pub(super) buffer: BufferEstimate,
     history: TransitionHistory,
-    features: bool,
+    features: SourceFeatures,
     last_bytes: u64,
     last_active_us: u64,
-    pub(super) deficit_windows: u8,
+    /// **Wall milliseconds the unsafe condition has held, uninterrupted** (N13). It was
+    /// `deficit_windows: u8`, a count of 750 us-of-ACTIVE-BODY-READ windows — and under
+    /// backpressure, which is the healthy full-buffer case, one such window spans unbounded wall
+    /// clock. So "six windows" named no duration at all, and the module said so twice in two
+    /// different units: one doc read it as "four and a half seconds of real transfer" (right for
+    /// the active clock) and another as "about nine seconds" (a wall-clock reading of the same
+    /// counter). The 750 us window survives as the SAMPLING rate; the policy is now a duration.
+    pub(super) unsafe_deficit_ms: i64,
+    /// The wall clock at the previous window, so the accumulation above is a real elapsed
+    /// difference rather than a count of windows wearing a millisecond suffix.
+    last_now_ms: u64,
 }
 
 impl OriginalModeController {
@@ -396,7 +433,7 @@ impl OriginalModeController {
         policy: AbrPolicy,
         catalog: HlsActuatorCatalog,
         history: TransitionHistory,
-        features: bool,
+        features: SourceFeatures,
     ) -> Option<Self> {
         (source_kbps > 0).then_some(Self {
             source_kbps,
@@ -408,7 +445,8 @@ impl OriginalModeController {
             features,
             last_bytes: 0,
             last_active_us: 0,
-            deficit_windows: 0,
+            unsafe_deficit_ms: 0,
+            last_now_ms: 0,
         })
     }
 
@@ -418,7 +456,7 @@ impl OriginalModeController {
     pub(crate) fn on_seek(&mut self, bytes: u64, active_us: u64) {
         self.last_bytes = bytes;
         self.last_active_us = active_us;
-        self.deficit_windows = 0;
+        self.unsafe_deficit_ms = 0;
         self.buffer = BufferEstimate::default();
     }
 
@@ -427,7 +465,29 @@ impl OriginalModeController {
     pub(crate) fn on_resume(&mut self, paused_ms: u64) {
         self.delivery.age_ms(paused_ms, &self.policy);
         self.buffer = BufferEstimate::default();
-        self.deficit_windows = 0;
+        self.unsafe_deficit_ms = 0;
+    }
+
+    /// **Test-only: `observe` with the wall clock pinned to the ACTIVE-read clock.**
+    ///
+    /// The two coincide exactly when the reader is saturated — every millisecond of wall time is a
+    /// millisecond of body read — and diverge only under backpressure, which is the healthy
+    /// full-buffer case. Every fixture in `tests.rs` models a link that is SHORT, so the reader is
+    /// never parked and this is the physically correct clock for them; it is also what lets N13's
+    /// change preserve their expectations rather than re-fit them, because at wall == active the
+    /// old six-window rule and the new 4 500 ms rule are the same rule.
+    ///
+    /// **A test about the divergence must call `observe` directly**, and one does — that is the
+    /// whole of N13, and expressing it through this helper would assert the helper.
+    #[cfg(test)]
+    pub(crate) fn observe_saturated(
+        &mut self,
+        bytes: u64,
+        active_us: u64,
+        buffered_ms: Option<i64>,
+        remaining_ms: i64,
+    ) -> Option<OriginalObservation> {
+        self.observe(bytes, active_us, buffered_ms, remaining_ms, active_us / 1_000)
     }
 
     fn fallback_target(&self) -> Option<Rung> {
@@ -437,21 +497,31 @@ impl OriginalModeController {
             .map(|candidate| candidate.rung)
     }
 
+    /// `now_ms` is ABSOLUTE monotonic wall clock, for the reason [`Self::advance_history`]'s
+    /// sibling `advance_to` documents: windows do not arrive on a regular cadence — that is the
+    /// whole defect N13 names — so a delta API would make the policy depend on how often the caller
+    /// happened to call.
     pub(crate) fn observe(
         &mut self,
         bytes: u64,
         active_us: u64,
         buffered_ms: Option<i64>,
         remaining_ms: i64,
+        now_ms: u64,
     ) -> Option<OriginalObservation> {
         if bytes < self.last_bytes || active_us < self.last_active_us {
             self.on_seek(bytes, active_us);
+            self.last_now_ms = now_ms;
             return None;
         }
         let active_delta = active_us - self.last_active_us;
         if active_delta < ORIGINAL_WINDOW_US {
             return None;
         }
+        // Elapsed since the previous WINDOW, which is what the deficit accumulates in. Taken before
+        // any early return below so a window that decides nothing still advances the clock.
+        let wall_delta = i64::try_from(now_ms.saturating_sub(self.last_now_ms)).unwrap_or(0);
+        self.last_now_ms = now_ms;
         let byte_delta = bytes - self.last_bytes;
         self.last_bytes = bytes;
         self.last_active_us = active_us;
@@ -467,11 +537,11 @@ impl OriginalModeController {
             // No timestamp on one lane yet. That IS the starvation this metric watches for, but it
             // is not yet evidence of it — an A/V session that has not produced both tails cannot
             // be told apart from one that never will.
-            self.deficit_windows = 0;
+            self.unsafe_deficit_ms = 0;
             return None;
         };
         if byte_delta == 0 {
-            self.deficit_windows = 0;
+            self.unsafe_deficit_ms = 0;
             return None;
         }
         let measured_kbps = (byte_delta.saturating_mul(8_000) / active_delta)
@@ -496,9 +566,9 @@ impl OriginalModeController {
             .seconds
             .is_some_and(|secs| secs < self.policy.starvation_safe_secs);
         if unsafe_horizon && !cold_start {
-            self.deficit_windows = self.deficit_windows.saturating_add(1);
+            self.unsafe_deficit_ms = self.unsafe_deficit_ms.saturating_add(wall_delta);
         } else {
-            self.deficit_windows = 0;
+            self.unsafe_deficit_ms = 0;
         }
         let target = self.fallback_target();
         let fallback = self.verdict(buffered_ms, remaining_ms, horizon, target);
@@ -509,7 +579,7 @@ impl OriginalModeController {
             buffered_ms,
             slope_ms_per_s: self.buffer.slope_ms_per_s,
             horizon_secs: horizon.seconds,
-            bad_windows: self.deficit_windows,
+            unsafe_deficit_ms: self.unsafe_deficit_ms,
             fallback,
             target,
         })
@@ -566,7 +636,7 @@ impl OriginalModeController {
         if imminent {
             return Some(OriginalExit::ImminentStarvation);
         }
-        if self.deficit_windows < ORIGINAL_DEFICIT_WINDOWS {
+        if self.unsafe_deficit_ms < self.policy.sustained_unsafe_deficit_ms {
             return None;
         }
         // Sustained but not imminent: the only branch where a visible switch is a JUDGEMENT, so
@@ -587,8 +657,9 @@ impl OriginalModeController {
             remaining_ms,
             history: self.history,
             original_feasible: true,
-            original_features: self.features,
-            persistent_deficit_windows: self.deficit_windows,
+            source_dv: self.features.dv,
+            source_atmos: self.features.atmos,
+            unsafe_deficit_ms: self.unsafe_deficit_ms,
         };
         let (mode, _, _, _) = choose_mode(&inputs, candidate, candidate, &self.policy);
         (mode == ModeKind::Hls).then_some(OriginalExit::SustainedDeficit)

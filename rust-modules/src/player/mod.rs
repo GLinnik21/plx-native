@@ -526,7 +526,10 @@ pub(crate) struct Diag {
     pub abr_ratio_pm: i64,
     pub abr_action: u8,
     pub abr_target_kbps: i64,
-    pub abr_bad_windows: u8,
+    /// Wall milliseconds an unsafe Original deficit has held (N13). Was a COUNT of
+    /// 750 ms active-read windows — a clock that stops under backpressure, so the read-out it
+    /// fed said "3 windows" for durations an order of magnitude apart.
+    pub abr_unsafe_deficit_ms: i64,
     pub abr_safe_kbps: i64,
     pub abr_optimal_kbps: i64,
     pub abr_unc_pm: i64,
@@ -638,7 +641,7 @@ pub(crate) fn diag() -> Diag {
         abr_ratio_pm: SHARED.dg_abr_ratio_pm.load(Relaxed),
         abr_action: SHARED.dg_abr_action.load(Relaxed),
         abr_target_kbps: SHARED.dg_abr_target_kbps.load(Relaxed),
-        abr_bad_windows: SHARED.dg_abr_bad_windows.load(Relaxed),
+        abr_unsafe_deficit_ms: SHARED.dg_abr_unsafe_deficit_ms.load(Relaxed),
         abr_safe_kbps: SHARED.dg_abr_safe_kbps.load(Relaxed),
         abr_optimal_kbps: SHARED.dg_abr_optimal_kbps.load(Relaxed),
         abr_unc_pm: SHARED.dg_abr_unc_pm.load(Relaxed),

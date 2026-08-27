@@ -13,6 +13,33 @@ pub(crate) fn dur_short(ms: i64) -> String {
     }
 }
 
+/// **Seconds-scale duration** — "4.5 s" / "12 s". The two formatters above are minute-scale and
+/// round a fifteen-second interval to "0m", which is a read-out saying nothing; this is for the
+/// short spans the diagnostics panel reports (an Original shortfall's elapsed time, N13).
+///
+/// One decimal below ten seconds and none above, because the interesting distinctions are at the
+/// bottom of the range — the difference between 2 s and 4.5 s of shortfall is a decision, and the
+/// difference between 40 s and 41 s is not.
+pub(crate) fn secs_short(ms: i64) -> String {
+    let ms = ms.max(0);
+    if ms < 10_000 {
+        format!("{}.{} s", ms / 1_000, (ms % 1_000) / 100)
+    } else {
+        format!("{} s", ms / 1_000)
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn seconds_scale_durations_keep_the_distinctions_that_matter() {
+    assert_eq!(secs_short(0), "0.0 s");
+    assert_eq!(secs_short(4_500), "4.5 s");
+    assert_eq!(secs_short(9_999), "9.9 s");
+    assert_eq!(secs_short(12_000), "12 s");
+    // Negative is not a duration; it reads as none rather than as a minus sign on screen.
+    assert_eq!(secs_short(-1), "0.0 s");
+}
+
 /// Spelled-out duration — "2 hr 15 min" / "45 min" (detail hero + About "Run Time").
 pub(crate) fn dur_long(ms: i64) -> String {
     let mins = (ms / 60_000).max(0);

@@ -3455,7 +3455,7 @@ fn hls_demux(
         SHARED.dg_abr_ratio_pm.store(-1, Ordering::Relaxed);
         SHARED.dg_abr_action.store(crate::player::ABR_ACTION_STEADY, Ordering::Relaxed);
         SHARED.dg_abr_target_kbps.store(0, Ordering::Relaxed);
-        SHARED.dg_abr_bad_windows.store(0, Ordering::Relaxed);
+        SHARED.dg_abr_unsafe_deficit_ms.store(0, Ordering::Relaxed);
     }
     let mut cursor = hls_cursor_open(origin, path, aq, hs, true)?;
     let mut timeline = crate::hls::SegmentTimeline::default();
@@ -3704,6 +3704,9 @@ fn hls_demux(
                         buffer,
                         &delivery,
                         remaining_ms,
+                        // The same monotonic clock the switch-penalty decay uses; probe spacing is
+                        // wall time now, not a count of segments the server may size as it likes.
+                        history_since.elapsed().as_millis() as u64,
                     )
                 });
             if probe_due {
@@ -4157,7 +4160,7 @@ pub(crate) fn demux(
         SHARED.dg_abr_ratio_pm.store(-1, Ordering::Relaxed);
         SHARED.dg_abr_action.store(crate::player::ABR_ACTION_STEADY, Ordering::Relaxed);
         SHARED.dg_abr_target_kbps.store(0, Ordering::Relaxed);
-        SHARED.dg_abr_bad_windows.store(0, Ordering::Relaxed);
+        SHARED.dg_abr_unsafe_deficit_ms.store(0, Ordering::Relaxed);
     }
     let mut original_watch = auto_original.and_then(|watch| {
         crate::abr::OriginalModeController::new(
@@ -4171,6 +4174,11 @@ pub(crate) fn demux(
     // Same pause rule as the HLS worker: only a real pause is unmeasured time, and only that ages
     // the estimate. Backpressure with a healthy reserve is the system working.
     let mut original_paused_since: Option<std::time::Instant> = None;
+    // **The Original watchdog's WALL clock** (N13). Its persistence rule used to count 750 ms
+    // windows of ACTIVE BODY-READ time, which under backpressure — the healthy full-buffer case —
+    // spans unbounded wall clock, so "six windows" was not a duration at all. One `Instant` for the
+    // whole progressive session, read absolutely, for the reason `advance_to` documents.
+    let original_since = std::time::Instant::now();
     let port = origin.port() as c_int;
     // `host()` is the origin's BARE host — a v6 literal arrives unbracketed, which is what
     // `stream.rs` wants; `base()` re-brackets it, which is what a URL needs. Both spellings come
@@ -4543,7 +4551,7 @@ pub(crate) fn demux(
                         watch.on_seek(state.body_bytes, state.body_active_us);
                         SHARED.dg_abr_net_kbps.store(-1, Ordering::Relaxed);
                         SHARED.dg_abr_buffer_ms.store(-1, Ordering::Relaxed);
-                        SHARED.dg_abr_bad_windows.store(0, Ordering::Relaxed);
+                        SHARED.dg_abr_unsafe_deficit_ms.store(0, Ordering::Relaxed);
                     }
                     let ts = av_rescale_q(seek_ns, NS_TB, stream_time_base(vst));
                     let sr = av_seek_frame(fmt, vi, ts, AVSEEK_FLAG_BACKWARD);
@@ -4696,6 +4704,7 @@ pub(crate) fn demux(
                             state.body_active_us,
                             progressive_buffered_ms(audio_expected),
                             remaining_playback_ms(),
+                            original_since.elapsed().as_millis() as u64,
                         ) {
                             SHARED.dg_abr_net_kbps.store(
                                 i64::from(observation.measured_kbps),
@@ -4705,8 +4714,8 @@ pub(crate) fn demux(
                                 observation.buffered_ms,
                                 Ordering::Relaxed,
                             );
-                            SHARED.dg_abr_bad_windows.store(
-                                observation.bad_windows,
+                            SHARED.dg_abr_unsafe_deficit_ms.store(
+                                observation.unsafe_deficit_ms,
                                 Ordering::Relaxed,
                             );
                             // The rest of the model, on ONE line each — `shared.rs`'s writer guard
@@ -4737,7 +4746,7 @@ pub(crate) fn demux(
                                         .horizon_secs
                                         .map(|s| s.to_string())
                                         .unwrap_or_else(|| "none".to_string()),
-                                    observation.bad_windows,
+                                    observation.unsafe_deficit_ms,
                                     observation.target.map(|r| r.kbps()).unwrap_or(0),
                                 ));
                                 // Hand over the CONSERVATIVE estimate, not the last window's raw
