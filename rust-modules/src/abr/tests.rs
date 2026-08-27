@@ -2588,6 +2588,72 @@ fn the_feature_bonus_is_ordered_and_its_magnitudes_are_not_the_claim() {
     );
 }
 
+/// **I8: a seek carries the link estimate, and `from_prior` cannot express one.**
+///
+/// Category 8.3. An HLS seek destroys the engine and builds a fresh `Controller`; the only thing
+/// that survived was `session().auto_prior_kbps`, whose writer on the Original->HLS fallback path
+/// is the rate measured *at the moment the link failed*. So after one bad patch every subsequent
+/// seek re-seeded from the worst rate the playback had ever measured, at maximum uncertainty with
+/// one sample, and the ladder re-ramped for five to ten segments.
+///
+/// The two constructors make two different CLAIMS and that is the whole increment: `from_prior`
+/// pins uncertainty at its cap and asserts one sample, which is the honest reading of a bootstrap
+/// probe and a false one for an estimate that has watched a link for a minute.
+///
+/// Differential: under unmodified code there is no `from_snapshot`, so a seeded controller cannot
+/// hold more than one sample and its conservative budget is exactly half its rate.
+#[test]
+fn a_carried_estimate_says_more_than_a_prior_of_the_same_rate() {
+    let settled = CapacityEstimate::from_snapshot(40_000, 41_000, 200, 19)
+        .expect("a settled estimate is an estimate");
+    let bootstrap = CapacityEstimate::from_prior(40_000);
+    assert_eq!(bootstrap.samples, 1, "a prior asserts one observation");
+    assert_eq!(
+        bootstrap.conservative_kbps(),
+        20_000,
+        "and at the uncertainty cap that is half the rate — the right claim about a probe",
+    );
+    assert!(
+        settled.conservative_kbps() > bootstrap.conservative_kbps() * 3 / 2,
+        "carrying what was actually observed must be worth substantially more than restating the \
+         rate as a probe: {} against {}",
+        settled.conservative_kbps(),
+        bootstrap.conservative_kbps(),
+    );
+
+    // Absence is absence, not a zero-rate estimate: an unwritten snapshot must not seed anything.
+    assert!(CapacityEstimate::from_snapshot(0, 0, 0, 0).is_none());
+    assert!(CapacityEstimate::from_snapshot(40_000, 40_000, 200, 0).is_none(), "no samples");
+    assert!(CapacityEstimate::from_snapshot(0, 40_000, 200, 9).is_none(), "no rate");
+    // The cap is a cap on the way in too — a snapshot cannot claim more confidence than the
+    // estimator's own floor allows.
+    assert_eq!(
+        CapacityEstimate::from_snapshot(40_000, 40_000, 900, 9).unwrap().uncertainty_pm,
+        MAX_UNCERTAINTY_PM,
+    );
+}
+
+/// **I8, the other half: what a seek must NOT carry.**
+///
+/// The link did not change because the viewer jumped, so the delivery estimate crosses. Everything
+/// positional does not — the buffer describes a reserve at an offset that no longer exists, the
+/// risk history was computed from it, and a pending transaction was proposed for it. The new
+/// `Controller` gets those right by CONSTRUCTION, which is worth an assertion precisely because it
+/// is the kind of correctness that a later refactor can quietly lose.
+#[test]
+fn a_seeded_controller_carries_the_link_and_nothing_positional() {
+    let carried = CapacityEstimate::from_snapshot(40_000, 41_000, 200, 19).unwrap();
+    let c = Controller::starting_at(Rung::P1080, Some(carried), hd_catalog());
+    let t = c.telemetry();
+    assert_eq!(t.delivery, carried, "the link estimate crosses whole");
+    assert_eq!(t.buffer.buffered_ms, 0, "the reserve at the old position is not a reserve here");
+    assert_eq!(t.buffer.samples, 0, "nor is its history");
+    assert_eq!(t.gates.draining, 0);
+    assert_eq!(t.pending, None, "a transaction proposed for the old position must not survive");
+    assert_eq!(t.gates.dwell_ms, 0, "and no encoder has been started on this side of the seek");
+    assert_eq!(t.gates.blocked_kbps, 0);
+}
+
 /// Utility is not a bitrate comparison: Original wins from BEHIND on wire rate because it has
 /// no generation loss and asks the server for no video encoding at all.
 #[test]

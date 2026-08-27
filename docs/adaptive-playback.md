@@ -563,6 +563,32 @@ paid for instead of starting from nothing — and it picks the opening rung from
 steady-state selection uses, so a 17 Mbit/s probe on a 60 Mbit/s file opens at a 12 Mbps rendition
 rather than at a floor it would spend a minute climbing out of.
 
+### 8b. A seek carries the link, and nothing else
+
+An HLS seek routes `route::transcode_seek` -> `engine::reload_transcode` -> a **fresh
+`Controller`**. The only state that survived was `session().auto_prior_kbps`, and its writer on the
+Original->HLS fallback path is `measured_kbps` **at the moment the link failed**. So after one bad
+patch, every subsequent seek re-seeded from the worst rate the playback had ever measured, at
+`MAX_UNCERTAINTY_PM` with `samples = 1` — and the ladder re-ramped for five to ten segments: ten to
+twenty seconds of visibly softer picture after every skip (I8).
+
+The delivery estimate now crosses whole, as its own four fields. **`from_prior` and `from_snapshot`
+make two different claims and that is the point**: a prior pins uncertainty at its cap and asserts
+one observation, which is the honest reading of a bootstrap probe and a false one for an estimate
+that has watched a link for a minute. `auto_prior_kbps` is not deleted — it remains the BOOTSTRAP
+seed, correct when there is no live estimate to carry.
+
+**Only the link crosses.** The buffer describes a reserve at an offset that no longer exists, the
+risk history was computed from it, and any pending transaction was proposed for it; the new
+`Controller` gets all three right by construction, and a host test says so because that is the kind
+of correctness a later refactor loses quietly.
+
+The mechanism is the one asymmetry worth knowing: `engine::teardown` calls `SHARED.reset_session()`
+on **both** paths, a real stop and a reload — and a reload is the same item on the same link at a
+new position (a seek, a quality pick, an app-switch resume). So the seed is deliberately **not** in
+`reset_session`; `clear_abr_seed` is separate and is called only under `!for_reload`. The two
+methods are one keystroke apart, so a test asserts the split rather than trusting it.
+
 ## 9. The transaction is unchanged, and it is the reality check
 
 Everything above is a prediction. A quality move is still: propose, register a separately named PMS

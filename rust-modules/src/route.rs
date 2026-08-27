@@ -596,9 +596,36 @@ fn note_visible_switch() {
 
 /// The source-probe measurement this playback already paid for, as a weak prior. `None` once it is
 /// too old to mean anything or when there never was one.
+/// **What the next controller starts from, and the seek is why it has two sources** (I8).
+///
+/// The CARRIED estimate wins when there is one. A seek destroys the engine and builds a fresh
+/// `Controller`, and before this the only thing that survived was `auto_prior_kbps` — whose writer
+/// on the Original->HLS fallback path is `measured_kbps` *at the moment the link failed*. So after
+/// one bad patch every subsequent seek re-seeded from the worst rate the playback had ever
+/// measured, at `MAX_UNCERTAINTY_PM` with one sample, and the ladder re-ramped for five to ten
+/// segments: ten to twenty seconds of visibly softer picture after every skip.
+///
+/// **`auto_prior_kbps` is not deleted and is not a fallback of convenience.** It remains the
+/// BOOTSTRAP seed — the startup probe, and the rate measured when Original was abandoned — which
+/// is the right seed when there is no live HLS estimate to carry, i.e. the first controller of a
+/// playback. `from_prior` states its own weakness (uncertainty at the cap, one sample); the
+/// carried snapshot states what was actually observed. Two different claims, two constructors.
+///
+/// Only the DELIVERY estimate crosses. The buffer, the risk history and any pending transaction
+/// describe a position that no longer exists and are reset by the new `Controller`'s construction.
 fn auto_prior() -> Option<crate::abr::CapacityEstimate> {
-    let kbps = session().auto_prior_kbps;
-    (kbps > 0).then(|| crate::abr::CapacityEstimate::from_prior(kbps))
+    use std::sync::atomic::Ordering::Relaxed;
+    let shared = &crate::player::SHARED;
+    let carried = crate::abr::CapacityEstimate::from_snapshot(
+        u32::try_from(shared.abr_seed_slow_kbps.load(Relaxed)).unwrap_or(0),
+        u32::try_from(shared.abr_seed_fast_kbps.load(Relaxed)).unwrap_or(0),
+        u32::try_from(shared.abr_seed_unc_pm.load(Relaxed)).unwrap_or(0),
+        u32::try_from(shared.abr_seed_samples.load(Relaxed)).unwrap_or(0),
+    );
+    carried.or_else(|| {
+        let kbps = session().auto_prior_kbps;
+        (kbps > 0).then(|| crate::abr::CapacityEstimate::from_prior(kbps))
+    })
 }
 
 /// Does this playback's source carry something a transcode cannot give back? Dolby Vision and

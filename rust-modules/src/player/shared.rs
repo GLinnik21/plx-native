@@ -397,6 +397,20 @@ pub(crate) struct Shared {
     /// for this link ignoring hysteresis, the delivery estimate's own dispersion and sample count,
     /// the buffer's slope, its starvation horizon in seconds (`-1` = no deficit, so no horizon),
     /// the predicted production cost of the current candidate, and the risk score.
+    /// **The live link estimate, carried ACROSS A SEEK** (I8) — and deliberately not a `dg_`
+    /// field, because these four decide something. An HLS seek tears the engine down and builds a
+    /// fresh `Controller`, so before this the only survivor was `session().auto_prior_kbps`, whose
+    /// writer on the fallback path is the rate measured at the moment Original FAILED. Every seek
+    /// therefore re-seeded from the worst rate the playback had ever measured, at maximum
+    /// uncertainty with one sample, and the ladder re-ramped for five to ten segments: ten to
+    /// twenty seconds of visibly softer picture after every skip.
+    ///
+    /// `abr_seed_samples < 0` means "no seed". Cleared by [`Shared::clear_abr_seed`] and
+    /// **deliberately NOT by [`Shared::reset_session`]** — see that method.
+    pub abr_seed_slow_kbps: AtomicI64,
+    pub abr_seed_fast_kbps: AtomicI64,
+    pub abr_seed_unc_pm: AtomicI64,
+    pub abr_seed_samples: AtomicI64,
     pub dg_abr_safe_kbps: AtomicI64,
     pub dg_abr_optimal_kbps: AtomicI64,
     pub dg_abr_unc_pm: AtomicI64,
@@ -444,6 +458,10 @@ impl Shared {
             dg_abr_action: AtomicU8::new(0),
             dg_abr_target_kbps: AtomicI64::new(0),
             dg_abr_unsafe_deficit_ms: AtomicI64::new(0),
+            abr_seed_slow_kbps: AtomicI64::new(0),
+            abr_seed_fast_kbps: AtomicI64::new(0),
+            abr_seed_unc_pm: AtomicI64::new(0),
+            abr_seed_samples: AtomicI64::new(-1),
             dg_abr_safe_kbps: AtomicI64::new(-1),
             dg_abr_optimal_kbps: AtomicI64::new(-1),
             dg_abr_unc_pm: AtomicI64::new(-1),
@@ -495,6 +513,20 @@ impl Shared {
         }
     }
     /// reset per-file state on stop (mirrors the tail of stop_bufferfeed).
+    /// **Drop the carried link estimate.** Called from `engine::teardown` on a real STOP only —
+    /// `reset_session` runs on a reload too, and a reload is the same item on the same link at a
+    /// new position, which is exactly the case I8 exists to preserve. Splitting it out rather than
+    /// making `reset_session` caller-conditional keeps "clear everything about this session" a
+    /// method with no exceptions in it.
+    pub fn clear_abr_seed(&self) {
+        self.abr_seed_samples.store(-1, Ordering::Relaxed);
+        self.abr_seed_slow_kbps.store(0, Ordering::Relaxed);
+        self.abr_seed_fast_kbps.store(0, Ordering::Relaxed);
+        self.abr_seed_unc_pm.store(0, Ordering::Relaxed);
+    }
+
+    /// **NB: this does NOT clear the ABR seed** — see [`Shared::clear_abr_seed`]. Everything else
+    /// here describes one engine's session and must not outlive it.
     pub fn reset_session(&self) {
         // the diagnostics mirror is per-session too — a stale bind outcome from the last item is
         // exactly the misleading answer the read-out exists to avoid
@@ -680,6 +712,37 @@ mod tests {
             });
             assert!(written, "dg_{f} is declared and read but NOTHING writes it — the panel would print its sentinel as fact");
         }
+    }
+
+    /// **`reset_session` must NOT drop the ABR seed, and `clear_abr_seed` must** (I8).
+    ///
+    /// `engine::teardown` calls `reset_session` on both paths — a real stop AND a reload — and a
+    /// reload is the same item on the same link at a new position: a seek, a quality pick, an
+    /// app-switch resume. Re-measuring the link from nothing across one is what made every skip
+    /// re-ramp the ladder for ten to twenty seconds. So the split is load-bearing and this is the
+    /// assertion that keeps it: the two methods are one keystroke apart and merging them back would
+    /// otherwise be silent.
+    #[test]
+    fn the_carried_link_estimate_survives_a_reload_and_not_a_stop() {
+        let s = Shared::new();
+        s.abr_seed_slow_kbps.store(40_000, Ordering::Relaxed);
+        s.abr_seed_fast_kbps.store(41_000, Ordering::Relaxed);
+        s.abr_seed_unc_pm.store(200, Ordering::Relaxed);
+        s.abr_seed_samples.store(19, Ordering::Relaxed);
+
+        s.reset_session();
+        assert_eq!(
+            s.abr_seed_samples.load(Ordering::Relaxed), 19,
+            "a reload tears the engine down and keeps the link; this is the seek path",
+        );
+        assert_eq!(s.abr_seed_slow_kbps.load(Ordering::Relaxed), 40_000);
+
+        s.clear_abr_seed();
+        assert_eq!(
+            s.abr_seed_samples.load(Ordering::Relaxed), -1,
+            "a real stop ends the playback, and the next one measures its own link",
+        );
+        assert_eq!(s.abr_seed_slow_kbps.load(Ordering::Relaxed), 0);
     }
 
     /// The one invariant that cannot be recovered from if it breaks, and breaks SILENTLY: a session

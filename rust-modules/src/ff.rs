@@ -3002,6 +3002,14 @@ fn publish_hls_abr_model(t: &crate::abr::ControllerTelemetry) {
     SHARED.dg_abr_pred_pm.store(pred, rel);
     SHARED.dg_abr_risk.store(i64::from(t.risk.score), rel);
     SHARED.dg_abr_why.store(abr_why_code(t.reason), rel);
+    // **The seed that survives a seek** (I8). Published every segment rather than at teardown,
+    // because a teardown has several paths and one of them (a crash of the demux worker) reaches
+    // none of them — and the estimate is worth carrying whatever ended the session. Not a `dg_`
+    // field: these four are read to DECIDE, by `route::auto_prior` when the next control is built.
+    SHARED.abr_seed_slow_kbps.store(i64::from(t.delivery.slow_kbps), rel);
+    SHARED.abr_seed_fast_kbps.store(i64::from(t.delivery.fast_kbps), rel);
+    SHARED.abr_seed_unc_pm.store(i64::from(t.delivery.uncertainty_pm), rel);
+    SHARED.abr_seed_samples.store(i64::from(t.delivery.samples), rel);
 }
 
 /// The once-a-segment event-log line, on the do-nothing path only. Its counterpart is

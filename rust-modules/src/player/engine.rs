@@ -1042,6 +1042,11 @@ fn teardown(mt: &MainThread, for_reload: bool) {
     SHARED.reset_session();
     TX.reset();
     if !for_reload {
+        // **The carried link estimate dies with the PLAYBACK, not with the engine** (I8). A reload
+        // is the same item on the same link at a new position — a seek, a quality pick, an
+        // app-switch resume — and re-measuring the link from nothing across one is what made every
+        // skip re-ramp the ladder for ten to twenty seconds.
+        SHARED.clear_abr_seed();
         crate::route::clear_url(); // the transcode stop rode out with `scrobble_stop` above
     } else if let Some(t) = eng.report_th.take() {
         // A reload posts no `stopped`, so there is nothing to order against: detach. Its own

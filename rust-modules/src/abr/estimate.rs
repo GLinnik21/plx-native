@@ -138,6 +138,30 @@ impl CapacityEstimate {
     /// One measurement standing in for a history — a bootstrap probe, or a rate carried across a
     /// mode switch. Deliberately born at maximum uncertainty: it is a place to start, not a fact
     /// about the next ten minutes.
+    /// **Rebuild an estimate from a snapshot of its own four fields** (I8) — the seek path, where
+    /// the engine is destroyed and a fresh `Controller` is built on the other side.
+    ///
+    /// It is NOT `from_prior`, and the difference is the whole increment: `from_prior` pins
+    /// `uncertainty_pm` at its cap and claims one sample, which is the correct reading of a
+    /// bootstrap PROBE and a false one for an estimate that has just watched a link for a minute.
+    /// Carrying the uncertainty and the sample count is what stops the ladder re-ramping.
+    ///
+    /// `samples == 0` is not an estimate and returns `None`; so is a zero rate, which is what an
+    /// unwritten snapshot reads as.
+    pub(crate) fn from_snapshot(
+        slow_kbps: u32,
+        fast_kbps: u32,
+        uncertainty_pm: u32,
+        samples: u32,
+    ) -> Option<Self> {
+        (samples > 0 && slow_kbps > 0).then_some(Self {
+            fast_kbps,
+            slow_kbps,
+            uncertainty_pm: uncertainty_pm.min(MAX_UNCERTAINTY_PM),
+            samples,
+        })
+    }
+
     pub(crate) fn from_prior(kbps: u32) -> Self {
         Self {
             fast_kbps: kbps,
