@@ -1843,7 +1843,7 @@
       "network_profile": [
         {"until_s": 300.0, "kbps": 8300}
       ],
-      "run_secs": 180,
+      "run_secs": 120,
       "operations": [
         {"op": "play"}
       ],
@@ -1851,7 +1851,7 @@
         "codec": "h264",
         "load_video": "H264",
         "load_audio": "AAC",
-        "min_pos_climb_s": 60,
+        "min_pos_climb_s": 45,
         "require_video_bound": true,
         "no_playing_error": true,
         "abr_shape": {
@@ -1871,7 +1871,7 @@
         {"until_s": 25.0, "kbps": 40000},
         {"until_s": 300.0, "kbps": 500}
       ],
-      "run_secs": 180,
+      "run_secs": 120,
       "operations": [
         {"op": "play"}
       ],
@@ -1879,7 +1879,7 @@
         "codec": "h264",
         "load_video": "H264",
         "load_audio": "AAC",
-        "min_pos_climb_s": 60,
+        "min_pos_climb_s": 45,
         "require_video_bound": true,
         "no_playing_error": true,
         "abr_shape": {

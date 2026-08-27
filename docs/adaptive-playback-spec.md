@@ -823,6 +823,83 @@ admission with a reserve condition replaces most of what the starvation-horizon 
 approximating. They should be re-derived against the new rule rather than classified against the
 old one, which is work this section does not do.
 
+## 7a. The two risk ladders, against the same rule as everything else
+
+§7's audit stopped at 18 struct fields; the ~33 constants inside the utility sum were the half it
+did not reach, and the previous section answered only the **numeraire**. This is the other half:
+the two risk ladders and the loose adders around them.
+
+**What they are today.** Both score a *starvation horizon* — seconds until the reserve empties,
+from `starvation_horizon` in `abr/plant.rs` — through a bucket table:
+
+| horizon band | HLS (`viability.rs`) | Original (`mode.rs`) | halvings below 60 s |
+|---|---:|---:|---:|
+| ≥ 60 s | 1 | 2 | 0.00 |
+| 20 – 60 s | 4 | 10 | 1.58 |
+| 10 – 20 s | 12 | 25 | 2.58 |
+| < 10 s | 40 | 60 | 3.58 |
+
+**They are not logarithmic and nothing explains the shape they do have.** Points per halving of the
+horizon runs 2.5 → 4.6 → 11.2 on the HLS ladder and 6.3 → 9.7 → 16.7 on Original's — **convex** in
+halvings, growing steeply as the horizon shortens. That may even be the right instinct, but it is
+an instinct: no measurement, no argument, and two different curves for what is supposed to be one
+quantity. And §7's replacement of the quality scale makes the mismatch structural — quality is now
+`K·log₂(...)`, so a risk term denominated in an unnamed convex curve is not commensurable with it.
+
+### The replacement splits into a constraint and a price, and the constraint is fully derived
+
+**(1) Feasibility is a hard constraint, not a large number of points.** §5's deadline says a rung
+is unsurvivable once `B < A_i + E_tx_down(k*)` — there is no affordable escape left. The `< 10 s`
+bucket is trying to express exactly that as a score of 40 or 60, which is the wrong *shape*: a
+penalty, however large, can be outvoted by a large enough quality gain, and infeasibility cannot
+be traded against picture quality at any exchange rate. Written as a constraint it needs no
+constant at all —
+
+```
+admissible(j)   requires   horizon(j)  ≥  E_tx_down
+```
+
+— and `E_tx_down` is measured, which is what `pipe_abr_down_collapse` exists for. **This deletes the
+bottom bucket of both ladders**, and with it the argument about whether 40 and 60 are the right
+numbers.
+
+**(2) Above the constraint, risk is a price, and it takes the quality scale's own form.** Equal
+*ratios* of horizon are equally alarming, which is the same Weber–Fechner statement §7 makes about
+bitrate, so:
+
+```
+risk(j)  =  max( 0,  K_r · log₂( H_ref / horizon(j) ) )
+```
+
+`K_r` is quality points per **halving** of the safety horizon — one constant, in a stated unit,
+commensurable with `Q` by construction because both are octaves. `H_ref` is the horizon at which
+the controller would have to begin acting, which is `E_tx_down + D`: one escape transaction plus
+the segment in flight. Both replace nine bucket values and the two boundaries
+(`starvation_safe_secs`, `starvation_fallback_secs`) that positioned them.
+
+**And `risk_weight` disappears into `K_r`.** They were always the same quantity — the price of risk
+in quality points — split across a coefficient and a table. §4a settled that the risk term's
+natural unit is a horizon rather than a probability; this is what that costs in constants.
+
+### The loose adders
+
+| adder | site | verdict |
+|---|---|---|
+| `+30` if `buffer_risk` | `viability.rs` | **Delete.** It fires on `buffered_ms < emergency_buffer_ms`, which is the feasibility constraint (1) expressed a second time and less precisely. |
+| `+20` if `production_risk` / `samples == 0` | `viability.rs`, `mode.rs` | **Delete — it is the estimator's job.** "No measurement of this request" is low `n`, and `ε = k/(n+1)` already widens the bound automatically as `n` falls. A flat surcharge is a second, uncalibrated uncertainty model sitting beside a calibrated one. |
+| the bare `800` in `candidate_ready` | `controller.rs:363` | **Delete.** §4's admission rule is the comparison this literal was approximating, and it is the one gate that admits or refuses every upshift while appearing in no struct §7 could audit. |
+| `uncertainty_pm ≥ 500` gate | `viability.rs` | **Delete with the `+20` it qualifies.** |
+| `×4` per persistence window, `min 15` | `mode.rs:194` | **STILL OPEN, and deliberately not derived here.** Persistence is a *derivative* — the horizon shrinking rather than being short — and it is R10's load-bearing counter, the only thing absorbing the controller's own ceiling-collapse impulse. Pricing a trend needs a trend model this specification does not have, and deleting it is exactly the mistake R10 caught. Flagged rather than answered. |
+
+**Arithmetic.** Nine bucket values, two boundary constants, `risk_weight`, four adders and one bare
+literal — **17 numbers** — become `K_r`, `H_ref` (derived from a measured `E_tx_down`), and two
+constants left standing with a reason. The claim is not that this is fewer numbers; it is that the
+survivors are in stated units and commensurable with the quality they trade against.
+
+**What this does not do.** `E_tx_down` is not measured yet — `pipe_abr_down_collapse` is written and
+unrun — so `H_ref` has no value, and `K_r` is a product choice nobody has priced. Neither is a
+derivation gap; both are a number waiting on a measurement that now has a case.
+
 ## 8. What blocks Phase 4
 
 **Needs the device. Three of the five were settled by the 2026-08-27 session and are struck here
