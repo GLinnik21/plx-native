@@ -7,8 +7,10 @@ description: >
   free: "check this looks right", "screenshot the detail page", "does the library grid still lay
   out", "iterate on this spacing", "test my change", "run the app locally", "I don't have the TV",
   "someone else is using the TV", or when several agents need to verify work AT THE SAME TIME.
-  Also covers what the simulator provably cannot answer — frame rates, text rasterization, video
-  playback, the video plane — and hands those to the `tv-session` skill. Prefer this over
+  Also covers what the simulator provably cannot answer — frame rates, text rasterization, LG's
+  decoder, the video plane — and hands those to the `tv-session` skill. Since 2026-08-28 it DOES
+  stream and demux (`plxnative-clocksink` + a host FFmpeg), so the pipeline between the socket and
+  the decoder is answerable here too. Prefer this over
   `tv-session` for ordinary UI work; the television is a single shared resource and this is not.
 ---
 
@@ -19,7 +21,8 @@ description: >
 > (`tools/tv-lock.sh`, the **`tv-lock`** skill): when a device command is refused because another
 > lane holds it, the simulator is usually the answer rather than the queue — N instances run at
 > once, each with its own `PLXNATIVE_RUNTIME_DIR`. Come back to the TV only for what the simulator
-> provably cannot answer (frame rate, text rasterization, video, the video plane).
+> provably cannot answer (frame rate, text rasterization, LG's decoder, the video plane) — a
+> shorter list than it was, since the streaming pipeline moved onto this side on 2026-08-28.
 
 `plxnative-sim` is the same application core the television runs, linked against desktop SDL2 and
 desktop GL. It draws the real interface against your real Plex Media Server, on this Mac.
@@ -189,10 +192,23 @@ Report these ONLY from the device, via the **`tv-session`** skill (and `wake-tv`
   opens at an exact divisor of the 1920x1080 canvas and is not resizable, so on a Retina display
   the drawable is 1920x1080 and `scale` is exactly 1.0. Check the `surface:` line — it prints the
   drawable and the scale, and a 0.5 there means glyphs are downscaled and softer by construction.
-- **Anything about video.** There is no playback: the 29-symbol Starfish/ACB seam does not exist
-  off-device, and `player::ffi`'s host arm reports the seam's own "no video path" failure. Pressing
-  Play lands on the app's real failure read-out — which is correct behaviour, not a bug, and is
-  also a convenient way to look at that screen.
+- **Anything about LG's DECODER** — resource-allocation refusals, the Load payload's Dolby
+  declaration, `SOUND_ERROR_019`, frame pacing, which codecs the panel takes. The 29-symbol
+  Starfish/ACB seam does not exist off-device, so by default `player::ffi`'s host arm reports the
+  seam's own "no video path" failure and pressing Play lands on the app's real failure read-out —
+  correct behaviour, not a bug, and a convenient way to look at that screen.
+- ~~**Anything about video.**~~ **Narrowed twice, and the second time is recent.** Arm
+  **`plxnative-clocksink`** in the instance root and the seam becomes a plant: access units are
+  accepted and discarded and a presentation clock advances at real time, clamped to the last fed
+  PTS, reporting position at the television's own measured 5 Hz. And since **2026-08-28** the
+  source of those AUs can be a real network stream: `make sim` now builds a HOST copy of the
+  bundled FFmpeg (`HOST=1 ci/build-ffmpeg.sh`, staged into `pkg/` as `libavformat-plx.63.dylib`),
+  so `ff.rs` demuxes here. What that makes runnable off-device is everything between the socket
+  and the decoder — both AVIO transports, the HLS demux, the AU queues and their byte-cap
+  backpressure, the feed-ahead throttle, the ABR controller's rung transactions, seek and PTS
+  rebase. A 30 s host run against `tests/serve_fixtures.py` produces `abr:` lines and rung commits.
+  **Nothing decodes**, every heartbeat still carries `sim=1`, and no number taken here is a device
+  measurement.
 - **The video plane and UI transparency.** The wayland non-opaque trick is webOS-only.
 - ~~**plex.tv sign-in.**~~ **This one is FIXED as of 2026-08-16 and is no longer a limitation.**
   The candidate list gained macOS's `libcurl.4.dylib` (which the dyld shared cache answers with no
@@ -228,5 +244,8 @@ device-verified" is a useful, honest status. "Verified" without a TV is not.
   corrupt it. The in-app shot needs no permission, works occluded, and is deterministic.
 - The window is not 1:1. `surface::probe` letterboxes 1920×1080 into whatever the drawable is, so
   shots come out at the viewport size (e.g. 1650×928). Fine for layout, wrong for pixel work.
-- No video means no `player` route to screenshot beyond the failure read-out and the HUD's busy
-  states.
+- Without `plxnative-clocksink` there is no `player` route to screenshot beyond the failure
+  read-out and the HUD's busy states. With it there is a real one, driven by a real stream — but
+  the video PLANE is still empty, because nothing decodes and the wayland overlay is webOS-only.
+  So a player shot here is the HUD over black, which is the right thing for HUD layout work and
+  the wrong thing for anything about the picture.
