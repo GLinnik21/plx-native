@@ -1471,6 +1471,48 @@ class AbrLogLineContract(unittest.TestCase):
         self.assertIsNone(run.abr_min_buf_ms(rows), "no reserve observed is not a reserve of 0")
 
 
+class EverySeekGiveUpPathDisarmsTheSpinner(unittest.TestCase):
+    """**A source-level spot-check on an invariant the type system cannot state.**
+
+    `player::request_seek` sets `SHARED.seeking`; `pump::set_state` publishes
+    `PlaybackState::Seeking` from it AHEAD of every other arm; and until 2026-08-27 the only place
+    that ever cleared it was the successful prime→Play. So any path that gave up on a seek left a
+    permanent spinner, a playhead frozen at the target and `is_playing()` false, while the pipeline
+    played on underneath. Device-measured: 84 seconds of that, through 37 segment acquisitions and
+    four rung commits (`docs/measurements/j3e-logs/pipe_abr_seek_flat.log`).
+
+    **This checks the two KNOWN give-up paths and cannot check a future one**, which is stated
+    rather than papered over: a real guard would derive the state instead of latching a flag —
+    `Seeking` iff a target is pending or the engine is priming after one — and that is the shape
+    this should eventually take. It is not taken here because `prime_play` is also set outside a
+    seek, so deriving would change the startup read-out too, and stacking that onto a bug fix is
+    what the plan forbids.
+    """
+
+    def _src(self, *parts):
+        with open(os.path.join(REPO_ROOT, "rust-modules", "src", *parts), encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_a_failed_transcode_seek_rebuild_abandons_the_seek(self):
+        src = self._src("player", "pump.rs")
+        i = src.index('"seek(transcode): rebuild failed"')
+        self.assertIn("abandon_seek()", src[max(0, i - 600):i],
+                      "the failed rebuild returns without disarming the spinner")
+
+    def test_a_reload_with_no_url_abandons_the_seek(self):
+        src = self._src("player", "engine.rs")
+        i = src.index('"reload_transcode: no url (ignored)"')
+        self.assertIn("abandon_seek()", src[max(0, i - 400):i],
+                      "the ignored reload returns without disarming the spinner")
+
+    def test_the_flag_is_armed_in_exactly_one_place(self):
+        """If a second writer appears, the two known clear sites stop being a complete account and
+        this whole class is measuring the wrong thing."""
+        src = self._src("player", "mod.rs")
+        self.assertEqual(src.count("SHARED.seeking.store(true"), 1,
+                         "more than one place arms the spinner; re-audit the give-up paths")
+
+
 class TheRequestIndexedShaper(unittest.TestCase):
     """**MATHEMATICAL INVARIANT: a rate keyed to the segment COUNT, not the clock.**
 

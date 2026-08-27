@@ -882,6 +882,9 @@ pub(crate) fn switch_audio_native(mt: &MainThread, audio_idx: i32, pos_ns: i64) 
 /// route::retranscode has already set the URL + session + STREAM_VCODEC=h264 before this call.
 pub(crate) fn reload_transcode(mt: &MainThread, offset_ns: i64) {
     if crate::route::url().is_empty() {
+        // The other abandonment path with the same hole: `request_seek` armed the spinner and
+        // nothing here would ever disarm it. See `player::abandon_seek`.
+        crate::player::abandon_seek();
         log("reload_transcode: no url (ignored)");
         return;
     }

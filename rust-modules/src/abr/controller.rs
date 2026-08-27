@@ -428,7 +428,7 @@ impl Controller {
         // refuses 4K on a fast link in front of a loaded PMS — the measured 4K point costs 4% more
         // wire and 110% more server, so a bitrate-only budget would wave it through.
         let Some(target_candidate) = self.catalog.best_sustainable(
-            safe_budget * 4 / 5,
+            safe_budget,
             &self.production,
             current_candidate,
             &self.policy,

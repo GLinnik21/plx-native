@@ -190,6 +190,29 @@ pub(crate) fn request_seek(ns: i64) {
     // ever sees it — that overwrite IS the coalescing, and this is the only place it's countable.
     TX.seek_reqs.fetch_add(1, Relaxed);
 }
+/// **The seek was ABANDONED — put the playhead back on reality.**
+///
+/// [`request_seek`] sets `SHARED.seeking`, and until 2026-08-27 exactly ONE place ever cleared it:
+/// the successful prime→Play in `engine::feed_stream`. Every path that gives UP on a seek
+/// therefore leaked the flag — and that flag is what `pump::set_state` reads to publish
+/// `PlaybackState::Seeking`, which means a spinner over the picture, the playhead frozen at
+/// `seek_display_ns`, and `is_playing()` false, **for the rest of the playback**, while the
+/// pipeline goes on fetching and presenting underneath.
+///
+/// Device-measured 2026-08-27 (`docs/measurements/j3e-logs/pipe_abr_seek_flat.log`): a transcode
+/// seek whose rebuild returned `None` froze the read-out at `pos=5s` while 37 further segments
+/// were acquired, four rung commits landed, and the loop held 60 fps for another 84 seconds. The
+/// stream was fine; only the app's account of it was stuck.
+///
+/// A flag set by the requester and cleared only on the success path is a wedge waiting to happen.
+/// This exists so every give-up path can say so in one word, rather than each remembering a store
+/// — which is the arrangement that failed. `seek_display_ns` goes back to `-1` with it, since the
+/// HUD reads that as "no seek target" and a stale one would keep the frozen playhead after the
+/// spinner cleared.
+pub(crate) fn abandon_seek() {
+    SHARED.seeking.store(false, Relaxed);
+    SHARED.seek_display_ns.store(-1, Relaxed);
+}
 /// true while a seek is resolving (request → reopen/reload → prime → Play): the HUD shows a
 /// spinner and freezes the playhead at `seek_display_ns` instead of wobbling through the reopen.
 pub(crate) fn loading() -> bool { state().is_busy() }
@@ -1010,6 +1033,38 @@ pub extern "C" fn acb_on_event(ev: c_long, reply: *const c_char) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **A seek that is given up on must not leave the spinner armed forever.**
+    ///
+    /// `request_seek` sets `SHARED.seeking`, and the ONLY place that cleared it was the successful
+    /// prime→Play. `pump::set_state` publishes `PlaybackState::Seeking` from that flag ahead of
+    /// every other arm — deliberately, since the frames on the panel during a seek are the
+    /// pre-seek ones — so a leaked flag means a permanent spinner, a playhead frozen at the target
+    /// and `is_playing()` false, while the pipeline plays on underneath. Device-measured: 84
+    /// seconds of exactly that, through 37 segment acquisitions and four rung commits.
+    ///
+    /// Differential: against the code before `abandon_seek` existed there was nothing to call, and
+    /// both assertions below fail on the state `request_seek` leaves.
+    ///
+    /// Takes the crate lock because `SHARED` is a process-wide global and other modules' tests
+    /// read the playback state.
+    #[test]
+    fn an_abandoned_seek_disarms_the_spinner_and_the_frozen_playhead() {
+        let _guard = crate::testlock::serial();
+        let was_seeking = SHARED.seeking.load(Relaxed);
+        let was_display = SHARED.seek_display_ns.load(Relaxed);
+
+        request_seek(40_000_000_000);
+        assert!(SHARED.seeking.load(Relaxed), "the requester arms the spinner");
+        assert_eq!(seek_display_ns(), 40_000_000_000, "and freezes the playhead at the target");
+
+        abandon_seek();
+        assert!(!SHARED.seeking.load(Relaxed), "giving up must disarm it");
+        assert_eq!(seek_display_ns(), -1, "a stale target would keep the playhead frozen");
+
+        SHARED.seeking.store(was_seeking, Relaxed);
+        SHARED.seek_display_ns.store(was_display, Relaxed);
+    }
 
     /// Issue #22: the error must NAME an audio-only stream, and name the right party. On a
     /// transcode it is the server's doing — and on a KNOWN-free server the reason appends the

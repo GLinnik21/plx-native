@@ -2000,6 +2000,46 @@ def op_seek_inplace(lines, target_s):
     return True, f"in-place seek OK; reached {reached}s :: {started.strip()}"
 
 
+def op_seek_refused(lines, target_s):
+    """A seek the app CANNOT serve must be refused cleanly, and playback must survive the refusal.
+
+    Reaching this path is structural rather than incidental, and only this tier can. A transcode
+    seek restarts the encode at a new `&offset`, which `route::transcode_seek` builds from a PMS
+    ratingKey and client — and a `plxnative-playurl` playback has neither, so every seek during
+    Auto on the pipeline tier is refused. That makes it the one place the REFUSAL path is
+    observable at all; on the server tier the seek succeeds and this branch never runs.
+
+    What is graded is the survival, because that is what failed. `player::request_seek` arms
+    `SHARED.seeking` and, before 2026-08-27, only a successful prime→Play ever disarmed it — so a
+    refused seek left `PlaybackState::Seeking` latched forever: a spinner over the picture, the
+    playhead frozen at the target, and `pos=` (gated on `is_playing()`) absent from every
+    subsequent heartbeat. Measured before the fix: the position froze at 5 s while 37 further
+    segments were acquired, four rung commits landed and the loop held 60 fps for 84 more seconds.
+
+    So the assertion is DIFFERENTIAL by construction: it requires the position series to advance
+    AFTER the refusal line, which is exactly what a latched spinner prevents. `target_s` is unused
+    and named only so the signature matches its siblings — a refused seek reaches no target, and
+    asserting one would assert the bug.
+    """
+    _ = target_s
+    fired = find(lines, "autoseek: step")
+    if fired is None:
+        return False, "the seek was never requested (`autoseek: step` absent)"
+    refused = find(lines, "seek(transcode): rebuild failed")
+    if refused is None:
+        return False, ("the seek was NOT refused — this tier cannot rebuild a transcode, so either "
+                       "the app grew a playurl seek path or the case is no longer on Auto")
+    after = lines[lines.index(refused) + 1:]
+    ts = progress_secs(after)
+    if len(ts) < 2:
+        return False, (f"only {len(ts)} position sample(s) after the refusal — the read-out is "
+                       "latched (`SHARED.seeking` never disarmed); see player::abandon_seek")
+    climb = ts[-1][0] - ts[0][0]
+    if climb <= 0:
+        return False, f"position did not advance after the refusal ({ts[0][0]}s..{ts[-1][0]}s)"
+    return True, f"refused cleanly; position advanced {climb}s over {len(ts)} sample(s) after it"
+
+
 def op_seek_rapid(lines, final_s):
     """Rapid tap-burst seek: request_seek()s land while an earlier seek is still resolving, so
     the pump COALESCES — it keeps only the newest target and applies it once the in-flight seek
@@ -2666,6 +2706,8 @@ def evaluate(case, lines):
         k = op["op"]
         if k == "seek" and op.get("mode") == "rapid":
             results.append(("seek_rapid", *op_seek_rapid(lines, op["final_s"])))
+        elif k == "seek" and op.get("mode") == "refused":
+            results.append(("seek_refused", *op_seek_refused(lines, op.get("target_s", 140))))
         elif k == "seek" and op.get("mode") == "inplace":
             results.append(("seek_inplace", *op_seek_inplace(lines, op.get("target_s", 140))))
         elif k == "seek":
@@ -3010,6 +3052,8 @@ def evaluate_pipeline(case, lines, srv_delta, gst_lines=None):
     for op in case.get("operations", []):
         if op["op"] == "seek" and op.get("mode") == "rapid":
             results.append(("seek_rapid", *op_seek_rapid(lines, op["final_s"])))
+        elif op["op"] == "seek" and op.get("mode") == "refused":
+            results.append(("seek_refused", *op_seek_refused(lines, op.get("target_s", 140))))
         elif op["op"] == "seek":
             results.append(("seek_inplace", *op_seek_inplace(lines, op.get("target_s", 140))))
 

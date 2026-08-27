@@ -267,6 +267,10 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
             if crate::route::transcode_seek(secs).is_some() {
                 super::engine::reload_transcode(mt, t);
             } else {
+                // Give up on THIS seek and say so, or the spinner and the frozen playhead outlive
+                // the playback — see `player::abandon_seek`. The engine is untouched here (no
+                // flush has happened), so the stream itself carries on from where it was.
+                super::abandon_seek();
                 super::log("seek(transcode): rebuild failed");
             }
             return;

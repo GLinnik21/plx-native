@@ -212,3 +212,70 @@ projection — but note that this case needs no quantile at all to see the probl
 `pipe_abr_down_outrun` carries no `max_stall_s`. Adding one now would assert a result nobody has
 measured; adding one when R16 lands makes this case differential, because 76 s cannot pass any
 bound a two-second escape justifies.
+
+---
+
+# J3e / J3f — a refused seek latched the read-out for the rest of the film
+
+*`docs/measurements/j3e-logs/` (before) and `j3f-logs/` (after). Found by a case written for
+something else entirely, which is the part worth keeping.*
+
+## 10. What the case was for, and why it cannot do that here
+
+`pipe_abr_seek_flat` was added to close the one gap §7 named: R11's `None` branch is host-proven
+and device-**unobserved**, because no case seeks during Auto. It cannot close it on this tier, and
+the reason is structural rather than incidental. A transcode seek restarts the encode at a new
+`&offset`; `route::transcode_seek` builds that from a PMS ratingKey and client; a
+`plxnative-playurl` playback has neither. So the seek is refused before a single segment is
+fetched, and the reserve the seek would have disturbed is never touched.
+
+`unreadable reserve: 0/38`. **R11 remains host-proven and device-unobserved**, and the
+characterisation line is what says so rather than an argument.
+
+## 11. What it found instead
+
+```
+207: loop=47 route=player pos=5s vtick=5 vgap=201ms fps=48
+213: autoseek: step → 40s (0 left)
+214: seek(transcode): rebuild failed
+     … 84 further seconds, 37 segment acquisitions, four rung commits, fps=60,
+       and no `pos=` on any heartbeat again
+```
+
+`player::request_seek` arms `SHARED.seeking`. `pump::set_state` publishes
+`PlaybackState::Seeking` from that flag **ahead of every other arm** — deliberately, because the
+frames on the panel during a seek are the pre-seek ones. And exactly one place ever cleared it: the
+successful prime→Play in `engine::feed_stream`.
+
+So every path that gives UP on a seek leaked it, and a leaked flag means a spinner over the
+picture, the playhead frozen at the target, and `is_playing()` false **for the rest of the
+playback** — while the pipeline goes on fetching, deciding and presenting underneath. The stream
+was fine. Only the app's account of it was stuck.
+
+Two such paths existed: the failed transcode rebuild above, and `reload_transcode`'s
+`no url (ignored)` early return. Both now call `player::abandon_seek`, which disarms the flag and
+returns `seek_display_ns` to `-1` so a stale target cannot keep the playhead pinned after the
+spinner clears.
+
+## 12. The differential, on the device
+
+Same case, same tier, same shaping; only the binary changed.
+
+| | before (`j3e`) | after (`j3f`) |
+|---|---|---|
+| position series | 0 s .. **5 s** over **6** samples | 0 s .. **83 s** over **83** samples |
+| after the refusal | — | position advanced **77 s** over 77 samples |
+| `seek_refused` | — (`seek_inplace` failed) | **PASS** |
+| segments / commits | 37 / 4 | 38 / 5 |
+
+The bottom row is the control: the pipeline was healthy in BOTH runs, which is what makes the top
+row a read-out defect rather than a playback one.
+
+**The assertion is differential by construction.** `seek_refused` requires the position series to
+advance after the refusal line — precisely what a latched spinner prevents — so it cannot be
+satisfied by the code that produced the bug. The structural half is
+`EverySeekGiveUpPathDisarmsTheSpinner`, which checks the two known give-up paths and **says out
+loud that it cannot check a future one**: the real guard is to derive the state rather than latch a
+flag (`Seeking` iff a target is pending or the engine is priming after one). That is not done here
+because `prime_play` is also set outside a seek, so deriving would change the startup read-out too,
+and stacking that onto a bug fix is what the plan forbids.

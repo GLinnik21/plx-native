@@ -1949,8 +1949,8 @@
     {
       "name": "pipe_abr_seek_flat",
       "fixture": "pipe_h264_aac_mp4.mp4",
-      "title": "no-Plex Auto: a SEEK mid-Auto must not be read as an empty reserve",
-      "covers": ["abr-upshift", "seek-inplace", "unreadable-reserve"],
+      "title": "no-Plex Auto: a REFUSED seek must not latch the read-out",
+      "covers": ["abr-upshift", "seek-refused", "unreadable-reserve"],
       "declare": {"vcodec": "h264", "acodec": "aac", "fps": 24.0},
       "auto_network": {"source_kbps": 60000},
       "network_profile": [
@@ -1958,7 +1958,7 @@
       ],
       "run_secs": 90,
       "operations": [
-        {"op": "seek", "mode": "inplace", "target_s": 40}
+        {"op": "seek", "mode": "refused", "target_s": 40}
       ],
       "expect": {
         "codec": "h264",
@@ -1971,7 +1971,7 @@
           "floor_kbps": 8000
         }
       },
-      "_seek_note": "The one case in either tier that SEEKS while Auto is running, and it exists for a state no other case can reach. A seek clears SHARED.hls_audio_tail_ns (`ff.rs`), so the first segment after it can present an A/V session whose audio lane has produced no timestamp -- and `BufferSnapshot::buffered_ms` answered 0 for that until R11 (2026-08-27), which the emergency trigger `buffered < segment || starving()` reads as an EMPTY reserve and turns into a downshift proposal on a healthy link. On this flat 40 Mbps link nothing about the link or the server justifies a downshift, so `floor_kbps` grades the one thing that separates a healthy seek from the bug: Auto is still at a high rung afterwards. The `unreadable reserve: n/N` characterisation line beside it says whether the branch was reached AT ALL -- a zero there means this case is exercising the seek and not the state it was written for, which is worth knowing before reading the PASS, and is the difference between coverage and the appearance of it."
+      "_seek_note": "The one case in either tier that SEEKS while Auto is running, and it changed purpose after its first run -- which is recorded rather than tidied away, because the run is why the case is worth keeping. It was written for R11: a seek clears SHARED.hls_audio_tail_ns, so the first segment after one can present an A/V session whose audio lane has produced no timestamp, and `BufferSnapshot::buffered_ms` answered 0 for that until R11, which the emergency trigger reads as an EMPTY reserve. It cannot serve that purpose HERE and the reason is structural: a transcode seek restarts the encode at a new &offset, `route::transcode_seek` builds that from a PMS ratingKey and client, and a plxnative-playurl playback has neither -- so the seek is refused before any segment is fetched. The `unreadable reserve: n/N` characterisation line still reports whether the R11 branch was reached; it reads 0/37, and R11 stays host-proven and device-unobserved. What the first run DID find is a real defect, which is now what this case grades. `request_seek` arms SHARED.seeking and, before 2026-08-27, only a successful prime->Play ever disarmed it -- so the refusal latched PlaybackState::Seeking permanently: a spinner over the picture, the playhead frozen at 40 s, and pos= absent from every later heartbeat, while 37 further segments were acquired, four rung commits landed and the loop held 60 fps for 84 more seconds. The stream was fine; only the app's account of it was stuck. `seek_refused` asserts the position advances AFTER the refusal line, which is exactly what a latched spinner prevents, so the assertion is differential against the code that produced it. `floor_kbps` stays because a refused seek must also leave the CONTROLLER alone -- Auto is still high on a flat 40 Mbps link afterwards."
     },
     {
       "name": "pipe_h264_aac_resolution_spike",
