@@ -688,6 +688,68 @@ precisely the coefficients of the sum. Read the table, not the summary.
 | `risk_weight` | 2 | **[R-blocked] The "delete" verdict is WITHDRAWN.** A probability is dimensionless and the other terms of the sum are quality points, so a probability is precisely *not* commensurable with them — it needs a price in points, which is the coefficient being deleted. And this specification constructs no probability anywhere: turning §4's per-segment exceedance into a *stall* probability needs the `B_after` relaxation model §1 records as unavailable. `risk_weight` is also the exchange rate for **both** ledgers (`abr/mode.rs:157` and `:206`), not just the HLS one this table quotes. Verdict: **keep, reclassified as a product choice** — the price of risk in quality points — until something produces a probability. |
 | `server_cost_weight` | 4 | **Keep, and re-measure — but not on the premium quoted here.** "2.1× the work for 4% more bits" is the ratio of two catalog entries (`P1080High` 20 011 and `Uhd` 20 895), and `p2h` §6 measures that the app never obtains the first of them: under the request the app really sends, rung 20000 declares 16 150, so the real trade is **2.1× work for 29% more bits**. The premium is off by 6.6×, and it is the entire justification for the weight. `production_load_pm` is separately a per-item quantity stored as a per-server constant, inert below its own floor for the modal item at every rung. |
 
+### [RESOLVED for the numeraire] Quality is octaves below source, and R5's inversion goes with it
+
+§7's audit covered 18 struct fields and not the ≥51 quantities that decide, and the omitted ones
+are inside the utility sum — starting with `hls_quality_score`'s bucket table
+(`abr/mode.rs:127-135`), which is **the unit every other term is denominated in**. Nine values and
+eight boundaries, none classified. This answers that table and the ledger it feeds; the two risk
+ladders are scoped below and are not answered here.
+
+**The table's own doc comment states the right principle and the numbers do not obey it.** It
+argues concavity — "2 to 4 Mbit/s is a transformation of the picture, 18 to 20 is not" — which is
+the statement that equal *ratios* are equally visible, i.e. that quality is logarithmic in rate.
+That is also what rate-distortion theory says. A logarithmic score has a constant number of points
+per octave. This one does not:
+
+| from | to | Δ score | Δ octave | points/octave |
+|---:|---:|---:|---:|---:|
+| 500 | 1 000 | 10 | 1.000 | 10.0 |
+| 1 000 | 2 500 | 15 | 1.322 | 11.3 |
+| 2 500 | 5 000 | 15 | 1.000 | 15.0 |
+| 5 000 | 7 000 | 10 | 0.485 | **20.6** |
+| 7 000 | 9 000 | 8 | 0.363 | **22.1** |
+| 9 000 | 13 000 | 8 | 0.531 | 15.1 |
+| 13 000 | 17 000 | 6 | 0.387 | 15.5 |
+
+It runs 10.0 → 22.1 → 15.5, so the table is an ad-hoc curve wearing a concavity argument.
+
+**The replacement is one line and it deletes seventeen numbers:**
+
+```
+Q(R)  =  K · log₂( min(R, S) / S )          S = the source's own rate; Q ≤ 0 always
+```
+
+* `min(R, S)` is the **information bound**, classification (1): a transcode cannot carry more than
+  its source, so paying for rate above `S` buys nothing. This is exactly R5's defect —
+  "quality step on a bitrate ladder does not respect `transcode ≤ source`" — fixed by construction
+  rather than by a correction term.
+* `log₂` is (3), from the concavity the table already claims and rate-distortion supplies.
+* **Relative to `S`**, so Original scores exactly **0** and every transcode scores negative. The
+  ledger stops needing `original_quality_bonus` as a thumb on the scale; Original wins ties because
+  it *is* the source, not because it is handed 40 points.
+* `K` is the single surviving constant: **quality points per octave**, an explicit product choice
+  (4), and the numeraire §7 said was undefined. One number, stated in a unit, instead of nine
+  values whose unit was never named.
+
+**R5's counterexample, recomputed.** An 8.5 Mbit/s 1080p source against a 20 Mbit/s transcode of
+itself: `min(20000, 8500) = 8500`, so `Q = K·log₂(1) = 0` — **equal to Original**, where the shipped
+ladder put the source three steps below. A 4 Mbit/s transcode of the same item scores
+`K·log₂(4000/8500) = −1.087·K`, about one octave down, which is what a viewer would actually see.
+
+**Integer form.** `log₂` to a sixteenth of an octave: `i64::ilog2` for the exponent plus a 16-entry
+mantissa table, error ≤ 1/16 octave — far below the resolution at which a quality difference is a
+decision. No floats, per §6.
+
+**What this does NOT answer**, since §7's whole complaint was a scope claim that outran its audit:
+Original's risk ladder (`{2,10,25,60}`, `/2`, `+20`, `×4`, `min 15` — `abr/mode.rs:181-194`), HLS's
+risk ladder (`{0,1,4,12,40}`, `+20`, `+30`, the `uncertainty_pm ≥ 500` gate —
+`abr/viability.rs:43-59`), and the bare `800` in `candidate_ready`. Those are ~33 further constants
+and they price **risk**, not quality — and §4 has changed what risk means, since an ε-level
+admission with a reserve condition replaces most of what the starvation-horizon buckets were
+approximating. They should be re-derived against the new rule rather than classified against the
+old one, which is work this section does not do.
+
 ## 8. What blocks Phase 4
 
 **Needs the device, and all of it fits one lease:**
