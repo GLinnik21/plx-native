@@ -1887,7 +1887,63 @@
           "settle_max_kbps": 720
         }
       },
-      "_collapse_note": "Measures E_tx_down under collapse -- the plan's 5th-ranked device case, and the one that matters most because DOWNSHIFTS HAVE NO DEADLINE AT ALL TODAY (`candidate_prime_budget` and `candidate_warmup_budget` both return None for Direction::Down). A transaction with no deadline on the recovery path is the failure mode with no upper bound on its cost. The 500 kbps floor is derived rather than picked: at that rate only rung 320 is sustainable (A/D 0.90 from the measured fixed cost and rung 320's own 380 kbps of media), while 720 is at 1.74 and 2000 at 4.58 -- so the controller has to walk the WHOLE ladder down from the top rung an unshaped start puts it on, which is what makes the descent cost observable rather than inferred. Distinct from `pipe_abr_brief_dropout`, which dips for 3 s and grades the RECOVERY: this one holds the floor for the rest of the run and grades the descent. `settle_max_kbps: 720` is deliberately one rung looser than the arithmetic demands -- the assertion is that the full descent happens, not that it lands on exactly the rung a model predicts, since a model that also chose the leg rate would be marking its own work. No `max_stall_s`: a collapse from the ladder top through a ~4.9 s reserve may legitimately stall, and asserting it must not would be asserting a result nobody has measured."
+      "_collapse_note": "Measures E_tx_down under collapse -- the plan's 5th-ranked device case, and the one that matters most because it is where the descent is priced. It was written when DOWNSHIFTS HAD NO DEADLINE AT ALL (`candidate_prime_budget` and `candidate_warmup_budget` both returned None for Direction::Down), and it is the case that produced the evidence: one warm-up fetch of 36 156 ms against a 5 793 ms reserve, which is 6.2x the reserve it was spending. Since J3b (2026-08-27) a candidate transfer is bounded by that reserve in both directions, so this case now measures the descent WITH the bound in place -- and `warmup_dl=` on each `abr: tx` line says what the bound was, which is the field that lets a captured log state whether it held rather than only how long the fetch took. The 500 kbps floor is derived rather than picked: at that rate only rung 320 is sustainable (A/D 0.90 from the measured fixed cost and rung 320's own 380 kbps of media), while 720 is at 1.74 and 2000 at 4.58 -- so the controller has to walk the WHOLE ladder down from the top rung an unshaped start puts it on, which is what makes the descent cost observable rather than inferred. Distinct from `pipe_abr_brief_dropout`, which dips for 3 s and grades the RECOVERY: this one holds the floor for the rest of the run and grades the descent. `settle_max_kbps: 720` is deliberately one rung looser than the arithmetic demands -- the assertion is that the full descent happens, not that it lands on exactly the rung a model predicts, since a model that also chose the leg rate would be marking its own work. No `max_stall_s`: a collapse from the ladder top through a ~4.9 s reserve may legitimately stall, and asserting it must not would be asserting a result nobody has measured."
+    },
+    {
+      "name": "pipe_abr_down_staircase",
+      "fixture": "pipe_h264_aac_mp4.mp4",
+      "title": "no-Plex Auto: a TWO-STEP collapse, the shape that outruns a downshift",
+      "covers": ["abr-downshift", "collapse", "transaction-cost", "transfer-deadline"],
+      "declare": {"vcodec": "h264", "acodec": "aac", "fps": 24.0},
+      "auto_network": {"source_kbps": 900000},
+      "network_profile": [
+        {"until_s": 22.0, "kbps": 40000},
+        {"until_s": 30.0, "kbps": 9600},
+        {"until_s": 300.0, "kbps": 500}
+      ],
+      "run_secs": 120,
+      "operations": [
+        {"op": "play"}
+      ],
+      "expect": {
+        "codec": "h264",
+        "load_video": "H264",
+        "load_audio": "AAC",
+        "min_pos_climb_s": 30,
+        "require_video_bound": true,
+        "no_playing_error": true,
+        "abr_shape": {
+          "settle_max_kbps": 720
+        }
+      },
+      "_staircase_note": "RECONSTRUCTS the one pathological transaction in the corpus, and makes it deterministic. `pipe_abr_down_collapse` produced a 36 156 ms warm-up fetch against a 5 793 ms reserve ONCE IN THREE RUNS OF THE SAME CASE (6.24x in j3a-window-logs; 0.64x in p2-logs and 0.74x in j3b-logs), so it cannot be used to grade a transfer deadline: two of three runs never enter the state. Reading the three timelines side by side says why. The single cliff 40000 -> 500 is measured by the sample that straddles it, and WHICH rate that sample reports decides everything: p2 and j3b measured ~500 and targeted rung 320, whose segment fetches in ~1.4 s at 500 kbps; j3a measured the INTERMEDIATE 9593, targeted rung 8000, and then fetched a ~2 MB segment at the 500 kbps floor -- 32 s of transfer against a 5.8 s reserve. Whether the straddling sample reads 9593 or 500 is a coincidence of where the fetch boundary falls, which is why the case is intermittent. The middle leg here MAKES that reading deterministic: a full sample at 9600 forces a downshift target the floor cannot carry, and the drop to 500 lands inside its warm-up fetch. 22 s is far enough in for the ladder to have climbed and the reserve to have filled; 9600 is the measured value from the pathological run rather than a round number. What this case grades is unchanged from its sibling -- the descent completes (`settle_max_kbps`) without a `Playing error` -- because the DEADLINE is not gradeable by an assertion here: it is visible as `warmup_dl=` and a `warmup_deadline` outcome on the `abr: tx` line, and asserting an outcome would pin a mechanism rather than a behaviour. No `max_stall_s`, for the same reason as `pipe_abr_down_collapse`: a collapse through a ~5 s reserve may legitimately stall, and asserting otherwise would assert a result nobody has measured."
+    },
+    {
+      "name": "pipe_abr_seek_flat",
+      "fixture": "pipe_h264_aac_mp4.mp4",
+      "title": "no-Plex Auto: a SEEK mid-Auto must not be read as an empty reserve",
+      "covers": ["abr-upshift", "seek-inplace", "unreadable-reserve"],
+      "declare": {"vcodec": "h264", "acodec": "aac", "fps": 24.0},
+      "auto_network": {"source_kbps": 60000},
+      "network_profile": [
+        {"until_s": 240.0, "kbps": 40000}
+      ],
+      "run_secs": 90,
+      "operations": [
+        {"op": "seek", "mode": "inplace", "target_s": 40}
+      ],
+      "expect": {
+        "codec": "h264",
+        "load_video": "H264",
+        "load_audio": "AAC",
+        "min_pos_climb_s": 8,
+        "require_video_bound": true,
+        "no_playing_error": true,
+        "abr_shape": {
+          "floor_kbps": 8000
+        }
+      },
+      "_seek_note": "The one case in either tier that SEEKS while Auto is running, and it exists for a state no other case can reach. A seek clears SHARED.hls_audio_tail_ns (`ff.rs`), so the first segment after it can present an A/V session whose audio lane has produced no timestamp -- and `BufferSnapshot::buffered_ms` answered 0 for that until R11 (2026-08-27), which the emergency trigger `buffered < segment || starving()` reads as an EMPTY reserve and turns into a downshift proposal on a healthy link. On this flat 40 Mbps link nothing about the link or the server justifies a downshift, so `floor_kbps` grades the one thing that separates a healthy seek from the bug: Auto is still at a high rung afterwards. The `unreadable reserve: n/N` characterisation line beside it says whether the branch was reached AT ALL -- a zero there means this case is exercising the seek and not the state it was written for, which is worth knowing before reading the PASS, and is the difference between coverage and the appearance of it."
     },
     {
       "name": "pipe_h264_aac_resolution_spike",

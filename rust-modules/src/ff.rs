@@ -2889,7 +2889,8 @@ fn publish_hls_abr_model(t: &crate::abr::ControllerTelemetry) {
 fn log_hls_abr_steady(t: &crate::abr::ControllerTelemetry, remaining_ms: i64) {
     crate::player::log(&format!(
         "abr: steady current={}kbps safe={}kbps pending={}kbps fast={}kbps slow={}kbps unc={}pm n={} \
-         buf={}ms slope={}ms/s prod={}pm/{}pm risk={} starve={} left={}s reason={:?}",
+         buf={}ms slope={}ms/s prod={}pm/{}pm risk={} starve={} left={}s \
+         stable={} cool={} onrung={} draining={} reason={:?}",
         t.current.kbps(),
         t.safe_budget_kbps,
         t.pending.map(|p| p.rung.kbps()).unwrap_or(0),
@@ -2907,6 +2908,13 @@ fn log_hls_abr_steady(t: &crate::abr::ControllerTelemetry, remaining_ms: i64) {
             .map(|s| s.to_string())
             .unwrap_or_else(|| "none".to_string()),
         remaining_ms / 1_000,
+        // The four raw counters, so J5's policy change has a baseline. They are the only fields on
+        // this line that are not an estimator or a derived quantity, and they are here to be
+        // deleted with the counters they report.
+        t.gates.stable,
+        t.gates.cooldown,
+        t.gates.on_rung,
+        t.gates.draining,
         t.reason,
     ));
 }
@@ -3068,6 +3076,11 @@ struct TxTrace {
     warmup_acq_ms: Option<i64>,
     graded_acq_ms: Option<i64>,
     buf_start_ms: Option<i64>,
+    /// **The deadline the warm-up leg was actually granted, ms.** Without it a captured log cannot
+    /// say whether a transaction was bounded — only how long it took — so "the deadline held" is
+    /// not a statement the corpus can make about itself. `None` on every exit path that never
+    /// reached the media fetch.
+    warmup_dl_ms: Option<i64>,
     /// Acquisition of the CURRENT stream's segment immediately before the transaction — the
     /// `resume_cost` the viability claim's admission rule would divide the reserve against.
     cur_acq_before_ms: i64,
@@ -3120,6 +3133,7 @@ impl TxTrace {
             control_plane_ms: None,
             warmup_acq_ms: None,
             graded_acq_ms: None,
+            warmup_dl_ms: None,
             // The HONEST reserve: `hls_buffer_snapshot(None)` reads only what has actually been
             // FED, where the `Some(output)` arm folds in a staged candidate tail that has not been.
             buf_start_ms: hls_buffer_snapshot(None).buffered_ms(),
@@ -3160,6 +3174,10 @@ impl TxTrace {
 
     fn mark_control_plane(&mut self) {
         self.control_plane_ms = Some(self.elapsed_ms());
+    }
+
+    fn mark_warmup_deadline(&mut self, budget: std::time::Duration) {
+        self.warmup_dl_ms = Some(i64::try_from(budget.as_millis()).unwrap_or(i64::MAX));
     }
 
     /// The post-commit feed, measured from its own start so it is never confused with the
@@ -3204,7 +3222,8 @@ impl Drop for TxTrace {
         crate::player::log(&format!(
             "abr: tx {:?} {}->{}kbps outcome={} decided={}ms total={}ms control={}ms \
              prime={}ms master={}ms media={}ms warmup={}ms \
-             graded={}ms buf_start={}ms buf_decided={}ms feed={}ms buf_fed={}ms buf_end={}ms \
+             graded={}ms warmup_dl={}ms buf_start={}ms buf_decided={}ms feed={}ms buf_fed={}ms \
+             buf_end={}ms \
              cur_acq_before={}ms net={}kbps fast={}kbps slow={}kbps unc={}pm declared={}kbps \
              graded_bytes={}",
             self.direction,
@@ -3219,6 +3238,7 @@ impl Drop for TxTrace {
             opt(leg(self.control_plane_ms, self.master_done_ms)),
             opt(self.warmup_acq_ms),
             opt(self.graded_acq_ms),
+            opt(self.warmup_dl_ms),
             opt(self.buf_start_ms),
             opt(self.buf_decided_ms),
             opt(self.feed_ms),
@@ -3598,12 +3618,10 @@ fn hls_demux(
             continue;
         };
         let reserve = crate::abr::reserve_as_budget(reserve_ms);
-        let candidate_deadline = std::time::Instant::now()
-            .checked_add(crate::abr::candidate_warmup_budget(
-                proposal,
-                candidate_segment.duration,
-                reserve,
-            ));
+        let warmup_budget =
+            crate::abr::candidate_warmup_budget(proposal, candidate_segment.duration, reserve);
+        tx.mark_warmup_deadline(warmup_budget);
+        let candidate_deadline = std::time::Instant::now().checked_add(warmup_budget);
         let mut staged_timeline = timeline;
         let mut candidate_clock = match staged_timeline.begin(candidate_segment.duration) {
             Ok(clock) => clock,

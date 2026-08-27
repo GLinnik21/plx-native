@@ -1256,6 +1256,26 @@ RE_ABR_SEED = re.compile(
 RE_ABR_HISTORY = re.compile(r"abr: history switches=(\d+) since_last=(\S+) advanced=(\d+)ms")
 
 RE_ABR_STEADY = re.compile(r"abr: steady current=(\d+)kbps")
+# The four raw gate counters, J5's baseline instrument. A separate regex from `RE_ABR_STEADY`
+# above rather than an extension of it: that one is deliberately a one-field prefix match used to
+# count decisions, and widening it would make every existing count depend on fields that are
+# scheduled to be DELETED with the counters they report.
+RE_ABR_GATES = re.compile(
+    r"abr: steady current=(\d+)kbps .*?"
+    r"stable=(\d+) cool=(\d+) onrung=(\d+) draining=(\d+) reason=(\S+)"
+)
+GATE_FIELDS = ("current_kbps", "stable", "cooldown", "on_rung", "draining", "reason")
+
+
+def abr_gates(lines):
+    """Every `abr: steady` line's raw counter state, in order.
+
+    These are the only fields on that line that are not an estimator or a derived quantity. They
+    exist so J5's policy change ("counters -> derived guards") can be measured against a baseline
+    rather than argued about: a `stay` with `stable=2` and every `all_good` conjunct holding is a
+    climb the evidence supported and a counter refused.
+    """
+    return _parsed(RE_ABR_GATES, GATE_FIELDS, lines)
 # `declared` is the CANDIDATE RENDITION'S OWN RATE, off its master playlist -- the only per-rung
 # rate this app can obtain that is not the catalog's `expected_wire_kbps` (the input the plan's R1
 # killed: +5.2% to +31.6% error, item-dependent, and non-injective). `-1` on every exit path that
@@ -1277,7 +1297,7 @@ RE_ABR_TX = re.compile(
     r"abr: tx (\w+) (\d+)->(\d+)kbps outcome=(\S+) "
     r"decided=" + _MS + r"ms total=(-?\d+)ms control=" + _MS + r"ms "
     r"prime=" + _MS + r"ms master=" + _MS + r"ms media=" + _MS + r"ms "
-    r"warmup=" + _MS + r"ms graded=" + _MS + r"ms "
+    r"warmup=" + _MS + r"ms graded=" + _MS + r"ms warmup_dl=" + _MS + r"ms "
     r"buf_start=" + _MS + r"ms buf_decided=" + _MS + r"ms feed=" + _MS + r"ms "
     r"buf_fed=" + _MS + r"ms buf_end=" + _MS + r"ms cur_acq_before=(-?\d+)ms "
     r"net=(\d+)kbps fast=(\d+)kbps slow=(\d+)kbps unc=(\d+)pm declared=(-?\d+)kbps "
@@ -1286,7 +1306,8 @@ RE_ABR_TX = re.compile(
 TX_FIELDS = (
     "direction", "from_kbps", "to_kbps", "outcome",
     "decided_ms", "total_ms", "control_ms", "prime_ms", "master_ms", "media_ms",
-    "warmup_ms", "graded_ms", "buf_start_ms", "buf_decided_ms", "feed_ms", "buf_fed_ms",
+    "warmup_ms", "graded_ms", "warmup_dl_ms", "buf_start_ms", "buf_decided_ms", "feed_ms",
+    "buf_fed_ms",
     "buf_end_ms", "cur_acq_before_ms", "net_kbps", "fast_kbps", "slow_kbps", "unc_pm",
     "declared_kbps", "graded_bytes",
 )
@@ -1381,8 +1402,25 @@ def abr_windows(lines):
 
 
 def abr_transactions(lines):
-    """Every `abr: tx` as a dict. One per proposal, commit or reject."""
-    return _parsed(RE_ABR_TX, TX_FIELDS, lines)
+    """Every `abr: tx` as a dict. One per proposal, commit or reject.
+
+    **A line that does not match is REPORTED, not dropped in silence.** `RE_ABR_TX` names the
+    current field set exactly, so a capture from an earlier instrumentation generation fails to
+    match it entirely — and the corpus under `docs/measurements/` is append-only and spans several.
+    That is not hypothetical: `decided=` meant a different quantity before the transaction leg
+    split (it included the post-commit feed), and reading the two generations as one distribution
+    is what produced the retracted "true upshift cost is 9 563 ms" in
+    `docs/measurements/i2-transaction-cost.md` — and, on 2026-08-27, a `Down` summary that
+    understated its own headline. Silence here reads as "there were no transactions", which is
+    indistinguishable from a feature that never ran.
+    """
+    rows = _parsed(RE_ABR_TX, TX_FIELDS, lines)
+    seen = sum(1 for line in lines if "abr: tx " in line)
+    if seen > len(rows):
+        print(f"note: {seen - len(rows)} of {seen} `abr: tx` line(s) did not match the current "
+              "field set — an older instrumentation generation, excluded from every statistic "
+              "below", file=sys.stderr)
+    return rows
 
 
 def hls_segments(lines):
@@ -1553,6 +1591,13 @@ def abr_characterisation(lines):
     if samples:
         first = samples[0]
         first_buf = "none" if first["buf_ms"] is None else f"{first['buf_ms']}ms"
+        # The count of segments whose playable reserve was not knowable — an A/V session whose
+        # audio lane had produced no timestamp. It is reported because it is the ONLY way this
+        # tier can say whether that path was reached at all: it decides nothing (the controller
+        # declines to decide on those segments), so no assertion moves when it changes, and a
+        # zero here means R11's branch is untested on device rather than tested and passing.
+        unreadable = sum(1 for s in samples if s["buf_ms"] is None)
+        out.append(f"unreadable reserve: {unreadable}/{len(samples)} segment(s)")
         out.append(f"first segment: buf={first_buf} current={first['current_kbps']}kbps "
                    f"decision={first['decision']} target={first['target_kbps']}kbps")
     for m in [RE_ABR_SEED.search(ln) for ln in lines]:

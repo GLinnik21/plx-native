@@ -190,17 +190,17 @@ impl TransactionModel {
         Self {
             up_commit: Some(TransactionCost {
                 control_plane_ms: 6,
-                warmup_acq_ms: 1185,
-                graded_acq_ms: 1278,
+                warmup_acq_ms: 1180,
+                graded_acq_ms: 1276,
             }),
             up_reject: Some(TransactionCost {
                 control_plane_ms: 6,
-                warmup_acq_ms: 1425,
+                warmup_acq_ms: 1442,
                 graded_acq_ms: 0,
             }),
             down_commit: Some(TransactionCost {
                 control_plane_ms: 6,
-                warmup_acq_ms: 741,
+                warmup_acq_ms: 676,
                 graded_acq_ms: 0,
             }),
             down_reject: None,
@@ -341,20 +341,20 @@ impl Calibration {
             4_000 => 18_418,
             10_000 => 8_168,
             16_000 => 5_793,
-            20_000 => 4_918,
+            20_000 => 4_960,
             _ => return None,
         })
     }
 
     pub(super) fn point(rung_request_kbps: u32) -> Option<OperatingPoint> {
         let (ts, audio, overhead) = match rung_request_kbps {
-            320 => (383u32, 98u32, 18i64),
+            320 => (376u32, 98u32, 21i64),
             720 => (806, 131, 24),
-            2_000 => (2_198, 159, 53),
-            4_000 => (4_386, 159, 86),
-            10_000 => (10_522, 192, 181),
-            16_000 => (16_530, 192, 274),
-            20_000 => (20_694, 192, 345),
+            2_000 => (2_221, 159, 51),
+            4_000 => (4_386, 159, 84),
+            10_000 => (10_881, 192, 171),
+            16_000 => (16_798, 192, 264),
+            20_000 => (20_706, 192, 323),
             _ => return None,
         };
         Some(OperatingPoint {
@@ -705,14 +705,14 @@ mod tests {
     /// **The arithmetic is spelled out against the CURRENT calibration**, because the version of
     /// this comment that preceded it quoted ES rates from a superseded fixture pack (video ES
     /// 17 561 at rung 20000, 1201 at 720) and read as a derivation while being a transcription:
-    ///   * 20000: ES (20 694 − 192)/1.04 = 19 713 → 67 108 864/19 713 = 3404, +1600 = **5004**;
+    ///   * 20000: ES (20 706 − 192)/1.04 = 19 725 → 67 108 864/19 725 = 3402, +1600 = **5002**;
     ///     audio 192 → 8 388 608/192 = 43 690, +3600 = 47 290, so video binds.
     ///   * 720:   ES (806 − 131)/1.04 = 649 → 67 108 864/649 = 103 403, +1600 = 105 003;
     ///     audio 131 → 8 388 608/131 = 64 035, +3600 = **67 635**, so AUDIO binds.
     #[test]
     fn the_lane_ceilings_come_from_elementary_rates() {
         let plant = Plant::default();
-        assert_eq!(plant.b_max_ms(&p20000()), 5_004);
+        assert_eq!(plant.b_max_ms(&p20000()), 5_002);
         assert_eq!(plant.b_max_ms(&p720()), 67_635);
         // Forcing the video lane below the audio one flips which ceiling is returned, which is the
         // property `min` has to have and the census alone cannot isolate.

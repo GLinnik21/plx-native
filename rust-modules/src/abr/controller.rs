@@ -52,6 +52,29 @@ pub(crate) struct ControllerTelemetry {
     /// so the rule can be graded against the estimators beside it on a device before anything is
     /// moved onto it.
     pub(crate) window: AdmissionReadout,
+    /// **The three counters that can hold an upshift back, and could not be seen.** J5 proposes
+    /// replacing all three with derived guards; nothing can say what they COST until a log
+    /// distinguishes "the evidence did not support a climb" from "the evidence supported it and a
+    /// counter was still counting". Every field of `abr: steady` beside these is an estimator or a
+    /// derived quantity; these are the raw state, and they are here for exactly one increment.
+    pub(crate) gates: GateCounters,
+}
+
+/// Raw counter state, for the log line only. **Nothing reads this to decide anything** — it is the
+/// instrumentation half of J5, landed before the policy half so the policy change has a baseline
+/// to be measured against rather than an argument to be judged by.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct GateCounters {
+    /// Consecutive samples on which every `all_good` conjunct held. An upshift needs three.
+    pub(crate) stable: u8,
+    /// Samples still to be skipped after a commit or a reject.
+    pub(crate) cooldown: u8,
+    /// Samples taken since the current rung was committed. The first is a PMS cold start.
+    pub(crate) on_rung: u8,
+    /// Consecutive samples the reserve has been draining. The production trigger needs eight.
+    /// **`u32` where the other three are `u8`**, because it is `BufferEstimate`'s own field and
+    /// widening it here would be a second copy of that type's decision.
+    pub(crate) draining: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -207,6 +230,12 @@ impl Controller {
             delivery: self.delivery,
             production: self.production,
             buffer: self.buffer,
+            gates: GateCounters {
+                stable: self.stable_samples,
+                cooldown: self.cooldown,
+                on_rung: self.samples_on_rung,
+                draining: self.buffer.draining_samples,
+            },
             risk: candidate_risk(
                 current,
                 current,

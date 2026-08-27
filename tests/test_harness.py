@@ -1411,6 +1411,30 @@ class AbrLogLineContract(unittest.TestCase):
         self.assertIsNotNone(run.RE_ABR_SAMPLE.search(_sample_line()))
         self.assertIsNotNone(run.RE_ABR_SAMPLE.search(_sample_line(abuf="none", buf=-1)))
 
+    def test_the_steady_line_emits_the_four_gate_counters_the_harness_parses(self):
+        """The J5 baseline instrument, both sides. Names read out of `ff.rs`'s own format literal,
+        so a rename on the app side fails here rather than silently yielding zero gate rows."""
+        emitted = self._emitted_fields("steady")
+        for field in ("stable", "cool", "onrung", "draining"):
+            with self.subTest(field=field):
+                self.assertIn(field, emitted, f"ff.rs no longer emits {field}=")
+                self.assertIn(field, self._regex_fields(run.RE_ABR_GATES))
+
+    def test_a_rendered_steady_line_yields_its_counters(self):
+        line = ("[  12.345] abr: steady current=10000kbps safe=25000kbps pending=0kbps "
+                "fast=40000kbps slow=39000kbps unc=200pm n=9 buf=12000ms slope=0ms/s "
+                "prod=300pm/380pm risk=0 starve=none left=1800s "
+                "stable=2 cool=0 onrung=7 draining=0 reason=None")
+        rows = run.abr_gates([line])
+        self.assertEqual(len(rows), 1, "RE_ABR_GATES no longer matches what the app logs")
+        self.assertEqual(
+            (rows[0]["stable"], rows[0]["cooldown"], rows[0]["on_rung"], rows[0]["draining"]),
+            (2, 0, 7, 0))
+        self.assertEqual(rows[0]["current_kbps"], 10000)
+        # The one-field prefix regex must go on matching the same line: several counts depend on
+        # it, and widening it would tie them to fields scheduled for deletion.
+        self.assertIsNotNone(run.RE_ABR_STEADY.search(line))
+
     def test_an_unknown_reserve_parses_as_none_and_not_as_a_dropped_line(self):
         """**`buf=none` must not stop the regex matching.**
 
@@ -1704,7 +1728,7 @@ class LogLineContract(unittest.TestCase):
         line = (
             "abr: tx Up 4000->6000kbps outcome=committed decided=3065ms total=9563ms "
             "control=118ms prime=94ms master=12ms media=12ms warmup=2210ms graded=1804ms "
-            "buf_start=24835ms buf_decided=21770ms feed=6498ms buf_fed=24918ms "
+            "warmup_dl=3000ms buf_start=24835ms buf_decided=21770ms feed=6498ms buf_fed=24918ms "
             "buf_end=24918ms cur_acq_before=1583ms net=41200kbps fast=41200kbps "
             "slow=39800kbps unc=120pm declared=5602kbps graded_bytes=1441792"
         )
@@ -1720,11 +1744,27 @@ class LogLineContract(unittest.TestCase):
         self.assertEqual(row["graded_bytes"], 1441792,
                          "with `graded=`, the one window observation a transaction adds")
 
+    def test_a_transaction_line_from_an_older_generation_is_reported_not_dropped(self):
+        """The corpus is append-only and spans several instrumentation generations. A strict
+        regex is right — `decided=` meant a different quantity before the leg split — but a
+        SILENT non-match reads as "there were no transactions", and pooling the generations is
+        what produced two retracted summaries. So the mismatch is counted and said out loud."""
+        import contextlib
+        import io
+        legacy = ("abr: tx Up 4000->6000kbps outcome=committed decided=9563ms total=9564ms "
+                  "control=11ms warmup=1576ms graded=1559ms buf_start=19792ms")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            rows = run.abr_transactions([legacy])
+        self.assertEqual(rows, [], "a pre-leg-split line must not be read as a current one")
+        self.assertIn("did not match", err.getvalue())
+        self.assertIn("1 of 1", err.getvalue())
+
     def test_abr_tx_reads_none_as_absent_and_never_as_zero(self):
         line = (
             "abr: tx Up 4000->6000kbps outcome=prime_refused decided=41ms total=41ms "
             "control=none prime=none master=none media=none warmup=none graded=none "
-            "buf_start=24835ms buf_decided=24835ms feed=nonems buf_fed=nonems "
+            "warmup_dl=nonems buf_start=24835ms buf_decided=24835ms feed=nonems buf_fed=nonems "
             "buf_end=24835ms cur_acq_before=1583ms net=41200kbps fast=41200kbps "
             "slow=39800kbps unc=120pm declared=-1kbps graded_bytes=-1"
         ).replace("control=none", "control=nonems").replace(

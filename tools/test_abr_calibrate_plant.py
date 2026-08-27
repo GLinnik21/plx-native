@@ -19,6 +19,7 @@ from __future__ import annotations
 import importlib.util
 import pathlib
 import re
+import statistics
 import unittest
 
 _spec = importlib.util.spec_from_file_location(
@@ -70,6 +71,37 @@ class TheFixtureMapIsReadNotCopied(unittest.TestCase):
         for rung, name in cp.fixture_map().items():
             self.assertIn(f'"{rung}": "{name}"', text.replace("\n", " ").replace("  ", " ")
                           if f'"{rung}": "{name}"' not in text else text)
+
+
+class TheCaptureChronology(unittest.TestCase):
+    """The order captures are preferred in cannot be derived from their names, so it is stated."""
+
+    def test_every_capture_on_disk_is_placed_in_the_chronology(self):
+        """An unplaced capture must fail loudly. `sorted(reverse=True)` was the rule until a
+        `j3b-logs` capture landed and reverse-alphabetical silently put every `p*` ahead of it —
+        the stale-table failure this file exists to prevent, recurring in the mechanism meant to
+        prevent it."""
+        cp.captures_newest_first()  # raises SystemExit naming anything unlisted
+
+    def test_the_stated_order_is_not_the_alphabetical_one(self):
+        """If these ever coincide the bug is invisible again, and the explicit list looks like
+        redundant ceremony to the next reader. They do not coincide today: `p2-logs` sorts above
+        `j3b-logs` and is older."""
+        import glob
+        present = [pathlib.Path(d).name for d in glob.glob(str(ROOT / "docs/measurements/*-logs"))]
+        stated = [n for n in cp.CAPTURE_ORDER if n in present]
+        self.assertNotEqual(stated, sorted(present, reverse=True),
+                            "stated and alphabetical order agree; this guard proves nothing")
+
+    def test_the_table_reports_which_capture_each_rung_came_from(self):
+        """A rung is never averaged across captures, but a TABLE routinely draws from two or three
+        — and from a partial one while a capture is being taken. `provenance` is the only thing
+        that makes that visible, so it is asserted rather than assumed."""
+        points = cp.operating_points(cp.DEFAULT_FIXTURES)
+        self.assertTrue(points)
+        for rung, p in points.items():
+            with self.subTest(rung=rung):
+                self.assertIn(p["source"], cp.CAPTURE_ORDER)
 
 
 class Settling(unittest.TestCase):
@@ -215,36 +247,119 @@ class TheTransactionLegs(unittest.TestCase):
         """**`E_tx_down` is not one quantity, and the specification's `H_ref` assumes it is.**
 
         §7a derives `H_ref = E_tx_down + D = 3 424 ms` from a single 1 424 ms observation. Over the
-        whole committed corpus the `Down/commit` `decided` values are min 26, p50 916, p95 2 198 —
-        and **max 36 164**. A 16x jump from p95 with nothing in between is not a tail, it is a
-        second regime, and the record is a downshift whose warm-up fetch ran 36 156 ms on a
-        collapsing link.
+        committed corpus the `Down`/commit `decided` values are min 26, p50 749, p95 1 491 — and
+        **max 36 164**. The six largest are 1 441, 1 451, 1 491, 1 502, 2 241, 36 164: a **24x jump
+        from p95 and 16x from the second-largest value**, which is not a tail but a second regime.
+        The record is a downshift whose warm-up fetch ran 36 156 ms on a collapsing link.
 
-        The cause is structural: `candidate_prime_budget` and `candidate_warmup_budget` both open
-        with `if direction == Down { return None }`, so the fail-safe transaction has no deadline of
-        any kind. 36 s is not a transaction cost, it is an unbounded transaction.
+        **Restricted to records where `decided` MEANS the decision cost.** Before the leg split,
+        `tx.finish("committed")` sat below the feed loop, so `decided` also contained the
+        post-commit backpressure — a different quantity, and 17 of the 65 `Down` records are of
+        that older kind. Pooling them is what the plan's own board caught in
+        `docs/measurements/i2-transaction-cost.md` ("true upshift cost is 3 065 ms median, not
+        9 563"), and the first version of this test repeated it: the pooled figures were p50 916 /
+        p95 2 198, which UNDERSTATES the gap. ` prime=` is the marker, since that field arrived
+        with the split.
 
-        This test exists so the counter-example cannot quietly leave the corpus and let `H_ref` look
-        derived again. It fails if the spread collapses — at which point either a deadline landed
-        (delete this and derive `H_ref` from it) or the evidence was dropped.
+        The cause of the outlier is structural: `candidate_prime_budget` and
+        `candidate_warmup_budget` both opened with `if direction == Down { return None }`, so the
+        fail-safe transaction had no deadline of any kind. 36 s is not a transaction cost, it is an
+        unbounded transaction.
+
+        This test pins the counter-example so it cannot quietly leave the corpus and let `H_ref`
+        look derived again. **A landed deadline does not flip it** — the historical record stays in
+        an append-only corpus — so the deadline's own evidence is graded by
+        `NoTransactionOutspendsItsReserve` below instead. Delete this one only when `E_tx_down` has
+        been RE-MEASURED with the deadline in place and `H_ref` derived from that.
         """
-        # `transaction_legs` keeps the three legs, not `decided`, so read it here rather than
-        # widen that API for one test.
-        import glob
-        import re as _re
-        import statistics
-        pattern = _re.compile(r"abr: tx Down \d+->\d+kbps outcome=committed decided=(\d+)ms")
-        rows = [int(m.group(1))
-                for p in sorted(glob.glob(str(ROOT / "docs/measurements/*-logs/*.log")))
-                for m in pattern.finditer(pathlib.Path(p).read_text(errors="replace"))]
+        rows = sorted(down_committed_ms())
         self.assertGreaterEqual(len(rows), 40, "too few records to say anything about the shape")
-        rows.sort()
         p95 = rows[int(0.95 * (len(rows) - 1))]
-        self.assertLess(statistics.median(rows), 2_000, "the ordinary regime is around a second")
+        self.assertLess(statistics.median(rows), 2_000, "the ordinary regime is under a second")
         self.assertGreater(
             rows[-1], 10 * p95,
             f"the unbounded downshift is gone from the corpus (max {rows[-1]}ms vs p95 {p95}ms). "
-            "If a downshift deadline landed, derive H_ref from it and delete this test.")
+            "If E_tx_down has been re-measured under the deadline, derive H_ref and delete this.")
+
+
+def down_committed_ms():
+    """`decided` for every `Down`/commit record whose `decided` means the DECISION cost.
+
+    ` prime=` is the marker for the leg split; before it the field also carried the post-commit
+    feed. Shared by two tests so the restriction cannot drift between them.
+    """
+    import glob
+    pattern = re.compile(r"abr: tx Down \d+->\d+kbps outcome=committed decided=(\d+)ms")
+    return [int(m.group(1))
+            for path in sorted(glob.glob(str(ROOT / "docs/measurements/*-logs/*.log")))
+            for line in pathlib.Path(path).read_text(errors="replace").splitlines()
+            if " prime=" in line
+            for m in [pattern.search(line)] if m]
+
+
+class NoTransactionOutspendsItsReserve(unittest.TestCase):
+    """**The property J3b enforces, graded on the corpus rather than asserted about the code.**
+
+    A candidate transaction runs inline on the demux worker and stages its output until commit, so
+    the playable reserve falls one millisecond per millisecond of wall clock while it runs. A
+    transaction whose media fetches alone exceed the reserve it started with has therefore stalled
+    playback, whatever it went on to decide.
+
+    `warmup + graded` is a LOWER bound on the wall clock (the control plane sits on top of it), so
+    this is the permissive form of the deadline — which is the point: it is the strongest statement
+    a captured log can support, and it is already sharp enough to catch exactly one record.
+
+    **One record in the whole corpus violates it, and it is the one the deadline exists to
+    prevent.** It is grandfathered by name below because the corpus is append-only. Everything
+    captured since is graded automatically; a second violation fails this test.
+    """
+
+    #: (capture directory, `decided` ms) — captured BEFORE `candidate_warmup_budget` bounded a
+    #: downshift. Not a tolerance: an exhaustive list of the evidence that motivated the change.
+    #: It shrinks to nothing when these captures are eventually pruned, and it must never grow.
+    GRANDFATHERED = {("j3a-window-logs", 36156)}
+
+    # `.*?` between `graded=` and `buf_start=` because `warmup_dl=` landed between them and the
+    # corpus holds captures from both sides of that change. This grader must read BOTH: a
+    # regex pinned to one field order silently drops half the evidence it exists to check.
+    LEGS = re.compile(r"abr: tx (\w+) \d+->\d+kbps outcome=(\S+).*?warmup=(\d+|none)ms "
+                      r"graded=(\d+|none)ms.*? buf_start=(-?\d+)ms")
+
+    @classmethod
+    def violations(cls):
+        import glob
+        out, total = [], 0
+        for path in sorted(glob.glob(str(ROOT / "docs/measurements/*-logs/*.log"))):
+            capture = pathlib.Path(path).parent.name
+            for n, line in enumerate(pathlib.Path(path).read_text(errors="replace").splitlines(), 1):
+                m = cls.LEGS.search(line)
+                if not m:
+                    continue
+                total += 1
+                spent = sum(int(g) for g in (m.group(3), m.group(4)) if g != "none")
+                if spent > int(m.group(5)):
+                    out.append((capture, n, m.group(1), spent, int(m.group(5))))
+        return out, total
+
+    def test_the_corpus_is_large_enough_to_mean_something(self):
+        _, total = self.violations()
+        self.assertGreaterEqual(total, 100, f"only {total} transactions carry a leg breakdown")
+
+    def test_no_transaction_outside_the_named_ones_outspends_its_reserve(self):
+        violations, total = self.violations()
+        unexpected = [v for v in violations if (v[0], v[3]) not in self.GRANDFATHERED]
+        self.assertFalse(
+            unexpected,
+            f"{len(unexpected)} of {total} transactions spent more than the reserve they started "
+            f"with, and are not the pre-deadline record: {unexpected}")
+
+    def test_the_grandfathered_record_is_still_there_so_this_test_can_still_fail(self):
+        """A guard that only ever passes has stopped being a guard. If the pre-deadline capture is
+        pruned, delete the entry rather than leaving a check for evidence that is gone."""
+        found = {(v[0], v[3]) for v in self.violations()[0]}
+        self.assertEqual(
+            found & self.GRANDFATHERED, self.GRANDFATHERED,
+            "the grandfathered pre-deadline record is no longer in the corpus; drop it from the set")
 
 
 if __name__ == "__main__":

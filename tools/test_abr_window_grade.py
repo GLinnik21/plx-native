@@ -269,7 +269,8 @@ class TheCandidateObservation(unittest.TestCase):
     """
 
     TX = ("abr: tx Up 4000->6000kbps outcome=committed decided=3065ms total=4100ms control=120ms "
-          "prime=40ms master=30ms media=50ms warmup=1800ms graded=900ms buf_start=9000ms "
+          "prime=40ms master=30ms media=50ms warmup=1800ms graded=900ms warmup_dl=2200ms "
+          "buf_start=9000ms "
           "buf_decided=6000ms feed=900ms buf_fed=9000ms buf_end=9000ms cur_acq_before=1200ms "
           "net=9000kbps fast=9200kbps slow=8800kbps unc=120pm declared=5602kbps "
           "graded_bytes=1441792")

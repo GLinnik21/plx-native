@@ -966,6 +966,24 @@ must be fixed with it:
   print `none` — which `tests/run.py` now parses as `None` rather than losing the line. A
   differential test pins it: read as zero, a 12 s reserve with a silent audio lane produces a
   `Prime(Down)`.
+
+  **[CORRECTED, same day] The commit that landed this OVERSTATED how often it fires**, and the
+  correction is worth more than the claim was. It said the `None` state "is what a session looks
+  like for the first segment after every open and every seek, with the video queue holding
+  whatever it holds — on a fast link, the full 8 MiB." Reading `hls_buffer_snapshot` back: `None`
+  needs `SHARED.hls_audio_tail_ns < 0` **and** the segment's own `audio_tail_ns` to be absent while
+  its `transfer.audio_expected` is set. The shared tail is `-1` only at a session start or after a
+  seek — but on those segments the demuxed segment normally CARRIES an audio timestamp, which
+  satisfies the second clause and yields a number. So the real condition is narrower: *a segment
+  that declares an audio stream and produces no audio AU, on a session whose audio lane has not
+  spoken since the last reset*. And after a seek both queues are flushed, so the video reserve is
+  one segment rather than 8 MiB.
+
+  Two things follow. The FIX is unaffected — an `Option` is the correct type, five readers now
+  give five different correct answers to "unknown", and a fabricated zero could not have served
+  any of them. The IMPORTANCE is smaller than claimed, and it is **not device-exercised**: zero
+  `buf=none` samples across the ABR captures, because no case in `tests/manifest.json` seeks
+  during an Auto/HLS playback. Treat R11 as host-proven and device-unobserved until one does.
 * ~~**There is no terminal case** when no rung is viable~~ — **NAMED 2026-08-27, and it is a
   naming rather than a fix, deliberately.** At the ladder floor `Rung::below()` is the identity, so
   the proposal was already skipped and `Stay` was already the answer; there is no other answer,
@@ -1245,19 +1263,30 @@ choice — quality points per halving of the safety horizon — and nobody has p
 
 ### [CORRECTED 2026-08-27] `E_tx_down` is BIMODAL, and `H_ref` is not derivable until J3b bounds it
 
-The paragraph above takes one observation as *the* cost of a downshift transaction. The whole
-committed corpus holds **65** `Down/commit` records, and they do not describe one quantity:
+The paragraph above takes one observation as *the* cost of a downshift transaction. The committed
+corpus holds **48** `Down/commit` records on which `decided` means the decision cost, and they do
+not describe one quantity:
 
 | | min | p50 | p90 | p95 | max |
 |---|---:|---:|---:|---:|---:|
-| `decided` ms | 26 | **916** | 1 801 | 2 198 | **36 164** |
+| `decided` ms | 26 | **749** | 1 441 | 1 491 | **36 164** |
 
-1 424 ms is not a best case — it sits at the **74th percentile**, and as a central value it is
-fine. The problem is the last column. p95 is 2 198 ms and the maximum is **36 164 ms**, a 16×
-jump with nothing in between: that is not a tail, it is a second regime. The record is
+**48, not 65, and the restriction matters — the first version of this correction got it wrong in
+the permissive direction.** Before the transaction leg split, `tx.finish("committed")` sat below
+the feed loop, so `decided` also contained the post-commit backpressure. That is a different
+quantity, it is the same error the board caught in `docs/measurements/i2-transaction-cost.md`
+("true upshift cost is 3 065 ms median, not 9 563"), and pooling the 17 older records here gave
+p50 916 / p95 2 198 — which **understates** the gap. ` prime=` is the marker for the split, and
+`tools/test_abr_calibrate_plant.py` now restricts on it.
+
+1 424 ms is not a best case — it sits at the **85th percentile**, and as a central value it is
+fine. The problem is the last column. The six largest values are 1 441, 1 451, 1 491, 1 502,
+2 241 and **36 164**: a **24× jump from p95, and 16× from the second-largest value in the entire
+corpus**. That is not a tail, it is a second regime. The record is
 `abr: tx Down 14000->8000kbps outcome=committed decided=36164ms … warmup=36156ms` on a link that
 had fallen to 9 593 kbps
-(`docs/measurements/j3a-window-logs/pipe_abr_down_collapse.log:311`).
+(`docs/measurements/j3a-window-logs/pipe_abr_down_collapse.log:311`), and it is
+**post-leg-split** — its `warmup=36156ms` says the cost was the media fetch itself and not the feed.
 
 **36 seconds is not a measurement of a transaction cost. It is a measurement of an UNBOUNDED
 transaction.** §5 and the J3b analysis both record why: `candidate_prime_budget` and
@@ -1279,9 +1308,17 @@ Consequences, and they are worth separating:
   which is the sound version of "derived from a measured `E_tx_down`", because the deadline is a
   stated choice and the measurement then bounds whether it is affordable.
 
-Until then this section's `H_ref` should be read as **a lower bound with a known counter-example**,
-not as a measured constant. Nothing in `src/abr/` reads it yet, so the correction costs nothing but
-must not be lost.
+**The deadline landed 2026-08-27 (§5); the re-measurement is what is still owed.** `H_ref` is
+therefore blocked on evidence again rather than on code, and the evidence is one device run. Note
+that a landed deadline does NOT retire the counter-example — the corpus is append-only, so the
+36 s record stays in it forever — which is why the grading moved to a property that new captures
+satisfy or fail on their own: **no candidate transaction may spend more than the reserve it
+started with**. Across the 115 transactions in the corpus that carry a leg breakdown, exactly one
+violates it, and it is this one, by 6.2×.
+
+Until the re-measurement, this section's `H_ref` should be read as **a lower bound with a known
+counter-example**, not as a measured constant. Nothing in `src/abr/` reads it yet, so the
+correction costs nothing but must not be lost.
 
 **The same run is the argument for the constraint half of this section.** The controller reached
 `cur_acq_before = 61 480 ms` — 61.5 seconds to fetch a 2-second segment — before it downshifted,

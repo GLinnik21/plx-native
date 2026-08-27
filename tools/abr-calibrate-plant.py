@@ -136,21 +136,66 @@ def settled(rows):
     return rows[len(rows) // 4:] if len(rows) >= 8 else rows
 
 
+#: Capture directories under `docs/measurements/`, **NEWEST FIRST**. Stated rather than derived,
+#: because neither available signal orders them and both look like they do.
+#:
+#: `sorted(reverse=True)` was the rule here, and it happened to be right only while the newest
+#: capture was `p2-logs`: the names mix PHASE numbering (`p0`, `p1`, `p1b`, `p2`, `p2h`) with
+#: INCREMENT numbering (`i2`, `j3`, `j3a`, `j3b`), and reverse-alphabetical puts every `p*` ahead
+#: of every `j*`. So the moment a `j3b` capture landed, "newest wins" silently meant "p2 wins" —
+#: which is precisely the stale-table failure this whole file exists to prevent, recurring in the
+#: mechanism meant to prevent it. `git log` cannot rescue it either: this branch's captures all
+#: carry the same commit date.
+#:
+#: An unlisted directory is an ERROR, not a silent placement (see below). Adding a capture
+#: therefore costs one line here, and forgetting it fails loudly rather than calibrating from
+#: whichever name happens to sort highest.
+CAPTURE_ORDER = (
+    "j3b-logs",          # J3b: the downshift deadline, and the first pins taken under it
+    "j3a-window-logs",   # J3a: the admission window's shadow verdict
+    "j3-decides-logs",   # J3: the window moved from shadow to deciding
+    "p2h-logs",          # P2h: the PMS ladder probe (host-side; no pin logs)
+    "p2-logs",           # P2: identification, the M4 census that landed
+    "p1b-logs",          # P1b: the apparatus rebuild, second pass
+    "p1-logs",           # P1: the apparatus rebuild
+    "i2-logs",           # I2: the transaction-cost baseline, pre-board
+)
+
+
+def captures_newest_first():
+    """Every capture directory that exists, newest first. Unlisted ones are an error."""
+    present = {pathlib.Path(d).name for d in glob.glob(str(ROOT / "docs/measurements/*-logs"))}
+    unknown = sorted(present - set(CAPTURE_ORDER))
+    if unknown:
+        raise SystemExit(
+            f"capture director{'y' if len(unknown) == 1 else 'ies'} {unknown} not in "
+            "CAPTURE_ORDER. Place them in the chronology (newest first) in "
+            "tools/abr-calibrate-plant.py — the order cannot be derived from the names.")
+    return [ROOT / "docs/measurements" / name for name in CAPTURE_ORDER if name in present]
+
+
 def operating_points(fixtures: pathlib.Path):
     fixture = fixture_map()
     out = {}
     for rung in sorted({int(r) for r in fixture}, reverse=False):
         best = None
-        for d in sorted(glob.glob(str(ROOT / "docs/measurements/*-logs")), reverse=True):
+        for d in captures_newest_first():
             p = pathlib.Path(d) / f"pipe_abr_pin_{rung}.log"
             if not p.exists():
                 continue
             rows = settled(pin_samples(p, rung))
             if len(rows) < 8:
                 continue
-            # Newest capture wins: `sorted(reverse=True)` puts p2 ahead of p1b ahead of p1, which is
-            # what makes the FIXTURE REBUILD visible instead of averaged away. A table that mixed
-            # both packs would be wrong at every rung rather than at two of them.
+            # Newest capture wins, and the search stops at the FIRST one that has this rung —
+            # a rung is never averaged across captures, which is what makes a fixture rebuild
+            # visible instead of blended away.
+            #
+            # **It is per rung, not wholesale, and that is a real seam.** No single capture has
+            # pinned every rung, so a table normally draws from two or three; and while a capture
+            # is still being taken it draws from a PARTIAL one, mixing generations. The defence is
+            # not a rule, it is the `provenance` column, which names the capture behind every row.
+            # Read it before trusting a table: rows from different captures are legitimate only
+            # while the fixture pack is unchanged between them.
             best = (pathlib.Path(d).name, rows)
             break
         if best is None:
