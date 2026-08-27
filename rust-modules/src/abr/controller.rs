@@ -198,14 +198,20 @@ pub(crate) struct Controller {
     /// cycled, running slow exactly when the reserve is full and the byte cap is idling the demux
     /// worker, which is the substitution N13 identifies as a defect elsewhere.
     now_ms: u64,
-    /// **The instant of the last COMMIT, and the arm of the dwell guard** (N10).
+    /// **The instant the dwell guard EXPIRES, fixed when it is armed** (N10).
     ///
     /// It replaced `cooldown`, which counted SEGMENTS — and a segment is `bytes / C` of wall time,
     /// so an eight-segment guard was an unbounded amount of wall clock that got longer exactly as
     /// the link got worse. Any commit arms it, because any commit starts a PMS encoder session and
     /// this is an encoder-lifecycle guard; only the UP path is blocked by it, because a downshift
     /// is a recovery action and rate-limiting recovery is how a stall becomes a policy.
-    last_commit_ms: Option<u64>,
+    ///
+    /// It holds the deadline rather than the commit instant because `E_tx` is a function of the
+    /// segment's media duration, and a guard's length must be decided by the transaction that
+    /// armed it. Recomputing it each sample from the CURRENT `last_segment_ms` let a longer
+    /// segment retroactively extend a running dwell — and HLS segment durations come off
+    /// `#EXTINF`, i.e. a request PMS may answer differently at any point.
+    dwell_until_ms: Option<u64>,
     /// The last observed segment's media duration, so `reject` can price `E_tx` without the sample
     /// that is no longer in scope by then. Zero until the first `observe`, and a zero-duration
     /// segment cannot arm a backoff, which is the correct reading of "no measurement".
@@ -267,7 +273,7 @@ impl Controller {
             policy: AbrPolicy::measured(),
             samples_on_rung: 0,
             now_ms: 0,
-            last_commit_ms: None,
+            dwell_until_ms: None,
             last_segment_ms: 0,
             reject_block: None,
             last_reason: None,
@@ -315,7 +321,7 @@ impl Controller {
     /// written around one steady state: a stream that is keeping up delivers `d` of content every
     /// `d` of wall clock. This advances the clock by exactly that and nothing else, so a test that
     /// does not care about time does not have to invent a number — and, more importantly, cannot
-    /// silently leave the clock at zero, where `last_commit_ms` would never age and every
+    /// silently leave the clock at zero, where the dwell deadline would never be reached and every
     /// post-commit upshift would be blocked by a guard the test never meant to exercise.
     ///
     /// **A test about a wall-clock guard must call `observe` directly.** Those are the tests where
@@ -967,8 +973,9 @@ impl Controller {
         self.pending = None;
         self.samples_on_rung = 0;
         self.now_ms = self.now_ms.max(now_ms);
-        // Both directions arm it; only the UP path reads it. See the field.
-        self.last_commit_ms = Some(self.now_ms);
+        // Both directions arm it; only the UP path reads it. See the field. The length is fixed
+        // HERE, from the segment this transaction ran against.
+        self.dwell_until_ms = Some(self.now_ms.saturating_add(self.upshift_dwell_ms()));
         // A rung that just committed is a rung that works. Whatever the last reject believed about
         // it has been answered by a transaction that finished, so the block is retired by evidence
         // of exactly the kind it was waiting for.
@@ -996,7 +1003,7 @@ impl Controller {
         self.pending = None;
         self.now_ms = self.now_ms.max(now_ms);
         // **Only a DISCRETIONARY attempt arms the block, and a downshift is not one.** This guard
-        // prices repeating a spend the controller chose to make; `last_commit_ms`' doc already
+        // prices repeating a spend the controller chose to make; `dwell_until_ms`' doc already
         // draws the same line for the dwell — "a downshift is a recovery action and rate-limiting
         // recovery is how a stall becomes a policy" — and the argument is identical here, with a
         // sharper failure. `refill_time_ms` returns `None` whenever `safe_budget <= R_current`,
@@ -1017,15 +1024,9 @@ impl Controller {
         {
             return true;
         }
-        // What the failed attempt spent: `E_tx`, the sum of the two deadlines it was held to.
-        let cost_ms = i64::try_from(
-            crate::abr::viability::upshift_transaction_cost(
-                std::time::Duration::from_millis(u64::try_from(self.last_segment_ms).unwrap_or(0)),
-                &self.policy,
-            )
-            .as_millis(),
-        )
-        .unwrap_or(i64::MAX);
+        // What the failed attempt spent: `E_tx`, the sum of the two deadlines it was held to —
+        // the same quantity the dwell is armed for, asked for once.
+        let cost_ms = i64::try_from(self.upshift_dwell_ms()).unwrap_or(i64::MAX);
         // What it takes to earn that back: the CURRENT rung is what playback keeps consuming while
         // the reserve refills, and the surplus is measured against the conservative budget rather
         // than the raw rate — this guard decides whether another attempt is affordable, and an
@@ -1046,30 +1047,35 @@ impl Controller {
         true
     }
 
-    /// Wall milliseconds still owed on the dwell guard (N10). `0` once the interval has elapsed,
-    /// and `0` before any commit — a controller that has started no encoder owes nothing.
-    fn dwell_remaining_ms(&self) -> u64 {
-        let Some(last) = self.last_commit_ms else {
-            return 0;
-        };
+    /// `E_tx` for the segment currently in scope — the interval a commit arms the dwell for, and
+    /// the debt a failed upshift owes. Zero when no segment has been measured, which is the
+    /// correct reading of "no measurement" and cannot arm anything.
+    ///
+    /// **Saturate toward NOT blocking.** `upshift_transaction_cost` is bounded by `2.6 * d` today
+    /// and this conversion cannot fail, but the safe failure of a guard is to let the decision
+    /// through: `u64::MAX` here would be a dwell of 5.8e8 years, i.e. a permanent latch on every
+    /// climb for the life of the demux, and it is one refactor away — the moment this cost is
+    /// asked for a `Direction::Down`, `candidate_warmup_budget` returns `Duration::MAX` and
+    /// `saturating_add` keeps it.
+    fn upshift_dwell_ms(&self) -> u64 {
         if self.last_segment_ms <= 0 {
             return 0;
         }
-        // **Saturate toward NOT blocking.** `upshift_transaction_cost` is bounded by `2.6 * d`
-        // today and this conversion cannot fail, but the safe failure of a guard is to let the
-        // decision through: `u64::MAX` here would be a dwell of 5.8e8 years, i.e. a permanent
-        // latch on every climb for the life of the demux, and it is one refactor away — the moment
-        // this cost is asked for a `Direction::Down`, `candidate_warmup_budget` returns
-        // `Duration::MAX` and `saturating_add` keeps it.
-        let dwell = u64::try_from(
+        u64::try_from(
             crate::abr::viability::upshift_transaction_cost(
                 std::time::Duration::from_millis(u64::try_from(self.last_segment_ms).unwrap_or(0)),
                 &self.policy,
             )
             .as_millis(),
         )
-        .unwrap_or(0);
-        dwell.saturating_sub(self.now_ms.saturating_sub(last))
+        .unwrap_or(0)
+    }
+
+    /// Wall milliseconds still owed on the dwell guard (N10). `0` once the deadline has passed,
+    /// and `0` before any commit — a controller that has started no encoder owes nothing.
+    fn dwell_remaining_ms(&self) -> u64 {
+        self.dwell_until_ms
+            .map_or(0, |until| until.saturating_sub(self.now_ms))
     }
 
     /// Is a live reject block refusing this climb (N11)? See [`RejectBlock`] for why this takes no

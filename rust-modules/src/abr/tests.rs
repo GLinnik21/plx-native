@@ -1137,6 +1137,80 @@ fn the_dwell_between_two_climbs_is_wall_clock_and_not_a_segment_count() {
     );
 }
 
+/// **A running dwell has a FIXED length: a longer segment afterwards must not extend it.**
+///
+/// `E_tx` is `3/2 * d + production_max_pm * d`, a function of the segment's media duration, and
+/// `dwell_remaining_ms` recomputed it every sample from whatever `last_segment_ms` happened to
+/// hold — so a guard armed against a 2 s segment silently became a guard against a 10 s one the
+/// moment such a segment arrived. That is not hypothetical input: HLS segment durations come off
+/// `#EXTINF`, which is a duration PMS chooses and may change, and `seconds_per_segment` is a
+/// REQUEST the server is free to answer differently.
+///
+/// Differential by construction: under the recomputing form the second reading is larger than the
+/// first despite time having passed, which is the one thing a countdown cannot do.
+#[test]
+fn a_longer_segment_cannot_retroactively_lengthen_a_running_dwell() {
+    const ARMED_ON_MS: u32 = 2_000;
+    const MUCH_LONGER_MS: u32 = 10_000;
+    let mut c = controller_at(Rung::P720);
+    let up = prime_up(&mut c);
+    let committed_at = c.clock_ms();
+    assert!(c.commit(up, committed_at));
+    let armed = c.telemetry().gates.dwell_ms;
+    assert!(armed > 0, "a commit must arm the dwell");
+
+    // One much longer segment arrives while the guard is still running.
+    let _ = c.observe(
+        sample_of(MUCH_LONGER_MS, 40_000, 200, 20_000),
+        committed_at + u64::from(ARMED_ON_MS),
+    );
+    let after = c.telemetry().gates.dwell_ms;
+    assert!(
+        after < armed,
+        "the dwell owed {armed} ms when armed and {after} ms after {ARMED_ON_MS} ms had passed — a \
+         countdown that grows is one whose length is being re-derived from a segment that had no \
+         part in arming it",
+    );
+    assert_eq!(
+        after,
+        armed - u64::from(ARMED_ON_MS),
+        "and it must have counted down by exactly the wall time that elapsed",
+    );
+}
+
+/// **N11's `Circumstance` half, which nothing exercised.** `RejectCause::Circumstance` is
+/// constructed only in `ff.rs`; the simulator hardcodes `Candidate`, so the entire "do not block a
+/// good rung after a seek" side of the guard had no test at all.
+///
+/// The rule is the enum's own: a reject that says nothing about the RUNG must arm nothing. A seek
+/// makes the reserve unreadable and the route moving underneath changes the origin — in both the
+/// transaction that follows starts from different facts, and refusing the next climb on either
+/// would be the guard doing harm in the one direction with no recovery path.
+///
+/// Differential, with its `Candidate` control: asserting only the `Circumstance` half would pass
+/// against a `reject` that armed nothing at all.
+#[test]
+fn a_reject_that_says_nothing_about_the_rung_arms_nothing() {
+    let mut circumstantial = bootstrap_controller();
+    let up = prime_up(&mut circumstantial);
+    assert!(circumstantial.reject(up, RejectCause::Circumstance, circumstantial.clock_ms()));
+    assert_eq!(
+        circumstantial.telemetry().gates.blocked_kbps,
+        0,
+        "a seek or an origin change is a statement about the SESSION; the next transaction starts \
+         from different facts and must not be refused on this one's account",
+    );
+
+    let mut candidate = bootstrap_controller();
+    let up = prime_up(&mut candidate);
+    assert!(candidate.reject(up, RejectCause::Candidate, candidate.clock_ms()));
+    assert!(
+        candidate.telemetry().gates.blocked_kbps > 0,
+        "a failure about the candidate must still arm the block, or the assertion above grades \
+         nothing",
+    );
+}
+
 /// **N10's dwell is anchored at the COMMIT, not at the proposal that opened the transaction.**
 ///
 /// `Controller::now_ms` is written only by `observe`, so before `commit` took the caller's clock
