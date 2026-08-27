@@ -1074,7 +1074,36 @@ def a_timeline_climb(lines, min_climb, dense_only=False):
     hi = max(t for t, _ in ts)
     ok = (hi - lo) >= min_climb
     src = "heartbeat pos=" if dense else "timeline t="
-    return ok, f"{src} {lo}s..{hi}s (climb {hi-lo}s, need >={min_climb}s) over {len(ts)} samples"
+    # The RATE rides along, reported on every case and asserted by none of them: a climb bound
+    # says the film got somewhere, and says nothing about how long it took. `playback_rate`'s
+    # docstring has the mechanism — a reserve cannot see a slow film, because the reserve is
+    # measured against the playhead that slowed. Absent on the sparse fallback, which is 10 s
+    # apart and cannot carry a rate.
+    rate = ""
+    if dense:
+        mean_pm, worst_pm, _n, legs = playback_rate(lines)
+        if mean_pm is not None:
+            rate = f"; {mean_pm}pm of real time (worst 10s window {worst_pm}pm over {legs} leg(s))"
+    return ok, f"{src} {lo}s..{hi}s (climb {hi-lo}s, need >={min_climb}s) over {len(ts)} samples{rate}"
+
+
+def a_play_rate(lines, floor_pm):
+    """The film ran at speed. `floor_pm` is per mille of real time; 1000 is exact.
+
+    Declared per case rather than defaulted, because the honest floor is a property of what the
+    case is doing to the link: a profile that deliberately collapses the link to below the ladder
+    floor MUST run slow, and a case on a link that carries the rung must not. There is no one
+    number, and a default here would be a guess wearing a bound.
+
+    Reads the worst window rather than the mean: a film that crawls for thirty seconds and then
+    replays at 2x to catch up has a mean of 1000 and is exactly the defect.
+    """
+    mean_pm, worst_pm, beats, legs = playback_rate(lines)
+    if worst_pm is None:
+        return False, f"no usable media-clock series ({beats} beat(s), {legs} leg(s))"
+    return worst_pm >= floor_pm, (
+        f"worst 10s window {worst_pm}pm of real time (mean {mean_pm}pm over {legs} leg(s), "
+        f"{beats} beats), want >= {floor_pm}pm")
 
 
 def a_timeline_post(lines):
@@ -1369,13 +1398,22 @@ def early_exit_allowed(case, cfg):
     same binary scored 7 rung changes on a full window while PASSING a 5-bound on an early-exit
     run of the same case (I1, 2026-08-26), then 8 on a later full window. A bound whose value
     depends on when grading stopped cannot be graded early in either direction.
+
+    `min_play_rate_pm`: the same shape from the other side. It grades the WORST window of the
+    media clock, so it is satisfied by every prefix that has not met the slow leg yet, and a case
+    that stopped early would report the rate of its healthy opening. Both tiers ask it now, which
+    is why `run_case` calls this function too -- it did not until 2026-08-27, and the server cases
+    are exactly where a slow film was reported.
     """
+    exp = case.get("expect") or {}
     if cfg.get("no_early"):
         return False, ""                      # the operator already said so; no need to explain
     if case.get("gst_trace"):
         return False, "gst_trace assertions are graded only after the run"
-    if "abr_shape" in (case.get("expect") or {}):
+    if "abr_shape" in exp:
         return False, "abr_shape carries a commit COUNT, which is window-length sensitive"
+    if "min_play_rate_pm" in exp:
+        return False, "min_play_rate_pm grades the WORST window, which a prefix cannot settle"
     return True, ""
 
 
@@ -1574,6 +1612,71 @@ def abr_stalls(lines):
     return (max(runs) if runs else 0), sum(runs), len(series)
 
 
+def playback_rate(lines, window=10):
+    """Media seconds per WALL second — whether the film is running at speed.
+
+    Returns `(mean_pm, worst_pm, beats, legs)` in per mille of real time, or `(None, None, n, 0)`
+    when there is not enough of a series to say. 1000 is real time; 670 is the picture crawling.
+
+    **This is the only thing here that can see a slow film.** Every other metric on this line is a
+    RESERVE, and a reserve is media time measured against the playhead — so when the playhead
+    itself slows down, the reserve stops draining, `slope` goes quiet, and `min_buf_ms` reads
+    healthy while the picture runs at two thirds speed. `max_stall_s` cannot see it either: a
+    stall is the clock not advancing at all, and this is the clock advancing too slowly.
+    Measured on the corpus 2026-08-27: `pipe_abr_band_20000` holds 670 for ~30 s with `buf`
+    parked at 2.2 s, `slope` decaying to −29 ms/s and every buffer signal reading fine.
+
+    The wall clock is the HEARTBEAT COUNT: `app.rs`'s `loop_tick` emits one line per wall second
+    whatever the frame rate, so beats are seconds. Arrival stamps are used instead when `lines`
+    carries them (a live `StampedLines`), because they measure wall time directly and survive a
+    beat the ssh hop dropped; a log read back off disk has none and falls back to the count.
+
+    RESOLUTION: `pos=` is INTEGER seconds (`RE_POS`), so a single beat is ±1 s and only a window
+    is meaningful. Over `window` beats the quantization is ±1000/(window−1) pm — ±111 pm at the
+    default 10 — which is why nothing shorter is reported and why a bound below ~900 is the only
+    kind this can carry honestly.
+
+    A seek or a reload moves the media clock discontinuously and is NOT a rate. Legs are split on
+    any backward step, and on a forward step larger than the wall gap plus one second of slack;
+    each leg is measured on its own and legs shorter than `window` are dropped.
+    """
+    stamps = getattr(lines, "stamps", None)
+    beats = []
+    for i, ln in enumerate(lines):
+        m = RE_POS.search(ln)
+        if m:
+            beats.append((int(m.group(1)),
+                          stamps[i] if stamps and i < len(stamps) else float(len(beats))))
+    if len(beats) < window:
+        return None, None, len(beats), 0
+    legs, cur = [], []
+    for b in beats:
+        if cur:
+            d_media, d_wall = b[0] - cur[-1][0], b[1] - cur[-1][1]
+            if d_media < 0 or d_media > d_wall + 1.0:
+                legs.append(cur)
+                cur = []
+        cur.append(b)
+    legs.append(cur)
+    legs = [l for l in legs if len(l) >= window]
+    if not legs:
+        return None, None, len(beats), 0
+    worst, media, wall = None, 0.0, 0.0
+    for leg in legs:
+        media += leg[-1][0] - leg[0][0]
+        wall += leg[-1][1] - leg[0][1]
+        for i in range(len(leg) - window + 1):
+            a, b = leg[i], leg[i + window - 1]
+            span = b[1] - a[1]
+            if span <= 0:
+                continue
+            r = int(round(1000 * (b[0] - a[0]) / span))
+            if worst is None or r < worst:
+                worst = r
+    mean = int(round(1000 * media / wall)) if wall > 0 else None
+    return mean, worst, len(beats), len(legs)
+
+
 def abr_raster_changes(lines):
     """Commits whose raster differs from the previous commit's.
 
@@ -1661,12 +1764,15 @@ def a_abr_shape(lines, spec, dip_windows=()):
     min_buf = abr_min_buf_ms(samples)
     dip_kbps, dip_note = abr_dip_max_kbps(samples, dip_windows)
     stall_max, stall_total, beats = abr_stalls(lines)
+    rate_mean, rate_worst, _rate_beats, rate_legs = playback_rate(lines)
     rasters = abr_raster_changes(lines)
     story += (f" | min_buf_ms={min_buf if min_buf is not None else 'n/a'}"
               f" dip_max_kbps={dip_kbps if dip_kbps is not None else 'n/a'} ({dip_note})"
               f" max_stall_s={stall_max if stall_max is not None else 'n/a'}"
               f" (total {stall_total if stall_total is not None else 'n/a'}s over {beats} beats,"
-              f" +/-1s) raster_changes={rasters} lane[{abr_binding_lane(samples)}]"
+              f" +/-1s) play_rate_pm={rate_mean if rate_mean is not None else 'n/a'}"
+              f"/worst{rate_worst if rate_worst is not None else 'n/a'} over {rate_legs} leg(s)"
+              f" raster_changes={rasters} lane[{abr_binding_lane(samples)}]"
               f" segments={len(samples)}")
     if not samples:
         story += " | WARNING: no `abr: sample` line — every metric above is blind"
@@ -1677,6 +1783,12 @@ def a_abr_shape(lines, spec, dip_windows=()):
     stall_cap = spec.get("max_stall_s")
     if stall_cap is not None and (stall_max is None or stall_max > stall_cap):
         return False, f"stalled {stall_max}s, want <= {stall_cap}s :: {story}"
+    # The film ran SLOW. Separate from `max_stall_s` on purpose: that grades the clock stopping,
+    # this grades it advancing at the wrong speed, and a reserve-derived metric can see neither.
+    rate_floor = spec.get("min_play_rate_pm")
+    if rate_floor is not None and (rate_worst is None or rate_worst < rate_floor):
+        return False, (f"played at {rate_worst}pm of real time (mean {rate_mean}pm), "
+                       f"want >= {rate_floor}pm :: {story}")
     raster_cap = spec.get("raster_changes_max")
     if raster_cap is not None and rasters > raster_cap:
         return False, f"{rasters} raster change(s), want <= {raster_cap} :: {story}"
@@ -2790,6 +2902,8 @@ def evaluate(case, lines):
     if exp.get("require_video_bound", True):
         results.append(("video_bound", *a_video_bound(lines)))
     results.append(("timeline_climb", *a_timeline_climb(lines, exp.get("min_timeline_climb_s", 12))))
+    if "min_play_rate_pm" in exp:
+        results.append(("play_rate", *a_play_rate(lines, exp["min_play_rate_pm"])))
     results.append(("timeline_post", *a_timeline_post(lines)))
     if exp.get("no_playing_error", True):
         results.append(("no_error", *a_no_error(lines)))
@@ -2924,7 +3038,9 @@ def run_case(case, cfg, token, verbose):
         print(f"    plxnative-servers: <{describe_server(cfg['shared_server'])}, token redacted>")
 
     # 4. run + grade the log as it streams (run_secs is the cap, not the runtime)
-    early = not cfg.get("no_early")
+    early, why = early_exit_allowed(case, cfg)
+    if not early and why:
+        print(f"    early exit disabled: {why}")
     print(f"    run-stream (cap {run_secs}s{'' if early else ', early exit off'}) ...")
     lines, elapsed, stopped_early, settled = stream_case(
         case, cfg, run_secs, early=early, inject=key_inject_for_case(case))

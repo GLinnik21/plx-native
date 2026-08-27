@@ -2315,6 +2315,95 @@ class EarlyExitSoundness(unittest.TestCase):
             self.assertFalse(allowed, f"{case.get('name')} would grade a commit count early")
 
 
+class ThePlaybackRateIsTheOnlyThingThatSeesASlowFilm(unittest.TestCase):
+    """The reserve metrics are blind to a film running slow, and this is the differential.
+
+    `min_buf_ms`, `max_stall_s` and `slope` are all measured against the PLAYHEAD. When the
+    playhead itself slows down, the reserve stops draining -- so every one of them reads healthy
+    at exactly the moment the picture is worst. Measured on the corpus 2026-08-27:
+    `pipe_abr_band_20000` sits at 670 per mille of real time for ~30 s with `buf` parked at
+    2.2 s and `slope` decaying to -29 ms/s, and no bound in the harness could see it.
+    """
+
+    @staticmethod
+    def beats(positions):
+        """A heartbeat per wall second, carrying `pos=` in media seconds."""
+        return [f"loop=60 route=player overlay=none pos={p}s vtick=5 vgap=201ms fps=60"
+                for p in positions]
+
+    def test_real_time_playback_reads_one_thousand(self):
+        mean, worst, beats, legs = run.playback_rate(self.beats(range(30)))
+        self.assertEqual(mean, 1000)
+        self.assertEqual(worst, 1000)
+        self.assertEqual((beats, legs), (30, 1))
+
+    def test_a_slow_leg_is_found_even_when_the_mean_is_perfect(self):
+        """The shape actually observed: crawl, then replay fast to catch up.
+
+        A mean would score this 1000 and report nothing at all. The worst window is the assertion
+        because the person watching saw thirty seconds of a broken film, not an average.
+        """
+        pos = list(range(0, 20))                      # 20 s at speed
+        pos += [20 + (i * 2) // 3 for i in range(30)]  # 30 s at two thirds
+        pos += [pos[-1] + 2 * i for i in range(1, 16)]  # catch up at 2x
+        mean, worst, _b, _l = run.playback_rate(pos and self.beats(pos))
+        self.assertLessEqual(worst, 700, "the 0.67x leg has to be visible")
+        self.assertGreaterEqual(mean, 950, "…and the mean is exactly what hides it")
+
+    def test_a_seek_is_not_a_rate(self):
+        """A discontinuity splits legs; it never becomes a 40x window or a negative one."""
+        forward = self.beats(list(range(20)) + list(range(300, 320)))
+        _mean, worst, _b, legs = run.playback_rate(forward)
+        self.assertEqual(legs, 2)
+        self.assertEqual(worst, 1000, "the jump must not be measured as playback")
+        back = self.beats(list(range(300, 320)) + list(range(20)))
+        _mean, worst, _b, legs = run.playback_rate(back)
+        self.assertEqual((legs, worst), (2, 1000))
+
+    def test_too_short_a_series_says_so_rather_than_guessing(self):
+        mean, worst, beats, legs = run.playback_rate(self.beats(range(4)))
+        self.assertEqual((mean, worst, legs), (None, None, 0))
+        self.assertEqual(beats, 4)
+        self.assertFalse(run.a_play_rate(self.beats(range(4)), 900)[0],
+                         "no series is a FAIL, never a silent pass")
+
+    def test_the_declared_bound_grades_the_worst_window(self):
+        slow = self.beats([0] + [(i * 2) // 3 for i in range(1, 40)])
+        ok, why = run.a_play_rate(slow, 900)
+        self.assertFalse(ok)
+        self.assertIn("pm of real time", why)
+        self.assertTrue(run.a_play_rate(self.beats(range(40)), 900)[0])
+
+    def test_the_reserve_bounds_pass_the_very_log_the_rate_bound_fails(self):
+        """THE differential. Same log: healthy reserve, no stall, and a two-thirds-speed film."""
+        log = []
+        for i in range(40):
+            log.append(f"loop=60 route=player overlay=none pos={(i * 2) // 3}s "
+                       f"vtick=5 vgap=201ms fps=60")
+            log.append("abr: steady current=20000kbps safe=10000kbps pending=0kbps")
+            log.append("abr: sample current=20000kbps media=20635kbps net=19622kbps buf=2210ms "
+                       "vbuf=2210ms abuf=2210ms dur=2000ms prod=1214pm n=28 decision=stay "
+                       "target=0kbps reason=None")
+        blind = {"min_buf_ms": 2000, "max_stall_s": 1, "raster_changes_max": 0}
+        ok, why = run.a_abr_shape(log, blind)
+        self.assertTrue(ok, f"the reserve bounds must PASS here, or the differential is not one: {why}")
+        self.assertIn("play_rate_pm=", why, "the rate is reported on every shaped case")
+        seeing, why = run.a_abr_shape(log, dict(blind, min_play_rate_pm=900))
+        self.assertFalse(seeing, why)
+        self.assertIn("of real time", why)
+
+    def test_a_case_declaring_the_bound_cannot_grade_it_on_a_prefix(self):
+        allowed, why = run.early_exit_allowed({"expect": {"min_play_rate_pm": 900}}, {})
+        self.assertFalse(allowed, "a worst-window bound is satisfied by every healthy prefix")
+        self.assertIn("WORST window", why)
+
+    def test_the_rate_rides_along_on_every_case_that_has_a_dense_series(self):
+        """Reported without being asserted, so a slow film is legible in a log nobody bounded."""
+        _ok, why = run.a_timeline_climb(self.beats([(i * 2) // 3 for i in range(40)]), 10)
+        self.assertIn("pm of real time", why)
+        self.assertIn("worst 10s window", why)
+
+
 class TheAbrWindowLineMatchesTheHarnessRegex(unittest.TestCase):
     """**The other half of a contract whose two sides never meet at runtime.**
 
