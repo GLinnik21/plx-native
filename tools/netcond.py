@@ -595,6 +595,15 @@ def _selftest(kbps, kbytes):
 def main():
     ap = argparse.ArgumentParser(description="network-conditioning TCP proxy")
     ap.add_argument("--listen", type=int, default=32401)
+    # **`--bind 127.0.0.1` is the SIMULATOR's shape and it needs no allowlist**, because both ends
+    # are this machine. Since 2026-08-28 `make sim` streams and demuxes, so conditioning a host
+    # playback is an ordinary thing to want — and the alternative spelling
+    # (`--allow-client 127.0.0.1` against the 0.0.0.0 default) puts a forwarding proxy for a
+    # token-carrying PMS on the LAN for an experiment that never leaves loopback. The television
+    # still needs the default bind and a real allowlist; this is the other case, named.
+    ap.add_argument("--bind", default="0.0.0.0",
+                    help="listener address (default 0.0.0.0; use 127.0.0.1 for a simulator run, "
+                         "which then needs no --allow-client)")
     ap.add_argument("--target", default="127.0.0.1:32400")
     ap.add_argument("--mode", default="pass")
     ap.add_argument("--control", default="/tmp/netcond.mode")
@@ -623,9 +632,9 @@ def main():
     with open(a.control, "w") as f:
         f.write(a.mode)
 
-    srv, _port = start_proxy(a.listen, target, mode, allow_clients=a.allow_client)
+    srv, _port = start_proxy(a.listen, target, mode, bind=a.bind, allow_clients=a.allow_client)
     print(
-        f"[netcond] :{a.listen} -> {target}   mode={a.mode}   control={a.control} "
+        f"[netcond] {a.bind}:{a.listen} -> {target}   mode={a.mode}   control={a.control} "
         f"allow_clients={len(a.allow_client)}",
         flush=True,
     )

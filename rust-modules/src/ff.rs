@@ -3911,8 +3911,54 @@ fn hls_demux(
             control.abandon(&primed.encoder_session);
             reject_hls_abr(controller, proposal);
             if raster_ready {
-                tx.finish("not_ready");
-                crate::player::log("abr: candidate lacked measured headroom; staying on current rung");
+                // **A REJECT NO LONGER DELIVERS NOTHING** — Phase 0, lever 1 of
+                // `docs/measurements/p0-plant-sizing.md`.
+                //
+                // These segments are already fetched, already demuxed, and already graded as
+                // within the proposal's raster bound. Discarding them made a rejected transaction
+                // cost its whole wall time with ZERO fill, which is why the up-guard is `Omega(D)`
+                // and why R2 could show the top of the ladder unreachable for any guard of that
+                // shape. Feeding them turns the post-reject reserve from `B - E_tx_max` into
+                // `B - E_tx_max + D`. The sweep prices the change at +555 ms of climbable ceiling
+                // against a measured 167 ms noise floor, and neither this nor the queue enlargement
+                // clears that floor alone.
+                //
+                // **Only in the `raster_ready` arm.** The other branch rejected these very AUs for
+                // having a raster outside the rung's bound; feeding a segment we just refused
+                // would be acting on a check we performed and then ignored.
+                //
+                // **The timeline and the cursor must BOTH advance, or the same media plays twice.**
+                // `staged_timeline` is what these AUs were stamped against, and the current
+                // cursor still points at the same media interval the candidate covered — PMS cuts
+                // both playlists at the same boundaries, which is the property the COMMIT path
+                // already relies on when it swaps cursors outright. Feeding without stepping the
+                // cursor would re-fetch and re-feed those seconds from the current rung.
+                //
+                // **What is proven and what is owed.** The host half — queues, backpressure, the
+                // PTS timeline, the cursor step, the reserve the controller then reads — runs in
+                // the simulator (`make sim` + `plxnative-clocksink`). The DEVICE half is not
+                // proven and cannot be from here: this is a one-segment raster excursion followed
+                // by a return, and LG's decoder's reaction to that is unknown. A commit changes
+                // raster too and is fine, so the new thing is only the change BACK.
+                for (output, _, _) in &candidate_outputs {
+                    hls_feed_segment(output, aq, aqa)?;
+                }
+                timeline = staged_timeline;
+                let mut stepped = 0usize;
+                while stepped < candidate_outputs.len() {
+                    match hls_cursor_next(&mut cursor, aq, hs)? {
+                        Some(_) => stepped += 1,
+                        // The current rung's playlist ran out where the candidate's did not. Stop
+                        // rather than continue: the two are no longer describing the same media,
+                        // and the outer loop's own `None` arm is the right place to end a stream.
+                        None => break,
+                    }
+                }
+                tx.finish("not_ready_fed");
+                crate::player::log(&format!(
+                    "abr: candidate lacked measured headroom; fed {} graded segment(s) and                      stayed on current rung",
+                    stepped,
+                ));
             } else {
                 tx.finish("raster_refused");
                     crate::player::log(&format!(

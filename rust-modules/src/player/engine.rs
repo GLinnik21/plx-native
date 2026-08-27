@@ -104,10 +104,27 @@ pub(crate) const fn feed_leads_ms() -> (i64, i64) {
     )
 }
 
-// Per-lane queue byte caps (two-lane feed). Video matches the pipeline's srcBufferLevelVideo (8MB);
-// audio is kept small (the TV is RAM-tight and audio frames are tiny) yet large enough to cushion
-// the single demux thread briefly blocking on a full video lane.
-const AQ_VIDEO_BYTES: c_long = 8 * 1024 * 1024;
+// Per-lane queue byte caps (two-lane feed). Audio is kept small (the TV is RAM-tight and audio
+// frames are tiny) yet large enough to cushion the single demux thread briefly blocking on a full
+// video lane.
+//
+// **The video cap is 10 MiB, and it stopped matching the Load payload's `srcBufferLevelVideo`
+// (8 MiB) on purpose.** Those are two different buffers: this one sits between our demux thread
+// and our pump, and that one is what Starfish will hold. They were equal because 8 MiB was copied
+// from the payload, not because anything requires it — feeding past Starfish's own level returns
+// `'B'` and the pump retries, which is the backpressure path every playback already uses.
+//
+// **What the 2 MiB buys, and why it is not a guess.** The reserve the adaptive controller can ever
+// see is `B_max = feed_lead + queue_bytes*8 / R_elementary` — a queue term that falls as `1/R`
+// while the upshift guard it has to clear is `Omega(D)`. R2 of the plan of record showed those
+// crossing at about 15.7 Mbit/s of media at 8 MiB, i.e. **the top of the ladder is unreachable for
+// any guard of that shape**, and no control law fixes a plant that cannot hold the reserve its own
+// guard demands. `tools/abr-plant-sweep.py` prices this at +555 ms of climbable ceiling WITH the
+// graded-reject feed and **+17 ms without it** — inside a measured 167 ms noise floor — so the two
+// levers are one decision and neither is worth landing alone.
+// `docs/measurements/p0-plant-sizing.md` is the record; `requiredMemory` is 160 MB, so +2 MiB RSS
+// on a 32-bit set is inside the budget already declared.
+const AQ_VIDEO_BYTES: c_long = 10 * 1024 * 1024;
 const AQ_AUDIO_BYTES: c_long = 1024 * 1024;
 
 pub(crate) struct SampleBuf {

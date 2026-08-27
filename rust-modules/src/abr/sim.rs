@@ -66,9 +66,13 @@
 //! # A transaction is not free
 //!
 //! On `Decision::Prime` the demux worker runs the candidate transaction **inline on its own loop**:
-//! the current stream is not read while it runs and candidate segments are fed only after the
-//! commit (`ff.rs`'s prime arm). So a prime costs wall time with **no fill**, and a rejected one
-//! costs it for nothing. That cost is a [`TransactionModel`] split four ways — up/down x
+//! the current stream is not read while it runs. So a prime costs wall time with **no fill**.
+//!
+//! **A rejected one no longer costs it for nothing**, as of 2026-08-28: a candidate whose raster
+//! was within bound but whose headroom was not is FED before its session is abandoned (`ff.rs`'s
+//! `not_ready_fed` arm — Phase 0 lever 1 of `docs/measurements/p0-plant-sizing.md`). The wall cost
+//! is identical; the reserve gains one segment rather than zero. That is the difference between an
+//! up-guard that is `Omega(D)` and one that is not, which is R2's whole argument. That cost is a [`TransactionModel`] split four ways — up/down x
 //! commit/reject, each with its control-plane and media legs — and every leg is `Option`, because
 //! none of them is measured yet. [`run`] REFUSES an unmeasured leg rather than substituting a
 //! constant: one flat number for all four made `T_down` growing on a collapsing link
@@ -81,10 +85,21 @@
 
 use super::{BufferSnapshot, Controller, Decision, Direction, MediaTimeMs, Rung, SegmentSample};
 
-/// Video AU queue byte cap. `player::engine::AQ_VIDEO_BYTES` = `8 * 1024 * 1024`, carried by value
+/// Video AU queue byte cap. `player::engine::AQ_VIDEO_BYTES` = `10 * 1024 * 1024`, carried by value
 /// because this plant must not depend on the app's own model of itself (see the module note). If
-/// that constant moves, [`tests::the_plant_constants_still_match_the_pipeline`] fails.
-pub(super) const VIDEO_QUEUE_BYTES: u64 = 8 * 1024 * 1024;
+/// that constant moves, [`tests::the_plant_constants_still_match_the_pipeline`] fails — and it did,
+/// which is how the Phase 0 enlargement reached this file rather than being forgotten in it.
+pub(super) const VIDEO_QUEUE_BYTES: u64 = 10 * 1024 * 1024;
+/// **The video cap the M4 census was taken at**, 8 MiB, and the reason it has to be written down.
+///
+/// [`tests::the_calibration_reproduces_the_device_census`] grades a MODEL against a MEASUREMENT,
+/// and the measurement is of one configuration. Enlarging the queue does not make the census wrong;
+/// it makes it a census of something the app no longer is. So the reproduction test keeps running
+/// at this size — the model is still validated, at the only operating point evidence exists for —
+/// while [`Plant::default`] models what ships. Re-censusing at 10 MiB is a device job and the
+/// prediction to check against is `1600 + 83886080/R_v`, about 25% above every video-bound row of
+/// the current table.
+pub(super) const CENSUS_VIDEO_QUEUE_BYTES: u64 = 8 * 1024 * 1024;
 /// Audio AU queue byte cap. `player::engine::AQ_AUDIO_BYTES` = `1024 * 1024`.
 pub(super) const AUDIO_QUEUE_BYTES: u64 = 1024 * 1024;
 /// Video feed-ahead throttle. `player::engine::MAX_FEED_AHEAD_NS` = 1.6 s.
@@ -581,9 +596,9 @@ pub(super) fn run(
             )
         })?;
 
-        // The current stream is not read for the whole transaction and nothing is fed until
-        // commit (`ff.rs`'s prime arm), so the reserve drains for all of it and a REJECT costs the
-        // same as a commit.
+        // The current stream is not read for the whole transaction, so the reserve drains for all
+        // of it whichever way the decision goes. What a REJECT delivers changed on 2026-08-28 —
+        // see the credit below.
         let spent = cost.total_ms();
         let tx_stall = (spent - buf_ms).max(0);
         buf_ms = (buf_ms - spent).max(0);
@@ -599,6 +614,22 @@ pub(super) fn run(
                 .min(plant.b_max_ms(&cand_point));
             report.commits.push((now_ms, proposal.rung.kbps()));
         } else {
+            // **A graded reject now DELIVERS its segment** (`ff.rs`'s `not_ready_fed` arm, Phase 0
+            // lever 1). It costs the same wall time as before — `cost` is unchanged, and the feed
+            // is charged separately on the device as `feed=` — but the reserve gains one segment
+            // instead of nothing, which is the entire point of the lever and is what takes the
+            // up-guard off `Omega(D)`.
+            //
+            // Clamped to the CURRENT rung's ceiling, not the candidate's: the encoder session was
+            // abandoned, so the very next segment comes from the rung still playing.
+            //
+            // `would_commit` here is `candidate_ready`, which is exactly the device's `!ready`
+            // test, and the plant always produces a raster inside the proposal's bound — so every
+            // reject this loop can reach is the fed one. The device has six other reject outcomes
+            // (a warm-up deadline, a transport failure, a refused raster, three control-plane
+            // ones) and NONE of them feeds; the plant cannot express those, which is a gap on the
+            // pessimistic side and is stated here rather than modelled optimistically.
+            buf_ms = buf_ms.saturating_add(plant.segment_ms).min(plant.b_max_ms(&point));
             controller.reject(proposal);
             report.rejects += 1;
         }
@@ -674,7 +705,13 @@ mod tests {
     /// generated now (`tools/abr-calibrate-plant.py`), which is what makes agreement mean something.
     #[test]
     fn the_calibration_reproduces_the_device_census() {
-        let plant = Plant::default();
+        // **At the size the census was taken at, not the size that ships.** A measurement grades
+        // the configuration it was taken in; Phase 0 enlarged the video queue to 10 MiB and
+        // nothing has re-measured `buf=` since. Running this at the shipped size would compare a
+        // 10 MiB prediction with an 8 MiB observation and fail by ~25% at every video-bound rung —
+        // which would read as the ceiling model breaking when the only thing that happened is that
+        // the plant moved and the evidence did not.
+        let plant = Plant { video_queue_bytes: CENSUS_VIDEO_QUEUE_BYTES, ..Plant::default() };
         let mut checked = 0;
         for rung in CALIBRATED {
             let point = Calibration::point(rung).expect("CALIBRATED lists it");
@@ -717,24 +754,30 @@ mod tests {
     /// MATHEMATICAL INVARIANT: three rates, and a lane ceiling never comes from a wire rate.
     ///
     /// Hand-computed from queue geometry; nothing here calls `b_max_ms` to build its expectation.
-    /// video queue 8 MiB = 67 108 864 bits, audio queue 1 MiB = 8 388 608 bits, leads 1600 / 3600.
+    /// video queue **10 MiB** = 83 886 080 bits, audio queue 1 MiB = 8 388 608 bits, leads
+    /// 1600 / 3600.
     ///
     /// **The arithmetic is spelled out against the CURRENT calibration**, because the version of
     /// this comment that preceded it quoted ES rates from a superseded fixture pack (video ES
     /// 17 561 at rung 20000, 1201 at 720) and read as a derivation while being a transcription:
-    ///   * 20000: ES (20 706 − 192)/1.04 = 19 725 → 67 108 864/19 725 = 3402, +1600 = **5002**;
+    ///   * 20000: ES (20 706 − 192)/1.04 = 19 725 → 83 886 080/19 725 = 4252, +1600 = **5852**;
     ///     audio 192 → 8 388 608/192 = 43 690, +3600 = 47 290, so video binds.
-    ///   * 720:   ES (806 − 131)/1.04 = 649 → 67 108 864/649 = 103 403, +1600 = 105 003;
+    ///   * 720:   ES (806 − 131)/1.04 = 649 → 83 886 080/649 = 129 254, +1600 = 130 854;
     ///     audio 131 → 8 388 608/131 = 64 035, +3600 = **67 635**, so AUDIO binds.
+    ///
+    /// **The top-rung number is the one Phase 0 moved and the one R2 turns on**: 5002 → 5852 ms,
+    /// +850 ms of headroom at exactly the rung the up-guard could not be cleared at. The AUDIO
+    /// row is unchanged by construction — the enlargement is the video lane's — which is what
+    /// makes this test show that the change went where it was supposed to and nowhere else.
     #[test]
     fn the_lane_ceilings_come_from_elementary_rates() {
         let plant = Plant::default();
-        assert_eq!(plant.b_max_ms(&p20000()), 5_002);
-        assert_eq!(plant.b_max_ms(&p720()), 67_635);
+        assert_eq!(plant.b_max_ms(&p20000()), 5_852);
+        assert_eq!(plant.b_max_ms(&p720()), 67_635, "the audio lane does not move with the video cap");
         // Forcing the video lane below the audio one flips which ceiling is returned, which is the
         // property `min` has to have and the census alone cannot isolate.
         let video_bound = OperatingPoint { video_es_kbps: 20_000, ..p720() };
-        assert_eq!(plant.b_max_ms(&video_bound), 1_600 + 67_108_864 / 20_000);
+        assert_eq!(plant.b_max_ms(&video_bound), 1_600 + 83_886_080 / 20_000);
     }
 
     /// MATHEMATICAL INVARIANT: the plant's constants are still the pipeline's.

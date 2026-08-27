@@ -83,6 +83,45 @@ circular.
 20000 are later shown indistinguishable, `no-ties + graded-reject feed + aq 10 MiB` (+1 104 ms,
 6.6x noise) is strictly better and costs a rung nobody can see.
 
+## Landed 2026-08-28
+
+The recommendation is implemented, as two changes that are one decision:
+
+* **The graded-reject feed** — `ff.rs`'s `not_ready` arm now feeds its already-fetched,
+  already-demuxed, already-raster-checked segments before abandoning the candidate session, and
+  advances the current cursor and the fed timeline past them. Outcome token `not_ready_fed`.
+  The other six reject outcomes feed nothing, deliberately: `raster_refused` was rejected for the
+  raster of these very AUs, and the rest never completed a fetch.
+* **`AQ_VIDEO_BYTES` 8 -> 10 MiB** (`player/engine.rs`), mirrored into `sim.rs`'s
+  `VIDEO_QUEUE_BYTES` — the mismatch gate fired, which is how it got there. `B_max` at the top rung
+  moves **5002 -> 5852 ms**, and the audio-bound rungs do not move at all, which is the check that
+  the enlargement went to the lane it was aimed at.
+
+Neither is worth landing alone: +17 ms and +105 ms respectively, against a 167 ms noise floor.
+
+**The census is now a measurement of a configuration the app is not.** `census_buf_ms` is `buf=`
+off the television at 8 MiB, so `the_calibration_reproduces_the_device_census` was moved onto an
+explicit `CENSUS_VIDEO_QUEUE_BYTES` plant rather than `Plant::default()`. The model is still
+validated at the only operating point evidence exists for; it is no longer validated at the one
+that ships. Re-censusing is a device job and the prediction to check is `1600 + 83886080/R_v`,
+about 25% above every video-bound row of the current table.
+
+**Host evidence, such as it is.** A 200 s shaped simulator run (`make sim` + `plxnative-clocksink`
+through `tools/netcond.py`, unshaped then `rate:8300`) climbed 720 -> 2000 -> 20000, walked down to
+4000 and back to 6000, and peaked at **`qbytes=8481329`** — past the old 8 388 608 cap, so the
+enlargement is live in the real pipeline and not merely in the model. That run produced **six
+commits and zero rejects**, so **the graded-reject feed itself is still unexercised**, on the host
+as well as on the device. Provoking one needs the `pipe_abr_reject_up_4000` recipe (40 Mbit/s for
+15 s, then 8 300) run long enough for the ladder to be walked at 19 samples a rung, and it did not
+happen inside this window. Stated rather than left as an implied pass.
+
+**What the simulator can and cannot say about the feed.** `make sim` + `plxnative-clocksink` now
+runs the whole path — queues, backpressure, the PTS timeline, the cursor step, the reserve the
+controller reads next — so "does our own pipeline handle a fed reject" is host-answerable and was
+answered here. What is NOT answerable off-device is LG's decoder: this is a one-segment raster
+excursion followed by a return, and while a commit changes raster too and is fine, the change BACK
+is new. That is the device leg this owes, and it is the first item below.
+
 ## What this does not settle
 
 - `cold_start_ms = 250` is **unmeasured off-fixture**; on a remote TLS PMS it carries a handshake.
