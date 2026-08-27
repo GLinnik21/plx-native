@@ -116,6 +116,58 @@ the reason that one stays gated. What the exemption costs, priced rather than as
 one-segment reserve the deadline is reached at a measured deficit of 10%, and at a full `B_max` at
 the top rung it takes 44%.
 
+## 2b. The reachable ceiling, and the two gates derived from it
+
+**The reserve has a physical ceiling and nothing may ask for more than it.** Two lanes feed one
+playable reserve: the demux thread blocks on either AU queue's byte cap, and the pump throttles
+video to `MAX_FEED_AHEAD_NS` ahead of the playhead and audio to that plus `AUDIO_SLACK_NS`.
+
+```text
+B_max(R_v, R_a) = min( video_lead + video_queue_bits / R_v ,
+                       audio_lead + audio_queue_bits / R_a )   [ms]
+```
+
+`kbps` is bits per millisecond, so `bits / kbps` is already milliseconds — there is no scale
+factor, and a `* 1000` here is the defect that shipped in a draft and survived review because the
+reviewer's expected value came from the same expression. `plant::b_max_est_ms` reads every input
+from `player::engine` at run time (`aq_caps`, `feed_leads_ms`) rather than transcribing it. The
+device census says the model is good: seven pinned rungs, every prediction within 5% of the `buf=`
+the television settled at, sharing no term with it.
+
+**Why it matters more than it sounds.** `B_max` falls as `1/R` while a flat reserve gate does not,
+so they cross — and the upshift gate was a constant `3 * segment` = 6 000 ms against a ceiling of
+5 852 ms at the top of the ladder. That gate was unsatisfiable at exactly the rungs it guarded,
+whatever the link did. It is now `min(3 * segment, alpha * B_max_est(R_target))`: unchanged below
+about 14 Mbit/s of video ES, where the ceiling term is the larger, and reachable above it.
+
+**The refill filter, per candidate.** A candidate that would leave the reserve short of its own
+target must leave room to close that shortfall inside the horizon `H`:
+
+```text
+B*(R)   = min(buffer_target_ms, alpha * B_max_est(R))     the reserve we ask for at rate R
+D_j     = max(0, B*(R_j) - B)                             this candidate's deficit
+R_max_j = C_safe * H / (H + D_j)                          what it may claim
+```
+
+With no deficit `R_max_j = C_safe` exactly, so the filter is the identity in the state every
+healthy playback is in. At an empty reserve it is `H/(H+B*)` = 0.8 of `C_safe` — derived from two
+named durations rather than chosen. **It is currently SHADOWED on the decision path**, because the
+reserve gate above demands more than `B*` at every rung on this ladder; its live effect is on
+selection at low reserves and on the read-out's `optimal`. That shadowing is written down and
+tested rather than left implicit, because one constraint hiding behind a stricter one is the shape
+this design keeps finding.
+
+`alpha` (`buffer_reserve_fraction_pm` = 500) is one number used by both gates — "how much of the
+reachable ceiling we are willing to ask for" — not two wearing different names. At
+`buffer_target_ms = 2 500` it binds only above ~19 700 kbps of video ES, so it is inert on eleven
+of thirteen rungs; that is the intended shape for landing the corrected formula without moving an
+expected value, and M4 decides whether either number rises.
+
+**One limitation, stated rather than fixed by mixing dimensions.** `C_safe` is measured over active
+body-read time, which excludes PMS production, while "close the deficit within `H`" is a wall-clock
+promise. The guarantee therefore over-promises by the factor that must not be folded in: production
+is an independent feasibility constraint and stays one.
+
 ## 3. Estimation, with uncertainty as a first-class output
 
 `CapacityEstimate` keeps a fast and a slow rate, a dispersion in per-mille, and a sample count.

@@ -108,6 +108,27 @@ pub(crate) struct AbrPolicy {
     pub(crate) production_floor_pm: u32,
     /// Below this the next stall is close enough that "wait and see" is no longer a policy.
     pub(crate) emergency_buffer_ms: i64,
+    /// **The reserve `B*` asks for, as a ceiling** (N3). It is the value the deleted
+    /// `minimum_buffer_ms` carried, kept deliberately: at 2 500 ms the deficit is zero whenever the
+    /// reserve exceeds one and a quarter segments, so the corrected refill formula lands without
+    /// moving an expected value and M4 decides whether it rises.
+    pub(crate) buffer_target_ms: i64,
+    /// **How much of the REACHABLE ceiling `B*` may ask for** (N3's alpha). The target is
+    /// `min(buffer_target_ms, alpha * B_max_est(R))`, and this term is what stops it being a
+    /// promise the byte caps cannot keep. At the shipped target it binds only above ~19 700 kbps of
+    /// video ES — P1080High and Uhd alone — so it is inert on eleven of thirteen rungs today. It
+    /// becomes the live term, and its device validation stops being optional, if the target rises.
+    pub(crate) buffer_reserve_fraction_pm: u32,
+    /// **How fast a reserve deficit must close**, wall clock (N3's `H`). A candidate that leaves
+    /// the reserve short may claim `C_safe * H / (H + D)`, so the horizon is what converts "we are
+    /// `D` milliseconds down" into "you may spend this much". TEMPORARY: inert at today's `B*`,
+    /// so unobservable until `buffer_target_ms` moves, and not device-validated.
+    pub(crate) buffer_refill_horizon_ms: i64,
+    /// **The audio ES rate to use when none has been measured**, for `B_max_est`'s audio lane.
+    /// TEMPORARY. 192 kbps is the census value at every rung from 10 000 up; the bottom of the
+    /// ladder measures 98-159, and the audio lane is the one that BINDS down there, so an assumed
+    /// value there is optimistic and the measured one must be preferred wherever it exists.
+    pub(crate) assumed_audio_kbps: u32,
     /// **VBR headroom over a whole-file average.** A file averaging 60 Mbit/s contains scenes well
     /// above it, so the average is a lower bound on demand, not the demand. Spending the entire
     /// measured link on the average merely postpones starvation to the first busy scene.
@@ -182,6 +203,10 @@ impl AbrPolicy {
             production_max_pm: 1_100,
             production_floor_pm: 250,
             emergency_buffer_ms: 2_000,
+            buffer_target_ms: 2_500,
+            buffer_reserve_fraction_pm: 500,
+            buffer_refill_horizon_ms: 10_000,
+            assumed_audio_kbps: 192,
             vbr_allowance_pm: 1_350,
             bootstrap_confidence_pm: 1_350,
             stale_half_life_ms: 30_000,

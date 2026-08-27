@@ -261,6 +261,7 @@ impl Controller {
                 &self.production,
                 current,
                 &self.policy,
+                self.buffer.buffered_ms,
             ),
             delivery: self.delivery,
             production: self.production,
@@ -529,6 +530,7 @@ impl Controller {
             &self.production,
             current_candidate,
             &self.policy,
+            buffered,
         ) else {
             self.stable_samples = 0;
             return Decision::Stay;
@@ -570,8 +572,35 @@ impl Controller {
         // budget above. The remaining independent resource guards must pass simultaneously.
         // The target is selected directly from the actuator catalog, so 8 -> 14-class budgets
         // skip intermediate encoders.
+        // **The upshift reserve gate, DERIVED from the reachable ceiling** — I3b(b), which the plan
+        // left as a ruling and which `b_max_est_ms` makes decidable.
+        //
+        // It was a flat `3 * segment` = 6 000 ms. `B_max` falls as `1/R`, and at the top of the
+        // ladder the byte caps top out at 5 852 ms with a SETTLED reserve well under that — so a
+        // constant six seconds is a gate the plant cannot satisfy at exactly the rungs it is
+        // guarding, which is R2's "the top of the ladder is unreachable for any guard of this
+        // shape" seen from the control side. Phase 0 fixed the plant half; this is the other.
+        //
+        // `min` of the two, so nothing is loosened where the old number was reachable: below about
+        // 14 000 kbps of video ES the ceiling term exceeds 6 000 ms and the constant still binds,
+        // unchanged. Above it the gate becomes what the queue can actually hold a fraction of.
+        // `alpha` is the same `buffer_reserve_fraction_pm` `B*` uses — one number for "how much of
+        // the reachable ceiling we are willing to ask for", not a second one wearing a new name.
+        //
+        // Evaluated at the TARGET's rate, not the current one: the question is whether the reserve
+        // will survive arriving there.
+        let target_video_es = target_candidate
+            .expected_wire_kbps
+            .saturating_sub(self.policy.assumed_audio_kbps);
+        let reachable_gate = crate::abr::plant::b_max_est_ms(
+            target_video_es,
+            self.policy.assumed_audio_kbps,
+        )
+        .saturating_mul(i64::from(self.policy.buffer_reserve_fraction_pm))
+            / 1_000;
+        let reserve_gate = segment.saturating_mul(3).min(reachable_gate);
         let all_good = self.production.ratio_pm <= self.policy.production_safe_pm
-            && buffered >= segment.saturating_mul(3)
+            && buffered >= reserve_gate
             && !draining;
         if !all_good {
             self.stable_samples = 0;

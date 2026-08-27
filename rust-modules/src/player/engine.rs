@@ -96,7 +96,6 @@ pub(crate) const fn aq_caps() -> (i64, i64) {
 /// operating-point table was hand-transcribed, the fixture pack was rebuilt under it, and the
 /// plant modelled a television that no longer existed at two of its three points for a month
 /// without a single test going red. This closes the identical hole in the geometry.
-#[cfg(test)]
 pub(crate) const fn feed_leads_ms() -> (i64, i64) {
     (
         MAX_FEED_AHEAD_NS / 1_000_000,

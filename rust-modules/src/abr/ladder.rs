@@ -412,6 +412,7 @@ impl HlsActuatorCatalog {
         production: &ProductionEstimate,
         current: HlsCandidate,
         policy: &AbrPolicy,
+        buffered_ms: i64,
     ) -> Option<HlsCandidate> {
         self.feasible()
             .filter(|candidate| candidate.expected_wire_kbps <= safe_budget_kbps)
@@ -419,6 +420,33 @@ impl HlsActuatorCatalog {
                 production
                     .predicted_ratio_pm(*candidate, current, policy)
                     .is_none_or(|ratio| ratio <= policy.production_safe_pm)
+            })
+            // **N3's refill filter — a THIRD independent constraint, in its own units.** The
+            // budget above is bits per second, production is a cadence, and this is a reserve: a
+            // candidate that would leave the buffer short of its own target has to leave room to
+            // close that shortfall inside `H`, so the rate it may claim shrinks in proportion.
+            // Per candidate rather than as one scalar, because `R` appears on both sides of the
+            // algebra and a single budget compared against every rung is not well defined.
+            //
+            // **The two rates handed to it are PLANNING rates and are labelled so here**, per N17.
+            // `expected_wire_kbps` is what the rendition was asked for, not what it delivered —
+            // the catalog's error is +5.2% to +31.6% — and the audio lane uses
+            // `assumed_audio_kbps` because no per-lane ES measurement exists for a rung that has
+            // not been played. Only `B_max_est`'s geometry is measured; the rates it is evaluated
+            // at are not, and the day `SegmentSample::media_kbps` is carried per rung this becomes
+            // a measurement.
+            .filter(|candidate| {
+                let video_es = candidate
+                    .expected_wire_kbps
+                    .saturating_sub(policy.assumed_audio_kbps);
+                super::plant::refill_admits(
+                    candidate.expected_wire_kbps,
+                    video_es,
+                    policy.assumed_audio_kbps,
+                    buffered_ms,
+                    safe_budget_kbps,
+                    policy,
+                )
             })
             .max_by_key(|candidate| candidate.expected_wire_kbps)
     }

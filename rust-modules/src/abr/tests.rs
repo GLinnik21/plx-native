@@ -1093,7 +1093,7 @@ fn a_fast_link_in_front_of_a_loaded_server_does_not_choose_4k() {
     }
     assert_eq!(
         catalog
-            .best_sustainable(60_000, &quick_server, current, &policy)
+            .best_sustainable(60_000, &quick_server, current, &policy, 30_000)
             .map(|c| c.rung),
         Some(Rung::Uhd),
         "a server at a fifth of real time has room for the measured 2.1x",
@@ -1105,7 +1105,7 @@ fn a_fast_link_in_front_of_a_loaded_server_does_not_choose_4k() {
     }
     assert_eq!(
         catalog
-            .best_sustainable(60_000, &loaded_server, current, &policy)
+            .best_sustainable(60_000, &loaded_server, current, &policy, 30_000)
             .map(|c| c.rung),
         Some(Rung::P1080High),
         "0.7 of real time on 1080p predicts 1.47 on 4K — behind, whatever the link does",
@@ -2144,4 +2144,155 @@ fn the_affordability_guard_is_subsumed_by_the_starvation_arm() {
     let mut buffer = BufferEstimate::default();
     buffer.update(Some(E_TX_DOWN_MS - 1), 2_000);
     assert!(buffer.starving(), "the starvation arm covers the whole unaffordable region");
+}
+
+// ---------------------------------------------------------------------------------------------
+// N3 — the reachable ceiling, and the two gates derived from it
+// ---------------------------------------------------------------------------------------------
+
+/// MATHEMATICAL INVARIANT (N3 point 2, the stated proof obligation).
+///
+/// The refill filter is `R_j <= C_safe * H / (H + D_j)` with `D_j = max(0, B*(R_j) - B)`.
+/// `B_max_est` DECREASES in `R`, so `D_j` decreases in `R_j`, so `R_max_j` INCREASES in `R_j` —
+/// both sides of the comparison move the same way, which is precisely the shape that can admit a
+/// SCATTERED set rather than a prefix of the ladder. Every selector downstream assumes a prefix.
+///
+/// It is a prefix today only because `B*` is capped at `buffer_target_ms`, which pins `R_max_j`
+/// into `[0.8*C_safe, C_safe]` at `H = 10 s`. That is a property of the current numbers and not of
+/// the form, so it is swept rather than argued: if `buffer_target_ms` rises after M4 and the cap
+/// stops binding, this is what goes red.
+#[test]
+fn the_refill_filter_admits_a_prefix_of_the_ladder() {
+    let policy = AbrPolicy::measured();
+    for &safe in &[320u32, 720, 2_000, 4_000, 10_000, 20_000, 45_000, 120_000] {
+        for &buffered in &[0i64, 500, 2_000, 2_500, 6_000, 20_000, 90_000] {
+            let admitted: Vec<bool> = LADDER
+                .iter()
+                .map(|rung| {
+                    let wire = HlsActuatorCatalog::measured().candidate(*rung).expected_wire_kbps;
+                    plant::refill_admits(
+                        wire,
+                        wire.saturating_sub(policy.assumed_audio_kbps),
+                        policy.assumed_audio_kbps,
+                        buffered,
+                        safe,
+                        &policy,
+                    )
+                })
+                .collect();
+            // A prefix: once it stops admitting, it never resumes.
+            let first_refusal = admitted.iter().position(|ok| !ok);
+            if let Some(cut) = first_refusal {
+                assert!(
+                    admitted[cut..].iter().all(|ok| !ok),
+                    "scattered admissible set at safe={safe}kbps buffered={buffered}ms: {admitted:?}",
+                );
+            }
+        }
+    }
+}
+
+/// **Where the refill filter BINDS, and where it is shadowed — stated rather than assumed.**
+///
+/// A filter that can never change an outcome is not a guard, it is dead code that passes. This
+/// pins both halves of the truth at today's numbers:
+///
+/// * it binds on `best_sustainable` itself whenever the reserve is under `buffer_target_ms`, and
+///   the haircut at an empty buffer is exactly `H/(H+B*)` = `10000/12500` = 0.8 of `C_safe` —
+///   derived, not chosen;
+/// * on the DECISION path it is currently shadowed, because the reserve gate that runs after it
+///   demands `min(3*segment, alpha*B_max_est)` and that is above `buffer_target_ms` at every rung
+///   on this ladder. So the filter's live effect today is on the telemetry `optimal` and on
+///   selection at low reserves, not on whether an upshift fires.
+///
+/// The shadowing is the thing worth having written down: it is one constraint hidden behind a
+/// stricter one, which is the shape the plan hunts, and it dissolves the moment either number
+/// moves after M4.
+#[test]
+fn the_refill_filter_binds_at_a_low_reserve_and_is_shadowed_at_the_gate() {
+    let policy = AbrPolicy::measured();
+    let catalog = hd_catalog();
+    let production = ProductionEstimate::default();
+    let current = catalog.candidate(Rung::P480);
+
+    // Empty reserve: `D = buffer_target_ms`, so the budget is cut to H/(H+B*) of C_safe.
+    let empty = catalog
+        .best_sustainable(20_000, &production, current, &policy, 0)
+        .expect("something is always affordable at 20 Mbit/s");
+    let full = catalog
+        .best_sustainable(20_000, &production, current, &policy, 30_000)
+        .expect("ditto");
+    assert!(
+        empty.expected_wire_kbps < full.expected_wire_kbps,
+        "the filter must cost something at an empty reserve: {} vs {}",
+        empty.expected_wire_kbps,
+        full.expected_wire_kbps,
+    );
+    let cut = i64::from(20_000u32) * policy.buffer_refill_horizon_ms
+        / (policy.buffer_refill_horizon_ms + policy.buffer_target_ms);
+    assert_eq!(cut, 16_000, "H/(H+B*) of 20 000 kbps is 0.8 — derived, not chosen");
+    assert!(i64::from(empty.expected_wire_kbps) <= cut);
+
+    // ...and the shadow: the reserve gate is above `buffer_target_ms` at every rung, so any
+    // reserve that clears the gate also zeroes the deficit.
+    let segment = 2_000i64;
+    for rung in LADDER {
+        let wire = HlsActuatorCatalog::measured().candidate(rung).expected_wire_kbps;
+        let reachable = plant::b_max_est_ms(
+            wire.saturating_sub(policy.assumed_audio_kbps),
+            policy.assumed_audio_kbps,
+        ) * i64::from(policy.buffer_reserve_fraction_pm)
+            / 1_000;
+        let gate = (segment * 3).min(reachable);
+        assert!(
+            gate >= policy.buffer_target_ms,
+            "at {}kbps the upshift gate is {gate}ms, BELOW the refill target {}ms — the filter is \
+             no longer shadowed and its effect on the decision path needs its own test",
+            rung.kbps(),
+            policy.buffer_target_ms,
+        );
+    }
+}
+
+/// DEVICE-FINDING REGRESSION, R2: **no reserve gate may demand more than the byte caps can hold.**
+///
+/// The upshift gate was a flat `3 * segment` = 6 000 ms while `B_max` at the top of the ladder is
+/// 5 852 ms — so it was unsatisfiable at exactly the rungs it guarded, whatever the link did. That
+/// is the control-law half of R2; Phase 0 fixed the plant half. Derived now as
+/// `min(3*segment, alpha * B_max_est(R_target))`.
+///
+/// Differential: against the flat constant the top three rungs fail.
+#[test]
+fn no_reserve_gate_asks_for_more_than_the_queues_can_hold() {
+    let policy = AbrPolicy::measured();
+    let segment = 2_000i64;
+    for rung in LADDER {
+        let wire = HlsActuatorCatalog::measured().candidate(rung).expected_wire_kbps;
+        let ceiling = plant::b_max_est_ms(
+            wire.saturating_sub(policy.assumed_audio_kbps),
+            policy.assumed_audio_kbps,
+        );
+        let gate = (segment * 3).min(ceiling * i64::from(policy.buffer_reserve_fraction_pm) / 1_000);
+        assert!(
+            gate < ceiling,
+            "at {}kbps the gate wants {gate}ms of a reserve that tops out at {ceiling}ms",
+            rung.kbps(),
+        );
+        assert!(
+            policy.buffer_target_ms <= ceiling && policy.emergency_buffer_ms < ceiling,
+            "at {}kbps B* ({}ms) or the emergency floor ({}ms) exceeds the ceiling {ceiling}ms",
+            rung.kbps(),
+            policy.buffer_target_ms,
+            policy.emergency_buffer_ms,
+        );
+    }
+    // The loosening is confined to the top, which is what `min` is for: at the bottom of the
+    // ladder the ceiling term is tens of seconds and the constant still binds, unchanged.
+    let bottom = HlsActuatorCatalog::measured().candidate(Rung::P240).expected_wire_kbps;
+    let bottom_ceiling = plant::b_max_est_ms(
+        bottom.saturating_sub(policy.assumed_audio_kbps),
+        policy.assumed_audio_kbps,
+    ) * i64::from(policy.buffer_reserve_fraction_pm)
+        / 1_000;
+    assert!(bottom_ceiling > segment * 3, "the constant must still bind at the floor rung");
 }

@@ -233,3 +233,112 @@ pub(crate) fn starvation_horizon(
     StarvationHorizon { seconds: u32::try_from(time_to_empty_ms / 1_000).ok() }
 }
 
+
+/// **The physically reachable reserve at a given pair of elementary rates** — N3, and the quantity
+/// `B* = 10 s` was written without.
+///
+/// Two lanes feed one playable reserve. The demux thread blocks on either lane's byte cap
+/// (`aq.rs`), the pump throttles video to `MAX_FEED_AHEAD_NS` ahead of the presented position and
+/// audio to that plus `AUDIO_SLACK_NS` (`player/engine.rs`), and the controller sees the minimum.
+/// So
+///
+/// ```text
+/// B_max(R_v, R_a) = min( video_lead + video_queue_bits / R_v ,
+///                        audio_lead + audio_queue_bits / R_a )   [ms]
+/// ```
+///
+/// **`kbps` IS bits per millisecond, so `bits / kbps` is ALREADY milliseconds.** There is no scale
+/// factor in this function and a `* 1000` anywhere in it is the defect the first draft of the plan
+/// shipped — it survived review because the reviewer's expected value came from the same
+/// expression.
+///
+/// **Every input is read from `player::engine` at run time**, never transcribed: `aq_caps()` for
+/// the byte caps and `feed_leads_ms()` for the two throttles. `abr/sim.rs` deliberately keeps its
+/// own copy of the same geometry, sourced by VALUE with a comment, so that the plant grading this
+/// controller is not the controller agreeing with itself — and
+/// `sim::tests::the_plant_constants_still_match_the_pipeline` is what keeps the two honest.
+///
+/// **This is a MODEL, and the device census is what says it is a good one**: seven pinned rungs,
+/// every prediction within 5% of the `buf=` the television settled at
+/// (`sim::tests::the_calibration_reproduces_the_device_census`). It shares no term with that
+/// measurement.
+pub(crate) fn b_max_est_ms(video_es_kbps: u32, audio_es_kbps: u32) -> i64 {
+    let (video_bytes, audio_bytes) = crate::player::aq_caps();
+    let (video_lead_ms, audio_lead_ms) = crate::player::feed_leads_ms();
+    let bits = |bytes: i64| u64::try_from(bytes).unwrap_or(0).saturating_mul(8);
+    // `.max(1)` on both divisors: a rate of zero is reachable (an audio-less stream, or an ES rate
+    // that has not been measured yet) and `overflow-checks` is ON under `cargo test` and OFF in
+    // release, so a bare division panics on the Mac and traps on the television.
+    let video = video_lead_ms
+        .saturating_add((bits(video_bytes) / u64::from(video_es_kbps.max(1))).min(i64::MAX as u64) as i64);
+    let audio = audio_lead_ms
+        .saturating_add((bits(audio_bytes) / u64::from(audio_es_kbps.max(1))).min(i64::MAX as u64) as i64);
+    video.min(audio)
+}
+
+/// **The reserve we ASK for at a given rate** — `B*(R)` — and why it is not a constant.
+///
+/// `B* = min(buffer_target_ms, alpha * B_max_est(R))`. The second term is what stops the target
+/// from being a promise the plant cannot keep: asking for 10 s at the top of the ladder, where the
+/// byte caps top out under 6 s, would make the deficit permanently positive and install a
+/// rung-dependent haircut of 0.67-0.71 of the measured link — larger and more hidden than the
+/// explicit 0.8 this whole effort exists to make visible.
+///
+/// At the shipped `buffer_target_ms = 2 500` the first term binds on eleven of thirteen rungs, so
+/// alpha is INERT almost everywhere. That is the intended shape for landing: the corrected formula
+/// arrives without moving an expected value, and M4 decides whether either number moves.
+pub(crate) fn buffer_target_at_ms(
+    video_es_kbps: u32,
+    audio_es_kbps: u32,
+    policy: &AbrPolicy,
+) -> i64 {
+    let reachable = b_max_est_ms(video_es_kbps, audio_es_kbps)
+        .saturating_mul(i64::from(policy.buffer_reserve_fraction_pm))
+        / 1_000;
+    policy.buffer_target_ms.min(reachable)
+}
+
+/// **The per-candidate refill filter** — N3's `R_j <= R_max_j`, and the resolution of an ambiguity
+/// the previous plan carried: `R` appears on BOTH sides of the algebra, so a single scalar budget
+/// compared against every candidate is not well defined. It is evaluated per candidate.
+///
+/// ```text
+/// D_j     = max(0, B*(R_j) - B)                        the deficit against THIS candidate's target
+/// R_max_j = C_safe * H / (H + D_j)                     what may be spent while still closing it
+/// ```
+///
+/// The reading: a candidate that leaves the reserve short has to leave room to refill that
+/// shortfall inside the horizon `H`, and the rate it may claim shrinks in proportion. With no
+/// deficit `D_j = 0` and `R_max_j = C_safe` exactly — the filter is then the identity, which is
+/// the state every healthy playback is in and the reason this lands without moving anything.
+///
+/// **Integer, and associated so it cannot divide first.** `C_safe * H` before the division by
+/// `H + D_j`; at `C_safe = 20 000` and `H = 10 000` that is 2e8, nowhere near `i64`.
+///
+/// **The monotonicity obligation, because the predicate is not trivially well-posed.**
+/// `B_max_est` decreases in `R`, so `D_j` decreases in `R_j`, so `R_max_j` INCREASES in `R_j` —
+/// both sides of `R_j <= R_max_j` move the same way, which is the shape that can admit a scattered
+/// set rather than a prefix of the ladder. It is a prefix today only because `B*` is capped at
+/// `buffer_target_ms`, which pins `R_max_j` into `[0.8*C_safe, C_safe]` at `H = 10 s`. That is a
+/// property of the current numbers, not of the form, so
+/// `tests::the_refill_filter_admits_a_prefix_of_the_ladder` asserts it over a magnitude sweep and
+/// is what protects it when `buffer_target_ms` moves after M4.
+///
+/// **One limitation, stated rather than fixed by mixing dimensions.** `C_safe` is measured over
+/// `active_fetch_us`, which EXCLUDES PMS production time, while "close the deficit within `H`" is
+/// a wall-clock promise. So the guarantee over-promises by exactly the factor N6 forbids folding
+/// in — production is an independent feasibility constraint and stays one.
+pub(crate) fn refill_admits(
+    candidate_wire_kbps: u32,
+    candidate_video_es_kbps: u32,
+    audio_es_kbps: u32,
+    buffered_ms: i64,
+    safe_budget_kbps: u32,
+    policy: &AbrPolicy,
+) -> bool {
+    let target = buffer_target_at_ms(candidate_video_es_kbps, audio_es_kbps, policy);
+    let deficit = (target - buffered_ms).max(0);
+    let horizon = policy.buffer_refill_horizon_ms.max(1);
+    let r_max = i64::from(safe_budget_kbps).saturating_mul(horizon) / horizon.saturating_add(deficit);
+    i64::from(candidate_wire_kbps) <= r_max
+}
