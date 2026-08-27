@@ -48,10 +48,20 @@ THREE GRADES, and the first one FAILS on purpose.
                 changes mid-run overshoot by up to 20x (the "same link regime" precondition
                 genuinely broken).
 2. `order`    -- the shipped form. Over a trailing window of `n` observations, transfer each to the
-                candidate byte count and take the `k`-th largest. Under exchangeability of the
-                pairs `(b_i, A_i)`, the transferred values are a fixed measurable function of them
-                and so are exchangeable too, giving `P(A_next > kth largest) = k/(n+1)` exactly.
+                candidate byte count and take the `k`-th largest. The guarantee is an INEQUALITY:
+
+                    P(A_next > kth largest transferred)  <=  k/(n+1)
+
+                NOT an equality, and the difference is not pedantry. The map
+                `g_q(b_i, A_i) = A_i * max(1, q/b_i)` is indexed by the QUERY byte count, so it is
+                not a fixed function of the bag -- swap the test point with a window member and the
+                map itself changes. What carries the exact result is the RAW order statistic (the
+                identity map, genuinely fixed); and since every transfer factor is >= 1, the
+                transferred bound dominates the raw one pointwise, so the exceedance event is a
+                subset and the probability can only be lower. Conservative by construction.
                 No coefficient, no fit, no floating point required.
+
+                The `RAW ctrl` column exists because of this -- see `grade_order`.
 3. `climb`   -- the question that killed two previous designs. A bound that never admits an
                 upshift is useless however safe it is (the specification's own review: "section 5's
                 trigger set contains no upshift condition -- climbing unreachable"). Reports, per
@@ -60,6 +70,11 @@ THREE GRADES, and the first one FAILS on purpose.
 The exchangeability argument covers the STATISTICS. It does not cover the MODEL step: `A_j <=
 T_next` holds only if the plant parameters really are those implied by the next observation. That
 assumption is named here rather than buried, and grade 1 is what it looks like when it breaks.
+
+And read the right column for it. "Observed exceedance is below nominal" is NOT evidence that
+exchangeability holds -- it is forced by the >= 1 inflation and would appear under any degree of
+non-exchangeability. The `RAW ctrl` column is the diagnostic; on the p1b corpus it lands at nominal
+at all six settings, which does support the assumption, by the route that actually tests it.
 
 Reads the `hls: segment=` lines this project's event log already writes, so it needs no device and
 no new instrumentation. Segment 0 is dropped everywhere: it carries decoder and encoder cold start
@@ -115,15 +130,35 @@ def grade_pairs(segments: list[tuple[int, int]]) -> tuple[int, int, float]:
 
 
 def grade_order(
-    segments: list[tuple[int, int]], window: int, k: int
+    segments: list[tuple[int, int]], window: int, k: int, transfer_on: bool = True
 ) -> tuple[int, int, float]:
-    """The shipped form: `k`-th largest transferred value over a trailing window of `window`."""
+    """The shipped form: `k`-th largest transferred value over a trailing window of `window`.
+
+    `transfer_on=False` is the CONTROL, and it is the diagnostic this tool was missing. Pinning the
+    factor to 1 removes the model entirely and leaves the plain order statistic of past acquisition
+    times, which IS a fixed (identity) map on exchangeable variables and therefore does carry the
+    exact `k/(n+1)` result. Comparing the two separates two things that the transferred grade alone
+    conflates:
+
+    * whether the exchangeability assumption holds on this corpus -- read the CONTROL column, which
+      should land at nominal;
+    * how much conservatism the transfer buys -- the gap between the columns.
+
+    Without it, "measured exceedance is below nominal" reads as evidence that the assumption holds,
+    and it is not: every transfer factor is >= 1, so the transferred bound is pointwise >= the raw
+    one and can only miss LOW. That under-shoot appears under any degree of non-exchangeability and
+    is therefore not a test of it. Measured here: the raw control lands at nominal at all six
+    settings while the transferred grade sits 2-4x under, on an inflation that is > 1 for 44.6% of
+    in-window transfers.
+    """
     total = exceedances = 0
     worst = 1.0
     for t in range(window, len(segments)):
         past = segments[t - window : t]
         b_j, a_j = segments[t]
-        transferred = sorted(transfer(a_i, b_i, b_j) for b_i, a_i in past)
+        transferred = sorted(
+            (transfer(a_i, b_i, b_j) if transfer_on else float(a_i)) for b_i, a_i in past
+        )
         bound = transferred[-k]
         total += 1
         if a_j > bound:
@@ -215,7 +250,8 @@ def main() -> int:
 
     if args.grade in ("all", "order", "sweep"):
         print("### 2. Order-statistic transfer bound -- the shipped form\n")
-        print(f"{'n':>4} {'k':>3} {'nominal eps':>12} {'observed':>10} {'tested':>8} {'worst':>7}")
+        print(f"{'n':>4} {'k':>3} {'nominal eps':>12} {'observed':>10} {'RAW ctrl':>10} "
+              f"{'tested':>8} {'worst':>7}")
         settings = (
             [(10, 1), (20, 1), (20, 2), (29, 1), (29, 3), (40, 2)]
             if args.grade == "sweep"
@@ -223,15 +259,21 @@ def main() -> int:
         )
         for window, k in settings:
             total = exceedances = 0
+            raw_total = raw_exceed = 0
             worst = 1.0
             for _, segments in found:
                 sub_total, sub_exceed, sub_worst = grade_order(segments, window, k)
                 total += sub_total
                 exceedances += sub_exceed
                 worst = max(worst, sub_worst)
+                r_total, r_exceed, _ = grade_order(segments, window, k, transfer_on=False)
+                raw_total += r_total
+                raw_exceed += r_exceed
             observed = exceedances / total if total else 0.0
+            raw = raw_exceed / raw_total if raw_total else 0.0
             print(
-                f"{window:4d} {k:3d} {k/(window+1):12.3%} {observed:10.2%} {total:8d} {worst:7.2f}"
+                f"{window:4d} {k:3d} {k/(window+1):12.3%} {observed:10.2%} {raw:10.2%} "
+                f"{total:8d} {worst:7.2f}"
             )
         print()
 

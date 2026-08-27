@@ -183,30 +183,79 @@ Over a trailing window of `n` observations, transfer each to the candidate byte 
 Â_j  =  k-th largest of  { A_i · max(1, b_j/b_i)  :  i in the last n segments }
 ```
 
-**Why this carries a guarantee.** The transferred values are a *fixed measurable function* of the
-pairs `(b_i, A_i)`. A fixed function of exchangeable variables is exchangeable, so the order-
-statistic result §4 already relies on applies unchanged:
+**Why this carries a guarantee, and [CORRECTED 2026-08-27] why it is an INEQUALITY.** An earlier
+draft of this paragraph said the transferred values are a *fixed measurable function* of the pairs
+`(b_i, A_i)`, hence exchangeable, hence `= k/(n+1)` exactly. **The map is not fixed.** It is
+`g_q(b_i, A_i) = A_i · max(1, q/b_i)`, indexed by the QUERY byte count — swap the test point with a
+window member and the map applied to the bag becomes a different function, so the transformed
+vector is not exchangeable and the equality does not hold.
+
+What does hold, and is what the rule actually needs:
 
 ```
-P( T_next > k-th largest of the window )  =  k/(n+1)          exactly
+P( A_next > k-th largest of the transferred window )  ≤  k/(n+1)
 ```
+
+The argument is domination, not exchangeability of the transform. Every factor is `≥ 1`, so the
+transferred bound is pointwise at or above the **raw** `k`-th largest; the exceedance event is
+therefore a subset of the raw one, and the raw comparison *is* the identity map on the bag —
+genuinely fixed, genuinely exchangeable — so it carries the exact result. The transfer can only
+push the probability down. **Conservative by construction.**
 
 `ε = k/(n+1)` is therefore (4), an explicit SLO choice, and `n = k/ε − 1` follows from it (R28's
-corrected theorem — `k/ε − 1`, not `1/ε − 1`). Nothing else is chosen.
+corrected theorem — `k/ε − 1`, not `1/ε − 1`).
 
-**Measured against real acquisitions it is conservative at every setting tried**, which is the
-evidence that the exchangeability assumption is not being strained in practice — and a better
-answer than R9's proposed AR(1) correction table, since `p2h` §4 refuted a *stable* autocorrelation
-(ρ₁ spans −0.376 to +0.764 with no consistent sign), so no fixed ρ is estimable to correct with:
+**[CORRECTED 2026-08-27] The earlier draft closed "Nothing else is chosen", and that is false: `ε`
+pins only the RATIO, so `k` is a second free parameter and it was classified nowhere.** It is not
+neutral. `k` sets the window length `n = k/ε − 1`, and the window is two other things at once: the
+estimator's exposure to non-stationarity — the failure mode measured below, where the violations
+sit inside one window of a link step — and, through §4's condition (2), the span of media the
+reserve condition proves survival over, which the document states as exactly `n·D`. The table below
+shows the choice moving behaviour at fixed `ε`: `(20, 1)` and `(40, 2)` have essentially the same
+nominal `ε` (4.76% vs 4.88%) and differ 2.4× in realized exceedance, with 80 s of reserve coverage
+instead of 40 s.
 
-| n | k | nominal ε | observed | tested |
-|---:|---:|---:|---:|---:|
-| 10 | 1 | 9.09% | 4.31% | 487 |
-| 20 | 1 | 4.76% | **1.06%** | 377 |
-| 20 | 2 | 9.52% | 5.04% | 377 |
-| 29 | 1 | 3.33% | 1.08% | 278 |
-| 29 | 3 | 10.00% | 5.76% | 278 |
-| 40 | 2 | 4.88% | 2.53% | 158 |
+**`k` is therefore a second product/SLO choice (4), and it must be stated as one**, with its own
+meaning: *how many of the last `n` acquisitions may exceed the bound before the estimate is
+considered wrong*. `k = 1` is the tightest bound and the most outlier-sensitive; larger `k` is
+robust and buys a longer proof horizon. Two constraints tie it down rather than leaving it free —
+`n ≥ k/ε − 1` from the theorem, and `n·D ≥` the passage length condition (2) must survive, which is
+what actually decides `k` once someone states the passage length.
+
+**And §5's `n ≤ 32` was an unclassified cap that contradicts this table.** It appeared once, in
+passing, with no derivation. Under it the achievable `ε` is bounded below by `k/33`, so `k = 2`
+forces `ε ≥ 6.06%` and `k = 3` forces `ε ≥ 9.09%` — and the `(40, 2)` row measured below is
+**unreachable**, since `k/ε − 1` at `ε = 4.88%, k = 2` is 40. The cap is withdrawn: the window
+length is `n = k/ε − 1` and nothing else, and §5's arithmetic-cost argument ("a sum over `n ≤ 32`
+evaluated where the controller already runs") is a statement about cost, not a bound on `n`.
+
+**[CORRECTED] "Conservative at every setting" is NOT evidence that exchangeability holds.** The
+earlier draft read it that way, and it cannot be read that way: the under-shoot is the arithmetic
+consequence of the domination above — an upper-biased statistic can only miss low — so it would
+appear under *any* degree of non-exchangeability. The diagnostic that does test the assumption is
+the **raw control**: the same order statistic with the transfer factor pinned to 1. The tool now
+reports both (`tools/abr-transfer-bound.py --grade sweep`):
+
+| n | k | nominal ε | transferred | **RAW control** | tested |
+|---:|---:|---:|---:|---:|---:|
+| 10 | 1 | 9.09% | 4.31% | **9.24%** | 487 |
+| 20 | 1 | 4.76% | 1.06% | **3.98%** | 377 |
+| 20 | 2 | 9.52% | 5.04% | **10.34%** | 377 |
+| 29 | 1 | 3.33% | 1.08% | **4.32%** | 278 |
+| 29 | 3 | 10.00% | 5.76% | **11.15%** | 278 |
+| 40 | 2 | 4.88% | 2.53% | **5.06%** | 158 |
+
+**The raw control lands at nominal at all six settings, which does support exchangeability on this
+corpus — by the route that actually tests it.** The transferred column sits 2–4× under, and that
+gap is the conservatism the transfer buys, on an inflation factor above 1 for **44.6%** of
+in-window transfers (max 48.3×). Two consequences worth stating rather than leaving implied:
+realized coverage on a stationary link runs 3–4× inside the `ε` the setting is named after, so `ε`
+is a ceiling on exceedance and not a description of it; and the cushion is finite — §2a's own band
+sweeps run the transferred bound to 9.23% against a 4.76% nominal.
+
+This is still a better answer than R9's proposed AR(1) correction table, since `p2h` §4 refuted a
+*stable* autocorrelation (ρ₁ spans −0.376 to +0.764 with no consistent sign), so no fixed ρ is
+estimable to correct with.
 
 ### [MEASURED 2026-08-27] The guarantee holds on a stationary link and degrades ~2x off one
 
@@ -215,9 +264,23 @@ The table above is settled links. The `pipe_abr_band_*` sweeps put the first 18 
 two logs the bound is anti-conservative**: 9.23% against a 4.76% nominal at (20, 1), 16.92% against
 9.52% at (20, 2), 14.89% against 10% at (29, 3).
 
-**The cause is not ambiguous — all 6 violations fall within one window of a link-rate step.** The
-window straddles a leg boundary and carries observations from a link that no longer exists, so
-exchangeability fails by construction rather than by degree.
+**[WEAKENED 2026-08-27] The earlier draft said "the cause is not ambiguous — all 6 violations fall
+within one window of a link-rate step". That predicate discriminates nothing.** The band cases
+shape the link in 20-second legs while a 20-sample window spans 27–41 s of wall time in these logs,
+so **every** gradable window straddles a leg boundary — the violating ones and the 57 that did not
+violate alike. A property shared by 100% of the samples cannot be evidence for a cause, and the
+experiment has no control leg, so the claim is unfalsifiable here rather than established.
+
+The violation *shape* argues against it too: only 2 of the 6 sit at a step, and 4 are mid-leg
+overshoots of 1.005–1.10×, which is the same "dispersion around the model" this section classifies
+as noise for the pin cases. One 2.69× overshoot at a step plus five near-ties is not
+"exchangeability fails by construction".
+
+**What survives is the weaker and still useful statement**: the transferred bound runs
+anti-conservative on a link that is being swept, by about 2×, and the largest single overshoot
+coincides with a leg boundary. *Why* is not settled by this run. Settling it needs a control —
+the same sweep with one long flat leg, so windows that straddle a step can be compared against
+windows that do not — and that case is not written.
 
 **A regime-change reset does not rescue it, and the reason is a number worth knowing.**
 `CapacityEstimate`'s existing rule fires on a **4×** move; the sweep's largest step is 3.1×, so it
@@ -497,9 +560,31 @@ it moves 1.00 → 2.98, which is the reserve doing exactly the job the finding s
 | `brief_dropout` | 0.65 | 6 335 ms | 1.16 | 1.51 |
 | `steady_modest_link` | 0.59 | 37 210 ms | 1.31 | 1.77 |
 
-The ladder's own steps are ~1.4×, so a healthy link clears a one-rung upshift with room to spare
-and a loaded one (`A/D` ≈ 0.6) admits between 1.5 and 1.8 — a single rung, not three. **This is the
-finding that "climbing is unreachable" being closed with a number rather than an argument.**
+**[CORRECTED 2026-08-27 — both halves of the sentence that stood here were false.]** It read: "The
+ladder's own steps are ~1.4×, so a healthy link clears a one-rung upshift with room to spare and a
+loaded one (`A/D` ≈ 0.6) admits between 1.5 and 1.8 — a single rung, not three."
+
+* **No step in the shipped ladder is 1.4×.** From rung 4000 up, `Rung::kbps` steps are 1.500,
+  1.333, 1.250, 1.200, 1.167, 1.143, 1.125, 1.111, 1.100 — geometric mean **1.21**, and the top
+  step is 1.10.
+* **"A single rung, not three" is off by 3–7×**, and the table directly above it says so. Three
+  rows sit near `A/D ≈ 0.6`: 1.51, 1.77 and **2.98**. Against the real ladder, from rung 8000 a
+  1.77 budget lands on **14000 — three rungs up**, and 2.98 lands on **22000, seven rungs up and a
+  raster change to 4K**. It cannot be recovered by walking one rung at a time: `best_sustainable`
+  is documented and coded to jump straight to the largest admissible candidate, precisely so that
+  an 8 → 15 Mbit/s budget primes the 14 Mbps encoder once instead of paying for three encoder
+  creations.
+
+**So what the measurement actually shows is weaker than the claim it was used for.** The rule
+climbs — that much stands, and it is what "climbing is unreachable" needed — but the sizes it
+admits are large enough that the *step-size* question is now open rather than settled. A 2.98×
+admission on an oscillating link is not "a single rung with room to spare"; it is a jump to the top
+of the ladder, and whether the reserve condition alone should license that is exactly what §5's
+self-consistency precondition has to answer. **A per-decision cap on the number of rungs is NOT the
+remedy** — that is a rung-walking rule of the kind the design rule forbids, and it would reintroduce
+the encoder-churn `best_sustainable` exists to avoid. The honest statement is that (1) ∧ (2) bound
+the *rate* a candidate may demand and say nothing about the *raster change* that accompanies a
+large jump, and the utility ledger of §7 is where that cost belongs.
 
 ### The shipped integer form
 
@@ -626,7 +711,8 @@ interaction with the anti-flap cost. §2a and §4 between them remove the need t
 three.
 
 **Cadence: every segment.** There is nothing to schedule. The admission rule of §4 is a sum and a
-selection over a window of `n ≤ 32`, evaluated where the controller already runs once per segment,
+selection over a window of a few dozen samples, evaluated where the controller already runs once
+per segment,
 so a cadence parameter would only be a way of doing *less often* something that costs nothing. The
 window needs no reset across a **commit**: §2a transfers by **bytes**, so observations taken at the
 old rung remain valid evidence about the new one — which is the property R3 identified and the
@@ -796,20 +882,32 @@ Q(R)  =  K · log₂( min(R, S) / S )          S = the source's own rate; Q ≤ 
 ```
 
 * `min(R, S)` is the **information bound**, classification (1): a transcode cannot carry more than
-  its source, so paying for rate above `S` buys nothing. This is exactly R5's defect —
-  "quality step on a bitrate ladder does not respect `transcode ≤ source`" — fixed by construction
-  rather than by a correction term.
+  its source, so paying for rate above `S` buys nothing. **[CORRECTED 2026-08-27] That bound is an
+  INEQUALITY and this formula turns it into an EQUALITY, which is wrong and decision-relevant.**
+  "A transcode cannot carry more than its source" gives `Q(transcode) ≤ 0`; it does not give
+  `Q = 0`. A transcode is a re-encode of already-lossy content, so generation loss makes it
+  strictly worse at every finite `R` — and on this app's path it can lose the source's Dolby Vision
+  and Atmos outright, which §7's own `original_feature_bonus` row concedes. So R5's inversion is not
+  fixed by construction; it is **reduced from "transcode wins by three steps" to "transcode ties"**.
+  The tie is not cosmetic: with `Q_orig = Q_hls = 0`, the Original-vs-top-rung comparison is carried
+  entirely by `server_cost_weight` and `original_feature_bonus` — two constants this same document
+  leaves unresolved. The correct form needs a generation-loss term, `Q(R) = K·log₂(min(R,S)/S) − G`
+  with `G > 0` for any transcode, and **`G` is not derived here**: it is the honest replacement for
+  `original_quality_bonus` and it is an open number, not a solved one.
 * `log₂` is (3), from the concavity the table already claims and rate-distortion supplies.
-* **Relative to `S`**, so Original scores exactly **0** and every transcode scores negative. The
-  ledger stops needing `original_quality_bonus` as a thumb on the scale; Original wins ties because
-  it *is* the source, not because it is handed 40 points.
+* **Relative to `S`**, so Original scores exactly **0** and every transcode scores at most 0.
+  `original_quality_bonus` stops being a thumb on the scale — but it is **replaced, not deleted**,
+  by the generation-loss term `G` above. Original wins because it *is* the source; the size of that
+  win is `G` and nobody has measured it.
 * `K` is the single surviving constant: **quality points per octave**, an explicit product choice
   (4), and the numeraire §7 said was undefined. One number, stated in a unit, instead of nine
   values whose unit was never named.
 
 **R5's counterexample, recomputed.** An 8.5 Mbit/s 1080p source against a 20 Mbit/s transcode of
-itself: `min(20000, 8500) = 8500`, so `Q = K·log₂(1) = 0` — **equal to Original**, where the shipped
-ladder put the source three steps below. A 4 Mbit/s transcode of the same item scores
+itself: `min(20000, 8500) = 8500`, so `Q = K·log₂(1) − G = −G` — **below Original by exactly the
+generation loss**, where the shipped ladder put the source three steps *above* the transcode in
+cost terms. With `G` unmeasured the comparison degenerates to a tie, which is better than an
+inversion and is not yet right. A 4 Mbit/s transcode of the same item scores
 `K·log₂(4000/8500) = −1.087·K`, about one octave down, which is what a viewer would actually see.
 
 **Integer form.** `log₂` to a sixteenth of an octave: `i64::ilog2` for the exponent plus a 16-entry
@@ -964,9 +1062,28 @@ rather than deleted, because what each BECAME is the useful part:**
   95% CI of width 0.6. The mode-comparison rule must degrade gracefully without them rather than
   wait for them.
 
-**Process — done, and the answer was no.** The review the plan requires has run: five seats, each
-attacked by an independent refuter, 13 findings surviving and 7 killed
-(`docs/measurements/p3-spec-review.md`). I predicted the weakest points would be §3's
+**Process — run TWICE now, and the second one found four blocking errors in the same day's work.**
+The review the plan requires ran first with five seats and independent refuters, 13 findings
+surviving and 7 killed (`docs/measurements/p3-spec-review.md`). A **second** review, on the same
+terms, ran after those six blockers were answered: 5/5 seats, 14 findings, **5 survived and 9 were
+killed** (`docs/measurements/p3b-spec-review.md`). All four blocking survivors were errors in the
+answers themselves —
+
+* §2a claimed the exchangeability guarantee is an EQUALITY. The map is indexed by the query byte
+  count, so it is not fixed and the equality is false; the correct statement is `≤`, carried by
+  domination over the raw order statistic. Worse, "conservative at every setting" was read as
+  evidence the assumption holds, and it is an artifact of that same domination. The **raw control**
+  is the real diagnostic and it lands at nominal — the tool now reports it.
+* §4 reassured that admitted ratios mean "a single rung, not three". No ladder step is 1.4×
+  (geometric mean 1.21 from rung 4000 up), and the table's own 2.98 lands **seven rungs up, at 4K**.
+* §7's `min(R, S)` turns an inequality into an equality: generation loss means a transcode is
+  strictly worse than its source, so R5's inversion is reduced to a TIE rather than fixed, and a
+  generation-loss term `G` is now open where `original_quality_bonus` was.
+* §2a's "nothing else is chosen" was false — `ε` pins only the ratio `k/(n+1)`, so `k` is a second
+  product choice, and §5's undeclared `n ≤ 32` cap made the `(40, 2)` row of §2a's own table
+  unreachable.
+
+All five are corrected in place above, marked `[CORRECTED 2026-08-27]`. I predicted the weakest points would be §3's
 single-server `σ`, §7's product choices, and §4's two missing numbers. **`σ` itself survived** — an
 attack arguing it is merely an extreme order statistic was recomputed and killed. What actually
 broke was structural and I had not anticipated any of it: §5 could not climb, §4 had no reserve
@@ -986,7 +1103,8 @@ one was attempted and failed. What follows is the state, not a plan:
    "climbing unreachable" into a 2.6–2.8× admitted byte ratio on a healthy link against a ladder
    that steps 1.4×.
 3. ~~**§5's periodic upshift trigger.**~~ **Answered, with no parameter.** Cadence is *every
-   segment* — the rule is a sum over `n ≤ 32` evaluated where the controller already runs, and the
+   segment* — the rule is a sum over a few dozen samples evaluated where the controller already
+   runs, and the
    window survives a commit because §2a transfers by bytes. The reserve precondition is
    self-consistency, `admit(j)` re-evaluated at `B − E_tx_up`, which is what a cooldown was
    approximating. **This also dissolves R2**: the unreachable ladder top was a property of guards

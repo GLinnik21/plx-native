@@ -87,6 +87,44 @@ class OrderStatistic(unittest.TestCase):
         self.assertEqual((total, exceed), (0, 0))
 
 
+class TheRawControl(unittest.TestCase):
+    """`transfer_on=False` pins the factor to 1, which is the diagnostic the tool lacked.
+
+    Without it, "observed exceedance is below nominal" reads as evidence that exchangeability
+    holds. It is not: every transfer factor is >= 1, so the transferred bound dominates the raw one
+    pointwise and can only miss LOW, under any degree of non-exchangeability. The raw order
+    statistic is the identity map on the bag -- genuinely fixed -- and is what carries the exact
+    result, so it is the column that tests the assumption.
+    """
+
+    def test_the_control_ignores_bytes_entirely(self):
+        # Same acquisitions, wildly different sizes: the control must not move.
+        a = [(1_000, 10), (1_000, 20), (1_000, 30), (1_000, 25)]
+        b = [(10, 10), (5_000_000, 20), (7, 30), (900_000, 25)]
+        self.assertEqual(
+            tb.grade_order(a, window=3, k=1, transfer_on=False),
+            tb.grade_order(b, window=3, k=1, transfer_on=False),
+        )
+
+    def test_the_transferred_bound_dominates_the_raw_one(self):
+        # Pointwise domination is why the guarantee is <= and not =. An upshift query inflates
+        # every window member, so the bound rises and the exceedance count cannot rise with it.
+        segments = [(1_000, v) for v in (10, 20, 30, 25, 28, 22, 26)]
+        segments = [(b if i % 2 else b // 4, a) for i, (b, a) in enumerate(segments)]
+        _, transferred, _ = tb.grade_order(segments, window=3, k=1, transfer_on=True)
+        _, raw, _ = tb.grade_order(segments, window=3, k=1, transfer_on=False)
+        self.assertLessEqual(transferred, raw)
+
+    def test_equal_sizes_make_the_two_identical(self):
+        # With every factor exactly 1 the transfer is the identity, so the columns must coincide --
+        # which is also why a corpus with no size variation cannot tell the two apart.
+        segments = [(1_000, v) for v in (10, 20, 30, 25, 28)]
+        self.assertEqual(
+            tb.grade_order(segments, window=3, k=1, transfer_on=True),
+            tb.grade_order(segments, window=3, k=1, transfer_on=False),
+        )
+
+
 class Pairs(unittest.TestCase):
     def test_consistent_plant_never_violates(self):
         # Points generated from an exact A = O0 + b*tau lie ON the bound's feasible set, so a
@@ -162,6 +200,20 @@ class AgainstTheCommittedCorpus(unittest.TestCase):
         # The claim recorded in the specification is "~37%". Pin it as clearly-refuted rather than
         # as a value echo: anything above a few percent kills the single-observation form.
         self.assertGreater(violations / total, 0.20)
+
+    def test_the_raw_control_lands_at_nominal_which_is_the_real_diagnostic(self):
+        """The assumption test. The raw column should sit AT nominal, not under it."""
+        for window, k, tol in [(20, 1, 0.04), (29, 3, 0.04)]:
+            total = exceed = 0
+            for _, segments in self.cases:
+                st, se, _ = tb.grade_order(segments, window, k, transfer_on=False)
+                total += st
+                exceed += se
+            with self.subTest(window=window, k=k):
+                self.assertGreater(total, 100)
+                # Two-sided: landing far BELOW nominal here would mean the control is not
+                # measuring what it claims either.
+                self.assertLess(abs(exceed / total - k / (window + 1)), tol)
 
     def test_order_statistic_is_conservative_against_nominal(self):
         for window, k in [(20, 1), (29, 3)]:
