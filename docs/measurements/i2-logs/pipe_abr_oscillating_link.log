@@ -212,8 +212,7 @@ hls: segment=0 bytes=2786912 raster=1920x1080 v=48 a=95 tail_skew_ms=-5 audio_pt
 loop=60 route=player overlay=none pos=6s vtick=5 vgap=201ms fps=60
 auth: '"<SHARED-SERVER-NAME>"' probe timed out at <SERVER-LAN-IP>:32400
 plex: server slot 1 re-pointed to https://<SHARED-SERVER>.plex.direct:<PORT>
-auth: reached "<peer-name-2>" <SHARED-SERVER-IP>:26937 (shared by <OWNER> via https://<SHARED-SERVER>.plex.direct:<PORT>
-auth: roster refresh — 2 server(s)
+auth: reached "<peer-name-2>" <SHARED-SERVER-IP>:26937 (shared by <peer-owner-1>)
 net: curl rc=28 — timed out
 feed v#200 sz=17016 fed=8332999999 reply=O qbytes=5647397
 pms: server 1 version=1.43.4.10903-e5521bd8c plexPass=true

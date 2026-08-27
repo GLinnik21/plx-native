@@ -37,9 +37,19 @@ PUBLIC_IP = re.compile(
     r"(?!192\.168\.)(?!172\.(?:1[6-9]|2\d|3[01])\.)"
     r"(?:\d{1,3}\.){3}\d{1,3}(?![0-9])(?!\.\d)(?!-\w)")
 
-# `auth: reached "<peer-name-2>" <addr>:<port> (shared)` -- the server's HANDLE, which names the
+# `auth: reached "handle" <addr>:<port> (shared)` -- the server's HANDLE, which names the
 # machine and often its owner just as precisely as the address does.
 PEER_HANDLE = re.compile(r'(auth: reached\s+)"([^"]+)"')
+
+# **Three more shapes of the same address, and missing them is how the first fix of this stayed
+# incomplete for a day.** Plex reaches a server through `https://<dashed-ip>.<hash>.plex.direct`,
+# so the SAME address appears a second time with dashes for dots -- invisible to any dotted-quad
+# pattern -- alongside a hash derived from the server's machineIdentifier, which identifies it just
+# as uniquely. And `(shared by <user>)` names the OWNER outright, which is the disclosure the
+# address is only a proxy for.
+DASHED_HOST = re.compile(r"(?<![0-9.-])\d{1,3}(?:-\d{1,3}){3}(?=\.[0-9a-f]{20,}\.plex\.direct)")
+PLEX_DIRECT_HASH = re.compile(r"(?<=\.)[0-9a-f]{20,}(?=\.plex\.direct)")
+SHARED_BY = re.compile(r"(\(shared by\s+)([^)]+)(\))")
 
 
 def load_guard(root):
@@ -108,7 +118,22 @@ def scrub(text, guard, secrets):
         return f'{m.group(1)}"{name}"'
     text = PEER_HANDLE.sub(_handle, text)
 
-    return text, replaced + len(hosts) + len(peers) + len(handles)
+    # The dashed form of the same address, the machineIdentifier-derived hash beside it, and the
+    # owner's account name. Each is a complete identifier on its own.
+    dashed = {}
+    text = DASHED_HOST.sub(
+        lambda m: dashed.setdefault(m.group(0), f"<peer-host-{len(dashed) + 1}>"), text)
+    hashes = {}
+    text = PLEX_DIRECT_HASH.sub(
+        lambda m: hashes.setdefault(m.group(0), f"<plex-direct-hash-{len(hashes) + 1}>"), text)
+    owners = {}
+    def _owner(m):
+        name = owners.setdefault(m.group(2), f"<peer-owner-{len(owners) + 1}>")
+        return f"{m.group(1)}{name}{m.group(3)}"
+    text = SHARED_BY.sub(_owner, text)
+
+    return text, (replaced + len(hosts) + len(peers) + len(handles)
+                  + len(dashed) + len(hashes) + len(owners))
 
 
 def main(argv=None):

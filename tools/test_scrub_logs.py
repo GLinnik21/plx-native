@@ -78,6 +78,39 @@ class PublicAddresses(unittest.TestCase):
         self.assertNotIn("<peer-ip-1>", out)
 
 
+class TheSameAddressInOtherShapes(unittest.TestCase):
+    """Plex reaches a server through `https://<dashed-ip>.<hash>.plex.direct`, so the address
+    appears a SECOND time with dashes for dots -- invisible to any dotted-quad pattern -- beside a
+    machineIdentifier-derived hash that identifies it just as uniquely, and `(shared by <user>)`
+    names the owner outright. The first fix of this leak redacted the dotted form and the handle
+    and left all three of these in the tree, which is why they have tests."""
+
+    def test_the_dashed_form_of_the_address_is_redacted(self):
+        out, _ = scrub("via https://203-0-113-7.abc123def4567890abcd.plex.direct:32400")
+        self.assertNotIn("203-0-113-7", out)
+        self.assertIn("<peer-host-1>", out)
+
+    def test_the_plex_direct_hash_is_redacted(self):
+        out, _ = scrub("via https://203-0-113-7.abc123def4567890abcd.plex.direct:32400")
+        self.assertNotIn("abc123def4567890abcd", out)
+        self.assertIn("<plex-direct-hash-1>", out)
+
+    def test_the_owner_account_name_is_redacted(self):
+        out, _ = scrub('auth: reached "srv" 203.0.113.7:26937 (shared by someuser) via x')
+        self.assertNotIn("someuser", out)
+        self.assertIn("<peer-owner-1>", out)
+        self.assertIn("(shared by", out, "the line must still say the server is shared")
+
+    def test_ours_is_not_mistaken_for_a_shared_owner(self):
+        text = 'auth: reached "srv" 10.0.0.2:32400 (ours) via x'
+        self.assertIn("(ours)", scrub(text)[0])
+
+    def test_a_dashed_run_that_is_not_a_plex_direct_host_survives(self):
+        # Only dashes IMMEDIATELY followed by a hash + plex.direct are an address.
+        text = "case pipe-1-2-3-4 finished"
+        self.assertEqual(scrub(text)[0], text)
+
+
 class VersionStringsAreNotAddresses(unittest.TestCase):
     """A dotted quad followed by more digits is a version, and every log is full of them."""
 
@@ -143,6 +176,24 @@ class TheCommittedLogsAreClean(unittest.TestCase):
             "captured logs carry routable addresses; re-run tools/scrub-logs.py over: "
             + ", ".join(offenders),
         )
+
+    def test_no_other_shape_of_a_peer_address_survives(self):
+        offenders = []
+        for path in sorted(ROOT.glob("docs/measurements/*-logs/*.log")):
+            text = path.read_text(errors="replace")
+            # SHARED_BY matches its own replacement -- `<peer-owner-1>` is a valid `[^)]+` -- so
+            # count only owners that are not already a placeholder, exactly as the handle check
+            # below does. Without this the gate reports every scrubbed file as still leaking.
+            owners = [m for m in sl.SHARED_BY.finditer(text)
+                      if not m.group(2).startswith("<peer-owner-")]
+            hits = (len(sl.DASHED_HOST.findall(text)) + len(sl.PLEX_DIRECT_HASH.findall(text))
+                    + len(owners))
+            if hits:
+                offenders.append(f"{path.relative_to(ROOT)} ({hits})")
+        self.assertFalse(
+            offenders,
+            "captured logs carry a dashed address, a plex.direct hash or an owner name: "
+            + ", ".join(offenders))
 
     def test_no_peer_handle_survives_in_any_captured_log(self):
         offenders = []
