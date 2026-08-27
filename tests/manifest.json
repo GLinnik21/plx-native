@@ -1587,7 +1587,7 @@
         "mid-transfer-network-profile"
       ],
       "declare": {"vcodec": "h264", "acodec": "aac", "fps": 24.0},
-      "auto_network": {"source_kbps": 60000},
+      "auto_network": {"source_kbps": 60000, "start_hls": true},
       "network_profile": [
         {"until_s": 10.0, "kbps": 2000},
         {"until_s": 240.0, "kbps": 40000}
@@ -1618,7 +1618,7 @@
         "mid-transfer-network-profile"
       ],
       "declare": {"vcodec": "h264", "acodec": "aac", "fps": 24.0},
-      "auto_network": {"source_kbps": 60000},
+      "auto_network": {"source_kbps": 60000, "start_hls": true},
       "network_profile": [
         {"until_s": 240.0, "kbps": 6000}
       ],
@@ -1650,7 +1650,7 @@
         "mid-transfer-network-profile"
       ],
       "declare": {"vcodec": "h264", "acodec": "aac", "fps": 24.0},
-      "auto_network": {"source_kbps": 60000},
+      "auto_network": {"source_kbps": 60000, "start_hls": true},
       "network_profile": [
         {"until_s": 20.0, "kbps": 40000},
         {"until_s": 23.0, "kbps": 200},
@@ -1681,7 +1681,7 @@
         "mid-transfer-network-profile"
       ],
       "declare": {"vcodec": "h264", "acodec": "aac", "fps": 24.0},
-      "auto_network": {"source_kbps": 60000},
+      "auto_network": {"source_kbps": 60000, "start_hls": true},
       "network_profile": [
         {"until_s": 12.0, "kbps": 20000},
         {"until_s": 20.0, "kbps": 3000},
@@ -1716,7 +1716,7 @@
         "rung-pin"
       ],
       "declare": {"vcodec": "h264", "acodec": "aac", "fps": 24.0},
-      "auto_network": {"source_kbps": 900000},
+      "auto_network": {"source_kbps": 900000, "start_hls": true},
       "abr_pin": 320,
       "run_secs": 120,
       "operations": [{"op": "play"}],
@@ -1729,7 +1729,7 @@
         "no_playing_error": true,
         "abr_shape": {}
       },
-      "_census_note": "Measurement step M4 of docs/adaptive-playback-plan.md, as ONE command: this case writes the play URL, quality=auto and plxnative-abrpin together, so the census needs no manual prerequisite. the bottom of the ladder: the 1 MiB AUDIO queue should bind, not the 8 MiB video one. The link is deliberately UNSHAPED (no network_profile) so the AU queue byte cap is the only limiter -- a shaped leg would measure the shaper instead. source_kbps is declared at 900000 for exactly one reason: on an unshaped LAN a 60000 kbps source IS sustainable, so Auto stays on Original and the HLS controller never runs at all (device-observed 2026-08-26 -- the shaped cases only reach HLS because their slow leg forces it). A source no link can carry forces the HLS path without shaping the link. `abr_shape: {}` reports every I0 metric and asserts none of them: this case exists to produce evidence, and a bound written before the baseline exists would be a number somebody guessed. Run it with --no-early: the census needs the FULL window, and a case that satisfied every assertion would otherwise stop as soon as it had. min_pos_climb_s stays below the 60 s entry fixture's own duration, which the harness checks up front."
+      "_census_note": "Measurement step M4 of docs/adaptive-playback-plan.md, as ONE command: this case writes the play URL, quality=auto and plxnative-abrpin together, so the census needs no manual prerequisite. the bottom of the ladder: the 1 MiB AUDIO queue should bind, not the 8 MiB video one. The link is deliberately UNSHAPED (no network_profile) so the AU queue byte cap is the only limiter -- a shaped leg would measure the shaper instead. `start_hls` is what puts this case in HLS, and it is the honest replacement for what used to: `source_kbps: 900000` was declared so that the starvation horizon would fire and drop Auto out of Original, on an unshaped link where the reserve was visibly FILLING. That entry only ever worked because the horizon did not check whether anything was draining, and it stopped working the day that was fixed -- correctly, since a growing reserve is not a starvation. `route::arm_auto_fixture` now installs the post-fallback state directly. The declared rate is kept because it still bounds the actuator raster and keeps Original RECOVERY out of the case, and it no longer forces anything. `abr_shape: {}` reports every I0 metric and asserts none of them: this case exists to produce evidence, and a bound written before the baseline exists would be a number somebody guessed. Run it with --no-early: the census needs the FULL window, and a case that satisfied every assertion would otherwise stop as soon as it had. min_pos_climb_s stays below the 60 s entry fixture's own duration, which the harness checks up front."
     },
     {
       "name": "pipe_abr_pin_720",
@@ -1741,7 +1741,7 @@
         "rung-pin"
       ],
       "declare": {"vcodec": "h264", "acodec": "aac", "fps": 24.0},
-      "auto_network": {"source_kbps": 900000},
+      "auto_network": {"source_kbps": 900000, "start_hls": true},
       "network_profile": [
         {"until_s": 600.0, "kbps": 6000}
       ],
@@ -1758,7 +1758,7 @@
         "no_playing_error": true,
         "abr_shape": {}
       },
-      "_census_note": "Measurement step M4 of docs/adaptive-playback-plan.md, as ONE command: this case writes the play URL, quality=auto and plxnative-abrpin together, so the census needs no manual prerequisite. the bootstrap rung, still predicted AUDIO-bound. This point carries a FLAT 6000 kbps leg, and that departure is now HISTORICAL: unshaped, the link measures 84-111 Mbit/s and `startup_rung` picks the top rung, and until 2026-08-27 the pin could not transact down from there because PIN_MIN_RESERVE_SEGMENTS charged an UPSHIFT derivation of six segments in both directions -- 12000 ms against a ceiling of ~5421. It charges two going down now (PIN_MIN_RESERVE_SEGMENTS_DOWN), and the P2 census landed this pin unshaped, so the leg is a leftover the next census can drop. The shaper sets the FILL rate and sits far above this rung's media rate, so the queue is still what bounds the reserve SIZE -- which is a claim the measurement itself checks, and did: observed median within +2.7% / +0.6% of the queue-geometry prediction. source_kbps is declared at 900000 for exactly one reason: on an unshaped LAN a 60000 kbps source IS sustainable, so Auto stays on Original and the HLS controller never runs at all (device-observed 2026-08-26 -- the shaped cases only reach HLS because their slow leg forces it). A source no link can carry forces the HLS path without shaping the link. `abr_shape: {}` reports every I0 metric and asserts none of them: this case exists to produce evidence, and a bound written before the baseline exists would be a number somebody guessed. Run it with --no-early: the census needs the FULL window, and a case that satisfied every assertion would otherwise stop as soon as it had. min_pos_climb_s stays below the 60 s entry fixture's own duration, which the harness checks up front."
+      "_census_note": "Measurement step M4 of docs/adaptive-playback-plan.md, as ONE command: this case writes the play URL, quality=auto and plxnative-abrpin together, so the census needs no manual prerequisite. the bootstrap rung, still predicted AUDIO-bound. This point carries a FLAT 6000 kbps leg, and that departure is now HISTORICAL: unshaped, the link measures 84-111 Mbit/s and `startup_rung` picks the top rung, and until 2026-08-27 the pin could not transact down from there because PIN_MIN_RESERVE_SEGMENTS charged an UPSHIFT derivation of six segments in both directions -- 12000 ms against a ceiling of ~5421. It charges two going down now (PIN_MIN_RESERVE_SEGMENTS_DOWN), and the P2 census landed this pin unshaped, so the leg is a leftover the next census can drop. The shaper sets the FILL rate and sits far above this rung's media rate, so the queue is still what bounds the reserve SIZE -- which is a claim the measurement itself checks, and did: observed median within +2.7% / +0.6% of the queue-geometry prediction. `start_hls` is what puts this case in HLS, and it is the honest replacement for what used to: `source_kbps: 900000` was declared so that the starvation horizon would fire and drop Auto out of Original, on an unshaped link where the reserve was visibly FILLING. That entry only ever worked because the horizon did not check whether anything was draining, and it stopped working the day that was fixed -- correctly, since a growing reserve is not a starvation. `route::arm_auto_fixture` now installs the post-fallback state directly. The declared rate is kept because it still bounds the actuator raster and keeps Original RECOVERY out of the case, and it no longer forces anything. `abr_shape: {}` reports every I0 metric and asserts none of them: this case exists to produce evidence, and a bound written before the baseline exists would be a number somebody guessed. Run it with --no-early: the census needs the FULL window, and a case that satisfied every assertion would otherwise stop as soon as it had. min_pos_climb_s stays below the 60 s entry fixture's own duration, which the harness checks up front."
     },
     {
       "name": "pipe_abr_pin_2000",
@@ -1770,7 +1770,7 @@
         "rung-pin"
       ],
       "declare": {"vcodec": "h264", "acodec": "aac", "fps": 24.0},
-      "auto_network": {"source_kbps": 900000},
+      "auto_network": {"source_kbps": 900000, "start_hls": true},
       "abr_pin": 2000,
       "run_secs": 120,
       "operations": [{"op": "play"}],
@@ -1783,7 +1783,7 @@
         "no_playing_error": true,
         "abr_shape": {}
       },
-      "_census_note": "Measurement step M4 of docs/adaptive-playback-plan.md, as ONE command: this case writes the play URL, quality=auto and plxnative-abrpin together, so the census needs no manual prerequisite. the far side of the predicted audio/video crossover (~1.66 Mbit/s of wire). The link is deliberately UNSHAPED (no network_profile) so the AU queue byte cap is the only limiter -- a shaped leg would measure the shaper instead. source_kbps is declared at 900000 for exactly one reason: on an unshaped LAN a 60000 kbps source IS sustainable, so Auto stays on Original and the HLS controller never runs at all (device-observed 2026-08-26 -- the shaped cases only reach HLS because their slow leg forces it). A source no link can carry forces the HLS path without shaping the link. `abr_shape: {}` reports every I0 metric and asserts none of them: this case exists to produce evidence, and a bound written before the baseline exists would be a number somebody guessed. Run it with --no-early: the census needs the FULL window, and a case that satisfied every assertion would otherwise stop as soon as it had. min_pos_climb_s stays below the 60 s entry fixture's own duration, which the harness checks up front."
+      "_census_note": "Measurement step M4 of docs/adaptive-playback-plan.md, as ONE command: this case writes the play URL, quality=auto and plxnative-abrpin together, so the census needs no manual prerequisite. the far side of the predicted audio/video crossover (~1.66 Mbit/s of wire). The link is deliberately UNSHAPED (no network_profile) so the AU queue byte cap is the only limiter -- a shaped leg would measure the shaper instead. `start_hls` is what puts this case in HLS, and it is the honest replacement for what used to: `source_kbps: 900000` was declared so that the starvation horizon would fire and drop Auto out of Original, on an unshaped link where the reserve was visibly FILLING. That entry only ever worked because the horizon did not check whether anything was draining, and it stopped working the day that was fixed -- correctly, since a growing reserve is not a starvation. `route::arm_auto_fixture` now installs the post-fallback state directly. The declared rate is kept because it still bounds the actuator raster and keeps Original RECOVERY out of the case, and it no longer forces anything. `abr_shape: {}` reports every I0 metric and asserts none of them: this case exists to produce evidence, and a bound written before the baseline exists would be a number somebody guessed. Run it with --no-early: the census needs the FULL window, and a case that satisfied every assertion would otherwise stop as soon as it had. min_pos_climb_s stays below the 60 s entry fixture's own duration, which the harness checks up front."
     },
     {
       "name": "pipe_abr_pin_4000",
@@ -1795,7 +1795,7 @@
         "rung-pin"
       ],
       "declare": {"vcodec": "h264", "acodec": "aac", "fps": 24.0},
-      "auto_network": {"source_kbps": 900000},
+      "auto_network": {"source_kbps": 900000, "start_hls": true},
       "network_profile": [
         {"until_s": 600.0, "kbps": 20000}
       ],
@@ -1812,7 +1812,7 @@
         "no_playing_error": true,
         "abr_shape": {}
       },
-      "_census_note": "Measurement step M4 of docs/adaptive-playback-plan.md, as ONE command: this case writes the play URL, quality=auto and plxnative-abrpin together, so the census needs no manual prerequisite. mid ladder, comfortably video-bound. This point carries a FLAT 20000 kbps leg, and that is a departure from the rest of the census which is now HISTORICAL: unshaped, the link measures 84-111 Mbit/s and `startup_rung` picks the top rung, and until 2026-08-27 the pin could not transact down from there because PIN_MIN_RESERVE_SEGMENTS charged an UPSHIFT derivation of six segments in both directions -- 12000 ms against a ceiling of ~5421. It charges two going down now (PIN_MIN_RESERVE_SEGMENTS_DOWN, derived from what a downshift actually costs), and the P2 census landed every unshaped pin on its rung, so the shaping here is a leftover the next census can drop. Worse, this flat leg is why P1 measured rung 6000 under a case named 4000: it puts `startup_rung` at 6000 and the descent to 4000 needed the same unreachable reserve. The shaper sets the FILL rate and sits far above this rung's media rate, so the queue is still what bounds the reserve SIZE -- which is a claim the measurement itself checks, and did: observed median within +2.7% / +0.6% of the queue-geometry prediction. source_kbps is declared at 900000 for exactly one reason: on an unshaped LAN a 60000 kbps source IS sustainable, so Auto stays on Original and the HLS controller never runs at all (device-observed 2026-08-26 -- the shaped cases only reach HLS because their slow leg forces it). A source no link can carry forces the HLS path without shaping the link. `abr_shape: {}` reports every I0 metric and asserts none of them: this case exists to produce evidence, and a bound written before the baseline exists would be a number somebody guessed. Run it with --no-early: the census needs the FULL window, and a case that satisfied every assertion would otherwise stop as soon as it had. min_pos_climb_s stays below the 60 s entry fixture's own duration, which the harness checks up front."
+      "_census_note": "Measurement step M4 of docs/adaptive-playback-plan.md, as ONE command: this case writes the play URL, quality=auto and plxnative-abrpin together, so the census needs no manual prerequisite. mid ladder, comfortably video-bound. This point carries a FLAT 20000 kbps leg, and that is a departure from the rest of the census which is now HISTORICAL: unshaped, the link measures 84-111 Mbit/s and `startup_rung` picks the top rung, and until 2026-08-27 the pin could not transact down from there because PIN_MIN_RESERVE_SEGMENTS charged an UPSHIFT derivation of six segments in both directions -- 12000 ms against a ceiling of ~5421. It charges two going down now (PIN_MIN_RESERVE_SEGMENTS_DOWN, derived from what a downshift actually costs), and the P2 census landed every unshaped pin on its rung, so the shaping here is a leftover the next census can drop. Worse, this flat leg is why P1 measured rung 6000 under a case named 4000: it puts `startup_rung` at 6000 and the descent to 4000 needed the same unreachable reserve. The shaper sets the FILL rate and sits far above this rung's media rate, so the queue is still what bounds the reserve SIZE -- which is a claim the measurement itself checks, and did: observed median within +2.7% / +0.6% of the queue-geometry prediction. `start_hls` is what puts this case in HLS, and it is the honest replacement for what used to: `source_kbps: 900000` was declared so that the starvation horizon would fire and drop Auto out of Original, on an unshaped link where the reserve was visibly FILLING. That entry only ever worked because the horizon did not check whether anything was draining, and it stopped working the day that was fixed -- correctly, since a growing reserve is not a starvation. `route::arm_auto_fixture` now installs the post-fallback state directly. The declared rate is kept because it still bounds the actuator raster and keeps Original RECOVERY out of the case, and it no longer forces anything. `abr_shape: {}` reports every I0 metric and asserts none of them: this case exists to produce evidence, and a bound written before the baseline exists would be a number somebody guessed. Run it with --no-early: the census needs the FULL window, and a case that satisfied every assertion would otherwise stop as soon as it had. min_pos_climb_s stays below the 60 s entry fixture's own duration, which the harness checks up front."
     },
     {
       "name": "pipe_abr_pin_10000",
@@ -1824,7 +1824,7 @@
         "rung-pin"
       ],
       "declare": {"vcodec": "h264", "acodec": "aac", "fps": 24.0},
-      "auto_network": {"source_kbps": 900000},
+      "auto_network": {"source_kbps": 900000, "start_hls": true},
       "abr_pin": 10000,
       "run_secs": 120,
       "operations": [{"op": "play"}],
@@ -1837,7 +1837,7 @@
         "no_playing_error": true,
         "abr_shape": {}
       },
-      "_census_note": "Measurement step M4 of docs/adaptive-playback-plan.md, as ONE command: this case writes the play URL, quality=auto and plxnative-abrpin together, so the census needs no manual prerequisite. the rung the one existing device datum was taken at (a reserve flat at 11,918 ms). The link is deliberately UNSHAPED (no network_profile) so the AU queue byte cap is the only limiter -- a shaped leg would measure the shaper instead. source_kbps is declared at 900000 for exactly one reason: on an unshaped LAN a 60000 kbps source IS sustainable, so Auto stays on Original and the HLS controller never runs at all (device-observed 2026-08-26 -- the shaped cases only reach HLS because their slow leg forces it). A source no link can carry forces the HLS path without shaping the link. `abr_shape: {}` reports every I0 metric and asserts none of them: this case exists to produce evidence, and a bound written before the baseline exists would be a number somebody guessed. Run it with --no-early: the census needs the FULL window, and a case that satisfied every assertion would otherwise stop as soon as it had. min_pos_climb_s stays below the 60 s entry fixture's own duration, which the harness checks up front."
+      "_census_note": "Measurement step M4 of docs/adaptive-playback-plan.md, as ONE command: this case writes the play URL, quality=auto and plxnative-abrpin together, so the census needs no manual prerequisite. the rung the one existing device datum was taken at (a reserve flat at 11,918 ms). The link is deliberately UNSHAPED (no network_profile) so the AU queue byte cap is the only limiter -- a shaped leg would measure the shaper instead. `start_hls` is what puts this case in HLS, and it is the honest replacement for what used to: `source_kbps: 900000` was declared so that the starvation horizon would fire and drop Auto out of Original, on an unshaped link where the reserve was visibly FILLING. That entry only ever worked because the horizon did not check whether anything was draining, and it stopped working the day that was fixed -- correctly, since a growing reserve is not a starvation. `route::arm_auto_fixture` now installs the post-fallback state directly. The declared rate is kept because it still bounds the actuator raster and keeps Original RECOVERY out of the case, and it no longer forces anything. `abr_shape: {}` reports every I0 metric and asserts none of them: this case exists to produce evidence, and a bound written before the baseline exists would be a number somebody guessed. Run it with --no-early: the census needs the FULL window, and a case that satisfied every assertion would otherwise stop as soon as it had. min_pos_climb_s stays below the 60 s entry fixture's own duration, which the harness checks up front."
     },
     {
       "name": "pipe_abr_pin_16000",
@@ -1849,7 +1849,7 @@
         "rung-pin"
       ],
       "declare": {"vcodec": "h264", "acodec": "aac", "fps": 24.0},
-      "auto_network": {"source_kbps": 900000},
+      "auto_network": {"source_kbps": 900000, "start_hls": true},
       "abr_pin": 16000,
       "run_secs": 120,
       "operations": [{"op": "play"}],
@@ -1862,7 +1862,7 @@
         "no_playing_error": true,
         "abr_shape": {}
       },
-      "_census_note": "Measurement step M4 of docs/adaptive-playback-plan.md, as ONE command: this case writes the play URL, quality=auto and plxnative-abrpin together, so the census needs no manual prerequisite. predicted 5.85 s: below the 6,000 ms band of starving()'s second arm. The link is deliberately UNSHAPED (no network_profile) so the AU queue byte cap is the only limiter -- a shaped leg would measure the shaper instead. source_kbps is declared at 900000 for exactly one reason: on an unshaped LAN a 60000 kbps source IS sustainable, so Auto stays on Original and the HLS controller never runs at all (device-observed 2026-08-26 -- the shaped cases only reach HLS because their slow leg forces it). A source no link can carry forces the HLS path without shaping the link. `abr_shape: {}` reports every I0 metric and asserts none of them: this case exists to produce evidence, and a bound written before the baseline exists would be a number somebody guessed. Run it with --no-early: the census needs the FULL window, and a case that satisfied every assertion would otherwise stop as soon as it had. min_pos_climb_s stays below the 60 s entry fixture's own duration, which the harness checks up front."
+      "_census_note": "Measurement step M4 of docs/adaptive-playback-plan.md, as ONE command: this case writes the play URL, quality=auto and plxnative-abrpin together, so the census needs no manual prerequisite. predicted 5.85 s: below the 6,000 ms band of starving()'s second arm. The link is deliberately UNSHAPED (no network_profile) so the AU queue byte cap is the only limiter -- a shaped leg would measure the shaper instead. `start_hls` is what puts this case in HLS, and it is the honest replacement for what used to: `source_kbps: 900000` was declared so that the starvation horizon would fire and drop Auto out of Original, on an unshaped link where the reserve was visibly FILLING. That entry only ever worked because the horizon did not check whether anything was draining, and it stopped working the day that was fixed -- correctly, since a growing reserve is not a starvation. `route::arm_auto_fixture` now installs the post-fallback state directly. The declared rate is kept because it still bounds the actuator raster and keeps Original RECOVERY out of the case, and it no longer forces anything. `abr_shape: {}` reports every I0 metric and asserts none of them: this case exists to produce evidence, and a bound written before the baseline exists would be a number somebody guessed. Run it with --no-early: the census needs the FULL window, and a case that satisfied every assertion would otherwise stop as soon as it had. min_pos_climb_s stays below the 60 s entry fixture's own duration, which the harness checks up front."
     },
     {
       "name": "pipe_abr_pin_20000",
@@ -1874,7 +1874,7 @@
         "rung-pin"
       ],
       "declare": {"vcodec": "h264", "acodec": "aac", "fps": 24.0},
-      "auto_network": {"source_kbps": 900000},
+      "auto_network": {"source_kbps": 900000, "start_hls": true},
       "abr_pin": 20000,
       "run_secs": 120,
       "operations": [{"op": "play"}],
@@ -1887,7 +1887,7 @@
         "no_playing_error": true,
         "abr_shape": {}
       },
-      "_census_note": "Measurement step M4 of docs/adaptive-playback-plan.md, as ONE command: this case writes the play URL, quality=auto and plxnative-abrpin together, so the census needs no manual prerequisite. the decisive point -- is the settled reserve above or below 6,000 ms?. The link is deliberately UNSHAPED (no network_profile) so the AU queue byte cap is the only limiter -- a shaped leg would measure the shaper instead. source_kbps is declared at 900000 for exactly one reason: on an unshaped LAN a 60000 kbps source IS sustainable, so Auto stays on Original and the HLS controller never runs at all (device-observed 2026-08-26 -- the shaped cases only reach HLS because their slow leg forces it). A source no link can carry forces the HLS path without shaping the link. `abr_shape: {}` reports every I0 metric and asserts none of them: this case exists to produce evidence, and a bound written before the baseline exists would be a number somebody guessed. Run it with --no-early: the census needs the FULL window, and a case that satisfied every assertion would otherwise stop as soon as it had. min_pos_climb_s stays below the 60 s entry fixture's own duration, which the harness checks up front."
+      "_census_note": "Measurement step M4 of docs/adaptive-playback-plan.md, as ONE command: this case writes the play URL, quality=auto and plxnative-abrpin together, so the census needs no manual prerequisite. the decisive point -- is the settled reserve above or below 6,000 ms?. The link is deliberately UNSHAPED (no network_profile) so the AU queue byte cap is the only limiter -- a shaped leg would measure the shaper instead. `start_hls` is what puts this case in HLS, and it is the honest replacement for what used to: `source_kbps: 900000` was declared so that the starvation horizon would fire and drop Auto out of Original, on an unshaped link where the reserve was visibly FILLING. That entry only ever worked because the horizon did not check whether anything was draining, and it stopped working the day that was fixed -- correctly, since a growing reserve is not a starvation. `route::arm_auto_fixture` now installs the post-fallback state directly. The declared rate is kept because it still bounds the actuator raster and keeps Original RECOVERY out of the case, and it no longer forces anything. `abr_shape: {}` reports every I0 metric and asserts none of them: this case exists to produce evidence, and a bound written before the baseline exists would be a number somebody guessed. Run it with --no-early: the census needs the FULL window, and a case that satisfied every assertion would otherwise stop as soon as it had. min_pos_climb_s stays below the 60 s entry fixture's own duration, which the harness checks up front."
     },
     {
       "name": "pipe_abr_band_4000",
@@ -1895,7 +1895,7 @@
       "title": "M4 census: hold request=4000 and sweep the link through the unobserved A/D band",
       "covers": ["abr-buffer-census", "rung-pin", "unobserved-load-band"],
       "declare": {"vcodec": "h264", "acodec": "aac", "fps": 24.0},
-      "auto_network": {"source_kbps": 900000},
+      "auto_network": {"source_kbps": 900000, "start_hls": true},
       "network_profile": [
         {"until_s": 25.0, "kbps": 20000},
         {"until_s": 45.0, "kbps": 6446},
@@ -1925,7 +1925,7 @@
       "title": "M4 census: the same band at the top of the ladder, where B_max < 3D",
       "covers": ["abr-buffer-census", "rung-pin", "unobserved-load-band"],
       "declare": {"vcodec": "h264", "acodec": "aac", "fps": 24.0},
-      "auto_network": {"source_kbps": 900000},
+      "auto_network": {"source_kbps": 900000, "start_hls": true},
       "network_profile": [
         {"until_s": 25.0, "kbps": 100000},
         {"until_s": 45.0, "kbps": 30769},
@@ -1955,7 +1955,7 @@
       "title": "no-Plex Auto: an upshift the candidate cannot pay for, rejected repeatedly",
       "covers": ["abr-upshift", "candidate-reject", "transaction-cost"],
       "declare": {"vcodec": "h264", "acodec": "aac", "fps": 24.0},
-      "auto_network": {"source_kbps": 900000},
+      "auto_network": {"source_kbps": 900000, "start_hls": true},
       "network_profile": [
         {"until_s": 15.0, "kbps": 40000},
         {"until_s": 300.0, "kbps": 8300}
@@ -1983,7 +1983,7 @@
       "title": "no-Plex Auto: a sustained link collapse, and the full descent it forces",
       "covers": ["abr-downshift", "collapse", "transaction-cost", "regime-change"],
       "declare": {"vcodec": "h264", "acodec": "aac", "fps": 24.0},
-      "auto_network": {"source_kbps": 900000},
+      "auto_network": {"source_kbps": 900000, "start_hls": true},
       "network_profile": [
         {"until_s": 25.0, "kbps": 40000},
         {"until_s": 300.0, "kbps": 500}
@@ -2011,7 +2011,7 @@
       "title": "no-Plex Auto: a TWO-STEP collapse, the shape that outruns a downshift",
       "covers": ["abr-downshift", "collapse", "transaction-cost", "transfer-deadline"],
       "declare": {"vcodec": "h264", "acodec": "aac", "fps": 24.0},
-      "auto_network": {"source_kbps": 900000},
+      "auto_network": {"source_kbps": 900000, "start_hls": true},
       "network_profile": [
         {"until_s": 22.0, "kbps": 40000},
         {"until_s": 30.0, "kbps": 9600},
@@ -2040,7 +2040,7 @@
       "title": "no-Plex Auto: a link that falls UNDER a downshift already in flight",
       "covers": ["abr-downshift", "collapse", "transaction-cost", "transfer-deadline"],
       "declare": {"vcodec": "h264", "acodec": "aac", "fps": 24.0},
-      "auto_network": {"source_kbps": 900000},
+      "auto_network": {"source_kbps": 900000, "start_hls": true},
       "segment_profile": [
         {"from_segment": 10, "kbps": 6000},
         {"from_segment": 11, "kbps": 500}
@@ -2068,7 +2068,7 @@
       "title": "no-Plex Auto: a REFUSED seek must not latch the read-out",
       "covers": ["abr-upshift", "seek-refused", "unreadable-reserve"],
       "declare": {"vcodec": "h264", "acodec": "aac", "fps": 24.0},
-      "auto_network": {"source_kbps": 60000},
+      "auto_network": {"source_kbps": 60000, "start_hls": true},
       "network_profile": [
         {"until_s": 240.0, "kbps": 40000}
       ],

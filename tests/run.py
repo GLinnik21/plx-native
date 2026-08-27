@@ -698,6 +698,12 @@ def triggers_for_case(case, url_base=None):
         if auto:
             spec["auto_source_kbps"] = int(auto["source_kbps"])
             spec["auto_hls_base"] = f"{url_base}/__abr"
+            # Enter HLS directly rather than by provoking a starvation. Declared per case: the one
+            # case that GRADES the Original->HLS transition must not skip it. See
+            # `dev::PlayUrl::auto_start_hls` — the old entry relied on the starvation horizon
+            # firing while the reserve was filling, which stopped being possible on 2026-08-27.
+            if auto.get("start_hls"):
+                spec["auto_start_hls"] = True
             files[0] = ("plxnative-playurl", json.dumps(spec, separators=(",", ":")))
             files.append(("plxnative-quality", "auto"))
             # Pin Auto's ladder to one actuator for the whole case, by REQUEST rate. Measurement

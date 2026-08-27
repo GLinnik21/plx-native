@@ -542,6 +542,18 @@ pub(crate) struct PlayUrl {
     /// PMS through `HlsAbrControl`.
     #[serde(default)]
     pub(crate) auto_hls_base: String,
+    /// **Start in HLS instead of arriving there through a starvation.** The pipeline tier's ABR
+    /// cases exist to exercise the HLS controller, and until 2026-08-27 their only way in was to
+    /// declare an Original source rate no link could carry (900 000 kbps) and let the starvation
+    /// horizon fire. That worked only because the horizon fired without checking whether the
+    /// reserve was actually draining — on an unshaped link it was FILLING — so the entry depended
+    /// on a defect, and it stopped working the moment the defect was fixed
+    /// (`docs/measurements/local-original-blind.md`, `docs/measurements/orig-first-window-fallback.md`).
+    /// With this set, `route::arm_auto_fixture` installs the post-fallback state directly and the
+    /// controller runs from the first segment. `pipe_auto_original_slow_recover` deliberately does
+    /// NOT set it: the transition is what that case grades.
+    #[serde(default)]
+    pub(crate) auto_start_hls: bool,
 }
 
 /// The four DV fields the Load payload actually decides on — [`crate::metadata::Dovi`]'s

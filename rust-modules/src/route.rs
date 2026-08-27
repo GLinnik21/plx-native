@@ -662,7 +662,12 @@ pub(crate) fn auto_original_watch() -> Option<AutoOriginalWatch> {
 /// asking PMS to create an encoder. Transport, FFmpeg, buffer measurement, the controller, pump
 /// handoff and Starfish are unchanged, which makes a mid-request bandwidth profile testable on a
 /// TV without a library, account, token, or external server.
-pub(crate) fn arm_auto_fixture(original_url: &str, source_kbps: u32, hls_base: &str) {
+pub(crate) fn arm_auto_fixture(
+    original_url: &str,
+    source_kbps: u32,
+    hls_base: &str,
+    start_hls: bool,
+) -> Option<String> {
     session_mut(|s| {
         s.url = original_url.to_owned();
         s.cur_rk = "__auto_fixture__".into();
@@ -695,6 +700,35 @@ pub(crate) fn arm_auto_fixture(original_url: &str, source_kbps: u32, hls_base: &
         "auto fixture: Original source={}kbps armed",
         source_kbps
     ));
+    if !start_hls {
+        return None;
+    }
+    // Install exactly the state `fallback_auto_to_hls` leaves behind, at the bootstrap rung, and
+    // hand the caller the playlist to open. See `dev::PlayUrl::auto_start_hls` for why this exists
+    // at all: the alternative was declaring a source rate no link could carry and relying on the
+    // starvation horizon to fire on a reserve that was visibly FILLING.
+    let rung = crate::abr::Rung::P480;
+    let base = hls_base.trim_end_matches('/');
+    let url = format!("{base}/{}/master.m3u8?X-Plex-Token=<plex-token>", rung.kbps());
+    let encoder = format!("auto-fixture-{}", rung.kbps());
+    session_mut(|s| {
+        s.cur_auto_original_watched = false;
+        s.cur_remux = false;
+        s.cur_delivery = crate::plex::TranscodeDelivery::FixedHls { seconds_per_segment: 2 };
+        s.cur_ceiling = Some(rung.ceiling());
+        s.url = url.clone();
+        s.tsession = encoder.clone();
+        s.stream_vcodec = "h264".into();
+        s.stream_acodec = "aac".into();
+    });
+    install_active_encoder(&encoder);
+    crate::player::log(&format!(
+        "auto fixture: starting in {}kbps {}x{} HLS (no Original phase)",
+        rung.kbps(),
+        rung.raster().0,
+        rung.raster().1,
+    ));
+    Some(url)
 }
 
 /// Main-thread half of the progressive watchdog transaction. The demux worker has stopped at a
@@ -4301,6 +4335,49 @@ mod tests {
         apply_plan(plan, "rk-7");
         assert_eq!(cur_sid(), sid, "the installed identity is the captured one");
         assert_eq!(cur_rk(), "rk-7", "and its other half");
+    }
+
+    /// The pipeline tier's entry into HLS, both ways round. Differential against the old seam,
+    /// which had ONE way in: declare an Original source rate no link could carry and let the
+    /// starvation horizon fire on a reserve that was visibly filling. That entry stopped working
+    /// when the horizon started requiring an observed drain, and it should have — the reserve was
+    /// growing, so nothing was starving. This is the honest replacement.
+    #[test]
+    fn the_fixture_can_start_in_hls_instead_of_provoking_a_starvation() {
+        let _g = fresh_registry();
+        restore_quality(Quality::Auto);
+
+        // Without the flag the fixture arms an Original and returns nothing to open.
+        assert_eq!(
+            arm_auto_fixture("http://host/clip.mp4", 900_000, "http://host/__abr", false),
+            None,
+        );
+        assert!(matches!(
+            cur_delivery(),
+            crate::plex::TranscodeDelivery::ProgressiveMkv
+        ));
+        assert!(
+            auto_original_watch().is_some(),
+            "…and it is WATCHED, which is what the transition case grades",
+        );
+
+        // With it, the post-fallback state is installed directly and the playlist comes back.
+        let url = arm_auto_fixture("http://host/clip.mp4", 900_000, "http://host/__abr/", true)
+            .expect("a fixture that starts in HLS hands back the playlist to open");
+        assert!(url.starts_with("http://host/__abr/720/master.m3u8"), "{url}");
+        assert!(matches!(
+            cur_delivery(),
+            crate::plex::TranscodeDelivery::FixedHls { seconds_per_segment: 2 }
+        ));
+        assert_eq!(cur_ceiling(), Some(crate::abr::Rung::P480.ceiling()));
+        assert!(
+            auto_original_watch().is_none(),
+            "there is no Original under it to watch",
+        );
+
+        restore_quality(Quality::Original);
+        install_active_encoder("");
+        reset_session();
     }
 
     /// **RE-EXPRESSED 2026-08-27**, name and message both. It read

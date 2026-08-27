@@ -530,11 +530,17 @@ pub(crate) fn start_bufferfeed(mt: &MainThread) -> bool {
                 crate::route::set_stream_declaration(
                     &p.vcodec, &p.acodec, p.fps, p.dovi.to_dovi(), p.atmos);
                 if p.auto_source_kbps > 0 && !p.auto_hls_base.is_empty() {
-                    crate::route::arm_auto_fixture(
+                    // A fixture that starts in HLS hands back the playlist to open: the route's
+                    // own `url` has already moved, and this local copy is what everything below
+                    // reads.
+                    if let Some(hls) = crate::route::arm_auto_fixture(
                         &p.url,
                         p.auto_source_kbps,
                         &p.auto_hls_base,
-                    );
+                        p.auto_start_hls,
+                    ) {
+                        url = hls;
+                    }
                 }
             }
             // Log and fall through rather than refuse: the next candidate may well be armed. The
