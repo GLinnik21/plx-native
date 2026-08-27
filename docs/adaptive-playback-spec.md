@@ -871,8 +871,9 @@ broke was structural and I had not anticipated any of it: §5 could not climb, �
 term, §3's key input is unavailable at the decision that needs it, §7 audited one struct instead of
 the decision surface, and two of my "delete" verdicts were wrong.
 
-**Four of the six findings that blocked Phase 4 are now answered**, all three by §2a and what
-follows from it, and none by the route the specification expected. What remains:
+**All six findings that blocked Phase 4 have now been answered or tested to a conclusion**, and
+none by the route the specification expected. Four dissolved, one is half-done and says which half,
+one was attempted and failed. What follows is the state, not a plan:
 
 1. ~~**§2a — an estimator for `O₀` and `τ`.**~~ **Answered by dissolution.** There is nothing to
    estimate: the transfer bound is closed-form, tight, and parameter-free apart from the SLO `ε`.
@@ -901,6 +902,15 @@ follows from it, and none by the route the specification expected. What remains:
 6. **A probability, or `risk_weight` stays.** **Tried, and it stays** — the route was tested
    rather than assumed, and the negative result is in §4a below. `risk_weight` is a product choice
    pricing a HORIZON, which is what `starvation_horizon` already computes.
+
+**Device session 2026-08-27 settled three of the five items in the "needs the device" list above.**
+The M4 census reached its pinned rungs for the first time (see the defect below), the settled
+reserve is now measured at seven rungs across an 18x range, the audio/video crossover is
+**confirmed** between rungs 720 and 2000 by the fixtures' own audio rates, and the `A/D ∈ [0.80,
+1.05]` band holds **18 samples** where it held 0 of 366. Full record:
+`docs/measurements/p2-census.md`. Still owed by a device: `E_tx(up, reject)` at n ≈ 10 and
+`E_tx_down` under collapse — the two cases the plan ranks 4th and 5th, still unwritten, and
+downshifts still have no deadline at all.
 
 **A defect in the apparatus, found while grading the above, that the next device lease must not
 repeat.** Five of the seven M4 pin cases never reached their pinned rung: `pin_320`, `pin_2000`,
