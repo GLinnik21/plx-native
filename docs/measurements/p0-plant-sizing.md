@@ -90,7 +90,11 @@ circular.
   plane 6 ms. Both are optimistic against a real PMS.
 - The `/1.04` TS-to-ES divisor is an assumption (`sim.rs:246-250`), not a measurement, and the
   per-lane ES byte counters that replace it are Phase 1 work.
-- The audio lane has never bound in 366 samples, so its term in `B_max` is pure arithmetic.
+- ~~The audio lane has never bound in 366 samples, so its term in `B_max` is pure arithmetic.~~
+  **Measured 2026-08-27 and no longer true**: the audio lane binds at rungs 320 and 720, within
+  +3.2% and +5.6% of `lead + AQ/R_a`, and the ratio test agrees (`R_v/R_a` = 5.1 at rung 720,
+  below the bare `VQ/AQ` = 8). The crossover sits between 720 and 2000, so the audio term is
+  measured rather than arithmetic. `docs/measurements/p2-census.md` §2.
 - The graded-reject feed needs **device verification** that a one-segment raster excursion through
   `hls_feed_segment` is benign — the AUs are self-contained, but the encoder session is abandoned
   immediately afterwards and Starfish's reaction is unproven.

@@ -1318,7 +1318,7 @@ fn original_beats_the_top_rung_on_utility_at_equal_risk() {
 }
 
 /// **A downshift pin must land from the top of the ladder.** It could not, and the M4 census paid
-/// for it: five of its seven points never reached their pinned rung and silently recorded the top
+/// for it: four of its seven points never reached their pinned rung and silently recorded the top
 /// rung five times instead (`pin_320`, `pin_2000`, `pin_10000`, `pin_16000` all logged
 /// `rung=20000` with byte lists identical to `pin_20000`'s).
 ///
@@ -1349,7 +1349,7 @@ fn a_downshift_pin_lands_from_the_top_of_the_ladder() {
         }
         other => panic!(
             "a pin four segments into a reserve the top rung can actually hold never proposed \
-             anything ({other:?}) — this is the gate that cost the census five of seven points",
+             anything ({other:?}) — this is the gate that cost the census four of seven points",
         ),
     }
 }

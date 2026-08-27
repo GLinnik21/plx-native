@@ -70,8 +70,13 @@ and never varied.
   (the LAN measures 84-111 Mbit/s, so `startup_rung` picks 20000), and the pin cannot transact
   from there: `PIN_MIN_RESERVE_SEGMENTS` needs six segments of reserve, which is unreachable above
   ~11 Mbit/s of media. Pins 720 and 4000 were reached only by shaping the link so the run STARTS
-  low. Measuring 320 / 2000 / 10000 / 16000 needs the pin applied at the ROUTE's starting ceiling
-  rather than as a transaction — an I0 follow-up, not a policy change.
+  low. ~~Measuring 320 / 2000 / 10000 / 16000 needs the pin applied at the ROUTE's starting ceiling
+  rather than as a transaction — an I0 follow-up, not a policy change.~~ **Both halves wrong,
+  settled 2026-08-27.** It WAS a policy change: the six-segment figure is an upshift derivation
+  charged in both directions, and splitting it (`PIN_MIN_RESERVE_SEGMENTS_DOWN = 2`, 4 000 ms,
+  inside `B_max` at every rung) was the whole fix. All four rungs were then measured with the pin
+  applied as an ordinary prime/validate/commit transaction, unshaped —
+  `docs/measurements/p2-census.md` §0.
 * Segment-duration sensitivity (I1-D) was NOT measured. `serve_fixtures.py` hard-codes
   `#EXT-X-TARGETDURATION:2` over 2 s clips; a 4 s leg needs new fixtures. Deferred, not inferred.
 * Seek (I1-E) was NOT exercised: one `abr: seed` line per run, no seek operation. Deferred.

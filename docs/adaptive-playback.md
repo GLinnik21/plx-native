@@ -154,8 +154,12 @@ per-server constant.** Swept across three library items
 20000 turn out to be the same encoder session on a 1080p item, byte-identical in 39 of 40
 segments. Every error is an over-estimate, so nothing mis-behaves today — but the replacement is
 free, because the transaction already fetches the true declared rate and logs it before it decides
-anything, and it is a real bound: no segment at any rung above 2000 kbps exceeded 0.85x its own
-declaration in 1 120 observations. Spending it is admission-rule work and has not landed. Six of them are byte-for-byte the
+anything, and it is a real bound at rungs **4000 and above**: 0 of **1 440** segments exceeded
+0.85x their own declaration, max 0.8456. **Not "above 2000", which is what this sentence said
+until a second item was run through the full ladder and refuted it** — rung 2000 puts 9 of 120
+segments over, to 0.9175, and the shipped constant is now `sigma = 0.90`: the pooled max scaled by
+the largest measured cross-item spread, because 0.85 against a measured 0.8456 is a rounding
+artefact of that measurement and not a margin. `docs/measurements/p2h-pms-ladder.md` §2/§2a. Spending it is admission-rule work and has not landed. Six of them are byte-for-byte the
 `route::Quality` rungs a user can pick by hand, because Auto arriving at the same operating point
 must send the same request.
 

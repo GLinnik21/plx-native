@@ -133,7 +133,7 @@ Right shape, wrong content. Amended list:
 **Cannot be observed today without a code change the claim does not mention:**
 - No sample is emitted between proposal and commit — the prime arm runs inline inside the one-sample-per-iteration loop (`ff.rs:3065`, `3207`), so **the transaction drawdown is structurally invisible**. `min_buf_ms = 2000` in the M2 results is not evidence of no drawdown.
 - The census traces are pin-masked; grading any decision needs an **unpinned** shaped leg.
-- `A` at every rung above ~11 Mbit/s of media is unmeasured, because `PIN_MIN_RESERVE_SEGMENTS = 6` cannot be satisfied there.
+- ~~`A` at every rung above ~11 Mbit/s of media is unmeasured, because `PIN_MIN_RESERVE_SEGMENTS = 6` cannot be satisfied there.~~ **Both clauses closed 2026-08-27.** The constant no longer gates a downshift, and `A` is measured at seven rungs across an 18x range including 16000 (n = 54) and 20000 (n = 39). The code change this bullet says the claim does not mention is the directional split of that constant — `docs/measurements/p2-census.md`.
 - The ABR fixtures are a static file server, so **every A in the corpus has zero PMS JIT production**. At the top rung the slack `B − A_i − 4600` is 95 ms; 95 ms of JIT inverts §5's own worked example.
 
 **Free win to take first:** `abr: sample` already carries `prod=` on every current-stream segment (`ff.rs:3115`). Replaying the event logs of the four shaped M2 profiles answers "how many of the 7/6/7/3 commits would rule 1 have suppressed" with **no code change and no television**.

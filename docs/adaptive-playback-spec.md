@@ -825,16 +825,22 @@ old one, which is work this section does not do.
 
 ## 8. What blocks Phase 4
 
-**Needs the device, and all of it fits one lease:**
+**Needs the device. Three of the five were settled by the 2026-08-27 session and are struck here
+rather than deleted, because what each BECAME is the useful part:**
 
-* `O₀` and `τ` on a real link — §2 and §4's two parameters. Nothing in §4 can be evaluated without
-  them.
-* The `A/D ∈ [0.80, 1.05]` band, which is 0 of 366 samples in the entire existing corpus. The whole
-  law is keyed on a boundary no measurement has ever been near.
-* `E_tx(up, reject)` at n ≈ 10, and `E_tx_down` under collapse. Downshifts have no deadline at all
-  today.
-* The audio lane of `B_max`, which has never bound in 366 samples.
-* The over-grant gate, on a binary carrying the hoisted `safe=` telemetry.
+* ~~`O₀` and `τ` on a real link — §2 and §4's two parameters. Nothing in §4 can be evaluated
+  without them.~~ **Needs no link and no device.** §2a's transfer bound is the exact worst case
+  over the split, so neither coefficient is ever formed.
+* ~~The `A/D ∈ [0.80, 1.05]` band, which is 0 of 366 samples in the entire existing corpus.~~
+  **Entered.** The `pipe_abr_band_*` sweeps put **18 samples** in it and ran out to `A/D = 1.73`
+  with no stall (`docs/measurements/p2-census.md` §4). It also cost the ε guarantee its
+  unconditional form — §2a.
+* ~~The audio lane of `B_max`, which has never bound in 366 samples.~~ **It binds**, at rungs 320
+  and 720, within +3.2% / +5.6% of `lead + AQ/R_a`, and the crossover is **confirmed** between 720
+  and 2000 by the bare `VQ/AQ = 8` ratio (`p2-census.md` §2).
+* `E_tx(up, reject)` at n ≈ 10, and `E_tx_down` under collapse. **Still open, and now the only
+  device work left.** Downshifts have no deadline at all today, and neither case is written.
+* The over-grant gate, on a binary carrying the hoisted `safe=` telemetry. **Still open.**
 
 **Needs no device, and is not done:**
 
@@ -849,7 +855,11 @@ old one, which is work this section does not do.
   defaults to the full 13-rung ladder, so this needs no `--rungs` and no second server: it is one
   host-only command per additional item. **Do this first — it is cheaper than the second server
   and it closes the hole that a second-server run would faithfully reproduce.**
-* **`σ` on a second server**, after that. Falsified by any segment above `0.85·W` at a rung ≥ 2000.
+* **`σ` on a second server**, after that. Falsified by any segment above `0.90·W` at a rung ≥ 4000.
+  **Not `0.85·W` at ≥ 2000, which is what this said and which now fires on an outcome §3 predicts**:
+  9 of 120 rung-2000 segments already exceed `0.85·W` on THIS server, so the probe would report
+  "falsified" on its first window and prove nothing. Rungs 320, 720 and 2000 are outside the bound
+  by construction and overshoot there is the expected result.
 * ~~**An estimator for `O₀` and `τ`**~~ — **DISSOLVED, not built.** The coefficients are never
   separately needed: one observation bounds acquisition at any other byte count in closed form
   (§2a), tightly, over exactly the split the corpus cannot identify. Graded three ways in
@@ -913,7 +923,7 @@ reserve is now measured at seven rungs across an 18x range, the audio/video cros
 downshifts still have no deadline at all.
 
 **A defect in the apparatus, found while grading the above, that the next device lease must not
-repeat.** Five of the seven M4 pin cases never reached their pinned rung: `pin_320`, `pin_2000`,
+repeat.** Four of the seven M4 pin cases never reached their pinned rung: `pin_320`, `pin_2000`,
 `pin_10000` and `pin_16000` all logged `rung=20000`, and their byte lists are identical. The
 census measured the top rung five times. `PIN_MIN_RESERVE_SEGMENTS = 6` demands 12 000 ms of
 reserve while `B_max(20000) ≈ 5 421 ms`, so a pin can never land *downward* from the startup rung —

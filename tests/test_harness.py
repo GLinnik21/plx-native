@@ -952,9 +952,13 @@ class AutoNetworkProfile(unittest.TestCase):
         for case in census:
             with self.subTest(case["name"]):
                 # Unshaped is the DEFAULT and the intent: the AU queue byte cap is the subject,
-                # and a shaped leg risks measuring the shaper. Two points depart from it because
-                # the pin cannot transact from the top rung, which is where an unshaped link puts
-                # the controller — so they shape the link only to make the run START low. A
+                # and a shaped leg risks measuring the shaper. Two points depart from it, and the
+                # departure is now HISTORICAL: the pin needed six segments of reserve in BOTH
+                # directions until 2026-08-27 and so could not transact down from the ladder top,
+                # which is where an unshaped link puts the controller. It needs two going down now
+                # (PIN_MIN_RESERVE_SEGMENTS_DOWN), and the P2 census landed every unshaped pin, so
+                # a flat leg here is a leftover the next census can drop rather than a rule this
+                # test is enforcing. A
                 # departure has to be a single flat leg and has to say why, in the case, rather
                 # than be discovered later in a graph nobody can explain. Whether the queue still
                 # bound is not a manifest rule and cannot be: the measurement checks it.

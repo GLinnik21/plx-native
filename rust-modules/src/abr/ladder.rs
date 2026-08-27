@@ -58,7 +58,8 @@ pub(crate) const LADDER: [Rung; 13] = [
 /// plant reproduced exactly that livelock the first time this was written without a gate.
 ///
 /// **Every clause of that derivation is an UPSHIFT argument, and applying it downward cost the M4
-/// census five of its seven points.** Both budgets it cites return `None` for [`Direction::Down`]
+/// census four of its seven points (five in the corpus before it, where `pin_4000` additionally
+/// ran at rung 6000 for a separate reason -- rungs 2000 and 4000 shared one clip).** Both budgets it cites return `None` for [`Direction::Down`]
 /// (`abr/viability.rs`), so a downshift has neither a warm-up deadline nor a prime deadline to pay
 /// for. The old note here said "pin UPWARD from the bootstrap rung, which is how measurement step
 /// M4 is written" — but on an unshaped LAN `startup_rung` picks the ladder TOP, so every pin in

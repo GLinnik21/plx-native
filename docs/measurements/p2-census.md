@@ -9,9 +9,19 @@ server on the dev Mac. Seven `pipe_abr_pin_*` cases, all `--no-early`. Scrubbed 
 ## 0. Why the previous census measured nothing, and how that stayed invisible
 
 `docs/measurements/p1-transaction-anatomy.md` reports an eleven-point census. **Four of its seven
-pinned rungs were never reached.** `pin_320`, `pin_2000`, `pin_10000` and `pin_16000` all ran at
-`rung=20000` and logged byte lists byte-identical to `pin_20000`'s, so the census recorded the top
-rung five times and read as ladder-wide coverage.
+pinned rungs were never reached**, and in the corpus before it, five.
+
+* **P1b** (post-fixture-rebuild, the corpus every fit in that document is computed from):
+  `pin_320`, `pin_2000`, `pin_10000` and `pin_16000` all ran at `rung=20000` and logged byte lists
+  byte-identical to `pin_20000`'s, so the census recorded the top rung **five times** and read as
+  ladder-wide coverage.
+* **P1**: the same four, plus `pin_4000`, which ran its whole 124 samples at `current=6000kbps`.
+  It is not a fifth instance of the same failure — rungs 2000 and 4000 shared one clip until the
+  fixture rebuild gave 4000 its own, so the pin landed on the neighbouring rung the shared clip
+  actually served. The rebuild fixed that half; the reserve gate below is what was left.
+
+**The count therefore differs by corpus and both numbers are correct.** Anywhere this repository
+says "five of seven" it means P1; this document is P1b.
 
 `PIN_MIN_RESERVE_SEGMENTS = 6` demands 12 000 ms of reserve before the pin will transact. The
 reachable reserve at the ladder top is ~5 421 ms. So a pin could never transact **downward** from
@@ -37,6 +47,7 @@ the three control-plane requests (~100 ms median, 1 306 ms max on a real PMS). T
 | `pin_320` | 58 × 1920x1080 | **82 × 426x240** |
 | `pin_720` | 10 × 1280x720, 81 × 854x480 | 89 × 854x480 |
 | `pin_2000` | 51 × 1920x1080 | **74 × 1280x720** |
+| `pin_4000` | 67 × 1280x720 (P1b, landed) — 63 × 1920x1080 at rung 6000 in P1 | 67 × 1280x720 |
 | `pin_10000` | 52 × 1920x1080 | **1920x1080, at rung 10000** |
 | `pin_16000` | 49 × 1920x1080 | **1920x1080, at rung 16000** |
 
