@@ -2935,6 +2935,19 @@ fn log_hls_abr_sample(
     ));
 }
 
+/// **One line per segment for the §4 admission rule, which decides nothing yet.**
+///
+/// The formatting itself lives on [`crate::abr::AdmissionReadout::log_line`], beside the numbers
+/// it prints and beside the test that pins the exact wire form — this function is only the
+/// plumbing that decides WHEN it is emitted, which is every segment whatever was decided.
+fn log_hls_abr_window(t: &crate::abr::ControllerTelemetry, sample: crate::abr::SegmentSample) {
+    crate::player::log(&t.window.log_line(
+        t.current.kbps(),
+        sample.bytes(),
+        sample.media_duration_ms(),
+    ));
+}
+
 /// The controller's reason enum as the read-out's code. A `match` rather than a cast, so a new
 /// [`crate::abr::HlsReason`] variant is a compile error here instead of silently reading as one of
 /// the four the panel already names.
@@ -3340,6 +3353,7 @@ fn hls_demux(
         let telemetry = controller.telemetry();
         publish_hls_abr_model(&telemetry);
         log_hls_abr_sample(&telemetry, sample, decision);
+        log_hls_abr_window(&telemetry, sample);
         if matches!(decision, crate::abr::Decision::Stay) {
             log_hls_abr_steady(&telemetry, remaining_ms);
         }

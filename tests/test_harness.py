@@ -1915,5 +1915,73 @@ class EarlyExitSoundness(unittest.TestCase):
             self.assertFalse(allowed, f"{case.get('name')} would grade a commit count early")
 
 
+class TheAbrWindowLineMatchesTheHarnessRegex(unittest.TestCase):
+    """**The other half of a contract whose two sides never meet at runtime.**
+
+    The app formats `abr: window` on a television (`rust-modules/src/abr/window.rs`,
+    `AdmissionReadout::log_line`) and this harness parses it on a Mac. Nothing links them, so a
+    field renamed on one side and not the other produces "no `abr: window` lines" -- which reads
+    exactly like the feature never ran, i.e. like a total regression, on the one tier where the
+    only copy of the evidence is the captured log.
+
+    So the Rust test module pins the exact wire form as string constants and this reads them back
+    out of the source. It is a source-extraction test rather than a fixture on purpose: a fixture
+    copied here would drift with the regex it is supposed to grade, and agree with it forever.
+    """
+
+    WINDOW_RS = os.path.join(REPO_ROOT, "rust-modules", "src", "abr", "window.rs")
+
+    @classmethod
+    def wire_examples(cls):
+        """Every `const … : &str = // wire-example` literal in `window.rs`, un-escaped.
+
+        Rust's `\\` line continuation swallows the newline AND the leading whitespace of the next
+        line, which is what lets the source stay inside a line limit while the emitted line is one
+        long string. Reproducing that here is the whole extraction.
+        """
+        with open(cls.WINDOW_RS, encoding="utf-8") as fh:
+            source = fh.read()
+        out = []
+        pattern = r'// wire-example\n\s*"((?:[^"\\]|\\[\s\S])*)"'
+        for body in re.findall(pattern, source):
+            out.append(re.sub(r"\\\n\s*", "", body))
+        return out
+
+    def test_the_examples_are_present(self):
+        examples = self.wire_examples()
+        self.assertGreaterEqual(len(examples), 2, f"no wire examples found in {self.WINDOW_RS}")
+        self.assertTrue(all(e.startswith("abr: window ") for e in examples), examples)
+
+    def test_every_example_parses(self):
+        for line in self.wire_examples():
+            with self.subTest(line=line):
+                rows = run.abr_windows([line])
+                self.assertEqual(len(rows), 1, "RE_ABR_WINDOW no longer matches what the app logs")
+
+    def test_a_filling_verdict_parses_as_not_computed_rather_than_zero(self):
+        filling = [ln for ln in self.wire_examples() if "verdict=filling" in ln]
+        self.assertTrue(filling, "the filling state needs an example; it is every playback's first n")
+        row = run.abr_windows(filling)[0]
+        for field in ("bound_ms", "demand_ms", "supply_ms", "excess_ms"):
+            self.assertEqual(row[field], -1, f"{field} must say NOT COMPUTED, not zero")
+        self.assertLess(row["have"], row["want"])
+
+    def test_a_full_verdict_parses_every_term(self):
+        full = [ln for ln in self.wire_examples() if "verdict=admit" in ln]
+        self.assertTrue(full)
+        row = run.abr_windows(full)[0]
+        self.assertEqual(row["have"], row["want"])
+        self.assertEqual((row["sustainable"], row["survivable"]), (1, 1))
+        self.assertLessEqual(row["demand_ms"], row["supply_ms"], "condition (1), as logged")
+        self.assertGreaterEqual(row["excess_ms"], 0)
+
+    def test_the_window_line_does_not_also_match_the_sample_regex(self):
+        """Both are `abr: ` lines emitted on the same segment; a `search` that matched both would
+        double-count every segment in `abr_samples`, which several statistics average over."""
+        for line in self.wire_examples():
+            self.assertIsNone(run.RE_ABR_SAMPLE.search(line))
+            self.assertEqual(run.abr_samples([line]), [])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

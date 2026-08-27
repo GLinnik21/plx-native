@@ -307,6 +307,20 @@ impl SegmentSample {
             .min(u64::from(u32::MAX)) as u32
     }
 
+    /// End-to-end acquisition, microseconds -- what `abr/window.rs` transfers between rungs.
+    /// `active_fetch_us` is the transfer alone and is what `network_kbps` divides by; this is the
+    /// whole cost the reserve actually pays for, which is the quantity section 4 compares to `D`.
+    pub(crate) fn total_fetch_us(self) -> u64 {
+        self.total_fetch_us
+    }
+
+    /// Delivered bytes. The transfer bound's `b_i`, and the query for the current rung's own
+    /// admission -- so it is the one field of `abr/window.rs`'s arithmetic that is not derivable
+    /// from anything else already on the wire.
+    pub(crate) fn bytes(self) -> u64 {
+        self.bytes
+    }
+
     /// Per-mille total acquisition time / content duration. This includes PMS JIT production and
     /// TTFB; a two-second segment arriving in 1.9 seconds has almost no production headroom even
     /// if its response body crosses the LAN quickly.

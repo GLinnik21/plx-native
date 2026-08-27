@@ -37,6 +37,10 @@ pub(crate) struct ControllerTelemetry {
     pub(crate) risk: CandidateRisk,
     pub(crate) pending: Option<Proposal>,
     pub(crate) reason: Option<DecisionReason>,
+    /// **The §4 admission rule's shadow verdict on the current rung.** Decides nothing; it is here
+    /// so the rule can be graded against the estimators beside it on a device before anything is
+    /// moved onto it.
+    pub(crate) window: AdmissionReadout,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -68,6 +72,15 @@ pub(crate) struct Controller {
     last_safe_budget_kbps: u32,
     /// **Dev-only actuator pin — see [`Self::pinned_to`].** `None` in every production path.
     pin: Option<Rung>,
+    /// **The transferred acquisition window** (`abr/window.rs`, specification §2a/§4).
+    ///
+    /// Observed on every segment and reported in telemetry; it decides nothing yet. This is
+    /// deliberately an OBSERVE-ONLY increment: the window has to be shown to track the same
+    /// segments the shipped estimators see, on a device, before a decision is moved onto it.
+    acquisitions: AcquisitionWindow,
+    /// What the §4 rule WOULD have said about staying on the current rung, recomputed each sample.
+    /// Read only by telemetry.
+    last_window: AdmissionReadout,
 }
 
 impl Controller {
@@ -98,6 +111,8 @@ impl Controller {
             last_reason: None,
             last_safe_budget_kbps: 0,
             pin: None,
+            acquisitions: AcquisitionWindow::default(),
+            last_window: AdmissionReadout::default(),
         }
     }
 
@@ -182,6 +197,7 @@ impl Controller {
             ),
             pending: self.pending,
             reason: self.last_reason,
+            window: self.last_window,
         }
     }
 
@@ -200,6 +216,12 @@ impl Controller {
         let network = observation.kbps;
         if observation.is_collapse(&self.delivery) {
             self.delivery.collapse(network);
+            // **The one place the acquisition window is cleared.** `window.rs` keeps history across
+            // a rung COMMIT on purpose — the transfer bound carries a sample from one rung to
+            // another by bytes — but a collapse is the other thing: the link this history describes
+            // has stopped existing, and a bound built from it runs about 2x anti-conservative on a
+            // swept link. This changes no decision today; the window is observed, not read.
+            self.acquisitions.reset();
         }
         self.delivery.update(observation);
         let cold_start = self.samples_on_rung == 0;
@@ -225,6 +247,18 @@ impl Controller {
         let safe_budget =
             hls_safe_budget(&self.delivery, &self.production, &self.buffer, &self.policy);
         self.last_safe_budget_kbps = safe_budget;
+
+        // **Shadow the §4 admission rule. It decides nothing here.** Observed above every early
+        // return for the same reason `safe_budget` is: a pinned run returns before the decision on
+        // every sample after the pin lands, and a quantity that is only computed on the path it
+        // does not take is unobservable on exactly the runs meant to characterise it.
+        //
+        // The query is the CURRENT rung's own byte count, so this answers "is what we are already
+        // playing sustainable" — the one admission question that needs no size prediction and no
+        // `sigma`. A candidate's query is `sigma * W_j * D / 8000`; that arrives with the decision.
+        self.acquisitions.observe(sample.bytes, sample.total_fetch_us());
+        self.last_window =
+            self.acquisitions.readout(sample.bytes, segment, buffered, self.policy.admission);
 
         if self.pending.is_some() {
             return Decision::Stay;

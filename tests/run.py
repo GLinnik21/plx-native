@@ -1336,6 +1336,33 @@ def early_exit_allowed(case, cfg):
     return True, ""
 
 
+# **The section 4 admission rule's shadow verdict, one line per segment.** It decides nothing in
+# the app -- the whole point of the increment that added it is that the rule can be graded against
+# the estimators beside it on real device traces before anything is moved onto it.
+#
+# A line of its own rather than fields appended to `abr: sample`, so a trace taken with the shadow
+# running is still parsed byte-for-byte by `RE_ABR_SAMPLE` and is therefore comparable against a
+# baseline captured before it existed. Do NOT fold these fields into that regex.
+#
+# `verdict=filling` is the ordinary state for the first `n` segments of every playback, and
+# `demand`/`supply`/`excess`/`bound` are `-1` there -- "not computed", not zero.
+RE_ABR_WINDOW = re.compile(
+    r"abr: window current=(\d+)kbps verdict=(\S+) have=(\d+)/(\d+) eps=(\d+)pm clamp=(\d+) "
+    r"bound=(-?\d+)ms demand=(-?\d+)ms supply=(-?\d+)ms excess=(-?\d+)ms "
+    r"sus=(\d+) sur=(\d+) bytes=(\d+) dur=(\d+)ms"
+)
+WINDOW_FIELDS = (
+    "current_kbps", "verdict", "have", "want", "eps_pm", "clamp",
+    "bound_ms", "demand_ms", "supply_ms", "excess_ms",
+    "sustainable", "survivable", "bytes", "dur_ms",
+)
+
+
+def abr_windows(lines):
+    """Every `abr: window` as a dict, in order. One per segment, whatever was decided."""
+    return _parsed(RE_ABR_WINDOW, WINDOW_FIELDS, lines)
+
+
 def abr_transactions(lines):
     """Every `abr: tx` as a dict. One per proposal, commit or reject."""
     return _parsed(RE_ABR_TX, TX_FIELDS, lines)

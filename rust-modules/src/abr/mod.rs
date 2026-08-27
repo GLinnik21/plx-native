@@ -65,6 +65,7 @@ mod original;
 mod plant;
 mod units;
 mod viability;
+mod window;
 
 pub(crate) use bootstrap::*;
 pub(crate) use controller::*;
@@ -75,13 +76,19 @@ pub(crate) use original::*;
 pub(crate) use plant::*;
 pub(crate) use units::*;
 pub(crate) use viability::*;
+pub(crate) use window::*;
 
 /// **Every tunable in one place, and every field answers "what product behaviour is this?"** —
 /// which is the test a number has to pass to live here at all. What this type replaced was a
 /// scatter of `3 good samples`, `8 cooldown samples`, `2 bad windows` and a bare `1_100`, none of
 /// which said what it was for, so none of them could be argued with.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct AbrPolicy {
+    /// **The section 4 admission rule's two explicit choices** -- see [`AdmissionPolicy`]. Both are
+    /// classification (4). Nothing reads them for a DECISION yet: the window shadows the shipped
+    /// path and is reported, so that the rule can be graded against the estimators it replaces on
+    /// a device before anything is moved onto it.
+    pub(crate) admission: AdmissionPolicy,
     /// PMS is comfortably ahead of real time below this segment-acquisition ratio. Above it a
     /// candidate may still play, but it has no margin left for a slower scene.
     pub(crate) production_safe_pm: u32,
@@ -154,6 +161,21 @@ pub(crate) struct AbrPolicy {
 impl AbrPolicy {
     pub(crate) fn measured() -> Self {
         Self {
+            // **eps = 50pm, k = 1, so n = 19.** Stated as what it costs a viewer rather than as
+            // a percentage: one acquisition in twenty may exceed the bound, and at the 2 s segment
+            // this pipeline requests that is **one exceedance per ~40 s of playback**. An
+            // exceedance is not a stall — it is one segment arriving later than the bound
+            // promised, which condition (2) has already required the reserve to absorb — so the
+            // quantity being chosen is how often the reserve is drawn on, not how often the
+            // picture stops.
+            //
+            // `k = 1` takes the window's maximum: the tightest bound available at this eps, and
+            // the most sensitive to a single outlier. It is the conservative end of the one axis
+            // that is free once eps is fixed, and it is the right end to start from while the rule
+            // decides nothing. Raising `k` buys a longer proof horizon at the same eps (n = k/eps
+            // - 1) and should be argued from a stated passage length, which this project does not
+            // have yet.
+            admission: AdmissionPolicy { epsilon_pm: 50, k: 1 },
             production_safe_pm: 750,
             production_max_pm: 1_100,
             production_floor_pm: 250,
