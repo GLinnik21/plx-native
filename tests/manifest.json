@@ -1834,6 +1834,61 @@
       "_band_note": "The ONE region no measurement has ever entered: `A/D` in [0.80, 1.05], 0 of 366 samples in the entire pre-existing corpus, and the boundary the whole admission rule is keyed on. A pin holds the rung while the SHAPER sweeps the link, so `A/D` is swept directly instead of being waited for. Every leg rate is DERIVED, not chosen: from this rung's own measured (bytes, A, C) the fixed cost is A - 8*bytes/C, which is link-independent (p2h R27: ~79% of acquisition lands after the first AU, serial and post-body), so the rate producing a target A/D is 8*bytes / (target*D - fixed). The pin is what makes this safe to hold past 1.0: it short-circuits the decision before the fast-down path, so the controller cannot escape the rung and the drain is bounded by the leg length. At A/D = 1.05 a 2 s segment takes 2.1 s, draining 100 ms per segment, so a 20 s leg costs ~1 s of reserve -- inside B_max at both rungs. `abr_shape: {}` reports every metric and asserts none: a bound written before the band has ever been observed would be a number somebody guessed. Rung 20000: measured bytes ~5 000 000 and A ~700 ms unshaped (~100 Mbit/s) give a fixed cost of 300 ms, so 30769 / 26667 / 22222 kbps are A/D = 0.80 / 0.90 / 1.05. This is the rung whose reachable reserve is ~5 421 ms -- under three segments -- so it is the only place the stall boundary and the band coincide."
     },
     {
+      "name": "pipe_abr_reject_up_4000",
+      "fixture": "pipe_h264_aac_mp4.mp4",
+      "title": "no-Plex Auto: an upshift the candidate cannot pay for, rejected repeatedly",
+      "covers": ["abr-upshift", "candidate-reject", "transaction-cost"],
+      "declare": {"vcodec": "h264", "acodec": "aac", "fps": 24.0},
+      "auto_network": {"source_kbps": 900000},
+      "network_profile": [
+        {"until_s": 300.0, "kbps": 8300}
+      ],
+      "run_secs": 180,
+      "operations": [
+        {"op": "play"}
+      ],
+      "expect": {
+        "codec": "h264",
+        "load_video": "H264",
+        "load_audio": "AAC",
+        "min_pos_climb_s": 60,
+        "require_video_bound": true,
+        "no_playing_error": true,
+        "abr_shape": {
+          "settle_max_kbps": 4000
+        }
+      },
+      "_reject_note": "Measures E_tx(up, reject) -- the cost of an upshift that is PROPOSED and then REFUSED -- which the plan ranks 4th among the device cases and which today has n=1, unlabelled. The flat 8300 kbps leg is DERIVED, not chosen, and it is the only leg in this file that has to sit inside a window rather than above or below a threshold. `candidate_prime_budget` gives the candidate 4/5 of one media duration, 1600 ms. From the measured fixed cost of 272 ms and the rungs' own median segment bytes (1.07 MB at 4000, 1.50 MB at 6000): at 8300 kbps rung 4000 costs 1303 ms, comfortably sustainable at A/D 0.65 so the controller stays there and keeps proposing, while rung 6000's warm-up costs 1718 ms and overruns its budget, so every proposal is rejected. The window has a far edge and it is worth knowing where: at 10000 kbps the candidate costs 1472 ms and is ACCEPTED, so a link 20% faster turns this case into an upshift test instead. `settle_max_kbps: 4000` is the assertion that matters -- if the rejection path breaks, Auto commits to 6000 on a link that cannot carry it and this fails. No `max_stall_s`, deliberately: a stall bound is what this case most wants to assert -- repeated rejected transactions draining the reserve is the exact failure E_tx exists to bound -- but `max_stall_s` is an I0 metric and `test_no_manifest_case_carries_a_new_abr_bound_yet` refuses it until an I1 baseline exists. That guard is right and asserting 0 here would have been the guessed number it was written to stop. The metric is still REPORTED, so this run is what produces the baseline that lets a later increment assert it."
+    },
+    {
+      "name": "pipe_abr_down_collapse",
+      "fixture": "pipe_h264_aac_mp4.mp4",
+      "title": "no-Plex Auto: a sustained link collapse, and the full descent it forces",
+      "covers": ["abr-downshift", "collapse", "transaction-cost", "regime-change"],
+      "declare": {"vcodec": "h264", "acodec": "aac", "fps": 24.0},
+      "auto_network": {"source_kbps": 900000},
+      "network_profile": [
+        {"until_s": 25.0, "kbps": 40000},
+        {"until_s": 300.0, "kbps": 500}
+      ],
+      "run_secs": 180,
+      "operations": [
+        {"op": "play"}
+      ],
+      "expect": {
+        "codec": "h264",
+        "load_video": "H264",
+        "load_audio": "AAC",
+        "min_pos_climb_s": 60,
+        "require_video_bound": true,
+        "no_playing_error": true,
+        "abr_shape": {
+          "settle_max_kbps": 720
+        }
+      },
+      "_collapse_note": "Measures E_tx_down under collapse -- the plan's 5th-ranked device case, and the one that matters most because DOWNSHIFTS HAVE NO DEADLINE AT ALL TODAY (`candidate_prime_budget` and `candidate_warmup_budget` both return None for Direction::Down). A transaction with no deadline on the recovery path is the failure mode with no upper bound on its cost. The 500 kbps floor is derived rather than picked: at that rate only rung 320 is sustainable (A/D 0.90 from the measured fixed cost and rung 320's own 380 kbps of media), while 720 is at 1.74 and 2000 at 4.58 -- so the controller has to walk the WHOLE ladder down from the top rung an unshaped start puts it on, which is what makes the descent cost observable rather than inferred. Distinct from `pipe_abr_brief_dropout`, which dips for 3 s and grades the RECOVERY: this one holds the floor for the rest of the run and grades the descent. `settle_max_kbps: 720` is deliberately one rung looser than the arithmetic demands -- the assertion is that the full descent happens, not that it lands on exactly the rung a model predicts, since a model that also chose the leg rate would be marking its own work. No `max_stall_s`: a collapse from the ladder top through a ~4.9 s reserve may legitimately stall, and asserting it must not would be asserting a result nobody has measured."
+    },
+    {
       "name": "pipe_h264_aac_resolution_spike",
       "fixture": "pipe_h264_aac_resolution_spike.mkv",
       "title": "one Starfish Load: 720p -> 1080p -> 720p H.264/AAC",
