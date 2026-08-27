@@ -37,6 +37,12 @@ RE_SAMPLE = re.compile(
     r"vbuf=(-?\d+)ms abuf=(\S+) dur=(\d+)ms prod=(\d+)pm n=(\d+) decision=(\S+) "
     r"target=(\d+)kbps"
 )
+# `graded=` is the acquisition of a candidate transaction's graded segment and `graded_bytes=` its
+# size -- together, the ONE observation `Controller::observe_candidate` adds to the window that no
+# `abr: window` line describes. A replayer without them counts one short after every transaction
+# that got that far, which reads as the app miscounting and is not.
+RE_TX_GRADED = re.compile(r"abr: tx \S+ .*? graded=(\d+)ms .*? graded_bytes=(\d+)")
+
 RE_WINDOW = re.compile(
     r"abr: window current=(\d+)kbps verdict=(\S+) have=(\d+)/(\d+) eps=(\d+)pm clamp=(\d+) "
     r"bound=(-?\d+)ms demand=(-?\d+)ms supply=(-?\d+)ms excess=(-?\d+)ms "
@@ -55,14 +61,24 @@ def transferred_us(bytes_i: int, acq_us: int, query: int) -> int:
 
 
 def paired(lines):
-    """(sample, window) per segment, in order.
+    """The window's input stream, in order: `("candidate", bytes, acq_us)` or `("segment", …)`.
 
-    Paired by ADJACENCY because one call site writes both, in that order, for one segment. A
-    `window` line with no `sample` before it means the two drifted apart and every number below
-    would be attributed to the wrong segment, so it is an error rather than a skip.
+    Segments are paired by ADJACENCY because one call site writes `abr: sample` and `abr: window`
+    in that order for one segment. A `window` line with no `sample` before it means the two drifted
+    apart and every number below would be attributed to the wrong segment, so it is an error rather
+    than a skip.
+
+    A candidate observation is spliced in at its `abr: tx` line. That placement is exact rather than
+    approximate: the transaction runs inline on the demux worker, so no current-stream segment is
+    acquired while it is in flight, and the `tx` record therefore falls between the `abr: window`
+    before the transaction and the one after it.
     """
     out, pending = [], None
     for line in lines:
+        m = RE_TX_GRADED.search(line)
+        if m:
+            out.append(("candidate", int(m.group(2)), int(m.group(1)) * 1_000))
+            continue
         m = RE_SAMPLE.search(line)
         if m:
             pending = {"buf_ms": int(m.group(4)), "dur_ms": int(m.group(7)),
@@ -73,7 +89,7 @@ def paired(lines):
             continue
         if pending is None:
             raise SystemExit("`abr: window` with no preceding `abr: sample`; the pairing is broken")
-        out.append((pending, {
+        out.append(("segment", pending, {
             "verdict": m.group(2), "have": int(m.group(3)), "want": int(m.group(4)),
             "eps_pm": int(m.group(5)), "clamp": int(m.group(6)),
             "bound_ms": int(m.group(7)), "demand_ms": int(m.group(8)),
@@ -99,10 +115,20 @@ def grade(path: str):
         return None
 
     ring: list[tuple[int, int, int]] = []          # (bytes, acq_lo_us, acq_hi_us)
-    checked = disagree = filling = resets = 0
+    checked = disagree = filling = resets = candidates = 0
     seen_resets = 0
     worst = ("", 0)
-    for sample, window in rows:
+    for row in rows:
+        if row[0] == "candidate":
+            # `graded=` is whole milliseconds, so its interval is [ms, ms+1) in microseconds --
+            # narrower than a segment's, and propagated the same way rather than assumed exact.
+            _, cand_bytes, acq_us = row
+            if cand_bytes and acq_us:
+                ring.append((cand_bytes, acq_us, acq_us + 1_000))
+                ring = ring[-WINDOW_CAPACITY:]
+                candidates += 1
+            continue
+        _, sample, window = row
         # **A reset is replayed from the app's own counter, never inferred from `have`.** The
         # window clears on a delivery regime change and the grader cannot see one -- a collapse is
         # not in these lines. Keying on the monotone counter means a legitimate reset costs
@@ -166,7 +192,7 @@ def grade(path: str):
             print("  ! sus=1 but the whole interval is unsustainable")
             disagree += 1
     return {"rows": len(rows), "checked": checked, "filling": filling,
-            "disagree": disagree, "resets": resets, "worst": worst[0]}
+            "disagree": disagree, "resets": resets, "candidates": candidates, "worst": worst[0]}
 
 
 def occupancy(path: str):
@@ -177,7 +203,7 @@ def occupancy(path: str):
     quoted as evidence about the rule.
     """
     rows = paired(pathlib.Path(path).read_text(errors="replace").splitlines())
-    graded = [w for _, w in rows if w["verdict"] != "filling"]
+    graded = [r[2] for r in rows if r[0] == "segment" and r[2]["verdict"] != "filling"]
     if not graded:
         return None
     loads = [w["demand_ms"] / w["supply_ms"] for w in graded if w["supply_ms"] > 0]
@@ -195,7 +221,8 @@ def main(argv):
     paths = [p for a in argv for p in sorted(glob.glob(a))]
     if not paths:
         raise SystemExit(__doc__)
-    print(f"{'case':<34} {'lines':>6} {'graded':>7} {'fill':>5} {'reset':>6} {'disagree':>9}")
+    print(f"{'case':<34} {'lines':>6} {'graded':>7} {'fill':>5} {'cand':>5} {'reset':>6} "
+          f"{'disagree':>9}")
     total_checked = total_disagree = 0
     occ = []
     for path in paths:
@@ -204,7 +231,7 @@ def main(argv):
             continue
         name = pathlib.Path(path).stem[:34]
         print(f"{name:<34} {r['rows']:>6} {r['checked']:>7} {r['filling']:>5} "
-              f"{r['resets']:>6} {r['disagree']:>9}")
+              f"{r['candidates']:>5} {r['resets']:>6} {r['disagree']:>9}")
         total_checked += r["checked"]
         total_disagree += r["disagree"]
         o = occupancy(path)

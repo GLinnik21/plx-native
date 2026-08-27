@@ -3062,6 +3062,11 @@ struct TxTrace {
     feed_ms: Option<i64>,
     /// The reserve after the feed, so the pre/post pair brackets what the staged segments added.
     buf_fed_ms: Option<i64>,
+    /// The graded candidate segment's byte count. Pairs with `graded=` (its acquisition) to make
+    /// the ONE observation a transaction adds to the controller's window replayable from the log.
+    /// Without it a trace cannot reconstruct the window at all: `abr: window` lines come from
+    /// current-stream segments, and `observe_candidate` adds a sample none of them describes.
+    graded_bytes: Option<u64>,
     /// The candidate rendition's DECLARED rate, kbit/s, from its own master playlist. `None`
     /// (logged `-1`) on every exit path that never got that far -- which is not zero and must not
     /// read as a rendition that declares nothing.
@@ -3102,6 +3107,7 @@ impl TxTrace {
             buf_decided_ms: None,
             feed_ms: None,
             buf_fed_ms: None,
+            graded_bytes: None,
             declared_kbps: None,
         }
     }
@@ -3136,6 +3142,7 @@ impl TxTrace {
         let acq = i64::try_from(output.transfer.total_us / 1_000).unwrap_or(i64::MAX);
         if graded {
             self.graded_acq_ms = Some(acq);
+            self.graded_bytes = Some(output.transfer.bytes);
         } else {
             self.warmup_acq_ms = Some(acq);
         }
@@ -3165,7 +3172,8 @@ impl Drop for TxTrace {
             "abr: tx {:?} {}->{}kbps outcome={} decided={}ms total={}ms control={}ms \
              prime={}ms master={}ms media={}ms warmup={}ms \
              graded={}ms buf_start={}ms buf_decided={}ms feed={}ms buf_fed={}ms buf_end={}ms \
-             cur_acq_before={}ms net={}kbps fast={}kbps slow={}kbps unc={}pm declared={}kbps",
+             cur_acq_before={}ms net={}kbps fast={}kbps slow={}kbps unc={}pm declared={}kbps \
+             graded_bytes={}",
             self.direction,
             self.from_kbps,
             self.to_kbps,
@@ -3189,6 +3197,7 @@ impl Drop for TxTrace {
             self.slow_kbps,
             self.unc_pm,
             self.declared_kbps.map(i64::from).unwrap_or(-1),
+            self.graded_bytes.map(|b| b as i64).unwrap_or(-1),
         ));
     }
 }

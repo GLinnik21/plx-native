@@ -1677,7 +1677,7 @@ class LogLineContract(unittest.TestCase):
             "control=118ms prime=94ms master=12ms media=12ms warmup=2210ms graded=1804ms "
             "buf_start=24835ms buf_decided=21770ms feed=6498ms buf_fed=24918ms "
             "buf_end=24918ms cur_acq_before=1583ms net=41200kbps fast=41200kbps "
-            "slow=39800kbps unc=120pm declared=5602kbps"
+            "slow=39800kbps unc=120pm declared=5602kbps graded_bytes=1441792"
         )
         rows = run.abr_transactions([line])
         self.assertEqual(len(rows), 1, "the committed-upshift shape must parse")
@@ -1688,6 +1688,8 @@ class LogLineContract(unittest.TestCase):
                          "the three control legs are a partition of `control=`, not a sample of it")
         self.assertEqual(row["declared_kbps"], 5602,
                          "the candidate's OWN rate, which is not `to_kbps` and not the catalog's")
+        self.assertEqual(row["graded_bytes"], 1441792,
+                         "with `graded=`, the one window observation a transaction adds")
 
     def test_abr_tx_reads_none_as_absent_and_never_as_zero(self):
         line = (
@@ -1695,7 +1697,7 @@ class LogLineContract(unittest.TestCase):
             "control=none prime=none master=none media=none warmup=none graded=none "
             "buf_start=24835ms buf_decided=24835ms feed=nonems buf_fed=nonems "
             "buf_end=24835ms cur_acq_before=1583ms net=41200kbps fast=41200kbps "
-            "slow=39800kbps unc=120pm declared=-1kbps"
+            "slow=39800kbps unc=120pm declared=-1kbps graded_bytes=-1"
         ).replace("control=none", "control=nonems").replace(
             "prime=none ", "prime=nonems ").replace("master=none ", "master=nonems ").replace(
             "media=none ", "media=nonems ").replace("warmup=none ", "warmup=nonems ").replace(

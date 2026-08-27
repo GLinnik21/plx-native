@@ -358,6 +358,30 @@ already been seen to violate at the pooled level. Two things contain the damage.
 against every fetched segment at run time — the app already logs `bytes=`. And **it is needed only
 on the upshift path**.
 
+### [SHIPPED 2026-08-27] `σ` per rung, following this section's own recipe
+
+The rule needs a `σ` at every rung it may target, and the paragraphs above give one only for
+rungs ≥ 4000. `Rung::size_spread_pm` completes the table by the same construction —
+`max_observed × cross-item spread`, both factors (2), the product (3):
+
+| rung | max observed | cross-item spread | `σ` | per-mille |
+|---|---:|---:|---:|---:|
+| 320 | 1.285 | *22.7% — **borrowed**, see below* | 1.577 | 1577 |
+| 720 | 1.155 | 22.7% | 1.418 | 1418 |
+| 2000 | 0.917 | 13.4% | 1.040 | 1040 |
+| ≥ 4000 | 0.846 | 5.6% | 0.893 | 893 |
+
+**Rung 320's spread is the one number in the table that is not measured.** No second item reached
+that rung, so its cross-item variation is unknown; it takes 720's, the largest in the table and its
+neighbour in the same floor regime. Labelled rather than smoothed over, because the floor regime is
+not merely higher but far more item-dependent (22.7% at 720 against 5.6% above 4000), which is
+exactly why a shared constant is wrong down there.
+
+**One constant would be wrong in both regimes**, which is why this is a table and not a number:
+applying the floor's 1.577 everywhere is a 1.77× haircut at the rungs the controller exists to
+reach, and applying 0.893 everywhere understates the bottom three by up to 43% — in the permissive
+direction. The consequence of the floor's `σ > 1` is the climb limitation recorded in §4.
+
 **[CORRECTED 2026-08-27] That last clause used to read "§2a's transfer bound needs no `b_j` at all
 when the byte count falls", and the loose form of it is wrong in a way worth keeping visible.** The
 transfer is free of the query exactly when `q ≤ b_i`, i.e. when
@@ -600,6 +624,80 @@ remedy** — that is a rung-walking rule of the kind the design rule forbids, an
 the encoder-churn `best_sustainable` exists to avoid. The honest statement is that (1) ∧ (2) bound
 the *rate* a candidate may demand and say nothing about the *raster change* that accompanies a
 large jump, and the utility ledger of §7 is where that cost belongs.
+
+### [SHIPPED 2026-08-27] The rule decides the upshift, and where it does so is forced
+
+`Controller::candidate_ready` admits an upshift iff the acquisition window admits
+`σ_j·W_j·D/8000`, with `W_j` the candidate's OWN declared rate. Three tests were removed, and none
+of them survived its own evidence:
+
+| removed | why |
+|---|---|
+| `network_kbps ≥ candidate.expected_wire_kbps` | the catalog rate R1 killed: +5.2% to +31.6%, item-dependent, non-injective |
+| `production_ratio_pm ≤ 800` | a bare 800, and structurally the single-observation form `A ≤ 0.8·D`, refuted at ~37% |
+| `buffered ≥ 2·segment` | a reserve floor in segments; condition (2) is the derived version |
+
+**One disqualifier survives and is not a margin.** No amount of link evidence answers whether a
+DIFFERENT encoder can produce — every sample in the window came from another one — so a candidate
+whose own graded segment is at or slower than real time is refused outright, at
+`production_max_pm`, a named policy threshold with a stated meaning. The margin question is the
+window's; this is the disqualifier. Two independent constraints, not two stacked margins.
+
+**Selection and admission must evaluate the same rule or the controller livelocks.** Proposing what
+validation will refuse costs a real PMS encoder session and ~3 s of unrefilled playback, and
+`reject` sets a one-sample cooldown — so the loop repeats. Selection therefore walks DOWN from the
+budget's choice to the highest rung the window supports, using the catalog rate, which is the only
+per-rung rate it can see (§3); validation re-runs the same rule on the declared rate and decides.
+One rule read twice with the best input each side has, and no new number.
+
+That is **not** a rung-walking rule. It still jumps many rungs at once — what it refuses is refused
+by `T_i(q) = A_i·max(1, q/b_i)` growing with the query, i.e. by the bound's own arithmetic, and the
+refusal dissolves as the window accumulates evidence at larger byte counts.
+
+### [LIMITATION] At the emergency floor the bound licenses a climb only while production is fast
+
+A 320 kbps segment is ~80 kB. The largest byte count the bound admits is `b_i · D/A`, and the
+candidate is charged its rung's WORST case (`σ_j·W_j·D/8000`) while the observation is whatever this
+content happened to weigh. At the floor those asymmetries compound: `σ` is **1.418 at rung 720**
+against 0.893 above 4000, and an easy 80 kB segment is only 0.63 of rung 320's own worst case. The
+climb needs a **3.19×** byte ratio while `D/A` supplies `2000/ratio_pm`.
+
+**Crossover at `ratio_pm ≈ 313`** — arithmetic, not a tuning knob. Above it the controller holds the
+floor.
+
+This is the same shape as the collapse finding above: the rule declining to speak where its evidence
+cannot carry a conclusion, and for the same structural reason. The remedy is not a weaker bound but
+**better evidence** — a bounded, affordable probe that buys one larger observation, which is the
+plan's J4 and is where `Admission::with_transaction_cost` belongs. Until it exists the boundary is
+real, and `at_the_emergency_floor_a_slow_producing_server_holds_the_rule_below_a_climb` pins both
+sides of it so a change that moves it fails loudly.
+
+### [MEASURED 2026-08-27] The host test fixture was unphysical, and it was hiding the answer
+
+`abr/tests.rs`'s `sample(network_kbps, ratio_pm, buffered)` is given two numbers and must produce
+three — `bytes`, `active_fetch_us`, `total_fetch_us` — so how it resolves the third IS a plant
+model. It resolved it as `active = min(total, 200 ms)`, which at the `ratio_pm = 400` most tests use
+makes the transfer 200 ms of an 800 ms acquisition: **a 75% fixed-cost share, on every sample,
+independent of the link argument.**
+
+Measured over 127 device segments (`docs/measurements/j3a-window-logs`):
+
+| case | p10 | median | p90 |
+|---|---:|---:|---:|
+| `pipe_abr_band_4000` | 4% | **6%** | 13% |
+| `pipe_abr_down_collapse` | 1% | 7% | 20% |
+| `pipe_abr_band_20000` | 12% | **16%** | 37% |
+
+Nothing on that television resembles 75%. Since §4 reads total acquisition against bytes, the
+fixture described a link four times faster than its own acquisitions admit — and graded the rule
+against a plant that cannot exist. Resolved to 14%, inside the measured band; two of the six tests
+that had failed passed again immediately. **The rule was right and the plant was wrong**, which is
+the only reason worth changing a fixture for.
+
+The same table bounds how much the bound's `O₀ = 0` assumption actually costs: at most the
+fixed-cost share, so **6–16% of the achievable rate at the median** rather than the 4× the old
+fixture implied. On `pipe_abr_band_4000` the bound admits a **×1.44 median and ×2.99 p90** climb in
+one step.
 
 ### [SUPERSEDED] The integer form of the per-segment rule
 

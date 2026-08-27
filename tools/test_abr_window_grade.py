@@ -70,8 +70,8 @@ class Pairing(unittest.TestCase):
     def test_pairs_come_out_in_order(self):
         rows = wg.paired([sample(500), window("filling", 1, 9, -1, -1, -1, -1, 0, 0),
                           sample(600), window("filling", 2, 9, -1, -1, -1, -1, 0, 0)])
-        self.assertEqual([w["have"] for _, w in rows], [1, 2])
-        self.assertEqual([s["prod_pm"] for s, _ in rows], [500, 600])
+        self.assertEqual([r[2]["have"] for r in rows], [1, 2])
+        self.assertEqual([r[1]["prod_pm"] for r in rows], [500, 600])
 
 
 class TheQuantizationInterval(unittest.TestCase):
@@ -234,6 +234,62 @@ class TheResetPath(unittest.TestCase):
         result, printed = graded(self.run_of(reset_at=6, reset_value=2))
         self.assertEqual(result["disagree"], 0, printed)
         self.assertEqual(result["resets"], 2)
+
+
+class TheCandidateObservation(unittest.TestCase):
+    """A transaction adds ONE sample to the window that no `abr: window` line describes.
+
+    `Controller::observe_candidate` puts the graded candidate segment in, and every `abr: window`
+    line is a CURRENT-stream segment — so a replayer that only reads those counts one short after
+    every transaction, forever. That is not the app miscounting, and before `graded_bytes=` reached
+    the wire this grader reported 54 disagreements on a healthy 15-case run.
+    """
+
+    TX = ("abr: tx Up 4000->6000kbps outcome=committed decided=3065ms total=4100ms control=120ms "
+          "prime=40ms master=30ms media=50ms warmup=1800ms graded=900ms buf_start=9000ms "
+          "buf_decided=6000ms feed=900ms buf_fed=9000ms buf_end=9000ms cur_acq_before=1200ms "
+          "net=9000kbps fast=9200kbps slow=8800kbps unc=120pm declared=5602kbps "
+          "graded_bytes=1441792")
+
+    def test_a_transaction_line_contributes_one_observation(self):
+        rows = wg.paired([sample(500), window("filling", 1, 9, -1, -1, -1, -1, 0, 0), self.TX])
+        self.assertEqual([r[0] for r in rows], ["segment", "candidate"])
+        self.assertEqual(rows[1], ("candidate", 1441792, 900_000))
+
+    def test_it_lands_between_the_windows_either_side_of_it(self):
+        """Exact, not approximate: the transaction runs inline on the demux worker, so no
+        current-stream segment is acquired while it is in flight."""
+        rows = wg.paired([sample(500), window("filling", 1, 9, -1, -1, -1, -1, 0, 0),
+                          self.TX,
+                          sample(600), window("filling", 3, 9, -1, -1, -1, -1, 0, 0)])
+        self.assertEqual([r[0] for r in rows], ["segment", "candidate", "segment"])
+
+    def test_the_run_grades_clean_when_the_candidate_is_accounted_for(self):
+        lines = []
+        for i in range(9):
+            lines.append(sample(500))
+            lines.append(window("filling", i + 1, 19, -1, -1, -1, -1, 0, 0))
+        lines.append(self.TX)
+        lines.append(sample(500))
+        lines.append(window("filling", 11, 19, -1, -1, -1, -1, 0, 0))
+        result, printed = graded(lines)
+        self.assertEqual(result["disagree"], 0, printed)
+        self.assertEqual(result["candidates"], 1)
+
+    def test_an_unaccounted_extra_sample_is_still_caught(self):
+        """The check the splice must not weaken: a `have` that jumps with no transaction to
+        explain it is the app miscounting, and that has to keep failing."""
+        lines = [sample(500), window("filling", 1, 19, -1, -1, -1, -1, 0, 0),
+                 sample(500), window("filling", 3, 19, -1, -1, -1, -1, 0, 0)]
+        result, printed = graded(lines)
+        self.assertGreaterEqual(result["disagree"], 1)
+        self.assertIn("have", printed)
+
+    def test_a_rejected_transaction_still_contributes_its_observation(self):
+        """A rejected candidate MEASURED the link, so its graded segment is in the window too."""
+        rejected = self.TX.replace("outcome=committed", "outcome=not_ready")
+        rows = wg.paired([rejected])
+        self.assertEqual(rows[0][0], "candidate")
 
 
 if __name__ == "__main__":
