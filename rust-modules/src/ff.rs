@@ -3810,10 +3810,13 @@ fn hls_demux(
         let Some(reserve_ms) = hls_buffer_snapshot(None).buffered_ms() else {
             // No readable reserve means nothing can be said about what this transaction can
             // afford, and a transaction with no affordability bound is the unbounded case being
-            // removed. Refusing costs one segment: `Controller::reject` sets a one-sample
-            // cooldown, and the controller cannot have proposed on an unknown reserve in the first
-            // place, so the lane fell silent between the proposal and here — a seek, which the
-            // next sample resolves.
+            // removed. **Refusing costs nothing**, which is what `RejectCause::Circumstance` on the
+            // next line exists to say: the controller cannot have proposed on an unknown reserve in
+            // the first place, so the lane fell silent between the proposal and here — a seek —
+            // and that says nothing about the RUNG. No backoff is armed and the next sample
+            // resolves it. (This read "sets a one-sample cooldown" until I6, describing a mechanism
+            // that never blocked a segment even before it was deleted: the decrement ran before
+            // the check, so `K = 1` was a no-op.)
             control.abandon(&primed.encoder_session);
             reject_hls_abr(controller, proposal, crate::abr::RejectCause::Circumstance);
             tx.finish("reserve_unreadable");
@@ -4744,7 +4747,12 @@ pub(crate) fn demux(
                                 // requirement it was measured against, the reserve, its direction,
                                 // how many seconds that reserve survives, and which rule fired.
                                 crate::player::log(&format!(
-                                    "auto: Original -> HLS {reason:?} measured={}kbps safe={}kbps need={}kbps buf={}ms slope={}ms/s starve={} windows={} target={}kbps",
+                                    // **`held=` and NOT `windows=`.** The value is wall
+                                    // milliseconds now (N13); reusing the old label would make an
+                                    // old log's `windows=2` and a new log's `windows=2` two
+                                    // different quantities under one name — the exact shape the
+                                    // heartbeat's `FPS=`/`loop=` rename exists to prevent.
+                                    "auto: Original -> HLS {reason:?} measured={}kbps safe={}kbps need={}kbps buf={}ms slope={}ms/s starve={} held={}ms target={}kbps",
                                     observation.measured_kbps,
                                     observation.conservative_kbps,
                                     observation.requirement_kbps,

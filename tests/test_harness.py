@@ -832,7 +832,7 @@ class AutoNetworkProfile(unittest.TestCase):
 
     def test_assertion_requires_a_measured_collapse_then_a_committed_original(self):
         down = ("auto: Original -> HLS ImminentStarvation measured=3998kbps safe=3198kbps "
-                "need=10800kbps buf=2900ms slope=-1200ms/s starve=4 windows=1 target=2000kbps")
+                "need=10800kbps buf=2900ms slope=-1200ms/s starve=4 held=1500ms target=2000kbps")
         up = "abr: committed Up to 20000kbps 1920x1080"
         request = "abr: source sustainable again at 60321kbps; requesting Original"
         committed = "auto: recovered Original direct play; retiring HLS encoder"
@@ -841,8 +841,9 @@ class AutoNetworkProfile(unittest.TestCase):
         self.assertIn("ImminentStarvation", why, "the reason code is the field worth reporting")
         # The rung the ladder happens to be on when the probe fires is NOT graded any more: PMS
         # producing 20 Mbit/s of H.264 says the server can encode, not that the link can carry the
-        # remux, and on this fixture the probe gate (three healthy segments) usually beats the
-        # ladder (five). What must still hold is the ORDER: collapse, then probe, then route.
+        # remux. The probe gate and the upshift dwell are both WALL clock now (6 s and ~5.2 s) and
+        # race too closely to order, where they used to be three segments against five. What must
+        # still hold is the ORDER: collapse, then probe, then route.
         self.assertTrue(run.a_auto_network_recovery([down, request, committed], 5000, 20000)[0],
                         "recovery from a middle rung is the design, not a failure")
         self.assertFalse(run.a_auto_network_recovery([request, committed, down], 5000, 20000)[0],

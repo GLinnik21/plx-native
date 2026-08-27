@@ -206,8 +206,14 @@ buffer and production condition and the proposal it justified. All three are gon
 | was | counted | is |
 |---|---|---|
 | `stable_samples` | three consecutive good samples before any climb, reset at seven sites | **deleted.** The model had already agreed; the counter re-asked |
-| `samples_on_rung < 2` | no adaptation at all on a rung's first two samples | **deleted as a gate, kept as an estimator input** — it is still the production estimator's cold-start flag and I3's predicate, and it is the only sample count left anywhere in HLS policy |
+| `samples_on_rung < 2` | no adaptation at all on a rung's first two samples | **deleted as a gate, kept as an estimator input** — it is still the production estimator's cold-start flag and I3's predicate, and it is the only sample count left on the UPSHIFT path |
 | `cooldown` | 3 segments after an up commit, 8 after a down | **`E_tx` of wall clock**, on the UP path only |
+
+One sample count survives elsewhere and is named here so the table above is not read as a clean
+sweep: `BufferEstimate::starving()`'s second arm is `buffered_ms <= 6_000 && draining_samples >= 2`,
+and it decides `buffer_bad` on the immediate-downshift arm. It is a hard guard on a reserve that is
+both thin and shrinking rather than an adaptation gate, which is why N8-N10 left it alone — but it
+is a count, and the sentence above would otherwise be false in its own paragraph.
 
 **A segment is not a bounded amount of wall time** — it is `bytes / C`, and `C` is the quantity a
 downshift exists to react to — so an eight-segment guard was an unbounded interval that got longer
@@ -439,7 +445,7 @@ exits, and the log names which one fired:
 | exit | rule | consults utility |
 |---|---|---|
 | `ImminentStarvation` | horizon inside `starvation_fallback_secs`, **and the reserve measurably falling** | no — a stall beats any switch |
-| `SustainedDeficit` | horizon unsafe for `ORIGINAL_DEFICIT_WINDOWS`, and utility agrees | yes |
+| `SustainedDeficit` | horizon unsafe for `sustained_unsafe_deficit_ms` of WALL clock, and utility agrees (§7b) | yes |
 | `EmergencyLowBuffer` | reserve under the floor and falling, whatever the estimates say | no |
 
 **Both hard guards require an observed drain, and the first one did not until 2026-08-27.** The
@@ -622,12 +628,19 @@ per-mille only, so a line can be pasted into an issue thread.
 ```text
 abr: steady current=8000kbps safe=17600kbps pending=0kbps fast=22000kbps slow=22000kbps unc=200pm
      n=6 buf=12000ms slope=0ms/s prod=200pm/419pm risk=0 starve=none edge=none left=3512s
-     reason=Some(...)
+     dwell=0ms block=0kbps onrung=7 draining=0 reason=None
+abr: mode chose=Hls why=OriginalNotWorthIt vs_hls=20011kbps scale=66pm
+     win[q=5 f=8 r=26 s=4 t=0 tot=-17] lose[q=7 f=8 r=0 s=0 t=15 tot=0]
 auto: Original -> HLS ImminentStarvation measured=3998kbps safe=3198kbps need=10800kbps buf=2900ms
-     slope=-1200ms/s starve=4 windows=1 target=2000kbps
-abr: Original probe #2 measured=60321kbps 2048KiB/400ms complete=1 current_safe=1 left=2100s
-     verdict=Recover
+     slope=-1200ms/s starve=4 held=1500ms target=2000kbps
+abr: Original probe #2 measured=60321kbps 2048KiB/400ms complete=1 left=2100s verdict=Recover
 ```
+
+**Three of those field sets moved in 2026-08 and a stale log does not parse**, deliberately:
+`stable=`/`cool=` became `dwell=`/`block=` when the counters they reported became guards (I6), and
+the fallback line's `windows=` became `held=…ms` when the persistence rule moved onto the wall
+clock (N13). Both are the `FPS=`/`loop=` shape — the same label for a different quantity is worse
+than no label, so the names moved with the units and `RE_ABR_GATES` matches the new ones only.
 
 Every field in the steady line was an INPUT to the decision published beside it, and the struct is
 assembled by the controller rather than re-read at the log site, so the numbers logged are the

@@ -156,14 +156,27 @@ pub(crate) struct AbrPolicy {
     pub(crate) visible_switch_cost: i64,
     /// Extra cost per visible switch already made in this playback. One switch is a decision; four
     /// is flapping, and this is what makes the fourth expensive without a hard cooldown counter.
-    /// At 15 the arithmetic is: a first move costs 15, the return trip 30 (still inside Original's
-    /// 40-point advantage, so one round trip is allowed), and a third 45 (refused).
+    /// **Each visible switch raises the price of the next by this much**, and that SHAPE is the
+    /// claim. The worked refusal boundary that used to be written here — "a first move costs 15,
+    /// the return trip 30 (inside Original's 40-point advantage), a third 45 (refused)" — rested on
+    /// a flat 40, and there is no flat 40 any more: I7a made Original's quality source-dependent,
+    /// and N16 gives every Original an unconditional `generation_loss_bonus` on top. At the
+    /// reference case the margin is 48, so the old "third move refused" clears by 3; with DV and
+    /// Atmos it is 65 and even a fourth clears. Where the ladder now bites depends on the file,
+    /// which is the point of scoring it from the file.
     pub(crate) visible_switch_penalty: i64,
     /// Half-life of that penalty. A switch fifteen minutes ago is history; one fifteen seconds ago
     /// is a pattern.
     pub(crate) visible_switch_decay_ms: u64,
-    /// What Original is worth over the best HLS rendition, before any risk or cost: no generation
-    /// loss, source audio, Dolby Vision and Atmos preserved, and zero server video encoding.
+    /// **The structural floor of Original's quality term**, added to the SOURCE-derived score
+    /// (`mode::source_quality_score`): zero server video encoding, and the source's own audio.
+    ///
+    /// It is not "what Original is worth over the best HLS rendition" any more, and it stopped
+    /// being that in two steps. I7a made the quality term score against a real alternative, so the
+    /// difference moves with the source's rate and raster instead of being a constant. And N16
+    /// split generation loss, Dolby Vision and Atmos out into the three bonuses below — so a
+    /// sentence claiming this 40 covers them double-books the exact terms whose own doc calls
+    /// pricing them together "the conflation N16 names".
     pub(crate) original_quality_bonus: i64,
     /// **What Original preserves about THIS file, split three ways** (N16). It was one flat
     /// `original_feature_bonus = 25` behind one boolean, `dovi.profile > 0 || immersive` — so an
