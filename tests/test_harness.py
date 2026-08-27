@@ -912,9 +912,18 @@ class AutoNetworkProfile(unittest.TestCase):
         bound could later be written. The old expectation was not wrong, it was under-scoped —
         every case it was written about still has to satisfy it, and the census family has its own
         rule in `test_every_census_case_is_unshaped_pinned_and_grades_nothing` below.
+
+        SCOPED AGAIN on 2026-08-27 for a THIRD family, `pipe_abr_band_*`, which is neither: it
+        shapes the link *because* the link is the independent variable, and it grades nothing for
+        the census's reason. The three families are separated by what varies and what is asserted —
+        census holds the link still and asserts nothing, band sweeps the link and asserts nothing,
+        shaped disturbs the link and must assert the recovery. Its own rule is
+        `test_every_band_case_sweeps_a_derived_ladder_of_legs`.
         """
         shaped = [c for c in _manifest()["pipeline_cases"]
-                  if c["name"].startswith("pipe_abr_") and not c["name"].startswith("pipe_abr_pin_")]
+                  if c["name"].startswith("pipe_abr_")
+                  and not c["name"].startswith("pipe_abr_pin_")
+                  and not c["name"].startswith("pipe_abr_band_")]
         self.assertGreaterEqual(len(shaped), 4, "the bad-network profiles are missing")
         for case in shaped:
             with self.subTest(case["name"]):
@@ -960,6 +969,47 @@ class AutoNetworkProfile(unittest.TestCase):
                 self.assertEqual(case["expect"].get("abr_shape"), {},
                                  "the census reports metrics and grades none of them")
                 self.assertIn("auto_network", case, "the census must run the Auto HLS path")
+
+    def test_every_band_case_sweeps_a_derived_ladder_of_legs(self):
+        """The `pipe_abr_band_*` family: hold a rung, sweep the LINK, assert nothing.
+
+        These exist for the one region no measurement has ever entered — `A/D` in [0.80, 1.05],
+        0 of 366 samples in the whole pre-existing corpus, and the boundary the admission rule is
+        keyed on. Waiting for a link to wander into it does not work; the shaper walks `A/D`
+        through it directly while a pin holds the rung still, so the load is the only thing moving.
+
+        Four properties. MULTI-LEG, because a flat profile is a census point and cannot sweep
+        anything. PINNED, because the whole construction assumes the controller cannot escape the
+        rung — the pin short-circuits the decision before the fast-down path, which is also what
+        makes it safe to sit past `A/D = 1.0`. EMPTY `abr_shape`, for the census's reason: a bound
+        written before the band has ever been observed is a number somebody guessed. And a
+        `_band_note` carrying the ARITHMETIC, because every leg rate here is derived from that
+        rung's own measured `(bytes, A, C)` rather than chosen, and a derived number whose
+        derivation is not written down is indistinguishable from a picked one six months later.
+        """
+        band = [c for c in _manifest()["pipeline_cases"]
+                if c["name"].startswith("pipe_abr_band_")]
+        self.assertGreaterEqual(len(band), 2, "the unobserved-band sweeps are missing")
+        ladder = {320, 720, 2000, 4000, 6000, 8000, 10000, 12000, 14000, 16000, 18000, 20000, 22000}
+        for case in band:
+            with self.subTest(case["name"]):
+                profile = case.get("network_profile") or []
+                self.assertGreater(len(profile), 1,
+                                   "a band sweep with one leg sweeps nothing — that is a census point")
+                rates = [leg["kbps"] for leg in profile]
+                self.assertGreaterEqual(len(set(rates)), 3,
+                                        "a sweep needs at least three distinct rates to have an "
+                                        "interior — two is a step, which the shaped family covers")
+                self.assertIn(case.get("abr_pin"), ladder, "pin must name a real actuator request")
+                self.assertEqual(case["name"], f"pipe_abr_band_{case['abr_pin']}",
+                                 "the name and the pin are two statements of one number")
+                self.assertEqual(case["expect"].get("abr_shape"), {},
+                                 "a band sweep reports metrics and grades none of them")
+                self.assertIn("auto_network", case, "the band sweep must run the Auto HLS path")
+                note = case.get("_band_note", "")
+                self.assertIn("A/D", note, "the note must say which load band the legs target")
+                self.assertTrue(any(str(r) in note for r in rates),
+                                "the note must show the arithmetic for the rates it uses")
 
     def test_the_census_covers_both_sides_of_the_predicted_binding_crossover(self):
         """The audio lane is predicted to bind below ~1.66 Mbit/s of wire and the video lane above

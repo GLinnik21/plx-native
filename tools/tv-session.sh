@@ -8,6 +8,7 @@
 #   tv-session.sh click <x> <y>  click at authored 1920x1080 coords
 #   tv-session.sh shot [out.png] grab the panel (video plane included) via the capture service
 #   tv-session.sh log [pattern]  fetch the on-device event log, optionally grepped
+#   tv-session.sh screen off|on  blank the PANEL while the app keeps running (see below)
 #   tv-session.sh down           hand the TV back: strip automation, relaunch interactive
 #
 # Options (accepted before OR after the subcommand, because every one of them needs it):
@@ -29,6 +30,20 @@
 #                     this is a tunnel and never a router port forward.
 #   --no-token        boot with no injected token (exercises the QR sign-in flow)
 #   --keep            do not clear existing triggers first (rarely what you want)
+#
+# SCREEN OFF is a panel state, not an app state. `luna://com.webos.service.tvpower/power/
+# turnOffScreen` blanks the picture with the set still on, the app still running and playback
+# still decoding — it does NOT deliver the SDL background events (`0x103`/`0x104`) that make
+# `app.rs` suspend the buffer-feed and drop to Home, which is the failure worth ruling out before
+# using it: a suspended feed reads as a total ABR regression rather than as an obviously blank
+# screen. Device-confirmed on webOS 4.10.0 (2026-08-27), and the whole P1/P1b device corpus was
+# taken this way. `power/turnOnScreen` is the reverse; both are on this firmware's api-permissions
+# list, unlike the newer-webOS `power/turnOff` the wake-tv skill records as `Unknown method` here.
+#
+# USE IT FOR the measurement tiers — ABR, transaction cost, anything read out of the event log —
+# where it saves the panel over long runs and costs nothing. DO NOT use it for the fps scenes,
+# `shot`, or the capture stream: `ui::idle` gates presents and the panel is the thing those
+# measure, so a dark screen makes them either meaningless or silently wrong.
 #
 # THE TV LOCK: every subcommand that DRIVES the set (up, key, click, shot, down) requires the
 # television's lock and refuses when another lane holds it; `status` and `log` are read-only and
@@ -589,8 +604,31 @@ cmd_down() {
   echo "== TV is yours"
 }
 
+# Blank or restore the PANEL, leaving the app and playback untouched. See the header for why
+# this is safe for the measurement tiers and disqualifying for the visual ones.
+cmd_screen() {
+  local want="${1:-}"
+  case "$want" in
+    off) method=turnOffScreen ;;
+    on)  method=turnOnScreen ;;
+    *) echo "usage: tv-session.sh screen off|on" >&2; exit 2 ;;
+  esac
+  # Driving the set, so it takes the lock like every other command that does.
+  require_lock "tv-session screen $want"
+  ensure_awake || exit 1
+  # `luna-send` silently no-ops without a controlling TTY -- the house `script -qc` wrapper, same
+  # as every other luna call against this television.
+  local reply
+  reply=$(tv "script -qc \"luna-send -n 1 -f luna://com.webos.service.tvpower/power/$method '{}'\" /dev/null" 2>/dev/null)
+  case "$reply" in
+    *'"returnValue": true'*) ok "panel $want ($(printf '%s' "$reply" | sed -n 's/.*"state": "\([^"]*\)".*/\1/p'))" ;;
+    *) bad "screen $want refused: $reply"; return 1 ;;
+  esac
+}
+
 case "${1:-}" in
   up)     shift; cmd_up "$@" ;;
+  screen) shift; cmd_screen "$@" ;;
   status) shift; cmd_status ;;
   key)    shift; cmd_key "$@" ;;
   click)  shift; cmd_click "$@" ;;
