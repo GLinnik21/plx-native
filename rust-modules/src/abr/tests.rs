@@ -163,9 +163,9 @@ fn settle_link(network_kbps: u32) -> Rung {
         {
             let candidate = sample(network_kbps, 400, buf_ms.max(SEGMENT_MS));
             if controller.candidate_ready(proposal, candidate, declared_bps(proposal.rung)) {
-                controller.commit(proposal);
+                controller.commit(proposal, controller.clock_ms());
             } else {
-                controller.reject(proposal, RejectCause::Candidate);
+                controller.reject(proposal, RejectCause::Candidate, controller.clock_ms());
             }
         }
     }
@@ -633,7 +633,7 @@ fn a_proposal_does_not_mutate_current_until_candidate_commit() {
         sample(20_000, 200, 12_000),
         declared_bps(proposal.rung),
     ));
-    assert!(controller.commit(proposal));
+    assert!(controller.commit(proposal, controller.clock_ms()));
     assert_eq!(controller.current(), Rung::P1080M12);
 }
 
@@ -651,7 +651,7 @@ fn rejected_candidate_preserves_current_and_clears_pending() {
         sample(2_100, 1_200, 12_000),
         declared_bps(proposal.rung),
     ));
-    assert!(controller.reject(proposal, RejectCause::Candidate));
+    assert!(controller.reject(proposal, RejectCause::Candidate, controller.clock_ms()));
     assert_eq!(controller.current(), Rung::P480);
     assert_eq!(controller.pending(), None);
 }
@@ -660,7 +660,7 @@ fn rejected_candidate_preserves_current_and_clears_pending() {
 fn startup_does_not_issue_back_to_back_encoder_swaps() {
     let mut controller = bootstrap_controller();
     let proposal = prime_up(&mut controller);
-    controller.commit(proposal);
+    controller.commit(proposal, controller.clock_ms());
     for _ in 0..3 {
         assert_eq!(controller.observe_next(sample(20_000, 200, 12_000)), Decision::Stay);
     }
@@ -684,6 +684,53 @@ fn a_single_slow_network_sample_jumps_to_the_measured_sustainable_rung() {
         Decision::Prime(Proposal { rung: Rung::P240, direction: Direction::Down })
     );
     assert_eq!(controller.current(), Rung::P720);
+}
+
+/// **A failed DOWNSHIFT must not arm the guard that refuses climbing** (a correction to N11's
+/// backoff, found by adversarial review of I6).
+///
+/// `RejectBlock` prices repeating a spend the controller CHOSE to make — that is the whole
+/// affordability argument in its doc, and `last_commit_ms` already draws the same line for the
+/// dwell: "a downshift is a recovery action and rate-limiting recovery is how a stall becomes a
+/// policy". `reject` did not look at the direction, and on the down path the block it armed had no
+/// clock release at all: `refill_time_ms` returns `None` whenever `safe_budget <= R_current`,
+/// which is precisely the state a collapse-driven downshift is in. The only remaining exit was the
+/// safe budget exceeding `slow_kbps` as of the failure — the link having to beat its own
+/// pre-collapse reading — so a partial recovery left every upshift refused for the life of the
+/// demux while playback sat far below what the link could carry.
+///
+/// Differential by construction, and it carries its own control: the same reject on an UP proposal
+/// must still arm the block. Asserting only the down half would pass against a `reject` that armed
+/// nothing at all.
+#[test]
+fn a_failed_downshift_does_not_arm_the_guard_that_refuses_climbing() {
+    // A collapse from P720 — the shape `a_single_slow_network_sample_jumps_to_the_measured_
+    // sustainable_rung` pins, and the state in which `safe_budget <= R_current` holds.
+    let mut c = bootstrap_controller();
+    c.current = Rung::P720;
+    assert_eq!(c.observe_next(sample(20_000, 400, 8_000)), Decision::Stay);
+    let Decision::Prime(down) = c.observe_next(sample(1_000, 400, 8_000)) else {
+        panic!("a collapsed link must propose a downshift");
+    };
+    assert_eq!(down.direction, Direction::Down);
+    assert!(c.reject(down, RejectCause::Candidate, c.clock_ms()));
+    assert_eq!(
+        c.telemetry().gates.blocked_kbps,
+        0,
+        "a downshift the plant compelled must leave no backoff behind: the reserve it spent is not \
+         evidence that a later CLIMB is unaffordable, and the estimator can see the collapse \
+         directly",
+    );
+
+    // The control. An upshift is discretionary, so its failure is exactly what the guard is for.
+    let mut c = bootstrap_controller();
+    let up = prime_up(&mut c);
+    assert_eq!(up.direction, Direction::Up);
+    assert!(c.reject(up, RejectCause::Candidate, c.clock_ms()));
+    assert!(
+        c.telemetry().gates.blocked_kbps > 0,
+        "a failed upshift must still arm the block, or the assertion above grades nothing",
+    );
 }
 
 #[test]
@@ -987,7 +1034,7 @@ fn a_downshift_recovers_on_the_sample_the_window_admits_and_not_two_later() {
     let Decision::Prime(down) = controller.observe_next(sample(12_000, 500, 8_000)) else {
         panic!("the collapsed link must propose a downshift")
     };
-    assert!(controller.commit(down));
+    assert!(controller.commit(down, controller.clock_ms()));
 
     let n = AbrPolicy::measured().admission.window_len();
     let mut dwell_cleared_at = None;
@@ -1031,45 +1078,112 @@ fn a_downshift_recovers_on_the_sample_the_window_admits_and_not_two_later() {
     );
 }
 
-/// **N10: the guard between two climbs is WALL CLOCK, and the proof is that the sample count
-/// moves when the segment size does.**
+/// **N10: the guard between two climbs is WALL CLOCK, and the proof is that a slower link spends
+/// FEWER samples inside it.**
 ///
-/// Category 8.3. `cooldown` counted segments — `Up => 3`, `Down => 8` — and a segment is
-/// `bytes / C` of wall time, so the guard got longer exactly as the link got worse and there was no
-/// bound on it at all. `upshift_dwell_ms` is `E_tx`, the sum of the two deadlines this transaction
-/// is already held to, and it is the same duration whatever a segment happens to cost.
+/// Category 8.3. `cooldown` counted delivered segments — `Up => 3`, `Down => 8` — and a segment
+/// ARRIVES in `bytes / C` of wall time, so the guard got longer exactly as the link got worse and
+/// had no bound at all. `E_tx` is the sum of the two deadlines this transaction is already held
+/// to, and it is the same duration however slowly segments happen to turn up.
 ///
-/// **Differential by construction, and it does not depend on any particular duration.** The same
-/// wall-clock interval is fed twice, once as short segments and once as long ones. A segment
-/// counter is invariant to that — three segments is three segments — so unmodified code gives the
-/// same count both times; a wall clock gives fewer long segments than short ones. The assertion is
-/// the INEQUALITY, so no number here can go stale.
+/// **Differential by construction, and the axis is the one that matters.** Both legs feed the same
+/// segment MEDIA duration and differ only in how far apart in wall clock the samples arrive —
+/// which is precisely what a degraded link does. A segment counter is invariant to that (three
+/// segments is three segments), so unmodified code gives the same count for both; a wall-clock
+/// interval admits fewer of the slow ones. The assertion is the INEQUALITY, so no number goes
+/// stale.
+///
+/// **The axis is deliberately NOT the segment's media duration, and the first version of this test
+/// got that wrong.** `E_tx` is `3/2 * d + production_max_pm * d`, i.e. proportional to `d` by
+/// construction, so counting samples while varying `d` is scale-invariant — 2.6 either way — and
+/// an inequality between the two legs can only come from somewhere else. It did: `prime_up` drives
+/// the controller through `observe_next`, which advances the clock a segment per call, so by the
+/// commit the clock was already past 38 s; the loop then restarted a SECOND origin at zero, and
+/// `dwell_remaining_ms`' `saturating_sub` read no elapsed time at all until that origin caught up.
+/// The test was dividing 38 000 by two segment sizes and reporting the ratio as the dwell. It is
+/// why `Controller::clock_ms` exists: a test that continues the controller's own timeline cannot
+/// reintroduce that.
 #[test]
 fn the_dwell_between_two_climbs_is_wall_clock_and_not_a_segment_count() {
-    fn samples_held(segment_ms: u32) -> usize {
+    // Media duration held FIXED across both legs, so the guard's own length is identical and the
+    // only thing that changes is how much wall clock passes between samples.
+    const SEGMENT_MS: u32 = 2_000;
+    fn samples_held(sample_gap_ms: u64) -> usize {
         let mut c = controller_at(Rung::P720);
         let up = prime_up(&mut c);
-        assert!(c.commit(up));
-        let mut now = c.telemetry().gates.dwell_ms; // dwell owed at the instant of the commit
-        assert!(now > 0, "a commit must arm the dwell");
+        assert!(c.commit(up, c.clock_ms()));
+        assert!(c.telemetry().gates.dwell_ms > 0, "a commit must arm the dwell");
+        // CONTINUE the controller's clock. Starting a second origin here is the defect the doc
+        // above describes, and it is silent: the guard simply reads as never having aged.
+        let mut clock = c.clock_ms();
         let mut held = 0usize;
-        let mut clock = 0u64;
         while c.telemetry().gates.dwell_ms > 0 {
-            clock += u64::from(segment_ms);
-            let _ = c.observe(sample_of(segment_ms, 40_000, 200, 20_000), clock);
+            clock += sample_gap_ms;
+            let _ = c.observe(sample_of(SEGMENT_MS, 40_000, 200, 20_000), clock);
             held += 1;
             assert!(held < 100, "the dwell must expire");
         }
-        now = 0;
-        let _ = now;
         held
     }
-    let short = samples_held(1_000);
-    let long = samples_held(4_000);
+    // Segments arriving at real time, versus the same segments arriving four times as far apart —
+    // a link delivering 2 s of media every 8 s.
+    let at_speed = samples_held(u64::from(SEGMENT_MS));
+    let slow_link = samples_held(u64::from(SEGMENT_MS) * 4);
     assert!(
-        long < short,
-        "the same interval took {short} short segments and {long} long ones — a guard that gives \
-         the same count for both is counting segments, not measuring time",
+        slow_link < at_speed,
+        "the same interval admitted {at_speed} samples at speed and {slow_link} on a link four \
+         times slower — a guard that gives the same count for both is counting segments, not \
+         measuring time",
+    );
+}
+
+/// **N10's dwell is anchored at the COMMIT, not at the proposal that opened the transaction.**
+///
+/// `Controller::now_ms` is written only by `observe`, so before `commit` took the caller's clock
+/// the anchor was whatever `observe` last recorded — the instant the proposal was made. On device
+/// a transaction runs `control.prime`, two playlist fetches, a warm-up fetch, a graded fetch and a
+/// feed in between, and `E_tx` is by construction the upper BOUND on that work; anchoring there
+/// set the guard expiring at about the moment the transaction was guaranteed to be over, so it
+/// blocked roughly one sample instead of the interval N10 specifies.
+///
+/// Differential by construction: the whole assertion is that a transaction taking real time does
+/// not consume the guard that is supposed to start when it ENDS. Under the old anchor the dwell
+/// owed at the commit is `E_tx - elapsed`, which for a transaction of half `E_tx` is half the
+/// guard — so the equality below cannot hold. No host test could have caught it before, because
+/// every fixture committed from the proposing `observe` with no clock advance, which reproduces
+/// exactly the anchor being corrected.
+#[test]
+fn a_transaction_that_takes_time_does_not_spend_the_dwell_it_arms() {
+    let mut c = controller_at(Rung::P720);
+    let up = prime_up(&mut c);
+    let proposed_at = c.clock_ms();
+    let full_dwell = crate::abr::viability::upshift_transaction_cost(
+        std::time::Duration::from_millis(2_000),
+        &AbrPolicy::measured(),
+    )
+    .as_millis() as u64;
+    assert!(full_dwell > 0, "E_tx must be a real interval or this test grades nothing");
+
+    // A transaction that really took most of its own budget: a control-plane round trip plus two
+    // fetches. Anything strictly inside `E_tx` and strictly positive makes the point.
+    let tx_ms = full_dwell / 2;
+    let committed_at = proposed_at + tx_ms;
+    assert!(c.commit(up, committed_at));
+
+    // The next segment arrives one media duration after the transaction closed. Read the guard
+    // THERE — reading it at the commit instant proves nothing, because under either anchor the
+    // clock has not moved past the value being compared against.
+    const SEGMENT_MS: u32 = 2_000;
+    let _ = c.observe(
+        sample_of(SEGMENT_MS, 40_000, 200, 20_000),
+        committed_at + u64::from(SEGMENT_MS),
+    );
+    assert_eq!(
+        c.telemetry().gates.dwell_ms,
+        full_dwell - u64::from(SEGMENT_MS),
+        "the dwell must have aged by the wall time since the COMMIT ({SEGMENT_MS} ms) and no more \
+         — anchored at the proposal it would additionally have spent {tx_ms} ms of itself on the \
+         transaction it exists to follow",
     );
 }
 
@@ -1093,7 +1207,7 @@ fn a_failed_prime_is_paid_for_before_another_is_attempted() {
     let refused = prime_up(&mut c);
     let clock_at_reject = 1_000_000u64;
     let _ = c.observe(sample(20_000, 200, 10_000), clock_at_reject);
-    assert!(c.reject(refused, RejectCause::Candidate));
+    assert!(c.reject(refused, RejectCause::Candidate, c.clock_ms()));
     assert_eq!(
         c.telemetry().gates.blocked_kbps,
         refused.rung.kbps(),
@@ -1328,10 +1442,10 @@ fn a_transfer_too_short_to_time_cannot_claim_a_gigabit_link() {
         let segment = sample_bytes(80_000, 700, 250, 12_000);
         if let Decision::Prime(proposal) = controller.observe_next(segment) {
             if controller.candidate_ready(proposal, sample(20_000, 400, 12_000), declared_bps(proposal.rung)) {
-                controller.commit(proposal);
+                controller.commit(proposal, controller.clock_ms());
                 reached = controller.current();
             } else {
-                controller.reject(proposal, RejectCause::Candidate);
+                controller.reject(proposal, RejectCause::Candidate, controller.clock_ms());
             }
         }
     }
@@ -1370,9 +1484,9 @@ fn at_the_emergency_floor_a_slow_producing_server_holds_the_rule_below_a_climb()
                     sample(20_000, 400, 12_000),
                     declared_bps(proposal.rung),
                 ) {
-                    controller.commit(proposal);
+                    controller.commit(proposal, controller.clock_ms());
                 } else {
-                    controller.reject(proposal, RejectCause::Candidate);
+                    controller.reject(proposal, RejectCause::Candidate, controller.clock_ms());
                 }
             }
         }
@@ -1599,7 +1713,7 @@ fn resume_clears_the_state_a_pause_invalidates_and_leaves_the_clock_alone() {
         }
         assert!(now < 60_000, "the setup must reach an upshift proposal");
     };
-    assert!(blocked.reject(proposal, RejectCause::Candidate));
+    assert!(blocked.reject(proposal, RejectCause::Candidate, blocked.clock_ms()));
     assert_eq!(
         blocked.telemetry().gates.blocked_kbps,
         proposal.rung.kbps(),
@@ -1618,7 +1732,7 @@ fn resume_clears_the_state_a_pause_invalidates_and_leaves_the_clock_alone() {
         }
         assert!(now < 60_000, "the setup must reach an upshift proposal");
     };
-    assert!(dwelling.commit(up));
+    assert!(dwelling.commit(up, dwelling.clock_ms()));
     assert!(dwelling.telemetry().gates.dwell_ms > 0, "a commit arms the dwell");
     now += 30_000;
     let _ = dwelling.observe(sample(40_000, 200, 20_000), now);
@@ -2270,6 +2384,23 @@ fn originals_quality_is_scored_from_the_source_and_not_from_a_fabricated_rung() 
         big,
         "an unmeasured raster must not be read as a forbidden zero-pixel picture",
     );
+
+    // **A rung's raster is a BOUNDING BOX, and every SCOPE film is the case that proves it.** PMS
+    // fits the source inside the box and never upscales, so 1920x800 is reproduced exactly by the
+    // 1920x1080 rungs and must score as 1080p does. The cap was first written as its own per-axis
+    // filter in the inverted direction (`rung_w <= source_w`), which admitted no 1080p rung for a
+    // 2.40:1 master and capped it at 4000 kbps — 40 against this 76, on the argmax that decides
+    // whether Auto recovers Original at all. `ladder::admits`' doc records the same defect measured
+    // on the television from the ladder's side; this asserts it from the mode comparison's.
+    for scope in [(1_920u16, 800u16), (1_920, 816), (1_920, 1_040)] {
+        assert_eq!(
+            quality_of(28_000, scope),
+            big,
+            "a {}x{} master is reproduced exactly by the 1080p rungs and must score as one does",
+            scope.0,
+            scope.1,
+        );
+    }
 }
 
 /// **N18: Original's risk is a RECURRING cost and is scaled like one.**

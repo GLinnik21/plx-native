@@ -326,6 +326,17 @@ impl Controller {
         self.observe(sample, now)
     }
 
+    /// The controller's own wall clock, for a test that must CONTINUE it rather than invent a
+    /// second origin. `observe_next` advances this by a segment per call, so by the time a fixture
+    /// has driven the acquisition window to its admitting length the clock is already tens of
+    /// seconds in; a test that then starts counting from 0 is not measuring the same timeline the
+    /// controller is, and `dwell_remaining_ms`' `saturating_sub` reads the difference as zero
+    /// elapsed until the second origin catches up.
+    #[cfg(test)]
+    pub(crate) fn clock_ms(&self) -> u64 {
+        self.now_ms
+    }
+
     #[cfg(test)]
     pub(crate) fn window_len(&self) -> usize {
         self.acquisitions.len()
@@ -929,13 +940,24 @@ impl Controller {
         }
     }
 
-    pub(crate) fn commit(&mut self, proposal: Proposal) -> bool {
+    /// `now_ms` is the caller's clock **at the commit**, and it is a parameter rather than
+    /// `self.now_ms` for a reason N10 depends on. `self.now_ms` is written only by `observe`, and
+    /// on device a transaction runs `control.prime`, two playlist fetches, a warm-up fetch, a
+    /// graded fetch and a feed between the `observe` that proposed and this call — so
+    /// `self.now_ms` is the instant of the PROPOSAL. Anchoring the dwell there sets it expiring at
+    /// `proposal + E_tx`, and `E_tx` is by construction the upper bound on the transaction's own
+    /// duration: the guard would elapse at about the moment the transaction was guaranteed to be
+    /// over, blocking roughly one sample instead of the interval N10 specifies. No host test could
+    /// see it, because every fixture commits from the proposing `observe` with no clock advance,
+    /// which reproduces exactly the anchor being corrected.
+    pub(crate) fn commit(&mut self, proposal: Proposal, now_ms: u64) -> bool {
         if self.pending != Some(proposal) {
             return false;
         }
         self.current = proposal.rung;
         self.pending = None;
         self.samples_on_rung = 0;
+        self.now_ms = self.now_ms.max(now_ms);
         // Both directions arm it; only the UP path reads it. See the field.
         self.last_commit_ms = Some(self.now_ms);
         // A rung that just committed is a rung that works. Whatever the last reject believed about
@@ -953,12 +975,37 @@ impl Controller {
     /// `cause` is the call site's own reading, and it decides whether a block is armed at all —
     /// see [`RejectCause`]. The block's two release conditions are computed HERE, from the state
     /// at the moment of failure, rather than re-derived later against numbers that have moved.
-    pub(crate) fn reject(&mut self, proposal: Proposal, cause: RejectCause) -> bool {
+    pub(crate) fn reject(
+        &mut self,
+        proposal: Proposal,
+        cause: RejectCause,
+        now_ms: u64,
+    ) -> bool {
         if self.pending != Some(proposal) {
             return false;
         }
         self.pending = None;
-        if cause == RejectCause::Circumstance || self.last_segment_ms <= 0 {
+        self.now_ms = self.now_ms.max(now_ms);
+        // **Only a DISCRETIONARY attempt arms the block, and a downshift is not one.** This guard
+        // prices repeating a spend the controller chose to make; `last_commit_ms`' doc already
+        // draws the same line for the dwell — "a downshift is a recovery action and rate-limiting
+        // recovery is how a stall becomes a policy" — and the argument is identical here, with a
+        // sharper failure. `refill_time_ms` returns `None` whenever `safe_budget <= R_current`,
+        // which IS the state a collapse-driven downshift is in, so a failed downshift armed a
+        // block with no clock release at all; the only remaining exit is the budget exceeding the
+        // raw rate the failing estimate believed, i.e. the link having to beat its own
+        // pre-collapse reading. Between those, every upshift was refused indefinitely and playback
+        // sat on the floor with a link that could carry several rungs. On the up path this cannot
+        // arise: `best_sustainable` admits only `expected_wire <= 0.8 * safe`, so a surplus of at
+        // least `0.25 * R` exists by construction and the block is bounded by `4 * E_tx`.
+        //
+        // It also settles the pricing: the cost below is `upshift_transaction_cost`, which is the
+        // right ledger for the only direction that now reaches it. A downshift has no graded leg
+        // and an unbounded warm-up, so charging it that sum was wrong twice over.
+        if cause == RejectCause::Circumstance
+            || proposal.direction != Direction::Up
+            || self.last_segment_ms <= 0
+        {
             return true;
         }
         // What the failed attempt spent: `E_tx`, the sum of the two deadlines it was held to.
@@ -999,6 +1046,12 @@ impl Controller {
         if self.last_segment_ms <= 0 {
             return 0;
         }
+        // **Saturate toward NOT blocking.** `upshift_transaction_cost` is bounded by `2.6 * d`
+        // today and this conversion cannot fail, but the safe failure of a guard is to let the
+        // decision through: `u64::MAX` here would be a dwell of 5.8e8 years, i.e. a permanent
+        // latch on every climb for the life of the demux, and it is one refactor away — the moment
+        // this cost is asked for a `Direction::Down`, `candidate_warmup_budget` returns
+        // `Duration::MAX` and `saturating_add` keeps it.
         let dwell = u64::try_from(
             crate::abr::viability::upshift_transaction_cost(
                 std::time::Duration::from_millis(u64::try_from(self.last_segment_ms).unwrap_or(0)),
@@ -1006,7 +1059,7 @@ impl Controller {
             )
             .as_millis(),
         )
-        .unwrap_or(u64::MAX);
+        .unwrap_or(0);
         dwell.saturating_sub(self.now_ms.saturating_sub(last))
     }
 

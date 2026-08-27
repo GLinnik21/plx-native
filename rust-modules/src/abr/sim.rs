@@ -608,7 +608,11 @@ pub(super) fn run(
         report.tx_control_plane_ms += cost.control_plane_ms;
         report.tx_media_ms += cost.warmup_acq_ms.saturating_add(cost.graded_acq_ms);
 
-        if would_commit && controller.commit(proposal) {
+        // `now_ms` has already been advanced by the transaction's own duration, so this is the
+        // instant of the COMMIT rather than of the proposal — which is what the dwell interval is
+        // defined between, and what the device now passes for the same reason.
+        let closed_at = u64::try_from(now_ms).unwrap_or(0);
+        if would_commit && controller.commit(proposal, closed_at) {
             buf_ms = buf_ms
                 .saturating_add(plant.segment_ms)
                 .min(plant.b_max_ms(&cand_point));
@@ -630,7 +634,7 @@ pub(super) fn run(
             // ones) and NONE of them feeds; the plant cannot express those, which is a gap on the
             // pessimistic side and is stated here rather than modelled optimistically.
             buf_ms = buf_ms.saturating_add(plant.segment_ms).min(plant.b_max_ms(&point));
-            controller.reject(proposal, crate::abr::RejectCause::Candidate);
+            controller.reject(proposal, crate::abr::RejectCause::Candidate, closed_at);
             report.rejects += 1;
         }
     }

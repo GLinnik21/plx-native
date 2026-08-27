@@ -272,37 +272,42 @@ pub(crate) fn original_utility(inputs: &ModeInputs, policy: &AbrPolicy) -> Optio
 ///   quality curve has saturated anyway (`hls_quality_score`'s last band is open-ended), so
 ///   clamping costs nothing real and stops an enormous remux rate reading as an enormous score.
 /// * the raster is a CAP, not a bonus. A source smaller than 1080p cannot be worth more than the
-///   rungs that reproduce it exactly, so it scores at the best rung whose frame it fills. An
-///   UNSTATED raster `(0, 0)` applies no cap — the same "nobody said is not a forbidden zero"
-///   reading `HlsActuatorCatalog::limited_to` gives it, and the conservative direction here,
-///   because refusing to credit a source nobody measured would silently prefer transcoding.
+///   rungs that reproduce it exactly, so it scores at the best rung the LADDER ITSELF admits for
+///   that source — `HlsActuatorCatalog::limited_to(unbounded device, source).feasible()`, i.e.
+///   exactly `admits`. An UNSTATED raster `(0, 0)` applies no cap, because `covers_source` reads a
+///   zero as "nobody said" and every rung is then admitted; the conservative direction here, since
+///   refusing to credit a source nobody measured would silently prefer transcoding.
+///
+///   **Asking the catalog is not tidiness — restating the rule got it backwards, in the exact
+///   shape `admits` already records as device-measured.** This function first wrote the cap as its
+///   own per-axis filter, `rung_w <= source_w && rung_h <= source_h`. That is the inverted
+///   containment test: a rung's raster is a BOUNDING BOX that PMS fits the source inside, so the
+///   question is whether the box COVERS the source, not whether it fits within it. Under the
+///   inverted form a 1920x800 scope master — which is to say most films — admitted no 1080p rung
+///   at all and capped at 4000 kbps, scoring 40 where a 16:9 master of the same bitrate scored 76.
+///   Since that score is one side of `choose_mode`'s argmax, Auto would have refused to recover
+///   Original on a scope film while recovering it on a 16:9 one over the same link. `admits`'s own
+///   doc describes the same defect from the ladder's side, measured on the television.
 ///
 /// It is deliberately expressed in `hls_quality_score`'s own units by evaluating that function, so
 /// the two sides of the comparison cannot drift apart when the curve is re-shaped.
 fn source_quality_score(inputs: &ModeInputs, _policy: &AbrPolicy) -> i64 {
     let top = HlsActuatorCatalog::measured().candidate(Rung::P1080High);
-    let (sw, sh) = inputs.source_raster;
     // **The raster caps the RATE**, and then the curve is evaluated once. Expressing it as a rate
     // cap rather than as a filter over rungs is not a simplification for its own sake: the first
     // version filtered the ladder by raster and then took `max` with the source's own rate as a
     // floor, and the floor silently defeated the cap — a 28 Mbps 720p master scored the same as a
     // 28 Mbps 1080p one, which is the exact defect this function exists to remove.
-    let raster_cap = if sw > 0 && sh > 0 {
-        LADDER
-            .iter()
-            .filter(|rung| {
-                let (rw, rh) = rung.raster();
-                rw <= sw && rh <= sh
-            })
-            .map(|rung| HlsActuatorCatalog::measured().candidate(*rung).expected_wire_kbps)
-            .max()
-            .unwrap_or(0)
-    } else {
-        // `(0, 0)` is "nobody said", not a forbidden zero-pixel picture — the same reading
-        // `HlsActuatorCatalog::limited_to` gives it, and the conservative direction here, because
-        // refusing to credit a source nobody measured would silently prefer transcoding.
-        u32::MAX
-    };
+    //
+    // The DEVICE bound is deliberately unbounded here: this asks what the source is worth, which
+    // is a property of the picture that exists, not of the SoC that would decode a transcode of
+    // it. `choose_mode`'s HLS side is already scored on a catalog the device bounded.
+    let raster_cap = HlsActuatorCatalog::measured()
+        .limited_to((0, 0), inputs.source_raster)
+        .feasible()
+        .map(|candidate| candidate.expected_wire_kbps)
+        .max()
+        .unwrap_or(0);
     let rate = inputs
         .source_kbps
         .min(top.expected_wire_kbps)
