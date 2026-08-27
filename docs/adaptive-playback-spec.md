@@ -556,6 +556,50 @@ panics under `cargo test` and wraps on the television.
 bound on `bytes_j` rather than a ratio to `bytes_i`. It is retained here only because the plan's
 §5 ships it, and the note above is what a reviewer needs if it comes back.
 
+## 4a. [TESTED, NEGATIVE] A stall probability is still not constructible
+
+§7 keeps `risk_weight` "until something produces a probability". §4 looked like it might: an
+ε-level admission with a reserve condition is closer to a probability than anything the plan had.
+It does not get there, and the route is recorded because a tested dead end is worth more than an
+untried one.
+
+**The construction.** The reserve moves by `D − A` per segment, so the accumulated drain over `m`
+segments is `Σ(A_i − D)⁺` and Markov's inequality gives a genuine bound with no free parameter:
+
+```
+P( stall within m segments )  ≤  m · E[(T − D)⁺] / B
+```
+
+`E[(T−D)⁺]` is the mean transferred excess over the window — already computed for §4's condition
+(2) — so this costs nothing extra and is (3), mathematically derived.
+
+**It is valid and it is vacuous.** Measured on the band sweeps, which are the only samples that
+have ever had a non-zero excess term at all, it **saturates at certainty** (1000 pm) at the worst
+moments of both runs — and neither run stalled. A bound that says "certain" where nothing happened
+carries no information.
+
+The reason is structural rather than a matter of tuning. Markov assumes the current excess rate
+persists for the whole horizon, and at `benefit_horizon_ms = 120 000` that is 60 segments. Both
+runs recovered instead, because their last leg returns the link to full speed. Knowing that
+requires a model of how the link EVOLVES, which is exactly what R6 killed: four events, dispersion
+index 10.8 against Poisson, a 95% CI of width 0.6 on `P(revert)`.
+
+**Where it stops being vacuous is itself the finding:**
+
+| case | worst `B` | worst excess | m=3 | m=5 | m=10 | m=20 | m=60 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `band_20000` | 2 210 | 572 | 0.78 | 1.00 | 1.00 | 1.00 | 1.00 |
+| `band_4000` | 16 960 | 282 | 0.05 | 0.08 | 0.17 | 0.33 | 1.00 |
+
+The horizon over which a stall probability can be constructed is set by `B / excess`, not by the
+product's benefit horizon — and `B / excess` is a **time to empty**, in segments. Which is
+`starvation_horizon`, already in `abr/plant.rs`, already the input to the risk score.
+
+**So the conclusion is that the risk term's natural unit is a horizon and not a probability**, and
+`risk_weight` is the price of a horizon in quality points. That is a product choice (4) and it
+stays. What §7's table should stop claiming is that a probability is one derivation away; it is one
+*link model* away, and that model is not identifiable from anything this project can measure.
+
 ## 5. Trigger, target and deadline are three different things
 
 The plan conflates them, which is why the emergency path looked like the only path (R23).
@@ -854,7 +898,9 @@ follows from it, and none by the route the specification expected. What remains:
    "memoise" nor "probe" offered.
 5. **§7's real scope** — the 33 constants inside the utility sum, starting with the quality bucket
    table that is its unit of account.
-6. **A probability, or `risk_weight` stays** — and on current evidence it stays.
+6. **A probability, or `risk_weight` stays.** **Tried, and it stays** — the route was tested
+   rather than assumed, and the negative result is in §4a below. `risk_weight` is a product choice
+   pricing a HORIZON, which is what `starvation_horizon` already computes.
 
 **A defect in the apparatus, found while grading the above, that the next device lease must not
 repeat.** Five of the seven M4 pin cases never reached their pinned rung: `pin_320`, `pin_2000`,
