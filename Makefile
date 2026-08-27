@@ -1002,6 +1002,36 @@ sim-token:
 	@test -s $(SIM_DIR)/plxnative-token || { echo "no PMS_TOKEN in src/config.local.h"; rm -f $(SIM_DIR)/plxnative-token; exit 1; }
 	@echo "token staged in $(SIM_DIR)"
 
+# `make sim-play` — a REAL playback session on this Mac, with no television and no Plex.
+#
+# Arms the CLOCK SINK (`rust-modules/src/player/ffi_host.rs`): access units are accepted, discarded,
+# and a presentation clock advances at real time, reporting position at the television's own
+# measured 5 Hz. Nothing decodes. What that exercises is everything between the demuxer and the
+# decoder — the AU queues and their byte-cap backpressure, the feed-ahead throttle, the engine's
+# Load/Play sequence, the exported-window video path, the HUD and the position clock — none of
+# which had any host coverage at all before.
+#
+# **The source is a raw Annex-B sample, deliberately.** `sample.h264` bypasses `ff.rs` entirely,
+# which matters because the bundled FFmpeg is an ARM build and `ff.rs`'s struct offsets are
+# hard-coded for 32-bit ARM EABI (`ci/ffabi-assert.c` asserts `AVDictionaryEntry` is two 32-bit
+# pointers). Demuxing on a 64-bit host needs a second offset table and a host FFmpeg 9.0; until
+# then the STREAMING half of the pipeline stays device-only and this target covers the rest.
+#
+# Needs no PMS, so it does not go through SIM_PRE. `SIM_SECS` bounds it.
+SIM_SAMPLE ?=
+SIM_SECS   ?= 20
+sim-play: sim
+	@test -n "$(SIM_SAMPLE)" || { echo "SIM_SAMPLE=<file.h264> is required — an Annex-B elementary stream WITH access-unit delimiters, e.g."; \
+	  echo "  ffmpeg -i clip.ts -c:v copy -an -bsf:v h264_metadata=aud=insert -f h264 /tmp/sample.h264"; exit 1; }
+	@mkdir -p $(SIM_DIR)
+	@rm -f $(SIM_DIR)/plxnative-playurl $(SIM_DIR)/plxnative-events.log
+	@cp $(SIM_SAMPLE) $(SIM_DIR)/sample.h264
+	@touch $(SIM_DIR)/plxnative-clocksink $(SIM_DIR)/plxnative-autoplay $(SIM_DIR)/plxnative-stats
+	$(SIM_ENV) PLXNATIVE_SHOT=$(SIM_SHOT) PLXNATIVE_SHOT_FRAME=$$(( $(SIM_SECS) * 60 )) \
+	  PLXNATIVE_SHOT_EXIT=1 $(SIM_BIN) 127.0.0.1 32400 || true
+	@echo "--- $(SIM_DIR)/plxnative-events.log ---"
+	@grep -E 'clocksink|bf_split|SMP |vplane|route=player' $(SIM_DIR)/plxnative-events.log | head -20
+
 sim-clean:
 	rm -rf $(SIM_DIR)
 
