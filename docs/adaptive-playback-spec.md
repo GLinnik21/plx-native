@@ -1192,6 +1192,46 @@ H_ref  =  E_tx_down + D  =  1 424 + 2 000  =  3 424 ms
 and it is (2), directly measured, on one device and one tier. `K_r` remains the single product
 choice — quality points per halving of the safety horizon — and nobody has priced it.
 
+### [CORRECTED 2026-08-27] `E_tx_down` is BIMODAL, and `H_ref` is not derivable until J3b bounds it
+
+The paragraph above takes one observation as *the* cost of a downshift transaction. The whole
+committed corpus holds **65** `Down/commit` records, and they do not describe one quantity:
+
+| | min | p50 | p90 | p95 | max |
+|---|---:|---:|---:|---:|---:|
+| `decided` ms | 26 | **916** | 1 801 | 2 198 | **36 164** |
+
+1 424 ms is not a best case — it sits at the **74th percentile**, and as a central value it is
+fine. The problem is the last column. p95 is 2 198 ms and the maximum is **36 164 ms**, a 16×
+jump with nothing in between: that is not a tail, it is a second regime. The record is
+`abr: tx Down 14000->8000kbps outcome=committed decided=36164ms … warmup=36156ms` on a link that
+had fallen to 9 593 kbps
+(`docs/measurements/j3a-window-logs/pipe_abr_down_collapse.log:311`).
+
+**36 seconds is not a measurement of a transaction cost. It is a measurement of an UNBOUNDED
+transaction.** §5 and the J3b analysis both record why: `candidate_prime_budget` and
+`candidate_warmup_budget` open with `if direction == Down { return None }` — **the downshift, the
+fail-safe itself, has no deadline of any kind** — and the `NotReady` retry in `ff.rs` sits outside
+every budget as well. So the warm-up fetch of a downshift candidate on a collapsing link runs until
+the transport gives up.
+
+Consequences, and they are worth separating:
+
+* **`H_ref = 3 424 ms` prices risk against a horizon the one collapse in the corpus exceeded by
+  more than 10×** — and a collapse is precisely the regime the risk term exists for. Any ladder
+  built on it is calibrated to the quiet case.
+* **This is not fixed by picking a bigger quantile.** Taking the max would set `H_ref ≈ 38 s`,
+  which prices ordinary playback against a pathology. The quantity is not a distribution to be
+  summarised; it is a number that a deadline has not yet made exist.
+* **So `H_ref` is blocked on J3b, not on more measurement.** Once a downshift carries an enforced
+  deadline, `E_tx_down` is bounded BY that deadline and `H_ref` follows from it by construction —
+  which is the sound version of "derived from a measured `E_tx_down`", because the deadline is a
+  stated choice and the measurement then bounds whether it is affordable.
+
+Until then this section's `H_ref` should be read as **a lower bound with a known counter-example**,
+not as a measured constant. Nothing in `src/abr/` reads it yet, so the correction costs nothing but
+must not be lost.
+
 **The same run is the argument for the constraint half of this section.** The controller reached
 `cur_acq_before = 61 480 ms` — 61.5 seconds to fetch a 2-second segment — before it downshifted,
 then paid 1 424 ms out of a 2 209 ms reserve and finished with **168 ms** left. §5's deadline was

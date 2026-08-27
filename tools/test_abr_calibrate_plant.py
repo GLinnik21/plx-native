@@ -197,6 +197,41 @@ class TheTransactionLegs(unittest.TestCase):
     def test_a_downshift_has_no_graded_segment(self):
         self.assertEqual(self.legs[("Down", True)]["graded_acq_ms"], 0)
 
+    def test_the_downshift_cost_is_bimodal_because_it_has_no_deadline(self):
+        """**`E_tx_down` is not one quantity, and the specification's `H_ref` assumes it is.**
+
+        §7a derives `H_ref = E_tx_down + D = 3 424 ms` from a single 1 424 ms observation. Over the
+        whole committed corpus the `Down/commit` `decided` values are min 26, p50 916, p95 2 198 —
+        and **max 36 164**. A 16x jump from p95 with nothing in between is not a tail, it is a
+        second regime, and the record is a downshift whose warm-up fetch ran 36 156 ms on a
+        collapsing link.
+
+        The cause is structural: `candidate_prime_budget` and `candidate_warmup_budget` both open
+        with `if direction == Down { return None }`, so the fail-safe transaction has no deadline of
+        any kind. 36 s is not a transaction cost, it is an unbounded transaction.
+
+        This test exists so the counter-example cannot quietly leave the corpus and let `H_ref` look
+        derived again. It fails if the spread collapses — at which point either a deadline landed
+        (delete this and derive `H_ref` from it) or the evidence was dropped.
+        """
+        # `transaction_legs` keeps the three legs, not `decided`, so read it here rather than
+        # widen that API for one test.
+        import glob
+        import re as _re
+        import statistics
+        pattern = _re.compile(r"abr: tx Down \d+->\d+kbps outcome=committed decided=(\d+)ms")
+        rows = [int(m.group(1))
+                for p in sorted(glob.glob(str(ROOT / "docs/measurements/*-logs/*.log")))
+                for m in pattern.finditer(pathlib.Path(p).read_text(errors="replace"))]
+        self.assertGreaterEqual(len(rows), 40, "too few records to say anything about the shape")
+        rows.sort()
+        p95 = rows[int(0.95 * (len(rows) - 1))]
+        self.assertLess(statistics.median(rows), 2_000, "the ordinary regime is around a second")
+        self.assertGreater(
+            rows[-1], 10 * p95,
+            f"the unbounded downshift is gone from the corpus (max {rows[-1]}ms vs p95 {p95}ms). "
+            "If a downshift deadline landed, derive H_ref from it and delete this test.")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
