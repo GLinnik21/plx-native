@@ -173,6 +173,14 @@ impl TransactionModel {
     /// plant did — one flat 4600 ms charged to all four legs — which made `T_down` growing on a
     /// collapsing link literally unrepresentable.
     ///
+    /// **The plant charges a fixed median per leg, so it cannot exhibit the downshift DEADLINE.**
+    /// J3b bounds a candidate transfer by the reserve it is spending, and the bound binds only in
+    /// the tail — the 36-second transaction the corpus holds, not the 741 ms median below. A cost
+    /// model with no dependence on the link rate has no tail to bound, so the deadline is
+    /// invisible here by construction and its effect is a device question. Modelling it needs
+    /// `E_tx` as a function of delivered rate, which nothing has measured; that is the same gap
+    /// `docs/adaptive-playback-spec.md` §7a names for `H_ref`.
+    ///
     /// **`control_plane_ms: 6` is the FIXTURE SERVER's control plane, not a PMS's.** These captures
     /// come from the synthetic pipeline tier, where `tests/serve_fixtures.py` answers a playlist off
     /// local disk. A real PMS is 13-18 ms warm (`docs/measurements/p2h-pms-ladder.md` §5) and can be

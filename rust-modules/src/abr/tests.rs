@@ -994,16 +994,80 @@ fn only_upshift_primes_receive_the_exact_acceptance_budget() {
     let policy = AbrPolicy::measured();
     let up = Proposal { rung: Rung::P720Low, direction: Direction::Up };
     let down = Proposal { rung: Rung::P240, direction: Direction::Down };
+    // A reserve far above either acceptance budget, so this test grades the ACCEPTANCE half alone.
+    let ample = reserve_as_budget(60_000);
     assert_eq!(
-        candidate_prime_budget(up, media, &policy),
-        Some(std::time::Duration::from_micros(2_202_200))
+        candidate_prime_budget(media, &policy, ample),
+        std::time::Duration::from_micros(2_202_200)
     );
     assert_eq!(
-        candidate_warmup_budget(up, media),
-        Some(std::time::Duration::from_micros(3_003_000))
+        candidate_warmup_budget(up, media, ample),
+        std::time::Duration::from_micros(3_003_000)
     );
-    assert_eq!(candidate_prime_budget(down, media, &policy), None);
-    assert_eq!(candidate_warmup_budget(down, media), None);
+    // A downshift has no acceptance test — it is the recovery path — so the reserve is its ONLY
+    // bound, and it is now a bound rather than nothing.
+    assert_eq!(candidate_warmup_budget(down, media, ample), ample);
+}
+
+/// **A downshift transfer may not outlive the reserve it is paid out of.** J3b, and the
+/// 36-second transaction it removes.
+///
+/// Both budget functions opened with `if direction == Down { return None }`, so a downshift
+/// warm-up ran until the transport gave up. Over the committed corpus the `Down`/commit decision
+/// cost is p95 2 198 ms and **max 36 164** — a 16x jump with nothing in between, on a link that
+/// had collapsed to 9 593 kbps. That is not a slow transaction; it is an unbounded one.
+///
+/// Differential: against the old code every assertion below reads `None`.
+#[test]
+fn a_downshift_transfer_is_bounded_by_the_reserve_it_spends() {
+    let media = std::time::Duration::from_millis(2_000);
+    let down = Proposal { rung: Rung::P240, direction: Direction::Down };
+    for reserve_ms in [0i64, 250, 5_000, 36_000] {
+        let reserve = reserve_as_budget(reserve_ms);
+        assert_eq!(
+            candidate_warmup_budget(down, media, reserve),
+            reserve,
+            "a {reserve_ms}ms reserve buys exactly {reserve_ms}ms of transfer",
+        );
+    }
+}
+
+/// The bound is the CONSERVATION identity, so it applies in both directions — a transaction that
+/// outlives the reserve stalls whichever way it was going. On a healthy upshift it does not bind
+/// (the proposal gate requires three segments and the two budgets sum to ~2.6), which is the
+/// signature of a bound that is not doing hidden work; it binds when the reserve fell between the
+/// proposal and the fetch.
+#[test]
+fn a_thin_reserve_bounds_an_upshift_too_and_an_ample_one_does_not() {
+    let media = std::time::Duration::from_millis(2_000);
+    let policy = AbrPolicy::measured();
+    let up = Proposal { rung: Rung::P1080, direction: Direction::Up };
+
+    let healthy = reserve_as_budget(3 * 2_000);
+    assert_eq!(
+        candidate_warmup_budget(up, media, healthy),
+        std::time::Duration::from_millis(3_000),
+        "at the proposal gate's own reserve the acceptance budget still decides",
+    );
+    assert_eq!(
+        candidate_prime_budget(media, &policy, healthy),
+        std::time::Duration::from_millis(2_200),
+    );
+
+    let thin = reserve_as_budget(400);
+    assert_eq!(candidate_warmup_budget(up, media, thin), thin);
+    assert_eq!(candidate_prime_budget(media, &policy, thin), thin);
+}
+
+/// A reserve at or below zero buys no time at all. The deadline is then "now", which aborts the
+/// fetch on its first check — correct, because a transaction starting with no reserve has already
+/// stalled and every millisecond after that is a millisecond of stall.
+#[test]
+fn a_reserve_at_or_below_zero_is_a_zero_budget_and_never_a_wrapped_one() {
+    for ms in [0i64, -1, -20_000, i64::MIN] {
+        assert_eq!(reserve_as_budget(ms), std::time::Duration::ZERO, "at {ms}ms");
+    }
+    assert_eq!(reserve_as_budget(1), std::time::Duration::from_millis(1));
 }
 
 /// **DIMENSIONAL INVARIANT: the budget is a RATE and the reserve is a DURATION.**
@@ -1082,10 +1146,10 @@ fn a_reading_a_quarter_of_the_prior_still_collapses() {
 #[test]
 fn the_prime_deadline_is_exactly_the_acceptance_threshold() {
     let policy = AbrPolicy::measured();
-    let up = Proposal { rung: Rung::P1080, direction: Direction::Up };
     for media_ms in [1_000u64, 2_000, 4_000, 6_006] {
         let media = std::time::Duration::from_millis(media_ms);
-        let budget = candidate_prime_budget(up, media, &policy).expect("upshifts get one");
+        // An ample reserve, so the acceptance threshold is what this grades.
+        let budget = candidate_prime_budget(media, &policy, reserve_as_budget(600_000));
         // What `candidate_ready` admits: `production_ratio_pm < production_max_pm`, i.e. an
         // acquisition strictly under `production_max_pm/1000` of the content duration.
         let admits_up_to_us =
@@ -1620,8 +1684,9 @@ fn original_beats_the_top_rung_on_utility_at_equal_risk() {
 ///
 /// The cause is a derivation applied in a direction it was never argued for.
 /// `PIN_MIN_RESERVE_SEGMENTS = 6` is built from `candidate_warmup_budget` +
-/// `candidate_prime_budget` + `candidate_ready`'s residual — and both of those budgets return
-/// `None` for `Direction::Down`. Six segments is 12 000 ms at `D = 2000`, while the reachable
+/// `candidate_prime_budget` + `candidate_ready`'s residual — none of which a downshift pays: it
+/// has no graded segment, and its warm-up is bounded by the reserve rather than by a multiple of
+/// the content duration. Six segments is 12 000 ms at `D = 2000`, while the reachable
 /// reserve at rung 20000 is `B_max ≈ 5 421 ms`, so the gate was unsatisfiable by construction
 /// exactly where the census most needed it.
 ///

@@ -315,7 +315,8 @@ impl Controller {
             let direction = if pin.kbps() > self.current.kbps() { Direction::Up } else { Direction::Down };
             // Wait for a reserve the transaction can be paid out of. The requirement is
             // DIRECTIONAL: the six-segment figure is an upshift derivation (two deadline budgets
-            // plus `candidate_ready`'s residual), and both of those budgets are `None` going down.
+            // plus `candidate_ready`'s residual), and neither of those budgets applies going down
+            // — there is no graded segment, and the warm-up is bounded by the reserve itself.
             // Charging it downward is unsatisfiable at the top of the ladder — 12 000 ms against a
             // `B_max(20000)` of ~5 421 ms — which silently cost the M4 census five of its seven
             // points. See PIN_MIN_RESERVE_SEGMENTS and PIN_MIN_RESERVE_SEGMENTS_DOWN.

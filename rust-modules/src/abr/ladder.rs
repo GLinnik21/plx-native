@@ -59,9 +59,11 @@ pub(crate) const LADDER: [Rung; 13] = [
 ///
 /// **Every clause of that derivation is an UPSHIFT argument, and applying it downward cost the M4
 /// census four of its seven points (five in the corpus before it, where `pin_4000` additionally
-/// ran at rung 6000 for a separate reason -- rungs 2000 and 4000 shared one clip).** Both budgets it cites return `None` for [`Direction::Down`]
-/// (`abr/viability.rs`), so a downshift has neither a warm-up deadline nor a prime deadline to pay
-/// for. The old note here said "pin UPWARD from the bootstrap rung, which is how measurement step
+/// ran at rung 6000 for a separate reason -- rungs 2000 and 4000 shared one clip).** A downshift
+/// has no PRIME budget at all (there is no graded segment to hold to an acceptance threshold) and
+/// its warm-up budget is the reserve itself rather than a multiple of the content duration
+/// (`abr/viability.rs`), so neither of the two figures this constant sums applies going down.
+/// The old note here said "pin UPWARD from the bootstrap rung, which is how measurement step
 /// M4 is written" — but on an unshaped LAN `startup_rung` picks the ladder TOP, so every pin in
 /// that census was a *downshift*, needing 12 000 ms of reserve at a rung whose reachable ceiling is
 /// `B_max(20000) ≈ 5 421 ms`. Unsatisfiable by construction. Device-measured 2026-08-26 and only
@@ -84,8 +86,16 @@ pub(crate) const PIN_MIN_RESERVE_SEGMENTS: i64 = 6;
 ///   ~100 ms median with a 1 306 ms maximum (`docs/measurements/p2h-pms-ladder.md` §5), which one
 ///   media duration covers at every `D` the ladder serves.
 ///
-/// No third term: the two deadline budgets that make up the upshift's 2.3 segments are `None` in
-/// this direction, and `candidate_ready`'s two-segment residual is an *upshift* acceptance test.
+/// No third term: the two deadline budgets that make up the upshift's 2.3 segments do not apply
+/// in this direction — there is no graded segment, and the warm-up's budget is the reserve itself
+/// (J3b) rather than a multiple of `D` — and `candidate_ready`'s two-segment residual is an
+/// *upshift* acceptance test.
+///
+/// **The deadline makes this figure self-consistent rather than merely expected.** A downshift
+/// warm-up is now bounded by the reserve it is spending, so a pin that waits for two segments
+/// hands the fetch a budget of at most those two segments less the control plane — the gate and
+/// the enforcement are the same quantity read at two moments, which is why neither needs a margin
+/// against the other.
 ///
 /// Two segments is 4 000 ms at `D = 2000`, inside `B_max` at every rung including the top, which is
 /// the property the six-segment figure lacked and the whole reason this constant exists separately.

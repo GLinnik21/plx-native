@@ -2368,9 +2368,28 @@ unsafe fn hls_demux_segment(
                 open_us = attempt.elapsed().as_micros() as u64;
                 break opened;
             }
+            // **The retry is INSIDE the caller's deadline, and it was not.** `retry_budget` runs
+            // to 15 s and was the only bound here, while `deadline` reached only as far as
+            // `hls_input` — which is constructed after this loop exits. So a candidate whose
+            // deadline was three seconds could spend fifteen looping on `NotReady` before the
+            // deadline had any effect at all, which is R19's "the `NotReady` retry has no leg of
+            // its own" seen from the enforcement side rather than the accounting side. A retry
+            // budget that can outlive the reserve it is spending is not a budget.
+            Err(HlsExit::NotReady)
+                if deadline.is_some_and(|at| std::time::Instant::now() >= at) =>
+            {
+                return Err(HlsExit::PrimeExpired)
+            }
             Err(HlsExit::NotReady) if request_started.elapsed() < retry_budget => {
                 not_ready_retries = not_ready_retries.saturating_add(1);
-                hls_wait(aq, std::time::Duration::from_millis(250))?;
+                // Never sleep past the deadline. A fixed 250 ms wait against a deadline 40 ms away
+                // overshoots by 210 ms of reserve, every time, for no information — the poll after
+                // it can only be discarded.
+                let mut wait = std::time::Duration::from_millis(250);
+                if let Some(at) = deadline {
+                    wait = wait.min(at.saturating_duration_since(std::time::Instant::now()));
+                }
+                hls_wait(aq, wait)?;
             }
             Err(HlsExit::NotReady) => return Err(HlsExit::Failed("HLS segment was not produced in time")),
             Err(error) => return Err(error),
@@ -3555,13 +3574,35 @@ fn hls_demux(
         // remote PMS may spend a second registering the encoder and returning its master/media
         // playlists before the first media byte is requested. Charging that setup against a
         // two-second segment's budget made every healthy upshift time out. The cold first segment
-        // gets the bounded warm-up budget; the immediately following segment gets the strict 80%
+        // gets the bounded warm-up budget; the immediately following segment gets the strict
         // production budget below. Neither includes control-plane or playlist latency.
-        let candidate_deadline = crate::abr::candidate_warmup_budget(
-            proposal,
-            candidate_segment.duration,
-        )
-        .and_then(|budget| std::time::Instant::now().checked_add(budget));
+        //
+        // **The reserve is read HERE and not at the transaction's start.** The control plane above
+        // has already spent some of it, and the deadline is about what is left to spend, not what
+        // there was. Reading it once at the top would hand the fetch a budget the buffer no longer
+        // holds — the exact over-grant this deadline exists to close.
+        let Some(reserve_ms) = hls_buffer_snapshot(None).buffered_ms() else {
+            // No readable reserve means nothing can be said about what this transaction can
+            // afford, and a transaction with no affordability bound is the unbounded case being
+            // removed. Refusing costs one segment: `Controller::reject` sets a one-sample
+            // cooldown, and the controller cannot have proposed on an unknown reserve in the first
+            // place, so the lane fell silent between the proposal and here — a seek, which the
+            // next sample resolves.
+            control.abandon(&primed.encoder_session);
+            reject_hls_abr(controller, proposal);
+            tx.finish("reserve_unreadable");
+            crate::player::log(
+                "abr: candidate reserve unreadable; cannot bound the transfer, staying on current rung",
+            );
+            continue;
+        };
+        let reserve = crate::abr::reserve_as_budget(reserve_ms);
+        let candidate_deadline = std::time::Instant::now()
+            .checked_add(crate::abr::candidate_warmup_budget(
+                proposal,
+                candidate_segment.duration,
+                reserve,
+            ));
         let mut staged_timeline = timeline;
         let mut candidate_clock = match staged_timeline.begin(candidate_segment.duration) {
             Ok(clock) => clock,
@@ -3633,13 +3674,28 @@ fn hls_demux(
             };
             // The deadline is the ACCEPTANCE threshold, read from the same policy
             // `Controller::candidate_ready` reads. Passing a different number here aborts
-            // candidates the rule would have admitted, invisibly, in the transport.
-            let graded_deadline = crate::abr::candidate_prime_budget(
-                proposal,
-                graded_segment.duration,
-                &crate::abr::AbrPolicy::measured(),
-            )
-            .and_then(|budget| std::time::Instant::now().checked_add(budget));
+            // candidates the rule would have admitted, invisibly, in the transport. It is capped
+            // by what is left of the reserve, re-read because the warm-up above has just spent
+            // some of it.
+            let Some(graded_reserve_ms) = hls_buffer_snapshot(None).buffered_ms() else {
+                // Same rule as the warm-up above, and stated separately so the outcome names the
+                // leg it happened on. A zero here would abort as `graded_deadline`, attributing a
+                // missing measurement to a slow server.
+                control.abandon(&primed.encoder_session);
+                reject_hls_abr(controller, proposal);
+                tx.finish("reserve_unreadable");
+                crate::player::log(
+                    "abr: candidate reserve unreadable before grading; staying on current rung",
+                );
+                continue;
+            };
+            let graded_reserve = crate::abr::reserve_as_budget(graded_reserve_ms);
+            let graded_deadline =
+                std::time::Instant::now().checked_add(crate::abr::candidate_prime_budget(
+                    graded_segment.duration,
+                    &crate::abr::AbrPolicy::measured(),
+                    graded_reserve,
+                ));
             let graded_output = match unsafe {
                 hls_demux_segment(
                     &graded_segment,

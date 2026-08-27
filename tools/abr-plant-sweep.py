@@ -51,6 +51,13 @@ OBSERVED_P10 = {720: 50085, 4000: 24751, 20000: 5293}
 MODEL_DISCOUNT = 0.984            # worst over-prediction seen: 5335/5421
 
 # E_tx_down medians per landing rung, from the 17 committed down-legs in i2-logs.
+#
+# A median summarises this honestly only because a downshift now carries a DEADLINE (J3b). Before
+# it, `E_tx_down` was bimodal — p95 2 198 ms against a max of 36 164 — because the fail-safe
+# transaction had no bound of any kind, so no quantile of it described a quantity. The deadline
+# caps the transfer at the reserve being spent, which is what makes the tail these medians omit a
+# bounded tail rather than an open one. The medians themselves are unchanged: every one of them is
+# far under any reserve the ladder holds, so the deadline does not move them.
 E_TX_DOWN_MS = {320: 295, 720: 725, 2000: 1783, 4000: 1356, 6000: 967,
                 8000: 773, 14000: 1209, 16000: 1305, 18000: 1445}
 E_TX_DOWN_FALLBACK = 1800         # worst measured; used where a rung never landed

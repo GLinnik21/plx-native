@@ -973,6 +973,46 @@ must be fixed with it:
 `NotReady` retry (up to 8 s) and the post-commit block have no leg of their own. Any deadline built
 on `E_tx_max` as "the sum of enforced deadlines" is unsound until those are bounded.
 
+### [SHIPPED 2026-08-27] The downshift deadline, and the retry that outlived it
+
+**A candidate transfer is now bounded in every direction, by the reserve it is spending.**
+
+During a candidate fetch the current stream is not being acquired (the transaction runs inline on
+the demux worker) and the candidate's own output is staged privately until commit, so the playable
+reserve falls at one millisecond per millisecond of wall clock. After `B` milliseconds it is gone.
+That is the conservation identity `B_after = B_start − t` at `B_after = 0`; it carries no
+coefficient and it is classification (1). `candidate_warmup_budget` takes the reserve and returns
+`min(acceptance budget, reserve)`; a downshift has no acceptance budget, so the reserve is its only
+bound and the `if direction == Down { return None }` that produced the 36-second transaction is
+gone.
+
+**The bound is the WHOLE reserve, deliberately.** It is the last point at which the transaction can
+still be doing the thing it exists to do, so it is an upper bound on any correct deadline, and
+firing there is the weakest enforceable rule. A tighter one needs either R16's projection from an
+in-segment rate quantile (open; needs chunk-level instrumentation the transport does not have) or a
+bound on the reserve the new rung needs on arrival, `A_j` — which the acquisition window would
+supply and cannot supply here, because a delivery collapse resets the window and a collapse is the
+event that produced the downshift. The alternative to the physical bound is a fraction of it, which
+is the unexplained multiplier the design rule forbids.
+
+**The reserve is read at the FETCH, not at the transaction's start.** The control plane has already
+spent some of it, and the deadline is about what is left. An unreadable reserve REFUSES the
+transaction rather than running it unbounded — one segment of delay, since `reject` sets a one-sample
+cooldown and the controller cannot have proposed on an unknown reserve in the first place.
+
+**The `NotReady` retry was outside every deadline and is now inside one.** `retry_budget` runs to
+15 s and was the only bound in that loop, while `deadline` reached no further than `hls_input`,
+which is constructed after the loop exits — so a candidate with a three-second deadline could spend
+fifteen looping before the deadline had any effect. That is R19's "the retry has no leg of its own"
+seen from the enforcement side. The wait between polls is also capped at the time remaining, since
+a fixed 250 ms wait against a deadline 40 ms away spends 210 ms of reserve for a poll that can only
+be discarded.
+
+**What this does NOT yet do.** The closed-loop plant charges a fixed median per transaction leg, so
+it has no tail for the deadline to bound and cannot exhibit the change at all; the effect is a
+device question. `H_ref` becomes derivable once `E_tx_down` is re-measured with the deadline in
+place — see §7a, and the corpus test that pins the counter-example until then.
+
 ## 6. Numerical safety
 
 Not a review pass — part of the specification.
