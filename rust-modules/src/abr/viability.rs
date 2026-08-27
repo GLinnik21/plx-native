@@ -20,6 +20,80 @@ pub(crate) struct CandidateRisk {
     pub(crate) score: u32,
 }
 
+/// **N5's continuous risk, and the thing it replaced.**
+///
+/// The network term was a four-step bucket ladder — `1 / 4 / 12 / 40` on the starvation horizon —
+/// and a ladder is a set of cliffs: a horizon of 60 s scored 1 and 59 s scored 4, for one second.
+/// The previous plan proposed `tau/(T + tau)` instead and it is VOID: it is globally rather than
+/// locally sensitive to an unstated `tau`, and its `1/T` tail charges 20-40 points at a 60 s
+/// horizon where the ladder charged 1 — contradicting the deficit principle it sits beside.
+///
+/// ```text
+/// r_net(T) = 0                                   T infinite, or T >= starvation_safe_secs
+///          = (T_safe - T) / (T_safe - T_fallback)   in between
+///          = 1                                   T <= starvation_fallback_secs
+/// ```
+///
+/// Continuous, monotone, bounded, **and it introduces no free parameter**: both endpoints are
+/// horizons that already exist and already have product meanings (60 s and 20 s). `r_net = 1`
+/// below the fallback horizon is consistent by construction, because that region is an EMERGENCY
+/// and is decided by a hard guard rather than by utility.
+///
+/// The production term is the same shape between the two ratios that already name "comfortably
+/// ahead" and "at or slower than real time".
+///
+/// **The three coefficients are not new either** — 40 / 20 / 30 are the ladder's own worst-case
+/// values, so `score_max` stays 90 and every existing ratio to `visible_switch_cost` is unchanged
+/// at the endpoints. Two endpoint changes ARE deliberate: a comfortable horizon now scores **0**
+/// where the ladder charged 1, and an imminent one still scores 40.
+///
+/// **Rounding is toward MORE risk**, which is the opposite of every other truncation in this
+/// module — those all round toward safety, and here safety is the larger number. `.max(1)` on the
+/// production divisor because `AbrPolicy` derives nothing that guarantees the two ratios differ.
+///
+/// `buffer_risk` stays a labelled boolean hard guard and is deliberately NOT normalised.
+pub(crate) fn risk_score(
+    horizon_secs: Option<u32>,
+    predicted_ratio_pm: Option<u32>,
+    buffer_risk: bool,
+    policy: &AbrPolicy,
+) -> u32 {
+    let safe = i64::from(policy.starvation_safe_secs);
+    let fallback = i64::from(policy.starvation_fallback_secs);
+    // Per mille of the band, so the composition below is one integer multiply and one rounded
+    // divide rather than a float. `safe - fallback` is the band width and cannot be zero here
+    // without the policy being incoherent, but `.max(1)` costs nothing and the host panics on a
+    // division by zero while the television does not.
+    let r_net_pm: i64 = match horizon_secs {
+        None => 0,
+        Some(t) if i64::from(t) >= safe => 0,
+        Some(t) if i64::from(t) <= fallback => 1_000,
+        Some(t) => (safe - i64::from(t)) * 1_000 / (safe - fallback).max(1),
+    };
+    let r_prod_pm: i64 = match predicted_ratio_pm {
+        None => 0,
+        Some(ratio) => {
+            let over = i64::from(ratio) - i64::from(policy.production_safe_pm);
+            let band = i64::from(policy.production_max_pm)
+                .saturating_sub(i64::from(policy.production_safe_pm))
+                .max(1);
+            (over * 1_000 / band).clamp(0, 1_000)
+        }
+    };
+    // `round_half_up` on a non-negative numerator is `(x + half) / whole`.
+    let round_half_up = |weight: i64, pm: i64| ((weight * pm) + 500) / 1_000;
+    let mut score = round_half_up(40, r_net_pm) + round_half_up(20, r_prod_pm);
+    if buffer_risk {
+        score += 30;
+    }
+    u32::try_from(score).unwrap_or(u32::MAX)
+}
+
+/// The largest value [`risk_score`] can return: 40 + 20 + 30. It is the DENOMINATOR the read-out
+/// renders with, and it is here rather than as a literal at the render site so the panel cannot
+/// go on dividing by 90 after a coefficient moves.
+pub(crate) const RISK_SCORE_MAX: u32 = 90;
+
 pub(crate) fn candidate_risk(
     candidate: HlsCandidate,
     current: HlsCandidate,
@@ -44,20 +118,7 @@ pub(crate) fn candidate_risk(
     });
     let buffer_risk = buffer.buffered_ms < policy.emergency_buffer_ms
         || (buffer.starving() && buffer.draining());
-    let mut score = 0;
-    score += match horizon.seconds {
-        None => 0,
-        Some(seconds) if seconds >= policy.starvation_safe_secs => 1,
-        Some(seconds) if seconds >= policy.starvation_fallback_secs => 4,
-        Some(seconds) if seconds >= policy.starvation_fallback_secs / 2 => 12,
-        Some(_) => 40,
-    };
-    if production_risk {
-        score += 20;
-    }
-    if buffer_risk {
-        score += 30;
-    }
+    let score = risk_score(horizon.seconds, predicted, buffer_risk, policy);
     CandidateRisk {
         starvation_seconds: horizon.seconds,
         production_ratio_pm: predicted,

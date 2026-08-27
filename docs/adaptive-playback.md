@@ -116,6 +116,36 @@ the reason that one stays gated. What the exemption costs, priced rather than as
 one-segment reserve the deadline is reached at a measured deficit of 10%, and at a full `B_max` at
 the top rung it takes 44%.
 
+**The horizon reaches utility as a CONTINUOUS number, not a four-step ladder.** `risk_score` was
+`1 / 4 / 12 / 40` on four bands of `T`, and a ladder is a set of cliffs: 60 s scored 1 and 59 s
+scored 4, for one second, while every horizon from 59 s down to 21 s scored the same 4. It is now
+linear between the two horizons that already exist and already mean something —
+
+```text
+r_net(T) = 0                                       T infinite, or T >= starvation_safe_secs (60 s)
+         = (T_safe - T) / (T_safe - T_fallback)    in between
+         = 1                                       T <= starvation_fallback_secs (20 s)
+```
+
+— scaled by the ladder's own worst case, 40, so `score_max` stays 90 and every ratio to
+`visible_switch_cost` holds where it was calibrated. **No new parameter enters**: both endpoints
+are policy horizons the emergency path already keys on, and `r_net = 1` below the fallback horizon
+is consistent by construction because that region is decided by a hard guard rather than by
+utility. The production term takes the same shape between `production_safe_pm` and
+`production_max_pm`; `buffer_risk` stays a labelled boolean and is deliberately not normalised.
+Rounding is toward MORE risk — the opposite of every other truncation in this module, because here
+safety is the larger number.
+
+Two endpoints move deliberately, and both are asserted: a comfortable horizon now scores **0**
+where the ladder charged 1, and the fallback horizon scores the full **40** where the ladder
+charged 4. **The second of those exposed a test that had never graded what it claimed.**
+`recovery_does_not_pay_for_a_reload_at_the_end_of_a_film` was passing by ONE point out of a
+comparison whose terms are tens, on a fixture — `CapacityEstimate::from_prior(30_000)` — that the
+helper called healthy and that was not: `from_prior` pins uncertainty at its cap, so its
+conservative reading was 15 000 kbps against the 20 011 kbps rung the comparison scores, a 47 s
+horizon. The ladder flattened that to 4 and hid it. The fixture is now derived from the rung it is
+compared against rather than written down.
+
 ## 2b. The reachable ceiling, and the two gates derived from it
 
 **The reserve has a physical ceiling and nothing may ask for more than it.** Two lanes feed one

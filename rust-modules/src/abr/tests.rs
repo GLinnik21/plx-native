@@ -714,8 +714,23 @@ fn recovery(source_kbps: u32) -> OriginalRecovery {
 
 /// The HLS session the recovery decision is compared AGAINST — healthy, since that is the
 /// interesting case: a starved one would make Original win by default.
+///
+/// **It has to be DERIVED from the rung the comparison scores, and a flat `from_prior(30_000)`
+/// was not healthy at all.** `from_prior` pins `uncertainty_pm` at its cap, so a prior's
+/// conservative reading is exactly half of it — 15 000 kbps against the 20 011 kbps top rung
+/// `observe_probe` compares with, i.e. a session whose own conservative arithmetic says it drains
+/// a 12 s reserve in 47 s. The old four-step risk ladder flattened that whole band to 4 points and
+/// hid it; N5's continuous form charges 13, and
+/// `recovery_does_not_pay_for_a_reload_at_the_end_of_a_film` turned out to have been passing by
+/// ONE point out of a comparison whose terms are tens — grading the pinned-prior artefact rather
+/// than the reload amortisation it is named for.
+///
+/// So: four times the top rung's wire rate, which after the cap's halving leaves the conservative
+/// reading at twice what that rung needs. Nothing here is chosen — the factor is the cap, and the
+/// rate is the candidate.
 fn healthy_hls() -> CapacityEstimate {
-    CapacityEstimate::from_prior(30_000)
+    let top = HlsActuatorCatalog::measured().candidate(Rung::P1080High).expected_wire_kbps;
+    CapacityEstimate::from_prior(top.saturating_mul(4))
 }
 
 fn healthy_buffer() -> BufferEstimate {
@@ -1804,6 +1819,45 @@ fn advancing_the_switch_clock_is_idempotent_in_the_value_not_the_call_count() {
         many.observe_probe(good, healthy_buffer(), &healthy_hls(), 600_000),
         "forty ticks to the same instant is one tick to that instant",
     );
+}
+
+/// **N5's endpoints, and the ladder they replaced.** The network term was `1 / 4 / 12 / 40` on
+/// four steps of the starvation horizon; it is now linear between the two horizons that already
+/// have product meanings, with the ladder's own worst case as its slope.
+///
+/// Differential by construction — every assertion here contradicts the ladder:
+/// a comfortable horizon scored **1** and now scores **0**, the fallback horizon scored **4** and
+/// now scores the full **40**, and the band between them was FLAT at 4 where it is now strictly
+/// decreasing in `T`. Nothing in this test can be satisfied by the code it replaced.
+#[test]
+fn the_network_risk_term_is_continuous_between_the_two_horizons_that_already_exist() {
+    let policy = AbrPolicy::measured();
+    let safe = policy.starvation_safe_secs;
+    let fallback = policy.starvation_fallback_secs;
+    let net = |secs: Option<u32>| risk_score(secs, None, false, &policy);
+
+    assert_eq!(net(None), 0, "no deficit at all is not a risk");
+    assert_eq!(net(Some(safe)), 0, "the ladder charged 1 for a horizon it calls SAFE");
+    assert_eq!(net(Some(safe + 600)), 0, "and charges nothing more for being safer still");
+    assert_eq!(net(Some(fallback)), 40, "the ladder charged 4 one second above its own floor");
+    assert_eq!(net(Some(0)), 40, "below the floor it is an emergency, decided by a hard guard");
+
+    // Strictly decreasing in T across the whole band, which is the property a step ladder cannot
+    // have: a 59 s horizon and a 21 s horizon scored the same 4.
+    let mut previous = 41;
+    for secs in fallback..=safe {
+        let score = net(Some(secs));
+        assert!(score < previous, "risk must fall as the horizon grows: {secs}s scored {score}");
+        assert!(score <= 40, "{secs}s scored {score}, past the term's own ceiling");
+        previous = score;
+    }
+
+    // The other two terms are unchanged at their endpoints, so every ratio to
+    // `visible_switch_cost` that the mode comparison rests on still holds where it was calibrated.
+    assert_eq!(risk_score(None, Some(policy.production_safe_pm), false, &policy), 0);
+    assert_eq!(risk_score(None, Some(policy.production_max_pm), false, &policy), 20);
+    assert_eq!(risk_score(None, None, true, &policy), 30);
+    assert_eq!(risk_score(Some(0), Some(policy.production_max_pm), true, &policy), RISK_SCORE_MAX);
 }
 
 /// A whole-file average is a LOWER BOUND on demand. The requirement carries VBR headroom, so a

@@ -671,7 +671,13 @@ fn abr_decision(d: &crate::player::Diag) -> String {
     // is exactly the surface a user photographing their television cannot reach.
     let mut s = action;
     if d.abr_risk >= 0 {
-        s.push_str(&format!(" · risk {}", d.abr_risk));
+        // **With its scale.** A bare `risk 3` on a photograph of a television means nothing —
+        // three out of what? The score's maximum is a property of the composition
+        // (`abr::RISK_SCORE_MAX`, 40 + 20 + 30) and is read from there rather than written as 90
+        // here, so the panel cannot go on dividing by a number a coefficient has moved past.
+        let pct = d.abr_risk.saturating_mul(100)
+            / i64::from(crate::abr::RISK_SCORE_MAX).max(1);
+        s.push_str(&format!(" · risk {pct}%"));
     }
     if let Some(why) = abr_why_text(d.abr_why) {
         s.push_str(" · ");
@@ -1164,7 +1170,7 @@ mod tests {
         assert_eq!(val(&v, "Link"), "safe 11.0 Mbps · measured 12.4 Mbps ±20% · n=7");
         assert_eq!(val(&v, "Buffer"), "6.2 s · +0.1 s/s · no deficit");
         assert_eq!(val(&v, "Server load"), "0.42x measured · 0.90x predicted");
-        assert_eq!(val(&v, "Decision"), "changed up to 4.0 Mbps · risk 0 · link has room");
+        assert_eq!(val(&v, "Decision"), "changed up to 4.0 Mbps · risk 0% · link has room");
 
         // Every actuator on the ladder names its raster, including the ones added after this panel
         // was written — the failure mode is a photograph reading `unknown raster`.
