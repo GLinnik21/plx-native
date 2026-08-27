@@ -342,6 +342,46 @@ numbers are at the head of this section; the mechanism is `p2h` §2/§2a.
 the rungs a controller reaches when everything has already gone wrong, so "we have no bound there"
 is not academic. §8 carries it as open.
 
+### [RESOLVED] `W_j` at selection time is the REQUESTED rate, and that is structural
+
+The availability split above is real: the declared rate for a candidate rung is not known when the
+rung is chosen, because the master playlist is fetched only after `control.prime()` has created an
+encoder session (`ff.rs:3466`). §8 posed the remedy as a choice — "memoise per rung, or probe
+`/decision` per candidate" — and both are worse than the answer.
+
+**The parameter the app sends is `maxVideoBitrate` (`plex/transcoder.rs:268`), which is a CAP.** A
+server cannot answer a rate-capped request with a higher declared rate and still be answering it,
+so
+
+```
+W_j  ≤  R_j          R_j = the rung's REQUEST rate, known at selection time by definition
+```
+
+is classification **(1)**, physical/structural — a property of the protocol, not of this server.
+It costs nothing, needs no memoisation and adds no round trip, because `R_j` *is* the thing being
+chosen.
+
+**Measured, it holds with room and the slack is informative.** Across 49 rung-item pairs the ratio
+`declared/requested` never exceeded **0.951**:
+
+| rungs | `declared / requested` | spread across items |
+|---|---|---|
+| 8000 – 16000 | 0.938 – 0.951 | ≤ **1.006** — effectively a constant 0.945 |
+| 320, 4000, 6000, 22000 | 0.873 – 0.950 | ≤ 1.081 |
+| 18000, 20000 | 0.807 – 0.951 | 1.148 — the two-rungs-one-session degeneracy of §6 |
+| **720, 2000** | **0.590 – 0.915** | **1.287, 1.254** |
+
+The bottom of the ladder is item-dependent again, and in the same place and for the same reason as
+`σ`: below a certain rate target the encoder's quality floor decides the outcome, not the request.
+So the two loosest inputs to the admission rule are loose *together*, on the same three rungs, and
+those three rungs are downshift targets that §2a's asymmetry already exempts.
+
+**A memoised `W_j` is strictly better where it exists and is a refinement, not a prerequisite.**
+Once a rung has been visited the transaction has logged its real declared rate
+(`hls: master one-variant bandwidth=`), which is tighter than `R_j` by the 5–40% above. Use it when
+present; fall back to `R_j` otherwise. The fallback is what makes the *first* upshift to an unvisited
+rung possible at all, which neither of §8's two options offered.
+
 ## 4. The admission rule
 
 A rung is **sustainable** when one segment's acquisition fits inside the media it provides:
@@ -696,7 +736,7 @@ broke was structural and I had not anticipated any of it: §5 could not climb, �
 term, §3's key input is unavailable at the decision that needs it, §7 audited one struct instead of
 the decision surface, and two of my "delete" verdicts were wrong.
 
-**Three of the six findings that blocked Phase 4 are now answered**, all three by §2a and what
+**Four of the six findings that blocked Phase 4 are now answered**, all three by §2a and what
 follows from it, and none by the route the specification expected. What remains:
 
 1. ~~**§2a — an estimator for `O₀` and `τ`.**~~ **Answered by dissolution.** There is nothing to
@@ -715,9 +755,12 @@ follows from it, and none by the route the specification expected. What remains:
    that are `Ω(D)` by construction, and §4 (2) is `Ω(observed excess)`, which is zero on a link
    that is keeping up — 35 of 35 top-rung states admit even after paying the full 4 798 ms
    transaction. **Consequence: Phase 0's plant sizing must not ship on R2's authority.**
-4. **§3's selection-time rate** — memoise per rung, or probe `/decision` per candidate. Pick one.
-   Reduced in scope by §2a's asymmetry: **downshifts need no `W_j` at all**, so this binds only on
-   the upshift path.
+4. ~~**§3's selection-time rate.**~~ **Answered, and neither option was needed.** The app sends
+   `maxVideoBitrate`, a CAP, so `W_j ≤ R_j` — the request rate, known at selection time by
+   definition — is structural rather than measured. Measured slack: `declared/requested` never
+   exceeds 0.951 over 49 rung-item pairs. A memoised declared rate is a refinement where it exists;
+   the fallback is what makes a first upshift to an unvisited rung possible at all, which neither
+   "memoise" nor "probe" offered.
 5. **§7's real scope** — the 33 constants inside the utility sum, starting with the quality bucket
    table that is its unit of account.
 6. **A probability, or `risk_weight` stays** — and on current evidence it stays.
