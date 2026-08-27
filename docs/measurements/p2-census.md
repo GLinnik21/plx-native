@@ -217,6 +217,41 @@ of climbing to it. The lesson is in the case's own note, since it is not visible
 a flat leg at the target rate silently measures the estimator's convergence rather than the
 behaviour under test.
 
+### And the re-run found something better than the thing it was looking for
+
+With the fast opening leg the controller reached rung 4000 as intended — and then **proposed
+nothing for 62 consecutive samples**. Still zero rejections, because `E_tx(up, reject)` requires an
+upshift to be *attempted*, and the shipped controller does not attempt one. The state at the end of
+the run:
+
+| quantity | value |
+|---|---:|
+| true shaped link | 8 300 kbps |
+| `slow` (measured link) | 7 282 kbps |
+| `unc` | 200 pm |
+| `safe` budget | 5 825 kbps |
+| **after `best_sustainable`'s `4/5` haircut** | **4 660 kbps** |
+| rung actually played | **4 000 kbps** |
+| reserve | 18 710 ms — **nine segments** |
+| `slope` | **+33 ms/s** — filling |
+
+Every gate in the upshift's `all_good` conjunction would have passed: the reserve is three times
+the three-segment requirement, nothing is draining, production is fine. **The rung never gets
+proposed at all**, because the target is chosen by `best_sustainable(safe_budget * 4/5, …)` and
+4 660 kbps cannot reach rung 6000. Target resolves to the current rung, and the branch returns
+`Stay` before any of the gates are consulted.
+
+**So Auto plays 4 000 kbps on an 8 300 kbps link — 48% of capacity — with nine segments of
+buffer, a rising buffer slope, and no distress signal anywhere.** This is the plan's central
+complaint (stacked margins multiplying to 0.32–0.51 of the measured link) observed directly, with
+numbers, on hardware, rather than derived from reading the constants.
+
+**It also settles what `pipe_abr_reject_up_4000` is.** `E_tx(up, reject)` is not measurable against
+the shipped controller in any configuration, because the transaction it prices is never started.
+The case is a **Phase 4** case: it becomes productive the moment §4's admission rule replaces the
+haircut, and until then its passing tells you nothing. That is worth more than the measurement it
+failed to take — a case that cannot fire is evidence about the controller, not about the case.
+
 ## 7. What this run does not answer
 * **Whether a rung COMMIT invalidates the transfer window**, as §4 above distinguishes from a link
   change. Both band cases pin the rung, so nothing here commits.
