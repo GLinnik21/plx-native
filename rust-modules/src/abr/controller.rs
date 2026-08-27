@@ -146,6 +146,11 @@ impl Controller {
         self.pending
     }
 
+    #[cfg(test)]
+    pub(crate) fn window_len(&self) -> usize {
+        self.acquisitions.len()
+    }
+
     pub(crate) fn catalog(&self) -> HlsActuatorCatalog {
         self.catalog
     }
@@ -384,6 +389,29 @@ impl Controller {
         self.pending = Some(proposal);
         self.last_reason = Some(DecisionReason::Hls(HlsReason::SafeBudgetIncrease));
         Decision::Prime(proposal)
+    }
+
+    /// **A candidate's GRADED segment is a link observation and enters the acquisition window.**
+    ///
+    /// The window is evidence about the LINK, not about a rung — that is the whole content of §2a's
+    /// transfer bound, which carries a sample from one byte count to another. Excluding a real
+    /// acquisition because of which rendition produced it would throw away the only direct
+    /// measurement the transaction buys.
+    ///
+    /// **Only the graded one, and the exclusion is derived rather than chosen.** PMS's FixedSession
+    /// HLS starts a fresh decoder and encoder for every candidate, so segment zero measures that
+    /// cold start — a property of the server's session lifecycle, not of the link. `ff.rs` already
+    /// says so where it fetches a second segment to grade. Feeding the warm-up would put a
+    /// server-side startup cost into a distribution the rule reads as network capacity, which is
+    /// the same category error as reading `control=` as a transfer.
+    ///
+    /// A downshift has no graded segment, so nothing enters from one. That is not a gap: a
+    /// downshift is not gated on the window (see [`Self::candidate_ready`]).
+    ///
+    /// This changes no decision while the window decides nothing. It changes what the window
+    /// CONTAINS, which is why it lands separately from the verdict that will read it.
+    pub(crate) fn observe_candidate(&mut self, sample: SegmentSample) {
+        self.acquisitions.observe(sample.bytes(), sample.total_fetch_us());
     }
 
     /// Candidate-session acceptance. Downshifts need a decodable complete segment and a surviving

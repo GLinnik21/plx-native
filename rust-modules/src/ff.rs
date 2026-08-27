@@ -3644,6 +3644,16 @@ fn hls_demux(
             };
             tx.mark_media(&graded_output, true);
             staged_timeline.commit(graded_clock);
+            // The graded segment is a real acquisition on this link, so it joins the controller's
+            // window whatever the verdict turns out to be -- a rejected candidate still measured
+            // the link. The WARM-UP above deliberately does not: PMS starts a fresh encoder per
+            // candidate, so segment zero carries that cold start, which is a server property and
+            // not a network one. See `Controller::observe_candidate`.
+            if let Some(graded_sample) =
+                hls_segment_sample(&graded_output, graded_segment.duration)
+            {
+                controller.observe_candidate(graded_sample);
+            }
             candidate_outputs.push((graded_output, graded_clock, graded_segment.duration));
         }
 

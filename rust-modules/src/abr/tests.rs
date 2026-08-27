@@ -1370,3 +1370,26 @@ fn an_upshift_pin_still_waits_for_the_full_reserve() {
         );
     }
 }
+
+/// A rejected candidate still MEASURED the link, so its graded segment is evidence and the window
+/// keeps it. Differential: it fails against a `candidate_ready` that leaves the window untouched.
+#[test]
+fn a_candidates_graded_segment_enters_the_window_even_when_the_candidate_is_refused() {
+    let mut controller = Controller::starting_at(Rung::P1080, None, HlsActuatorCatalog::measured());
+    let before = controller.window_len();
+    controller.observe_candidate(sample_bytes(2_000_000, 1_500_000, 900, 20_000));
+    assert_eq!(controller.window_len(), before + 1);
+}
+
+/// The window is about the LINK, so a sample taken at one rung bounds another by BYTES. This pins
+/// that `observe_candidate` really reaches the same store `observe` fills, rather than a second
+/// one that would silently give the rule half its evidence.
+#[test]
+fn candidate_and_current_observations_share_one_window() {
+    let mut controller = Controller::starting_at(Rung::P1080, None, HlsActuatorCatalog::measured());
+    controller.observe(sample(9_000, 400, 20_000));
+    let after_current = controller.window_len();
+    controller.observe_candidate(sample_bytes(2_000_000, 1_500_000, 900, 20_000));
+    assert_eq!(after_current, 1);
+    assert_eq!(controller.window_len(), 2);
+}
