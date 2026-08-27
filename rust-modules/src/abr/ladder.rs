@@ -46,7 +46,7 @@ pub(crate) const LADDER: [Rung; 13] = [
     Rung::Uhd,
 ];
 
-/// **How much reserve the dev rung pin waits for before it transacts.** Six segments.
+/// **How much reserve the dev rung pin waits for before it transacts UPWARD.** Six segments.
 ///
 /// A TOOL constant, not ABR policy: nothing outside [`Controller::pinned_to`] reads it and it
 /// takes no part in any decision an unpinned build makes. It exists because a candidate
@@ -57,10 +57,38 @@ pub(crate) const LADDER: [Rung; 13] = [
 /// the pin re-proposes forever without ever landing — which is not a hypothetical: the closed-loop
 /// plant reproduced exactly that livelock the first time this was written without a gate.
 ///
-/// Consequence worth knowing before using the pin: at the top of the ladder the reachable reserve
-/// is under three segments (`abr/sim.rs`), so a pin cannot be satisfied there from a standing
-/// start. Pin UPWARD from the bootstrap rung, which is how measurement step M4 is written.
+/// **Every clause of that derivation is an UPSHIFT argument, and applying it downward cost the M4
+/// census five of its seven points.** Both budgets it cites return `None` for [`Direction::Down`]
+/// (`abr/viability.rs`), so a downshift has neither a warm-up deadline nor a prime deadline to pay
+/// for. The old note here said "pin UPWARD from the bootstrap rung, which is how measurement step
+/// M4 is written" — but on an unshaped LAN `startup_rung` picks the ladder TOP, so every pin in
+/// that census was a *downshift*, needing 12 000 ms of reserve at a rung whose reachable ceiling is
+/// `B_max(20000) ≈ 5 421 ms`. Unsatisfiable by construction. Device-measured 2026-08-26 and only
+/// noticed 2026-08-27: `pin_320`, `pin_2000`, `pin_10000` and `pin_16000` all ran at `rung=20000`
+/// with byte lists identical to `pin_20000`'s, so the census recorded the top rung five times and
+/// the corpus has three distinct clips of byte support rather than eleven.
+///
+/// See [`PIN_MIN_RESERVE_SEGMENTS_DOWN`] for what a downshift actually has to afford.
 pub(crate) const PIN_MIN_RESERVE_SEGMENTS: i64 = 6;
+
+/// **How much reserve the dev rung pin waits for before it transacts DOWNWARD.** Two segments.
+///
+/// Derived from what the transaction costs rather than reused from the upshift figure:
+///
+/// * **One segment** for the candidate's warm-up fetch. The acquisition-transfer bound
+///   (`docs/adaptive-playback-spec.md` §2a) gives `A_j ≤ A_i` whenever the candidate's byte count
+///   is lower, which a downshift's is by definition — so the warm-up cannot cost more than a
+///   current-rung segment, and a rung being sustained costs at most `D`.
+/// * **One segment** for the control plane. Three requests (`ff.rs`), measured on a real PMS at a
+///   ~100 ms median with a 1 306 ms maximum (`docs/measurements/p2h-pms-ladder.md` §5), which one
+///   media duration covers at every `D` the ladder serves.
+///
+/// No third term: the two deadline budgets that make up the upshift's 2.3 segments are `None` in
+/// this direction, and `candidate_ready`'s two-segment residual is an *upshift* acceptance test.
+///
+/// Two segments is 4 000 ms at `D = 2000`, inside `B_max` at every rung including the top, which is
+/// the property the six-segment figure lacked and the whole reason this constant exists separately.
+pub(crate) const PIN_MIN_RESERVE_SEGMENTS_DOWN: i64 = 2;
 
 impl Rung {
     pub(crate) const fn kbps(self) -> u32 {

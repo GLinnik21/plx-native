@@ -240,11 +240,20 @@ impl Controller {
             if self.current == pin {
                 return Decision::Stay;
             }
-            // Wait for a reserve the transaction can be paid out of; see PIN_MIN_RESERVE_SEGMENTS.
-            if buffered < segment.saturating_mul(PIN_MIN_RESERVE_SEGMENTS) {
+            let direction = if pin.kbps() > self.current.kbps() { Direction::Up } else { Direction::Down };
+            // Wait for a reserve the transaction can be paid out of. The requirement is
+            // DIRECTIONAL: the six-segment figure is an upshift derivation (two deadline budgets
+            // plus `candidate_ready`'s residual), and both of those budgets are `None` going down.
+            // Charging it downward is unsatisfiable at the top of the ladder — 12 000 ms against a
+            // `B_max(20000)` of ~5 421 ms — which silently cost the M4 census five of its seven
+            // points. See PIN_MIN_RESERVE_SEGMENTS and PIN_MIN_RESERVE_SEGMENTS_DOWN.
+            let required = match direction {
+                Direction::Up => PIN_MIN_RESERVE_SEGMENTS,
+                Direction::Down => PIN_MIN_RESERVE_SEGMENTS_DOWN,
+            };
+            if buffered < segment.saturating_mul(required) {
                 return Decision::Stay;
             }
-            let direction = if pin.kbps() > self.current.kbps() { Direction::Up } else { Direction::Down };
             let proposal = Proposal { rung: pin, direction };
             self.pending = Some(proposal);
             return Decision::Prime(proposal);

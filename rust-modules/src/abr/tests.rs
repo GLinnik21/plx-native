@@ -1316,3 +1316,57 @@ fn original_beats_the_top_rung_on_utility_at_equal_risk() {
     assert_eq!((mode, reason), (ModeKind::Hls, ModeReason::OriginalInfeasible));
     assert!(other.is_none());
 }
+
+/// **A downshift pin must land from the top of the ladder.** It could not, and the M4 census paid
+/// for it: five of its seven points never reached their pinned rung and silently recorded the top
+/// rung five times instead (`pin_320`, `pin_2000`, `pin_10000`, `pin_16000` all logged
+/// `rung=20000` with byte lists identical to `pin_20000`'s).
+///
+/// The cause is a derivation applied in a direction it was never argued for.
+/// `PIN_MIN_RESERVE_SEGMENTS = 6` is built from `candidate_warmup_budget` +
+/// `candidate_prime_budget` + `candidate_ready`'s residual — and both of those budgets return
+/// `None` for `Direction::Down`. Six segments is 12 000 ms at `D = 2000`, while the reachable
+/// reserve at rung 20000 is `B_max ≈ 5 421 ms`, so the gate was unsatisfiable by construction
+/// exactly where the census most needed it.
+///
+/// Differential: the reserve here is four segments — above `PIN_MIN_RESERVE_SEGMENTS_DOWN` and
+/// below `PIN_MIN_RESERVE_SEGMENTS` — so against the unmodified gate this can only return `Stay`,
+/// and it is also inside what the top rung can actually hold, so it is a reachable state rather
+/// than a hypothetical one.
+#[test]
+fn a_downshift_pin_lands_from_the_top_of_the_ladder() {
+    let mut pinned = controller_at(Rung::Uhd).pinned_to(Some(Rung::P240));
+    let reserve_ms = 4 * 2_000;
+
+    let decision = (0..6)
+        .map(|_| pinned.observe(sample(40_000, 300, reserve_ms)))
+        .find(|decision| !matches!(decision, Decision::Stay));
+
+    match decision {
+        Some(Decision::Prime(proposal)) => {
+            assert_eq!(proposal.rung, Rung::P240, "the pin is the target, not one rung down");
+            assert_eq!(proposal.direction, Direction::Down);
+        }
+        other => panic!(
+            "a pin four segments into a reserve the top rung can actually hold never proposed \
+             anything ({other:?}) — this is the gate that cost the census five of seven points",
+        ),
+    }
+}
+
+/// The upshift half of the same gate is unchanged, and this is what stops the fix above from
+/// being "lower the threshold until the pin lands". Four segments of reserve is still short of the
+/// six an upshift transaction has to afford, so an upward pin must keep waiting.
+#[test]
+fn an_upshift_pin_still_waits_for_the_full_reserve() {
+    let mut pinned = controller_at(Rung::P240).pinned_to(Some(Rung::Uhd));
+    let reserve_ms = 4 * 2_000;
+
+    for _ in 0..6 {
+        assert!(
+            matches!(pinned.observe(sample(40_000, 300, reserve_ms)), Decision::Stay),
+            "an upshift pin transacted on a reserve smaller than the transaction costs, which is \
+             the livelock PIN_MIN_RESERVE_SEGMENTS exists to prevent",
+        );
+    }
+}
