@@ -205,7 +205,7 @@ abr: committed Up to 720kbps 854x480
 abr: tx Up 320->720kbps outcome=committed decided=2760ms total=2760ms control=6ms warmup=1374ms graded=1377ms buf_start=21542ms buf_decided=22751ms buf_end=22751ms cur_acq_before=290ms net=3825kbps fast=2505kbps slow=2243kbps unc=200pm
 auth: '"<SHARED-SERVER-NAME>"' probe timed out at <SERVER-LAN-IP>:32400
 plex: server slot 1 re-pointed to https://<SHARED-SERVER>.plex.direct:<PORT>
-auth: reached "<SHARED-SERVER-NAME>" <SHARED-SERVER-IP>:26937 (shared by <OWNER> via https://<SHARED-SERVER>.plex.direct:<PORT>
+auth: reached "<peer-name-2>" <SHARED-SERVER-IP>:26937 (shared by <OWNER> via https://<SHARED-SERVER>.plex.direct:<PORT>
 auth: roster refresh — 2 server(s)
 net: curl rc=28 — timed out
 pms: server 1 version=1.43.4.10903-e5521bd8c plexPass=true

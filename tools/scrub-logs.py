@@ -23,6 +23,25 @@ file everybody now believes is safe. It never prints a matched value.
 import argparse, importlib.util, os, re, shutil, sys
 
 
+# Any dotted quad that is NOT loopback, link-local, RFC1918 or the unspecified address. The
+# private ranges are excluded here only because the pass above has already replaced them with a
+# stable `<lan-ip-N>` label; anything left is routable and belongs to somebody.
+# The two trailing guards are not defensive padding, they are the difference between this pass
+# and a pass that mangles every log it touches. PMS reports `version=1.43.3.10896-cb3ebc72d`,
+# whose leading run is four dot-separated numbers -- so a build suffix (`-abc`) and a `version=`
+# prefix both have to be excluded, or every server version in every log becomes `<peer-ip-1>`.
+# Caught by `tools/test_scrub_logs.py` before this shipped, which is the only reason it is here.
+PUBLIC_IP = re.compile(
+    r"(?<!version=)"
+    r"(?<![0-9.])(?!0\.)(?!127\.)(?!169\.254\.)(?!10(?:\.\d{1,3}){3}(?![0-9]))"
+    r"(?!192\.168\.)(?!172\.(?:1[6-9]|2\d|3[01])\.)"
+    r"(?:\d{1,3}\.){3}\d{1,3}(?![0-9])(?!\.\d)(?!-\w)")
+
+# `auth: reached "<peer-name-2>" <addr>:<port> (shared)` -- the server's HANDLE, which names the
+# machine and often its owner just as precisely as the address does.
+PEER_HANDLE = re.compile(r'(auth: reached\s+)"([^"]+)"')
+
+
 def load_guard(root):
     path = os.path.join(root, ".claude", "hooks", "outbound-guard.py")
     if not os.path.isfile(path):
@@ -60,7 +79,36 @@ def scrub(text, guard, secrets):
             return m.group(0)
         return hosts.setdefault(m.group(0), f"<lan-ip-{len(hosts) + 1}>")
     text = guard.PRIV_IP.sub(_ip, text)
-    return text, replaced + len(hosts)
+
+    # **PUBLIC addresses too, and this pass is the one that matters.** Redacting RFC1918 while
+    # publishing routable addresses is exactly backwards for the threat: a LAN address identifies
+    # nobody off the LAN, whereas a public address and port identify a REAL HOST belonging to a
+    # real person -- and the app reaches other people's servers by construction. `auth: reached
+    # "<handle>" <ip>:<port> (shared...)` is logged for every server the account can see, so a
+    # friend's shared server lands in EVERY captured log, under an address that appears in no
+    # declared private file because it arrives at runtime from plex.tv.
+    #
+    # This was not hypothetical. 42 occurrences across 21 committed logs survived a commit whose
+    # message was "scrub third-party and device identifiers from the captured logs", because both
+    # passes above are blind to a routable address: the first only knows values read out of
+    # `PRIVATE_FILES`, the second only matches RFC1918. Third-party data is not the maintainer's
+    # to publish and this repository is public (`third-party-share-data`).
+    peers = {}
+    def _pub(m):
+        if guard.CIDR_TAIL.match(text[m.end():m.end() + 2]):
+            return m.group(0)
+        return peers.setdefault(m.group(0), f"<peer-ip-{len(peers) + 1}>")
+    text = PUBLIC_IP.sub(_pub, text)
+
+    # The handle beside it is the same disclosure by another route -- it names the machine and,
+    # usually, its owner. Replaced positionally so the line still reads as a reachability result.
+    handles = {}
+    def _handle(m):
+        name = handles.setdefault(m.group(2), f"<peer-name-{len(handles) + 1}>")
+        return f'{m.group(1)}"{name}"'
+    text = PEER_HANDLE.sub(_handle, text)
+
+    return text, replaced + len(hosts) + len(peers) + len(handles)
 
 
 def main(argv=None):

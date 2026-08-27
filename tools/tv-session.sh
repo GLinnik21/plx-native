@@ -618,12 +618,17 @@ cmd_screen() {
   ensure_awake || exit 1
   # `luna-send` silently no-ops without a controlling TTY -- the house `script -qc` wrapper, same
   # as every other luna call against this television.
-  local reply
+  # The reply is pretty-printed multi-line JSON whose exact spacing is not ours to rely on, so
+  # match it with grep on the collapsed text rather than a shell glob over embedded newlines --
+  # the glob form silently took the failure branch on a reply that was in fact successful.
+  local reply flat
   reply=$(tv "script -qc \"luna-send -n 1 -f luna://com.webos.service.tvpower/power/$method '{}'\" /dev/null" 2>/dev/null)
-  case "$reply" in
-    *'"returnValue": true'*) ok "panel $want ($(printf '%s' "$reply" | sed -n 's/.*"state": "\([^"]*\)".*/\1/p'))" ;;
-    *) bad "screen $want refused: $reply"; return 1 ;;
-  esac
+  flat=$(printf '%s' "$reply" | tr -d '\r\n' | tr -s ' ')
+  if printf '%s' "$flat" | grep -q '"returnValue": *true'; then
+    ok "panel $want ($(printf '%s' "$flat" | sed -n 's/.*"state": *"\([^"]*\)".*/\1/p'))"
+  else
+    bad "screen $want refused: $flat"; return 1
+  fi
 }
 
 case "${1:-}" in
