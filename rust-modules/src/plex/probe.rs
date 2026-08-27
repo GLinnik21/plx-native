@@ -195,11 +195,20 @@ fn tier(c: &Connection) -> Location {
 ///
 /// **Address shape is weaker evidence than a probe, and deliberately so.** A private literal
 /// reached through a VPN is not on this LAN, and this will call it `Local` anyway. That is
-/// affordable exactly here: a wrong `Local` starts Original, and `OriginalModeController` measures
-/// the very first 750 ms window and leaves on the starvation horizon — the mechanism that exists
-/// for a link which turns out not to carry the source. A wrong `Remote` costs one bounded startup
-/// probe. Neither can strand a playback, which is why this guesses rather than blocking the boot on
-/// a measurement.
+/// affordable exactly here: a wrong `Local` starts Original, and `OriginalModeController` watches
+/// it — measuring 750 ms windows and leaving on the starvation horizon once a window has actually
+/// observed the reserve draining. A wrong `Remote` costs one bounded startup probe. Neither can
+/// strand a playback, which is why this guesses rather than blocking the boot on a measurement.
+///
+/// **This paragraph was FALSE from the day it was written until 2026-08-27, in both halves.**
+/// `route::auto_original_watch` required `Location::Remote`, so on a `Local` link that controller
+/// was never constructed at all and a LAN which did not carry the source ran the film at 8-25 %
+/// of real time forever, with no `abr:` line in the log
+/// (`docs/measurements/local-original-blind.md`). And the horizon it names fired on the FIRST
+/// window, where the reserve is the prime remnant and `conservative_kbps` is pinned to half the
+/// measurement by the uncertainty floor — which cost a real playback its 4K Dolby Vision
+/// (`docs/measurements/orig-first-window-fallback.md`). Both are fixed; the wording above is now
+/// the behaviour rather than the intention.
 pub fn configured_tier(host: &str) -> Location {
     let h = host.trim().trim_start_matches('[').trim_end_matches(']');
     if let Ok(v4) = h.parse::<std::net::Ipv4Addr>() {

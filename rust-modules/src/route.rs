@@ -82,9 +82,23 @@ struct Session {
     /// live socket against this rather than `cur_src.0` (video only), because the wire has to carry
     /// both lanes. `0` means PMS did not provide one and disables the watchdog fail-safely.
     cur_transport_kbps: i64,
-    /// This exact playback is Auto preserving Original on a direct Remote and therefore needs the
-    /// progressive transfer watchdog. Local Original never needs it; HLS owns its own controller.
-    cur_auto_remote_original: bool,
+    /// **Auto chose Original for this playback, so the progressive transfer watchdog runs.**
+    /// The only reader is [`auto_original_watch`], so this field's whole meaning is that question.
+    ///
+    /// It used to be `cur_auto_remote_original` and to carry `Location::Remote`, on the argument
+    /// that a Local link "needs no throughput proof". That is true of the PRE-FLIGHT question —
+    /// whether to spend a probe before choosing Original — and false of the runtime one:
+    /// `Location` is decided from the address shape (`plex::probe::configured_tier`) and describes
+    /// TOPOLOGY, which does not imply throughput. Wi-Fi, powerline, a busy switch or a second
+    /// stream in the house all produce a LAN that cannot carry a 10 Mbps source.
+    ///
+    /// Measured 2026-08-27 (`docs/measurements/local-original-blind.md`): a 10 634 kbps
+    /// direct-play source on the local PMS with the link held at 2 500 kbps ran at **8–25 % of
+    /// real time for the rest of the playback**, with ZERO `abr:` lines in the whole log. The two
+    /// `recover_auto_to_original` writers never carried the conjunct, so an Original REACHED from
+    /// HLS was supervised on any link while the same state chosen at play time on a LAN was not —
+    /// which is what makes it an oversight rather than a design.
+    cur_auto_original_watched: bool,
     /// The zero-encode flavor Auto may return to after a remote link recovers. Kept even while
     /// HLS is active: the HLS worker owns only measurements, while the main thread owns the
     /// codec/session transition back to this exact source declaration.
@@ -226,7 +240,7 @@ impl Session {
         cur_ceiling: None,
         cur_src: (0, 0, 0),
         cur_transport_kbps: 0,
-        cur_auto_remote_original: false,
+        cur_auto_original_watched: false,
         auto_original: None,
         auto_fixture_base: String::new(),
         auto_switches: 0,
@@ -629,7 +643,7 @@ pub(crate) struct AutoOriginalWatch {
 pub(crate) fn auto_original_watch() -> Option<AutoOriginalWatch> {
     let s = session();
     if quality() != Quality::Auto
-        || !s.cur_auto_remote_original
+        || !s.cur_auto_original_watched
         || !matches!(s.cur_delivery, crate::plex::TranscodeDelivery::ProgressiveMkv)
     {
         return None;
@@ -661,7 +675,7 @@ pub(crate) fn arm_auto_fixture(original_url: &str, source_kbps: u32, hls_base: &
         // rung, so the candidate would 404 and read on the TV as a rejected encoder.
         s.cur_src = (i64::from(source_kbps), 1_920, 1_080);
         s.cur_transport_kbps = i64::from(source_kbps);
-        s.cur_auto_remote_original = true;
+        s.cur_auto_original_watched = true;
         s.auto_original = Some(AutoOriginalCandidate {
             probe_url: original_url.to_owned(),
             direct: true,
@@ -700,7 +714,7 @@ pub(crate) fn fallback_auto_to_hls(measured_kbps: u32, offset_secs: i64) -> Opti
     session_mut(|s| s.auto_prior_kbps = measured_kbps);
     let fixture_base = session().auto_fixture_base.clone();
     session_mut(|s| {
-        s.cur_auto_remote_original = false;
+        s.cur_auto_original_watched = false;
         s.cur_remux = false;
         s.cur_delivery = crate::plex::TranscodeDelivery::FixedHls { seconds_per_segment: 2 };
         s.cur_ceiling = Some(rung.ceiling());
@@ -774,7 +788,7 @@ pub(crate) fn recover_auto_to_original(offset_secs: i64) -> Option<AutoOriginalR
             s.cur_delivery = crate::plex::TranscodeDelivery::ProgressiveMkv;
             s.cur_no_video_copy = false;
             s.cur_ceiling = None;
-            s.cur_auto_remote_original = automatic;
+            s.cur_auto_original_watched = automatic;
             s.cur_audio_sid = candidate.audio_sid;
             s.stream_vcodec = candidate.vcodec.clone();
             s.stream_acodec = candidate.acodec.clone();
@@ -799,7 +813,7 @@ pub(crate) fn recover_auto_to_original(offset_secs: i64) -> Option<AutoOriginalR
         s.cur_delivery = crate::plex::TranscodeDelivery::ProgressiveMkv;
         s.cur_no_video_copy = false;
         s.cur_ceiling = None;
-        s.cur_auto_remote_original = automatic;
+        s.cur_auto_original_watched = automatic;
         s.cur_audio_sid = candidate.audio_sid;
         s.stream_vcodec = candidate.vcodec.clone();
         s.stream_acodec = candidate.acodec.clone();
@@ -1414,9 +1428,9 @@ pub(crate) fn set_quality(q: Quality) {
         && (location == Some(crate::plex::probe::Location::Local)
             || (location == Some(crate::plex::probe::Location::Remote)
                 && (!is_transcoding() || is_remux())));
-    let auto_remote_original = q == Quality::Auto
-        && location == Some(crate::plex::probe::Location::Remote)
-        && auto_original;
+    // Supervision does not depend on where the server is: `auto_original` already says Auto is
+    // going to run Original, and that is the whole question the watchdog asks. See the field.
+    let auto_original_watched = auto_original;
     let adaptive = auto_uses_hls(q, auto_original);
     let delivery = if adaptive {
         crate::plex::TranscodeDelivery::FixedHls { seconds_per_segment: 2 }
@@ -1437,7 +1451,7 @@ pub(crate) fn set_quality(q: Quality) {
     session_mut(|s| {
         s.cur_ceiling = ceiling;
         s.cur_delivery = delivery;
-        s.cur_auto_remote_original = auto_remote_original;
+        s.cur_auto_original_watched = auto_original_watched;
         if matches!(delivery, crate::plex::TranscodeDelivery::FixedHls { .. }) {
             s.cur_remux = false;
         }
@@ -2012,7 +2026,7 @@ pub(crate) struct Plan {
     /// Whole-file wire rate used by Auto's runtime Original watchdog (video + audio).
     pub transport_kbps: i64,
     /// This plan admitted Original specifically on a measured direct Remote link.
-    pub auto_remote_original: bool,
+    pub auto_original_watched: bool,
     /// What the startup probe measured, kept so the live estimator can be SEEDED with it instead
     /// of starting from nothing — and so a later mode transition can hand the next worker the same
     /// evidence. `0` when this plan never probed (Local, Relay, a fixed rung, or Original).
@@ -2370,9 +2384,9 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveE
     // same flavor instead of silently dropping the user's choice.
     plan.src_measure = (env.src_kbps, src_w, src_h);
     plan.transport_kbps = source_transport_kbps;
-    plan.auto_remote_original = env.quality == Quality::Auto
-        && location == Some(crate::plex::probe::Location::Remote)
-        && auto_original;
+    // See `Session::cur_auto_original_watched`: Auto running Original is the whole condition, and
+    // the link's tier is not part of it.
+    plan.auto_original_watched = env.quality == Quality::Auto && auto_original;
     if env.quality != Quality::Auto && !tentative_quality.direct_play {
         crate::player::log(&format!(
             "route: quality ceiling {} — source {}kbps {src_w}x{src_h}; denying direct play + remux, re-encoding",
@@ -3075,7 +3089,7 @@ fn apply_plan(plan: Plan, rk: &str) {
             cur_ceiling: plan.ceiling,
             cur_src: plan.src_measure,
             cur_transport_kbps: plan.transport_kbps,
-            cur_auto_remote_original: plan.auto_remote_original,
+            cur_auto_original_watched: plan.auto_original_watched,
             auto_original: plan.auto_original,
             auto_fixture_base: String::new(),
             // A NEW playback starts a new switch history: the count exists to stop this film
@@ -4289,23 +4303,65 @@ mod tests {
         assert_eq!(cur_rk(), "rk-7", "and its other half");
     }
 
+    /// **RE-EXPRESSED 2026-08-27**, name and message both. It read
+    /// `only_a_measured_remote_auto_original_arms_the_progressive_watchdog` and asserted "HLS and
+    /// Local Original do not use this watchdog" — which was true of the code and is the defect
+    /// `docs/measurements/local-original-blind.md` measured. What the watchdog needs is a
+    /// MEASURED SOURCE RATE and a progressive delivery; where the server sits is not part of it.
     #[test]
-    fn only_a_measured_remote_auto_original_arms_the_progressive_watchdog() {
+    fn a_measured_auto_original_arms_the_progressive_watchdog_wherever_the_server_is() {
         let _g = fresh_registry();
         restore_quality(Quality::Auto);
         apply_plan(
             Plan {
                 transport_kbps: 28_000,
-                auto_remote_original: true,
+                auto_original_watched: true,
                 ..Default::default()
             },
             "rk-auto",
         );
         assert_eq!(auto_original_watch().map(|w| w.source_kbps), Some(28_000));
-        session_mut(|s| s.cur_auto_remote_original = false);
-        assert!(auto_original_watch().is_none(), "HLS and Local Original do not use this watchdog");
+        session_mut(|s| s.cur_auto_original_watched = false);
+        assert!(auto_original_watch().is_none(), "HLS owns its own controller and needs no watchdog");
         restore_quality(Quality::Original);
         reset_session();
+    }
+
+    /// **The differential for the LOCAL blindness.** A local server, Auto, a direct-playable
+    /// source with a measured transport rate: `build_stream` must arm the watchdog. Against the
+    /// old route this fails on the last assertion — `plan.auto_original_watched` was
+    /// `Auto && Location::Remote && auto_original`, so a LAN playback ran unsupervised and a link
+    /// that turned out not to carry the source produced 8-25% of real time for the rest of the
+    /// film with no `abr:` line anywhere in the log.
+    #[test]
+    fn a_local_auto_original_is_supervised_exactly_like_a_remote_one() {
+        let _g = fresh_registry();
+        restore_quality(Quality::Auto);
+        let sid = crate::plex::register_for_test(
+            "machine-local-watch",
+            "<peer-host-1>.example.invalid",
+            32400,
+            "token",
+            "test-client-id",
+        );
+        crate::plex::client_for(sid)
+            .expect("server installed")
+            .set_link(crate::plex::probe::Location::Local);
+        apply_plan(
+            Plan {
+                sid,
+                transport_kbps: 10_634,
+                delivery: crate::plex::TranscodeDelivery::ProgressiveMkv,
+                auto_original_watched: true,
+                ..Default::default()
+            },
+            "rk-local-original",
+        );
+        let watch = auto_original_watch().expect("a local Auto Original is still watched");
+        assert_eq!(watch.source_kbps, 10_634, "and it is watched against the MEASURED source");
+        restore_quality(Quality::Original);
+        reset_session();
+        crate::plex::reset_servers_for_test();
     }
 
     #[test]
