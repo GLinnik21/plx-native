@@ -296,7 +296,8 @@ against every fetched segment at run time — the app already logs `bytes=`. And
 on the upshift path**: §2a's transfer bound needs no `b_j` at all when the byte count falls, so the
 three floor-regime rungs, which are downshift targets, never consume it.
 
-**Classification, and [R-blocked] the availability split the earlier draft got wrong.** `D` is
+**Classification, and [RESOLVED — see the subsection below] the availability split the earlier
+draft got wrong.** `D` is
 (2). `σ` is (2). `W_j` is (2) — but the draft's "the transaction already fetches and already logs
 it before deciding anything" is true of **one** decision and false of the other, and the two are
 the two halves of admission:
@@ -604,7 +605,7 @@ stays. What §7's table should stop claiming is that a probability is one deriva
 
 The plan conflates them, which is why the emergency path looked like the only path (R23).
 
-**Trigger — when to reconsider at all.** **[R-blocked] The earlier draft listed only
+**Trigger — when to reconsider at all.** **[RESOLVED below] The earlier draft listed only
 `¬sustainable(current)` and `draining()`. Both are distress conditions, so from a healthy state —
 current rung sustainable, reserve flat — neither fires, the target rule is never evaluated, and
 the controller can never climb.** The section opened by blaming the plan for making the emergency
@@ -718,7 +719,8 @@ Not a review pass — part of the specification.
 
 ## 7. Every shipped tunable, against the classification rule
 
-**[R-blocked] This table audits the eighteen fields of `AbrPolicy::measured()`, and that is not
+**[RESOLVED in two halves — the numeraire in this section, the risk ladders in §7a.] This table
+audits the eighteen fields of `AbrPolicy::measured()`, and that is not
 the same set as "the quantities that decide".** At least **33 more** decision constants sit inside
 the very utility sum this table is adjudicating, none of them fields of that struct and none of
 them audited here:
@@ -758,7 +760,7 @@ precisely the coefficients of the sum. Read the table, not the summary.
 | `visible_switch_decay_ms` | 120 000 | **Product choice.** |
 | `original_quality_bonus` | 40 | **Open, and the ledger it feeds is dead as specified** (R5): "quality step" on a bitrate ladder does not respect `transcode ≤ source`, so an 8.5 Mbit/s 1080p source scores three steps below a 20 Mbit/s transcode of itself. Quality must be relative to the source and concave. |
 | `original_feature_bonus` | 25 | Same. DV/Atmos must be represented explicitly, not through a bitrate proxy. |
-| `risk_weight` | 2 | **[R-blocked] The "delete" verdict is WITHDRAWN.** A probability is dimensionless and the other terms of the sum are quality points, so a probability is precisely *not* commensurable with them — it needs a price in points, which is the coefficient being deleted. And this specification constructs no probability anywhere: turning §4's per-segment exceedance into a *stall* probability needs the `B_after` relaxation model §1 records as unavailable. `risk_weight` is also the exchange rate for **both** ledgers (`abr/mode.rs:157` and `:206`), not just the HLS one this table quotes. Verdict: **keep, reclassified as a product choice** — the price of risk in quality points — until something produces a probability. |
+| `risk_weight` | 2 | **[RESOLVED in §7a: it becomes `K_r`.] The "delete" verdict was WITHDRAWN, and then superseded.** §4a establishes that no stall probability is constructible, so the risk term's unit is a HORIZON; §7a prices a horizon as `K_r · log₂(H_ref/horizon)`, points per halving. `risk_weight` and that coefficient are the same quantity — the price of risk in quality points — so it does not survive as a separate number. The reasoning that withdrew the delete still stands and is why: A probability is dimensionless and the other terms of the sum are quality points, so a probability is precisely *not* commensurable with them — it needs a price in points, which is the coefficient being deleted. And this specification constructs no probability anywhere: turning §4's per-segment exceedance into a *stall* probability needs the `B_after` relaxation model §1 records as unavailable. `risk_weight` is also the exchange rate for **both** ledgers (`abr/mode.rs:157` and `:206`), not just the HLS one this table quotes. Verdict: **keep, reclassified as a product choice** — the price of risk in quality points — until something produces a probability. |
 | `server_cost_weight` | 4 | **Keep, and re-measure — but not on the premium quoted here.** "2.1× the work for 4% more bits" is the ratio of two catalog entries (`P1080High` 20 011 and `Uhd` 20 895), and `p2h` §6 measures that the app never obtains the first of them: under the request the app really sends, rung 20000 declares 16 150, so the real trade is **2.1× work for 29% more bits**. The premium is off by 6.6×, and it is the entire justification for the weight. `production_load_pm` is separately a per-item quantity stored as a per-server constant, inert below its own floor for the modal item at every rung. |
 
 ### [RESOLVED for the numeraire] Quality is octaves below source, and R5's inversion goes with it
