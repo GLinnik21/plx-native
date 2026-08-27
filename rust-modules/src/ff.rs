@@ -2630,6 +2630,19 @@ struct HlsCursor {
     /// estimate, the HUD's total and the scrobble all inherit the truncated number for the rest
     /// of the playback. The candidate is promoted to publishing at the moment it is committed.
     publishes_duration: bool,
+    /// **The rate this rendition's master playlist DECLARED**, bit/s, `#EXT-X-STREAM-INF:BANDWIDTH`.
+    ///
+    /// Retained rather than logged and dropped, which is what happened to it until now. It is the
+    /// only per-rung rate this app can obtain that is not the catalog's `expected_wire_kbps` — the
+    /// input the plan's R1 killed, measured at +5.2% to +31.6% error, item-dependent, and
+    /// non-injective (rungs 18000 and 20000 both declare 16 150). The admission rule's candidate
+    /// query is `sigma * W_j * D / 8000` and `W_j` is exactly this, so a rule evaluated on the
+    /// catalog rate would be answering about a rendition that does not exist.
+    ///
+    /// Available at VALIDATION and nowhere else: a rung's `BANDWIDTH` cannot be read without first
+    /// creating a PMS encoder session for it, so selection over the ladder still has no per-rung
+    /// rate. That asymmetry is the specification's, not this field's.
+    declared_bps: u64,
     auth: crate::hls::InheritedAuth,
     media: crate::hls::Resource,
     tracker: crate::hls::MediaTracker,
@@ -2662,6 +2675,7 @@ fn hls_cursor_open(
     ));
     Ok(HlsCursor {
         publishes_duration,
+        declared_bps: master.variant.bandwidth,
         auth,
         media: master.variant.resource,
         tracker: crate::hls::MediaTracker::default(),
@@ -3048,6 +3062,10 @@ struct TxTrace {
     feed_ms: Option<i64>,
     /// The reserve after the feed, so the pre/post pair brackets what the staged segments added.
     buf_fed_ms: Option<i64>,
+    /// The candidate rendition's DECLARED rate, kbit/s, from its own master playlist. `None`
+    /// (logged `-1`) on every exit path that never got that far -- which is not zero and must not
+    /// read as a rendition that declares nothing.
+    declared_kbps: Option<u32>,
 }
 
 impl TxTrace {
@@ -3084,6 +3102,7 @@ impl TxTrace {
             buf_decided_ms: None,
             feed_ms: None,
             buf_fed_ms: None,
+            declared_kbps: None,
         }
     }
 
@@ -3091,8 +3110,13 @@ impl TxTrace {
         self.prime_done_ms = Some(self.elapsed_ms());
     }
 
-    fn mark_master(&mut self) {
+    /// The candidate's master playlist is in, so its DECLARED rate is known -- for the only
+    /// moment in a playback at which any per-rung rate is knowable at all. Recorded here so the
+    /// `abr: tx` line carries it beside the catalog's guess and the two can be differenced on a
+    /// captured trace with no extra instrumentation.
+    fn mark_master(&mut self, declared_bps: u64) {
         self.master_done_ms = Some(self.elapsed_ms());
+        self.declared_kbps = Some(u32::try_from(declared_bps / 1_000).unwrap_or(u32::MAX));
     }
 
     fn mark_control_plane(&mut self) {
@@ -3141,7 +3165,7 @@ impl Drop for TxTrace {
             "abr: tx {:?} {}->{}kbps outcome={} decided={}ms total={}ms control={}ms \
              prime={}ms master={}ms media={}ms warmup={}ms \
              graded={}ms buf_start={}ms buf_decided={}ms feed={}ms buf_fed={}ms buf_end={}ms \
-             cur_acq_before={}ms net={}kbps fast={}kbps slow={}kbps unc={}pm",
+             cur_acq_before={}ms net={}kbps fast={}kbps slow={}kbps unc={}pm declared={}kbps",
             self.direction,
             self.from_kbps,
             self.to_kbps,
@@ -3164,6 +3188,7 @@ impl Drop for TxTrace {
             self.fast_kbps,
             self.slow_kbps,
             self.unc_pm,
+            self.declared_kbps.map(i64::from).unwrap_or(-1),
         ));
     }
 }
@@ -3487,7 +3512,7 @@ fn hls_demux(
                 continue;
             }
         };
-        tx.mark_master();
+        tx.mark_master(candidate.declared_bps);
         let candidate_segment = match hls_cursor_next(&mut candidate, aq, hs) {
             Ok(Some(segment)) => segment,
             _ => {

@@ -356,8 +356,23 @@ artefact of the measurement that produced it and not a safety margin.
 on one server; it bounds a sixth item only under an exchangeability assumption that rung 2000 has
 already been seen to violate at the pooled level. Two things contain the damage. `σ` is verified
 against every fetched segment at run time — the app already logs `bytes=`. And **it is needed only
-on the upshift path**: §2a's transfer bound needs no `b_j` at all when the byte count falls, so the
-three floor-regime rungs, which are downshift targets, never consume it.
+on the upshift path**.
+
+**[CORRECTED 2026-08-27] That last clause used to read "§2a's transfer bound needs no `b_j` at all
+when the byte count falls", and the loose form of it is wrong in a way worth keeping visible.** The
+transfer is free of the query exactly when `q ≤ b_i`, i.e. when
+
+```
+σ_j · W_j · D / 8000  ≤  b_i
+```
+
+— the candidate's worst case is under what the sample actually weighed. That is not independent of
+`σ_j`; it is **insensitive** to it, which is a weaker claim and the true one. `W_j` is a cap, so a
+real downshift moves the rate by 1.1× to 60×, and the condition then holds for any `σ_j` up to
+`8000·b_i/(W_j·D)` — a threshold in the tens at the bottom of the ladder against measured spreads
+under 1. So the three floor-regime rungs remain admissible with no usable `σ`, by a margin of
+orders of magnitude rather than by a fitted number. Stated the loose way, the same sentence would
+license an **upshift**, which is the one direction it must not.
 
 **Classification, and [RESOLVED — see the subsection below] the availability split the earlier
 draft got wrong.** `D` is

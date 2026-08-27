@@ -1256,6 +1256,12 @@ RE_ABR_SEED = re.compile(
 RE_ABR_HISTORY = re.compile(r"abr: history switches=(\d+) since_last=(\S+) advanced=(\d+)ms")
 
 RE_ABR_STEADY = re.compile(r"abr: steady current=(\d+)kbps")
+# `declared` is the CANDIDATE RENDITION'S OWN RATE, off its master playlist -- the only per-rung
+# rate this app can obtain that is not the catalog's `expected_wire_kbps` (the input the plan's R1
+# killed: +5.2% to +31.6% error, item-dependent, and non-injective). `-1` on every exit path that
+# never fetched a master, which is not zero. Differencing it against `to_kbps` on a captured trace
+# is the catalog's error, measured, with no extra instrumentation.
+#
 # The whole transaction, one line per proposal on every exit path. `decided` is the DECISION cost
 # and `feed` is the post-commit backpressure that used to be inside it; `control` is the sum of
 # `prime` + `master` + `media`, which are three separate requests and move for different reasons.
@@ -1269,13 +1275,14 @@ RE_ABR_TX = re.compile(
     r"warmup=" + _MS + r"ms graded=" + _MS + r"ms "
     r"buf_start=(-?\d+)ms buf_decided=" + _MS + r"ms feed=" + _MS + r"ms "
     r"buf_fed=" + _MS + r"ms buf_end=(-?\d+)ms cur_acq_before=(-?\d+)ms "
-    r"net=(\d+)kbps fast=(\d+)kbps slow=(\d+)kbps unc=(\d+)pm"
+    r"net=(\d+)kbps fast=(\d+)kbps slow=(\d+)kbps unc=(\d+)pm declared=(-?\d+)kbps"
 )
 TX_FIELDS = (
     "direction", "from_kbps", "to_kbps", "outcome",
     "decided_ms", "total_ms", "control_ms", "prime_ms", "master_ms", "media_ms",
     "warmup_ms", "graded_ms", "buf_start_ms", "buf_decided_ms", "feed_ms", "buf_fed_ms",
     "buf_end_ms", "cur_acq_before_ms", "net_kbps", "fast_kbps", "slow_kbps", "unc_pm",
+    "declared_kbps",
 )
 
 # One line per acquired segment. `open_ms` is the successful open only (a NotReady retry is

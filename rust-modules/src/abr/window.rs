@@ -20,10 +20,27 @@
 //! precisely the split this project's corpus was shown unable to identify (R7). **No estimator for
 //! `O0` or `tau` exists here because none is needed.**
 //!
-//! One asymmetry decides how much of the ladder needs a size prediction at all: a **downshift needs
-//! no `q`**. Acquisition cannot rise when the byte count falls, so `T = A_i` whatever the candidate
-//! turns out to weigh — which is why the three rungs where `sigma` has no usable ceiling (320, 720,
-//! 2000) never consume one. They are downshift targets.
+//! One asymmetry decides how much of the ladder needs a size prediction at all, and it is worth
+//! stating precisely because the loose version of it is wrong. `T_i(q) = A_i` exactly when
+//! `q <= b_i` — so the transfer is free of `q` not for "a downshift" in general but **whenever the
+//! candidate's worst case is under what the sample actually weighed**:
+//!
+//! ```text
+//! sigma_j * W_j * D / 8000  <=  b_i
+//! ```
+//!
+//! That is not independent of `sigma_j`; it is INSENSITIVE to it, which is a weaker claim and the
+//! true one. `W_j` is a cap (§3), so a real downshift moves the rate by 1.1x to 60x, and the
+//! condition then holds for any `sigma_j` up to `8000*b_i/(W_j*D)` — a threshold in the tens at the
+//! bottom of the ladder against measured spreads under 1. **This is why the three rungs where
+//! `sigma` has no usable ceiling (320, 720, 2000) are still admissible: they are downshift targets,
+//! and the margin there is orders of magnitude, not a fitted number.** An earlier draft of this
+//! paragraph said `T = A_i` held "whatever the candidate turns out to weigh", which drops the
+//! condition entirely and would license an UPSHIFT on the same reasoning.
+//!
+//! Nothing in the code depends on which case applies — [`AcquisitionWindow::transferred_us`] takes
+//! `q` and is correct either way. The distinction decides only where a good `sigma` is needed, and
+//! therefore which candidates the rule can price today.
 //!
 //! # The guarantee is an INEQUALITY, and the reason matters
 //!
