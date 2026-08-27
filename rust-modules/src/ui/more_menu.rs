@@ -147,12 +147,43 @@ fn is_on(a: Action) -> bool {
     }
 }
 
+/// **"Original" is a claim about the SOURCE, and for some sources it is false.**
+///
+/// Every other rung names a bound the viewer can reason about — "1080p · 20 Mbps". This one names a
+/// provenance, and when the television cannot decode the source video at all (AV1, VP9, MPEG-2 —
+/// `route::source_decodable`) the server must re-encode the pixels whatever is picked. The row
+/// still does something: it is the only rung that sends no bitrate or resolution cap. But it cannot
+/// deliver the original, and until this it said so nowhere, while the DETAIL page for the same item
+/// already said "Converts on server" from the same predicate.
+///
+/// **The same words as the detail page, deliberately.** One vocabulary for one fact; a second
+/// phrasing here would read as a second fact.
+///
+/// **A sub-line rather than a trailing value**, because `Row`'s rule is that a leading mark and a
+/// trailing word may not both appear and every rung row carries the picker's mark. And no `dim`:
+/// dimming is the ink of "unavailable", the row is fully selectable and still useful, and this is
+/// the one rung that can ask for more than 1080p — an annotation that reads as "do not pick this"
+/// would steer people off the only >1080p ask the app has.
+/// **Pure, and it takes the fact rather than reading it.** The predicate lives on the session and
+/// the row is drawn from it (`row_for`); passing it in is what lets the copy be tested without a
+/// resolved playback, and what keeps this function a statement about the LADDER rather than about
+/// global state.
+fn quality_detail(q: crate::route::Quality, source_decodable: bool) -> &'static str {
+    if q == crate::route::Quality::Original && !source_decodable {
+        "Converts on server"
+    } else {
+        ""
+    }
+}
+
 /// One row, drawn in the idiom its ACTION calls for. Free-standing (rather than inline in [`open`])
 /// so the two idioms are decided in one place: a switch gets the trailing word, a picker rung gets
 /// the leading mark, and nothing gets both.
 fn row_for(a: Action) -> Row {
     match a {
-        Action::SetQuality(q) => Row::new(label(a)).checked(crate::route::quality() == q),
+        Action::SetQuality(q) => Row::new(label(a))
+            .checked(crate::route::quality() == q)
+            .detail(quality_detail(q, crate::route::source_decodable())),
         _ => Row::new(label(a)).toggle(is_on(a)),
     }
 }
@@ -288,6 +319,49 @@ pub fn draw() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **The Original row says so when it cannot be Original.**
+    ///
+    /// For a source this television cannot decode — AV1, VP9, MPEG-2 — the server must re-encode
+    /// the pixels whatever rung is picked, so the word "Original" is a promise the pipeline cannot
+    /// keep. The DETAIL page for the same item already said "Converts on server" from the same
+    /// predicate; the quality picker, which is where a viewer goes to do something about it, said
+    /// nothing at all.
+    ///
+    /// Differential: unmodified code draws no sub-line on any quality row, in any state.
+    ///
+    /// The negative half is the important one. A fixed rung ALSO converts, and Auto on such an
+    /// item runs an encoded ladder too — but neither of them is named after the source, so neither
+    /// is making the claim this line corrects. Annotating them would turn one honest correction
+    /// into four lines of noise.
+    #[test]
+    fn only_the_original_row_says_the_source_cannot_be_preserved() {
+        use crate::route::Quality;
+        assert_eq!(quality_detail(Quality::Original, false), "Converts on server");
+        assert_eq!(
+            quality_detail(Quality::Original, true), "",
+            "a source the panel decodes needs no correction — Original means Original",
+        );
+        for q in crate::route::QUALITY_LADDER {
+            if q == Quality::Original {
+                continue;
+            }
+            assert_eq!(
+                quality_detail(q, false), "",
+                "{q:?} is not named after the source, so it makes no claim to correct",
+            );
+        }
+    }
+
+    /// The copy is the DETAIL page's, verbatim. One vocabulary for one fact: a second phrasing
+    /// would read as a second fact, and the two surfaces answer from the same predicate.
+    #[test]
+    fn the_conversion_notice_is_the_words_the_detail_page_already_uses() {
+        assert_eq!(
+            quality_detail(crate::route::Quality::Original, false),
+            crate::ui::detail::CONVERTS_ON_SERVER,
+        );
+    }
 
     #[test]
     fn every_row_has_a_label() {

@@ -82,6 +82,26 @@ struct Session {
     /// live socket against this rather than `cur_src.0` (video only), because the wire has to carry
     /// both lanes. `0` means PMS did not provide one and disables the watchdog fail-safely.
     cur_transport_kbps: i64,
+    /// **Can this television decode the SOURCE video stream as it stands** — `video_direct_plays`
+    /// evaluated by [`build_stream`], carried rather than re-derived.
+    ///
+    /// It answers the one question the word "Original" is a claim about: false means the server
+    /// MUST re-encode the pixels, whatever rung is picked and whatever the link does, so the
+    /// quality menu's Original row cannot deliver the original. AV1, VP9 and MPEG-2 are the cases;
+    /// see the `!video_dp` arm's own comment.
+    ///
+    /// **Carried, because re-deriving it at draw time would be a second copy of the gate.** The
+    /// menu is drawn from a different thread of control and a different set of facts than the
+    /// resolve — `metadata::playing()` is `None` for the whole 0.5-3 s resolve window — and a
+    /// second evaluation could disagree with the routing decision it is describing. This is the
+    /// same argument [`Session::cur_remux`] carries for the neighbouring question, and the reason
+    /// `playback_preview_of` exists rather than a duplicate of the gate on the detail page.
+    ///
+    /// **`true` when nothing has resolved yet**, so an absent fact annotates nothing. A menu is
+    /// only reachable inside a live player session, so the window is small; and the failure
+    /// direction matters — claiming "the source cannot be preserved" about a source nobody has
+    /// looked at is a worse read-out than saying nothing.
+    cur_source_decodable: bool,
     /// **Auto chose Original for this playback, so the progressive transfer watchdog runs.**
     /// The only reader is [`auto_original_watch`], so this field's whole meaning is that question.
     ///
@@ -240,6 +260,7 @@ impl Session {
         cur_ceiling: None,
         cur_src: (0, 0, 0),
         cur_transport_kbps: 0,
+        cur_source_decodable: true,
         cur_auto_original_watched: false,
         auto_original: None,
         auto_fixture_base: String::new(),
@@ -1079,6 +1100,16 @@ pub(crate) fn is_segmented_hls() -> bool {
 }
 pub(crate) fn source_vcodec() -> String {
     session().src_vcodec.clone()
+}
+
+/// **Can the pixels of this playback's source reach the panel untouched?** See
+/// [`Session::cur_source_decodable`]. `false` is the state in which the quality ladder's
+/// "Original" row is a promise the pipeline cannot keep.
+///
+/// Deliberately NOT `is_transcoding()`: that says what is happening now, and a fixed rung makes it
+/// true of any source. This says what is POSSIBLE, which is the question a picker is asked.
+pub(crate) fn source_decodable() -> bool {
+    session().cur_source_decodable
 }
 pub(crate) fn source_acodec() -> String {
     session().src_acodec.clone()
@@ -2066,6 +2097,14 @@ pub(crate) struct Plan {
     pub src_measure: (i64, i64, i64),
     /// Whole-file wire rate used by Auto's runtime Original watchdog (video + audio).
     pub transport_kbps: i64,
+    /// `video_direct_plays` for this source — see [`Session::cur_source_decodable`].
+    ///
+    /// **`bool::default()` is the wrong default and it is not a style point.** `false` is the
+    /// claim "this television cannot decode the source", which the quality menu renders as a line
+    /// of copy; `build_stream` has an exit that returns before the gate runs at all. So the
+    /// initializer sets `true` explicitly and the gate overwrites it, which makes every exit carry
+    /// something that was either measured or honestly absent.
+    pub source_decodable: bool,
     /// This plan admitted Original specifically on a measured direct Remote link.
     pub auto_original_watched: bool,
     /// What the startup probe measured, kept so the live estimator can be SEEDED with it instead
@@ -2127,6 +2166,12 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveE
         part_id: part_id_of(part),
         src_vcodec: vcodec.to_string(),
         src_acodec: acodec.to_string(),
+        // **`bool::default()` is `false` and `false` here is a CLAIM** — "this television cannot
+        // decode the source" — which the quality menu turns into a line of copy. The exit two lines
+        // below returns this plan without ever reaching the gate, so an unresolvable playback would
+        // assert something nobody looked at. Every exit therefore carries `true` ("nobody has said
+        // otherwise") until the gate says otherwise.
+        source_decodable: true,
         ..Default::default()
     };
     let client = match crate::plex::client_for(env.sid) {
@@ -2184,6 +2229,9 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveE
     // Profile 5 direct-played with nothing declared: the wrong colours, back again.
     let dv = dovi.presentation_now();
     let video_dp = video_direct_plays(vcodec, src_w, src_h, dv, crate::devcaps::caps());
+    // Carried to the session so the quality menu can say whether "Original" means anything for
+    // this item without evaluating the gate a second time against a different set of facts.
+    plan.source_decodable = video_dp;
     // **Refusing direct play is only half of it.** The transcode query below grants the server
     // `directStream=1` — permission to COPY the video rather than encode it — and PMS takes that
     // permission whenever the source fits the caps the query carries. Those caps are resolution,
@@ -3130,6 +3178,7 @@ fn apply_plan(plan: Plan, rk: &str) {
             cur_ceiling: plan.ceiling,
             cur_src: plan.src_measure,
             cur_transport_kbps: plan.transport_kbps,
+            cur_source_decodable: plan.source_decodable,
             cur_auto_original_watched: plan.auto_original_watched,
             auto_original: plan.auto_original,
             auto_fixture_base: String::new(),
@@ -4342,6 +4391,59 @@ mod tests {
         apply_plan(plan, "rk-7");
         assert_eq!(cur_sid(), sid, "the installed identity is the captured one");
         assert_eq!(cur_rk(), "rk-7", "and its other half");
+    }
+
+    /// **A plan that never reached the codec gate must not claim the source is undecodable.**
+    ///
+    /// `Plan::source_decodable` is a `bool`, `bool::default()` is `false`, and `false` is a CLAIM —
+    /// the quality menu renders it as "Converts on server" on the Original row. `build_stream` has
+    /// an exit (no client for the server slot) that returns before the gate runs at all, so the
+    /// value has to be `true` on the way in and be overwritten by evidence, not the other way
+    /// round.
+    ///
+    /// Differential: with the initializer's explicit `true` removed this fails, and the failure is
+    /// a line of copy asserting something about a file nobody opened.
+    #[test]
+    fn a_plan_that_never_resolved_makes_no_claim_about_the_source() {
+        let _g = fresh_registry();
+        let sid = unregistered_sid();
+        let env = ResolveEnv::snapshot(sid, "rk-7");
+
+        let plan = build_stream("rk-7", "/library/parts/5/1/f.mkv", "h264", "ac3", &env);
+        assert!(plan.url.is_empty(), "the test needs the exit that precedes the codec gate");
+        assert!(
+            plan.source_decodable,
+            "nobody looked at this file, so nothing may be said about it",
+        );
+        apply_plan(plan, "rk-7");
+        assert!(source_decodable(), "and the session carries the same silence");
+    }
+
+    /// The gate's verdict reaches the session, and it is the SOURCE codec that decides it.
+    ///
+    /// Category: policy plumbing. It is one boolean, but it is the boolean a line of user-visible
+    /// copy is drawn from, and the two ends are in different modules — the menu asks
+    /// `route::source_decodable()` and never evaluates `video_direct_plays` itself, deliberately,
+    /// because a second evaluation could disagree with the routing decision it describes.
+    #[test]
+    fn the_codec_gates_verdict_is_what_the_quality_menu_reads() {
+        let caps = crate::devcaps::Caps::assumed();
+        let dv = crate::metadata::Dovi::default().presentation_now();
+        // The two ends of the gate, at a UHD raster this device's table admits.
+        assert!(
+            video_direct_plays("hevc", 3840, 2160, dv, &caps),
+            "the raster is not what refuses a 4K item here — `hevc_max` admits it",
+        );
+        assert!(
+            !video_direct_plays("av1", 3840, 2160, dv, &caps),
+            "and the codec is: the pipeline cannot feed AV1 at any size",
+        );
+
+        let _g = fresh_registry();
+        session_mut(|s| s.cur_source_decodable = false);
+        assert!(!source_decodable(), "the menu reads the session, not the gate");
+        session_mut(|s| s.cur_source_decodable = true);
+        assert!(source_decodable());
     }
 
     /// The pipeline tier's entry into HLS, both ways round. Differential against the old seam,

@@ -2802,6 +2802,22 @@ enum PlayNote {
 /// HEVC file in a `.mov`, and the soft note on every mkv whose only fault was an audio track that
 /// had to be converted — pointing the user at a purchase that would fix nothing, which is the one
 /// thing `player::error_shape`'s own rule forbids.
+/// **The words this app uses for "the server must re-encode the pixels", in one place.**
+///
+/// Two surfaces answer from the same predicate — this page's facts row and the player's quality
+/// menu, which corrects the "Original" rung for a source the television cannot decode — and a
+/// second phrasing would read to a viewer as a second fact. Held as a `CStr` because the drawing
+/// side takes one; [`CONVERTS_ON_SERVER`] is the same bytes for callers that want a `&str`.
+pub(crate) const CONVERTS_ON_SERVER_C: &std::ffi::CStr = c"Converts on server";
+/// [`CONVERTS_ON_SERVER_C`] as a `&str`. Same bytes, asserted by a test rather than by eye.
+pub(crate) const CONVERTS_ON_SERVER: &str = "Converts on server";
+
+#[cfg(test)]
+#[test]
+fn the_two_spellings_of_the_conversion_notice_are_the_same_bytes() {
+    assert_eq!(CONVERTS_ON_SERVER_C.to_str().unwrap(), CONVERTS_ON_SERVER);
+}
+
 fn play_note(
     pv: crate::route::Preview,
     hdr: bool,
@@ -2887,13 +2903,13 @@ fn play_mode_bits(d: &metadata::Detail, after: bool) -> ([Bit; FACTS_BITS], usiz
                 // `info_panel::playback_now` reports for the LIVE session — the picture is copied,
                 // so calling it a conversion would state that the server touched the pixels.
                 crate::route::Preview::Remux => c"Direct Stream",
-                crate::route::Preview::Converts => c"Converts on server",
+                crate::route::Preview::Converts => CONVERTS_ON_SERVER_C,
             },
             dim,
             0,
         )),
         PlayNote::Soft => {
-            push(Bit::Word(c"Converts on server", dim, 0));
+            push(Bit::Word(CONVERTS_ON_SERVER_C, dim, 0));
             // inside the fragment the air closes one rung: these clauses are one sentence, where the
             // row-level dots separate three independent facts
             push(Bit::Sep(theme::space::SM));
