@@ -1127,7 +1127,12 @@ class NetcondRate(unittest.TestCase):
         self.mode = netcond.Mode(self.ctl, "pass")
         self._set("pass")
         self.proxy, self.port = netcond.start_proxy(
-            0, ("127.0.0.1", oport), self.mode, bind="127.0.0.1")
+            0,
+            ("127.0.0.1", oport),
+            self.mode,
+            bind="127.0.0.1",
+            allow_clients=["127.0.0.1"],
+        )
         self.addCleanup(self.proxy.close)
 
     def _set(self, raw):
@@ -1187,6 +1192,29 @@ class NetcondRate(unittest.TestCase):
         self.assertLessEqual(len(slow) * 8 / slow_s / 1000, self.KBPS * 1.35,
                              f"measured faster than the requested {self.KBPS:g} kbps "
                              f"(floor {self.FLOOR_S:.3f}s, took {slow_s:.3f}s)")
+
+    def test_a_non_loopback_listener_requires_a_client_allowlist(self):
+        """PMS URLs carry credentials; a LAN-wide forwarding proxy may not be open by default."""
+        with self.assertRaisesRegex(ValueError, "requires at least one allowed client"):
+            netcond.start_proxy(0, ("127.0.0.1", 1), self.mode)
+
+    def test_a_client_outside_the_allowlist_is_closed_before_forwarding(self):
+        blocked, port = netcond.start_proxy(
+            0,
+            ("127.0.0.1", 1),
+            self.mode,
+            bind="127.0.0.1",
+            allow_clients=["192.0.2.1"],
+        )
+        self.addCleanup(blocked.close)
+        client = socket.create_connection(("127.0.0.1", port), timeout=2)
+        self.addCleanup(client.close)
+        client.sendall(b"GET /private HTTP/1.1\r\nHost: x\r\n\r\n")
+        try:
+            body = client.recv(1)
+        except ConnectionResetError:
+            body = b""
+        self.assertEqual(body, b"")
 
     def test_a_scoped_rate_leaves_other_connections_alone(self):
         """The half that was broken until 2026-08-23: `relay` took `Mode.split`, which discards the

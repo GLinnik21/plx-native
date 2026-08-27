@@ -83,7 +83,8 @@ Four properties, each deliberate:
 
 ## Use
 
-    tools/netcond.py --listen 32401 --target 127.0.0.1:32400        # starts in `pass`
+    tools/netcond.py --listen 32401 --target 127.0.0.1:32400 \
+        --allow-client <TV_IP>                                     # starts in `pass`
     echo 'stall@/:/timeline' > /tmp/netcond.mode                    # freeze the reporter
     echo 'rate:512'          > /tmp/netcond.mode                    # throttle the link
     echo pass                > /tmp/netcond.mode                    # let it go again
@@ -104,6 +105,7 @@ Nothing here is deployed to the TV and nothing is secret: it forwards bytes it d
 beyond the first line, and it never logs the query string — a PMS URL carries `X-Plex-Token`.
 """
 import argparse
+import ipaddress
 import os
 import re
 import select
@@ -115,7 +117,15 @@ import threading
 import time
 
 CHUNK = 65536
-_stats = {"opened": 0, "stalled": 0, "rejected": 0, "blackholed": 0, "rated": 0, "passed": 0}
+_stats = {
+    "opened": 0,
+    "denied": 0,
+    "stalled": 0,
+    "rejected": 0,
+    "blackholed": 0,
+    "rated": 0,
+    "passed": 0,
+}
 _lock = threading.Lock()
 
 
@@ -408,14 +418,23 @@ def serve_conn(cli, target, mode):
                     pass
 
 
-def start_proxy(listen, target, mode, bind="0.0.0.0"):
+def start_proxy(listen, target, mode, bind="0.0.0.0", allow_clients=None):
     """Bind, listen, and accept on a daemon thread. Returns (listener, port).
 
     Factored out of `main` so `--selftest` and `tests/test_harness.py` drive the REAL accept path
     rather than a second, simpler copy of it. Shaping only means anything measured through the same
     `serve_conn`/`relay` the television goes through — a test against a private mini-proxy would
     grade a function nothing in the field calls.
+
+    A listener reachable beyond loopback MUST name the clients allowed to use it. PMS requests
+    carry an authentication token in the URL, so an open forwarding proxy on the LAN is not a
+    harmless test fixture: another client could ask it for private server responses. The check is
+    made before the request line is read and before an upstream connection is opened.
     """
+    allowed = frozenset(str(ipaddress.ip_address(client)) for client in (allow_clients or ()))
+    if not ipaddress.ip_address(bind).is_loopback and not allowed:
+        raise ValueError("a non-loopback netcond listener requires at least one allowed client")
+
     srv = socket.socket()
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind((bind, listen))
@@ -424,7 +443,13 @@ def start_proxy(listen, target, mode, bind="0.0.0.0"):
     def _accept():
         try:
             while True:
-                cli, _ = srv.accept()
+                cli, peer = srv.accept()
+                if allowed and peer[0] not in allowed:
+                    with _lock:
+                        _stats["denied"] += 1
+                    say("[netcond] DENY client not on allowlist")
+                    cli.close()
+                    continue
                 with _lock:
                     _stats["opened"] += 1
                 threading.Thread(target=serve_conn, args=(cli, target, mode), daemon=True).start()
@@ -573,6 +598,13 @@ def main():
     ap.add_argument("--target", default="127.0.0.1:32400")
     ap.add_argument("--mode", default="pass")
     ap.add_argument("--control", default="/tmp/netcond.mode")
+    ap.add_argument(
+        "--allow-client",
+        action="append",
+        default=[],
+        type=ipaddress.ip_address,
+        help="client IP allowed to use a non-loopback listener (repeatable; required on the LAN)",
+    )
     ap.add_argument("--selftest", action="store_true",
                     help="prove rate: shapes a loopback transfer and is live-switchable, then exit "
                          "(uses its own temp control file, never --control: see _selftest)")
@@ -591,8 +623,12 @@ def main():
     with open(a.control, "w") as f:
         f.write(a.mode)
 
-    srv, _port = start_proxy(a.listen, target, mode)
-    print(f"[netcond] :{a.listen} -> {target}   mode={a.mode}   control={a.control}", flush=True)
+    srv, _port = start_proxy(a.listen, target, mode, allow_clients=a.allow_client)
+    print(
+        f"[netcond] :{a.listen} -> {target}   mode={a.mode}   control={a.control} "
+        f"allow_clients={len(a.allow_client)}",
+        flush=True,
+    )
     try:
         threading.Event().wait()
     except KeyboardInterrupt:

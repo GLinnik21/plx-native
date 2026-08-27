@@ -282,6 +282,25 @@
       "_quality_note": "The standalone CONTROL: it establishes that playback left alone on Auto runs on this server, independently of the switching mechanism. Deliberately asserts nothing about rungs or controller presence: on an unshaped link what Auto chooses is the server's and the network's business, and a bound here would grade the afternoon. Run with `--verbose` when its `auto:` and `abr: sample` lines are wanted as characterisation; no cross-case fact is silently imported into the switch assertions."
     },
     {
+      "name": "auto_hls_pin_and_back",
+      "item": "movie_av1_no_dp_audio",
+      "kind": "movie",
+      "title": "Auto HLS, then PINNED to 720p·4 Mbps, then back to Auto",
+      "covers": ["auto-quality", "quality-switch", "abr-controller-lifecycle", "transcode", "e2e"],
+      "quality": "auto",
+      "run_secs": 90,
+      "operations": [
+        {"op": "play"},
+        {"op": "quality_switch", "to": ["720p_4_mbps", "auto"], "gap_ms": 40000}
+      ],
+      "expect": {
+        "min_timeline_climb_s": 40,
+        "no_playing_error": true,
+        "require_video_bound": true
+      },
+      "_quality_note": "The controller-forced companion to `auto_pin_and_back`. That case intentionally uses an ordinary direct-playable item and therefore cannot require an HLS controller on a Local server: Auto structurally chooses Local Original without a network probe. This case uses the existing symbolic AV1/no-direct-play-audio item, so Original is technically infeasible and Auto MUST start Fixed HLS whatever the link classification. The same switch script can therefore grade both lifecycle directions without a conditional: `abr: sample` must exist before the 4 Mbps pin, cease while fixed quality owns the route, and resume after Auto is restored. The item identity remains in the gitignored overlay. Link-specific rung assertions still belong to a netcond run; this case makes that run capable of observing the controller rather than pretending a slowed Local Original stream is ABR."
+    },
+    {
       "name": "original_then_auto",
       "item": "movie_h264_ac3_1080p",
       "kind": "movie",

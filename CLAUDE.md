@@ -406,8 +406,11 @@ which the linking section explains is load-bearing rather than tidy.
   selftest` proves upload, ordered redelivery/ack and refusal paths on loopback with no television,
   and runs inside `make check`.
 - `tools/netcond.py` — **network-conditioning TCP proxy** (host-side), for the failures a healthy LAN
-  cannot produce. Sits between the TV and the PMS (`--listen 32499 --target 127.0.0.1:32400`; the PMS
-  runs on the dev Mac) and makes the server misbehave on demand via `/tmp/netcond.mode`:
+  cannot produce. Sits between the TV and the PMS (`--listen 32499 --target 127.0.0.1:32400
+  --allow-client <TV_IP>`; the PMS runs on the dev Mac) and makes the server misbehave on demand
+  via `/tmp/netcond.mode`. A non-loopback listener refuses to start without an allowlisted client:
+  PMS request URLs carry credentials, so a LAN-wide forwarding proxy may never be open by default.
+  Modes:
   `pass` / `stall` (accept, hold open, answer nothing — the case that turns a join into a parked
   frame loop) / `blackhole` / `reject` / `delay:<ms>` / **`rate:<kbps>`**. Any mode scopes to
   matching requests — `stall@/:/timeline` freezes the progress reporter while video keeps
