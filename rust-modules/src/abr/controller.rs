@@ -206,7 +206,12 @@ impl Controller {
     pub(crate) fn on_resume(&mut self, paused_ms: u64) {
         self.delivery.age_ms(paused_ms, &self.policy);
         self.buffer = BufferEstimate::default();
+        // These counters describe uninterrupted time on this rung. A pause deliberately ages the
+        // delivery estimate, so carrying the lifecycle guards across it would combine stale
+        // evidence with a state that claims continuity.
+        self.samples_on_rung = 0;
         self.stable_samples = 0;
+        self.cooldown = 0;
     }
 
     /// Everything one decision was made on, in one struct, for one event-log line. Assembled here
@@ -285,17 +290,16 @@ impl Controller {
         let draining = self.buffer.draining();
         let segment = i64::from(sample.media_duration_ms);
 
-        // **Computed HERE, above every early return, and only read below.** The budget is a pure
-        // function of the four estimators, all of which this call has already updated, so its
-        // value is identical wherever between here and the decision it is taken — nothing in
-        // between mutates an input. Where it was computed mattered anyway, because three paths
+        // **Computed HERE, above every early return, and only read below.** The budget is the
+        // delivery estimate's conservative network rate, so its value is identical wherever
+        // between here and the decision it is taken — nothing in between mutates that input.
+        // Where it was computed mattered anyway, because three paths
         // return before reaching the decision: a transaction in flight, and both arms of the dev
         // pin. On a pinned run that is EVERY sample after the pin is reached, and the measured
         // consequence was that 397 of 527 `abr: steady` lines reported `safe=0kbps` — the central
         // quantity of the admission rule, unobservable on three quarters of the corpus, on
         // exactly the runs designed to characterise a rung.
-        let safe_budget =
-            hls_safe_budget(&self.delivery, &self.production, &self.buffer, &self.policy);
+        let safe_budget = hls_safe_budget(&self.delivery);
         self.last_safe_budget_kbps = safe_budget;
 
         // **Observe the §4 window, and compute its verdict on the CURRENT rung for telemetry.**
@@ -469,16 +473,16 @@ impl Controller {
             self.stable_samples = 0;
             return Decision::Stay;
         };
-        let target_candidate = self.catalog.candidate(target);
         if target <= self.current {
             self.stable_samples = 0;
             return Decision::Stay;
         }
 
-        // Upshift requires every resource signal to pass simultaneously. The target is selected
-        // directly from the actuator catalog, so 8 -> 14-class budgets skip intermediate encoders.
-        let all_good = safe_budget >= target_candidate.expected_wire_kbps
-            && self.production.ratio_pm <= self.policy.production_safe_pm
+        // The network constraint already selected `target` from the stricter named admission
+        // budget above. The remaining independent resource guards must pass simultaneously.
+        // The target is selected directly from the actuator catalog, so 8 -> 14-class budgets
+        // skip intermediate encoders.
+        let all_good = self.production.ratio_pm <= self.policy.production_safe_pm
             && buffered >= segment.saturating_mul(3)
             && !draining;
         if !all_good {

@@ -67,9 +67,21 @@ pub(crate) fn candidate_risk(
     }
 }
 
-/// The continuous budget the actuator is then chosen FROM — never "one rung up". Two discounts,
-/// each with a reason: uncertainty (inside `conservative_kbps`) and a server that is already
-/// behind.
+/// The continuous NETWORK budget the actuator is then chosen FROM — never "one rung up".
+/// [`CapacityEstimate::conservative_kbps`] has already applied the estimator's uncertainty;
+/// nothing else may discount this rate. Production and reserve are independent feasibility
+/// constraints, evaluated in their own units by the candidate filter and the acquisition window.
+///
+/// # [DELETED] Production pressure was folded into network capacity
+///
+/// ```text
+/// budget = budget * production_safe_pm / production.ratio_pm;
+/// ```
+///
+/// A server taking longer to produce a segment does not reduce the link's bit rate. Production
+/// remains an independent feasibility test in both candidate selection and the final upshift
+/// guard; representing the same fact here as fewer network kilobits double-counted it and mixed
+/// two actuators into a number named for one.
 ///
 /// # [DELETED] The third discount subtracted MILLISECONDS from KILOBITS PER SECOND
 ///
@@ -89,19 +101,8 @@ pub(crate) fn candidate_risk(
 /// the reserve in the units of the reserve, on measured acquisitions. Keeping a dimensionally
 /// broken copy of the same idea in the budget would be exactly the double-counting the design rule
 /// forbids — and the copy fires on the *selection* side, where it is invisible.
-pub(crate) fn hls_safe_budget(
-    capacity: &CapacityEstimate,
-    production: &ProductionEstimate,
-    buffer: &BufferEstimate,
-    policy: &AbrPolicy,
-) -> u32 {
-    let _ = buffer; // the reserve is condition (2)'s business, not the budget's — see above
-    let mut budget = capacity.conservative_kbps();
-    if production.ratio_pm > policy.production_safe_pm {
-        budget = budget.saturating_mul(policy.production_safe_pm).max(1)
-            / production.ratio_pm.max(1);
-    }
-    budget
+pub(crate) fn hls_safe_budget(capacity: &CapacityEstimate) -> u32 {
+    capacity.conservative_kbps()
 }
 
 /// **The wall-clock a candidate transfer may spend, and it is bounded in EVERY direction.**

@@ -1117,7 +1117,7 @@ fn a_reserve_at_or_below_zero_is_a_zero_budget_and_never_a_wrapped_one() {
     assert_eq!(reserve_as_budget(1), std::time::Duration::from_millis(1));
 }
 
-/// **DIMENSIONAL INVARIANT: the budget is a RATE and the reserve is a DURATION.**
+/// **DIMENSIONAL INVARIANT: the network budget has exactly one input, a network estimate.**
 ///
 /// `hls_safe_budget` used to do `budget -= (minimum_buffer_ms - buffered_ms)` — subtracting
 /// milliseconds from kilobits per second, removing up to 2 500 kbps of link because the reserve was
@@ -1126,24 +1126,44 @@ fn a_reserve_at_or_below_zero_is_a_zero_budget_and_never_a_wrapped_one() {
 ///
 /// The intent behind that branch is not lost, it is relocated: "the reserve must cover what the
 /// rung will overrun by" is §4's condition (2), evaluated in the units of the reserve against
-/// measured acquisitions.
+/// measured acquisitions. Production is likewise a separate candidate feasibility constraint;
+/// neither quantity can enter this function by construction.
 #[test]
-fn the_safe_budget_does_not_move_when_only_the_reserve_moves() {
-    let policy = AbrPolicy::measured();
+fn the_safe_budget_is_the_final_conservative_network_estimate() {
     let capacity = CapacityEstimate::from_prior(20_000);
-    let production = ProductionEstimate::default();
-    let budgets: Vec<u32> = [0i64, 1_000, 2_499, 2_500, 30_000, 90_000]
-        .iter()
-        .map(|&buffered_ms| {
-            let buffer = BufferEstimate { buffered_ms, ..Default::default() };
-            hls_safe_budget(&capacity, &production, &buffer, &policy)
-        })
-        .collect();
-    assert!(
-        budgets.windows(2).all(|w| w[0] == w[1]),
-        "the reserve changed the budget: {budgets:?} — a duration is being mixed into a rate",
-    );
-    assert!(budgets[0] > 0, "and the budget must not be zero, which would hide the invariant");
+    assert_eq!(hls_safe_budget(&capacity), capacity.conservative_kbps());
+}
+
+/// A pause breaks uninterrupted rung residency. The delivery estimate is retained as an aged
+/// prior, but sample-count lifecycle state must not survive beside it.
+#[test]
+fn resume_clears_every_sample_count_lifecycle_guard() {
+    let mut stable = bootstrap_controller();
+    for _ in 0..(AbrPolicy::measured().admission.window_len() * 2) {
+        let _ = stable.observe(sample(40_000, 200, 20_000));
+        if stable.telemetry().gates.stable > 0 {
+            break;
+        }
+    }
+    let before = stable.telemetry().gates;
+    assert!(before.on_rung > 0, "the setup must establish rung residency");
+    assert!(before.stable > 0, "the setup must establish an in-progress stability count");
+    stable.on_resume(30_000);
+    let after = stable.telemetry().gates;
+    assert_eq!(after.stable, 0);
+    assert_eq!(after.on_rung, 0);
+
+    let mut cooling = controller_at(Rung::P1080);
+    for _ in 0..2 {
+        assert_eq!(cooling.observe(sample(20_000, 400, 12_000)), Decision::Stay);
+    }
+    let Decision::Prime(down) = cooling.observe(sample(1_000, 400, 500)) else {
+        panic!("the setup must propose the emergency downshift");
+    };
+    assert!(cooling.commit(down));
+    assert!(cooling.telemetry().gates.cooldown > 0, "the setup must establish a cooldown");
+    cooling.on_resume(30_000);
+    assert_eq!(cooling.telemetry().gates.cooldown, 0);
 }
 
 /// **A link too fast to be believed must not read as a COLLAPSE.**
