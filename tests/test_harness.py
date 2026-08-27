@@ -345,6 +345,17 @@ class PipelineTier(unittest.TestCase):
         self.assertFalse(run.a_stream_path(bad, "pipe_h264_ac3_1080p.mkv")[0])
         self.assertFalse(run.a_stream_path([], "pipe_h264_ac3_1080p.mkv")[0])
 
+        # A case that starts in HLS never opens the clip it names — the ABR playlist is the
+        # first thing opened — so the fixture filename is the wrong comparison. What must still
+        # hold is that the stream came from THIS case's fixture root.
+        hls = ["stream: 10.0.0.2:53923 path=/__abr/720/master.m3u8?X-Plex-Token=x"]
+        self.assertFalse(run.a_stream_path(hls, "pipe_h264_aac_mp4.mp4")[0],
+                         "without the flag a playlist is not the named fixture, and says so")
+        self.assertTrue(run.a_stream_path(hls, "pipe_h264_aac_mp4.mp4", hls_entry=True)[0])
+        stale = ["stream: 10.0.0.2:53923 path=/library/parts/9/1/file.mkv?X-Plex-Token=x"]
+        self.assertFalse(run.a_stream_path(stale, "pipe_h264_aac_mp4.mp4", hls_entry=True)[0],
+                         "a stale plxnative-play library item is what this assertion is FOR")
+
     def test_the_audio_lane_assertion_reads_the_fed_index(self):
         ln = ["ff: v=#0 codec=h264 codec_id=27 1920x1080 trc=1 pri=1 spc=1 a=#2 dur_ns=60000000000"]
         self.assertTrue(run.a_audio_lane(ln, 2)[0])

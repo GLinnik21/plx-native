@@ -662,6 +662,13 @@ pub(crate) fn auto_original_watch() -> Option<AutoOriginalWatch> {
 /// asking PMS to create an encoder. Transport, FFmpeg, buffer measurement, the controller, pump
 /// handoff and Starfish are unchanged, which makes a mid-request bandwidth profile testable on a
 /// TV without a library, account, token, or external server.
+///
+/// `start_hls` skips the Original phase entirely and returns the playlist to open. Use it for
+/// every case that grades the HLS CONTROLLER; leave it off only where the transition itself is
+/// what is being graded, and give that case a `network_profile` that starves for real.
+/// [`crate::dev::PlayUrl::auto_start_hls`] has the history — the alternative was declaring a
+/// source rate no link could carry and relying on a starvation horizon that did not check whether
+/// the reserve was draining.
 pub(crate) fn arm_auto_fixture(
     original_url: &str,
     source_kbps: u32,

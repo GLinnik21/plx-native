@@ -1131,8 +1131,14 @@ def a_timeline_post(lines):
 #
 # Four, and each exists because the integration-tier assertion next to it asks a question the
 # pipeline tier cannot answer, or fails to ask one it must.
-def a_stream_path(lines, fixture):
-    """The demuxer opened THIS case's fixture.
+def a_stream_path(lines, fixture, hls_entry=False):
+    """The demuxer opened THIS case's stream.
+
+    `hls_entry` is a case that starts in HLS (`auto_network.start_hls`): the first thing opened is
+    the fixture server's own ABR playlist, never the clip the case names, so the fixture filename
+    is the wrong thing to compare. What still has to hold is the property this assertion exists
+    for — that the stream came from THIS case's fixture root and not from a stale
+    `plxnative-play=<rk>` pointing at a library item — and `/__abr/<rung>/master.m3u8` says so.
 
     `a_decision` cannot be reused and must not be relaxed to cover this: it classifies the opened
     path as DIRECT PLAY or TRANSCODE by matching `/library/parts/` or `/transcode/`, and
@@ -1149,7 +1155,11 @@ def a_stream_path(lines, fixture):
     for ln in lines:
         m = RE_STREAM_PATH.search(ln)
         if m:
-            got = os.path.basename(m.group(1).split("?", 1)[0])
+            path = m.group(1).split("?", 1)[0]
+            got = os.path.basename(path)
+            if hls_entry:
+                ok = got == "master.m3u8" and "/__abr/" in path
+                return ok, f"opened {path!r} (want the case's own /__abr/…/master.m3u8) :: {ln.strip()}"
             return (got == fixture), f"opened {got!r} (want {fixture!r}) :: {ln.strip()}"
     return False, "no `stream: ... path=` line — the demuxer never opened anything"
 
@@ -3421,7 +3431,9 @@ def evaluate_pipeline(case, lines, srv_delta, gst_lines=None):
     bit-identical instead of making it depend on a flag it never sets.
     """
     exp = case["expect"]
-    results = [("stream_path", *a_stream_path(lines, case["fixture"]))]
+    results = [("stream_path", *a_stream_path(
+        lines, case["fixture"],
+        hls_entry=bool((case.get("auto_network") or {}).get("start_hls"))))]
     results.append(("load_decl", *a_load_decl(lines, exp)))
     if "load_count_exact" in exp:
         results.append(("load_count", *a_load_count(lines, exp["load_count_exact"])))

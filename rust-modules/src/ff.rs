@@ -2179,6 +2179,48 @@ impl Drop for HlsInput {
     }
 }
 
+/// **What the HLS demuxer actually found, logged when it CHANGES.** The progressive path has said
+/// this since it was written (`ff: v=#0 codec=… WxH`); the adaptive path never has, so on every
+/// HLS playback — both tiers — nothing in the log stated the codec or the raster of the stream
+/// being decoded. `abr: committed … 1280x720` is the CATALOG raster of the rung that was asked
+/// for, which is a different claim: it is what we requested, not what arrived.
+/// `docs/adaptive-playback-plan.md` §7.B names that gap.
+///
+/// Emitted on change rather than per segment, because a segment open happens every two seconds
+/// and the interesting event is the raster moving. The line's SHAPE is deliberately identical to
+/// the progressive one so `tests/run.py`'s `RE_CODEC` reads both without a second regex — which
+/// is also why the stream index is written `#0` rather than the discovered one: it is the video
+/// stream, and every consumer of that field treats it that way.
+static HLS_LAST_VIDEO: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
+
+unsafe fn log_hls_video_change(fmt: *mut AVFormatContext) {
+    let streams = (*fmt).streams;
+    for i in 0..(*fmt).nb_streams {
+        let cp = stream_codecpar(*streams.add(i as usize));
+        if (*cp).codec_type != AVMEDIA_TYPE_VIDEO {
+            continue;
+        }
+        let (id, w, h) = ((*cp).codec_id, (*cp).width, (*cp).height);
+        // Pack (codec_id, width, height) into one word so the compare-and-store is a single
+        // atomic and two threads cannot interleave a half-updated triple.
+        let key = ((id as u64 & 0xffff) << 48)
+            | ((w as u64 & 0xffff_ffff) << 16)
+            | (h as u64 & 0xffff);
+        if HLS_LAST_VIDEO.swap(key, Ordering::Relaxed) == key {
+            return;
+        }
+        let cname = std::ffi::CStr::from_ptr(avcodec_get_name(id)).to_string_lossy();
+        crate::player::log(&format!(
+            "ff: v=#0 codec={cname} codec_id={id} {w}x{h} trc={} pri={} spc={} a=#1 dur_ns={}",
+            (*cp).color_trc,
+            (*cp).color_primaries,
+            (*cp).color_space,
+            SHARED.duration_ns.load(Ordering::Relaxed)
+        ));
+        return;
+    }
+}
+
 unsafe fn hls_input(
     src: Src,
     size: i64,
@@ -2244,6 +2286,7 @@ unsafe fn hls_input(
         }
         return Err(HlsExit::Failed("segment stream discovery failed"));
     }
+    log_hls_video_change(input.fmt);
     input.pkt = av_packet_alloc();
     if input.pkt.is_null() {
         return Err(HlsExit::Failed("segment packet allocation failed"));
@@ -3296,6 +3339,10 @@ fn hls_demux(
     aqa: *mut AuQueue,
     hs: *mut HttpStream,
 ) -> Result<(), HlsExit> {
+    // The change detector is process-global, so a second playback of the same stream would
+    // otherwise log nothing at all. Cleared here rather than on teardown: this is the one place
+    // that runs exactly once per HLS demux, whatever ended the previous one.
+    HLS_LAST_VIDEO.store(u64::MAX, Ordering::Relaxed);
     if let Some((control, _)) = abr.as_ref() {
         SHARED.dg_abr_mode.store(crate::player::ABR_MODE_HLS, Ordering::Relaxed);
         SHARED.dg_abr_kbps.store(i64::from(control.initial_rung.kbps()), Ordering::Relaxed);
