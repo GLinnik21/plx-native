@@ -41,11 +41,18 @@ full one-time setup + troubleshooting.
   (`ci/build-ffmpeg.sh`; ~2 minutes cold, nothing after). Also compiles `ci/ffabi-assert.c` against
   `vendor/ffmpeg-prefix/include` — **the headers the shipped libraries were built from**, installed
   by the same invocation that produced them — which is what proves `ff.rs`'s ABI table. **One**
-  header tree, **one** table. This line long said BOTH vendored trees (n3.3 and n4.0) and *two*
-  tables, which was true while the app read the television's FFmpeg and had to select a table per
-  firmware; bundling collapsed that into a single equality (`ffabi-assert.c` opens by asserting
-  `LIBAVFORMAT_VERSION_MAJOR == 63`), and the vendored trees are gone — so anyone who went looking
-  for them found `vendor/` holding nanosvg and nothing else.
+  header tree per target, **one** FFmpeg. This line long said BOTH vendored trees (n3.3 and n4.0)
+  and *two* tables, which was true while the app read the television's FFmpeg and had to select a
+  table per firmware; bundling collapsed that into a single equality (`ffabi-assert.c` opens by
+  asserting `LIBAVFORMAT_VERSION_MAJOR == 63`), and the vendored trees are gone.
+  **Since 2026-08-28 there ARE two tables again, and the axis is POINTER WIDTH rather than
+  version.** `make sim` builds the same FFmpeg 9.0 from the same component list for this Mac
+  (`HOST=1 ci/build-ffmpeg.sh` → `vendor/ffmpeg-prefix-host`, staged into `pkg/` as
+  `libavformat-plx.63.dylib`) so the simulator can demux at all, and `ffabi-assert.c` `#if`s on
+  `__SIZEOF_POINTER__`, each half compiled against its own build's headers. That is not the old
+  runtime major-selected table returning: this picks between two ABIs of ONE version at COMPILE
+  time, on evidence the compiler holds — and deriving the second half is what found
+  `AVSubtitleRect` modelled with `flags` in the wrong place.
 - `make deploy` — scp the binary + this flavour's `appinfo.json` + the fonts (UNCONDITIONALLY —
   the old `test -f || scp` guard meant a changed font could never reach the TV) into that
   install's app dir. Refuses if the flavour has never been installed, naming
@@ -723,12 +730,32 @@ triggers, is driven by the same remote-FIFO tokens, and screenshots itself. **Th
 harness jobs kill each other — while N simulators run side by side, each pointed at its own
 instance root (`PLXNATIVE_RUNTIME_DIR`, which is where the triggers, FIFO and event log now come
 from; unset it and everything resolves to `/tmp` exactly as before). It answers layout, focus,
-navigation, every screen, and the whole Plex data layer. It CANNOT answer frame rate (different
+navigation, every screen, and the whole Plex data layer.
+**And since 2026-08-28 it STREAMS — real HTTP, real demux, real HLS, the real adaptive
+controller.** `make sim` builds a HOST copy of the same bundled FFmpeg 9.0 from the same
+`ci/build-ffmpeg.sh` component list (`HOST=1`, into `vendor/ffmpeg-prefix-host`, staged into
+`pkg/` as `libavformat-plx.63.dylib` beside the ARM `.so.63`), and `ff.rs` carries a second ABI
+table selected on `target_pointer_width` with `ci/ffabi-assert.c` holding both. Arm
+`plxnative-clocksink` (`player/ffi_host.rs` — AUs accepted and discarded, a presentation clock
+clamped to the last fed PTS, position reported at the television's measured 5 Hz) and the whole
+pipeline between the socket and the decoder runs on the Mac: both AVIO transports, `ff.rs`'s
+demux, the AU queues and their byte-cap backpressure, the feed-ahead throttle, rung transactions,
+seek. Measured the day it landed: 94 `abr:` lines and a rung commit in one 30 s host run against
+`tests/serve_fixtures.py`. Until then this half was device-only and `make sim` said so
+(`ff: FFmpeg unavailable — the app runs, playback will refuse`), which is why the ABR work was
+pinned to the one-television mutex.
+It still CANNOT answer frame rate (different
 GPU — every simulator heartbeat carries **`sim=1`** so a pasted log cannot be mistaken for a
-device measurement), text rasterization, or anything about video (the 29-symbol Starfish/ACB seam
-is absent; `player::ffi`'s host arm reports the seam's own "no video path" failure, so Play lands
-on the real failure read-out). Two bugs it has already found in DEVICE code: the glyph upload
-ignored `SDL_Surface::pitch` (`text.rs`), and `dev`/`remote`/`log` all hardcoded `/tmp`.
+device measurement), text rasterization, or anything about **LG's decoder** — resource-allocation
+refusals, the ACB video-plane bind, the Load payload's Dolby declaration, `SOUND_ERROR_019`, frame
+pacing, which codecs the panel takes. Nothing decodes: the clock sink throws every AU away, and a
+Mac decodes things that television will not and the reverse. Without the trigger, Play still lands
+on the real failure read-out, which is what the UI work wants to see.
+Bugs it has already found in DEVICE code: the glyph upload
+ignored `SDL_Surface::pitch` (`text.rs`), `dev`/`remote`/`log` all hardcoded `/tmp`, and — from
+deriving the ABI table at a second pointer width — `AVSubtitleRect` was modelled with `flags`
+last where the header puts it before `type`, so `type_` read `flags` and on 64-bit `flags` landed
+one word past the end of the struct.
 **Two host-only traps that read as your change being broken.** (1) **`make sim-shot` HANGS on a
 settled screen** — `SIM_FRAME` is a count of *presented* frames (`shot.rs`, and `app.rs` says the
 same at the `shot` token: "presented frames only accrue when something repaints"), and `ui::idle`

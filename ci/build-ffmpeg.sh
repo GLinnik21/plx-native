@@ -38,6 +38,26 @@
 # RTLD_GLOBAL — libavutil, then libavcodec, then libavformat — so each is already in the global
 # scope by SONAME when the next one names it. That is ordinary loader behaviour, it needs no build
 # flag to survive quoting, and unlike an rpath it can be asserted from inside the app.
+#
+# HOST=1 BUILDS THE SAME FFMPEG FOR THIS MAC INSTEAD, and it is the same script on purpose.
+#
+# The desktop simulator (`make sim`) runs the real app core on macOS, but `ff.rs` dlopens the
+# bundled libraries by absolute path out of the app directory — where they are 32-bit ARM ELF. So
+# the ENTIRE streaming half of the app (the AVIO transports, the HLS demux, the AU queues and
+# therefore the whole adaptive controller) was device-only, and the one instrument that can run
+# them without a television could not reach them: `ff: FFmpeg unavailable — the app runs, playback
+# will refuse`, measured 2026-08-28.
+#
+# **One script, and specifically ONE COMPONENT LIST.** Everything below `set --` is shared: same
+# version, same demuxers, parsers, bitstream filters and decoders, same `--disable-network` with
+# `file` as the only protocol, same `-plx` suffix, same LGPL flags. A second script would drift,
+# and the drift would be invisible — the host would demux something the television cannot, or
+# stop demuxing something it can, and the simulator would be answering about a different FFmpeg
+# while looking identical. The cross block is the only difference, and it is three lines.
+#
+# The output is `vendor/ffmpeg-prefix-host` and `libavformat-plx.63.dylib` — Mach-O naming, so
+# nothing here can be confused with the shipped ELF even by basename, and `make ipk`'s
+# `lib*-plx.so.*` glob cannot pick it up.
 set -eu
 
 VERSION=9.0
@@ -45,8 +65,14 @@ SHA256=7f607a00dd0d28a729d5a4811205812eef01cf6ef6155025febb6f36a9062d52
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 NDK=${WEBOS_SDK:-$HOME/webos-ndk/arm-webos-linux-gnueabi_sdk-buildroot}
 SYSROOT="$NDK/arm-webos-linux-gnueabi/sysroot"
-WORK="$ROOT/vendor/ffmpeg-build"
-PREFIX="$ROOT/vendor/ffmpeg-prefix"
+HOST=${HOST:-}
+if [ -n "$HOST" ]; then
+  WORK="$ROOT/vendor/ffmpeg-build-host"
+  PREFIX="$ROOT/vendor/ffmpeg-prefix-host"
+else
+  WORK="$ROOT/vendor/ffmpeg-build"
+  PREFIX="$ROOT/vendor/ffmpeg-prefix"
+fi
 # `--prefix` is the LITERAL /plx, not $PREFIX, and the install is redirected with DESTDIR below.
 #
 # WHY: FFmpeg records its entire configure INVOCATION inside libavutil (`avutil_configuration()`),
@@ -71,7 +97,9 @@ SRC="$WORK/ffmpeg-$VERSION"
 # misleading "C compiler test failed", so --cross-prefix must be absolute.
 CROSS="$NDK/bin/arm-webos-linux-gnueabi-"
 
-[ -x "${CROSS}gcc" ] || { echo "ffmpeg: no NDK at $NDK — run 'make setup-env'" >&2; exit 1; }
+if [ -z "$HOST" ]; then
+  [ -x "${CROSS}gcc" ] || { echo "ffmpeg: no NDK at $NDK — run 'make setup-env'" >&2; exit 1; }
+fi
 
 mkdir -p "$WORK"
 TAR="$WORK/ffmpeg-$VERSION.tar.xz"
@@ -111,10 +139,15 @@ fi
 #              FFmpeg here never touches a video frame.
 #   encoder/   mpeg1video + mpegts are the DEV capture stream only, dropped by RELEASE=1 along
 #   muxer      with swscale, which nothing else uses.
-set -- \
-  --prefix=/plx \
-  --enable-cross-compile --cross-prefix="$CROSS" --host-cc=cc \
-  --arch=arm --cpu=cortex-a9 --target-os=linux --sysroot="$SYSROOT" \
+if [ -n "$HOST" ]; then
+  # No --arch/--cpu/--target-os: configure detects this Mac, which is the point.
+  set -- --prefix=/plx
+else
+  set -- --prefix=/plx \
+    --enable-cross-compile --cross-prefix="$CROSS" --host-cc=cc \
+    --arch=arm --cpu=cortex-a9 --target-os=linux --sysroot="$SYSROOT"
+fi
+set -- "$@" \
   --build-suffix=-plx \
   --enable-shared --disable-static --enable-pic \
   --extra-cflags='-Dstatic_assert=_Static_assert' \
@@ -155,12 +188,15 @@ make install DESTDIR="$WORK/destdir" > "$WORK/install.log" 2>&1
 mkdir -p "$PREFIX"
 cp -R "$WORK/destdir/plx/." "$PREFIX/"
 
-# Strip: these ship, and the debug info is ~4x the code.
-for f in "$PREFIX"/lib/lib*-plx.so.*; do
-  [ -f "$f" ] && [ ! -L "$f" ] && "${CROSS}strip" --strip-unneeded "$f"
-done
+# Strip: these ship, and the debug info is ~4x the code. Only the shipped build — the host copy
+# never leaves this machine, and `strip` on a Mach-O dylib is a different flag set for no gain.
+if [ -z "$HOST" ]; then
+  for f in "$PREFIX"/lib/lib*-plx.so.*; do
+    [ -f "$f" ] && [ ! -L "$f" ] && "${CROSS}strip" --strip-unneeded "$f"
+  done
+fi
 
 echo "ffmpeg: installed to $PREFIX"
-for f in "$PREFIX"/lib/lib*-plx.so.*; do
+for f in "$PREFIX"/lib/lib*-plx.so.* "$PREFIX"/lib/lib*-plx.*.dylib; do
   [ -f "$f" ] && [ ! -L "$f" ] && printf '  %-28s %6s KB\n' "$(basename "$f")" "$(( $(wc -c < "$f") / 1024 ))"
 done

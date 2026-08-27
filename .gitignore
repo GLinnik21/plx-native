@@ -124,3 +124,10 @@ tests/fixtures/fixtures.json
 # Python bytecode from the host-side test/tooling scripts.
 __pycache__/
 *.pyc
+
+# The HOST FFmpeg the desktop simulator streams through (ci/build-ffmpeg.sh HOST=1) — derived,
+# ~2 MB of Mach-O, and never shipped: APP_FILES is an explicit list, so it cannot reach an .ipk.
+vendor/ffmpeg-build-host/
+vendor/ffmpeg-prefix-host/
+pkg/*.dylib
+pkg/.ffabi-host-ok

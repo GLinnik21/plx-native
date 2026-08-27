@@ -970,13 +970,43 @@ SIM_ENV = PLXNATIVE_RUNTIME_DIR=$(SIM_DIR) PLXNATIVE_APP_DIR=$(CURDIR)/pkg $(SIM
 SIM_PRE = mkdir -p $(SIM_DIR); test -n "$(SIM_PMS)" || \
           { echo "no PMS host — set SIM_PMS=<ip> or add PMS_HOST to src/config.local.h"; exit 1; }
 
+# **The simulator needs its own FFmpeg, and that is what makes it able to STREAM.** `ff.rs` opens
+# the bundled libraries by absolute path out of the app directory, where they are 32-bit ARM ELF —
+# so until 2026-08-28 the entire streaming half of the app (both AVIO transports, the HLS demux,
+# the AU queues and therefore the whole adaptive controller) was device-only, and `make sim`
+# logged `ff: FFmpeg unavailable`. `HOST=1 ci/build-ffmpeg.sh` builds the SAME FFmpeg 9.0 from the
+# SAME component list for this Mac; `ci/stage-host-ffmpeg.sh` puts it in pkg/ with loader-relative
+# names. `APP_FILES` is an explicit list, so none of it can reach an .ipk or a television.
+FFMPEG_HOST_PREFIX = vendor/ffmpeg-prefix-host
+FFMPEG_HOST_INC    = $(FFMPEG_HOST_PREFIX)/include
+FFMPEG_HOST_NAMES  = libavutil-plx.61 libavcodec-plx.63 libavformat-plx.63 libswscale-plx.10
+FFMPEG_HOST_STAGED = $(addprefix pkg/,$(addsuffix .dylib,$(FFMPEG_HOST_NAMES)))
+
+$(FFMPEG_HOST_INC)/libavformat/avformat.h:
+	HOST=1 ./ci/build-ffmpeg.sh
+
+$(FFMPEG_HOST_STAGED): pkg/%.dylib: $(FFMPEG_HOST_INC)/libavformat/avformat.h ci/stage-host-ffmpeg.sh
+	@mkdir -p pkg
+	./ci/stage-host-ffmpeg.sh $*
+
+# The same ABI gate the cross build runs, at the other pointer width. ci/ffabi-assert.c `#if`s on
+# `__SIZEOF_POINTER__` and carries both tables, so this compile is what holds ff.rs's 64-bit
+# constants in place — and it is the reading that found `AVSubtitleRect`'s field order.
+pkg/.ffabi-host-ok: ci/ffabi-assert.c $(FFMPEG_HOST_INC)/libavformat/avformat.h Makefile
+	@mkdir -p pkg
+	cc -I $(FFMPEG_HOST_INC) -std=c11 -c ci/ffabi-assert.c -o /dev/null
+	@touch $@
+
 # LAB=1 adds the Lab Diagnostics feature here too, and that is not a curiosity: it is the only way
 # to exercise the WHOLE upload path — trigger, snapshot, scrub, gzip, pinned TLS POST, receiver —
 # without a television and without opening a port on the router (`tools/plxnative-lab start
 # --hostname 127.0.0.1 --no-upnp`). The simulator reads `lab.json` out of its app dir, which is
 # `pkg/`, which is where `plxnative-lab start` writes it. It has its own target dir for the same
 # reason every other feature set does.
-sim:
+#
+# The host FFmpeg is a prerequisite of BOTH configurations: a lab simulator that cannot demux
+# would exercise the upload path over a playback that never started.
+sim: $(FFMPEG_HOST_STAGED) pkg/.ffabi-host-ok
 	cargo build --manifest-path rust-modules/Cargo.toml --target-dir $(SIM_TDIR)$(if $(LAB),-lab,) --features hostsim$(if $(LAB), --features lab-diagnostics,) --bin plxnative-sim
 
 # Interactive: opens a window. Ctrl-C to quit.

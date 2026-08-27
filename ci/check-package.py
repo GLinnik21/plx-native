@@ -602,6 +602,14 @@ if data_tar.exists():
         paths = {m.name.lstrip("./") for m in members}
         owners = {(m.uname, m.gname) for m in members}
     check(expected <= names, f"payload carries all {len(expected)} app files")
+    # **The simulator's Mach-O FFmpeg lives in pkg/ too, and must never be in the package.** It
+    # cannot get there today — `APP_FILES` is an explicit list, not a glob — but "cannot" is a
+    # property of one Makefile line, and what it guards against is 2 MB of unrunnable arm64 shipped
+    # to a 32-bit television inside an archive whose sha256 is a published release asset. Graded
+    # against the ARCHIVE, never against pkg/, which is expected to hold them.
+    dylibs = sorted(n for n in names if n.endswith(".dylib"))
+    check(not dylibs, "payload carries no host .dylib"
+                      + (f" (found {', '.join(dylibs)})" if dylibs else ""))
     # The Makefile's own comment records the ipk once shipping WITHOUT the fonts, silently
     # rendering the whole theme::size ladder in DroidSans.
     check(owners <= {("root", "root"), ("", "")},

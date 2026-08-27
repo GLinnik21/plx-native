@@ -23,7 +23,25 @@
 #include <libavutil/frame.h>
 #include <libavutil/dovi_meta.h>
 
+/* Two ways to recover the same list, chosen by the platform's constraint rather than by taste.
+ *
+ * CROSS (default): each value becomes the SIZE of a zero-initialised array, read back with
+ * `nm -S`. Nothing executes, which is the only option for an ARM object on this desk.
+ *
+ * `-DPLX_FFABI_MAIN` (the HOST table, for the simulator): the same list becomes a printed table,
+ * because a host object CAN be run and because macOS `nm` reports every Mach-O size as zero — the
+ * array trick is not merely unnecessary there, it silently yields nothing.
+ *
+ * **One list, two readers.** A second file would drift, and a drifted ABI table does not fail: it
+ * succeeds with garbage, which is the whole reason this apparatus exists.
+ */
+#ifdef PLX_FFABI_MAIN
+#include <stdio.h>
+static const struct { const char *name; long value; } plx_table[] = {
+#define DUMP(name, expr) { #name, (long)(expr) },
+#else
 #define DUMP(name, expr) char plx_##name[(expr) + 1];
+#endif
 
 DUMP(version_avformat, LIBAVFORMAT_VERSION_MAJOR)
 DUMP(version_avcodec,  LIBAVCODEC_VERSION_MAJOR)
@@ -33,6 +51,7 @@ DUMP(version_avutil,   LIBAVUTIL_VERSION_MAJOR)
 DUMP(off_stream_index,     offsetof(AVStream, index))
 DUMP(off_stream_time_base, offsetof(AVStream, time_base))
 DUMP(off_stream_codecpar,  offsetof(AVStream, codecpar))
+DUMP(off_stream_metadata,  offsetof(AVStream, metadata))
 DUMP(sizeof_stream,        sizeof(AVStream))
 
 /* AVFormatContext — modelled through `nb_streams`/`streams`, plus duration by offset. */
@@ -124,3 +143,13 @@ DUMP(pix_nv12,  AV_PIX_FMT_NV12)
 DUMP(mt_video,  AVMEDIA_TYPE_VIDEO)
 DUMP(mt_audio,  AVMEDIA_TYPE_AUDIO)
 DUMP(mt_sub,    AVMEDIA_TYPE_SUBTITLE)
+
+#ifdef PLX_FFABI_MAIN
+};
+int main(void) {
+    for (unsigned i = 0; i < sizeof plx_table / sizeof plx_table[0]; i++)
+        printf("%-24s %8ld   0x%lx\n", plx_table[i].name, plx_table[i].value,
+               plx_table[i].value);
+    return 0;
+}
+#endif

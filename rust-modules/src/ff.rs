@@ -68,9 +68,27 @@ pub enum AVStream {}
 // version string plus an upstream tarball — becomes one the compiler checked.
 //
 // `tools/ffabi-dump.sh` re-derives all of them if the bundled version ever changes.
+//
+// **TWO TABLES, and the axis is POINTER WIDTH rather than FFmpeg version.** The 32-bit arm is the
+// television; the 64-bit arm is the desktop simulator (`make sim`), which runs this same code
+// against a host build of the SAME FFmpeg 9.0 from the SAME `ci/build-ffmpeg.sh` component list.
+// Every difference below is a pointer that got wider or an int64 that moved to keep its
+// alignment; nothing here is a version difference, which is exactly why the old runtime
+// major-selected table does not come back. `ci/ffabi-assert.c` holds both, `#if`-ed the same way,
+// against each build's own headers — so a wrong number is a compile error on the platform it is
+// wrong for, and `HOST=1 tools/ffabi-dump.sh` prints the 64-bit half.
+#[cfg(target_pointer_width = "32")]
 const OFF_STREAM_INDEX: usize = 4; // NB not 0 — FFmpeg 5.0 put `const AVClass *av_class` first
+#[cfg(target_pointer_width = "32")]
 const OFF_STREAM_CODECPAR: usize = 12;
+#[cfg(target_pointer_width = "32")]
 const OFF_STREAM_TIME_BASE: usize = 20;
+#[cfg(target_pointer_width = "64")]
+const OFF_STREAM_INDEX: usize = 8;
+#[cfg(target_pointer_width = "64")]
+const OFF_STREAM_CODECPAR: usize = 16;
+#[cfg(target_pointer_width = "64")]
+const OFF_STREAM_TIME_BASE: usize = 32;
 /// `AVStream.metadata` — the container's own per-track tags, which is where a track's NAME lives.
 ///
 /// It is read for one reason and it is a data reason, not a rendering one: **PMS does not send the
@@ -83,9 +101,15 @@ const OFF_STREAM_TIME_BASE: usize = 20;
 /// tell a forced signs track from a full translation, and no amount of care in the UI can invent
 /// the difference. `/library/streams/{id}` is 501 and `checkFiles=1` adds nothing; the file is the
 /// only source, and we are already holding it open.
+#[cfg(target_pointer_width = "32")]
 const OFF_STREAM_METADATA: usize = 72;
+#[cfg(target_pointer_width = "64")]
+const OFF_STREAM_METADATA: usize = 80;
 /// `AVFormatContext.duration`, in AV_TIME_BASE units. By offset — see the struct's closing note.
+#[cfg(target_pointer_width = "32")]
 const OFF_FMT_DURATION: usize = 64;
+#[cfg(target_pointer_width = "64")]
+const OFF_FMT_DURATION: usize = 104;
 
 /// `AVDictionaryEntry` — two `char *`. Modelled rather than opaque because the whole point of the
 /// call is to read both halves; `ci/ffabi-assert.c` holds the layout.
@@ -287,10 +311,18 @@ pub struct AVSubtitleRect {
     // it under FF_API_AVPICTURE. FFmpeg 5.0 deleted that, taking sizeof from 132 to 68.
     pub data: [*mut u8; 4], // +20  data[0]=PAL8 indices, data[1]=palette (256×BGRA)
     pub linesize: [c_int; 4], // +36
-    pub type_: c_int,       // +52 (enum AVSubtitleType: 0=NONE, 1=BITMAP, 2=TEXT, 3=ASS)
-    pub text: *mut c_char,  // +56
-    pub ass: *mut c_char,   // +60
-    pub flags: c_int,       // +64
+    // **`flags` comes BEFORE `type`, and this model had them the other way round until
+    // 2026-08-28.** The consequence was latent rather than live — `rect_to_rgba` reads only
+    // x/y/w/h/linesize[0]/data[0..2], all of which are ahead of the swap — but it was wrong in
+    // the way this whole apparatus exists to prevent: `type_` read `flags`, `text` read `type`,
+    // and on the 64-bit host `flags` landed at offset 96 of a 96-byte struct, i.e. one word past
+    // the end. Found by porting the table to the simulator's pointer width, which is a second
+    // independent reading of the same header and is exactly what caught it. `ci/ffabi-assert.c`
+    // now pins all four on both widths.
+    pub flags: c_int,       // +52 arm / +72 host
+    pub type_: c_int,       // +56 / +76 (enum AVSubtitleType: 0=NONE, 1=BITMAP, 2=TEXT, 3=ASS)
+    pub text: *mut c_char,  // +60 / +80
+    pub ass: *mut c_char,   // +64 / +88
 }
 
 
@@ -311,7 +343,14 @@ pub struct AVSubtitleRect {
 // suite links unconditionally, and a test that calls into FFmpeg now fails by taking `dlopen`'s
 // None branch on Darwin instead of by failing to link.
 crate::dynlib! {
-    avformat: ["libavformat-plx.so.63"] {
+    avformat: [
+        // The ELF the app SHIPS, and the Mach-O the desktop simulator builds beside it
+        // (`HOST=1 ci/build-ffmpeg.sh` — same version, same component list). A candidate
+        // LIST rather than a `cfg`: `dynlib!` already tries each name and reports the ones
+        // it could not open, and only one of these two can ever exist in an app directory.
+        "libavformat-plx.so.63",
+        "libavformat-plx.63.dylib",
+    ] {
     // Declared beside libavformat's other entry points because that is the library that DEFINES
     // it. Under `#[link]` the final link resolved every name against every library at once and
     // the grouping was cosmetic; `dlsym` searches one handle and its dependency chain, and
@@ -361,7 +400,14 @@ crate::dynlib! {
     fn avformat_free_context(s: *mut AVFormatContext);
 }}
 crate::dynlib! {
-    avcodec: ["libavcodec-plx.so.63"] {
+    avcodec: [
+        // The ELF the app SHIPS, and the Mach-O the desktop simulator builds beside it
+        // (`HOST=1 ci/build-ffmpeg.sh` — same version, same component list). A candidate
+        // LIST rather than a `cfg`: `dynlib!` already tries each name and reports the ones
+        // it could not open, and only one of these two can ever exist in an app directory.
+        "libavcodec-plx.so.63",
+        "libavcodec-plx.63.dylib",
+    ] {
     fn avcodec_version() -> c_uint;
     fn av_packet_alloc() -> *mut AVPacket;
     fn av_packet_free(pkt: *mut *mut AVPacket);
@@ -400,7 +446,14 @@ crate::dynlib! {
     // avformat_version lives in libavformat, not libavutil — but it was declared here and the
     // loader resolves by symbol, not by header, so it must move to the library that defines it or
     // the whole avutil table reports Incomplete on every device.
-    avutil: ["libavutil-plx.so.61"] {
+    avutil: [
+        // The ELF the app SHIPS, and the Mach-O the desktop simulator builds beside it
+        // (`HOST=1 ci/build-ffmpeg.sh` — same version, same component list). A candidate
+        // LIST rather than a `cfg`: `dynlib!` already tries each name and reports the ones
+        // it could not open, and only one of these two can ever exist in an app directory.
+        "libavutil-plx.so.61",
+        "libavutil-plx.61.dylib",
+    ] {
     fn avutil_version() -> c_uint;
     fn av_malloc(size: usize) -> *mut c_void;
     fn av_freep(ptr: *mut c_void);
@@ -422,7 +475,14 @@ crate::dynlib! {
     ) -> *const AVDictionaryEntry;
 }}
 crate::dynlib! {
-    swscale: ["libswscale-plx.so.10"] {
+    swscale: [
+        // The ELF the app SHIPS, and the Mach-O the desktop simulator builds beside it
+        // (`HOST=1 ci/build-ffmpeg.sh` — same version, same component list). A candidate
+        // LIST rather than a `cfg`: `dynlib!` already tries each name and reports the ones
+        // it could not open, and only one of these two can ever exist in an app directory.
+        "libswscale-plx.so.10",
+        "libswscale-plx.10.dylib",
+    ] {
     fn sws_getContext(
         src_w: c_int, src_h: c_int, src_fmt: c_int,
         dst_w: c_int, dst_h: c_int, dst_fmt: c_int,
@@ -652,12 +712,30 @@ unsafe fn nth_audio_stream(fmt: *mut AVFormatContext, n: i32) -> Option<c_int> {
 // asserts them per major, so if anyone ever needs to poke them again the proven numbers are there.
 // AVFrame (avutil 55, 32-bit ARM). pts sits at +104: a 4-byte pad at +100
 // 8-aligns the int64 on ARM EABI (the classic AVFrame-on-ARM quirk).
-const OFF_FRAME_DATA: usize = 0; // u8*[8]
+const OFF_FRAME_DATA: usize = 0; // u8*[8] — the only one that does not move
+#[cfg(target_pointer_width = "32")]
 const OFF_FRAME_LINESIZE: usize = 32; // c_int[8]
+#[cfg(target_pointer_width = "32")]
 const OFF_FRAME_WIDTH: usize = 68;
+#[cfg(target_pointer_width = "32")]
 const OFF_FRAME_HEIGHT: usize = 72;
+#[cfg(target_pointer_width = "32")]
 const OFF_FRAME_FORMAT: usize = 80;
+#[cfg(target_pointer_width = "32")]
 const OFF_FRAME_PTS: usize = 96;
+// 64-bit: `data` is eight POINTERS rather than eight 32-bit ones, so `linesize` doubles and
+// everything after it follows. `pts` needs no pad here — it is already 8-aligned — which is the
+// ARM EABI quirk described above seen from the side where it does not bite.
+#[cfg(target_pointer_width = "64")]
+const OFF_FRAME_LINESIZE: usize = 64;
+#[cfg(target_pointer_width = "64")]
+const OFF_FRAME_WIDTH: usize = 104;
+#[cfg(target_pointer_width = "64")]
+const OFF_FRAME_HEIGHT: usize = 108;
+#[cfg(target_pointer_width = "64")]
+const OFF_FRAME_FORMAT: usize = 116;
+#[cfg(target_pointer_width = "64")]
+const OFF_FRAME_PTS: usize = 136;
 const SWS_BILINEAR: c_int = 2;
 const VENC_TB: AVRational = AVRational { num: 1, den: 30 };
 
