@@ -316,10 +316,11 @@
       "operations": [{"op": "play"}],
       "expect": {
         "min_timeline_climb_s": 60,
+        "min_play_rate_pm": 700,
         "no_playing_error": true,
         "require_video_bound": true
       },
-      "_quality_note": "PENDING BOUNDS — the first run of this case is a measurement, not a gate, and the rung/rate bounds are its deliverable. What it does that no other server case can: it plays a REAL item off a REAL PMS over a link this harness owns, so an Auto assertion here grades the controller rather than the afternoon. The item is the AV1/no-direct-play-audio shape, so Original is infeasible and Auto must run Fixed HLS whatever the link classification says. The squeeze is 2.5 Mbps, which is below the 4000 rung and above the 2000 one, so a controller that adapts has somewhere to go and one that does not is visible as `prod` above 1000 with the rung unchanged. 50 s of unshaped link first, because the admission window needs 19 samples before it decides anything."
+      "_quality_note": "What it does that no other server case can: it plays a REAL item off a REAL PMS over a link this harness owns, so an Auto assertion here grades the controller rather than the afternoon. The item is the AV1/no-direct-play-audio shape, so Original is infeasible and Auto must run Fixed HLS whatever the link classification says. The squeeze is 2.5 Mbps, which is below the 4000 rung and above the 2000 one, so a controller that adapts has somewhere to go and one that does not is visible as `prod` above 1000 with the rung unchanged. 50 s of unshaped link first, because the admission window needs 19 samples before it decides anything. `min_play_rate_pm` is the same product choice `auto_original_squeeze` states — 1000·(10−3)/10, one reload inside a 10-heartbeat window — and it is the assertion that would notice the controller riding an unaffordable rung instead of leaving it: measured 900 pm here, against 111 pm for the unsupervised Original path this case is the control for."
     },
     {
       "name": "auto_original_squeeze",
@@ -336,10 +337,11 @@
       "operations": [{"op": "play"}],
       "expect": {
         "min_timeline_climb_s": 30,
+        "min_play_rate_pm": 700,
         "no_playing_error": true,
         "require_video_bound": true
       },
-      "_quality_note": "PENDING BOUNDS — a measurement first. This is the shape `auto_link_squeeze` cannot reach: a Local server and a direct-playable source, where Auto chooses ORIGINAL and there is no ladder under it at all. The source is measured at 10.6 Mbps and the link is held at 2.5, a fourfold deficit, so the only escape is abandoning Original for HLS — the mode comparison, not the rung selector. The squeeze is never lifted, deliberately: the question is whether Auto ever leaves, not whether it recovers when the link does. What to read: `play=` on the heartbeat (media time per wall second — the field that sees a slow film) beside `abr: mode`, and whether a transcode session ever starts."
+      "_quality_note": "This is the shape `auto_link_squeeze` cannot reach: a Local server and a direct-playable source, where Auto chooses ORIGINAL and there is no ladder under it at all. The source is measured at 10.6 Mbps and the link is held at 2.5, a fourfold deficit, so the only escape is abandoning Original for HLS — the mode comparison, not the rung selector. The squeeze is never lifted, deliberately: the question is whether Auto ever leaves, not whether it recovers when the link does. `min_play_rate_pm` is a PRODUCT CHOICE and is labelled as one: the case permits exactly one visible mode switch, a switch is a fresh Starfish `Load`, and `playback_rate`'s window is 10 heartbeats — so a floor of 700 pm is `1000·(10−3)/10`, i.e. it tolerates one reload parking the media clock for up to three seconds inside a window and refuses anything sustained. It is DIFFERENTIAL: measured 111 pm before `auto_original_watch` stopped requiring a remote server, 818 pm after, on the same profile and the same item."
     },
     {
       "name": "original_then_auto",

@@ -30,7 +30,9 @@ back.
 controller, no watchdog, no sample, no decision. There is nothing to downgrade the quality,
 by construction.
 
-`docs/measurements/local-original-blind-logs/` holds both captures.
+`docs/measurements/local-original-blind-logs/` holds three captures:
+`auto_original_squeeze.log` (before), `auto_original_squeeze-fixed.log` (after) and
+`auto_link_squeeze.log` (the control, taken after).
 
 ## 2. Why: the watchdog is gated on the SERVER BEING REMOTE
 
@@ -93,21 +95,77 @@ quantity directly as `play=<pm>` on the heartbeat. On this run: mean **850 pm**,
 ## 5. The control
 
 `auto_link_squeeze` is the same experiment on `movie_av1_no_dp_audio`, where Original is infeasible
-so Auto must run Fixed HLS. There the controller behaves: it climbs 720 → 2000 → 4000 on the
-unshaped leg, and when the link drops to 2 500 kbps it commits **Down to 720** with
-`reason=Some(Hls(UnsafeCurrentState))` and settles at `prod` 114–175 pm — sustainable. Worst window
-900 pm.
+so Auto must run Fixed HLS. There the controller behaves, over the whole profile:
+
+```
+abr: committed Up   to 2000kbps 1280x720      unshaped leg
+abr: committed Up   to 4000kbps 1280x720
+abr: committed Down to  720kbps  854x480      the 2 500 kbps squeeze, UnsafeCurrentState
+abr: committed Up   to 2000kbps 1280x720      the link returns
+```
+
+Worst window **900 pm**, mean 993, no stall, `prod` 28–30 pm at the end.
 
 So the fault is not in the HLS controller and not in the estimators. It is that on this path
 neither exists.
 
-## 6. Still open
+## 6. After the fix
 
-* The fix is to make the field mean what its only reader asks — *Auto chose Original* — and drop
-  the `Location` conjunct from the two writers that carry it. Cost on a healthy LAN is one
-  starvation-horizon computation per 750 ms of active read, on a horizon that is infinite;
-  `starvation_safe_secs`, `ORIGINAL_DEFICIT_WINDOWS` and the utility veto are the same guards the
-  Remote path already relies on to avoid a spurious visible switch.
+Same case, same profile, same item, on the two commits that followed
+(`abr: ★ a starvation horizon must observe the drain it claims to be racing` and
+`abr: ★ Auto Original is watched wherever the server is`):
+
+```
+auto: Original -> HLS ImminentStarvation measured=2529kbps safe=1264kbps need=14355kbps
+      buf=14917ms slope=8446ms/s starve=16 windows=1 target=720kbps
+auto: Original became unsustainable at 1264kbps; switching to 720kbps 854x480 HLS
+```
+
+| | before | after |
+|---|---|---|
+| worst 10 s window | **111 pm** | **818 pm** |
+| mean | 850 pm | 978 pm |
+| `abr:` lines in the log | **0** | 83 HLS segments |
+| log length | 314 lines | 742 lines |
+
+The squeeze starts at t=30 s; the watchdog leaves Original at t≈50 s, once the reserve has drained
+from ~40 s to 14.9 s and the horizon has reached 16 s against a `starvation_fallback_secs` of 20.
+The remaining 818 pm window is the fresh `Load` the mode switch costs, and is what the case's
+`min_play_rate_pm` floor is sized to admit.
+
+**One detail in that line is worth keeping**, because it decides which of two similar-looking
+quantities the new guard may read: `slope=8446ms/s` — the SMOOTHED EWMA — is strongly POSITIVE at
+the moment of a correct fallback, because it still carries the healthy opening leg. Only the raw
+`last_delta_ms` was negative. A guard written against `draining()` would have blocked this exit;
+the one that shipped reads the raw delta, for the reason `EmergencyLowBuffer` already gave beside
+it.
+
+## 7. Corroboration from the AU queue
+
+The `feed v#…` lines carry `qbytes`, the video AU queue depth, and they place the collapse exactly:
+
+```
+feed v#2700 … fed=112416999999 … qbytes=1361575
+feed v#2800 … fed=116582999999 … qbytes=379154
+feed v#2900 … fed=120749999999 … qbytes=0
+feed v#3000 … fed=124916999999 … qbytes=0
+```
+
+It drains monotonically from 3.2 MB and reaches zero at `fed=120.7 s`, which is the beat at which
+`play=` fell to 246 pm. So the picture is starved rather than slow to present — the pipeline shows
+the frames it has, when it has them — and `vtick` falling 5 → 1 with `vgap` reaching 2003 ms is the
+same fact from the video plane's side.
+
+## 8. Still open
+
+* **The fallback is one-way here by construction** — the profile never lifts the squeeze — so
+  nothing in this run says whether Original is recovered when the link returns.
+  `orig-first-window-fallback.md` §"Why it never came back" prices that gate at 1.69x the source,
+  which is a separate open item.
+* The replacement rung is **720 kbps 854x480** against a link measured at 2 529 kbps: the same
+  double discount that document describes (`conservative_kbps` halves, then
+  `original_fallback_rung` divides by `vbr_allowance_pm` again). Correct in direction, and
+  three times more conservative than the measurement.
 * **The 90 s of healthy playback before the collapse is a second finding**, not incidental: the
   reserve built on the fast leg masks the deficit for a minute and a half, so any watchdog that
   waits for the reserve to fall is late by exactly that much. The deficit is knowable from the
@@ -115,3 +173,7 @@ neither exists.
   and the horizon test is already written that way — this run cannot say whether it would have
   fired early, because it never ran.
 * Whether the collapse is *recoverable* — the profile deliberately never lifts the squeeze.
+* **The control ends sitting on rung 2000 with `safe=117928kbps`** — a 118 Mbps budget under a
+  2 Mbps rung — because the admission window needs 19 samples per rung and the case is 150 s long.
+  That is the under-reach the plan of record already tracks, not something this finding introduces,
+  and it is why neither case carries a rung bound.

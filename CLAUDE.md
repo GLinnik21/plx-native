@@ -433,6 +433,17 @@ which the linking section explains is load-bearing rather than tidy.
   an empty read) — the "allow incoming connections?" GUI prompt must be clicked once per python
   path, so start netcond BEFORE going headless, and treat "netcond logs nothing" as this, not as a
   quiet TV.
+  **`tests/run.py` owns one for the whole SERVER tier** since 2026-08-27, so a case can declare a
+  `link_profile` — legs of `{"at_s": …, "mode": …}` anchored at the app's first log line — and be
+  graded over a link the harness controls rather than over whatever the LAN was doing. It is
+  fail-closed and has to be: the app's primary server is `plex_run(PMS_HOST, PMS_PORT)` plus the
+  injected `plxnative-token` (`plxnative-servers` is strictly ADDITIVE and cannot move the
+  primary), so the link is conditioned only if the DEPLOYED BINARY was built with `PMS_PORT`
+  pointing at the proxy — which the harness can read out of `src/config.local.h` but never
+  arrange. When it cannot bind, or when the binary talks to the server directly, every case
+  naming a `link_profile` SKIPS with that reason in the summary, because a shaped assertion on an
+  unshaped link is a false pass. A `link_profile` also disables early exit: the interesting leg is
+  never the first.
   Measured with it 2026-07-29: teardown's join of the `/:/timeline` reporter parked the main loop
   **6974 ms**; after moving that join onto the scrobble worker, BACK→teardown is **0.5 s**.
   **That run was taken while the scope bug above was live, so the proxy was stalling EVERY
@@ -895,6 +906,19 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   costs ~30s of playback. It is gated on `player::is_playing()`, not `is_started()`: a direct-play
   resume does not seed `playpos_ns` (only the transcode branch does), so the pre-roll would log a
   0 and a 0→600 step reads as 600s of "climb" in one second — a false PASS.
+  **Beside it since 2026-08-27 is `play=<pm>`: media time advanced per WALL millisecond, in per
+  mille — 1000 is the film running at speed and 670 is it crawling — and it is the ONLY field on
+  that line that can see a slow film.** `fps=` counts our GL swaps and sits at 60 through a stream
+  the television is decoding at two-thirds speed; every buffer number the adaptive controller reads
+  is a RESERVE, and a reserve is media time measured against the same playhead, so when the
+  playhead slows the reserve stops draining and `slope`, `min_buf_ms` and `draining()` all read
+  healthy at exactly the moment the picture is worst. `max_stall_s` is blind from the other side —
+  it grades the clock STOPPING, and this is the clock advancing too slowly. The harness derives the
+  same quantity from `pos=` alone (`playback_rate`, reported on every case's `timeline_climb`
+  evidence, asserted only where a case declares `min_play_rate_pm`), so an old log is still
+  readable. There is deliberately no magnitude gate on `play=`: a seek reads as a huge or negative
+  value and a catch-up leg as something above 1000, and both are real observations.
+  `docs/measurements/local-original-blind.md` is what it found first.
 - **`tests/run.py` always cleans the TV on exit** — pass, fail, Ctrl-C, `kill`, or crash: it closes
   the app, clears every `plxnative-*` trigger in that install's runtime root **including the
   injected PMS token**, and reaps stray ssh clients. Only the three append-only `*.log` files
