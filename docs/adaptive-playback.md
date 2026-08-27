@@ -93,6 +93,20 @@ conservative rate there is exactly half the measured one. Score the eviction on 
 delivering *precisely* what the rung asks reads as a 2x deficit — an emergency on the healthiest
 possible playback.
 
+**A rate deficit is not a trigger at all.** `immediate_network < expected_wire_kbps` used to
+evict the current rung on its own — true of a rung 1% too dear against a completely full buffer.
+It survives under the name `collapse_target` for the two jobs it is good at: SELECTING the
+downshift target, so a measured collapse does not walk the ladder one oversized encoder at a time,
+and naming the reason. The deficit still narrows `safe_budget`, which is a reason not to climb.
+Keeping a state you are already buffered into and admitting a new one are different decisions.
+
+**N4 also lists `B < E_tx_down` as a hard guard, and it is not built, because it is redundant.**
+`E_tx_down` is measured at 1 424 ms and `starving()`'s first arm fires at `B <= 2 000`, so the
+unaffordable region is strictly inside the starving one with nothing reachable in between. Building
+it would be one condition under two names — the defect `candidate_prime_budget` was already caught
+committing. `the_affordability_guard_is_subsumed_by_the_starvation_arm` fails if either number
+moves.
+
 **The eviction horizon runs at cold start, and it is the only trigger that does.** `starvation_
 horizon` returns `None` whenever `C >= R`, so on a link that covers the rung it cannot fire however
 small the reserve is; the reserve appears only in the numerator. The cold-start artefact — the

@@ -122,13 +122,39 @@ fn prime_up(controller: &mut Controller) -> Proposal {
     panic!("no proposal")
 }
 
+/// Drive a controller to rest on a flat link, with a reserve that **integrates the deficit**.
+///
+/// It used to hand every sample a frozen `buffered_ms: 10_000`, and that fixture is physically
+/// impossible: a link short of the rung it is playing drains the reserve by `d*(R/C - 1)` every
+/// segment, and one that exceeds it fills until the queue caps. A constant is neither.
+///
+/// It passed anyway while `network_bad` — a bare `C < R` with no reserve in it — was a downshift
+/// TRIGGER, because that predicate cannot tell a full buffer from an empty one. N4 deleted that
+/// trigger, and the deficit legs then settled a rung too high here while behaving correctly on a
+/// real link. So the fixture was the thing that was wrong, and it was wrong in the way
+/// `[[reserve-cannot-see-a-slow-film]]` names: it held constant the very quantity the predicate
+/// under test reads.
+///
+/// The model is one line of the plant's own state equation (`abr/sim.rs`) and deliberately not a
+/// call into it — a helper that asked the plant would make this a test of the plant. `R` is the
+/// rung's REQUEST rate rather than its measured wire rate, which is the one approximation here and
+/// is stated: the catalog's `expected_wire_kbps` differs by up to a few per cent and nothing in
+/// this test turns on it.
 fn settle_link(network_kbps: u32) -> Rung {
     let mut controller = bootstrap_controller();
+    const SEGMENT_MS: i64 = 2_000;
+    // A ceiling so a fast link does not integrate to an unreachable reserve — `B_max` at the
+    // bottom of the ladder is tens of seconds and this is inside it at every rung these legs use.
+    const CEILING_MS: i64 = 30_000;
+    let mut buf_ms: i64 = 10_000;
     for _ in 0..80 {
+        let rung_kbps = i64::from(controller.current().kbps());
+        let fetch_ms = SEGMENT_MS * rung_kbps / i64::from(network_kbps.max(1));
+        buf_ms = (buf_ms - fetch_ms + SEGMENT_MS).clamp(0, CEILING_MS);
         if let Decision::Prime(proposal) =
-            controller.observe(sample(network_kbps, 400, 10_000))
+            controller.observe(sample(network_kbps, 400, buf_ms))
         {
-            let candidate = sample(network_kbps, 400, 12_000);
+            let candidate = sample(network_kbps, 400, buf_ms.max(SEGMENT_MS));
             if controller.candidate_ready(proposal, candidate, declared_bps(proposal.rung)) {
                 controller.commit(proposal);
             } else {
@@ -2045,4 +2071,77 @@ fn a_five_percent_deficit_against_a_full_top_rung_reserve_is_not_a_deadline() {
         Some(DecisionReason::Hls(HlsReason::StarvationHorizon)),
         "the deadline must not be what moved this rung",
     );
+}
+
+/// **N4's incumbent clause: a deficit is a reason not to CLIMB, not a reason to descend.**
+///
+/// `network_bad` — `immediate_network < expected_wire_kbps`, a bare rate comparison with no
+/// reserve in it — was a downshift trigger, so a link 1% short of the rung it was playing evicted
+/// that rung against a completely full buffer. Deleted as a trigger here; the same deficit still
+/// narrows `safe_budget`, which is where it belongs.
+///
+/// Differential in both directions, which is the point: the SAME 5% deficit must be ignored at a
+/// deep reserve and acted on at a shallow one, because what separates them is the deadline and
+/// nothing else. Against the trigger as shipped, the first half fails.
+#[test]
+fn a_rate_deficit_evicts_a_rung_only_when_the_deadline_says_so() {
+    let policy = AbrPolicy::measured();
+    // 5% short of P1080M14's 14 000 kbps expected wire rate.
+    let short = 13_300;
+
+    // Deep: the device census of the top rung is 4 960 ms and this is deeper still, so the
+    // horizon is minutes. Two samples, because the first is the cold start.
+    let mut deep = controller_at(Rung::P1080M14);
+    for _ in 0..3 {
+        assert_eq!(
+            deep.observe(sample(short, 250, 20_000)),
+            Decision::Stay,
+            "a 5% deficit against 20 s of reserve is arithmetic, not an emergency",
+        );
+    }
+    assert!(
+        deep.telemetry().emergency_horizon_secs.is_some_and(|s| s > policy.starvation_fallback_secs),
+        "and the deadline has to be the thing that says so: {:?}",
+        deep.telemetry().emergency_horizon_secs,
+    );
+
+    // Shallow: the same deficit, a reserve one segment deep. `2000 * 14000 / 700 = 40 s`, still
+    // outside the window — so this leg descends on `starving()`, not on the deadline, and the
+    // assertion is that SOMETHING still evicts. Without it the test above is satisfied by a
+    // controller that never downshifts at all.
+    let mut shallow = controller_at(Rung::P1080M14);
+    shallow.observe(sample(short, 250, 2_000));
+    assert!(
+        matches!(shallow.observe(sample(short, 250, 1_500)), Decision::Prime(p)
+                 if p.direction == Direction::Down),
+        "a reserve under one segment is still an emergency on the second sample",
+    );
+}
+
+/// **N4's affordability disjunct is REDUNDANT at the measured `E_tx_down`, so it is not built.**
+///
+/// The plan lists `B < E_tx_down` as a hard guard in its own right. `E_tx_down` is measured at
+/// 1 424 ms (`docs/measurements/j3b-deadline.md`), and `starving()`'s first arm already fires at
+/// `B <= 2 000`. So `B < 1424` implies `starving()` implies the emergency, everywhere, with no
+/// reachable state in between — adding it would be one condition under two names, which is the
+/// exact defect `candidate_prime_budget` was already caught committing when a literal `4/5` and
+/// `production_max_pm` were the same threshold at two values.
+///
+/// This test is what makes the omission checkable rather than an assertion in a commit message: if
+/// either number moves so that the implication fails, it goes red and the guard has to be built.
+#[test]
+fn the_affordability_guard_is_subsumed_by_the_starvation_arm() {
+    const E_TX_DOWN_MS: i64 = 1_424; // j3b-deadline.md, median of 17 committed down-legs
+    let policy = AbrPolicy::measured();
+    assert!(
+        E_TX_DOWN_MS <= policy.emergency_buffer_ms,
+        "a reserve too small to afford a downshift ({E_TX_DOWN_MS}ms) must already be starving \
+         (arm fires at <= {}ms); if this fails, N4's affordability disjunct is reachable and has \
+         to be built",
+        policy.emergency_buffer_ms,
+    );
+    // The implication, exercised rather than argued: a reserve just under E_tx_down is starving.
+    let mut buffer = BufferEstimate::default();
+    buffer.update(Some(E_TX_DOWN_MS - 1), 2_000);
+    assert!(buffer.starving(), "the starvation arm covers the whole unaffordable region");
 }

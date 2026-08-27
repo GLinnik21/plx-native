@@ -417,7 +417,17 @@ impl Controller {
             &self.buffer,
             &self.policy,
         );
-        let network_bad = immediate_network < current_candidate.expected_wire_kbps;
+        // **A bare rate comparison, and NO LONGER A TRIGGER** (N4). It is true of a rung that is 1%
+        // too dear against a completely full buffer, which is not an emergency — it is a reason not
+        // to CLIMB, and it already is one: the same deficit narrows `safe_budget` a few lines down.
+        // Keeping a state you are already buffered into and admitting a new one are different
+        // decisions, and a reserve that is deep relative to the deficit is safe for a long time.
+        //
+        // Its other two uses survive verbatim, which is why it keeps a name. It SELECTS the
+        // downshift target — a measured link collapse must not walk the ladder one oversized
+        // encoder at a time — and it names the reason, because "the link is measurably below this
+        // rung" is the actionable half of a downshift that fired for some other reason.
+        let collapse_target = immediate_network < current_candidate.expected_wire_kbps;
         let production_bad =
             current_risk.production_risk && self.buffer.draining_samples >= 8;
         let buffer_bad = buffered < segment || self.buffer.starving();
@@ -469,11 +479,11 @@ impl Controller {
         // same line; the next sample was 58.3 seconds later, and the picture was frozen for 47 of
         // them. So the gate applies to the disjuncts whose evidence the cold start corrupts, and
         // the deadline runs whether or not this is the first sample.
-        if horizon_bad || (!cold_start && (buffer_bad || network_bad || production_bad)) {
+        if horizon_bad || (!cold_start && (buffer_bad || production_bad)) {
             self.stable_samples = 0;
             // A measured link collapse must not walk the ladder one oversized encoder at a time.
             // Select the best actuator that fits the new safe budget, still bounded below current.
-            let target = if network_bad || buffered < segment / 2 {
+            let target = if collapse_target || buffered < segment / 2 {
                 self.catalog
                     .best_for_budget(self.delivery.conservative_kbps())
                     .map(|candidate| candidate.rung)
@@ -487,7 +497,7 @@ impl Controller {
                 self.pending = Some(proposal);
                 self.last_reason = Some(DecisionReason::Hls(if horizon_bad {
                     HlsReason::StarvationHorizon
-                } else if network_bad {
+                } else if collapse_target {
                     HlsReason::UnsafeCurrentState
                 } else if production_bad {
                     HlsReason::ProductionConstraint
