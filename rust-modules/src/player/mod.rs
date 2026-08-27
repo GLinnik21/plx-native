@@ -103,6 +103,10 @@ pub(crate) const ABR_WHY_SAFE_BUDGET: u8 = 1;
 pub(crate) const ABR_WHY_UNSAFE_STATE: u8 = 2;
 pub(crate) const ABR_WHY_PRODUCTION: u8 = 3;
 pub(crate) const ABR_WHY_BUFFER: u8 = 4;
+/// The downshift trigger fired and there is no rung below — the ladder floor. Distinct from the
+/// three constraint codes above because it names the ABSENCE of an action rather than the
+/// constraint that chose one: nothing the controller can do will improve this playback.
+pub(crate) const ABR_WHY_LADDER_FLOOR: u8 = 5;
 // Kodi in-place seek (flush + reopen + re-anchor the decode position + sendSegmentEvent, NO
 // reload/decoder re-init → no HDR-mode popup, no A/V-resync glitch). On webOS<11 (this 4.5)
 // setTimeToDecode returns 0, so feed_stream falls back to the content-info path

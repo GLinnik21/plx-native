@@ -3005,6 +3005,7 @@ fn abr_why_code(reason: Option<crate::abr::DecisionReason>) -> u8 {
         Some(Hls(R::UnsafeCurrentState)) => crate::player::ABR_WHY_UNSAFE_STATE,
         Some(Hls(R::ProductionConstraint)) => crate::player::ABR_WHY_PRODUCTION,
         Some(Hls(R::BufferConstraint)) => crate::player::ABR_WHY_BUFFER,
+        Some(Hls(R::LadderFloor)) => crate::player::ABR_WHY_LADDER_FLOOR,
     }
 }
 

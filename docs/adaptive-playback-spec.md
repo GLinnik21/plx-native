@@ -966,8 +966,15 @@ must be fixed with it:
   print `none` — which `tests/run.py` now parses as `None` rather than losing the line. A
   differential test pins it: read as zero, a 12 s reserve with a silent audio lane produces a
   `Prime(Down)`.
-* **There is no terminal case** when no rung is viable. A predicate with no action in the region
-  that motivates it.
+* ~~**There is no terminal case** when no rung is viable~~ — **NAMED 2026-08-27, and it is a
+  naming rather than a fix, deliberately.** At the ladder floor `Rung::below()` is the identity, so
+  the proposal was already skipped and `Stay` was already the answer; there is no other answer,
+  because the escape this trigger exists to take does not exist at the bottom of the ladder. What
+  was missing is that the state said nothing — `decision=stay reason=None`, byte-identical to a
+  healthy segment, on the one state where the controller has exhausted every action it has. It now
+  reports `HlsReason::LadderFloor`, which reaches the read-out as "lowest quality". **The action
+  that could exist there is J4's emergency-floor probe and does not exist yet**; until it does,
+  claiming this item closed on the strength of a log line would be the thing the plan warns about.
 
 `E_tx` is a **lower** bound, not a worst case: `decided − E_tx` reaches 1 231 ms, because the
 `NotReady` retry (up to 8 s) and the post-commit block have no leg of their own. Any deadline built

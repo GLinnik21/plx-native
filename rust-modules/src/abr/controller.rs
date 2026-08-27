@@ -12,6 +12,17 @@ pub(crate) enum HlsReason {
     UnsafeCurrentState,
     ProductionConstraint,
     BufferConstraint,
+    /// **The terminal case: the downshift trigger fired and there is no rung below.** R12 — "a
+    /// predicate with no action in the region that motivates it."
+    ///
+    /// It is not a new behaviour. `self.current.below()` returns `self.current` at the ladder
+    /// floor, so the proposal was already skipped and `Stay` was already the answer; there is no
+    /// other answer, because the escape this trigger exists to take does not exist at the bottom
+    /// of the ladder. What was missing is that it said nothing. The line read `decision=stay
+    /// reason=None`, identical to a healthy segment, and telling the two apart meant
+    /// cross-referencing `current=` against the ladder floor by hand — on the one state where the
+    /// controller has exhausted everything it can do and the picture is about to stop.
+    LadderFloor,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -372,6 +383,10 @@ impl Controller {
                 }));
                 return Decision::Prime(proposal);
             }
+            // `target == self.current` here means EXACTLY the floor: `below()` is the identity
+            // at the bottom rung, and the `best_for_budget` branch is clamped by `.min(below())`,
+            // so at any other rung the target is strictly lower. See `HlsReason::LadderFloor`.
+            self.last_reason = Some(DecisionReason::Hls(HlsReason::LadderFloor));
             return Decision::Stay;
         }
 

@@ -688,6 +688,10 @@ fn abr_why_text(why: u8) -> Option<&'static str> {
         crate::player::ABR_WHY_UNSAFE_STATE => Some("link too slow"),
         crate::player::ABR_WHY_PRODUCTION => Some("server behind"),
         crate::player::ABR_WHY_BUFFER => Some("reserve low"),
+        // Deliberately not phrased as a constraint like the four above: this is the state where
+        // the controller has nothing left to try, and a reader watching the picture stop is owed
+        // that rather than a fifth thing that sounds like a knob.
+        crate::player::ABR_WHY_LADDER_FLOOR => Some("lowest quality"),
         _ => None,
     }
 }

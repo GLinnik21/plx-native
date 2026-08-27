@@ -170,6 +170,53 @@ fn audio_expected_without_a_tail_has_no_buffer_but_silent_video_does() {
     assert_eq!(b.buffered_ms(), Some(4_000));
 }
 
+/// **At the ladder floor the trigger fires and there is nothing to do — say so.** R12.
+///
+/// The behaviour is not new and must not be: `Rung::below()` is the identity at the bottom, so the
+/// proposal was already skipped and `Stay` was already the answer. What was new is that the answer
+/// said nothing — `decision=stay reason=None`, byte-identical to a healthy segment, on the one
+/// state where the controller has exhausted every action it has and the picture is about to stop.
+///
+/// Differential on the reason, not on the decision: against the unmodified controller `reason` is
+/// `None` here, and the two assertions below are what separate "there is nothing wrong" from
+/// "there is nothing left".
+#[test]
+fn the_ladder_floor_is_a_stated_terminal_case_and_not_a_silent_stay() {
+    let mut c = controller_at(Rung::P240);
+    // A link far below what even the bottom rung asks for, and a reserve under one segment: both
+    // halves of the emergency trigger, at the rung that has no rung below it.
+    let decision = (0..4)
+        .map(|_| c.observe(sample(64, 900, 500)))
+        .last()
+        .expect("four samples");
+    assert_eq!(decision, Decision::Stay, "there is no lower rung to propose");
+    assert_eq!(
+        c.telemetry().reason,
+        Some(DecisionReason::Hls(HlsReason::LadderFloor)),
+        "the floor must be distinguishable from a healthy stay",
+    );
+}
+
+/// The control case: one rung up from the floor, the same collapsed link proposes a downshift
+/// rather than reporting the floor. Without this the test above is satisfied by a controller that
+/// reports `LadderFloor` everywhere.
+#[test]
+fn one_rung_above_the_floor_the_same_link_still_has_somewhere_to_go() {
+    let mut c = controller_at(Rung::P480);
+    let decision = (0..4)
+        .map(|_| c.observe(sample(64, 900, 500)))
+        .find(|d| !matches!(d, Decision::Stay));
+    assert!(
+        matches!(decision, Some(Decision::Prime(p)) if p.direction == Direction::Down),
+        "got {decision:?}",
+    );
+    assert_ne!(
+        c.telemetry().reason,
+        Some(DecisionReason::Hls(HlsReason::LadderFloor)),
+        "a rung that CAN move is not at the floor",
+    );
+}
+
 /// **A quiet audio lane must not be read as an empty buffer.** R11, and the bug it names.
 ///
 /// A `BufferSnapshot` with `audio_expected` and no `audio_tail` is what every session looks like
