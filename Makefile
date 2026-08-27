@@ -753,6 +753,7 @@ check: lint
 	@# router: the UPnP half reports what is on this LAN rather than asserting anything.
 	@# It runs here because the receiver has no other gate — nothing in cargo can see a python file.
 	python3 tools/plxnative-lab selftest
+	python3 tools/test_abr_transfer_bound.py
 
 # `make lint` — the three clippy lints that catch a SHADOWED branch, the one bug class the unit
 # suite structurally cannot reach. `app.rs` shipped a duplicated `else if` whose empty body hid the
