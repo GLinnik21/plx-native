@@ -377,6 +377,14 @@ impl OriginalModeController {
         let byte_delta = bytes - self.last_bytes;
         self.last_bytes = bytes;
         self.last_active_us = active_us;
+        // The first window of a playback — and the first after a seek or a resume, both of which
+        // reset `buffer` — does not count toward the SUSTAINED-deficit tally. `unsafe_horizon`
+        // there is manufactured rather than observed: `uncertainty_pm` sits at its 500 pm floor on
+        // the first capacity sample, so `conservative_kbps` is EXACTLY half the measurement, and
+        // `buffered_ms` is whatever the prime left, which is ~0 by design. Both hard guards below
+        // are already unable to fire on it (they require a measured drain, and there is no
+        // derivative yet), so this is the one place the cold start still has to be said.
+        let cold_start = self.buffer.samples == 0;
         let Some(buffered_ms) = buffered_ms else {
             // No timestamp on one lane yet. That IS the starvation this metric watches for, but it
             // is not yet evidence of it — an A/V session that has not produced both tails cannot
@@ -409,7 +417,7 @@ impl OriginalModeController {
         let unsafe_horizon = horizon
             .seconds
             .is_some_and(|secs| secs < self.policy.starvation_safe_secs);
-        if unsafe_horizon {
+        if unsafe_horizon && !cold_start {
             self.deficit_windows = self.deficit_windows.saturating_add(1);
         } else {
             self.deficit_windows = 0;
@@ -449,9 +457,34 @@ impl OriginalModeController {
         if buffered_ms <= self.policy.emergency_buffer_ms && self.buffer.last_delta_ms < 0 {
             return Some(OriginalExit::EmergencyLowBuffer);
         }
+        // **The horizon's own premise has to be observed, not assumed.** `starvation_horizon` is
+        // `T = B·R/(R−C)`, and that formula is a prediction ONLY under the premise that the
+        // reserve is being consumed at `(R−C)/R`. When the measured reserve is flat or growing,
+        // the premise is contradicted by the measurement sitting next to it, and `T` is arithmetic
+        // on a discounted rate rather than a forecast of anything.
+        //
+        // This is what `docs/measurements/orig-first-window-fallback.md` concluded in its own
+        // words — *"any test of sustainability that looked at the buffer's DIRECTION rather than
+        // at a discounted rate against an inflated requirement would have stayed"* — and it is the
+        // same conjunct `EmergencyLowBuffer` above already carries, read the same way: the RAW
+        // delta, because a branch that exists for the case where the estimates are wrong must not
+        // consult a trend that lags.
+        //
+        // It also makes window 1 structurally unable to fire, which is the other half of that
+        // finding: `last_delta_ms` is 0 on the first sample by construction, there being nothing
+        // to difference against, while `conservative_kbps` is pinned to half the measurement by
+        // the 500 pm uncertainty floor. A 42 365 kbps link carrying a 25 264 kbps file abandoned
+        // 4K Dolby Vision + Atmos on that window, permanently, with the reserve rising at
+        // +113 ms/s.
+        //
+        // **NECESSARY, not sufficient.** The deficit term is still `(R − C)` with `C` discounted,
+        // so a reserve that is falling for any reason still gets a horizon computed from a rate
+        // rather than from the observed drain. Replacing that is the plant-model work the plan of
+        // record defers; this removes the case the device actually produced and claims no more.
         let imminent = horizon
             .seconds
-            .is_some_and(|secs| secs <= self.policy.starvation_fallback_secs);
+            .is_some_and(|secs| secs <= self.policy.starvation_fallback_secs)
+            && self.buffer.last_delta_ms < 0;
         if imminent {
             return Some(OriginalExit::ImminentStarvation);
         }

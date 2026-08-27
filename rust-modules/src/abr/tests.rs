@@ -371,14 +371,61 @@ fn a_deficit_with_a_deep_reserve_is_arithmetic_not_an_emergency() {
 /// The same rate against the same file with a shallow reserve IS an emergency, and the reason
 /// code says which rule fired. It also names the replacement state — the best the collapsed
 /// link sustains, never the bottom of the ladder.
+///
+/// **RE-EXPRESSED 2026-08-27, and it was asserting the defect.** This used to fire on the FIRST
+/// window, which is exactly what `docs/measurements/orig-first-window-fallback.md` recorded going
+/// wrong on a real film: at window 1 `uncertainty_pm` is pinned to its 500 pm floor, so `safe` is
+/// half of `measured` by construction, and there is no reserve derivative to contradict it. The
+/// collapse is still graded — it just has to be OBSERVED, over two windows, with the reserve
+/// actually falling. That is the differential: the second window is what the old code did not
+/// need and the new code does.
 #[test]
 fn a_collapse_leaves_original_for_the_best_sustainable_state() {
     let mut mode = original(28_000);
-    let observation = mode
+    let cold = mode
         .observe(window_bytes(4_000), ORIGINAL_WINDOW_US, Some(8_000), HOUR_MS)
+        .unwrap();
+    assert_eq!(cold.fallback, None, "the first window refines the estimators and decides nothing");
+    let observation = mode
+        .observe(window_bytes(4_000) * 2, ORIGINAL_WINDOW_US * 2, Some(5_000), HOUR_MS)
         .unwrap();
     assert_eq!(observation.fallback, Some(OriginalExit::ImminentStarvation));
     assert_eq!(observation.target, Some(Rung::P720Low), "3.2 Mbit/s of proven capacity");
+}
+
+/// **The device finding, as an assertion** (`docs/measurements/orig-first-window-fallback.md`).
+/// A 42 365 kbps link carrying a 25 264 kbps file: the link comfortably covers it, the reserve is
+/// 85 ms only because the prime was just consumed, and it is GROWING. The old code returned
+/// `ImminentStarvation` here and replaced 4K Dolby Vision direct play with a 1080p transcode for
+/// the rest of the film.
+///
+/// Differential by construction: every term is the one the log carried, and against unmodified
+/// code the first `assert` fails.
+#[test]
+fn the_prime_remnant_is_not_a_starving_reserve() {
+    let mut mode = original(25_264);
+    let first = mode
+        .observe(window_bytes(42_365), ORIGINAL_WINDOW_US, Some(85), HOUR_MS)
+        .unwrap();
+    // 42_364 rather than 42_365: `window_bytes` truncates, and so does the kbps division
+    // back out of it. One kbit/s in forty-two megabits changes nothing here.
+    assert_eq!(first.measured_kbps, 42_364);
+    assert!(
+        first.requirement_kbps > first.conservative_kbps,
+        "the manufactured deficit is still there — {}kbps needed against {}kbps 'safe' — and that \
+         is the point: it is arithmetic on an uncertainty floor, not an observation",
+        first.requirement_kbps,
+        first.conservative_kbps,
+    );
+    assert_eq!(first.fallback, None, "window 1 may not abandon 4K direct play");
+    assert_eq!(first.bad_windows, 0, "nor may it count toward the sustained-deficit tally");
+
+    // …and the reserve then GROWS, exactly as the film's log showed (+113 ms/s). Nothing about
+    // the next window is a deficit either.
+    let second = mode
+        .observe(window_bytes(42_365) * 2, ORIGINAL_WINDOW_US * 2, Some(1_200), HOUR_MS)
+        .unwrap();
+    assert_eq!(second.fallback, None, "a filling reserve on a link that covers the file");
 }
 
 /// A moderate deficit that will not go away eventually loses the argument on its own — before
