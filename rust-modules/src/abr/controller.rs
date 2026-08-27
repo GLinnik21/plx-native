@@ -216,13 +216,15 @@ impl Controller {
         ControllerTelemetry {
             current: self.current,
             safe_budget_kbps: self.last_safe_budget_kbps,
-            // The SAME selection [`Self::observe`]'s upshift arm makes, four fifths of the budget
-            // included — so the read-out cannot advertise an operating point the controller would
-            // not actually choose. It is the answer to "what is this link worth", which is a
-            // different question from "what is playing" and the one a viewer photographing the
-            // panel is usually asking.
+            // The SAME selection [`Self::observe`]'s upshift arm makes, including the named
+            // admission headroom — so the read-out cannot advertise an operating point the
+            // controller would not actually choose. It is the answer to "what is this link worth",
+            // which is a different question from "what is playing" and the one a viewer
+            // photographing the panel is usually asking.
             optimal: self.catalog.best_sustainable(
-                self.last_safe_budget_kbps * 4 / 5,
+                self.last_safe_budget_kbps
+                    .saturating_mul(self.policy.upshift_admission_headroom_pm)
+                    / 1_000,
                 &self.production,
                 current,
                 &self.policy,
@@ -427,8 +429,11 @@ impl Controller {
         // to carry the bits AND the server has to produce them ahead of real time. This is what
         // refuses 4K on a fast link in front of a loaded PMS — the measured 4K point costs 4% more
         // wire and 110% more server, so a bitrate-only budget would wave it through.
+        let upshift_admission_budget = safe_budget
+            .saturating_mul(self.policy.upshift_admission_headroom_pm)
+            / 1_000;
         let Some(target_candidate) = self.catalog.best_sustainable(
-            safe_budget,
+            upshift_admission_budget,
             &self.production,
             current_candidate,
             &self.policy,
@@ -662,4 +667,3 @@ impl Controller {
         true
     }
 }
-

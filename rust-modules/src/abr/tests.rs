@@ -1801,22 +1801,3 @@ fn candidate_and_current_observations_share_one_window() {
     assert_eq!(after_current, 1);
     assert_eq!(controller.window_len(), 2);
 }
-
-#[test]
-fn scratch_haircut_probe() {
-    for link in [17_500u32, 20_000, 25_000, 30_000, 40_000, 60_000, 100_000] {
-        let rung = settle_link(link);
-        eprintln!("link={link} settles_at={:?} kbps={}", rung, rung.kbps());
-    }
-    // Show the selection arithmetic directly.
-    let cat = HlsActuatorCatalog::measured();
-    let prod = ProductionEstimate::default();
-    let pol = AbrPolicy::measured();
-    let cur = cat.candidate(Rung::P1080);
-    for safe in [18_750u32, 20_000, 22_000, 25_000] {
-        let with = cat.best_sustainable(safe * 4 / 5, &prod, cur, &pol).map(|c| c.rung);
-        let without = cat.best_sustainable(safe, &prod, cur, &pol).map(|c| c.rung);
-        eprintln!("safe={safe}: with_haircut={:?} without={:?}", with, without);
-    }
-    panic!("scratch output");
-}

@@ -89,6 +89,11 @@ pub(crate) struct AbrPolicy {
     /// controller must hold before it may propose one, and the same window decides whether the
     /// primed candidate commits.
     pub(crate) admission: AdmissionPolicy,
+    /// **The last remaining upshift-admission headroom.** Proposing a rung starts a real PMS
+    /// encoder session and leaves playback unrefilled while the candidate primes, whereas staying
+    /// on the current rung has no symmetric transaction cost. This is therefore an explicit
+    /// product choice, not a second estimate of capacity. Plan measurement M-D6 owns its removal.
+    pub(crate) upshift_admission_headroom_pm: u32,
     /// PMS is comfortably ahead of real time below this segment-acquisition ratio. Above it a
     /// candidate may still play, but it has no margin left for a slower scene.
     pub(crate) production_safe_pm: u32,
@@ -172,6 +177,7 @@ impl AbrPolicy {
             // eps (n = k/eps - 1) and should be argued from a stated passage length, which this
             // project does not have yet.
             admission: AdmissionPolicy { epsilon_pm: 50, k: 1 },
+            upshift_admission_headroom_pm: 800,
             production_safe_pm: 750,
             production_max_pm: 1_100,
             production_floor_pm: 250,
