@@ -173,6 +173,15 @@ same fact from the video plane's side.
   and the horizon test is already written that way — this run cannot say whether it would have
   fired early, because it never ran.
 * Whether the collapse is *recoverable* — the profile deliberately never lifts the squeeze.
+* **`sim.rs`'s plant calls this a STALL and the device does not**, and `play=` is the first thing
+  that can settle whether the two agree. `step()` computes `stall_ms = (wall_ms − buf_ms).max(0)`
+  — the wall time during which the media clock did not advance — and the closed-loop grader treats
+  a stall as a disqualifier. On the television the same reserve exhaustion produced no freeze at
+  all: `pos=` kept climbing at 81–250 pm while `vtick` fell to 1 and `vgap` reached 2003 ms, i.e.
+  Starfish presents what it has, when it has it. The two are the same media-time SHORTFALL and may
+  well be the same number; nobody has compared them, because until now the device side had no
+  measurement. The comparison is `sum(stall_ms)` against `∫(1 − play/1000) dt` over the same
+  trace, and it is host work.
 * **The control ends sitting on rung 2000 with `safe=117928kbps`** — a 118 Mbps budget under a
   2 Mbps rung — because the admission window needs 19 samples per rung and the case is 150 s long.
   That is the under-reach the plan of record already tracks, not something this finding introduces,
