@@ -309,18 +309,6 @@ impl HlsActuatorCatalog {
         }
     }
 
-    /// Restrict the catalog to rasters this playback can actually use. Both bounds matter and they
-    /// are different questions: `device` is what the SoC decodes (`devcaps`, the television's own
-    /// table), and `source` is the picture that exists — asking PMS to UPSCALE a 1080p master to
-    /// 4K buys nothing and costs the measured 2.1x of server work, so a candidate wider than the
-    /// source is infeasible rather than merely unattractive.
-    /// **A zero on either axis means NOBODY SAID, and is treated as unbounded** — not as a
-    /// forbidden zero-pixel picture. PMS omits source dimensions often enough that the other
-    /// reading would empty the catalog and park Auto on whatever the floor happens to be, which is
-    /// the opposite of what a missing field justifies. (This is the mirror image of
-    /// `plex::Ceiling::admits`, where an unmeasured source fails CLOSED — deliberately: there, `0`
-    /// is being asked to honour an explicit user instruction, and here it is being asked to
-    /// forbid a device capability nobody has contradicted.)
     /// **The source raster this catalog was bounded by**, `(0, 0)` for "nobody said" — the same
     /// reading `limited_to` gives it, and the reading `covers_source` already depends on.
     ///
@@ -334,6 +322,18 @@ impl HlsActuatorCatalog {
         self.source
     }
 
+    /// Restrict the catalog to rasters this playback can actually use. Both bounds matter and they
+    /// are different questions: `device` is what the SoC decodes (`devcaps`, the television's own
+    /// table), and `source` is the picture that exists — asking PMS to UPSCALE a 1080p master to
+    /// 4K buys nothing and costs the measured 2.1x of server work, so a candidate wider than the
+    /// source is infeasible rather than merely unattractive.
+    /// **A zero on either axis means NOBODY SAID, and is treated as unbounded** — not as a
+    /// forbidden zero-pixel picture. PMS omits source dimensions often enough that the other
+    /// reading would empty the catalog and park Auto on whatever the floor happens to be, which is
+    /// the opposite of what a missing field justifies. (This is the mirror image of
+    /// `plex::Ceiling::admits`, where an unmeasured source fails CLOSED — deliberately: there, `0`
+    /// is being asked to honour an explicit user instruction, and here it is being asked to
+    /// forbid a device capability nobody has contradicted.)
     pub(crate) fn limited_to(mut self, device: (u16, u16), source: (u16, u16)) -> Self {
         fn axis(value: u16) -> u16 {
             if value == 0 { u16::MAX } else { value }

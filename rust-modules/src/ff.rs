@@ -3760,16 +3760,28 @@ fn hls_demux(
             .max(0)
             .saturating_add(timeline.end().0.saturating_mul(1_000_000))
             / 1_000_000_000;
-        let Some(primed) = control.prime(
-            active_encoder,
-            proposal,
-            *generation,
-            offset_secs,
-        ) else {
-            reject_hls_abr(controller, proposal, crate::abr::RejectCause::Candidate, now_ms());
-            tx.finish("prime_refused");
+        let primed = match control.prime(active_encoder, proposal, *generation, offset_secs) {
+            Ok(primed) => primed,
+            Err(refusal) => {
+                // **The cause is the SERVER's answer, not a guess at this call site.** `prime`
+                // has four exits and only one — a PMS refusal of this rung's ceiling — says
+                // anything about the candidate. Reading a bare failure as `Candidate` charged the
+                // other three a full `E_tx` refill debt (up to ~4x `E_tx` of blocked climbing) for
+                // an encoder that moved underneath, a missing client or a control-plane call that
+                // never reached the server; two of those spend no round trip at all.
+                let (cause, why) = match refusal {
+                    crate::route::PrimeRefusal::Rung => {
+                        (crate::abr::RejectCause::Candidate, "prime_refused")
+                    }
+                    crate::route::PrimeRefusal::Session => {
+                        (crate::abr::RejectCause::Circumstance, "prime_session_moved")
+                    }
+                };
+                reject_hls_abr(controller, proposal, cause, now_ms());
+                tx.finish(why);
                 crate::player::log("abr: candidate registration rejected; staying on current rung");
-            continue;
+                continue;
+            }
         };
         tx.mark_prime();
         let candidate_url = crate::plex::StreamUrl::parse(&primed.url);

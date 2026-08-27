@@ -431,6 +431,15 @@ impl Controller {
     /// passes one `Instant`'s elapsed time for the whole playback (`ff.rs`).
     pub(crate) fn observe(&mut self, sample: SegmentSample, now_ms: u64) -> Decision {
         self.now_ms = now_ms;
+        // **A reason describes THIS sample or there is none.** It was written on every path that
+        // reached a conclusion and cleared on none, so any earlier return re-published the last
+        // one that happened to be set. I6's dwell gate made that visible: it returns before a
+        // target is selected, so the line read `dwell=1400ms reason=SafeBudgetIncrease` — the
+        // reason belonging to the commit that ARMED the dwell, on a sample where no evaluation
+        // took place. `HlsReason::RejectBackoff`'s doc already argues that the dwell needs no code
+        // of its own ("a dwell that is holding returns before any target is selected, so there is
+        // no rung to name"), and that argument only holds if the field is empty when it says so.
+        self.last_reason = None;
         let ratio = sample.production_ratio_pm();
         let current_candidate = self.catalog.candidate(self.current);
         // A segment at a low rung on a fast link is too small to time; clamp what it may claim to

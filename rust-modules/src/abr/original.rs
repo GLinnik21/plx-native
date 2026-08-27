@@ -146,10 +146,13 @@ impl OriginalRecovery {
         self.probes
     }
 
-    /// The whole basis of the last real recovery decision, for one log line. `None` before the
-    /// first completed probe that cleared the requirement — the two earlier exits
-    /// (`!observation.completed`, and a conservative rate under the requirement) never reach a
-    /// comparison, so there is nothing to publish and saying so beats publishing a stale one.
+    /// The basis of the decision THIS probe reached, for one log line. `None` whenever the last
+    /// probe did not reach one — before the first, and after either of `observe_probe`'s two early
+    /// exits (`!observation.completed`, and a conservative rate under the requirement), which is
+    /// why that function clears this on entry rather than only writing it on success. Saying "no
+    /// comparison" beats publishing a stale one, and the difference is invisible from the log:
+    /// `ff.rs` emits `abr: mode` on every probe result, so a value left behind reads as a decision
+    /// that had just been taken.
     pub(crate) fn comparison(&self) -> Option<ModeComparison> {
         self.last_comparison
     }
@@ -294,6 +297,15 @@ impl OriginalRecovery {
         remaining_ms: i64,
     ) -> RecoveryVerdict {
         self.probes = self.probes.saturating_add(1);
+        // **Retire the previous probe's comparison before this one can fail.** Both exits below
+        // return without reaching `choose_mode`, and `ff.rs` logs `abr: mode` off `comparison()`
+        // on EVERY probe result — so leaving the old value in place printed a decision that was
+        // made two probes ago immediately above this probe's `verdict=Insufficient`, with nothing
+        // marking it stale, and `RE_ABR_MODE` parsed it as a decision that had just been taken.
+        // The doc on `comparison()` already promised this ("saying so beats publishing a stale
+        // one"); it was true only because the test that pinned it truncated the FIRST probe, when
+        // there was nothing stale to publish yet.
+        self.last_comparison = None;
         if !observation.completed {
             // A truncated probe is not a slow link — it is an absent measurement, and folding it
             // into the estimate as a low rate would poison the next decision with a number no

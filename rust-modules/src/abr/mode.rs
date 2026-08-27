@@ -175,9 +175,28 @@ pub(crate) fn hls_utility(
         policy,
     );
     let quality = scaled(hls_quality_score(candidate), scale);
-    let server = policy.server_cost_weight * i64::from(candidate.production_load_pm) / 1_000;
+    // **N18 applies to BOTH sides of the argmax, and it was applied to one.** The rule it states
+    // is a partition, not a preference: a term paid once is outside the scale and a term paid for
+    // every remaining segment is inside it. `original_utility` scales quality, features and risk
+    // and leaves `transition` out; here only quality was scaled, so `risk` and `server` — both
+    // recurring, both charged per segment for the rest of the film — kept full weight while
+    // Original's shrank with the horizon.
+    //
+    // That is not symmetric bookkeeping, it decides reloads. In `OriginalRecovery` the Original
+    // side's risk score is identically zero (both paths reach `original_utility` only past a
+    // capacity test that empties the starvation band, and `inputs` hardcodes `unsafe_deficit_ms:
+    // 0`), so near the end of a film the comparison reduces to `-transition` against
+    // `-(risk + server)` with one side scaled to almost nothing and the other not. Worked at 8 s
+    // remaining (`scale` = 66 pm) with a loaded PMS holding the best rung at P480: Original
+    // totalled -9 and HLS -60, i.e. tear the encoder down and reload the pipeline with eight
+    // seconds of film left. Scaled consistently the same state gives HLS -3 and the reload does
+    // not happen. `benefit_scale_pm` exists to make exactly that decision.
+    let server = scaled(
+        policy.server_cost_weight * i64::from(candidate.production_load_pm) / 1_000,
+        scale,
+    );
     let transition = transition_cost(inputs.current, ModeKind::Hls, inputs.history, policy);
-    let risk_cost = policy.risk_weight * i64::from(risk.score);
+    let risk_cost = scaled(policy.risk_weight * i64::from(risk.score), scale);
     ModeUtility {
         quality,
         features: 0,

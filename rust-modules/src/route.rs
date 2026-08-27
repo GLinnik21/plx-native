@@ -438,6 +438,23 @@ pub(crate) struct PrimedHls {
     pub(crate) encoder_session: String,
 }
 
+/// **Why [`HlsAbrControl::prime`] would not register a candidate encoder**, in the one distinction
+/// the caller's backoff turns on. It maps straight onto `crate::abr::RejectCause` and is a
+/// separate type only because `route` must not decide an ABR policy question — it reports which
+/// exit it took, and `ff.rs` translates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PrimeRefusal {
+    /// The session moved underneath the request, or the request never reached the server: the
+    /// active encoder changed, the server's client is gone, or the control-plane call did not
+    /// complete. **Says nothing about the rung**, so it must not arm N11's backoff — the same
+    /// reading `origin_changed` already gets one branch later.
+    Session,
+    /// PMS was asked for this rung's ceiling and refused it. The one exit that IS about the
+    /// candidate, and the one that should arm the backoff: re-proposing buys the same answer at
+    /// the same price.
+    Rung,
+}
+
 impl HlsAbrControl {
     pub(crate) fn can_recover_original(&self) -> bool {
         !self.original_probe_url.is_empty() && self.original_source_kbps > 0
@@ -456,19 +473,29 @@ impl HlsAbrControl {
 
     /// Register a distinct fixed-rendition encoder at the current content boundary. The old
     /// encoder remains active and readable; this only returns the candidate's master URL.
+    ///
+    /// **The refusal is TYPED, because only this function knows which of its exits it took and the
+    /// caller's answer differs by exit.** `ff.rs` classifies every reject as `Candidate` or
+    /// `Circumstance` — does the failure say anything about the RUNG — and it was reading a bare
+    /// `None` as `Candidate` for all four. Three of the four say nothing about the rung at all:
+    /// the active encoder moved underneath (the same event as `origin_changed`, already
+    /// `Circumstance`), the server's client is gone, or the control-plane call did not complete.
+    /// Only a PMS `refusal` is about the rung, and it is the only one that should arm N11's
+    /// backoff — which charges a full `E_tx` refill debt, up to ~4x `E_tx` of blocked climbing,
+    /// against exits that spent one round trip or none at all.
     pub(crate) fn prime(
         &self,
         expected_encoder: &str,
         proposal: crate::abr::Proposal,
         generation: u64,
         offset_secs: i64,
-    ) -> Option<PrimedHls> {
+    ) -> Result<PrimedHls, PrimeRefusal> {
         if !is_active_encoder(expected_encoder) {
-            return None;
+            return Err(PrimeRefusal::Session);
         }
         if !self.fixture_base.is_empty() {
             let encoder_session = format!("{}-abr-{generation}", self.logical_session);
-            return Some(PrimedHls {
+            return Ok(PrimedHls {
                 url: format!(
                     "{}/{}/master.m3u8?offset={}&X-Plex-Token=fixture-only",
                     self.fixture_base.trim_end_matches('/'),
@@ -478,7 +505,9 @@ impl HlsAbrControl {
                 encoder_session,
             });
         }
-        let client = crate::plex::client_for(self.sid)?;
+        let Some(client) = crate::plex::client_for(self.sid) else {
+            return Err(PrimeRefusal::Session);
+        };
         let encoder_session = format!("{}-abr-{generation}", self.logical_session);
         // PMS exposes the two session fields separately, but the overlap TV spike proved it
         // cannot prime a replacement while it shares the old X-Plex id: the first encoder dies
@@ -497,12 +526,22 @@ impl HlsAbrControl {
                 seconds_per_segment: self.seconds_per_segment,
             },
         );
-        let decision = client.transcode_decision(&spec)?;
-        if refusal(&decision).is_some() || !is_active_encoder(expected_encoder) {
+        // A control-plane call that did not complete is a statement about the LINK to PMS, not
+        // about the rung: the server was never asked. It is deliberately not folded in with the
+        // refusal below.
+        let Some(decision) = client.transcode_decision(&spec) else {
+            return Err(PrimeRefusal::Session);
+        };
+        // The two disjuncts that used to share this branch are different answers and are split.
+        if refusal(&decision).is_some() {
             let _ = client.transcode_stop(&encoder_session);
-            return None;
+            return Err(PrimeRefusal::Rung);
         }
-        Some(PrimedHls {
+        if !is_active_encoder(expected_encoder) {
+            let _ = client.transcode_stop(&encoder_session);
+            return Err(PrimeRefusal::Session);
+        }
+        Ok(PrimedHls {
             url: client.transcode_start_url(&spec).to_url(),
             encoder_session,
         })

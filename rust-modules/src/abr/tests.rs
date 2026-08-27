@@ -2535,6 +2535,88 @@ fn the_probe_gate_weighs_the_rung_the_link_supports_and_not_the_one_it_is_on() {
     );
 }
 
+/// **N18 is a PARTITION and it must hold on both sides of the argmax** (found by adversarial
+/// review of I7a).
+///
+/// The rule N18 states is not a preference about risk aversion, it is a classification of terms: a
+/// cost paid ONCE is outside `benefit_scale_pm` and a cost paid for every remaining segment is
+/// inside it. `original_utility` classified quality, features and risk as recurring and
+/// `transition` as one-off. `hls_utility` classified quality alone, so `risk` and `server` kept
+/// full weight however little film was left — and both are charged per segment for the rest of the
+/// playback, exactly as quality is.
+///
+/// The asymmetry decides reloads rather than tidiness. In `OriginalRecovery` the Original side's
+/// risk score is identically zero (both paths reach `original_utility` only past a capacity test
+/// that empties the starvation band, and its `inputs` hardcodes `unsafe_deficit_ms: 0`), so with a
+/// short horizon the comparison reduces to `-transition` against `-(risk + server)` with one side
+/// discounted to almost nothing and the other not.
+///
+/// Differential by construction, and it asserts the RULE rather than a downstream consequence:
+/// under unmodified code the two HLS terms are invariant to `remaining_ms`, so the strict
+/// inequalities cannot hold. `transition` is the control — it must NOT move, or the test would
+/// pass against code that scaled everything indiscriminately.
+#[test]
+fn every_recurring_term_scales_with_the_horizon_and_the_reload_does_not() {
+    let policy = AbrPolicy::measured();
+    let candidate = hd_catalog().candidate(Rung::Uhd);
+    let current = hd_catalog().candidate(Rung::P480);
+    // A state with a real risk score and a real server cost to discount: a session whose
+    // conservative reading does not cover the candidate, against the 4K point's measured 2.1x
+    // production load. `history` carries a switch so `transition` is non-zero and can act as the
+    // control.
+    let inputs = ModeInputs {
+        current: ModeKind::Original,
+        source_kbps: 28_000,
+        source_raster: (1_920, 1_080),
+        source_delivery: CapacityEstimate::from_prior(30_000),
+        hls_delivery: CapacityEstimate::from_prior(9_000),
+        production: ProductionEstimate::default(),
+        buffer: BufferEstimate { buffered_ms: 4_000, ..Default::default() },
+        remaining_ms: HOUR_MS,
+        history: TransitionHistory::default(),
+        original_feasible: true,
+        source_dv: false,
+        source_atmos: false,
+        unsafe_deficit_ms: 0,
+    };
+    let long = hls_utility(candidate, current, &inputs, &policy);
+    let short = hls_utility(
+        candidate,
+        current,
+        &ModeInputs { remaining_ms: 8_000, ..inputs },
+        &policy,
+    );
+
+    assert!(long.risk > 0, "the fixture must carry a real risk cost or this grades nothing");
+    assert!(long.server > 0, "and a real server cost");
+    assert!(
+        short.risk < long.risk,
+        "risk is charged on every remaining segment, so it must shrink with the horizon: {} at an \
+         hour and {} at eight seconds",
+        long.risk,
+        short.risk,
+    );
+    assert!(
+        short.server < long.server,
+        "so is the server's production load: {} at an hour and {} at eight seconds",
+        long.server,
+        short.server,
+    );
+    assert_eq!(
+        short.transition, long.transition,
+        "the reload is paid ONCE and must stay outside the scale — without this the assertions \
+         above would pass against code that scaled every term indiscriminately",
+    );
+
+    // The same partition on the Original side, so the two are demonstrably one rule.
+    let orig_long = original_utility(&inputs, &policy).expect("feasible");
+    let orig_short =
+        original_utility(&ModeInputs { remaining_ms: 8_000, ..inputs }, &policy).expect("feasible");
+    assert!(orig_short.quality < orig_long.quality);
+    assert!(orig_short.features < orig_long.features);
+    assert_eq!(orig_short.transition, orig_long.transition);
+}
+
 /// **§7.H: the whole comparison is published, so a log can explain a mode switch.**
 ///
 /// `ModeUtility` has always been kept as its component terms "because the event log prints them —
@@ -2577,6 +2659,23 @@ fn a_recovery_decision_publishes_the_comparison_it_was_made_on() {
         cmp.hls_rung,
         Rung::P720,
         "the comparison must be against the best rung the link supports, not the one playing",
+    );
+
+    // **The order that actually exposes staleness, and the one this test was missing.** Truncating
+    // the FIRST probe proves only that a comparison starts absent. `ff.rs` emits `abr: mode` off
+    // `comparison()` on EVERY probe result, so a probe that fails AFTER one succeeded printed the
+    // earlier decision immediately above its own `verdict=Insufficient`, with nothing marking it
+    // stale — and `RE_ABR_MODE` parsed it as a decision that had just been taken.
+    assert_eq!(
+        gate.observe_probe(
+            probe(2_000, false), current, &idle_server(), healthy_buffer(), &healthy_hls(), HOUR_MS,
+        ),
+        RecoveryVerdict::Insufficient,
+    );
+    assert!(
+        gate.comparison().is_none(),
+        "a truncated probe must RETIRE the previous comparison, not leave it standing beside a \
+         verdict it had no part in",
     );
     assert_eq!(cmp.scale_pm, 1_000, "an hour of film is the full benefit scale");
     let w = cmp.winner;
