@@ -167,10 +167,57 @@ window needs no reset across a commit". That claim was about a RUNG commit and i
 since a pin holds the rung here. What is now measured is the **link** regime, and there the window
 is the problem rather than the rung.
 
-## 5. What this run does not answer
+## 5. `E_tx_down` under collapse, measured — 1 424 ms, out of a 2 209 ms reserve
 
-* **`E_tx(up, reject)` and `E_tx_down` under collapse** — the two device cases the plan ranks 4th
-  and 5th, still unwritten. Downshifts have no deadline at all today.
+`pipe_abr_down_collapse` holds the link at 500 kbps, where only rung 320 survives. It forced the
+full descent and produced the first measurement of a downshift's cost:
+
+| move | `decided` | `warmup` | `buf_start` → `buf_decided` | `cur_acq_before` |
+|---|---:|---:|---:|---:|
+| 10000 → 8000 | 745 ms | 738 ms | 1 920 → 1 920 | 916 ms |
+| 8000 → 14000 (up) | 2 464 ms | 1 173 ms | 9 959 → 7 543 | 816 ms |
+| **14000 → 320** | **1 424 ms** | 1 418 ms | **2 209 → 168** | **61 480 ms** |
+
+**`E_tx_down` = 1 424 ms** on the collapse commit, and it is paid almost entirely by the warm-up
+fetch (1 418 of 1 424) — the control plane is 6 ms, as `p2h` §5 says it is on this tier.
+
+**The alarming column is the last one.** `cur_acq_before = 61 480 ms`: the rung the controller was
+still on took **61.5 seconds** to fetch one 2-second segment before it moved. The escape then cost
+1 424 ms out of a 2 209 ms reserve, leaving **168 ms** — under a tenth of a segment. It did not
+stall (`no_playing_error` and `pos_climb` both passed), but it is not a margin either. §5's
+deadline `B < A_i + E_tx_down` was violated by a factor of thirty before the controller acted,
+which is the case for that deadline existing, measured.
+
+It also gives §7a's `H_ref = E_tx_down + D` a value for the first time: **3 424 ms**.
+
+## 6. A case that passed while measuring nothing, and what it took to see that
+
+`pipe_abr_reject_up_4000` is built to produce `E_tx(up, reject)` — an upshift proposed and refused.
+It **passed with every assertion green and produced zero rejections**, because it never reached
+rung 4000 at all: it settled at 720/2000, and `settle_max_kbps: 4000` is satisfied by settling
+*below* the rung the case is named for. The pipeline tier's standing warning about false PASSes,
+in a new place.
+
+**The first diagnosis was wrong and is recorded because the correction is the useful part.** The
+obvious explanation is a ratchet: throughput measured as `bytes / A` is biased low when a segment
+is small, so a low rung under-estimates the link that put it there and stays low. The arithmetic
+works — at rung 720 on an 8 300 kbps link that model predicts 3 443 kbps, 41% of the truth. **It is
+also refuted.** `network_kbps()` divides by `active_fetch_us`, the transfer window alone, so the
+fixed cost is not in the denominator; and `clamped_to_evidence` binds only on Weak samples, while
+rung 2000's 555 kB segment is Normal. Neither mechanism was operating.
+
+What actually happened is visible in the log: the *instantaneous* observation was correct
+throughout (`net` 6 426 – 7 908 kbps against a shaped 8 300), and it was `slow_kbps` — an 8-weight
+EWMA — that lagged, **climbing** 4 830 → 5 031 across the window. `conservative` = 5 031 × 0.8 =
+4 025 reached rung 4000's boundary exactly as the 120 s run ended. Not a measurement error, not a
+ratchet: EWMA convergence from a low bootstrap, and a case one window too short.
+
+Fixed by opening the profile at 40 000 kbps for 15 s so the estimate **descends** to 8 300 instead
+of climbing to it. The lesson is in the case's own note, since it is not visible from the outside:
+a flat leg at the target rate silently measures the estimator's convergence rather than the
+behaviour under test.
+
+## 7. What this run does not answer
 * **Whether a rung COMMIT invalidates the transfer window**, as §4 above distinguishes from a link
   change. Both band cases pin the rung, so nothing here commits.
 * **The residual anomaly of §3**, above.

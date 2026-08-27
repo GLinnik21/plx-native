@@ -898,9 +898,22 @@ literal — **17 numbers** — become `K_r`, `H_ref` (derived from a measured `E
 constants left standing with a reason. The claim is not that this is fewer numbers; it is that the
 survivors are in stated units and commensurable with the quality they trade against.
 
-**What this does not do.** `E_tx_down` is not measured yet — `pipe_abr_down_collapse` is written and
-unrun — so `H_ref` has no value, and `K_r` is a product choice nobody has priced. Neither is a
-derivation gap; both are a number waiting on a measurement that now has a case.
+**`E_tx_down` is now MEASURED, so `H_ref` has a value.** `pipe_abr_down_collapse` ran 2026-08-27:
+the collapse commit (14000 → 320 on a 500 kbps link) cost **1 424 ms**, of which 1 418 is the
+warm-up fetch and 6 ms the control plane. So
+
+```
+H_ref  =  E_tx_down + D  =  1 424 + 2 000  =  3 424 ms
+```
+
+and it is (2), directly measured, on one device and one tier. `K_r` remains the single product
+choice — quality points per halving of the safety horizon — and nobody has priced it.
+
+**The same run is the argument for the constraint half of this section.** The controller reached
+`cur_acq_before = 61 480 ms` — 61.5 seconds to fetch a 2-second segment — before it downshifted,
+then paid 1 424 ms out of a 2 209 ms reserve and finished with **168 ms** left. §5's deadline was
+violated by a factor of thirty before anything moved. A bucket table that scores that state at 40
+or 60 points, tradeable against picture quality, is the wrong instrument for it.
 
 ## 8. What blocks Phase 4
 
