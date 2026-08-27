@@ -91,6 +91,17 @@ pub(crate) struct OriginalRecovery {
     elapsed_ms: u64,
     healthy_samples: u8,
     probes: u8,
+    /// The last comparison this gate made, whole, for the event log — see [`ModeComparison`].
+    /// Written by [`Self::observe_probe`] only: `worth_probing` asks a hypothetical ("would a
+    /// GOOD probe change anything") and publishing that beside a real decision is how a log
+    /// acquires two numbers where one of them decided nothing.
+    last_comparison: Option<ModeComparison>,
+    /// **This playback's actuator set** — carried so both halves of the comparison can be scored
+    /// on real alternatives (N14) and so Original's own quality can be scored against the SOURCE
+    /// raster, which `HlsActuatorCatalog::source_raster` already holds. The catalog is `Copy` and
+    /// the worker already owns one; taking it here beats adding a raster parameter to three
+    /// methods and beats a second copy of a bound that can disagree with the ladder it bounds.
+    catalog: HlsActuatorCatalog,
 }
 
 impl OriginalRecovery {
@@ -99,6 +110,7 @@ impl OriginalRecovery {
         policy: AbrPolicy,
         features: bool,
         history: TransitionHistory,
+        catalog: HlsActuatorCatalog,
     ) -> Option<Self> {
         (source_kbps > 0).then_some(Self {
             source_kbps,
@@ -109,6 +121,8 @@ impl OriginalRecovery {
             elapsed_ms: 0,
             healthy_samples: 0,
             probes: 0,
+            last_comparison: None,
+            catalog,
         })
     }
 
@@ -124,6 +138,14 @@ impl OriginalRecovery {
         self.probes
     }
 
+    /// The whole basis of the last real recovery decision, for one log line. `None` before the
+    /// first completed probe that cleared the requirement — the two earlier exits
+    /// (`!observation.completed`, and a conservative rate under the requirement) never reach a
+    /// comparison, so there is nothing to publish and saying so beats publishing a stale one.
+    pub(crate) fn comparison(&self) -> Option<ModeComparison> {
+        self.last_comparison
+    }
+
     /// Would a SUCCESSFUL probe change anything? Asked before spending one, because a probe reads
     /// real media bytes over the link the segments need. Answered with the utility comparison
     /// under an assumed-good outcome, so "twenty seconds left" and "already switched three times"
@@ -131,15 +153,47 @@ impl OriginalRecovery {
     fn worth_probing(
         &self,
         current: HlsCandidate,
+        production: &ProductionEstimate,
         buffer: BufferEstimate,
         hls_delivery: &CapacityEstimate,
         remaining_ms: i64,
     ) -> bool {
         let requirement = source_requirement_kbps(self.source_kbps, &self.policy);
         let assumed = CapacityEstimate::from_prior(requirement.saturating_mul(2));
-        let inputs = self.inputs(assumed, buffer, *hls_delivery, remaining_ms);
-        let (mode, _, _, _) = choose_mode(&inputs, current, current, &self.policy);
+        let inputs = self.inputs(assumed, *production, buffer, *hls_delivery, remaining_ms);
+        // **The value-of-information gate has to score the decision it gates** (N14 site 2). Both
+        // arguments were `current`, so it asked "is Original better than STAYING HERE" while the
+        // decision it guards asks "is Original better than the BEST rung this link supports" —
+        // and the app spent real source probes, over the link the segments need, on questions the
+        // decision had already settled the other way.
+        let best = self.best_hls(current, production, buffer, hls_delivery);
+        let (mode, _, _, _) = choose_mode(&inputs, current, best, &self.policy);
         mode == ModeKind::Original
+    }
+
+    /// **The HLS alternative the comparison is actually against**: the best rung this link and this
+    /// server currently support, chosen by the same `best_sustainable` the controller's own upshift
+    /// arm uses — consumed directly rather than through `telemetry.optimal`, whose value moves with
+    /// the admission headroom and would put a margin meant for ADMISSION inside a comparison.
+    ///
+    /// Falls back to `current` when nothing is sustainable, which is the honest answer: the thing
+    /// Original would be replacing is the thing that is playing.
+    fn best_hls(
+        &self,
+        current: HlsCandidate,
+        production: &ProductionEstimate,
+        buffer: BufferEstimate,
+        hls_delivery: &CapacityEstimate,
+    ) -> HlsCandidate {
+        self.catalog
+            .best_sustainable(
+                hls_safe_budget(hls_delivery),
+                production,
+                current,
+                &self.policy,
+                buffer.buffered_ms,
+            )
+            .unwrap_or(current)
     }
 
     /// **Both sides of the comparison get real evidence.** `hls_delivery` was an empty estimate
@@ -151,6 +205,7 @@ impl OriginalRecovery {
     fn inputs(
         &self,
         source_delivery: CapacityEstimate,
+        production: ProductionEstimate,
         buffer: BufferEstimate,
         hls_delivery: CapacityEstimate,
         remaining_ms: i64,
@@ -158,9 +213,16 @@ impl OriginalRecovery {
         ModeInputs {
             current: ModeKind::Hls,
             source_kbps: self.source_kbps,
+            // The catalog was bounded by this playback's own source frame on the main thread; see
+            // `HlsActuatorCatalog::source_raster`.
+            source_raster: self.catalog.source_raster(),
             source_delivery,
             hls_delivery,
-            production: ProductionEstimate::default(),
+            // **The real server, not a default one** (N14 sites 1 and 2). A defaulted
+            // `ProductionEstimate` says the server is idle, so the HLS side of the argmax was
+            // scored as if PMS could produce anything asked of it — which biases every recovery
+            // decision by exactly the amount the server is actually loaded.
+            production,
             buffer,
             remaining_ms,
             history: self.history.advanced_by(self.elapsed_ms),
@@ -179,6 +241,7 @@ impl OriginalRecovery {
     pub(crate) fn probe_due(
         &mut self,
         current: HlsCandidate,
+        production: &ProductionEstimate,
         sample: SegmentSample,
         buffer: BufferEstimate,
         hls_delivery: &CapacityEstimate,
@@ -202,7 +265,7 @@ impl OriginalRecovery {
         if self.healthy_samples < ORIGINAL_PROBE_SPACING {
             return false;
         }
-        if !self.worth_probing(current, buffer, hls_delivery, remaining_ms) {
+        if !self.worth_probing(current, production, buffer, hls_delivery, remaining_ms) {
             return false;
         }
         self.healthy_samples = 0;
@@ -212,6 +275,8 @@ impl OriginalRecovery {
     pub(crate) fn observe_probe(
         &mut self,
         observation: CapacityObservation,
+        current: HlsCandidate,
+        production: &ProductionEstimate,
         buffer: BufferEstimate,
         hls_delivery: &CapacityEstimate,
         remaining_ms: i64,
@@ -228,9 +293,22 @@ impl OriginalRecovery {
         if self.probe.conservative_kbps() < requirement {
             return RecoveryVerdict::Insufficient;
         }
-        let inputs = self.inputs(self.probe, buffer, *hls_delivery, remaining_ms);
-        let hls = HlsActuatorCatalog::measured().candidate(Rung::P1080High);
-        let (mode, _, _, _) = choose_mode(&inputs, hls, hls, &self.policy);
+        let inputs = self.inputs(self.probe, *production, buffer, *hls_delivery, remaining_ms);
+        // **The whole HLS side of the argmax was fabricated** (N14 site 1): both arguments were
+        // `candidate(P1080High)`, a rung this playback may not be on, may not be able to reach, and
+        // may not even have in its catalog — so the decision to tear down an encoder and reload was
+        // taken against an alternative that did not exist. Every input needed to score the real one
+        // is on the demux worker's stack at the call site.
+        let best = self.best_hls(current, production, buffer, hls_delivery);
+        let (mode, reason, winner, loser) = choose_mode(&inputs, current, best, &self.policy);
+        self.last_comparison = Some(ModeComparison {
+            chosen: mode,
+            reason,
+            winner,
+            loser,
+            hls_rung: best.rung,
+            scale_pm: benefit_scale_pm(remaining_ms, &self.policy),
+        });
         if mode == ModeKind::Original {
             RecoveryVerdict::Recover
         } else {
@@ -498,8 +576,12 @@ impl OriginalModeController {
         let inputs = ModeInputs {
             current: ModeKind::Original,
             source_kbps: self.source_kbps,
+            source_raster: self.catalog.source_raster(),
             source_delivery: self.delivery,
             hls_delivery: self.delivery,
+            // No HLS session is running, so there IS no measured server cadence to consult — the
+            // default is the honest value here rather than a fabrication. (Contrast the recovery
+            // gate, where an HLS session is live and its estimator was being thrown away.)
             production: ProductionEstimate::default(),
             buffer: self.buffer,
             remaining_ms,

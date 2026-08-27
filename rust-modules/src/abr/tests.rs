@@ -715,8 +715,24 @@ fn recovery(source_kbps: u32) -> OriginalRecovery {
         AbrPolicy::measured(),
         false,
         TransitionHistory::default(),
+        hd_catalog(),
     )
     .unwrap()
+}
+
+/// The rung the recovery fixtures are PLAYING when the probe lands. It is the value the code used
+/// to fabricate for both sides of the comparison, so passing it as `current` holds that half still
+/// and isolates what actually moved: the ALTERNATIVE is now chosen by `best_sustainable`, and the
+/// server is now the measured one.
+fn top_candidate() -> HlsCandidate {
+    hd_catalog().candidate(Rung::P1080High)
+}
+
+/// The server the recovery fixtures compare against. Its own default — an idle PMS — which is what
+/// these tests meant all along; the difference is that the gate now has to be TOLD, so a fixture
+/// that wants a loaded server can say so.
+fn idle_server() -> ProductionEstimate {
+    ProductionEstimate::default()
 }
 
 /// The HLS session the recovery decision is compared AGAINST — healthy, since that is the
@@ -758,7 +774,7 @@ fn original_recovery_probes_from_any_rung_with_measured_headroom() {
     let spare = CapacityEstimate::from_prior(30_000);
     for n in 1..=ORIGINAL_PROBE_SPACING {
         assert_eq!(
-            gate.probe_due(current, sample(20_000, 500, 10_000), healthy_buffer(), &spare, HOUR_MS),
+            gate.probe_due(current, &idle_server(), sample(20_000, 500, 10_000), healthy_buffer(), &spare, HOUR_MS),
             n == ORIGINAL_PROBE_SPACING,
             "spacing window {n}",
         );
@@ -776,6 +792,7 @@ fn original_recovery_refuses_to_probe_without_room_to_do_it_safely() {
         assert!(
             !recovery(28_000).probe_due(
                 current,
+                &idle_server(),
                 sample(60_000, 500, 10_000),
                 healthy_buffer(),
                 &no_headroom,
@@ -786,6 +803,7 @@ fn original_recovery_refuses_to_probe_without_room_to_do_it_safely() {
         assert!(
             !recovery(28_000).probe_due(
                 current,
+                &idle_server(),
                 sample(60_000, 500, 2_000),
                 healthy_buffer(),
                 &spare,
@@ -796,6 +814,7 @@ fn original_recovery_refuses_to_probe_without_room_to_do_it_safely() {
         assert!(
             !recovery(28_000).probe_due(
                 current,
+                &idle_server(),
                 sample(60_000, 500, 10_000),
                 BufferEstimate { buffered_ms: 12_000, slope_ms_per_s: -400, ..Default::default() },
                 &spare,
@@ -814,14 +833,14 @@ fn original_recovery_refuses_to_probe_without_room_to_do_it_safely() {
 fn original_recovery_is_decided_by_confidence_rather_than_probe_count() {
     let mut decisive = recovery(28_000);
     assert_eq!(
-        decisive.observe_probe(probe(80_000, true), healthy_buffer(), &healthy_hls(), HOUR_MS),
+        decisive.observe_probe(probe(80_000, true), top_candidate(), &idle_server(), healthy_buffer(), &healthy_hls(), HOUR_MS),
         RecoveryVerdict::Recover,
         "80 Mbit/s leaves nothing for a second probe to add",
     );
 
     let mut marginal = recovery(28_000);
     let verdicts: Vec<RecoveryVerdict> = (0..3)
-        .map(|_| marginal.observe_probe(probe(50_000, true), healthy_buffer(), &healthy_hls(), HOUR_MS))
+        .map(|_| marginal.observe_probe(probe(50_000, true), top_candidate(), &idle_server(), healthy_buffer(), &healthy_hls(), HOUR_MS))
         .collect();
     assert_eq!(
         verdicts,
@@ -840,11 +859,11 @@ fn original_recovery_is_decided_by_confidence_rather_than_probe_count() {
 fn a_truncated_probe_is_absence_of_evidence() {
     let mut gate = recovery(28_000);
     assert_eq!(
-        gate.observe_probe(probe(2_000, false), healthy_buffer(), &healthy_hls(), HOUR_MS),
+        gate.observe_probe(probe(2_000, false), top_candidate(), &idle_server(), healthy_buffer(), &healthy_hls(), HOUR_MS),
         RecoveryVerdict::Insufficient,
     );
     assert_eq!(
-        gate.observe_probe(probe(80_000, true), healthy_buffer(), &healthy_hls(), HOUR_MS),
+        gate.observe_probe(probe(80_000, true), top_candidate(), &idle_server(), healthy_buffer(), &healthy_hls(), HOUR_MS),
         RecoveryVerdict::Recover,
         "the aborted attempt left no trace to drag the estimate down",
     );
@@ -855,7 +874,7 @@ fn a_truncated_probe_is_absence_of_evidence() {
 fn recovery_does_not_pay_for_a_reload_at_the_end_of_a_film() {
     let mut gate = recovery(28_000);
     assert_eq!(
-        gate.observe_probe(probe(80_000, true), healthy_buffer(), &healthy_hls(), 8_000),
+        gate.observe_probe(probe(80_000, true), top_candidate(), &idle_server(), healthy_buffer(), &healthy_hls(), 8_000),
         RecoveryVerdict::NotWorthIt,
     );
     let current = hd_catalog().candidate(Rung::P720);
@@ -864,6 +883,7 @@ fn recovery_does_not_pay_for_a_reload_at_the_end_of_a_film() {
         assert!(
             !recovery(28_000).probe_due(
                 current,
+                &idle_server(),
                 sample(20_000, 500, 10_000),
                 healthy_buffer(),
                 &spare,
@@ -1960,6 +1980,7 @@ fn repeated_visible_switches_stop_paying_for_themselves() {
         AbrPolicy::measured(),
         false,
         TransitionHistory::default(),
+        hd_catalog(),
     )
     .unwrap();
     let flapping = OriginalRecovery::new(
@@ -1967,17 +1988,18 @@ fn repeated_visible_switches_stop_paying_for_themselves() {
         AbrPolicy::measured(),
         false,
         TransitionHistory { visible_switches: 5, since_last_ms: Some(2_000) },
+        hd_catalog(),
     )
     .unwrap();
     let good = probe(90_000, true);
     let mut calm = calm;
     let mut flapping = flapping;
     assert_eq!(
-        calm.observe_probe(good, healthy_buffer(), &healthy_hls(), 600_000),
+        calm.observe_probe(good, top_candidate(), &idle_server(), healthy_buffer(), &healthy_hls(), 600_000),
         RecoveryVerdict::Recover,
     );
     assert_eq!(
-        flapping.observe_probe(good, healthy_buffer(), &healthy_hls(), 600_000),
+        flapping.observe_probe(good, top_candidate(), &idle_server(), healthy_buffer(), &healthy_hls(), 600_000),
         RecoveryVerdict::NotWorthIt,
         "same link, same film, fifth visible switch",
     );
@@ -2022,19 +2044,19 @@ fn the_visible_switch_penalty_decays_on_the_worker_clock() {
     let flapping = TransitionHistory { visible_switches: 5, since_last_ms: Some(2_000) };
     let good = probe(90_000, true);
 
-    let mut at_once = OriginalRecovery::new(28_000, policy, false, flapping).unwrap();
+    let mut at_once = OriginalRecovery::new(28_000, policy, false, flapping, hd_catalog()).unwrap();
     assert_eq!(
-        at_once.observe_probe(good, healthy_buffer(), &healthy_hls(), 600_000),
+        at_once.observe_probe(good, top_candidate(), &idle_server(), healthy_buffer(), &healthy_hls(), 600_000),
         RecoveryVerdict::NotWorthIt,
         "the fifth switch two seconds ago is still expensive",
     );
 
-    let mut later = OriginalRecovery::new(28_000, policy, false, flapping).unwrap();
+    let mut later = OriginalRecovery::new(28_000, policy, false, flapping, hd_catalog()).unwrap();
     // Six half-lives, so the penalty is under 2% of its opening value. The RATE is policy and is
     // not under test here; that the clock advances at all is.
     later.advance_to(policy.visible_switch_decay_ms.saturating_mul(6));
     assert_eq!(
-        later.observe_probe(good, healthy_buffer(), &healthy_hls(), 600_000),
+        later.observe_probe(good, top_candidate(), &idle_server(), healthy_buffer(), &healthy_hls(), 600_000),
         RecoveryVerdict::Recover,
         "the same evidence, once the penalty has decayed, is worth acting on",
     );
@@ -2050,16 +2072,16 @@ fn advancing_the_switch_clock_is_idempotent_in_the_value_not_the_call_count() {
     let good = probe(90_000, true);
     let target = policy.visible_switch_decay_ms.saturating_mul(6);
 
-    let mut once = OriginalRecovery::new(28_000, policy, false, flapping).unwrap();
+    let mut once = OriginalRecovery::new(28_000, policy, false, flapping, hd_catalog()).unwrap();
     once.advance_to(target);
 
-    let mut many = OriginalRecovery::new(28_000, policy, false, flapping).unwrap();
+    let mut many = OriginalRecovery::new(28_000, policy, false, flapping, hd_catalog()).unwrap();
     for _ in 0..40 {
         many.advance_to(target);
     }
     assert_eq!(
-        once.observe_probe(good, healthy_buffer(), &healthy_hls(), 600_000),
-        many.observe_probe(good, healthy_buffer(), &healthy_hls(), 600_000),
+        once.observe_probe(good, top_candidate(), &idle_server(), healthy_buffer(), &healthy_hls(), 600_000),
+        many.observe_probe(good, top_candidate(), &idle_server(), healthy_buffer(), &healthy_hls(), 600_000),
         "forty ticks to the same instant is one tick to that instant",
     );
 }
@@ -2120,6 +2142,248 @@ fn vbr_headroom_makes_the_whole_file_average_a_lower_bound() {
     assert!(observation.fallback.is_none(), "but 30 s of reserve is not an emergency either");
 }
 
+/// **N14 site 3: Original's quality comes from the SOURCE, and a modest source is worth less.**
+///
+/// Category 8.3. It was `original_quality_bonus + hls_quality_score(candidate(P1080High))` — a
+/// constant 116 regardless of what it was being compared against, so the structural advantage the
+/// policy comment reasons about as "40" was in fact +40 against P1080High, +76 against P720 and
+/// +116 against P240. A bonus that grows as the alternative worsens is a thumb on the scale.
+///
+/// Differential by construction: under unmodified code both halves of this are the SAME NUMBER, so
+/// the inequality cannot hold. It also pins the direction rather than a value, so the quality
+/// curve can be re-shaped without re-fitting it.
+#[test]
+fn originals_quality_is_scored_from_the_source_and_not_from_a_fabricated_rung() {
+    let policy = AbrPolicy::measured();
+    let base = ModeInputs {
+        current: ModeKind::Hls,
+        source_kbps: 28_000,
+        source_raster: (1_920, 1_080),
+        source_delivery: CapacityEstimate::from_prior(200_000),
+        hls_delivery: CapacityEstimate::from_prior(200_000),
+        production: ProductionEstimate::default(),
+        buffer: BufferEstimate { buffered_ms: 8_000, ..Default::default() },
+        remaining_ms: HOUR_MS,
+        history: TransitionHistory::default(),
+        original_feasible: true,
+        original_features: false,
+        persistent_deficit_windows: 0,
+    };
+    let quality_of = |kbps: u32, raster: (u16, u16)| {
+        original_utility(
+            &ModeInputs { source_kbps: kbps, source_raster: raster, ..base },
+            &policy,
+        )
+        .expect("feasible")
+        .quality
+    };
+
+    let big = quality_of(28_000, (1_920, 1_080));
+    let small = quality_of(2_200, (1_280, 720));
+    assert!(
+        small < big,
+        "a 2.2 Mbps 720p master scored {small} and a 28 Mbps 1080p one {big} — Original's quality \
+         must be about the file, and under the fabricated baseline these were the same number",
+    );
+
+    // The RASTER is a cap in its own right: the same bitrate in a smaller frame is not worth more.
+    assert!(
+        quality_of(28_000, (1_280, 720)) < big,
+        "a 720p master cannot be worth what a 1080p one is at the same rate",
+    );
+
+    // An unstated raster applies no cap — `(0, 0)` is "nobody said", the same reading
+    // `HlsActuatorCatalog::limited_to` gives it, and the conservative direction here: refusing to
+    // credit a source nobody measured would silently prefer transcoding.
+    assert_eq!(
+        quality_of(28_000, (0, 0)),
+        big,
+        "an unmeasured raster must not be read as a forbidden zero-pixel picture",
+    );
+}
+
+/// **N18: Original's risk is a RECURRING cost and is scaled like one.**
+///
+/// Category 8.3. `quality` and `features` were already scaled by `benefit_scale_pm`; `risk` was
+/// not, which made effective risk aversion inversely proportional to remaining playback — the same
+/// defect §7.C rejects for rung selection. `transition` stays outside the scale, because a reload
+/// is paid once, now.
+///
+/// Differential: under unmodified code the two risk terms below are equal.
+#[test]
+fn originals_risk_shrinks_with_the_playback_it_is_a_risk_to() {
+    let policy = AbrPolicy::measured();
+    // A source the link cannot carry, so the risk term is non-zero and has something to scale.
+    let base = ModeInputs {
+        current: ModeKind::Hls,
+        source_kbps: 60_000,
+        source_raster: (1_920, 1_080),
+        source_delivery: CapacityEstimate::from_prior(9_000),
+        hls_delivery: CapacityEstimate::from_prior(40_000),
+        production: ProductionEstimate::default(),
+        buffer: BufferEstimate { buffered_ms: 4_000, ..Default::default() },
+        remaining_ms: HOUR_MS,
+        history: TransitionHistory::default(),
+        original_feasible: true,
+        original_features: false,
+        persistent_deficit_windows: 0,
+    };
+    let whole_film = original_utility(&base, &policy).expect("feasible");
+    let last_ten_seconds =
+        original_utility(&ModeInputs { remaining_ms: 10_000, ..base }, &policy).expect("feasible");
+    assert!(whole_film.risk > 0, "the fixture must produce a risk to scale");
+    assert!(
+        last_ten_seconds.risk < whole_film.risk,
+        "risk is a property of the playback that REMAINS: {} with ten seconds left against {} with \
+         an hour is the same number, which is the defect",
+        last_ten_seconds.risk,
+        whole_film.risk,
+    );
+    assert_eq!(
+        last_ten_seconds.transition, whole_film.transition,
+        "a reload is paid once, now, and must stay outside the scale",
+    );
+}
+
+/// **N14 sites 1 and 2: the recovery gate scores the REAL server, not an idle one.**
+///
+/// Category 8.3. `OriginalRecovery::inputs` hardcoded `ProductionEstimate::default()`, so the HLS
+/// side of the argmax was always scored as if PMS could produce anything asked of it — a bias in
+/// one direction by exactly the amount the server is actually loaded, on every recovery decision.
+///
+/// **The fixture has to be CLOSE, and that is what makes it a real test.** On a link this fast
+/// Original wins outright the moment the requirement clears, so a loaded server would change
+/// nothing observable; three spent visible switches price the reload high enough that the decision
+/// is genuinely balanced, and then the server is what tips it. The switch count is a fixture
+/// choice, not a threshold — the assertion is that the two verdicts DIFFER, not what they are.
+///
+/// Differential by construction: unmodified code has no production argument at all, so both gates
+/// below are computed from identical inputs and cannot disagree.
+#[test]
+fn the_recovery_comparison_can_see_a_loaded_server() {
+    let policy = AbrPolicy::measured();
+    let current = top_candidate();
+    let mut loaded = ProductionEstimate::default();
+    for _ in 0..6 {
+        loaded.observe(policy.production_max_pm * 2, current.production_load_pm, false);
+    }
+    assert!(loaded.ratio_pm > policy.production_max_pm, "the setup must load the server");
+
+    let spent = TransitionHistory { visible_switches: 3, since_last_ms: Some(0) };
+    let gate = || {
+        OriginalRecovery::new(28_000, policy, false, spent, hd_catalog()).expect("feasible")
+    };
+    let (mut idle_gate, mut loaded_gate) = (gate(), gate());
+    let verdicts: Vec<(RecoveryVerdict, RecoveryVerdict)> = (0..3)
+        .map(|_| {
+            (
+                idle_gate.observe_probe(
+                    probe(50_000, true), current, &idle_server(), healthy_buffer(),
+                    &healthy_hls(), HOUR_MS,
+                ),
+                loaded_gate.observe_probe(
+                    probe(50_000, true), current, &loaded, healthy_buffer(),
+                    &healthy_hls(), HOUR_MS,
+                ),
+            )
+        })
+        .collect();
+    assert!(
+        verdicts.iter().any(|(idle, busy)| idle != busy),
+        "the same probe against the same link gave the same answer on an idle server and on one \
+         past its ceiling — which is exactly what a defaulted `ProductionEstimate` guarantees: \
+         {verdicts:?}",
+    );
+}
+
+/// **N14 site 2: the value-of-information gate scores the decision it gates.**
+///
+/// Category 8.3. `worth_probing` passed the real `current` as BOTH `current_hls` and `best_hls`,
+/// so it asked "is Original better than staying exactly here" while the decision it guards asks
+/// "is Original better than the best rung this link supports". The app therefore spent real source
+/// probes — read over the link the segments need — on questions the decision had already settled
+/// the other way.
+///
+/// Differential: unmodified code cannot distinguish these two runs at all, because the alternative
+/// it scores is `current` in both.
+#[test]
+fn the_probe_gate_weighs_the_rung_the_link_supports_and_not_the_one_it_is_on() {
+    let policy = AbrPolicy::measured();
+    // Spent switches, so the comparison is close enough that the ALTERNATIVE decides it.
+    let spent = TransitionHistory { visible_switches: 3, since_last_ms: Some(0) };
+    let gate = || {
+        OriginalRecovery::new(28_000, policy, false, spent, hd_catalog()).expect("feasible")
+    };
+    let floor = hd_catalog().candidate(Rung::P480);
+    // A link with room for the top rung. Sitting at the FLOOR, the honest alternative to Original
+    // is the top rung this link supports — not the 720 kbps that happens to be playing.
+    let roomy = healthy_hls();
+    let due_at_floor = gate().probe_due(
+        floor, &idle_server(), sample(40_000, 200, 20_000), healthy_buffer(), &roomy, HOUR_MS,
+    );
+    let due_at_top = gate().probe_due(
+        top_candidate(), &idle_server(), sample(40_000, 200, 20_000), healthy_buffer(), &roomy,
+        HOUR_MS,
+    );
+    assert_eq!(
+        due_at_floor, due_at_top,
+        "the alternative is the best rung the link supports either way, so which rung happens to \
+         be playing must not change whether a probe is worth spending",
+    );
+}
+
+/// **§7.H: the whole comparison is published, so a log can explain a mode switch.**
+///
+/// `ModeUtility` has always been kept as its component terms "because the event log prints them —
+/// *Original lost* is not a diagnosis". Every `choose_mode` call site discarded the reason and both
+/// utilities, so the sentence was aspirational and the one question an operator asks after a
+/// visible switch had no answer in the log.
+///
+/// Differential: unmodified code publishes nothing. The `hls_rung` assertion is the second half —
+/// it is the value N14 site 1 was fabricating, so a comparison that reported P1080High while
+/// playing a 4 Mbps rung would be the defect surviving inside its own instrument.
+#[test]
+fn a_recovery_decision_publishes_the_comparison_it_was_made_on() {
+    let mut gate = recovery(28_000);
+    assert!(gate.comparison().is_none(), "nothing has been compared yet");
+
+    let current = hd_catalog().candidate(Rung::P720);
+    assert_eq!(
+        gate.observe_probe(
+            probe(2_000, false), current, &idle_server(), healthy_buffer(), &healthy_hls(), HOUR_MS,
+        ),
+        RecoveryVerdict::Insufficient,
+    );
+    assert!(
+        gate.comparison().is_none(),
+        "a truncated probe never reaches a comparison, so there is nothing to publish — and a \
+         stale one beside a fresh verdict is the trap this whole line exists to avoid",
+    );
+
+    assert_eq!(
+        gate.observe_probe(
+            probe(80_000, true), current, &idle_server(), healthy_buffer(), &healthy_hls(), HOUR_MS,
+        ),
+        RecoveryVerdict::Recover,
+    );
+    let cmp = gate.comparison().expect("a real decision publishes its basis");
+    assert_eq!(cmp.chosen, ModeKind::Original);
+    assert_eq!(cmp.reason, ModeReason::OriginalWorthIt);
+    assert!(cmp.loser.is_some(), "the alternative was scored, so it must be readable");
+    assert_ne!(
+        cmp.hls_rung,
+        Rung::P720,
+        "the comparison must be against the best rung the link supports, not the one playing",
+    );
+    assert_eq!(cmp.scale_pm, 1_000, "an hour of film is the full benefit scale");
+    let w = cmp.winner;
+    assert_eq!(
+        w.quality + w.features - w.risk - w.server - w.transition,
+        w.total,
+        "the terms must reconstruct the total, or decomposing them explains nothing",
+    );
+}
+
 /// Utility is not a bitrate comparison: Original wins from BEHIND on wire rate because it has
 /// no generation loss and asks the server for no video encoding at all.
 #[test]
@@ -2128,6 +2392,8 @@ fn original_beats_the_top_rung_on_utility_at_equal_risk() {
     let inputs = ModeInputs {
         current: ModeKind::Original,
         source_kbps: 28_000,
+        // A 1080p master, the raster the rest of this fixture is written around.
+        source_raster: (1_920, 1_080),
         source_delivery: CapacityEstimate::from_prior(80_000),
         hls_delivery: CapacityEstimate::from_prior(80_000),
         production: ProductionEstimate::default(),

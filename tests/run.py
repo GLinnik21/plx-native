@@ -1310,6 +1310,26 @@ RE_ABR_SEED = re.compile(
 )
 RE_ABR_HISTORY = re.compile(r"abr: history switches=(\d+) since_last=(\S+) advanced=(\d+)ms")
 
+# **The mode comparison, whole** — the one line that answers "why did Auto choose this" for the
+# Original/HLS decision, as opposed to the rung decision `abr: steady` covers. Both utilities are
+# decomposed because a total explains nothing: "Original lost" is not a diagnosis, "Original lost
+# 40 of quality to 60 of transition cost at scale 66pm" is.
+RE_ABR_MODE = re.compile(
+    r"abr: mode chose=(\S+) why=(\S+) vs_hls=(\d+)kbps scale=(-?\d+)pm "
+    r"win\[q=(-?\d+) f=(-?\d+) r=(-?\d+) s=(-?\d+) t=(-?\d+) tot=(-?\d+)\] "
+    r"lose\[q=(-?\d+) f=(-?\d+) r=(-?\d+) s=(-?\d+) t=(-?\d+) tot=(-?\d+)\]"
+)
+MODE_FIELDS = (
+    "chose", "why", "vs_hls_kbps", "scale_pm",
+    "win_quality", "win_features", "win_risk", "win_server", "win_transition", "win_total",
+    "lose_quality", "lose_features", "lose_risk", "lose_server", "lose_transition", "lose_total",
+)
+
+
+def abr_modes(lines):
+    """Every Original-vs-HLS comparison the run made, decomposed, in order."""
+    return _parsed(RE_ABR_MODE, MODE_FIELDS, lines)
+
 RE_ABR_STEADY = re.compile(r"abr: steady current=(\d+)kbps")
 # The two operational guards and the two estimator inputs beside them. A separate regex from
 # `RE_ABR_STEADY` above rather than an extension of it: that one is deliberately a one-field prefix

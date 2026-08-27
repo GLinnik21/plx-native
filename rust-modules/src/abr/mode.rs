@@ -79,6 +79,10 @@ pub(crate) struct ModeUtility {
 pub(crate) struct ModeInputs {
     pub(crate) current: ModeKind,
     pub(crate) source_kbps: u32,
+    /// **The SOURCE's frame, `(0, 0)` for "nobody said"** — the second of the two inputs Original's
+    /// quality has to be scored from (N14 site 3). Read off the playback's own catalog, which
+    /// `route::auto_catalog` already bounded by it; see `HlsActuatorCatalog::source_raster`.
+    pub(crate) source_raster: (u16, u16),
     /// Delivery evidence for the SOURCE request — a bootstrap or recovery probe, or the live
     /// progressive transfer. Not interchangeable with the HLS estimate; see
     /// [`CapacityEstimate::demote_to_prior`].
@@ -192,10 +196,13 @@ pub(crate) fn original_utility(inputs: &ModeInputs, policy: &AbrPolicy) -> Optio
     // costs Original the argument even while starvation is still a minute away — and a single
     // wobble, which resets the counter, costs nothing.
     score += u32::from(inputs.persistent_deficit_windows.min(15)).saturating_mul(4);
+    // **Original's quality is scored from the SOURCE, not from a synthetic HLS reference** (N14
+    // site 3). It was `original_quality_bonus + hls_quality_score(candidate(P1080High))` — a
+    // constant 116 whatever it was being compared against, so the structural advantage the policy
+    // comment reasons about as "40" was +40 against P1080High, +76 against P720 and +116 against
+    // P240. A bonus that grows as the alternative gets worse is not a bonus, it is a thumb.
     let quality = scaled(
-        policy.original_quality_bonus + i64::from(hls_quality_score(
-            HlsActuatorCatalog::measured().candidate(Rung::P1080High),
-        )),
+        policy.original_quality_bonus + i64::from(source_quality_score(inputs, policy)),
         scale,
     );
     let features = scaled(
@@ -203,7 +210,12 @@ pub(crate) fn original_utility(inputs: &ModeInputs, policy: &AbrPolicy) -> Optio
         scale,
     );
     let transition = transition_cost(inputs.current, ModeKind::Original, inputs.history, policy);
-    let risk_cost = policy.risk_weight * i64::from(score);
+    // **Scaled with the other recurring terms** (N18). Risk is a property of the playback that
+    // REMAINS, exactly as quality and features are; leaving it outside the scale made effective
+    // risk aversion inversely proportional to remaining playback, which is the same defect §7.C
+    // rejects for rung selection — at 6 s remaining the argmax was P720 and at 2 s a tie between
+    // P240 and P480. `transition` stays outside it: a reload is paid once, now.
+    let risk_cost = scaled(policy.risk_weight * i64::from(score), scale);
     Some(ModeUtility {
         quality,
         features,
@@ -214,6 +226,86 @@ pub(crate) fn original_utility(inputs: &ModeInputs, policy: &AbrPolicy) -> Optio
         transition,
         total: quality + features - risk_cost - transition,
     })
+}
+
+/// **What the SOURCE is worth on the same scale the rungs are scored on** — the honest baseline
+/// `original_utility` needed and did not have.
+///
+/// Two inputs and both are conservative on purpose:
+///
+/// * the rate is `min(source_kbps, top rung's planning rate)`. Above the ladder's ceiling the
+///   quality curve has saturated anyway (`hls_quality_score`'s last band is open-ended), so
+///   clamping costs nothing real and stops an enormous remux rate reading as an enormous score.
+/// * the raster is a CAP, not a bonus. A source smaller than 1080p cannot be worth more than the
+///   rungs that reproduce it exactly, so it scores at the best rung whose frame it fills. An
+///   UNSTATED raster `(0, 0)` applies no cap — the same "nobody said is not a forbidden zero"
+///   reading `HlsActuatorCatalog::limited_to` gives it, and the conservative direction here,
+///   because refusing to credit a source nobody measured would silently prefer transcoding.
+///
+/// It is deliberately expressed in `hls_quality_score`'s own units by evaluating that function, so
+/// the two sides of the comparison cannot drift apart when the curve is re-shaped.
+fn source_quality_score(inputs: &ModeInputs, _policy: &AbrPolicy) -> i64 {
+    let top = HlsActuatorCatalog::measured().candidate(Rung::P1080High);
+    let (sw, sh) = inputs.source_raster;
+    // **The raster caps the RATE**, and then the curve is evaluated once. Expressing it as a rate
+    // cap rather than as a filter over rungs is not a simplification for its own sake: the first
+    // version filtered the ladder by raster and then took `max` with the source's own rate as a
+    // floor, and the floor silently defeated the cap — a 28 Mbps 720p master scored the same as a
+    // 28 Mbps 1080p one, which is the exact defect this function exists to remove.
+    let raster_cap = if sw > 0 && sh > 0 {
+        LADDER
+            .iter()
+            .filter(|rung| {
+                let (rw, rh) = rung.raster();
+                rw <= sw && rh <= sh
+            })
+            .map(|rung| HlsActuatorCatalog::measured().candidate(*rung).expected_wire_kbps)
+            .max()
+            .unwrap_or(0)
+    } else {
+        // `(0, 0)` is "nobody said", not a forbidden zero-pixel picture — the same reading
+        // `HlsActuatorCatalog::limited_to` gives it, and the conservative direction here, because
+        // refusing to credit a source nobody measured would silently prefer transcoding.
+        u32::MAX
+    };
+    let rate = inputs
+        .source_kbps
+        .min(top.expected_wire_kbps)
+        .min(raster_cap);
+    hls_quality_score(HlsCandidate {
+        rung: Rung::P240,
+        request_kbps: rate,
+        expected_wire_kbps: rate,
+        production_load_pm: 0,
+    })
+}
+
+/// **One whole mode comparison, for one event-log line** (§7.H).
+///
+/// `ModeUtility`'s own doc has always said the terms are kept apart "because the event log prints
+/// them" — *"Original lost is not a diagnosis; Original lost 40 of quality to 60 of transition cost
+/// with 90 s left is"*. That was aspirational: all three `choose_mode` call sites discarded the
+/// reason and both utilities, so the one question an operator asks after a visible switch was
+/// unanswerable from a log. This is the carrier that makes the sentence true.
+///
+/// Assembled in `abr/`, which never logs — the same division `ControllerTelemetry` keeps, and for
+/// the same reason: the numbers printed are then provably the numbers used, rather than a
+/// re-derivation at the call site against inputs that have since moved.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ModeComparison {
+    pub(crate) chosen: ModeKind,
+    pub(crate) reason: ModeReason,
+    /// The mode that WON, decomposed.
+    pub(crate) winner: ModeUtility,
+    /// The mode that lost, when there was one. `None` only for `OriginalInfeasible`, where there
+    /// was no second candidate to score rather than a second candidate that scored badly.
+    pub(crate) loser: Option<ModeUtility>,
+    /// The HLS operating point the comparison was actually against — the thing N14 site 1 was
+    /// fabricating. Logged because "Original lost to HLS" means nothing without it.
+    pub(crate) hls_rung: Rung,
+    /// `benefit_scale_pm` at the moment of the decision, so a comparison taken near the end of a
+    /// film is readable as one.
+    pub(crate) scale_pm: i64,
 }
 
 /// Why a mode comparison came out the way it did — logged verbatim, so "why did Auto choose this"

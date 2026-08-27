@@ -3495,6 +3495,10 @@ fn hls_demux(
                     // The worker's own clock takes over from here; the main thread's capture is
                     // the starting point, not a live view.
                     control.history.advanced_by(advanced_ms),
+                    // This playback's actuator set, so the recovery comparison scores the rungs
+                    // that exist here rather than a synthetic one — and so Original's own quality
+                    // can be scored against the SOURCE raster the catalog was bounded by.
+                    control.catalog,
                 )
             })
             .flatten();
@@ -3607,9 +3611,41 @@ fn hls_demux(
             if let Ok(probe) = probe_rx.try_recv() {
                 *probe_inflight = false;
                 let delivery = controller.delivery();
+                // Every input the comparison needs is already on this stack — `telemetry` was
+                // taken above and carries the live production estimate, and the current candidate
+                // is one catalog lookup. Nothing here crosses a thread (N14).
+                let current_candidate = controller.catalog().candidate(controller.current());
                 let verdict = recovery.as_mut().map(|gate| {
-                    gate.observe_probe(probe, controller.buffer(), &delivery, remaining_ms)
+                    gate.observe_probe(
+                        probe,
+                        current_candidate,
+                        &telemetry.production,
+                        controller.buffer(),
+                        &delivery,
+                        remaining_ms,
+                    )
                 });
+                // **The comparison, whole** (§7.H). `ModeUtility` has always been kept as its
+                // component terms "because the event log prints them"; until this it printed none
+                // of them, so "Original lost" was the entire record of a decision that tears down
+                // an encoder session. Emitted only when a comparison was actually made — the two
+                // earlier exits in `observe_probe` never reach one.
+                if let Some(cmp) = recovery.as_ref().and_then(|gate| gate.comparison()) {
+                    let loser = cmp.loser.unwrap_or_default();
+                    crate::player::log(&format!(
+                        "abr: mode chose={:?} why={:?} vs_hls={}kbps scale={}pm \
+                         win[q={} f={} r={} s={} t={} tot={}] \
+                         lose[q={} f={} r={} s={} t={} tot={}]",
+                        cmp.chosen,
+                        cmp.reason,
+                        cmp.hls_rung.kbps(),
+                        cmp.scale_pm,
+                        cmp.winner.quality, cmp.winner.features, cmp.winner.risk,
+                        cmp.winner.server, cmp.winner.transition, cmp.winner.total,
+                        loser.quality, loser.features, loser.risk,
+                        loser.server, loser.transition, loser.total,
+                    ));
+                }
                 crate::player::log(&format!(
                     "abr: Original probe #{} measured={}kbps {}KiB/{}ms complete={} left={}s verdict={:?}",
                     recovery.as_ref().map(|gate| gate.probes()).unwrap_or(0),
@@ -3661,7 +3697,14 @@ fn hls_demux(
             let delivery = controller.delivery();
             let probe_due = !*probe_inflight
                 && recovery.as_mut().is_some_and(|gate| {
-                    gate.probe_due(current_candidate, sample, buffer, &delivery, remaining_ms)
+                    gate.probe_due(
+                        current_candidate,
+                        &telemetry.production,
+                        sample,
+                        buffer,
+                        &delivery,
+                        remaining_ms,
+                    )
                 });
             if probe_due {
                 SHARED

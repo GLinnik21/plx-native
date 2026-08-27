@@ -377,6 +377,60 @@ engine, so a counter held by a demux worker would reset to zero on exactly the e
 count. It lives on the route session, is captured into each worker at spawn, and both directions
 record it — the penalty prices the ALTERNATION.
 
+### 6b. The comparison scores real alternatives, and says so
+
+Three quantities in the Original/HLS argmax were **fabricated** rather than measured, and each
+biased it in one direction (N14).
+
+| site | was | is |
+|---|---|---|
+| `observe_probe` | both sides scored against `candidate(P1080High)` — a rung this playback may not be on, may not reach, and may not have in its catalog | the rung actually playing, against the best rung `best_sustainable` admits |
+| `worth_probing` | the real `current` passed as BOTH `current_hls` and `best_hls` | the same pair as the decision it gates |
+| both | `ProductionEstimate::default()` — an idle server | the live estimator |
+| `original_utility` | `original_quality_bonus + hls_quality_score(P1080High)`, a constant 116 | scored from the SOURCE |
+
+The third is the one that reads as a bug once stated: a constant baseline made Original's
+"structural advantage" **+40 against P1080High, +76 against P720 and +116 against P240**, while the
+policy comment beside it reasons about 40 throughout. A bonus that grows as the alternative worsens
+is a thumb on the scale, and it points the opposite way from the first two — which is why all three
+had to land together.
+
+`source_quality_score` is deliberately conservative in both inputs: the rate is
+`min(source_kbps, top rung)` because the quality curve has saturated above the ladder anyway, and
+the raster **caps the rate** rather than filtering the ladder. The filter form was written first and
+was wrong: it took a `max` with the source's own rate as a floor, and the floor silently defeated
+the cap, so a 28 Mbps 720p master scored the same as a 28 Mbps 1080p one. An unstated raster
+`(0, 0)` applies no cap — "nobody said" is not a forbidden zero-pixel picture, and refusing to
+credit an unmeasured source would silently prefer transcoding.
+
+**N14 asked for a `source_raster` field on `ModeInputs` "threaded through `HlsAbrControl` to the
+worker — that one does cross a thread". It does not.** `route::auto_catalog` bounds this playback's
+catalog by `session().cur_src` on the main thread, and `HlsAbrControl` already carries the whole
+catalog across; the raster has been on the worker's stack the entire time, one accessor away. A
+parallel field would have been a second copy of one fact, free to disagree with the bound it
+describes.
+
+**Original's risk is scaled with the playback it is a risk to** (N18). `quality` and `features`
+already were; `risk` was not, which made effective risk aversion inversely proportional to remaining
+playback — the same defect §7.C rejects for rung selection. `transition` stays outside the scale: a
+reload is paid once, now.
+
+**And the comparison is now printed.** `ModeUtility`'s doc has always said its terms are kept apart
+"because the event log prints them — *Original lost* is not a diagnosis, *Original lost 40 of
+quality to 60 of transition cost with 90 s left* is". Every call site discarded them, so that was
+aspirational. `abr: mode` carries both decompositions, the rung compared against, and the benefit
+scale:
+
+```text
+abr: mode chose=Hls why=OriginalNotWorthIt vs_hls=20011kbps scale=66pm
+     win[q=5 f=0 r=26 s=4 t=0 tot=-25] lose[q=7 f=0 r=0 s=0 t=15 tot=-8]
+```
+
+It is assembled in `abr/`, which never logs, for the reason `ControllerTelemetry` is: the numbers
+printed are then provably the numbers used. It appears only where a comparison was actually made —
+a truncated probe and a rate under the requirement both exit before one, and publishing a stale
+comparison beside a fresh verdict is the trap the line exists to avoid.
+
 ## 7. Leaving Original, and returning
 
 **Leaving** (`OriginalModeController::observe`, one 750 ms window of ACTIVE body-read time) has three

@@ -1450,6 +1450,30 @@ class AbrLogLineContract(unittest.TestCase):
                          f"ff.rs emits {emitted}, run.py parses {parsed}")
         self.assertIn("reason", emitted, "the decision reason must stay on the line")
 
+    def test_the_mode_line_emits_exactly_the_fields_the_harness_parses(self):
+        """The Original-vs-HLS comparison, both sides of the contract.
+
+        Field NAMES come out of `ff.rs`'s own format literal, so a rename there fails here rather
+        than silently yielding zero comparison rows — and this line is the only record of a decision
+        that tears down an encoder session, so a silent zero is the expensive failure."""
+        emitted = self._emitted_fields("mode")
+        parsed = self._regex_fields(run.RE_ABR_MODE)
+        self.assertEqual(emitted, parsed, f"ff.rs emits {emitted}, run.py parses {parsed}")
+
+    def test_a_rendered_mode_line_yields_both_decompositions(self):
+        line = ("[  12.345] abr: mode chose=Original why=OriginalWorthIt vs_hls=8000kbps "
+                "scale=1000pm win[q=116 f=0 r=0 s=0 t=15 tot=101] "
+                "lose[q=58 f=0 r=8 s=3 t=0 tot=47]")
+        rows = run.abr_modes([line])
+        self.assertEqual(len(rows), 1, "RE_ABR_MODE no longer matches what the app logs")
+        self.assertEqual(rows[0]["chose"], "Original")
+        self.assertEqual(rows[0]["vs_hls_kbps"], 8000)
+        # The whole point of decomposing: the totals must be reconstructible from the terms.
+        self.assertEqual(
+            rows[0]["win_quality"] + rows[0]["win_features"] - rows[0]["win_risk"]
+            - rows[0]["win_server"] - rows[0]["win_transition"],
+            rows[0]["win_total"])
+
     def test_the_seed_and_history_lines_match_their_regexes(self):
         for prefix, pattern in (("seed", run.RE_ABR_SEED), ("history", run.RE_ABR_HISTORY)):
             with self.subTest(line=prefix):

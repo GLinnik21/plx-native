@@ -321,6 +321,19 @@ impl HlsActuatorCatalog {
     /// `plex::Ceiling::admits`, where an unmeasured source fails CLOSED — deliberately: there, `0`
     /// is being asked to honour an explicit user instruction, and here it is being asked to
     /// forbid a device capability nobody has contradicted.)
+    /// **The source raster this catalog was bounded by**, `(0, 0)` for "nobody said" — the same
+    /// reading `limited_to` gives it, and the reading `covers_source` already depends on.
+    ///
+    /// N14 asked for a `source_raster` field on `ModeInputs`, "threaded through `HlsAbrControl` to
+    /// the worker — that one does cross a thread". It does not: `route::auto_catalog` builds this
+    /// catalog from `session().cur_src` on the main thread and `HlsAbrControl` already carries the
+    /// whole catalog to the worker, so the raster has been on the worker's stack all along, one
+    /// accessor away. Adding a parallel field would have been a second copy of one fact, free to
+    /// disagree with the bound it describes.
+    pub(crate) fn source_raster(&self) -> (u16, u16) {
+        self.source
+    }
+
     pub(crate) fn limited_to(mut self, device: (u16, u16), source: (u16, u16)) -> Self {
         fn axis(value: u16) -> u16 {
             if value == 0 { u16::MAX } else { value }
