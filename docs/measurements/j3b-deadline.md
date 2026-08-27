@@ -128,9 +128,87 @@ cheapest. At rung 320 an 88-second deadline is barely a bound at all — and hon
   (`pin_320`: 89 samples at 320). The whole plant table comes from **one** capture for the first
   time, where it previously drew from `p2-logs` and `p1b-logs` together.
 * **The calibration tool's "newest capture wins" was reverse-alphabetical**, which silently put
-  every `p*` directory ahead of every `j*` one. It is a stated chronology now, and an unlisted
-  capture is an error rather than a silent placement.
+  every `p*` directory ahead of every `j*` one — the stale-table failure that tool exists to
+  prevent, recurring in the mechanism meant to prevent it.
+
+  **[CORRECTED] The first fix was also wrong, and its justification was false.** It replaced the
+  sort with a HAND-WRITTEN chronology, on the stated grounds that "git cannot rescue it either:
+  this branch's captures all carry the same commit date." They do not. That came from reading
+  `git log --format=%cs`, which is the DAY; `--diff-filter=A --format=%ct` separates them to the
+  second. And the hand-written list was wrong in two places: `j3-decides-logs` is NEWER than
+  `j3a-window-logs` (13:15 against 12:03 — the window became a decider after the shadow capture),
+  and `p2-logs` is newer than `p2h-logs`. The order is derived from the commit that ADDED each
+  capture now, which is the right question anyway, and an uncommitted capture sorts newest because
+  that is what a capture being taken right now is.
+
+  The wrong order changed no shipped number — `j3b-logs` won every rung either way — which is
+  exactly why it would have survived.
 * **R11 is unobserved on device.** Zero `buf=none` samples: no case seeks during Auto.
   `pipe_abr_seek_flat` is added for that, and until it runs R11 is host-proven only.
 * **`Down`/reject has still never been observed** — n = 0 across every capture. `sim.rs` continues
   to refuse the leg rather than invent it.
+
+---
+
+# J3d — the deadline FIRES, and reveals a larger hole beside it
+
+*`docs/measurements/j3d-logs/pipe_abr_down_outrun.log`. Same binary as J3b plus the
+request-indexed shaper.*
+
+## 8. The first observation of the deadline acting
+
+```
+Down 18000->2000  outcome=warmup_deadline  decided=2226ms  warmup_dl=2209ms  buf_start=2209ms
+Down 18000->320   outcome=committed        decided=1792ms  warmup=1787ms
+```
+
+The link fell to 5 568 kbps under segment 9; the controller, at rung 18000, targeted rung 2000.
+Rung 2000 carries 2 221 kbps of media, so two seconds of it is 4 442 kbit — **9.1 s at the 490 kbps
+floor, against a 2 209 ms reserve**. The deadline aborted at 2 226 ms, and the controller then
+**re-decided on evidence that now included the 490 kbps reading and chose rung 320**, which
+committed in 1 787 ms.
+
+That is the whole value proposition, observed: an unaffordable commitment to a rung chosen from a
+rate the link no longer had, converted into a bounded abort and a correct second choice. Without
+it the fetch runs to completion and commits to rung 2000 on a 490 kbps link — unsustainable, and
+requiring another downshift from an empty reserve, which is the 36-second record's shape.
+
+**The request-indexed shaper is what made it reachable, and it justified itself in the same run.**
+The indices were derived from `j3c`, whose trajectory this run did not share at all: with no
+wall-clock profile the link is ~100 Mbps, the seed is rung 20000 rather than 10000, and segments
+arrive far faster. Segments 10 and 11 still measured 5 568 and 490 kbps. Index-keyed shaping is
+invariant to the trajectory; a wall clock is not, which is the entire reason the previous two
+attempts produced a clean descent instead of the event.
+
+## 9. **Nothing bounds the CURRENT stream's fetch, and that is where the stall was**
+
+The case stalled **76 seconds**. It is not the transaction, and it is not a regression:
+
+```
+hls: segment=10 bytes=4648488 ... open_probe_ms=75943
+```
+
+That is the segment of the rung already playing. 4 648 488 B is 37 188 kbit; at 490 kbps it is
+**75.9 s**, against a logged 75 943 ms — agreement to 40 ms. Every leg checks out the same way:
+
+| fetch | kbit | link | predicted | logged |
+|---|---:|---:|---:|---:|
+| current seg 9 (6000 leg) | 39 346 | 5 568 | 7.1 s | 7 127 ms |
+| **current seg 10 (500 leg)** | **37 188** | **490** | **75.9 s** | **75 943 ms** |
+| rung 320 segment | 767 | 490 | 1.6 s | 1 782 ms |
+
+So J3b bounds a **candidate** transfer at 2 209 ms while the **current** transfer beside it runs
+unbounded for 76 seconds. Stated plainly: the deadline closed the smaller of the two holes. On a
+collapsing link the dominant cost is not the transaction — it is the app's refusal to abandon a
+segment it has already started, on a rung the link can no longer carry.
+
+The remedy is the plan's R16 abort rule, and this is the first measurement that prices it: rung 320
+was 1.6 s away. Abandoning the in-flight 18000 segment would have turned a 76-second stall into
+about two seconds. R16 is currently blocked on the in-segment rate quantile it wants for the
+projection — but note that this case needs no quantile at all to see the problem, because
+`Content-Length` and the delivered rate are both known at the first byte.
+
+**The acceptance test for that increment already exists and is deliberately absent today:**
+`pipe_abr_down_outrun` carries no `max_stall_s`. Adding one now would assert a result nobody has
+measured; adding one when R16 lands makes this case differential, because 76 s cannot pass any
+bound a two-second escape justifies.

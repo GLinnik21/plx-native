@@ -245,6 +245,12 @@ class FixtureHandler(BaseHTTPRequestHandler):
         if not body:
             return
         self.server.count(partial)
+        # The request-indexed rate is resolved ONCE, here, from this response's own segment index —
+        # so the whole body runs at one rate even if the schedule would move under it. Only media
+        # segments are counted and only they can be overridden; a playlist carries no media.
+        rate_override = None
+        if RE_ABR_SEGMENT.match(self.path.split("?", 1)[0]):
+            rate_override = self.server.segment_rate_kbps(self.server.count_segment())
         try:
             with open(path, "rb") as f:
                 f.seek(start)
@@ -253,7 +259,7 @@ class FixtureHandler(BaseHTTPRequestHandler):
                     chunk = f.read(min(self.server.chunk_size(), left))
                     if not chunk:
                         break
-                    self.server.write_body(self.wfile, chunk)
+                    self.server.write_body(self.wfile, chunk, rate_override)
                     left -= len(chunk)
         except (BrokenPipeError, ConnectionResetError):
             # The demuxer closes mid-body on every seek and on teardown. That is the protocol here,
@@ -275,6 +281,9 @@ class FixtureServer(socketserver.ThreadingTCPServer):
         self.n_opens = self.n_ranged = 0
         self.rate_profile = []
         self.rate_started = None
+        # The REQUEST-indexed schedule, and the count it is indexed by. See `set_segment_profile`.
+        self.segment_profile = []
+        self.n_segments = 0
         # The instant the shared link next falls idle. See `write_body`.
         self.link_free_at = None
         self._abr_parts = {}
@@ -319,6 +328,67 @@ class FixtureServer(socketserver.ThreadingTCPServer):
             self.rate_profile = cleaned
             self.rate_started = None
             self.link_free_at = None
+
+    def set_segment_profile(self, profile):
+        """Install a rate schedule keyed to the MEDIA SEGMENT COUNT: [{from_segment, kbps}, ...].
+
+        # Why a second shaper, when `set_network_profile` already shapes the link
+
+        `network_profile` is keyed to the wall clock, and there is one behaviour it structurally
+        cannot produce: a rate that falls DURING a transfer whose target was chosen from the rate
+        before it. That is not a corner case — it is the only condition under which a candidate
+        transfer deadline can fire at all, and the reason is worth stating because it is not
+        obvious. The controller picks its downshift target from the rate it just measured, so on a
+        steady link the target is by construction affordable: a rung is admitted only if its
+        `expected_wire_kbps` fits the measured budget, and one segment of it therefore fetches in
+        about one segment of time. A transfer only becomes unaffordable when the rate underneath
+        it drops after the choice was made.
+
+        With a wall-clock cliff, whether that happens is a PHASE relationship — the cliff has to
+        land near the end of a segment fetch, so that the measurement stays high and the next fetch
+        runs slow. `pipe_abr_down_collapse` produced exactly that once in three runs of the same
+        case (36 156 ms of fetch against a 5 793 ms reserve), and the two runs that did not bracket
+        the change it was supposed to grade. A test that enters its own state one time in three
+        cannot grade anything.
+
+        Keyed to the segment COUNT instead, the same event is exact: the controller measures
+        segment `from_segment - 1` at the fast rate, decides, and its candidate warm-up IS segment
+        `from_segment`, served slow. No clock, no phase, no luck.
+
+        **Counted per media-segment RESPONSE, not per `?sequence=`**, because sequence numbering
+        restarts at zero for each rung — so a candidate's warm-up is always `sequence=0` and could
+        never be selected by sequence. Playlists do not count; they carry no media.
+
+        Legs apply from `from_segment` onward, last match wins, and an empty list restores the
+        ordinary behaviour. It COMPOSES with `network_profile`: this one wins where it applies,
+        which is what lets a case shape the run-up on the clock and the critical fetch by index.
+        """
+        cleaned = []
+        for leg in profile or []:
+            start, kbps = int(leg["from_segment"]), int(leg["kbps"])
+            if start < 0 or kbps <= 0 or (cleaned and start <= cleaned[-1][0]):
+                raise ValueError(f"invalid segment-profile leg: {leg!r}")
+            cleaned.append((start, kbps))
+        with self.lock:
+            self.segment_profile = cleaned
+            self.n_segments = 0
+            self.link_free_at = None
+
+    def count_segment(self):
+        """One media-segment response has begun. Returns its 0-based index."""
+        with self.lock:
+            index = self.n_segments
+            self.n_segments += 1
+            return index
+
+    def segment_rate_kbps(self, index):
+        """The request-indexed rate for the segment at `index`, or `None` if none applies."""
+        with self.lock:
+            match = None
+            for start, kbps in self.segment_profile:
+                if index >= start:
+                    match = kbps
+            return match
 
     def _rate_kbps(self):
         with self.lock:
@@ -366,10 +436,17 @@ class FixtureServer(socketserver.ThreadingTCPServer):
         return [(a, b, kbps) for a, b, kbps in legs if kbps < peak]
 
     def chunk_size(self):
-        return 64 * 1024 if self._rate_kbps() is not None else 262144
+        shaped = self._rate_kbps() is not None or bool(self.segment_profile)
+        return 64 * 1024 if shaped else 262144
 
-    def write_body(self, stream, data):
+    def write_body(self, stream, data, rate_override=None):
         """Write one chunk, then hold the SHARED link for as long as those bytes would occupy it.
+
+        `rate_override` is the request-indexed rate from `set_segment_profile`, resolved once when
+        the response began. It WINS over the wall-clock profile: a case that uses both is saying
+        "shape the run-up on the clock and this particular fetch by index", and the index is the
+        more specific statement. Resolved per response rather than per chunk on purpose — the
+        whole point is that one transfer runs at one rate the controller did not choose from.
 
         **This used to sleep per writer**, so two concurrent transfers each got the full nominal
         rate and the aggregate was N times the link. That is not a small error: it is why every
@@ -390,7 +467,7 @@ class FixtureServer(socketserver.ThreadingTCPServer):
         """
         stream.write(data)
         stream.flush()
-        kbps = self._rate_kbps()
+        kbps = rate_override if rate_override is not None else self._rate_kbps()
         if kbps is None:
             return
         occupancy = len(data) * 8 / (kbps * 1000.0)

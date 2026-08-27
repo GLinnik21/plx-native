@@ -136,42 +136,48 @@ def settled(rows):
     return rows[len(rows) // 4:] if len(rows) >= 8 else rows
 
 
-#: Capture directories under `docs/measurements/`, **NEWEST FIRST**. Stated rather than derived,
-#: because neither available signal orders them and both look like they do.
-#:
-#: `sorted(reverse=True)` was the rule here, and it happened to be right only while the newest
-#: capture was `p2-logs`: the names mix PHASE numbering (`p0`, `p1`, `p1b`, `p2`, `p2h`) with
-#: INCREMENT numbering (`i2`, `j3`, `j3a`, `j3b`), and reverse-alphabetical puts every `p*` ahead
-#: of every `j*`. So the moment a `j3b` capture landed, "newest wins" silently meant "p2 wins" —
-#: which is precisely the stale-table failure this whole file exists to prevent, recurring in the
-#: mechanism meant to prevent it. `git log` cannot rescue it either: this branch's captures all
-#: carry the same commit date.
-#:
-#: An unlisted directory is an ERROR, not a silent placement (see below). Adding a capture
-#: therefore costs one line here, and forgetting it fails loudly rather than calibrating from
-#: whichever name happens to sort highest.
-CAPTURE_ORDER = (
-    "j3b-logs",          # J3b: the downshift deadline, and the first pins taken under it
-    "j3a-window-logs",   # J3a: the admission window's shadow verdict
-    "j3-decides-logs",   # J3: the window moved from shadow to deciding
-    "p2h-logs",          # P2h: the PMS ladder probe (host-side; no pin logs)
-    "p2-logs",           # P2: identification, the M4 census that landed
-    "p1b-logs",          # P1b: the apparatus rebuild, second pass
-    "p1-logs",           # P1: the apparatus rebuild
-    "i2-logs",           # I2: the transaction-cost baseline, pre-board
-)
+def capture_added_at(directory: pathlib.Path):
+    """Unix time of the commit that FIRST ADDED this capture, or `None` if it is uncommitted.
+
+    Uncommitted means a capture still in the working tree, which is the newest thing there can be.
+    """
+    out = subprocess.run(
+        ["git", "log", "--diff-filter=A", "--format=%ct", "-1", "--", str(directory)],
+        cwd=ROOT, capture_output=True, text=True)
+    stamp = out.stdout.strip()
+    return int(stamp) if out.returncode == 0 and stamp else None
 
 
 def captures_newest_first():
-    """Every capture directory that exists, newest first. Unlisted ones are an error."""
-    present = {pathlib.Path(d).name for d in glob.glob(str(ROOT / "docs/measurements/*-logs"))}
-    unknown = sorted(present - set(CAPTURE_ORDER))
-    if unknown:
-        raise SystemExit(
-            f"capture director{'y' if len(unknown) == 1 else 'ies'} {unknown} not in "
-            "CAPTURE_ORDER. Place them in the chronology (newest first) in "
-            "tools/abr-calibrate-plant.py — the order cannot be derived from the names.")
-    return [ROOT / "docs/measurements" / name for name in CAPTURE_ORDER if name in present]
+    """Every capture directory that exists, newest first, **derived from git**.
+
+    # Two wrong answers preceded this one, and the second was worse than the first
+
+    It was `sorted(reverse=True)`, which is not chronological: the names mix PHASE numbering
+    (`p1`, `p1b`, `p2`, `p2h`) with INCREMENT numbering (`i2`, `j3`, `j3a`, `j3b`), so every `p*`
+    sorts above every `j*`. The moment a `j3b` capture landed, "newest wins" silently meant "p2
+    wins" -- the stale-table failure this file exists to prevent, recurring in the mechanism meant
+    to prevent it.
+
+    It was then replaced by a HAND-WRITTEN chronology, on the stated grounds that "git cannot
+    rescue it either: this branch's captures all carry the same commit date." **That was false, and
+    the hand-written list was wrong in two places** -- `j3-decides-logs` is NEWER than
+    `j3a-window-logs`, not older, and `p2-logs` is newer than `p2h-logs`. The claim came from
+    reading `git log --format=%cs`, which is the DAY, and concluding the captures were
+    indistinguishable. `--diff-filter=A --format=%ct` separates them to the second, and it is the
+    right question anyway: a capture's chronology is when it was ADDED, not when its directory was
+    last touched.
+
+    So the order is derived, not stated, and the failure mode of the previous two versions -- a
+    human placing a capture wrongly, or forgetting to place it at all -- cannot occur.
+    """
+    out = []
+    for d in glob.glob(str(ROOT / "docs/measurements/*-logs")):
+        path = pathlib.Path(d)
+        added = capture_added_at(path)
+        # An uncommitted capture sorts newest: it is a capture being taken right now.
+        out.append((added if added is not None else float("inf"), path))
+    return [path for _, path in sorted(out, key=lambda pair: pair[0], reverse=True)]
 
 
 def operating_points(fixtures: pathlib.Path):
@@ -230,12 +236,40 @@ def transaction_legs():
     return legs
 
 
+#: Outcomes whose cost is a DEADLINE rather than an acquisition. A transaction that hit its
+#: deadline never completed a fetch, so it logs `warmup=none` -- and a median over "none" is
+#: nothing, which a constant-cost leg records as ZERO. Its real cost is `min(acceptance budget,
+#: reserve)`, a state variable, so there is no constant to record at all.
+DEADLINE_OUTCOMES = ("warmup_deadline", "graded_deadline")
+
+
 def leg_summary(rows):
     def med(key):
         vals = [r[key] for r in rows if r[key] is not None]
         return round(statistics.median(vals)) if vals else 0
+    deadlines = sum(1 for r in rows if r["outcome"] in DEADLINE_OUTCOMES)
     return {"n": len(rows), "control_plane_ms": med("control"),
             "warmup_acq_ms": med("warmup"), "graded_acq_ms": med("graded"),
+            "deadline_aborts": deadlines,
+            # **A leg every one of whose members hit a deadline has no constant cost**, and
+            # emitting one is worse than emitting nothing: the plant would model a downshift
+            # reject as FREE -- 5 ms of control plane for a transaction that really cost 2 226 ms,
+            # a 445x understatement -- and could not represent the failure the deadline exists to
+            # bound. The previous plant made the mirror-image error, charging one flat 4 600 ms to
+            # all four legs, which made `T_down` on a collapsing link unrepresentable. `sim.rs`
+            # refuses an absent leg loudly, which is the right failure to have.
+            #
+            # A MIXED leg is still understated and this does not fix that: `up_reject` medians the
+            # two `graded_deadline` members that measured a warm-up and silently omits the two
+            # `warmup_deadline` ones, whose cost was their deadline. `deadline_aborts` is reported
+            # beside `n` so the ratio is visible rather than implied.
+            # The test is whether ANY member contributed an acquisition measurement, not what the
+            # outcomes were called: a `graded_deadline` transaction completed its warm-up and so
+            # carries a real number, while a `warmup_deadline` one never completed a fetch at all.
+            # An outcome-name test flagged `up_reject` (2 of its 4 are graded_deadline, with real
+            # warm-ups) and would have thrown away a measured leg.
+            "costless": bool(rows) and all(
+                r["warmup"] is None and r["graded"] is None for r in rows),
             "outcomes": dict(collections.Counter(r["outcome"] for r in rows))}
 
 
@@ -276,6 +310,13 @@ def main(argv=None):
                 print(f"            {field}: None,")
                 continue
             s = legs[key]
+            if s["costless"]:
+                # Observed, and STILL `None` — for a different reason than "never seen". Every
+                # member hit a deadline, so its cost is `min(acceptance, reserve)` rather than an
+                # acquisition, and a constant here would record it as free. See DEADLINE_OUTCOMES.
+                print(f"            {field}: None,  // {s['n']} observed, all deadline aborts: "
+                      "cost is the reserve, not a constant")
+                continue
             print(f"            {field}: Some(TransactionCost {{ "
                   f"control_plane_ms: {s['control_plane_ms']}, "
                   f"warmup_acq_ms: {s['warmup_acq_ms']}, "

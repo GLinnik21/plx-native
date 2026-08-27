@@ -166,20 +166,37 @@ impl TransactionModel {
     /// in this file either pinned a rung or asserted the refusal itself: the one instrument capable
     /// of comparing two policies without a television had never executed a transaction.
     ///
-    /// **`down_reject` stays `None` and that is structural, not an oversight.**
-    /// `Controller::candidate_ready` returns `true` for every downshift that produced a decodable
-    /// segment and left one segment of reserve, so reaching a down-reject needs a decode or raster
-    /// failure. n = 0 across 45 captured logs. Inventing a number here is exactly what the previous
-    /// plant did — one flat 4600 ms charged to all four legs — which made `T_down` growing on a
-    /// collapsing link literally unrepresentable.
+    /// **`down_reject` stays `None`, and as of 2026-08-27 for a DIFFERENT reason — it has now
+    /// been observed.**
+    ///
+    /// It used to be structural: `Controller::candidate_ready` returns `true` for every downshift
+    /// that produced a decodable segment and left one segment of reserve, so reaching a
+    /// down-reject needed a decode or raster failure, and n was 0 across 45 captured logs. **J3b
+    /// falsified that premise by giving a downshift a way to be refused** — its transfer deadline
+    /// — and `pipe_abr_down_outrun` produced the first one: `Down 18000->2000 outcome=
+    /// warmup_deadline decided=2226ms warmup_dl=2209ms`.
+    ///
+    /// It is still `None` because **there is no constant to record**. That transaction never
+    /// completed a fetch, so it logs `warmup=none`; a median over nothing is zero, and a leg
+    /// costing 0 would model a downshift reject as FREE — 5 ms of control plane for a transaction
+    /// that really cost 2 226 ms, a 445x understatement, in the one direction that matters. Its
+    /// true cost is `min(acceptance budget, reserve)`, which is a STATE VARIABLE.
+    ///
+    /// **The plant could compute it.** `sim.rs` models the reserve, so it could charge a deadline
+    /// abort `min(acceptance, buffered_ms)` from its own state instead of from a table. That is
+    /// the increment this observation asks for, and it is the thing that would let the simulator
+    /// exhibit the deadline at all — see the note below on why a fixed median cannot.
+    /// `tools/abr-calibrate-plant.py` refuses to emit a leg with no acquisition measurement rather
+    /// than emitting a zero, so this stays `None` until the plant learns to derive it.
     ///
     /// **The plant charges a fixed median per leg, so it cannot exhibit the downshift DEADLINE.**
-    /// J3b bounds a candidate transfer by the reserve it is spending, and the bound binds only in
-    /// the tail — the 36-second transaction the corpus holds, not the 741 ms median below. A cost
-    /// model with no dependence on the link rate has no tail to bound, so the deadline is
-    /// invisible here by construction and its effect is a device question. Modelling it needs
-    /// `E_tx` as a function of delivered rate, which nothing has measured; that is the same gap
-    /// `docs/adaptive-playback-spec.md` §7a names for `H_ref`.
+    /// J3b bounds a candidate transfer by the reserve it is spending, and the bound binds only
+    /// when the rate during the fetch is below the rate the target was chosen from — which a
+    /// constant cost cannot express, because it has no dependence on the link at all. Device
+    /// evidence exists now (`docs/measurements/j3b-deadline.md` §8), and closing the gap needs the
+    /// leg cost to become `bytes(target) * 8 / C_now` against the modelled reserve rather than a
+    /// median. Everything that needs is already here: the byte table above, the reserve, and the
+    /// link trace.
     ///
     /// **`control_plane_ms: 6` is the FIXTURE SERVER's control plane, not a PMS's.** These captures
     /// come from the synthetic pipeline tier, where `tests/serve_fixtures.py` answers a playlist off

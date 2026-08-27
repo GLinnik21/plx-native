@@ -74,24 +74,40 @@ class TheFixtureMapIsReadNotCopied(unittest.TestCase):
 
 
 class TheCaptureChronology(unittest.TestCase):
-    """The order captures are preferred in cannot be derived from their names, so it is stated."""
+    """The order captures are preferred in is DERIVED from git, after two wrong answers."""
 
-    def test_every_capture_on_disk_is_placed_in_the_chronology(self):
-        """An unplaced capture must fail loudly. `sorted(reverse=True)` was the rule until a
-        `j3b-logs` capture landed and reverse-alphabetical silently put every `p*` ahead of it —
-        the stale-table failure this file exists to prevent, recurring in the mechanism meant to
-        prevent it."""
-        cp.captures_newest_first()  # raises SystemExit naming anything unlisted
+    def test_the_order_is_the_git_add_order(self):
+        """`--diff-filter=A` is the commit that first added a capture, which is its chronology.
+        Reading `%cs` (the DAY) instead is what produced the claim that git could not separate
+        them, and then a hand-written list that was wrong in two places."""
+        got = [p.name for p in cp.captures_newest_first()]
+        stamps = [cp.capture_added_at(p) for p in cp.captures_newest_first()]
+        committed = [s for s in stamps if s is not None]
+        self.assertEqual(committed, sorted(committed, reverse=True), f"not newest-first: {got}")
+        self.assertGreaterEqual(len(got), 6)
 
-    def test_the_stated_order_is_not_the_alphabetical_one(self):
-        """If these ever coincide the bug is invisible again, and the explicit list looks like
-        redundant ceremony to the next reader. They do not coincide today: `p2-logs` sorts above
-        `j3b-logs` and is older."""
-        import glob
-        present = [pathlib.Path(d).name for d in glob.glob(str(ROOT / "docs/measurements/*-logs"))]
-        stated = [n for n in cp.CAPTURE_ORDER if n in present]
-        self.assertNotEqual(stated, sorted(present, reverse=True),
-                            "stated and alphabetical order agree; this guard proves nothing")
+    def test_the_git_order_is_not_the_alphabetical_one(self):
+        """If these ever coincide the bug is invisible again and the derivation looks like
+        ceremony. They do not coincide today: `p2-logs` sorts above `j3b-logs` and is older."""
+        got = [p.name for p in cp.captures_newest_first()]
+        self.assertNotEqual(got, sorted(got, reverse=True),
+                            "derived and alphabetical order agree; this guard proves nothing")
+
+    def test_two_captures_the_hand_written_list_had_backwards(self):
+        """Differential against the list this replaced, which is the only way to show the
+        derivation fixed something rather than restating it."""
+        order = [p.name for p in cp.captures_newest_first()]
+        for newer, older in (("j3-decides-logs", "j3a-window-logs"), ("p2-logs", "p2h-logs")):
+            if newer in order and older in order:
+                with self.subTest(pair=(newer, older)):
+                    self.assertLess(order.index(newer), order.index(older),
+                                    f"{newer} was ADDED after {older}; check `git log "
+                                    f"--diff-filter=A -- docs/measurements/{newer}`")
+
+    def test_an_uncommitted_capture_sorts_newest(self):
+        """A capture being taken right now is the newest thing there can be, and it has no add
+        commit at all — so `None` must mean newest rather than oldest or an error."""
+        self.assertIsNone(cp.capture_added_at(ROOT / "docs/measurements/does-not-exist-logs"))
 
     def test_the_table_reports_which_capture_each_rung_came_from(self):
         """A rung is never averaged across captures, but a TABLE routinely draws from two or three
@@ -99,9 +115,10 @@ class TheCaptureChronology(unittest.TestCase):
         that makes that visible, so it is asserted rather than assumed."""
         points = cp.operating_points(cp.DEFAULT_FIXTURES)
         self.assertTrue(points)
-        for rung, p in points.items():
+        known = {p.name for p in cp.captures_newest_first()}
+        for rung, point in points.items():
             with self.subTest(rung=rung):
-                self.assertIn(p["source"], cp.CAPTURE_ORDER)
+                self.assertIn(point["source"], known)
 
 
 class Settling(unittest.TestCase):
@@ -224,13 +241,37 @@ class TheTransactionLegs(unittest.TestCase):
                 self.assertIn(key, self.legs)
                 self.assertGreater(self.legs[key]["n"], 0)
 
-    def test_a_downshift_reject_has_never_been_observed(self):
-        """`Controller::candidate_ready` returns `true` for every downshift that produced a
-        decodable segment and one segment of reserve, so a down-reject needs a decode or raster
-        failure to happen at all. `sim.rs` must keep refusing rather than inventing it — a
-        fabricated leg is how the previous plant made `T_down` growing on a collapsing link
-        unrepresentable."""
-        self.assertNotIn(("Down", False), self.legs)
+    def test_a_downshift_reject_is_observed_and_still_has_no_constant_cost(self):
+        """**This test asserted an ABSENCE, and J3b falsified its premise — which is the test
+        working.**
+
+        It read: a down-reject needs a decode or raster failure, because `candidate_ready` returns
+        `true` for every downshift that produced a decodable segment and one segment of reserve;
+        n was 0 across 45 logs. J3b gave a downshift a second way to be refused — its transfer
+        deadline — and `pipe_abr_down_outrun` produced the first one.
+
+        The conclusion for `sim.rs` is UNCHANGED and the reason is new: the leg still has no
+        constant cost. That transaction never completed a fetch, so it logs `warmup=none`, a
+        median over nothing is zero, and a zero-cost leg models a downshift reject as FREE — 5 ms
+        of control plane for a transaction that cost 2 226 ms. Its cost is `min(acceptance,
+        reserve)`, a state variable.
+        """
+        leg = self.legs.get(("Down", False))
+        self.assertIsNotNone(leg, "the deadline abort left the corpus; see j3d-logs")
+        self.assertEqual(leg["deadline_aborts"], leg["n"], "a down-reject with another cause")
+        self.assertTrue(leg["costless"], "it has acquisition data now — give sim.rs the leg")
+        self.assertIn("down_reject: None", SIM_RS.read_text(),
+                      "sim.rs must not record a leg whose cost is a deadline")
+
+    def test_a_leg_with_a_real_measurement_is_not_discarded_as_costless(self):
+        """The control case, and the reason `costless` is not an outcome-NAME test. A
+        `graded_deadline` transaction completed its warm-up and carries a real number; only a
+        `warmup_deadline` one measured nothing. An outcome-name test flagged `up_reject` — 2 of
+        whose 4 members are `graded_deadline` — and would have thrown away a measured leg."""
+        leg = self.legs[("Up", False)]
+        self.assertEqual(leg["deadline_aborts"], leg["n"], "every up-reject is a deadline")
+        self.assertFalse(leg["costless"], "but two of them measured a warm-up")
+        self.assertGreater(leg["warmup_acq_ms"], 0)
 
     def test_an_upshift_costs_more_than_a_downshift(self):
         """Structural: an upshift fetches a warm-up AND a graded segment, a downshift only a

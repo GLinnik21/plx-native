@@ -919,6 +919,14 @@ class AutoNetworkProfile(unittest.TestCase):
         census holds the link still and asserts nothing, band sweeps the link and asserts nothing,
         shaped disturbs the link and must assert the recovery. Its own rule is
         `test_every_band_case_sweeps_a_derived_ladder_of_legs`.
+
+        WIDENED on 2026-08-27 to accept EITHER shaper. There are two now, and the second is not a
+        convenience: `network_profile` is keyed to the wall clock and structurally cannot produce a
+        transfer whose rate is below the rate its target was chosen from, which is the only
+        condition under which a candidate transfer deadline can fire. `segment_profile` keys the
+        same disturbance to the media-segment COUNT, which makes it exact instead of a phase
+        coincidence. The rule this test enforces is unchanged — a case that DISTURBS the link must
+        assert what the controller does about it — and "disturbs" is what widened, not the duty.
         """
         shaped = [c for c in _manifest()["pipeline_cases"]
                   if c["name"].startswith("pipe_abr_")
@@ -927,7 +935,9 @@ class AutoNetworkProfile(unittest.TestCase):
         self.assertGreaterEqual(len(shaped), 4, "the bad-network profiles are missing")
         for case in shaped:
             with self.subTest(case["name"]):
-                self.assertIn("network_profile", case, "a shaped case must shape the link")
+                self.assertTrue(
+                    case.get("network_profile") or case.get("segment_profile"),
+                    "a shaped case must shape the link, by the clock or by segment index")
                 bounds = case["expect"].get("abr_shape") or {}
                 self.assertTrue(bounds, "no abr_shape bound — this case grades nothing new")
                 unknown = set(bounds) - abr_shape_keys()
@@ -1459,6 +1469,91 @@ class AbrLogLineContract(unittest.TestCase):
     def test_a_trace_of_nothing_but_unknown_reserves_has_no_floor_rather_than_a_zero(self):
         rows = run.abr_samples([_sample_line(buf="none")])
         self.assertIsNone(run.abr_min_buf_ms(rows), "no reserve observed is not a reserve of 0")
+
+
+class TheRequestIndexedShaper(unittest.TestCase):
+    """**MATHEMATICAL INVARIANT: a rate keyed to the segment COUNT, not the clock.**
+
+    It exists for one behaviour the wall-clock shaper structurally cannot produce: a transfer whose
+    rate is below the rate its target was chosen from. That is the only condition under which a
+    candidate transfer deadline can fire — on a steady link the controller admits a rung only if it
+    fits the measured budget, so one segment of it fetches in about one segment of time — and with
+    a wall-clock cliff whether it happens is a PHASE relationship. `pipe_abr_down_collapse`
+    produced it once in three runs of the same case.
+    """
+
+    def _server(self, profile):
+        srv = serve_fixtures.FixtureServer.__new__(serve_fixtures.FixtureServer)
+        srv.lock = threading.Lock()
+        srv.rate_profile = []
+        srv.rate_started = None
+        srv.link_free_at = None
+        srv.segment_profile = []
+        srv.n_segments = 0
+        srv.set_segment_profile(profile)
+        return srv
+
+    def test_the_rate_applies_from_its_segment_onward(self):
+        srv = self._server([{"from_segment": 12, "kbps": 500}])
+        self.assertIsNone(srv.segment_rate_kbps(11), "before the leg, the schedule says nothing")
+        self.assertEqual(srv.segment_rate_kbps(12), 500)
+        self.assertEqual(srv.segment_rate_kbps(99), 500, "a leg has no end; the last match wins")
+
+    def test_later_legs_win(self):
+        srv = self._server([{"from_segment": 5, "kbps": 9000}, {"from_segment": 10, "kbps": 500}])
+        self.assertIsNone(srv.segment_rate_kbps(4))
+        self.assertEqual(srv.segment_rate_kbps(5), 9000)
+        self.assertEqual(srv.segment_rate_kbps(9), 9000)
+        self.assertEqual(srv.segment_rate_kbps(10), 500)
+
+    def test_the_counter_is_per_response_and_starts_at_zero(self):
+        srv = self._server([{"from_segment": 2, "kbps": 500}])
+        self.assertEqual([srv.count_segment() for _ in range(4)], [0, 1, 2, 3])
+
+    def test_an_empty_profile_shapes_nothing(self):
+        srv = self._server([])
+        srv.count_segment()
+        self.assertIsNone(srv.segment_rate_kbps(0))
+        self.assertIsNone(srv.segment_rate_kbps(1000))
+
+    def test_a_malformed_leg_is_refused_rather_than_silently_ignored(self):
+        for bad in ([{"from_segment": -1, "kbps": 500}],
+                    [{"from_segment": 3, "kbps": 0}],
+                    [{"from_segment": 5, "kbps": 100}, {"from_segment": 5, "kbps": 200}],
+                    [{"from_segment": 5, "kbps": 100}, {"from_segment": 4, "kbps": 200}]):
+            with self.subTest(profile=bad):
+                with self.assertRaises(ValueError):
+                    self._server(bad)
+
+    def test_the_override_beats_the_wall_clock_profile(self):
+        """A case using both is saying "shape the run-up on the clock and THIS fetch by index",
+        and the index is the more specific statement. Graded on the shared link's virtual clock:
+        the override's occupancy is what advances it."""
+        srv = self._server([{"from_segment": 0, "kbps": 1000}])
+        srv.rate_profile = [(999.0, 40000)]
+        srv.rate_started = None
+        sink = io.BytesIO()
+
+        class _Stream:
+            def write(self, b):
+                sink.write(b)
+
+            def flush(self):
+                pass
+
+        start = time.monotonic()
+        srv.write_body(_Stream(), b"x" * 12500, 1000)   # 100 kbit at 1000 kbps = 100 ms
+        elapsed = time.monotonic() - start
+        self.assertGreater(elapsed, 0.05,
+                           "the override was ignored and the 40 Mbps clock leg was used")
+        self.assertEqual(len(sink.getvalue()), 12500)
+
+    def test_a_shaped_run_uses_the_small_chunk_size_even_with_no_clock_profile(self):
+        """`chunk_size` gated on the wall-clock profile alone, so a segment-only case would have
+        written 256 KiB chunks and shaped at a granularity coarser than a whole segment."""
+        srv = self._server([{"from_segment": 1, "kbps": 500}])
+        self.assertEqual(srv.chunk_size(), 64 * 1024)
+        self.assertEqual(self._server([]).chunk_size(), 262144)
 
 
 class ShaperSchedule(unittest.TestCase):

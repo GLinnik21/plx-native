@@ -1919,6 +1919,34 @@
       "_staircase_note": "RECONSTRUCTS the one pathological transaction in the corpus, and makes it deterministic. `pipe_abr_down_collapse` produced a 36 156 ms warm-up fetch against a 5 793 ms reserve ONCE IN THREE RUNS OF THE SAME CASE (6.24x in j3a-window-logs; 0.64x in p2-logs and 0.74x in j3b-logs), so it cannot be used to grade a transfer deadline: two of three runs never enter the state. Reading the three timelines side by side says why. The single cliff 40000 -> 500 is measured by the sample that straddles it, and WHICH rate that sample reports decides everything: p2 and j3b measured ~500 and targeted rung 320, whose segment fetches in ~1.4 s at 500 kbps; j3a measured the INTERMEDIATE 9593, targeted rung 8000, and then fetched a ~2 MB segment at the 500 kbps floor -- 32 s of transfer against a 5.8 s reserve. Whether the straddling sample reads 9593 or 500 is a coincidence of where the fetch boundary falls, which is why the case is intermittent. The middle leg here MAKES that reading deterministic: a full sample at 9600 forces a downshift target the floor cannot carry, and the drop to 500 lands inside its warm-up fetch. 22 s is far enough in for the ladder to have climbed and the reserve to have filled; 9600 is the measured value from the pathological run rather than a round number. What this case grades is unchanged from its sibling -- the descent completes (`settle_max_kbps`) without a `Playing error` -- because the DEADLINE is not gradeable by an assertion here: it is visible as `warmup_dl=` and a `warmup_deadline` outcome on the `abr: tx` line, and asserting an outcome would pin a mechanism rather than a behaviour. No `max_stall_s`, for the same reason as `pipe_abr_down_collapse`: a collapse through a ~5 s reserve may legitimately stall, and asserting otherwise would assert a result nobody has measured."
     },
     {
+      "name": "pipe_abr_down_outrun",
+      "fixture": "pipe_h264_aac_mp4.mp4",
+      "title": "no-Plex Auto: a link that falls UNDER a downshift already in flight",
+      "covers": ["abr-downshift", "collapse", "transaction-cost", "transfer-deadline"],
+      "declare": {"vcodec": "h264", "acodec": "aac", "fps": 24.0},
+      "auto_network": {"source_kbps": 900000},
+      "segment_profile": [
+        {"from_segment": 10, "kbps": 6000},
+        {"from_segment": 11, "kbps": 500}
+      ],
+      "run_secs": 120,
+      "operations": [
+        {"op": "play"}
+      ],
+      "expect": {
+        "codec": "h264",
+        "load_video": "H264",
+        "load_audio": "AAC",
+        "min_pos_climb_s": 20,
+        "require_video_bound": true,
+        "no_playing_error": true,
+        "abr_shape": {
+          "settle_max_kbps": 720
+        }
+      },
+      "_outrun_note": "The ONLY case that can make a candidate transfer deadline fire, and it needs the REQUEST-INDEXED shaper (`segment_profile`) rather than the wall-clock one. The reason is structural rather than a matter of tuning: the controller chooses its downshift target from the rate it just measured, and admits a rung only if its expected_wire_kbps fits that budget -- so on any steady link one segment of the target fetches in about one segment of time and no deadline can bind. A transfer only becomes unaffordable when the rate underneath it drops AFTER the choice was made. With a wall-clock cliff that is a PHASE relationship (the cliff must land near the end of a segment fetch, so the measurement stays high and the next fetch runs slow), which is why `pipe_abr_down_collapse` produced it exactly once in three runs of the same case and why `pipe_abr_down_staircase` did not produce it at all. Keyed to the segment COUNT the same event is exact. Every index is read off a real request stream rather than guessed: segment 0 is the seed rung 10000, the controller downshifts to 8000 at segment 1 and holds it through segment 15 while the S4 admission window fills (19 samples), and the reserve is full from segment 4. So segment 10 sits mid-stretch at rung 8000 with ~10 s of reserve: served at 6000 it is below what rung 8000 needs, which triggers a downshift, and the budget it leaves selects rung 4000. Segment 11 IS that candidate's warm-up, served at 500 -- and rung 4000 carries 4386 kbps of media, so 2 s of it is 8772 kbit, which at 500 kbps is 17.5 s against a deadline of roughly the 9.2 s reserve. The arithmetic is the case. 500 is the same floor `pipe_abr_down_collapse` uses and is not chosen against the threshold: it is low enough that rung 4000 cannot be fetched and high enough that rung 320 can (752 kbit in 1.5 s), so the descent still has somewhere to land. What is GRADED stays the behaviour -- the descent completes, nothing errors -- because asserting `warmup_deadline` would pin a mechanism; the deadline is read from `warmup_dl=` and the outcome on the `abr: tx` line. No `max_stall_s`: at 500 kbps the CURRENT rung cannot be fetched either, so a stall here is the link, not the controller."
+    },
+    {
       "name": "pipe_abr_seek_flat",
       "fixture": "pipe_h264_aac_mp4.mp4",
       "title": "no-Plex Auto: a SEEK mid-Auto must not be read as an empty reserve",
