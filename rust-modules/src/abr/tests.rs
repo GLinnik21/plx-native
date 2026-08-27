@@ -276,6 +276,41 @@ fn a_short_reserve_still_fires_a_downshift_when_the_lane_is_speaking() {
     );
 }
 
+/// Plan I3 / integration regression: the first segment after bootstrap is a cold-start sample,
+/// not evidence that an otherwise fast link needs a lower rung. At 1 958 ms both arms of the old
+/// buffer trigger are true (`buffered < segment` and `starving()`), so this is differential against
+/// gating only one of them.
+#[test]
+fn the_first_bootstrap_segment_cannot_false_downshift() {
+    let mut controller = bootstrap_controller();
+    assert_eq!(
+        controller.observe(sample(40_000, 200, 1_958)),
+        Decision::Stay,
+        "one cold-start segment of reserve on a fast link is not a failing steady state",
+    );
+    assert!(controller.pending().is_none());
+}
+
+/// Resume resets positional state and rung residency, so its first observation has the same
+/// cold-start contract as bootstrap. The control assertion on the second observation proves this
+/// is a one-sample guard rather than a disabled emergency path.
+#[test]
+fn the_first_segment_after_resume_cannot_false_downshift() {
+    let mut controller = bootstrap_controller();
+    assert_eq!(controller.observe(sample(40_000, 200, 12_000)), Decision::Stay);
+    controller.on_resume(30_000);
+
+    assert_eq!(controller.observe(sample(40_000, 200, 1_958)), Decision::Stay);
+    assert!(controller.pending().is_none());
+    assert!(
+        matches!(
+            controller.observe(sample(40_000, 200, 1_958)),
+            Decision::Prime(Proposal { direction: Direction::Down, .. })
+        ),
+        "the same short reserve on the second sample must reach the emergency path",
+    );
+}
+
 /// **An unknown reserve is not an observation, and the estimator must not treat it as one.**
 ///
 /// The estimator carries `last_delta_ms` unsmoothed precisely so the emergency guard can see a
@@ -551,15 +586,18 @@ fn startup_does_not_issue_back_to_back_encoder_swaps() {
     }
 }
 
-/// One slow sample is acted on immediately — a downshift is an invisible transaction and the
-/// alternative is a stall — but it is acted on CONSERVATIVELY: a single measurement carries the
-/// maximum discount, so 1 Mbit/s is treated as 0.5 Mbit/s of proven capacity and the target is
-/// the emergency floor rather than the rung just below. The next agreeing samples are what buy
-/// the way back up.
+/// Once the current rung has one non-cold observation, one slow sample is acted on immediately —
+/// a downshift is an invisible transaction and the alternative is a stall — but it is acted on
+/// CONSERVATIVELY: a single measurement carries the maximum discount, so 1 Mbit/s is treated as
+/// 0.5 Mbit/s of proven capacity and the target is the emergency floor rather than the rung just
+/// below. The next agreeing samples are what buy the way back up. The preceding sample separates
+/// this runtime-collapse policy test from I3's cold-start suppressor; the expected target is the
+/// original policy assertion and is unchanged.
 #[test]
 fn a_single_slow_network_sample_jumps_to_the_measured_sustainable_rung() {
     let mut controller = bootstrap_controller();
     controller.current = Rung::P720;
+    assert_eq!(controller.observe(sample(20_000, 400, 8_000)), Decision::Stay);
     let decision = controller.observe(sample(1_000, 400, 8_000));
     assert_eq!(
         decision,
@@ -572,6 +610,7 @@ fn a_single_slow_network_sample_jumps_to_the_measured_sustainable_rung() {
 fn a_runtime_collapse_from_the_top_does_not_prime_oversized_intermediate_rungs() {
     let mut controller = bootstrap_controller();
     controller.current = Rung::P1080High;
+    assert_eq!(controller.observe(sample(40_000, 400, 8_000)), Decision::Stay);
     assert_eq!(
         controller.observe(sample(512, 1_000, 8_000)),
         Decision::Prime(Proposal { rung: Rung::P240, direction: Direction::Down })
@@ -750,6 +789,9 @@ fn recovery_does_not_pay_for_a_reload_at_the_end_of_a_film() {
 #[test]
 fn a_downshift_holds_long_enough_to_avoid_immediate_top_rung_flapping() {
     let mut controller = controller_at(Rung::P1080High);
+    // Establish that the encoder is no longer on its cold sample. The collapse below remains the
+    // first SLOW sample, which is the decision this test grades.
+    assert_eq!(controller.observe(sample(40_000, 400, 8_000)), Decision::Stay);
     let Decision::Prime(down) = controller.observe(sample(12_000, 500, 8_000)) else {
         panic!("the collapsed link must propose a downshift")
     };

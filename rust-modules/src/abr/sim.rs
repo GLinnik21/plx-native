@@ -1089,7 +1089,12 @@ mod tests {
     fn a_link_under_the_floor_rung_drives_the_controller_to_the_floor() {
         let plant = Plant::default();
         let trace = Trace::new(&[(30.0, 40_000), (180.0, 300)]);
-        let mut controller = Controller::starting_at(Rung::P480, None, cat());
+        // Keep this plant assertion inside the measured 320/720/2000/4000 census. Before I3 the
+        // false opening downshift happened to prevent an unbounded catalog reaching the
+        // uncalibrated 22000 rung; relying on that defect made the test's apparatus invalid as
+        // soon as the cold-start decision was corrected.
+        let catalog = cat().limited_to((3840, 2176), (1280, 720));
+        let mut controller = Controller::starting_at(Rung::P480, None, catalog);
         let report = run(&plant, &trace, &mut controller, &TransactionModel::measured())
             .expect("calibrated");
         assert_eq!(report.final_rung_kbps(), Rung::P240.kbps(), "the floor is where it belongs");
@@ -1097,12 +1102,10 @@ mod tests {
     }
 
 
-    /// CHARACTERISATION / BASELINE — not a policy assertion.
-    ///
-    /// Plan §0.3(1): one segment of reserve trips `starving()`, so the first segment of every
-    /// playback may propose a downshift on any link. Asserted here is only the STRUCTURAL
-    /// precondition; the decision is recorded, never graded, because increment I3 is expected to
-    /// change it and this test must keep passing when it does.
+    /// Plan I3: the first segment has only one segment of reserve, so the old `starving()` rule
+    /// proposed a downshift on every link, including this 400 Mbit/s one. The structural
+    /// precondition and the decision are both graded now: cold-start evidence is measured, but it
+    /// cannot move the actuator.
     #[test]
     fn characterise_the_first_segment_of_a_fast_link() {
         let plant = Plant::default();
@@ -1113,10 +1116,10 @@ mod tests {
         assert!(o.buf_ms <= plant.segment_ms, "one segment in, the reserve is one segment");
         let mut c = Controller::starting_at(Rung::P480, None, cat());
         let decision = c.observe(sample);
+        assert_eq!(decision, Decision::Stay, "a cold start on a fast link must hold its rung");
         println!(
             "CHARACTERISATION first-segment: buf={}ms acquire={}ms prod={}pm decision={:?}",
             o.buf_ms, o.acquire_ms, sample.production_ratio_pm(), decision,
         );
     }
 }
-

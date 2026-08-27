@@ -393,7 +393,12 @@ impl Controller {
         let production_bad =
             current_risk.production_risk && self.buffer.draining_samples >= 8;
         let buffer_bad = buffered < segment || self.buffer.starving();
-        if buffer_bad || network_bad || production_bad {
+        // The first sample on a rung is the encoder's cold start and the reserve contains only the
+        // segment that just arrived. It refines the estimators, but cannot establish a failing
+        // steady state: on the measured baseline every playback otherwise downshifted here even on
+        // a fast link, solely because `B <= D`. The second sample is live policy again, so a real
+        // collapse waits one segment rather than being hidden.
+        if !cold_start && (buffer_bad || network_bad || production_bad) {
             self.stable_samples = 0;
             // A measured link collapse must not walk the ladder one oversized encoder at a time.
             // Select the best actuator that fits the new safe budget, still bounded below current.
