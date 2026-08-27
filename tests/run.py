@@ -1311,24 +1311,30 @@ RE_ABR_SEED = re.compile(
 RE_ABR_HISTORY = re.compile(r"abr: history switches=(\d+) since_last=(\S+) advanced=(\d+)ms")
 
 RE_ABR_STEADY = re.compile(r"abr: steady current=(\d+)kbps")
-# The four raw gate counters, J5's baseline instrument. A separate regex from `RE_ABR_STEADY`
-# above rather than an extension of it: that one is deliberately a one-field prefix match used to
-# count decisions, and widening it would make every existing count depend on fields that are
-# scheduled to be DELETED with the counters they report.
+# The two operational guards and the two estimator inputs beside them. A separate regex from
+# `RE_ABR_STEADY` above rather than an extension of it: that one is deliberately a one-field prefix
+# match used to count decisions, and widening it would couple every existing count to fields that
+# move whenever the guards do.
+#
+# `stable=`/`cool=` were here until 2026-08-28 and are GONE, with the counters they reported (I6,
+# N8/N10). A log predating that will not match this regex at all, which is the intended failure:
+# `dwell=` is wall clock and `cool=` was a segment count, so silently reading one as the other
+# would compare two different quantities across the very change they measure.
 RE_ABR_GATES = re.compile(
     r"abr: steady current=(\d+)kbps .*?"
-    r"stable=(\d+) cool=(\d+) onrung=(\d+) draining=(\d+) reason=(\S+)"
+    r"dwell=(\d+)ms block=(\d+)kbps onrung=(\d+) draining=(\d+) reason=(\S+)"
 )
-GATE_FIELDS = ("current_kbps", "stable", "cooldown", "on_rung", "draining", "reason")
+GATE_FIELDS = ("current_kbps", "dwell_ms", "blocked_kbps", "on_rung", "draining", "reason")
 
 
 def abr_gates(lines):
-    """Every `abr: steady` line's raw counter state, in order.
+    """Every `abr: steady` line's guard state, in order.
 
-    These are the only fields on that line that are not an estimator or a derived quantity. They
-    exist so J5's policy change ("counters -> derived guards") can be measured against a baseline
-    rather than argued about: a `stay` with `stable=2` and every `all_good` conjunct holding is a
-    climb the evidence supported and a counter refused.
+    These are the only fields on that line that are not an estimator or a derived quantity, and
+    they answer the question a counter baseline used to: a `stay` with every `all_good` conjunct
+    holding and a non-zero `dwell=` or `block=` is a climb the evidence supported and a guard
+    declined. Both are now durations and rates rather than sample counts, so the same reading works
+    whatever the segment size turns out to be.
     """
     return _parsed(RE_ABR_GATES, GATE_FIELDS, lines)
 # `declared` is the CANDIDATE RENDITION'S OWN RATE, off its master playlist -- the only per-rung

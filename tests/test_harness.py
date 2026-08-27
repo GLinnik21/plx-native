@@ -1460,29 +1460,45 @@ class AbrLogLineContract(unittest.TestCase):
         self.assertIsNotNone(run.RE_ABR_SAMPLE.search(_sample_line()))
         self.assertIsNotNone(run.RE_ABR_SAMPLE.search(_sample_line(abuf="none", buf=-1)))
 
-    def test_the_steady_line_emits_the_four_gate_counters_the_harness_parses(self):
-        """The J5 baseline instrument, both sides. Names read out of `ff.rs`'s own format literal,
-        so a rename on the app side fails here rather than silently yielding zero gate rows."""
+    def test_the_steady_line_emits_the_four_gate_fields_the_harness_parses(self):
+        """Both sides of the guard read-out. Names come out of `ff.rs`'s own format literal, so a
+        rename on the app side fails here rather than silently yielding zero gate rows.
+
+        `stable`/`cool` were the first two until 2026-08-28 and went with the counters they
+        reported (I6, N8/N10). `dwell` is wall milliseconds and `block` is a rung in kbps."""
         emitted = self._emitted_fields("steady")
-        for field in ("stable", "cool", "onrung", "draining"):
+        for field in ("dwell", "block", "onrung", "draining"):
             with self.subTest(field=field):
                 self.assertIn(field, emitted, f"ff.rs no longer emits {field}=")
                 self.assertIn(field, self._regex_fields(run.RE_ABR_GATES))
 
-    def test_a_rendered_steady_line_yields_its_counters(self):
+    def test_a_rendered_steady_line_yields_its_guard_state(self):
         line = ("[  12.345] abr: steady current=10000kbps safe=25000kbps pending=0kbps "
                 "fast=40000kbps slow=39000kbps unc=200pm n=9 buf=12000ms slope=0ms/s "
-                "prod=300pm/380pm risk=0 starve=none left=1800s "
-                "stable=2 cool=0 onrung=7 draining=0 reason=None")
+                "prod=300pm/380pm risk=0 starve=none edge=none left=1800s "
+                "dwell=3200ms block=14000kbps onrung=7 draining=0 reason=None")
         rows = run.abr_gates([line])
         self.assertEqual(len(rows), 1, "RE_ABR_GATES no longer matches what the app logs")
         self.assertEqual(
-            (rows[0]["stable"], rows[0]["cooldown"], rows[0]["on_rung"], rows[0]["draining"]),
-            (2, 0, 7, 0))
+            (rows[0]["dwell_ms"], rows[0]["blocked_kbps"], rows[0]["on_rung"], rows[0]["draining"]),
+            (3200, 14000, 7, 0))
         self.assertEqual(rows[0]["current_kbps"], 10000)
         # The one-field prefix regex must go on matching the same line: several counts depend on
-        # it, and widening it would tie them to fields scheduled for deletion.
+        # it, and widening it would tie them to fields that move whenever the guards do.
         self.assertIsNotNone(run.RE_ABR_STEADY.search(line))
+
+    def test_a_pre_i6_steady_line_does_not_parse_as_guard_state(self):
+        """**A stale log must fail loudly rather than be read as the new quantity.**
+
+        `cool=` counted SEGMENTS and `dwell=` is WALL CLOCK. A regex tolerant of both would let a
+        captured baseline be compared against a post-I6 run field by field, which is the exact
+        mistake the heartbeat's `FPS=`/`loop=` rename was made to prevent."""
+        legacy = ("[  12.345] abr: steady current=10000kbps safe=25000kbps pending=0kbps "
+                  "fast=40000kbps slow=39000kbps unc=200pm n=9 buf=12000ms slope=0ms/s "
+                  "prod=300pm/380pm risk=0 starve=none left=1800s "
+                  "stable=2 cool=0 onrung=7 draining=0 reason=None")
+        self.assertEqual(run.abr_gates([legacy]), [],
+                         "a pre-I6 line must yield no guard rows, not silently mis-typed ones")
 
     def test_an_unknown_reserve_parses_as_none_and_not_as_a_dropped_line(self):
         """**`buf=none` must not stop the regex matching.**

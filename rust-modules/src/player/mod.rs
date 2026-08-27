@@ -112,6 +112,10 @@ pub(crate) const ABR_WHY_LADDER_FLOOR: u8 = 5;
 /// reserve in it — it is true of a rung that is 1% too dear against a full buffer — while this one
 /// is a DEADLINE and is the code a reader sees on the way to a stall.
 pub(crate) const ABR_WHY_STARVATION: u8 = 6;
+/// The climb was selected and N11's reject/backoff guard refused it — the evidence supported the
+/// rung and a failed attempt on that same rung had not yet been paid for. Distinct from every code
+/// above because those all describe the MODEL; this one describes a guard sitting on top of it.
+pub(crate) const ABR_WHY_REJECT_BACKOFF: u8 = 7;
 // Kodi in-place seek (flush + reopen + re-anchor the decode position + sendSegmentEvent, NO
 // reload/decoder re-init → no HDR-mode popup, no A/V-resync glitch). On webOS<11 (this 4.5)
 // setTimeToDecode returns 0, so feed_stream falls back to the content-info path

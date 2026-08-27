@@ -3011,7 +3011,7 @@ fn log_hls_abr_steady(t: &crate::abr::ControllerTelemetry, remaining_ms: i64) {
     crate::player::log(&format!(
         "abr: steady current={}kbps safe={}kbps pending={}kbps fast={}kbps slow={}kbps unc={}pm n={} \
          buf={}ms slope={}ms/s prod={}pm/{}pm risk={} starve={} edge={} left={}s \
-         stable={} cool={} onrung={} draining={} reason={:?}",
+         dwell={}ms block={}kbps onrung={} draining={} reason={:?}",
         t.current.kbps(),
         t.safe_budget_kbps,
         t.pending.map(|p| p.rung.kbps()).unwrap_or(0),
@@ -3037,11 +3037,14 @@ fn log_hls_abr_steady(t: &crate::abr::ControllerTelemetry, remaining_ms: i64) {
             .map(|s| s.to_string())
             .unwrap_or_else(|| "none".to_string()),
         remaining_ms / 1_000,
-        // The four raw counters, so J5's policy change has a baseline. They are the only fields on
-        // this line that are not an estimator or a derived quantity, and they are here to be
-        // deleted with the counters they report.
-        t.gates.stable,
-        t.gates.cooldown,
+        // The two operational guards and the two estimator inputs that survived beside them. The
+        // first pair replaced J5's `stable=`/`cool=` when I6 replaced the counters those reported:
+        // `dwell=` is wall milliseconds still owed before another encoder session may be started,
+        // and `block=` is the rung N11's backoff is refusing. Both are read the same way the
+        // counters were — a `stay` with every conjunct holding and a non-zero guard here is a climb
+        // the evidence supported and a guard declined.
+        t.gates.dwell_ms,
+        t.gates.blocked_kbps,
         t.gates.on_rung,
         t.gates.draining,
         t.reason,
@@ -3143,6 +3146,7 @@ fn abr_why_code(reason: Option<crate::abr::DecisionReason>) -> u8 {
         Some(Hls(R::ProductionConstraint)) => crate::player::ABR_WHY_PRODUCTION,
         Some(Hls(R::BufferConstraint)) => crate::player::ABR_WHY_BUFFER,
         Some(Hls(R::LadderFloor)) => crate::player::ABR_WHY_LADDER_FLOOR,
+        Some(Hls(R::RejectBackoff)) => crate::player::ABR_WHY_REJECT_BACKOFF,
         Some(Hls(R::StarvationHorizon)) => crate::player::ABR_WHY_STARVATION,
     }
 }
@@ -3385,8 +3389,21 @@ impl Drop for TxTrace {
     }
 }
 
-fn reject_hls_abr(controller: &mut crate::abr::Controller, proposal: crate::abr::Proposal) {
-    controller.reject(proposal);
+/// **`cause` is a judgement each call site makes about its own failure, and it is load-bearing.**
+///
+/// N11's backoff refuses to re-prime a rung that just failed. That is right when the failure was
+/// ABOUT the rung — no playlist, a missed deadline, a refused prime, an acceptance test the
+/// candidate did not pass — and wrong when it was about the session: a `reserve_unreadable` is the
+/// audio lane falling silent at a seek, and an `origin_changed` is the route moving underneath.
+/// Blocking a good rung for either would be the guard doing harm in the one direction that has no
+/// recovery path, so the classification lives here, beside the `tx.finish` string that already
+/// names the same event for the transaction log.
+fn reject_hls_abr(
+    controller: &mut crate::abr::Controller,
+    proposal: crate::abr::Proposal,
+    cause: crate::abr::RejectCause,
+) {
+    controller.reject(proposal, cause);
     publish_hls_abr_action(proposal, Some(false));
 }
 
@@ -3566,7 +3583,7 @@ fn hls_demux(
         }
         publish_hls_abr_sample(sample);
         let remaining_ms = remaining_playback_ms();
-        let decision = controller.observe(sample);
+        let decision = controller.observe(sample, history_since.elapsed().as_millis() as u64);
         // ONE telemetry read for both: the panel must never show a safe budget from this segment
         // beside a risk score from the next. The MODEL is published whatever was decided — the
         // segments worth looking at are the ones that decided to move — while the `abr: steady`
@@ -3687,7 +3704,7 @@ fn hls_demux(
             *generation,
             offset_secs,
         ) else {
-            reject_hls_abr(controller, proposal);
+            reject_hls_abr(controller, proposal, crate::abr::RejectCause::Candidate);
             tx.finish("prime_refused");
                 crate::player::log("abr: candidate registration rejected; staying on current rung");
             continue;
@@ -3696,7 +3713,7 @@ fn hls_demux(
         let candidate_url = crate::plex::StreamUrl::parse(&primed.url);
         if candidate_url.origin != *origin {
             control.abandon(&primed.encoder_session);
-            reject_hls_abr(controller, proposal);
+            reject_hls_abr(controller, proposal, crate::abr::RejectCause::Circumstance);
             tx.finish("origin_changed");
                 crate::player::log("abr: candidate changed origin; rejected");
             continue;
@@ -3705,7 +3722,7 @@ fn hls_demux(
             Ok(candidate) => candidate,
             Err(_) => {
                 control.abandon(&primed.encoder_session);
-                reject_hls_abr(controller, proposal);
+                reject_hls_abr(controller, proposal, crate::abr::RejectCause::Candidate);
                 tx.finish("no_master_playlist");
                 crate::player::log("abr: candidate master failed; staying on current rung");
                 continue;
@@ -3716,7 +3733,7 @@ fn hls_demux(
             Ok(Some(segment)) => segment,
             _ => {
                 control.abandon(&primed.encoder_session);
-                reject_hls_abr(controller, proposal);
+                reject_hls_abr(controller, proposal, crate::abr::RejectCause::Candidate);
                 tx.finish("no_media_playlist");
                 crate::player::log("abr: candidate produced no segment; staying on current rung");
                 continue;
@@ -3744,7 +3761,7 @@ fn hls_demux(
             // place, so the lane fell silent between the proposal and here — a seek, which the
             // next sample resolves.
             control.abandon(&primed.encoder_session);
-            reject_hls_abr(controller, proposal);
+            reject_hls_abr(controller, proposal, crate::abr::RejectCause::Circumstance);
             tx.finish("reserve_unreadable");
             crate::player::log(
                 "abr: candidate reserve unreadable; cannot bound the transfer, staying on current rung",
@@ -3761,7 +3778,7 @@ fn hls_demux(
             Ok(clock) => clock,
             Err(_) => {
                 control.abandon(&primed.encoder_session);
-                reject_hls_abr(controller, proposal);
+                reject_hls_abr(controller, proposal, crate::abr::RejectCause::Circumstance);
                 return Err(HlsExit::Failed("HLS candidate timeline overflow"));
             }
         };
@@ -3779,7 +3796,7 @@ fn hls_demux(
             Ok(output) => output,
             Err(HlsExit::PrimeExpired) => {
                 control.abandon(&primed.encoder_session);
-                reject_hls_abr(controller, proposal);
+                reject_hls_abr(controller, proposal, crate::abr::RejectCause::Candidate);
                 tx.finish("warmup_deadline");
                 crate::player::log(
                     "abr: upshift candidate warm-up exceeded deadline; staying on current rung",
@@ -3788,7 +3805,7 @@ fn hls_demux(
             }
             Err(_) => {
                 control.abandon(&primed.encoder_session);
-                reject_hls_abr(controller, proposal);
+                reject_hls_abr(controller, proposal, crate::abr::RejectCause::Candidate);
                 tx.finish("warmup_failed");
                 crate::player::log("abr: candidate segment failed; staying on current rung");
                 continue;
@@ -3809,7 +3826,7 @@ fn hls_demux(
                 Ok(Some(segment)) => segment,
                 _ => {
                     control.abandon(&primed.encoder_session);
-                    reject_hls_abr(controller, proposal);
+                    reject_hls_abr(controller, proposal, crate::abr::RejectCause::Candidate);
                     tx.finish("no_graded_segment");
                 crate::player::log(
                         "abr: upshift candidate produced no graded segment; staying on current rung",
@@ -3821,7 +3838,7 @@ fn hls_demux(
                 Ok(clock) => clock,
                 Err(_) => {
                     control.abandon(&primed.encoder_session);
-                    reject_hls_abr(controller, proposal);
+                    reject_hls_abr(controller, proposal, crate::abr::RejectCause::Circumstance);
                     return Err(HlsExit::Failed("HLS candidate timeline overflow"));
                 }
             };
@@ -3835,7 +3852,7 @@ fn hls_demux(
                 // leg it happened on. A zero here would abort as `graded_deadline`, attributing a
                 // missing measurement to a slow server.
                 control.abandon(&primed.encoder_session);
-                reject_hls_abr(controller, proposal);
+                reject_hls_abr(controller, proposal, crate::abr::RejectCause::Circumstance);
                 tx.finish("reserve_unreadable");
                 crate::player::log(
                     "abr: candidate reserve unreadable before grading; staying on current rung",
@@ -3863,7 +3880,7 @@ fn hls_demux(
                 Ok(output) => output,
                 Err(HlsExit::PrimeExpired) => {
                     control.abandon(&primed.encoder_session);
-                    reject_hls_abr(controller, proposal);
+                    reject_hls_abr(controller, proposal, crate::abr::RejectCause::Candidate);
                     tx.finish("graded_deadline");
                     crate::player::log(
                         "abr: upshift candidate lacked steady production headroom; staying on current rung",
@@ -3872,7 +3889,7 @@ fn hls_demux(
                 }
                 Err(_) => {
                     control.abandon(&primed.encoder_session);
-                    reject_hls_abr(controller, proposal);
+                    reject_hls_abr(controller, proposal, crate::abr::RejectCause::Candidate);
                     tx.finish("graded_failed");
                 crate::player::log(
                         "abr: candidate graded segment failed; staying on current rung",
@@ -3909,7 +3926,7 @@ fn hls_demux(
                 });
         if !ready {
             control.abandon(&primed.encoder_session);
-            reject_hls_abr(controller, proposal);
+            reject_hls_abr(controller, proposal, crate::abr::RejectCause::Candidate);
             if raster_ready {
                 // **A REJECT NO LONGER DELIVERS NOTHING** — Phase 0, lever 1 of
                 // `docs/measurements/p0-plant-sizing.md`.
@@ -3972,7 +3989,7 @@ fn hls_demux(
             continue;
         }
         if !control.commit(active_encoder, &primed.encoder_session) {
-            reject_hls_abr(controller, proposal);
+            reject_hls_abr(controller, proposal, crate::abr::RejectCause::Circumstance);
             return Err(HlsExit::Aborted);
         }
         // The decision is MADE here. `finish` is taken before the feed loop below, because that

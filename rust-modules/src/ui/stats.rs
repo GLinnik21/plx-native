@@ -702,6 +702,7 @@ fn abr_why_text(why: u8) -> Option<&'static str> {
         // taken by the rate comparison, and a reader who sees both wants to know which of them is
         // about to stop the picture.
         crate::player::ABR_WHY_STARVATION => Some("buffer running out"),
+        crate::player::ABR_WHY_REJECT_BACKOFF => Some("retrying shortly"),
         _ => None,
     }
 }

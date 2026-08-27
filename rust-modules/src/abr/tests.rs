@@ -46,7 +46,14 @@ fn declared_bps(rung: Rung) -> u64 {
 /// band. Both arguments keep their exact meaning: `network_kbps()` still returns the first and
 /// `production_ratio_pm()` still returns the second.
 fn sample(network_kbps: u32, ratio_pm: u32, buffered_ms: i64) -> SegmentSample {
-    let media_ms = 2_000;
+    sample_of(2_000, network_kbps, ratio_pm, buffered_ms)
+}
+
+/// [`sample`] with the segment's own media duration named. Every fixture in this file is written
+/// around the 2 s segment this pipeline requests, and that is the right default — but a wall-clock
+/// guard cannot be told apart from a segment counter without varying it, so the one axis the
+/// default hides has to be reachable.
+fn sample_of(media_ms: u32, network_kbps: u32, ratio_pm: u32, buffered_ms: i64) -> SegmentSample {
     let total_us = u64::from((media_ms * ratio_pm / 1_000).max(1)) * 1_000;
     let active_us = (total_us * 6 / 7).max(1);
     let bytes = u64::from(network_kbps) * active_us / 8_000;
@@ -115,7 +122,7 @@ const HOUR_MS: i64 = 3_600_000;
 fn prime_up(controller: &mut Controller) -> Proposal {
     let n = AbrPolicy::measured().admission.window_len();
     for _ in 0..(n * 2) {
-        if let Decision::Prime(proposal) = controller.observe(sample(20_000, 200, 10_000)) {
+        if let Decision::Prime(proposal) = controller.observe_next(sample(20_000, 200, 10_000)) {
             return proposal;
         }
     }
@@ -152,13 +159,13 @@ fn settle_link(network_kbps: u32) -> Rung {
         let fetch_ms = SEGMENT_MS * rung_kbps / i64::from(network_kbps.max(1));
         buf_ms = (buf_ms - fetch_ms + SEGMENT_MS).clamp(0, CEILING_MS);
         if let Decision::Prime(proposal) =
-            controller.observe(sample(network_kbps, 400, buf_ms))
+            controller.observe_next(sample(network_kbps, 400, buf_ms))
         {
             let candidate = sample(network_kbps, 400, buf_ms.max(SEGMENT_MS));
             if controller.candidate_ready(proposal, candidate, declared_bps(proposal.rung)) {
                 controller.commit(proposal);
             } else {
-                controller.reject(proposal);
+                controller.reject(proposal, RejectCause::Candidate);
             }
         }
     }
@@ -212,7 +219,7 @@ fn the_ladder_floor_is_a_stated_terminal_case_and_not_a_silent_stay() {
     // A link far below what even the bottom rung asks for, and a reserve under one segment: both
     // halves of the emergency trigger, at the rung that has no rung below it.
     let decision = (0..4)
-        .map(|_| c.observe(sample(64, 900, 500)))
+        .map(|_| c.observe_next(sample(64, 900, 500)))
         .last()
         .expect("four samples");
     assert_eq!(decision, Decision::Stay, "there is no lower rung to propose");
@@ -230,7 +237,7 @@ fn the_ladder_floor_is_a_stated_terminal_case_and_not_a_silent_stay() {
 fn one_rung_above_the_floor_the_same_link_still_has_somewhere_to_go() {
     let mut c = controller_at(Rung::P480);
     let decision = (0..4)
-        .map(|_| c.observe(sample(64, 900, 500)))
+        .map(|_| c.observe_next(sample(64, 900, 500)))
         .find(|d| !matches!(d, Decision::Stay));
     assert!(
         matches!(decision, Some(Decision::Prime(p)) if p.direction == Direction::Down),
@@ -276,9 +283,9 @@ fn a_silent_audio_lane_does_not_fire_a_downshift_on_a_full_reserve() {
     // Two ordinary segments first, so the controller is past its cold start and the estimators
     // hold a healthy reserve — the state a mid-playback seek actually lands in.
     for _ in 0..2 {
-        c.observe(sample(20_000, 400, 12_000));
+        c.observe_next(sample(20_000, 400, 12_000));
     }
-    let decision = c.observe(quiet(12_000));
+    let decision = c.observe_next(quiet(12_000));
     assert_eq!(
         decision,
         Decision::Stay,
@@ -293,9 +300,9 @@ fn a_silent_audio_lane_does_not_fire_a_downshift_on_a_full_reserve() {
 fn a_short_reserve_still_fires_a_downshift_when_the_lane_is_speaking() {
     let mut c = controller_at(Rung::P1080);
     for _ in 0..2 {
-        c.observe(sample(20_000, 400, 12_000));
+        c.observe_next(sample(20_000, 400, 12_000));
     }
-    let decision = c.observe(sample(20_000, 400, 500));
+    let decision = c.observe_next(sample(20_000, 400, 500));
     assert!(
         matches!(decision, Decision::Prime(p) if p.direction == Direction::Down),
         "a reserve below one segment is the emergency trigger; got {decision:?}"
@@ -310,7 +317,7 @@ fn a_short_reserve_still_fires_a_downshift_when_the_lane_is_speaking() {
 fn the_first_bootstrap_segment_cannot_false_downshift() {
     let mut controller = bootstrap_controller();
     assert_eq!(
-        controller.observe(sample(40_000, 200, 1_958)),
+        controller.observe_next(sample(40_000, 200, 1_958)),
         Decision::Stay,
         "one cold-start segment of reserve on a fast link is not a failing steady state",
     );
@@ -323,14 +330,14 @@ fn the_first_bootstrap_segment_cannot_false_downshift() {
 #[test]
 fn the_first_segment_after_resume_cannot_false_downshift() {
     let mut controller = bootstrap_controller();
-    assert_eq!(controller.observe(sample(40_000, 200, 12_000)), Decision::Stay);
+    assert_eq!(controller.observe_next(sample(40_000, 200, 12_000)), Decision::Stay);
     controller.on_resume(30_000);
 
-    assert_eq!(controller.observe(sample(40_000, 200, 1_958)), Decision::Stay);
+    assert_eq!(controller.observe_next(sample(40_000, 200, 1_958)), Decision::Stay);
     assert!(controller.pending().is_none());
     assert!(
         matches!(
-            controller.observe(sample(40_000, 200, 1_958)),
+            controller.observe_next(sample(40_000, 200, 1_958)),
             Decision::Prime(Proposal { direction: Direction::Down, .. })
         ),
         "the same short reserve on the second sample must reach the emergency path",
@@ -609,7 +616,7 @@ fn measured_runtime_fallback_avoids_an_unnecessarily_low_bootstrap() {
 fn realtime_jit_blocks_upshift_without_forcing_a_downshift() {
     let mut controller = bootstrap_controller();
     for _ in 0..10 {
-        assert_eq!(controller.observe(sample(20_000, 1_000, 10_000)), Decision::Stay);
+        assert_eq!(controller.observe_next(sample(20_000, 1_000, 10_000)), Decision::Stay);
     }
     assert_eq!(controller.current(), Rung::P480);
 }
@@ -644,7 +651,7 @@ fn rejected_candidate_preserves_current_and_clears_pending() {
         sample(2_100, 1_200, 12_000),
         declared_bps(proposal.rung),
     ));
-    assert!(controller.reject(proposal));
+    assert!(controller.reject(proposal, RejectCause::Candidate));
     assert_eq!(controller.current(), Rung::P480);
     assert_eq!(controller.pending(), None);
 }
@@ -655,7 +662,7 @@ fn startup_does_not_issue_back_to_back_encoder_swaps() {
     let proposal = prime_up(&mut controller);
     controller.commit(proposal);
     for _ in 0..3 {
-        assert_eq!(controller.observe(sample(20_000, 200, 12_000)), Decision::Stay);
+        assert_eq!(controller.observe_next(sample(20_000, 200, 12_000)), Decision::Stay);
     }
 }
 
@@ -670,8 +677,8 @@ fn startup_does_not_issue_back_to_back_encoder_swaps() {
 fn a_single_slow_network_sample_jumps_to_the_measured_sustainable_rung() {
     let mut controller = bootstrap_controller();
     controller.current = Rung::P720;
-    assert_eq!(controller.observe(sample(20_000, 400, 8_000)), Decision::Stay);
-    let decision = controller.observe(sample(1_000, 400, 8_000));
+    assert_eq!(controller.observe_next(sample(20_000, 400, 8_000)), Decision::Stay);
+    let decision = controller.observe_next(sample(1_000, 400, 8_000));
     assert_eq!(
         decision,
         Decision::Prime(Proposal { rung: Rung::P240, direction: Direction::Down })
@@ -683,9 +690,9 @@ fn a_single_slow_network_sample_jumps_to_the_measured_sustainable_rung() {
 fn a_runtime_collapse_from_the_top_does_not_prime_oversized_intermediate_rungs() {
     let mut controller = bootstrap_controller();
     controller.current = Rung::P1080High;
-    assert_eq!(controller.observe(sample(40_000, 400, 8_000)), Decision::Stay);
+    assert_eq!(controller.observe_next(sample(40_000, 400, 8_000)), Decision::Stay);
     assert_eq!(
-        controller.observe(sample(512, 1_000, 8_000)),
+        controller.observe_next(sample(512, 1_000, 8_000)),
         Decision::Prime(Proposal { rung: Rung::P240, direction: Direction::Down })
     );
 }
@@ -693,12 +700,12 @@ fn a_runtime_collapse_from_the_top_does_not_prime_oversized_intermediate_rungs()
 #[test]
 fn draining_jit_session_downshifts_but_stable_jit_does_not() {
     let mut controller = bootstrap_controller();
-    assert_eq!(controller.observe(sample(20_000, 1_200, 8_000)), Decision::Stay);
-    assert_eq!(controller.observe(sample(20_000, 1_200, 6_000)), Decision::Stay);
-    assert_eq!(controller.observe(sample(20_000, 1_200, 4_000)), Decision::Stay);
-    assert_eq!(controller.observe(sample(20_000, 1_200, 3_000)), Decision::Stay);
-    assert_eq!(controller.observe(sample(20_000, 1_200, 2_500)), Decision::Stay);
-    assert_eq!(controller.observe(sample(20_000, 1_200, 2_000)),
+    assert_eq!(controller.observe_next(sample(20_000, 1_200, 8_000)), Decision::Stay);
+    assert_eq!(controller.observe_next(sample(20_000, 1_200, 6_000)), Decision::Stay);
+    assert_eq!(controller.observe_next(sample(20_000, 1_200, 4_000)), Decision::Stay);
+    assert_eq!(controller.observe_next(sample(20_000, 1_200, 3_000)), Decision::Stay);
+    assert_eq!(controller.observe_next(sample(20_000, 1_200, 2_500)), Decision::Stay);
+    assert_eq!(controller.observe_next(sample(20_000, 1_200, 2_000)),
         Decision::Prime(Proposal { rung: Rung::P240, direction: Direction::Down }));
 }
 
@@ -867,38 +874,237 @@ fn recovery_does_not_pay_for_a_reload_at_the_end_of_a_film() {
     }
 }
 
-/// After a forced downshift, the recovery is not immediate — and since §4's rule decides, the
-/// horizon is the ACQUISITION WINDOW rather than the `stable_samples` counter that used to set it.
+/// After a forced downshift the recovery is not immediate — and **the horizon is the ACQUISITION
+/// WINDOW, which is now true rather than merely claimed**.
 ///
-/// **That is the counter being subsumed, not a second threshold added.** `n` is derived from the
-/// SLO (`n = k/ε − 1`); the old 3 was not derived from anything. The recovery still happens, still
-/// goes back to the top rung, and still refuses to do it on the first good sample — which is
-/// everything this test was written to protect.
+/// Category 8.3 (policy choice; N8). The old form asserted `n - 2` samples of `Stay` and then
+/// looked for the proposal, with a doc saying the counter had been "subsumed" by §4's rule. The
+/// expectation was invalid as a statement about the controller: the window admits the top rung on
+/// the sample that brings it to `n` observations, and `stable_samples` then held the proposal back
+/// for two more — so `n - 2` was exactly the fudge that hid a counter the doc said was not there.
+/// I6 deletes the counter, the proposal arrives on the sample the window admits it, and the old
+/// margin is revealed as having been the counter all along.
+///
+/// **Derived rather than counted, so it cannot rot** (§8.5(c)): the assertion is not a number of
+/// samples but the coincidence of two observable facts — `window_len() >= n` and a proposal. A
+/// `Stay` on a sample where the window could carry the rung fails, which is precisely what
+/// unmodified code does twice, so this is differential by construction.
 #[test]
-fn a_downshift_holds_long_enough_to_avoid_immediate_top_rung_flapping() {
+fn a_downshift_recovers_on_the_sample_the_window_admits_and_not_two_later() {
     let mut controller = controller_at(Rung::P1080High);
     // Establish that the encoder is no longer on its cold sample. The collapse below remains the
     // first SLOW sample, which is the decision this test grades.
-    assert_eq!(controller.observe(sample(40_000, 400, 8_000)), Decision::Stay);
-    let Decision::Prime(down) = controller.observe(sample(12_000, 500, 8_000)) else {
+    assert_eq!(controller.observe_next(sample(40_000, 400, 8_000)), Decision::Stay);
+    let Decision::Prime(down) = controller.observe_next(sample(12_000, 500, 8_000)) else {
         panic!("the collapsed link must propose a downshift")
     };
     assert!(controller.commit(down));
+
     let n = AbrPolicy::measured().admission.window_len();
-    for _ in 0..(n - 2) {
+    let mut dwell_cleared_at = None;
+    let mut recovered = None;
+    for i in 0..(n * 2) {
+        let decision = controller.observe_next(sample(60_000, 400, 10_000));
+        let carried = controller.window_len() >= n;
+        if dwell_cleared_at.is_none() && controller.telemetry().gates.dwell_ms == 0 {
+            dwell_cleared_at = Some(i);
+        }
+        match decision {
+            Decision::Prime(proposal) => {
+                recovered = Some((proposal, controller.window_len(), i));
+                break;
+            }
+            Decision::Stay => assert!(
+                !carried,
+                "sample {i}: the window holds {} observations and can carry the top rung, and \
+                 nothing proposed it — which is a counter, not a model",
+                controller.window_len(),
+            ),
+        }
+    }
+    let (proposal, window_at_proposal, at) = recovered.expect("the recovery must happen at all");
+    assert_eq!(
+        proposal,
+        Proposal { rung: Rung::P1080High, direction: Direction::Up },
+        "and it must recover all the way, not one rung at a time",
+    );
+    assert_eq!(
+        window_at_proposal, n,
+        "the proposal must arrive on the FIRST sample the window admits, not a later one",
+    );
+    // The OTHER guard must have got out of the way long before, or this test would be grading the
+    // dwell instead of the window and would stop meaning what it says.
+    let dwell_cleared_at = dwell_cleared_at.expect("the dwell must expire");
+    assert!(
+        dwell_cleared_at < at,
+        "the dwell cleared at sample {dwell_cleared_at} and the window admitted at {at}: with the \
+         two that close together this test no longer grades the window",
+    );
+}
+
+/// **N10: the guard between two climbs is WALL CLOCK, and the proof is that the sample count
+/// moves when the segment size does.**
+///
+/// Category 8.3. `cooldown` counted segments — `Up => 3`, `Down => 8` — and a segment is
+/// `bytes / C` of wall time, so the guard got longer exactly as the link got worse and there was no
+/// bound on it at all. `upshift_dwell_ms` is `E_tx`, the sum of the two deadlines this transaction
+/// is already held to, and it is the same duration whatever a segment happens to cost.
+///
+/// **Differential by construction, and it does not depend on any particular duration.** The same
+/// wall-clock interval is fed twice, once as short segments and once as long ones. A segment
+/// counter is invariant to that — three segments is three segments — so unmodified code gives the
+/// same count both times; a wall clock gives fewer long segments than short ones. The assertion is
+/// the INEQUALITY, so no number here can go stale.
+#[test]
+fn the_dwell_between_two_climbs_is_wall_clock_and_not_a_segment_count() {
+    fn samples_held(segment_ms: u32) -> usize {
+        let mut c = controller_at(Rung::P720);
+        let up = prime_up(&mut c);
+        assert!(c.commit(up));
+        let mut now = c.telemetry().gates.dwell_ms; // dwell owed at the instant of the commit
+        assert!(now > 0, "a commit must arm the dwell");
+        let mut held = 0usize;
+        let mut clock = 0u64;
+        while c.telemetry().gates.dwell_ms > 0 {
+            clock += u64::from(segment_ms);
+            let _ = c.observe(sample_of(segment_ms, 40_000, 200, 20_000), clock);
+            held += 1;
+            assert!(held < 100, "the dwell must expire");
+        }
+        now = 0;
+        let _ = now;
+        held
+    }
+    let short = samples_held(1_000);
+    let long = samples_held(4_000);
+    assert!(
+        long < short,
+        "the same interval took {short} short segments and {long} long ones — a guard that gives \
+         the same count for both is counting segments, not measuring time",
+    );
+}
+
+/// **N11: a failed attempt is paid for before another is made.**
+///
+/// Category 8.3. `reject` used to record nothing and set `cooldown = 1`, and the decrement runs
+/// BEFORE the check, so `K = 1` has never blocked a single segment — a refusal cost `E_tx` of
+/// unrefilled reserve and bought another attempt on the very next sample. That is the livelock N11
+/// exists to close.
+///
+/// **The guard is not keyed on the rejected rung, and writing this test is what showed why.** N11
+/// says "refuse to re-prime that rung"; the controller does not re-propose that rung at all — the
+/// budget has moved by the next sample, so it proposes a NEIGHBOURING one, which a rung-keyed
+/// guard waves straight through while the reserve pays for it identically. See [`RejectBlock`].
+///
+/// Differential in both directions: unmodified code proposes again immediately (first leg), and a
+/// guard that latched would never propose again (second leg).
+#[test]
+fn a_failed_prime_is_paid_for_before_another_is_attempted() {
+    let mut c = controller_at(Rung::P720);
+    let refused = prime_up(&mut c);
+    let clock_at_reject = 1_000_000u64;
+    let _ = c.observe(sample(20_000, 200, 10_000), clock_at_reject);
+    assert!(c.reject(refused, RejectCause::Candidate));
+    assert_eq!(
+        c.telemetry().gates.blocked_kbps,
+        refused.rung.kbps(),
+        "the reject must record the rung it refused, and the guard must be live",
+    );
+
+    // The same evidence at the same instant: no attempt of any kind, at any rung.
+    for _ in 0..4 {
         assert_eq!(
-            controller.observe(sample(60_000, 400, 10_000)),
+            c.observe(sample(20_000, 200, 10_000), clock_at_reject),
             Decision::Stay,
-            "a recovering link must not re-propose the top rung before the window can carry it",
+            "another attempt costs another E_tx and nothing has repaid the last one",
+        );
+        assert!(c.telemetry().gates.blocked_kbps > 0, "the guard must still be holding");
+    }
+
+    // And it is not a latch. Wall clock alone releases it — this link has surplus, so the reserve
+    // really does earn the attempt back, which is what `refill_time_ms` computes.
+    let mut clock = clock_at_reject;
+    let mut released = None;
+    for _ in 0..(AbrPolicy::measured().admission.window_len() * 2) {
+        clock += 2_000;
+        let decision = c.observe(sample(20_000, 200, 10_000), clock);
+        if c.telemetry().gates.blocked_kbps == 0 {
+            released = Some(decision);
+            break;
+        }
+    }
+    assert!(released.is_some(), "a link with surplus must repay one attempt in bounded time");
+}
+
+/// **N21: the production arm is a magnitude predicate, not a persistence count.**
+///
+/// Category 8.3, and the derivation is the 2026-08-25 device finding at `BufferEstimate::draining`.
+/// The arm required EIGHT consecutive draining segments — about sixteen seconds at the segment
+/// this pipeline requests — while `starving()` beside it treats two as enough. It is now
+/// `draining()`.
+///
+/// Stated plainly: this drops the persistence requirement entirely, an 8x increase in sensitivity
+/// on an immediate-downshift arm. Differential by construction — the fixture drains for fewer than
+/// eight samples, so unmodified code returns `Stay` here.
+///
+/// The other two downshift arms are held OFF on purpose, or this would grade one of them instead:
+/// the reserve stays far above one segment and above `starving()`'s six seconds, and the link
+/// delivers the rung's full rate so `starvation_horizon` is `None`.
+#[test]
+fn a_server_falling_behind_moves_the_rung_without_eight_samples_of_agreement() {
+    let policy = AbrPolicy::measured();
+    let mut c = controller_at(Rung::P1080);
+    let rung_kbps = HlsActuatorCatalog::measured().candidate(Rung::P1080).expected_wire_kbps;
+    // Past `production_max_pm` from the first sample, so the ONLY thing this test waits for is the
+    // reserve, which is the predicate under change.
+    let over = policy.production_max_pm * 2;
+    let mut clock = 0u64;
+
+    // **The reserve FILLS before it drains, and that is not decoration.** `BufferEstimate::update`
+    // computes its first slope against a zero baseline, so a fixture that opens at a deep reserve
+    // hands the 3:1 EWMA a fabricated positive spike of half that depth and needs about twenty
+    // samples to forget it — which would make this test grade the estimator's warm-up instead of
+    // the predicate. A real session starts at about one segment and climbs, so the artefact is
+    // small; the fixture has to do the same or it is not modelling a playback. (Same lesson as
+    // `settle_link`'s frozen reserve.)
+    let mut buf = 2_000i64;
+    for _ in 0..14 {
+        clock += 2_000;
+        buf += 2_000;
+        assert_eq!(
+            c.observe(sample_of(2_000, rung_kbps * 4, over, buf), clock),
+            Decision::Stay,
+            "a filling reserve is not a reason to move, however loaded the server is",
         );
     }
-    let recovered = (0..n)
-        .map(|_| controller.observe(sample(60_000, 400, 10_000)))
-        .find(|d| matches!(d, Decision::Prime(_)));
+    assert!(!c.buffer().draining(), "the setup must reach a non-draining deep reserve");
+
+    let mut fired = None;
+    for i in 0..8 {
+        clock += 2_000;
+        buf -= 1_500;
+        let decision = c.observe(sample_of(2_000, rung_kbps * 4, over, buf), clock);
+        assert!(
+            c.buffer().buffered_ms > 6_000,
+            "sample {i}: the reserve must stay clear of `starving()` or this grades that arm",
+        );
+        if let Decision::Prime(p) = decision {
+            fired = Some((p, c.telemetry().gates.draining));
+            break;
+        }
+    }
+    let (proposal, draining) =
+        fired.expect("a server past its ceiling with a draining reserve must move the rung");
+    assert_eq!(proposal.direction, Direction::Down);
     assert_eq!(
-        recovered,
-        Some(Decision::Prime(Proposal { rung: Rung::P1080High, direction: Direction::Up })),
-        "and it must then recover all the way, not one rung at a time",
+        c.telemetry().reason,
+        Some(DecisionReason::Hls(HlsReason::ProductionConstraint)),
+        "and it must be the PRODUCTION arm that fired, not a buffer or deadline one",
+    );
+    assert!(
+        draining < 8,
+        "it fired after {draining} draining samples — at eight or more this test grades nothing, \
+         because that is exactly what the code it replaced already did",
     );
 }
 
@@ -1031,12 +1237,12 @@ fn a_transfer_too_short_to_time_cannot_claim_a_gigabit_link() {
     let mut reached = Rung::P240;
     for _ in 0..40 {
         let segment = sample_bytes(80_000, 700, 250, 12_000);
-        if let Decision::Prime(proposal) = controller.observe(segment) {
+        if let Decision::Prime(proposal) = controller.observe_next(segment) {
             if controller.candidate_ready(proposal, sample(20_000, 400, 12_000), declared_bps(proposal.rung)) {
                 controller.commit(proposal);
                 reached = controller.current();
             } else {
-                controller.reject(proposal);
+                controller.reject(proposal, RejectCause::Candidate);
             }
         }
     }
@@ -1068,7 +1274,7 @@ fn at_the_emergency_floor_a_slow_producing_server_holds_the_rule_below_a_climb()
         let mut controller = controller_at(Rung::P240);
         for _ in 0..40 {
             if let Decision::Prime(proposal) =
-                controller.observe(sample_bytes(80_000, 700, ratio_pm, 12_000))
+                controller.observe_next(sample_bytes(80_000, 700, ratio_pm, 12_000))
             {
                 if controller.candidate_ready(
                     proposal,
@@ -1077,7 +1283,7 @@ fn at_the_emergency_floor_a_slow_producing_server_holds_the_rule_below_a_climb()
                 ) {
                     controller.commit(proposal);
                 } else {
-                    controller.reject(proposal);
+                    controller.reject(proposal, RejectCause::Candidate);
                 }
             }
         }
@@ -1153,7 +1359,7 @@ fn a_budget_jump_skips_the_intermediate_encoders() {
     let n = AbrPolicy::measured().admission.window_len();
     let mut proposal = None;
     for _ in 0..(n * 2) {
-        if let Decision::Prime(p) = controller.observe(sample(22_000, 200, 12_000)) {
+        if let Decision::Prime(p) = controller.observe_next(sample(22_000, 200, 12_000)) {
             proposal = Some(p);
             break;
         }
@@ -1264,36 +1470,73 @@ fn the_safe_budget_is_the_final_conservative_network_estimate() {
     assert_eq!(hls_safe_budget(&capacity), capacity.conservative_kbps());
 }
 
-/// A pause breaks uninterrupted rung residency. The delivery estimate is retained as an aged
-/// prior, but sample-count lifecycle state must not survive beside it.
+/// A pause breaks uninterrupted rung residency, and **which guards it clears is now an argument
+/// rather than a sweep** (N12, re-expressed by I6).
+///
+/// Category 8.3 (policy choice). The old assertion — "`on_resume` clears `stable`, `cooldown` and
+/// `on_rung`" — is invalid because two of those three no longer exist: I6 replaced the sample
+/// counters with a wall-clock dwell and a recorded reject block (N10, N11). Re-expressed rather
+/// than deleted, because the underlying question survives verbatim: after a pause, which state
+/// still describes the world?
+///
+/// The three answers are now different from each other, and that is the finding:
+///
+/// * `on_rung` is CLEARED. It counts uninterrupted samples on this rung and a pause ends that.
+/// * The reject block is CLEARED. Its evidence release compares against a rate `age_ms` has just
+///   widened the uncertainty on, so the recorded number no longer describes anything.
+/// * The dwell is NOT cleared, and needs no clearing — thirty seconds of pause really are thirty
+///   seconds in which no encoder session was started, so `E_tx` has genuinely elapsed. **This is
+///   the differential half**: a segment counter could not represent that at all, because no
+///   segments arrived, so under unmodified code the pause released exactly nothing.
 #[test]
-fn resume_clears_every_sample_count_lifecycle_guard() {
-    let mut stable = bootstrap_controller();
-    for _ in 0..(AbrPolicy::measured().admission.window_len() * 2) {
-        let _ = stable.observe(sample(40_000, 200, 20_000));
-        if stable.telemetry().gates.stable > 0 {
-            break;
-        }
+fn resume_clears_the_state_a_pause_invalidates_and_leaves_the_clock_alone() {
+    let mut c = bootstrap_controller();
+    let mut now = 0u64;
+    for _ in 0..3 {
+        now += 2_000;
+        let _ = c.observe(sample(40_000, 200, 20_000), now);
     }
-    let before = stable.telemetry().gates;
-    assert!(before.on_rung > 0, "the setup must establish rung residency");
-    assert!(before.stable > 0, "the setup must establish an in-progress stability count");
-    stable.on_resume(30_000);
-    let after = stable.telemetry().gates;
-    assert_eq!(after.stable, 0);
-    assert_eq!(after.on_rung, 0);
+    assert!(c.telemetry().gates.on_rung > 0, "the setup must establish rung residency");
+    c.on_resume(30_000);
+    assert_eq!(c.telemetry().gates.on_rung, 0);
 
-    let mut cooling = controller_at(Rung::P1080);
-    for _ in 0..2 {
-        assert_eq!(cooling.observe(sample(20_000, 400, 12_000)), Decision::Stay);
-    }
-    let Decision::Prime(down) = cooling.observe(sample(1_000, 400, 500)) else {
-        panic!("the setup must propose the emergency downshift");
+    // A reject records the rung it refused; a resume retires that record.
+    let mut blocked = controller_at(Rung::P720);
+    let mut now = 0u64;
+    let proposal = loop {
+        now += 2_000;
+        if let Decision::Prime(p) = blocked.observe(sample(40_000, 200, 20_000), now) {
+            break p;
+        }
+        assert!(now < 60_000, "the setup must reach an upshift proposal");
     };
-    assert!(cooling.commit(down));
-    assert!(cooling.telemetry().gates.cooldown > 0, "the setup must establish a cooldown");
-    cooling.on_resume(30_000);
-    assert_eq!(cooling.telemetry().gates.cooldown, 0);
+    assert!(blocked.reject(proposal, RejectCause::Candidate));
+    assert_eq!(
+        blocked.telemetry().gates.blocked_kbps,
+        proposal.rung.kbps(),
+        "the setup must establish a live reject block",
+    );
+    blocked.on_resume(30_000);
+    assert_eq!(blocked.telemetry().gates.blocked_kbps, 0);
+
+    // And the dwell is released by the clock, whether or not anything was resumed.
+    let mut dwelling = controller_at(Rung::P720);
+    let mut now = 0u64;
+    let up = loop {
+        now += 2_000;
+        if let Decision::Prime(p) = dwelling.observe(sample(40_000, 200, 20_000), now) {
+            break p;
+        }
+        assert!(now < 60_000, "the setup must reach an upshift proposal");
+    };
+    assert!(dwelling.commit(up));
+    assert!(dwelling.telemetry().gates.dwell_ms > 0, "a commit arms the dwell");
+    now += 30_000;
+    let _ = dwelling.observe(sample(40_000, 200, 20_000), now);
+    assert_eq!(
+        dwelling.telemetry().gates.dwell_ms, 0,
+        "thirty seconds of wall clock is thirty seconds, whether they were paused or played",
+    );
 }
 
 /// **A link too fast to be believed must not read as a COLLAPSE.**
@@ -1674,7 +1917,7 @@ fn the_bootstrap_prior_seeds_the_steady_state_estimator() {
     // The seed is weak enough that ONE real segment dominates it rather than being averaged
     // into irrelevance.
     let mut seeded = seeded;
-    seeded.observe(sample(4_000, 400, 10_000));
+    seeded.observe_next(sample(4_000, 400, 10_000));
     assert!(seeded.delivery().slow_kbps < 25_000, "{}", seeded.delivery().slow_kbps);
 }
 
@@ -1756,7 +1999,7 @@ fn a_pinned_controller_still_publishes_its_safe_budget() {
     let mut pinned = controller_at(Rung::P1080High).pinned_to(Some(Rung::P1080High));
     assert_eq!(pinned.telemetry().safe_budget_kbps, 0, "nothing observed yet");
     for _ in 0..4 {
-        assert!(matches!(pinned.observe(sample(40_000, 300, 30_000)), Decision::Stay),
+        assert!(matches!(pinned.observe_next(sample(40_000, 300, 30_000)), Decision::Stay),
                 "already at the pin, so there is nothing to propose\u{2014}but a sample was still taken");
     }
     assert!(
@@ -1936,7 +2179,7 @@ fn a_downshift_pin_lands_from_the_top_of_the_ladder() {
     let reserve_ms = 4 * 2_000;
 
     let decision = (0..6)
-        .map(|_| pinned.observe(sample(40_000, 300, reserve_ms)))
+        .map(|_| pinned.observe_next(sample(40_000, 300, reserve_ms)))
         .find(|decision| !matches!(decision, Decision::Stay));
 
     match decision {
@@ -1961,7 +2204,7 @@ fn an_upshift_pin_still_waits_for_the_full_reserve() {
 
     for _ in 0..6 {
         assert!(
-            matches!(pinned.observe(sample(40_000, 300, reserve_ms)), Decision::Stay),
+            matches!(pinned.observe_next(sample(40_000, 300, reserve_ms)), Decision::Stay),
             "an upshift pin transacted on a reserve smaller than the transaction costs, which is \
              the livelock PIN_MIN_RESERVE_SEGMENTS exists to prevent",
         );
@@ -1984,7 +2227,7 @@ fn a_candidates_graded_segment_enters_the_window_even_when_the_candidate_is_refu
 #[test]
 fn candidate_and_current_observations_share_one_window() {
     let mut controller = Controller::starting_at(Rung::P1080, None, HlsActuatorCatalog::measured());
-    controller.observe(sample(9_000, 400, 20_000));
+    controller.observe_next(sample(9_000, 400, 20_000));
     let after_current = controller.window_len();
     controller.observe_candidate(sample_bytes(2_000_000, 1_500_000, 900, 20_000));
     assert_eq!(after_current, 1);
@@ -2010,7 +2253,7 @@ fn candidate_and_current_observations_share_one_window() {
 #[test]
 fn a_collapse_on_the_first_sample_of_a_rung_is_not_hidden_by_the_cold_start_gate() {
     let mut controller = controller_at(Rung::P1080M14);
-    let decision = controller.observe(sample(498, 29_150, 2_210));
+    let decision = controller.observe_next(sample(498, 29_150, 2_210));
     assert!(
         matches!(decision, Decision::Prime(p) if p.direction == Direction::Down),
         "a 28x measured rate deficit with 2.2 s of reserve is an emergency on the sample that \
@@ -2042,7 +2285,7 @@ fn a_collapse_on_the_first_sample_of_a_rung_is_not_hidden_by_the_cold_start_gate
 #[test]
 fn a_link_delivering_exactly_the_rungs_rate_is_not_an_emergency_at_cold_start() {
     let mut controller = controller_at(Rung::P1080M14);
-    let decision = controller.observe(sample(14_000, 250, 1_958));
+    let decision = controller.observe_next(sample(14_000, 250, 1_958));
     assert_eq!(
         decision,
         Decision::Stay,
@@ -2082,7 +2325,7 @@ fn the_cold_start_floor_fires_at_a_tenth_of_the_rate_and_not_at_a_twentieth() {
     // a second under; the claim is the bracket, not the digit.)
     let mut fires = controller_at(Rung::P1080M14);
     assert!(
-        matches!(fires.observe(sample(12_600, 250, 2_000)), Decision::Prime(_)),
+        matches!(fires.observe_next(sample(12_600, 250, 2_000)), Decision::Prime(_)),
         "a tenth short with one segment left is the 20 s deadline",
     );
     assert!(fires.telemetry().emergency_horizon_secs.is_some_and(|s| s <= window));
@@ -2090,7 +2333,7 @@ fn the_cold_start_floor_fires_at_a_tenth_of_the_rate_and_not_at_a_twentieth() {
     // 5% short: T = 2000 * 14000 / 700 = 40 s. Twice the window, so nothing fires — and the
     // cold-start gate then covers the `buffered < segment` disjunct as it always did.
     let mut holds = controller_at(Rung::P1080M14);
-    assert_eq!(holds.observe(sample(13_300, 250, 2_000)), Decision::Stay);
+    assert_eq!(holds.observe_next(sample(13_300, 250, 2_000)), Decision::Stay);
     assert!(
         holds.telemetry().emergency_horizon_secs.is_some_and(|s| s > window),
         "twice the window is not a deadline; got {:?}",
@@ -2113,7 +2356,7 @@ fn a_five_percent_deficit_against_a_full_top_rung_reserve_is_not_a_deadline() {
     let full = super::sim::Calibration::census_buf_ms(20_000).expect("censused");
     // 5% short of the top rung's 20 011 kbps expected wire rate.
     for _ in 0..2 {
-        controller.observe(sample(19_010, 250, full));
+        controller.observe_next(sample(19_010, 250, full));
     }
     assert_eq!(
         controller.telemetry().emergency_horizon_secs,
@@ -2148,7 +2391,7 @@ fn a_rate_deficit_evicts_a_rung_only_when_the_deadline_says_so() {
     let mut deep = controller_at(Rung::P1080M14);
     for _ in 0..3 {
         assert_eq!(
-            deep.observe(sample(short, 250, 20_000)),
+            deep.observe_next(sample(short, 250, 20_000)),
             Decision::Stay,
             "a 5% deficit against 20 s of reserve is arithmetic, not an emergency",
         );
@@ -2164,9 +2407,9 @@ fn a_rate_deficit_evicts_a_rung_only_when_the_deadline_says_so() {
     // assertion is that SOMETHING still evicts. Without it the test above is satisfied by a
     // controller that never downshifts at all.
     let mut shallow = controller_at(Rung::P1080M14);
-    shallow.observe(sample(short, 250, 2_000));
+    shallow.observe_next(sample(short, 250, 2_000));
     assert!(
-        matches!(shallow.observe(sample(short, 250, 1_500)), Decision::Prime(p)
+        matches!(shallow.observe_next(sample(short, 250, 1_500)), Decision::Prime(p)
                  if p.direction == Direction::Down),
         "a reserve under one segment is still an emergency on the second sample",
     );
@@ -2350,3 +2593,5 @@ fn no_reserve_gate_asks_for_more_than_the_queues_can_hold() {
         / 1_000;
     assert!(bottom_ceiling > segment * 3, "the constant must still bind at the floor rung");
 }
+
+

@@ -198,6 +198,59 @@ body-read time, which excludes PMS production, while "close the deficit within `
 promise. The guarantee therefore over-promises by the factor that must not be folded in: production
 is an independent feasibility constraint and stays one.
 
+## 2c. Counters became guards, and the guards are wall clock
+
+Three sample counters used to sit between a model that had already passed every risk, budget,
+buffer and production condition and the proposal it justified. All three are gone (N8-N10).
+
+| was | counted | is |
+|---|---|---|
+| `stable_samples` | three consecutive good samples before any climb, reset at seven sites | **deleted.** The model had already agreed; the counter re-asked |
+| `samples_on_rung < 2` | no adaptation at all on a rung's first two samples | **deleted as a gate, kept as an estimator input** — it is still the production estimator's cold-start flag and I3's predicate, and it is the only sample count left anywhere in HLS policy |
+| `cooldown` | 3 segments after an up commit, 8 after a down | **`E_tx` of wall clock**, on the UP path only |
+
+**A segment is not a bounded amount of wall time** — it is `bytes / C`, and `C` is the quantity a
+downshift exists to react to — so an eight-segment guard was an unbounded interval that got longer
+exactly as the link got worse. `E_tx` is the sum of the two deadlines the transaction is *already*
+held to (`candidate_warmup_budget` + `candidate_prime_budget`, R19's own form), so no number is
+introduced: 5.2 s at the 2 s segment this pipeline requests. It is labelled an **encoder-lifecycle
+operational guard** and may never be made to express a quality preference (N20). Both directions
+arm it, because both start a PMS encoder session; only the up path is blocked by it, because
+rate-limiting a recovery is how a stall becomes a policy.
+
+**And a reject now records what it cost** (N11). It used to record nothing and set `cooldown = 1`,
+whose decrement runs *before* the check — so `K = 1` has never blocked a single segment, and any
+stateless refusal bought another attempt on the very next sample at another `E_tx` of unrefilled
+reserve. The block releases on **either** of two independent sufficient conditions, and neither is
+a chosen number:
+
+* **the link has repaid the attempt** — `t = E_tx · R/(C − R)`, [`starvation_horizon`] run
+  backwards. `None` when `C ≤ R`: a link with no surplus never repays it, and saying so beats
+  returning a number that reads as an answer.
+* **the evidence has moved past what the failing estimate did not know** — the failing budget was
+  `slow·(1000 − unc)/1000` and the uncertainty band is `slow·unc/1000`, so "materially" is
+  `safe > slow` at reject time. The estimator states its own threshold.
+
+**It refuses every upshift, not only the rung that failed, and that is a correction to N11 as
+written.** N11 says "that rung" and justifies it by affordability. The two do not match, and the
+test written to pin the guard is what showed it: after a reject the controller does not re-propose
+the same rung at all — the budget has moved, so it proposes a *neighbouring* one, which a
+rung-keyed guard waves through while the reserve pays for it identically. `E_tx` is spent by the
+attempt. The rung is recorded because the log needs it and because the evidence test is about it.
+
+**The production arm lost its persistence requirement entirely** (N21): `production_risk &&
+draining_samples >= 8` — about sixteen seconds before a server falling behind could move the rung,
+while `starving()` beside it treats two as enough — is now `production_risk && draining()`, the
+magnitude test derived from the 2026-08-25 device finding. Stated as what it is: an 8x increase in
+sensitivity on an immediate-downshift arm, with `draining_samples >= 2` recorded as the fallback if
+it proves too eager.
+
+`abr: steady` reports the two guards where it used to report the two counters: `dwell=<ms>` is what
+is still owed before another encoder may be started, and `block=<kbps>` is the rung a live reject
+block is refusing (`0` for neither). **A pre-2026-08-28 log does not parse**, deliberately —
+`cool=` was a segment count and `dwell=` is wall clock, and a regex tolerant of both would invite
+comparing them field by field across the change that separates them.
+
 ## 3. Estimation, with uncertainty as a first-class output
 
 `CapacityEstimate` keeps a fast and a slow rate, a dispersion in per-mille, and a sample count.

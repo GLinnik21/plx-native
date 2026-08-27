@@ -547,7 +547,7 @@ pub(super) fn run(
         report.stall_ms_max = report.stall_ms_max.max(observed.stall_ms);
         report.samples.push(observed);
 
-        let decision = controller.observe(sample);
+        let decision = controller.observe(sample, u64::try_from(now_ms).unwrap_or(0));
         if report.first_decision.is_none() {
             report.first_decision = Some(decision);
             report.first_buf_ms = observed.buf_ms;
@@ -630,7 +630,7 @@ pub(super) fn run(
             // ones) and NONE of them feeds; the plant cannot express those, which is a gap on the
             // pessimistic side and is stated here rather than modelled optimistically.
             buf_ms = buf_ms.saturating_add(plant.segment_ms).min(plant.b_max_ms(&point));
-            controller.reject(proposal);
+            controller.reject(proposal, crate::abr::RejectCause::Candidate);
             report.rejects += 1;
         }
     }
@@ -1167,7 +1167,7 @@ mod tests {
         let (o, sample) = step(&plant, &trace, &point, &mut now, &mut buf, 720);
         assert!(o.buf_ms <= plant.segment_ms, "one segment in, the reserve is one segment");
         let mut c = Controller::starting_at(Rung::P480, None, cat());
-        let decision = c.observe(sample);
+        let decision = c.observe_next(sample);
         assert_eq!(decision, Decision::Stay, "a cold start on a fast link must hold its rung");
         println!(
             "CHARACTERISATION first-segment: buf={}ms acquire={}ms prod={}pm decision={:?}",

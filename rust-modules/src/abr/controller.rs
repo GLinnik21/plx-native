@@ -33,6 +33,13 @@ pub(crate) enum HlsReason {
     /// only the first cannot tell a rung that is slightly too dear from one that is about to
     /// stop.
     StarvationHorizon,
+    /// **The evidence supported a climb and N11's backoff was still holding it.**
+    ///
+    /// The one guard state on the UP path that is worth a code of its own, because it is the only
+    /// one that says "yes, and not yet". `dwell=` on the same line reports the OTHER guard, which
+    /// needs no code: a dwell that is holding returns before any target is selected, so there is
+    /// no rung to name. This one has a rung, has selected it, and is refusing it.
+    RejectBackoff,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -66,29 +73,101 @@ pub(crate) struct ControllerTelemetry {
     /// so the rule can be graded against the estimators beside it on a device before anything is
     /// moved onto it.
     pub(crate) window: AdmissionReadout,
-    /// **The three counters that can hold an upshift back, and could not be seen.** J5 proposes
-    /// replacing all three with derived guards; nothing can say what they COST until a log
-    /// distinguishes "the evidence did not support a climb" from "the evidence supported it and a
-    /// counter was still counting". Every field of `abr: steady` beside these is an estimator or a
-    /// derived quantity; these are the raw state, and they are here for exactly one increment.
+    /// **The two operational guards that can hold an upshift back** (N10, N11), and the two
+    /// estimator inputs that survived beside them. J5's three counters are gone; what replaced
+    /// them is wall clock and recorded evidence, and both are reported here for the same reason
+    /// the counters were: a log has to distinguish "the evidence did not support a climb" from
+    /// "the evidence supported it and a guard was still holding".
     pub(crate) gates: GateCounters,
 }
 
-/// Raw counter state, for the log line only. **Nothing reads this to decide anything** — it is the
-/// instrumentation half of J5, landed before the policy half so the policy change has a baseline
-/// to be measured against rather than an argument to be judged by.
+/// Guard state, for the log line only. **Nothing reads this to decide anything.**
+///
+/// It replaced J5's `stable`/`cooldown`/`on_rung`/`draining` quartet when I6 replaced the counters
+/// those two reported. `on_rung` and `draining` survive unchanged — both are still real state,
+/// and neither was ever a policy counter — while the two that WERE policy are now reported as
+/// what they became: a wall-clock debt and a named refusal.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct GateCounters {
-    /// Consecutive samples on which every `all_good` conjunct held. An upshift needs three.
-    pub(crate) stable: u8,
-    /// Samples still to be skipped after a commit or a reject.
-    pub(crate) cooldown: u8,
-    /// Samples taken since the current rung was committed. The first is a PMS cold start.
+    /// Wall milliseconds still owed before the UP path may propose again (N10). `0` is free.
+    pub(crate) dwell_ms: u64,
+    /// The rung the reject/backoff guard is currently refusing, in kbps (N11). `0` is nothing.
+    pub(crate) blocked_kbps: u32,
+    /// Samples taken since the current rung was committed. The first is a PMS cold start, which
+    /// is the ONE sample count that survives anywhere in HLS policy — it feeds the production
+    /// estimator's 1-vs-3 weight, and it is I3's cold-start predicate. It is not an adaptation
+    /// gate any more (N9).
     pub(crate) on_rung: u8,
-    /// Consecutive samples the reserve has been draining. The production trigger needs eight.
-    /// **`u32` where the other three are `u8`**, because it is `BufferEstimate`'s own field and
-    /// widening it here would be a second copy of that type's decision.
+    /// Consecutive samples the reserve has been draining. **No longer a threshold** — N21 replaced
+    /// `>= 8` on the production arm with `BufferEstimate::draining()`'s magnitude test — but still
+    /// worth reading, because `starving()`'s second arm counts it.
     pub(crate) draining: u32,
+}
+
+/// **Why a candidate transaction was abandoned, in the only distinction the backoff guard needs.**
+///
+/// N11 asks the controller to record "the rejected rung and the reason". The reason matters for
+/// exactly one decision: whether the failure says anything about the RUNG. Every reject site in
+/// `ff.rs` already names itself to `tx.finish(...)`, so the vocabulary exists; this collapses it
+/// to the one axis that changes behaviour, at the call site, where the knowledge is.
+///
+/// Getting this wrong in the permissive direction re-creates the livelock N11 exists to stop.
+/// Getting it wrong in the strict direction blocks a perfectly good rung after a seek — which is
+/// why `Circumstance` is not a courtesy: `reserve_unreadable` and `origin_changed` are statements
+/// about the SESSION, and the transaction that follows them starts from different facts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RejectCause {
+    /// The candidate itself failed — no playlist, no segment, a missed deadline, a refused prime,
+    /// a production ratio or acquisition window that would not admit it. Arms the backoff, because
+    /// re-proposing the same rung against the same evidence buys the same answer at the same price.
+    Candidate,
+    /// The transaction was abandoned for a reason that says nothing about the rung: the origin
+    /// moved, or the reserve stopped being readable (a seek). Does not arm the backoff.
+    Circumstance,
+}
+
+/// **What the last candidate reject cost, and the two independent things that release it** (N11).
+///
+/// Before this, `reject` recorded nothing at all: it set `cooldown = 1`, and the decrement runs
+/// *before* the check, so `K = 1` has never blocked a single segment. Any stateless cost therefore
+/// re-proposed on the very next sample, and each failed prime costs `E_tx` of unrefilled reserve —
+/// a self-inflicted drain that repeats until something else moves.
+///
+/// **It refuses every upshift, not only the rung that failed, and that is a correction to N11 as
+/// written.** N11 says "refuse to re-prime THAT rung", and the reason it gives is affordability:
+/// "each failed prime costs ~4.6 s of unrefilled reserve against ~3.6 s of refill". Those two do
+/// not match, and the test written to pin the guard is what exposed it — after a reject the
+/// controller does not re-propose the same rung at all; the budget has moved, so it proposes a
+/// NEIGHBOURING one, and a rung-keyed guard waves that through while the reserve pays for it just
+/// the same. `E_tx` is spent by the ATTEMPT. The rung is recorded because the log needs it and
+/// because the evidence test below is about it; it is not what the refusal is keyed on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RejectBlock {
+    rung: Rung,
+    /// **The clock release**, at `now + refill_time(E_tx)`: the wall time this link needs to earn
+    /// back what the failed attempt spent. `None` when the link had no surplus at reject time —
+    /// then no amount of waiting repays it and only new evidence may release the block, which is
+    /// [`crate::abr::plant::refill_time_ms`]'s `None` carried through rather than papered over.
+    release_at_ms: Option<u64>,
+    /// **The evidence release**, and it is not a chosen threshold. The failing budget was
+    /// `slow * (1000 - unc)/1000`; the estimate's own uncertainty band is `slow * unc/1000`; so a
+    /// budget that has moved past the whole band is a budget above `slow` — the raw rate the
+    /// failing estimate believed. "Materially" is therefore the estimator's own statement of what
+    /// it did not know, and no number is introduced to express it.
+    evidence_kbps: u32,
+}
+
+impl RejectBlock {
+    /// Is this block still refusing? **Both conditions must hold**, and either one alone releases
+    /// it, because they are two independent sufficient reasons to try again: the link has repaid
+    /// what the attempt spent, or the evidence has moved so far that the next attempt is not the
+    /// same attempt. `release_at_ms == None` is a link with no measured surplus at reject time —
+    /// nothing is ever repaid there, so only the evidence can release it, which is exactly what
+    /// this expression says without a special case.
+    fn holds(&self, now_ms: u64, safe_budget_kbps: u32) -> bool {
+        let unpaid = self.release_at_ms.is_none_or(|at| now_ms < at);
+        unpaid && safe_budget_kbps <= self.evidence_kbps
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -114,8 +193,25 @@ pub(crate) struct Controller {
     catalog: HlsActuatorCatalog,
     policy: AbrPolicy,
     samples_on_rung: u8,
-    stable_samples: u8,
-    cooldown: u8,
+    /// **Wall clock, supplied by the caller on every `observe`** — the controller owns no clock of
+    /// its own and must not: `SegmentSample::total_fetch_us` is per-REQUEST elapsed and is duty
+    /// cycled, running slow exactly when the reserve is full and the byte cap is idling the demux
+    /// worker, which is the substitution N13 identifies as a defect elsewhere.
+    now_ms: u64,
+    /// **The instant of the last COMMIT, and the arm of the dwell guard** (N10).
+    ///
+    /// It replaced `cooldown`, which counted SEGMENTS — and a segment is `bytes / C` of wall time,
+    /// so an eight-segment guard was an unbounded amount of wall clock that got longer exactly as
+    /// the link got worse. Any commit arms it, because any commit starts a PMS encoder session and
+    /// this is an encoder-lifecycle guard; only the UP path is blocked by it, because a downshift
+    /// is a recovery action and rate-limiting recovery is how a stall becomes a policy.
+    last_commit_ms: Option<u64>,
+    /// The last observed segment's media duration, so `reject` can price `E_tx` without the sample
+    /// that is no longer in scope by then. Zero until the first `observe`, and a zero-duration
+    /// segment cannot arm a backoff, which is the correct reading of "no measurement".
+    last_segment_ms: i64,
+    /// **The reject/backoff guard's state** (N11). `None` is the ordinary case.
+    reject_block: Option<RejectBlock>,
     last_reason: Option<DecisionReason>,
     last_safe_budget_kbps: u32,
     /// **The emergency deadline the last decision was taken against**, so the log carries the
@@ -170,8 +266,10 @@ impl Controller {
             catalog,
             policy: AbrPolicy::measured(),
             samples_on_rung: 0,
-            stable_samples: 0,
-            cooldown: 0,
+            now_ms: 0,
+            last_commit_ms: None,
+            last_segment_ms: 0,
+            reject_block: None,
             last_reason: None,
             last_safe_budget_kbps: 0,
             last_emergency_horizon: None,
@@ -211,6 +309,23 @@ impl Controller {
         self.pending
     }
 
+    /// **Test-only: `observe` with the fixture wall clock advanced by one segment.**
+    ///
+    /// `observe` takes absolute monotonic milliseconds (N10) and the fixtures in `tests.rs` are
+    /// written around one steady state: a stream that is keeping up delivers `d` of content every
+    /// `d` of wall clock. This advances the clock by exactly that and nothing else, so a test that
+    /// does not care about time does not have to invent a number — and, more importantly, cannot
+    /// silently leave the clock at zero, where `last_commit_ms` would never age and every
+    /// post-commit upshift would be blocked by a guard the test never meant to exercise.
+    ///
+    /// **A test about a wall-clock guard must call `observe` directly.** Those are the tests where
+    /// the cadence IS the subject, and expressing it through this fixture would assert the fixture.
+    #[cfg(test)]
+    pub(crate) fn observe_next(&mut self, sample: SegmentSample) -> Decision {
+        let now = self.now_ms.saturating_add(u64::from(sample.media_duration_ms));
+        self.observe(sample, now)
+    }
+
     #[cfg(test)]
     pub(crate) fn window_len(&self) -> usize {
         self.acquisitions.len()
@@ -233,12 +348,16 @@ impl Controller {
     pub(crate) fn on_resume(&mut self, paused_ms: u64) {
         self.delivery.age_ms(paused_ms, &self.policy);
         self.buffer = BufferEstimate::default();
-        // These counters describe uninterrupted time on this rung. A pause deliberately ages the
-        // delivery estimate, so carrying the lifecycle guards across it would combine stale
-        // evidence with a state that claims continuity.
+        // `samples_on_rung` describes uninterrupted time on this rung, and a pause ends that.
         self.samples_on_rung = 0;
-        self.stable_samples = 0;
-        self.cooldown = 0;
+        // **The backoff block goes and the dwell instant stays, and the asymmetry is the whole
+        // argument for a wall clock.** The block's evidence release is keyed on the estimate
+        // `age_ms` has just widened, so the rate it recorded no longer describes anything; keeping
+        // it would refuse a rung on a comparison against a number that has been retracted. The
+        // dwell needs no such care — sixty seconds of pause really are sixty seconds during which
+        // no encoder was started, so the guard has genuinely expired, which is exactly what a
+        // segment counter could not represent.
+        self.reject_block = None;
     }
 
     /// Everything one decision was made on, in one struct, for one event-log line. Assembled here
@@ -267,8 +386,16 @@ impl Controller {
             production: self.production,
             buffer: self.buffer,
             gates: GateCounters {
-                stable: self.stable_samples,
-                cooldown: self.cooldown,
+                dwell_ms: self.dwell_remaining_ms(),
+                // The guard's EFFECT, not its storage: `0` means nothing is being refused right
+                // now, which is the question a log line is asked. A block that has released is
+                // indistinguishable from no block at all, and reporting it would read as a stuck
+                // guard on exactly the segments where it had already got out of the way.
+                blocked_kbps: self
+                    .reject_block
+                    .filter(|b| b.holds(self.now_ms, self.last_safe_budget_kbps))
+                    .map(|b| b.rung.kbps())
+                    .unwrap_or(0),
                 on_rung: self.samples_on_rung,
                 draining: self.buffer.draining_samples,
             },
@@ -286,7 +413,13 @@ impl Controller {
         }
     }
 
-    pub(crate) fn observe(&mut self, sample: SegmentSample) -> Decision {
+    /// **`now_ms` is ABSOLUTE monotonic wall clock, not a delta**, for the reason
+    /// `OriginalRecovery::advance_to` already documents: segments do not arrive on a regular
+    /// cadence, so a delta API would make every wall-clock guard depend on how often the caller
+    /// happened to call — which is a property of the link, not of the guard. The production caller
+    /// passes one `Instant`'s elapsed time for the whole playback (`ff.rs`).
+    pub(crate) fn observe(&mut self, sample: SegmentSample, now_ms: u64) -> Decision {
+        self.now_ms = now_ms;
         let ratio = sample.production_ratio_pm();
         let current_candidate = self.catalog.candidate(self.current);
         // A segment at a low rung on a fast link is too small to time; clamp what it may claim to
@@ -318,6 +451,7 @@ impl Controller {
 
         let draining = self.buffer.draining();
         let segment = i64::from(sample.media_duration_ms);
+        self.last_segment_ms = segment;
 
         // **Computed HERE, above every early return, and only read below.** The budget is the
         // delivery estimate's conservative network rate, so its value is identical wherever
@@ -330,6 +464,16 @@ impl Controller {
         // exactly the runs designed to characterise a rung.
         let safe_budget = hls_safe_budget(&self.delivery);
         self.last_safe_budget_kbps = safe_budget;
+        // A block that has released is RETIRED, not merely re-tested every sample, and the reason
+        // is not monotonicity — only the clock half is monotone; the budget can rise past
+        // `evidence_kbps` and fall back under it. It is that the block describes ONE attempt and
+        // its debt. Once any sufficient reason to try again has occurred, that debt is discharged;
+        // a budget that falls afterwards is new information about the link, not the old refusal
+        // coming back. Keeping it would let a single failed prime refuse climbs indefinitely
+        // through a budget that merely wobbles.
+        if self.reject_block.is_some_and(|block| !block.holds(now_ms, safe_budget)) {
+            self.reject_block = None;
+        }
 
         // **Observe the §4 window, and compute its verdict on the CURRENT rung for telemetry.**
         // The decision this window drives is not taken here — it is taken at the proposal
@@ -360,10 +504,6 @@ impl Controller {
         if self.pending.is_some() {
             return Decision::Stay;
         }
-        if self.cooldown > 0 {
-            self.cooldown -= 1;
-        }
-
         // **An unknowable reserve decides nothing.** `buffered_ms` is `None` for exactly one
         // situation — an A/V session whose audio lane has produced no timestamp since the open or
         // the seek — and every branch below is keyed on the reserve: the emergency trigger reads it
@@ -376,7 +516,6 @@ impl Controller {
         // decision waits, and it waits at most until the audio lane produces a timestamp, which is
         // bounded by the first audio AU of the current segment.
         let Some(buffered) = sample.buffer.buffered_ms() else {
-            self.stable_samples = 0;
             return Decision::Stay;
         };
         // The dev pin (`pinned_to`) short-circuits the decision and NOTHING above it: every
@@ -429,8 +568,20 @@ impl Controller {
         // encoder at a time — and it names the reason, because "the link is measurably below this
         // rung" is the actionable half of a downshift that fired for some other reason.
         let collapse_target = immediate_network < current_candidate.expected_wire_kbps;
-        let production_bad =
-            current_risk.production_risk && self.buffer.draining_samples >= 8;
+        // **N21: a magnitude predicate, not a persistence count.** This required EIGHT consecutive
+        // draining segments — about sixteen seconds at the 2 s segment this pipeline requests —
+        // before a server falling behind could move the rung, while `starving()` two lines up
+        // treats two as enough. It is now `draining()`, whose derivation is the 2026-08-25 device
+        // finding recorded at `BufferEstimate::draining`: judge the travel, not the sign of it, and
+        // not the number of samples it took.
+        //
+        // Stated as what it is rather than as a reconciliation: this drops the persistence
+        // requirement ENTIRELY — an 8x increase in sensitivity on an immediate-downshift arm. It is
+        // safe in the direction that matters because `production_risk` is itself a predicted-ratio
+        // test against `production_max_pm`, so the conjunction still needs the server to be behind
+        // AND the reserve to be measurably shrinking. If it proves too eager the recorded fallback
+        // is `draining_samples >= 2`, matching `starving()`.
+        let production_bad = current_risk.production_risk && self.buffer.draining();
         let buffer_bad = buffered < segment || self.buffer.starving();
         // **The deadline, and the one trigger cold start may not suppress.** `T = B*R/(R - C)`:
         // at the rate this link is delivering, the reserve empties in `T` seconds. N4's opening
@@ -481,7 +632,6 @@ impl Controller {
         // them. So the gate applies to the disjuncts whose evidence the cold start corrupts, and
         // the deadline runs whether or not this is the first sample.
         if horizon_bad || (!cold_start && (buffer_bad || production_bad)) {
-            self.stable_samples = 0;
             // A measured link collapse must not walk the ladder one oversized encoder at a time.
             // Select the best actuator that fits the new safe budget, still bounded below current.
             let target = if collapse_target || buffered < segment / 2 {
@@ -514,8 +664,18 @@ impl Controller {
             return Decision::Stay;
         }
 
-        if self.cooldown > 0 || self.samples_on_rung < 2 {
-            self.stable_samples = 0;
+        // **N10's dwell, and N9's deleted gate.** What stood here was
+        // `self.cooldown > 0 || self.samples_on_rung < 2` — two sample counts, one of which
+        // ("wait three segments after an up commit, eight after a down") was an unbounded amount of
+        // wall time, and the other of which forbade any adaptation at all on the first two samples
+        // of a rung.
+        //
+        // `samples_on_rung` is gone from the decision and kept as an estimator input (N9). What
+        // replaces the cooldown is one wall-clock interval, `E_tx` — the sum of the two deadlines
+        // this transaction is already held to. Its meaning is exact and operational: do not start
+        // another encoder session before the last one could have finished paying for itself. It is
+        // NOT a quality preference and may never be made into one (N20).
+        if self.dwell_remaining_ms() > 0 {
             return Decision::Stay;
         }
         // TWO independent constraints, deliberately not collapsed into one budget: the network has
@@ -532,26 +692,24 @@ impl Controller {
             &self.policy,
             buffered,
         ) else {
-            self.stable_samples = 0;
             return Decision::Stay;
         };
         let target = target_candidate.rung;
         if target == self.current {
-            self.stable_samples = 0;
             return Decision::Stay;
         }
         if target < self.current {
             // The budget shrank without any current-state signal failing. Nothing is wrong with
             // what is playing, so this is not a downshift trigger — it is a reason not to climb.
-            self.stable_samples = 0;
             return Decision::Stay;
         }
 
         // **Selection must not propose what validation is certain to refuse.** Below `n` samples
         // `candidate_ready` cannot admit an upshift at all, and above it only admits one the
         // window can carry — so proposing outside that set is not merely wasted work, it is a
-        // livelock: each proposal costs a real PMS encoder session and ~3 s of unrefilled
-        // playback, the reject clears `stable_samples`, and the loop repeats forever.
+        // livelock: each proposal costs a real PMS encoder session and `E_tx` of unrefilled
+        // playback, and nothing about the refusal was recorded, so the loop repeated forever. N11's
+        // backoff is the other half of closing that; this is the half that never proposes it.
         //
         // **The same rule on both sides, with the best input each side has.** Validation has the
         // rendition's own declared rate; selection cannot — a rung's `BANDWIDTH` needs a PMS
@@ -560,11 +718,9 @@ impl Controller {
         // decides. This is one rule read twice, not two thresholds stacked: no new number appears,
         // `n` and `σ` are the rule's own.
         let Some(target) = self.largest_admissible(target, segment, buffered) else {
-            self.stable_samples = 0;
             return Decision::Stay;
         };
         if target <= self.current {
-            self.stable_samples = 0;
             return Decision::Stay;
         }
 
@@ -603,14 +759,24 @@ impl Controller {
             && buffered >= reserve_gate
             && !draining;
         if !all_good {
-            self.stable_samples = 0;
             return Decision::Stay;
         }
-        self.stable_samples = self.stable_samples.saturating_add(1);
-        if self.stable_samples < 3 {
+        // **N11's backoff, checked against the rung selection actually made.** Placed here rather
+        // than earlier so a blocked rung still costs a full evaluation and a full log line: the
+        // question "would this climb have happened" stays answerable while the guard is holding.
+        //
+        // A blocked target is a STAY, not a walk down to the next rung. Dodging the block would be
+        // a rung-walking rule — the unexplained per-decision step the design directive forbids —
+        // and it would spend a transaction on a rung the evidence never selected.
+        if self.reject_blocks() {
+            self.last_reason = Some(DecisionReason::Hls(HlsReason::RejectBackoff));
             return Decision::Stay;
         }
-        self.stable_samples = 0;
+        // **And there is no `stable_samples` here any more (N8).** Three consecutive samples on
+        // which every conjunct above held was pure counting layered on a model that had already
+        // passed every risk, budget, buffer and production condition, reset at seven separate
+        // sites, and it was the dominant term in the opening seconds: counter spacing was exactly
+        // five segments between successive upshifts and ten after a downshift.
         let proposal = Proposal { rung: target, direction: Direction::Up };
         self.pending = Some(proposal);
         self.last_reason = Some(DecisionReason::Hls(HlsReason::SafeBudgetIncrease));
@@ -770,21 +936,84 @@ impl Controller {
         self.current = proposal.rung;
         self.pending = None;
         self.samples_on_rung = 0;
-        self.stable_samples = 0;
-        self.cooldown = match proposal.direction {
-            Direction::Down => 8,
-            Direction::Up => 3,
-        };
+        // Both directions arm it; only the UP path reads it. See the field.
+        self.last_commit_ms = Some(self.now_ms);
+        // A rung that just committed is a rung that works. Whatever the last reject believed about
+        // it has been answered by a transaction that finished, so the block is retired by evidence
+        // of exactly the kind it was waiting for.
+        if self.reject_block.map(|block| block.rung) == Some(proposal.rung) {
+            self.reject_block = None;
+        }
         true
     }
 
-    pub(crate) fn reject(&mut self, proposal: Proposal) -> bool {
+    /// **A reject now records what failed** (N11), where it recorded nothing and set a
+    /// `cooldown = 1` that provably never blocked a segment.
+    ///
+    /// `cause` is the call site's own reading, and it decides whether a block is armed at all —
+    /// see [`RejectCause`]. The block's two release conditions are computed HERE, from the state
+    /// at the moment of failure, rather than re-derived later against numbers that have moved.
+    pub(crate) fn reject(&mut self, proposal: Proposal, cause: RejectCause) -> bool {
         if self.pending != Some(proposal) {
             return false;
         }
         self.pending = None;
-        self.stable_samples = 0;
-        self.cooldown = 1;
+        if cause == RejectCause::Circumstance || self.last_segment_ms <= 0 {
+            return true;
+        }
+        // What the failed attempt spent: `E_tx`, the sum of the two deadlines it was held to.
+        let cost_ms = i64::try_from(
+            crate::abr::viability::upshift_transaction_cost(
+                std::time::Duration::from_millis(u64::try_from(self.last_segment_ms).unwrap_or(0)),
+                &self.policy,
+            )
+            .as_millis(),
+        )
+        .unwrap_or(i64::MAX);
+        // What it takes to earn that back: the CURRENT rung is what playback keeps consuming while
+        // the reserve refills, and the surplus is measured against the conservative budget rather
+        // than the raw rate — this guard decides whether another attempt is affordable, and an
+        // affordability question is answered on a lower bound.
+        let current = self.catalog.candidate(self.current);
+        let refill_ms = crate::abr::plant::refill_time_ms(
+            cost_ms,
+            current.expected_wire_kbps,
+            hls_safe_budget(&self.delivery),
+        );
+        self.reject_block = Some(RejectBlock {
+            rung: proposal.rung,
+            release_at_ms: refill_ms
+                .and_then(|ms| u64::try_from(ms).ok())
+                .map(|ms| self.now_ms.saturating_add(ms)),
+            evidence_kbps: self.delivery.slow_kbps,
+        });
         true
+    }
+
+    /// Wall milliseconds still owed on the dwell guard (N10). `0` once the interval has elapsed,
+    /// and `0` before any commit — a controller that has started no encoder owes nothing.
+    fn dwell_remaining_ms(&self) -> u64 {
+        let Some(last) = self.last_commit_ms else {
+            return 0;
+        };
+        if self.last_segment_ms <= 0 {
+            return 0;
+        }
+        let dwell = u64::try_from(
+            crate::abr::viability::upshift_transaction_cost(
+                std::time::Duration::from_millis(u64::try_from(self.last_segment_ms).unwrap_or(0)),
+                &self.policy,
+            )
+            .as_millis(),
+        )
+        .unwrap_or(u64::MAX);
+        dwell.saturating_sub(self.now_ms.saturating_sub(last))
+    }
+
+    /// Is a live reject block refusing this climb (N11)? See [`RejectBlock`] for why this takes no
+    /// rung: the reserve pays `E_tx` for the ATTEMPT, whichever rung it was aimed at.
+    fn reject_blocks(&self) -> bool {
+        self.reject_block
+            .is_some_and(|block| block.holds(self.now_ms, self.last_safe_budget_kbps))
     }
 }

@@ -269,6 +269,39 @@ pub(crate) fn candidate_prime_budget(
     std::time::Duration::from_micros(micros.min(u128::from(u64::MAX)) as u64).min(reserve)
 }
 
+/// **`E_tx`: what one upshift transaction costs in unrefilled playback**, and the derivation the
+/// ledger left as "TBD from `E_tx`" for [`AbrPolicy`]'s two operational guards (N10, N11).
+///
+/// It is **the sum of the two enforced deadlines** and nothing else — R19's own form, which is the
+/// only bound on this transaction that is a fact rather than an estimate. The warm-up fetch may
+/// run to [`candidate_warmup_budget`] and the graded fetch to [`candidate_prime_budget`]; the
+/// reserve does not refill during either, because the transaction runs inline on the demux worker
+/// and the candidate's output is staged privately until commit. So the cost is bounded by their
+/// sum, by construction, whatever the link does.
+///
+/// **No new number enters.** `3/2` and `production_max_pm` already exist, already have written
+/// derivations at their own sites, and are already enforced. At the 2 s segment this pipeline
+/// requests that is `3 s + 2.2 s = 5.2 s`. (`docs/adaptive-playback-plan.md` §6.2 records `E_tx`
+/// as "~4 600 (2.3·d)", which was written while `candidate_prime_budget` was a literal `4/5·d`;
+/// the ledger row is stale, not this function — see that function's own account of the `4/5`.)
+///
+/// The `reserve` argument the two budgets take is deliberately absent: this is the cost of a
+/// transaction that runs to its deadlines, and clamping it to the reserve of the moment would make
+/// a guard derived from it *shorter* exactly when the reserve is thin, which is backwards.
+pub(crate) fn upshift_transaction_cost(
+    media_duration: std::time::Duration,
+    policy: &AbrPolicy,
+) -> std::time::Duration {
+    let unbounded = std::time::Duration::MAX;
+    let warmup = candidate_warmup_budget(
+        Proposal { rung: Rung::P240, direction: Direction::Up },
+        media_duration,
+        unbounded,
+    );
+    let prime = candidate_prime_budget(media_duration, policy, unbounded);
+    warmup.saturating_add(prime)
+}
+
 /// The playable reserve as a wall-clock budget. A reserve at or below zero is `ZERO`, which makes
 /// the deadline "now" — correct, because a transaction starting with no reserve has already
 /// stalled and every further millisecond it spends is a millisecond of stall.

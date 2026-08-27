@@ -233,6 +233,33 @@ pub(crate) fn starvation_horizon(
     StarvationHorizon { seconds: u32::try_from(time_to_empty_ms / 1_000).ok() }
 }
 
+/// **[`starvation_horizon`] run backwards: how long a surplus takes to REFILL a spent reserve.**
+///
+/// Same algebra, opposite sign. Playback consumes one millisecond of media per millisecond of wall
+/// clock while the link delivers `C/R` of it, so the reserve grows at `(C - R)/R` per wall
+/// millisecond and closing a gap of `cost_ms` takes
+///
+/// ```text
+/// t_refill = cost_ms * R / (C - R)      [ms]
+/// ```
+///
+/// **`None` when `C <= R`, and that is the useful half.** A link with no surplus never repays the
+/// gap, so a guard built on this correctly refuses to release on the clock and must wait for the
+/// evidence to change instead. The same structural protection [`starvation_horizon`] has, for the
+/// same reason: the quantity is undefined rather than large, and saying so beats returning a
+/// number that reads as an answer.
+///
+/// **It introduces no constant.** `cost_ms` is [`crate::abr::viability::upshift_transaction_cost`]
+/// — itself the sum of two deadlines that already exist — and `R`/`C` are the rung's rate and the
+/// measured one. This is the whole derivation of `reject_backoff_ms`, which
+/// `docs/adaptive-playback-plan.md` §6.2 records as "TBD from `E_tx`".
+pub(crate) fn refill_time_ms(cost_ms: i64, requirement_kbps: u32, capacity_kbps: u32) -> Option<i64> {
+    if capacity_kbps <= requirement_kbps || cost_ms <= 0 {
+        return None;
+    }
+    let surplus = i64::from(capacity_kbps - requirement_kbps);
+    Some(cost_ms.saturating_mul(i64::from(requirement_kbps)) / surplus.max(1))
+}
 
 /// **The physically reachable reserve at a given pair of elementary rates** — N3, and the quantity
 /// `B* = 10 s` was written without.
