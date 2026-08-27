@@ -212,9 +212,26 @@ exits, and the log names which one fired:
 
 | exit | rule | consults utility |
 |---|---|---|
-| `ImminentStarvation` | horizon inside `starvation_fallback_secs` | no — a stall beats any switch |
+| `ImminentStarvation` | horizon inside `starvation_fallback_secs`, **and the reserve measurably falling** | no — a stall beats any switch |
 | `SustainedDeficit` | horizon unsafe for `ORIGINAL_DEFICIT_WINDOWS`, and utility agrees | yes |
 | `EmergencyLowBuffer` | reserve under the floor and falling, whatever the estimates say | no |
+
+**Both hard guards require an observed drain, and the first one did not until 2026-08-27.** The
+horizon is `T = B·R/(R−C)`, which is a prediction only under the premise that the reserve is being
+consumed at `(R−C)/R`; when the measurement beside it says the reserve is flat or growing, `T` is
+arithmetic on a discounted rate rather than a forecast. Without that conjunct the guard fired on
+measurement window ONE — where `conservative_kbps` is pinned to half the measurement by the
+uncertainty floor and `buffered_ms` is the prime remnant — and cost a real film its 4K Dolby Vision
+and Atmos for the whole playback (`docs/measurements/orig-first-window-fallback.md`). Both read the
+RAW delta rather than `draining()`: at the moment of a *correct* fallback the smoothed slope was
+measured at **+8446 ms/s**, still carrying the healthy leg before it.
+
+**Every Auto Original is watched, wherever the server is.** Until 2026-08-27 the watchdog was armed
+only for a `Remote` server, on the argument that a Local link needs no throughput proof — true of
+the pre-flight probe below, false at runtime, since `Location` is decided from the address shape and
+describes topology rather than throughput. A LAN held at 2 500 kbps under a 10 634 kbps source ran
+the film at 8–25 % of real time with no `abr:` line in the log at all
+(`docs/measurements/local-original-blind.md`).
 
 The third is a **labelled emergency guard**: it should be unreachable when the model works, and its
 appearance in a log is a finding about this module rather than about the network. It reads the raw
@@ -252,7 +269,7 @@ link is proven".
 
 | link | rule | reason code |
 |---|---|---|
-| Local | Original immediately, no probe | `LocalDirect` |
+| Local | Original immediately, no probe — and then WATCHED, §7 | `LocalDirect` |
 | Relay | HLS; relay is bandwidth-limited by design | `RelayLimited` |
 | Remote | one bounded probe of the actual file | `ProbeSustainable` / `ProbeBelowRequirement` |
 | Remote, probe failed or source bitrate unknown | conservative HLS, playback still starts | `ProbeInconclusive` |
