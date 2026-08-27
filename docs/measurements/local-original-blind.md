@@ -177,3 +177,20 @@ same fact from the video plane's side.
   2 Mbps rung — because the admission window needs 19 samples per rung and the case is 150 s long.
   That is the under-reach the plan of record already tracks, not something this finding introduces,
   and it is why neither case carries a rung bound.
+
+## 9. The metric against the whole committed corpus
+
+`playback_rate` over all 73 captured logs under `docs/measurements/` that carry a usable `pos=`
+series. Eight fall below the 700 pm floor the two new cases assert, and **every one of them is a
+case where slowness is required by construction** — no false positive anywhere else:
+
+| worst 10 s window | logs | why |
+|---|---|---|
+| 0 | `pipe_abr_down_collapse` x3, `pipe_abr_down_outrun` | the profile collapses the link to **500 kbps**, and the ladder floor is 320 kbps of video plus ~192 kbps of audio. The bottom rung is itself unaffordable, so the film has to run slow — there is nowhere left to go |
+| 111 | `auto_original_squeeze` (before) | the defect this document is about |
+| 667 | `pipe_abr_band_20000` x3 | `abr_pin: 20000` — the case exists to HOLD an unsustainable rung and sample the `A/D` band nobody had observed |
+
+The four zeros mean a full ten-beat window with no media advance at all, i.e. a hard stall of
+≥10 s. Those cases carry `settle_max_kbps` and no `max_stall_s`; whether the floor rung should
+refuse a link it cannot fit on (`HlsReason::LadderFloor` is a stated terminal case and does
+nothing else) is the open question they pose, and it is not this one.
