@@ -126,31 +126,152 @@ eleven, a 1.56× swing, with a cluster-robust SE of 15.29 that puts it ~1.4σ fr
 owns it. It ships in **picoseconds per byte** (`i64`): in ms/byte the value is 5.85e-5, which
 truncates to integer **0** and divides by zero in the demux worker (R20).
 
+## 2a. [RESOLVED] There is no estimator for `O₀` and `τ`, because nothing needs them
+
+§8 listed "an estimator for `O₀` and `τ`" as the **first** thing blocking Phase 4 — "nothing
+downstream is implementable without it". That was the wrong question. The two coefficients are
+never separately needed, and the quantity that *is* needed has a closed form that estimates
+neither.
+
+**The derivation.** Physics supplies exactly two constraints on the model `A = O₀ + bytes·τ`: a
+fixed cost cannot be negative (`O₀ ≥ 0`), and more bytes cannot cost less (`τ ≥ 0`). Take any one
+observation `(b_i, A_i)` and ask what a different byte count `b_j` costs on the same link:
+
+```
+A_j = A_i + (b_j − b_i)·τ
+
+b_j ≥ b_i :  τ ≤ A_i/b_i   (because O₀ ≥ 0)   ⟹   A_j ≤ A_i · b_j/b_i
+b_j < b_i :  τ ≥ 0                            ⟹   A_j ≤ A_i
+
+both      :  A_j  ≤  A_i · max(1, b_j/b_i)                    the TRANSFER BOUND
+```
+
+Both halves are **tight** — the first is attained at `O₀ = 0`, the second at `τ = 0`. So the bound
+is the exact worst case over every split of `A_i` between the two coefficients, which is precisely
+the split R7 proved this corpus cannot identify (ten effective degrees of freedom, `bytes`
+collinear with rung). **The identification problem is dissolved rather than solved**, and the three
+irreconcilable `(O₀, τ)` fits tabulated above stop being a blocker: none of them is used.
+
+**One asymmetry decides how much of the ladder needs a size prediction at all.** A downshift bound
+carries no `b_j`: acquisition cannot rise when the byte count falls, so `A_j ≤ A_i` holds whatever
+the candidate's segments turn out to weigh. Only **upshifts** need §3's `σ`, which is why the three
+rungs where `σ` has no usable ceiling (320, 720, 2000 — `p2h` §2/§2a) do not matter: they are
+downshift targets.
+
+### The single-observation form is REFUTED, and its failure shape is the evidence
+
+Graded over every ordered pair in the committed device logs, `A_j ≤ A_i·max(1, b_j/b_i)` is
+violated on **36.6%** of pairs (`tools/abr-transfer-bound.py --grade pairs`). The derivation is
+deterministic; real acquisitions are not. **How it fails is what licenses the fix:**
+
+| corpus | worst overshoot | reading |
+|---|---:|---|
+| the five steady-link pin cases | 1.05 – 1.06 | noise around the model |
+| `brief_dropout`, `steady_modest_link` | 1.41, 2.00 | the link moved a little |
+| `oscillating_link`, `slow_start_then_fast` | 8.99, 20.35 | the "same link" precondition genuinely broken |
+
+A 5% overshoot on a settled link is dispersion, not a wrong model. A 20× overshoot is a different
+link, and no per-segment bound of any shape survives that — it is `CapacityEstimate`'s regime-change
+reset that owns it.
+
+### The shipped form: the k-th order statistic of the transferred window
+
+Over a trailing window of `n` observations, transfer each to the candidate byte count and take the
+`k`-th largest:
+
+```
+Â_j  =  k-th largest of  { A_i · max(1, b_j/b_i)  :  i in the last n segments }
+```
+
+**Why this carries a guarantee.** The transferred values are a *fixed measurable function* of the
+pairs `(b_i, A_i)`. A fixed function of exchangeable variables is exchangeable, so the order-
+statistic result §4 already relies on applies unchanged:
+
+```
+P( T_next > k-th largest of the window )  =  k/(n+1)          exactly
+```
+
+`ε = k/(n+1)` is therefore (4), an explicit SLO choice, and `n = k/ε − 1` follows from it (R28's
+corrected theorem — `k/ε − 1`, not `1/ε − 1`). Nothing else is chosen.
+
+**Measured against real acquisitions it is conservative at every setting tried**, which is the
+evidence that the exchangeability assumption is not being strained in practice — and a better
+answer than R9's proposed AR(1) correction table, since `p2h` §4 refuted a *stable* autocorrelation
+(ρ₁ spans −0.376 to +0.764 with no consistent sign), so no fixed ρ is estimable to correct with:
+
+| n | k | nominal ε | observed | tested |
+|---:|---:|---:|---:|---:|
+| 10 | 1 | 9.09% | 4.31% | 487 |
+| 20 | 1 | 4.76% | **1.06%** | 377 |
+| 20 | 2 | 9.52% | 5.04% | 377 |
+| 29 | 1 | 3.33% | 1.08% | 278 |
+| 29 | 3 | 10.00% | 5.76% | 278 |
+| 40 | 2 | 4.88% | 2.53% | 158 |
+
+**What the guarantee does NOT cover, stated because §2's earlier draft is what happens when it is
+not.** Exchangeability covers the statistics. It does not cover the model step: `A_j ≤ T_next` holds
+only if the plant parameters really are those implied by the next observation. That assumption is
+the one the refutation above breaks, and the `pairs` grade is kept in the tool precisely so its
+failure stays visible rather than being tidied away.
+
+**Integer form.** A multiply, a ceiling divide and a selection — no floats, no fit, no coefficient:
+
+```rust
+// A_i * max(1, b_j / b_i), rounded UP: this is a safety bound, so flooring is the wrong way.
+let transferred = if query_bytes <= observed_bytes {
+    acquisition_us
+} else {
+    (acquisition_us * query_bytes + observed_bytes - 1) / observed_bytes
+};
+```
+
+`acquisition_us` ≤ 6e7 (a 60 s fetch) and `query_bytes` ≤ 2e7 give a product ≤ 1.2e15, against
+`i64::MAX` = 9.2e18 — six thousand times the headroom. `observed_bytes` is `.max(1)` at the call
+site; a malformed log line must not divide by zero on the demux worker (R20's failure, in a new
+place).
+
 ## 3. How big is the next segment
 
 This is what the plan's R1 killed the old admission rule over, and it is now answered without a
 device.
 
 Let `W_j` be the rate the server **declares** for rung `j` — `#EXT-X-STREAM-INF:BANDWIDTH` from the
-master playlist. Three properties, all measured over 1 440 segments on three items:
+master playlist. Three properties, measured over **1 560 segments on three items in five windows**:
 
 * `W_j` **equals the `/decision` response's own bitrate**, exactly, in the wire shape the app
   sends (26/26 rung-window pairs). It is a target average, **not** the RFC 8216 peak.
-* **It bounds the delivered rate at every rung the ladder uses above 720 kbps.** Not one of
-  **1 120** segments at rungs ≥ 2000 exceeded `0.85 · W_j`. The maximum anywhere was 0.846.
-* **It does not bound it at 320 or 720.** Overshoot to 1.285 and 1.155 respectively; at rung 320
-  the peak segment carries 1.91× the video rate the server said it was targeting, because a
-  minimum-quality floor beats a rate target that small.
+* **[CORRECTED] It bounds the delivered rate at rungs 4000 and above** — not 2000, which is what
+  this bullet said until a second item was run through the full ladder and refuted it. 0 of
+  **1 440** segments at rungs ≥ 4000 exceed `0.85 · W_j`, max **0.8456**. At rung **2000**, 9 of
+  120 exceed it, to **0.9175**.
+* **It does not bound it at 320, 720 or 2000.** Overshoot to 1.285, 1.155 and 0.917. Max `σ` decays
+  *monotonically* across the whole ladder — 1.285, 1.155, 0.917, 0.846, … 0.798 — so this is one
+  curve crossing a threshold, not a bound that holds and then breaks: the encoder cannot go below a
+  content-dependent **quality floor**, and a small enough rate target loses to it.
 
-What makes the first bound a *ceiling* rather than a lucky quantile: between two 80 s windows of
-one film the **median** of `delivered/declared` moves 4.3× while the **max** stays inside
-`[0.77, 0.85]`.
+What makes the bound a *ceiling* rather than a lucky quantile: between two 80 s windows of one film
+the **median** of `delivered/declared` moves 4.3× while the **max** stays inside `[0.77, 0.85]`.
 
-So, for rungs at or above 2000 kbps:
+So, for rungs at or above **4000** kbps:
 
 ```
-bytes_j  ≤  σ · W_j · D / 8000            σ = 0.85, W in bit/s, D in ms, bytes in bytes
+bytes_j  ≤  σ · W_j · D / 8000            σ, W in bit/s, D in ms, bytes in bytes
 ```
+
+**`σ = 0.90`, and the margin is derived rather than picked.** Five item-windows now reach the same
+rungs, which makes the *cross-item* spread of the max measurable: at rungs ≥ 4000 an unseen item
+moved it by at most **5.6%** (at 2000 by 13.4%, at 720 by 22.7% — the floor regime is not merely
+higher but far more item-dependent, which is what makes a shared constant wrong there
+specifically). So `σ = max_observed × spread = 0.846 × 1.056 = 0.893`, both factors (2) and the
+product (3). Shipping the observed max of 0.8456 as "0.85" leaves **0.5%**, which is a rounding
+artefact of the measurement that produced it and not a safety margin.
+
+**This is a seed, not a guarantee, and §2a is why that is survivable.** The spread is five windows
+on one server; it bounds a sixth item only under an exchangeability assumption that rung 2000 has
+already been seen to violate at the pooled level. Two things contain the damage. `σ` is verified
+against every fetched segment at run time — the app already logs `bytes=`. And **it is needed only
+on the upshift path**: §2a's transfer bound needs no `b_j` at all when the byte count falls, so the
+three floor-regime rungs, which are downshift targets, never consume it.
 
 **Classification, and [R-blocked] the availability split the earlier draft got wrong.** `D` is
 (2). `σ` is (2). `W_j` is (2) — but the draft's "the transaction already fetches and already logs
@@ -195,10 +316,18 @@ segments" did the rhetorical work of a large sample:
   holds the corpus's third-largest `s` (0.8424). The episode is the item that breaks the bound at
   720 (1.155, the worst overshoot in the corpus) and it is **absent from rung 2000 entirely**.
 
-None of that moves `σ` — the maximum and the exceedance count are unchanged, and an attack arguing
-`σ` is merely an extreme order statistic whose expectation grows like `ln n` was **tested and
-killed** (`p3-spec-review.md`). It changes what may be claimed for it. §8 carries the remedy, and
-it is not the one the earlier draft named.
+**[SUPERSEDED — and the last bullet is why this paragraph was worth writing.]** The four bullets
+above describe the corpus as it stood before the episode was run through the full ladder. That run
+has happened, it was the remedy §8 named, and it **refuted the bound at exactly the rung this
+analysis flagged as thinnest**: rung 2000 was one item and 80 segments, the episode was the item
+that broke 720 and was absent from 2000, and putting it there put 9 of 40 segments above `0.85·W`.
+
+So the honest verdict on this paragraph reverses. It closed with "none of that moves `σ`", which
+was true of the corpus that produced it; the correct reading was that an evidence base this uneven
+cannot support a claim about the rung it does not cover. The attack arguing `σ` is merely an
+extreme order statistic whose expectation grows like `ln n` remains **tested and killed**
+(`p3-spec-review.md`) — `σ` did not die of sampling, it died of an unmeasured item. Current
+numbers are at the head of this section; the mechanism is `p2h` §2/§2a.
 
 **Two alternatives were tested and rejected**, which is why this one is not merely the tidiest:
 
@@ -245,30 +374,68 @@ total_fetch_us <= media_duration_ms * 1_000
 — because integer division floors, so a `≤ 1000` form admits `A < 1.001·D`, a 2 ms drain per
 segment and 3.6 s of reserve per hour. But it is a behaviour change and must land as one.
 
-### [R-blocked] The rule as stated cannot upshift, because the reserve is not in it
+### [RESOLVED] The rule now admits on the average and survives the peak from the reserve
 
-`A_j ≤ D` charged **per segment at the worst case** is stateless in `B`. The reserve is the only
-physical reason a buffered player may run a rung whose *peak* exceeds the link, and it appears
-nowhere on the admission side — only in §5's downshift deadline. Since `W_j` is a target **average**
-and `σ·W_j` is a **peak**, requiring every segment's peak to fit inside `D` demands the link carry
-the peak continuously, which is strictly stronger than sustainability.
+The blocker recorded here was that `A_j ≤ D` charged **per segment at the worst case** is stateless
+in `B`. The reserve is the only physical reason a buffered player may run a rung whose *peak*
+exceeds the link, and it appeared nowhere on the admission side. Since `W_j` is a target **average**
+and `σ·W_j` a **peak**, the rule demanded the link carry the peak continuously — strictly stronger
+than sustainability, and measurably so: at high rungs on easy content the *median* delivered rate
+is 0.14–0.26 of declared.
 
-The measured gap is large: at high rungs on easy content the *median* delivered rate is 0.14–0.26
-of declared, so a rule keyed on the peak refuses rungs the link would carry comfortably for long
-stretches.
+**Two overstatements from the seat that raised it stay withdrawn** on the refuter's recomputation
+and should not be repeated: "settles three ladder steps low" matches neither measured window, and
+the 2.80× is **not** deliverable headroom being wasted — the same film's 40-min window aggregates
+12 674 kbps at rung 22000 against that link, so a rule that spent it would guarantee a collapse at
+the difficulty change.
 
-**Two overstatements from the seat that raised this are withdrawn on the refuter's recomputation**
-and should not be repeated: "settles three ladder steps low" matches neither measured window (the
-mean-affordable rung at a 6 Mbit/s link is the ladder *top* on the easy window and rung 10000 on
-the hard one), and the 2.80× is **not** deliverable headroom being wasted — the same film's 40-min
-window aggregates 12 674 kbps at rung 22000 against that same link, so a rule that spent it would
-guarantee a collapse at the difficulty change.
+§2a supplies what was missing. The transferred window is a *distribution*, not a single worst case,
+so the two halves the finding asked for can be written separately against it:
 
-That is the real shape of the problem, and it is why the fix is not simply "use the median": the
-correct condition has to admit on the **average** while proving the **peak** is survivable *out of
-the reserve* for the length of a hard passage. Writing that condition needs the `B_after`
-relaxation model §1 records as unavailable in closed form. **It is not written here, and until it
-is, §4 admits far too little.**
+```
+admit(j)  ⟺   Σ_i T_i(b_j)  ≤  n · D                     (1) sustainability, on the AVERAGE
+          ∧   B  ≥  Σ_i ( T_i(b_j) − D )⁺                (2) the reserve covers the excess
+```
+
+where `T_i(b_j)` is §2a's transferred value and `x⁺ = max(0, x)`.
+
+**(1) is the sustainability condition and it is exact.** The reserve moves by `D − A` per segment —
+one segment buys `D` of media and spends `A` of wall time — so `ΣA ≤ nD` is precisely "this rung
+does not drain the buffer over the window", with no margin, no discount and nothing chosen. It
+replaces the peak test with the mean test the finding asked for.
+
+**(2) is the survivability condition.** Segments that exceed `D` drain the reserve by their excess;
+summing every excess in the window and requiring `B` to cover it asks whether the reserve absorbs
+the whole tail *at once*. Summing rather than taking the observed maximum drawdown is deliberate
+and is the conservative choice: under exchangeability the ORDER of the window carries no
+information, so the worst ordering — every hard segment consecutive — is the only one that can be
+assumed.
+
+**What (2) proves, and the boundary it does not cross.** It proves survival for **the span of the
+evidence**, `n·D` of media, and not one segment further. A passage harder than the window is long
+is not covered by it. That is sound only because the controller re-evaluates every segment, so it
+never needs to survive longer than the interval to the next decision — but it is a real limit and
+it is the reason §5's re-evaluation cadence is not a free parameter.
+
+**Measured effect, against the same corpus** (`tools/abr-transfer-bound.py`): the pair is uniformly
+more permissive than the order statistic alone, and most where it should be. On the easiest state
+in the corpus — `slow_start_then_fast`, `A/D = 0.10` — the order statistic alone admits a byte
+ratio of only **1.16**, because `k = 1` is the window maximum and one slow-start observation
+dominates it; the pair admits **2.58**. On `oscillating_link` at `A/D = 0.60` with 25 s of reserve
+it moves 1.00 → 2.98, which is the reserve doing exactly the job the finding said was missing.
+
+| case | median `A/D` | median `B` | order statistic alone | (1) ∧ (2) |
+|---|---:|---:|---:|---:|
+| `slow_start_then_fast` | 0.10 | 50 126 ms | 1.16 | **2.58** |
+| `oscillating_link` | 0.60 | 25 293 ms | 1.00 | **2.98** |
+| `pin_4000` | 0.35 | 18 418 ms | 2.15 | 2.71 |
+| the five steady pins | 0.36 | ~4 900 ms | 2.66 – 2.74 | 2.78 – 2.80 |
+| `brief_dropout` | 0.65 | 6 335 ms | 1.16 | 1.51 |
+| `steady_modest_link` | 0.59 | 37 210 ms | 1.31 | 1.77 |
+
+The ladder's own steps are ~1.4×, so a healthy link clears a one-rung upshift with room to spare
+and a loaded one (`A/D` ≈ 0.6) admits between 1.5 and 1.8 — a single rung, not three. **This is the
+finding that "climbing is unreachable" being closed with a number rather than an argument.**
 
 ### The shipped integer form
 
@@ -455,18 +622,26 @@ precisely the coefficients of the sum. Read the table, not the summary.
 
 **Needs no device, and is not done:**
 
-* **A second ITEM at the thin rungs, on THIS server** — which the earlier draft got wrong by
-  asking only for a second *server*. Eight of the eleven rungs ≥ 2000 rest on one film, including
+* ~~**A second ITEM at the thin rungs, on THIS server**~~ — **DONE, and it refuted the bound.**
+  Rung 2000 puts 9 of 40 segments above `0.85·W` (max 0.9175), so §3's claim now reads **rungs
+  ≥ 4000**. Five item-windows also make the cross-item margin *derivable*: at rungs ≥ 4000 an
+  unseen item moves max `σ` by at most 5.6%, giving `σ = 0.90` with a reason rather than 0.85 with
+  0.5% of rounding slack. `docs/measurements/p2h-pms-ladder.md` §2/§2a. The original wording,
+  which the earlier draft got wrong by asking only for a second *server*, was: Eight of the eleven rungs ≥ 2000 rest on one film, including
   rung **2000**, the boundary of the rule, and the item that breaks the bound one rung below it
   (the episode, 1.155 at 720) is absent from rung 2000 entirely. `tools/pms-rung-sweep.py`
   defaults to the full 13-rung ladder, so this needs no `--rungs` and no second server: it is one
   host-only command per additional item. **Do this first — it is cheaper than the second server
   and it closes the hole that a second-server run would faithfully reproduce.**
 * **`σ` on a second server**, after that. Falsified by any segment above `0.85·W` at a rung ≥ 2000.
-* **An estimator for `O₀` and `τ`** (§2a, which does not exist). Without it §4 is not
-  implementable at all, whatever the device measures.
+* ~~**An estimator for `O₀` and `τ`**~~ — **DISSOLVED, not built.** The coefficients are never
+  separately needed: one observation bounds acquisition at any other byte count in closed form
+  (§2a), tightly, over exactly the split the corpus cannot identify. Graded three ways in
+  `tools/abr-transfer-bound.py`.
 * **A bound for rungs 320 and 720**, where §3 does not hold.
 * **The `B_after` relaxation model** from the queue's actual byte list, graded on R18's residuals.
+  Still open, but **no longer blocking §4**: the reserve now enters admission as a level test
+  against the transferred window (§4 (2)), which needs `B` itself and not its trajectory.
 * **λ and `P(revert)` are not available at all** (R6): four events, dispersion index 10.8, and a
   95% CI of width 0.6. The mode-comparison rule must degrade gracefully without them rather than
   wait for them.
@@ -480,15 +655,35 @@ broke was structural and I had not anticipated any of it: §5 could not climb, �
 term, §3's key input is unavailable at the decision that needs it, §7 audited one struct instead of
 the decision surface, and two of my "delete" verdicts were wrong.
 
-**Six findings block Phase 4** and are marked **[R-blocked]** above. In order of what has to be
-answered first:
+**Two of the six findings that blocked Phase 4 are now answered**, both by §2a, and neither by the
+route the specification expected. What remains, in the order it has to be answered:
 
-1. **§2a — an estimator for `O₀` and `τ`.** Nothing downstream is implementable without it.
-2. **§4's reserve term.** Needs the `B_after` relaxation model from §1, which is unwritten.
-3. **§5's periodic upshift trigger** — cadence, reserve precondition, anti-flap interaction.
+1. ~~**§2a — an estimator for `O₀` and `τ`.**~~ **Answered by dissolution.** There is nothing to
+   estimate: the transfer bound is closed-form, tight, and parameter-free apart from the SLO `ε`.
+   Validated conservative on 278–487 real device acquisitions at six `(n, k)` settings.
+2. ~~**§4's reserve term.**~~ **Answered.** The transferred window is a distribution, so
+   sustainability (`ΣT ≤ nD`) and survivability (`B ≥ Σ(T−D)⁺`) separate cleanly. It does *not*
+   need the `B_after` relaxation model, which is what made this look blocked. Measured: it turns
+   "climbing unreachable" into a 2.6–2.8× admitted byte ratio on a healthy link against a ladder
+   that steps 1.4×.
+3. **§5's periodic upshift trigger** — cadence, reserve precondition, anti-flap interaction. **Now
+   the first blocker, and §4 (2) sharpens it**: the reserve condition proves survival only for the
+   window's span, so the re-evaluation interval is load-bearing rather than a free parameter.
 4. **§3's selection-time rate** — memoise per rung, or probe `/decision` per candidate. Pick one.
-5. **§7's real scope** — the 33 constants inside the utility sum, starting with the quality
-   bucket table that is its unit of account.
+   Reduced in scope by §2a's asymmetry: **downshifts need no `W_j` at all**, so this binds only on
+   the upshift path.
+5. **§7's real scope** — the 33 constants inside the utility sum, starting with the quality bucket
+   table that is its unit of account.
 6. **A probability, or `risk_weight` stays** — and on current evidence it stays.
+
+**A defect in the apparatus, found while grading the above, that the next device lease must not
+repeat.** Five of the seven M4 pin cases never reached their pinned rung: `pin_320`, `pin_2000`,
+`pin_10000` and `pin_16000` all logged `rung=20000`, and their byte lists are identical. The
+census measured the top rung five times. `PIN_MIN_RESERVE_SEGMENTS = 6` demands 12 000 ms of
+reserve while `B_max(20000) ≈ 5 421 ms`, so a pin can never land *downward* from the startup rung —
+and its own derivation (warm-up + prime + `candidate_ready`'s residual) is an **upshift** argument,
+while `candidate_prime_budget` and `candidate_warmup_budget` both return `None` for
+`Direction::Down`. The effective byte-size support of the whole device corpus is **three clips**,
+not eleven, which is R7 confirmed from a direction the board did not look.
 
 A second review is warranted once those are answered, on the same terms.
