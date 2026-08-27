@@ -280,6 +280,39 @@ impl AdmissionReadout {
     }
 }
 
+/// **The bytes a candidate could demand for one segment, worst case** — the admission rule's query.
+///
+/// ```text
+/// q = sigma * W_j * D / 8000            W in bit/s, D in ms, sigma per-mille
+/// ```
+///
+/// `W_j` is the rate the candidate's OWN master playlist declared, not the catalog's guess for that
+/// rung — the catalog rate is the input the plan's R1 killed (+5.2% to +31.6% error, item-dependent,
+/// non-injective). `sigma` is [`Rung::size_spread_pm`], per-rung and measured.
+///
+/// **CEILED**, because this is a safety bound and flooring one points the wrong way. The
+/// association is the specification's and is not a style question: folding `sigma*W*D*tau` into one
+/// product before dividing reaches 1.6e19 at rung 22000, past `i64::MAX`. Computing the byte count
+/// first keeps every intermediate under 1e14 — at rung 22000 with D = 2000 the numerator is 3.6e13,
+/// five orders inside `u64`.
+///
+/// A zero or missing declared rate returns 0, and **every caller must treat that as a refusal**: a
+/// zero query makes every transfer factor 1, which is the most PERMISSIVE the rule can be. That is
+/// the one input where "unknown" and "free" would look the same.
+pub(crate) fn candidate_worst_case_bytes(
+    declared_bps: u64,
+    media_duration_ms: i64,
+    sigma_pm: u32,
+) -> u64 {
+    if declared_bps == 0 || media_duration_ms <= 0 {
+        return 0;
+    }
+    let numerator = u64::from(sigma_pm)
+        .saturating_mul(declared_bps)
+        .saturating_mul(media_duration_ms as u64);
+    numerator.saturating_add(7_999_999) / 8_000_000
+}
+
 /// A ring of recent acquisitions. One per fetched segment, oldest evicted.
 ///
 /// **The window is NOT reset on a rung commit**, and that is the property that makes the transfer

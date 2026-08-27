@@ -20,10 +20,35 @@ fn sample_bytes(bytes: u64, active_us: u64, ratio_pm: u32, buffered_ms: i64) -> 
     .unwrap()
 }
 
+/// A rendition that declares exactly what its rung asked for. Real PMS does not — the catalog's
+/// error is +5.2% to +31.6% — but a test that wants to exercise the ADMISSION arithmetic should not
+/// also be modelling that gap, and every test here that needs a different one passes it directly.
+fn declared_bps(rung: Rung) -> u64 {
+    u64::from(rung.kbps()).saturating_mul(1_000)
+}
+
+/// A segment on a link of `network_kbps` whose acquisition is `ratio_pm` of its content duration.
+///
+/// **The two arguments over-determine the sample** — `bytes`, `active_fetch_us` and
+/// `total_fetch_us` are three numbers and this fixture is given two — so how the third is resolved
+/// is a plant model, and it used to be `active = min(total, 200ms)`. At the `ratio_pm = 400` most
+/// tests here use, that made the transfer 200 ms of an 800 ms acquisition: **a 75% fixed-cost
+/// share, on every sample, independent of the link argument.**
+///
+/// Measured on the device (`docs/measurements/j3a-window-logs`, 127 segments over three cases), the
+/// real share is **6% median at rung 4000, 16% at rung 20000, and 37% at the 90th percentile of the
+/// worst case**. Nothing on that television resembles 75%, and the difference is not cosmetic:
+/// §4's admission rule reads total acquisition against bytes, so a fixture where three quarters of
+/// the cost does not scale with bytes describes a link four times faster than its own acquisitions
+/// admit — and grades the rule against a plant that cannot exist.
+///
+/// So the resolution is now `active = total × 6/7`, a **14% fixed-cost share**, inside the measured
+/// band. Both arguments keep their exact meaning: `network_kbps()` still returns the first and
+/// `production_ratio_pm()` still returns the second.
 fn sample(network_kbps: u32, ratio_pm: u32, buffered_ms: i64) -> SegmentSample {
     let media_ms = 2_000;
     let total_us = u64::from((media_ms * ratio_pm / 1_000).max(1)) * 1_000;
-    let active_us = total_us.min(200_000);
+    let active_us = (total_us * 6 / 7).max(1);
     let bytes = u64::from(network_kbps) * active_us / 8_000;
     SegmentSample::new(
         bytes,
@@ -80,8 +105,16 @@ fn window_bytes(kbps: u64) -> u64 {
 
 const HOUR_MS: i64 = 3_600_000;
 
+/// Drive the controller until it proposes an upshift.
+///
+/// **The bound is `2n`, not a handful of samples, and that is the admission rule showing through.**
+/// An upshift now needs a full acquisition window on BOTH sides — `observe` will not propose one it
+/// cannot commit, and `candidate_ready` will not commit one without the evidence — so a helper that
+/// stopped at four samples was asserting a climb the controller is designed to refuse. Twice `n`
+/// leaves room for the transaction gates that sit in front of it.
 fn prime_up(controller: &mut Controller) -> Proposal {
-    for _ in 0..4 {
+    let n = AbrPolicy::measured().admission.window_len();
+    for _ in 0..(n * 2) {
         if let Decision::Prime(proposal) = controller.observe(sample(20_000, 200, 10_000)) {
             return proposal;
         }
@@ -96,7 +129,7 @@ fn settle_link(network_kbps: u32) -> Rung {
             controller.observe(sample(network_kbps, 400, 10_000))
         {
             let candidate = sample(network_kbps, 400, 12_000);
-            if controller.candidate_ready(proposal, candidate) {
+            if controller.candidate_ready(proposal, candidate, declared_bps(proposal.rung)) {
                 controller.commit(proposal);
             } else {
                 controller.reject(proposal);
@@ -351,7 +384,11 @@ fn a_proposal_does_not_mutate_current_until_candidate_commit() {
     assert_eq!(proposal.rung, Rung::P1080M12);
     assert_eq!(controller.current(), Rung::P480);
     assert_eq!(controller.pending(), Some(proposal));
-    assert!(controller.candidate_ready(proposal, sample(20_000, 200, 12_000)));
+    assert!(controller.candidate_ready(
+        proposal,
+        sample(20_000, 200, 12_000),
+        declared_bps(proposal.rung),
+    ));
     assert!(controller.commit(proposal));
     assert_eq!(controller.current(), Rung::P1080M12);
 }
@@ -360,7 +397,16 @@ fn a_proposal_does_not_mutate_current_until_candidate_commit() {
 fn rejected_candidate_preserves_current_and_clears_pending() {
     let mut controller = bootstrap_controller();
     let proposal = prime_up(&mut controller);
-    assert!(!controller.candidate_ready(proposal, sample(2_100, 950, 12_000)));
+    // **A candidate whose own encoder is at or past real time.** The old gate here was a bare
+    // `800`, i.e. the single-observation form `A <= 0.8 D` the device corpus refutes at ~37%
+    // violation; the disqualifier is now `production_max_pm`, which is a named policy threshold
+    // meaning "this JIT encoder cannot keep up". 1200 pm is 2.4 s of production for a 2 s segment.
+    // The link is not the question — the window is full of fast samples and still cannot save it.
+    assert!(!controller.candidate_ready(
+        proposal,
+        sample(2_100, 1_200, 12_000),
+        declared_bps(proposal.rung),
+    ));
     assert!(controller.reject(proposal));
     assert_eq!(controller.current(), Rung::P480);
     assert_eq!(controller.pending(), None);
@@ -565,6 +611,13 @@ fn recovery_does_not_pay_for_a_reload_at_the_end_of_a_film() {
     }
 }
 
+/// After a forced downshift, the recovery is not immediate — and since §4's rule decides, the
+/// horizon is the ACQUISITION WINDOW rather than the `stable_samples` counter that used to set it.
+///
+/// **That is the counter being subsumed, not a second threshold added.** `n` is derived from the
+/// SLO (`n = k/ε − 1`); the old 3 was not derived from anything. The recovery still happens, still
+/// goes back to the top rung, and still refuses to do it on the first good sample — which is
+/// everything this test was written to protect.
 #[test]
 fn a_downshift_holds_long_enough_to_avoid_immediate_top_rung_flapping() {
     let mut controller = controller_at(Rung::P1080High);
@@ -572,12 +625,21 @@ fn a_downshift_holds_long_enough_to_avoid_immediate_top_rung_flapping() {
         panic!("the collapsed link must propose a downshift")
     };
     assert!(controller.commit(down));
-    for _ in 0..9 {
-        assert_eq!(controller.observe(sample(60_000, 400, 10_000)), Decision::Stay);
+    let n = AbrPolicy::measured().admission.window_len();
+    for _ in 0..(n - 2) {
+        assert_eq!(
+            controller.observe(sample(60_000, 400, 10_000)),
+            Decision::Stay,
+            "a recovering link must not re-propose the top rung before the window can carry it",
+        );
     }
+    let recovered = (0..n)
+        .map(|_| controller.observe(sample(60_000, 400, 10_000)))
+        .find(|d| matches!(d, Decision::Prime(_)));
     assert_eq!(
-        controller.observe(sample(60_000, 400, 10_000)),
-        Decision::Prime(Proposal { rung: Rung::P1080High, direction: Direction::Up }),
+        recovered,
+        Some(Decision::Prime(Proposal { rung: Rung::P1080High, direction: Direction::Up })),
+        "and it must then recover all the way, not one rung at a time",
     );
 }
 
@@ -703,13 +765,15 @@ fn a_transfer_too_short_to_time_cannot_claim_a_gigabit_link() {
     };
     assert_eq!(real.clamped_to_evidence(floor.expected_wire_kbps), real);
 
-    // End to end: the floor rung on a fast LAN climbs instead of parking.
+    // End to end: the floor rung on a fast LAN climbs instead of parking. `250pm` is half a
+    // second of PMS production for a two-second segment — see the companion test below for why
+    // the number is load-bearing here and was not before §4's rule decided.
     let mut controller = controller_at(Rung::P240);
     let mut reached = Rung::P240;
     for _ in 0..40 {
-        let segment = sample_bytes(80_000, 700, 400, 12_000);
+        let segment = sample_bytes(80_000, 700, 250, 12_000);
         if let Decision::Prime(proposal) = controller.observe(segment) {
-            if controller.candidate_ready(proposal, sample(20_000, 400, 12_000)) {
+            if controller.candidate_ready(proposal, sample(20_000, 400, 12_000), declared_bps(proposal.rung)) {
                 controller.commit(proposal);
                 reached = controller.current();
             } else {
@@ -718,6 +782,55 @@ fn a_transfer_too_short_to_time_cannot_claim_a_gigabit_link() {
         }
     }
     assert!(reached > Rung::P240, "a LAN must not leave Auto on the emergency floor");
+}
+
+/// **[LIMITATION, pinned deliberately] At the emergency floor the transfer bound licenses a climb
+/// only while production is fast, and this test is where that boundary is written down.**
+///
+/// A 320 kbps segment is ~80 kB. §2a's bound is `A_i·max(1, q/b_i)`, so the largest byte count it
+/// will admit is `b_i · D/A` — and the candidate is charged its rung's WORST case, `σ·W_j·D/8000`,
+/// while the observation is whatever this content happened to weigh. At the floor those two
+/// asymmetries compound: `σ` is **1.418 at rung 720** (the quality-floor regime, where the encoder
+/// overshoots its target) against 0.893 above 4000, and 80 kB is only 0.63 of rung 320's own worst
+/// case on easy content. The climb therefore needs a **3.19×** byte ratio while `D/A` supplies
+/// `1000/ratio_pm × 2`.
+///
+/// The crossover is `ratio_pm ≈ 313`, and it is arithmetic rather than a tuning knob: above it the
+/// controller holds the floor.
+///
+/// **This is the same shape as the collapse finding** (`docs/measurements/j3a-window-shadow.md` §5)
+/// — the rule declining to speak where its evidence cannot carry a conclusion — and it has the same
+/// remedy: not a weaker bound, but better evidence. A probe that spends a bounded, affordable
+/// transaction to obtain one larger observation is the plan's J4, and until it exists this boundary
+/// is real. It is pinned rather than papered over so that a change moving it fails loudly.
+#[test]
+fn at_the_emergency_floor_a_slow_producing_server_holds_the_rule_below_a_climb() {
+    fn reached_from_floor(ratio_pm: u32) -> Rung {
+        let mut controller = controller_at(Rung::P240);
+        for _ in 0..40 {
+            if let Decision::Prime(proposal) =
+                controller.observe(sample_bytes(80_000, 700, ratio_pm, 12_000))
+            {
+                if controller.candidate_ready(
+                    proposal,
+                    sample(20_000, 400, 12_000),
+                    declared_bps(proposal.rung),
+                ) {
+                    controller.commit(proposal);
+                } else {
+                    controller.reject(proposal);
+                }
+            }
+        }
+        controller.current()
+    }
+    assert!(reached_from_floor(300) > Rung::P240, "below the crossover the floor is escapable");
+    assert_eq!(
+        reached_from_floor(400),
+        Rung::P240,
+        "above it the bound cannot license a climb, and pretending otherwise is the whole thing \
+         this specification exists to stop",
+    );
 }
 
 /// **Network yes, server no.** The two constraints are evaluated independently, so a fast link
@@ -769,11 +882,18 @@ fn a_fast_link_in_front_of_a_loaded_server_does_not_choose_4k() {
 
 /// A budget jump primes the far candidate ONCE, instead of paying for three encoder creations
 /// to walk 10, 12, 14.
+///
+/// **The loop reaches `2n` because §4's rule gates BOTH sides of the transaction now**, and this
+/// test is the clearest place to say that the jump itself is untouched by it: `largest_admissible`
+/// walks DOWN from the budget's choice and returns the highest rung the window supports, which is
+/// still one proposal and still skips 10 and 12. What the window changed is WHEN the controller may
+/// propose, not how far it may reach.
 #[test]
 fn a_budget_jump_skips_the_intermediate_encoders() {
     let mut controller = controller_at(Rung::P1080);
+    let n = AbrPolicy::measured().admission.window_len();
     let mut proposal = None;
-    for _ in 0..6 {
+    for _ in 0..(n * 2) {
         if let Decision::Prime(p) = controller.observe(sample(22_000, 200, 12_000)) {
             proposal = Some(p);
             break;

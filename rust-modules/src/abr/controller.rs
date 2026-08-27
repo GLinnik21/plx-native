@@ -370,6 +370,28 @@ impl Controller {
             return Decision::Stay;
         }
 
+        // **Selection must not propose what validation is certain to refuse.** Below `n` samples
+        // `candidate_ready` cannot admit an upshift at all, and above it only admits one the
+        // window can carry — so proposing outside that set is not merely wasted work, it is a
+        // livelock: each proposal costs a real PMS encoder session and ~3 s of unrefilled
+        // playback, the reject clears `stable_samples`, and the loop repeats forever.
+        //
+        // **The same rule on both sides, with the best input each side has.** Validation has the
+        // rendition's own declared rate; selection cannot — a rung's `BANDWIDTH` needs a PMS
+        // encoder session to exist first (§3) — so it evaluates against the catalog's
+        // `expected_wire_kbps`, which is approximate (+5.2% to +31.6%) and is why validation still
+        // decides. This is one rule read twice, not two thresholds stacked: no new number appears,
+        // `n` and `σ` are the rule's own.
+        let Some(target) = self.largest_admissible(target, segment, buffered) else {
+            self.stable_samples = 0;
+            return Decision::Stay;
+        };
+        let target_candidate = self.catalog.candidate(target);
+        if target <= self.current {
+            self.stable_samples = 0;
+            return Decision::Stay;
+        }
+
         // Upshift requires every resource signal to pass simultaneously. The target is selected
         // directly from the actuator catalog, so 8 -> 14-class budgets skip intermediate encoders.
         let all_good = safe_budget >= target_candidate.expected_wire_kbps
@@ -389,6 +411,43 @@ impl Controller {
         self.pending = Some(proposal);
         self.last_reason = Some(DecisionReason::Hls(HlsReason::SafeBudgetIncrease));
         Decision::Prime(proposal)
+    }
+
+    /// **The highest rung at or below `ceiling` that §4 would admit**, or `None` if none would.
+    ///
+    /// Walks DOWN from the proposed target because the admission conditions are monotone in the
+    /// query and the query is monotone in the rate, so the admissible set is a prefix of the ladder
+    /// and the first rung that passes is the best one. Thirteen entries; no search is warranted.
+    ///
+    /// **This is not a rung-walking rule.** It does not step the ladder one rung per decision — it
+    /// jumps straight to the largest rung the evidence supports, which on a fast link out of a low
+    /// rung is many rungs at once. What it refuses is a jump the window cannot justify, and the
+    /// refusal is the bound's, not a cap: `T_i(q) = A_i·max(1, q/b_i)` grows with the query, so a
+    /// large enough jump fails condition (1) on its own arithmetic. A per-decision cap on the
+    /// NUMBER of rungs would be the unexplained rule the design directive forbids; this is the
+    /// same inequality the validation side evaluates, and it disappears entirely as the window
+    /// accumulates evidence at larger byte counts.
+    ///
+    /// It uses the CATALOG rate, which is the only per-rung rate selection can see, and is
+    /// therefore an estimate. `candidate_ready` re-runs the same rule on the rendition's own
+    /// declared rate and is what actually decides.
+    fn largest_admissible(&self, ceiling: Rung, segment: i64, buffered: i64) -> Option<Rung> {
+        LADDER
+            .iter()
+            .rev()
+            .copied()
+            .filter(|rung| *rung <= ceiling)
+            .find(|rung| {
+                let declared_bps =
+                    u64::from(self.catalog.candidate(*rung).expected_wire_kbps).saturating_mul(1_000);
+                let query =
+                    candidate_worst_case_bytes(declared_bps, segment, rung.size_spread_pm());
+                query > 0
+                    && self
+                        .acquisitions
+                        .admits(query, segment, buffered, self.policy.admission)
+                        .is_some_and(Admission::admitted)
+            })
     }
 
     /// **A candidate's GRADED segment is a link observation and enters the acquisition window.**
@@ -414,10 +473,45 @@ impl Controller {
         self.acquisitions.observe(sample.bytes(), sample.total_fetch_us());
     }
 
-    /// Candidate-session acceptance. Downshifts need a decodable complete segment and a surviving
-    /// reserve; upshifts additionally require both network and JIT-production headroom at the
-    /// candidate's actual rendition. The controller still does not mutate until `commit`.
-    pub(crate) fn candidate_ready(&self, proposal: Proposal, sample: SegmentSample) -> bool {
+    /// **Candidate-session acceptance, and this is where §4's admission rule DECIDES.**
+    ///
+    /// It is the only point in a playback where the rule can be evaluated at all: a rung's
+    /// `BANDWIDTH` cannot be read without first creating a PMS encoder session for it, so
+    /// `declared_bps` exists here and nowhere else (§3). That makes this the rule's proper home
+    /// rather than a compromise — the transaction has already fetched and graded a real segment at
+    /// the candidate, and that segment is already in the window ([`Self::observe_candidate`]).
+    ///
+    /// **What this replaced.** Three stacked tests, none of which survives its own evidence:
+    ///
+    /// * `network_kbps >= candidate.expected_wire_kbps` — the CATALOG rate, which the plan's R1
+    ///   killed: +5.2% to +31.6% error, item-dependent, and non-injective (rungs 18000 and 20000
+    ///   both declare 16 150). It is replaced by `declared_bps`, the rendition's own.
+    /// * `production_ratio_pm <= 800` — a bare 800, and structurally the SINGLE-OBSERVATION form
+    ///   `A <= 0.8 D`, which the device corpus refutes at ~37% violation. It is replaced by a
+    ///   window.
+    /// * `buffered >= 2 * segment` — a reserve floor in segments, replaced by condition (2), which
+    ///   asks the reserve to cover the excess this window actually contains.
+    ///
+    /// **A filling window refuses an upshift, and that needs no extra rule.** `admits` returns
+    /// `None` below `n` samples, and "no evidence" is not "safe to climb" — the default has to be
+    /// the conservative one, and it is the same answer the rule gives when it does have evidence
+    /// and the evidence is bad. It costs the first `n` segments of a playback, which is `n·D` of
+    /// media, and the alternative is committing an encoder on a guess.
+    ///
+    /// **A DOWNSHIFT is deliberately not gated on the rule** and keeps only the decodable-segment
+    /// and one-segment-reserve tests. Measured reason, not caution: `pipe_abr_down_collapse` graded
+    /// ZERO segments across 23, because a collapse resets the window and 19 samples at a 2 s segment
+    /// is 38 s of media — longer than a collapse takes to resolve. A rule that is silent through the
+    /// event is the wrong instrument for it, and §5 says so structurally: this is the trigger and
+    /// the target, and a DEADLINE fires from the current reserve alone.
+    ///
+    /// The controller still does not mutate until `commit`.
+    pub(crate) fn candidate_ready(
+        &self,
+        proposal: Proposal,
+        sample: SegmentSample,
+        declared_bps: u64,
+    ) -> bool {
         if self.pending != Some(proposal) {
             return false;
         }
@@ -429,10 +523,31 @@ impl Controller {
         match proposal.direction {
             Direction::Down => true,
             Direction::Up => {
-                let candidate = self.catalog.candidate(proposal.rung);
-                sample.network_kbps() >= candidate.expected_wire_kbps
-                    && sample.production_ratio_pm() <= 800
-                    && buffered >= segment.saturating_mul(2)
+                let query = candidate_worst_case_bytes(
+                    declared_bps,
+                    segment,
+                    proposal.rung.size_spread_pm(),
+                );
+                // **Two INDEPENDENT constraints, not two margins.** The window answers "can the
+                // link carry this rendition"; this answers "can the SERVER produce it", which no
+                // amount of link evidence can, because every sample in the window was produced by
+                // a different encoder. Moving onto a JIT encoder already at or slower than real
+                // time is unconditionally wrong whatever the link does.
+                //
+                // `production_max_pm` is the policy's own named threshold for exactly that, with a
+                // stated product meaning. What it replaced was a bare `800` sitting unexplained
+                // between this and `production_safe_pm` -- and structurally that 800 was the
+                // SINGLE-OBSERVATION admission form `A <= 0.8 D`, which the device corpus refutes
+                // at ~37% violation. The margin question is the window's; this is the disqualifier.
+                //
+                // A zero query is the most PERMISSIVE the rule can be -- every transfer factor
+                // becomes 1 -- so an unreadable declared rate must refuse rather than fall through.
+                sample.production_ratio_pm() < self.policy.production_max_pm
+                    && query > 0
+                    && self
+                        .acquisitions
+                        .admits(query, segment, buffered, self.policy.admission)
+                        .is_some_and(Admission::admitted)
             }
         }
     }

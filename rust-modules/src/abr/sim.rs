@@ -438,7 +438,13 @@ pub(super) fn run(
                 },
             )
             .expect("plant produced a degenerate candidate segment");
-            controller.candidate_ready(proposal, probe)
+            // **The plant declares what it was asked for.** There is no PMS in the simulator to
+            // do otherwise, so `sigma` is the only thing standing between the request and the
+            // query -- which makes this a modelling assumption and not a measurement, and it is
+            // the reason the plant cannot grade the catalog-rate error the device can.
+            let declared_bps = u64::from(proposal.rung.kbps()).saturating_mul(1_000);
+            controller.observe_candidate(probe);
+            controller.candidate_ready(proposal, probe, declared_bps)
         };
         let cost = tx.leg(proposal.direction, would_commit).ok_or_else(|| {
             format!(

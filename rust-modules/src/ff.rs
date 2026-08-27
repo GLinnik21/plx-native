@@ -3663,7 +3663,12 @@ fn hls_demux(
         let (graded_output, _, graded_duration) = candidate_outputs.last().expect("candidate output");
         let ready = raster_ready
             && hls_segment_sample(graded_output, *graded_duration)
-                .is_some_and(|candidate_sample| controller.candidate_ready(proposal, candidate_sample));
+                .is_some_and(|candidate_sample| {
+                    // The candidate's OWN declared rate, off the master this transaction fetched.
+                    // Not `proposal.rung.kbps()` and not the catalog's `expected_wire_kbps`: those
+                    // are what the rendition was ASKED for, and the two differ by up to 31.6%.
+                    controller.candidate_ready(proposal, candidate_sample, candidate.declared_bps)
+                });
         if !ready {
             control.abandon(&primed.encoder_session);
             reject_hls_abr(controller, proposal);

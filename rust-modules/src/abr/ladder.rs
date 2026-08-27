@@ -110,6 +110,47 @@ impl Rung {
         }
     }
 
+    /// **`σ` — how far above its DECLARED rate a rendition's segments can actually run**, per-mille.
+    ///
+    /// The admission rule's candidate query is `σ · W_j · D / 8000` (specification §3), and `σ` is a
+    /// property of the encoder at that rung rather than a single constant. It is measured, not
+    /// chosen: `max_observed(delivered/declared) × cross-item spread`, both factors classification
+    /// (2) and the product (3), over 1 560 segments on three items in five windows.
+    ///
+    /// | rung | max observed | cross-item spread | `σ` |
+    /// |---|---:|---:|---:|
+    /// | 320 | 1.285 | *22.7% (borrowed)* | 1.577 |
+    /// | 720 | 1.155 | 22.7% | 1.418 |
+    /// | 2000 | 0.917 | 13.4% | 1.040 |
+    /// | ≥ 4000 | 0.846 | 5.6% | 0.893 |
+    ///
+    /// **The ladder has two regimes and one constant would be wrong in both.** Above 4000 the
+    /// declared rate is a genuine ceiling — 0 of 1 440 segments exceed `0.85·W_j`. Below it the
+    /// encoder cannot go under a content-dependent **quality floor**, so a small enough target
+    /// loses to it and the delivered rate overshoots; max `σ` decays monotonically across the whole
+    /// ladder (1.285, 1.155, 0.917, 0.846 … 0.798), which is one curve crossing a threshold rather
+    /// than a bound that holds and then breaks. Applying the floor regime's 1.577 everywhere would
+    /// be a 1.77× haircut at exactly the rungs this controller exists to reach; applying 0.893
+    /// everywhere would under-state the bottom three by up to 43%, in the permissive direction.
+    ///
+    /// **Rung 320's spread is BORROWED and that is the one number here that is not measured.** No
+    /// second item reached it, so its cross-item variation is unknown; it takes 720's, the largest
+    /// in the table and its neighbour in the same floor regime. Stated rather than smoothed over,
+    /// because the floor regime is not merely higher but far more item-dependent (22.7% at 720
+    /// against 5.6% above 4000), which is precisely why a shared constant is wrong down there.
+    ///
+    /// **This is a seed, not a guarantee**, and §2a is why that is survivable: the rule re-decides
+    /// every segment against a window of real acquisitions, and `bytes=` is logged for every
+    /// fetched segment, so a wrong `σ` is visible rather than silent.
+    pub(crate) const fn size_spread_pm(self) -> u32 {
+        match self {
+            Rung::P240 => 1_577,
+            Rung::P480 => 1_418,
+            Rung::P720Low => 1_040,
+            _ => 893,
+        }
+    }
+
     pub(crate) const fn raster(self) -> (u16, u16) {
         match self {
             Rung::P240 => (426, 240),
