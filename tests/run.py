@@ -131,6 +131,7 @@ ALL_TRIGGERS = [
     "plxnative-itemmenu",
     # playurl is the synthetic tier's entry; replay is how many times a FINISHED one restarts (#46)
     "plxnative-playurl", "plxnative-replay", "plxnative-gstlog", "plxnative-quality",
+    "plxnative-qualityswitch",
 ]
 
 # the type=43 spam filter (mirrors: grep -vaE "smp_cb type=43 num=0 str=$")
@@ -757,6 +758,14 @@ def triggers_for_case(case, url_base=None):
             # jump to 5s before the named server marker, so the skip/Up Next control row is
             # reachable in seconds instead of 50 minutes into an episode
             files.append(("plxnative-marker", op["marker"]))
+        elif kind == "quality_switch":
+            # The rungs to switch to WHILE IT PLAYS, in the app's own wire vocabulary — the same
+            # strings `plxnative-quality` accepts and `quality: switch → …` prints, so the case
+            # states each rung once. `gap_ms` only appears when there is more than one step,
+            # because with one there is no cadence to state.
+            steps = op["to"] if isinstance(op["to"], list) else [op["to"]]
+            gap = f'gap={op["gap_ms"]},' if len(steps) > 1 else ""
+            files.append(("plxnative-qualityswitch", gap + ",".join(steps)))
         elif kind == "audio_switch":
             files.append(("plxnative-menupick", f'{op["tab"]},{op["row"]}'))
         elif kind == "subtitle":
@@ -2000,6 +2009,86 @@ def op_seek_inplace(lines, target_s):
     return True, f"in-place seek OK; reached {reached}s :: {started.strip()}"
 
 
+def op_quality_switch(lines, steps):
+    """A mid-playback quality change must LAND, and playback must survive it.
+
+    This is the thing a person does at the television that no boot override can reach:
+    `plxnative-quality` decides what a playback STARTS as and is read once, while switching a
+    running stream re-asks the routing question against a picture already on screen, reloads if the
+    answer moved, and — on the way out of Auto — tears down a live ABR controller.
+
+    Three assertions, and the middle one is the only one that grades what a PIN MEANS:
+
+    * every requested rung produced its `quality: switch → <rung>` line, in order;
+    * **Auto's controller stops when Auto stops**, and — only if this run showed it running at all
+      — resumes when Auto does. `route::hls_abr_control` returns `None` for any non-Auto quality,
+      so the `abr: sample` line, one per acquired segment, must cease after a pin. That is a
+      derived consequence of the routing policy rather than a restatement of it: nothing tells the
+      controller about the switch, it simply is not constructed. A pin that left it deciding would
+      be a stream still being adapted under a user who asked for a fixed rung.
+
+      The RESUME half is conditional, and self-calibrating rather than assumed. `hls_abr_control`
+      also requires HLS delivery and a live encoder, so Auto on an item this server DIRECT-PLAYS
+      runs no controller and never will — asserting one would fail on somebody's library for a
+      reason that is not a defect. So it is asserted exactly when the run itself demonstrated the
+      capability: if `abr: sample` appeared before the first switch, Auto adapts this item here,
+      and switching back must restore that. If it never appeared, the case still grades the switch
+      landing and playback surviving, and says so.
+    * the position keeps climbing across the whole sequence, since a reload that never re-primes
+      would otherwise read as a successful switch.
+
+    `no_playing_error` is asserted separately by every case that uses this, so it is not repeated
+    here.
+    """
+    marks = [(i, ln) for i, ln in enumerate(lines) if "quality: switch → " in ln]
+    got = [ln.split("quality: switch → ", 1)[1].split(" ", 1)[0].strip() for _, ln in marks]
+    if got != list(steps):
+        return False, f"switched to {got}, want {list(steps)}"
+
+    # Did Auto adapt this item on this server AT ALL, before anything was switched? Everything
+    # about the resume half hangs on it, and it is read from the run rather than assumed.
+    adapted_before = sum(1 for ln in lines[:marks[0][0]] if RE_ABR_SAMPLE.search(ln))
+
+    # Segment-level ABR activity, sliced by where each switch landed. A quality request is logged
+    # before `set_quality`, while the old demux worker may still finish an in-flight acquisition.
+    # Grade the replacement stream after its fresh-Load boundary, not that teardown interval.
+    for n, (idx, _) in enumerate(marks):
+        upto = marks[n + 1][0] if n + 1 < len(marks) else len(lines)
+        requested = lines[idx + 1:upto]
+        reload_at = next(
+            (i for i, ln in enumerate(requested)
+             if "reload_transcode: fresh Load" in ln or "reload_at: fresh Load" in ln),
+            None,
+        )
+        window = requested[reload_at + 1:] if reload_at is not None else requested
+        samples = sum(1 for ln in window if RE_ABR_SAMPLE.search(ln))
+        if steps[n] == "auto":
+            if adapted_before and samples == 0:
+                return False, (f"Auto adapted this item before the switches ({adapted_before} "
+                               f"`abr: sample`) but not after switching back to auto "
+                               f"(0 in {len(window)} line(s))")
+        else:
+            if adapted_before and reload_at is None:
+                return False, (f"pinning {steps[n]} requested no replacement Load after an active "
+                               "Auto controller — the fixed route did not land")
+            if samples:
+                return False, (f"after pinning {steps[n]} the ABR controller kept deciding "
+                               f"({samples} `abr: sample` line(s) after the fresh Load) — the "
+                               "replacement stream is still being adapted")
+
+    after = lines[marks[0][0]:]
+    ts = progress_secs(after)
+    if len(ts) < 2 or ts[-1][0] <= ts[0][0]:
+        return False, (f"position did not advance across the switches "
+                       f"({len(ts)} sample(s), {ts[0][0] if ts else '?'}s..{ts[-1][0] if ts else '?'}s)")
+    adapt = (f"Auto adapted ({adapted_before} sample(s)) before the first switch"
+             if adapted_before else
+             "Auto did NOT adapt this item here (direct play or progressive) — the resume half "
+             "of this assertion is not graded")
+    return True, (f"switched {' -> '.join(got)}; position advanced "
+                  f"{ts[-1][0] - ts[0][0]}s over {len(ts)} sample(s); {adapt}")
+
+
 def op_seek_refused(lines, target_s):
     """A seek the app CANNOT serve must be refused cleanly, and playback must survive the refusal.
 
@@ -2691,9 +2780,13 @@ def evaluate(case, lines):
     exp = case["expect"]
     results = []
 
-    # base assertions (every case)
-    results.append(("decision", *a_decision(lines, exp["decision"])))
-    results.append(("codec", *a_codec(lines, exp["codec"], exp["min_video_width"])))
+    # Base assertions. Adaptive cases deliberately omit a fixed decision/codec: those are outputs
+    # of the real server and link, while their integration contract is stated by their operations.
+    if "decision" in exp:
+        results.append(("decision", *a_decision(lines, exp["decision"])))
+    if "codec" in exp:
+        results.append(("codec", *a_codec(
+            lines, exp["codec"], exp.get("min_video_width", 0), exp.get("video_size"))))
     if exp.get("require_video_bound", True):
         results.append(("video_bound", *a_video_bound(lines)))
     results.append(("timeline_climb", *a_timeline_climb(lines, exp.get("min_timeline_climb_s", 12))))
@@ -2721,6 +2814,9 @@ def evaluate(case, lines):
             results.append(("up_next", *op_up_next(lines, op["expect_up_next"])))
         elif k == "marker":
             results.append(("marker_offer", *op_marker_offer(lines, op["marker"].capitalize())))
+        elif k == "quality_switch":
+            steps = op["to"] if isinstance(op["to"], list) else [op["to"]]
+            results.append(("quality_switch", *op_quality_switch(lines, steps)))
         elif k == "audio_switch" and op.get("mode") == "native":
             results.append(("audio_native", *op_audio_native(lines)))
         elif k == "audio_switch":
@@ -3050,7 +3146,10 @@ def evaluate_pipeline(case, lines, srv_delta, gst_lines=None):
             gst_lines or [], exp, case.get("gst_trace", {}))))
 
     for op in case.get("operations", []):
-        if op["op"] == "seek" and op.get("mode") == "rapid":
+        if op["op"] == "quality_switch":
+            steps = op["to"] if isinstance(op["to"], list) else [op["to"]]
+            results.append(("quality_switch", *op_quality_switch(lines, steps)))
+        elif op["op"] == "seek" and op.get("mode") == "rapid":
             results.append(("seek_rapid", *op_seek_rapid(lines, op["final_s"])))
         elif op["op"] == "seek" and op.get("mode") == "refused":
             results.append(("seek_refused", *op_seek_refused(lines, op.get("target_s", 140))))

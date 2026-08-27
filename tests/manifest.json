@@ -246,6 +246,60 @@
   ],
   "cases": [
     {
+      "name": "auto_pin_and_back",
+      "item": "movie_h264_ac3_1080p",
+      "kind": "movie",
+      "title": "Auto, then PINNED to 720p·4 Mbps mid-playback, then back to Auto",
+      "covers": ["auto-quality", "quality-switch", "abr-controller-lifecycle", "e2e"],
+      "quality": "auto",
+      "run_secs": 90,
+      "operations": [
+        {"op": "quality_switch", "to": ["720p_4_mbps", "auto"], "gap_ms": 40000}
+      ],
+      "expect": {
+        "min_timeline_climb_s": 40,
+        "no_playing_error": true,
+        "require_video_bound": true
+      },
+      "_quality_note": "THE case this family exists for, and the one a person actually performs by hand: start something on Auto, watch it, pin a rung because Auto picked something they did not want, then hand it back to Auto. Everything is real -- a real PMS, a real /decision, a real JIT encoder, a real ratingKey, real timeline scrobbles -- so what it grades is the INTEGRATION and not a model of it. No `decision` bound: on Auto the answer is the server's and the link's, and asserting one would assert whatever this library and this afternoon's network happened to agree on. What IS deterministic is the routing POLICY, and `quality_switch` grades exactly that: every requested rung produced its `quality: switch` line in order, and the ABR controller stopped when Auto stopped -- `route::hls_abr_control` returns None for any non-Auto quality, so `abr: sample` must cease after the replacement Load, and a pinned stream that kept adapting would be the app overriding a user's explicit choice. The RESUME half is graded only if this run showed Auto adapting before the first switch, because `hls_abr_control` also needs HLS delivery and a live encoder and Auto on a direct-playable item legitimately runs no controller at all -- asserting one unconditionally would fail on somebody's library for a reason that is not a defect. The trigger first observes 12 uninterrupted seconds of Playing; `gap_ms=40000` is then an explicit end-to-end test SLO: the fixed-quality replacement must load, resume playback and expose post-reload evidence within 40 s before the case hands control back to Auto. The 90 s cap leaves another 38 s after the second request for Auto's replacement and the final progress/controller evidence."
+    },
+    {
+      "name": "auto_baseline",
+      "item": "movie_h264_ac3_1080p",
+      "kind": "movie",
+      "title": "Auto, undisturbed — the control for the switch cases",
+      "covers": ["auto-quality", "e2e"],
+      "quality": "auto",
+      "run_secs": 90,
+      "operations": [
+        {"op": "play"}
+      ],
+      "expect": {
+        "min_timeline_climb_s": 30,
+        "no_playing_error": true,
+        "require_video_bound": true
+      },
+      "_quality_note": "The standalone CONTROL: it establishes that playback left alone on Auto runs on this server, independently of the switching mechanism. Deliberately asserts nothing about rungs or controller presence: on an unshaped link what Auto chooses is the server's and the network's business, and a bound here would grade the afternoon. Run with `--verbose` when its `auto:` and `abr: sample` lines are wanted as characterisation; no cross-case fact is silently imported into the switch assertions."
+    },
+    {
+      "name": "original_then_auto",
+      "item": "movie_h264_ac3_1080p",
+      "kind": "movie",
+      "title": "Original, then handed to Auto mid-playback",
+      "covers": ["auto-quality", "quality-switch", "e2e"],
+      "quality": "original",
+      "run_secs": 120,
+      "operations": [
+        {"op": "quality_switch", "to": "auto"}
+      ],
+      "expect": {
+        "min_timeline_climb_s": 30,
+        "no_playing_error": true,
+        "require_video_bound": true
+      },
+      "_quality_note": "The other direction, and the one with a different failure mode: a viewer whose Original playback is struggling hands it to Auto. It starts from the tier's ordinary default rather than from Auto, so the switch has to build a controller where there was none -- the mirror of `auto_pin_and_back`, which has to tear one down. One step, so no `gap_ms`: with a single switch there is no cadence to state and the trigger asks for none. The resume half of the assertion is self-calibrating here too and will typically NOT be graded, because a playback that started as Original produced no `abr: sample` before the switch -- which is correct and is reported rather than hidden."
+    },
+    {
       "name": "dp_h264_ac3_1080p",
       "item": "movie_h264_ac3_1080p",
       "kind": "movie",

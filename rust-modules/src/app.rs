@@ -4768,6 +4768,14 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         let mut seek_script_at = 0u32;
         let mut seek_gap_ms = 300u32;
         let mut seek_script_last = 0i64;
+        // /tmp/plxnative-qualityswitch: the rungs still to switch to, the tick of the last one
+        // fired, and the gap between them. Same shape as the seek script above, for the same
+        // reason — a person changing quality mid-playback does it more than once.
+        let mut quality_script: Vec<crate::plex::session::PlaybackQuality> = Vec::new();
+        let mut quality_script_at = 0u32;
+        let mut quality_gap_ms = 0u32;
+        let mut quality_tried = false;
+        let mut quality_playing_since: Option<u32> = None;
         let mut detail_tried = false;
         let mut play_tried = false;
         let mut menu_tried = false;
@@ -5823,6 +5831,51 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 seek_script_last = t;
                 log(&format!("autoseek: step → {}s ({} left)", t / 1_000_000_000, seek_script.len()));
                 request_seek(t);
+            }
+            // dev: /tmp/plxnative-qualityswitch — change the playback quality WHILE IT PLAYS,
+            // which is what a person does at the television and what no boot override can reach:
+            // it re-asks the routing question against a stream already on screen, reloads if the
+            // answer moved, and on the way out of Auto tears down a running ABR controller.
+            // Armed on the same gate as the seek script, so the two are comparable and neither
+            // fires into a session that has not settled.
+            if !quality_tried {
+                // Explicit test SLO: observe twelve uninterrupted seconds of PLAYING before the
+                // first request. This is not playback policy; it keeps a slow boot or pre-roll
+                // from consuming the observation window that is meant to establish the initial
+                // route and, when present, its ABR controller.
+                const QUALITY_SWITCH_OBSERVE_MS: u32 = 12_000;
+                let playing = matches!(route, Route::Player { .. })
+                    && dur() > 0
+                    && crate::player::is_playing();
+                if !playing {
+                    quality_playing_since = None;
+                } else {
+                    let since = *quality_playing_since.get_or_insert(now);
+                    if now.wrapping_sub(since) >= QUALITY_SWITCH_OBSERVE_MS {
+                        quality_tried = true;
+                        if let Some((gap, qs)) = crate::dev::quality_switch_script() {
+                            quality_gap_ms = gap;
+                            quality_script_at = now.wrapping_sub(gap); // fire the first step now
+                            quality_script = qs;
+                        }
+                    }
+                }
+            }
+            if !quality_script.is_empty()
+                && matches!(route, Route::Player { .. })
+                && now.wrapping_sub(quality_script_at) >= quality_gap_ms
+            {
+                let q = quality_script.remove(0);
+                quality_script_at = now;
+                // Logged BEFORE the call, because `set_quality` may reload the engine and the
+                // line has to survive that to say what was asked for. The harness reads this to
+                // pair each switch with what playback did after it.
+                log(&format!(
+                    "quality: switch → {} ({} left)",
+                    crate::dev::quality_wire_name(q),
+                    quality_script.len()
+                ));
+                crate::route::set_quality(q);
             }
             // dev: /tmp/plxnative-autopause pauses once (headless paused-HUD capture)
             if !pause_tried && matches!(route, Route::Player { .. }) && now.wrapping_sub(t0) > 6000 {

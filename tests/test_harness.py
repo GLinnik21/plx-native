@@ -1471,6 +1471,147 @@ class AbrLogLineContract(unittest.TestCase):
         self.assertIsNone(run.abr_min_buf_ms(rows), "no reserve observed is not a reserve of 0")
 
 
+class TheQualitySwitchAssertion(unittest.TestCase):
+    """MATHEMATICAL INVARIANT: what a PIN means, graded on hand-built logs.
+
+    The one property that is deterministic regardless of library or link:
+    `route::hls_abr_control` returns `None` for any non-Auto quality, so a pinned stream cannot be
+    adapting. Everything else about an Auto playback is the server's and the afternoon's.
+    """
+
+    def _log(self, *events):
+        """A synthetic event log: switch, sample, reload, or position."""
+        out = []
+        for e in events:
+            if e[0] == "switch":
+                out.append(f"quality: switch → {e[1]} (0 left)")
+            elif e[0] == "sample":
+                out.append(_sample_line())
+            elif e[0] == "reload":
+                out.append("reload_transcode: fresh Load at offset 5s")
+            else:
+                out.append(f"loop=60 route=player overlay=none pos={e[1]}s fps=60")
+        return out
+
+    def test_a_pin_that_silences_the_controller_passes(self):
+        ok, why = run.op_quality_switch(self._log(
+            ("sample",), ("pos", 1), ("switch", "720p_4_mbps"), ("reload",),
+            ("pos", 5), ("pos", 30),
+        ), ["720p_4_mbps"])
+        self.assertTrue(ok, why)
+
+    def test_a_pin_the_controller_ignores_fails(self):
+        """The defect this exists for: a stream still being adapted under a viewer who asked for a
+        fixed rung."""
+        ok, why = run.op_quality_switch(self._log(
+            ("sample",), ("pos", 1), ("switch", "720p_4_mbps"), ("reload",),
+            ("pos", 5), ("sample",), ("pos", 30),
+        ), ["720p_4_mbps"])
+        self.assertFalse(ok)
+        self.assertIn("still being adapted", why)
+
+    def test_an_in_flight_old_worker_sample_before_the_reload_is_not_blame(self):
+        ok, why = run.op_quality_switch(self._log(
+            ("sample",), ("pos", 1), ("switch", "720p_4_mbps"), ("sample",),
+            ("reload",), ("pos", 5), ("pos", 30),
+        ), ["720p_4_mbps"])
+        self.assertTrue(ok, why)
+
+    def test_an_active_auto_controller_requires_the_fixed_replacement_to_load(self):
+        ok, why = run.op_quality_switch(self._log(
+            ("sample",), ("pos", 1), ("switch", "720p_4_mbps"), ("pos", 30),
+        ), ["720p_4_mbps"])
+        self.assertFalse(ok)
+        self.assertIn("no replacement Load", why)
+
+    def test_switching_back_to_auto_must_restore_a_controller_that_was_running(self):
+        ok, why = run.op_quality_switch(self._log(
+            ("sample",), ("pos", 1), ("switch", "720p_4_mbps"), ("reload",), ("pos", 5),
+            ("switch", "auto"), ("reload",), ("pos", 30),
+        ), ["720p_4_mbps", "auto"])
+        self.assertFalse(ok)
+        self.assertIn("not after switching back", why)
+
+    def test_switching_back_to_auto_restores_the_controller(self):
+        ok, why = run.op_quality_switch(self._log(
+            ("sample",), ("pos", 1), ("switch", "720p_4_mbps"), ("reload",), ("pos", 5),
+            ("switch", "auto"), ("reload",), ("sample",), ("pos", 30),
+        ), ["720p_4_mbps", "auto"])
+        self.assertTrue(ok, why)
+
+    def test_the_resume_half_is_not_graded_when_auto_never_adapted(self):
+        """Self-calibrating: `hls_abr_control` also needs HLS delivery and a live encoder, so Auto
+        on a DIRECT-PLAYABLE item runs no controller and never will. Asserting one unconditionally
+        would fail on somebody's library for a reason that is not a defect."""
+        ok, why = run.op_quality_switch(self._log(
+            ("pos", 1), ("switch", "auto"), ("pos", 5), ("pos", 30),
+        ), ["auto"])
+        self.assertTrue(ok, why)
+        self.assertIn("did NOT adapt", why)
+
+    def test_adaptive_cases_may_leave_server_outputs_unbounded(self):
+        """A real Auto result is an observation, not a fixed answer copied from one server. The
+        evaluator must still return its remaining checks instead of indexing absent fields."""
+        case = {
+            "expect": {"min_timeline_climb_s": 1, "no_playing_error": True,
+                       "require_video_bound": True},
+            "operations": [{"op": "quality_switch", "to": "auto"}],
+        }
+        _, results = run.evaluate(case, [])
+        labels = [label for label, _, _ in results]
+        self.assertNotIn("decision", labels)
+        self.assertNotIn("codec", labels)
+        self.assertIn("quality_switch", labels)
+
+    def test_a_switch_that_never_landed_fails(self):
+        ok, why = run.op_quality_switch(self._log(("pos", 1), ("pos", 30)), ["720p_4_mbps"])
+        self.assertFalse(ok)
+        self.assertIn("want ['720p_4_mbps']", why)
+
+    def test_the_order_of_the_switches_is_graded_not_just_the_set(self):
+        ok, why = run.op_quality_switch(self._log(
+            ("pos", 1), ("switch", "auto"), ("pos", 5), ("switch", "720p_4_mbps"), ("pos", 30),
+        ), ["720p_4_mbps", "auto"])
+        self.assertFalse(ok)
+        self.assertIn("switched to ['auto', '720p_4_mbps']", why)
+
+    def test_a_frozen_position_fails_even_when_every_switch_landed(self):
+        """A reload that never re-primes would otherwise read as a successful switch — which is
+        the exact shape of the seek-latch bug found on device the same day."""
+        ok, why = run.op_quality_switch(self._log(
+            ("pos", 5), ("switch", "720p_4_mbps"), ("pos", 5), ("pos", 5),
+        ), ["720p_4_mbps"])
+        self.assertFalse(ok)
+        self.assertIn("did not advance", why)
+
+    def test_the_trigger_carries_a_gap_only_when_there_is_a_cadence(self):
+        """With one step there is no cadence to state, and inventing a default would be a number
+        nothing justified — the app asks for none either."""
+        one = dict(run.triggers_for_case(
+            {"rk": "1", "operations": [{"op": "quality_switch", "to": "auto"}]}))
+        self.assertEqual(one["plxnative-qualityswitch"], "auto")
+        many = dict(run.triggers_for_case({"rk": "1", "operations": [
+            {"op": "quality_switch", "to": ["720p_4_mbps", "auto"], "gap_ms": 40000}]}))
+        self.assertEqual(many["plxnative-qualityswitch"], "gap=40000,720p_4_mbps,auto")
+
+    def test_the_wire_vocabulary_matches_the_app(self):
+        """Both sides of a contract that never meets at runtime: the manifest names a rung and the
+        app parses it. A name the app does not know arms a trigger that does nothing, and the case
+        fails as if the feature were broken."""
+        with open(os.path.join(REPO_ROOT, "rust-modules", "src", "dev.rs"), encoding="utf-8") as fh:
+            dev = fh.read()
+        known = set(re.findall(r'^\s*"([a-z0-9_]+)" => Some\(PlaybackQuality::', dev, re.M))
+        self.assertTrue(known, "could not read the app's quality vocabulary")
+        for case in _manifest()["cases"]:
+            for op in case.get("operations", []):
+                if op.get("op") != "quality_switch":
+                    continue
+                steps = op["to"] if isinstance(op["to"], list) else [op["to"]]
+                for step in steps:
+                    with self.subTest(case=case["name"], step=step):
+                        self.assertIn(step, known, "the app cannot parse this rung name")
+
+
 class EverySeekGiveUpPathDisarmsTheSpinner(unittest.TestCase):
     """**A source-level spot-check on an invariant the type system cannot state.**
 
