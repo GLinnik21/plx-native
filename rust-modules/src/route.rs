@@ -1402,7 +1402,15 @@ pub(crate) fn set_quality(q: Quality) {
     // selecting Auto must not start an encoder under a movie which is currently arriving as
     // Original. A fresh Remote play is measured in `build_stream`; an existing transcode has no
     // such original-file observation and stays on HLS.
+    //
+    // Link class cannot create a source candidate. Local normally needs no throughput proof, but
+    // it still needs Original to be technically possible. `build_stream` records that fact as
+    // `auto_original`: `None` means the source codec/container/audio combination already failed
+    // feasibility. Treating Local alone as sufficient here turns a fixed-rung AV1 transcode into
+    // progressive MKV when the user returns to Auto, so no HLS controller is rebuilt.
+    let original_feasible = session().auto_original.is_some();
     let auto_original = q == Quality::Auto
+        && original_feasible
         && (location == Some(crate::plex::probe::Location::Local)
             || (location == Some(crate::plex::probe::Location::Remote)
                 && (!is_transcoding() || is_remux())));
@@ -4460,6 +4468,54 @@ mod tests {
 
         reset_session();
         restore_quality(Quality::Original);
+        crate::plex::reset_servers_for_test();
+    }
+
+    /// Returning from a fixed rung to Auto on a Local server must not confuse "the link needs no
+    /// proof" with "the source needs no feasibility check". Differential against the old route:
+    /// Local alone set `auto_original = true`, selected progressive MKV, and left this AV1-shaped
+    /// playback without an HLS controller after the reload.
+    #[test]
+    fn local_auto_keeps_hls_when_original_is_infeasible() {
+        let _g = fresh_registry();
+        restore_quality(Quality::P720);
+        let sid = crate::plex::register_for_test(
+            "machine-local-infeasible",
+            "<peer-host-1>.example.invalid",
+            32400,
+            "token",
+            "test-client-id",
+        );
+        crate::plex::client_for(sid)
+            .expect("server installed")
+            .set_link(crate::plex::probe::Location::Local);
+        apply_plan(
+            Plan {
+                sid,
+                tsession: "encoder-fixed".into(),
+                delivery: crate::plex::TranscodeDelivery::ProgressiveMkv,
+                ceiling: Some(Quality::P720.ceiling().expect("fixed rung")),
+                src_measure: (16_357, 3_840, 1_608),
+                auto_original: None,
+                ..Default::default()
+            },
+            "rk-local-infeasible",
+        );
+        install_active_encoder("encoder-fixed");
+
+        set_quality(Quality::Auto);
+
+        assert_eq!(quality(), Quality::Auto);
+        assert!(
+            matches!(cur_delivery(), crate::plex::TranscodeDelivery::FixedHls { .. }),
+            "Auto must rebuild the HLS controller when no native source candidate exists",
+        );
+        assert_eq!(cur_ceiling(), Some(crate::abr::Rung::P480.ceiling()));
+        assert!(crate::player::pending_transcode_refresh());
+
+        reset_session();
+        restore_quality(Quality::Original);
+        install_active_encoder("");
         crate::plex::reset_servers_for_test();
     }
 
