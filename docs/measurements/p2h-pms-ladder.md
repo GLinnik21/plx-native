@@ -63,40 +63,54 @@ One shape difference worth recording because it inverts the answer: with `autoAd
 chosen raster. The app does not send that shape. A probe run that did would have concluded
 `BANDWIDTH` is meaningless, which is the opposite of the truth.
 
-## 2. What a rung delivers: `s`, and the one bound that survives
+## 2. What a rung delivers: `s`, and where its bound actually holds
 
 Define `s = 8 * bytes / (duration * BANDWIDTH)` — the segment's delivered rate over its declared
 rate. Dimensionless, so it is comparable across rungs in a way bytes are not.
 
 **Does the declaration bound the delivery?** One row per rung, pooled over every window that
-reached it:
+reached it. **The fifth column is new and it is the one that changed the answer** — the episode
+run through the FULL ladder, which `docs/adaptive-playback-spec.md` §8 asked for first because
+rung 2000 rested on a single film:
 
-| rung | movie/opening | movie/40min | 4k-hevc/40min | episode/10min | pooled | max `s` |
-|---:|---|---|---|---|---:|---:|
-| 320 | 12/40 | 36/40 | 32/40 | 30/40 | **110/160** | **1.285** |
-| 720 | 0/40 | 0/40 | 0/40 | 7/40 | **7/160** | **1.155** |
-| 2000 | 0/40 | 0/40 | — | — | 0/80 | 0.842 |
-| 4000 | 0/40 | 0/40 | 0/40 | 0/40 | 0/160 | 0.846 |
-| 6000 | 0/40 | 0/40 | — | — | 0/80 | 0.818 |
-| 8000 | 0/40 | 0/40 | — | — | 0/80 | 0.819 |
-| 10000 | 0/40 | 0/40 | — | — | 0/80 | 0.820 |
-| 12000 | 0/40 | 0/40 | 0/40 | 0/40 | 0/160 | 0.799 |
-| 14000 | 0/40 | 0/40 | — | — | 0/80 | 0.805 |
-| 16000 | 0/40 | 0/40 | — | — | 0/80 | 0.808 |
-| 18000 | 0/40 | 0/40 | — | — | 0/80 | 0.804 |
-| 20000 | 0/40 | 0/40 | — | — | 0/80 | 0.804 |
-| 22000 | 0/40 | 0/40 | 0/40 | 0/40 | 0/160 | 0.798 |
+| rung | movie/opening | movie/40min | 4k-hevc/40min | episode/10min | episode/full | pooled `s`>1 | max `s` | `s`>0.85 |
+|---:|---|---|---|---|---|---:|---:|---:|
+| 320 | 12/40 | 36/40 | 32/40 | 30/40 | 30/40 | **140/200** | **1.285** | 181/200 |
+| 720 | 0/40 | 0/40 | 0/40 | 7/40 | 7/40 | **14/200** | **1.155** | 151/200 |
+| 2000 | 0/40 | 0/40 | — | — | 0/40 | 0/120 | **0.917** | **9/120** |
+| 4000 | 0/40 | 0/40 | 0/40 | 0/40 | 0/40 | 0/200 | 0.846 | 0/200 |
+| 6000 | 0/40 | 0/40 | — | — | 0/40 | 0/120 | 0.837 | 0/120 |
+| 8000 | 0/40 | 0/40 | — | — | 0/40 | 0/120 | 0.819 | 0/120 |
+| 10000 | 0/40 | 0/40 | — | — | 0/40 | 0/120 | 0.820 | 0/120 |
+| 12000 | 0/40 | 0/40 | 0/40 | 0/40 | 0/40 | 0/200 | 0.799 | 0/200 |
+| 14000 | 0/40 | 0/40 | — | — | 0/40 | 0/120 | 0.805 | 0/120 |
+| 16000 | 0/40 | 0/40 | — | — | 0/40 | 0/120 | 0.808 | 0/120 |
+| 18000 | 0/40 | 0/40 | — | — | 0/40 | 0/120 | 0.804 | 0/120 |
+| 20000 | 0/40 | 0/40 | — | — | 0/40 | 0/120 | 0.804 | 0/120 |
+| 22000 | 0/40 | 0/40 | 0/40 | 0/40 | 0/40 | 0/200 | 0.798 | 0/200 |
 
-(cells are `segments with s > 1 / segments sampled`)
+### [REFUTED] The `s <= 0.85` bound does not hold at rung 2000. It holds at 4000 and above.
 
-**At every rung at or above 2000 kbps, not one of 1 120 segments exceeded 0.85x its declared
-`BANDWIDTH`.** At 720 the bound holds on three windows and fails on the fourth (max 1.155). At
-320 it fails everywhere, by up to 1.285.
+An earlier version of this section read: **"At every rung at or above 2000 kbps, not one of 1 120
+segments exceeded 0.85x its declared `BANDWIDTH`."** That sentence was true of the corpus that
+produced it and is **false**. The episode, run through the full ladder, puts **9 of 40** segments
+at rung 2000 above `0.85 * W`, to a maximum of **0.9175**.
 
-The two rungs where it fails are the two lowest, and the mechanism is visible in the decision: at
-rung 320 the server targets 180 kbps of video and the peak segment carries 1.91x that. A
-minimum-quality floor beats the rate target when the target is small enough. **That is a property
-of the bottom of the ladder, not of the encoder in general.**
+This is exactly the hole the specification predicted, in the place it predicted: rung 2000 is the
+boundary of the admission rule, eight of the eleven rungs at or above it rested on one film, and
+the one item that already broke the bound one rung lower was absent from 2000 entirely. It was
+named as the first thing to do and it refuted the claim on the first run. **The corrected
+statement is `s <= 0.85` for rungs at or above 4000** — 0 of **1 440** segments, max **0.8456**.
+
+The failure is not a surprise once the mechanism is written down. Max `s` decays **monotonically**
+with the rung — 1.285, 1.155, 0.917, 0.846, 0.837, 0.819, 0.820, 0.799, 0.805, 0.808, 0.804,
+0.804, 0.798 — which is one curve, not a bound that holds and then breaks. The encoder cannot go
+below a content-dependent **quality floor**, so at a small enough rate target the floor wins and
+the segment overshoots. Rung 2000 is simply where that curve crosses 0.85 on this item.
+
+The two lowest rungs are the same mechanism at full strength: at rung 320 the server targets
+180 kbps of video and the peak segment carries 1.91x that. **That is a property of the bottom of
+the ladder, not of the encoder in general.**
 
 **The median is not the max, and the difference is the whole reason the max is interesting.**
 Median `s` moves enormously with content while the max barely moves at all — the same item, two
@@ -117,6 +131,57 @@ A 4.3x swing in the median against a max that holds inside `[0.77, 0.85]` is the
 **cap**, not of a distribution that happened to be sampled twice. That is what makes the bound
 usable: it is not a high quantile of a shifting distribution, it is a ceiling the encoder does not
 cross.
+
+## 2a. `s` is a per-rung quantity, and the margin for an unseen item is measurable
+
+The refutation above kills the single-constant form of `s`, not the quantity. What replaces it is
+the same measurement read per rung instead of pooled across rungs — and, separately, an answer to
+the question the single constant could never answer: **how much does an item this server has never
+transcoded move the bound?**
+
+That is answerable here because five item-windows now reach the same rungs. Per rung, take each
+window's own max `s` and compare the largest to the smallest:
+
+| rung | 4k-hevc | episode/10m | episode/full | movie/40m | movie/open | cross-item spread |
+|---:|---:|---:|---:|---:|---:|---:|
+| 320 | 1.080 | 1.285 | 1.285 | 1.135 | 1.075 | **1.196** |
+| 720 | 0.992 | 1.155 | 1.155 | 0.962 | 0.942 | **1.227** |
+| 2000 | — | — | 0.917 | 0.842 | 0.809 | **1.134** |
+| 4000 | 0.801 | 0.843 | 0.843 | 0.835 | 0.846 | 1.055 |
+| 6000 | — | — | 0.837 | 0.818 | 0.801 | 1.045 |
+| 8000 | — | — | 0.818 | 0.819 | 0.811 | 1.010 |
+| 10000 | — | — | 0.819 | 0.792 | 0.820 | 1.036 |
+| 12000 | 0.757 | 0.797 | 0.797 | 0.782 | 0.799 | 1.056 |
+| 14000 | — | — | 0.794 | 0.790 | 0.805 | 1.018 |
+| 16000 | — | — | 0.798 | 0.770 | 0.808 | 1.049 |
+| 18000 | — | — | 0.788 | 0.779 | 0.804 | 1.032 |
+| 20000 | — | — | 0.795 | 0.779 | 0.804 | 1.032 |
+| 22000 | 0.757 | 0.785 | 0.785 | 0.786 | 0.798 | 1.054 |
+
+**The spread splits the ladder in the same place the refutation did.** At every rung at or above
+4000 an unseen item moved the max by at most **5.6%**. At 2000 it moves **13.4%**, at 720 **22.7%**
+and at 320 **19.6%** — the quality-floor regime is not merely higher, it is far more
+item-dependent, which is what makes a shared constant wrong there specifically.
+
+**So the margin is derived rather than chosen.** Ship, per rung, the pooled max scaled by the
+largest cross-item ratio observed at rungs where the ratio is stable:
+
+```
+sigma_j  =  max_observed(j)  x  spread(j)
+```
+
+Both factors are (2) directly measured; the product is (3) mathematically derived. For rungs >= 4000
+that is `0.846 x 1.056 = 0.893`, i.e. **`sigma = 0.90`** — which is the first version of this number
+with any margin at all. The pooled max is 0.8456, so shipping 0.85 leaves **0.5%**, and 0.5% is not
+a safety margin, it is a rounding artefact of the measurement that produced it.
+
+**Two things this does NOT establish, stated because the refutation above is what happens when they
+are forgotten.** The spread is computed over five windows on one server and three items; it bounds
+the sixth only under the assumption that item-to-item variation is exchangeable, which is precisely
+the assumption rung 2000 just violated at the pooled level. And every window is 80 s of one
+programme. **`sigma` must therefore be verified against every fetched segment at run time** — the
+app already logs `bytes=` — and a rule that depends on it has to degrade when it is exceeded rather
+than treat exceedance as impossible. A bound measured on five windows is a seed, not a guarantee.
 
 ## 3. The relative bound does **not** survive
 
@@ -282,8 +347,9 @@ Confirmed, and now with a mechanism:
 
 * **R1 stands and is sharpened.** The admission rule must not use catalog rung rates. But the
   replacement it needed — measured per-rung byte ratios from a device census — is not the answer
-  either (§3). The answer is the server's declared rate, which §2 shows bounds delivery above
-  rung 2000, and which the transaction **already fetches and already logs**
+  either (§3). The answer is the server's declared rate, which §2 shows bounds delivery at rungs
+  **4000 and above** — not 2000, as this line said until the episode refuted it — and which the
+  transaction **already fetches and already logs**
   (`ff.rs:2660`, `hls: master one-variant bandwidth=`) before deciding anything.
 * **R2's unreachable top gains a second, independent cause.** Even with the queue resized, two of
   the ladder's top rungs are the same encoder session on a 1080p item.
@@ -311,8 +377,15 @@ Refuted:
 
 Newly open, and none of it needs a television:
 
-* The `s <= 0.85` ceiling is measured on one server across three items. It is the single load-
-  bearing number in the whole document and deserves a second server before anything is built on
-  it.
+* **A second SERVER.** The per-rung `sigma` of §2a is measured on one server across three items and
+  five windows. That is now enough items to *derive* a cross-item margin (§2a), which is what the
+  second item bought; it is still one server, one transcoder build and one client profile.
+* **Rungs 320, 720 and 2000 have no usable ceiling** and must not be admitted through the declared
+  rate at all. §2a gives their measured values, but with 13-23% cross-item spread they are seeds
+  for a run-time estimate, not bounds.
+* **Whether `sigma` needs to be a shipped table at all.** An upshift needs a size prediction; a
+  DOWNSHIFT does not, because acquisition time cannot rise when the byte count falls. If the
+  controller only ever predicts sizes upward, the three floor-regime rungs stop mattering, since
+  they are downshift targets.
 * Why 108 ms.
 * Whether the 320 and 720 rungs' overshoot is bounded at all, or merely was here.
