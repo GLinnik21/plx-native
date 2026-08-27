@@ -1,0 +1,314 @@
+install: id=com.beb.plxnative.debug flavour=debug runtime=/tmp/com.beb.plxnative.debug features=dev APPID_env=com.beb.plxnative.debug
+appdir: /media/developer/apps/usr/palm/applications/com.beb.plxnative.debug (from current_exe)
+webos: webOS TV release=4.10.2 codename=goldilocks2-grampians api=4.1.0 major=4
+devcaps: hevc=true 4096x2176 vp9=true audio=aac,ac3,eac3 (device table)
+video driver: wayland
+surface: window=1920x1080 drawable=1920x1080 panel=3840x2160 logical=1920x1080 scale=1.000
+GL: Mali-T820 / OpenGL ES 3.2 v1.r12p0-04rel0.cb5901e2e52329f9302428bb2e5885c3
+egl: display=0x6fc440 draw_surface=0x7350c8
+egl vendor: ARM
+egl version: 1.4 Midgard-"r12p0-04rel0"
+egl client_apis: OpenGL_ES
+egl extensions:  EGL_KHR_config_attribs EGL_KHR_image EGL_KHR_image_base EGL_KHR_fence_sync EGL_KHR_wait_sync EGL_KHR_gl_colorspace EGL_KHR_get_all_proc_addresses EGL_ARM_pixmap_multisample_discard EGL_WL_bind_wayland_display EGL_IMG_context_priority EGL_ARM_pixmap_multisample_discard EGL_KHR_gl_texture_2D_image EGL_KHR_gl_renderbuffer_image EGL_KHR_create_context EGL_KHR_surfaceless_context EGL_KHR_gl_texture_cubemap_image EGL_EXT_create_context_robustness EGL_KHR_cl_event2
+egl procs: eglSetDamageRegionKHR=1 eglSwapBuffersWithDamageKHR=1 eglSwapBuffersWithDamageEXT=1 eglQuerySurface=1 eglSurfaceAttrib=1
+egl surface: 1920x1080 (ok=1/1) swap_behavior=0x3095 BUFFER_DESTROYED (ok=1 err=0x3000) buffer_age=0 (ok=1 err=0x3000)
+egl config: id=1 surface_type=0x0007 (ok=1)          SWAP_BEHAVIOR_PRESERVED_BIT=0
+gl extensions: GL_ARM_rgba8 GL_ARM_mali_shader_binary GL_OES_depth24 GL_OES_depth_texture GL_OES_depth_texture_cube_map GL_OES_packed_depth_stencil GL_OES_rgb8_rgba8 GL_EXT_read_format_bgra GL_OES_compressed_paletted_texture GL_OES_compressed_ETC1_RGB8_texture GL_OES_standard_derivatives GL_OES_EGL_image GL_OES_EGL_image_external GL_OES_EGL_image_external_essl3 GL_OES_EGL_sync GL_OES_texture_npot GL_OES_vertex_half_float GL_OES_required_internalformat GL_OES_vertex_array_object GL_OES_mapbuffer GL_EXT_texture_format_BGRA8888 GL_EXT_texture_rg GL_EXT_texture_type_2_10_10_10_REV GL_OES_fbo_render_mipmap GL_OES_element_index_uint GL_EXT_shadow_samplers GL_OES_texture_compression_astc GL_KHR_texture_compression_astc_ldr GL_KHR_texture_compression_astc_hdr GL_KHR_texture_compression_astc_sliced_3d GL_KHR_debug GL_EXT_occlusion_query_boolean GL_EXT_disjoint_timer_query GL_EXT_blend_minmax GL_EXT_discard_framebuffer GL_OES_get_program_binary GL_OES_texture_3D GL_EXT_texture_storage GL_EXT_multisampled_render_to_texture GL_OES_surfaceless_context GL_OES_texture_stencil8 GL_EXT_shader_pixel_local_storage GL_ARM_shader_framebuffer_fetch GL_ARM_shader_framebuffer_fetch_depth_stencil GL_ARM_mali_program_binary GL_EXT_sRGB GL_EXT_sRGB_write_control GL_EXT_texture_sRGB_decode GL_KHR_blend_equation_advanced GL_KHR_blend_equation_advanced_coherent GL_OES_texture_storage_multisample_2d_array GL_OES_shader_image_atomic GL_EXT_robustness GL_EXT_draw_buffers_indexed GL_OES_draw_buffers_indexed GL_EXT_texture_border_clamp GL_OES_texture_border_clamp GL_EXT_texture_cube_map_array GL_OES_texture_cube_map_array GL_OES_sample_variables GL_OES_sample_shading GL_OES_shader_multisample_interpolation GL_EXT_shader_io_blocks GL_OES_shader_io_blocks GL_EXT_tessellation_shader GL_OES_tessellation_shader GL_EXT_primitive_bounding_box GL_OES_primitive_bounding_box GL_EXT_geometry_shader GL_OES_geometry_shader GL_ANDROID_extension_pack_es31a GL_EXT_gpu_shader5 GL_OES_gpu_shader5 GL_EXT_texture_buffer GL_OES_texture_buffer GL_EXT_copy_image GL_OES_copy_image GL_EXT_color_buffer_half_float GL_EXT_color_buffer_float GL_EXT_YUV_target GL_OVR_multiview GL_OVR_multiview2 GL_OVR_multiview_multisampled_render_to_texture GL_KHR_robustness GL_KHR_robust_buffer_access_behavior GL_EXT_draw_elements_base_vertex GL_OES_draw_elements_base_vertex 
+keyboard: support=1 active=0 focus=0 winflags=0x7
+FB bits: alpha=8 red=8 depth=0 stencil=0 (config alpha=8 depth=0 stencil=0)
+wm sdl=2.0.5 subsys=6 wl_surface=0x6fb570 wl_display=0x6f7020 alpha=8
+init_text ok=1
+net: bound libcurl -> libcurl.so.5 (libcurl/7.53.1 OpenSSL/1.0.2p zlib/1.2.11 c-ares/1.12.0 nghttp2/1.26.0; AsynchDNS=yes); threaded-tls=true legacy-locks=Installed
+token: using /tmp/plxnative-token (test identity)
+boot: dev token — link=Local (classified from the configured address)
+plex: server slot 0 registered at <pms-host>:32499
+pms: server 0 version=1.43.3.10896-cb3ebc72d plexPass=true
+hubs: source 0 ok — 2 shelves, 4 in CW
+browse: roster now 1 source(s)
+pms: nmovies=28 nsections=2
+vplane: ACB (webOS 4.x)
+ptype=10
+acb create=1
+curlio: bound libcurl.so.5 curl_multi_* (7 symbols)
+ff: bound avutil -> libavutil-plx.so.61
+ff: bound avcodec -> libavcodec-plx.so.63
+ff: bound avformat -> libavformat-plx.so.63
+ff: bound swscale -> libswscale-plx.so.10
+ff: avformat=63.1.100 avcodec=63.1.100 avutil=61.1.100
+hubs: landed — 28 items, 3 shelves
+font chain: Base /media/developer/apps/usr/palm/applications/com.beb.plxnative.debug/appfont.ttf codepoints=2853
+LIFECYCLE: foreground (wasPlaying=0)
+LIFECYCLE: foreground (wasPlaying=0)
+detail: rk=4 'The Substance' show=false genres=3 cast=120 crew=1 seasons=0 eps=0 related=2 audio=3 subs=4 ms=44
+plxnative-play: rk=4 start
+playqueue: id=3031 item=20977 remaining=0 rows=1 next=-
+route: Auto Original — source 10634kbps 1918x802; no video encode
+playing item: rk=4 audio=3 subs=4 markers=1 chapters=5
+server-selected subtitle: sid=2698 render_idx=2
+esInfo: videoFps 24/1 + adaptiveResolution (src 24.000)
+load: v=H264 a="AC3" fps=24.000 dv=present:0 P0/0 el:0 atmos:0
+stream: <pms-host>:32499 path=/library/parts/749/1731784061/file.mkv?X-Plex-Session-Identifier=a6cd4614-8ad7-4
+SMP: media thread spawned, stream=1
+SMP: calling Load (uid=NULL)
+ff: open status=200 clen=11256969349
+ff: container names 7/7 tracks (a=3 s=4)
+ff: v=#0 codec=h264 codec_id=27 1918x802 trc=2 pri=2 spc=2 a=#3 dur_ns=8469000000000
+ff: sub tracks=[#4:text,#5:text,#6:text,#7:text] selected=2
+ff: param_sets=50 bytes nal_len=4 is_hevc=false
+ff: AU#0 size=879 key=true head=[00 00 00 01 27 64 00 28 ac 52 18 07 80 67 ea 23 ff 00 01 00 01 6a 02 02 03 6e 00 00 03 00 02 00 00 03 00 61 c2 b5 ef 7c]
+smp_cb type=13 num=1 str=
+smp_cb type=14 num=0 str=1
+smp_cb type=5 num=0 str=0 video/x-h264 (null) (null) 3840 2160 (null) 60.000000 0 0 0
+smp_cb type=15 num=0 str=1
+smp_cb type=8 num=0 str=audio/x-ac3 (null) (null) 0.000000 0 (null) 0 0 0 0 (null) 0 (null) 0 
+smp_cb type=17 num=0 str=
+smp_cb type=35 num=1 str=
+smp_cb type=22 num=0 str=true
+SMP loadCompleted
+SMP: Load returned ok=1
+SMP Play
+feed reply="{"returnValue":"Ok"}
+"
+feed v#1 sz=879 fed=0 reply=O qbytes=1641241
+feed reply="{"returnValue":"Ok"}
+"
+feed v#2 sz=205 fed=82999999 reply=O qbytes=1735366
+feed reply="{"returnValue":"Ok"}
+"
+feed v#3 sz=173 fed=41999999 reply=O qbytes=1735193
+feed v#4 sz=209 fed=166999999 reply=O qbytes=1734984
+feed a#1 sz=1536 fed=0 reply=O qbytes=324096
+feed a#2 sz=1536 fed=32000000 reply=O qbytes=322560
+feed a#3 sz=1536 fed=64000000 reply=O qbytes=321024
+feed a#4 sz=1536 fed=96000000 reply=O qbytes=319488
+smp_cb type=7 num=0 str={"track":-1,"dualMono":false,"immersive":"none"}
+
+smp_cb type=42 num=0 str=��-�
+smp_cb type=4 num=0 str={"context":"_ngOUYKDMwbXsJE","content":"movie","video":{"frameRate":24,"scanType":"VIDEO_PROGRESSIVE","width":1918,"height":802,"bitRate":0,"adaptive":true,"path":"network","pixelAspectRatio":{"width":1,"height":1},"afd":16,"rotation":0,"data3D":{"originalPattern":"2d","currentPattern":"2d","typeLR":"LR"},"hfr":false,"hdrType":"none","mediaSei":{"displayPrimariesX0":0,"displayPrimariesX1":0,"displayPrimariesX2":0,"displayPrimariesY0":0,"displayPrimariesY1":0,"displayPrimariesY2":0,"whitePointX":0,"whitePointY":0,"minDisplayMasteringLuminance":0,"maxDisplayMasteringLuminance":0,"maxContentLightLevel":0,"maxPicAverageLightLevel":0},"mediaVui":{"transferCharacteristics":1,"colorPrimaries":1,"matrixCoeffs":1}}}
+
+SMP context/mediaId=_ngOUYKDMwbXsJE
+SMP sourceInfoRaw captured (717 bytes)
+SMP ACB bound id=_ngOUYKDMwbXsJE
+smp_cb type=26 num=0 str=true
+loop=43 route=player overlay=none fps=43
+acb_cb ev=1 reply=
+setMediaVideoData rv=1 frames=2
+setMediaVideoData sent → window+PLAYING
+acb_cb ev=1 reply=
+acb_cb ev=1 reply=
+acb_cb ev=1 reply=
+loop=58 route=player overlay=none pos=0s vtick=3 vgap=200ms fps=59
+egl surface (after 120 presents): buffer_age=2 ok=1 err=0x3000
+loop=60 route=player overlay=none pos=1s play=984pm vtick=5 vgap=201ms fps=61
+loop=60 route=player overlay=none pos=2s play=1040pm vtick=5 vgap=201ms fps=60
+feed v#100 sz=173 fed=4082999999 reply=O qbytes=8439697
+feed a#200 sz=1536 fed=6368000000 reply=O qbytes=245760
+loop=60 route=player overlay=none pos=3s play=1000pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=4s play=1000pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=5s play=999pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=6s play=1000pm vtick=5 vgap=201ms fps=60
+feed v#200 sz=21029 fed=8249999999 reply=O qbytes=8437344
+loop=60 route=player overlay=none pos=7s play=1000pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=8s play=999pm vtick=5 vgap=201ms fps=60
+timeline playing t=9s/8469s
+feed a#400 sz=1536 fed=12768000000 reply=O qbytes=245760
+loop=60 route=player overlay=none pos=9s play=999pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=10s play=1000pm vtick=5 vgap=201ms fps=60
+feed v#300 sz=11161 fed=12416999999 reply=O qbytes=8403611
+loop=60 route=player overlay=none pos=11s play=1000pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=12s play=999pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=13s play=1000pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=14s play=992pm vtick=5 vgap=201ms fps=60
+feed v#400 sz=69326 fed=16666999999 reply=O qbytes=8335807
+loop=60 route=player overlay=none pos=15s play=999pm vtick=5 vgap=201ms fps=60
+feed a#600 sz=1536 fed=19168000000 reply=O qbytes=211968
+loop=60 route=player overlay=none pos=16s play=999pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=17s play=1000pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=18s play=995pm vtick=5 vgap=201ms fps=60
+timeline playing t=19s/8469s
+feed v#500 sz=17001 fed=20749999999 reply=O qbytes=8435870
+loop=60 route=player overlay=none pos=19s play=987pm vtick=5 vgap=201ms fps=61
+loop=60 route=player overlay=none pos=20s play=1000pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=21s play=992pm vtick=5 vgap=201ms fps=60
+feed a#800 sz=1536 fed=25568000000 reply=O qbytes=761856
+loop=60 route=player overlay=none pos=22s play=1198pm vtick=6 vgap=201ms fps=60
+feed v#600 sz=88368 fed=24999999999 reply=O qbytes=8249202
+loop=60 route=player overlay=none pos=23s play=791pm vtick=4 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=24s play=999pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=25s play=1000pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=26s play=1000pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=27s play=1000pm vtick=5 vgap=201ms fps=60
+feed v#700 sz=430 fed=29166999999 reply=O qbytes=8773387
+feed a#1000 sz=1536 fed=31968000000 reply=O qbytes=519168
+loop=60 route=player overlay=none pos=28s play=999pm vtick=5 vgap=201ms fps=60
+timeline playing t=29s/8469s
+loop=60 route=player overlay=none pos=29s play=999pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=30s play=1188pm vtick=6 vgap=201ms fps=61
+loop=60 route=player overlay=none pos=31s play=1000pm vtick=5 vgap=201ms fps=60
+feed v#800 sz=49194 fed=33291999999 reply=O qbytes=8416137
+loop=60 route=player overlay=none pos=32s play=1000pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=33s play=1000pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=34s play=999pm vtick=5 vgap=201ms fps=60
+feed a#1200 sz=1536 fed=38368000000 reply=O qbytes=264192
+loop=60 route=player overlay=none pos=35s play=999pm vtick=5 vgap=201ms fps=60
+feed v#900 sz=51330 fed=37499999999 reply=O qbytes=8328224
+loop=60 route=player overlay=none pos=36s play=983pm vtick=5 vgap=201ms fps=61
+loop=60 route=player overlay=none pos=37s play=984pm vtick=5 vgap=201ms fps=61
+loop=60 route=player overlay=none pos=38s play=999pm vtick=5 vgap=201ms fps=60
+timeline playing t=39s/8469s
+loop=60 route=player overlay=none pos=39s play=1000pm vtick=5 vgap=201ms fps=60
+feed v#1000 sz=27757 fed=41582999999 reply=O qbytes=8350844
+loop=59 route=player overlay=none pos=40s play=1000pm vtick=5 vgap=201ms fps=59
+feed a#1400 sz=1536 fed=44768000000 reply=O qbytes=99840
+loop=60 route=player overlay=none pos=41s play=999pm vtick=5 vgap=201ms fps=60
+loop=59 route=player overlay=none pos=42s play=991pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=43s play=1042pm vtick=5 vgap=201ms fps=60
+feed v#1100 sz=22984 fed=45749999999 reply=O qbytes=2577710
+loop=60 route=player overlay=none pos=44s play=1000pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=45s play=982pm vtick=5 vgap=201ms fps=61
+loop=60 route=player overlay=none pos=46s play=982pm vtick=5 vgap=201ms fps=61
+feed a#1600 sz=1536 fed=51168000000 reply=O qbytes=324096
+loop=60 route=player overlay=none pos=47s play=986pm vtick=5 vgap=201ms fps=61
+feed v#1200 sz=762 fed=49916999999 reply=O qbytes=175364
+loop=60 route=player overlay=none pos=48s play=1000pm vtick=5 vgap=201ms fps=60
+timeline playing t=49s/8469s
+loop=60 route=player overlay=none pos=49s play=1000pm vtick=5 vgap=201ms fps=60
+loop=59 route=player overlay=none pos=50s play=991pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=51s play=992pm vtick=5 vgap=201ms fps=60
+feed v#1300 sz=2446 fed=54166999999 reply=O qbytes=672816
+loop=60 route=player overlay=none pos=52s play=999pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=53s play=1000pm vtick=5 vgap=201ms fps=60
+feed a#1800 sz=1536 fed=57568000000 reply=O qbytes=577536
+loop=60 route=player overlay=none pos=54s play=1000pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=55s play=984pm vtick=5 vgap=201ms fps=61
+feed v#1400 sz=329 fed=58332999999 reply=O qbytes=1466752
+loop=60 route=player overlay=none pos=56s play=1000pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=57s play=1000pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=58s play=997pm vtick=5 vgap=201ms fps=60
+timeline playing t=59s/8469s
+loop=60 route=player overlay=none pos=59s play=988pm vtick=5 vgap=201ms fps=61
+feed a#2000 sz=1536 fed=63968000000 reply=O qbytes=536064
+loop=59 route=player overlay=none pos=60s play=991pm vtick=5 vgap=201ms fps=60
+feed v#1500 sz=172 fed=62416999999 reply=O qbytes=2430700
+loop=60 route=player overlay=none pos=61s play=999pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=62s play=1000pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=63s play=983pm vtick=5 vgap=201ms fps=61
+loop=60 route=player overlay=none pos=64s play=985pm vtick=5 vgap=201ms fps=61
+feed v#1600 sz=3369 fed=66666999999 reply=O qbytes=3271104
+loop=60 route=player overlay=none pos=65s play=1000pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=66s play=1000pm vtick=5 vgap=201ms fps=60
+feed a#2200 sz=1536 fed=70368000000 reply=O qbytes=446976
+loop=60 route=player overlay=none pos=67s play=1000pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=68s play=1000pm vtick=5 vgap=201ms fps=60
+timeline playing t=69s/8469s
+feed v#1700 sz=12717 fed=70832999999 reply=O qbytes=3228891
+loop=60 route=player overlay=none pos=69s play=999pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=70s play=999pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=71s play=982pm vtick=5 vgap=201ms fps=61
+loop=60 route=player overlay=none pos=72s play=1026pm vtick=5 vgap=201ms fps=61
+feed v#1800 sz=9496 fed=74916999999 reply=O qbytes=3020970
+feed a#2400 sz=1536 fed=76768000000 reply=O qbytes=408576
+loop=60 route=player overlay=none pos=73s play=982pm vtick=5 vgap=201ms fps=61
+loop=60 route=player overlay=none pos=74s play=988pm vtick=5 vgap=201ms fps=61
+loop=60 route=player overlay=none pos=75s play=999pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=76s play=996pm vtick=5 vgap=201ms fps=60
+feed v#1900 sz=17250 fed=79166999999 reply=O qbytes=2573941
+loop=60 route=player overlay=none pos=77s play=1193pm vtick=6 vgap=201ms fps=61
+loop=60 route=player overlay=none pos=78s play=997pm vtick=5 vgap=201ms fps=60
+timeline playing t=79s/8469s
+feed a#2600 sz=1536 fed=83168000000 reply=O qbytes=308736
+loop=60 route=player overlay=none pos=79s play=985pm vtick=5 vgap=201ms fps=61
+loop=60 route=player overlay=none pos=80s play=984pm vtick=5 vgap=201ms fps=61
+feed v#2000 sz=6686 fed=83249999999 reply=O qbytes=2520607
+loop=60 route=player overlay=none pos=81s play=1000pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=82s play=983pm vtick=5 vgap=201ms fps=61
+loop=60 route=player overlay=none pos=83s play=985pm vtick=5 vgap=201ms fps=61
+loop=60 route=player overlay=none pos=84s play=999pm vtick=5 vgap=201ms fps=60
+feed v#2100 sz=8759 fed=87416999999 reply=O qbytes=2204435
+feed a#2800 sz=1536 fed=89568000000 reply=O qbytes=284160
+loop=60 route=player overlay=none pos=85s play=983pm vtick=5 vgap=201ms fps=61
+loop=60 route=player overlay=none pos=86s play=1000pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=87s play=1000pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=88s play=1000pm vtick=5 vgap=201ms fps=60
+timeline playing t=89s/8469s
+loop=60 route=player overlay=none pos=89s play=1000pm vtick=5 vgap=201ms fps=60
+feed v#2200 sz=5225 fed=91582999999 reply=O qbytes=1656791
+loop=60 route=player overlay=none pos=90s play=1000pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=91s play=1000pm vtick=5 vgap=201ms fps=60
+feed a#3000 sz=1536 fed=95968000000 reply=O qbytes=284160
+loop=60 route=player overlay=none pos=92s play=982pm vtick=5 vgap=201ms fps=61
+loop=60 route=player overlay=none pos=93s play=985pm vtick=5 vgap=201ms fps=61
+feed v#2300 sz=4493 fed=95749999999 reply=O qbytes=1704330
+loop=60 route=player overlay=none pos=94s play=984pm vtick=5 vgap=201ms fps=61
+loop=60 route=player overlay=none pos=95s play=999pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=96s play=1000pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=97s play=984pm vtick=5 vgap=201ms fps=61
+feed v#2400 sz=4841 fed=99916999999 reply=O qbytes=1829696
+feed a#3200 sz=1536 fed=102368000000 reply=O qbytes=221184
+loop=60 route=player overlay=none pos=98s play=999pm vtick=5 vgap=201ms fps=60
+timeline playing t=99s/8469s
+loop=60 route=player overlay=none pos=99s play=1000pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=100s play=1000pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=101s play=984pm vtick=5 vgap=201ms fps=61
+feed v#2500 sz=7067 fed=104082999999 reply=O qbytes=1777602
+loop=59 route=player overlay=none pos=102s play=999pm vtick=5 vgap=201ms fps=59
+loop=60 route=player overlay=none pos=103s play=1000pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=105s play=1026pm vtick=5 vgap=201ms fps=61
+feed a#3400 sz=1536 fed=108768000000 reply=O qbytes=159744
+loop=60 route=player overlay=none pos=106s play=996pm vtick=5 vgap=201ms fps=60
+feed v#2600 sz=7415 fed=108249999999 reply=O qbytes=1553301
+loop=60 route=player overlay=none pos=107s play=985pm vtick=5 vgap=201ms fps=61
+loop=60 route=player overlay=none pos=108s play=985pm vtick=5 vgap=201ms fps=61
+loop=60 route=player overlay=none pos=109s play=1000pm vtick=5 vgap=201ms fps=60
+timeline playing t=109s/8469s
+loop=60 route=player overlay=none pos=110s play=999pm vtick=5 vgap=201ms fps=60
+feed v#2700 sz=7849 fed=112416999999 reply=O qbytes=1361575
+loop=60 route=player overlay=none pos=111s play=985pm vtick=5 vgap=201ms fps=61
+feed a#3600 sz=1536 fed=115168000000 reply=O qbytes=33792
+loop=60 route=player overlay=none pos=112s play=1000pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=113s play=1000pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=114s play=1000pm vtick=5 vgap=201ms fps=60
+feed v#2800 sz=766 fed=116582999999 reply=O qbytes=379154
+loop=60 route=player overlay=none pos=115s play=1000pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=116s play=1000pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=117s play=998pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=118s play=984pm vtick=5 vgap=201ms fps=61
+loop=60 route=player overlay=none pos=119s play=1188pm vtick=6 vgap=201ms fps=61
+timeline playing t=119s/8469s
+feed v#2900 sz=10764 fed=120749999999 reply=O qbytes=0
+loop=60 route=player overlay=none pos=120s play=999pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=120s play=667pm vtick=4 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=121s play=246pm vtick=3 vgap=401ms fps=61
+loop=60 route=player overlay=none pos=121s play=83pm vtick=1 vgap=600ms fps=60
+feed a#3800 sz=1536 fed=121568000000 reply=O qbytes=10752
+loop=60 route=player overlay=none pos=121s play=250pm vtick=3 vgap=601ms fps=60
+loop=60 route=player overlay=none pos=121s play=167pm vtick=2 vgap=401ms fps=60
+loop=60 route=player overlay=none pos=121s play=166pm vtick=3 vgap=400ms fps=60
+loop=60 route=player overlay=none pos=121s play=167pm vtick=2 vgap=601ms fps=60
+loop=60 route=player overlay=none pos=122s play=165pm vtick=2 vgap=601ms fps=60
+loop=60 route=player overlay=none pos=122s play=165pm vtick=3 vgap=401ms fps=60
+timeline playing t=122s/8469s
+loop=60 route=player overlay=none pos=122s play=167pm vtick=2 vgap=601ms fps=60
+loop=60 route=player overlay=none pos=122s play=83pm vtick=2 vgap=401ms fps=60
+loop=60 route=player overlay=none pos=122s play=167pm vtick=3 vgap=601ms fps=60
+loop=60 route=player overlay=none pos=122s play=167pm vtick=3 vgap=601ms fps=60
+loop=60 route=player overlay=none pos=122s play=81pm vtick=1 vgap=601ms fps=61
+loop=60 route=player overlay=none pos=123s play=167pm vtick=2 vgap=601ms fps=60
+loop=60 route=player overlay=none pos=123s play=125pm vtick=2 vgap=601ms fps=60
+loop=60 route=player overlay=none pos=123s play=125pm vtick=3 vgap=401ms fps=60
+loop=60 route=player overlay=none pos=123s play=166pm vtick=2 vgap=601ms fps=60
+loop=60 route=player overlay=none pos=123s play=167pm vtick=3 vgap=400ms fps=60
+timeline playing t=123s/8469s
+loop=60 route=player overlay=none pos=123s play=207pm vtick=3 vgap=401ms fps=60
+loop=60 route=player overlay=none pos=123s play=0pm vtick=0 vgap=0ms fps=61
+smp_cb type=46 num=1 str=
+loop=60 route=player overlay=none pos=124s play=83pm vtick=1 vgap=2003ms fps=60
+loop=60 route=player overlay=none pos=124s play=40pm vtick=1 vgap=400ms fps=61
+smp_cb type=46 num=1 str=
+smp_cb type=46 num=1 str=
+loop=60 route=player overlay=none pos=124s play=292pm vtick=4 vgap=801ms fps=60
+loop=60 route=player overlay=none pos=124s play=208pm vtick=5 vgap=201ms fps=60
+loop=60 route=player overlay=none pos=124s play=167pm vtick=2 vgap=401ms fps=60
+feed v#3000 sz=17067 fed=124916999999 reply=O qbytes=0
+loop=60 route=player overlay=none pos=124s play=167pm vtick=2 vgap=401ms fps=60
+loop=60 route=player overlay=none pos=125s play=249pm vtick=4 vgap=602ms fps=60

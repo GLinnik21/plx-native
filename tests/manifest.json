@@ -301,6 +301,47 @@
       "_quality_note": "The controller-forced companion to `auto_pin_and_back`. That case intentionally uses an ordinary direct-playable item and therefore cannot require an HLS controller on a Local server: Auto structurally chooses Local Original without a network probe. This case uses the existing symbolic AV1/no-direct-play-audio item, so Original is technically infeasible and Auto MUST start Fixed HLS whatever the link classification. The same switch script can therefore grade both lifecycle directions without a conditional: `abr: sample` must exist before the 4 Mbps pin, cease while fixed quality owns the route, and resume after Auto is restored. The item identity remains in the gitignored overlay. Link-specific rung assertions still belong to a netcond run; this case makes that run capable of observing the controller rather than pretending a slowed Local Original stream is ABR."
     },
     {
+      "name": "auto_link_squeeze",
+      "item": "movie_av1_no_dp_audio",
+      "kind": "movie",
+      "title": "Auto over a link that collapses to 2.5 Mbps and comes back",
+      "covers": ["auto-quality", "abr-controller-lifecycle", "conditioned-link", "transcode", "e2e"],
+      "quality": "auto",
+      "run_secs": 150,
+      "link_profile": [
+        {"at_s": 0, "mode": "pass"},
+        {"at_s": 50, "mode": "rate:2500"},
+        {"at_s": 105, "mode": "pass"}
+      ],
+      "operations": [{"op": "play"}],
+      "expect": {
+        "min_timeline_climb_s": 60,
+        "no_playing_error": true,
+        "require_video_bound": true
+      },
+      "_quality_note": "PENDING BOUNDS — the first run of this case is a measurement, not a gate, and the rung/rate bounds are its deliverable. What it does that no other server case can: it plays a REAL item off a REAL PMS over a link this harness owns, so an Auto assertion here grades the controller rather than the afternoon. The item is the AV1/no-direct-play-audio shape, so Original is infeasible and Auto must run Fixed HLS whatever the link classification says. The squeeze is 2.5 Mbps, which is below the 4000 rung and above the 2000 one, so a controller that adapts has somewhere to go and one that does not is visible as `prod` above 1000 with the rung unchanged. 50 s of unshaped link first, because the admission window needs 19 samples before it decides anything."
+    },
+    {
+      "name": "auto_original_squeeze",
+      "item": "movie_h264_ac3_1080p",
+      "kind": "movie",
+      "title": "Auto on a 10.6 Mbps direct-play source, link squeezed to 2.5 Mbps and left there",
+      "covers": ["auto-quality", "auto-original-fallback", "conditioned-link", "e2e"],
+      "quality": "auto",
+      "run_secs": 150,
+      "link_profile": [
+        {"at_s": 0, "mode": "pass"},
+        {"at_s": 30, "mode": "rate:2500"}
+      ],
+      "operations": [{"op": "play"}],
+      "expect": {
+        "min_timeline_climb_s": 30,
+        "no_playing_error": true,
+        "require_video_bound": true
+      },
+      "_quality_note": "PENDING BOUNDS — a measurement first. This is the shape `auto_link_squeeze` cannot reach: a Local server and a direct-playable source, where Auto chooses ORIGINAL and there is no ladder under it at all. The source is measured at 10.6 Mbps and the link is held at 2.5, a fourfold deficit, so the only escape is abandoning Original for HLS — the mode comparison, not the rung selector. The squeeze is never lifted, deliberately: the question is whether Auto ever leaves, not whether it recovers when the link does. What to read: `play=` on the heartbeat (media time per wall second — the field that sees a slow film) beside `abr: mode`, and whether a transcode session ever starts."
+    },
+    {
       "name": "original_then_auto",
       "item": "movie_h264_ac3_1080p",
       "kind": "movie",

@@ -4643,6 +4643,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         let mut loop_t = t0;
         let mut iters_ct = 0i32;
         let mut loop_shown = 0i32;
+        // (media ns, SDL ticks) at the previous heartbeat, for `play=` below. `None` while
+        // nothing is presenting, so the first beat of a playback reports no rate rather than a
+        // fabricated one.
+        let mut play_prev: Option<(i64, u32)> = None;
         let mut running = true;
         // Dev-only panel proof: advance a red/green counter phase only after SDL_GL_SwapWindow
         // returns. Hold each colour for 30 swaps: per-buffer alternation blends yellow at 60 Hz,
@@ -7276,11 +7280,38 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 // play ~30s, so the sparse signal was charging every case double its real floor.
                 // Gated on is_playing() (not is_started()) — see that fn for the resume trap.
                 let pos_ns = playpos(); // one read — the test and the value must agree
-                let pos = if crate::player::is_playing() && pos_ns > 0 {
-                    format!(" pos={}s", pos_ns / 1_000_000_000)
-                } else {
-                    String::new()
-                };
+                // `play=<pm>` — MEDIA time advanced per WALL millisecond since the previous
+                // heartbeat, in per mille. 1000 is the film running at speed; 670 is it crawling.
+                //
+                // **It is the only field on this line that can see a slow film**, and the reason
+                // is worth carrying. Every buffer signal the adaptive controller reads is a
+                // RESERVE, and a reserve is media time measured against this same playhead — so
+                // when the playhead slows, the reserve stops draining, `slope` goes quiet and
+                // every drain-derived trigger falls silent at exactly the moment the picture is
+                // worst. `fps=` cannot see it either: that counts OUR GL swaps, and it sits at 60
+                // through a stream the television is decoding at two thirds speed. `vtick`/`vgap`
+                // come closest — they are the pipeline's own 5 Hz callback and they do respond to
+                // gross starvation — but they are a cadence, not a rate, and the healthy reading
+                // is 5/201 whatever the media clock is doing.
+                //
+                // NO magnitude gate, deliberately. A seek reads as a huge or negative value and a
+                // catch-up leg as something above 1000; both are real observations and both are
+                // things a reader wants to see. Inventing a "that must be a seek" threshold would
+                // be a constant nobody can derive, and the analysis side (`tests/run.py`'s
+                // `playback_rate`) already splits legs on the discontinuity itself.
+                let playing = crate::player::is_playing() && pos_ns > 0;
+                let mut pos = String::new();
+                if playing {
+                    pos = format!(" pos={}s", pos_ns / 1_000_000_000);
+                    if let Some((prev_ns, prev_ticks)) = play_prev {
+                        let wall_ms = i64::from(now.wrapping_sub(prev_ticks));
+                        if wall_ms > 0 {
+                            let media_ms = (pos_ns - prev_ns) / 1_000_000;
+                            pos.push_str(&format!(" play={}pm", media_ms * 1000 / wall_ms));
+                        }
+                    }
+                }
+                play_prev = if playing { Some((pos_ns, now)) } else { None };
                 // `vtick=<n> vgap=<n>ms` — the media pipeline's own `FRAMEREADY` cadence, the only
                 // field on this line that comes from the VIDEO plane's side of the house. Every
                 // other number here describes the graphics plane: `fps=` counts our GL swaps and

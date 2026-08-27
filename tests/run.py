@@ -68,6 +68,7 @@ import re
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -1384,6 +1385,160 @@ def _parsed(pattern, fields, lines, numeric=True):
     return out
 
 
+# ---------------------------------------------------------------------------
+# The LINK CONDITIONER — a real server over a link this harness controls.
+#
+# The synthetic tier shapes its own fixture server, which is why it can grade a rung. The server
+# tier could not: it plays a real item off a real PMS over whatever the LAN happens to be doing,
+# so an Auto assertion there would grade the afternoon. `tools/netcond.py` closes that — one
+# shared token bucket, live-switchable under an open transfer — and this is its lifecycle.
+#
+# **The binary decides whether any of this is reachable, and the harness can only read that.**
+# The app's primary server is `plex_run(PMS_HOST, PMS_PORT)` (`src/main.c`) plus the injected
+# `plxnative-token`; `plxnative-servers` is strictly ADDITIVE and cannot move the primary. So the
+# link is conditioned only if the DEPLOYED BINARY was built with `PMS_PORT` pointing at the proxy
+# rather than at the server. When it was not, a case that declares `link_profile` SKIPS with that
+# reason spelled out — it must never run unconditioned and report a pass, because "Auto held a
+# rung it could afford" and "Auto was never squeezed" produce the same green.
+# ---------------------------------------------------------------------------
+CONFIG_LOCAL_H = os.path.join(REPO_ROOT, "src", "config.local.h")
+
+
+def compiled_pms_endpoint():
+    """`(host, port)` the deployed binary talks to, or `(None, None)`.
+
+    Read from the gitignored `src/config.local.h`, which is the ONLY statement of it — `app.h`
+    includes that file when present and falls back to a placeholder host on port 32400.
+    """
+    try:
+        with open(CONFIG_LOCAL_H, encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError:
+        return None, None
+    host = re.search(r'#define\s+PMS_HOST\s+"([^"]*)"', text)
+    port = re.search(r"#define\s+PMS_PORT\s+(\d+)", text)
+    return (host.group(1) if host else None, int(port.group(1)) if port else None)
+
+
+class LinkConditioner:
+    """Owns one `tools/netcond.py` for the run, and steers it per case.
+
+    Started ONCE for the whole server tier rather than per case, because the binary points at its
+    port unconditionally: an unconditioned case still has to reach the PMS through it. It runs in
+    `pass` until a case names a profile, and is returned to `pass` when that case ends — a mode
+    left armed would silently shape every case after it, which is the same class of bug as a dev
+    trigger left behind.
+
+    An ALREADY-RUNNING proxy on that port is adopted for forwarding and refused for steering: we
+    cannot know its control file or its allowlist, and writing to the wrong one conditions nothing
+    while reporting that it did. `usable` is what a case's skip decision reads.
+    """
+
+    def __init__(self, listen, target, allow_client, control=None):
+        self.listen, self.target, self.allow_client = listen, target, allow_client
+        self.control = control or os.path.join(
+            tempfile.gettempdir(), f"netcond-run-{os.getpid()}.mode")
+        self.proc = None
+        self.usable = False
+        self.why = "not started"
+        self.legs = []          # [(monotonic, mode)] — what was applied, WHEN
+        self._timer = None
+        self._stop = threading.Event()
+
+    def start(self):
+        if self.listen is None:
+            self.why = ("the deployed binary names no PMS port — src/config.local.h is missing "
+                        "or has no PMS_PORT")
+            return
+        if self.listen == self.target[1] and self.target[0] == self.host_of_listen():
+            self.why = (f"the binary talks to the server DIRECTLY on :{self.listen}; rebuild with "
+                        f"PMS_PORT set to a proxy port to condition the link")
+            return
+        with open(self.control, "w") as fh:
+            fh.write("pass")
+        argv = [sys.executable, os.path.join(REPO_ROOT, "tools", "netcond.py"),
+                "--listen", str(self.listen),
+                "--target", f"{self.target[0]}:{self.target[1]}",
+                "--control", self.control, "--mode", "pass"]
+        if self.allow_client:
+            argv += ["--allow-client", self.allow_client]
+        self.proc = subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                                     text=True, start_new_session=True)
+        # A bind failure is immediate and is the ONE outcome that must not be read as success:
+        # the app still reaches the PMS through whoever holds the port, so every case passes and
+        # every conditioned case grades an unshaped link.
+        time.sleep(1.0)
+        if self.proc.poll() is not None:
+            err = (self.proc.stderr.read() or "").strip().splitlines()
+            self.proc = None
+            self.why = (f"could not bind :{self.listen} — another netcond is probably already "
+                        f"running; stop it so this run can steer one"
+                        + (f" ({err[-1]})" if err else ""))
+            return
+        self.usable = True
+        self.why = ""
+
+    def host_of_listen(self):
+        """netcond binds 0.0.0.0, so 'direct' means the compiled host IS the PMS host."""
+        return self.target[0]
+
+    def arm(self, profile, started_at):
+        """Apply `profile` — a list of `{"at_s": <offset>, "mode": "<netcond mode>"}` — from
+        `started_at` (the app's first log line). Leg 0 is applied immediately at that instant.
+
+        A thread rather than inline sleeps because `stream_case` owns the foreground for the whole
+        case; and offsets are from PLAYBACK start, so a leg lands the same distance into the film
+        however long the launch took.
+        """
+        self.disarm()
+        self._stop = threading.Event()
+        legs = sorted(profile, key=lambda leg: leg.get("at_s", 0))
+
+        def drive():
+            for leg in legs:
+                wait = started_at + float(leg.get("at_s", 0)) - time.monotonic()
+                if wait > 0 and self._stop.wait(wait):
+                    return
+                if self._stop.is_set():
+                    return
+                self.apply(leg["mode"])
+
+        self._timer = threading.Thread(target=drive, daemon=True)
+        self._timer.start()
+
+    def apply(self, mode):
+        with open(self.control, "w") as fh:
+            fh.write(mode)
+        self.legs.append((time.monotonic(), mode))
+        print(f"    link: {mode}", flush=True)
+
+    def disarm(self):
+        """Stop the schedule and put the link back. Called at the END of every conditioned case."""
+        self._stop.set()
+        if self._timer:
+            self._timer.join(timeout=2)
+            self._timer = None
+        if self.usable and self.legs and self.legs[-1][1] != "pass":
+            self.apply("pass")
+
+    def close(self):
+        self.disarm()
+        if self.proc:
+            try:
+                os.killpg(os.getpgid(self.proc.pid), signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                pass
+            try:
+                self.proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+            self.proc = None
+        try:
+            os.unlink(self.control)
+        except OSError:
+            pass
+
+
 def early_exit_allowed(case, cfg):
     """(may this case stop as soon as every assertion holds, why not) -- the NON-monotone check.
 
@@ -1398,6 +1553,11 @@ def early_exit_allowed(case, cfg):
     same binary scored 7 rung changes on a full window while PASSING a 5-bound on an early-exit
     run of the same case (I1, 2026-08-26), then 8 on a later full window. A bound whose value
     depends on when grading stopped cannot be graded early in either direction.
+
+    `link_profile`: a case that conditions the link has LEGS, and the interesting one is never
+    the first. Stopping as soon as the opening assertions hold ends the case before the squeeze
+    it exists for — observed on the first run of `auto_link_squeeze`, which passed in 70 s of a
+    150 s profile whose second leg starts at 50 s.
 
     `min_play_rate_pm`: the same shape from the other side. It grades the WORST window of the
     media clock, so it is satisfied by every prefix that has not met the slow leg yet, and a case
@@ -1414,6 +1574,8 @@ def early_exit_allowed(case, cfg):
         return False, "abr_shape carries a commit COUNT, which is window-length sensitive"
     if "min_play_rate_pm" in exp:
         return False, "min_play_rate_pm grades the WORST window, which a prefix cannot settle"
+    if case.get("link_profile"):
+        return False, "a link_profile has legs; the last one must actually run"
     return True, ""
 
 
@@ -2718,7 +2880,7 @@ def require_install(lines, cfg):
         f"exists to refuse. `make FLAVOR={FLAVOUR} deploy` ships one that carries it.")
 
 
-def stream_case(case, cfg, cap_s, early=True, inject=None, evaluator=None):
+def stream_case(case, cfg, cap_s, early=True, inject=None, evaluator=None, on_start=None):
     """Launch via `make run-stream` and grade the log as it streams.
 
     Returns (lines, elapsed_s, stopped_early, settled_reason). Lines come back already filtered;
@@ -2770,6 +2932,12 @@ def stream_case(case, cfg, cap_s, early=True, inject=None, evaluator=None):
             if deadline is None:
                 if lines:
                     deadline = now + cap_s
+                    # The app is alive and its clock has started. Anything scheduled against
+                    # PLAYBACK time — the link conditioner's legs — is anchored here and not at
+                    # ssh start, for the same reason `cap_s` is: the close+launch overhead is a
+                    # couple of seconds and it is not playback.
+                    if on_start:
+                        on_start(now)
                 elif now - started >= BOOT_GRACE_S:
                     break  # app never wrote a line — grade the empty log, same as a dead TV
             elif now >= deadline:
@@ -2970,7 +3138,7 @@ def report_case(passed, results, elapsed, run_secs, stopped_early, settled, verb
         print(f"       stopped early — settled: {redact(settled)}")
 
 
-def run_case(case, cfg, token, verbose):
+def run_case(case, cfg, token, verbose, cond=None):
     name = case["name"]
     tv = cfg["tv"]
     run_secs = case.get("run_secs", 60)
@@ -3042,12 +3210,36 @@ def run_case(case, cfg, token, verbose):
     if not early and why:
         print(f"    early exit disabled: {why}")
     print(f"    run-stream (cap {run_secs}s{'' if early else ', early exit off'}) ...")
-    lines, elapsed, stopped_early, settled = stream_case(
-        case, cfg, run_secs, early=early, inject=key_inject_for_case(case))
+    profile = case.get("link_profile")
+    on_start = None
+    if profile and cond and cond.usable:
+        on_start = lambda at: cond.arm(profile, at)
+    try:
+        lines, elapsed, stopped_early, settled = stream_case(
+            case, cfg, run_secs, early=early, inject=key_inject_for_case(case),
+            on_start=on_start)
+    finally:
+        # ALWAYS, and before the next case is set up: a mode left armed shapes every case after
+        # this one, and nothing downstream would say so.
+        if on_start:
+            cond.disarm()
 
     # 5. evaluate
     passed, results = evaluate(case, lines)
+    saved = save_case_log(cfg, name, lines)
+    if saved:
+        print(f"    log saved: {saved} ({len(lines)} lines)")
     report_case(passed, results, elapsed, run_secs, stopped_early, settled, verbose)
+    # The same characterisation the synthetic tier prints, for the same reason and on the tier
+    # that needs it more: an `abr: sample` here came from a REAL PMS ladder over a real link, and
+    # the app truncates its event log every launch. `--save-logs` was a silent no-op on this tier
+    # until 2026-08-27 -- so every server-tier ABR observation ever taken was read once off the
+    # terminal and then destroyed by the next case.
+    notes = abr_characterisation(lines)
+    if notes:
+        print("    characterisation (recorded, not graded):")
+        for note in notes:
+            print(f"       {note}")
     return passed, results, lines
 
 
@@ -4046,10 +4238,28 @@ def main():
     if args.build:
         do_build(cfg["tv"])
 
+    # The link conditioner, started ONCE for the tier — the binary points at its port for every
+    # case, conditioned or not, so it cannot be a per-case resource. `usable` decides whether a
+    # case that names a `link_profile` runs or skips; nothing else changes.
+    _host, listen = compiled_pms_endpoint()
+    cond = LinkConditioner(listen, (cfg["pms"]["host"], cfg["pms"]["port"]), cfg["tv"])
+    cond.start()
+    atexit.register(cond.close)
+    shaped, link_skipped = [c for c in cases if c.get("link_profile")], []
+    if shaped:
+        if cond.usable:
+            print(f"link conditioner: :{listen} -> PMS, {len(shaped)} shaped case(s)")
+        else:
+            print(f"link conditioner UNAVAILABLE — {cond.why}")
+            for c in shaped:
+                print(f"    SKIP {c['name']}: needs a conditioned link")
+            cases = [c for c in cases if not c.get("link_profile")]
+            link_skipped = shaped
+
     summary = []
     for c in cases:
         try:
-            passed, results, _ = run_case(c, cfg, token, args.verbose)
+            passed, results, _ = run_case(c, cfg, token, args.verbose, cond=cond)
         except Exception as e:  # keep the batch going; record the failure
             print(f"    ERROR running {c['name']}: {e}")
             passed, results = False, [("harness", False, str(e))]
@@ -4085,7 +4295,9 @@ def main():
     for name in shared_skipped:
         print(f"  [SKIP] {name}  <- needs a second server; none configured in "
               f"{os.path.basename(MANIFEST_LOCAL)}")
-    nskip = len(shared_skipped) + len(item_skipped)
+    for c in link_skipped:
+        print(f"  [SKIP] {c['name']}  <- needs a conditioned link: {cond.why}")
+    nskip = len(shared_skipped) + len(item_skipped) + len(link_skipped)
     tail = f", {nskip} skipped" if nskip else ""
     print(f"\n{npass} passed, {real_fail} failed, {nxfail} known-gap of {len(summary)}{tail}")
     return 0 if real_fail == 0 else 1
