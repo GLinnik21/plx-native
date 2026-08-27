@@ -2820,7 +2820,11 @@ fn hls_segment_sample(
 
 fn publish_hls_abr_sample(sample: crate::abr::SegmentSample) {
     SHARED.dg_abr_net_kbps.store(i64::from(sample.network_kbps()), Ordering::Relaxed);
-    SHARED.dg_abr_buffer_ms.store(sample.buffer.buffered_ms(), Ordering::Relaxed);
+    // `-1` is "not knowable this segment", which the gauge has no other way to say. It is a
+    // dev read-out with one i64 slot; the decision paths take the `Option` itself.
+    SHARED
+        .dg_abr_buffer_ms
+        .store(sample.buffer.buffered_ms().unwrap_or(-1), Ordering::Relaxed);
     SHARED.dg_abr_ratio_pm.store(i64::from(sample.production_ratio_pm()), Ordering::Relaxed);
 }
 
@@ -2928,12 +2932,16 @@ fn log_hls_abr_sample(
         _ => ("stay", 0),
     };
     crate::player::log(&format!(
-        "abr: sample current={}kbps media={}kbps net={}kbps buf={}ms vbuf={}ms abuf={} \
+        "abr: sample current={}kbps media={}kbps net={}kbps buf={} vbuf={}ms abuf={} \
          dur={}ms prod={}pm n={} decision={} target={}kbps reason={:?}",
         t.current.kbps(),
         sample.media_kbps(),
         sample.network_kbps(),
-        sample.buffer.buffered_ms(),
+        sample
+            .buffer
+            .buffered_ms()
+            .map(|ms| format!("{ms}ms"))
+            .unwrap_or_else(|| "none".to_string()),
         sample.buffer.video_buffered_ms(),
         sample
             .buffer
@@ -3039,7 +3047,7 @@ struct TxTrace {
     control_plane_ms: Option<i64>,
     warmup_acq_ms: Option<i64>,
     graded_acq_ms: Option<i64>,
-    buf_start_ms: i64,
+    buf_start_ms: Option<i64>,
     /// Acquisition of the CURRENT stream's segment immediately before the transaction — the
     /// `resume_cost` the viability claim's admission rule would divide the reserve against.
     cur_acq_before_ms: i64,
@@ -3138,7 +3146,7 @@ impl TxTrace {
     /// decision that preceded it.
     fn mark_feed(&mut self, started: std::time::Instant) {
         self.feed_ms = Some(i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX));
-        self.buf_fed_ms = Some(hls_buffer_snapshot(None).buffered_ms());
+        self.buf_fed_ms = hls_buffer_snapshot(None).buffered_ms();
     }
 
     /// Acquisition of one candidate media segment, measured the same way production measures the
@@ -3156,7 +3164,7 @@ impl TxTrace {
     fn finish(&mut self, outcome: &'static str) {
         self.outcome = outcome;
         self.decided_ms = Some(self.elapsed_ms());
-        self.buf_decided_ms = Some(hls_buffer_snapshot(None).buffered_ms());
+        self.buf_decided_ms = hls_buffer_snapshot(None).buffered_ms();
     }
 
     fn elapsed_ms(&self) -> i64 {
@@ -3191,11 +3199,11 @@ impl Drop for TxTrace {
             opt(leg(self.control_plane_ms, self.master_done_ms)),
             opt(self.warmup_acq_ms),
             opt(self.graded_acq_ms),
-            self.buf_start_ms,
+            opt(self.buf_start_ms),
             opt(self.buf_decided_ms),
             opt(self.feed_ms),
             opt(self.buf_fed_ms),
-            hls_buffer_snapshot(None).buffered_ms(),
+            opt(hls_buffer_snapshot(None).buffered_ms()),
             self.cur_acq_before_ms,
             self.net_kbps,
             self.fast_kbps,
@@ -3438,7 +3446,10 @@ fn hls_demux(
         // nothing and discards no evidence.
         if *recover_kbps > 0
             && decision == crate::abr::Decision::Stay
-            && sample.buffer.buffered_ms() >= i64::from(sample.media_duration_ms())
+            && sample
+                .buffer
+                .buffered_ms()
+                .is_some_and(|ms| ms >= i64::from(sample.media_duration_ms()))
         {
             SHARED
                 .dg_abr_action

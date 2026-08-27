@@ -185,7 +185,12 @@ impl OriginalRecovery {
         remaining_ms: i64,
     ) -> bool {
         let segment = i64::from(sample.media_duration_ms);
-        let deep_reserve = sample.buffer.buffered_ms() >= segment.saturating_mul(3);
+        // An unreadable reserve is not a deep one. A probe spends the reserve it cannot
+        // see, which is the one thing this gate exists to prevent.
+        let deep_reserve = sample
+            .buffer
+            .buffered_ms()
+            .is_some_and(|ms| ms >= segment.saturating_mul(3));
         let refilling = !buffer.draining();
         let spare_capacity =
             hls_delivery.conservative_kbps() > current.expected_wire_kbps;
@@ -396,7 +401,7 @@ impl OriginalModeController {
         }
         self.delivery.update(observation);
         self.buffer
-            .update(buffered_ms, i64::try_from(active_delta / 1_000).unwrap_or(1).max(1));
+            .update(Some(buffered_ms), i64::try_from(active_delta / 1_000).unwrap_or(1).max(1));
 
         let requirement = source_requirement_kbps(self.source_kbps, &self.policy);
         let conservative = self.delivery.conservative_kbps();

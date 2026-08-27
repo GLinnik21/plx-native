@@ -1243,7 +1243,7 @@ def a_auto_network_recovery(lines, max_fallback_kbps, min_recovered_kbps):
 # statistic over a sample whose membership the policy under test controls: a policy that commits
 # more often observes less, and reads as an improvement.
 RE_ABR_SAMPLE = re.compile(
-    r"abr: sample current=(\d+)kbps media=(\d+)kbps net=(\d+)kbps buf=(-?\d+)ms "
+    r"abr: sample current=(\d+)kbps media=(\d+)kbps net=(\d+)kbps buf=(\S+) "
     r"vbuf=(-?\d+)ms abuf=(\S+) dur=(\d+)ms prod=(\d+)pm n=(\d+) decision=(\S+) "
     r"target=(\d+)kbps"
 )
@@ -1278,8 +1278,8 @@ RE_ABR_TX = re.compile(
     r"decided=" + _MS + r"ms total=(-?\d+)ms control=" + _MS + r"ms "
     r"prime=" + _MS + r"ms master=" + _MS + r"ms media=" + _MS + r"ms "
     r"warmup=" + _MS + r"ms graded=" + _MS + r"ms "
-    r"buf_start=(-?\d+)ms buf_decided=" + _MS + r"ms feed=" + _MS + r"ms "
-    r"buf_fed=" + _MS + r"ms buf_end=(-?\d+)ms cur_acq_before=(-?\d+)ms "
+    r"buf_start=" + _MS + r"ms buf_decided=" + _MS + r"ms feed=" + _MS + r"ms "
+    r"buf_fed=" + _MS + r"ms buf_end=" + _MS + r"ms cur_acq_before=(-?\d+)ms "
     r"net=(\d+)kbps fast=(\d+)kbps slow=(\d+)kbps unc=(\d+)pm declared=(-?\d+)kbps "
     r"graded_bytes=(-?\d+)"
 )
@@ -1413,7 +1413,12 @@ def abr_samples(lines):
         media, net, dur = int(m.group(2)), int(m.group(3)), int(m.group(7))
         out.append({
             "current_kbps": int(m.group(1)), "media_kbps": media,
-            "net_kbps": net, "buf_ms": int(m.group(4)),
+            "net_kbps": net,
+            # `buf=` joined `abuf=` in being optional: the app prints `none` when the playable
+            # reserve is not knowable this segment (an A/V session whose audio lane has produced
+            # no timestamp since the open or the seek). It used to print a fabricated `0`, which
+            # every reader here — `abr_min_buf_ms` above all — read as a reserve that hit bottom.
+            "buf_ms": None if m.group(4) == "none" else int(m.group(4).rstrip("ms")),
             "vbuf_ms": int(m.group(5)),
             "abuf_ms": None if m.group(6) == "none" else int(m.group(6).rstrip("ms")),
             "dur_ms": dur,
@@ -1431,8 +1436,13 @@ def abr_min_buf_ms(samples):
     This is the controller-visible playable reserve — `min(video, audio) - playback`, the same
     quantity the decision path used, taken from the same segment. It is not recomputed here and
     there is deliberately no second notion of "buffer" in this harness.
+
+    Segments whose reserve was `none` are EXCLUDED rather than read as zero. That is the same
+    decision the controller makes on them (it declines to decide), and it is the difference
+    between a `min_buf_ms` bound that grades the reserve and one that grades how often the audio
+    lane was quiet — the latter fires hardest on exactly the first segment after every seek.
     """
-    return min((s["buf_ms"] for s in samples), default=None)
+    return min((s["buf_ms"] for s in samples if s["buf_ms"] is not None), default=None)
 
 
 def abr_binding_lane(samples):
@@ -1542,7 +1552,8 @@ def abr_characterisation(lines):
     samples = abr_samples(lines)
     if samples:
         first = samples[0]
-        out.append(f"first segment: buf={first['buf_ms']}ms current={first['current_kbps']}kbps "
+        first_buf = "none" if first["buf_ms"] is None else f"{first['buf_ms']}ms"
+        out.append(f"first segment: buf={first_buf} current={first['current_kbps']}kbps "
                    f"decision={first['decision']} target={first['target_kbps']}kbps")
     for m in [RE_ABR_SEED.search(ln) for ln in lines]:
         if m:

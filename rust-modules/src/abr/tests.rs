@@ -161,9 +161,91 @@ fn audio_expected_without_a_tail_has_no_buffer_but_silent_video_does() {
         audio_tail: None,
         audio_expected: true,
     };
-    assert_eq!(b.buffered_ms(), 0);
+    assert_eq!(
+        b.buffered_ms(),
+        None,
+        "an A/V session whose audio lane has not spoken has an UNKNOWN reserve, not an empty one"
+    );
     b.audio_expected = false;
-    assert_eq!(b.buffered_ms(), 4_000);
+    assert_eq!(b.buffered_ms(), Some(4_000));
+}
+
+/// **A quiet audio lane must not be read as an empty buffer.** R11, and the bug it names.
+///
+/// A `BufferSnapshot` with `audio_expected` and no `audio_tail` is what every session looks like
+/// for the first segment after an open and after every seek — with the video queue holding
+/// whatever it holds, which on a fast link is the full 8 MiB. The old `buffered_ms` answered `0`,
+/// and the emergency trigger reads the reserve as a level (`buffered < segment || starving()`), so
+/// a full reserve produced a downshift proposal that nothing about the link or the server
+/// justified — a fail-safe firing at the one moment it is guaranteed to be wrong.
+///
+/// Differential: the video lane here carries 12 s, which is six segments and far above every
+/// threshold in the decision, so the ONLY thing that can produce a `Prime(Down)` is reading the
+/// missing audio timestamp as an empty buffer. Against the previous code this asserts false.
+#[test]
+fn a_silent_audio_lane_does_not_fire_a_downshift_on_a_full_reserve() {
+    let quiet = |video_ms: i64| {
+        SegmentSample::new(
+            2_000_000,
+            1_000_000,
+            1_200_000,
+            2_000,
+            BufferSnapshot {
+                playback: MediaTimeMs(10_000),
+                video_tail: MediaTimeMs(10_000 + video_ms),
+                audio_tail: None,
+                audio_expected: true,
+            },
+        )
+        .unwrap()
+    };
+    let mut c = controller_at(Rung::P1080);
+    // Two ordinary segments first, so the controller is past its cold start and the estimators
+    // hold a healthy reserve — the state a mid-playback seek actually lands in.
+    for _ in 0..2 {
+        c.observe(sample(20_000, 400, 12_000));
+    }
+    let decision = c.observe(quiet(12_000));
+    assert_eq!(
+        decision,
+        Decision::Stay,
+        "a reserve that cannot be READ is not a reserve that is EMPTY"
+    );
+    assert!(c.pending().is_none(), "nothing may be proposed on an unknowable reserve");
+}
+
+/// The other half: the reserve genuinely being short still fires. Without this the test above is
+/// satisfied by a controller that never downshifts at all.
+#[test]
+fn a_short_reserve_still_fires_a_downshift_when_the_lane_is_speaking() {
+    let mut c = controller_at(Rung::P1080);
+    for _ in 0..2 {
+        c.observe(sample(20_000, 400, 12_000));
+    }
+    let decision = c.observe(sample(20_000, 400, 500));
+    assert!(
+        matches!(decision, Decision::Prime(p) if p.direction == Direction::Down),
+        "a reserve below one segment is the emergency trigger; got {decision:?}"
+    );
+}
+
+/// **An unknown reserve is not an observation, and the estimator must not treat it as one.**
+///
+/// The estimator carries `last_delta_ms` unsmoothed precisely so the emergency guard can see a
+/// cliff, so entering a `None` as a zero would manufacture the exact signal that guard exists to
+/// react to. Differential: against a `update(0, …)` this fails on every assertion below.
+#[test]
+fn an_unknown_reserve_advances_no_estimate_and_no_counter() {
+    let mut buffer = BufferEstimate::default();
+    buffer.update(Some(12_000), 2_000);
+    buffer.update(Some(11_000), 2_000);
+    let after_two = buffer;
+    buffer.update(None, 2_000);
+    assert_eq!(buffer.buffered_ms, after_two.buffered_ms, "the level must not move");
+    assert_eq!(buffer.slope_ms_per_s, after_two.slope_ms_per_s, "the slope must not move");
+    assert_eq!(buffer.last_delta_ms, after_two.last_delta_ms, "no fabricated cliff");
+    assert_eq!(buffer.samples, after_two.samples, "an absence is not a sample");
+    assert_eq!(buffer.draining_samples, after_two.draining_samples);
 }
 
 /// A window shorter than the measurement window is not a measurement.
@@ -1188,9 +1270,9 @@ fn a_flat_reserve_is_not_draining() {
     }
     // And the counter behind `starving` follows the same test, so the two cannot disagree.
     let mut buffer = BufferEstimate::default();
-    buffer.update(12_000, 2_000);
+    buffer.update(Some(12_000), 2_000);
     for step in 1..=3 {
-        buffer.update(12_000 - step * 20, 2_000);
+        buffer.update(Some(12_000 - step * 20), 2_000);
     }
     assert_eq!(buffer.draining_samples, 0, "20ms a segment is not a drain");
 }

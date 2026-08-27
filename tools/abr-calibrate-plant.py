@@ -54,7 +54,12 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEFAULT_FIXTURES = pathlib.Path(os.path.expanduser("~/plxnative-fixtures/pipeline"))
 
 RE_SAMPLE = re.compile(
-    r"abr: sample current=(\d+)kbps media=(\d+)kbps net=(\d+)kbps buf=(-?\d+)ms "
+    # `buf=` is `<n>ms` or the literal `none` -- the app cannot know the playable reserve on a
+    # segment whose audio lane has produced no timestamp yet, and prints `none` rather than a
+    # zero that reads as an empty buffer. Matched permissively HERE and rejected explicitly at
+    # the use site, so such a sample is a stated skip rather than a line that silently stops
+    # matching and disappears from the census.
+    r"abr: sample current=(\d+)kbps media=(\d+)kbps net=(\d+)kbps buf=(\S+) "
     r"vbuf=(-?\d+)ms abuf=(\S+) dur=(\d+)ms prod=(\d+)pm"
 )
 RE_TX = re.compile(
@@ -102,7 +107,14 @@ def pin_samples(path: pathlib.Path, rung: int):
     """Samples taken while the controller was actually ON the pinned rung."""
     rows = []
     for m in RE_SAMPLE.finditer(path.read_text(errors="replace")):
-        cur, media, net, buf, dur, prod = (int(m.group(i)) for i in (1, 2, 3, 4, 7, 8))
+        cur, media, net, dur, prod = (int(m.group(i)) for i in (1, 2, 3, 7, 8))
+        # A `buf=none` sample has no reserve to census. It is skipped rather than coerced,
+        # because `buf_median_ms` is the plant's starting reserve and a zero would drag it down
+        # by exactly the count of segments whose audio lane happened to be quiet.
+        raw_buf = m.group(4)
+        if raw_buf == "none":
+            continue
+        buf = int(raw_buf.rstrip("ms"))
         if cur != rung or not (media and net and dur):
             continue
         # `overhead` is the non-transfer part of acquisition, exactly as `sim.rs` defines it:

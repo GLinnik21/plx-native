@@ -240,7 +240,6 @@ impl Controller {
             .update(sample.buffer.buffered_ms(), i64::from(sample.media_duration_ms));
         self.samples_on_rung = self.samples_on_rung.saturating_add(1);
 
-        let buffered = self.buffer.buffered_ms;
         let draining = self.buffer.draining();
         let segment = i64::from(sample.media_duration_ms);
 
@@ -270,9 +269,18 @@ impl Controller {
         // The query is the CURRENT rung's own byte count, so this answers "is what we are already
         // playing sustainable" — the one admission question that needs no size prediction and no
         // `sigma`. A candidate's query is `sigma * W_j * D / 8000`; that arrives with the decision.
+        // The reserve here is the ESTIMATOR's — the last one actually observed — and not this
+        // sample's, which may be `None`. The readout decides nothing and is graded offline, so a
+        // one-segment-stale reserve is the right input for it; refusing to emit the line on the
+        // samples where the audio lane is quiet would blind the grading to exactly the segments
+        // after an open or a seek.
         self.acquisitions.observe(sample.bytes, sample.total_fetch_us());
-        self.last_window =
-            self.acquisitions.readout(sample.bytes, segment, buffered, self.policy.admission);
+        self.last_window = self.acquisitions.readout(
+            sample.bytes,
+            segment,
+            self.buffer.buffered_ms,
+            self.policy.admission,
+        );
 
         if self.pending.is_some() {
             return Decision::Stay;
@@ -280,6 +288,22 @@ impl Controller {
         if self.cooldown > 0 {
             self.cooldown -= 1;
         }
+
+        // **An unknowable reserve decides nothing.** `buffered_ms` is `None` for exactly one
+        // situation — an A/V session whose audio lane has produced no timestamp since the open or
+        // the seek — and every branch below is keyed on the reserve: the emergency trigger reads it
+        // as a level, the upshift gate as a depth, and §4's condition (2) as the excess it has to
+        // cover. There is no honest value to substitute, and the one that WAS substituted (zero,
+        // i.e. "empty") turned a full reserve into a downshift trigger.
+        //
+        // Staying is not a policy choice dressed as a guard: it is the absence of one. The
+        // estimators above have already taken this segment, so the evidence is kept; only the
+        // decision waits, and it waits at most until the audio lane produces a timestamp, which is
+        // bounded by the first audio AU of the current segment.
+        let Some(buffered) = sample.buffer.buffered_ms() else {
+            self.stable_samples = 0;
+            return Decision::Stay;
+        };
         // The dev pin (`pinned_to`) short-circuits the decision and NOTHING above it: every
         // estimator has already taken this segment. Reaching the pinned rung goes through the
         // ordinary prime/validate/commit transaction, so a pinned run exercises the real transport
@@ -524,7 +548,14 @@ impl Controller {
         if self.pending != Some(proposal) {
             return false;
         }
-        let buffered = sample.buffer.buffered_ms();
+        // An unreadable reserve refuses. It is the same answer an empty reserve gets, and that is
+        // not a coincidence to paper over: this test asks whether the transaction can be paid for,
+        // and a reserve that cannot be read cannot be shown to cover anything. It differs from the
+        // old zero in what it does NOT do — the controller no longer proposes on an unknown
+        // reserve at all, so reaching here with `None` means the lane fell silent mid-transaction.
+        let Some(buffered) = sample.buffer.buffered_ms() else {
+            return false;
+        };
         let segment = i64::from(sample.media_duration_ms);
         if buffered < segment {
             return false;

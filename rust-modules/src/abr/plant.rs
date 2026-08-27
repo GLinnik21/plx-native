@@ -11,13 +11,35 @@ pub(crate) struct BufferSnapshot {
 }
 
 impl BufferSnapshot {
-    pub(crate) fn buffered_ms(self) -> i64 {
+    /// The playable reserve, `min(video, audio) - playback`, or **`None` when it is not knowable
+    /// yet** — an A/V session whose audio lane has produced no timestamp since the open or the
+    /// seek.
+    ///
+    /// # Why this is an `Option` and not a zero
+    ///
+    /// It returned `0` for that case, and every caller read `0` as *empty*. Those are opposite
+    /// facts. "The audio lane has not spoken yet" is what a session looks like for the first
+    /// segment after every open and every seek — with the video queue holding whatever it holds,
+    /// which on a fast link is the full 8 MiB. So the one input the emergency path is keyed on
+    /// reported an empty reserve while the reserve was full, and `buffer_bad` (`buffered < segment
+    /// || starving()`) fired a downshift that nothing about the link or the server justified.
+    ///
+    /// The same condition is already an `Option` one function down (`progressive_buffered_ms`
+    /// returns `None` when either lane is missing) and has been since it was written, which is
+    /// what makes this a transcription error rather than a design question: the two paths encode
+    /// the same physical situation and disagreed about whether it was a number.
+    ///
+    /// Every caller now states what it does with "unknown" — and the answers differ, which is the
+    /// point: [`Controller::steady`] makes NO decision, [`Controller::candidate_ready`] refuses,
+    /// the Original probe declines to spend a probe, and the two log sites print `none`. A single
+    /// fabricated value could not have served four different correct answers.
+    pub(crate) fn buffered_ms(self) -> Option<i64> {
         let tail = match (self.audio_expected, self.audio_tail) {
-            (true, None) => return 0,
+            (true, None) => return None,
             (_, Some(audio)) => audio.min(self.video_tail),
             (false, None) => self.video_tail,
         };
-        tail.saturating_since(self.playback)
+        Some(tail.saturating_since(self.playback))
     }
 
     /// The VIDEO lane's own buffered duration, ignoring audio. Diagnostic only: nothing in the
@@ -136,7 +158,15 @@ pub(crate) struct BufferEstimate {
 }
 
 impl BufferEstimate {
-    pub(crate) fn update(&mut self, buffered_ms: i64, media_duration_ms: i64) {
+    /// One segment's observation. **`None` is not an observation** — it is the audio lane having
+    /// said nothing yet ([`BufferSnapshot::buffered_ms`]) — so it advances no counter and moves no
+    /// estimate. Folding it in as a zero would enter a full reserve into the EWMA as a cliff, and
+    /// `last_delta_ms` (which the emergency guard reads precisely because it is unsmoothed) would
+    /// carry the whole fabricated drop.
+    pub(crate) fn update(&mut self, buffered_ms: Option<i64>, media_duration_ms: i64) {
+        let Some(buffered_ms) = buffered_ms else {
+            return;
+        };
         if media_duration_ms <= 0 {
             return;
         }

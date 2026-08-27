@@ -110,6 +110,20 @@ class PinSamples(unittest.TestCase):
             rows = cp.pin_samples(p, 4000)
         self.assertAlmostEqual(rows[0]["overhead"], 400.0)
 
+    def test_a_sample_with_no_readable_reserve_is_skipped_rather_than_censused_as_zero(self):
+        """`buf=none` is the app saying the playable reserve is not knowable this segment. It
+        feeds `buf_median_ms`, the plant's starting reserve, so coercing it to 0 would drag that
+        median down by exactly the count of segments whose audio lane happened to be quiet — and
+        `sim.rs` would then model a television that starts every rung emptier than it does."""
+        import tempfile
+        line = ("abr: sample current=4000kbps media=4000kbps net=8000kbps buf={buf} "
+                "vbuf=9000ms abuf=9000ms dur=2000ms prod=700pm n=1 decision=stay target=0kbps")
+        with tempfile.TemporaryDirectory() as d:
+            p = pathlib.Path(d) / "case.log"
+            p.write_text("\n".join(line.format(buf=b) for b in ("9000ms", "none", "9000ms")) + "\n")
+            rows = cp.pin_samples(p, 4000)
+        self.assertEqual([r["buf"] for r in rows], [9000, 9000])
+
     def test_overhead_never_goes_negative(self):
         import tempfile
         line = ("abr: sample current=4000kbps media=4000kbps net=1000kbps buf=1ms "

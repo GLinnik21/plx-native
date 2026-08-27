@@ -10,6 +10,7 @@ disagreements" and "no lines" look identical in the summary.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import io
 import pathlib
@@ -26,8 +27,10 @@ _spec.loader.exec_module(wg)
 
 
 def sample(prod_pm, dur_ms=2000, buf_ms=8000):
-    return (f"abr: sample current=4000kbps media=3000kbps net=9000kbps buf={buf_ms}ms "
-            f"vbuf={buf_ms}ms abuf={buf_ms}ms dur={dur_ms}ms prod={prod_pm}pm n=9 "
+    # `buf_ms="none"` is the app's own spelling for a reserve it cannot read this segment.
+    buf = f"{buf_ms}ms" if buf_ms != "none" else "none"
+    return (f"abr: sample current=4000kbps media=3000kbps net=9000kbps buf={buf} "
+            f"vbuf=8000ms abuf=8000ms dur={dur_ms}ms prod={prod_pm}pm n=9 "
             f"decision=stay target=0kbps")
 
 
@@ -66,6 +69,26 @@ class Pairing(unittest.TestCase):
         # downstream would still "pass" against the neighbouring segment's numbers.
         with self.assertRaises(SystemExit):
             graded([window("filling", 1, 9, -1, -1, -1, -1, 0, 0)])
+
+    def test_an_unknown_reserve_is_a_STATED_skip_and_not_a_pairing_break(self):
+        """A `buf=none` segment still emits its `abr: window` line — the readout sits above every
+        early return in the controller — so the window has a sample before it and the pairing is
+        intact. What it does NOT have is a reserve, which is the entire subject of condition (2),
+        so the pair is dropped and counted rather than graded against a fabricated zero (which
+        would score every such segment as an unsurvivable window)."""
+        rows = wg.paired([sample(500, buf_ms="none"),
+                          window("admit", 9, 9, 1000, 2600, 6000, 0, 1, 1),
+                          sample(600), window("admit", 9, 9, 1000, 2600, 6000, 0, 1, 1)])
+        self.assertEqual(len(rows), 1, "only the gradeable segment survives")
+        self.assertEqual(rows[0][1]["prod_pm"], 600)
+
+    def test_the_skip_is_reported_rather_than_silent(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            wg.paired([sample(500, buf_ms="none"),
+                       window("admit", 9, 9, 1000, 2600, 6000, 0, 1, 1)])
+        self.assertIn("skipped", err.getvalue())
+        self.assertIn("1 segment", err.getvalue())
 
     def test_pairs_come_out_in_order(self):
         rows = wg.paired([sample(500), window("filling", 1, 9, -1, -1, -1, -1, 0, 0),

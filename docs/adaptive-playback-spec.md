@@ -959,9 +959,13 @@ B < A_i + E_tx_down(k*)
 This is `must_downshift`, and it is a deadline, not a trigger. Two defects in the shipped version
 must be fixed with it:
 
-* **`buffered_ms()` returns 0 for "unknown"** and `must_downshift` reads 0 as "empty", so a missing
-  audio timestamp fires a deadline-free downshift on a full reserve. It must become
-  `Option<i64>` — the Original path already encodes the same condition that way.
+* ~~**`buffered_ms()` returns 0 for "unknown"**~~ — **SHIPPED 2026-08-27.** It returns
+  `Option<i64>`, and each of the five readers states its own answer to "unknown": the controller
+  makes NO decision (so a quiet audio lane can no longer propose anything, which was the bug),
+  `candidate_ready` refuses, the Original probe declines to spend a probe, and the two log sites
+  print `none` — which `tests/run.py` now parses as `None` rather than losing the line. A
+  differential test pins it: read as zero, a 12 s reserve with a silent audio lane produces a
+  `Prime(Down)`.
 * **There is no terminal case** when no rung is viable. A predicate with no action in the region
   that motivates it.
 

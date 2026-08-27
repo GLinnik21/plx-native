@@ -33,7 +33,12 @@ import re
 import sys
 
 RE_SAMPLE = re.compile(
-    r"abr: sample current=(\d+)kbps media=(\d+)kbps net=(\d+)kbps buf=(-?\d+)ms "
+    # `buf=` is `<n>ms` or the literal `none` -- the app cannot know the playable reserve on a
+    # segment whose audio lane has produced no timestamp yet, and prints `none` rather than a
+    # zero that reads as an empty buffer. Matched permissively HERE and rejected explicitly at
+    # the use site, so such a sample is a stated skip rather than a line that silently stops
+    # matching and disappears from the census.
+    r"abr: sample current=(\d+)kbps media=(\d+)kbps net=(\d+)kbps buf=(\S+) "
     r"vbuf=(-?\d+)ms abuf=(\S+) dur=(\d+)ms prod=(\d+)pm n=(\d+) decision=(\S+) "
     r"target=(\d+)kbps"
 )
@@ -60,6 +65,12 @@ def transferred_us(bytes_i: int, acq_us: int, query: int) -> int:
     return -((-acq_us * query) // b)  # ceiling division, no float
 
 
+#: A sample that was seen but carries no gradeable reserve. A distinct object rather than `None`
+#: so that "no sample" (a real pairing break, which is an error) stays distinguishable from "a
+#: sample whose reserve was unknowable" (a stated skip).
+UNGRADEABLE = object()
+
+
 def paired(lines):
     """The window's input stream, in order: `("candidate", bytes, acq_us)` or `("segment", …)`.
 
@@ -73,7 +84,7 @@ def paired(lines):
     acquired while it is in flight, and the `tx` record therefore falls between the `abr: window`
     before the transaction and the one after it.
     """
-    out, pending = [], None
+    out, pending, ungradeable = [], None, 0
     for line in lines:
         m = RE_TX_GRADED.search(line)
         if m:
@@ -81,14 +92,27 @@ def paired(lines):
             continue
         m = RE_SAMPLE.search(line)
         if m:
-            pending = {"buf_ms": int(m.group(4)), "dur_ms": int(m.group(7)),
-                       "prod_pm": int(m.group(8))}
+            # A `buf=none` sample cannot be graded against condition (2) — the reserve IS the
+            # quantity that condition is about — so it pairs as `UNGRADEABLE` rather than with a
+            # fabricated zero, which would score every such segment as an unsurvivable window.
+            # It is still a pairing: the app emits the `abr: window` line for these segments too
+            # (the readout sits above every early return), so dropping the sample entirely would
+            # leave that line looking like the drift this function refuses to guess through.
+            raw_buf = m.group(4)
+            pending = UNGRADEABLE if raw_buf == "none" else {
+                "buf_ms": int(raw_buf.rstrip("ms")), "dur_ms": int(m.group(7)),
+                "prod_pm": int(m.group(8)),
+            }
             continue
         m = RE_WINDOW.search(line)
         if not m:
             continue
         if pending is None:
             raise SystemExit("`abr: window` with no preceding `abr: sample`; the pairing is broken")
+        if pending is UNGRADEABLE:
+            pending = None
+            ungradeable += 1
+            continue
         out.append(("segment", pending, {
             "verdict": m.group(2), "have": int(m.group(3)), "want": int(m.group(4)),
             "eps_pm": int(m.group(5)), "clamp": int(m.group(6)),
@@ -99,6 +123,12 @@ def paired(lines):
             "bytes": int(m.group(14)), "dur_ms": int(m.group(15)),
         }))
         pending = None
+    if ungradeable:
+        # Stated, never silent: a skipped segment is coverage this grading does not have, and a
+        # count printed beside the verdict is the difference between "condition (2) held" and
+        # "condition (2) held on the segments we could evaluate".
+        print(f"note: {ungradeable} segment(s) skipped — reserve was `none` (audio lane silent)",
+              file=sys.stderr)
     return out
 
 

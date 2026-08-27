@@ -1233,8 +1233,12 @@ class NetcondRate(unittest.TestCase):
 # ---------------------------------------------------------------------------
 def _sample_line(current=10000, media=9800, net=40000, buf=8000, vbuf=8000,
                  abuf="8200ms", dur=2000, prod=300, n=5, decision="stay", target=0):
+    # `buf` takes an int OR the literal string "none", exactly as the app emits it: the playable
+    # reserve is not knowable on a segment whose audio lane has produced no timestamp since the
+    # open or the seek, and the app says so rather than printing a zero that reads as empty.
+    buf = f"{buf}ms" if buf != "none" else "none"
     return (f"[  12.345] abr: sample current={current}kbps media={media}kbps net={net}kbps "
-            f"buf={buf}ms vbuf={vbuf}ms abuf={abuf} dur={dur}ms prod={prod}pm n={n} "
+            f"buf={buf} vbuf={vbuf}ms abuf={abuf} dur={dur}ms prod={prod}pm n={n} "
             f"decision={decision} target={target}kbps reason=None")
 
 
@@ -1406,6 +1410,31 @@ class AbrLogLineContract(unittest.TestCase):
         """Belt and braces: the field NAMES agreeing is not the same as the line parsing."""
         self.assertIsNotNone(run.RE_ABR_SAMPLE.search(_sample_line()))
         self.assertIsNotNone(run.RE_ABR_SAMPLE.search(_sample_line(abuf="none", buf=-1)))
+
+    def test_an_unknown_reserve_parses_as_none_and_not_as_a_dropped_line(self):
+        """**`buf=none` must not stop the regex matching.**
+
+        It is the shape every `abr: sample` takes on the first segment after an open and after
+        every seek, so a regex that only accepts a number loses exactly those lines — and a lost
+        `abr: sample` is indistinguishable from the feature never having run, on the one tier
+        whose only copy of the evidence is a captured log.
+        """
+        rows = run.abr_samples([_sample_line(buf="none")])
+        self.assertEqual(len(rows), 1, "RE_ABR_SAMPLE no longer matches what the app logs")
+        self.assertIsNone(rows[0]["buf_ms"], "an unknown reserve must be None, never 0")
+        self.assertEqual(rows[0]["vbuf_ms"], 8000, "the rest of the line still parses")
+
+    def test_the_reserve_floor_ignores_the_segments_whose_reserve_was_unknown(self):
+        """Differential: read as 0, an unknown reserve makes `min_buf_ms` 0 on every trace that
+        contains a seek — which fails any `min_buf_ms` bound a case could carry, always, for a
+        reason that has nothing to do with the buffer."""
+        rows = run.abr_samples([_sample_line(buf=9000), _sample_line(buf="none"),
+                                _sample_line(buf=7000)])
+        self.assertEqual(run.abr_min_buf_ms(rows), 7000)
+
+    def test_a_trace_of_nothing_but_unknown_reserves_has_no_floor_rather_than_a_zero(self):
+        rows = run.abr_samples([_sample_line(buf="none")])
+        self.assertIsNone(run.abr_min_buf_ms(rows), "no reserve observed is not a reserve of 0")
 
 
 class ShaperSchedule(unittest.TestCase):
