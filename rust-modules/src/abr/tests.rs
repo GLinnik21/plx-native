@@ -3915,3 +3915,57 @@ fn a_commit_does_not_enter_the_ceiling_drop_as_a_drain() {
     }
     assert!(buffer.draining(), "a genuine post-commit drain must still fire: {buffer:?}");
 }
+
+/// **A transcode may not out-score the master it was made from** (R5, §7.B).
+///
+/// Differential: before the source clamp in `hls_utility`, the HLS side read the rung's nominal
+/// wire rate with no source input at all, so a rendition requested above the source's own rate
+/// scored a strictly higher band than the source — for ANY source. There is no input under which
+/// the unmodified code satisfies the first assertion below.
+///
+/// The magnitudes are R5's and the ones measured on the host: an 8000 kbps master scores 58
+/// (`7001..=9000`), an 18000 kbps rendition of it scored 76 (the open band), and 58 -> 66 -> 72 ->
+/// 76 is the "three steps" R5 named.
+#[test]
+fn a_rendition_cannot_score_above_the_master_it_encodes() {
+    let catalog = HlsActuatorCatalog::measured();
+    let rich = catalog.candidate(Rung::P1080M18);
+    let source_kbps = 8_000;
+
+    // The curve itself is unchanged and still says what it always said about a bare rate.
+    assert_eq!(hls_quality_score(rich), 76, "the ladder's own band for 18000");
+    assert_eq!(
+        hls_quality_score(HlsCandidate { expected_wire_kbps: source_kbps, ..rich }),
+        58,
+        "and the band an 8000 kbps master falls in",
+    );
+
+    // What changed is which of those the COMPARISON uses. Scored against an 8000 kbps source, a
+    // rendition asking for 18000 may not claim more than the master carries.
+    let clamped = HlsCandidate {
+        expected_wire_kbps: rich.expected_wire_kbps.min(source_kbps),
+        ..rich
+    };
+    assert_eq!(
+        hls_quality_score(clamped),
+        hls_quality_score(HlsCandidate { expected_wire_kbps: source_kbps, ..rich }),
+        "a transcode of an 8000 kbps master is worth an 8000 kbps picture, not an 18000 one",
+    );
+
+    // The clamp must NOT bite when the rung is genuinely under the source — that is the ordinary
+    // case, and clamping there would flatten the whole ladder into one band.
+    let modest = catalog.candidate(Rung::P720Low);
+    assert!(modest.expected_wire_kbps < source_kbps, "fixture assumption");
+    assert_eq!(
+        hls_quality_score(HlsCandidate {
+            expected_wire_kbps: modest.expected_wire_kbps.min(source_kbps),
+            ..modest
+        }),
+        hls_quality_score(modest),
+        "a rung below the source is scored exactly as before",
+    );
+
+    // ...and an unknown source (`source_kbps == 0`) must not clamp to nothing, which would score
+    // every rung 0 and refuse every upshift.
+    assert_eq!(hls_quality_score(rich), 76, "unknown source leaves the curve alone");
+}

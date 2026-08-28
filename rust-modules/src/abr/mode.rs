@@ -178,7 +178,37 @@ pub(crate) fn hls_utility(
         &inputs.buffer,
         policy,
     );
-    let quality = scaled(hls_quality_score(candidate), scale);
+    // **A transcode cannot carry more information than its source** (plan R5, §7.B).
+    //
+    // `hls_quality_score` reads the rung's nominal wire rate, and until 2026-08-28 that was the
+    // whole input on this side of the argmax — while `source_quality_score` on the OTHER side has
+    // always capped the source by its own rate and raster. The comparison was therefore asymmetric
+    // in the one direction that matters: a rendition may be requested at any rung the ladder
+    // offers, so a 20 Mbit/s transcode of an 8 Mbit/s master scored the ladder's top band while
+    // the master itself scored the band its real rate falls in.
+    //
+    // R5 stated the size of that ("an 8.5 Mbit/s 1080p source scores three steps below a
+    // 20 Mbit/s transcode of itself") and this reproduces it exactly: 8000 lands in `7001..=9000`
+    // for 58, 18000 lands in the open band for 76, and 58 -> 66 -> 72 -> 76 is three steps.
+    //
+    // Measured consequence, host 2026-08-28 (`pipe_auto_original_slow_recover`): with HLS settled
+    // at 18000 against an 8000 kbps source, `OriginalRecovery::probe_due` refuses with
+    // `reason=not_worth_it` and Original is never recovered — the controller declining to return
+    // to the master because it scores a re-encode of that master above it.
+    //
+    // The cap is STRUCTURAL, not a tuning weight: it is `transcode <= source` in R5's own words,
+    // the same bound `source_quality_score` already applies, and it introduces no constant. Zero
+    // means "nobody said what the source is" (`ModeInputs::source_kbps`) and must not clamp to
+    // nothing, which would score every rung 0 and refuse every upshift.
+    let scored = if inputs.source_kbps == 0 {
+        candidate
+    } else {
+        HlsCandidate {
+            expected_wire_kbps: candidate.expected_wire_kbps.min(inputs.source_kbps),
+            ..candidate
+        }
+    };
+    let quality = scaled(hls_quality_score(scored), scale);
     // **N18 applies to BOTH sides of the argmax, and it was applied to one.** The rule it states
     // is a partition, not a preference: a term paid once is outside the scale and a term paid for
     // every remaining segment is inside it. `original_utility` scales quality, features and risk
