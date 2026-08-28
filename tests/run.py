@@ -562,6 +562,38 @@ def make_argv(target_args):
     return ["make", "-s", "-C", REPO_ROOT] + target_args + [f"FLAVOR={FLAVOUR}"]
 
 
+def tv_awake(tv, timeout=8):
+    """Does the television answer ssh at all. One probe, no lease, no side effects."""
+    try:
+        return ssh(tv, "true", timeout=timeout).returncode == 0
+    except Exception:
+        return False
+
+
+def require_tv(tv, name):
+    """**A sleeping television is not a test result.** Abort the run instead of grading it.
+
+    This set drops to standby on its own (`.claude/skills/wake-tv/`), and when it does mid-suite
+    EVERY assertion of every remaining case fails at once — `stream_path`, `load_decl`, `codec`,
+    `video_bound`, `pos_climb`, `server_wire` — because the app never launched and the log is a
+    boot banner. Measured 2026-08-28: a 19-case ABR tier reported **14 failures** that way, four
+    cases in, and the shape of it is indistinguishable at a glance from a catastrophic regression
+    in the code under test. It cost a full re-run to tell apart, and it is exactly the "plausible
+    wrong data" the repo's one-television rule warns about — the damage is not a clean failure.
+
+    So the run stops at the first case it cannot reach, naming the television rather than the
+    change. It does NOT wake the set itself: waking is a lease-holding operation with its own
+    skill, and a harness that silently resurrects the hardware hides how often this happens.
+    """
+    if tv_awake(tv):
+        return
+    sys.exit(
+        f"\nTELEVISION UNREACHABLE before `{name}` — stopping rather than grading.\n"
+        f"  Every assertion would fail at once and would read as a code regression.\n"
+        f"  Wake it and re-run:  .claude/skills/wake-tv/wake-tv.sh\n"
+    )
+
+
 def make(target_args, timeout, capture=True):
     """Invoke a make target from the repo root (absolute cwd so nothing drifts)."""
     return subprocess.run(make_argv(target_args), capture_output=capture, text=True,
@@ -3218,6 +3250,7 @@ def run_case(case, cfg, token, verbose, cond=None):
     run_secs = case.get("run_secs", 60)
     print(f"\n=== {name}  (rk={case['rk']}, {case.get('title','')}) ===")
     print(f"    covers: {', '.join(case.get('covers', []))}")
+    require_tv(tv, name)
 
     # 1. close the app first (so a live timeline_thread can't overwrite the viewOffset).
     # ONLY needed when this case seeds one: that race is the entire purpose of the close, and
@@ -3587,6 +3620,7 @@ def run_pipeline_case(case, cfg, srv, url_base, verbose):
     print(f"\n=== {name}  ({case['fixture']}, {case.get('title','')}) ===")
     print(f"    covers: {', '.join(case.get('covers', []))}")
 
+    require_tv(tv, name)
     make(["kill", f"TV={tv}"], timeout=40)
     srv.set_network_profile(case.get("network_profile"))
     # **The REQUEST-indexed shaper, which existed and was never armed.**
