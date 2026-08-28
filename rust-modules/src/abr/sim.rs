@@ -1048,6 +1048,16 @@ mod tests {
         // `abr/tests.rs` and the device case are what grade it. Censusing 18000 is what would
         // change that, and it is one pin.
         //
+        // **The set MOVED from 18000 to 6000 on 2026-08-28, and the reason is a policy change
+        // rather than a new pin.** `CapacityObservation::quality` now applies the interval floor to
+        // every tier, so a large-but-brief transfer is `Weak` and is clamped to
+        // `WEAK_SAMPLE_HEADROOM` times the rung it was measured on. The fast leg therefore climbs
+        // geometrically instead of jumping on one fabricated reading, and inside this matrix's
+        // horizon it now reaches 6000 rather than the top — so it no longer descends through
+        // 18000 either. That is the designed ramp (`clamped_to_evidence`'s doc argues it) and it is
+        // also a LOSS of reach for this instrument: the top-of-ladder shape above is now further
+        // out of the closed loop's range than it was, not nearer. Both pins are still owed.
+        //
         // Asserted as an exact set on purpose. If it shrinks, somebody censused a rung and this
         // list should shrink with it; if it grows, a profile now reaches a gap nobody accounted
         // for. Either way the reader is told, which a bare skip count does not do.
@@ -1059,7 +1069,7 @@ mod tests {
         gaps.dedup();
         assert_eq!(
             gaps,
-            vec![18_000],
+            vec![6_000],
             "the uncensused rungs this matrix reaches have changed; skipped:\n  {}",
             skipped.join("\n  "),
         );

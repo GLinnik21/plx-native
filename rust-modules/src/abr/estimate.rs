@@ -199,11 +199,39 @@ pub(crate) struct CapacityObservation {
 }
 
 impl CapacityObservation {
+    /// **The interval floor applies to every tier, not only to `Strong`.** The two axes answer
+    /// different questions and were being asked in the wrong order: the DURATION decides whether a
+    /// rate measurement means anything at all, and the SIZE grades how much to trust one that
+    /// does. `Strong` tested both and `Normal` tested size alone, so a transfer that was large but
+    /// far too brief to measure — the exact case `clamped_to_evidence` exists for — was classified
+    /// `Normal` and skipped the clamp.
+    ///
+    /// The consequence is not a slightly noisy estimate. Measured on the host simulator over a
+    /// shaped 20 Mbit/s link (2026-08-28, leg D): after a link collapse and recovery the
+    /// controller reached rung 2000 and never proposed another upshift for the rest of the run —
+    /// no dwell, no reject block, no transaction attempted at all. A 2 s segment at that rung is
+    /// ~500 KB, which crosses `NORMAL_OBSERVATION_BYTES` on size while arriving in ~200 us, so
+    /// `network_kbps` read tens of millions of kbps unclamped. Consecutive samples read
+    /// `18074, 18434921, 271729, 23303152, ...` kbps; each extreme reading inflated `fast_kbps`,
+    /// the next honest one was then more than a factor of four below it, and `is_collapse` fired —
+    /// which is the ONE call site of `AcquisitionWindow::reset`. The window was wiped six times
+    /// running and never again passed 4 of the 19 samples an upshift needs. The estimator's own
+    /// guard could not see the thing it was written for.
+    ///
+    /// **No new quantity is introduced.** `STRONG_OBSERVATION_US` is promoted from one half of the
+    /// `Strong` test to the validity floor it always described, and `Strong` keeps its own meaning
+    /// as "valid AND megabyte-scale". Below the floor a sample is `Weak`, which is what
+    /// `ObservationQuality::Weak`'s own doc has always said — "truncated, tiny, **or over too
+    /// short an interval to have left TCP's opening burst**" — and which routes it through
+    /// `clamped_to_evidence`, so it claims `WEAK_SAMPLE_HEADROOM` times the rung it was measured
+    /// on rather than a fabricated ceiling. That is the geometric ramp the clamp was designed
+    /// around: the rung climbs, its segments get bigger and slower, and they become measurable.
+    /// The cost of that ramp is real and is recorded beside the census assertion in `sim.rs`.
     pub(crate) fn quality(self) -> ObservationQuality {
-        if !self.completed {
+        if !self.completed || self.active_us < MEASURABLE_OBSERVATION_US {
             return ObservationQuality::Weak;
         }
-        if self.bytes >= STRONG_OBSERVATION_BYTES && self.active_us >= STRONG_OBSERVATION_US {
+        if self.bytes >= STRONG_OBSERVATION_BYTES {
             ObservationQuality::Strong
         } else if self.bytes >= NORMAL_OBSERVATION_BYTES {
             ObservationQuality::Normal
@@ -272,7 +300,12 @@ pub(crate) const MAX_UNCERTAINTY_PM: u32 = 500;
 /// climb is re-measured at every step instead of being asserted once.
 pub(crate) const WEAK_SAMPLE_HEADROOM: u32 = 8;
 pub(crate) const STRONG_OBSERVATION_BYTES: u64 = 1_048_576;
-pub(crate) const STRONG_OBSERVATION_US: u64 = 250_000;
+/// **The interval below which a transfer reports latency rather than capacity**, and therefore the
+/// floor on a rate measurement being admissible at all. It was `STRONG_OBSERVATION_US` and was
+/// asked only alongside `STRONG_OBSERVATION_BYTES`; `CapacityObservation::quality` now asks it
+/// first, for every tier, which is what `ObservationQuality::Weak`'s doc always claimed. The value
+/// is unchanged — this is a promotion, not a new threshold.
+pub(crate) const MEASURABLE_OBSERVATION_US: u64 = 250_000;
 pub(crate) const NORMAL_OBSERVATION_BYTES: u64 = 256 * 1024;
 
 pub(crate) fn weighted_mean(old: u32, new: u32, weight: u32, denominator: u64) -> u32 {

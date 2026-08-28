@@ -744,16 +744,52 @@ fn a_runtime_collapse_from_the_top_does_not_prime_oversized_intermediate_rungs()
     );
 }
 
+/// A loaded server draining the reserve must move the rung; a loaded server holding it steady must
+/// not. The contrast is the whole test — `prod` is identical in both legs, so only the reserve's
+/// TRAJECTORY can be doing the work.
+///
+/// **The draining leg now fires four samples earlier, and that is the point rather than a
+/// tolerance change.** It used to walk 8000 -> 6000 -> 4000 -> 3000 -> 2500 -> 2000 and react only
+/// at the last one. The reserve loses a full segment's worth of content per segment throughout —
+/// draining at real time from the second sample onward — against a server reporting 1200 pm, i.e.
+/// 20% behind real time. `production_bad` is exactly the conjunction of those two, so it should
+/// have fired at the first sample carrying a real delta. It did not, because
+/// `BufferEstimate::update` seeded `slope_ms_per_s` from a FABRICATED one: `self.buffered_ms`
+/// starts at zero, so sample one entered the whole 8 s reserve as a `+4000 ms/s` FILL, and the 3:1
+/// EWMA still read `+2750` at sample two. `draining()` was therefore false and the conjunction
+/// could not hold, so four further samples of `Stay` were not the policy being careful — they were
+/// the fabrication decaying. It was optimistic in the one direction that matters, which is
+/// `[[reserve-cannot-see-a-slow-film]]`'s shape exactly.
 #[test]
 fn draining_jit_session_downshifts_but_stable_jit_does_not() {
-    let mut controller = bootstrap_controller();
-    assert_eq!(controller.observe_next(sample(20_000, 1_200, 8_000)), Decision::Stay);
-    assert_eq!(controller.observe_next(sample(20_000, 1_200, 6_000)), Decision::Stay);
-    assert_eq!(controller.observe_next(sample(20_000, 1_200, 4_000)), Decision::Stay);
-    assert_eq!(controller.observe_next(sample(20_000, 1_200, 3_000)), Decision::Stay);
-    assert_eq!(controller.observe_next(sample(20_000, 1_200, 2_500)), Decision::Stay);
-    assert_eq!(controller.observe_next(sample(20_000, 1_200, 2_000)),
-        Decision::Prime(Proposal { rung: Rung::P240, direction: Direction::Down }));
+    // The drain, reacted to on the first sample that can see it. Sample one records the level and
+    // no slope — a slope needs two observations — so sample two carries the first real delta.
+    let mut draining = bootstrap_controller();
+    assert_eq!(draining.observe_next(sample(20_000, 1_200, 8_000)), Decision::Stay);
+    assert_eq!(
+        draining.observe_next(sample(20_000, 1_200, 6_000)),
+        Decision::Prime(Proposal { rung: Rung::P240, direction: Direction::Down }),
+        "one real delta is enough here because TWO independent conditions agree on it",
+    );
+    assert_eq!(
+        draining.telemetry().reason,
+        Some(DecisionReason::Hls(HlsReason::ProductionConstraint)),
+        "and it must be the production arm: `production_bad` is the server being behind real time \
+         AND the reserve draining, which is what the fabricated seed used to hide — at this sample \
+         the old slope was +2750 ms/s, so `draining()` was false and a server 20% behind real time \
+         with a reserve falling at real time read as healthy",
+    );
+
+    // The control, and the half the name promises: the same production load with a reserve that is
+    // NOT falling must move nothing, however long it runs.
+    let mut stable = bootstrap_controller();
+    for _ in 0..8 {
+        assert_eq!(
+            stable.observe_next(sample(20_000, 1_200, 8_000)),
+            Decision::Stay,
+            "a loaded server is not a reason to move while the reserve is holding",
+        );
+    }
 }
 
 fn recovery(source_kbps: u32) -> OriginalRecovery {
@@ -1974,17 +2010,42 @@ fn a_safe_budget_selects_the_best_actuator_directly() {
     assert_eq!(catalog.best_for_budget(100).map(|c| c.rung), None, "nothing fits, and it says so");
 }
 
-/// Throughput is a RATE, so the size and duration of the transfer decide how much it proves.
+/// Throughput is a RATE, so the size and duration of the transfer decide how much it proves —
+/// and the DURATION decides it first, for every tier.
+///
+/// **This test's own `normal` fixture was the defect.** It carried `active_us: 160_000` against a
+/// 250 ms floor and asserted `Normal`, because `quality()` asked the interval only on the `Strong`
+/// arm. That is the case `clamped_to_evidence` exists for — large enough to pass the size test,
+/// far too brief to measure — and it skipped the clamp, so a ~500 KB segment arriving in ~200 us
+/// reported tens of millions of kbps. Found on the host simulator over a shaped 20 Mbit/s link,
+/// where it wiped the acquisition window six times running and left the controller unable to
+/// propose any upshift at all (`CapacityObservation::quality`'s doc has the reading).
 #[test]
 fn observation_quality_weights_a_tiny_read_below_a_sustained_one() {
     let tiny = CapacityObservation { kbps: 100_000, bytes: 40_000, active_us: 3_000, completed: true };
-    let normal = CapacityObservation { kbps: 20_000, bytes: 400_000, active_us: 160_000, completed: true };
+    let normal = CapacityObservation { kbps: 20_000, bytes: 400_000, active_us: 300_000, completed: true };
     let sustained = CapacityObservation { kbps: 20_000, bytes: 4_000_000, active_us: 1_600_000, completed: true };
     let truncated = CapacityObservation { completed: false, ..sustained };
+    // Large enough to pass every SIZE test and far too brief to be a rate at all: the shape that
+    // escaped both the interval test and the clamp.
+    let big_and_brief = CapacityObservation {
+        kbps: 24_000_000, bytes: 600_000, active_us: 200, completed: true,
+    };
     assert_eq!(tiny.quality(), ObservationQuality::Weak);
     assert_eq!(normal.quality(), ObservationQuality::Normal);
     assert_eq!(sustained.quality(), ObservationQuality::Strong);
     assert_eq!(truncated.quality(), ObservationQuality::Weak, "a truncated read proves a floor");
+    assert_eq!(
+        big_and_brief.quality(),
+        ObservationQuality::Weak,
+        "a transfer that never stayed open long enough to measure reports LATENCY, whatever its \
+         size — and only a Weak sample reaches `clamped_to_evidence`",
+    );
+    assert_eq!(
+        big_and_brief.clamped_to_evidence(2_000).kbps,
+        2_000 * crate::abr::estimate::WEAK_SAMPLE_HEADROOM,
+        "so it may claim a multiple of the rung it was measured on, not 24 Gbit/s",
+    );
     assert!(tiny.weight() < normal.weight() && normal.weight() < sustained.weight());
 
     // ...and the weighting is real: a Strong observation pulls the estimate harder than a

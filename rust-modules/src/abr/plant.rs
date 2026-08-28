@@ -170,13 +170,28 @@ impl BufferEstimate {
         if media_duration_ms <= 0 {
             return;
         }
+        // **A slope needs TWO observations, and the first sample has one.** `self.buffered_ms`
+        // starts at zero, so on the first update `delta` is the whole reserve rather than a
+        // change in it — a playback opening with a 20 s reserve and 2 s segments manufactures
+        // `+10000 ms/s`. The guard above already exists for exactly this ("folding it in as a zero
+        // would enter a full reserve into the EWMA as a cliff") and was applied to `last_delta_ms`
+        // alone, so the same fabricated delta still SEEDED the slope, and a 3:1 EWMA needs about
+        // twenty samples to forget it. The direction of harm is the one
+        // `[[reserve-cannot-see-a-slow-film]]` names: the fabrication reads as the reserve FILLING
+        // fast, which is the reading that masks a real drain.
+        //
+        // So the seed moves one sample later, to the first update that has a real delta. Sample
+        // zero records the level and nothing else; `slope_ms_per_s` stays at its default, which
+        // says "no rate of change is known" — the honest answer, and a safe one, because no
+        // upshift can occur on the first sample anyway (the acquisition window needs nineteen).
         let delta = buffered_ms - self.buffered_ms;
-        self.last_delta_ms = if self.samples == 0 { 0 } else { delta };
+        let first = self.samples == 0;
+        self.last_delta_ms = if first { 0 } else { delta };
         let sample_slope = (delta * 1_000) / media_duration_ms;
-        self.slope_ms_per_s = if self.samples == 0 {
-            sample_slope
-        } else {
-            (self.slope_ms_per_s * 3 + sample_slope) / 4
+        self.slope_ms_per_s = match self.samples {
+            0 => self.slope_ms_per_s,
+            1 => sample_slope,
+            _ => (self.slope_ms_per_s * 3 + sample_slope) / 4,
         };
         if self.draining() {
             self.draining_samples = self.draining_samples.saturating_add(1);
