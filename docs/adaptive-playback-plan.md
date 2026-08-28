@@ -1214,3 +1214,51 @@ result.
 - It does not tune any parameter marked unidentifiable in §6.2b or §6.3 from host tests.
 - It does not change a device-provenance expectation to make a rewritten controller green (§8.5).
 - It does not resolve `candidate_accept_pm` to either neighbouring threshold before M3 (N19).
+
+---
+
+## 10. What actually remains (2026-08-28), and which tier can answer it
+
+Added because three separate claims in this repository's own prose were found stale in one
+session, each one sending a reader to redo work already done. This section is the current
+disposition; **when it disagrees with an increment row above, check the code before believing
+either.**
+
+### The assignment that changed under everything
+
+**`make sim` + `plxnative-clocksink` runs the REAL pipeline now** — both AVIO transports, the HLS
+demux, `ff.rs`'s rung transactions, the AU queues and their backpressure, the feed-ahead throttle,
+seek and PTS rebase, and the reserve the controller reads next. The host/device column in §M and
+§I was written before that, so **several legs marked "device" are host-runnable today**. Only two
+classes genuinely need the television:
+
+1. **LG's decoder** — resource-allocation refusals, the Load payload, frame pacing, what the panel
+   accepts. Nothing off-device speaks to it.
+2. **Timing taken as a device measurement** — every simulator heartbeat carries `sim=1` precisely
+   so a pasted number cannot be mistaken for one.
+
+Everything else is a question about *our* code, and our code runs here.
+
+### Disposition
+
+| leg | status | tier that can answer it |
+|---|---|---|
+| Phase 0 graded-reject raster excursion | **DISCHARGED** — 37 raster-crossing fed rejects across 7 cases, zero errors (`p0-plant-sizing.md`) | already answered by the default tier |
+| closed-loop sim, stall disqualifier | **RUNS** in `make check` — 3 legs (`abr/sim.rs`) | host |
+| §7.B quality scoring | inputs unblocked (`source_raster()` exists; `out=` is logged) — **not built** | host to build; needs validation before shipping |
+| §7.A thirteen-way argmax | gated on §7.B, per §7.A's own "do not build it without B" | — |
+| I5a, I6 A/B | **blocked on I0(h)**, the `abr_policy` switch, which does not exist. This is the real blocker, not the television: without it `apply_triggers` wipes the trigger before each case, and both parameter sets cannot be run over one trace | host (build the switch), then either tier |
+| I7a Original recovery | Original mode is unreachable from `pipe_abr_*` — those fixtures are HLS-only | needs a real server, or a hand-driven `netcond` session |
+| I7b Original→HLS fallback | same, and §I already says "the `pipe_abr_*` cases cannot reach it; name the case that can" | as above |
+| I8 seek-twice | `pipe_abr_seek_flat` exists and passes | host sim is sufficient; confirm it seeks twice |
+| λ / `P(revert)` | **NOT pending work.** R6 established it is unidentifiable from this corpus — four events, dispersion index 10.8, a 95% CI of width 0.6, and degenerate at every legal entry point in the first half of a film | nothing; recorded, not estimated |
+
+### The failure mode this section exists to stop
+
+All three stale claims had the same shape: a limitation recorded **truthfully**, then closed by
+later work that did not walk back the note. Nothing compiles prose, so the note outlives the
+limitation and reads as current.
+
+The cheap defence is a grep before a rig. `p0-plant-sizing.md` named a shaped recipe to provoke a
+graded reject; one `grep -c outcome=not_ready_fed` over logs already on disk showed the default
+tier had been firing it 37 times a run. **Search the captured logs before building the experiment.**
