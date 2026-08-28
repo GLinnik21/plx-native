@@ -81,6 +81,15 @@ still a disagreement.
   result from run A and no replayable arithmetic on this build.
 * Nothing compares this against the previous controller under matched conditions. `max_commits` is
   not a grader — the same binary scored 7 then 3 on identical inputs — so a real comparison is the
-  closed-loop simulator over frozen traces with a stall disqualifier, which has not been run.
+  closed-loop simulator over frozen traces with a stall disqualifier. ~~which has not been run.~~
+  **It RUNS, as of 2026-08-28, and it runs inside `make check`.** `abr/sim.rs` closes the loop over
+  the device-calibrated plant with a stall disqualifier in three legs —
+  `the_controller_never_rebuffers_on_a_link_that_can_carry_the_ladder` (the disturbance matrix),
+  `the_device_collapse_case_descends_to_a_sustainable_rung_and_stops_stalling` (this document's own
+  collapse case) and `a_link_under_the_floor_rung_drives_the_controller_to_the_floor`. It was
+  blocked because `run()` refuses an unmeasured transaction leg and all four were `None`;
+  `TransactionModel::measured()` unblocked it. **The A/B half is still owed** — grading BOTH
+  parameter sets needs the `abr_policy` switch (I0 deliverable (h)), which does not exist, so what
+  runs today grades the shipped controller and not the comparison this bullet asks for.
 * The floor limitation and the collapse silence are both recorded as *bounds on what the rule can
   say*, not as things this run measured the cost of.

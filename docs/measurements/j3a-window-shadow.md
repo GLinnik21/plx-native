@@ -117,7 +117,10 @@ history for no reason are the same two lines in a captured log.
 * Nothing about `E_tx`. The transaction charge is not in the module yet.
 * Nothing about whether refusing would have been **better**. The shadow decides nothing, by
   construction; grading that needs the closed-loop simulator over frozen traces, with a stall
-  disqualifier, and `max_commits` is not a grader.
+  disqualifier, and `max_commits` is not a grader. **That simulator exists and runs in `make check`
+  as of 2026-08-28** (`abr/sim.rs`, three stall-disqualified legs — see `j3-decides.md`), so this
+  bullet's blocker is half lifted: what it still cannot do is the A/B, which needs the `abr_policy`
+  switch to run both parameter sets over one trace.
 * The regime-change exposure was measured on the earlier build of the same two cases and is not
   re-quoted here as a number, because that run's logs were replaced: after the shaper leg ended and
   throughput jumped ~4×, the verdict stayed `refuse` for a further 20 segments while the window
