@@ -623,6 +623,25 @@ controller's current rung untouched.
 This is what makes the empirical table in §4 survivable if another PMS holds a different boundary:
 the model chooses what to try, and the media decides what ships.
 
+**And a transaction's deadline is not the same quantity in both directions**, which is the one
+place the reality check can refuse a move it exists to enable. Both candidate budgets are bounded
+by the reserve they are paid out of — the conservation identity, no coefficient — and for an
+upshift that is exactly right: an upshift buys quality on a picture that is still playing, so once
+the reserve is gone the benefit is gone with it. For a **downshift the same sentence is false**,
+because a downshift's benefit is the picture RESTARTING, which is available precisely when the
+reserve is exhausted. Enforced symmetrically it made the exhausted reserve **absorbing**: the
+first downshift spent the whole reserve on its warm-up and missed by 31 ms, and every one after
+that was issued a 168 ms deadline no transfer can meet, refused, so the reserve was never refilled.
+The controller decided correctly 321 consecutive times — every line reads `decision=prime_down` —
+and could act on none of them: 74 s of stall at a pinned rung, the film at `play=617`.
+
+So a downshift's warm-up deadline is floored at `R_target * D / C`, the time its transfer
+physically needs at the measured capacity (`predicted_transfer`). Both terms are measurements and
+there is no margin; refusing a transfer less time than it requires is not bounding it. It does not
+loosen the 36-second runaway the reserve bound was written for — that record computes to 1 667 ms,
+tighter than the reserve it ran against — so the floor binds only in the absorbing state.
+`docs/measurements/j3b-downshift-floor.md`, with both logs.
+
 ## 10. What this deliberately does not model
 
 * **Decoder/render health.** This television publishes no trustworthy dropped-frame or
