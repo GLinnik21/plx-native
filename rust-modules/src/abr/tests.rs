@@ -466,8 +466,137 @@ fn the_prime_remnant_is_not_a_starving_reserve() {
     assert_eq!(second.fallback, None, "a filling reserve on a link that covers the file");
 }
 
+/// **The same film, eight windows in — where `the_prime_remnant_is_not_a_starving_reserve` stops
+/// looking.** (Device, 2026-08-29.)
+///
+/// That test guards windows 1 and 2, which is where `orig-first-window-fallback.md` found the
+/// defect. The guard it installed — `last_delta_ms < 0` — protects those two windows for a reason
+/// that expires: window 1 has no derivative at all, and window 2's is the whole of a rising prime.
+/// From window 3 on, the raw delta is a **sign test on a signal whose quantisation is comparable
+/// to its per-window travel**, and the reserve is `min(video_tail, audio_tail) - playpos` with
+/// `playpos` off a 5 Hz callback — so one negative sample out of eight is close to certain on a
+/// perfectly healthy link.
+///
+/// This is that film's actual failure, in its own numbers: a 25 264 kbps 4K Dolby Vision + Atmos
+/// source on a link measuring 31 037 kbps, reserve climbing ~600 ms per window, and ONE window
+/// where it dips 114 ms — a fifth of the quantisation step. The horizon is 17 s against a
+/// `starvation_fallback_secs` of 20, so the old conjunction fires and the film loses 4K direct
+/// play for a 720p transcode. The log line was
+/// `ImminentStarvation ... buf=4814ms slope=1020ms/s starve=16` — a starvation verdict beside a
+/// filling reserve.
+///
+/// Differential by construction: against unmodified code the final `assert` fails.
+#[test]
+fn one_quantisation_dip_in_a_filling_reserve_is_not_a_starvation() {
+    let mut mode = original(25_264);
+    // Reserve as the device carried it: the prime remnant, then ~600 ms of gain per window.
+    let climb = [749_i64, 1_300, 1_900, 2_500, 3_100, 3_700, 4_300, 4_814];
+    for (i, buffered) in climb.iter().enumerate() {
+        let windows = (i + 1) as u64;
+        let observation = mode
+            .observe_saturated(
+                window_bytes(31_037) * windows,
+                ORIGINAL_WINDOW_US * windows,
+                Some(*buffered),
+                HOUR_MS,
+            )
+            .unwrap();
+        assert_eq!(
+            observation.fallback, None,
+            "window {windows}: the reserve is rising and the film is playing at speed",
+        );
+    }
+    // The dip. 114 ms against a ~200 ms quantisation step and a ~600 ms per-window trend: this is
+    // the measurement's noise floor, not an observation about the link.
+    let windows = climb.len() as u64 + 1;
+    let dip = mode
+        .observe_saturated(
+            window_bytes(31_037) * windows,
+            ORIGINAL_WINDOW_US * windows,
+            Some(4_700),
+            HOUR_MS,
+        )
+        .unwrap();
+    assert!(
+        dip.slope_ms_per_s > 0,
+        "the smoothed reserve is still rising ({}ms/s) — which is the evidence the verdict has to \
+         answer to",
+        dip.slope_ms_per_s,
+    );
+    assert!(
+        dip.horizon_secs.is_some_and(|s| s <= 20),
+        "the manufactured horizon is present and inside `starvation_fallback_secs` — {:?}s — so \
+         this test really does exercise the branch, and only the derivative keeps it shut",
+        dip.horizon_secs,
+    );
+    assert_eq!(
+        dip.fallback, None,
+        "one negative sample in a filling reserve may not cost a reload and a visible blink",
+    );
+}
+
+/// **The reserve derivative is per WALL second, because that is what spends the reserve.**
+///
+/// `ORIGINAL_WINDOW_US` deliberately measures capacity over ACTIVE body-read time, so a reader
+/// parked on backpressure does not measure as a slow link. Feeding that same denominator to the
+/// buffer estimate was a units error: parking is what a HEALTHY link does, so `t_active < t_wall`
+/// exactly when the reserve is filling, and the slope came out inflated by `t_wall / t_active`.
+/// Device-measured: a printed `slope=1020ms/s` against a real +508 ms per wall second.
+///
+/// It matters because `slope_ms_per_s` is then compared against `DRAIN_EPS_MS_PER_S`, which is
+/// stated in wall seconds, and sits beside `starvation_horizon`, which is wall seconds throughout.
+///
+/// `observe_saturated` cannot see this — it passes `now_ms = active_us / 1_000`, making the two
+/// clocks identical — so this test calls `observe` directly, which is the only way to separate
+/// them.
+#[test]
+fn the_reserve_slope_is_measured_on_the_wall_clock_not_on_read_time() {
+    let mut mode = original(25_264);
+    // One window of active read that took twice as long in wall time: the reader spent half of it
+    // parked on a full queue, which is the healthy case.
+    mode.observe(window_bytes(31_037), ORIGINAL_WINDOW_US, Some(1_000), HOUR_MS, 1_500)
+        .unwrap();
+    let second = mode
+        .observe(
+            window_bytes(31_037) * 2,
+            ORIGINAL_WINDOW_US * 2,
+            Some(2_500),
+            HOUR_MS,
+            3_000,
+        )
+        .unwrap();
+    // 1 500 ms of reserve gained over 1 500 ms of wall clock is +1 000 ms/s. Over the 750 ms of
+    // active read the same gain would read +2 000 ms/s — the doubling this test exists to refuse.
+    assert_eq!(
+        second.slope_ms_per_s, 1_000,
+        "gained 1500ms of reserve across 1500ms of wall clock",
+    );
+}
+
 /// A moderate deficit that will not go away eventually loses the argument on its own — before
 /// starvation is imminent, and with no counter deciding anything by itself.
+///
+/// **RE-EXPRESSED 2026-08-29: the reserve now FALLS, and holding it constant was asserting the
+/// defect** — the same shape as `a_collapse_leaves_original_for_the_best_sustainable_state`'s own
+/// re-expression, for the same reason.
+///
+/// This fixture used to hold `Some(30_000)` across all fourteen windows, and that world is
+/// self-contradictory: a reserve that neither grows nor shrinks while the film plays says delivery
+/// EQUALS consumption exactly, which is the definition of a link that is carrying the file. The
+/// only thing asserting a deficit there was `R − C` — `vbr_allowance_pm` inflating the requirement
+/// and `uncertainty_pm` discounting the measurement, against each other, with no observation on
+/// either side. Counting that toward `sustained_unsafe_deficit_ms` is what let a 4K Dolby Vision
+/// film be abandoned with its reserve rising at +783 ms/s (see
+/// `one_quantisation_dip_in_a_filling_reserve_is_not_a_starvation`).
+///
+/// It also could not stay: a flat reserve is what SATURATION looks like — `B_max` is the queue
+/// caps plus the pump's feed-ahead lead — so the old fixture's own steady state was the one state
+/// that most conclusively refutes starvation.
+///
+/// So the shortfall is now observable: 200 ms of reserve lost per window, a slope of −266 ms/s,
+/// past `DRAIN_EPS_MS_PER_S` and nowhere near imminent. What the test grades is unchanged — a
+/// persistent, non-imminent deficit eventually loses the utility argument — and it now grades it
+/// on a scenario that can happen.
 #[test]
 fn a_deficit_that_persists_costs_original_the_argument() {
     let mut mode = original(60_000);
@@ -477,7 +606,7 @@ fn a_deficit_that_persists_costs_original_the_argument() {
             .observe_saturated(
                 window_bytes(50_000) * window,
                 ORIGINAL_WINDOW_US * window,
-                Some(30_000),
+                Some(30_000 - 200 * i64::try_from(window).unwrap()),
                 HOUR_MS,
             )
             .unwrap();
