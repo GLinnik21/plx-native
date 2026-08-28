@@ -260,6 +260,25 @@ pub(crate) fn hls_safe_budget(capacity: &CapacityEstimate) -> u32 {
 /// segments of reserve and the two upshift budgets sum to about 2.6, so condition 1 does not bind
 /// on a healthy upshift. It binds when the reserve fell between the proposal and the fetch — which
 /// is a real transaction, several hundred milliseconds long, on a link that has just deteriorated.
+/// **Does a candidate warm-up carry the abort rule?** Down, and not at the ladder floor.
+///
+/// The two halves are the two arguments that were already made elsewhere, applied here.
+///
+/// `Direction::Down`, because the abort rule protects the PICTURE and the question is whether the
+/// picture is still being fed while the warm-up runs. On an upshift it is: the current rung is
+/// affordable by construction — that is why a dearer one was proposed — so a warm-up that
+/// overruns costs a probe and nothing else. On a downshift it is not: the current rung being
+/// unaffordable IS the trigger, so the reserve drains for the whole warm-up and the budget the
+/// deadline is built from is the reserve itself. `candidate_warmup_budget` turns on the same
+/// asymmetry for the same reason.
+///
+/// **Not at the floor**, which is R12 exactly as `hls_read_loop` applies it to the active cursor:
+/// aborting buys an escape to a cheaper rung, and where there is no cheaper rung it re-fetches
+/// the same bytes and buys a loop instead of a picture.
+pub(crate) fn candidate_warmup_is_guarded(proposal: Proposal) -> bool {
+    proposal.direction == Direction::Down && proposal.rung.below() != proposal.rung
+}
+
 pub(crate) fn candidate_warmup_budget(
     proposal: Proposal,
     media_duration: std::time::Duration,

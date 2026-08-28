@@ -1652,9 +1652,15 @@ struct AvioState {
     /// progressive stream retain their transport's normal stall budgets.
     deadline: Option<std::time::Instant>,
     deadline_expired: bool,
-    /// Armed only for the ACTIVE cursor, and only when the reserve is knowable and a cheaper rung
-    /// exists. A candidate carries `deadline` instead: its bound is what the transaction can
-    /// afford, not what the picture can survive.
+    /// Armed for the ACTIVE cursor when the reserve is knowable and a cheaper rung exists, and —
+    /// since 2026-08-28 — for a DOWNSHIFT candidate's warm-up, bounded by the warm-up budget
+    /// rather than by the reserve. This said "armed only for the ACTIVE cursor" and that a
+    /// candidate "carries `deadline` instead: its bound is what the transaction can afford, not
+    /// what the picture can survive". The bound half is still right; the picture half assumed the
+    /// current rung keeps feeding throughout, which is true of an upshift and is the exact
+    /// opposite of a downshift's trigger. `candidate_warmup_is_guarded` is the predicate and
+    /// `docs/measurements/j3c-warmup-abort.md` is the device trace — a warm-up that spent a
+    /// 5918 ms reserve, all of it, proving a rung unaffordable.
     stall: Option<StallGuard>,
     stall_aborted: bool,
 }
@@ -4108,10 +4114,38 @@ fn hls_demux(
                 hs,
                 acodec,
                 candidate_deadline,
-                // A candidate's bound is what the TRANSACTION can afford, which
-                // `candidate_deadline` already is. The abort rule is about what the PICTURE can
-                // survive, and the picture is being fed by the current rung throughout.
-                None,
+                // **An upshift candidate carries no abort rule; a DOWNSHIFT candidate does.**
+                //
+                // This argued `None` for both, on the grounds that "a candidate's bound is what
+                // the transaction can afford, which `candidate_deadline` already is", and that
+                // "the picture is being fed by the current rung throughout". The first half is
+                // still true. The second half is true of an UPSHIFT — where the current rung is
+                // affordable by construction, which is why a better one was proposed — and FALSE
+                // of a downshift, where the current rung being unaffordable IS the trigger. It is
+                // the same asymmetry `candidate_warmup_budget` already turns on, one level down.
+                //
+                // Device-measured (`pipe_abr_down_outrun`, 2026-08-28) with this `None` in place:
+                // `tx Down 18000->2000 outcome=warmup_deadline decided=5948ms warmup_dl=5918ms
+                // buf_start=5918ms buf_decided=168ms net=5798kbps`. The deadline was the whole
+                // reserve, the transfer spent all of it against a link 17x slower than the
+                // estimate that sized it, and the picture it was supposedly protected by lost
+                // 5750 ms of reserve while nothing was watching. The two attempts that followed
+                // then ran on 168 ms, the second missing its own deadline by **8 ms**, and
+                // playback spent ~30 s advancing one 2 s segment at a time because the queue was
+                // empty. A wall-clock deadline says WHEN to give up; it cannot say that giving up
+                // now is already certain.
+                //
+                // So the bound is the same `warmup_budget` the deadline is built from — no new
+                // constant and no new threshold — and the guard's own question is unchanged:
+                // project the remaining fetch from the rate this fetch has sustained and stop iff
+                // it provably cannot land inside the budget it was already granted. R12 applies
+                // as it does everywhere: at the ladder floor there is nowhere cheaper to run to,
+                // so aborting re-fetches the same bytes and buys a loop instead of a picture.
+                if crate::abr::candidate_warmup_is_guarded(proposal) {
+                    StallGuard::arm(warmup_budget.as_millis().min(i64::MAX as u128) as i64)
+                } else {
+                    None
+                },
             )
         } {
             Ok(output) => output,
@@ -4122,6 +4156,27 @@ fn hls_demux(
                 crate::player::log(&format!(
                     "abr: {:?} candidate warm-up exceeded deadline; staying on current rung",
                     proposal.direction,
+                ));
+                continue;
+            }
+            // Same disposition as the deadline above — the proposal is rejected and the current
+            // rung is kept — under its own outcome name, because the two differ in exactly the
+            // thing worth reading off a log: `warmup_deadline` spent the whole budget to learn
+            // the rung was unaffordable, and `warmup_unreachable` proved it early and handed the
+            // rest of the budget back to the picture.
+            Err(HlsExit::StallAbort(transfer)) => {
+                control.abandon(&primed.encoder_session);
+                reject_hls_abr(controller, proposal, crate::abr::RejectCause::Candidate, now_ms());
+                tx.finish("warmup_unreachable");
+                crate::player::log(&format!(
+                    "abr: {:?} candidate warm-up cannot land inside {}ms (got {} bytes at \
+                     {}kbps); staying on current rung",
+                    proposal.direction,
+                    warmup_budget.as_millis(),
+                    transfer.bytes,
+                    // The guard's own rate, spelled the same way `should_abort` spells it, so a
+                    // log line and the decision behind it cannot drift apart.
+                    transfer.bytes.saturating_mul(8_000) / transfer.active_us.max(1),
                 ));
                 continue;
             }

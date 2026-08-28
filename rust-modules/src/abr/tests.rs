@@ -3830,3 +3830,48 @@ fn a_stay_always_names_its_reason_unless_the_dwell_is_holding() {
     }
     assert!(checked > 200, "the sweep must actually reach Stay decisions, got {checked}");
 }
+
+/// **Only a downshift warm-up carries the abort rule, and not at the ladder floor.**
+///
+/// Differential by construction: before `candidate_warmup_is_guarded` existed, every candidate
+/// warm-up passed `None` for its guard, so there was no arrangement of inputs under which the
+/// unmodified transport aborted one early. The device trace this replaces
+/// (`pipe_abr_down_outrun`, 2026-08-28) shows what that cost: `tx Down 18000->2000
+/// outcome=warmup_deadline decided=5948ms warmup_dl=5918ms buf_start=5918ms buf_decided=168ms
+/// net=5798kbps` — the whole reserve spent proving a rung unaffordable that a projection off the
+/// first measurable 250 ms already implied.
+#[test]
+fn only_a_downshift_off_the_floor_guards_its_warmup() {
+    // The reason the picture is unprotected on the way down and protected on the way up: an
+    // upshift's current rung is affordable by construction, a downshift's is the trigger.
+    assert!(candidate_warmup_is_guarded(Proposal {
+        rung: Rung::P720Low,
+        direction: Direction::Down,
+    }));
+    assert!(!candidate_warmup_is_guarded(Proposal {
+        rung: Rung::P720Low,
+        direction: Direction::Up,
+    }));
+
+    // R12's terminal case, and the one place the rule must NOT arm: `below()` of the floor is the
+    // floor, so an abort here re-fetches the same bytes forever.
+    assert_eq!(Rung::P240.below(), Rung::P240, "P240 is expected to be the ladder floor");
+    assert!(!candidate_warmup_is_guarded(Proposal {
+        rung: Rung::P240,
+        direction: Direction::Down,
+    }));
+
+    // Every non-floor rung guards its downshift — stated over the whole ladder rather than at one
+    // sampled rung, so adding a rung cannot silently leave a hole.
+    for rung in LADDER {
+        assert_eq!(
+            candidate_warmup_is_guarded(Proposal { rung, direction: Direction::Down }),
+            rung.below() != rung,
+            "downshift guard at {rung:?} must follow the floor test alone",
+        );
+        assert!(
+            !candidate_warmup_is_guarded(Proposal { rung, direction: Direction::Up }),
+            "an upshift warm-up never guards: {rung:?}",
+        );
+    }
+}
