@@ -554,6 +554,22 @@ pub(crate) struct PlayUrl {
     /// NOT set it: the transition is what that case grades.
     #[serde(default)]
     pub(crate) auto_start_hls: bool,
+    /// **The SOURCE raster, which decides whether the 4K actuator is feasible at all.**
+    ///
+    /// `route::arm_auto_fixture` hardcoded `1920x1080`, and its comment gave the honest reason:
+    /// an unknown source raster is treated as UNBOUNDED by
+    /// [`HlsActuatorCatalog::limited_to`](crate::abr::HlsActuatorCatalog::limited_to), which makes
+    /// the Uhd rung feasible — and `tests/serve_fixtures.py` served no 22000 rung, so a candidate
+    /// there would 404 and read on the television as a rejected encoder. That is a fixture gap
+    /// standing in for a policy, and it is what kept the plan's I9 blocked: with every
+    /// `auto_network` case pinned to a 1080p source, `admits` deletes Uhd and the two entries the
+    /// production table calls empirical are the two no case can reach.
+    ///
+    /// `[w, h]`. Absent or malformed keeps the 1080p default, so every existing case is unchanged
+    /// by construction. The server now answers 22000 with a real 4K clip, so declaring 4K here
+    /// selects a rung that exists rather than one that 404s.
+    #[serde(default)]
+    pub(crate) source_raster: Option<[u16; 2]>,
 }
 
 /// The four DV fields the Load payload actually decides on — [`crate::metadata::Dovi`]'s

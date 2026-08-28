@@ -58,10 +58,18 @@ from http.server import BaseHTTPRequestHandler
 # is what a browser sends when someone points one at this server to check a fixture by hand, and
 # answering it wrongly there would look like a server bug while debugging a real one.
 RE_RANGE = re.compile(r"^bytes=(\d+)-(\d*)$")
-# Every rung `abr::LADDER` can propose for a 1080p source, so a controller that skips intermediate
-# encoders cannot land on a 404 and have it graded as a rejected candidate. The 4K point (22000) is
-# deliberately absent: it is feasible only for a UHD source, and this pack's clip is 1080p.
-ABR_RUNGS = "320|720|2000|4000|6000|8000|10000|12000|14000|16000|18000|20000"
+# Every rung `abr::LADDER` can propose, so a controller that skips intermediate encoders cannot
+# land on a 404 and have it graded as a rejected candidate.
+#
+# **22000 is the 4K point and it used to be absent**, on the reasoning that it is feasible only for
+# a UHD source and this pack's clip is 1080p. That was true and it was also the thing keeping the
+# plan's I9 blocked: `route::arm_auto_fixture` hardcoded a 1080p source raster BECAUSE this rung
+# 404'd, so `admits` deleted Uhd on every `auto_network` case, so the two entries the production
+# table calls empirical were the two no case could reach — a fixture gap standing in for a policy.
+# It is answered now, by a real 4K clip. A 1080p-source case still never requests it (the catalog
+# deletes it), so nothing about the existing cases changes; a case that declares
+# `source_raster: [3840, 2160]` can reach it.
+ABR_RUNGS = "320|720|2000|4000|6000|8000|10000|12000|14000|16000|18000|20000|22000"
 RE_ABR_PLAYLIST = re.compile(rf"^/__abr/({ABR_RUNGS})/(master|media)\.m3u8$")
 RE_ABR_SEGMENT = re.compile(rf"^/__abr/({ABR_RUNGS})/segment\.ts$")
 RE_SEQUENCE = re.compile(r"(?:^|&)sequence=(\d+)")
@@ -89,12 +97,17 @@ ABR_FIXTURE = {
     "10000": "pipe_abr_1080p_10m.ts", "12000": "pipe_abr_1080p_12m.ts",
     "14000": "pipe_abr_1080p_14m.ts", "16000": "pipe_abr_1080p_16m.ts",
     "18000": "pipe_abr_1080p_18m.ts", "20000": "pipe_abr_1080p_20m.ts",
+    "22000": "pipe_abr_4k_22m.ts",
 }
 ABR_RASTER = {
     "320": "426x240", "720": "854x480", "2000": "1280x720", "4000": "1280x720",
     "6000": "1920x1080", "8000": "1920x1080", "10000": "1920x1080",
     "12000": "1920x1080", "14000": "1920x1080", "16000": "1920x1080",
     "18000": "1920x1080", "20000": "1920x1080",
+    # The only rung in this pack above 1080p, and the only one whose raster is the POINT rather
+    # than a consequence: `hls_raster_within` grades the decoded picture against the rung's box, so
+    # a 22000 rung serving a 1080p clip would be admitted and would prove nothing about Uhd.
+    "22000": "3840x2160",
 }
 # What a rung falls back to when its own clip has not been generated yet. See `_resolve`.
 ABR_FALLBACK = "pipe_abr_1080p.ts"

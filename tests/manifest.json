@@ -1641,6 +1641,52 @@
       "_network_note": "The OVERREACH guard, and the only case here that can fail on the controller being too eager rather than too timid. A client that spends a 6 Mbit/s link reaching for 20 still plays -- it rebuffers, recovers, and passes every other assertion in this file -- so `ceiling_kbps` is the assertion no position climb can stand in for. `floor_kbps` pins the other side: it must still leave the 720 Kbps bootstrap rung, or 'never overreached' is trivially true."
     },
     {
+      "name": "pipe_abr_uhd_source_admits_4k",
+      "fixture": "pipe_h264_ac3_2160p.mkv",
+      "title": "no-Plex Auto: a 4K source on a fast link reaches the Uhd rung",
+      "covers": [
+        "abr-ladder-ceiling",
+        "uhd-actuator",
+        "production-load-empirical-points"
+      ],
+      "declare": {
+        "vcodec": "h264",
+        "acodec": "ac3",
+        "fps": 24.0
+      },
+      "auto_network": {
+        "source_kbps": 90000,
+        "start_hls": true,
+        "source_raster": [3840, 2160]
+      },
+      "network_profile": [
+        {
+          "until_s": 300.0,
+          "kbps": 60000
+        }
+      ],
+      "run_secs": 120,
+      "operations": [
+        {
+          "op": "play"
+        }
+      ],
+      "expect": {
+        "codec": "h264",
+        "load_video": "H264",
+        "load_audio": "AC3",
+        "min_pos_climb_s": 20,
+        "require_video_bound": true,
+        "no_playing_error": true,
+        "abr_shape": {
+          "floor_kbps": 2000,
+          "settle_min_kbps": 20000
+        }
+      },
+      "_uhd_note": "The ONE case that can reach the Uhd actuator, and the plan's I9 blocker made runnable. Every other auto_network case declares a 1080p source, so `HlsActuatorCatalog::limited_to` deletes Uhd before anything is scored -- which meant the two `production_load_pm` entries the table calls EMPIRICAL (the 1080p anchor at 1000 and Uhd at 2100) were the two no case on any tier could exercise. Three things had to change together and none is a policy: `tests/serve_fixtures.py` now answers rung 22000 with a real 3840x2160 clip (it served none, so a candidate 404'd and read as a rejected encoder); `route::arm_auto_fixture` takes the source raster instead of hardcoding 1080p (the literal was there BECAUSE of the 404); and a case can declare it. `settle_min_kbps` rather than a ceiling: the assertion is that the top of the ladder is REACHABLE on a link that can carry it, which is the half no existing case grades. The 60 Mbit/s leg is well above the 22 Mbit/s rung so the link is not the binding constraint -- if this fails, the catalog or the acceptance test is.",
+      "_raster_note": "`hls_raster_within` grades the decoded picture against the rung's BOX, not against equality, so a 22000 rung serving a 1080p clip would be admitted and would prove nothing. The fixture is generated at 3840x2160 for that reason and the server asserts the raster alongside it."
+    },
+    {
       "name": "pipe_abr_brief_dropout",
       "fixture": "pipe_h264_aac_mp4.mp4",
       "title": "no-Plex Auto: a 3 s near-stall mid-stream, then full speed again",

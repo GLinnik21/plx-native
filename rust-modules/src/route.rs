@@ -765,6 +765,7 @@ pub(crate) fn arm_auto_fixture(
     source_kbps: u32,
     hls_base: &str,
     start_hls: bool,
+    source_raster: (u16, u16),
 ) -> Option<String> {
     session_mut(|s| {
         s.url = original_url.to_owned();
@@ -772,11 +773,18 @@ pub(crate) fn arm_auto_fixture(
         s.sess = "auto-fixture".into();
         s.cur_delivery = crate::plex::TranscodeDelivery::ProgressiveMkv;
         s.cur_ceiling = None;
-        // The fixture clip IS 1080p, and saying so is load-bearing rather than cosmetic: an unknown
-        // source raster is treated as unbounded (`HlsActuatorCatalog::limited_to`), which would make
-        // the 4K actuator feasible — and `tests/serve_fixtures.py` deliberately serves no 22000
-        // rung, so the candidate would 404 and read on the TV as a rejected encoder.
-        s.cur_src = (i64::from(source_kbps), 1_920, 1_080);
+        // **Saying the source raster out loud is load-bearing rather than cosmetic**: an unknown
+        // one is treated as unbounded (`HlsActuatorCatalog::limited_to`), which makes the 4K
+        // actuator feasible on every case. It was a hardcoded 1080p because
+        // `tests/serve_fixtures.py` served no 22000 rung, so such a candidate would 404 and read
+        // on the television as a rejected encoder — a fixture gap standing in for a policy, and
+        // the thing that kept the plan's I9 blocked. The server answers 22000 now, so the caller
+        // declares it (`dev::PlayUrl::source_raster`) and the default is still 1080p.
+        s.cur_src = (
+            i64::from(source_kbps),
+            i64::from(source_raster.0),
+            i64::from(source_raster.1),
+        );
         s.cur_transport_kbps = i64::from(source_kbps);
         s.cur_auto_original_watched = true;
         s.auto_original = Some(AutoOriginalCandidate {
@@ -4521,14 +4529,39 @@ mod tests {
     /// starvation horizon fire on a reserve that was visibly filling. That entry stopped working
     /// when the horizon started requiring an observed drain, and it should have — the reserve was
     /// growing, so nothing was starving. This is the honest replacement.
-    #[test]
+    /// The raster every pre-2026-08-28 `auto_network` case had hardcoded into the function.
+const HD: (u16, u16) = (1_920, 1_080);
+
+/// **The declared source raster reaches the catalog, and that is what makes the Uhd rung
+/// reachable at all.**
+///
+/// Differential, and it is the plan's I9 blocker stated as a test: with a 1080p source
+/// `limited_to` deletes the 4K actuator, so every `auto_network` case that ever ran could not
+/// select the one rung whose `production_load_pm` the table calls empirical. Before this the
+/// raster was a literal inside `arm_auto_fixture`, so the 4K leg was unreachable by construction
+/// rather than by policy — `tests/serve_fixtures.py` served no 22000 rung and the literal was
+/// there to keep candidates off a 404.
+#[test]
+fn a_declared_4k_source_makes_the_uhd_actuator_feasible() {
+    let _lock = crate::testlock::serial();
+    let uhd_feasible = |raster: (u16, u16)| {
+        arm_auto_fixture("http://host/clip.mp4", 900_000, "http://host/__abr", true, raster);
+        auto_catalog()
+            .feasible()
+            .any(|candidate| candidate.rung == crate::abr::Rung::Uhd)
+    };
+    assert!(!uhd_feasible(HD), "a 1080p source must not admit the 4K actuator");
+    assert!(uhd_feasible((3_840, 2_160)), "a 4K source must");
+}
+
+#[test]
     fn the_fixture_can_start_in_hls_instead_of_provoking_a_starvation() {
         let _g = fresh_registry();
         restore_quality(Quality::Auto);
 
         // Without the flag the fixture arms an Original and returns nothing to open.
         assert_eq!(
-            arm_auto_fixture("http://host/clip.mp4", 900_000, "http://host/__abr", false),
+            arm_auto_fixture("http://host/clip.mp4", 900_000, "http://host/__abr", false, HD),
             None,
         );
         assert!(matches!(
@@ -4541,7 +4574,7 @@ mod tests {
         );
 
         // With it, the post-fallback state is installed directly and the playlist comes back.
-        let url = arm_auto_fixture("http://host/clip.mp4", 900_000, "http://host/__abr/", true)
+        let url = arm_auto_fixture("http://host/clip.mp4", 900_000, "http://host/__abr/", true, HD)
             .expect("a fixture that starts in HLS hands back the playlist to open");
         assert!(url.starts_with("http://host/__abr/720/master.m3u8"), "{url}");
         assert!(matches!(

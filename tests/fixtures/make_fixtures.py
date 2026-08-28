@@ -1234,6 +1234,23 @@ PIPE_SHAPES = {
         }
         for mbit in (6, 8, 10, 12, 14, 16, 18, 20)
     },
+    # **The 4K rung, and the only ABR clip in either pack above 1080p.** The ladder's Uhd point is
+    # feasible only for a UHD source, so until this existed no `auto_network` case could reach it
+    # — which is what kept the plan's I9 blocked, since `Uhd = 2100` and the 1080p anchor are the
+    # two `production_load_pm` entries the table calls empirical.
+    #
+    # It is the most expensive clip in the ABR set (12 s at ~22 Mbit/s, about 33 MB) and it is the
+    # smallest thing that can answer the question: the acceptance test is `hls_raster_within`, so a
+    # 22000 rung serving 1080p would be ADMITTED and would prove nothing.
+    "pipe_abr_4k_22m": {
+        "kind": "clip", "ext": "ts", "duration": 12, "rate": 0.08, "hls_segment": True,
+        "hls_segments": 6,
+        "declare": {"vcodec": "h264", "acodec": "aac", "fps": float(FPS), "atmos": False},
+        "video": {"codec": "h264", "size": "3840x2160", "vbr": 22 * 1000 - 192},
+        "audio": [{"codec": "aac", "ch": 2, "lang": "eng", "br": "192k", "pitch": 240,
+                   "default": True, "title": "AAC 2.0 English"}],
+        "subs": [],
+    },
     # -----------------------------------------------------------------------------------
     # ...and the one shape in either pack that is SUPPOSED to run out — LG item #46.
     "pipe_h264_ac3_short": {
@@ -1399,6 +1416,7 @@ PIPE_MBIT = {
     # Rate-targeted, so these are the TARGET rather than an estimate: video `vbr` plus the
     # 192 kbps audio track, i.e. the rung's own request. That is the point of them.
     **{f"pipe_abr_1080p_{mbit}m": float(mbit) for mbit in (6, 8, 10, 12, 14, 16, 18, 20)},
+    "pipe_abr_4k_22m": 22.0,
     "pipe_h264_ac3_short": 1.71,        # = pipe_h264_ac3_480p, of which it is a 20 s copy
 }
 

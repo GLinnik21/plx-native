@@ -704,6 +704,13 @@ def triggers_for_case(case, url_base=None):
             # firing while the reserve was filling, which stopped being possible on 2026-08-27.
             if auto.get("start_hls"):
                 spec["auto_start_hls"] = True
+            # **The SOURCE raster, which is what decides whether the 4K actuator is feasible.**
+            # `route::arm_auto_fixture` defaults to 1080p, so omitting this leaves every existing
+            # case byte-identical; declaring [3840, 2160] is the only way a case can reach the Uhd
+            # rung, and until `tests/serve_fixtures.py` answered 22000 there was no such way at
+            # all. `[w, h]`.
+            if auto.get("source_raster"):
+                spec["source_raster"] = [int(v) for v in auto["source_raster"]]
             files[0] = ("plxnative-playurl", json.dumps(spec, separators=(",", ":")))
             files.append(("plxnative-quality", "auto"))
             # Pin Auto's ladder to one actuator for the whole case, by REQUEST rate. Measurement

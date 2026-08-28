@@ -554,6 +554,7 @@ pub(crate) fn start_bufferfeed(mt: &MainThread) -> bool {
                         p.auto_source_kbps,
                         &p.auto_hls_base,
                         p.auto_start_hls,
+                        p.source_raster.map_or((1_920, 1_080), |[w, h]| (w, h)),
                     ) {
                         url = hls;
                     }
