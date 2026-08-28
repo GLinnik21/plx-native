@@ -100,6 +100,15 @@ The trajectory in the right-hand column is what the case was written to grade: a
   one run and has not been taken.
 - **Only the `Down` direction was measured.** The upshift bound is unchanged and untested by this
   case by construction.
+- **The floor's MAGNITUDE is bounded only by the target selection being sane**, and that is a
+  coupling between two mechanisms rather than a property of this one. `R_target * D / C` grows
+  without limit as `C` falls: an 8000 kbps target on a link measured at 100 kbps is a truthful
+  160 s deadline. What keeps it small in practice is that the controller picks its target with
+  `best_for_budget(C)`, so a 100 kbps link selects the ladder floor and the prediction comes back
+  at 6.4 s. The measured run bears that out — warm-ups of 321 / 4 221 / 1 328 ms across the three
+  commits — but nothing *enforces* the coupling, and a selection bug would now buy a long stall
+  where before it bought a fast refusal. Capping it would be the unexplained constant the design
+  rule forbids; the honest statement is that this floor assumes the selector.
 - **The 31 ms miss on the first transaction is unexplained.** `warmup_dl=5876ms` against
   `decided=5907ms` is close enough that the deadline may be being computed from a reserve read
   slightly before the fetch starts; that is a real question and this run does not answer it.
