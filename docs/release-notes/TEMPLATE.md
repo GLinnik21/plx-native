@@ -49,7 +49,7 @@ it is not here.
 ## Compatibility
 
 - **Plays video, verified by watching it — <model year> LG sets.** <The one television: model, platform release, what LG markets it as, and what was run on it before this release.>
-- **Plays video, reported by someone else — <model year>.** <@who, which set, which platform release, which version they ran, the date, and a link.>
+- **Plays video, reported by someone else — <model year>.** <who reported it as a PROFILE LINK — `[name](https://github.com/name)`, never a GitHub mention — which set, which platform release, which version they ran, the date, and a link to the report.>
 - **Starts, and nothing further is known — every other firmware from webOS <N> up.** The loader resolves this binary's libraries and symbols against all <n> firmware images webosbrew has at <N> or newer. That grades startup and says nothing about whether video plays; the matrix is in the [technical audit](https://github.com/GLinnik21/plx-native/blob/main/docs/release-audits/vX.Y.Z.md).
 - **Does not start — webOS <M> and older.** Symbols the app needs are missing there, so the process is killed before anything appears.
 

@@ -101,7 +101,7 @@ Three rules produce the block:
 Updating it:
 
 - **One television moves one line, and only the line it belongs to.** A verified set does not promote a range, a release or a model year it did not sit in.
-- **A third-party report is added with `@who`, the date and the version they ran.** Never generalise a report from one release to its neighbours, and never restate someone's hedge as a verdict.
+- **A third-party report is added with the reporter's name as a profile link, the date and the version they ran.** Never generalise a report from one release to its neighbours, and never restate someone's hedge as a verdict.
 - **When a release changes something on a path that is known broken, do not restate the old failure as present fact.** Say what changed and that nobody has run it there. That is what `Help test this release` is for, and it is the only way this project ever gets the report it needs.
 - **The static tier is regenerated from the release run's `webosbrew-ipk-verify` output, never retyped.** The full matrix lives in the audit; the note carries the one-line summary of it.
 - **A compatibility or scope change is a two-artifact change**: this note *and* a PR to `webosbrew/apps-repo` updating the package description, which is the only text an owner reads before installing. Sync `docs/webosbrew-package.yml` in the same commit.
@@ -136,6 +136,7 @@ Optimise for GitHub's renderer and for someone reading on a television or a phon
 - **Effects before mechanisms.** What the reader would have seen comes first; the mechanism gets one clause, or goes in the commit message.
 - **Semantic limits, not line counts.** "One short paragraph, usually 1-3 sentences" — never "four lines", which means nothing once the text is not hard-wrapped.
 - **Links must be absolute.** A release body is not rendered relative to the repository, so `[audit](docs/release-audits/v0.5.0.md)` is a dead link for every reader. Use `https://github.com/GLinnik21/plx-native/blob/main/…`. Enforced.
+- **No GitHub @mentions — link the profile instead.** `[name](https://github.com/name)`, not `@name`. Enforced. A mention in a release body makes GitHub list that person as a **contributor to the release**, which is wrong for the people these notes actually name: a tester who reported a firmware result and a reviewer who filed a bug contributed neither code nor the release. It also attributes our claims to them on their own profile. Five published releases had done this before it was noticed.
 - **No emoji.** Enforced. The most important sentences here are a compatibility claim and sometimes a credential-rotation instruction, being read by someone deciding whether to trust an unsigned binary. Nothing is signed and one television is tested, so the prose is the warranty.
 - **No marketing verbs** — "blazing", "massively improved", "now fully supports".
 - **No auto-generated PR-title dump as the body.** It cannot express a compatibility claim, a defect boundary or an ask, which are three of the six things a note is for. GitHub's generated list is appended after the note, where it is a free second record.
@@ -178,7 +179,7 @@ Rewriting a pre-standard note to the current template is a deliberate, separate 
 
 - **Every safety disclosure moved across intact** — the token rotation in v0.1.0, v0.2.0 and v0.2.1, and both of v0.4.0's, the PIN bypass and the first release that reaches a server over the internet.
 - **Nothing a reader could act on was dropped.** v0.1.0, v0.2.0 and v0.2.1 still say that their `ipk.sha256` records a path rather than a bare filename, so `sha256sum -c` will not find the download — because that instruction is one a reader follows. v0.2.1 still says it was built and published by hand.
-- **No later knowledge was folded backwards.** v0.2.0 does not carry the webOS 6 and 10 report that arrived three days after it shipped; v0.2.1 does not carry @mariotaku's 6.5.2 success from the day after; none of them carries the webOS 10.3.1 transcode failure found in late August. Each note says what was known when it was published, and the evidence for that boundary is the dated record in each release's audit.
+- **No later knowledge was folded backwards.** v0.2.0 does not carry the webOS 6 and 10 report that arrived three days after it shipped; v0.2.1 does not carry [mariotaku](https://github.com/mariotaku)'s 6.5.2 success from the day after; none of them carries the webOS 10.3.1 transcode failure found in late August. Each note says what was known when it was published, and the evidence for that boundary is the dated record in each release's audit.
 
 Because every note now conforms, `ci/check-package.py` applies the whole standard to all of them with no version exemption.
 
@@ -208,7 +209,7 @@ grep -niE 'reproducible|byte-identical|every firmware|fully support|works on|gua
 | no hand-typed package hash | `ci/check-package.py` |
 | every `webOS N` it names has evidence in this repo | `ci/check-package.py` |
 | no hard-wrapped prose | `ci/check-package.py` |
-| no relative links, no emoji | `ci/check-package.py` |
+| no relative links, no emoji, no @mentions | `ci/check-package.py` |
 | it does not carry the audit's sections | `ci/check-package.py` |
 | the published body is this file with the sentinel filled | `.github/workflows/release.yml` |
 | the published body quotes the artifact's real hash | `ci/verify-published.sh` |

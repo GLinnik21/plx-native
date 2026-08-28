@@ -66,6 +66,9 @@ AUTHORED_AUDIT_SECTIONS = (
 # deliberately outside these ranges.
 EMOJI = re.compile("[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\uFE0F]")
 MD_LINK = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
+# A GitHub @mention. Anchored so an email address (`a@users.noreply.github.com`) and a path-like
+# `@rpath` are not mentions; a bare `@name` at a word boundary is.
+MENTION = re.compile(r"(?<![A-Za-z0-9._%+/-])@([A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?)\b")
 
 
 # ---- which webOS versions a release document may name ------------------------------------------
@@ -194,6 +197,14 @@ def lint_note(path) -> None:
                    + (f" (relative: {', '.join(rel[:3])})" if rel else ""))
     emoji = sorted(set(EMOJI.findall(body)))
     check(not emoji, f"{path.name} carries no emoji" + (f" (found {' '.join(emoji)})" if emoji else ""))
+    # AN @MENTION IN A RELEASE BODY MAKES GITHUB LIST THAT PERSON AS A CONTRIBUTOR TO THE RELEASE.
+    # These notes name testers and bug reporters — people who contributed neither code nor the
+    # release — and it also attributes our claims to them on their own profile. Five published
+    # releases carried one before anybody noticed (`mentions_count=1` on each). Link the profile.
+    mentions = sorted(set(MENTION.findall(body)))
+    check(not mentions, f"{path.name} uses profile links rather than @mentions"
+                        + (f" (found @{', @'.join(mentions)} — GitHub would list them as release "
+                           "contributors; write [name](https://github.com/name))" if mentions else ""))
     moved = [h for h in MOVED_SECTIONS if h in body]
     check(not moved, f"{path.name} does not carry the audit's sections"
                      + (f" ({', '.join(moved)} → docs/release-audits/)" if moved else ""))
@@ -210,6 +221,12 @@ def lint_audit(path) -> None:
                       + (f" (missing {'; '.join(absent)})" if absent else ""))
     # Same firmware gate as the note, on the half a person wrote. The generated half is derived
     # from the tool's own output and cannot invent a release.
+    # Same rule as the note, for a weaker reason: an audit is not a release body, so it creates no
+    # release contributor — but it does notify and mis-attribute, and one rule across both
+    # directories is one rule to remember.
+    mentions = sorted(set(MENTION.findall(authored)))
+    check(not mentions, f"{path.name} uses profile links rather than @mentions"
+                        + (f" (found @{', @'.join(mentions)})" if mentions else ""))
     unknown = unknown_firmwares(authored)
     check(not unknown, f"every webOS version {path.name}'s authored half names has evidence"
                        + (f" (no evidence for {', '.join(unknown)})" if unknown else ""))

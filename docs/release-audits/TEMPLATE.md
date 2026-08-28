@@ -33,7 +33,7 @@ The evidence behind [the vX.Y.Z release note](https://github.com/GLinnik21/plx-n
 
 ## External compatibility reports known at release time
 
-<Every third-party report this release's compatibility claim rests on: @who, which set, which platform release, which version they ran, the date, a link, and what they actually saw. Never generalise one to its neighbours. If there are none, say so — an empty section here is itself a fact about how much is known.>
+<Every third-party report this release's compatibility claim rests on: who reported it as a profile link rather than a GitHub mention, which set, which platform release, which version they ran, the date, a link, and what they actually saw. Never generalise one to its neighbours. If there are none, say so — an empty section here is itself a fact about how much is known.>
 
 ## Compatibility tiers, and what moved
 
