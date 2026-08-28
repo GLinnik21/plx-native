@@ -1597,9 +1597,29 @@ impl StallGuard {
         t_remaining_ms > reserve_left
     }
 
+    /// **An abort may not fire before the fetch it abandons is MEASURABLE.**
+    ///
+    /// Not a grace period and not politeness: an abort that carries no measurement makes the
+    /// controller blind, and the device showed the whole failure. Once the reserve is below what
+    /// any fetch needs, the projection fails on the very first read — measured
+    /// `prod=2pm`, i.e. the fetch was abandoned **4 ms** in — so no segment ever completed, no
+    /// sample ever reached the estimator, and the capacity estimate froze at its pre-collapse
+    /// value. The controller then chose the same unaffordable target 36 times in a row. Refusing
+    /// to learn is the same failure as learning wrongly, one level further back.
+    ///
+    /// The threshold is `MEASURABLE_OBSERVATION_US` — already measured, already used by
+    /// `CapacityObservation::quality`, and already meaning exactly this: below it a transfer
+    /// reports latency rather than capacity. Reusing it is what makes this a rule instead of a
+    /// number, and it bounds the cost of an abort at one quarter second of an already-stalled
+    /// picture. Above it the sample is `Weak` at worst, which is a real observation the estimator
+    /// can act on — and on a collapsed link it will be SLOWER than history, which is the one
+    /// direction an abandoned sample is allowed to move the estimate.
     fn should_abort(&self, bytes_remaining: i64, body_bytes: u64, body_active_us: u64) -> bool {
         if body_active_us == 0 || body_bytes == 0 {
             return false; // no rate measured yet — a projection from nothing is not a projection
+        }
+        if body_active_us < crate::abr::MEASURABLE_OBSERVATION_US {
+            return false;
         }
         let kbps = (body_bytes.saturating_mul(8_000) / body_active_us).min(i64::MAX as u64) as i64;
         let elapsed_ms = self.started.elapsed().as_millis().min(i64::MAX as u128) as i64;
@@ -5760,6 +5780,37 @@ mod tests {
 #[cfg(test)]
 mod stall_guard_tests {
     use super::StallGuard;
+
+    /// **An abort may not fire before the fetch is measurable, because an abort that carries no
+    /// measurement makes the controller blind.** Device-measured: once the reserve fell below what
+    /// any fetch needs, the projection failed on the first read (`prod=2pm` — abandoned 4 ms in),
+    /// so nothing ever completed, no sample reached the estimator, and the same unaffordable
+    /// target was chosen 36 times in a row. Refusing to learn is the same failure as learning
+    /// wrongly, one level further back.
+    ///
+    /// Differential: the projection ALONE says abort in every leg below, so these assertions can
+    /// only pass against the measurability gate.
+    #[test]
+    fn an_abort_waits_until_its_own_fetch_is_measurable() {
+        let guard = StallGuard::arm(168).expect("a live reserve arms");
+        // 1448 bytes in 274 us: the device's own prefix.
+        assert!(
+            StallGuard::expired(168, 0, 4_500_000, 42_277),
+            "the projection alone would abort",
+        );
+        assert!(
+            !guard.should_abort(4_500_000, 1_448, 274),
+            "but 274us is below MEASURABLE_OBSERVATION_US, so it carries no observation",
+        );
+        assert!(
+            !guard.should_abort(4_500_000, 1_448, crate::abr::MEASURABLE_OBSERVATION_US - 1),
+            "and the gate is the threshold itself, not a rounding of it",
+        );
+        assert!(
+            guard.should_abort(4_500_000, 1_448, crate::abr::MEASURABLE_OBSERVATION_US),
+            "at the threshold it may fire, because now the sample says something",
+        );
+    }
 
     /// **R16: the projection is `8 * bytes / kbps`, and the 8 is the whole rule.**
     ///
