@@ -13,6 +13,32 @@ pub(crate) struct CapacityEstimate {
 
 impl CapacityEstimate {
     pub(crate) fn update(&mut self, observation: CapacityObservation) {
+        // **AN ABANDONED TRANSFER MAY LOWER THIS ESTIMATE AND MAY NEVER RAISE IT.**
+        //
+        // The rule is not a safety margin; it is what the observation MEANS. A fetch is abandoned
+        // because its projected remainder did not fit the reserve — the event is evidence that the
+        // link is INSUFFICIENT. Its bytes, meanwhile, are the receive buffer's opening burst
+        // draining, measured over a few hundred microseconds, so as an estimate of SUSTAINED
+        // capacity they are biased upward by construction. Reading them as "the link is fast"
+        // inverts the meaning of the very event that produced them.
+        //
+        // Marking the sample incomplete was not enough, and the device showed exactly why. That
+        // only raised `uncertainty_pm`, while the rate still entered — and a prefix four times the
+        // history trips `is_regime_change` below, which RESTARTS the estimate at the prefix's own
+        // value. So each abort reset the estimate upward: measured on `pipe_abr_down_outrun` with
+        // the shaper holding **500 kbps**, the estimate walked 5 632 -> 28 744 -> 101 078 kbps
+        // across successive aborts, and a 50% uncertainty discount on 101 Mbit/s is still two
+        // orders of magnitude above the truth. Every downshift then chose an unaffordable target,
+        // overran, aborted, and fed the estimate again.
+        //
+        // A slower-than-history prefix is kept, because that IS the abort's message and it is the
+        // direction the evidence supports. A faster one contributes its uncertainty and nothing
+        // else.
+        if !observation.completed && self.samples > 0 && observation.kbps >= self.slow_kbps {
+            self.uncertainty_pm = MAX_UNCERTAINTY_PM;
+            self.samples = self.samples.saturating_add(1);
+            return;
+        }
         // **A measurement a factor of four away from the history, in EITHER direction, is not the
         // same link.** Averaging across a regime change describes a link that never existed, and
         // the failure is not symmetric in cost: measured on the television 2026-08-25, an Original

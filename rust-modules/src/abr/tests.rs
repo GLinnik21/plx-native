@@ -3735,3 +3735,50 @@ fn an_abandoned_sample_reports_maximum_uncertainty() {
         c.delivery().uncertainty_pm,
     );
 }
+
+/// **An abandoned prefix must not RESTART the estimate at its own value.** The device's exact
+/// walk, reproduced: with the shaper holding 500 kbps, successive aborts drove the estimate
+/// 5 632 -> 28 744 -> 101 078 kbps, because a prefix four times the history trips
+/// `is_regime_change` and that path resets to the new value with one sample's confidence.
+///
+/// Differential twice over: marking the sample incomplete alone does NOT fix it (the rate still
+/// enters and still trips the regime change), which is why the assertion is on the estimate rather
+/// than on the uncertainty.
+#[test]
+fn an_abandoned_prefix_cannot_restart_the_estimate_upward() {
+    let mut c = CapacityEstimate::default();
+    for _ in 0..6 {
+        c.update(CapacityObservation {
+            kbps: 5_600, bytes: 1_400_000, active_us: 2_000_000, completed: true,
+        });
+    }
+    let settled = c.slow_kbps;
+    assert!((5_000..=6_200).contains(&settled), "fixture must settle near the shaped rate: {settled}");
+
+    // Three aborts, each timing far above the history — the receive buffer, not the link.
+    for kbps in [26_691u32, 35_533, 101_078] {
+        c.update(CapacityObservation {
+            kbps, bytes: 1_448, active_us: 274, completed: false,
+        });
+    }
+    assert_eq!(c.slow_kbps, settled, "an abandoned prefix may not move the estimate up at all");
+    assert_eq!(c.uncertainty_pm, MAX_UNCERTAINTY_PM, "but it must say the estimate is now unsure");
+}
+
+/// ...and it may still move it DOWN, because a slow prefix is the abort's actual message and the
+/// direction the evidence supports. Without this the rule would be a one-way ratchet that ignores
+/// a genuinely collapsing link.
+#[test]
+fn an_abandoned_prefix_may_still_lower_the_estimate() {
+    let mut c = CapacityEstimate::default();
+    for _ in 0..6 {
+        c.update(CapacityObservation {
+            kbps: 20_000, bytes: 5_000_000, active_us: 2_000_000, completed: true,
+        });
+    }
+    let settled = c.slow_kbps;
+    c.update(CapacityObservation {
+        kbps: 500, bytes: 125_000, active_us: 2_000_000, completed: false,
+    });
+    assert!(c.slow_kbps < settled, "a slow abandoned prefix is real evidence of a slow link");
+}
