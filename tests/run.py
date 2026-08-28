@@ -1954,10 +1954,35 @@ def a_abr_shape(lines, spec, dip_windows=()):
       because the ladder has 13 points and a link between two of them may legitimately settle on
       either; a profile that wants an exact rung sets both to it.
 
-    Read from ``abr: steady``, not from the commits, because the STARTING rung is not a commit and
-    a case whose whole point is "it never moved" would otherwise have nothing to read at all.
+    Read from ``abr: steady`` AND from the commits, in log order. Steady alone is not enough and
+    steady alone is what this did, which made both bounds under-report.
+
+    ``abr: steady`` is emitted only on ``Decision::Stay`` (``ff.rs``), so a rung the controller
+    commits to and then immediately proposes to leave — or commits to near the end of a case —
+    produces no steady line at all and was INVISIBLE here. Measured 2026-08-28:
+    ``pipe_abr_seek_flat`` logged ``tx Up 2000->10000kbps outcome=committed`` and then ended
+    (that transaction alone took 22.4 s, 20.6 s of it feed backpressure), so ``visited`` was
+    ``{720, 2000}``, ``max`` was 2000, and ``floor_kbps: 8000`` failed a case that had reached
+    10000.
+
+    **The same gap is a FALSE PASS on the other side**, which is the half that matters more:
+    ``ceiling_kbps`` is the overreach guard the manifest calls "the assertion no position climb can
+    stand in for", and a rung reached and left inside one segment cleared it by not being looked at.
+
+    Commits alone would not do either — the STARTING rung is not a commit, and a case whose whole
+    point is "it never moved" would have nothing to read. So it is the union, ordered by position
+    in the log, which is what "which rung was the controller on, over time" actually means.
+    ``visited[-1]`` is then the last rung it was on, which is what ``settle`` wants.
     """
-    visited = [int(m.group(1)) for line in lines for m in [RE_ABR_STEADY.search(line)] if m]
+    marks = []
+    for i, line in enumerate(lines):
+        m = RE_ABR_STEADY.search(line)
+        if m:
+            marks.append((i, int(m.group(1))))
+        c = RE_ABR_COMMIT.search(line)
+        if c:
+            marks.append((i, int(c.group(2))))
+    visited = [kbps for _, kbps in marks]
     if not visited:
         return False, "no `abr: steady` line — the HLS controller never ran"
     commits = [(m.group(1), int(m.group(2)), f"{m.group(3)}x{m.group(4)}")

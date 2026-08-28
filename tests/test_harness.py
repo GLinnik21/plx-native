@@ -865,6 +865,40 @@ class AutoNetworkProfile(unittest.TestCase):
             committed,
         ], 5000, 20000)[0], "the shaped 4 Mbit/s leg must be measured, not merely assumed")
 
+    def test_a_rung_committed_but_never_settled_is_still_visited(self):
+        """`abr: steady` is emitted only on `Decision::Stay`, so a rung the controller commits to
+        and then leaves — or commits to near the end of a case — produced NO steady line and was
+        invisible to both bounds.
+
+        Measured 2026-08-28: `pipe_abr_seek_flat` logged `tx Up 2000->10000kbps outcome=committed`
+        and then ended (that transaction alone ran 22.4 s, 20.6 s of it feed backpressure), so
+        `visited` was {720, 2000} and `floor_kbps: 8000` failed a case that had reached 10000.
+
+        The half that matters more is the FALSE PASS on the other side: `ceiling_kbps` is the
+        overreach guard, and a rung reached and left inside one segment cleared it by not being
+        looked at. Both directions are asserted here.
+        """
+        steady = lambda kbps: f"abr: steady current={kbps}kbps safe=9000kbps pending=0kbps"
+        commit = lambda d, kbps: f"abr: committed {d} to {kbps}kbps 1920x1080"
+
+        # The floor half: reached 10000 on the last commit, with no steady line after it.
+        late = [steady(720), steady(2000), steady(2000), commit("Up", 10_000)]
+        ok, why = run.a_abr_shape(late, {"floor_kbps": 8000})
+        self.assertTrue(ok, f"a committed rung counts as visited: {why}")
+
+        # The ceiling half, and this is the one that was a silent false pass.
+        blip = [steady(2000), commit("Up", 20_000), commit("Down", 2000), steady(2000)]
+        self.assertFalse(
+            run.a_abr_shape(blip, {"ceiling_kbps": 8000})[0],
+            "a rung reached and left inside one segment must still trip the overreach guard",
+        )
+
+        # And commits alone are not the rule either: the STARTING rung is not a commit, so a case
+        # that never moves must still read.
+        parked = [steady(720), steady(720), steady(720)]
+        self.assertTrue(run.a_abr_shape(parked, {"ceiling_kbps": 8000})[0])
+        self.assertFalse(run.a_abr_shape(parked, {"floor_kbps": 2000})[0])
+
     def test_the_rung_shape_assertion_can_fail_on_overreach_not_only_on_stalling(self):
         """`a_abr_shape` exists for the failure every other assertion here is blind to.
 
