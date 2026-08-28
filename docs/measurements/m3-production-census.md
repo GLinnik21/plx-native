@@ -1,5 +1,14 @@
 # M3 — what a rung actually costs the server
 
+> **RE-RUN 2026-08-28 with the output column, and it changes two conclusions below.** The
+> `Uhd = 58 pm` anomaly that Result 2 is built on **does not reproduce**: `Uhd` now measures 106,
+> identical to every other row clamped to the source raster, while delivering a HIGHER rate
+> (7618 vs 5153 kbps) — and the stray 58 landed on `P1080M10`'s back-to-back leg this time while
+> its own paced leg read 111. It is a sporadic artifact that moves between rungs, not a property
+> of any rung, and the "PMS stopped re-encoding at an unbinding ceiling" hypothesis it motivated is
+> **refuted**: every rung's output is `h264` at the source raster. §"The re-run" at the bottom has
+> the full tables and the decision that came out of them.
+
 **Measured 2026-08-28 on the dev Mac against the configured PMS.** No television, no lock.
 Tool: `tools/abr-production-census.py`, which drives `tools/pms-hls-probe.py` once per request
 ceiling and reads only its already-redacted `report.json`. Twelve consecutive segments per rung,
@@ -140,3 +149,77 @@ tools/abr-production-census.py --item movie_hevc_4k_high_bitrate --segments 12 -
 Both write a `census.json` carrying every per-segment rho. The overlay keys are shape names, not
 identifiers on anybody's server; no address, token, session, rating key or title reaches any
 artifact, which `pms-hls-probe.py` enforces rather than merely intending.
+
+
+## The re-run (2026-08-28), with what PMS actually produced
+
+`tools/abr-production-census.py` now records the OUTPUT per rung — codec, raster and delivered rate
+— which is the column that separates a mis-indexed table from a mixture of two different
+operations. Both source classes, paced and back-to-back.
+
+### Against a 1918x802 source, the table is not inverted so much as FLAT
+
+| rung | table | warm | output raster | delivered |
+|---|---|---|---|---|
+| P240 | 90 | 161 | 320x134 | 317 kbps |
+| P480 | 180 | 162 | 478x200 | 463 |
+| P720Low | 420 | 158 | 716x300 | 999 |
+| P720 | 450 | 112 | 1276x534 | 1949 |
+| P1080M6 … P1080High | 900…1000 | 106–111 | 1918x802 | 2624–5153 |
+| Uhd | 2100 | 106 | 1918x802 | 7618 |
+
+**Table spread 23.3x. Measured spread 1.53x.** Every rung from `P1080M6` up produces the same
+picture, because PMS never upscales and the source is 1918x802 — so eight rungs of the ladder are
+one output and one cost. "Inverted" was the right sign and the wrong magnitude.
+
+### Against a 4K source, cost tracks the raster PMS ACTUALLY PRODUCED
+
+| rung | table | warm | output raster | resid | dev |
+|---|---|---|---|---|---|
+| P240 | 90 | 57 | 320x180 | 0 | *floor-tied* |
+| P480 | 180 | 57 | 480x270 | 0 | *floor-tied* |
+| P720Low | 420 | 104 | 720x404 | 296 | **29.5%** |
+| P720 | 450 | 112 | 1280x720 | 346 | 23.1% |
+| **P1080M6** | **900** | **112** | **1280x720** | 346 | **61.6%** |
+| P1080 … P1080M18 | 930…995 | 212–217 | 1920x1080 | 975–1006 | ≤8.2% |
+| P1080High | 1000 | 216 | 1920x1080 | 1000 | *anchor* |
+| **Uhd** | **2100** | **429** | **3840x2160** | 2340 | **11.4%** |
+
+**The two empirical anchors hold.** `Uhd = 2100` measures 2340–2416 and the 1080p block is within
+8.2%, reproducing the first census.
+
+**`P1080M6` is the indexing defect in a single row.** Against a 4K source PMS produces **1280x720**
+for it — the same raster it produces for `P720` — at the same measured 112 pm, while the table
+asserts 900 against `P720`'s 450. Two rungs, identical output, identical cost, a 2x ratio between
+them. That is a bounding box being read as a target, which `Rung::raster`'s own doc already warns
+about and which `docs/adaptive-playback-plan.md` §B records as having shipped as a device bug once
+already.
+
+### What was corrected, and what was decided
+
+Per this document's own falsification rule, the two entries past 25% are re-argued on the measured
+numbers: **`P720Low` 420 → 300** and **`P1080M6` 900 → 350**. `P720` at 23.1% is inside the rule
+and left alone, though it measures the same as `P1080M6` — which is itself the evidence for the
+paragraph above.
+
+**The index stays keyed to the target rung**, and the field's doc now says what that describes: the
+work of producing a rung *when the source can supply it*. The argument is that where the index is
+wrong it is wrong in the **inert** direction — on a source below the rung's raster the real cost
+collapses to the source-raster cost, so the table OVERSTATES, and an overstated production cost can
+only make the gate more reluctant to climb, never less. There is no 4K work to refuse when the
+source is 1080p, so a gate that never fires there is correct rather than broken. The cost of that
+choice is stated rather than hidden: on a small source the admission rule is effectively
+network-only. The exact alternative — index by `min(rung box, source)`, which the cost tracks far
+better than the rung — is named at the field, with the note that nothing measured needs it yet.
+
+### Corrections to this document's earlier conclusions
+
+- **"the table's variable is wrong, not just its values"** — upheld, and now with a mechanism and a
+  worked row rather than a rung-pair count.
+- **"against a 1080p source the ordering INVERTS (58 of 75 pairs)"** — the sign is right, the
+  reading was overstated: the measured spread is 1.53x, so most of those pairs are separated by
+  noise rather than by cost.
+- **"`Uhd` … 58 pm … half the work"** — **withdrawn.** It does not reproduce and the stray value
+  moves between rungs; the remux hypothesis built on it is refuted by the output column.
+- **"does NOT settle: anything about a LOADED server"** — unchanged and still true. Every reading
+  here is against an idle PMS.

@@ -235,6 +235,43 @@ pub(crate) struct HlsCandidate {
     /// The 4K measurement supports exactly that reading — 2.1x the work for the same 1080p-class
     /// bitrate. Used only comparatively ("would this candidate cost the server more than the one
     /// now running"), never as a predicted absolute time.
+    ///
+    /// # What this table is indexed BY, settled 2026-08-28
+    ///
+    /// It is indexed by the TARGET RUNG, and M3's re-run shows that cannot be right for every
+    /// source: the same rung costs 2.8x-4x differently depending on what it is transcoding FROM.
+    /// `Uhd` measures 429 pm against a 4K source and 106 against a 1918x802 one; `P240` measures
+    /// 57 against the 4K source and 161 against the smaller one — in the opposite direction. The
+    /// reason is structural: PMS never upscales, so the raster it actually produces is
+    /// `min(rung box, source)`, and against a small source the top eight rungs all clamp to the
+    /// same output and cost the same. Measured spread on that source is **1.53x** against the
+    /// 23.3x this table asserts.
+    ///
+    /// **The decision is to keep the target-only index and state what it describes**: the work of
+    /// producing this rung *when the source can supply it*. Two reasons, and the second is the one
+    /// that makes it safe rather than merely convenient.
+    ///
+    /// 1. Against a 4K source — the only class where the two empirical anchors were ever taken —
+    ///    the table is good: `Uhd = 2100` measures a 2340-2416 residual (11-15%) and the whole
+    ///    1080p block lands within 8%. Re-indexing would re-derive numbers that are already right
+    ///    where they are used.
+    /// 2. Where the index is wrong, it is wrong in the **inert** direction. On a source below the
+    ///    rung's raster the real cost collapses to the source-raster cost, so the table
+    ///    OVERSTATES — and an overstated production cost can only make the gate more reluctant to
+    ///    climb, never less. There is no 4K work to refuse when the source is 1080p, so a gate
+    ///    that never fires there is correct rather than broken.
+    ///
+    /// What that trades away is stated rather than hidden: on a small source the production
+    /// constraint contributes nothing, so the admission rule is effectively network-only there.
+    /// That is the status quo, it is safe, and it is not what the two-constraint rule exists for —
+    /// the rule exists to refuse 4K on a fast link in front of a loaded PMS, which is precisely
+    /// the case a 4K source produces and this table gets right.
+    ///
+    /// **The alternative, if this ever needs to be exact:** index by the raster PMS actually
+    /// produces, `min(rung box, source)`, which the census shows the cost tracks far better than
+    /// the rung does. It needs a per-source measurement this project can take (the census does it
+    /// in one command) and a `source_raster` already threaded into the catalog by `limited_to`.
+    /// It is not built because nothing measured needs it yet.
     pub(crate) production_load_pm: u32,
 }
 
@@ -295,9 +332,21 @@ impl HlsActuatorCatalog {
             candidates: [
                 point(Rung::P240, 320, 90),
                 point(Rung::P480, 720, 180),
-                point(Rung::P720Low, 2_000, 420),
+                // **300 and 350 are MEASURED (M3 re-run, 2026-08-28), replacing 420 and 900.**
+                // Both were refuted by that census against a 4K source at the falsification rule
+                // this table was published with: `P720Low` measured a 296 residual (29.5% off) and
+                // `P1080M6` measured 346 (61.6% off), reproducibly across both pacing legs. See
+                // `docs/measurements/m3-production-census.md`.
+                //
+                // `P1080M6` is the entry worth understanding rather than just correcting, because
+                // it is the whole indexing defect in one row: against a 4K source PMS produces
+                // **1280x720** for it — the same raster it produces for `P720` — at the same
+                // measured 112 pm, while this table asserted 900 against `P720`'s 450. Two rungs,
+                // identical output, identical cost, a 2x ratio between them. That is the bounding
+                // box being read as a target, which the `raster()` doc below already warns about.
+                point(Rung::P720Low, 2_000, 300),
                 point(Rung::P720, 4_000, 450),
-                point(Rung::P1080M6, 6_000, 900),
+                point(Rung::P1080M6, 6_000, 350),
                 point(Rung::P1080, 8_000, 930),
                 point(Rung::P1080M10, 10_000, 950),
                 point(Rung::P1080M12, 12_000, 970),
