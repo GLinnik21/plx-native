@@ -1934,14 +1934,38 @@ def abr_raster_changes(lines):
 
 
 def abr_characterisation(lines):
-    """The three baseline observations I1 has to record, as printable text. Never graded.
+    """The baseline observations I1 has to record, as printable text. Never graded.
 
+    * **PLAYBACK HEALTH — whether the film actually ran** (see below; added 2026-08-28);
     * the FIRST segment: its reserve, decision and target (plan §0.3(1) predicts a downshift on
       every playback, on any link, because one segment of reserve trips `starving()`);
     * the controller SEED after a fresh construction, which a seek forces (plan §7.G);
     * the switch-history state and the elapsed time actually passed to its decay (plan §7.H).
+
+    **Why playback health is here rather than only in an assertion's evidence.** `report_case`
+    prints an assertion's evidence only when it FAILS (or under `--verbose`), and `max_stall_s` /
+    `play_rate_pm` ride on `abr_shape`'s evidence string — so a case that stalled for three
+    seconds and still satisfied every bound it declared printed nothing about the stall at all.
+    The quantities were computed, returned, and discarded. Most cases declare no stall bound and
+    none declares one on the rate, so "passed" has never meant "did not stall".
+
+    That is the same defect as `visited` reading `abr: steady` alone and as a sleeping television
+    grading as a regression: an instrument that exists and is not read. A stall is a fact about
+    the playback, not an opinion of the model, and no bound may hide one — so it prints on every
+    case, pass or fail, and stays UNGRADED for I0's reason (asserting it would pin today's
+    behaviour as desirable).
     """
     out = []
+    stall_max, stall_total, beats = abr_stalls(lines)
+    if stall_max is not None:
+        mean_pm, worst_pm, _n, legs = playback_rate(lines)
+        rate = "n/a" if mean_pm is None else f"{mean_pm}pm mean / {worst_pm}pm worst over {legs} leg(s)"
+        # +/-1 s and a floor, never a precise duration: `pos=` is integer seconds on a 1 Hz
+        # heartbeat, so a sub-second stall is invisible. Said at the point of reading.
+        out.append(
+            f"playback: max_stall={stall_max}s (total {stall_total}s over {beats} beats, +/-1s) "
+            f"rate={rate}"
+        )
     samples = abr_samples(lines)
     if samples:
         first = samples[0]
