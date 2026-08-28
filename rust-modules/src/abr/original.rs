@@ -719,7 +719,34 @@ impl OriginalModeController {
         }
         // RAW delta, not the smoothed slope: this branch exists for the case where the estimates
         // are wrong, so it must not consult a trend that lags the drop it is watching for.
-        if buffered_ms <= self.policy.emergency_buffer_ms && self.buffer.last_delta_ms < 0 {
+        //
+        // **`&& !filling()`, because a small reserve has two meanings and the LEVEL cannot tell
+        // them apart.** Nearly gone and still falling is the emergency this guard is for. Nearly
+        // gone because a fresh `Load` just consumed the prime is a stream WARMING UP, and every
+        // mode entry starts there by construction — `primed: v=749ms a=908ms` is a normal join.
+        //
+        // Host-simulator reproduction, 2026-08-29, five seconds after a CORRECT recovery into 4K
+        // Dolby Vision direct play:
+        //
+        // ```text
+        // reload_at: fresh Load at 129s
+        // auto: Original -> HLS EmergencyLowBuffer measured=25911kbps safe=21168kbps
+        //       need=21104kbps buf=1181ms slope=1113ms/s starve=none held=0ms
+        // reload_transcode: fresh Load at offset 126s
+        // ```
+        //
+        // `starve=none` is the whole argument: the horizon is INFINITE because `conservative_kbps`
+        // had already cleared the requirement — the model's own capacity test said the link was
+        // sufficient — while the reserve refilled at better than one millisecond of media per
+        // millisecond of wall clock. Two reloads in ten seconds, both visible.
+        //
+        // The raw delta stays the trigger, so a genuine cliff is still acted on the window it
+        // happens. `filling()` only disqualifies a reserve measurably going the other way, and it
+        // is not `!draining()`: the flat-within-noise band between them is left to the guard.
+        if buffered_ms <= self.policy.emergency_buffer_ms
+            && self.buffer.last_delta_ms < 0
+            && !self.buffer.filling()
+        {
             return Some(OriginalExit::EmergencyLowBuffer);
         }
         // **The horizon's own premise has to be observed, not assumed.** `starvation_horizon` is

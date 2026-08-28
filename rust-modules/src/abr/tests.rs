@@ -535,6 +535,58 @@ fn one_quantisation_dip_in_a_filling_reserve_is_not_a_starvation() {
     );
 }
 
+/// **A stream that has just joined has a small reserve BY CONSTRUCTION, and the emergency guard
+/// may not read that as the reserve being gone.** (Host simulator, 2026-08-29.)
+///
+/// Every mode entry begins here: the `Load` completes, the prime is consumed, and the reserve
+/// starts at a few hundred milliseconds and climbs. `emergency_buffer_ms` is 2 000, so the whole
+/// warm-up sits underneath it, and the only thing separating "warming up" from "about to stall" is
+/// the DIRECTION — which is why the level alone cannot decide it.
+///
+/// This is what the fix for `one_quantisation_dip_in_a_filling_reserve_is_not_a_starvation`
+/// uncovered: with the imminent branch and the deficit tally both requiring an observed drain, the
+/// simulator's 4K Dolby Vision recovery blinked anyway, five seconds after a CORRECT recovery,
+/// on `EmergencyLowBuffer measured=25911kbps safe=21168kbps need=21104kbps buf=1181ms
+/// slope=1113ms/s starve=none`. An infinite starvation horizon — the model's own capacity test
+/// saying the link was sufficient — beside a reserve refilling at better than real time, and a
+/// reload anyway.
+///
+/// Differential by construction: against unmodified code the final `assert` fails.
+#[test]
+fn a_reserve_refilling_after_a_join_is_not_an_emergency() {
+    let mut mode = original(15_633);
+    // The prime remnant, then the reserve climbing ~1.1 s per window — a link comfortably ahead.
+    for (window, buffered) in [(1_u64, 300_i64), (2, 1_400)] {
+        let observation = mode
+            .observe_saturated(
+                window_bytes(25_911) * window,
+                ORIGINAL_WINDOW_US * window,
+                Some(buffered),
+                HOUR_MS,
+            )
+            .unwrap();
+        assert_eq!(observation.fallback, None, "window {window} of a warm-up");
+    }
+    // One negative raw sample, still deep inside `emergency_buffer_ms`. This is the exact shape
+    // the guard fired on.
+    let dip = mode
+        .observe_saturated(window_bytes(25_911) * 3, ORIGINAL_WINDOW_US * 3, Some(1_181), HOUR_MS)
+        .unwrap();
+    assert!(
+        dip.buffered_ms <= AbrPolicy::measured().emergency_buffer_ms,
+        "the reserve must really be inside the emergency band, or this grades nothing",
+    );
+    assert!(
+        dip.slope_ms_per_s > 0,
+        "and it must really be refilling ({}ms/s)",
+        dip.slope_ms_per_s,
+    );
+    assert_eq!(
+        dip.fallback, None,
+        "a reserve climbing out of the prime is a stream starting, not a stream starving",
+    );
+}
+
 /// **The reserve derivative is per WALL second, because that is what spends the reserve.**
 ///
 /// `ORIGINAL_WINDOW_US` deliberately measures capacity over ACTIVE body-read time, so a reader
