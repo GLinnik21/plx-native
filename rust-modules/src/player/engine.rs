@@ -637,9 +637,28 @@ pub(crate) fn start_bufferfeed(mt: &MainThread) -> bool {
             };
             SHARED.dg_load_a.store(match ac { "AC3 PLUS" => 2, "AAC" => 3, _ => 1 }, Ordering::Relaxed);
             audio_declared = ac;
-            // Sink envelope = the panel max (4K) regardless of codec; the pipeline reads the
-            // true dims from the bitstream (SPS), so this is just a ceiling and is correct for a
-            // 4K stream (HEVC transcode / HEVC direct-play) AND harmless for a 1080p H264 file.
+            // Sink envelope = the panel max (4K) regardless of codec. The pipeline reads the
+            // true dims from the bitstream (SPS), so on the dev set (webOS 4.10) this is just a
+            // ceiling and is correct for a 4K stream (HEVC transcode / HEVC direct-play).
+            //
+            // **The rest of that sentence used to read "AND harmless for a 1080p H264 file", and
+            // that is MEASURED FALSE on webOS 10.3.1.** The pipeline there allocates against the
+            // DECLARED ceiling rather than the bitstream, no AVC decoder on that SoC does 4K60,
+            // and the Load is refused outright with `smp_cb type=18 num=601 str=Resource
+            // Allocation Error`. The control is airtight — the identical envelope carrying
+            // `"H265"` played 197+ frames in the same session, minutes apart. Since every server
+            // transcode is H.264, **every transcoded playback is impossible on webOS 10**, and
+            // the whole ABR path downstream never runs, because the Load never completes.
+            //
+            // It is still declared this way on purpose, and the purpose is narrow: the one-line
+            // codec-conditional fix was device-verified in that same lab slot and then reverted
+            // at the owner's request as out of scope, and the value it substituted (1920x1080)
+            // under-declares a genuine 4K H.264 file, which nothing has tested. Do NOT "fix" this
+            // by lowering the raster — the set's own devcaps table claims 4096x2176 for H.264 too,
+            // so the raster was never the binding constraint. The discriminator is almost
+            // certainly `maxFrameRate` (60, spliced in by `build_av_payload`), which `devcaps.rs`
+            // parses and drops by design. Full account, including the A/B and the leg that would
+            // settle it: `docs/webos10-resource-allocation.md`.
             let (mw, mh) = (3840, 2160);
             stream_payload = build_av_payload(vc, ac, mw, mh);
             &stream_payload

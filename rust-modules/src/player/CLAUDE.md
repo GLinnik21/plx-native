@@ -63,6 +63,15 @@ the seam or the Engine, so its presence in a signature keeps meaning something.
   payload nodes, the ACB audio forward, the Profile 5 one-tick fix and the instrument traps live
   there rather than here, because half of that record is about LG's binaries and the Dolby
   specifications rather than about our engine.
+- **The Load's `adaptiveStreaming` ceiling is 4K60 for EVERY codec, and on webOS 10 that refuses
+  every H.264 stream: `docs/webos10-resource-allocation.md`.** Lab-measured 2026-08-27 on release
+  10.3.1 — the pipeline allocates against the DECLARED ceiling rather than the bitstream, so the
+  Load comes back `num=601 Resource Allocation Error`, while the identical envelope carrying
+  `"H265"` played in the same session. Every server transcode is H.264, so transcoded playback is
+  impossible there and the ABR path never runs at all. **Not fixed on any branch** — the
+  device-verified one-line fix was reverted as out of scope, and the naive lowering under-declares
+  a real 4K H.264 file. Read that document before touching `build_av_payload`; in particular the
+  raster is NOT the discriminator (the set's own devcaps claims 4096x2176 for H.264 too).
 - **Starfish `Load` must be constructed with `uid = NULL`** (`SMP_ctor(g_smp, NULL)`), and in
   buffer-feed mode the app must **not** `LSRegister` its own `com.webos.media` client — either
   collides with the pipeline's uMS connection (CONN_FIND_ERR). See the comment in `load_thread`.
