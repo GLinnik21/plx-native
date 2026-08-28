@@ -18,7 +18,7 @@ how a green run means nothing.
 | what it needs | a TV address and `make fixtures-pipeline` | a Plex server, a token, a `manifest.local.json`, and a library holding the shapes the matrix names |
 | media | generated clips, served off your Mac | real items on your PMS |
 | who can run it | **anyone** | whoever owns that library |
-| cost | ~0.85 GB, a few minutes to build; seconds per case | ~3 GB, ~20 minutes to build; ten to twenty minutes to run |
+| cost | ~0.9 GB, a few minutes to build; seconds per case | ~3 GB, ~20 minutes to build; ten to twenty minutes to run |
 
 ```sh
 ./tests/run.py                  # the synthetic tier — 20 cases, ~7 min, needs nothing
@@ -604,7 +604,7 @@ because it needs a fixture short enough to actually run out.
 ## The synthetic tier (the default) — the player, with no Plex behind it
 
 ```sh
-make fixtures-pipeline          # ~0.85 GB into $FIXTURES_OUT/pipeline; ~4 min, once
+make fixtures-pipeline          # ~0.9 GB into $FIXTURES_OUT/pipeline; ~4 min, once
 ./tests/run.py                  # runs them on the TV
 ./tests/run.py --list           # offline: what would run, at what resolution, what is missing
 ```
