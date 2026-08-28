@@ -111,6 +111,10 @@ ABR_RASTER = {
 }
 # What a rung falls back to when its own clip has not been generated yet. See `_resolve`.
 ABR_FALLBACK = "pipe_abr_1080p.ts"
+# ...and the raster that fallback actually carries. A rung declaring anything else must NOT take
+# it: the acceptance test is a bounding box, so a smaller picture is admitted and the case passes
+# having proved nothing.
+ABR_RASTER_FALLBACK = "1920x1080"
 assert set(ABR_FIXTURE) == set(ABR_RUNGS.split("|")) == set(ABR_RASTER), (
     "a rung the route can request but this server cannot answer reads on the TV as a rejected "
     "candidate, which is indistinguishable from a real refusal"
@@ -141,6 +145,19 @@ class FixtureHandler(BaseHTTPRequestHandler):
             # pack look like a controller bug. Said out loud every time, because the fallback also
             # silently defeats measurement step M4 — the whole point of the per-rung clips is that
             # the rungs deliver different bitrates.
+            if ABR_RASTER[seg.group(1)] != ABR_RASTER_FALLBACK:
+                # **A rung whose RASTER is the point may not fall back.** `hls_raster_within`
+                # grades the decoded picture against the rung's BOX rather than equality, so
+                # serving 1080p at the 4K rung would be ADMITTED and the case would pass having
+                # proved nothing — a false pass with no symptom, which is worse than the rejected
+                # candidate the fallback exists to avoid. 404 instead, and say why: a missing
+                # fixture is an operator error and reads as one.
+                self.server.note(f"!! {rel} missing and rung {seg.group(1)} is "
+                                 f"{ABR_RASTER[seg.group(1)]} — REFUSING the "
+                                 f"{ABR_RASTER_FALLBACK} fallback, which would be admitted by the "
+                                 f"raster box test and pass the case for the wrong reason. "
+                                 f"Re-run `make fixtures-pipeline`.")
+                return None
             self.server.note(f"!! {rel} missing — falling back to pipe_abr_1080p.ts; rung "
                              f"{seg.group(1)} will NOT deliver its own bitrate. "
                              f"Re-run `make fixtures-pipeline`.")
