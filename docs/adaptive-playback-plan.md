@@ -941,9 +941,13 @@ rests on eleven `production_load_pm` values the file itself calls "an ordering a
 (`abr.rs:1074-1082`). A ±40 % correction to one entry caps a gigabit link four rungs low. *Inert
 today, arbitrary tomorrow, with no measurement in between.* It also overrules a documented design
 decision at `abr.rs:1767-1772` that the previous plan neither cites nor rebuts. **Unblocked by:**
-M3, **and** a 4K `auto_network` case existing (today `tests/serve_fixtures.py:61-64` omits rung
-22 000 and all five `auto_network` cases use a 1080p fixture, so `admits` deletes Uhd). Until both,
-the previous §21's tests E and F are unreachable on every tier. **Do not build it without B**: in
+M3, **and** a 4K `auto_network` case existing. That second half is DONE as of 2026-08-28 and this
+paragraph used to describe the blocker as permanent scenery: `tests/serve_fixtures.py` omitted rung
+22 000 and every `auto_network` case used a 1080p fixture, so `admits` deleted Uhd — and
+`route::arm_auto_fixture` hardcoded the 1080p source raster *because* the rung 404'd, which made it
+circular. The server answers 22 000 with a real 3840x2160 clip, the raster is declared per case, and
+`pipe_abr_uhd_source_admits_4k` grades `floor_kbps: 22000`. The previous §21's tests E and F are
+reachable on the pipeline tier now; what still blocks I9 is M3's indexing decision alone. **Do not build it without B**: in
 the shipped integer scale the argmax at every budget above 20 Mbps is P1080M18, not P1080High
 (76 − 3 > 76 − 4), with unresolved ties at 12 000 and 16 000 — §6 alone is worse than what ships.
 
