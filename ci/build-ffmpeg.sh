@@ -197,6 +197,16 @@ if [ -z "$HOST" ]; then
 fi
 
 echo "ffmpeg: installed to $PREFIX"
+# **`if`, not `&&`, and that is the whole bug this shape exists to avoid.** This loop is the LAST
+# command in the script, so its status is the script's, and one of the two globs never matches:
+# a cross build produces no `.dylib` and a host build no `.so.*`. With `[ -f ] && [ ! -L ] && printf`
+# the non-matching glob leaves the unexpanded pattern in `$f`, the test is false, and the whole
+# script exits 1 — after having done every byte of its work and printed the libraries it just
+# installed. Make then fails the target on a COLD tree while a second run succeeds, because by then
+# the header exists and the recipe never re-runs. That reads as a flake and is not one; CI builds
+# clean, so it fails there every time.
 for f in "$PREFIX"/lib/lib*-plx.so.* "$PREFIX"/lib/lib*-plx.*.dylib; do
-  [ -f "$f" ] && [ ! -L "$f" ] && printf '  %-28s %6s KB\n' "$(basename "$f")" "$(( $(wc -c < "$f") / 1024 ))"
+  if [ -f "$f" ] && [ ! -L "$f" ]; then
+    printf '  %-28s %6s KB\n' "$(basename "$f")" "$(( $(wc -c < "$f") / 1024 ))"
+  fi
 done
