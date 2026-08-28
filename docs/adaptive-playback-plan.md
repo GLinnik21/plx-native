@@ -1019,6 +1019,33 @@ So **§7.B is unblocked on its inputs** and is now gated only on validation: it 
 to quality scoring, it feeds `mode.rs`'s comparison, and no part of it has been near a television.
 Building it is the next increment; landing it unverified is not.
 
+**B — STATUS 2026-08-28: the three unblock conditions are met and the measured defect is FIXED.**
+`min(wire, source_kbps)` is applied on the HLS side of the argmax (`hls_utility`), the raster half
+needs nothing because `route::auto_catalog` already builds every candidate through
+`limited_to(device, source)`, and the observed raster is logged at commit. R5's inversion is gone
+and it was device-verified end to end: `pipe_auto_original_slow_recover` went from 2 Loads and
+"Original was never requested again" to 3 Loads, `abr: mode chose=Original why=OriginalWorthIt`,
+`win[q=63] lose[q=37]`. The full ABR tier is 19/19 either side of the change.
+
+**What remains of B is the SATURATION, and it is latent.** `hls_quality_score` still tops out at 76
+above 17 000 kbps, so `P1080High` and `Uhd` score identically, and `P480`'s catalog 720 still
+scores a band above its measured ~425. Neither is reachable today: the current selector is not an
+argmax, so nothing consumes the tie. They become load-bearing exactly when §7.A is built, which is
+why they are recorded here rather than fixed speculatively.
+
+**A — STATUS 2026-08-28: unblocked, and still deferred DELIBERATELY.** Every gate §7.A named is now
+open — M3 ran, the 4K `auto_network` case exists, and B's measured defect is fixed. It is not built,
+and the reason is the plan's own: the argmax is *provably inert on today's catalog* over the
+admitted set, its inertness rests on eleven `production_load_pm` values the file calls "an ordering
+assumption", and M3 additionally showed the table is indexed by the wrong variable against a 1080p
+source. Building a thirteen-way utility argmax now means authoring weights that no measurement
+constrains, on a cost table that measurement has partly refuted, to move a selection that provably
+does not move. That is precisely the "inert today, arbitrary tomorrow, with no measurement in
+between" this section was written to prevent. **The unblock is real; the motivation is still
+absent.** What would create one: a deployment where two rungs are genuinely close on quality and
+far apart on server cost, measured — which is M3 against a loaded PMS, and every ABR measurement in
+this repository so far has been against an idle one.
+
 **C. `g(remaining)·Q` on rung selection (previous §10).** *Void.* See N18.
 
 **D. Per-candidate ρ extrapolation across the ladder (previous §5).** *Deferred with A*, because
