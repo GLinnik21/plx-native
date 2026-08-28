@@ -19,6 +19,16 @@ position; the channel manifest asserts a size; the `.ipk` asserts what it contai
 all of it, and when one of those claims is wrong there is no update mechanism to correct it — the
 notes are the only channel back to someone who already installed.
 
+**Since 2026-08-29 that claim is made in TWO documents, and knowing which is which is the first
+thing to get right.** `docs/release-notes/vX.Y.Z.md` is the body CI publishes, written for a
+television owner: what is new, what was fixed, whether they must act, whether it works on their
+set, what is still broken. `docs/release-audits/vX.Y.Z.md` is the evidence — package facts,
+hashes, `DT_NEEDED`, the payload inventory, provenance, the firmware matrix, the LGPL position —
+and its measurable half is **generated from the artifact** by `ci/gen-release-audit.py` during the
+release run rather than written by anyone. Both directories carry their own standard as a README.
+Nothing was dropped in the split: every gate below still runs, and the numbers that used to be
+typed into a note are now read out of the `.ipk`.
+
 That is why this skill exists and why it is mostly about verification. Every rule below is here
 because it was violated in a real release of this project, not because it is good practice.
 
@@ -130,19 +140,42 @@ follows from the build.
 Semver as this project means it: **patch** for fixes and diagnostics, **minor** when a user gains a
 capability, **major** is unused. A release that changes only docs or CI does not need a version.
 
-### 2. Write the note before building
+### 2. Write BOTH documents before building
 
-`docs/release-notes/TEMPLATE.md` is the skeleton and `docs/release-notes/README.md` is the standard
-— read the standard the first time, then work from the template. Save the note to
-`docs/release-notes/vX.Y.Z.md` and commit it in the same commit as the version bump, because CI
-publishes the release body from that file.
+**The note** — `docs/release-notes/vX.Y.Z.md`, from `docs/release-notes/TEMPLATE.md`, to the
+standard in that directory's README. It is what a television owner reads, and it is short. Two
+rules a linter enforces and everyone forgets: **do not hard-wrap prose** (one source line per
+paragraph — GitHub wraps it), and **links must be absolute**, because a release body resolves no
+repository-relative path.
 
-Three blocks are **fixed wording** and must be pasted, not improvised: the verification block, the
-LGPL block, and the compatibility statement. They are the sentences most likely to become false by
-paraphrase, which is exactly why they are frozen.
+**The audit's authored half** — `docs/release-audits/vX.Y.Z.md`, from that directory's
+`TEMPLATE.md`. This is the part no command can produce: which suites ran on which television with
+what result, which third-party reports the compatibility claim rests on, where each known issue
+was measured, and anything the release deliberately did not do. Everything measurable is left to
+`ci/gen-release-audit.py`, which fills the file's generated block during the release run. **Do not
+type a hash, a size, a file list, a `DT_NEEDED` entry or a firmware verdict into it.**
 
-The compatibility statement has one editing rule, in §3 of the standard: **one television verified
-moves one line.** Do not widen it because a firmware "should" work.
+Commit both in the same commit as the version bump. CI publishes the body from the first and
+completes the second.
+
+Grade either one while you are writing it, with no package staged and before any bump:
+
+```sh
+python3 ci/check-package.py --lint-note  docs/release-notes/vX.Y.Z.md
+python3 ci/check-package.py --lint-audit docs/release-audits/vX.Y.Z.md
+```
+
+Preview what the generated half will look like, against any release that already exists:
+
+```sh
+gh release download vA.B.C -D /tmp/vA.B.C
+ci/gen-release-audit.py --tag vA.B.C --dist /tmp/vA.B.C
+```
+
+**The compatibility block has one editing rule and it has not changed: one television verified
+moves one line.** Do not widen it because a firmware "should" work, and never let the static
+loader check become a playback claim — it grades whether the process starts and cannot see a video
+plane. The note carries one line per tier; the matrix belongs to the audit.
 
 ### 3. Build locally to catch mistakes early — CI builds what ships
 
@@ -213,6 +246,19 @@ Run it by hand only to audit a release that already exists, including old ones:
 ci/verify-published.sh vX.Y.Z
 ```
 
+**Then check that the audit landed.** After the release is created and verified, the same job
+regenerates `docs/release-audits/vX.Y.Z.md` from the published artifacts — now including the
+`verify-published.sh` verdict — and pushes it to `main` as `release: audit for vX.Y.Z [skip ci]`.
+Two things are worth reading rather than assuming:
+
+```sh
+git -C . fetch origin main && git show origin/main:docs/release-audits/vX.Y.Z.md | head -40
+gh api repos/GLinnik21/plx-native/releases/tags/vX.Y.Z --jq '.assets[]|"\(.name) \(.uploader.login)"'
+```
+
+An audit whose generated block is still the template's placeholder means the release did not go
+through `release.yml`, which is the same defect as v0.2.1 wearing different clothes.
+
 ### 6. Install it the way a user would
 
 Deploying over ssh does not exercise the package. Install the real `.ipk` — this is how two
@@ -263,6 +309,13 @@ thread rather than the house style of a commit message.
 A note is a published claim, so it gets **errata, not edits**. If something in it turns out to be
 wrong, append a dated correction under `## Updates to this note` and leave the original text
 standing — someone may have acted on it. v0.2.1's reproducibility claim was corrected this way.
+
+**A note is not living documentation.** Do not fold a later discovery into an old release body: a
+firmware that turns out to work in October does not belong in August's note, and a fix has its own
+release. For a security problem found later in a shipped version, the mechanism is a GitHub
+security advisory plus a fixing release whose note carries the action-required section — an
+advisory reaches people the old page never will. The same applies to an audit: it records one
+artifact, gains a dated erratum if it is wrong about itself, and gains nothing else.
 
 If a release is wrong enough to withdraw, say so in the note and publish a fixed one. Never delete
 a tag that has been public; the hash in someone's notes has to keep meaning something.
