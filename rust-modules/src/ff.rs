@@ -3289,6 +3289,10 @@ fn abr_why_code(reason: Option<crate::abr::DecisionReason>) -> u8 {
         Some(Hls(R::LadderFloor)) => crate::player::ABR_WHY_LADDER_FLOOR,
         Some(Hls(R::RejectBackoff)) => crate::player::ABR_WHY_REJECT_BACKOFF,
         Some(Hls(R::StarvationHorizon)) => crate::player::ABR_WHY_STARVATION,
+        Some(Hls(R::NoSustainableTarget)) => crate::player::ABR_WHY_NO_TARGET,
+        Some(Hls(R::EvidenceWindow)) => crate::player::ABR_WHY_EVIDENCE,
+        Some(Hls(R::AtBestRung)) => crate::player::ABR_WHY_AT_BEST,
+        Some(Hls(R::ReserveUnknown)) => crate::player::ABR_WHY_RESERVE_UNKNOWN,
     }
 }
 

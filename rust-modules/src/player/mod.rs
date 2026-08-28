@@ -116,6 +116,18 @@ pub(crate) const ABR_WHY_STARVATION: u8 = 6;
 /// rung and a failed attempt on that same rung had not yet been paid for. Distinct from every code
 /// above because those all describe the MODEL; this one describes a guard sitting on top of it.
 pub(crate) const ABR_WHY_REJECT_BACKOFF: u8 = 7;
+/// Nothing above the current rung is sustainable: the two-constraint admission rule came back
+/// empty, or came back at or below where we already are.
+pub(crate) const ABR_WHY_NO_TARGET: u8 = 8;
+/// A target was selected and the acquisition window could not carry the climb. The exit that reads
+/// most like a stuck controller from outside — every other field on the line looks healthy.
+pub(crate) const ABR_WHY_EVIDENCE: u8 = 9;
+/// Already on the best rung the budget admits. Not a constraint; the controller is doing the right
+/// thing and previously had no way to say so.
+pub(crate) const ABR_WHY_AT_BEST: u8 = 10;
+/// The reserve was not knowable on this sample (the audio lane has produced no timestamp since
+/// the open or the seek), so there was nothing to decide against.
+pub(crate) const ABR_WHY_RESERVE_UNKNOWN: u8 = 11;
 // Kodi in-place seek (flush + reopen + re-anchor the decode position + sendSegmentEvent, NO
 // reload/decoder re-init → no HDR-mode popup, no A/V-resync glitch). On webOS<11 (this 4.5)
 // setTimeToDecode returns 0, so feed_stream falls back to the content-info path

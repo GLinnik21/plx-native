@@ -705,6 +705,12 @@ fn abr_why_text(why: u8) -> Option<&'static str> {
         // about to stop the picture.
         crate::player::ABR_WHY_STARVATION => Some("buffer running out"),
         crate::player::ABR_WHY_REJECT_BACKOFF => Some("retrying shortly"),
+        // Phrased for the person holding the phone, not for the controller: what they can see is
+        // that the picture is not improving, and these three are the three different reasons.
+        crate::player::ABR_WHY_NO_TARGET => Some("no better quality fits"),
+        crate::player::ABR_WHY_EVIDENCE => Some("still measuring"),
+        crate::player::ABR_WHY_AT_BEST => Some("best available"),
+        crate::player::ABR_WHY_RESERVE_UNKNOWN => Some("waiting for audio"),
         _ => None,
     }
 }

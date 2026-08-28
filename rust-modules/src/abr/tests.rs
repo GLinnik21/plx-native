@@ -3782,3 +3782,51 @@ fn an_abandoned_prefix_may_still_lower_the_estimate() {
     });
     assert!(c.slow_kbps < settled, "a slow abandoned prefix is real evidence of a slow link");
 }
+
+/// **A `Stay` must say why, and until now the whole UP path did not.**
+///
+/// `HlsReason::LadderFloor`'s own doc makes this complaint about the DOWN path — "the line read
+/// `decision=stay reason=None`, identical to a healthy segment" — and fixed it there. The up path
+/// had FIVE silent exits, and the cost showed on device: `pipe_abr_seek_flat` sat at 2000 kbps
+/// with `safe=12585kbps`, a 45-second reserve, `risk=0`, `starve=none`, `dwell=0ms`, `block=0kbps`
+/// and `reason=None` on **100 of 102** steady lines. Every field a reader would consult said
+/// healthy, and the one field that could have named the refusal was empty.
+///
+/// The exception is deliberate and is the dwell, which reports itself as `dwell=<n>ms` on the same
+/// line; `HlsReason::RejectBackoff`'s doc records the argument ("a dwell that is holding returns
+/// before any target is selected, so there is no rung to name").
+///
+/// Structural rather than a value echo: it sweeps states and asserts the INVARIANT, so a sixth
+/// silent exit added later fails it without anyone remembering this test exists.
+#[test]
+fn a_stay_always_names_its_reason_unless_the_dwell_is_holding() {
+    let mut checked = 0;
+    for link in [400u32, 2_000, 6_000, 20_000, 60_000, 200_000] {
+        for buffered in [500i64, 2_000, 8_000, 24_000, 45_000] {
+            for ratio in [80u32, 400, 900, 1_400] {
+                let mut c = Controller::starting_at(Rung::P720Low, None, hd_catalog());
+                for i in 0u32..40 {
+                    let s = sample(link, ratio, buffered);
+                    let decision = c.observe(s, u64::from(i) * 2_000);
+                    if decision != Decision::Stay {
+                        continue;
+                    }
+                    // The two exits that report themselves on the same line — `dwell=<n>ms` and
+                    // `pending=<n>kbps` — and so are excluded by the same argument
+                    // `HlsReason::RejectBackoff`'s doc makes for the dwell.
+                    if c.dwell_left_ms() > 0 || c.has_pending() {
+                        continue;
+                    }
+                    checked += 1;
+                    assert!(
+                        c.last_reason().is_some(),
+                        "silent Stay at link={link} buf={buffered} ratio={ratio} \
+                         rung={:?} sample={i}",
+                        c.current(),
+                    );
+                }
+            }
+        }
+    }
+    assert!(checked > 200, "the sweep must actually reach Stay decisions, got {checked}");
+}

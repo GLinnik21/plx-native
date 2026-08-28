@@ -40,6 +40,35 @@ pub(crate) enum HlsReason {
     /// needs no code: a dwell that is holding returns before any target is selected, so there is
     /// no rung to name. This one has a rung, has selected it, and is refusing it.
     RejectBackoff,
+    /// **Nothing above the current rung is sustainable.** The two-constraint admission rule
+    /// (`best_sustainable`) found no candidate the network AND the server could both carry, or
+    /// found one at or below where we already are.
+    ///
+    /// Distinct from [`ProductionConstraint`](Self::ProductionConstraint), which is a verdict on
+    /// the CURRENT rung: this one says the search for a better rung came back empty, which on a
+    /// fast link with a full reserve is the interesting case rather than the boring one.
+    NoSustainableTarget,
+    /// **A target was selected and the EVIDENCE could not carry it** — `largest_admissible`
+    /// refused every rung above the current one, because the acquisition window cannot support an
+    /// upshift of that size at the confidence the rule requires.
+    ///
+    /// This is the exit that reads most like a stuck controller from outside: budget, reserve,
+    /// risk and production all look healthy and nothing moves. Naming it is the difference
+    /// between "the link is fine and the client is broken" and "the client has not yet earned the
+    /// climb."
+    EvidenceWindow,
+    /// **The reserve is not knowable on this sample**, so there is nothing to decide against —
+    /// `buffered_ms()` is `None` for exactly one situation, an A/V session whose audio lane has
+    /// produced no timestamp since the open or the seek.
+    ///
+    /// It is the one Stay that is the ABSENCE of a policy rather than the application of one, and
+    /// it is worth a code because it is otherwise indistinguishable on the line from a healthy
+    /// segment: the estimators have all taken the sample, so every other field looks normal.
+    ReserveUnknown,
+    /// **Already on the best rung the budget admits.** Not a constraint and not a refusal — the
+    /// controller is doing the right thing and had no code for saying so, which made a healthy
+    /// ceiling indistinguishable from the two above.
+    AtBestRung,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -550,6 +579,7 @@ impl Controller {
         // decision waits, and it waits at most until the audio lane produces a timestamp, which is
         // bounded by the first audio AU of the current segment.
         let Some(buffered) = sample.buffer.buffered_ms() else {
+            self.last_reason = Some(DecisionReason::Hls(HlsReason::ReserveUnknown));
             return Decision::Stay;
         };
         // The dev pin (`pinned_to`) short-circuits the decision and NOTHING above it: every
@@ -726,15 +756,18 @@ impl Controller {
             &self.policy,
             buffered,
         ) else {
+            self.last_reason = Some(DecisionReason::Hls(HlsReason::NoSustainableTarget));
             return Decision::Stay;
         };
         let target = target_candidate.rung;
         if target == self.current {
+            self.last_reason = Some(DecisionReason::Hls(HlsReason::AtBestRung));
             return Decision::Stay;
         }
         if target < self.current {
             // The budget shrank without any current-state signal failing. Nothing is wrong with
             // what is playing, so this is not a downshift trigger — it is a reason not to climb.
+            self.last_reason = Some(DecisionReason::Hls(HlsReason::NoSustainableTarget));
             return Decision::Stay;
         }
 
@@ -752,9 +785,11 @@ impl Controller {
         // decides. This is one rule read twice, not two thresholds stacked: no new number appears,
         // `n` and `σ` are the rule's own.
         let Some(target) = self.largest_admissible(target, segment, buffered) else {
+            self.last_reason = Some(DecisionReason::Hls(HlsReason::EvidenceWindow));
             return Decision::Stay;
         };
         if target <= self.current {
+            self.last_reason = Some(DecisionReason::Hls(HlsReason::EvidenceWindow));
             return Decision::Stay;
         }
 
@@ -1065,6 +1100,27 @@ impl Controller {
     /// climb for the life of the demux, and it is one refactor away — the moment this cost is
     /// asked for a `Direction::Down`, `candidate_warmup_budget` returns `Duration::MAX` and
     /// `saturating_add` keeps it.
+    /// The reason attached to the LAST decision, for the invariant test that a `Stay` is never
+    /// silent. `telemetry()` publishes the same value; this is the direct read, so a test does not
+    /// have to build a whole telemetry snapshot to ask one question.
+    #[cfg(test)]
+    pub(crate) fn last_reason(&self) -> Option<DecisionReason> {
+        self.last_reason
+    }
+
+    #[cfg(test)]
+    pub(crate) fn dwell_left_ms(&self) -> u64 {
+        self.dwell_remaining_ms()
+    }
+
+    /// Is a transaction in flight. The steady line already reports this as `pending=<n>kbps`, so
+    /// like the dwell it needs no reason code — and like the dwell, the invariant test has to know
+    /// to skip it.
+    #[cfg(test)]
+    pub(crate) fn has_pending(&self) -> bool {
+        self.pending.is_some()
+    }
+
     fn upshift_dwell_ms(&self) -> u64 {
         if self.last_segment_ms <= 0 {
             return 0;
