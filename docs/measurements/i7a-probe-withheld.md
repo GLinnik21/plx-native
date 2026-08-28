@@ -81,29 +81,28 @@ One device run of `pipe_auto_original_slow_recover` — which is now one command
 in this repository's default filters will do for you.
 
 
-## Postscript — Original recovery is impossible from the TOP rung, and that is structural
+## Postscript — the top rung LOOKED unreachable, and the cause was the undeclared reserve
 
-Found while trying to raise the fixture's recovery link from 40000 to 48000 so the probe could
-clear its bound. It could not, and the reason is worth more than the bound was.
+Recorded first as *"Original recovery is impossible from the TOP rung, and that is structural"*,
+after raising the fixture's recovery link to 48000 pushed the ladder to rung 20000 and the gate
+then reported `reason=shallow_reserve` for the rest of the run.
 
-`probe_due`'s first condition is `deep_reserve` — `buffered_ms >= 3 * segment`, i.e. 6000 ms at the
-2 s segments this pipeline requests. `B_max(R) = lead + queue_bits/R_ES` is inversely proportional
-to the rung. At rung 20000 on this plant the reserve simply cannot reach three segments: the run at
-48000 climbs there and then reports `reason=shallow_reserve` for the rest of its life, having never
-once opened the gate.
+**That was true of the code as it stood and is no longer true.** The cause was not the plant: it was
+`deep_reserve` asking for `3 * segment` = 6000 ms, an undeclared multiplier, against a rung whose
+reserve floor `tools/abr-plant-sweep.py` puts at **5293 ms** (measured p10). Deriving the gate from
+the probe's own budget instead — 4000 ms, the wall time a probe actually costs — puts the
+requirement below that floor, and the top of the ladder recovers normally:
 
-So **whenever the ladder has climbed to the top, Original recovery cannot even be considered** — not
-declined on the comparison, not spent and lost, but never evaluated. A faster link makes this MORE
-likely rather than less, which is the counter-intuitive part: it raises the rung, which lowers
-`B_max`, which withholds the probe.
+```
+48000 link, rung 20000:  loads: 3   source probe 23895kbps; recovered direct play
+44000 link, rung 20000:  loads: 3   source probe 21969kbps; recovered direct play
+```
 
-This is plan R2 (*"the top of the ladder is unreachable for ANY guard of this shape … `B_max ∝
-1/R`"*) meeting the recovery gate, and it is a property of the plant rather than of any case.
-`docs/measurements/band-20000-parked.md` is the same crossing measured directly, with the rung
-pinned.
+So the finding inverts. It was **not** R2 meeting the recovery gate; it was an unexplained constant
+denominated in the wrong units, which R2's own crossing then made visible. The plant-sizing levers
+this postscript listed — more `AQ_VIDEO_BYTES`, `MAX_FEED_AHEAD_NS`, deleting top rungs — are not
+needed for this, and spending any of them would have bought a fix for a defect that was in a
+`3`.
 
-**Not addressed here.** The candidates are Phase 0's remaining levers (`AQ_VIDEO_BYTES` beyond
-10 MiB, `MAX_FEED_AHEAD_NS`, deleting or re-spacing the top rungs — R15 notes four quality ties up
-there already) and re-deriving `deep_reserve`'s three segments against `B_max` rather than against
-the segment duration. Which of those is right is a plant-sizing decision, which is where the plan
-puts it, and none of them should be picked to make one case green.
+The general shape is the one this session kept meeting: **a constant that is wrong in its UNITS
+fails at exactly one end of the range, and the end it fails at looks like a law of physics.**
