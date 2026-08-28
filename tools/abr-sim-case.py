@@ -55,7 +55,12 @@ SIM_BIN = os.environ.get(
 
 def cases():
     with open(os.path.join(REPO, "tests", "manifest.json")) as fh:
-        return [c for c in json.load(fh)["pipeline_cases"] if c["name"].startswith("pipe_abr")]
+            # `pipe_auto_*` as well as `pipe_abr_*`: `pipe_auto_original_slow_recover` is the ONLY
+        # case that starts in Original mode, and so the only one that reaches the Original -> HLS
+        # handoff and the recovery back. A `pipe_abr` filter excludes it by name, which is how it
+        # went unrun through a whole day of tiers.
+        return [c for c in json.load(fh)["pipeline_cases"]
+                if c["name"].startswith(("pipe_abr", "pipe_auto"))]
 
 
 def main():
@@ -76,7 +81,13 @@ def main():
         return 2
 
     srv, base = serve(default_root(), port=0)
+    # BOTH shapers, because the two cases that matter most use different ones and arming only one
+    # silently streams over an unshaped link — which is how `pipe_abr_down_outrun` could not pass
+    # by construction until 2026-08-28. `segment_profile` is request-indexed (exact, needed where a
+    # transfer must go unaffordable AFTER the choice was made); `network_profile` is wall-clock
+    # (what `pipe_auto_original_slow_recover`'s Original -> HLS -> Original arc is written against).
     srv.set_segment_profile(case.get("segment_profile"))
+    srv.set_network_profile(case.get("network_profile"))
 
     spec = dict(case.get("declare", {}))
     spec["url"] = f"{base}/{case['fixture']}"

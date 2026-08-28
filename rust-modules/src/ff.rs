@@ -3722,6 +3722,10 @@ fn hls_demux(
     // place an estimate really goes stale — backpressure with a full buffer is the healthy case and
     // must not be aged. Tracked here because the demux worker sees the flag but not the event.
     let mut paused_since: Option<std::time::Instant> = None;
+    // Last-logged recovery refusal, so a steady one costs one line instead of one per segment.
+    // Lives here rather than on `OriginalRecovery` because it is a property of the LOG, not of the
+    // gate — and the gate is rebuilt on a seek while this loop is not.
+    let mut last_probe_block: Option<crate::abr::ProbeBlock> = None;
 
     while let Some(segment) = hls_cursor_next(&mut cursor, aq, hs)? {
         let mut clock = timeline
@@ -3955,6 +3959,25 @@ fn hls_demux(
                         now_ms(),
                     )
                 });
+            // **Say why NOT, once per distinct reason.** `abr: mode` is only ever emitted on a
+            // probe RESULT, so a recovery gate that never opens produces a log identical to one
+            // that was never constructed — and on the host that is exactly what happens
+            // (`pipe_auto_original_slow_recover`, 180 s on a 40 Mbit/s link: zero `abr: mode`,
+            // Original never re-requested, no way to tell which of four conditions withheld it).
+            // Rate-limited to CHANGES so a steady refusal costs one line rather than one a
+            // segment; the reason is a name, not a number, so a repeat carries no new information.
+            if let Some(block) = recovery.as_ref().and_then(|g| g.last_block()) {
+                if last_probe_block != Some(block) {
+                    last_probe_block = Some(block);
+                    crate::player::log(&format!(
+                        "abr: probe withheld reason={} rung={}kbps buf={}ms safe={}kbps",
+                        block.as_str(),
+                        current_candidate.expected_wire_kbps,
+                        sample.buffer.buffered_ms().unwrap_or(-1),
+                        delivery.conservative_kbps(),
+                    ));
+                }
+            }
             if probe_due {
                 SHARED
                     .dg_abr_action

@@ -71,6 +71,45 @@ pub(crate) enum RecoveryVerdict {
 /// has to clear the requirement is its UNCERTAINTY-DISCOUNTED value. One probe at twice the
 /// requirement therefore recovers immediately, while a marginal one waits for a second that
 /// agrees — which is the behaviour "two probes" was reaching for, without the number.
+/// **Which of `probe_due`'s conditions said no.** Not a policy input — a name for the log.
+///
+/// The gate is a conjunction of three live conditions plus a spacing timer, and any one of them
+/// failing resets `healthy_ms` to zero. From outside, all four failures look identical: no probe,
+/// no line, nothing. Measured on the host 2026-08-28 (`pipe_auto_original_slow_recover`, 180 s,
+/// 40 Mbit/s link): the recovery probe NEVER fires, Original is never re-requested, and the log
+/// cannot say which condition withheld it — the whole run emits zero `abr: mode` lines, so the
+/// silence is indistinguishable from a gate that was never constructed.
+///
+/// That is `[[silent-instrument-trap]]` exactly: **prove the instrument can see the thing before
+/// reading its silence.** This makes the refusal legible without changing when it happens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ProbeBlock {
+    /// Reserve below three segments, or unreadable. A probe spends a reserve it cannot see.
+    ShallowReserve,
+    /// The reserve is draining, so the link is not currently paying for what is playing.
+    Draining,
+    /// No measurable headroom over the CURRENT rung. Note this tightens as the ladder climbs:
+    /// `expected_wire_kbps` rises with every commit, so a controller that keeps upshifting is
+    /// consuming the very headroom this condition looks for.
+    NoSpareCapacity,
+    /// All three healthy, but not yet for `probe_spacing_ms` continuously.
+    TooSoon,
+    /// Healthy and spaced, but a successful probe would not change the decision.
+    NotWorthIt,
+}
+
+impl ProbeBlock {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            ProbeBlock::ShallowReserve => "shallow_reserve",
+            ProbeBlock::Draining => "draining",
+            ProbeBlock::NoSpareCapacity => "no_spare_capacity",
+            ProbeBlock::TooSoon => "too_soon",
+            ProbeBlock::NotWorthIt => "not_worth_it",
+        }
+    }
+}
+
 pub(crate) struct OriginalRecovery {
     source_kbps: u32,
     policy: AbrPolicy,
@@ -95,6 +134,8 @@ pub(crate) struct OriginalRecovery {
     /// SEGMENTS — a third clock, behind an `ORIGINAL_` prefix shared with a counter of 750 ms
     /// active-read windows, and a segment duration is a client REQUEST the server may ignore.
     healthy_ms: u64,
+    /// Why the last `probe_due` declined. See [`ProbeBlock`].
+    last_block: Option<ProbeBlock>,
     /// The wall clock at the previous sample, so the accumulation above is elapsed time.
     last_now_ms: u64,
     probes: u8,
@@ -120,6 +161,8 @@ impl OriginalRecovery {
         catalog: HlsActuatorCatalog,
     ) -> Option<Self> {
         (source_kbps > 0).then_some(Self {
+            // No probe has been declined yet; the first `probe_due` writes this.
+            last_block: None,
             source_kbps,
             policy,
             probe: CapacityEstimate::default(),
@@ -140,6 +183,11 @@ impl OriginalRecovery {
     /// corrupt the decay by ticking at an irregular rate.
     pub(crate) fn advance_to(&mut self, elapsed_ms: u64) {
         self.elapsed_ms = elapsed_ms;
+    }
+
+    /// Why the last `probe_due` said no, for the log. `None` once a probe was actually due.
+    pub(crate) fn last_block(&self) -> Option<ProbeBlock> {
+        self.last_block
     }
 
     pub(crate) fn probes(&self) -> u8 {
@@ -273,16 +321,28 @@ impl OriginalRecovery {
         let elapsed = now_ms.saturating_sub(self.last_now_ms);
         self.last_now_ms = now_ms;
         if !(deep_reserve && refilling && spare_capacity) {
+            // Ordered so the FIRST unmet condition is the one named, which is the one to act on:
+            // a shallow reserve explains a drain, and both explain absent headroom.
+            self.last_block = Some(if !deep_reserve {
+                ProbeBlock::ShallowReserve
+            } else if !refilling {
+                ProbeBlock::Draining
+            } else {
+                ProbeBlock::NoSpareCapacity
+            });
             self.healthy_ms = 0;
             return false;
         }
         self.healthy_ms = self.healthy_ms.saturating_add(elapsed);
         if self.healthy_ms < self.policy.probe_spacing_ms {
+            self.last_block = Some(ProbeBlock::TooSoon);
             return false;
         }
         if !self.worth_probing(current, production, buffer, hls_delivery, remaining_ms) {
+            self.last_block = Some(ProbeBlock::NotWorthIt);
             return false;
         }
+        self.last_block = None;
         self.healthy_ms = 0;
         true
     }
