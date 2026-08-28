@@ -84,7 +84,8 @@ pub(crate) enum RecoveryVerdict {
 /// reading its silence.** This makes the refusal legible without changing when it happens.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ProbeBlock {
-    /// Reserve below three segments, or unreadable. A probe spends a reserve it cannot see.
+    /// Reserve shorter than the probe's own budget, or unreadable. A probe spends a reserve
+    /// it cannot see, and one that cannot outlast the probe causes the starvation it looks for.
     ShallowReserve,
     /// The reserve is draining, so the link is not currently paying for what is playing.
     Draining,
@@ -308,13 +309,25 @@ impl OriginalRecovery {
         remaining_ms: i64,
         now_ms: u64,
     ) -> bool {
-        let segment = i64::from(sample.media_duration_ms);
         // An unreadable reserve is not a deep one. A probe spends the reserve it cannot
         // see, which is the one thing this gate exists to prevent.
+        //
+        // **The depth is the PROBE'S OWN BUDGET, not a count of segments.** This read
+        // `ms >= segment * 3`, and the "3" was never derived. What the gate's doc actually asks
+        // for is "a reserve deep enough that the probe cannot cause the starvation it is looking
+        // for" — and what a probe costs is `probe_budget_ms` of wall time, during which it shares
+        // the link with the segments still being fetched. That quantity does not scale with the
+        // segment duration, so expressing it in segments was a dimension error as well as an
+        // unexplained multiplier: at this pipeline's 2 s segments the two agree to within 1.5x,
+        // at 6 s it demands 18 s of reserve for a 4 s probe, and at 1 s it demands **3 s for a 4 s
+        // probe** — short of the thing it is guarding, which is the one direction that matters.
+        //
+        // The two are now ONE constant (`route::REMOTE_PROBE_BUDGET` is `probe_budget_ms`), so the
+        // gate that rules a probe affordable and the transfer that spends it cannot disagree.
         let deep_reserve = sample
             .buffer
             .buffered_ms()
-            .is_some_and(|ms| ms >= segment.saturating_mul(3));
+            .is_some_and(|ms| ms >= i64::try_from(self.policy.probe_budget_ms).unwrap_or(i64::MAX));
         let refilling = !buffer.draining();
         let spare_capacity =
             hls_delivery.conservative_kbps() > current.expected_wire_kbps;

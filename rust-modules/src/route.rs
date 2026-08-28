@@ -1669,7 +1669,11 @@ fn auto_uses_hls(q: Quality, auto_original: bool) -> bool {
 
 const REMOTE_PROBE_MIN_BYTES: usize = 512 * 1024;
 const REMOTE_PROBE_MAX_BYTES: usize = 8 * 1024 * 1024;
-const REMOTE_PROBE_BUDGET: std::time::Duration = std::time::Duration::from_secs(4);
+/// The probe transfer's wall-clock deadline. **Derived from the policy rather than restated**, so
+/// this and `OriginalRecovery::probe_due`'s reserve requirement cannot drift: the gate that says a
+/// probe is affordable and the transfer that spends it must mean the same number.
+const REMOTE_PROBE_BUDGET: std::time::Duration =
+    std::time::Duration::from_millis(crate::abr::PROBE_BUDGET_MS);
 
 /// One second of source bytes, bounded so a tiny encode still exercises TCP beyond its opening
 /// burst and a high-rate remux does not add an unbounded startup download.

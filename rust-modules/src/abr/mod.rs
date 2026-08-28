@@ -82,6 +82,11 @@ pub(crate) use window::*;
 /// which is the test a number has to pass to live here at all. What this type replaced was a
 /// scatter of `3 good samples`, `8 cooldown samples`, `2 bad windows` and a bare `1_100`, none of
 /// which said what it was for, so none of them could be argued with.
+/// **How long a source probe may run.** One definition, referenced by the policy default AND by
+/// `route::REMOTE_PROBE_BUDGET`, so the gate that rules a probe affordable and the transfer that
+/// spends it cannot mean different numbers.
+pub(crate) const PROBE_BUDGET_MS: u64 = 4_000;
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct AbrPolicy {
     /// **The section 4 admission rule's two explicit choices** -- see [`AdmissionPolicy`]. Both are
@@ -226,6 +231,15 @@ pub(crate) struct AbrPolicy {
     /// above. 6 000 ms is those three segments at the 2 s duration this pipeline requests, carried
     /// across so nothing moves; unlike the count, it stays a duration if the server ignores the
     /// requested segment length.
+    /// **How long a source probe may run, ms** — and therefore the reserve one costs.
+    ///
+    /// The authoritative copy: `route::probe_original` passes this to
+    /// `curlio::sample_throughput` as its wall-clock budget, and `OriginalRecovery::probe_due`
+    /// requires a reserve at least this deep. One constant rather than two, because the gate that
+    /// decides a probe is affordable and the transfer that spends it MUST agree — they were a
+    /// `3 * segment` in `abr` against a `Duration::from_secs(4)` in `route`, which agree at 2 s
+    /// segments and at no other duration.
+    pub(crate) probe_budget_ms: u64,
     pub(crate) probe_spacing_ms: u64,
 }
 
@@ -272,6 +286,8 @@ impl AbrPolicy {
             risk_weight: 2,
             server_cost_weight: 4,
             sustained_unsafe_deficit_ms: 4_500,
+            // The transfer's own deadline. `route::REMOTE_PROBE_BUDGET` is this value.
+            probe_budget_ms: PROBE_BUDGET_MS,
             probe_spacing_ms: 6_000,
         }
     }

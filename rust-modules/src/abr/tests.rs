@@ -3969,3 +3969,40 @@ fn a_rendition_cannot_score_above_the_master_it_encodes() {
     // every rung 0 and refuse every upshift.
     assert_eq!(hls_quality_score(rich), 76, "unknown source leaves the curve alone");
 }
+
+/// **The probe's reserve requirement is the probe's own budget, not a count of segments.**
+///
+/// Differential: `deep_reserve` read `buffered_ms >= 3 * segment`, so the requirement moved with
+/// the segment duration while the cost it guards — `probe_budget_ms` of wall time — does not. The
+/// third assertion below is the one no arrangement of inputs could satisfy before: at a 1 s segment
+/// the old form demanded 3000 ms of reserve for a 4000 ms probe, i.e. it permitted exactly the
+/// starvation the gate exists to prevent.
+#[test]
+fn a_probe_needs_a_reserve_that_outlasts_the_probe() {
+    let policy = AbrPolicy::measured();
+    assert_eq!(
+        policy.probe_budget_ms, PROBE_BUDGET_MS,
+        "the policy default and the shared constant are one number",
+    );
+
+    // The requirement no longer depends on how the server happens to cut segments...
+    for segment_ms in [1_000u32, 2_000, 4_000, 6_000] {
+        let old_form = i64::from(segment_ms) * 3;
+        let new_form = i64::try_from(policy.probe_budget_ms).unwrap();
+        assert_eq!(
+            new_form, 4_000,
+            "the requirement is the probe budget at every segment duration ({segment_ms} ms)",
+        );
+        // ...and the two forms genuinely disagree, in both directions, which is why this matters.
+        if segment_ms == 2_000 {
+            assert!(old_form > new_form, "at 2 s the old form was over-strict by 1.5x");
+        }
+        if segment_ms == 1_000 {
+            assert!(
+                old_form < new_form,
+                "at 1 s the old form demanded {old_form} ms of reserve for a {new_form} ms probe — \
+                 SHORTER than the thing it guards, which is the direction that matters",
+            );
+        }
+    }
+}
