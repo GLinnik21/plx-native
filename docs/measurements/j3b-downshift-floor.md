@@ -75,6 +75,46 @@ in both directions: with the floor absent the same call returns the 168 ms the d
 the upshift leg pins that the floor is scoped to `Down` so it cannot be satisfied by raising the
 bound generally.
 
+## Two more defects behind it, and the third is the root cause
+
+The floor made the case pass and **the full ABR tier then failed it again**, which is how the rest
+of the chain came out. Recording all three because the order matters: each was invisible until the
+one before it was fixed, and the last one is the only one that was causing the failure.
+
+**Defect 2 — the floor was a central estimate, so it was a coin flip.** `R * D / C` is a *median*
+prediction and is exceeded about half the time. `Down 18000->16000` came back
+`warmup_dl=1314ms decided=1327ms` — missing by 13 ms, 53 consecutive times. Invisible in the first
+device leg because its targets were far below the current rung (8000, 720, 320 out of 20000), where
+the prediction is generous by a wide margin; it needs a NEAR target, where prediction and reality
+meet. Fixed by widening the floor with the estimator's own published error
+(`CapacityEstimate::uncertainty_pm`, the `unc=` on the steady line) rather than a chosen margin.
+
+**Defect 3 — the estimator was confident in a rate the link could not carry, and the ABORT RULE was
+what made it so.** With the floor widened the case *still* failed, and the numbers said why: the
+deadline was computed from `C ≈ 16 427 kbps` while the shaper held the link at **500 kbps**.
+
+`Controller::observe` built every `CapacityObservation` with a hardcoded `completed: true`. The
+field was already modelled and already wired to `MAX_UNCERTAINTY_PM`; the one caller with something
+else to say could not say it. So each abandoned prefix — 1448 bytes of receive buffer, timing at
+42 277 kbps — entered as a completed measurement. **They agree with each other**, so the
+estimator's dispersion term FELL and it became confident: `slow=48672kbps unc=500pm` against a real
+500 kbps. Every downshift the controller correctly decided to make then chose a target thirty times
+too dear, overran, aborted, and decided again.
+
+The decision was never wrong. The number it was made from was — and the instrument was
+manufacturing it.
+
+`SegmentSample::abandoned()` marks it; the bytes still count and the estimate still moves, but with
+maximum uncertainty attached, and `conservative_kbps` treats uncertainty as a discount. After it:
+`slow=501kbps`, which is the shaped rate to within one per cent.
+
+**A false trail worth recording.** The first hypothesis was exactly this — "the abandoned prefix is
+poisoning the estimator" — and it was dropped after a host fixture showed `observe` returning
+`Prime(Down)` when fed one. That fixture was answering the wrong question: the abort does produce a
+downshift, and what the prefixes corrupt is the *target* it picks, which a single-sample test cannot
+see. The mechanism is CONVERGENCE, so the differential test needs 24 repetitions; at 4 both legs
+land on the same budget and the fix looks inert.
+
 ## Result
 
 Same case, same shaped link, same manifest — `tests/` is byte-identical across the two runs.
