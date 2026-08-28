@@ -36,7 +36,7 @@ repository:
     separates them;
   * `gh api` with a body flag (`-f`/`-F`/`--field`/`--raw-field`/`--input`) or a non-GET method.
     Bare `gh api … --jq` is a READ and stays allowed — `ci/verify-published.sh` and
-    `docs/release-notes/README.md` are built on it, as are `gh release view|download` and
+    `docs/release-audits/README.md` are built on it, as are `gh release view|download` and
     `gh pr view`. `--json body` is a read too: this matches the FLAG `--body`, never the word.
   * `git commit` with `-m`/`-F`/`--message`/`--file` (short clusters like `-am` included),
     `git tag -m/-F`, `git notes … -m/-F`;
@@ -113,8 +113,8 @@ WHAT IT MATCHES. Two halves, and they fail in opposite directions on purpose.
 
     * A 40-HEX RUN IS ONLY MATCHED IN CONTEXT (`machineIdentifier=`, `machine_id:`,
       `clientIdentifier=`, `X-Plex-Client-Identifier`). A git sha1 is also 40 hex, and this repo's
-      release notes are full of them — `docs/release-notes/README.md` greps `[0-9a-f]{7,40}` out of
-      published bodies as a matter of routine. A guard that refuses `git commit -m "revert
+      release audits are full of them — `docs/release-audits/README.md` greps hashes and shas out
+      of published bodies and artifacts as a matter of routine. A guard that refuses `git commit -m "revert
       <40-hex>"` is a guard that gets switched off.
     * A URL TOKEN MUST CARRY A DIGIT, A LOWERCASE AND AN UPPERCASE. An all-lowercase 20-char run in
       a URL is far more likely to be a path segment than a token. This trades a possible miss (the

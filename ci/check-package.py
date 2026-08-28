@@ -18,13 +18,214 @@ import flavor  # noqa: E402  — ci/flavor.py, which DECIDES a flavour's id and 
 ROOT = Path(__file__).resolve().parent.parent
 FAILURES: list[str] = []
 
-
 def check(cond: bool, msg: str) -> None:
     if cond:
         print(f"  ok — {msg}")
     else:
         FAILURES.append(msg)
         print(f"  FAIL — {msg}")
+
+# ---- the two release documents -----------------------------------------------------------------
+#
+# `docs/release-notes/vX.Y.Z.md` is the body CI publishes, written for a television owner.
+# `docs/release-audits/vX.Y.Z.md` is the evidence, written for a reviewer and completed by
+# `ci/gen-release-audit.py` from the artifact. The standards are the README in each directory; the
+# checks below are the half a command can decide, which is where every check in this project lives
+# — a checklist is only as good as the person following it, and the release that skipped every gate
+# skipped them BECAUSE it was done by hand.
+
+# The split landed 2026-08-29, and on the same day v0.1.0 through v0.5.0 were rewritten to it as a
+# deliberate, dated exercise — so there is no historical exemption and every check below applies to
+# every note and every audit in the two directories. The gate that used to sit here (a version
+# floor, skipping the structural checks for pre-standard notes) is gone rather than left at a value
+# nothing can reach: an exemption nobody can trip is one nobody maintains, and the next standard
+# change can reintroduce it against the version it actually needs.
+
+SENTINELS = ("__IPK_SHA256__", "__COMMIT__", "__RUN_URL__", "__IPK_SIZE__", "__INSTALLED_SIZE__")
+# The one a note cannot do without: it is the only tamper check a user of an unsigned binary has.
+REQUIRED_SENTINEL = "__IPK_SHA256__"
+FFMPEG_TARBALL_SHA = "7f607a00dd0d28a729d5a4811205812eef01cf6ef6155025febb6f36a9062d52"
+AUDIT_BEGIN = "<!-- BEGIN GENERATED"
+AUDIT_END = "<!-- END GENERATED -->"
+# Sections that were in the note and are now the audit's. Named so a regression to the old shape
+# fails rather than being noticed in review, or not.
+MOVED_SECTIONS = (
+    "## Package facts",
+    "## Source for the bundled FFmpeg",
+    "## Checking what you downloaded",
+    "## Still the same scope",
+)
+AUTHORED_AUDIT_SECTIONS = (
+    "## Device test evidence",
+    "## External compatibility reports known at release time",
+    "## Compatibility tiers, and what moved",
+    "## Known issues at release, with provenance",
+    "## Release configuration",
+)
+# Emoji, not punctuation: the em dash, the ellipsis and the arrow this repo writes everywhere are
+# deliberately outside these ranges.
+EMOJI = re.compile("[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\uFE0F]")
+MD_LINK = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
+
+
+# ---- which webOS versions a release document may name ------------------------------------------
+#
+# THE "webOS 26" GATE. A published note once asserted support for a webOS 26 that does not exist,
+# and until 2026-08-29 this was a plain `version in evidence` substring test over the text of
+# `fwcompat.py` and `webos5-port.md`. **That test could not catch its own motivating defect**: both
+# documents are full of dates, and `"26" in "2026-08-11"` is True. Widening the corpus made it
+# worse rather than better — `docs/webos10-lab-report.md` quotes, in order to refute it, somebody
+# else's gloss "= webOS 25 and 26", so the corpus contains the exact string being guarded against.
+#
+# So the evidence is ENUMERATED instead, and a named version is accepted only when it is a
+# component-wise prefix of something in it: `webOS 10` passes on 10.2.0, `webOS 4.5` passes as LG's
+# marketing number, `webOS 26` and `webOS 25` fail.
+#
+# This list is a transcription and transcriptions rot in this repo — so the failure message names
+# the authority rather than this file. `tools/fwcompat.py` grades against a downloaded inventory
+# and prints the releases it holds; when it grows one, that output is what corrects this line.
+FW_MATRIX = ("1.2.0", "1.4.0", "2.2.3", "3.4.0", "3.9.2", "4.4.2", "4.10.0", "5.3.1",
+             "6.4.0", "7.4.0", "8.3.0", "9.2.0", "10.2.0", "11.2.0")
+# Real numbers outside that matrix, each with the evidence that makes it real.
+FW_EXTRA = {
+    "4.5": "LG's marketing number for the dev set's generation",
+    "4.10.2": "what the dev television itself reports (docs/webos5-port.md)",
+    "6.5.2": "the reviewer's set in issue #22",
+    "10.3.1": "the rented Cloud Lab set (docs/webos10-resource-allocation.md)",
+}
+
+
+def unknown_firmwares(text: str) -> list:
+    """Versions named after the literal "webOS " that this repo has no evidence for.
+
+    Two ways to be known, because the notes legitimately use both. A version is evidence-backed
+    when it is a component-wise PREFIX of a release in the lists above (`webOS 10` on 10.2.0), or
+    when it is a GENERATION BOUNDARY — `N.0` for a major that exists — which is how a range is
+    written: "every other firmware from webOS 4.0 up", "webOS 5.0 replaced the library that binds
+    the video plane". Neither admits a major nobody has: 25 and 26 fail on both.
+    """
+    known = tuple(FW_MATRIX) + tuple(FW_EXTRA)
+    majors = {k.split(".")[0] for k in known}
+    out = []
+    for v in sorted(set(re.findall(r"webOS (\d+(?:\.\d+)*)", text))):
+        parts = v.split(".")
+        prefix = any(k == v or k.startswith(v + ".") for k in known)
+        boundary = parts[0] in majors and all(c == "0" for c in parts[1:])
+        if not (prefix or boundary):
+            out.append(v)
+    return out
+
+
+def _strip_noise(text: str) -> list:
+    """(line number, line) with fenced code and HTML comments removed.
+
+    Both are invisible to the reader — a fence is verbatim and a comment is deleted by the
+    renderer — so neither can be hard-wrapped prose and neither carries a link a reader can click.
+    """
+    out, fence, comment = [], None, False
+    for n, line in enumerate(text.splitlines(), start=1):
+        s = line.strip()
+        if fence is None and s.startswith("```"):
+            fence = s[: len(s) - len(s.lstrip("`"))]
+            continue
+        if fence is not None:
+            if s.startswith(fence):
+                fence = None
+            continue
+        if comment:
+            if "-->" in line:
+                comment = False
+            continue
+        if s.startswith("<!--"):
+            comment = "-->" not in line
+            continue
+        out.append((n, line))
+    return out
+
+
+# A line that opens a new block rather than continuing the previous one. Everything else following
+# a non-blank line is a hard-wrapped continuation.
+_BLOCK_START = re.compile(r"^\s*(?:[-*+>|#]|\d+[.)]\s|\[\^|!\[)")
+
+
+def hard_wrapped(text: str) -> list:
+    """Line numbers where a paragraph was split across source lines.
+
+    Release notes are read RENDERED, in a browser, at a width nobody controls, so a hard wrap
+    buys nothing and costs a re-flow on every edit. One source line per paragraph or list item.
+    """
+    lines = _strip_noise(text)
+    bad = []
+    for (pn, prev), (n, cur) in zip(lines, lines[1:]):
+        if n != pn + 1 or not prev.strip() or not cur.strip():
+            continue
+        if _BLOCK_START.match(cur):
+            continue
+        bad.append(n)
+    return bad
+
+
+def lint_note(path) -> None:
+    """Grade one release note against the standard in `docs/release-notes/README.md`."""
+    body = path.read_text()
+    missing = REQUIRED_SENTINEL not in body
+    check(not missing, f"{path.name} carries the {REQUIRED_SENTINEL} sentinel CI substitutes")
+    # A sentinel CI does not know about would publish literally, in the one field a reader checks.
+    unknown = sorted({s for s in re.findall(r"__[A-Z0-9_]+__", body) if s not in SENTINELS})
+    check(not unknown, f"{path.name} uses only sentinels CI substitutes"
+                       + (f" (unknown: {', '.join(unknown)})" if unknown else ""))
+    # A literal 64-hex string beside the sentinel is either a stale hash from a previous release or
+    # one somebody typed, and both are the defect class this whole standard exists to end.
+    stray = [h for h in re.findall(r"\b[0-9a-f]{64}\b", body) if h != FFMPEG_TARBALL_SHA]
+    check(not stray, f"no hand-typed package hash in {path.name}"
+                     + (f" (found {stray[0][:12]}…)" if stray else ""))
+    # A past note asserted support for a "webOS 26" that does not exist. This is that gate.
+    unknown_fw = unknown_firmwares(body)
+    check(not unknown_fw, f"every webOS version {path.name} names has evidence in the repo"
+                          + (f" (no evidence for {', '.join(unknown_fw)})" if unknown_fw else ""))
+    wrapped = hard_wrapped(body)
+    check(not wrapped, f"{path.name} does not hard-wrap prose (one source line per paragraph)"
+                       + (f" (lines {', '.join(map(str, wrapped[:6]))})" if wrapped else ""))
+    # A release body is NOT rendered relative to the repository, so a relative link is dead for
+    # every reader of the thing this file becomes.
+    rel = sorted({u for u in MD_LINK.findall(body)
+                  if not u.startswith(("http://", "https://", "#", "mailto:"))})
+    check(not rel, f"{path.name} links absolutely (a release body resolves no repo-relative path)"
+                   + (f" (relative: {', '.join(rel[:3])})" if rel else ""))
+    emoji = sorted(set(EMOJI.findall(body)))
+    check(not emoji, f"{path.name} carries no emoji" + (f" (found {' '.join(emoji)})" if emoji else ""))
+    moved = [h for h in MOVED_SECTIONS if h in body]
+    check(not moved, f"{path.name} does not carry the audit's sections"
+                     + (f" ({', '.join(moved)} → docs/release-audits/)" if moved else ""))
+
+
+def lint_audit(path) -> None:
+    """Grade one release audit's AUTHORED half. The generated half grades itself by existing."""
+    body = path.read_text()
+    has_markers = AUDIT_BEGIN in body and AUDIT_END in body
+    check(has_markers, f"{path.name} carries the generated-block markers CI fills")
+    authored = body.split(AUDIT_BEGIN)[0] if AUDIT_BEGIN in body else body
+    absent = [h for h in AUTHORED_AUDIT_SECTIONS if h not in authored]
+    check(not absent, f"{path.name} carries the authored sections"
+                      + (f" (missing {'; '.join(absent)})" if absent else ""))
+    # Same firmware gate as the note, on the half a person wrote. The generated half is derived
+    # from the tool's own output and cannot invent a release.
+    unknown = unknown_firmwares(authored)
+    check(not unknown, f"every webOS version {path.name}'s authored half names has evidence"
+                       + (f" (no evidence for {', '.join(unknown)})" if unknown else ""))
+
+
+# Lint one document without a package, which is how a note or an audit is graded while it is
+# being written — before the version is bumped and long before anything is built.
+if len(sys.argv) > 2 and sys.argv[1] in ("--lint-note", "--lint-audit"):
+    target = Path(sys.argv[2])
+    print(f"== {sys.argv[1][7:]} {target} ==")
+    (lint_note if sys.argv[1] == "--lint-note" else lint_audit)(target)
+    for f in FAILURES:
+        print(f"::error::{f}")
+    print("\n" + ("all assertions passed" if not FAILURES else "FAILURES above"))
+    sys.exit(1 if FAILURES else 0)
+
 
 
 def png_size(p: Path) -> tuple[int, int]:
@@ -174,6 +375,20 @@ if len(staged) != 1 and not REQUIRE_PACKAGE:
     # not only after a cross-build has produced a package.
     print("== localized appinfo (tracked) ==")
     check_tracked_resources(tracked_appinfo["title"])
+    # The release note and the release audit are TRACKED files too, so they are graded on this
+    # cheap path as well — which is the one `release.yml`'s `prepare` runs BEFORE it writes a tag.
+    # Catching a missing note here costs a job; catching it after the build costs a tag that
+    # points at a release nobody can publish.
+    if tracked_appinfo["id"] == flavor.STABLE_ID:
+        print("== release documents (tracked) ==")
+        _note = ROOT / f"docs/release-notes/v{v}.md"
+        _audit = ROOT / f"docs/release-audits/v{v}.md"
+        check(_note.exists(), f"docs/release-notes/v{v}.md exists (CI publishes the body from it)")
+        if _note.exists():
+            lint_note(_note)
+        check(_audit.exists(), f"docs/release-audits/v{v}.md exists (the authored half)")
+        if _audit.exists():
+            lint_audit(_audit)
     for f in FAILURES:
         print(f"::error::{f}")
     print(f"\n{'all tracked-file assertions passed' if not FAILURES else 'FAILURES above'}")
@@ -286,37 +501,23 @@ for member in sorted(PAYLOAD.rglob("*")) if PAYLOAD.is_dir() else []:
 # failures for an artifact that is doing exactly what it should. SAID OUT LOUD rather than skipped
 # silently, because a gate that quietly does not run is the defect this section exists to end.
 note = ROOT / f"docs/release-notes/v{appinfo['version']}.md"
+audit = ROOT / f"docs/release-audits/v{appinfo['version']}.md"
 if not IS_STABLE:
     print(f"  SKIP — release coherence is not graded for the {FLAVOR} flavour (it is never published)")
 else:
-    # CI publishes the release body from this file, so a missing one means a release with no notes.
+    # CI publishes the release body from the note, so a missing one means a release with no notes.
     check(note.exists(), f"docs/release-notes/v{appinfo['version']}.md exists (CI publishes the body from it)")
+    # ...and the audit is the other half of the same release: its authored sections are written
+    # and reviewed BEFORE the build, and `ci/gen-release-audit.py` fills its generated block from
+    # the artifact during the release run.
+    check(audit.exists(),
+          f"docs/release-audits/v{appinfo['version']}.md exists "
+          f"(the authored half — copy docs/release-audits/TEMPLATE.md)")
 
 if IS_STABLE and note.exists():
-    body = note.read_text()
-    # The three values that CANNOT be written by a person, because they do not exist until the
-    # release run does: the artifact's hash, the commit and the run. `release.yml`'s publish job
-    # fills these from the artifacts themselves, so the note carries sentinels — and a note that
-    # dropped one would publish a body with no hash in it at all, which `verify-published.sh`
-    # would only catch once the release was already public. This is the pre-publish half.
-    sentinels = ("__IPK_SHA256__", "__COMMIT__", "__RUN_URL__", "__IPK_SIZE__", "__INSTALLED_SIZE__")
-    missing = [s for s in sentinels if s not in body]
-    check(not missing, "the note carries the sentinels CI substitutes"
-                       + (f" (missing {', '.join(missing)})" if missing else ""))
-    # …and it must not carry a hand-typed one beside them. A literal 64-hex string in the committed
-    # file is either a stale hash from a previous release or a number somebody typed, and both are
-    # the defect class this standard exists to end (`docs/release-notes/README.md` §1.9).
-    typed = re.findall(r"\b[0-9a-f]{64}\b", body)
-    ffmpeg_sha = "7f607a00dd0d28a729d5a4811205812eef01cf6ef6155025febb6f36a9062d52"
-    stray = [h for h in typed if h != ffmpeg_sha]
-    check(not stray, "no hand-typed package hash in the note (only the pinned FFmpeg tarball's)"
-                     + (f" (found {stray[0][:12]}…)" if stray else ""))
-    # Every firmware the note NAMES must be one this repo has evidence for. A past note asserted
-    # support for a "webOS 26" that does not exist; this is that gate.
-    evidence = (ROOT / "tools/fwcompat.py").read_text() + (ROOT / "docs/webos5-port.md").read_text()
-    unknown = sorted({v for v in re.findall(r"webOS (\d+(?:\.\d+)*)", body) if v not in evidence})
-    check(not unknown, "every webOS version the note names has evidence in the repo"
-                       + (f" (no evidence for {', '.join(unknown)})" if unknown else ""))
+    lint_note(note)
+if IS_STABLE and audit.exists():
+    lint_audit(audit)
 
 # WHICH CONFIGURATION produced what is in pkg/, which the two gates below both need. The Makefile
 # writes `features:$(RUST_FEATFLAGS)` into this stamp at PARSE time, and it is the same witness

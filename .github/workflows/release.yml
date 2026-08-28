@@ -251,6 +251,10 @@ jobs:
           # the parse-time stamp exists to prevent.
           grep -q -- '--no-default-features' pkg/.build-config \
             || { echo "::error::RELEASE=1 did not take — pkg/.build-config says [$(cat pkg/.build-config)]"; exit 1; }
+          # ...and carry the stamp to the publish job under a NON-HIDDEN name: upload-artifact
+          # silently drops dotfiles, so `pkg/.build-config` would never arrive and the audit would
+          # lose the row recording which configuration was built.
+          cp pkg/.build-config pkg/build-config.txt
           # ...and the same for the flavour, on the artifact's own name. `check-package.py` cannot
           # catch this one: it derives the packaged id from the stage and SKIPs every stable-only
           # assertion when that id is not stable, so a wrong-flavour package exits 0 there.
@@ -267,6 +271,12 @@ jobs:
         run: |
           ./ci/check-elf.sh
           python3 ci/check-package.py
+          # A gate row is appended only AFTER the gate passed — `run:` is `bash -e`, so a failure
+          # never reaches these lines. The audit therefore lists gates that really ran, which is
+          # the fact v0.2.1 could not produce: it was hand-published and every gate was skipped.
+          { echo "| \`ci/check-elf.sh\` — ELF identity, CP15 barriers, DT_NEEDED | pass |"
+            echo "| \`ci/check-package.py\` — versions, ar layout, descriptors, payload, notes | pass |"
+          } >> pkg/gates.md
 
       - name: webosbrew tooling
         run: |
@@ -278,9 +288,14 @@ jobs:
           sudo apt-get install -y ./webosbrew-toolbox-*.deb
 
       - name: Compatibility check (gating)
+        # Captured to a FILE as well as to the summary, because `ci/gen-release-audit.py` embeds
+        # this verbatim in the audit's static-compatibility section. The release note carries one
+        # line summarising it; the matrix is fourteen rows and belongs in the audit, derived from
+        # the tool rather than retyped — `docs/release-notes/README.md` bans retyping it and this
+        # is what makes that possible.
         run: |
           webosbrew-ipk-verify --details --format markdown \
-            --fw-releases '>=4.0' pkg/*.ipk | tee -a "$GITHUB_STEP_SUMMARY"
+            --fw-releases '>=4.0' pkg/*.ipk | tee pkg/ipk-verify.md | tee -a "$GITHUB_STEP_SUMMARY"
 
       - id: name
         run: echo "ipk=$(ls pkg/*.ipk)" >> "$GITHUB_OUTPUT"
@@ -311,6 +326,7 @@ jobs:
           have=$(sha256sum "${{ steps.name.outputs.ipk }}" | cut -d' ' -f1)
           [ "$want" = "$have" ] || { echo "::error::manifest sha256 $want != artifact $have"; exit 1; }
           echo "ipk sha256 $have" >> "$GITHUB_STEP_SUMMARY"
+          echo "| the Homebrew Channel manifest's sha256 matches the artifact | pass |" >> pkg/gates.md
 
       - name: LGPL corresponding source for the bundled FFmpeg
         # NOT optional and not paperwork. The package ships four FFmpeg shared libraries, so
@@ -327,6 +343,7 @@ jobs:
           cp "$tarball" pkg/
           cp ci/build-ffmpeg.sh pkg/
           echo "LGPL source: $(basename "$tarball") + build-ffmpeg.sh" >> "$GITHUB_STEP_SUMMARY"
+          echo "| LGPL corresponding source attached ($(basename "$tarball") + build-ffmpeg.sh) | pass |" >> pkg/gates.md
 
       - uses: actions/upload-artifact@v4
         with:
@@ -337,11 +354,16 @@ jobs:
             pkg/ipk.sha256
             pkg/ffmpeg-*.tar.xz
             pkg/build-ffmpeg.sh
+            pkg/ipk-verify.md
+            pkg/gates.md
+            pkg/build-config.txt
 
   publish:
     name: publish release
     runs-on: ubuntu-latest
-    needs: [build, guard]
+    # `legal-gate` is listed purely so its verdict can be READ into the release audit's gate table
+    # — `needs` exposes only DIRECT dependencies, and `build` already refuses to run without it.
+    needs: [build, guard, legal-gate]
     # See legal-gate: explicit, or the tag-push path skips this silently.
     if: always() && needs.guard.result == 'success' && needs.build.result == 'success' 
     permissions:
@@ -354,6 +376,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.guard.outputs.tag }}
+          # A shallow clone cannot push, and this job now pushes: the completed release audit goes
+          # to `main` in its last step. Same reason `prepare` fetches everything.
+          fetch-depth: 0
       - uses: actions/download-artifact@v4
         with:
           name: release-assets
@@ -365,11 +390,15 @@ jobs:
       # which meant `releases/latest` briefly carried a one-line body and a `rebuild_tag:` re-publish
       # silently dropped the note entirely.
       #
-      # Three values in it CANNOT exist in the committed file — the artifact's sha256, the commit
-      # and this run — so the note carries sentinels and they are filled HERE, from the artifacts
-      # themselves. That is the point: a hash nobody types cannot be the wrong hash, which is
-      # exactly the class of defect (`docs/release-notes/README.md` §1.9) this whole standard is
-      # about. Everything else in the body is the reviewed text, byte for byte.
+      # ONE value in it cannot exist in the committed file — the artifact's sha256 — so the note
+      # carries a sentinel and it is filled HERE, from the artifact itself. That is the point: a
+      # hash nobody types cannot be the wrong hash, which is the class of defect the release-note
+      # standard exists to end. Everything else in the body is the reviewed text, byte for byte.
+      #
+      # The other four sentinels (`__COMMIT__`, `__RUN_URL__`, `__IPK_SIZE__`, `__INSTALLED_SIZE__`)
+      # are still substituted for a note that uses them, so every published note stays reproducible
+      # from its committed file. New notes should not need them: provenance and sizes are the
+      # release AUDIT's job now, generated from the artifact rather than pasted through a sentinel.
       - name: Render the release body from the committed note
         run: |
           set -euo pipefail
@@ -386,17 +415,56 @@ jobs:
           # which is the artifact the note tells the reader they came from.
           size=$(python3 -c "import json;print(json.load(open('dist/com.beb.plxnative.manifest.json'))['ipkSize'])")
           inst=$(python3 -c "import json;print(json.load(open('dist/com.beb.plxnative.manifest.json'))['installedSize'])")
-          # Every sentinel must be PRESENT before substituting: a note that lost one would publish
-          # a body with no hash at all, and `verify-published.sh` would only catch it after the
-          # release existed.
-          for s in __IPK_SHA256__ __COMMIT__ __RUN_URL__ __IPK_SIZE__ __INSTALLED_SIZE__; do
-            grep -q "$s" "$note" || { echo "::error::$note does not carry the $s sentinel"; exit 1; }
-          done
+          # ONE sentinel is mandatory: the artifact's sha256, which is the only tamper check a
+          # user of an unsigned binary has. A note that lost it would publish a body with no hash
+          # at all, and `verify-published.sh` would only catch that once the release was public.
+          # The other four are substituted when a note uses them and are not required — since
+          # 2026-08-29 the sizes, the commit and the run URL live in the release AUDIT, which is
+          # generated from the artifact rather than written with sentinels.
+          grep -q __IPK_SHA256__ "$note" \
+            || { echo "::error::$note does not carry the __IPK_SHA256__ sentinel"; exit 1; }
           sed -e "s|__IPK_SHA256__|$sha|g" -e "s|__COMMIT__|$commit|g" -e "s|__RUN_URL__|$run|g" \
               -e "s|__IPK_SIZE__|$size|g" -e "s|__INSTALLED_SIZE__|$inst|g" \
               "$note" > dist/body.md
           echo "body: $(wc -l < dist/body.md) lines, sha $sha" >> "$GITHUB_STEP_SUMMARY"
+      # THE AUDIT'S EVIDENCE HALF, derived from the artifact that is about to be published.
+      #
+      # `docs/release-audits/vX.Y.Z.md` is committed with its AUTHORED half — device-test evidence,
+      # third-party reports, what this release deliberately did not do — which no command can
+      # produce. Everything measurable is read out of the .ipk here: hashes and their agreement,
+      # the ar layout, the payload inventory with per-file hashes, DT_NEEDED, the dev-trigger
+      # witnesses, FFmpeg's recorded configure invocation, the build-machine-path scan.
+      #
+      # It runs BEFORE the release is created, and a failure here stops the publish: an audit that
+      # cannot be produced from the artifact means something about the artifact is not what the
+      # release is about to claim.
+      - name: Generate the release audit from the built artifact
+        run: |
+          set -euo pipefail
+          tag='${{ needs.guard.outputs.tag }}'
+          # Job-level verdicts first, then the in-build gate rows the build job appended as each
+          # gate passed. `bash -e` means a failed gate never reached its own row.
+          {
+            echo "| gate | verdict |"
+            echo "|---|---|"
+            echo "| \`tag / version agreement\` | ${{ needs.guard.result }} |"
+            echo "| \`redistributable assets\` (LICENSE, notices, font family) | ${{ needs['legal-gate'].result }} |"
+            echo "| \`build + verify\` | ${{ needs.build.result }} |"
+            cat dist/gates.md 2>/dev/null || true
+          } > dist/all-gates.md
+          python3 ci/gen-release-audit.py \
+            --tag "$tag" --dist dist \
+            --commit "$(git rev-parse HEAD)" \
+            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --uploader 'github-actions[bot]' \
+            --build-config "$(cat dist/build-config.txt 2>/dev/null || echo unknown)" \
+            --gates dist/all-gates.md \
+            --fwcompat dist/ipk-verify.md \
+            --out dist/audit-generated.md
+          echo "audit evidence: $(wc -l < dist/audit-generated.md) lines" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Create the release
+        id: publish
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.guard.outputs.tag }}
@@ -424,7 +492,50 @@ jobs:
       - name: Verify what the public downloads
         env:
           GH_TOKEN: ${{ github.token }}
-        run: ci/verify-published.sh "${{ needs.guard.outputs.tag || github.ref_name }}"
+        run: |
+          set -o pipefail
+          # Captured as well as printed: this verdict is the audit's last section, and it is the
+          # one thing in the file that needs a LIVE release to establish. The colour codes go —
+          # they are for a terminal, not for a markdown code block.
+          ci/verify-published.sh "${{ needs.guard.outputs.tag || github.ref_name }}" 2>&1 \
+            | tee /tmp/published.txt
+          sed -i 's/\x1b\[[0-9;]*m//g' /tmp/published.txt
+
+      # The completed audit goes to `main`, not to the tag: it describes an artifact that did not
+      # exist when the tag was written, and the last section describes a release that did not exist
+      # ten seconds ago. `[skip ci]` because this is a documentation commit and ci.yml runs a full
+      # cross-build on every push to main.
+      - name: Commit the completed audit to main
+        if: always() && steps.publish.conclusion == 'success'
+        run: |
+          set -euo pipefail
+          tag='${{ needs.guard.outputs.tag }}'
+          git config user.name  'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git fetch origin main
+          git checkout -B main origin/main
+          if [ ! -f "docs/release-audits/$tag.md" ]; then
+            echo "::notice::no docs/release-audits/$tag.md on main — pre-standard release, nothing to complete"
+            exit 0
+          fi
+          python3 ci/gen-release-audit.py \
+            --tag "$tag" --dist dist \
+            --commit "${{ github.sha }}" \
+            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --uploader 'github-actions[bot]' \
+            --build-config "$(cat dist/build-config.txt 2>/dev/null || echo unknown)" \
+            --gates dist/all-gates.md \
+            --fwcompat dist/ipk-verify.md \
+            --published /tmp/published.txt \
+            --write
+          python3 ci/check-package.py --lint-audit "docs/release-audits/$tag.md"
+          git add "docs/release-audits/$tag.md"
+          if git diff --cached --quiet; then
+            echo "audit already complete and unchanged"
+          else
+            git commit -m "release: audit for $tag [skip ci]"
+            git push origin main
+          fi
 
       - name: Propagation note
         run: |

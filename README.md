@@ -105,6 +105,9 @@ renew it for you before that happens. The Homebrew Channel has no expiry.
 Grab the `.ipk` from the [latest release](https://github.com/GLinnik21/plx-native/releases) and
 install it with the Homebrew Channel or
 [dev-manager-desktop](https://github.com/webosbrew/dev-manager-desktop).
+[docs/install-and-verify.md](docs/install-and-verify.md) is the longer version: which of the five
+assets is which, how to check the download's sha256 (nothing in this chain is signed), and what the
+app writes, reads and reaches once it is on your set.
 
 Every release will also publish a `sha256`, and it's worth checking. Nothing in this distribution chain
 is code-signed, so that hash is the only thing standing between you and a tampered package. Builds

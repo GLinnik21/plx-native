@@ -1017,8 +1017,14 @@ between here and a release, and none of them is code:
 
 ## 7a. Cutting a release (2026-08-04)
 
-**Actions → Release → Run workflow → pick `patch`, `minor` or `major` → Run.** That is the whole
-process. Nothing is edited by hand and nothing is tagged by hand.
+**Write the two release documents, then Actions → Release → Run workflow → pick `patch`, `minor`
+or `major` → Run.** Nothing is edited by hand and nothing is tagged by hand.
+
+The documents come first because CI reads both: `docs/release-notes/vX.Y.Z.md` is published as the
+release body, and `docs/release-audits/vX.Y.Z.md` has its evidence half generated into it from the
+built artifact by `ci/gen-release-audit.py` and pushed to `main` after the release exists. Each
+directory's README is its standard; `ci/check-package.py` refuses to build a stable package missing
+either one, and the `cut-release` skill is the procedure.
 
 The `prepare` job runs `ci/bump-version.py`, which is the ONE place that knows the version lives in
 four files — `pkg/appinfo.json` (the source), `ipkroot/ctl/control`, `rust-modules/Cargo.toml` and

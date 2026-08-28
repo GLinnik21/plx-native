@@ -395,6 +395,18 @@ which the linking section explains is load-bearing rather than tidy.
   module: `src/starfish.c` is C and does its own `dlopen`.) Replaced `stub/`, which is deleted.
   `tools/fwcompat.py` grades the result;
   `docs/webos5-port.md` is the full account.
+- `docs/release-notes/` + `docs/release-audits/` — **the two halves of a release, split
+  2026-08-29**: the note is the body CI publishes, written for a television owner and deliberately
+  short; the audit is the evidence (package facts, hashes, `DT_NEEDED`, payload inventory,
+  provenance, firmware matrix, LGPL position), whose measurable half `ci/gen-release-audit.py`
+  READS OUT OF THE .ipk during the release run rather than anyone typing it. Each directory carries
+  its own standard as a README, and `ci/check-package.py` gates both documents — including, for
+  notes, that prose is NOT hard-wrapped and every link is absolute, because a release body is
+  rendered at a width nobody controls and resolves no repo-relative path. The `cut-release` skill
+  is the procedure.
+- `docs/install-and-verify.md` — the invariant half a release note used to repeat every time:
+  which asset is which, both install routes and why the Homebrew Channel wins, how to check the
+  sha256 per platform, and what the app writes, reads and reaches on your television.
 - `pkg/` — deployable payload: `appinfo.json` (native app manifest), `plxnative` binary, icons,
   `appfont*.ttf`, and the prebuilt `.ipk`.
 - `ipkroot/` — ipk staging (`ctl/control`, `data/`, `debian-binary`); assembled by `make ipk`.
