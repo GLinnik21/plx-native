@@ -169,9 +169,35 @@ The trajectory in the right-hand column is what the case was written to grade: a
 
 ## What this does not settle
 
-- **The abort rule is not what fixed this.** It fired twice in the passing run and its own
-  contribution is unmeasured — the floor alone may be sufficient. An A/B with the guard disarmed is
-  one run and has not been taken.
+### The floor's A/B — ANSWERED 2026-08-28, and it stays
+
+Defects 4 and 5 raised a fair question: with the estimator no longer corrupted and the abort no
+longer firing blind, is the deadline floor still doing anything? The first passing run suggested
+not — both successful downshifts had `warmup_dl == buf_start`, i.e. the RESERVE bound won and the
+floor never bound.
+
+Measured directly, one leg with the floor reverted to the pre-J3b `min(cold_start, reserve)` and
+everything else identical: **the case FAILS.** 22 aborts, 22 deadline rejects, and the absorbing
+state in its purest form —
+
+```
+abr: tx Down 18000->320kbps  warmup_dl=126ms  decided=138ms  buf_start=126ms
+```
+
+`320` is the LADDER FLOOR. With a 126 ms reserve as the only bound, even the cheapest rung on the
+ladder cannot be reached, so there is no escape at any price. That is the property the floor
+exists to remove, and nothing else added since removes it: the ratchet stops the estimate being
+wrong and the measurability gate stops the abort being blind, but neither gives a transaction the
+time it physically needs.
+
+So all three are load-bearing, and the reason they LOOK redundant in a passing run is that they
+act at different points: the ratchet and the gate keep the reserve from collapsing in the first
+place, and the floor is what makes the collapse survivable when it happens anyway.
+
+- **The abort rule's own contribution is still unmeasured.** It fired twice in the first passing
+  run; an A/B with the GUARD disarmed (as distinct from the floor, above) has not been taken. Note
+  it can no longer be assumed harmless-or-helpful either way: defect 5 showed the guard is what
+  starved the estimator, so its A/B is a real question rather than a formality.
 - **Only the `Down` direction was measured.** The upshift bound is unchanged and untested by this
   case by construction.
 - **The floor's MAGNITUDE is bounded only by the target selection being sane**, and that is a
