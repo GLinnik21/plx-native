@@ -618,7 +618,18 @@ def venc_args(v):
         # `queue_bytes / media_rate`, so a pack whose rungs all decode to the same file cannot
         # measure a bitrate-dependent ceiling at all — every rung would report the same reserve.
         # CRF gives a bitrate that is a CONSEQUENCE; this gives one that is an input.
-        rc = (["-b:v", f"{v['vbr']}k", "-maxrate", f"{v['vbr']}k", "-bufsize", f"{2 * v['vbr']}k"]
+        #
+        # `vbr_bufsize_ratio` narrows the rate-control WINDOW, and it exists for one measured
+        # reason. The validator grades SEGMENT 0, which is the segment carrying the opening IDR,
+        # and at 2x the target that window is two seconds wide — a whole segment — so the encoder
+        # is free to spend a full segment's budget on that one picture and pay it back later. At
+        # 1080p the overshoot stays inside the 1.30x band; at 3840x2160 the same IDR is four times
+        # the pixels and `pipe_abr_4k_22m` measured **1.40x**, failing its own gate. A narrower
+        # window forces the spend to be repaid within the segment it happens in, which is also
+        # what a real encoder feeding a real HLS rung has to do.
+        buf_ratio = v.get("vbr_bufsize_ratio", 2)
+        rc = (["-b:v", f"{v['vbr']}k", "-maxrate", f"{v['vbr']}k",
+               "-bufsize", f"{int(buf_ratio * v['vbr'])}k"]
               if v.get("vbr") else ["-crf", str(v["crf"])])
         # veryfast, NOT ultrafast: ultrafast silently forces Constrained Baseline (trap 6).
         return ["-c:v", "libx264", "-profile:v", "high", "-level", "4.0",
@@ -1246,7 +1257,11 @@ PIPE_SHAPES = {
         "kind": "clip", "ext": "ts", "duration": 12, "rate": 0.08, "hls_segment": True,
         "hls_segments": 6,
         "declare": {"vcodec": "h264", "acodec": "aac", "fps": float(FPS), "atmos": False},
-        "video": {"codec": "h264", "size": "3840x2160", "vbr": 22 * 1000 - 192},
+        "video": {"codec": "h264", "size": "3840x2160", "vbr": 22 * 1000 - 192,
+                  # See `vbr_bufsize_ratio`: at 4K the opening IDR overshoots segment 0 to 1.40x
+                  # of target inside the default two-second window, which is the clip's own gate
+                  # failing. Half a segment forces it to be repaid where it is spent.
+                  "vbr_bufsize_ratio": 0.5},
         "audio": [{"codec": "aac", "ch": 2, "lang": "eng", "br": "192k", "pitch": 240,
                    "default": True, "title": "AAC 2.0 English"}],
         "subs": [],
