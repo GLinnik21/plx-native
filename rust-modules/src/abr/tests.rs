@@ -3671,3 +3671,67 @@ fn the_floors_widening_is_monotone_in_uncertainty_alone() {
         assert_eq!(predicted_transfer(8_000, media, 0, unc), std::time::Duration::ZERO);
     }
 }
+
+/// **An abandoned fetch must not set the budget its own abandonment disproves.**
+///
+/// Device-measured 2026-08-28 on `pipe_abr_down_outrun`: the shaper held the link at 500 kbps,
+/// `ff::StallGuard` abandoned each fetch after ~1448 bytes, and those bytes timed at 42 277 kbps
+/// because they are the receive buffer draining rather than the link. Entered as a COMPLETED
+/// observation they held `conservative_kbps` near 16 Mbit/s, so every downshift the controller
+/// correctly decided to make chose a target thirty times too dear, overran its deadline, aborted,
+/// and decided again — 53 times on one rung pair, with the stall never ending.
+///
+/// Differential: the two legs differ ONLY in `abandoned()`, and the pre-fix code had no way to
+/// express it — `observe` passed a hardcoded `completed: true`.
+#[test]
+fn an_abandoned_prefix_lowers_the_budget_instead_of_raising_it() {
+    let settle = |mark_abandoned: bool| {
+        let mut c = Controller::starting_at(Rung::P1080M18, None, hd_catalog());
+        for _ in 0..6 {
+            c.observe(sample(16_000, 400, 12_000), 0);
+        }
+        let before = c.delivery().conservative_kbps();
+        // The device's own prefix: 1448 bytes in 274 us, which times at 42 Mbit/s. Repeated,
+        // because REPETITION is the mechanism — the prefixes agree with each other, so the
+        // estimator's dispersion term falls and it becomes CONFIDENT in a rate the link cannot
+        // carry. The device log shows exactly that end state: `slow=48672kbps unc=500pm` while
+        // the shaper held 500 kbps. Four samples do not get there; the failure needs the
+        // convergence.
+        for i in 0..24 {
+            let prefix = sample_bytes(1_448, 274, 400, 168);
+            c.observe(
+                if mark_abandoned { prefix.abandoned() } else { prefix },
+                1_000 + i * 100,
+            );
+        }
+        (before, c.delivery().conservative_kbps())
+    };
+
+    let (before_complete, after_complete) = settle(false);
+    let (before_abandoned, after_abandoned) = settle(true);
+    assert_eq!(before_complete, before_abandoned, "the two legs must start identical");
+    assert!(
+        after_abandoned < after_complete,
+        "an abandoned prefix must not buy the budget a completed one would: \
+         complete {before_complete}->{after_complete}, abandoned \
+         {before_abandoned}->{after_abandoned}",
+    );
+}
+
+/// The flag reaches the estimator's UNCERTAINTY, which is the mechanism — `completed: false` is
+/// already wired to `MAX_UNCERTAINTY_PM` and `conservative_kbps` already treats uncertainty as a
+/// discount. Nothing new was modelled; a call site stopped overriding what was.
+#[test]
+fn an_abandoned_sample_reports_maximum_uncertainty() {
+    let mut c = Controller::starting_at(Rung::P720, None, hd_catalog());
+    for _ in 0..6 {
+        c.observe(sample(8_000, 400, 12_000), 0);
+    }
+    let settled = c.delivery().uncertainty_pm;
+    c.observe(sample_bytes(1_448, 274, 400, 168).abandoned(), 1_000);
+    assert!(
+        c.delivery().uncertainty_pm > settled,
+        "abandoned {} must exceed settled {settled}",
+        c.delivery().uncertainty_pm,
+    );
+}

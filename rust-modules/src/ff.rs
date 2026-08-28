@@ -3716,6 +3716,14 @@ fn hls_demux(
         // ordinary sample -> observe -> transact path below, which is the entire point. The
         // controller only ever decides between segments, so the fetch that would have stalled for
         // 72 s is converted into the one thing it was withholding: a decision.
+        //
+        // **What it must NOT do is enter the capacity estimate as a completed transfer.** An abort
+        // fires early by construction, so its bytes are the receive buffer draining rather than the
+        // link — device-measured `bytes=1448 ... at 42277kbps` while the shaper held the link at
+        // 500 kbps. Entered as complete it kept `conservative_kbps` near 16 Mbit/s, so every
+        // downshift the controller correctly decided to make picked a target 30x too dear. See
+        // `SegmentSample::abandoned`.
+        let mut fetch_abandoned = false;
         let output = match unsafe {
             hls_demux_segment(&segment, &cursor.auth, &mut clock, aq, hs, acodec, None, stall_guard)
         } {
@@ -3738,6 +3746,7 @@ fn hls_demux(
                     .unwrap_or(-1),
                 ));
                 cursor.pending.push_front(segment.clone());
+                fetch_abandoned = true;
                 HlsSegmentOutput {
                     aus: Vec::new(),
                     transfer,
@@ -3771,7 +3780,9 @@ fn hls_demux(
         if let Some(gate) = recovery.as_mut() {
             gate.advance_to(now_ms());
         }
-        let Some(sample) = hls_segment_sample(&output, segment.duration) else {
+        let Some(sample) = hls_segment_sample(&output, segment.duration)
+            .map(|s| if fetch_abandoned { s.abandoned() } else { s })
+        else {
             crate::player::log("abr: ignoring invalid segment timing sample");
             continue;
         };

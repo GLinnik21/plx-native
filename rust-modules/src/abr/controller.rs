@@ -459,7 +459,10 @@ impl Controller {
             kbps: sample.network_kbps(),
             bytes: sample.bytes,
             active_us: sample.active_fetch_us,
-            completed: true,
+            // **Not a hardcoded `true` any more.** `SegmentSample::abandoned` is how a caller says
+            // the fetch was cut off, and `completed` was already wired to `MAX_UNCERTAINTY_PM` —
+            // the field existed, its semantics were right, and this call site overrode them.
+            completed: sample.completed(),
         }
         .clamped_to_evidence(current_candidate.expected_wire_kbps);
         let network = observation.kbps;

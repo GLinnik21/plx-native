@@ -326,6 +326,10 @@ pub(crate) struct SegmentSample {
     total_fetch_us: u64,
     pub(super) media_duration_ms: u32,
     pub(crate) buffer: BufferSnapshot,
+    /// Did the fetch that produced these bytes RUN TO COMPLETION. See [`Self::abandoned`] — this
+    /// is the one input `Controller::observe` used to hardcode, and the hardcoding is what let an
+    /// abandoned prefix set the budget its own abandonment disproved.
+    completed: bool,
 }
 
 impl SegmentSample {
@@ -346,7 +350,36 @@ impl SegmentSample {
                 total_fetch_us,
                 media_duration_ms,
                 buffer,
+                completed: true,
             })
+    }
+
+    /// **Mark this sample as an ABANDONED transfer** — bytes that really crossed the wire, from a
+    /// fetch that was cut off rather than finished.
+    ///
+    /// It exists because `CapacityObservation::completed` was already modelled, already drives
+    /// `MAX_UNCERTAINTY_PM`, and was already the right answer — and `Controller::observe` passed a
+    /// hardcoded `true`, so the one caller that had something else to say could not say it.
+    ///
+    /// The cost of that was measured. `ff::StallGuard` abandons a fetch after a few kilobytes, and
+    /// those kilobytes are the receive buffer draining rather than the link: the device logged
+    /// `bytes=1448 ... at 42277kbps` while the shaper held the link at **500 kbps**. Entered as a
+    /// completed observation it kept `conservative_kbps` near 16 Mbit/s, so every downshift the
+    /// controller correctly decided to make picked a target 30x too dear, overran, aborted, and
+    /// decided again — 53 times on one rung pair. The decision was never wrong; the number it was
+    /// made from was.
+    ///
+    /// Declaring it incomplete does not discard it. The bytes still count, and the estimate still
+    /// moves; what changes is that it moves with `MAX_UNCERTAINTY_PM` attached, and
+    /// `conservative_kbps` treats uncertainty as a DISCOUNT — so an abandoned fetch lowers the
+    /// budget it is asked to justify instead of raising it.
+    pub(crate) fn abandoned(mut self) -> Self {
+        self.completed = false;
+        self
+    }
+
+    pub(crate) fn completed(self) -> bool {
+        self.completed
     }
 
     pub(crate) fn network_kbps(self) -> u32 {
