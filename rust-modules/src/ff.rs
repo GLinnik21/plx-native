@@ -3400,9 +3400,13 @@ impl Drop for TxTrace {
 /// **`cause` is a judgement each call site makes about its own failure, and it is load-bearing.**
 ///
 /// N11's backoff refuses to re-prime a rung that just failed. That is right when the failure was
-/// ABOUT the rung — no playlist, a missed deadline, a refused prime, an acceptance test the
-/// candidate did not pass — and wrong when it was about the session: a `reserve_unreadable` is the
-/// audio lane falling silent at a seek, and an `origin_changed` is the route moving underneath.
+/// ABOUT the rung — no playlist, a missed deadline, PMS refusing this rung's ceiling
+/// (`route::PrimeRefusal::Rung`), an acceptance test the candidate did not pass — and wrong when it
+/// was about the session: `reserve_unreadable` is the audio lane falling silent at a seek,
+/// `origin_changed` is the route moving underneath, and `prime_session_moved` is either of those
+/// caught one branch earlier, before a round trip was spent. **"A refused prime" is about the rung
+/// only when the server actually refused it**, which is why `prime` reports which of its four exits
+/// it took rather than handing back a bare failure for this function to guess at.
 /// Blocking a good rung for either would be the guard doing harm in the one direction that has no
 /// recovery path, so the classification lives here, beside the `tx.finish` string that already
 /// names the same event for the transaction log.

@@ -690,7 +690,7 @@ fn a_single_slow_network_sample_jumps_to_the_measured_sustainable_rung() {
 /// backoff, found by adversarial review of I6).
 ///
 /// `RejectBlock` prices repeating a spend the controller CHOSE to make — that is the whole
-/// affordability argument in its doc, and `last_commit_ms` already draws the same line for the
+/// affordability argument in its doc, and `dwell_until_ms` already draws the same line for the
 /// dwell: "a downshift is a recovery action and rate-limiting recovery is how a stall becomes a
 /// policy". `reject` did not look at the direction, and on the down path the block it armed had no
 /// clock release at all: `refill_time_ms` returns `None` whenever `safe_budget <= R_current`,
@@ -3497,3 +3497,47 @@ fn no_reserve_gate_asks_for_more_than_the_queues_can_hold() {
 }
 
 
+
+/// **A published comparison must be readable as a decision: the winner out-totals the loser.**
+///
+/// `choose_mode` picks the larger total, so this holds by construction in the code — which is
+/// exactly why nothing checked it, and why both `abr: mode` specimens in `docs/adaptive-playback.md`
+/// were IMPOSSIBLE lines for as long as they existed. Each printed `chose=Hls` with the loser
+/// out-totalling the winner, and one gave the HLS side `f=8` where `hls_utility` hardcodes
+/// `features: 0`. A hand-written specimen of a machine-generated line has nothing holding it to the
+/// format, so this test emits the real thing and grades it; the doc's specimens were regenerated
+/// from this test's own output.
+///
+/// It also pins the two fields most easily transcribed wrong: `vs_hls=` is the rung's NOMINAL rate
+/// (`rung.kbps()`), not its `expected_wire_kbps` — the docs said 20011 where the code prints 20000
+/// — and the HLS side never carries a features term.
+#[test]
+fn a_published_comparison_is_readable_as_the_decision_it_records() {
+    let current = hd_catalog().candidate(Rung::P720);
+    let mut any = 0usize;
+    for remaining_ms in [HOUR_MS, 600_000i64, 60_000, 20_000] {
+        let mut gate = recovery(28_000);
+        let _ = gate.observe_probe(
+            probe(80_000, true), current, &idle_server(), healthy_buffer(), &healthy_hls(),
+            remaining_ms,
+        );
+        let Some(cmp) = gate.comparison() else { continue };
+        any += 1;
+        let loser = cmp.loser.unwrap_or_default();
+        assert!(
+            cmp.winner.total >= loser.total,
+            "at {remaining_ms} ms remaining the published winner totalled {} and the loser {} — a \
+             line a reader cannot reconcile with `chose=`",
+            cmp.winner.total,
+            loser.total,
+        );
+        let hls_side = if cmp.chosen == ModeKind::Hls { cmp.winner } else { loser };
+        assert_eq!(hls_side.features, 0, "the HLS side carries no features term");
+        assert_eq!(
+            cmp.hls_rung.kbps(),
+            20_000,
+            "`vs_hls=` is the rung's nominal rate, not its expected wire rate",
+        );
+    }
+    assert!(any >= 3, "the fixture must reach a real comparison at most horizons, got {any}");
+}

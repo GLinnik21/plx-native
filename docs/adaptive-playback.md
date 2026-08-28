@@ -224,7 +224,11 @@ operational guard** and may never be made to express a quality preference (N20).
 arm it, because both start a PMS encoder session; only the up path is blocked by it, because
 rate-limiting a recovery is how a stall becomes a policy.
 
-**And a reject now records what it cost** (N11). It used to record nothing and set `cooldown = 1`,
+**And a failed UPSHIFT now records what it cost** (N11). Only a discretionary spend arms the
+block — a downshift is a recovery action, the same line the dwell draws one paragraph up, and with
+a sharper failure on this side: `refill_time_ms` returns `None` exactly when `safe_budget <=
+R_current`, which IS the state a collapse-driven downshift is in, so a Down reject armed a guard
+with no clock release at all and left every climb refused for the life of the demux. It used to record nothing and set `cooldown = 1`,
 whose decrement runs *before* the check — so `K = 1` has never blocked a single segment, and any
 stateless refusal bought another attempt on the very next sample at another `E_tx` of unrefilled
 reserve. The block releases on **either** of two independent sufficient conditions, and neither is
@@ -368,9 +372,15 @@ U = quality + features - λr·risk - λs·serverCost - λt·transitionCost
 
 with two terms that make the comparison behave like a human decision:
 
-* **Benefit accrues over the remaining playback; cost is paid once, now.** Below
-  `AbrPolicy::benefit_horizon_ms` the benefit is scaled linearly, which is the whole of "do not
-  reload with twenty seconds left" — no threshold, no special case, and it degrades smoothly.
+* **A term paid for every remaining segment is scaled; a term paid once is not.** Below
+  `AbrPolicy::benefit_horizon_ms` the recurring terms are scaled linearly, which is the whole of
+  "do not reload with twenty seconds left" — no threshold, no special case, and it degrades
+  smoothly. Quality, features, risk and the server's production load all accrue over what is left
+  of the film and are all inside `benefit_scale_pm`; only `transition`, a reload, sits outside it.
+  **The benefit-versus-cost split this used to draw is the one the code deliberately rejects.**
+  Under it `risk` and `server` kept full weight on the HLS side while Original's shrank with the
+  horizon, and at 8 s remaining against a loaded PMS that scored HLS −60 to Original −9 — tear the
+  encoder down and reload the pipeline with eight seconds of film left.
 * **Transition cost is asymmetric and decays.** An HLS rung change is a background prime the viewer
   never sees and costs nothing here; a mode change costs `visible_switch_cost`; and each visible
   switch already spent in this playback adds a penalty that halves every
@@ -428,9 +438,16 @@ aspirational. `abr: mode` carries both decompositions, the rung compared against
 scale:
 
 ```text
-abr: mode chose=Hls why=OriginalNotWorthIt vs_hls=20011kbps scale=66pm
-     win[q=5 f=0 r=26 s=4 t=0 tot=-25] lose[q=7 f=0 r=0 s=0 t=15 tot=-8]
+abr: mode chose=Hls why=OriginalNotWorthIt vs_hls=20000kbps scale=166pm
+     win[q=12 f=0 r=0 s=0 t=0 tot=12] lose[q=19 f=1 r=0 s=0 t=15 tot=5]
 ```
+
+**Both specimens above are GENERATED**, by
+`abr::tests::a_published_comparison_is_readable_as_the_decision_it_records`, and that test grades
+what a hand-written one cannot: the winner must out-total the loser. Every earlier specimen here
+failed it — each printed `chose=Hls` with the loser ahead, and one gave the HLS side a features
+term where `hls_utility` hardcodes `features: 0`. `vs_hls=` is the rung's NOMINAL rate
+(`rung.kbps()`), not its `expected_wire_kbps`; this file said 20011 where the code prints 20000.
 
 It is assembled in `abr/`, which never logs, for the reason `ControllerTelemetry` is: the numbers
 printed are then provably the numbers used. It appears only where a comparison was actually made —
@@ -629,8 +646,8 @@ per-mille only, so a line can be pasted into an issue thread.
 abr: steady current=8000kbps safe=17600kbps pending=0kbps fast=22000kbps slow=22000kbps unc=200pm
      n=6 buf=12000ms slope=0ms/s prod=200pm/419pm risk=0 starve=none edge=none left=3512s
      dwell=0ms block=0kbps onrung=7 draining=0 reason=None
-abr: mode chose=Hls why=OriginalNotWorthIt vs_hls=20011kbps scale=66pm
-     win[q=5 f=8 r=26 s=4 t=0 tot=-17] lose[q=7 f=8 r=0 s=0 t=15 tot=0]
+abr: mode chose=Hls why=OriginalNotWorthIt vs_hls=20000kbps scale=166pm
+     win[q=12 f=0 r=0 s=0 t=0 tot=12] lose[q=19 f=1 r=0 s=0 t=15 tot=5]
 auto: Original -> HLS ImminentStarvation measured=3998kbps safe=3198kbps need=10800kbps buf=2900ms
      slope=-1200ms/s starve=4 held=1500ms target=2000kbps
 abr: Original probe #2 measured=60321kbps 2048KiB/400ms complete=1 left=2100s verdict=Recover

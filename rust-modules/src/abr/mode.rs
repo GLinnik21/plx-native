@@ -126,9 +126,13 @@ pub(crate) struct SourceFeatures {
     pub(crate) atmos: bool,
 }
 
-/// Benefit accrues over the remaining playback; cost is paid once, now. Below the policy horizon
-/// the benefit is scaled linearly, which is the whole of "do not reload with twenty seconds left"
-/// — no threshold, no special case, and it degrades smoothly rather than at a cliff.
+/// **A term paid for every remaining segment is scaled; a term paid once is not.** Below the
+/// policy horizon the recurring terms are scaled linearly, which is the whole of "do not reload
+/// with twenty seconds left" — no threshold, no special case, and it degrades smoothly rather than
+/// at a cliff. Quality, features, risk and the server's production load all accrue over what is
+/// left of the film; only `transition` is a reload and sits outside this. The benefit-versus-cost
+/// reading this doc used to give is the one `hls_utility` records as a defect: it kept `risk` and
+/// `server` at full weight on one side of the argmax only.
 pub(crate) fn benefit_scale_pm(remaining_ms: i64, policy: &AbrPolicy) -> i64 {
     if remaining_ms <= 0 {
         return 0;

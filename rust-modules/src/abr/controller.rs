@@ -117,12 +117,17 @@ pub(crate) struct GateCounters {
 /// about the SESSION, and the transaction that follows them starts from different facts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RejectCause {
-    /// The candidate itself failed — no playlist, no segment, a missed deadline, a refused prime,
-    /// a production ratio or acquisition window that would not admit it. Arms the backoff, because
-    /// re-proposing the same rung against the same evidence buys the same answer at the same price.
+    /// The RUNG itself failed — no playlist, no segment, a missed deadline, PMS refusing this
+    /// rung's ceiling (`route::PrimeRefusal::Rung`, and only that one of `prime`'s four exits), a
+    /// production ratio or acquisition window that would not admit it. Arms the backoff, because
+    /// re-proposing the same rung against the same evidence buys the same answer at the same price
+    /// — and arms it **only on an UP proposal**, because the block prices repeating a spend the
+    /// controller chose to make, which a downshift is not.
     Candidate,
     /// The transaction was abandoned for a reason that says nothing about the rung: the origin
-    /// moved, or the reserve stopped being readable (a seek). Does not arm the backoff.
+    /// moved, the reserve stopped being readable (a seek), or the session moved underneath the
+    /// prime (`route::PrimeRefusal::Session` — the encoder changed, the client is gone, or the
+    /// control-plane call never reached the server). Does not arm the backoff.
     Circumstance,
 }
 

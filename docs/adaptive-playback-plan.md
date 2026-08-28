@@ -703,7 +703,8 @@ Where the repository already holds a measurement that contradicts the catalog, s
 silently keeping the request: `docs/pms-hls-protocol-probe.md:18-19` records 720 → ~425 kbps and
 12 000 → ~11.356 Mbps.
 
-### N18 — remaining-playback scale: confirmed no-op on HLS, one real fix on Original
+### N18 — remaining-playback scale: §16's clamp already exists (no-op); the scale then had to
+### be applied to the recurring terms on BOTH sides of the argmax, not one
 
 `benefit_scale_pm` (`abr.rs:1644-1651`) already *is* the previous §16's linear clamp against
 `benefit_horizon_ms = 120_000` (`abr.rs:1443`), and no `if remaining < X` cliff exists anywhere in
