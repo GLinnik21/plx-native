@@ -37,21 +37,38 @@ head     current=8000kbps n=13  buf=12140ms  dwell=0             <- climbed 720 
 `stable=` is pre-I6's own field, so the binary under test is unambiguously the old one and its
 gates are live. On a link that carries 8000 it sat at 720 for the whole window.
 
-## What this does NOT establish, and it matters
+## The matched-window re-run, which the first pass owed
 
-**The observation windows are not matched.** Both legs got 90 s of wall clock; pre-I6 produced
-**59** heartbeats and 9 segments, head **87** and 52. So the stall totals are counts over unequal
-windows and are not directly comparable — 1/4 against 1/5 is not a measurement of anything.
+The first pass gave both legs 90 s of wall clock and got **59** heartbeats from pre-I6 against
+**87** from head, so its stall totals were counts over unequal windows and were recorded as not a
+comparison. Re-run at 170 s per leg and truncated to the common beat count:
 
-What survives that unevenness is the **rung** result, because a 720-versus-8000 difference is not
-something a 28-beat window difference produces. The disqualifier is also safe: it asks whether head
-stalls WORSE, and head's maximum is 1 s over the LONGER window.
+| case | beats | pre-I6 stall | head stall | pre-I6 lumpy | head lumpy | final rung |
+|---|---|---|---|---|---|---|
+| `pipe_abr_oscillating_link` | 58 | 1 / 4 | 1 / 2 | 5 | 3 | **720 -> 20000** |
+| `pipe_abr_brief_dropout` | 58 | 1 / 2 | 1 / 3 | 3 | 4 | **720 -> 20000** |
+| `pipe_abr_steady_modest_link` | 58 | 1 / 4 | 1 / 2 | 5 | 3 | **720 -> 20000** |
 
-Why the windows differ is not established either. The obvious candidate is that a controller parked
-at the seed rung fetches differently from one that climbed, but that is a hypothesis and this run
-does not separate it from a slower start.
+**I6 is not disqualified.** Maximum stall is 1 s — the instrument's own resolution, i.e. nothing
+measurable — on every leg of both parameter sets. Totals and lumpiness favour head in two cases of
+three and pre-I6 in the third, by one beat; at ±1 s per beat that is noise in both directions and
+neither is a result.
 
-**A matched-window re-run is owed** — same beat count, not same wall clock — before this is quoted
-as a stall comparison. Quoting the rung result needs nothing further.
+**The rung is the result, and it is the same on all three.** Over an identical 58-beat window
+pre-I6 never left the seed rung, while head reached the top of the ladder. The three sample
+counters were not a safety margin that I6 spent — they were preventing the controller from using
+a link it had already measured.
 
-Neither leg is a device measurement: every heartbeat here carries `sim=1`, and nothing decodes.
+## What this still does not establish
+
+* **It is not a device measurement.** Every heartbeat carries `sim=1`, nothing decodes, and this
+  Mac's loopback is not a television's link to a PMS. The device A/B on `pipe_abr_oscillating_link`
+  that I6's row asks for is still owed — but it is now owed as *confirmation*, against a host
+  result that already exists, rather than as the only evidence.
+* **Three cases, one link profile each.** The disturbance matrix in `abr/sim.rs` is broader and
+  runs the shipped controller only; running it under both binaries would be the stronger form of
+  this and is not what was done here.
+* **Why the beat counts differed at equal wall clock** is still unexplained — pre-I6 produced 59
+  beats where head produced 87. A controller parked at the seed rung plausibly fetches differently
+  from one that climbed, but this run does not separate that from a slower start, and the
+  truncation sidesteps rather than answers it.
