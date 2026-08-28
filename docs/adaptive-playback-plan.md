@@ -839,7 +839,14 @@ commit, and a single ★ increment may contain only one policy surface.**
 | **I7a ★** | **N14** (one surface: the mode comparison) | The three fabrication sites together (`observe_probe`, `worth_probing`, `original_utility`'s baseline) + `ModeInputs::source_raster` plumbing and its construction sites + `abr.rs:1741`'s scaled risk term (N18) + log the `ModeUtility` decomposition on the `abr: mode` line (§7.H). | host + a device leg on **Original recovery** | I5, I6, I7b |
 | **I7b ★** | **N16 + N13** (one surface: when Original is abandoned, and what it is worth) | The DV/Atmos split; `sustained_unsafe_deficit_ms` and `probe_spacing_ms` in elapsed wall time. | host + a device leg on the **Original→HLS fallback** — the `pipe_abr_*` cases cannot reach it; name the case that can, or state the leg is a hand-driven `netcond` session | I7a; then M8 |
 | **I8 ★** | **Seek estimate preservation** (§7.G) | A `CapacityEstimate` snapshot (`slow_kbps`, `fast_kbps`, `uncertainty_pm`, `samples`) stored in session state at teardown and consumed by the new `Controller` as its seed, replacing `auto_prior_kbps` on the seek path. `route.rs:700` keeps writing `auto_prior_kbps` as the **Original-fallback-only** seed and is not otherwise read on the seek path. Reset positional buffer and risk history; reset any pending transaction that no longer describes the seeked position. | host + a device leg: seek twice on a healthy link and assert the rung does not re-ramp | — |
-| **I9** | **BLOCKED — and M3 is now DONE, which narrows rather than lifts it** | §7.A's argmax and §7.B's quality scoring. M3 ran 2026-08-28 (`docs/measurements/m3-production-census.md`): `Uhd = 2100` measures 2404 and the whole 1080p block lands within 10.3%, so the two empirical points and the interpolation between them are **upheld**; `P1080M6 = 900` measures 353, off by **60.8%** in both pacing legs, which is past the 25% rule and REFUTES the mid-ladder. The larger finding is that the table is indexed by the wrong VARIABLE: against a 1080p source the ordering INVERTS (58 of 75 rung pairs), because a target below the source raster is downscaling work while a target at it is a near-copy — so no thirteen numbers keyed to the target alone can be right for both a 4K and a 1080p item. **Half of that is now UNBLOCKED (2026-08-28).** The 4K `auto_network` case exists: `serve_fixtures.py` answers rung 22000 with a real 3840x2160 clip, `route::arm_auto_fixture` takes the source raster instead of hardcoding 1080p, and `pipe_abr_uhd_source_admits_4k` declares it. The two were circular — the literal was there because the rung 404'd — so a fixture gap had been standing in for a policy, and the two entries the table calls empirical were the two nothing could reach. What remains is the decision on whether `production_load_pm` becomes a function of (source, target) or is declared correct for one source class only. That decision is a product call and is not made here — **and it should not be made on Result 2's stated cause**, which the census has since narrowed: the ordering is measured, but the same numbers also fit "PMS stopped re-encoding at an unbinding ceiling", and the output column that separates the two was not recorded the first time. It is recorded now; the re-run is owed. | — | — |
+| **I9** | **BLOCKED — and M3 is now DONE, which narrows rather than lifts it** | §7.A's argmax and §7.B's quality scoring. M3 ran 2026-08-28 (`docs/measurements/m3-production-census.md`): `Uhd = 2100` measures 2404 and the whole 1080p block lands within 10.3%, so the two empirical points and the interpolation between them are **upheld**; `P1080M6 = 900` measures 353, off by **60.8%** in both pacing legs, which is past the 25% rule and REFUTES the mid-ladder. The larger finding is that the table is indexed by the wrong VARIABLE: against a 1080p source the ordering INVERTS (58 of 75 rung pairs), because a target below the source raster is downscaling work while a target at it is a near-copy — so no thirteen numbers keyed to the target alone can be right for both a 4K and a 1080p item. **Half of that is now UNBLOCKED (2026-08-28).** The 4K `auto_network` case exists: `serve_fixtures.py` answers rung 22000 with a real 3840x2160 clip, `route::arm_auto_fixture` takes the source raster instead of hardcoding 1080p, and `pipe_abr_uhd_source_admits_4k` declares it. The two were circular — the literal was there because the rung 404'd — so a fixture gap had been standing in for a policy, and the two entries the table calls empirical were the two nothing could reach. What remains is the decision on whether `production_load_pm` becomes a function of (source, target) or is declared correct for one source class only. That decision is a product call and is not made here — **and it should not be made on Result 2's stated cause**, which the census has since narrowed: the ordering is measured, but the same numbers also fit "PMS stopped re-encoding at an unbinding ceiling", and the output column that separates the two was not recorded the first time. It is recorded now, **and the re-run is DONE (2026-08-28)** — `m3-production-census.md` carries
+the output-raster column and the corrected table (`P720Low` 420 -> 300, `P1080M6` 900 -> 350, the
+two entries the census refuted at the falsification rule this table was published with; tier6 ran
+19/19 afterwards, so no device behaviour moved). The re-run also settled Result 2's competing
+cause: cost tracks the raster PMS ACTUALLY PRODUCED, and the product call was made and recorded
+there — the index stays keyed to the target rung, with the field's doc now saying what that
+describes. **§7.B's two inputs both landed the same day** (see §7.B), so what remains of I9 is
+building §7.B and then §7.A on top of it, and validating both — not measuring anything further. | — | — |
 
 ### Landed 2026-08-28, outside the table above: the abort rule and the chain behind it
 
@@ -990,9 +997,27 @@ a box of 854×480, a 4.3× pixel error. **Reading a bounding box as a quality in
 mistake by hand, this time on the side where an over-stated value is anti-conservative.**
 *Unblocked by:* scoring on `min(box, source)` and `min(wire, source average)` — the average is
 `ModeInputs::source_kbps` (`abr.rs:1616`); the raster needs the `ModeInputs` field N14 site 3 adds
-— **and** feeding the observed raster back at commit, which `ff.rs:3265-3270` already reads. Note
-the commit line prints `proposal.rung.raster()`, the **catalog** raster (`ff.rs:3302-3308`), which
-is why `tests/run.py:1227` currently asserts the catalog against itself.
+— **and** feeding the observed raster back at commit.
+
+**Both halves of that are now in hand (2026-08-28), and neither is a `ModeInputs` field.**
+
+1. *The source raster* needs no new field and N14 site 3 should not add one:
+   `HlsActuatorCatalog::source_raster()` already returns it. `route::auto_catalog` builds the
+   catalog from `session().cur_src` on the main thread and `HlsAbrControl` carries the whole
+   catalog to the worker, so the raster has been on the worker's stack all along, one accessor
+   away. A parallel field would be a second copy of one fact, free to disagree with the bound it
+   describes.
+2. *The observed raster at commit* is logged. This paragraph used to end "the commit line prints
+   `proposal.rung.raster()`, the **catalog** raster, which is why `tests/run.py:1227` currently
+   asserts the catalog against itself" — true when written, fixed since: the line appends
+   ` out=WxH` from `HlsSegmentOutput::video_{width,height}`, and `abr_raster_changes` prefers it.
+   M3's re-run is what made this urgent rather than tidy — PMS produces 1280x720 for both `P720`
+   and `P1080M6` against a 4K source, so the co-grader was counting band crossings a viewer cannot
+   see. `TheAbrCommitLineMatchesTheHarnessRegex` pins the wire form by source extraction.
+
+So **§7.B is unblocked on its inputs** and is now gated only on validation: it is a policy change
+to quality scoring, it feeds `mode.rs`'s comparison, and no part of it has been near a television.
+Building it is the next increment; landing it unverified is not.
 
 **C. `g(remaining)·Q` on rung selection (previous §10).** *Void.* See N18.
 
