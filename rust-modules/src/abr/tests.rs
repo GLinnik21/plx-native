@@ -1,5 +1,10 @@
 use super::*;
 
+/// The [`candidate_warmup_budget`] floor, absent. Named rather than written out at each site so a
+/// test that is grading the RESERVE bound says so — `predicted_transfer` returns exactly this
+/// whenever the link is unmeasured, so it is also the real value on a cold transaction.
+const NO_FLOOR: std::time::Duration = std::time::Duration::ZERO;
+
 /// A segment described by what actually crossed the wire, for the cases where the SIZE of the
 /// transfer is the point rather than the rate it works out to.
 fn sample_bytes(bytes: u64, active_us: u64, ratio_pm: u32, buffered_ms: i64) -> SegmentSample {
@@ -1697,12 +1702,12 @@ fn only_upshift_primes_receive_the_exact_acceptance_budget() {
         std::time::Duration::from_micros(2_202_200)
     );
     assert_eq!(
-        candidate_warmup_budget(up, media, ample),
+        candidate_warmup_budget(up, media, ample, NO_FLOOR),
         std::time::Duration::from_micros(3_003_000)
     );
     // A downshift has no acceptance test — it is the recovery path — so the reserve is its ONLY
     // bound, and it is now a bound rather than nothing.
-    assert_eq!(candidate_warmup_budget(down, media, ample), ample);
+    assert_eq!(candidate_warmup_budget(down, media, ample, NO_FLOOR), ample);
 }
 
 /// **A downshift transfer may not outlive the reserve it is paid out of.** J3b, and the
@@ -1721,7 +1726,7 @@ fn a_downshift_transfer_is_bounded_by_the_reserve_it_spends() {
     for reserve_ms in [0i64, 250, 5_000, 36_000] {
         let reserve = reserve_as_budget(reserve_ms);
         assert_eq!(
-            candidate_warmup_budget(down, media, reserve),
+            candidate_warmup_budget(down, media, reserve, NO_FLOOR),
             reserve,
             "a {reserve_ms}ms reserve buys exactly {reserve_ms}ms of transfer",
         );
@@ -1741,7 +1746,7 @@ fn a_thin_reserve_bounds_an_upshift_too_and_an_ample_one_does_not() {
 
     let healthy = reserve_as_budget(3 * 2_000);
     assert_eq!(
-        candidate_warmup_budget(up, media, healthy),
+        candidate_warmup_budget(up, media, healthy, NO_FLOOR),
         std::time::Duration::from_millis(3_000),
         "at the proposal gate's own reserve the acceptance budget still decides",
     );
@@ -1751,7 +1756,7 @@ fn a_thin_reserve_bounds_an_upshift_too_and_an_ample_one_does_not() {
     );
 
     let thin = reserve_as_budget(400);
-    assert_eq!(candidate_warmup_budget(up, media, thin), thin);
+    assert_eq!(candidate_warmup_budget(up, media, thin, NO_FLOOR), thin);
     assert_eq!(candidate_prime_budget(media, &policy, thin), thin);
 }
 
@@ -3540,4 +3545,80 @@ fn a_published_comparison_is_readable_as_the_decision_it_records() {
         );
     }
     assert!(any >= 3, "the fixture must reach a real comparison at most horizons, got {any}");
+}
+
+/// **The absorbing state: a downshift issued with an exhausted reserve can never complete, so the
+/// exhausted reserve is permanent.** Device-measured 2026-08-28 on `pipe_abr_down_outrun` with
+/// the abort rule armed — 321 aborts, every one logging `decision=prime_down`, every transaction
+/// dying `outcome=warmup_deadline` with `warmup_dl=168ms`, 74 s of stall and the rung never
+/// leaving 18000.
+///
+/// Differential in both directions, which is what makes it a test of the FLOOR rather than of the
+/// reserve: with `NO_FLOOR` the same call returns the 168 ms the device measured, so the assertion
+/// below cannot pass against the unmodified function; and the upshift leg pins that the floor is
+/// scoped to `Down`, so it cannot be satisfied by simply raising the bound.
+#[test]
+fn a_downshift_gets_at_least_the_time_its_transfer_physically_needs() {
+    let media = std::time::Duration::from_millis(2_000);
+    let collapsed = reserve_as_budget(168);
+    let down = Proposal { rung: Rung::P720Low, direction: Direction::Down };
+    let up = Proposal { rung: Rung::P720Low, direction: Direction::Up };
+
+    // 2000 kbps of output over 2 s of media, on a link measured at 6 000 kbps: 666 ms.
+    let need = predicted_transfer(2_000, media, 6_000);
+    assert_eq!(need, std::time::Duration::from_millis(666));
+
+    assert_eq!(
+        candidate_warmup_budget(down, media, collapsed, NO_FLOOR),
+        collapsed,
+        "the pre-fix behaviour, and it is the deadline no transfer can meet",
+    );
+    assert_eq!(
+        candidate_warmup_budget(down, media, collapsed, need),
+        need,
+        "a downshift out of an exhausted reserve gets the time its own transfer requires",
+    );
+    assert_eq!(
+        candidate_warmup_budget(up, media, collapsed, need),
+        collapsed,
+        "and an upshift does NOT — once the reserve is gone an upshift has already lost",
+    );
+}
+
+/// **The floor does not loosen the 36-second bound this function was written for.** In that record
+/// — a 14000 -> 8000 downshift on a link measured at 9 593 kbps — the transfer's own requirement
+/// is 1 667 ms, i.e. TIGHTER than the reserve that record ran against. The floor binds only where
+/// the reserve has collapsed below what any transfer needs. (1 667 and not 1 668: the division
+/// truncates, so the floor UNDERSTATES the requirement by under a millisecond — the conservative
+/// direction for a bound whose job is to stop being smaller than a transfer.)
+#[test]
+fn the_floor_is_below_the_reserve_on_the_runaway_it_was_written_for() {
+    let media = std::time::Duration::from_millis(2_000);
+    let down = Proposal { rung: Rung::P1080, direction: Direction::Down };
+    let need = predicted_transfer(8_000, media, 9_593);
+    assert_eq!(need, std::time::Duration::from_millis(1_667));
+    for reserve_ms in [2_000i64, 5_000, 36_000] {
+        let reserve = reserve_as_budget(reserve_ms);
+        assert_eq!(
+            candidate_warmup_budget(down, media, reserve, need),
+            reserve,
+            "at a {reserve_ms}ms reserve the floor must not be what decides",
+        );
+    }
+}
+
+/// **An unmeasured link changes no behaviour.** `ZERO` is the identity element of the `max`, so a
+/// capacity of zero restores the reserve bound exactly rather than inheriting an invented one —
+/// which matters because the first transaction of every playback is taken before any completed
+/// segment has entered the estimate.
+#[test]
+fn an_unmeasured_link_predicts_nothing_and_the_reserve_still_bounds() {
+    let media = std::time::Duration::from_millis(2_000);
+    assert_eq!(predicted_transfer(8_000, media, 0), std::time::Duration::ZERO);
+    let down = Proposal { rung: Rung::P480, direction: Direction::Down };
+    let reserve = reserve_as_budget(900);
+    assert_eq!(
+        candidate_warmup_budget(down, media, reserve, predicted_transfer(8_000, media, 0)),
+        reserve,
+    );
 }

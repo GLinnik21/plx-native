@@ -4035,8 +4035,22 @@ fn hls_demux(
             continue;
         };
         let reserve = crate::abr::reserve_as_budget(reserve_ms);
-        let warmup_budget =
-            crate::abr::candidate_warmup_budget(proposal, candidate_segment.duration, reserve);
+        // The floor is a DOWNSHIFT's only protection against the reserve it is trying to refill:
+        // see `candidate_warmup_budget`. Both terms are read here, at the transaction, so the
+        // prediction describes the rung actually being primed against the capacity actually
+        // measured — `expected_wire_kbps` is the catalog's observed output for the target, not its
+        // request ceiling, and `conservative_kbps` comes only from completed segments.
+        let predicted = crate::abr::predicted_transfer(
+            controller.catalog().candidate(proposal.rung).expected_wire_kbps,
+            candidate_segment.duration,
+            controller.delivery().conservative_kbps(),
+        );
+        let warmup_budget = crate::abr::candidate_warmup_budget(
+            proposal,
+            candidate_segment.duration,
+            reserve,
+            predicted,
+        );
         tx.mark_warmup_deadline(warmup_budget);
         let candidate_deadline = std::time::Instant::now().checked_add(warmup_budget);
         let mut staged_timeline = timeline;
@@ -4068,9 +4082,10 @@ fn hls_demux(
                 control.abandon(&primed.encoder_session);
                 reject_hls_abr(controller, proposal, crate::abr::RejectCause::Candidate, now_ms());
                 tx.finish("warmup_deadline");
-                crate::player::log(
-                    "abr: upshift candidate warm-up exceeded deadline; staying on current rung",
-                );
+                crate::player::log(&format!(
+                    "abr: {:?} candidate warm-up exceeded deadline; staying on current rung",
+                    proposal.direction,
+                ));
                 continue;
             }
             Err(_) => {

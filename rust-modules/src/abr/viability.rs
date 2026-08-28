@@ -214,6 +214,37 @@ pub(crate) fn hls_safe_budget(capacity: &CapacityEstimate) -> u32 {
 /// So the deadline is the reserve, the tightening is a named open item, and the effect on
 /// `E_tx_down` is that it becomes bounded BY CONSTRUCTION rather than by luck.
 ///
+/// # Why a DOWNSHIFT's deadline is floored at the transfer's own requirement
+///
+/// The reserve bound above expresses "abandon a transaction that can no longer do what it exists
+/// to do", and for an upshift that is exactly right: an upshift buys more quality on a picture
+/// that is still playing, so once the reserve is gone the benefit is gone with it. **For a
+/// downshift the same sentence is false, and the device measured what that costs.** A downshift's
+/// benefit is the picture RESTARTING, which is available precisely when the reserve is exhausted —
+/// so abandoning it there means staying on the rung that caused the stall, and the exhausted state
+/// becomes ABSORBING.
+///
+/// Measured 2026-08-28, `pipe_abr_down_outrun` with the abort rule armed: the first downshift
+/// spent the whole 6 084 ms reserve on its warm-up and missed the deadline by 31 ms; every one
+/// after that was issued with `warmup_dl=168ms` and could not have completed. The controller
+/// decided correctly 321 consecutive times — every abort logged `decision=prime_down` — and every
+/// transaction died `outcome=warmup_deadline` on a deadline of its own predecessor's making. 74 s
+/// of stall, `play=617`, the rung never leaving 18000. `docs/measurements/j3b-downshift-floor.md`
+/// has the trace.
+///
+/// So the deadline is floored at [`predicted_transfer`] — `R_target * D / C`, the time the fetch
+/// physically needs at the measured capacity. Refusing a transfer less time than it requires is
+/// not bounding it, it is refusing it. Two properties are worth stating because neither is
+/// obvious:
+///
+/// * **It does not loosen the 36-second bound this function was written for.** That record was a
+///   14000 -> 8000 downshift on a link measured at 9 593 kbps: `8000 * 2000 / 9593` = **1 667 ms**,
+///   which is tighter than the reserve was. The floor binds only where the reserve has collapsed
+///   below what any transfer needs, which is the absorbing state and nothing else.
+/// * **It cannot run away**, because both of its terms are measured: a link that is genuinely dead
+///   drives `capacity_kbps` down, and a capacity of zero yields `ZERO`, restoring the reserve
+///   bound exactly.
+///
 /// The upshift bound is unchanged in the case that matters: the proposal gate requires three
 /// segments of reserve and the two upshift budgets sum to about 2.6, so condition 1 does not bind
 /// on a healthy upshift. It binds when the reserve fell between the proposal and the fetch — which
@@ -222,6 +253,7 @@ pub(crate) fn candidate_warmup_budget(
     proposal: Proposal,
     media_duration: std::time::Duration,
     reserve: std::time::Duration,
+    predicted_transfer: std::time::Duration,
 ) -> std::time::Duration {
     // A NEW PMS encoder's first segment carries decoder and encoder cold start and is not the
     // cadence the replacement will sustain, so it is not held to the acceptance threshold; it gets
@@ -233,11 +265,46 @@ pub(crate) fn candidate_warmup_budget(
             (media_duration.as_micros().saturating_mul(3) / 2).min(u128::from(u64::MAX)) as u64,
         ),
         // A downshift has no acceptance test at all — see above — so the reserve is its only
-        // bound. `MAX` is not a deadline; it is the identity element of the `min` below, written
-        // that way so there is exactly one place where a candidate transfer's budget is decided.
+        // acceptance bound. `MAX` is not a deadline; it is the identity element of the `min`
+        // below, written that way so there is exactly one place where a candidate transfer's
+        // budget is decided.
         Direction::Down => std::time::Duration::MAX,
     };
-    cold_start.min(reserve)
+    // **The floor, and it applies to a DOWNSHIFT only.** See the section above it.
+    match proposal.direction {
+        Direction::Up => cold_start.min(reserve),
+        Direction::Down => cold_start.min(reserve).max(predicted_transfer),
+    }
+}
+
+/// **How long one segment at `target_wire_kbps` physically needs on a link measured at
+/// `capacity_kbps`** — `bits / rate`, and nothing else.
+///
+/// ```text
+/// bits for one segment at rung R over D ms of media   =  R * D      (kbps * ms = bits)
+/// time to move them over a link of capacity C         =  R * D / C  (bits / kbps = ms)
+/// ```
+///
+/// Both inputs are measurements: `target_wire_kbps` is the catalog's *observed* output for that
+/// rung (not its request ceiling) and `capacity_kbps` is the delivery estimate's conservative
+/// reading from completed segments. There is no margin and no multiplier, because this is not a
+/// budget — it is the transfer's own requirement, and it exists so that a *deadline* can be
+/// stopped from falling below it.
+///
+/// **Zero capacity means no prediction**, which is `ZERO` rather than a fallback: as the identity
+/// element of the `max` in [`candidate_warmup_budget`] it leaves the reserve bound exactly as it
+/// was, so an unmeasured link changes no behaviour rather than inheriting an invented one.
+pub(crate) fn predicted_transfer(
+    target_wire_kbps: u32,
+    media_duration: std::time::Duration,
+    capacity_kbps: u32,
+) -> std::time::Duration {
+    if capacity_kbps == 0 {
+        return std::time::Duration::ZERO;
+    }
+    let bits = u128::from(target_wire_kbps).saturating_mul(media_duration.as_millis());
+    let ms = bits / u128::from(capacity_kbps);
+    std::time::Duration::from_millis(u64::try_from(ms).unwrap_or(u64::MAX))
 }
 
 /// The GRADED segment's budget, upshift only — the segment that decides whether the candidate is
@@ -297,6 +364,10 @@ pub(crate) fn upshift_transaction_cost(
         Proposal { rung: Rung::P240, direction: Direction::Up },
         media_duration,
         unbounded,
+        // The downshift floor by construction cannot reach an `Up` proposal, and this ledger
+        // prices the UP path alone. `ZERO` is the identity element, so it is stated rather than
+        // fabricating a capacity this function has no access to.
+        std::time::Duration::ZERO,
     );
     let prime = candidate_prime_budget(media_duration, policy, unbounded);
     warmup.saturating_add(prime)
