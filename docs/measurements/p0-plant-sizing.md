@@ -134,9 +134,24 @@ DISCHARGED, and it was discharged by evidence already on disk rather than by a s
 **One thing these logs cannot settle**, stated rather than glossed: they predate `out=WxH` on the
 commit line, so they prove the *catalog* bands were crossed and cannot prove the DECODED raster
 differed on each one — against a 1080p source several rungs produce an identical picture
-(`m3-production-census.md`). The next tier run answers it directly, since `abr_raster_changes` now
-reads the decoded value. The conclusion is unaffected either way: whatever the decoder was handed,
-it handled it.
+(`m3-production-census.md`). The conclusion is unaffected either way: whatever the decoder was
+handed, it handled it.
+
+**ANSWERED 2026-08-28, and the answer is that this tier cannot answer it.** The first device run
+carrying `out=` (19/19) shows the decoded raster equal to the catalog box on **every one of the 13
+distinct commit lines** — `Up to 2000kbps 1280x720 out=1280x720`, and so on for all of them — and
+`abr_raster_changes` reads 15 on both the catalog and the decoded series. That is not evidence the
+two agree in general; it is a property of the FIXTURE PACK. `serve_fixtures.py`'s `ABR_RASTER` maps
+every rung to exactly its catalog box, because the renditions are pre-encoded static files rather
+than a transcoder's output. There is no PMS here choosing a raster, so there is nothing for the box
+to disagree with.
+
+**The synthetic tier is therefore structurally blind to the box-vs-decoded divergence**, and the
+divergence is real: M3 measured a live PMS producing 1280x720 for BOTH `P720` and `P1080M6` against
+a 4K source, and 1918x802 for every rung from `P1080M6` up against a 1080p one. Confirming that
+`out=` changes what `raster_changes` counts needs the SERVER tier (`./tests/run.py --server`)
+against a real PMS. Until then the change is correct-by-construction and unexercised, which is a
+different and weaker claim than "verified".
 
 **What the simulator can and cannot say about the feed.** `make sim` + `plxnative-clocksink` now
 runs the whole path — queues, backpressure, the PTS timeline, the cursor step, the reserve the
