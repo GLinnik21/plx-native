@@ -44,7 +44,13 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO, "tests"))
 from serve_fixtures import serve, default_root  # noqa: E402
 
-SIM_BIN = os.path.join(REPO, "rust-modules", "target-sim", "debug", "plxnative-sim")
+# `PLXNATIVE_SIM_BIN` overrides which simulator is driven, which is what makes an A/B possible:
+# point it at a simulator built from another commit and this still supplies HEAD's manifest,
+# HEAD's fixtures and HEAD's shaper, so the ONLY thing that differs between the two legs is the
+# app. Reconstructing an old policy by hand would grade a strawman; a checkout cannot.
+SIM_BIN = os.environ.get(
+    "PLXNATIVE_SIM_BIN",
+    os.path.join(REPO, "rust-modules", "target-sim", "debug", "plxnative-sim"))
 
 
 def cases():
@@ -85,7 +91,8 @@ def main():
 
     # One instance root PER CASE, so several of these run side by side — which is the capability
     # the television does not have and the reason this file is worth its length.
-    root = os.path.join("/tmp", "plxnative-sim-abr", name)
+    tag = os.environ.get("PLXNATIVE_SIM_TAG", "head")
+    root = os.path.join("/tmp", "plxnative-sim-abr", tag, name)
     shutil.rmtree(root, ignore_errors=True)
     os.makedirs(root, exist_ok=True)
     write = lambda n, v: open(os.path.join(root, n), "w").write(v)  # noqa: E731
