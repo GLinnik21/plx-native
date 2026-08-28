@@ -200,7 +200,10 @@ impl Rung {
         LADDER.iter().position(|r| *r == self).unwrap_or(0)
     }
 
-    pub(super) fn below(self) -> Self {
+    /// The next rung down, and **the identity at the floor** — which is what makes it R12's
+    /// terminal case in one expression: `below() == self` IS "there is nowhere cheaper to
+    /// run to", and `ff.rs`'s abort rule asks it that way rather than naming `P240`.
+    pub(crate) fn below(self) -> Self {
         LADDER[self.index().saturating_sub(1)]
     }
 

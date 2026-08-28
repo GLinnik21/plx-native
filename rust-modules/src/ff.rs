@@ -1511,6 +1511,102 @@ enum Src {
     Curl(Box<crate::curlio::CurlSource>),
 }
 
+/// **The abort rule** (plan R16/R12): stop a fetch that is going to outlive the reserve, while
+/// there is still a cheaper rung to run to.
+///
+/// The controller can only decide between segments — `observe` runs when a fetch COMPLETES — so a
+/// fetch that takes longer than the reserve is a decision the controller never gets to make.
+/// Device-measured 2026-08-28 (`pipe_abr_down_outrun`): on rung 18000 against a 500 kbps link one
+/// segment is ~4.5 MB = 36 Mbit, i.e. **72 s**, and the picture was frozen for 72 of them while
+/// the controller sat holding a rung it would have abandoned instantly had it been asked. No
+/// guard elsewhere can see this: the warm-up deadline bounds a CANDIDATE's fetch, and the current
+/// rung's own fetch had no bound at all.
+///
+/// **The rule, and it introduces no constant.** At each read, project the remaining fetch from the
+/// rate this fetch has actually sustained and compare it against the reserve that will still be
+/// there when it lands:
+///
+/// ```text
+/// t_remaining_ms = 8 * bytes_remaining / C_kbps        (bits / (bits per ms))
+/// reserve_left   = reserve_at_start - elapsed          (the reserve drains at real time)
+/// abort  iff  t_remaining_ms > reserve_left  AND  a cheaper rung exists
+/// ```
+///
+/// **The 8 is load-bearing and was the plan's R16 defect.** `C` is kbps, i.e. bits per
+/// millisecond, and `bytes_remaining` is bytes; the plan's original expression divided bytes by a
+/// bit rate and under-reported the remaining fetch by exactly a factor of eight — so the abort
+/// rule would have continued a segment that stalls, on the emergency path, which is the one place
+/// it exists to act.
+///
+/// **"A cheaper rung exists" is the whole of R12's terminal case.** At the ladder floor there is
+/// nowhere to run to, so aborting re-fetches the same bytes and buys a loop instead of a picture;
+/// the guard is simply not armed there. Everywhere else the escape is real, because a lower rung's
+/// segment carries strictly fewer bytes over the same link.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct StallGuard {
+    /// The playable reserve when this fetch began, in ms of media. `None` is never stored — an
+    /// unknowable reserve (`BufferSnapshot::buffered_ms`'s `None`, the audio lane silent after an
+    /// open or a seek) arms no guard at all, because the comparison has no left-hand side.
+    reserve_ms_at_start: i64,
+    started: std::time::Instant,
+}
+
+impl StallGuard {
+    /// **Arm the guard, or decline to.** A reserve of zero AT THE START of a fetch is not an
+    /// emergency — it is what every session looks like before its first segment has been
+    /// delivered, and the rule's premise is that continuing guarantees a stall the abort could
+    /// avoid. With no picture yet there is nothing to stall and the abort has nothing to buy: it
+    /// simply abandons the fetch, pushes the segment back, and abandons it again.
+    ///
+    /// **That is not hypothetical.** Armed without this gate, device-measured 2026-08-28:
+    /// `abr: stall abort seq=0 bytes=2896 of 0ms reserve` — playback never started at all, one
+    /// segment fetched, the video plane never bound. It is the same shape as the plan's I3
+    /// (the first-segment false downshift): a predicate keyed on the reserve, evaluated at the one
+    /// moment the reserve is empty for a reason that is not failure.
+    ///
+    /// Mid-playback a genuinely drained reserve declines the guard too, and that is the
+    /// conservative direction rather than a gap: by then the picture has already stopped, the
+    /// abort can no longer prevent anything, and `starving()` is the predicate that owns it.
+    fn arm(reserve_ms_at_start: i64) -> Option<Self> {
+        (reserve_ms_at_start > 0).then(|| Self {
+            reserve_ms_at_start,
+            started: std::time::Instant::now(),
+        })
+    }
+
+    /// Does continuing guarantee a stall this fetch could avoid? Pure given the three measured
+    /// inputs, so the arithmetic is host-testable without a transport.
+    fn expired(reserve_ms_at_start: i64, elapsed_ms: i64, bytes_remaining: i64, kbps: i64) -> bool {
+        if bytes_remaining <= 0 || kbps <= 0 {
+            return false;
+        }
+        // The reserve has been draining at real time for the whole of this fetch.
+        let reserve_left = reserve_ms_at_start.saturating_sub(elapsed_ms);
+        if reserve_left <= 0 {
+            // Already out of reserve with bytes still to come: the picture has stopped and every
+            // further millisecond is stall. Nothing to project.
+            return true;
+        }
+        // **Ceiling, not truncation.** The plan's rounding audit: every term on the left of an
+        // admission test rounds toward +inf, because a projection that truncates UNDER-reports the
+        // remaining fetch and a guard that under-reports is one that lets the stall happen. At
+        // 500 kbps a truncating divide loses up to a millisecond per evaluation, which is
+        // negligible in magnitude and wrong in direction.
+        let bits = bytes_remaining.saturating_mul(8);
+        let t_remaining_ms = bits.saturating_add(kbps - 1) / kbps;
+        t_remaining_ms > reserve_left
+    }
+
+    fn should_abort(&self, bytes_remaining: i64, body_bytes: u64, body_active_us: u64) -> bool {
+        if body_active_us == 0 || body_bytes == 0 {
+            return false; // no rate measured yet — a projection from nothing is not a projection
+        }
+        let kbps = (body_bytes.saturating_mul(8_000) / body_active_us).min(i64::MAX as u64) as i64;
+        let elapsed_ms = self.started.elapsed().as_millis().min(i64::MAX as u128) as i64;
+        Self::expired(self.reserve_ms_at_start, elapsed_ms, bytes_remaining, kbps)
+    }
+}
+
 /// AVIO backing state: wraps the demux transport so libavformat reads through it and can seek by
 /// byte offset. Boxed so its address is stable for the C callbacks.
 struct AvioState {
@@ -1536,6 +1632,11 @@ struct AvioState {
     /// progressive stream retain their transport's normal stall budgets.
     deadline: Option<std::time::Instant>,
     deadline_expired: bool,
+    /// Armed only for the ACTIVE cursor, and only when the reserve is knowable and a cheaper rung
+    /// exists. A candidate carries `deadline` instead: its bound is what the transaction can
+    /// afford, not what the picture can survive.
+    stall: Option<StallGuard>,
+    stall_aborted: bool,
 }
 
 impl AvioState {
@@ -1579,6 +1680,13 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
         if s.deadline.is_some_and(|at| std::time::Instant::now() >= at) {
             s.deadline_expired = true;
             return AVERROR_EOF;
+        }
+        // The abort rule, evaluated where the numbers are. See `StallGuard`.
+        if let Some(guard) = s.stall {
+            if guard.should_abort(s.size - s.off, s.body_bytes, s.body_active_us) {
+                s.stall_aborted = true;
+                return AVERROR_EOF;
+            }
         }
         // Both sources use the same three-way return — >0 bytes, 0 clean end, <0 error — so the
         // EOF decision below stays one branch rather than one per transport.
@@ -2097,11 +2205,21 @@ fn adts_duration_ns(data: &[u8]) -> Option<i64> {
     Some(1_024_i64.saturating_mul(blocks).saturating_mul(1_000_000_000) / rate)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug)]
 enum HlsExit {
     Aborted,
     NotReady,
     PrimeExpired,
+    /// The abort rule fired on the ACTIVE stream: this fetch was projected to outlive the reserve
+    /// while a cheaper rung was still available. Not a failure — the segment is abandoned on
+    /// purpose so the controller gets a decision it would otherwise never be asked for. See
+    /// [`StallGuard`].
+    ///
+    /// **It carries the transfer, because an abandoned fetch is still a MEASUREMENT** — bytes over
+    /// the time they took, on the link as it is now. That is precisely the evidence the controller
+    /// was being starved of: without it the abort would abandon a segment and tell the estimator
+    /// nothing, and the next fetch would be chosen on the same stale rate that led here.
+    StallAbort(SegmentTransfer),
     Failed(&'static str),
 }
 
@@ -2304,6 +2422,7 @@ unsafe fn hls_input(
     size: i64,
     aq: *mut AuQueue,
     deadline: Option<std::time::Instant>,
+    stall: Option<StallGuard>,
 ) -> Result<HlsInput, HlsExit> {
     let mut input = HlsInput {
         state: Box::new(AvioState {
@@ -2317,6 +2436,8 @@ unsafe fn hls_input(
             first_byte_at: None,
             deadline,
             deadline_expired: false,
+            stall,
+            stall_aborted: false,
         }),
         avio: std::ptr::null_mut(),
         fmt: std::ptr::null_mut(),
@@ -2372,7 +2493,7 @@ unsafe fn hls_input(
     Ok(input)
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct SegmentTransfer {
     bytes: u64,
     active_us: u64,
@@ -2464,6 +2585,7 @@ unsafe fn hls_demux_segment(
     hs: *mut HttpStream,
     acodec: &str,
     deadline: Option<std::time::Instant>,
+    stall: Option<StallGuard>,
 ) -> Result<HlsSegmentOutput, HlsExit> {
     if crate::aq::aq_is_aborted(aq) {
         return Err(HlsExit::Aborted);
@@ -2517,7 +2639,7 @@ unsafe fn hls_demux_segment(
         }
     };
     let body_started = std::time::Instant::now();
-    let mut input = hls_input(src, size, aq, deadline)?;
+    let mut input = hls_input(src, size, aq, deadline, stall)?;
     let probe_done = std::time::Instant::now();
     let streams = (*input.fmt).streams;
     let vi = av_find_best_stream(
@@ -2575,6 +2697,17 @@ unsafe fn hls_demux_segment(
         input.state.io_failed = false;
         let read = av_read_frame(input.fmt, input.pkt);
         if read < 0 {
+            // The abort rule, raised beside the transaction deadline because they are the same
+            // kind of event — an in-flight bound the read callback tripped — and differ only in
+            // what they are protecting. See `StallGuard`.
+            if input.state.stall_aborted {
+                return Err(HlsExit::StallAbort(SegmentTransfer {
+                    bytes: input.state.body_bytes,
+                    active_us: input.state.body_active_us,
+                    total_us: request_started.elapsed().as_micros().max(1) as u64,
+                    audio_expected: ai >= 0 && FEED_AUDIO.load(Ordering::Relaxed),
+                }));
+            }
             if input.state.deadline_expired {
                 return Err(HlsExit::PrimeExpired);
             }
@@ -3564,11 +3697,63 @@ fn hls_demux(
         let mut clock = timeline
             .begin(segment.duration)
             .map_err(|_| HlsExit::Failed("HLS content timeline overflow"))?;
-        let output = unsafe {
-            hls_demux_segment(&segment, &cursor.auth, &mut clock, aq, hs, acodec, None)?
+        // **Arm the abort rule for the segment that is feeding the picture.** Both conditions are
+        // the guard's own preconditions rather than policy: a reserve that is not knowable has no
+        // left-hand side to compare against (`BufferSnapshot::buffered_ms`'s `None` — the audio
+        // lane silent after an open or a seek), and at the ladder floor there is no cheaper rung
+        // to run to, so an abort would re-fetch the same bytes and buy a loop instead of a
+        // picture. That second one is R12's terminal case, stated where it is enforced.
+        let stall_guard = adaptive.as_ref().and_then(|state| {
+            let controller = &state.2;
+            if controller.current().below() == controller.current() {
+                return None;
+            }
+            hls_buffer_snapshot(None).buffered_ms().and_then(StallGuard::arm)
+        });
+        // **An abort is not a failure and not a delivery — it is a MEASUREMENT that arrives
+        // instead of a segment.** The segment goes back on the cursor unconsumed, nothing is fed
+        // and the content timeline does not advance (we delivered no media); what continues is the
+        // ordinary sample -> observe -> transact path below, which is the entire point. The
+        // controller only ever decides between segments, so the fetch that would have stalled for
+        // 72 s is converted into the one thing it was withholding: a decision.
+        let output = match unsafe {
+            hls_demux_segment(&segment, &cursor.auth, &mut clock, aq, hs, acodec, None, stall_guard)
+        } {
+            Ok(output) => output,
+            Err(HlsExit::StallAbort(transfer)) => {
+                crate::player::log(&format!(
+                    "abr: stall abort seq={} bytes={} of {}ms reserve at {}kbps — abandoning the \
+                     fetch so the rung can be decided",
+                    segment.sequence,
+                    transfer.bytes,
+                    stall_guard.map(|g| g.reserve_ms_at_start).unwrap_or(-1),
+                    crate::abr::SegmentSample::new(
+                        transfer.bytes,
+                        transfer.active_us,
+                        transfer.total_us,
+                        1,
+                        hls_buffer_snapshot(None),
+                    )
+                    .map(|s| i64::from(s.network_kbps()))
+                    .unwrap_or(-1),
+                ));
+                cursor.pending.push_front(segment.clone());
+                HlsSegmentOutput {
+                    aus: Vec::new(),
+                    transfer,
+                    video_width: 0,
+                    video_height: 0,
+                    video_tail_ns: -1,
+                    audio_tail_ns: None,
+                }
+            }
+            Err(other) => return Err(other),
         };
-        hls_feed_segment(&output, aq, aqa)?;
-        timeline.commit(clock);
+        let delivered = !output.aus.is_empty();
+        if delivered {
+            hls_feed_segment(&output, aq, aqa)?;
+            timeline.commit(clock);
+        }
 
         let Some((
             control,
@@ -3872,6 +4057,10 @@ fn hls_demux(
                 hs,
                 acodec,
                 candidate_deadline,
+                // A candidate's bound is what the TRANSACTION can afford, which
+                // `candidate_deadline` already is. The abort rule is about what the PICTURE can
+                // survive, and the picture is being fed by the current rung throughout.
+                None,
             )
         } {
             Ok(output) => output,
@@ -3956,6 +4145,7 @@ fn hls_demux(
                     hs,
                     acodec,
                     graded_deadline,
+                    None,
                 )
             } {
                 Ok(output) => output,
@@ -4169,6 +4359,12 @@ pub(crate) fn demux(
                 crate::player::log("hls: demux failed: unexpected active-stream prime deadline");
                 SHARED.demux_io_failed.store(true, Ordering::Release);
             }
+            Ok(Err(HlsExit::StallAbort(_))) => {
+                // The abort rule is handled where it fires, inside the segment loop; reaching here
+                // means it escaped one of the candidate paths, which do not arm it.
+                crate::player::log("hls: demux failed: stall abort escaped the segment loop");
+                SHARED.demux_io_failed.store(true, Ordering::Release);
+            }
             Err(_) => {
                 crate::player::log("hls: demux panicked");
                 SHARED.demux_failed.store(true, Ordering::Release);
@@ -4332,6 +4528,10 @@ pub(crate) fn demux(
                 first_byte_at: None,
                 deadline: None,
                 deadline_expired: false,
+                // A progressive part is not on a ladder, so there is no cheaper rung to run to
+                // and the abort rule's escape does not exist. R12's terminal case, structurally.
+                stall: None,
+                stall_aborted: false,
             });
             let buf = av_malloc(65536) as *mut u8;
             if buf.is_null() {
@@ -5283,7 +5483,7 @@ mod tests {
                 src: Src::Socket { hs: &mut *hs, host: ip, port: port as c_int, path },
                 aq: &mut *aq, off: 0, size: 8, io_failed: false,
                 body_active_us: 0, body_bytes: 0, first_byte_at: None,
-                deadline: None, deadline_expired: false,
+                deadline: None, deadline_expired: false, stall: None, stall_aborted: false,
             };
             let op = &mut st as *mut AvioState as *mut c_void;
 
@@ -5317,7 +5517,7 @@ mod tests {
                 src: Src::Socket { hs: &mut *hs, host: ip, port: port as c_int, path },
                 aq: &mut *aq, off: 0, size: 8, io_failed: false,
                 body_active_us: 0, body_bytes: 0, first_byte_at: None,
-                deadline: None, deadline_expired: false,
+                deadline: None, deadline_expired: false, stall: None, stall_aborted: false,
             };
             let op = &mut st as *mut AvioState as *mut c_void;
             let mut dst = [0u8; 8];
@@ -5359,6 +5559,8 @@ mod tests {
             first_byte_at: None,
             deadline: Some(std::time::Instant::now()),
             deadline_expired: false,
+            stall: None,
+            stall_aborted: false,
         };
         let mut dst = [0u8; 8];
         let result = read_cb(
@@ -5414,7 +5616,7 @@ mod tests {
             let mut st = AvioState {
                 src: Src::Curl(cs), aq: &mut *aq, off: 0, size: 8, io_failed: false,
                 body_active_us: 0, body_bytes: 0, first_byte_at: None,
-                deadline: None, deadline_expired: false,
+                deadline: None, deadline_expired: false, stall: None, stall_aborted: false,
             };
             let op = &mut st as *mut AvioState as *mut c_void;
 
@@ -5441,7 +5643,7 @@ mod tests {
             let mut st = AvioState {
                 src: Src::Curl(cs), aq: &mut *aq, off: 0, size: 8, io_failed: false,
                 body_active_us: 0, body_bytes: 0, first_byte_at: None,
-                deadline: None, deadline_expired: false,
+                deadline: None, deadline_expired: false, stall: None, stall_aborted: false,
             };
             let op = &mut st as *mut AvioState as *mut c_void;
             let mut dst = [0u8; 8];
@@ -5486,7 +5688,7 @@ mod tests {
             let mut st = AvioState {
                 src: Src::Curl(cs), aq: &mut *aq, off: 0, size: 8, io_failed: false,
                 body_active_us: 0, body_bytes: 0, first_byte_at: None,
-                deadline: None, deadline_expired: false,
+                deadline: None, deadline_expired: false, stall: None, stall_aborted: false,
             };
             let op = &mut st as *mut AvioState as *mut c_void;
             let mut dst = [0u8; 8];
@@ -5520,5 +5722,92 @@ mod tests {
             );
             crate::aq::aq_destroy(&mut *aq);
         });
+    }
+}
+
+#[cfg(test)]
+mod stall_guard_tests {
+    use super::StallGuard;
+
+    /// **R16: the projection is `8 * bytes / kbps`, and the 8 is the whole rule.**
+    ///
+    /// `C` is kilobits per second, i.e. BITS per millisecond; `bytes_remaining` is bytes. The
+    /// plan's original expression divided bytes by a bit rate and under-reported the remaining
+    /// fetch by exactly a factor of eight — so the guard would have let a segment run that was
+    /// certain to stall, on the one path it exists to act on. Differential by construction: the
+    /// case below is chosen so the two forms disagree about the ANSWER, not merely the number.
+    #[test]
+    fn the_projection_converts_bytes_to_bits_before_dividing_by_a_bit_rate() {
+        // 500 kbps, 500 000 bytes still to come, 8 000 ms of reserve, nothing elapsed.
+        // Correct: 8 * 500_000 / 500 = 8 000 ms — exactly at the reserve, so not yet OVER it.
+        assert!(!StallGuard::expired(8_000, 0, 500_000, 500));
+        // A megabyte at the same rate is 16 000 ms and must abort. The un-multiplied form reads
+        // 2 000 ms — comfortably inside an 8 000 ms reserve — so it gives the opposite ANSWER, not
+        // merely a different number. That is the whole of R16.
+        assert!(StallGuard::expired(8_000, 0, 1_000_000, 500));
+        // ...and it would keep saying "comfortable" until the segment was eight times larger.
+        assert!(!StallGuard::expired(8_000, 0, 1_000_000 / 8, 500));
+    }
+
+    /// The device case this was built from, in numbers: rung 18000 against a 500 kbps link is
+    /// ~4.5 MB of segment, i.e. 36 Mbit, i.e. 72 s of fetch — against a reserve measured at
+    /// 2 168 ms when the warm-up deadline fired. Continuing is a 70-second stall.
+    #[test]
+    fn the_measured_device_stall_is_refused() {
+        assert!(StallGuard::expired(2_168, 0, 4_500_000, 500));
+    }
+
+    /// **The reserve drains at real time while the fetch runs**, so the comparison is against what
+    /// will still be there, not against what there was. Same fetch, same link, later in the wait.
+    #[test]
+    fn the_reserve_is_discounted_by_the_time_already_spent_waiting() {
+        // 1 000 kbps, 100 000 bytes left = 800 ms of fetch, against 1 000 ms of reserve: fine.
+        assert!(!StallGuard::expired(1_000, 0, 100_000, 1_000));
+        // 500 ms into the wait the same fetch is projected against 500 ms of reserve: not fine.
+        assert!(StallGuard::expired(1_000, 500, 100_000, 1_000));
+    }
+
+    /// A reserve spent DURING the fetch is not a projection question — the picture has stopped and
+    /// every further millisecond is stall, whatever the link does next.
+    #[test]
+    fn a_reserve_exhausted_during_the_fetch_aborts_without_projecting() {
+        assert!(StallGuard::expired(1_000, 1_000, 1, 1_000_000));
+    }
+
+    /// **But a reserve that was empty when the fetch STARTED never arms the guard at all**, which
+    /// is a different question and is the one that matters: that is every session's first segment,
+    /// and arming there aborts the fetch that would have created the picture. Device-measured
+    /// without this gate: `stall abort seq=0 ... of 0ms reserve`, playback never started, the video
+    /// plane never bound. Differential by construction — `expired` answers `true` for the same
+    /// numbers, so only the arming decision can make this pass.
+    #[test]
+    fn an_empty_reserve_at_the_start_of_a_fetch_arms_nothing() {
+        assert!(StallGuard::expired(0, 0, 1, u32::MAX as i64), "the projection alone would abort");
+        assert!(StallGuard::arm(0).is_none(), "so the guard must refuse to be armed");
+        assert!(StallGuard::arm(-1).is_none());
+        assert!(StallGuard::arm(1).is_some(), "and must arm as soon as there is a picture to keep");
+    }
+
+    /// **Absence of evidence never fires the guard.** No bytes left to fetch, no measured rate, or
+    /// a nonsense rate all mean the projection has no inputs — and a guard that aborts on missing
+    /// information would abandon healthy segments for the same reason `buffered_ms()` returning
+    /// `0` for "unknown" once turned a full reserve into a downshift trigger.
+    #[test]
+    fn a_projection_with_no_inputs_does_not_abort() {
+        assert!(!StallGuard::expired(1_000, 0, 0, 500), "nothing left to fetch");
+        assert!(!StallGuard::expired(1_000, 0, -5, 500), "already past the declared size");
+        assert!(!StallGuard::expired(1_000, 0, 500_000, 0), "no rate measured");
+        assert!(!StallGuard::expired(1_000, 0, 500_000, -1), "a negative rate is not a rate");
+    }
+
+    /// It cannot panic or wrap on the extremes the estimator is known to produce — this project
+    /// has measured an 865 Gbit/s reading, and `i64::MAX` bytes is what a corrupt declared size
+    /// looks like.
+    #[test]
+    fn the_arithmetic_survives_the_extremes_this_project_has_actually_seen() {
+        assert!(!StallGuard::expired(1_000, 0, 500_000, 865_000_000));
+        assert!(StallGuard::expired(1_000, 0, i64::MAX, 1));
+        assert!(!StallGuard::expired(i64::MAX, 0, 1, 1));
+        assert!(StallGuard::expired(i64::MIN, 0, 1, 1), "a nonsense reserve is an empty one");
     }
 }
