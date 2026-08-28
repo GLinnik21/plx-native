@@ -32,7 +32,7 @@ mod hwcnt; // direct userspace Mali r12p0 vinstr reader for the phase profiler
 #[cfg(feature = "devtriggers")]
 mod gpu_timer; // async EXT_disjoint_timer_query timing; no glFinish on the timing path
 mod img;
-mod lab; // Lab Diagnostics: the ring + the pinned upload that get a log off a Cloud Test Lab set
+mod lab; // Cloud Lab bridge: pinned diagnostic uploads + optional outbound command long-poll
 mod metadata; // item detail data layer (detail page): full metadata + seasons/episodes + cast + related
 mod net; // HTTPS client over the TV's libcurl (plex.tv account/login calls — stream.rs can't do TLS/DNS)
 mod person; // person/actor page data layer: the header handed in by the cast row + /library/people/{id}/media

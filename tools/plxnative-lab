@@ -11,6 +11,8 @@ read it.
 
     plxnative-lab start            # session + certificate + listener + port mapping
     plxnative-lab status --json    # what an agent polls
+    plxnative-lab send down down ok wait:1000 diag
+    plxnative-lab clear            # cancel input queued for a disconnected TV
     plxnative-lab logs --follow    # the snapshots, as JSONL on stdout
     plxnative-lab stop             # listener down, mapping deleted
 
@@ -21,10 +23,11 @@ transfer with no television and no router in the room.
 # The exposed surface, deliberately tiny
 
 For the life of a session `lab.plxnative.com:<port>` is a port on the public internet that reaches
-this process. So: ONE route (`POST /v1/diag`), a bearer secret checked before the body is read, a
-required and capped `Content-Length`, a socket timeout, a rate limit, a cap on total uploads, no
-filesystem serving, no subprocess, and no downward channel of any kind. Everything else is a bare
-404. The whole server is a few hundred lines on purpose — it is meant to be read end to end.
+this process. The public surface is two authenticated TV routes: diagnostic upload and a held
+command poll. The only enqueue/status routes are loopback-only, so the session secret in the `.ipk`
+cannot be used by the television (or anybody at its network vantage point) to create commands.
+Every body is capped, control tokens are a bounded grammar, there is no filesystem serving and no
+subprocess. The whole server stays small enough to read end to end.
 
 # Why a self-signed certificate is the stronger choice here
 
@@ -39,10 +42,12 @@ from __future__ import annotations
 
 import argparse
 import base64
+import collections
 import gzip
 import hashlib
 import hmac
 import http.client
+import ipaddress
 import json
 import os
 import re
@@ -86,6 +91,18 @@ MAX_UPLOADS = 60
 MIN_UPLOAD_GAP_S = 2.0
 SOCKET_TIMEOUT_S = 20
 UPNP_LEASE_S = 3600
+
+# Lab Control: one ordered, bounded queue. The TV holds one authenticated HTTPS request rather
+# than reconnecting several times a second; enqueue/status never leave this machine.
+CONTROL_POLL_S = 15.0
+MAX_CONTROL_BODY = 16 * 1024
+MAX_COMMAND_TOKEN = 128
+MAX_COMMAND_BATCH = 64
+MAX_COMMAND_QUEUE = 128
+MAX_COMMANDS = 1000
+MAX_COMMAND_WAIT_MS = 60_000
+MAX_DEVICE_WAIT_MS = 10_000
+MAX_RESULT_DETAIL = 256
 
 
 def _state() -> dict:
@@ -292,6 +309,57 @@ def lan_ip() -> str:
 
 
 # ---------------------------------------------------------------------------------------------
+# Lab Control token grammar
+# ---------------------------------------------------------------------------------------------
+
+# These are app-level synthetic inputs, not webOS/system commands. Keep this list in step with
+# `app.rs::remote_token_key` plus its three structured token arms. Raw key pairs are still confined
+# to the app's SDL queue; they cannot inject into another process or open a shell.
+CONTROL_NAMED = {
+    "up", "down", "left", "right", "ok", "enter", "select", "back", "esc",
+    "pageup", "pagedown", "chup", "chdown", "play", "pause", "stop", "ff",
+    "fastforward", "rew", "rewind", "playpause", "exit", "backspace", "del", "clear",
+    "okdown", "okup", "diag", "diagnostics",
+}
+
+
+def command_error(token) -> str | None:
+    """Return why a control token is refused, or None when it is in the bounded grammar."""
+    if not isinstance(token, str) or not token:
+        return "command must be a non-empty string"
+    if len(token.encode("utf-8")) > MAX_COMMAND_TOKEN:
+        return f"command exceeds {MAX_COMMAND_TOKEN} bytes"
+    if token in CONTROL_NAMED:
+        return None
+    if m := re.fullmatch(r"wait:(\d+)", token):
+        return None if int(m.group(1)) <= MAX_DEVICE_WAIT_MS else \
+            f"wait is capped at {MAX_DEVICE_WAIT_MS}ms"
+    if m := re.fullmatch(r"k:(\d+),(\d+)", token):
+        return None if all(int(x) <= 0xffffffff for x in m.groups()) else \
+            "raw key fields must fit u32"
+    if m := re.fullmatch(r"ck:(-?\d+),(-?\d+)", token):
+        x, y = map(int, m.groups())
+        return None if 0 <= x <= 1919 and 0 <= y <= 1079 else \
+            "click coordinates must be inside 1920x1080"
+    if token.startswith("txt:"):
+        text = token[4:]
+        return None if text and not any(c.isspace() for c in text) else \
+            "txt payload must be non-empty and use + for spaces"
+    if token.startswith("pat:"):
+        spec = token[4:]
+        return None if spec and not any(c.isspace() for c in spec) else \
+            "pattern payload must be non-empty and contain no whitespace"
+    return "unsupported command token"
+
+
+def _is_loopback(addr: str) -> bool:
+    try:
+        return ipaddress.ip_address(addr).is_loopback
+    except ValueError:
+        return False
+
+
+# ---------------------------------------------------------------------------------------------
 # the receiver
 # ---------------------------------------------------------------------------------------------
 
@@ -307,9 +375,16 @@ class Receiver(ThreadingHTTPServer):
         self.secret = secret
         self.session = session
         self.lock = threading.Lock()
+        self.control = threading.Condition(self.lock)
         self.uploads = 0
         self.last_at = 0.0
         self.rejected = 0
+        self.commands = collections.deque()
+        self.inflight = None
+        self.next_command_id = 1
+        self.results = collections.OrderedDict()
+        self.last_poll_at = 0.0
+        self.last_result = None
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -349,8 +424,45 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
         self.server.rejected += 1
 
-    # Everything that is not the one route is a bare 404 — including HEAD and GET, which have no
-    # business here and whose absence is itself a small piece of hardening.
+    def _answer(self, code: int, payload: dict) -> None:
+        body = json.dumps(payload, separators=(",", ":")).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _read_body(self, maximum: int) -> bytes | None:
+        try:
+            length = int(self.headers.get("Content-Length", ""))
+        except ValueError:
+            self._refuse(411, "content-length required")
+            return None
+        if length <= 0 or length > maximum:
+            self._refuse(413, "body too large")
+            return None
+        body = self.rfile.read(length)
+        if len(body) != length:
+            self._refuse(400, "short body")
+            return None
+        return body
+
+    def _read_json(self, maximum: int) -> dict | None:
+        body = self._read_body(maximum)
+        if body is None:
+            return None
+        try:
+            value = json.loads(body)
+        except (UnicodeDecodeError, ValueError):
+            self._refuse(400, "body is not JSON")
+            return None
+        if not isinstance(value, dict):
+            self._refuse(400, "JSON body must be an object")
+            return None
+        return value
+
+    # Everything that is not one of the declared POST routes is a bare 404 — including HEAD and
+    # GET, which have no business here and whose absence is itself a small piece of hardening.
     def do_GET(self):
         self._refuse(404, "not found")
 
@@ -361,7 +473,17 @@ class Handler(BaseHTTPRequestHandler):
         self._refuse(404, "not found")
 
     def do_POST(self):
-        if self.path != "/v1/diag":
+        routes = {
+            "/v1/diag", "/v1/control/poll",
+            "/v1/control/enqueue", "/v1/control/status", "/v1/control/clear",
+        }
+        if self.path not in routes:
+            return self._refuse(404, "not found")
+        # The host command surface is not public even to somebody holding the session credential.
+        # It is reached only through 127.0.0.1:<ephemeral>; the router mapping cannot manufacture a
+        # loopback peer address. Return 404 so the public service does not advertise the route.
+        if self.path in {"/v1/control/enqueue", "/v1/control/status", "/v1/control/clear"} and \
+                not _is_loopback(self.client_address[0]):
             return self._refuse(404, "not found")
         # AUTH FIRST, before a single byte of body is read: an unauthenticated caller must not be
         # able to make this process read four megabytes.
@@ -369,12 +491,26 @@ class Handler(BaseHTTPRequestHandler):
         want = "Bearer " + self.server.secret
         if not hmac.compare_digest(auth, want):
             return self._refuse(401, "unauthorised")
-        try:
-            length = int(self.headers.get("Content-Length", ""))
-        except ValueError:
-            return self._refuse(411, "content-length required")
-        if length <= 0 or length > MAX_BODY:
-            return self._refuse(413, "body too large")
+        # The secret is sufficient cryptographic authentication; the short id separately makes a
+        # stale package failure diagnosable instead of accepting it into the wrong named session.
+        got_session = self.headers.get("X-Plx-Session", "")
+        if not hmac.compare_digest(got_session, self.server.session):
+            return self._refuse(409, "stale session")
+
+        if self.path == "/v1/diag":
+            return self._diag()
+        if self.path == "/v1/control/poll":
+            return self._control_poll()
+        if self.path == "/v1/control/enqueue":
+            return self._control_enqueue()
+        if self.path == "/v1/control/status":
+            return self._control_status()
+        return self._control_clear()
+
+    def _diag(self):
+        body = self._read_body(MAX_BODY)
+        if body is None:
+            return
         with self.server.lock:
             now = time.time()
             if self.server.uploads >= MAX_UPLOADS:
@@ -382,9 +518,6 @@ class Handler(BaseHTTPRequestHandler):
             if now - self.server.last_at < MIN_UPLOAD_GAP_S:
                 return self._refuse(429, "too fast")
             self.server.last_at = now
-        body = self.rfile.read(length)
-        if len(body) != length:
-            return self._refuse(400, "short body")
         encoding = self.headers.get("Content-Encoding", "identity")
         try:
             text = gzip.decompress(body) if encoding == "gzip" else body
@@ -395,12 +528,135 @@ class Handler(BaseHTTPRequestHandler):
             self.server.uploads += 1
         self.log_message("upload seq=%s %d bytes (%s) -> %s", seq, len(body), encoding,
                          os.path.basename(path))
-        out = json.dumps({"ok": True, "seq": seq}).encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(out)))
-        self.end_headers()
-        self.wfile.write(out)
+        self._answer(200, {"ok": True, "seq": seq})
+
+    def _control_poll(self):
+        data = self._read_json(MAX_CONTROL_BODY)
+        if data is None:
+            return
+        ack = data.get("ack")
+        if ack is not None:
+            if not isinstance(ack, dict) or isinstance(ack.get("id"), bool) or \
+                    not isinstance(ack.get("id"), int) or not isinstance(ack.get("ok"), bool) or \
+                    not isinstance(ack.get("detail", ""), str):
+                return self._refuse(400, "malformed acknowledgement")
+            if len(ack.get("detail", "").encode("utf-8")) > MAX_RESULT_DETAIL:
+                return self._refuse(400, "acknowledgement detail too long")
+
+        with self.server.control:
+            self.server.last_poll_at = time.time()
+            if ack is not None:
+                aid = ack["id"]
+                if self.server.inflight is not None and aid == self.server.inflight["id"]:
+                    result = {
+                        "id": aid,
+                        "token": self.server.inflight["token"],
+                        "ok": ack["ok"],
+                        "detail": ack.get("detail", ""),
+                        "at": time.time(),
+                    }
+                    self.server.results[aid] = result
+                    while len(self.server.results) > MAX_COMMAND_QUEUE:
+                        self.server.results.popitem(last=False)
+                    self.server.last_result = result
+                    self.server.inflight = None
+                    self.server.control.notify_all()
+                elif aid not in self.server.results:
+                    return self._refuse(409, "acknowledgement does not match in-flight command")
+
+            deadline = time.monotonic() + CONTROL_POLL_S
+            while self.server.inflight is None and not self.server.commands:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    break
+                self.server.control.wait(left)
+            if self.server.inflight is None and self.server.commands:
+                self.server.inflight = self.server.commands.popleft()
+            command = dict(self.server.inflight) if self.server.inflight is not None else None
+
+        self._answer(200, {"ok": True, "command": command})
+
+    def _control_enqueue(self):
+        data = self._read_json(MAX_CONTROL_BODY)
+        if data is None:
+            return
+        tokens = data.get("tokens")
+        wait_ms = data.get("wait_ms", 0)
+        if not isinstance(tokens, list) or not tokens or len(tokens) > MAX_COMMAND_BATCH:
+            return self._refuse(400, f"tokens must contain 1..{MAX_COMMAND_BATCH} commands")
+        if isinstance(wait_ms, bool) or not isinstance(wait_ms, int) or \
+                not 0 <= wait_ms <= MAX_COMMAND_WAIT_MS:
+            return self._refuse(400, f"wait_ms must be 0..{MAX_COMMAND_WAIT_MS}")
+        for token in tokens:
+            if why := command_error(token):
+                return self._refuse(400, f"{token!r}: {why}")
+
+        with self.server.control:
+            occupied = len(self.server.commands) + int(self.server.inflight is not None)
+            if occupied + len(tokens) > MAX_COMMAND_QUEUE:
+                return self._refuse(429, "command queue full")
+            if self.server.next_command_id + len(tokens) - 1 > MAX_COMMANDS:
+                return self._refuse(429, "session command limit reached")
+            ids = []
+            for token in tokens:
+                cid = self.server.next_command_id
+                self.server.next_command_id += 1
+                self.server.commands.append({"id": cid, "token": token})
+                ids.append(cid)
+            self.server.control.notify_all()
+
+            deadline = time.monotonic() + wait_ms / 1000.0
+            while wait_ms and not all(cid in self.server.results for cid in ids):
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    break
+                self.server.control.wait(left)
+            results = [self.server.results[cid] for cid in ids if cid in self.server.results]
+            delivered = len(results) == len(ids)
+            queued = len(self.server.commands) + int(self.server.inflight is not None)
+
+        self.log_message("control queued ids=%s delivered=%s", ids, delivered)
+        self._answer(200 if delivered else 202, {
+            "ok": True, "ids": ids, "delivered": delivered, "results": results,
+            "queued": queued,
+        })
+
+    def _control_status(self):
+        if self._read_json(MAX_CONTROL_BODY) is None:
+            return
+        with self.server.control:
+            age = None if not self.server.last_poll_at else \
+                max(0, int(time.time() - self.server.last_poll_at))
+            out = {
+                "ok": True,
+                "tv_control": "connected" if age is not None and age <= CONTROL_POLL_S + 5
+                              else "not connected",
+                "last_poll_age_s": age,
+                "queued": len(self.server.commands),
+                "inflight": dict(self.server.inflight) if self.server.inflight else None,
+                "last_result": self.server.last_result,
+            }
+        self._answer(200, out)
+
+    def _control_clear(self):
+        if self._read_json(MAX_CONTROL_BODY) is None:
+            return
+        with self.server.control:
+            commands = ([self.server.inflight] if self.server.inflight else []) \
+                + list(self.server.commands)
+            self.server.inflight = None
+            self.server.commands.clear()
+            now = time.time()
+            for command in commands:
+                result = {"id": command["id"], "token": command["token"], "ok": False,
+                          "detail": "cancelled by host", "at": now}
+                self.server.results[command["id"]] = result
+                self.server.last_result = result
+            while len(self.server.results) > MAX_COMMAND_QUEUE:
+                self.server.results.popitem(last=False)
+            self.server.control.notify_all()
+        self.log_message("control cleared ids=%s", [c["id"] for c in commands])
+        self._answer(200, {"ok": True, "cleared": [c["id"] for c in commands]})
 
     def _file(self, text: bytes) -> tuple[str, str]:
         """Store the decompressed document, gzipped, under a sortable name. Returns (seq, path)."""
@@ -500,6 +756,7 @@ def cmd_start(args) -> int:
         "key": os.path.join(HOME, "key.pem"),
         "pin": pin,
         "no_upnp": bool(args.no_upnp),
+        "control": not bool(args.no_control),
         "status": "starting",
         "trigger_wcodes": [int(w) for w in args.trigger.split(",") if w.strip()],
     }
@@ -522,6 +779,7 @@ def cmd_start(args) -> int:
         "upnp": st["upnp"],
         "external_ip": st.get("external_ip"),
         "dns_matches": _dns_matches(st),
+        "control": st["control"],
         "lab_json": lab_json(st),
         "next": f"make LAB=1 FLAVOR=debug ipk   # stages pkg/lab.json into the package",
     }
@@ -544,9 +802,93 @@ def lab_json(st: dict) -> str:
         "session": st["session"],
         "secret": st["secret"],
         "pin": st["pin"],
+        "control": bool(st.get("control", False)),
         "trigger_wcodes": st.get("trigger_wcodes", []),
         "trigger_syms": [],
     })
+
+
+def _local_control(st: dict, path: str, payload: dict, timeout: float = 5.0):
+    """POST to a loopback-only receiver route. Returns (status, object), or None if unavailable."""
+    if not st.get("local_port") or not st.get("secret") or not st.get("session"):
+        return None
+    # The per-session certificate includes IP:127.0.0.1 in its SAN. Trust that exact file for the
+    # host-side loopback call instead of weakening verification just because the hop is local.
+    try:
+        ctx = ssl.create_default_context(cafile=st["cert"])
+    except (KeyError, OSError, ssl.SSLError):
+        return None
+    body = json.dumps(payload, separators=(",", ":")).encode()
+    headers = {
+        "Authorization": "Bearer " + st["secret"],
+        "X-Plx-Session": st["session"],
+        "Content-Type": "application/json",
+        "Content-Length": str(len(body)),
+    }
+    try:
+        c = http.client.HTTPSConnection("127.0.0.1", st["local_port"], context=ctx,
+                                        timeout=timeout)
+        c.request("POST", path, body=body, headers=headers)
+        r = c.getresponse()
+        raw = r.read()
+        status = r.status
+        c.close()
+        return status, json.loads(raw)
+    except (OSError, ValueError, http.client.HTTPException):
+        return None
+
+
+def cmd_send(args) -> int:
+    """Queue app-level commands and, by default, wait for main-thread delivery acknowledgements."""
+    if not 0 <= args.timeout <= MAX_COMMAND_WAIT_MS / 1000:
+        print(f"--timeout must be between 0 and {MAX_COMMAND_WAIT_MS // 1000} seconds",
+              file=sys.stderr)
+        return 2
+    st = _state()
+    if not (st.get("pid") and _alive(st["pid"]) and st.get("status") == "listening"):
+        print("receiver is stopped — run `tools/plxnative-lab start` first", file=sys.stderr)
+        return 1
+    for token in args.tokens:
+        if why := command_error(token):
+            print(f"refusing {token!r}: {why}", file=sys.stderr)
+            return 2
+    wait_ms = 0 if args.no_wait else int(args.timeout * 1000)
+    got = _local_control(
+        st, "/v1/control/enqueue", {"tokens": args.tokens, "wait_ms": wait_ms},
+        timeout=max(5.0, args.timeout + 5.0),
+    )
+    if got is None:
+        print("receiver control endpoint did not answer", file=sys.stderr)
+        return 1
+    status, out = got
+    if args.json:
+        print(json.dumps(out))
+    elif out.get("delivered"):
+        for result in out.get("results", []):
+            mark = "ok" if result.get("ok") else "FAIL"
+            print(f"{mark}  #{result.get('id')} {result.get('token')} — {result.get('detail')}")
+    else:
+        print(f"queued {out.get('ids', [])}; TV has not acknowledged all commands"
+              + ("" if args.no_wait else f" within {args.timeout:g}s"), file=sys.stderr)
+    if status not in (200, 202) or not out.get("ok"):
+        return 1
+    all_ok = out.get("delivered") and all(r.get("ok") for r in out.get("results", []))
+    return 0 if args.no_wait or all_ok else 1
+
+
+def cmd_clear(args) -> int:
+    """Cancel server-side queued/in-flight commands (a response already received cannot be recalled)."""
+    st = _state()
+    if not (st.get("pid") and _alive(st["pid"]) and st.get("status") == "listening"):
+        print("receiver is stopped", file=sys.stderr)
+        return 1
+    got = _local_control(st, "/v1/control/clear", {}, timeout=5.0)
+    if got is None or got[0] != 200:
+        print("receiver control endpoint did not answer", file=sys.stderr)
+        return 1
+    out = got[1]
+    print(json.dumps(out) if args.json else f"cleared command ids: {out.get('cleared', [])}")
+    return 0
 
 
 def _dns_matches(st: dict) -> bool | None:
@@ -608,6 +950,14 @@ def cmd_status(args) -> int:
         "last_route": env.get("route"),
         "dropped": env.get("dropped"),
     }
+    if live and st.get("status") == "listening":
+        control = _local_control(st, "/v1/control/status", {}, timeout=2.0)
+        if control and control[0] == 200:
+            out.update({k: v for k, v in control[1].items() if k != "ok"})
+        else:
+            out["tv_control"] = "status unavailable"
+    else:
+        out["tv_control"] = "receiver stopped"
     if args.json:
         print(json.dumps(out))
     else:
@@ -703,6 +1053,9 @@ def cmd_stop(args) -> int:
 
 
 def selftest(_args) -> int:
+    global CONTROL_POLL_S
+    original_poll_s = CONTROL_POLL_S
+    CONTROL_POLL_S = 0.05  # keep the idle-poll assertion fast; production remains 15 seconds
     fails = []
 
     def check(name: str, ok: bool, detail: str = "") -> None:
@@ -743,7 +1096,8 @@ def selftest(_args) -> int:
                + "\n" + json.dumps({"t_ms": 59000, "m": "feed v#1 reply=Ok"})).encode()
         gz = gzip.compress(doc)
         good = {"Authorization": "Bearer " + secret, "Content-Type": "application/x-ndjson",
-                "Content-Encoding": "gzip", "Content-Length": str(len(gz))}
+                "Content-Encoding": "gzip", "Content-Length": str(len(gz)),
+                "X-Plx-Session": "selftest"}
 
         st, body = post(gz, good)
         check("a valid gzip upload is accepted", st == 200 and json.loads(body)["ok"], str(st))
@@ -758,7 +1112,8 @@ def selftest(_args) -> int:
         st, _ = post(gz, dict(good, **{"Content-Length": str(MAX_BODY + 1)}))
         check("an oversized declared body is refused", st == 413, str(st))
 
-        st, _ = post(b"", {"Authorization": "Bearer " + secret, "Content-Length": "0"})
+        st, _ = post(b"", {"Authorization": "Bearer " + secret, "Content-Length": "0",
+                           "X-Plx-Session": "selftest"})
         check("an empty body is refused", st == 413, str(st))
 
         st, _ = post(gz, good, path="/anything-else")
@@ -773,6 +1128,68 @@ def selftest(_args) -> int:
         check("a second upload inside the gap is rate-limited", st == 429, str(st))
 
         check("only the accepted uploads were stored", len(_uploads()) == 2, str(len(_uploads())))
+
+        control_headers = {"Authorization": "Bearer " + secret,
+                           "X-Plx-Session": "selftest", "Content-Type": "application/json"}
+
+        def control(payload: dict, path: str):
+            raw = json.dumps(payload).encode()
+            return post(raw, dict(control_headers, **{"Content-Length": str(len(raw))}), path=path)
+
+        st, body = control({"tokens": ["down", "wait:1"], "wait_ms": 0},
+                           "/v1/control/enqueue")
+        queued = json.loads(body)
+        check("loopback can enqueue a bounded command batch",
+              st == 202 and queued.get("ids") == [1, 2], str(st))
+
+        st, body = control({}, "/v1/control/poll")
+        first = json.loads(body).get("command")
+        check("the TV poll receives the first command", st == 200 and first == {"id": 1,
+              "token": "down"}, str(first))
+
+        st, body = control({}, "/v1/control/poll")
+        repeated = json.loads(body).get("command")
+        check("an unacknowledged command is redelivered", repeated == first, str(repeated))
+
+        st, body = control({"ack": {"id": 1, "ok": True, "detail": "dispatched"}},
+                           "/v1/control/poll")
+        second = json.loads(body).get("command")
+        check("acknowledgement advances the ordered queue",
+              st == 200 and second == {"id": 2, "token": "wait:1"}, str(second))
+
+        st, body = control({"ack": {"id": 2, "ok": True, "detail": "waited 1ms"}},
+                           "/v1/control/poll")
+        check("the final acknowledgement leaves an idle poll",
+              st == 200 and json.loads(body).get("command") is None, str(st))
+
+        st, body = control({}, "/v1/control/status")
+        ctl_status = json.loads(body)
+        check("control status exposes delivery without secrets",
+              st == 200 and ctl_status.get("queued") == 0
+              and ctl_status.get("last_result", {}).get("id") == 2, str(ctl_status))
+        local = _local_control({"local_port": port, "secret": secret, "session": "selftest",
+                                "cert": cert}, "/v1/control/status", {})
+        check("the CLI's loopback client verifies the session certificate",
+              local is not None and local[0] == 200 and local[1].get("ok"), str(local))
+
+        st, body = control({"tokens": ["left"], "wait_ms": 0}, "/v1/control/enqueue")
+        cancel_id = json.loads(body).get("ids", [None])[0]
+        st, body = control({}, "/v1/control/clear")
+        check("the host can cancel stale commands before a TV reconnects",
+              st == 200 and json.loads(body).get("cleared") == [cancel_id], str(body))
+
+        st, _ = control({"tokens": ["shell:rm"], "wait_ms": 0}, "/v1/control/enqueue")
+        check("tokens outside the app-input grammar are refused", st == 400, str(st))
+
+        stale = dict(control_headers, **{"X-Plx-Session": "old"})
+        raw = b"{}"
+        st, _ = post(raw, dict(stale, **{"Content-Length": str(len(raw))}),
+                     path="/v1/control/poll")
+        check("a stale package session is named and refused", st == 409, str(st))
+
+        check("loopback classification cannot be faked by a hostname",
+              _is_loopback("127.0.0.1") and _is_loopback("::1")
+              and not _is_loopback("localhost") and not _is_loopback("203.0.113.7"))
         srv.shutdown()
 
     # UPnP is the one half a selftest cannot fake: report what is on this LAN rather than assert.
@@ -780,6 +1197,7 @@ def selftest(_args) -> int:
     print(f"note  UPnP IGD on this LAN: {'yes — ' + igd.control_url if igd else 'not found'}")
     if igd:
         print(f"note  router says its external address is {igd.external_ip()}")
+    CONTROL_POLL_S = original_poll_s
     print("\n" + ("SELFTEST FAILED: " + ", ".join(fails) if fails else "selftest passed"))
     return 1 if fails else 0
 
@@ -800,6 +1218,8 @@ def main() -> int:
     s.add_argument("--port", type=int, default=DEFAULT_PORT, help="the FIXED external port")
     s.add_argument("--local-port", type=int, default=0, help="0 = an ephemeral local port")
     s.add_argument("--no-upnp", action="store_true", help="assume the mapping already exists")
+    s.add_argument("--no-control", action="store_true",
+                   help="build an upload-only session without the outbound command poll")
     s.add_argument("--trigger", default="489",
                    help="comma-separated wcodes that fire an upload on the remote. 489 is BLUE, "
                         "measured on the dev set 2026-08-26 (486 RED / 487 GREEN / 488 YELLOW); "
@@ -809,6 +1229,16 @@ def main() -> int:
     sub.add_parser("serve", help=argparse.SUPPRESS).set_defaults(fn=serve)
 
     sub.add_parser("status", help="what the agent polls").set_defaults(fn=cmd_status)
+
+    snd = sub.add_parser("send", help="queue app commands for the Cloud Test Lab television")
+    snd.add_argument("tokens", nargs="+",
+                     help="up/down/left/right/ok/back, wait:MS, diag, k:SYM,WCODE, ck:X,Y, txt:...")
+    snd.add_argument("--timeout", type=float, default=30.0,
+                     help="seconds to wait for delivery acknowledgements (default: 30)")
+    snd.add_argument("--no-wait", action="store_true", help="return as soon as commands are queued")
+    snd.set_defaults(fn=cmd_send)
+
+    sub.add_parser("clear", help="cancel commands that have not been acknowledged").set_defaults(fn=cmd_clear)
 
     lg = sub.add_parser("logs", help="print the newest snapshot as JSONL")
     lg.add_argument("--follow", action="store_true")

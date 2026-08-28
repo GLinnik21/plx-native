@@ -513,6 +513,71 @@ fn remote_synth_key_edge(sym: c_uint, wcode: c_uint, down: bool) {
     unsafe { SDL_PushEvent(ev.as_ptr() as *const c_void) };
 }
 
+/// Dispatch one synthetic-input token. Shared by the SSH-only development FIFO and Lab Control's
+/// outbound HTTPS command channel, so a cloud command cannot grow a second interpretation of
+/// `down`, raw key pairs, pointer coordinates or text input beside the one the harness uses.
+///
+/// `true` means the token was accepted and injected/requested, not that the screen necessarily
+/// changed — pressing DOWN at the bottom of a list is still a successfully delivered command.
+fn dispatch_remote_token(tok: &str) -> bool {
+    crate::ui::idle::invalidate(); // injected input is input like any other
+    // pointer click token "ck:X,Y" — authored 1920x1080 coords
+    if let Some(rest) = tok.strip_prefix("ck:") {
+        let Some((xs, ys)) = rest.split_once(',') else { return false };
+        let (Ok(x), Ok(y)) = (xs.parse::<i32>(), ys.parse::<i32>()) else { return false };
+        log(&format!("remote: click {},{}", x, y));
+        remote_synth_ptr(x.clamp(0, 1919), y.clamp(0, 1079));
+        true
+    } else if cfg!(feature = "hostsim") && tok == "shot" {
+        // Simulator only. Screenshotting has to be a TOKEN rather than a launch option, because
+        // the interesting frame is the one AFTER driving, and `PLXNATIVE_SHOT_FRAME` is fixed
+        // before the app starts — worse, presented frames only accrue when something repaints
+        // (the idle gate), so no frame number can be predicted from outside. This makes
+        // `down down right ok shot` a single composable line.
+        #[cfg(feature = "hostsim")]
+        crate::shot::request();
+        true
+    } else if tok == "okdown" || tok == "okup" {
+        // The two halves of OK let a driver hold it past press::LONG_MS and reach the item menu.
+        remote_synth_key_edge(SDLK_RETURN, 0, tok == "okdown");
+        true
+    } else if tok == "diag" || tok == "diagnostics" {
+        if crate::lab::menu_row_enabled() {
+            crate::lab::request_upload("command");
+            true
+        } else {
+            false
+        }
+    } else if let Some(spec) = tok.strip_prefix("pat:") {
+        // `pat:flat:40` — swap the synthetic ground live for a one-session graded sweep.
+        let ok = crate::ui::testpat::set(spec);
+        if !ok {
+            crate::log(&format!("remote: unrecognised pattern {spec:?}"));
+        }
+        ok
+    } else if let Some(text) = tok.strip_prefix("txt:") {
+        // `txt:star+wars` — commit text as the system keyboard's IME would. `+` stands for a
+        // space because the FIFO protocol is whitespace-delimited. Handed directly to textinput:
+        // pushing a synthetic SDL_TEXTINPUT crashes sdl2-compat because SDL2 and SDL3 disagree
+        // about whether that payload is inline bytes or a pointer (the full measurement is in the
+        // original FIFO call-site history and `textinput.rs`).
+        let ev = crate::textinput::encode_event(&text.replace('+', " "));
+        crate::textinput::on_event(&ev);
+        log(&format!(
+            "txt: decoded {:?} pending={}",
+            crate::textinput::decode(&ev),
+            crate::textinput::pending()
+        ));
+        true
+    } else if let Some((sym, wcode)) = remote_token_key(tok) {
+        remote_synth_key(sym, wcode);
+        true
+    } else {
+        log(&format!("remote: unknown token {tok:?}"));
+        false
+    }
+}
+
 // ui focus state lives in ui::home; reach it through its accessors
 #[inline]
 fn g_fr() -> c_int { crate::ui::home::row() }
@@ -4719,6 +4784,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         // them as synthetic key events BEFORE the poll loop, so they're consumed this frame
         // by the ONE real key handler (see crate::remote / tools/stream-screen.py).
         let mut remote = crate::remote::Remote::open();
+        // A LAB package may opt into the outbound long-poll command channel. Start only now: curl
+        // has been initialised and, unlike the earlier boot/discovery work, the SDL loop below is
+        // ready to dispatch a delivered command within one frame. Compile-time no-op otherwise.
+        crate::lab::start_control();
         while running {
             // Resolve the control row ONCE per iteration, before the event pump, and pass this
             // value to input, update and draw alike. `player_hud::slot()` reads `playpos_ns`, which
@@ -4726,75 +4795,16 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // call site let a keypress activate a control this same frame then declined to draw.
             let ctrl = crate::ui::player_hud::slot();
             crate::system::ls2_pump();
+            // Cloud Test Lab has no SSH/FIFO. Its LAB build long-polls outward, then leaves each
+            // command here for the SDL thread so the same dispatcher and event queue remain the
+            // only input path. Acknowledge acceptance after dispatch, before polling SDL below.
+            for command in crate::lab::take_commands() {
+                let ok = dispatch_remote_token(&command.token);
+                crate::lab::command_done(command.id, ok);
+            }
             if let Some(r) = remote.as_mut() {
                 r.drain(|tok| {
-                    crate::ui::idle::invalidate(); // an injected key is input like any other
-                    // pointer click token "ck:X,Y" — authored 1920x1080 coords
-                    if let Some(rest) = tok.strip_prefix("ck:") {
-                        if let Some((xs, ys)) = rest.split_once(',') {
-                            if let (Ok(x), Ok(y)) = (xs.parse::<i32>(), ys.parse::<i32>()) {
-                                log(&format!("remote: click {},{}", x, y));
-                                remote_synth_ptr(x.clamp(0, 1919), y.clamp(0, 1079));
-                            }
-                        }
-                    } else if cfg!(feature = "hostsim") && tok == "shot" {
-                        // Simulator only. Screenshotting has to be a TOKEN rather than a launch
-                        // option, because the interesting frame is the one AFTER driving, and
-                        // `PLXNATIVE_SHOT_FRAME` is fixed before the app starts — worse, presented
-                        // frames only accrue when something repaints (the idle gate), so no frame
-                        // number can be predicted from outside. This makes
-                        // `down down right ok shot` a single composable line.
-                        #[cfg(feature = "hostsim")]
-                        crate::shot::request();
-                    } else if tok == "okdown" || tok == "okup" {
-                        // the two halves of OK, so a driver can hold it: `okdown`, wait past
-                        // press::LONG_MS, `okup` — the only way to exercise a press-and-hold (and so
-                        // the item menu) over the FIFO, since every other token is a tap.
-                        remote_synth_key_edge(SDLK_RETURN, 0, tok == "okdown");
-                    } else if let Some(spec) = tok.strip_prefix("pat:") {
-                        // `pat:flat:40` — swap the SYNTHETIC GROUND live. A boot trigger could set
-                        // one, but a graded ladder needs a dozen of them in one session and a
-                        // trigger is read once; this is what makes a snapshot sweep a single
-                        // scripted line instead of a dozen launches that each land on a different
-                        // hero. See `ui::testpat`.
-                        if !crate::ui::testpat::set(spec) {
-                            crate::log(&format!("remote: unrecognised pattern {spec:?}"));
-                        }
-                    } else if let Some(text) = tok.strip_prefix("txt:") {
-                        // `txt:star+wars` — commit text as the system keyboard's IME would. The
-                        // only way to get text into the app without a human: no trigger can raise
-                        // the panel, and typing into the simulator needs somebody at the keyboard.
-                        // `+` is a space, because this protocol is whitespace-DELIMITED
-                        // (`remote.rs` splits on it) so a token can never contain one and a query
-                        // is mostly spaces; a literal '+' cannot be sent, which no query needs.
-                        //
-                        // **Handed to `textinput` directly and NOT through `SDL_PushEvent` — the
-                        // way every other synthetic input here works, and the way that CRASHES.**
-                        // Measured 2026-08-14: pushing a synthetic `SDL_TEXTINPUT` SIGSEGVs
-                        // inside SDL itself (`KERN_INVALID_ADDRESS at 0x8`, no Rust panic and no
-                        // log line), because the Mac's `libSDL2` is **sdl2-compat forwarding into
-                        // libSDL3** — the backtrace runs `libSDL2-2.0.0.dylib SDL_PushEvent_REAL`
-                        // → `libSDL3.0.dylib SDL_PushEvent_REAL` — and SDL3's text event carries a
-                        // `char *text` POINTER where SDL2's carries an inline `char text[32]`. The
-                        // compat layer dereferences it while converting. Keys and `ck:` clicks
-                        // push safely only because their fields are all scalars.
-                        //
-                        // So this exercises `on_event` and everything below it — the platform
-                        // layout, the decode, the queue cap, the drain — and deliberately claims
-                        // nothing about `SDL_PollEvent`'s own delivery, which only a real panel
-                        // (or a real keystroke in `make sim-run`) can prove.
-                        let ev = crate::textinput::encode_event(&text.replace('+', " "));
-                        crate::textinput::on_event(&ev);
-                        // Logged, because until a screen drains this queue the token is otherwise
-                        // completely unobservable — and what it prints is the string read back
-                        // through the platform's own offset, not the one that was written.
-                        log(&format!("txt: decoded {:?} pending={}",
-                            crate::textinput::decode(&ev), crate::textinput::pending()));
-                    } else if let Some((sym, wcode)) = remote_token_key(tok) {
-                        remote_synth_key(sym, wcode);
-                    } else {
-                        log(&format!("remote: unknown token {tok:?}")); // catch mangling in transit
-                    }
+                    let _ = dispatch_remote_token(tok);
                 });
             }
             while SDL_PollEvent(ev.as_mut_ptr() as *mut c_void) != 0 {

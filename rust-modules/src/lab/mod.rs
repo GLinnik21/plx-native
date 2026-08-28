@@ -8,9 +8,10 @@
 //! listener, `make -s print-eventlog`) and is therefore unreachable there.
 //!
 //! This module is the bridge: a **bounded ring of the log lines the app already writes**, plus the
-//! structured state `crate::player::Diag` already carries, uploaded over one pinned TLS POST to a
-//! receiver on the developer's Mac (`tools/plxnative-lab`), triggered by a remote button or a menu
-//! row. `docs/lab-diagnostics.md` is the design note; read it before extending any of this.
+//! structured state `crate::player::Diag` already carries, uploaded over pinned TLS to a receiver
+//! on the developer's Mac (`tools/plxnative-lab`), triggered by a remote button, a menu row or the
+//! optional authenticated command channel. `docs/lab-diagnostics.md` is the design note; read it
+//! before extending any of this.
 //!
 //! # Three rules, all structural rather than a matter of care
 //!
@@ -32,10 +33,13 @@
 //!
 //! # What it deliberately is not
 //!
-//! Not analytics, not a crash service, not a remote-control channel. The device only ever POSTs;
-//! there is no downward direction, no command surface and nothing the receiver can ask the app to
-//! do. One session, one endpoint, one method.
+//! Not analytics, not a crash service and not general device administration. Lab Control can ask
+//! this app to replay only its bounded synthetic-input/test token grammar; it cannot invoke a
+//! shell, read a file, call an arbitrary URL or control webOS outside this SDL process. Both
+//! directions are initiated by the television as pinned, authenticated HTTPS POSTs.
 
+#[cfg(feature = "lab-diagnostics")]
+pub(crate) mod control;
 #[cfg(feature = "lab-diagnostics")]
 pub(crate) mod config;
 #[cfg(feature = "lab-diagnostics")]
@@ -46,6 +50,13 @@ pub(crate) mod snapshot;
 pub(crate) mod upload;
 #[cfg(feature = "lab-diagnostics")]
 pub(crate) mod zlib;
+
+/// A command delivered by Lab Control and waiting for the SDL main thread.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ControlCommand {
+    pub id: u32,
+    pub token: String,
+}
 
 /// Read `lab.json`, log what was found, and start the uptime clock. Called once at boot, beside
 /// `webos::probe`/`devcaps::probe`.
@@ -61,9 +72,10 @@ pub(crate) fn boot() {
         ring::start_clock();
         match config::get() {
             Some(c) => crate::log(&format!(
-                "lab: armed session={} endpoint={} triggers={:?} ring={}rec/{}KiB",
+                "lab: armed session={} endpoint={} control={} triggers={:?} ring={}rec/{}KiB",
                 c.session,
                 c.endpoint,
+                if c.control { "on" } else { "off" },
                 c.trigger_wcodes,
                 ring::MAX_RECORDS,
                 ring::MAX_BYTES / 1024
@@ -71,6 +83,28 @@ pub(crate) fn boot() {
             None => crate::log(&format!("lab: INERT — {}", config::why_not())),
         }
     }
+}
+
+/// Start the outbound command poll after libcurl's process-global initialisation.
+pub(crate) fn start_control() {
+    #[cfg(feature = "lab-diagnostics")]
+    control::start();
+}
+
+/// Commands waiting to enter SDL. Empty in every non-lab build.
+pub(crate) fn take_commands() -> Vec<ControlCommand> {
+    #[cfg(feature = "lab-diagnostics")]
+    {
+        return control::take();
+    }
+    #[cfg(not(feature = "lab-diagnostics"))]
+    Vec::new()
+}
+
+/// Acknowledge main-thread dispatch to the long-poll worker.
+pub(crate) fn command_done(_id: u32, _ok: bool) {
+    #[cfg(feature = "lab-diagnostics")]
+    control::finish(_id, _ok);
 }
 
 /// The log tap. Called by `crate::log` for every line, after `redact_tokens`.

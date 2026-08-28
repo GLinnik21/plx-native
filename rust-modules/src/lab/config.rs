@@ -54,6 +54,10 @@ pub(crate) struct Config {
     /// `CURLOPT_PINNEDPUBLICKEY`. Public by nature; it is a hash of a public key.
     #[serde(default)]
     pub pin: String,
+    /// Whether this package opens the authenticated long-poll command channel. Missing is false,
+    /// so a `lab.json` produced before Lab Control existed remains upload-only.
+    #[serde(default)]
+    pub control: bool,
     /// Which `wcode`s fire an upload. Zeroes are dropped at load: `wcode == 0` is what an
     /// unmapped key arrives as, and a zero in this list would make every such press upload.
     #[serde(default)]
@@ -65,9 +69,14 @@ pub(crate) struct Config {
 }
 
 impl Config {
-    /// The one URL this feature ever opens.
+    /// Diagnostic upload endpoint.
     pub fn url(&self) -> String {
         format!("https://{}/v1/diag", self.endpoint)
+    }
+
+    /// Outbound long-poll endpoint for the optional lab command channel.
+    pub fn control_url(&self) -> String {
+        format!("https://{}/v1/control/poll", self.endpoint)
     }
 
     pub fn is_trigger(&self, sym: u32, wcode: u32) -> bool {
@@ -141,7 +150,17 @@ mod tests {
     fn a_good_file_parses_and_builds_the_one_url() {
         let c = parse(GOOD).expect("parses");
         assert_eq!(c.url(), "https://lab.plxnative.com:39443/v1/diag");
+        assert_eq!(c.control_url(), "https://lab.plxnative.com:39443/v1/control/poll");
         assert_eq!(c.session, "a1b2c3d4");
+        assert!(!c.control, "an old config is upload-only by default");
+    }
+
+    #[test]
+    fn control_is_an_explicit_package_capability() {
+        let c = parse(r#"{"endpoint":"h:1","secret":"s","control":true,
+            "pin":"sha256//aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#)
+            .expect("parses");
+        assert!(c.control);
     }
 
     /// A zero in the trigger list would fire on every unmapped key — `wcode == 0` is exactly what

@@ -302,7 +302,7 @@ LIBS_REAL = -lSDL2 -lSDL2_ttf -lGLESv2 -lluna-service2 -lglib-2.0 \
 # links it with no comment: a release binary shipped as if it were the tested dev one. Measured,
 # not theorised. Separate dirs also let make track each artifact honestly.
 #
-# **LAB=1** adds one more feature — `lab-diagnostics`, the Cloud Test Lab bridge
+# **LAB=1** adds one more feature — `lab-diagnostics`, the diagnostics + control Cloud Test Lab bridge
 # (`docs/lab-diagnostics.md`). It is a THIRD configuration, with its own target dir for exactly
 # the reason above, and it composes with RELEASE: `make LAB=1 RELEASE=1 …` is a release-featured
 # binary that can still upload a snapshot, which is the configuration a submission candidate is
@@ -518,7 +518,7 @@ TURBOJPEG_SO := $(firstword $(wildcard $(SYSROOT)/usr/lib/libturbojpeg.so.0.*))
 APPINFO   = $(if $(filter stable,$(FLAVOR)),pkg/appinfo.json,pkg/.flavor/$(FLAVOR)/appinfo.json)
 ICONS     = $(if $(filter stable,$(FLAVOR)),pkg/icon.png pkg/largeIcon.png,pkg/dev/icon.png pkg/dev/largeIcon.png)
 # `pkg/lab.json` is in this list ONLY under LAB=1, and it is the whole handoff between the two
-# halves of the Lab Diagnostics feature: `tools/plxnative-lab start` writes it (endpoint, session,
+# halves of the Cloud Lab bridge: `tools/plxnative-lab start` writes it (endpoint, session,
 # secret, certificate pin), and the app reads it out of its own install directory at boot, because
 # a Cloud Test Lab set has no ssh and the package is the only channel into it. GITIGNORED, 0600,
 # and in `.claude/hooks/outbound-guard.py`'s PRIVATE_FILES — it carries a live credential.
@@ -731,7 +731,7 @@ check: lint
 	@# installation cannot resolve SKIPS the cases that need it instead of killing the run. A
 	@# regression there is invisible here and shows up as a stranger concluding the suite is broken.
 	python3 tests/test_harness.py
-	@# The Lab Diagnostics receiver, against a real TLS listener on loopback with a freshly
+	@# The Cloud Lab diagnostics/control receiver, against a real TLS listener on loopback with a freshly
 	@# generated certificate: an accepted upload, a wrong secret, an oversized body, a foreign
 	@# path, a bare GET and the rate limit — the six refusals that are the whole of its exposure to
 	@# the public internet. ~5 s, most of it the two deliberate rate-limit waits, and it needs no

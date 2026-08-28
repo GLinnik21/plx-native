@@ -1,10 +1,15 @@
-# Lab Diagnostics — getting the app's log off a television we cannot ssh into
+# Cloud Lab Bridge — logs out and bounded app commands in, without SSH
 
-**Status: BUILT and DEVICE-VERIFIED on the dev set, 2026-08-26** (against `main` @5a8ef2ef). The whole chain —
+**Diagnostics status: BUILT and DEVICE-VERIFIED on the dev set, 2026-08-26** (against `main`
+@5a8ef2ef). The whole chain —
 a **physical BLUE press** on the Magic Remote → snapshot → scrub → gzip → pinned TLS POST from the
 television's own libcurl → receiver → `plxnative-lab logs` — has run on the LG 49SM9000PLA. §11 is
-what that did and did not prove; the **public** leg through the router is the one part that does
-not work today, and §12 says why.
+what that did and did not prove; §12 records the separately verified public leg through the router.
+
+**Lab Control status: BUILT and HOST-VERIFIED, not yet device-verified.** The same lab package can
+hold an outbound pinned HTTPS poll, receive ordered app-input commands from `plxnative-lab send`,
+dispatch them on the SDL main thread and acknowledge delivery. It adds no dependency. The remaining
+proof is an `.ipk` installed on a Cloud Test Lab set and one command/ack round trip (§11).
 
 LG Cloud Test Lab rents us physical sets on webOS/SoC combinations nobody here owns. It gives a
 picture and a virtual remote, and **no console, no ssh, no stdout, no way to download a file**. We
@@ -12,9 +17,10 @@ can reproduce a bug on a k8hpp webOS 10 set and watch it happen, and the agent f
 one line of `plxnative-events.log`.
 
 This is the bridge: a lab-only build presses its own log out through the internet to a receiver on
-the developer's Mac, triggered by a button on the rented remote. It is **ephemeral development
-infrastructure** — not telemetry, not a crash service, and it does not exist in a build anybody
-installs.
+the developer's Mac and optionally holds an outbound command poll. Commands come back only as the
+response to that TV-initiated request, so Cloud Test Lab needs no inbound socket. It is **ephemeral
+development infrastructure** — not telemetry, not a crash service, and it does not exist in a
+normal build.
 
 ---
 
@@ -57,7 +63,8 @@ And two constraints that shape everything below:
 ## 2. Topology
 
 ```
-Cloud Test Lab TV  ──HTTPS POST──▶  lab.plxnative.com:39443   (DNS-only A → static IPv4)
+Cloud Test Lab TV  ──HTTPS POST / long poll──▶  lab.plxnative.com:39443
+                   ◀── bounded command response ──┘          (same outbound connection)
                                             │
                                         Keenetic  ──UPnP IGD AddPortMapping (temporary)
                                             │
@@ -72,7 +79,12 @@ lab build.
 
 ---
 
-## 3. Wire protocol — one endpoint, one method
+## 3. Wire protocol — two public TV routes, both outbound POSTs
+
+The bearer secret and `X-Plx-Session` id authenticate both routes. The per-session SPKI pin
+authenticates the receiver to the television. Redirects are disabled.
+
+### Diagnostic upload
 
 ```
 POST /v1/diag HTTP/1.1
@@ -88,8 +100,8 @@ Content-Length: <= 4 MiB, enforced both ends
 …
 ```
 
-Response `200 {"ok":true,"seq":N}` / `401` / `413` / `429`. Nothing else is routed; every other
-path and method is a bare 404 with no body.
+Response `200 {"ok":true,"seq":N}` / `401` / `413` / `429`. Outside the declared diagnostic and
+control POST routes, every path and method is a bare 404.
 
 **Body = JSONL.** Line 1 is the envelope, lines 2..n are ring records:
 
@@ -113,6 +125,33 @@ path and method is a bare 404 with no body.
 `loop=`/`fps=`/`pos=`). `dropped` is how many records the ring evicted since the last upload — the
 one number that tells the agent the window was too small.
 
+### Lab Control long poll
+
+```
+POST /v1/control/poll HTTP/1.1
+Authorization: Bearer <same session secret>
+X-Plx-Session: <session id>
+Content-Type: application/json
+
+{"ack":{"id":41,"ok":true,"detail":"dispatched"}}
+```
+
+The receiver holds an idle poll for 15 seconds. It answers immediately when a command exists:
+
+```json
+{"ok":true,"command":{"id":42,"token":"down"}}
+```
+
+Only one command is in flight. Until id 42 is acknowledged, another poll receives id 42 again;
+after the ack, the next queued id is returned in that same response. This is ordered and at-least-
+once. Within one app process an acknowledgement is not sent until the SDL main thread accepts the
+token, so a lost ack response does not double-press. A process crash between dispatch and ack may
+replay that one command after relaunch; no durable writable state exists on the rented set.
+
+The host enqueues through `/v1/control/enqueue` and reads `/v1/control/status`, but both routes
+require a loopback peer address in addition to the bearer. They cannot be reached through the
+router mapping even by somebody who extracted the session secret from the `.ipk`.
+
 Playback mode (Direct Play / Direct Stream / Transcode) is **not** in `Diag` today; it is decided in
 `route.rs`. MVP takes it from the log lines (`load:` and route's own lines are already in the ring);
 promoting it to a `Diag` field is a follow-up, not a blocker.
@@ -122,14 +161,15 @@ promoting it to a `Diag` field is a follow-up, not a blocker.
 ## 4. App side — new module `rust-modules/src/lab/`, one feature `lab-diagnostics`
 
 `Cargo.toml`: a third feature, **off by default**, alongside `devtools`/`devtriggers`. Off means
-the module is not compiled: no ring, no key arm, no config read, no socket. `RELEASE=1` already
+the module is not compiled: no ring, no key arm, no config read, no poll worker. `RELEASE=1` already
 drops the other two; this one is never in the default set at all, so a release build cannot get it
 by forgetting a flag.
 
 | file | what it owns |
 | --- | --- |
-| `lab/mod.rs` | the feature's doc (why it exists, what may never enter it), `enabled()`, `boot()` |
-| `lab/config.rs` | reads `lab.json` **from the app directory** (`paths::in_app_dir("lab.json")`) once at boot: `{endpoint, session, secret, pin, trigger_wcodes[]}`. Absent or malformed → the feature is inert and says so in one log line. |
+| `lab/mod.rs` | the feature boundary, boot/config gating and the main-thread control mailbox seam |
+| `lab/config.rs` | reads `lab.json` **from the app directory** (`paths::in_app_dir("lab.json")`) once at boot: `{endpoint, session, secret, pin, control, trigger_wcodes[]}`. Absent or malformed → the feature is inert and says so in one log line. Missing `control` is false, so an older package remains upload-only. |
+| `lab/control.rs` | one persistent pinned HTTPS long-poll worker, ordered command parsing, the main-thread mailbox, dispatch acknowledgement and bounded reconnect backoff |
 | `lab/ring.rs` | the bounded buffer: `VecDeque<(u32 t_ms, String)>`, capped by **both** 4000 records and 768 KB of text, evicting oldest, counting evictions. One `Mutex`. |
 | `lab/snapshot.rs` | envelope construction from `Diag` + `webos` + `devcaps` + `paths` + uptime, and the **second redaction pass** (§6). Pure and host-testable. |
 | `lab/upload.rs` | gzip (optional, §5) then one `net::post_pinned`, on a `task::spawn_small` worker. Single-flight: a second BLUE while one is in flight is refused, not queued. |
@@ -170,7 +210,12 @@ the present gate cannot see it otherwise (root `CLAUDE.md`, the `Xfade`/`Spinner
 
 **Threading.** `Diag` is main-thread-only by contract, so the snapshot is built on the SDL thread
 (one ring clone, sub-millisecond) and *moved* into the worker. Gzip and the blocking curl call
-happen on the worker. Nothing in the render, pump or feed path waits on any of it.
+happen on the worker. Lab Control has one 256 KB persistent worker. It blocks only in libcurl,
+`wait:<ms>` or its mailbox condvar; the SDL loop drains commands before `SDL_PollEvent`, dispatches
+through the same function as the remote FIFO and posts the completion. Nothing in render, pump or
+feed waits on network I/O. On a firmware where `net.rs` could not install the legacy OpenSSL lock
+callbacks, control disables itself rather than holding the fallback HTTPS mutex for a 15-second
+poll and starving sign-in or diagnostics.
 
 ---
 
@@ -190,8 +235,8 @@ channel:
   is accepted, which is a narrower trust root than the public CA set.
 
 `net.rs` change: the body of `request` gains an internal `pin: Option<&CStr>` parameter; the
-existing `request` passes `None` (no behaviour change, one line), and a `#[cfg(feature =
-"lab-diagnostics")] post_pinned(...)` is the second caller. Handed to the **`fw-compat-reviewer`**
+existing `request` passes `None` (no behaviour change, one line), and the `#[cfg(feature =
+"lab-diagnostics")] post_pinned(...)` wrapper serves both upload and control. Handed to the **`fw-compat-reviewer`**
 before push, per the root `CLAUDE.md`, because it touches the curl seam.
 
 **Compression** is `compress2` from libz, bound through `dynlib!` as its own one-symbol table (libz
@@ -279,7 +324,9 @@ dependencies, `--selftest`.
 ```
 plxnative-lab start [--port 39443] [--no-upnp] [--json]
 plxnative-lab status [--json]
-plxnative-lab logs [--follow] [--since 5m] [--seq N] [--raw]
+plxnative-lab send down down ok wait:1000 diag [--timeout 30] [--no-wait]
+plxnative-lab clear
+plxnative-lab logs [--follow] [--since 5m] [--seq N]
 plxnative-lab stop
 ```
 
@@ -292,22 +339,31 @@ It refuses to start if a session is already live (one session, by design).
 
 ```json
 {"receiver":"listening","endpoint":"lab.plxnative.com:39443","upnp":"mapped",
- "external_ip_matches_dns":true,"tv":"recent upload","uploads":3,
+ "dns_matches":true,"tv":"recent upload","uploads":3,"tv_control":"connected",
+ "last_poll_age_s":2,"queued":0,"inflight":null,
  "last_upload_age_s":14,"webos":"10.3.1","board":"k8hpp","model":"OLED55C1",
  "app_version":"0.4.1","session":"a1b2c3d4"}
 ```
 
-`logs` prints the newest snapshot's records as JSONL to stdout (gunzipped, `--raw` for the file as
-received); `--follow` blocks and emits each new upload as it lands; `--since 5m` filters by record
+`send` queues an ordered batch and waits up to 30 seconds for main-thread delivery by default.
+Named keys, split `okdown`/`okup`, `wait:<ms>`, `diag`, raw `k:<sym>,<wcode>`, authored-coordinate
+`ck:<x>,<y>`, test patterns and `txt:` input use the same grammar as the development FIFO. `--no-wait`
+only confirms queueing; the default acknowledgement is the useful automation contract.
+`clear` cancels the receiver's queued and in-flight state, so input queued while a TV is disconnected
+is not redelivered on a later relaunch. It cannot recall a response the app has already received.
+
+`logs` prints the newest snapshot's records as JSONL to stdout (gunzipped); `--follow` blocks and
+emits each new upload as it lands; `--since 5m` filters by record
 timestamp. Uploads are stored verbatim under `~/.plxnative-lab/uploads/NNNN-<unix>.jsonl.gz` — the
 agent can also just read those.
 
-**Hardening** (the exposed surface is the whole internet for the life of the session):
-one route (`POST /v1/diag`), bearer required before the body is read, `Content-Length` required and
-capped at 4 MiB with the read bounded independently, 20 s socket timeout, ≥2 s between accepted
-uploads and 60 per session, connection cap, no filesystem serving, no subprocess, no remote control
-of any kind, and the whole server is ~200 lines it is practical to read end to end. Mapping deleted
-on every exit path; `stop` verifies deletion with `GetSpecificPortMappingEntry`.
+**Hardening** (the exposed surface is the whole internet for the life of the session): the public
+surface is only authenticated `POST /v1/diag` and `POST /v1/control/poll`; auth and session checks
+happen before body reads. Enqueue/status additionally require a loopback source address. Bodies,
+uploads, command batch/queue/session totals, token bytes, wait durations, result detail, socket time
+and request concurrency are all capped. Commands are parsed into app-input tokens only: no shell,
+filesystem, subprocess, arbitrary URL or webOS service call. The mapping is deleted on every exit
+path; `stop` verifies deletion with `GetSpecificPortMappingEntry`.
 
 **UPnP IGD** is SSDP `M-SEARCH` → device description → `WANIPConnection`/`WANPPPConnection` control
 URL → `AddPortMapping` (1 h lease, renewed while running) / `DeletePortMapping`, plus
@@ -321,7 +377,9 @@ only cheap check that the path actually exists before a tester spends a lab hour
 ```
 plxnative-lab start                       # prints session + the make line below
 make LAB=1 FLAVOR=debug ipk               # bakes pkg/lab.json into the package
-   → upload pkg/com.beb.plxnative.debug_0.4.1_arm.ipk to Cloud Test Lab, install, reproduce, press BLUE
+   → upload pkg/com.beb.plxnative.debug_0.4.1_arm.ipk to Cloud Test Lab and install it
+plxnative-lab status                       # wait for tv_control: connected
+plxnative-lab send down down ok wait:1000 diag
 plxnative-lab logs --follow               # the agent watches
 plxnative-lab stop                        # mapping removed
 ```
@@ -344,17 +402,17 @@ id, is a packaging error**, which is where this class of mistake gets caught rat
 
 **In:** the feature flag, the ring + tap, the snapshot envelope from `Diag`/`webos`/`devcaps`, the
 scrub pass, pinned gzip upload on a worker, the account-menu row **and** the configurable colour-key
-arm, the toast, `plxnative-lab start/status/logs/stop` with UPnP, `LAB=1` packaging + the two
-package assertions.
+arm, the toast, the pinned HTTPS long-poll worker + main-thread mailbox, bounded ordered command
+queue/redelivery/ack, loopback-only enqueue/status/clear, `plxnative-lab
+start/status/send/clear/logs/stop` with
+UPnP, and `LAB=1` packaging + the two package assertions.
 
-**Deliberately out of the first iteration:** any Mac→TV direction, auto-upload on crash or on the
-player failure read-out, multiple concurrent sessions, retry/queueing across an app restart,
-persisting the ring to disk, a web UI, and promoting playback mode into `Diag`.
-
-**Deliberately out of this iteration:** any Mac→TV direction, auto-upload on crash or on the player
-failure read-out, several concurrent sessions, retry or queueing across an app restart, persisting
-the ring to disk, a web UI, and promoting Direct Play / Direct Stream / Transcode into `Diag` (the
-`load:` and route lines carry it in the ring today).
+**Still deliberately out:** a shell or general webOS-control surface, remotely creating the
+SSH-era `/tmp` boot triggers, automatic restart/relaunch, screenshot/video upload, blindly running
+the existing SSH-based harness unchanged, auto-upload on crash, several concurrent sessions,
+durable retry across an app restart, persisting the ring, and a web UI. Scripted navigation and log
+capture work now; porting a boot-trigger-heavy test requires an explicit app-level setup command,
+not pretending the old filesystem contract exists.
 
 ---
 
@@ -374,8 +432,12 @@ the ring to disk, a web UI, and promoting Direct Play / Direct Stream / Transcod
 * All four feature configurations type-check clean under `warnings = "deny"`: default,
   `--no-default-features`, `+lab-diagnostics`, and `--no-default-features +lab-diagnostics`.
 * `tools/plxnative-lab selftest` — a real TLS listener with a freshly generated certificate, a real
-  gzip upload accepted and stored, and the six refusals (wrong secret, oversized declared body,
-  empty body, foreign path, bare GET, rate limit). Wired into `make check`.
+  gzip upload accepted and stored, upload refusals, command enqueue, ordered delivery, redelivery
+  before ack, advancement after ack, status, grammar refusal and stale-session refusal. Wired into
+  `make check`.
+* Lab Control's Rust tests cover response parsing, bounded waits and the worker↔main-thread mailbox.
+  Both default and `+lab-diagnostics` configurations compile under `warnings = "deny"`; the control
+  module and its persistent worker do not exist in the former.
 * **The whole chain, end to end, on loopback**: `plxnative-lab start --hostname 127.0.0.1
   --no-upnp` → `make LAB=1 sim` → `k:0,406` down the remote FIFO → the app logged
   `lab: snapshot seq=1 reason=key route=login` and `lab: uploaded seq=1 4689B -> 2053B (gzip)
@@ -406,12 +468,19 @@ the ring to disk, a web UI, and promoting Direct Play / Direct Stream / Transcod
 
 **Still NOT verified:**
 
+* **Lab Control on hardware.** The receiver protocol and Rust mailbox are host-tested, but no TV
+  has yet held `/v1/control/poll`, dispatched a returned key through LG's SDL event queue and sent
+  its acknowledgement. In particular, the old dev set must prove that a concurrent 15-second easy
+  request behaves alongside sign-in/upload even though `net.rs` installed the required OpenSSL
+  locks; the code disables control if that concurrency prerequisite is absent.
+
 * **The `.ipk` path.** `ci/check-package.py`'s two new assertions have never executed, because no
   lab package has been built — every device run so far went through `make deploy`. That is the gap
   Cloud Test Lab actually walks through, since it installs a package rather than scp-ing a binary.
 * **A Cloud Test Lab set itself**: whether its virtual remote offers a colour button at all, and
   whether that set's libcurl and CA-less pinning behave like the dev set's. The account-menu row
-  exists precisely so the answer to the first does not matter.
+  exists precisely so the answer to the first does not matter. Lab Control would remove the need
+  to use that virtual remote once its first command round trip is proven.
 
 **The LAB ELF is graded by hand, and by nobody else.** `.github/workflows/ci.yml` builds and grades
 the DEFAULT configuration only, so `make LAB=1`'s binary — the one that actually flies to Cloud

@@ -680,10 +680,11 @@ pub fn https_post(url: &str, headers: &[String], body: &[u8]) -> Option<Resp> {
     request(url, headers, "POST", Some(body), API, false, None)
 }
 
-/// Blocking **pinned** HTTPS POST — the one caller is [`crate::lab::upload`], whose receiver is a
-/// self-signed certificate on a developer's Mac. Redirects are OFF (a pinned endpoint that
-/// redirects is not the endpoint) and the response body is capped: the receiver answers a few
-/// dozen bytes of JSON, and this is the one call in the app whose far end is not a Plex service.
+/// Blocking **pinned** HTTPS POST — used by Lab Diagnostics uploads and Lab Control's long poll.
+/// Their receiver is a self-signed certificate on a developer's Mac. Redirects are OFF (a pinned
+/// endpoint that redirects is not the endpoint) and the response body is capped: the receiver
+/// answers one small JSON object, and this is the one transport in the app whose far end is not a
+/// Plex service.
 #[cfg(feature = "lab-diagnostics")]
 pub(crate) fn post_pinned(
     url: &str,

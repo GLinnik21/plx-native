@@ -50,9 +50,9 @@ devtools = []
 # read back the event log, and `tests/run.py` builds with plain `make` — the harness never builds
 # a release binary, so gating the whole surface costs it nothing.
 devtriggers = []
-# **Lab Diagnostics** — the ring buffer, the Blue-button trigger and the pinned upload that get a
-# diagnostic log off a television in LG Cloud Test Lab, where there is no ssh, no console and no
-# way to download a file. See `rust-modules/src/lab/` and `docs/lab-diagnostics.md`.
+# **Cloud Lab Bridge** — the ring buffer, Blue-button upload and authenticated long-poll command
+# channel for a television in LG Cloud Test Lab, where there is no ssh, no console and no way to
+# download a file. See `rust-modules/src/lab/` and `docs/lab-diagnostics.md`.
 #
 # OFF by default, and deliberately NOT in the default set the way `devtools`/`devtriggers` are:
 # those are dropped by `RELEASE=1`, i.e. by remembering a flag, and this one must be impossible to
@@ -60,7 +60,8 @@ devtriggers = []
 #
 # It is additive in the cargo sense — nothing behind it replaces or reshapes any other path. What
 # it adds: a bounded in-memory copy of the lines `crate::log` already writes, one key arm, one row
-# in two menus, one overlay, and one pinned HTTPS POST. Everything else compiles identically.
+# in two menus, one overlay, pinned diagnostic POSTs and an opt-in pinned HTTPS long-poll worker.
+# Everything else compiles identically.
 lab-diagnostics = []
 # The desktop UI simulator. OFF by default, so no ordinary `make`, `make check` or harness run is
 # affected in any way; `cargo build --features hostsim` selects it.
