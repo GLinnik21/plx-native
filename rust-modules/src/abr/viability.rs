@@ -291,6 +291,11 @@ pub(crate) fn candidate_warmup_budget(
 /// budget — it is the transfer's own requirement, and it exists so that a *deadline* can be
 /// stopped from falling below it.
 ///
+/// **The conservative capacity is the right one, and the direction matters.** A lower `C` yields a
+/// LARGER requirement, hence a larger floor, hence more time granted — so an under-confident
+/// estimate errs toward letting the downshift complete, which is the whole point of the floor. The
+/// optimistic reading would shrink the floor exactly when the estimate is least trustworthy.
+///
 /// **Zero capacity means no prediction**, which is `ZERO` rather than a fallback: as the identity
 /// element of the `max` in [`candidate_warmup_budget`] it leaves the reserve bound exactly as it
 /// was, so an unmeasured link changes no behaviour rather than inheriting an invented one.
