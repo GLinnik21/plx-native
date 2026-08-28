@@ -1117,6 +1117,26 @@ PIPE_SHAPES = {
                    "default": True, "title": "AC-3 5.1 English"}],
         "subs": [],
     },
+    # **The 4K source the ABR ladder can actually be driven from.** Its sibling above is the
+    # resolution matrix's cell and carries AC-3 5.1, which is right for what THAT case grades and
+    # wrong here for two independent reasons: the harness checks a case's `declare` against the
+    # streams its fixture really carries, and the declaration must ALSO describe what is decoded —
+    # which under `auto_network.start_hls` is the ABR ladder, and every rung of that ladder is
+    # AAC. No single case can declare both. So the Uhd case gets a source whose audio matches the
+    # ladder it plays; the raster is what it is really for, since that is what makes the 4K
+    # actuator feasible at all (`HlsActuatorCatalog::limited_to`).
+    #
+    # NOT `pipe_abr_4k_22m`, which is a LADDER clip: its unsuffixed file is segment 0 alone, two
+    # seconds, and a source has to outlast the case's own `min_pos_climb_s`.
+    "pipe_h264_aac_2160p": {
+        "kind": "clip", "ext": "mkv",
+        "duration": PIPE_SECS, "rate": 0.20,
+        "declare": {"vcodec": "h264", "acodec": "aac", "fps": float(FPS), "atmos": False},
+        "video": {"codec": "h264", "size": "3840x2160", "crf": 26},
+        "audio": [{"codec": "aac", "ch": 2, "lang": "eng", "br": "192k", "pitch": 240,
+                   "default": True, "title": "AAC 2.0 English"}],
+        "subs": [],
+    },
     "pipe_hevc_eac3_480p": {
         "kind": "clip", "ext": "mkv",
         "duration": PIPE_SECS, "rate": 0.04,
@@ -1419,6 +1439,7 @@ PIPE_MBIT = {
     "pipe_h264_ac3_480p": 1.71,         # 1.26 video + 0.45 AC-3
     "pipe_h264_ac3_720p": 3.73,         # 3.28 + 0.45
     "pipe_h264_ac3_2160p": 12.2,        # 11.77 + 0.45
+    "pipe_h264_aac_2160p": 12.0,        # same 4K video, stereo AAC instead of AC-3 5.1
     "pipe_hevc_eac3_480p": 1.34,        # 0.96 video + 0.38 E-AC-3
     "pipe_hevc_eac3_720p": 2.50,        # 2.12 + 0.38
     "pipe_hevc_eac3_1080p": 4.90,       # 4.52 + 0.38
