@@ -3557,6 +3557,15 @@ def run_pipeline_case(case, cfg, srv, url_base, verbose):
 
     make(["kill", f"TV={tv}"], timeout=40)
     srv.set_network_profile(case.get("network_profile"))
+    # **The REQUEST-indexed shaper, which existed and was never armed.**
+    # `serve_fixtures.set_segment_profile` has been implemented and covered by
+    # `test_harness.py` since it was written, but this runner only ever called its
+    # wall-clock sibling — so `pipe_abr_down_outrun`, the ONLY case that can make a
+    # candidate transfer deadline fire, declared a `segment_profile` the run silently
+    # ignored, streamed over an unshaped link and could not pass by construction. Both are
+    # reset per case (each setter clears when given None), and they COMPOSE — the
+    # request-indexed one wins where it applies.
+    srv.set_segment_profile(case.get("segment_profile"))
     files = triggers_for_case(case, url_base=url_base)
     apply_triggers(tv, files)
     print("    triggers: " + ", ".join(n + ("=" + c if c is not None else "") for n, c in files))

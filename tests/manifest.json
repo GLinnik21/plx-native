@@ -1592,7 +1592,7 @@
         {"until_s": 10.0, "kbps": 2000},
         {"until_s": 240.0, "kbps": 40000}
       ],
-      "run_secs": 90,
+      "run_secs": 150,
       "operations": [{"op": "play"}],
       "expect": {
         "codec": "h264",
@@ -1606,6 +1606,7 @@
           "max_commits": 5
         }
       },
+      "_run_secs_note": "150 rather than 90, DERIVED from the plant this case grades rather than fitted to the number that came back. `floor_kbps: 10000` needs three commits from the 720 seed (720 -> 2000 -> 8000 -> above 10000), and each one needs the acquisition window to reach n_min = k/eps - 1 = 19 samples at 2 s of media per segment -- about 38 s per step plus the transaction, so roughly 120 s for three. A 90 s cap could not admit the third, which means the bound was only ever satisfiable through an estimate no measurement supported: until `CapacityObservation::quality` applied its interval floor to every tier, one large-but-brief transfer read as tens of millions of kbps and the ladder jumped on it. With that fixed the same 90 s window settles at 8000 with max_stall_s=0 and play_rate_pm=1000 -- healthy, and short of the bound. `run_secs` is a CAP and a passing case exits at its last assertion, so raising it costs nothing when the case passes.",
       "_network_note": "The plan's rung-SKIPPING requirement, graded directly. A 60 Mbit/s source can never be Original here, so Auto is in HLS from the first segment; the link then opens by a factor of twenty. The 13-point catalog means walking it would cost eight or nine encoder transactions, each a visible quality change and each a separately named PMS session -- so `max_commits: 5` is the assertion, and `floor_kbps` is what stops a controller that simply refuses to climb from passing it. Both bounds are needed: either alone is satisfiable by doing nothing."
     },
     {
@@ -2042,10 +2043,10 @@
       "declare": {"vcodec": "h264", "acodec": "aac", "fps": 24.0},
       "auto_network": {"source_kbps": 900000, "start_hls": true},
       "segment_profile": [
-        {"from_segment": 10, "kbps": 6000},
-        {"from_segment": 11, "kbps": 500}
+        {"from_segment": 61, "kbps": 6000},
+        {"from_segment": 62, "kbps": 500}
       ],
-      "run_secs": 120,
+      "run_secs": 200,
       "operations": [
         {"op": "play"}
       ],
@@ -2060,6 +2061,7 @@
           "settle_max_kbps": 720
         }
       },
+      "_outrun_index_note": "The INDICES were re-derived on 2026-08-28; the note below still describes the mechanism correctly but no longer the arithmetic, and two of its premises were stale. (1) It opens \"segment 0 is the seed rung 10000\" — the seed comes from `route::cur_ceiling()` and is P720Low, which a case cannot pin, so ten segments in the controller is still on 720 and has climbed nothing. (2) It wants a reserve near 9 s so the warm-up deadline can bind, and `candidate_warmup_budget(Down, ..)` IS the reserve — but ten segments in the reserve is tens of seconds deep and any fetch fits inside it. Both were measured off a real request stream, which is what the note itself asks for: on a 720 seed the acquisition window admits a commit every ~19 media responses (observed at global segments 22, 40 and 59 of `pipe_abr_slow_start_then_fast`), and the reserve is THIN only just after a climb — 58751 ms at the second commit against 12046 ms at the third. The condition this case needs therefore sits shortly after the third commit. Device-verified 2026-08-28: segment 61 served at 6000 triggers `Down 18000->2000`, and segment 62 — that candidate's warm-up, served at 500 against a 2168 ms reserve — returns `outcome=warmup_deadline`, which is the event this case exists for and which no run had ever produced. `run_secs` is 200 rather than 150 because the deadline landed on the LAST media response of a 150 s window: the graded behaviour is the descent COMPLETING after it, so the window has to outlast the event it triggers. **THIS CASE IS EXPECTED TO FAIL TODAY, and that is why it is kept.** With the shaper armed and the indices right it reproduces, deterministically and for the first time, the defect the whole Auto effort exists for: at rung 18000 against a 500 kbps link one segment is ~4.5 MB = 36 Mbit, i.e. 72 s of fetch — and the controller observes only on segment COMPLETION, so for those 72 s it receives no sample and can decide nothing. Measured 2026-08-28: max_stall_s=72, play_rate_pm=620, settled 18000. The warm-up deadline DOES fire and abandons the candidate correctly; what is missing is any action on the CURRENT rung's own fetch, which is the one taking 72 s. That is the plan's abort rule (R16's `t_remaining` projection) and `must_downshift`'s missing terminal case (R12), neither of which is built. Do not weaken the bound to make this green — a settled 18000 with the picture at 62% of real time is the exact behaviour the owner reported as unacceptable. None of it mattered before 2026-08-28, because `tests/run.py` never called `set_segment_profile`: the shaper was implemented in `serve_fixtures.py` and covered by `test_harness.py`, and the runner armed only its wall-clock sibling — so this case streamed over an unshaped link and could not pass by construction.",
       "_outrun_note": "The ONLY case that can make a candidate transfer deadline fire, and it needs the REQUEST-INDEXED shaper (`segment_profile`) rather than the wall-clock one. The reason is structural rather than a matter of tuning: the controller chooses its downshift target from the rate it just measured, and admits a rung only if its expected_wire_kbps fits that budget -- so on any steady link one segment of the target fetches in about one segment of time and no deadline can bind. A transfer only becomes unaffordable when the rate underneath it drops AFTER the choice was made. With a wall-clock cliff that is a PHASE relationship (the cliff must land near the end of a segment fetch, so the measurement stays high and the next fetch runs slow), which is why `pipe_abr_down_collapse` produced it exactly once in three runs of the same case and why `pipe_abr_down_staircase` did not produce it at all. Keyed to the segment COUNT the same event is exact. Every index is read off a real request stream rather than guessed: segment 0 is the seed rung 10000, the controller downshifts to 8000 at segment 1 and holds it through segment 15 while the S4 admission window fills (19 samples), and the reserve is full from segment 4. So segment 10 sits mid-stretch at rung 8000 with ~10 s of reserve: served at 6000 it is below what rung 8000 needs, which triggers a downshift, and the budget it leaves selects rung 4000. Segment 11 IS that candidate's warm-up, served at 500 -- and rung 4000 carries 4386 kbps of media, so 2 s of it is 8772 kbit, which at 500 kbps is 17.5 s against a deadline of roughly the 9.2 s reserve. The arithmetic is the case. 500 is the same floor `pipe_abr_down_collapse` uses and is not chosen against the threshold: it is low enough that rung 4000 cannot be fetched and high enough that rung 320 can (752 kbit in 1.5 s), so the descent still has somewhere to land. What is GRADED stays the behaviour -- the descent completes, nothing errors -- because asserting `warmup_deadline` would pin a mechanism; the deadline is read from `warmup_dl=` and the outcome on the `abr: tx` line. No `max_stall_s`: at 500 kbps the CURRENT rung cannot be fetched either, so a stall here is the link, not the controller."
     },
     {
