@@ -582,7 +582,12 @@ HEREDOC = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
 
 
 def continued(text):
-    """Does this line end in a shell line-continuation backslash?
+    # RAW docstring, and it has to stay raw: the prose below quotes `\` and `` \` `` as shell
+    # syntax, and in a plain string those are invalid escape sequences. Python 3.12 turned that
+    # from a silent DeprecationWarning into a SyntaxWarning printed on stderr at import — which
+    # this hook's own selftest reads, so four malformed-payload cases failed on CI while passing
+    # on a 3.9 Mac. A docstring broke a gate on one machine and not another.
+    r"""Does this line end in a shell line-continuation backslash?
 
     Found by verification on 2026-08-23, and it was a hole through the whole hook rather than a
     corner of one: `gh pr create --title x \` / newline / `  --body "<secret>"` was allowed. The
