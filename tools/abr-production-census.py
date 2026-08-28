@@ -54,6 +54,7 @@ Runs on the dev Mac against the configured PMS. No television, no lock, no `make
 from __future__ import annotations
 
 import argparse
+import collections
 import json
 import re
 import statistics
@@ -164,6 +165,57 @@ def rhos(report):
             continue
         out.append(round(1000.0 * float(total_ms) / media_ms))  # per mille, as the runtime does
     return out
+
+
+def output_shape(report):
+    """What PMS ACTUALLY produced at this ceiling: median output raster and wire rate.
+
+    **This is the discriminator the first census lacked, and without it the headline finding is
+    ambiguous.** M3 read a 1080p source's ordering as INVERTING — the low rungs costing more wall
+    clock than the high ones — and concluded the table is indexed by the wrong variable. There is a
+    second explanation that the same numbers also fit and that nothing recorded could separate:
+    **at a ceiling above what the source needs, PMS may stop transcoding and copy the video**, so
+    the cheapest column would not be a cheap transcode at all but a REMUX, and a remux does not
+    belong on a curve of encoder cost.
+
+    The 4K row is what makes it worth checking rather than assuming. Against a 1080p source the
+    `Uhd` request measured 58 pm where `P1080High` measured 105 — the same output raster (PMS never
+    upscales), the same source, half the work. Two requests that differ only in a bitrate ceiling
+    neither of which binds should not differ by 2x, and "one of them stopped re-encoding" is the
+    obvious reason they might.
+
+    So: `codec`, `width x height` and the delivered rate per rung. If the cheap rows come back at
+    the SOURCE's own rate they are copies and the inversion is an artefact of mixing two operations;
+    if they come back re-encoded at their own rate, the inversion is real and the table's variable
+    is wrong, which is what I9 has to decide on.
+    """
+    rasters, rates, codecs = [], [], []
+    for sample in report.get("segments") or []:
+        probe = sample.get("probe") or {}
+        fmt = probe.get("format") or {}
+        try:
+            media_s = float(fmt.get("duration"))
+        except (TypeError, ValueError):
+            continue
+        for stream in probe.get("streams") or []:
+            if stream.get("codec_type") != "video":
+                continue
+            if stream.get("width") and stream.get("height"):
+                rasters.append(f"{stream['width']}x{stream['height']}")
+            if stream.get("codec_name"):
+                codecs.append(stream["codec_name"])
+            break
+        size = sample.get("bytes") or (sample.get("timing") or {}).get("bytes")
+        if size and media_s > 0:
+            rates.append(round(float(size) * 8.0 / media_s / 1000.0))
+    def mode(xs):
+        return collections.Counter(xs).most_common(1)[0][0] if xs else None
+    return {
+        "raster": mode(rasters),
+        "codec": mode(codecs),
+        "delivered_kbps": statistics.median(rates) if rates else None,
+        "n": len(rates),
+    }
 
 
 def summarise(samples):
@@ -341,9 +393,12 @@ def main():
                 print(f"      probe failed: {err}", flush=True)
                 continue
             row[key] = summarise(rhos(report))
+            row[key]["output"] = output_shape(report)
+            out_s = row[key]["output"]
             print(
                 f"      cold={row[key]['cold_pm']}pm warm={row[key]['warm_pm']}pm "
-                f"n={row[key]['n']}",
+                f"n={row[key]['n']} out={out_s['codec']} {out_s['raster']} "
+                f"{out_s['delivered_kbps']}kbps",
                 flush=True,
             )
         rows.append(row)
@@ -357,12 +412,16 @@ def main():
     census = workdir / "census.json"
     census.write_text(json.dumps(out, indent=2, sort_keys=True) + "\n")
 
-    print(f"\n{'rung':12s} {'req':>6s} {'table':>6s} " + " ".join(f"{k[:9]:>9s} {'resid':>6s} {'dev%':>6s}" for k, _ in legs))
+    # The output column is printed beside the cost, because reading a cost curve without knowing
+    # which rows were re-encoded is the ambiguity `output_shape` exists to remove.
+    print(f"\n{'rung':12s} {'req':>6s} {'table':>6s} " + " ".join(f"{k[:9]:>9s} {'resid':>6s} {'dev%':>6s}" for k, _ in legs) + f" {'output':>22s}")
     for r in rows:
         line = f"{r['rung']:12s} {r['request_kbps']:6d} {r['production_load_pm']:6d} "
         for key, _ in legs:
             d = r.get(key, {})
             line += f" {str(d.get('warm_pm')):>9s} {str(d.get('residual_load_pm')):>6s} {str(d.get('deviation_pct')):>6s}"
+        last = (r.get(legs[-1][0]) or {}).get("output") or {}
+        line += f" {str(last.get('raster')):>10s} {str(last.get('delivered_kbps')):>7s}kbps"
         print(line)
     print()
     for key, _ in legs:

@@ -86,12 +86,40 @@ numbers that is right for both a 4K library item and a 1080p one. The 4K column 
 the current table approximates; against a 1080p source the same table is not merely mis-calibrated
 but ordered backwards.
 
+## An alternative explanation for Result 2 that these numbers cannot rule out
+
+Result 2 reads the 1080p column as the table being indexed by the wrong VARIABLE. **A second
+explanation fits the same numbers and nothing recorded here can separate them**, which has to be
+said before anyone re-parameterises a table on it.
+
+The `Uhd` row is what raises it. Against a 1080p source, a 4K request produced **58 pm** where
+`P1080High` produced **105** — the same output raster (PMS never upscales), the same source, half
+the work, from two requests that differ only in a bitrate ceiling that binds in neither case. Two
+unbinding ceilings should not differ by 2x. The obvious reason they might is that **at a ceiling
+above what the source needs, PMS stops re-encoding and copies the video** — in which case the
+cheapest column is not a cheap transcode at all but a REMUX, and a remux does not belong on a curve
+of encoder cost. If that is what happened, part of the "inversion" is two different operations
+plotted on one axis rather than a mis-indexed table.
+
+A latency floor was the other candidate and it is **refuted by these numbers**: a fixed cost per
+request would be a lower bound, and the 1080p rungs sit *below* the low ones (210–218 ms against
+324–326 ms). Whatever the low rungs are paying, it is not a floor.
+
+`tools/abr-production-census.py` now records the **output** per rung — codec, raster and delivered
+rate — beside the cost, which is the one column that separates the two readings. It was not
+recorded the first time. Until it is, Result 2's *direction* is measured and its *cause* is not,
+and I9's choice between "index by (source, target)" and "declare the table correct for one source
+class" should not be made on the cause being assumed.
+
 ## What this does and does not settle
 
 - **Settles:** `Uhd = 2100` and the 1080p block are real, within 15%, measured against a source
   that exercises them. The two empirical points the table always claimed are confirmed.
 - **Settles:** `P1080M6 = 900` is wrong by 61% and cannot be inherited into I9's argmax.
-- **Settles:** the table's variable is wrong, not just its values. Any re-parameterisation has to
+- **NARROWED since first written:** "the table's variable is wrong, not just its values" is what
+  the ordering shows, and the section above gives a second reading of the same evidence that has
+  not been excluded. What is settled is that **the target rung alone does not predict the cost**;
+  whether the missing term is the source raster or the transcode/remux distinction is open. Any re-parameterisation has to
   decide whether to index by (source, target) or to accept being right for one source class.
 - **Does NOT settle:** anything about a *loaded* server. Every reading here is against an idle
   PMS, where warm rho tops out at 432 pm against a `production_max_pm` of 1100 — a factor of 2.5
