@@ -190,14 +190,18 @@ exists to remove, and nothing else added since removes it: the ratchet stops the
 wrong and the measurability gate stops the abort being blind, but neither gives a transaction the
 time it physically needs.
 
-So all three are load-bearing, and the reason they LOOK redundant in a passing run is that they
-act at different points: the ratchet and the gate keep the reserve from collapsing in the first
+So all FOUR are load-bearing — both A/Bs were taken and both fail — and the reason they LOOK
+redundant in a passing run is that they act at different points: the ratchet and the gate keep the reserve from collapsing in the first
 place, and the floor is what makes the collapse survivable when it happens anyway.
 
-- **The abort rule's own contribution is still unmeasured.** It fired twice in the first passing
-  run; an A/B with the GUARD disarmed (as distinct from the floor, above) has not been taken. Note
-  it can no longer be assumed harmless-or-helpful either way: defect 5 showed the guard is what
-  starved the estimator, so its A/B is a real question rather than a formality.
+- ~~The abort rule's own contribution is unmeasured.~~ **ANSWERED, and it stays too.** One leg
+  with `StallGuard::arm` returning `None` and everything else identical: the case FAILS, by a
+  DIFFERENT mechanism from the no-floor leg. With no abort the active fetch at 18000 kbps simply
+  runs against a 500 kbps link, so no segment ever completes, no sample ever enters, and the
+  estimate stays frozen at its pre-collapse value — `slow=98750kbps` while the shaper holds 500 —
+  with the rung parked at 18000 and one failed downshift. The guard is what converts a fetch that
+  cannot finish into a decision point; the floor is what gives the resulting decision enough time
+  to act. Neither alone is sufficient and the two failures do not resemble each other.
 - **Only the `Down` direction was measured.** The upshift bound is unchanged and untested by this
   case by construction.
 - **The floor's MAGNITUDE is bounded only by the target selection being sane**, and that is a
