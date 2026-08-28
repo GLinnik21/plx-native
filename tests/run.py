@@ -1829,6 +1829,16 @@ def abr_dip_max_kbps(samples, dip_windows):
     return max(s["media_kbps"] for s in hit), f"{len(hit)} segment(s) over leg(s) {legs}kbps"
 
 
+# **Above this a forward jump is a RELOCATION, not a delivery.** A seek, a reload or an Up Next
+# advance moves the media clock by minutes; a queue running dry moves it by one segment. The
+# fixtures' segments are 2 s and the longest legitimate lump is therefore bounded by the largest
+# segment duration any fixture uses, not by a taste about judder — `hls: segment` carries the real
+# figure and nothing in either pack exceeds 4 s. Ten leaves room for a pack with longer segments
+# while staying far below the smallest seek any case performs (`plxnative-autoseek`'s default is
+# 140 s, and the shortest scripted step is 10 s ABSOLUTE from a position well past it).
+LUMP_SEEK_S = 10
+
+
 def abr_stalls(lines):
     """`(max_continuous_s, total_s, samples)` of REAL playback stall, from the 1 Hz `pos=` series.
 
@@ -1853,6 +1863,48 @@ def abr_stalls(lines):
     if cur:
         runs.append(cur)
     return (max(runs) if runs else 0), sum(runs), len(series)
+
+
+def playback_lumpiness(lines):
+    """`(lumpy_beats, longest_run, beats)` — the clock arriving in SEGMENT-SIZED lumps.
+
+    A third failure shape, and the only one of the three that every other metric on this line
+    reads as healthy. `abr_stalls` grades the clock STOPPING and `playback_rate` grades it
+    advancing too SLOWLY; this grades it advancing in the right amount at the wrong granularity —
+    `2,0,2,0,2,0` instead of `1,1,1,1,1,1`. The mean rate over that is exactly 1000 pm, no beat
+    is a stall longer than one, and the picture is visibly juddering.
+
+    Device-measured (`pipe_abr_down_outrun`, 2026-08-28): after three downshift attempts drained
+    the reserve to 168 ms, the media clock ran `123 125 125 127 129 129 131 133 133 …` for ~30
+    beats. `abr_stalls` scored max=8 total=13 — all of it the earlier true stall — and
+    `playback_rate` scored ~1000 pm. Both were right and both were blind: playback was running
+    straight off the network one 2 s segment at a time, because the queue was empty and each
+    arrival advanced the clock by a whole segment.
+
+    A beat is LUMPY when the clock moved by 2 s or more in one 1 Hz beat — i.e. it delivered at
+    least a whole extra segment's worth in the time one second of media should have taken. That
+    threshold is not a tuning knob: 2 is the smallest integer step this ±1 s source can
+    distinguish from real time at all (a true 1 s advance may read 0 or 1, never 2).
+
+    A seek moves the clock discontinuously and is not lumpiness; `playback_rate`'s leg splitting
+    is the wrong tool here because a lump IS a forward step, so this instead ignores any step
+    larger than `LUMP_SEEK_S`, above which a jump is a relocation rather than a delivery.
+    """
+    series = [p for p, _ in playpos_secs(lines)]
+    if len(series) < 2:
+        return None, None, len(series)
+    lumpy, runs, cur = 0, [], 0
+    for before, after in zip(series, series[1:]):
+        step = after - before
+        if 2 <= step <= LUMP_SEEK_S:
+            lumpy += 1
+            cur += 1
+        elif cur:
+            runs.append(cur)
+            cur = 0
+    if cur:
+        runs.append(cur)
+    return lumpy, (max(runs) if runs else 0), len(series)
 
 
 def playback_rate(lines, window=10):
@@ -1962,9 +2014,14 @@ def abr_characterisation(lines):
         rate = "n/a" if mean_pm is None else f"{mean_pm}pm mean / {worst_pm}pm worst over {legs} leg(s)"
         # +/-1 s and a floor, never a precise duration: `pos=` is integer seconds on a 1 Hz
         # heartbeat, so a sub-second stall is invisible. Said at the point of reading.
+        # Three shapes, printed together because each is blind to the other two: the clock
+        # STOPPING, the clock running SLOW, and the clock arriving in segment-sized LUMPS at a
+        # correct mean rate. The third was invisible until 2026-08-28 — `pipe_abr_down_outrun`
+        # ran ~30 beats of `2,0,2,0` with max_stall=8 and rate~1000pm, both reading healthy.
+        lumpy, lump_run, _ = playback_lumpiness(lines)
         out.append(
             f"playback: max_stall={stall_max}s (total {stall_total}s over {beats} beats, +/-1s) "
-            f"rate={rate}"
+            f"rate={rate} lumpy={lumpy} beat(s), longest run {lump_run}"
         )
     samples = abr_samples(lines)
     if samples:

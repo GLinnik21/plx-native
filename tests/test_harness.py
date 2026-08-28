@@ -1421,6 +1421,37 @@ class AbrTraceMetrics(unittest.TestCase):
     def test_a_run_too_short_to_judge_reports_absence(self):
         self.assertEqual(run.abr_stalls(["loop=60 fps=60 pos=1s"]), (None, None, 1))
 
+    def test_lumpiness_sees_what_the_stall_and_rate_metrics_are_both_blind_to(self):
+        """MATHEMATICAL INVARIANT: `2,0,2,0` and `1,1,1,1` differ, and only this can tell them apart.
+
+        The two series below cover the same media seconds in the same number of beats, so their
+        mean rate is identical and neither contains a stall longer than one beat. One is smooth
+        playback and the other is a queue running dry and advancing a whole segment per arrival —
+        which is what a viewer sees as judder. Device-observed in `pipe_abr_down_outrun`.
+        """
+        smooth = [f"loop=60 fps=60 pos={p}s" for p in [10, 11, 12, 13, 14, 15, 16, 17]]
+        lumpy = [f"loop=60 fps=60 pos={p}s" for p in [10, 12, 12, 14, 14, 16, 16, 17]]
+
+        # Same span, same beat count: every OTHER instrument scores them alike.
+        self.assertEqual(run.abr_stalls(smooth)[0], 0)
+        self.assertEqual(run.abr_stalls(lumpy)[0], 1, "no run of held beats exceeds one")
+
+        self.assertEqual(run.playback_lumpiness(smooth), (0, 0, len(smooth)))
+        lumpy_beats, longest, beats = run.playback_lumpiness(lumpy)
+        self.assertEqual((lumpy_beats, beats), (3, len(lumpy)))
+        self.assertEqual(longest, 1, "the lumps alternate with holds, so no two are adjacent")
+
+    def test_a_seek_is_a_relocation_and_not_a_lump(self):
+        """A forward jump past `LUMP_SEEK_S` is the clock being MOVED, not the queue running dry.
+
+        Without this the marker/seek cases would each report one phantom lump per seek.
+        """
+        seek = [f"loop=60 fps=60 pos={p}s" for p in [5, 6, 140, 141, 142]]
+        self.assertEqual(run.playback_lumpiness(seek), (0, 0, 5))
+        # ...and the boundary is inclusive on the lump side, so a long-segment pack still counts.
+        edge = [f"loop=60 fps=60 pos={p}s" for p in [5, 5 + run.LUMP_SEEK_S, 99 + run.LUMP_SEEK_S]]
+        self.assertEqual(run.playback_lumpiness(edge)[0], 1)
+
     def test_raster_changes_count_transitions_not_commits(self):
         """MATHEMATICAL INVARIANT: eight rungs share 1920x1080 and are eventless to a viewer."""
         lines = [
