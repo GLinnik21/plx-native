@@ -841,6 +841,34 @@ commit, and a single ★ increment may contain only one policy surface.**
 | **I8 ★** | **Seek estimate preservation** (§7.G) | A `CapacityEstimate` snapshot (`slow_kbps`, `fast_kbps`, `uncertainty_pm`, `samples`) stored in session state at teardown and consumed by the new `Controller` as its seed, replacing `auto_prior_kbps` on the seek path. `route.rs:700` keeps writing `auto_prior_kbps` as the **Original-fallback-only** seed and is not otherwise read on the seek path. Reset positional buffer and risk history; reset any pending transaction that no longer describes the seeked position. | host + a device leg: seek twice on a healthy link and assert the rung does not re-ramp | — |
 | **I9** | **BLOCKED — and M3 is now DONE, which narrows rather than lifts it** | §7.A's argmax and §7.B's quality scoring. M3 ran 2026-08-28 (`docs/measurements/m3-production-census.md`): `Uhd = 2100` measures 2404 and the whole 1080p block lands within 10.3%, so the two empirical points and the interpolation between them are **upheld**; `P1080M6 = 900` measures 353, off by **60.8%** in both pacing legs, which is past the 25% rule and REFUTES the mid-ladder. The larger finding is that the table is indexed by the wrong VARIABLE: against a 1080p source the ordering INVERTS (58 of 75 rung pairs), because a target below the source raster is downscaling work while a target at it is a near-copy — so no thirteen numbers keyed to the target alone can be right for both a 4K and a 1080p item. **Half of that is now UNBLOCKED (2026-08-28).** The 4K `auto_network` case exists: `serve_fixtures.py` answers rung 22000 with a real 3840x2160 clip, `route::arm_auto_fixture` takes the source raster instead of hardcoding 1080p, and `pipe_abr_uhd_source_admits_4k` declares it. The two were circular — the literal was there because the rung 404'd — so a fixture gap had been standing in for a policy, and the two entries the table calls empirical were the two nothing could reach. What remains is the decision on whether `production_load_pm` becomes a function of (source, target) or is declared correct for one source class only. That decision is a product call and is not made here — **and it should not be made on Result 2's stated cause**, which the census has since narrowed: the ordering is measured, but the same numbers also fit "PMS stopped re-encoding at an unbinding ceiling", and the output column that separates the two was not recorded the first time. It is recorded now; the re-run is owed. | — | — |
 
+### Landed 2026-08-28, outside the table above: the abort rule and the chain behind it
+
+R16/R12's abort rule was built, and arming it turned `pipe_abr_down_outrun` from a quiet failure
+into a loud one — which is what exposed **five** defects, each hidden by the one before it. Full
+record with both device logs: `docs/measurements/j3b-downshift-floor.md`.
+
+| | defect | fix |
+|---|---|---|
+| 1 | The exhausted reserve was **absorbing**: a candidate transfer is bounded by the reserve it is paid from, so a DOWNSHIFT — whose benefit is the picture restarting — was refused precisely when it was needed. 321 correct `prime_down` decisions, none actionable. | floor the deadline at `R_target * D / C` |
+| 2 | That floor was a **central estimate**, so it was exceeded about half the time: `warmup_dl=1314ms` against `decided=1327ms`, 53 consecutive times. Invisible for a FAR target, which is why the first device leg passed. | widen by `CapacityEstimate::uncertainty_pm`, the estimator's own published error |
+| 3 | `observe` hardcoded `completed: true`, so an abandoned prefix entered as a completed measurement. | `SegmentSample::abandoned()` |
+| 4 | Marking it was not enough — the RATE still entered, and a prefix 4x the history trips `is_regime_change`, which RESTARTS the estimate at it. `slow` walked 5 632 -> 101 078 kbps against a real 500. | an abandoned transfer may LOWER the estimate and may never raise it |
+| 5 | Then it stopped learning at all: the abort fires on the first read (`prod=2pm`, 4 ms in), so nothing completed and the estimate froze. The same unaffordable target was chosen 36 times. | an abort waits until its own fetch is measurable (`MEASURABLE_OBSERVATION_US`) |
+
+**They share one shape**, which is worth carrying into the rest of the plan: every one is a
+quantity used for a purpose its derivation did not support — a reserve bound applied to a direction
+whose benefit it did not model, a central estimate used as a deadline, a burst rate used as a
+capacity, a regime-change rule applied to an event that is not one, an instrument allowed to fire
+before it could measure. **None was a tuning error and none would have been fixed by changing a
+constant.**
+
+Landed alongside, because the chain was undiagnosable without it: **every `Stay` now names its
+reason.** The down path had one code and the UP path had five silent exits, which is how
+`pipe_abr_seek_flat` came to sit at 2000 kbps with `safe=12585kbps` and a 45-second reserve while
+`reason=None` on 100 of 102 lines. Four codes now (`NoSustainableTarget`, `EvidenceWindow`,
+`AtBestRung`, `ReserveUnknown`), with a host invariant that sweeps 120 states and fails any silent
+Stay — it found a sixth exit on its first run.
+
 ---
 
 ## 6. Calibration ledger
