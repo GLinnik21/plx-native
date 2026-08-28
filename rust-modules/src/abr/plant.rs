@@ -202,6 +202,44 @@ impl BufferEstimate {
         self.samples = self.samples.saturating_add(1);
     }
 
+    /// **The rung changed underneath the reserve, so the next delta is not a flow.** (R10.)
+    ///
+    /// `B_max(R) = lead + queue_bits/R_ES` — the ceiling is inversely proportional to the rung, so
+    /// a commit UP shrinks it, and the same bytes in the queue instantly measure as fewer
+    /// milliseconds of media. Differencing across that reads a **coordinate change as a flow**.
+    ///
+    /// This is the identical error the first-sample guard above exists for, and it is not
+    /// hypothetical. Device-measured 2026-08-28 on `pipe_auto_original_slow_recover`, across one
+    /// `6000 -> 8000` commit:
+    ///
+    /// ```text
+    /// steady rung=6000 buf=31043 slope=+1175      <- filling
+    /// TX Up 6000->8000kbps outcome=committed
+    /// steady rung=8000 buf=13376 slope=-1459      <- 17.7 s "lost" in one step
+    /// …decaying…
+    /// steady rung=8000 buf=11960 slope=-82        <- still past -50 at the end of the run
+    /// ```
+    ///
+    /// The reserve was never draining — 13.4 s of it remained, against 2.6x the capacity the rung
+    /// needed. But `slope_ms_per_s` is a 3:1 EWMA and the fabricated impulse outlives the case, so
+    /// `draining()` stayed true; `OriginalRecovery::probe_due` resets its spacing timer on every
+    /// `!refilling` reading, so the recovery probe could **never** accumulate `probe_spacing_ms`,
+    /// and Original was never re-requested. R10 predicted this impulse would risk a spurious mode
+    /// switch. What it does is permanently withhold the mode switch that should happen.
+    ///
+    /// So a commit records the level and nothing else, exactly as sample zero does: the rate of
+    /// change in the NEW coordinates is unknown until two observations exist in them, and
+    /// `slope_ms_per_s = 0` is the honest statement of that rather than a carried-over lie.
+    pub(crate) fn rebase(&mut self) {
+        self.slope_ms_per_s = 0;
+        self.last_delta_ms = 0;
+        self.draining_samples = 0;
+        // Not 1: the NEXT update has no valid predecessor either, because `self.buffered_ms` still
+        // holds a level measured under the old ceiling. Zero makes that update record the level
+        // and seed nothing, which is what the first-sample guard already means by it.
+        self.samples = 0;
+    }
+
     /// **Is the reserve actually shrinking** — a magnitude test, not a sign test, and that is a
     /// device finding rather than a refinement. `slope_ms_per_s` is a 3:1 EWMA, so after any real
     /// drain it decays toward zero asymptotically and NEVER REACHES IT: measured on the television

@@ -1015,6 +1015,12 @@ impl Controller {
         self.current = proposal.rung;
         self.pending = None;
         self.samples_on_rung = 0;
+        // **The ceiling moved, so the reserve's units did.** `B_max` is inversely proportional to
+        // the rung, so the next `buffered_ms` is measured against a different maximum and the
+        // delta across this commit is a coordinate change rather than a flow. See
+        // `BufferEstimate::rebase` for the device trace where differencing it withheld Original
+        // recovery for an entire playback.
+        self.buffer.rebase();
         self.now_ms = self.now_ms.max(now_ms);
         // Both directions arm it; only the UP path reads it. See the field. The length is fixed
         // HERE, from the segment this transaction ran against.

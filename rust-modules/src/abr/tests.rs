@@ -3875,3 +3875,43 @@ fn only_a_downshift_off_the_floor_guards_its_warmup() {
         );
     }
 }
+
+/// **A commit is a coordinate change, not a drain** (R10), and the device trace it comes from.
+///
+/// Differential by construction: before `BufferEstimate::rebase` the delta across a commit entered
+/// the EWMA as a flow, so the assertion below (`!draining()` immediately after) could not hold for
+/// any input where the ceiling shrank. The magnitudes are the measured ones —
+/// `pipe_auto_original_slow_recover`, 2026-08-28, one `6000 -> 8000` commit taking the reserve
+/// from 31043 ms to 13376 ms with `slope=-1459ms/s`, still `-82` at the end of the run against a
+/// `DRAIN_EPS_MS_PER_S` of 50.
+#[test]
+fn a_commit_does_not_enter_the_ceiling_drop_as_a_drain() {
+    let mut buffer = BufferEstimate::default();
+    // Settle a genuinely FILLING reserve at the old rung, the way the device did (+1175 ms/s).
+    for ms in [21_418, 23_210, 25_043, 27_000, 29_000, 31_043] {
+        buffer.update(Some(ms), 2_000);
+    }
+    assert!(!buffer.draining(), "a filling reserve must not read as draining");
+    assert!(buffer.slope_ms_per_s > 0, "the setup itself must be a fill: {buffer:?}");
+
+    // The commit. `B_max` shrinks with the rung, so the SAME queue now measures 13376 ms.
+    buffer.rebase();
+    buffer.update(Some(13_376), 2_000);
+
+    assert!(
+        !buffer.draining(),
+        "the ceiling dropping is not the reserve draining — 13.4 s remained: {buffer:?}",
+    );
+    assert_eq!(
+        buffer.slope_ms_per_s, 0,
+        "with one observation in the new coordinates the rate of change is UNKNOWN, and 0 is how \
+         this type says so",
+    );
+
+    // ...and a real drain in the new coordinates is still caught, which is the half a naive
+    // "ignore everything after a commit" fix would have broken.
+    for ms in [11_000, 8_500, 6_000, 3_500] {
+        buffer.update(Some(ms), 2_000);
+    }
+    assert!(buffer.draining(), "a genuine post-commit drain must still fire: {buffer:?}");
+}
