@@ -108,6 +108,40 @@ manufacturing it.
 maximum uncertainty attached, and `conservative_kbps` treats uncertainty as a discount. After it:
 `slow=501kbps`, which is the shaped rate to within one per cent.
 
+**Defect 4 — marking it incomplete was not enough, because the RATE still entered.** `abandoned()`
+raised `uncertainty_pm`, and `conservative_kbps` discounts by uncertainty — but a prefix four times
+the history trips `is_regime_change`, which RESTARTS the estimate at the prefix's own value with one
+sample's confidence. So each abort reset the estimate *upward*: 5 632 → 28 744 → **101 078 kbps**
+across successive aborts, and a 50% discount on 101 Mbit/s is still two orders of magnitude out.
+
+The rule that follows is not a margin, it is what the observation means. **An abandoned transfer
+may lower the estimate and may never raise it.** A fetch is abandoned because its projected
+remainder did not fit the reserve — the event is evidence of INSUFFICIENCY. Its bytes are the
+receive buffer's opening burst over a few hundred microseconds, so as an estimate of sustained
+capacity they are biased upward by construction, and reading them as "the link is fast" inverts the
+meaning of the event that produced them. A slower-than-history prefix is still kept: that is the
+abort's actual message, and not keeping it would be a one-way ratchet blind to a real collapse.
+
+**Defect 5 — and then it stopped learning at all, which is the same failure one level back.** With
+the ratchet in place the fast prefixes were correctly ignored, and the estimate FROZE at its
+pre-collapse value: no fetch ever completed, so nothing new ever entered. The controller chose the
+same unaffordable target 36 times.
+
+The cause is that the abort fires on the FIRST read once the reserve is small — measured
+`prod=2pm`, a fetch abandoned **4 ms** in, which carries no observation of anything. So an abort now
+waits until its own fetch is measurable, at `MEASURABLE_OBSERVATION_US`: already measured, already
+used by `CapacityObservation::quality`, and already meaning exactly this — below it a transfer
+reports latency rather than capacity. That bounds an abort's cost at a quarter second of an
+already-stalled picture, and above it the sample is `Weak` at worst, which on a collapsed link is a
+slower-than-history observation — the one direction the ratchet admits.
+
+**The shape of the whole chain is worth stating once.** Every one of these five is the same mistake
+in a different place: a quantity was used for a purpose its derivation did not support. A reserve
+bound was applied to a direction whose benefit it did not model; a central estimate was used as a
+deadline; a burst rate was used as a capacity; a regime-change rule was applied to an event that is
+not a regime change; and an instrument was allowed to fire before it could measure. None was a
+tuning error and none would have been fixed by changing a constant.
+
 **A false trail worth recording.** The first hypothesis was exactly this — "the abandoned prefix is
 poisoning the estimator" — and it was dropped after a host fixture showed `observe` returning
 `Prime(Down)` when fed one. That fixture was answering the wrong question: the abort does produce a
