@@ -241,9 +241,20 @@ pub(crate) fn hls_safe_budget(capacity: &CapacityEstimate) -> u32 {
 ///   14000 -> 8000 downshift on a link measured at 9 593 kbps: `8000 * 2000 / 9593` = **1 667 ms**,
 ///   which is tighter than the reserve was. The floor binds only where the reserve has collapsed
 ///   below what any transfer needs, which is the absorbing state and nothing else.
-/// * **It cannot run away**, because both of its terms are measured: a link that is genuinely dead
+/// * **It cannot run away**, because every term is measured: a link that is genuinely dead
 ///   drives `capacity_kbps` down, and a capacity of zero yields `ZERO`, restoring the reserve
 ///   bound exactly.
+///
+/// **And the floor is the prediction PLUS the estimate's stated error, not the prediction.** The
+/// first version granted exactly `R * D / C`, which is a central estimate and is therefore
+/// exceeded about half the time — a deadline with no slack is a coin flip, and the device landed
+/// it wrong 53 consecutive times on one rung pair: `warmup_dl=1314ms` against `decided=1327ms`,
+/// missing by 13 ms, over and over, with the absorbing state back. That was invisible in the first
+/// device leg because its targets were far below the current rung (8000, 720, 320 out of 20000),
+/// where the prediction is generous by a wide margin; it appears only for a NEAR target, where
+/// prediction and reality meet. The widening factor is `CapacityEstimate::uncertainty_pm` — the
+/// `unc=` the steady line already publishes — so it is the estimator's own opinion of how wrong it
+/// might be rather than a margin chosen here, and it shrinks to nothing as the estimate settles.
 ///
 /// The upshift bound is unchanged in the case that matters: the proposal gate requires three
 /// segments of reserve and the two upshift budgets sum to about 2.6, so condition 1 does not bind
@@ -303,13 +314,22 @@ pub(crate) fn predicted_transfer(
     target_wire_kbps: u32,
     media_duration: std::time::Duration,
     capacity_kbps: u32,
+    uncertainty_pm: u32,
 ) -> std::time::Duration {
     if capacity_kbps == 0 {
         return std::time::Duration::ZERO;
     }
     let bits = u128::from(target_wire_kbps).saturating_mul(media_duration.as_millis());
     let ms = bits / u128::from(capacity_kbps);
-    std::time::Duration::from_millis(u64::try_from(ms).unwrap_or(u64::MAX))
+    // **Plus the estimate's own stated error, because a CENTRAL estimate is exceeded half the
+    // time.** See the section above: a deadline set to the prediction exactly is a coin flip, and
+    // the device measured that coin landing wrong — `warmup_dl=1314ms` against `decided=1327ms`,
+    // 53 times in a row on one rung pair. The multiplier is not chosen: it is
+    // `CapacityEstimate::uncertainty_pm`, the same number the `abr: steady` line publishes as
+    // `unc=`, so a link the estimator is unsure about buys proportionally more time and a
+    // well-measured one buys almost none.
+    let widened = ms.saturating_mul(u128::from(1_000 + uncertainty_pm)) / 1_000;
+    std::time::Duration::from_millis(u64::try_from(widened).unwrap_or(u64::MAX))
 }
 
 /// The GRADED segment's budget, upshift only — the segment that decides whether the candidate is

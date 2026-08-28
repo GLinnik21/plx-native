@@ -3565,7 +3565,7 @@ fn a_downshift_gets_at_least_the_time_its_transfer_physically_needs() {
     let up = Proposal { rung: Rung::P720Low, direction: Direction::Up };
 
     // 2000 kbps of output over 2 s of media, on a link measured at 6 000 kbps: 666 ms.
-    let need = predicted_transfer(2_000, media, 6_000);
+    let need = predicted_transfer(2_000, media, 6_000, 0);
     assert_eq!(need, std::time::Duration::from_millis(666));
 
     assert_eq!(
@@ -3595,7 +3595,7 @@ fn a_downshift_gets_at_least_the_time_its_transfer_physically_needs() {
 fn the_floor_is_below_the_reserve_on_the_runaway_it_was_written_for() {
     let media = std::time::Duration::from_millis(2_000);
     let down = Proposal { rung: Rung::P1080, direction: Direction::Down };
-    let need = predicted_transfer(8_000, media, 9_593);
+    let need = predicted_transfer(8_000, media, 9_593, 0);
     assert_eq!(need, std::time::Duration::from_millis(1_667));
     for reserve_ms in [2_000i64, 5_000, 36_000] {
         let reserve = reserve_as_budget(reserve_ms);
@@ -3614,11 +3614,60 @@ fn the_floor_is_below_the_reserve_on_the_runaway_it_was_written_for() {
 #[test]
 fn an_unmeasured_link_predicts_nothing_and_the_reserve_still_bounds() {
     let media = std::time::Duration::from_millis(2_000);
-    assert_eq!(predicted_transfer(8_000, media, 0), std::time::Duration::ZERO);
+    assert_eq!(predicted_transfer(8_000, media, 0, 500), std::time::Duration::ZERO);
     let down = Proposal { rung: Rung::P480, direction: Direction::Down };
     let reserve = reserve_as_budget(900);
     assert_eq!(
-        candidate_warmup_budget(down, media, reserve, predicted_transfer(8_000, media, 0)),
+        candidate_warmup_budget(down, media, reserve, predicted_transfer(8_000, media, 0, 500)),
         reserve,
     );
+}
+
+/// **A deadline set to a central estimate is a coin flip, and the device landed it wrong 53 times
+/// in a row.** The first floor granted exactly `R * D / C`; measured 2026-08-28 on
+/// `pipe_abr_down_outrun`, `Down 18000->16000` came back `warmup_dl=1314ms decided=1327ms`,
+/// missing by 13 ms, over and over, with the absorbing state back.
+///
+/// It was invisible in the first device leg because that one's targets were FAR below the current
+/// rung — 8000, 720 and 320 out of 20000 — where the prediction is generous by a wide margin. It
+/// appears only for a NEAR target, where prediction and reality meet, which is why this test
+/// grades the ratio between the two regimes rather than either alone.
+///
+/// Differential: at `uncertainty_pm = 0` the widened value IS the central one, so the first
+/// assertion below is what the pre-fix code returned and the second cannot pass against it.
+#[test]
+fn the_floor_carries_the_estimates_own_error_not_just_its_centre() {
+    let media = std::time::Duration::from_millis(2_000);
+    // The device's numbers: a 16000 kbps target on a link the estimator read at 24 353 kbps.
+    let centre = predicted_transfer(16_000, media, 24_353, 0);
+    assert_eq!(centre, std::time::Duration::from_millis(1_314), "the deadline that missed by 13ms");
+
+    // `unc=500pm` is what the same log line published on those transactions.
+    let widened = predicted_transfer(16_000, media, 24_353, 500);
+    assert_eq!(widened, std::time::Duration::from_millis(1_971));
+    assert!(
+        widened > std::time::Duration::from_millis(1_327),
+        "and it must clear the transfer that actually happened",
+    );
+
+    // A settled estimate buys almost nothing, which is what makes this the estimator's opinion
+    // rather than a margin: the widening vanishes as `unc` does.
+    assert_eq!(predicted_transfer(16_000, media, 24_353, 20), std::time::Duration::from_millis(1_340));
+}
+
+/// The widening is monotone in the estimator's stated error and in nothing else — the property
+/// that makes it an uncertainty band rather than a tuning knob.
+#[test]
+fn the_floors_widening_is_monotone_in_uncertainty_alone() {
+    let media = std::time::Duration::from_millis(2_000);
+    let mut last = std::time::Duration::ZERO;
+    for unc in [0u32, 50, 100, 200, 500, 1_000] {
+        let d = predicted_transfer(8_000, media, 10_000, unc);
+        assert!(d >= last, "unc {unc} produced {d:?} after {last:?}");
+        last = d;
+    }
+    // ...and it never widens a prediction that does not exist.
+    for unc in [0u32, 500, 1_000] {
+        assert_eq!(predicted_transfer(8_000, media, 0, unc), std::time::Duration::ZERO);
+    }
 }

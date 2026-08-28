@@ -4040,10 +4040,12 @@ fn hls_demux(
         // prediction describes the rung actually being primed against the capacity actually
         // measured — `expected_wire_kbps` is the catalog's observed output for the target, not its
         // request ceiling, and `conservative_kbps` comes only from completed segments.
+        let delivery = controller.delivery();
         let predicted = crate::abr::predicted_transfer(
             controller.catalog().candidate(proposal.rung).expected_wire_kbps,
             candidate_segment.duration,
-            controller.delivery().conservative_kbps(),
+            delivery.conservative_kbps(),
+            delivery.uncertainty_pm,
         );
         let warmup_budget = crate::abr::candidate_warmup_budget(
             proposal,
