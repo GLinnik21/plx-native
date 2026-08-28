@@ -409,7 +409,7 @@ impl SegmentSample {
     }
 
     pub(crate) fn network_kbps(self) -> u32 {
-        (self.bytes.saturating_mul(8_000) / self.active_fetch_us)
+        (kbps_from(self.bytes, self.active_fetch_us))
             .min(u64::from(u32::MAX)) as u32
     }
 
@@ -455,3 +455,18 @@ impl SegmentSample {
     }
 }
 
+/// **Bits over microseconds, as kbps** — `bytes * 8 / us` with the two thousands folded, so the
+/// unit conversion exists once.
+///
+/// It is a free function rather than a method because three callers hold the same two numbers in
+/// three different shapes: `SegmentSample` (a completed segment), `ff.rs`'s `StallGuard` (a body
+/// still arriving) and `OriginalRecovery` (a delta between two progress readings). The last two
+/// open-coded it, and `ff.rs`'s log line carried a comment asking for exactly this — "spelled the
+/// same way `should_abort` spells it, so a log line and the decision behind it cannot drift
+/// apart" — settling for a comment where a call would enforce it.
+///
+/// `us` is clamped to 1: a zero divisor is a caller that has measured nothing, and every caller
+/// guards that case for its own reasons before reaching here.
+pub(crate) fn kbps_from(bytes: u64, us: u64) -> u64 {
+    bytes.saturating_mul(8_000) / us.max(1)
+}

@@ -52,6 +52,24 @@ PLEX_DIRECT_HASH = re.compile(r"(?<=\.)[0-9a-f]{20,}(?=\.plex\.direct)")
 SHARED_BY = re.compile(r"(\(shared by\s+)([^)]+)(\))")
 
 
+def _label(pattern, text, tag, group=0):
+    """Replace `pattern`'s `group` with a stable `<tag-N>`, keeping the rest of the match.
+
+    `(text, distinct_labels)`. Splicing by OFFSET rather than rebuilding the match from its groups
+    is what lets one function serve a whole-match pattern and a "keep the surrounding literal"
+    pattern alike -- `auth: reached "<peer-name-1>"` still reads as a reachability result, and
+    `(shared by <peer-owner-1>)` still reads as a sharing note, without either spelling its own
+    f-string. Numbering is per shape and by first appearance, so two distinct peers stay
+    distinguishable in a scrubbed log while the same peer keeps one name throughout.
+    """
+    seen = {}
+    def sub(m):
+        name = seen.setdefault(m.group(group), f"<{tag}-{len(seen) + 1}>")
+        whole, start = m.group(0), m.start()
+        return whole[:m.start(group) - start] + name + whole[m.end(group) - start:]
+    return pattern.sub(sub, text), len(seen)
+
+
 def load_guard(root):
     path = os.path.join(root, ".claude", "hooks", "outbound-guard.py")
     if not os.path.isfile(path):
@@ -110,30 +128,24 @@ def scrub(text, guard, secrets):
         return peers.setdefault(m.group(0), f"<peer-ip-{len(peers) + 1}>")
     text = PUBLIC_IP.sub(_pub, text)
 
-    # The handle beside it is the same disclosure by another route -- it names the machine and,
-    # usually, its owner. Replaced positionally so the line still reads as a reachability result.
-    handles = {}
-    def _handle(m):
-        name = handles.setdefault(m.group(2), f"<peer-name-{len(handles) + 1}>")
-        return f'{m.group(1)}"{name}"'
-    text = PEER_HANDLE.sub(_handle, text)
+    # The handle beside the address is the same disclosure by another route -- it names the machine
+    # and usually its owner. Then the dashed form of the address, the machineIdentifier-derived
+    # hash beside it, and the owner's account name outright. Each is a complete identifier alone.
+    #
+    # One pass per shape, through ONE `_label`, and the count comes back with it. Each shape used
+    # to carry its own dict, its own closure and its own `setdefault` line, and the total was a
+    # hand-written sum of six `len()`s at the end -- so a sixth identifier shape needed a remembered
+    # term in that sum, and forgetting it under-reports. An under-count here does not read as a bug:
+    # it reads as "nothing was scrubbed", on the tool whose whole job is proving otherwise.
+    labelled = 0
+    for pattern, tag, group in ((PEER_HANDLE, "peer-name", 2),
+                                (DASHED_HOST, "peer-host", 0),
+                                (PLEX_DIRECT_HASH, "plex-direct-hash", 0),
+                                (SHARED_BY, "peer-owner", 2)):
+        text, n = _label(pattern, text, tag, group)
+        labelled += n
 
-    # The dashed form of the same address, the machineIdentifier-derived hash beside it, and the
-    # owner's account name. Each is a complete identifier on its own.
-    dashed = {}
-    text = DASHED_HOST.sub(
-        lambda m: dashed.setdefault(m.group(0), f"<peer-host-{len(dashed) + 1}>"), text)
-    hashes = {}
-    text = PLEX_DIRECT_HASH.sub(
-        lambda m: hashes.setdefault(m.group(0), f"<plex-direct-hash-{len(hashes) + 1}>"), text)
-    owners = {}
-    def _owner(m):
-        name = owners.setdefault(m.group(2), f"<peer-owner-{len(owners) + 1}>")
-        return f"{m.group(1)}{name}{m.group(3)}"
-    text = SHARED_BY.sub(_owner, text)
-
-    return text, (replaced + len(hosts) + len(peers) + len(handles)
-                  + len(dashed) + len(hashes) + len(owners))
+    return text, replaced + len(hosts) + len(peers) + labelled
 
 
 def main(argv=None):

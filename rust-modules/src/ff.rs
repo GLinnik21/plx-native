@@ -1621,7 +1621,7 @@ impl StallGuard {
         if body_active_us < crate::abr::MEASURABLE_OBSERVATION_US {
             return false;
         }
-        let kbps = (body_bytes.saturating_mul(8_000) / body_active_us).min(i64::MAX as u64) as i64;
+        let kbps = crate::abr::kbps_from(body_bytes, body_active_us).min(i64::MAX as u64) as i64;
         let elapsed_ms = self.started.elapsed().as_millis().min(i64::MAX as u128) as i64;
         Self::expired(self.reserve_ms_at_start, elapsed_ms, bytes_remaining, kbps)
     }
@@ -3739,7 +3739,7 @@ fn hls_demux(
         // picture. That second one is R12's terminal case, stated where it is enforced.
         let stall_guard = adaptive.as_ref().and_then(|state| {
             let controller = &state.2;
-            if controller.current().below() == controller.current() {
+            if controller.current().at_floor() {
                 return None;
             }
             hls_buffer_snapshot(None).buffered_ms().and_then(StallGuard::arm)
@@ -3945,8 +3945,10 @@ fn hls_demux(
             let current_candidate = controller.catalog().candidate(controller.current());
             let buffer = controller.buffer();
             let delivery = controller.delivery();
-            let probe_due = !*probe_inflight
-                && recovery.as_mut().is_some_and(|gate| {
+            let verdict = if *probe_inflight {
+                None
+            } else {
+                recovery.as_mut().map(|gate| {
                     gate.probe_due(
                         current_candidate,
                         &telemetry.production,
@@ -3958,7 +3960,8 @@ fn hls_demux(
                         // wall time now, not a count of segments the server may size as it likes.
                         now_ms(),
                     )
-                });
+                })
+            };
             // **Say why NOT, once per distinct reason.** `abr: mode` is only ever emitted on a
             // probe RESULT, so a recovery gate that never opens produces a log identical to one
             // that was never constructed — and on the host that is exactly what happens
@@ -3966,8 +3969,15 @@ fn hls_demux(
             // Original never re-requested, no way to tell which of four conditions withheld it).
             // Rate-limited to CHANGES so a steady refusal costs one line rather than one a
             // segment; the reason is a name, not a number, so a repeat carries no new information.
-            if let Some(block) = recovery.as_ref().and_then(|g| g.last_block()) {
-                if last_probe_block != Some(block) {
+            //
+            // **A fired probe clears the latch, and that is a fix rather than a nicety.** The
+            // reason used to live on the gate as `last_block` and the latch here, two copies of
+            // one fact across a module boundary — and they went out of sync exactly when a probe
+            // succeeded: the gate reset its copy, this one kept the old reason, and the next
+            // refusal FOR THE SAME REASON printed nothing. `probe_due` now returns the reason
+            // instead of publishing it, so there is one answer and one channel.
+            match verdict {
+                Some(Err(block)) if last_probe_block != Some(block) => {
                     last_probe_block = Some(block);
                     crate::player::log(&format!(
                         "abr: probe withheld reason={} rung={}kbps buf={}ms safe={}kbps",
@@ -3977,8 +3987,10 @@ fn hls_demux(
                         delivery.conservative_kbps(),
                     ));
                 }
+                Some(Ok(())) => last_probe_block = None,
+                _ => {}
             }
-            if probe_due {
+            if matches!(verdict, Some(Ok(()))) {
                 SHARED
                     .dg_abr_action
                     .store(crate::player::ABR_ACTION_PROBE_ORIGINAL, Ordering::Relaxed);
@@ -4197,9 +4209,11 @@ fn hls_demux(
                     proposal.direction,
                     warmup_budget.as_millis(),
                     transfer.bytes,
-                    // The guard's own rate, spelled the same way `should_abort` spells it, so a
-                    // log line and the decision behind it cannot drift apart.
-                    transfer.bytes.saturating_mul(8_000) / transfer.active_us.max(1),
+                    // The guard's own rate, through the same conversion `should_abort` calls, so
+                    // a log line and the decision behind it cannot drift apart. This asked for
+                    // that in a comment while open-coding the arithmetic; `abr::kbps_from` is the
+                    // one door and enforces it.
+                    crate::abr::kbps_from(transfer.bytes, transfer.active_us),
                 ));
                 continue;
             }

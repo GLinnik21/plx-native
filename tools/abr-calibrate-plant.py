@@ -42,6 +42,7 @@ from __future__ import annotations
 import argparse
 import collections
 import glob
+import importlib.util
 import json
 import os
 import pathlib
@@ -53,26 +54,43 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEFAULT_FIXTURES = pathlib.Path(os.path.expanduser("~/plxnative-fixtures/pipeline"))
 
-RE_SAMPLE = re.compile(
-    # `buf=` is `<n>ms` or the literal `none` -- the app cannot know the playable reserve on a
-    # segment whose audio lane has produced no timestamp yet, and prints `none` rather than a
-    # zero that reads as an empty buffer. Matched permissively HERE and rejected explicitly at
-    # the use site, so such a sample is a stated skip rather than a line that silently stops
-    # matching and disappears from the census.
-    r"abr: sample current=(\d+)kbps media=(\d+)kbps net=(\d+)kbps buf=(\S+) "
-    r"vbuf=(-?\d+)ms abuf=(\S+) dur=(\d+)ms prod=(\d+)pm"
-)
+sys.path.insert(0, str(ROOT / "tests"))
+from run import RE_ABR_SAMPLE as RE_SAMPLE  # noqa: E402
+
+# **`abr: sample` is `tests/run.py`'s pattern, not a copy of it.** This file scrapes `ABR_FIXTURE`
+# out of `serve_fixtures.py` at run time for exactly this reason, thirteen lines below, and the
+# argument is the same one level up: a copied regex sits outside `tests/test_harness.py`'s contract
+# test, so a field added to the Rust format string reddens that test and leaves this tool matching
+# nothing -- and a table built from zero samples is a table this tool prints without complaint.
+# Measured before the swap over the 81 logs under `docs/measurements/`: 4627 samples either way.
+#
+# **`abr: tx` is deliberately NOT imported, and the same measurement is why.** `run.RE_ABR_TX`
+# names the CURRENT field set exactly and matched 382 of the 504 transaction lines in that corpus;
+# the prefix below, which stops at `graded=`, matched 479. The corpus is append-only and spans
+# several instrumentation generations, so importing here would silently drop a fifth of the
+# calibration evidence. Same trade as `tools/abr-window-grade.py`'s `RE_TX_GRADED`.
 RE_TX = re.compile(
     r"abr: tx (\w+) (\d+)->(\d+)kbps outcome=(\S+) decided=(-?\d+|none)ms total=(-?\d+)ms "
     r"control=(-?\d+|none)ms prime=(-?\d+|none)ms master=(-?\d+|none)ms media=(-?\d+|none)ms "
     r"warmup=(-?\d+|none)ms graded=(-?\d+|none)ms"
 )
 
-# `sim.rs`'s own documented assumption, repeated here so the two can be compared rather than
-# silently diverge: the AU queues hold demuxed ELEMENTARY bytes while `media=` is measured off the
-# TS wire. 1.04 is an assumed transport-stream overhead -- an assumption, not a measurement, and
-# `sim.rs` says so where it uses it.
-TS_OVERHEAD = 1.04
+# `sim.rs`'s own documented assumption: the AU queues hold demuxed ELEMENTARY bytes while `media=`
+# is measured off the TS wire. 1.04 is an assumed transport-stream overhead -- an assumption, not a
+# measurement, and `sim.rs` says so where it uses it.
+#
+# Read from `tools/abr-plant-sweep.py`, which owns the queue geometry; `tools/abr-tx-report.py`
+# states the same direction of dependency and this had gone the other way, so one constant was
+# written out twice with both copies claiming to mirror `sim.rs`.
+def _ts_overhead() -> float:
+    spec = importlib.util.spec_from_file_location(
+        "plant_sweep", ROOT / "tools" / "abr-plant-sweep.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.TS_OVERHEAD
+
+
+TS_OVERHEAD = _ts_overhead()
 
 # Rung -> local fixture, mirroring `tests/serve_fixtures.py`'s ABR_FIXTURE. Read from that file at
 # run time rather than copied, so a fixture rename cannot leave this silently pointing at the wrong
@@ -177,16 +195,20 @@ def captures_newest_first():
         added = capture_added_at(path)
         # An uncommitted capture sorts newest: it is a capture being taken right now.
         out.append((added if added is not None else float("inf"), path))
-    return [path for _, path in sorted(out, key=lambda pair: pair[0], reverse=True)]
+    return [pathlib.Path(path) for _, path in sorted(out, key=lambda pair: pair[0], reverse=True)]
 
 
 def operating_points(fixtures: pathlib.Path):
     fixture = fixture_map()
     out = {}
-    for rung in sorted({int(r) for r in fixture}, reverse=False):
+    # Hoisted: chronology is a property of the capture directories, not of the rung. Called inside
+    # the loop it forked one `git log` per capture per rung -- 195 subprocesses and ~3.4 s on this
+    # tree, for 15 distinct answers.
+    captures = captures_newest_first()
+    for rung in sorted({int(r) for r in fixture}):
         best = None
-        for d in captures_newest_first():
-            p = pathlib.Path(d) / f"pipe_abr_pin_{rung}.log"
+        for d in captures:
+            p = d / f"pipe_abr_pin_{rung}.log"
             if not p.exists():
                 continue
             rows = settled(pin_samples(p, rung))
@@ -202,7 +224,7 @@ def operating_points(fixtures: pathlib.Path):
             # not a rule, it is the `provenance` column, which names the capture behind every row.
             # Read it before trusting a table: rows from different captures are legitimate only
             # while the fixture pack is unchanged between them.
-            best = (pathlib.Path(d).name, rows)
+            best = (d.name, rows)
             break
         if best is None:
             continue

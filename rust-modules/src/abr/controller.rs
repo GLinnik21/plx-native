@@ -218,6 +218,18 @@ pub(crate) enum Decision {
 
 /// Integer-only estimator and transaction state. Current-session samples decide whether to
 /// propose. Candidate-session measurements decide whether that proposal may commit.
+/// **The budget the upshift arm selects against**, the safe budget less its named admission
+/// headroom.
+///
+/// One expression, because two readers must agree: `Controller::observe`'s upshift arm CHOOSES
+/// with it, and `Controller::telemetry`'s `optimal` REPORTS what that choice would be. The
+/// telemetry comment claims to make "the SAME selection", which was true only by transcription —
+/// so the panel could advertise an operating point the controller would not take, and the event
+/// log would not say so.
+fn upshift_admission_budget(safe_budget_kbps: u32, policy: &AbrPolicy) -> u32 {
+    safe_budget_kbps.saturating_mul(policy.upshift_admission_headroom_pm) / 1_000
+}
+
 pub(crate) struct Controller {
     pub(super) current: Rung,
     pending: Option<Proposal>,
@@ -425,9 +437,7 @@ impl Controller {
             // which is a different question from "what is playing" and the one a viewer
             // photographing the panel is usually asking.
             optimal: self.catalog.best_sustainable(
-                self.last_safe_budget_kbps
-                    .saturating_mul(self.policy.upshift_admission_headroom_pm)
-                    / 1_000,
+                upshift_admission_budget(self.last_safe_budget_kbps, &self.policy),
                 &self.production,
                 current,
                 &self.policy,
@@ -746,11 +756,8 @@ impl Controller {
         // to carry the bits AND the server has to produce them ahead of real time. This is what
         // refuses 4K on a fast link in front of a loaded PMS — the measured 4K point costs 4% more
         // wire and 110% more server, so a bitrate-only budget would wave it through.
-        let upshift_admission_budget = safe_budget
-            .saturating_mul(self.policy.upshift_admission_headroom_pm)
-            / 1_000;
         let Some(target_candidate) = self.catalog.best_sustainable(
-            upshift_admission_budget,
+            upshift_admission_budget(safe_budget, &self.policy),
             &self.production,
             current_candidate,
             &self.policy,
@@ -870,6 +877,27 @@ impl Controller {
     /// It uses the CATALOG rate, which is the only per-rung rate selection can see, and is
     /// therefore an estimate. `candidate_ready` re-runs the same rule on the rendition's own
     /// declared rate and is what actually decides.
+    /// **§4's admission rule, in ONE place.** Both sides of the design argument read it: selection
+    /// (`largest_admissible`, on the catalog rate) and validation (`candidate_ready`, on the
+    /// rendition's own declared rate). The difference between them is the ARGUMENT, never the
+    /// inequality — `largest_admissible`'s doc says "This is one rule read twice, not two
+    /// thresholds stacked", and until this function existed nothing made that true. The
+    /// no-livelock argument (propose only what validation will admit, so no encoder session is
+    /// bought and thrown away) rests on it exactly.
+    ///
+    /// The `query > 0` guard is part of the rule, not a caller's precaution: `AcquisitionWindow`
+    /// documents a zero query as making every transfer factor 1, which is the most PERMISSIVE the
+    /// rule can be, so an unreadable declared rate must REFUSE rather than fall through. Having it
+    /// at one site is the point — it was enforced at two.
+    fn window_admits(&self, declared_bps: u64, rung: Rung, segment: i64, buffered: i64) -> bool {
+        let query = candidate_worst_case_bytes(declared_bps, segment, rung.size_spread_pm());
+        query > 0
+            && self
+                .acquisitions
+                .admits(query, segment, buffered, self.policy.admission)
+                .is_some_and(Admission::admitted)
+    }
+
     fn largest_admissible(&self, ceiling: Rung, segment: i64, buffered: i64) -> Option<Rung> {
         LADDER
             .iter()
@@ -879,13 +907,7 @@ impl Controller {
             .find(|rung| {
                 let declared_bps =
                     u64::from(self.catalog.candidate(*rung).expected_wire_kbps).saturating_mul(1_000);
-                let query =
-                    candidate_worst_case_bytes(declared_bps, segment, rung.size_spread_pm());
-                query > 0
-                    && self
-                        .acquisitions
-                        .admits(query, segment, buffered, self.policy.admission)
-                        .is_some_and(Admission::admitted)
+                self.window_admits(declared_bps, *rung, segment, buffered)
             })
     }
 
@@ -969,11 +991,6 @@ impl Controller {
         match proposal.direction {
             Direction::Down => true,
             Direction::Up => {
-                let query = candidate_worst_case_bytes(
-                    declared_bps,
-                    segment,
-                    proposal.rung.size_spread_pm(),
-                );
                 // **Two INDEPENDENT constraints, not two margins.** The window answers "can the
                 // link carry this rendition"; this answers "can the SERVER produce it", which no
                 // amount of link evidence can, because every sample in the window was produced by
@@ -989,11 +1006,7 @@ impl Controller {
                 // A zero query is the most PERMISSIVE the rule can be -- every transfer factor
                 // becomes 1 -- so an unreadable declared rate must refuse rather than fall through.
                 sample.production_ratio_pm() < self.policy.production_max_pm
-                    && query > 0
-                    && self
-                        .acquisitions
-                        .admits(query, segment, buffered, self.policy.admission)
-                        .is_some_and(Admission::admitted)
+                    && self.window_admits(declared_bps, proposal.rung, segment, buffered)
             }
         }
     }

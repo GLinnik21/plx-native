@@ -73,6 +73,14 @@ pub(crate) enum RecoveryVerdict {
 /// agrees — which is the behaviour "two probes" was reaching for, without the number.
 /// **Which of `probe_due`'s conditions said no.** Not a policy input — a name for the log.
 ///
+/// It is that function's ERROR TYPE rather than a field it publishes, and the difference is not
+/// cosmetic. It was both at once: `probe_due` returned `bool` AND wrote the reason to a
+/// `last_block` field the caller read back, so `last_block.is_none()` and "it returned true" were
+/// two channels carrying one answer. They went out of step exactly when a probe SUCCEEDED — the
+/// gate cleared its copy, `ff.rs`'s change-detecting latch kept the old reason, and the next
+/// refusal for that same reason printed nothing at all. `Result<(), ProbeBlock>` makes the two
+/// inseparable, and an early return that forgets to publish the reason stops compiling.
+///
 /// The gate is a conjunction of three live conditions plus a spacing timer, and any one of them
 /// failing resets `healthy_ms` to zero. From outside, all four failures look identical: no probe,
 /// no line, nothing. Measured on the host 2026-08-28 (`pipe_auto_original_slow_recover`, 180 s,
@@ -135,8 +143,6 @@ pub(crate) struct OriginalRecovery {
     /// SEGMENTS — a third clock, behind an `ORIGINAL_` prefix shared with a counter of 750 ms
     /// active-read windows, and a segment duration is a client REQUEST the server may ignore.
     healthy_ms: u64,
-    /// Why the last `probe_due` declined. See [`ProbeBlock`].
-    last_block: Option<ProbeBlock>,
     /// The wall clock at the previous sample, so the accumulation above is elapsed time.
     last_now_ms: u64,
     probes: u8,
@@ -162,8 +168,6 @@ impl OriginalRecovery {
         catalog: HlsActuatorCatalog,
     ) -> Option<Self> {
         (source_kbps > 0).then_some(Self {
-            // No probe has been declined yet; the first `probe_due` writes this.
-            last_block: None,
             source_kbps,
             policy,
             probe: CapacityEstimate::default(),
@@ -184,11 +188,6 @@ impl OriginalRecovery {
     /// corrupt the decay by ticking at an irregular rate.
     pub(crate) fn advance_to(&mut self, elapsed_ms: u64) {
         self.elapsed_ms = elapsed_ms;
-    }
-
-    /// Why the last `probe_due` said no, for the log. `None` once a probe was actually due.
-    pub(crate) fn last_block(&self) -> Option<ProbeBlock> {
-        self.last_block
     }
 
     pub(crate) fn probes(&self) -> u8 {
@@ -308,7 +307,7 @@ impl OriginalRecovery {
         hls_delivery: &CapacityEstimate,
         remaining_ms: i64,
         now_ms: u64,
-    ) -> bool {
+    ) -> Result<(), ProbeBlock> {
         // An unreadable reserve is not a deep one. A probe spends the reserve it cannot
         // see, which is the one thing this gate exists to prevent.
         //
@@ -336,28 +335,24 @@ impl OriginalRecovery {
         if !(deep_reserve && refilling && spare_capacity) {
             // Ordered so the FIRST unmet condition is the one named, which is the one to act on:
             // a shallow reserve explains a drain, and both explain absent headroom.
-            self.last_block = Some(if !deep_reserve {
+            self.healthy_ms = 0;
+            return Err(if !deep_reserve {
                 ProbeBlock::ShallowReserve
             } else if !refilling {
                 ProbeBlock::Draining
             } else {
                 ProbeBlock::NoSpareCapacity
             });
-            self.healthy_ms = 0;
-            return false;
         }
         self.healthy_ms = self.healthy_ms.saturating_add(elapsed);
         if self.healthy_ms < self.policy.probe_spacing_ms {
-            self.last_block = Some(ProbeBlock::TooSoon);
-            return false;
+            return Err(ProbeBlock::TooSoon);
         }
         if !self.worth_probing(current, production, buffer, hls_delivery, remaining_ms) {
-            self.last_block = Some(ProbeBlock::NotWorthIt);
-            return false;
+            return Err(ProbeBlock::NotWorthIt);
         }
-        self.last_block = None;
         self.healthy_ms = 0;
-        true
+        Ok(())
     }
 
     pub(crate) fn observe_probe(
@@ -629,7 +624,7 @@ impl OriginalModeController {
             self.unsafe_deficit_ms = 0;
             return None;
         }
-        let measured_kbps = (byte_delta.saturating_mul(8_000) / active_delta)
+        let measured_kbps = kbps_from(byte_delta, active_delta)
             .min(u64::from(u32::MAX)) as u32;
         let observation = CapacityObservation {
             kbps: measured_kbps,

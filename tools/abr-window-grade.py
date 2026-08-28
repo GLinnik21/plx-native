@@ -32,27 +32,22 @@ import pathlib
 import re
 import sys
 
-RE_SAMPLE = re.compile(
-    # `buf=` is `<n>ms` or the literal `none` -- the app cannot know the playable reserve on a
-    # segment whose audio lane has produced no timestamp yet, and prints `none` rather than a
-    # zero that reads as an empty buffer. Matched permissively HERE and rejected explicitly at
-    # the use site, so such a sample is a stated skip rather than a line that silently stops
-    # matching and disappears from the census.
-    r"abr: sample current=(\d+)kbps media=(\d+)kbps net=(\d+)kbps buf=(\S+) "
-    r"vbuf=(-?\d+)ms abuf=(\S+) dur=(\d+)ms prod=(\d+)pm n=(\d+) decision=(\S+) "
-    r"target=(\d+)kbps"
-)
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "tests"))
+from run import RE_ABR_SAMPLE as RE_SAMPLE, RE_ABR_WINDOW as RE_WINDOW  # noqa: E402
+
+# **The two log patterns come from `tests/run.py`, which owns them.** They were copied here
+# character-for-character, including the `buf=` note, and a copy sits outside the contract test in
+# `tests/test_harness.py` that pins them against the Rust format strings. A field added to
+# `abr: sample` would redden that test and leave THIS file matching zero lines -- and zero matches
+# print as "0 segment(s) compared, 0 disagreements", which is what a clean run looks like.
+# Verified identical before the swap: over the 81 logs under `docs/measurements/`, the local
+# copies and run.py's matched the same 4627 samples and the same 2658 window lines.
+
 # `graded=` is the acquisition of a candidate transaction's graded segment and `graded_bytes=` its
 # size -- together, the ONE observation `Controller::observe_candidate` adds to the window that no
 # `abr: window` line describes. A replayer without them counts one short after every transaction
 # that got that far, which reads as the app miscounting and is not.
 RE_TX_GRADED = re.compile(r"abr: tx \S+ .*? graded=(\d+)ms .*? graded_bytes=(\d+)")
-
-RE_WINDOW = re.compile(
-    r"abr: window current=(\d+)kbps verdict=(\S+) have=(\d+)/(\d+) eps=(\d+)pm clamp=(\d+) "
-    r"bound=(-?\d+)ms demand=(-?\d+)ms supply=(-?\d+)ms excess=(-?\d+)ms "
-    r"sus=(\d+) sur=(\d+) reset=(\d+) bytes=(\d+) dur=(\d+)ms"
-)
 
 WINDOW_CAPACITY = 64
 
@@ -138,16 +133,19 @@ def acquisition_interval(sample) -> tuple[int, int]:
     return lo, lo + sample["dur_ms"]
 
 
-def grade(path: str):
-    lines = pathlib.Path(path).read_text(errors="replace").splitlines()
-    rows = paired(lines)
+def grade(rows):
+    """`rows` come from `paired`, parsed ONCE by the caller.
+
+    It used to take a path and parse the file itself, and so did `occupancy` -- so every log was
+    read and paired twice, and `paired`'s own `note: N segment(s) skipped` printed twice per file,
+    which reads as two separate skips.
+    """
     if not rows:
         return None
 
     ring: list[tuple[int, int, int]] = []          # (bytes, acq_lo_us, acq_hi_us)
     checked = disagree = filling = resets = candidates = 0
     seen_resets = 0
-    worst = ("", 0)
     for row in rows:
         if row[0] == "candidate":
             # `graded=` is whole milliseconds, so its interval is [ms, ms+1) in microseconds --
@@ -204,11 +202,8 @@ def grade(path: str):
             ("excess", window["excess_ms"], (e_lo // 1_000, e_hi // 1_000)),
         ):
             if not want_lo <= got <= want_hi:
-                off = min(abs(got - want_lo), abs(got - want_hi))
                 print(f"  ! {name}={got}ms outside the logged interval [{want_lo},{want_hi}]ms")
                 disagree += 1
-                if off > worst[1]:
-                    worst = (f"{name} off by {off}ms", off)
         if window["supply_ms"] != supply // 1_000:
             print(f"  ! supply={window['supply_ms']}ms, n*D says {supply // 1_000}ms")
             disagree += 1
@@ -222,17 +217,16 @@ def grade(path: str):
             print("  ! sus=1 but the whole interval is unsustainable")
             disagree += 1
     return {"rows": len(rows), "checked": checked, "filling": filling,
-            "disagree": disagree, "resets": resets, "candidates": candidates, "worst": worst[0]}
+            "disagree": disagree, "resets": resets, "candidates": candidates}
 
 
-def occupancy(path: str):
+def occupancy(rows):
     """What the shadow SAW, as a distribution -- the half a pass/fail cannot report.
 
     A run in which every graded line says `admit` with `demand` a fifth of `supply` has confirmed
     the arithmetic and characterised nothing, and that is worth knowing before the numbers are
     quoted as evidence about the rule.
     """
-    rows = paired(pathlib.Path(path).read_text(errors="replace").splitlines())
     graded = [r[2] for r in rows if r[0] == "segment" and r[2]["verdict"] != "filling"]
     if not graded:
         return None
@@ -256,7 +250,8 @@ def main(argv):
     total_checked = total_disagree = 0
     occ = []
     for path in paths:
-        r = grade(path)
+        rows = paired(pathlib.Path(path).read_text(errors="replace").splitlines())
+        r = grade(rows)
         if r is None:
             continue
         name = pathlib.Path(path).stem[:34]
@@ -264,7 +259,7 @@ def main(argv):
               f"{r['candidates']:>5} {r['resets']:>6} {r['disagree']:>9}")
         total_checked += r["checked"]
         total_disagree += r["disagree"]
-        o = occupancy(path)
+        o = occupancy(rows)
         if o:
             occ.append((name, o))
 

@@ -1578,9 +1578,6 @@ pub(crate) fn set_quality(q: Quality) {
         && (location == Some(crate::plex::probe::Location::Local)
             || (location == Some(crate::plex::probe::Location::Remote)
                 && (!is_transcoding() || is_remux())));
-    // Supervision does not depend on where the server is: `auto_original` already says Auto is
-    // going to run Original, and that is the whole question the watchdog asks. See the field.
-    let auto_original_watched = auto_original;
     let adaptive = auto_uses_hls(q, auto_original);
     let delivery = if adaptive {
         crate::plex::TranscodeDelivery::FixedHls { seconds_per_segment: 2 }
@@ -1601,7 +1598,12 @@ pub(crate) fn set_quality(q: Quality) {
     session_mut(|s| {
         s.cur_ceiling = ceiling;
         s.cur_delivery = delivery;
-        s.cur_auto_original_watched = auto_original_watched;
+        // Supervision does not depend on where the server is: `auto_original` already says Auto
+        // is going to run Original, and that is the whole question the watchdog asks. See the
+        // field. It was assigned to an `auto_original_watched` binding first, which named nothing
+        // the right-hand side did not already say — a leftover from the `auto_remote_original`
+        // refactor, where the two really were different.
+        s.cur_auto_original_watched = auto_original;
         if matches!(delivery, crate::plex::TranscodeDelivery::FixedHls { .. }) {
             s.cur_remux = false;
         }

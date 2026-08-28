@@ -145,12 +145,19 @@ pub(crate) fn scaled(value: i64, scale_pm: i64) -> i64 {
     value * scale_pm / 1_000
 }
 
-/// Quality score of an HLS operating point, in the same units as
+/// Quality score of a picture delivered at `wire_kbps`, in the same units as
 /// [`AbrPolicy::original_quality_bonus`]. Concave on purpose: 2 to 4 Mbit/s is a transformation of
 /// the picture, 18 to 20 is not, and a linear score would happily pay a visible reload for the
 /// second one.
-pub(crate) fn hls_quality_score(candidate: HlsCandidate) -> i64 {
-    match candidate.expected_wire_kbps {
+///
+/// **It takes a RATE, not a candidate, because a rate is all it ever read.** The candidate form it
+/// replaced forced both sides of `choose_mode`'s argmax to present one: `hls_utility` cloned a
+/// candidate solely to change that field, and `source_quality_score` — which has no candidate at
+/// all — invented `rung: Rung::P240` and `production_load_pm: 0` to call it. Those two were lies a
+/// later reader could believe, and the second is the shape N14 site 1 was already caught
+/// fabricating. Scoring a source is not scoring a rung, and the signature now says so.
+pub(crate) fn quality_score_at_kbps(wire_kbps: u32) -> i64 {
+    match wire_kbps {
         0..=500 => 0,
         501..=1_000 => 10,
         1_001..=2_500 => 25,
@@ -160,6 +167,46 @@ pub(crate) fn hls_quality_score(candidate: HlsCandidate) -> i64 {
         9_001..=13_000 => 66,
         13_001..=17_000 => 72,
         _ => 76,
+    }
+}
+
+/// **The rate an HLS candidate may be SCORED at: `transcode <= source`** (plan R5, §7.B).
+///
+/// [`quality_score_at_kbps`] reads a rung's nominal wire rate, and until 2026-08-28 that was the
+/// whole input on this side of the argmax — while [`source_quality_score`] on the OTHER side has
+/// always capped the source by its own rate and raster. The comparison was therefore asymmetric in
+/// the one direction that matters: a rendition may be requested at any rung the ladder offers, so
+/// a 20 Mbit/s transcode of an 8 Mbit/s master scored the ladder's top band while the master
+/// itself scored the band its real rate falls in.
+///
+/// R5 stated the size of that ("an 8.5 Mbit/s 1080p source scores three steps below a 20 Mbit/s
+/// transcode of itself") and this reproduces it exactly: 8000 lands in `7001..=9000` for 58, 18000
+/// lands in the open band for 76, and 58 -> 66 -> 72 -> 76 is three steps.
+///
+/// Measured consequence, host 2026-08-28 (`pipe_auto_original_slow_recover`): with HLS settled at
+/// 18000 against an 8000 kbps source, `OriginalRecovery::probe_due` refuses with
+/// `reason=not_worth_it` and Original is never recovered — the controller declining to return to
+/// the master because it scores a re-encode of that master above it.
+///
+/// The cap is STRUCTURAL, not a tuning weight: it is `transcode <= source` in R5's own words, the
+/// same bound `source_quality_score` already applies, and it introduces no constant.
+///
+/// **It is a named function rather than a `min` inside `hls_utility` because the invariant is a
+/// relation between two things and had no home.** As a local it was unreachable from the test that
+/// claimed to guard it — `a_rendition_cannot_score_above_the_master_it_encodes` re-implemented the
+/// clamp in its own body and stayed green with the production line deleted.
+///
+/// The two sides cap differently and that asymmetry is deliberate, so it is written down here
+/// rather than left to be inferred: this caps by RATE alone, because an HLS candidate's raster is
+/// already bounded by `route::auto_catalog`'s `limited_to`, while a source arrives with a raster
+/// nobody has bounded and `source_quality_score` must cap by rate AND raster.
+pub(crate) fn hls_scoring_kbps(candidate: HlsCandidate, source_kbps: u32) -> u32 {
+    if source_kbps == 0 {
+        // Zero means "nobody said what the source is" (`ModeInputs::source_kbps`) and must not
+        // clamp to nothing, which would score every rung 0 and refuse every upshift.
+        candidate.expected_wire_kbps
+    } else {
+        candidate.expected_wire_kbps.min(source_kbps)
     }
 }
 
@@ -178,37 +225,12 @@ pub(crate) fn hls_utility(
         &inputs.buffer,
         policy,
     );
-    // **A transcode cannot carry more information than its source** (plan R5, §7.B).
-    //
-    // `hls_quality_score` reads the rung's nominal wire rate, and until 2026-08-28 that was the
-    // whole input on this side of the argmax — while `source_quality_score` on the OTHER side has
-    // always capped the source by its own rate and raster. The comparison was therefore asymmetric
-    // in the one direction that matters: a rendition may be requested at any rung the ladder
-    // offers, so a 20 Mbit/s transcode of an 8 Mbit/s master scored the ladder's top band while
-    // the master itself scored the band its real rate falls in.
-    //
-    // R5 stated the size of that ("an 8.5 Mbit/s 1080p source scores three steps below a
-    // 20 Mbit/s transcode of itself") and this reproduces it exactly: 8000 lands in `7001..=9000`
-    // for 58, 18000 lands in the open band for 76, and 58 -> 66 -> 72 -> 76 is three steps.
-    //
-    // Measured consequence, host 2026-08-28 (`pipe_auto_original_slow_recover`): with HLS settled
-    // at 18000 against an 8000 kbps source, `OriginalRecovery::probe_due` refuses with
-    // `reason=not_worth_it` and Original is never recovered — the controller declining to return
-    // to the master because it scores a re-encode of that master above it.
-    //
-    // The cap is STRUCTURAL, not a tuning weight: it is `transcode <= source` in R5's own words,
-    // the same bound `source_quality_score` already applies, and it introduces no constant. Zero
-    // means "nobody said what the source is" (`ModeInputs::source_kbps`) and must not clamp to
-    // nothing, which would score every rung 0 and refuse every upshift.
-    let scored = if inputs.source_kbps == 0 {
-        candidate
-    } else {
-        HlsCandidate {
-            expected_wire_kbps: candidate.expected_wire_kbps.min(inputs.source_kbps),
-            ..candidate
-        }
-    };
-    let quality = scaled(hls_quality_score(scored), scale);
+    // R5's `transcode <= source` lives in `hls_scoring_kbps`, which is where the invariant is
+    // stated, tested and reachable from — not inline here, where it was a local nothing could name.
+    let quality = scaled(
+        quality_score_at_kbps(hls_scoring_kbps(candidate, inputs.source_kbps)),
+        scale,
+    );
     // **N18 applies to BOTH sides of the argmax, and it was applied to one.** The rule it states
     // is a partition, not a preference: a term paid once is outside the scale and a term paid for
     // every remaining segment is inside it. `original_utility` scales quality, features and risk
@@ -279,12 +301,12 @@ pub(crate) fn original_utility(inputs: &ModeInputs, policy: &AbrPolicy) -> Optio
     let held_pm = (inputs.unsafe_deficit_ms.max(0).saturating_mul(1_000) / threshold).min(2_500);
     score += u32::try_from(60 * held_pm / 2_500).unwrap_or(60);
     // **Original's quality is scored from the SOURCE, not from a synthetic HLS reference** (N14
-    // site 3). It was `original_quality_bonus + hls_quality_score(candidate(P1080High))` — a
+    // site 3). It was `original_quality_bonus + quality_score_at_kbps(candidate(P1080High).expected_wire_kbps)` — a
     // constant 116 whatever it was being compared against, so the structural advantage the policy
     // comment reasons about as "40" was +40 against P1080High, +76 against P720 and +116 against
     // P240. A bonus that grows as the alternative gets worse is not a bonus, it is a thumb.
     let quality = scaled(
-        policy.original_quality_bonus + i64::from(source_quality_score(inputs, policy)),
+        policy.original_quality_bonus + i64::from(source_quality_score(inputs)),
         scale,
     );
     // **Three terms, ordered, where there was one flat bonus behind one boolean** (N16).
@@ -322,7 +344,7 @@ pub(crate) fn original_utility(inputs: &ModeInputs, policy: &AbrPolicy) -> Optio
 /// Two inputs and both are conservative on purpose:
 ///
 /// * the rate is `min(source_kbps, top rung's planning rate)`. Above the ladder's ceiling the
-///   quality curve has saturated anyway (`hls_quality_score`'s last band is open-ended), so
+///   quality curve has saturated anyway (`quality_score_at_kbps`'s last band is open-ended), so
 ///   clamping costs nothing real and stops an enormous remux rate reading as an enormous score.
 /// * the raster is a CAP, not a bonus. A source smaller than 1080p cannot be worth more than the
 ///   rungs that reproduce it exactly, so it scores at the best rung the LADDER ITSELF admits for
@@ -342,9 +364,9 @@ pub(crate) fn original_utility(inputs: &ModeInputs, policy: &AbrPolicy) -> Optio
 ///   Original on a scope film while recovering it on a 16:9 one over the same link. `admits`'s own
 ///   doc describes the same defect from the ladder's side, measured on the television.
 ///
-/// It is deliberately expressed in `hls_quality_score`'s own units by evaluating that function, so
+/// It is deliberately expressed in `quality_score_at_kbps`'s own units by evaluating that function, so
 /// the two sides of the comparison cannot drift apart when the curve is re-shaped.
-fn source_quality_score(inputs: &ModeInputs, _policy: &AbrPolicy) -> i64 {
+fn source_quality_score(inputs: &ModeInputs) -> i64 {
     let top = HlsActuatorCatalog::measured().candidate(Rung::P1080High);
     // **The raster caps the RATE**, and then the curve is evaluated once. Expressing it as a rate
     // cap rather than as a filter over rungs is not a simplification for its own sake: the first
@@ -365,12 +387,7 @@ fn source_quality_score(inputs: &ModeInputs, _policy: &AbrPolicy) -> i64 {
         .source_kbps
         .min(top.expected_wire_kbps)
         .min(raster_cap);
-    hls_quality_score(HlsCandidate {
-        rung: Rung::P240,
-        request_kbps: rate,
-        expected_wire_kbps: rate,
-        production_load_pm: 0,
-    })
+    quality_score_at_kbps(rate)
 }
 
 /// **One whole mode comparison, for one event-log line** (§7.H).

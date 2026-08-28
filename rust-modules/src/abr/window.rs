@@ -139,14 +139,18 @@ impl AdmissionPolicy {
     /// is reported by [`Self::is_clamped`] rather than hidden, because a silently shortened window
     /// weakens condition (2)'s proof span without weakening anything that says so.
     pub(crate) fn window_len(self) -> usize {
-        let epsilon = self.epsilon_pm.max(1) as u64;
-        let n = (u64::from(self.k.max(1)) * 1_000 / epsilon).saturating_sub(1);
-        (n as usize).clamp(1, WINDOW_CAPACITY)
+        (self.requested_len() as usize).clamp(1, WINDOW_CAPACITY)
     }
 
     pub(crate) fn is_clamped(self) -> bool {
-        let epsilon = self.epsilon_pm.max(1) as u64;
-        (u64::from(self.k.max(1)) * 1_000 / epsilon).saturating_sub(1) > WINDOW_CAPACITY as u64
+        self.requested_len() > WINDOW_CAPACITY as u64
+    }
+
+    /// R28's theorem itself, UNCLAMPED — the length the policy asks for. Both readers above are
+    /// about the same number, and it was written out twice: `window_len` computed it and clamped,
+    /// `is_clamped` recomputed it to compare. One expression could move without the other.
+    fn requested_len(self) -> u64 {
+        (u64::from(self.k.max(1)) * 1_000 / u64::from(self.epsilon_pm.max(1))).saturating_sub(1)
     }
 
     /// The realized exceedance ceiling at the length actually used — which is `eps` only when the

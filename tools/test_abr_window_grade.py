@@ -14,7 +14,6 @@ import contextlib
 import importlib.util
 import io
 import pathlib
-import tempfile
 import unittest
 from contextlib import redirect_stdout
 
@@ -42,14 +41,16 @@ def window(verdict, have, want, bound, demand, supply, excess, sus, sur,
 
 
 def graded(lines):
-    """(result, printed) for one synthetic log."""
-    with tempfile.TemporaryDirectory() as directory:
-        path = pathlib.Path(directory) / "case.log"
-        path.write_text("\n".join(lines) + "\n")
-        buf = io.StringIO()
-        with redirect_stdout(buf):
-            result = wg.grade(str(path))
-        return result, buf.getvalue()
+    """(result, printed) for one synthetic log.
+
+    `grade` and `occupancy` both take PARSED rows -- the file is read and paired once, by the
+    caller, which is what stopped every log being walked twice and `paired`'s skip note printing
+    twice per file.
+    """
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        result = wg.grade(wg.paired(list(lines)))
+    return result, buf.getvalue()
 
 
 class Transfer(unittest.TestCase):
@@ -182,22 +183,15 @@ class Occupancy(unittest.TestCase):
     """The half a pass/fail cannot report: what the run actually exercised."""
 
     def test_an_idle_link_is_reported_as_an_idle_link(self):
-        occ = None
-        with tempfile.TemporaryDirectory() as directory:
-            path = pathlib.Path(directory) / "case.log"
-            path.write_text("\n".join(AnHonestLogIsAccepted.build()) + "\n")
-            occ = wg.occupancy(str(path))
+        occ = wg.occupancy(wg.paired(AnHonestLogIsAccepted.build()))
         self.assertEqual(occ["graded"], 1)
         self.assertEqual(occ["verdicts"], {"admit": 1, "refuse": 0})
         self.assertAlmostEqual(occ["load_mean"], 9009 / 18000)
         self.assertEqual(occ["excess_nonzero"], 0)
 
     def test_a_log_with_nothing_graded_reports_none_rather_than_a_zero(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = pathlib.Path(directory) / "case.log"
-            path.write_text(sample(500) + "\n"
-                            + window("filling", 1, 9, -1, -1, -1, -1, 0, 0) + "\n")
-            self.assertIsNone(wg.occupancy(str(path)))
+        self.assertIsNone(wg.occupancy(wg.paired(
+            [sample(500), window("filling", 1, 9, -1, -1, -1, -1, 0, 0)])))
 
 
 class TheResetPath(unittest.TestCase):

@@ -42,6 +42,7 @@ import sys
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO, "tests"))
+from run import triggers_for_case  # noqa: E402
 from serve_fixtures import serve, default_root  # noqa: E402
 
 # `PLXNATIVE_SIM_BIN` overrides which simulator is driven, which is what makes an A/B possible:
@@ -89,17 +90,6 @@ def main():
     srv.set_segment_profile(case.get("segment_profile"))
     srv.set_network_profile(case.get("network_profile"))
 
-    spec = dict(case.get("declare", {}))
-    spec["url"] = f"{base}/{case['fixture']}"
-    auto = case.get("auto_network") or {}
-    if auto:
-        spec["auto_source_kbps"] = int(auto["source_kbps"])
-        spec["auto_hls_base"] = f"{base}/__abr"
-        if auto.get("start_hls"):
-            spec["auto_start_hls"] = True
-        if auto.get("source_raster"):
-            spec["source_raster"] = [int(v) for v in auto["source_raster"]]
-
     # One instance root PER CASE, so several of these run side by side — which is the capability
     # the television does not have and the reason this file is worth its length.
     tag = os.environ.get("PLXNATIVE_SIM_TAG", "head")
@@ -107,13 +97,18 @@ def main():
     shutil.rmtree(root, ignore_errors=True)
     os.makedirs(root, exist_ok=True)
     write = lambda n, v: open(os.path.join(root, n), "w").write(v)  # noqa: E731
-    write("plxnative-playurl", json.dumps(spec, separators=(",", ":")))
+    # **The harness derives the trigger set; this does not restate it.** The module doc above
+    # promises exactly that for the case, and the trigger derivation is the same promise one level
+    # down — a hand-written copy of `triggers_for_case` lived here and had ALREADY drifted, because
+    # it never read `case["operations"]`. `pipe_abr_seek_flat` is the one ABR case with a
+    # non-`play` operation, so on this tier it ran without ever seeking: a case that shares a name
+    # with the device tier's and grades a different thing, which is the precise failure the doc
+    # says this file exists to avoid.
+    for fname, content in triggers_for_case(case, url_base=base):
+        write(fname, content or "")
+    # The one trigger that is genuinely THIS tier's rather than the harness's: nothing decodes on a
+    # Mac, so the clock sink stands in for LG's decoder. `tests/run.py` has no reason to know it.
     write("plxnative-clocksink", "")
-    write("plxnative-stats", "")
-    if auto:
-        write("plxnative-quality", "auto")
-    if case.get("abr_pin"):
-        write("plxnative-abrpin", str(int(case["abr_pin"])))
 
     print(f"{name}: {secs}s, fixtures on {base}, root {root}")
     if case.get("segment_profile"):

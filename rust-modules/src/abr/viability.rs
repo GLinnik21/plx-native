@@ -82,17 +82,25 @@ pub(crate) fn risk_score(
     };
     // `round_half_up` on a non-negative numerator is `(x + half) / whole`.
     let round_half_up = |weight: i64, pm: i64| ((weight * pm) + 500) / 1_000;
-    let mut score = round_half_up(40, r_net_pm) + round_half_up(20, r_prod_pm);
+    let mut score = round_half_up(RISK_NET, r_net_pm) + round_half_up(RISK_PROD, r_prod_pm);
     if buffer_risk {
-        score += 30;
+        score += RISK_BUFFER;
     }
     u32::try_from(score).unwrap_or(u32::MAX)
 }
 
-/// The largest value [`risk_score`] can return: 40 + 20 + 30. It is the DENOMINATOR the read-out
-/// renders with, and it is here rather than as a literal at the render site so the panel cannot
-/// go on dividing by 90 after a coefficient moves.
-pub(crate) const RISK_SCORE_MAX: u32 = 90;
+/// The three weights [`risk_score`] sums. Named so that [`RISK_SCORE_MAX`] can be their sum rather
+/// than a fourth number that has to be edited alongside them: the const's whole purpose is that the
+/// panel cannot go on dividing by a stale denominator after a coefficient moves, and while the
+/// coefficients were literals it did not achieve that — moving one still meant editing the 90 by
+/// hand, which is the edit it exists to make unnecessary.
+const RISK_NET: i64 = 40;
+const RISK_PROD: i64 = 20;
+const RISK_BUFFER: i64 = 30;
+
+/// The largest value [`risk_score`] can return. It is the DENOMINATOR the read-out renders with,
+/// and it is here rather than as a literal at the render site.
+pub(crate) const RISK_SCORE_MAX: u32 = (RISK_NET + RISK_PROD + RISK_BUFFER) as u32;
 
 pub(crate) fn candidate_risk(
     candidate: HlsCandidate,
@@ -276,7 +284,7 @@ pub(crate) fn hls_safe_budget(capacity: &CapacityEstimate) -> u32 {
 /// aborting buys an escape to a cheaper rung, and where there is no cheaper rung it re-fetches
 /// the same bytes and buys a loop instead of a picture.
 pub(crate) fn candidate_warmup_is_guarded(proposal: Proposal) -> bool {
-    proposal.direction == Direction::Down && proposal.rung.below() != proposal.rung
+    proposal.direction == Direction::Down && !proposal.rung.at_floor()
 }
 
 pub(crate) fn candidate_warmup_budget(

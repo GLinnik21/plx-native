@@ -885,7 +885,7 @@ fn original_recovery_probes_from_any_rung_once_the_spacing_has_elapsed() {
         if gate.probe_due(
             current, &idle_server(), sample(20_000, 500, 10_000), healthy_buffer(), &spare,
             HOUR_MS, now,
-        ) {
+        ).is_ok() {
             fired_at = Some(now);
             break;
         }
@@ -914,7 +914,7 @@ fn the_probe_spacing_is_a_duration_and_not_a_number_of_segments() {
             if gate.probe_due(
                 current, &idle_server(), sample(20_000, 500, 10_000), healthy_buffer(), &spare,
                 HOUR_MS, now,
-            ) {
+            ).is_ok() {
                 return n;
             }
         }
@@ -943,7 +943,7 @@ fn original_recovery_refuses_to_probe_without_room_to_do_it_safely() {
     let elapsed = AbrPolicy::measured().probe_spacing_ms * 4;
     for _ in 0..6 {
         assert!(
-            !recovery(28_000).probe_due(
+            recovery(28_000).probe_due(
                 current,
                 &idle_server(),
                 sample(60_000, 500, 10_000),
@@ -951,11 +951,11 @@ fn original_recovery_refuses_to_probe_without_room_to_do_it_safely() {
                 &no_headroom,
                 HOUR_MS,
                 elapsed,
-            ),
+            ).is_err(),
             "segments prove a LOWER bound; at the wire rate there is no evidence of more",
         );
         assert!(
-            !recovery(28_000).probe_due(
+            recovery(28_000).probe_due(
                 current,
                 &idle_server(),
                 sample(60_000, 500, 2_000),
@@ -963,11 +963,11 @@ fn original_recovery_refuses_to_probe_without_room_to_do_it_safely() {
                 &spare,
                 HOUR_MS,
                 elapsed,
-            ),
+            ).is_err(),
             "one segment of reserve is not room to spend on a measurement",
         );
         assert!(
-            !recovery(28_000).probe_due(
+            recovery(28_000).probe_due(
                 current,
                 &idle_server(),
                 sample(60_000, 500, 10_000),
@@ -975,7 +975,7 @@ fn original_recovery_refuses_to_probe_without_room_to_do_it_safely() {
                 &spare,
                 HOUR_MS,
                 elapsed,
-            ),
+            ).is_err(),
             "a draining reserve is not the moment to add a second transfer",
         );
     }
@@ -1037,7 +1037,7 @@ fn recovery_does_not_pay_for_a_reload_at_the_end_of_a_film() {
     let spare = CapacityEstimate::from_prior(80_000);
     for _ in 0..ORIGINAL_PROBE_SPACING * 2 {
         assert!(
-            !recovery(28_000).probe_due(
+            recovery(28_000).probe_due(
                 current,
                 &idle_server(),
                 sample(20_000, 500, 10_000),
@@ -1045,7 +1045,7 @@ fn recovery_does_not_pay_for_a_reload_at_the_end_of_a_film() {
                 &spare,
                 8_000,
                 AbrPolicy::measured().probe_spacing_ms * 4,
-            ),
+            ).is_err(),
             "and it does not spend a probe finding that out",
         );
     }
@@ -2465,9 +2465,34 @@ fn vbr_headroom_makes_the_whole_file_average_a_lower_bound() {
     assert!(observation.fallback.is_none(), "but 30 s of reserve is not an emergency either");
 }
 
+/// A healthy HLS session against a 28 Mbit/s 1080p source, an hour of film left and no switch
+/// history — the base every mode-utility fixture varies one or two fields of.
+///
+/// It exists because five call sites each wrote all fourteen fields out, nine of which were
+/// identical in all five: a new `ModeInputs` field was five mechanical edits, and the one or two
+/// fields a given test actually varies — the interesting part — were buried in restated
+/// boilerplate. Vary with `..mode_inputs()`.
+fn mode_inputs() -> ModeInputs {
+    ModeInputs {
+        current: ModeKind::Hls,
+        source_kbps: 28_000,
+        source_raster: (1_920, 1_080),
+        source_delivery: CapacityEstimate::from_prior(200_000),
+        hls_delivery: CapacityEstimate::from_prior(200_000),
+        production: ProductionEstimate::default(),
+        buffer: BufferEstimate { buffered_ms: 8_000, ..Default::default() },
+        remaining_ms: HOUR_MS,
+        history: TransitionHistory::default(),
+        original_feasible: true,
+        source_dv: false,
+        source_atmos: false,
+        unsafe_deficit_ms: 0,
+    }
+}
+
 /// **N14 site 3: Original's quality comes from the SOURCE, and a modest source is worth less.**
 ///
-/// Category 8.3. It was `original_quality_bonus + hls_quality_score(candidate(P1080High))` — a
+/// Category 8.3. It was `original_quality_bonus + quality_score_at_kbps(candidate(P1080High).expected_wire_kbps)` — a
 /// constant 116 regardless of what it was being compared against, so the structural advantage the
 /// policy comment reasons about as "40" was in fact +40 against P1080High, +76 against P720 and
 /// +116 against P240. A bonus that grows as the alternative worsens is a thumb on the scale.
@@ -2663,11 +2688,11 @@ fn the_probe_gate_weighs_the_rung_the_link_supports_and_not_the_one_it_is_on() {
     let due_at_floor = gate().probe_due(
         floor, &idle_server(), sample(40_000, 200, 20_000), healthy_buffer(), &roomy, HOUR_MS,
         AbrPolicy::measured().probe_spacing_ms * 4,
-    );
+    ).is_ok();
     let due_at_top = gate().probe_due(
         top_candidate(), &idle_server(), sample(40_000, 200, 20_000), healthy_buffer(), &roomy,
         HOUR_MS, AbrPolicy::measured().probe_spacing_ms * 4,
-    );
+    ).is_ok();
     assert_eq!(
         due_at_floor, due_at_top,
         "the alternative is the best rung the link supports either way, so which rung happens to \
@@ -3866,7 +3891,7 @@ fn only_a_downshift_off_the_floor_guards_its_warmup() {
     for rung in LADDER {
         assert_eq!(
             candidate_warmup_is_guarded(Proposal { rung, direction: Direction::Down }),
-            rung.below() != rung,
+            !rung.at_floor(),
             "downshift guard at {rung:?} must follow the floor test alone",
         );
         assert!(
@@ -3916,6 +3941,55 @@ fn a_commit_does_not_enter_the_ceiling_drop_as_a_drain() {
     assert!(buffer.draining(), "a genuine post-commit drain must still fire: {buffer:?}");
 }
 
+/// **The WIRING, not the mechanism** — `Controller::commit` is what must rebase.
+///
+/// Differential, and it exists because its neighbour above is not. `a_commit_does_not_enter_the_
+/// ceiling_drop_as_a_drain` proves `BufferEstimate` forgets its slope when TOLD to: it calls
+/// `rebase()` in its own body, so deleting the call in `Controller::commit` leaves it green while
+/// the device symptom returns verbatim (`slope=-1459ms/s` on a filling reserve -> `draining()`
+/// stuck true -> `probe_due` resetting its spacing every sample -> Original never recovered).
+///
+/// This asks the controller instead: drive a genuinely FILLING reserve to a real commit and read
+/// the slope on the far side. Under unmodified code the commit is transparent to the estimator, so
+/// the positive slope asserted one line earlier survives it and the assertion cannot pass.
+#[test]
+fn the_controller_rebases_its_reserve_when_it_commits() {
+    const LINK_KBPS: u32 = 40_000;
+    let mut controller = bootstrap_controller();
+    // A reserve filling at a steady +400 ms/s, driven rather than modelled: what is under test is
+    // the controller's response to a commit, and a plant model here would make the input a
+    // function of the very decision being graded.
+    for step in 0..40i64 {
+        let buf_ms = 8_000 + step * 800;
+        let Decision::Prime(proposal) =
+            controller.observe_next(sample(LINK_KBPS, 400, buf_ms))
+        else {
+            continue;
+        };
+        let candidate = sample(LINK_KBPS, 400, buf_ms);
+        if !controller.candidate_ready(proposal, candidate, declared_bps(proposal.rung)) {
+            controller.reject(proposal, RejectCause::Candidate, controller.clock_ms());
+            continue;
+        }
+        assert!(
+            controller.buffer().slope_ms_per_s > 0,
+            "the setup must reach the commit on a FILLING reserve, or this grades nothing: {:?}",
+            controller.buffer(),
+        );
+        assert!(controller.commit(proposal, controller.clock_ms()));
+        assert_eq!(
+            controller.buffer().slope_ms_per_s,
+            0,
+            "committing moved `B_max`, so the next reading is in new coordinates and the rate of \
+             change is UNKNOWN — `Controller::commit` owes `BufferEstimate::rebase`: {:?}",
+            controller.buffer(),
+        );
+        assert!(!controller.buffer().draining(), "and a rebased reserve is not draining");
+        return;
+    }
+    panic!("no rung transaction was proposed and accepted — the fixture no longer exercises a commit");
+}
+
 /// **A transcode may not out-score the master it was made from** (R5, §7.B).
 ///
 /// Differential: before the source clamp in `hls_utility`, the HLS side read the rung's nominal
@@ -3928,46 +4002,61 @@ fn a_commit_does_not_enter_the_ceiling_drop_as_a_drain() {
 /// 76 is the "three steps" R5 named.
 #[test]
 fn a_rendition_cannot_score_above_the_master_it_encodes() {
+    let policy = AbrPolicy::measured();
     let catalog = HlsActuatorCatalog::measured();
     let rich = catalog.candidate(Rung::P1080M18);
     let source_kbps = 8_000;
 
     // The curve itself is unchanged and still says what it always said about a bare rate.
-    assert_eq!(hls_quality_score(rich), 76, "the ladder's own band for 18000");
-    assert_eq!(
-        hls_quality_score(HlsCandidate { expected_wire_kbps: source_kbps, ..rich }),
-        58,
-        "and the band an 8000 kbps master falls in",
-    );
+    assert_eq!(quality_score_at_kbps(rich.expected_wire_kbps), 76, "the ladder's band for 18000");
+    assert_eq!(quality_score_at_kbps(source_kbps), 58, "the band an 8000 kbps master falls in");
 
-    // What changed is which of those the COMPARISON uses. Scored against an 8000 kbps source, a
-    // rendition asking for 18000 may not claim more than the master carries.
-    let clamped = HlsCandidate {
-        expected_wire_kbps: rich.expected_wire_kbps.min(source_kbps),
-        ..rich
+    // **Asked through the PRODUCTION path.** `hls_utility` is what `choose_mode` argmaxes over, so
+    // that is what has to be interrogated. This test used to re-implement the cap in its own body
+    // and assert the arithmetic, which stayed green with the production line deleted -- the shape
+    // the house rule on differential tests exists to forbid.
+    //
+    // Scoring the SAME candidate against an 8000 kbps source and against an unknown one must give
+    // different quality. Under unmodified code the source was not an input on this side at all, so
+    // both calls returned the 18000 band and the inequality cannot hold.
+    let quality_against = |src: u32| {
+        hls_utility(rich, rich, &ModeInputs { source_kbps: src, ..mode_inputs() }, &policy).quality
     };
+    assert!(
+        quality_against(source_kbps) < quality_against(0),
+        "an 18000 kbps rendition of an 8000 kbps master must not score as an 18000 kbps picture: \
+         {} against a known source vs {} against an unknown one",
+        quality_against(source_kbps),
+        quality_against(0),
+    );
     assert_eq!(
-        hls_quality_score(clamped),
-        hls_quality_score(HlsCandidate { expected_wire_kbps: source_kbps, ..rich }),
+        quality_against(source_kbps),
+        hls_utility(
+            HlsCandidate { expected_wire_kbps: source_kbps, ..rich },
+            rich,
+            &ModeInputs { source_kbps, ..mode_inputs() },
+            &policy,
+        )
+        .quality,
         "a transcode of an 8000 kbps master is worth an 8000 kbps picture, not an 18000 one",
     );
 
-    // The clamp must NOT bite when the rung is genuinely under the source — that is the ordinary
-    // case, and clamping there would flatten the whole ladder into one band.
+    // The cap must NOT bite when the rung is genuinely under the source -- the ordinary case, where
+    // capping would flatten the whole ladder into one band.
     let modest = catalog.candidate(Rung::P720Low);
     assert!(modest.expected_wire_kbps < source_kbps, "fixture assumption");
     assert_eq!(
-        hls_quality_score(HlsCandidate {
-            expected_wire_kbps: modest.expected_wire_kbps.min(source_kbps),
-            ..modest
-        }),
-        hls_quality_score(modest),
+        hls_scoring_kbps(modest, source_kbps),
+        modest.expected_wire_kbps,
         "a rung below the source is scored exactly as before",
     );
-
-    // ...and an unknown source (`source_kbps == 0`) must not clamp to nothing, which would score
+    // ...and an unknown source (`source_kbps == 0`) must not cap to nothing, which would score
     // every rung 0 and refuse every upshift.
-    assert_eq!(hls_quality_score(rich), 76, "unknown source leaves the curve alone");
+    assert_eq!(
+        hls_scoring_kbps(rich, 0),
+        rich.expected_wire_kbps,
+        "unknown source leaves the rate alone",
+    );
 }
 
 /// **The probe's reserve requirement is the probe's own budget, not a count of segments.**

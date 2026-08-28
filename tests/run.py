@@ -1531,7 +1531,12 @@ class LinkConditioner:
             self.why = ("the deployed binary names no PMS port — src/config.local.h is missing "
                         "or has no PMS_PORT")
             return
-        if self.listen == self.target[1] and self.target[0] == self.host_of_listen():
+        # netcond binds 0.0.0.0, so "direct" is decided by the PORT alone: the compiled host IS
+        # the PMS host by construction (`self.target[0]` is where both come from). The second
+        # conjunct used to be `self.target[0] == self.host_of_listen()`, and `host_of_listen`
+        # returned `self.target[0]` — `x == x`, a named method and a clause that read as a real
+        # guard and expressed nothing.
+        if self.listen == self.target[1]:
             self.why = (f"the binary talks to the server DIRECTLY on :{self.listen}; rebuild with "
                         f"PMS_PORT set to a proxy port to condition the link")
             return
@@ -1558,10 +1563,6 @@ class LinkConditioner:
             return
         self.usable = True
         self.why = ""
-
-    def host_of_listen(self):
-        """netcond binds 0.0.0.0, so 'direct' means the compiled host IS the PMS host."""
-        return self.target[0]
 
     def arm(self, profile, started_at):
         """Apply `profile` — a list of `{"at_s": <offset>, "mode": "<netcond mode>"}` — from
@@ -1844,6 +1845,26 @@ def abr_dip_max_kbps(samples, dip_windows):
 LUMP_SEEK_S = 10
 
 
+def _runs(series, is_bad):
+    """`(runs, hits)` — the lengths of every maximal run of CONSECUTIVE bad beats, and the total.
+
+    `abr_stalls` and `playback_lumpiness` ask the same question of the same `pos=` series and
+    differ only in what makes a beat bad, so the walk is here once. Both had their own copy,
+    including the trailing flush — the half that is easy to fix in one and forget in the other.
+    """
+    runs, cur, hits = [], 0, 0
+    for before, after in zip(series, series[1:]):
+        if is_bad(before, after):
+            cur += 1
+            hits += 1
+        elif cur:
+            runs.append(cur)
+            cur = 0
+    if cur:
+        runs.append(cur)
+    return runs, hits
+
+
 def abr_stalls(lines):
     """`(max_continuous_s, total_s, samples)` of REAL playback stall, from the 1 Hz `pos=` series.
 
@@ -1858,15 +1879,7 @@ def abr_stalls(lines):
     series = [p for p, _ in playpos_secs(lines)]
     if len(series) < 2:
         return None, None, len(series)
-    runs, cur = [], 0
-    for before, after in zip(series, series[1:]):
-        if after <= before:
-            cur += 1
-        elif cur:
-            runs.append(cur)
-            cur = 0
-    if cur:
-        runs.append(cur)
+    runs, _ = _runs(series, lambda before, after: after <= before)
     return (max(runs) if runs else 0), sum(runs), len(series)
 
 
@@ -1898,17 +1911,7 @@ def playback_lumpiness(lines):
     series = [p for p, _ in playpos_secs(lines)]
     if len(series) < 2:
         return None, None, len(series)
-    lumpy, runs, cur = 0, [], 0
-    for before, after in zip(series, series[1:]):
-        step = after - before
-        if 2 <= step <= LUMP_SEEK_S:
-            lumpy += 1
-            cur += 1
-        elif cur:
-            runs.append(cur)
-            cur = 0
-    if cur:
-        runs.append(cur)
+    runs, lumpy = _runs(series, lambda before, after: 2 <= after - before <= LUMP_SEEK_S)
     return lumpy, (max(runs) if runs else 0), len(series)
 
 
@@ -1995,6 +1998,14 @@ def abr_raster_changes(lines):
 
     A log with no `out=` falls back to the box and is scored exactly as before, so the two are not
     mixed within one series: whichever the FIRST commit offers is used for all of them.
+
+    **It returns WHICH reading it used, and the caller prints it.** Two series answer to one name
+    here, and this file states the doctrine twice elsewhere — a scene "must never grade a loop rate
+    as if it were a frame rate", a renamed field "must fail as 'no samples' rather than silently
+    match zero". A silent whole-series fallback is the same hazard: `0x0` is not hypothetical
+    (`ff.rs` writes it whenever a candidate produced no output, which a stall-aborted one does), so
+    a CURRENT build's log can revert to bounding-box semantics with nothing saying so — while the
+    failure message's `trail` goes on showing catalog rasters either way.
     """
     observed = [f"{m.group(1)}x{m.group(2)}"
                 for line in lines for m in [RE_ABR_COMMIT_OUT.search(line)] if m]
@@ -2002,9 +2013,37 @@ def abr_raster_changes(lines):
                for line in lines for m in [RE_ABR_COMMIT.search(line)] if m]
     # A decoded 0x0 is "the commit fed nothing measurable", not an observation; fall back whole
     # rather than letting one such entry manufacture two spurious transitions around itself.
-    rasters = observed if observed and len(observed) == len(catalog) and "0x0" not in observed \
-        else catalog
-    return sum(1 for a, b in zip(rasters, rasters[1:]) if a != b)
+    decoded = bool(observed) and len(observed) == len(catalog) and "0x0" not in observed
+    rasters = observed if decoded else catalog
+    return (sum(1 for a, b in zip(rasters, rasters[1:]) if a != b),
+            "decoded" if decoded else "catalog")
+
+
+def report_and_record(cfg, name, passed, results, lines, elapsed, run_secs, early, settled,
+                     verbose):
+    """Save the log, print the verdict, print the characterisation. Both tiers, one tail.
+
+    CHARACTERISATION is printed for any case that ran the HLS controller and is never graded:
+    these are the observations increment I1 has to record about UNMODIFIED HEAD, and later
+    increments are expected to change what they say. Asserting them would pin today's behaviour as
+    desirable, which is exactly what I0 must not do.
+
+    The server tier needs it MORE, not less: an `abr: sample` there came from a real PMS ladder
+    over a real link, and the app truncates its event log every launch. `--save-logs` was a silent
+    no-op on that tier until 2026-08-27, so every server-tier ABR observation ever taken was read
+    once off a terminal and then destroyed by the next case. The fix was copied into the second
+    runner rather than shared, which set up the same failure one move ahead — the next
+    characterisation surface added to one tail and not the other.
+    """
+    saved = save_case_log(cfg, name, lines)
+    if saved:
+        print(f"    log saved: {saved} ({len(lines)} lines)")
+    report_case(passed, results, elapsed, run_secs, early, settled, verbose)
+    notes = abr_characterisation(lines)
+    if notes:
+        print("    characterisation (recorded, not graded):")
+        for note in notes:
+            print(f"       {note}")
 
 
 def abr_characterisation(lines):
@@ -2136,14 +2175,14 @@ def a_abr_shape(lines, spec, dip_windows=()):
     dip_kbps, dip_note = abr_dip_max_kbps(samples, dip_windows)
     stall_max, stall_total, beats = abr_stalls(lines)
     rate_mean, rate_worst, _rate_beats, rate_legs = playback_rate(lines)
-    rasters = abr_raster_changes(lines)
+    rasters, raster_src = abr_raster_changes(lines)
     story += (f" | min_buf_ms={min_buf if min_buf is not None else 'n/a'}"
               f" dip_max_kbps={dip_kbps if dip_kbps is not None else 'n/a'} ({dip_note})"
               f" max_stall_s={stall_max if stall_max is not None else 'n/a'}"
               f" (total {stall_total if stall_total is not None else 'n/a'}s over {beats} beats,"
               f" +/-1s) play_rate_pm={rate_mean if rate_mean is not None else 'n/a'}"
               f"/worst{rate_worst if rate_worst is not None else 'n/a'} over {rate_legs} leg(s)"
-              f" raster_changes={rasters} lane[{abr_binding_lane(samples)}]"
+              f" raster_changes={rasters} ({raster_src}) lane[{abr_binding_lane(samples)}]"
               f" segments={len(samples)}")
     if not samples:
         story += " | WARNING: no `abr: sample` line — every metric above is blind"
@@ -3436,20 +3475,8 @@ def run_case(case, cfg, token, verbose, cond=None):
 
     # 5. evaluate
     passed, results = evaluate(case, lines)
-    saved = save_case_log(cfg, name, lines)
-    if saved:
-        print(f"    log saved: {saved} ({len(lines)} lines)")
-    report_case(passed, results, elapsed, run_secs, stopped_early, settled, verbose)
-    # The same characterisation the synthetic tier prints, for the same reason and on the tier
-    # that needs it more: an `abr: sample` here came from a REAL PMS ladder over a real link, and
-    # the app truncates its event log every launch. `--save-logs` was a silent no-op on this tier
-    # until 2026-08-27 -- so every server-tier ABR observation ever taken was read once off the
-    # terminal and then destroyed by the next case.
-    notes = abr_characterisation(lines)
-    if notes:
-        print("    characterisation (recorded, not graded):")
-        for note in notes:
-            print(f"       {note}")
+    report_and_record(cfg, name, passed, results, lines, elapsed, run_secs, stopped_early,
+                      settled, verbose)
     return passed, results, lines
 
 
@@ -3770,19 +3797,8 @@ def run_pipeline_case(case, cfg, srv, url_base, verbose):
     # the poll path see the same windows whichever way the case ended.
     case["_dip_windows"] = srv.dip_windows()
     passed, results = evaluate_pipeline(case, lines, delta, gst_lines=gst_lines)
-    saved = save_case_log(cfg, name, lines)
-    if saved:
-        print(f"    log saved: {saved} ({len(lines)} lines)")
-    report_case(passed, results, elapsed, run_secs, stopped_early, settled, verbose)
-    # CHARACTERISATION (plan I0-F/G/H). Printed for any case that ran the HLS controller, never
-    # graded: these are the three observations increment I1 has to record about UNMODIFIED HEAD,
-    # and later increments are expected to change what they say. Asserting them would pin today's
-    # behaviour as desirable, which is exactly what I0 must not do.
-    notes = abr_characterisation(lines)
-    if notes:
-        print("    characterisation (recorded, not graded):")
-        for note in notes:
-            print(f"       {note}")
+    report_and_record(cfg, name, passed, results, lines, elapsed, run_secs, stopped_early,
+                      settled, verbose)
     if delta[0] == 0:
         # Every case that reaches the television opens at least one body. Zero means the TV never
         # connected AT ALL, and on macOS the overwhelmingly likely reason is not the app: the

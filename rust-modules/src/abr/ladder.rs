@@ -207,6 +207,14 @@ impl Rung {
         LADDER[self.index().saturating_sub(1)]
     }
 
+    /// **R12's terminal case, named.** `below() == self` is the whole test, but it was written out
+    /// at three sites in two files and twice in the negative — `below() != self` for "there IS
+    /// somewhere to run to" reads as its own double negative, and a reader has to re-derive the
+    /// identity-at-the-floor trick each time to see that the three are one predicate.
+    pub(crate) fn at_floor(self) -> bool {
+        self.below() == self
+    }
+
     /// Recover the controller's starting rung from the exact ceiling stored in the playback
     /// route. Auto owns only these canonical values; an arbitrary/manual ceiling is not an ABR
     /// state and therefore has no answer here.

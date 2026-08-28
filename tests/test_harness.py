@@ -1460,7 +1460,7 @@ class AbrTraceMetrics(unittest.TestCase):
             "abr: committed Down to 4000kbps 1280x720",   # a raster band crossing
             "abr: committed Up to 8000kbps 1920x1080",    # and back
         ]
-        self.assertEqual(run.abr_raster_changes(lines), 2)
+        self.assertEqual(run.abr_raster_changes(lines), (2, "catalog"))
 
     def test_characterisation_reports_the_three_baseline_observations(self):
         """INTEGRATION: the text increment I1 records about unmodified HEAD."""
@@ -2589,10 +2589,10 @@ class TheAbrCommitLineMatchesTheHarnessRegex(unittest.TestCase):
             "abr: committed Up to 4000kbps 1280x720 out=1280x720",
             "abr: committed Up to 6000kbps 1920x1080 out=1280x720",
         ]
-        self.assertEqual(run.abr_raster_changes(box_differs_output_same), 0)
+        self.assertEqual(run.abr_raster_changes(box_differs_output_same), (0, "decoded"))
         # ...and the legacy form, with no `out=`, still scores exactly as it used to.
         self.assertEqual(run.abr_raster_changes(
-            [line.split(" out=")[0] for line in box_differs_output_same]), 1)
+            [line.split(" out=")[0] for line in box_differs_output_same]), (1, "catalog"))
 
     def test_an_unmeasured_commit_falls_back_rather_than_inventing_transitions(self):
         """A `0x0` decode is "fed nothing measurable", not an observation."""
@@ -2603,7 +2603,7 @@ class TheAbrCommitLineMatchesTheHarnessRegex(unittest.TestCase):
         ]
         # On the decoded reading this would be 1280->0->1920, i.e. TWO changes, one of them pure
         # artefact. Falling back to the boxes gives the one real band crossing.
-        self.assertEqual(run.abr_raster_changes(mixed), 1)
+        self.assertEqual(run.abr_raster_changes(mixed), (1, "catalog"))
 
 
 class TheAbrWindowLineMatchesTheHarnessRegex(unittest.TestCase):
