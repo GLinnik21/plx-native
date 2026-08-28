@@ -2521,6 +2521,91 @@ class ThePlaybackRateIsTheOnlyThingThatSeesASlowFilm(unittest.TestCase):
         self.assertIn("worst 10s window", why)
 
 
+class TheAbrCommitLineMatchesTheHarnessRegex(unittest.TestCase):
+    """**The commit line's format string, read out of `ff.rs` and matched against both regexes.**
+
+    Same contract as `TheAbrWindowLineMatchesTheHarnessRegex` and the same failure if it lapses:
+    the app formats this on a television and the harness parses it on a Mac, and a drift shows up
+    as `raster_changes=0` — indistinguishable from a run that never switched rung.
+
+    It extracts the FORMAT STRING rather than pinning a rendered example, because this line is an
+    inline `format!` with no `log_line` method to call. A copied example here would agree with the
+    regex forever regardless of what the app emits.
+
+    Two regexes, deliberately: `RE_ABR_COMMIT` reads the rung's bounding box and predates `out=`,
+    `RE_ABR_COMMIT_OUT` reads the decoded raster. Both must match the SAME line, or the additive
+    append silently retired a grader (`RE_ABR_UP` parses this line too).
+    """
+
+    FF_RS = os.path.join(REPO_ROOT, "rust-modules", "src", "ff.rs")
+
+    def commit_format(self):
+        with open(self.FF_RS, encoding="utf-8") as fh:
+            source = fh.read()
+        found = re.findall(r'"(abr: committed [^"\\]*)"', source)
+        self.assertEqual(len(found), 1,
+                         f"expected exactly one `abr: committed` format string, got {found}")
+        return found[0]
+
+    def rendered(self):
+        """The format string with its placeholders filled, in order.
+
+        Values chosen so every field is distinguishable from every other: a direction, a rate, a
+        bounding box and a DIFFERENT decoded raster — which is the case the whole change exists
+        for (M3 measured PMS producing 1280x720 against a 1920x1080 box).
+        """
+        fmt = self.commit_format()
+        values = ["Up", "6000", "1920", "1080", "1280", "720"]
+        out, rest = [], fmt
+        for value in values:
+            hole = re.search(r"\{:\?\}|\{\}", rest)
+            self.assertIsNotNone(hole, f"more values than placeholders in {fmt!r}")
+            out.append(rest[:hole.start()] + value)
+            rest = rest[hole.end():]
+        self.assertIsNone(re.search(r"\{:\?\}|\{\}", rest),
+                          f"more placeholders than values in {fmt!r}")
+        return "".join(out) + rest
+
+    def test_the_box_regex_still_matches_and_reads_the_box(self):
+        m = run.RE_ABR_COMMIT.search(self.rendered())
+        self.assertIsNotNone(m, f"RE_ABR_COMMIT no longer matches {self.rendered()!r}")
+        self.assertEqual((m.group(1), m.group(2)), ("Up", "6000"))
+        self.assertEqual((m.group(3), m.group(4)), ("1920", "1080"), "groups 3/4 are the BOX")
+
+    def test_the_out_regex_reads_the_decoded_raster_and_not_the_box(self):
+        m = run.RE_ABR_COMMIT_OUT.search(self.rendered())
+        self.assertIsNotNone(m, f"RE_ABR_COMMIT_OUT no longer matches {self.rendered()!r}")
+        self.assertEqual((m.group(1), m.group(2)), ("1280", "720"),
+                         "must read the DECODED raster, never the bounding box")
+
+    def test_raster_changes_prefers_the_decoded_raster(self):
+        """MATHEMATICAL INVARIANT: two commits that decoded alike are not a raster change.
+
+        Measured (`docs/measurements/m3-production-census.md`): against a 4K source PMS produces
+        1280x720 for both `P720` and `P1080M6`, whose catalog boxes differ. Counting boxes scores
+        a change a viewer cannot see.
+        """
+        box_differs_output_same = [
+            "abr: committed Up to 4000kbps 1280x720 out=1280x720",
+            "abr: committed Up to 6000kbps 1920x1080 out=1280x720",
+        ]
+        self.assertEqual(run.abr_raster_changes(box_differs_output_same), 0)
+        # ...and the legacy form, with no `out=`, still scores exactly as it used to.
+        self.assertEqual(run.abr_raster_changes(
+            [line.split(" out=")[0] for line in box_differs_output_same]), 1)
+
+    def test_an_unmeasured_commit_falls_back_rather_than_inventing_transitions(self):
+        """A `0x0` decode is "fed nothing measurable", not an observation."""
+        mixed = [
+            "abr: committed Up to 4000kbps 1280x720 out=1280x720",
+            "abr: committed Up to 6000kbps 1920x1080 out=0x0",
+            "abr: committed Up to 8000kbps 1920x1080 out=1920x1080",
+        ]
+        # On the decoded reading this would be 1280->0->1920, i.e. TWO changes, one of them pure
+        # artefact. Falling back to the boxes gives the one real band crossing.
+        self.assertEqual(run.abr_raster_changes(mixed), 1)
+
+
 class TheAbrWindowLineMatchesTheHarnessRegex(unittest.TestCase):
     """**The other half of a contract whose two sides never meet at runtime.**
 

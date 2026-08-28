@@ -4390,12 +4390,30 @@ fn hls_demux(
         // speak for the film's duration.
         candidate.publishes_duration = true;
         cursor = candidate;
+        // **`out=` is what was DECODED; the pair before it is the rung's bounding box.** They are
+        // routinely different and the difference is the point: M3 (2026-08-28) measured PMS
+        // producing 1280x720 for BOTH `P720` and `P1080M6` against a 4K source, and 1918x802 for
+        // every rung from `P1080M6` up against a 1080p one. So a commit that crosses a catalog
+        // raster band is frequently invisible to a viewer, and `run.py`'s `raster_changes` — the
+        // plan's device co-grader — counted those catalog bands because this line printed nothing
+        // else. `abr.rs` states the rule this violated: *a rung's raster is a BOUNDING BOX, not a
+        // target*, and reading one as the other has already shipped as a device bug once.
+        //
+        // APPENDED rather than substituted: `RE_ABR_UP` and `RE_ABR_COMMIT` both parse the
+        // leading form, so replacing it in place would silently retire two graders. Old logs stay
+        // readable and `abr_raster_changes` prefers `out=` when it is there.
+        let observed = candidate_outputs
+            .last()
+            .map(|(output, _, _)| (output.video_width, output.video_height))
+            .unwrap_or((0, 0));
         crate::player::log(&format!(
-            "abr: committed {:?} to {}kbps {}x{}",
+            "abr: committed {:?} to {}kbps {}x{} out={}x{}",
             proposal.direction,
             proposal.rung.kbps(),
             proposal.rung.raster().0,
             proposal.rung.raster().1,
+            observed.0,
+            observed.1,
         ));
     }
     Ok(())

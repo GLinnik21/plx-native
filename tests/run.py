@@ -1719,6 +1719,11 @@ def hls_segments(lines):
     return _parsed(RE_HLS_SEGMENT, SEGMENT_FIELDS, lines)
 
 RE_ABR_COMMIT = re.compile(r"abr: committed (Up|Down) to (\d+)kbps (\d+)x(\d+)")
+# The DECODED raster, appended to the same line since 2026-08-28. Separate pattern rather
+# than a widened `RE_ABR_COMMIT` so a log predating it still parses as it always did — and
+# so a reader cannot mistake the bounding box for an observation by reading one regex.
+RE_ABR_COMMIT_OUT = re.compile(
+    r"abr: committed (?:Up|Down) to \d+kbps \d+x\d+ out=(\d+)x(\d+)")
 
 
 def abr_samples(lines):
@@ -1977,11 +1982,28 @@ def abr_raster_changes(lines):
 
     Eight of the thirteen rungs share 1920x1080 and are eventless to a viewer; four of the twelve
     adjacent steps cross a raster band and are a different class of event. Counting commits alone
-    cannot tell those apart. NB the app prints the CATALOG raster on its commit line, so this
-    counts intended raster changes; the observed output raster is not yet logged (plan §7.B).
+    cannot tell those apart.
+
+    **Counts the DECODED raster when the log carries one** (`out=`, appended 2026-08-28), and the
+    catalog raster otherwise. That is not a formatting preference — the two disagree, measured:
+    against a 4K source PMS produces 1280x720 for BOTH `P720` and `P1080M6`, and against a 1080p
+    source it produces 1918x802 for every rung from `P1080M6` up
+    (`docs/measurements/m3-production-census.md`). So on the catalog reading a `P720 -> P1080M6`
+    commit is a raster change and a viewer sees nothing, while `P1080High -> Uhd` on a 1080p item
+    reads as a change into 4K that never happened. A rung's raster is a BOUNDING BOX, not a
+    target, and this counter is the plan's device co-grader — it was grading the intent.
+
+    A log with no `out=` falls back to the box and is scored exactly as before, so the two are not
+    mixed within one series: whichever the FIRST commit offers is used for all of them.
     """
-    rasters = [f"{m.group(3)}x{m.group(4)}"
+    observed = [f"{m.group(1)}x{m.group(2)}"
+                for line in lines for m in [RE_ABR_COMMIT_OUT.search(line)] if m]
+    catalog = [f"{m.group(3)}x{m.group(4)}"
                for line in lines for m in [RE_ABR_COMMIT.search(line)] if m]
+    # A decoded 0x0 is "the commit fed nothing measurable", not an observation; fall back whole
+    # rather than letting one such entry manufacture two spurious transitions around itself.
+    rasters = observed if observed and len(observed) == len(catalog) and "0x0" not in observed \
+        else catalog
     return sum(1 for a, b in zip(rasters, rasters[1:]) if a != b)
 
 
