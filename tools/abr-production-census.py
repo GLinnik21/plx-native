@@ -211,27 +211,95 @@ def residuals(rows, key, field="warm_pm"):
 
 
 def verdict(rows, key):
-    """M3's falsification rule, applied rather than described."""
+    """M3's falsification rule, applied rather than described — over the INTERIOR of the ladder.
+
+    The two normalisation anchors are excluded because their agreement is definitional, not
+    evidence: the rung supplying `rho_floor` is 0 by construction and `P1080High` is 1000 by
+    construction. Including them makes the floor rung read as a 100% deviation from whatever the
+    table happens to say about it, which is the loudest number in the output and means nothing.
+    M3's rule is about MID-ladder loads, and this is what that phrase has to mean.
+    """
+    have = [r for r in rows if r[key].get("residual_load_pm") is not None]
+    if not have:
+        return "INCONCLUSIVE — no interior rung produced a comparable residual"
+
+    # **A residual is only readable if the ladder's span exceeds the measurement's own noise.**
+    # Not a chosen threshold: it is the same comparison `BufferEstimate::draining` makes against
+    # `DRAIN_EPS_MS_PER_S` and `ui::idle` makes against a visibility floor — judge the signal
+    # against the dispersion of the instrument, not against zero. Against a 1080p SOURCE every
+    # rung's warm rho lands within a couple of per mille of every other, because the encoder is
+    # not downscaling and the fetch is measuring transport; dividing a 2 pm span by itself
+    # produced a "2187% deviation" that says nothing about the table at all.
+    spreads = []
+    for r in rows:
+        samples = r[key].get("all_pm") or []
+        warm = samples[1:] or samples
+        if len(warm) >= 2:
+            spreads.append(max(warm) - min(warm))
+    noise = statistics.median(spreads) if spreads else 0
+    raw = [r[key]["warm_pm"] for r in have if r[key].get("warm_pm") is not None]
+    span_pm = (max(raw) - min(raw)) if raw else 0
+    if span_pm <= noise:
+        return (
+            f"INCONCLUSIVE — the ladder spans {span_pm}pm of rho against {noise}pm of within-rung "
+            f"spread, so no residual is resolvable. This is the expected reading against a source "
+            f"the encoder does not have to downscale; use a 4K source to separate the rungs"
+        )
+    # **Is the measured ordering even the table's ordering?** `production_load_pm` is monotone in
+    # the rung, and a percentage deviation silently assumes that shape is right. Count concordant
+    # against discordant pairs first: a majority-discordant ladder is not a mis-CALIBRATED table,
+    # it is a table of the wrong VARIABLE, and reporting it as a percentage would hide that.
+    pairs = [(r["production_load_pm"], r[key]["warm_pm"]) for r in have]
+    con = dis = 0
+    for i in range(len(pairs)):
+        for j in range(i + 1, len(pairs)):
+            (t1, m1), (t2, m2) = pairs[i], pairs[j]
+            if t1 == t2 or m1 == m2:
+                continue
+            if (t1 < t2) == (m1 < m2):
+                con += 1
+            else:
+                dis += 1
+    if dis > con:
+        return (
+            f"INVERTED — {dis} of {con + dis} rung pairs cost the OPPOSITE of what the table "
+            f"orders them. Production cost is not a function of the target rung alone: against a "
+            f"source at raster R, a target BELOW R must be downscaled while a target AT R is a "
+            f"near-copy, so the cheap end of the ladder is the expensive end to produce. "
+            f"`production_load_pm` is indexed by target only and cannot express that"
+        )
+    floor_value = min(r[key]["residual_load_pm"] for r in have)
+    # EVERY rung tied at the floor is an anchor, not just one of them. Two rungs measuring the
+    # same cost is a real finding — the table separates P240 and P480 by 2x and the server does
+    # not — but it is a finding about the TABLE'S ORDERING, not a percentage deviation, and
+    # whichever tied rung is not chosen as the reference would otherwise read as 100% off.
+    anchors = {"P1080High"} | {
+        r["rung"] for r in have if r[key]["residual_load_pm"] == floor_value
+    }
+    tied = sorted(anchors - {"P1080High"})
     worst = None
     for r in rows:
         got = r[key].get("residual_load_pm")
         want = r["production_load_pm"]
-        if got is None or want <= 0:
+        if got is None or want <= 0 or r["rung"] in anchors:
             continue
         dev = abs(got - want) / want
         r[key]["deviation_pct"] = round(dev * 100, 1)
         if worst is None or dev > worst[1]:
             worst = (r["rung"], dev)
     if worst is None:
-        return "INCONCLUSIVE — no rung produced a comparable residual"
+        return "INCONCLUSIVE — no interior rung produced a comparable residual"
     name, dev = worst
+    floor_note = (
+        f" [floor-tied and excluded: {', '.join(tied)}]" if len(tied) > 1 else ""
+    )
     if dev <= 0.15:
-        return f"UPHELD — every residual within 15% (worst {name} at {dev*100:.1f}%)"
+        return f"UPHELD — every interior residual within 15% (worst {name} at {dev*100:.1f}%){floor_note}"
     if dev <= 0.25:
-        return f"MARGINAL — worst {name} at {dev*100:.1f}%, between the 15% and 25% rules"
+        return f"MARGINAL — worst {name} at {dev*100:.1f}%, between the 15% and 25% rules{floor_note}"
     return (
         f"REFUTED — {name} is off by {dev*100:.1f}%; the deferred argmax is a re-parameterisation "
-        f"on fresh numbers and must be argued on those"
+        f"on fresh numbers and must be argued on those{floor_note}"
     )
 
 
