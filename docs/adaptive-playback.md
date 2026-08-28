@@ -678,6 +678,20 @@ the fallback line's `windows=` became `held=…ms` when the persistence rule mov
 clock (N13). Both are the `FPS=`/`loop=` shape — the same label for a different quantity is worse
 than no label, so the names moved with the units and `RE_ABR_GATES` matches the new ones only.
 
+**`reason=None` on a `decision=stay` used to be the common case, and it meant nothing.** The
+example above still shows one because it is a real line from before the fix. Every Stay names its
+reason now, in both directions: the down path had one code and the UP path had five silent exits,
+which is how `pipe_abr_seek_flat` came to sit at 2000 kbps with `safe=12585kbps` and a 45-second
+reserve while every field a reader would consult said healthy — `reason=None` on 100 of 102 lines.
+The codes are `NoSustainableTarget` (the two-constraint admission rule came back empty),
+`EvidenceWindow` (a target was selected and the acquisition window could not carry the climb — the
+one that reads most like a stuck controller), `AtBestRung` (already on the best rung the budget
+admits, which is not a refusal at all) and `ReserveUnknown` (`buffered_ms()` is `None`, the one
+Stay that is the absence of a policy rather than the application of one). Two exits stay silent on
+purpose because they report themselves on the same line: `dwell=<n>ms` and `pending=<n>kbps`. The
+invariant is a host test that sweeps 120 states and fails on any Stay that names nothing — it found
+a sixth silent exit on its first run.
+
 Every field in the steady line was an INPUT to the decision published beside it, and the struct is
 assembled by the controller rather than re-read at the log site, so the numbers logged are the
 numbers used. **`starve=` and `edge=` are the same formula on two different rates and are both
