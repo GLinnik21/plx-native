@@ -110,17 +110,43 @@ about 25% above every video-bound row of the current table.
 through `tools/netcond.py`, unshaped then `rate:8300`) climbed 720 -> 2000 -> 20000, walked down to
 4000 and back to 6000, and peaked at **`qbytes=8481329`** — past the old 8 388 608 cap, so the
 enlargement is live in the real pipeline and not merely in the model. That run produced **six
-commits and zero rejects**, so **the graded-reject feed itself is still unexercised**, on the host
-as well as on the device. Provoking one needs the `pipe_abr_reject_up_4000` recipe (40 Mbit/s for
-15 s, then 8 300) run long enough for the ladder to be walked at 19 samples a rung, and it did not
-happen inside this window. Stated rather than left as an implied pass.
+commits and zero rejects**, so the graded-reject feed was unexercised *in that window*.
+
+**SUPERSEDED 2026-08-28 — it is exercised, heavily, on the DEVICE, and no rig was needed.** The
+paragraph above sent the next reader to build a shaped `pipe_abr_reject_up_4000` recipe for an
+experiment the ordinary tier had already been running all along. `not_ready_fed` IS this outcome,
+and a full `--filter pipe_abr` tier fires it **37 times across 7 cases**, feeding **2** graded
+segments each (not one), with **zero** errors and all 7 cases passing:
+
+| case | transaction |
+|---|---|
+| `pipe_abr_pin_2000` | 720 -> 2000 |
+| `pipe_abr_band_4000`, `pipe_abr_pin_4000` | 720 -> 4000 |
+| `pipe_abr_pin_10000` | 720 -> 10000 |
+| `pipe_abr_pin_16000` | 720 -> 16000 |
+| `pipe_abr_band_20000`, `pipe_abr_pin_20000` | 720 -> 20000 |
+
+**All 37 cross a catalog raster band** — 720's box is 854x480 and every target above is 1280x720 or
+1920x1080 — so the excursion-and-return is what LG's decoder actually did, 37 times, without a
+`Playing error` and with `pos_climb` satisfied in every case. The device half of this leg is
+DISCHARGED, and it was discharged by evidence already on disk rather than by a session.
+
+**One thing these logs cannot settle**, stated rather than glossed: they predate `out=WxH` on the
+commit line, so they prove the *catalog* bands were crossed and cannot prove the DECODED raster
+differed on each one — against a 1080p source several rungs produce an identical picture
+(`m3-production-census.md`). The next tier run answers it directly, since `abr_raster_changes` now
+reads the decoded value. The conclusion is unaffected either way: whatever the decoder was handed,
+it handled it.
 
 **What the simulator can and cannot say about the feed.** `make sim` + `plxnative-clocksink` now
 runs the whole path — queues, backpressure, the PTS timeline, the cursor step, the reserve the
 controller reads next — so "does our own pipeline handle a fed reject" is host-answerable and was
 answered here. What is NOT answerable off-device is LG's decoder: this is a one-segment raster
 excursion followed by a return, and while a commit changes raster too and is fine, the change BACK
-is new. That is the device leg this owes, and it is the first item below.
+is new. That was the device leg this owed. **It is discharged** — see the superseding note above: 37
+raster-crossing excursions across 7 cases on the television, zero errors. The host half was
+answered here; the device half was answered by the ordinary tier, which had been exercising it
+before anyone went looking.
 
 ## What this does not settle
 
