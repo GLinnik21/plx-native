@@ -11,6 +11,36 @@ just-in-time encoder in the loop.
 Six Auto cases exercise the controller here: `auto_baseline`, `auto_link_squeeze`,
 `auto_original_squeeze`, `auto_pin_and_back`, `auto_hls_pin_and_back`, `original_then_auto`.
 
+## CORRECTION — netcond was in the path, and I did not know it when I wrote this
+
+The first version of this document said the server tier ran "against a real PMS" and contrasted it
+with the synthetic shaper as though no conditioning were involved. **`tests/run.py` OWNS a
+`tools/netcond.py` for the whole `--server` run and steers it per case** (`LinkConditioner`), and it
+conditions the link whenever the deployed binary has `PMS_PORT` pointing at the proxy — which this
+build does (32499). So every byte below traversed the proxy, and the run started and stopped it
+without my noticing: the port was closed again by the time I went looking, which is what made the
+log's `<ip>:32499` look inexplicable.
+
+**This also answers the question that prompted the run in the affirmative on both halves.**
+`auto_link_squeeze` carries `link_profile: [pass @0s, rate:2500 @50s, pass @105s]` — a real
+2.5 Mbit/s squeeze applied to a real PMS mid-playback — and it PASSES. That is the netcond
+experiment, and it is part of the default server tier rather than something to be set up by hand.
+
+**What it costs the numbers below**, stated rather than buried: 6 of the 7 transactions come from
+`auto_link_squeeze` and were measured while the link was shaped or recovering from it; only one
+(`auto_hls_pin_and_back`) is unshaped.
+
+| case | shaping | `control=` | `warmup=` |
+|---|---|---|---|
+| `auto_hls_pin_and_back` | pass only | 190 | 1420 |
+| `auto_link_squeeze` | rate:2500 | 120, 123, 128, 133, 159, 304 | 1155, 1415, 1475, 1894, 2248 |
+
+The single unshaped sample has a HIGHER control cost than the shaped median and a mid-range
+warm-up, so the squeeze does not appear to dominate either quantity — but that is one sample, and
+the honest reading of the table below is **"real PMS, through a pass-mode proxy, mostly under a
+2.5 Mbit/s squeeze"** rather than "real PMS". The 22x control-plane gap is far larger than any
+plausible relay overhead and survives; the warm-up comparison is the one to distrust.
+
 ## What the synthetic tier gets right, and what it does not
 
 | quantity | real PMS | synthetic | ratio |
@@ -67,5 +97,6 @@ open item the production gate exists for.
 * One PMS, one library, one LAN, idle server. Titles and server identifiers are deliberately absent
   and no log from this run is committed.
 * `--server` runs as GUEST by default and resets `viewOffset` per case via `/:/unscrobble`.
-* This says nothing about `tools/netcond.py`'s failure modes — stall, blackhole, reject, shaped
-  rate against a REAL server — which remain unrun.
+* `tools/netcond.py`'s **shaped rate** against a real server IS exercised here (`auto_link_squeeze`,
+  `rate:2500`). Its other modes — `stall`, `blackhole`, `reject`, and scoped variants like
+  `stall@/:/timeline` — are not reached by any case in this tier and remain unrun.
