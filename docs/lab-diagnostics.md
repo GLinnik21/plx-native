@@ -296,8 +296,16 @@ answerable offline, and it is a code this remote never sends. The offline answer
 incomplete, it was wrong. No key access policy was needed either: unlike BACK, which requires
 `SDL_WEBOS_ACCESS_POLICY_KEYS_BACK` in `main.c`, the colour keys arrive unasked.
 
-One question is still open and only a lab set can close it: **whether the Cloud Test Lab virtual
-remote offers colour buttons at all.**
+**And a lab set closed the last of it, 2026-08-27.** The question that stood here — *whether the
+Cloud Test Lab virtual remote offers colour buttons at all* — is answered: it sent `wcode` **489**,
+`sym` **0**, byte for byte what the dev set's Magic Remote sends, and it fired the bridge **nine
+times** across three app runs on a webOS 10.3.1 set (`lab: snapshot seq=… reason=key`). The tenth
+upload of that session came from the menu row (`reason=menu`), so both routes below are now
+device-proven on rented hardware rather than only on the dev set. **486, 487 and 488 were never
+pressed there**, so nothing says whether that remote sends RED, GREEN or YELLOW — which is why the
+trigger stays a list. Full account: `docs/webos10-lab-report.md` §5. That session also delivered
+`wcode` 484 (`PointerHidden`, already swallowed — `docs/remote-keys.md` §2) and `wcode` **485**,
+which appears nowhere in this tree and is unbound.
 
 **The design absorbs every outcome**, which is why none of this blocked the build:
 

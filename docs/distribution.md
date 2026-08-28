@@ -260,7 +260,11 @@ lab.
 `lib32-glibc`, the loader is `ld-linux.so.3`, and webosbrew's NDK says it outright: *"LG's real
 devices are using armv7a (with arm64 kernel)."* The kernel is arm64; the userland is 32-bit and is
 the **only** userland. It is *aarch64* binaries that need a shim — hence
-`webosbrew/webos-bridge-64to32` (created 2026-05-29, "tested on webOS 10 and 11" = webOS 25 and 26),
+`webosbrew/webos-bridge-64to32` (created 2026-05-29, "tested on webOS 10 and 11" = webOS **24 and
+25**, and this line read "25 and 26" until 2026-08-27, when a rented Cloud Test Lab set reported
+`release=10.3.1 codename=ponytail-papikonda major=10` on a `k24` / `K24_DVB` 2024 chassis — device
+evidence for webOS 10 = webOS TV 24, where the old gloss was inference from a release-year mapping
+nobody had checked against a television; `docs/webos10-lab-report.md` §1),
 which exists precisely because the EGL/GLES libraries on the newest firmware are still 32-bit.
 Kodi's armv7 ipk on repo.webosbrew.org lists `webOS >= 4.0` with **no upper bound**, updated
 2026-07-30.
