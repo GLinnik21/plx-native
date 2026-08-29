@@ -15,6 +15,7 @@
 pub(crate) mod consent;
 pub(crate) mod posthog;
 pub(crate) mod queue;
+pub(crate) mod sender;
 pub(crate) mod sentry;
 
 use consent::Consent;
@@ -66,6 +67,124 @@ pub(crate) fn record(c: Consent) {
         crate::log("telemetry: could not persist the decision to ANY candidate path");
     }
     consent::install(c);
+}
+
+// ---- the spool, and the one worker that drains it ---------------------------------------------
+
+/// Guards against two flushes at once. A spool is a read-modify-write of one file, so two workers
+/// racing would have the second write back a list that does not know what the first acknowledged —
+/// re-sending records that were accepted, which is the duplicate-issue failure `event_id` reuse
+/// exists to prevent, arriving by a different door.
+static FLUSHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Read the spool from the first candidate that has one.
+fn load_spool() -> Vec<queue::Record> {
+    crate::paths::telemetry_spool_candidates()
+        .iter()
+        .find_map(|p| std::fs::read(p).ok())
+        .map(|b| {
+            let d = queue::decode_all(&b);
+            if d.dropped_bytes > 0 {
+                // Expected after a power cut, and worth one line either way: a non-zero count after
+                // a CLEAN shutdown means something worse than a torn write.
+                crate::log(&format!(
+                    "telemetry: spool recovered {} records, {} bytes discarded",
+                    d.records.len(),
+                    d.dropped_bytes
+                ));
+            }
+            d.records
+        })
+        .unwrap_or_default()
+}
+
+/// Write the spool back, trimmed. Atomic, like the decision file — a torn spool is survivable by
+/// construction, but there is no reason to manufacture one on every flush.
+fn save_spool(records: &[queue::Record]) {
+    let (kept, dropped) = queue::trim(records.to_vec());
+    if dropped > 0 {
+        // Never silent. A queue that discards without saying so is a queue whose numbers are wrong
+        // in a direction nobody can see.
+        crate::log(&format!("telemetry: spool over cap, dropped {dropped} oldest records"));
+    }
+    let bytes: Vec<u8> = kept.iter().filter_map(queue::encode).flatten().collect();
+    let stored = crate::paths::telemetry_spool_candidates()
+        .iter()
+        .any(|p| crate::plex::session::write_atomic(p, &bytes));
+    if !stored {
+        crate::log("telemetry: could not persist the spool to ANY candidate path");
+    }
+}
+
+/// Queue one record for later. Cheap, main-thread-safe, and it does NOT send.
+#[allow(dead_code)] // callers arrive with the event call sites and the panic hook
+pub(crate) fn enqueue(r: queue::Record) {
+    let mut all = load_spool();
+    all.push(r);
+    save_spool(&all);
+}
+
+/// Drain the spool on a worker thread.
+///
+/// **Never the main loop and never signal context.** A flush opens a socket and can block for
+/// [`sender`]'s whole timeout; on the main thread that is a visibly frozen interface, and from a
+/// signal handler it is neither async-signal-safe nor able to finish.
+///
+/// Returns immediately. A refused spawn is a return value rather than a panic — `task::spawn_small`
+/// exists because `thread::spawn` panics on EAGAIN and killed this app once.
+#[allow(dead_code)] // caller: boot, and the flush that follows an enqueue
+pub(crate) fn flush_soon() {
+    use std::sync::atomic::Ordering;
+    if !sender::configured() {
+        return; // nothing in this build to send to — see `sender`'s module doc
+    }
+    let Some(c) = consent::current() else { return };
+    if !c.any() {
+        return;
+    }
+    if FLUSHING.swap(true, Ordering::AcqRel) {
+        return; // one at a time — see FLUSHING
+    }
+    let ok = crate::task::spawn_small("telemetry", move || {
+        flush_now(&c);
+        FLUSHING.store(false, Ordering::Release);
+    });
+    if !ok {
+        FLUSHING.store(false, Ordering::Release);
+    }
+}
+
+/// The flush itself, on the worker.
+fn flush_now(c: &consent::Consent) {
+    let all = load_spool();
+    if all.is_empty() {
+        return;
+    }
+    let mut accepted: Vec<String> = Vec::new();
+    for r in &all {
+        // Per record, against its own category — a spool written before a withdrawal can still hold
+        // records of a category that is now off.
+        if !sender::allowed(r, c) {
+            accepted.push(r.event_id.clone()); // drop it: consent for it no longer exists
+            continue;
+        }
+        match sender::send_one(r) {
+            (sender::Verdict::Done, _) => accepted.push(r.event_id.clone()),
+            (sender::Verdict::Hopeless, _) => accepted.push(r.event_id.clone()),
+            // Held. Stop the whole flush rather than working down the list: whatever stopped this
+            // record — rate limit, dead link, a server having a bad day — applies to the next one
+            // too, and hammering an endpoint that just said stop is how a client earns a longer
+            // ban. The hold is honoured by simply not trying again until the next flush.
+            (sender::Verdict::Keep, hold) => {
+                let s = hold.unwrap_or(sender::DEFAULT_HOLD_S);
+                crate::log(&format!("telemetry: holding {} records, ~{s}s", all.len() - accepted.len()));
+                break;
+            }
+        }
+    }
+    if !accepted.is_empty() {
+        save_spool(&queue::ack(all, &accepted));
+    }
 }
 
 /// 16 bytes of `/dev/urandom` as lowercase hex — the ONLY way an `install_id` is ever produced.

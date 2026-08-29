@@ -124,21 +124,50 @@ impl Page {
 /// the second layer GDPR Art. 13 is satisfied by (WP260 allows layering: the screen carries who,
 /// what, that it is optional, and where — the exhaustive list lives at the link). Everything here
 /// is a statement about the code, checkable against the file named beside it.
+///
+/// **Rewritten when the sender landed, and by a test rather than by anyone remembering.** This used
+/// to open "There is no analytics, no telemetry, no crash upload, and no server of mine for them to
+/// reach", which was true and became false the moment `telemetry::sender` gained a `net::post_ca`
+/// call. [`the_privacy_notice_and_the_ability_to_send_cannot_both_be_true`] failed on that commit
+/// and is the reason these words changed in it. The opening sentence is deliberately still a strong
+/// claim — nothing is sent unless a switch is on, and the switches start off — because that is the
+/// claim the code actually supports, and the honest version of a weaker one is not a vaguer
+/// sentence but a more precise one.
 const PRIVACY: &str = "\
-PlxNative sends nothing to its developer. There is no analytics, no telemetry, no crash upload, and \
-no server of mine for them to reach. There is no account with me and no data of yours in my \
-possession.
+PlxNative sends nothing to its developer unless you switch it on, and it is off until you do. \
+There is no account with me. If you have not turned either switch on, this app has sent me nothing \
+and holds nothing about you.
 
 WHAT LEAVES THIS TELEVISION
 
 plex.tv, to sign in and to list the servers your account can reach. Your Plex Media Servers, to \
-browse and to play. Nothing else. Plex's own privacy policy governs what Plex sees; I am a \
-third-party client and I receive none of it.
+browse and to play. Plex's own privacy policy governs what Plex sees; I am a third-party client and \
+I receive none of it.
+
+And, only if you asked for it: crash reports, and which screens and video formats get used. Two \
+separate switches, both off by default, both reversible at any time in Settings, Privacy. Turning \
+them both off deletes the random identifier this television used, so anything sent later cannot be \
+joined to anything sent before.
+
+WHAT IS IN A REPORT
+
+The app version, the webOS version, the model, and what broke: a signal name and an address, or a \
+screen name, or a video and audio format. There is no field in any of them that can carry text \
+from your library. You can read the exact messages, in full, on the same screen the switches are \
+on.
+
+Reports go to Sentry and PostHog, both in the European Union, and are deleted after 13 months.
+
+WHAT IS NEVER SENT
+
+Titles. What you searched for. Subtitle text. Your account, your profile names, your server names \
+and addresses, and the numbers that identify items in your library.
 
 WHAT IS STORED HERE
 
 Your sign-in, as one access token per server, in a file only this app can read. Where you were when \
-you last closed the app. Three log files, which a reboot clears.
+you last closed the app. Your answer to the two switches above. Three log files, which a reboot \
+clears.
 
 WHAT THE LOG MAY NOT CONTAIN
 
@@ -152,7 +181,7 @@ WHAT IS NEVER READ
 The television's device identifier. webOS offers one derived from the MAC address; this app does \
 not ask for it.
 
-The full notice, including what would happen if diagnostics are ever offered:
+The full notice:
 github.com/GLinnik21/plx-native/blob/main/PRIVACY.md";
 
 /// The open-source notice.
@@ -544,9 +573,31 @@ mod tests {
     /// can ship a sender while the screen still says nothing is sent.
     #[test]
     fn the_privacy_page_states_the_no_telemetry_position_it_can_be_held_to() {
-        assert!(PRIVACY.contains("sends nothing to its developer"));
-        assert!(PRIVACY.contains("no analytics, no telemetry, no crash upload"));
+        // The claim as it now stands: nothing is sent unless a switch is on, and they start off.
+        assert!(PRIVACY.contains("sends nothing to its developer unless you switch it on"));
+        assert!(PRIVACY.contains("off until you do"));
+        assert!(PRIVACY.contains("both off by default"), "the default is the point");
+        assert!(PRIVACY.contains("reversible at any time"), "Art. 7(3)");
         assert!(PRIVACY.contains("does not ask for it"), "the LGUDID position");
+    }
+
+    /// The page names the two recipients, the region and the retention — the three facts a reader
+    /// cannot check for themselves and which the LG Data Safety declaration also has to state.
+    /// Asserted so the screen and that filing cannot drift apart silently.
+    #[test]
+    fn the_privacy_page_names_the_recipients_region_and_retention() {
+        assert!(PRIVACY.contains("Sentry") && PRIVACY.contains("PostHog"));
+        assert!(PRIVACY.contains("European Union"));
+        assert!(PRIVACY.contains("13 months"));
+    }
+
+    /// And it repeats the payload claim the consent screen makes, in the same terms — a person who
+    /// finds this page months later must be able to check the promise they were given.
+    #[test]
+    fn the_privacy_page_repeats_the_payload_claim() {
+        assert!(PRIVACY.contains("Titles."), "the never-sent list leads with titles");
+        assert!(PRIVACY.contains("What you searched for."));
+        assert!(PRIVACY.contains("no field in any of them that can carry text"));
     }
 
     /// The blank-line split is what turns a wall of text into a document, so it is pinned rather

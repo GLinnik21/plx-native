@@ -486,6 +486,23 @@ pub(crate) fn session_candidates() -> Vec<PathBuf> {
 ///
 /// Outside the `plxnative-` trigger namespace by construction, since it is not in the runtime root
 /// at all — so it cannot suppress the who's-watching picker the way anything in `/tmp` would.
+/// The spool, beside the decision that authorised it.
+///
+/// **Same directories, same search order, different file** — and not merged into
+/// `telemetry.json` for one reason: the decision is small, rewritten rarely and must survive
+/// anything, while the spool is up to half a megabyte rewritten after every flush. Sharing one file
+/// would put the consent record itself at risk on every single upload, which is the one piece of
+/// state whose loss changes what the app is allowed to do.
+pub(crate) fn telemetry_spool_candidates() -> Vec<PathBuf> {
+    telemetry_candidates()
+        .into_iter()
+        .map(|p| p.with_file_name(p.file_name().map_or_else(
+            || "telemetry-spool.bin".into(),
+            |n| n.to_string_lossy().replace("telemetry.json", "telemetry-spool.bin"),
+        )))
+        .collect()
+}
+
 pub(crate) fn telemetry_candidates() -> Vec<PathBuf> {
     let mut v = Vec::new();
     // A steerable build keeps its own, for exactly the reason the session file does: several

@@ -365,7 +365,29 @@ RUST_STAMP     = pkg/.build-config
 # `make RELEASE=1 ipk` followed by `make RELEASE=1 SYMBOLS=1 symbols` silently relinks a different
 # binary and hands you a `.debug` that will never match anything a user's television reports — the
 # same shape as `make RELEASE=1 && make deploy`, which is the trap this whole mechanism exists for.
-RUST_CFG       = features:$(RUST_FEATFLAGS)$(if $(SYMBOLS),+symbols,)
+# The telemetry endpoints, read out of the gitignored pkg/telemetry.local.json and handed to the
+# compiler as option_env! values. Absent file, absent key, EMPTY value -> the constant is None and
+# `telemetry::sender::configured()` is false at COMPILE time, so a fork, a CI runner and anyone
+# building from source get a binary with no endpoint in it at all. That is the safe direction and
+# it is a property of the artifact rather than of a runtime flag.
+#
+# Both are WRITE-ONLY ingest credentials and publishable by design -- any client that sends
+# anything must carry one. The Sentry AUTH TOKEN is a different thing entirely (it can read and
+# delete the project's data), is not read here, and is never compiled in; it is used from this Mac
+# by sentry-cli. `python3 -c` rather than a grep because the file is JSON and a value can contain a
+# `:` or a `/`; `|| true` because the whole point is that a checkout without the file still builds.
+TELEMETRY_JSON = pkg/telemetry.local.json
+telemetry_val = $(shell python3 -c "import json,sys;print(json.load(open('$(TELEMETRY_JSON)')).get('$(1)',''))" 2>/dev/null || true)
+PLX_SENTRY_DSN  ?= $(call telemetry_val,sentry_dsn)
+PLX_POSTHOG_KEY ?= $(call telemetry_val,posthog_key)
+
+# In the stamp, and it has to be: switching a build from unconfigured to configured changes what
+# the binary CAN DO and nothing about the sources, so without this the configuration would be
+# baked in from whichever build happened to run first -- the same class of trap as
+# `make RELEASE=1 && make deploy`. The values are hashed rather than written, so the stamp file
+# (which is not gitignored) never contains a credential.
+TELEMETRY_CFG  = $(shell printf '%s|%s' '$(PLX_SENTRY_DSN)' '$(PLX_POSTHOG_KEY)' | shasum | cut -c1-12)
+RUST_CFG       = features:$(RUST_FEATFLAGS)$(if $(SYMBOLS),+symbols,)+tel:$(TELEMETRY_CFG)
 # Handled by $(shell) during PARSING, and by DELETING the output rather than by timestamps.
 # Both choices are load-bearing, and both were arrived at by measuring the failures:
 #   * A rule cannot do it. macOS ships GNU make 3.81, which decides whether a target is up to date
@@ -477,6 +499,7 @@ $(FFABI_STAMP): ci/ffabi-assert.c $(FFMPEG_INC)/libavformat/avformat.h Makefile
 RUST_INPUTS := $(shell find rust-modules/src assets -type f 2>/dev/null)
 $(RUST_LIB): $(RUST_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.lock rust-modules/.cargo/config.toml Makefile $(FFABI_STAMP)
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" $(RUST_ENV) \
+	  PLX_SENTRY_DSN='$(PLX_SENTRY_DSN)' PLX_POSTHOG_KEY='$(PLX_POSTHOG_KEY)' \
 	  cargo +$(RUST_NIGHTLY) build --release --target $(RUST_TARGET) \
 	    --target-dir $(RUST_TDIR) $(RUST_FEATFLAGS)
 
