@@ -75,6 +75,22 @@ full one-time setup + troubleshooting.
   default profile ships it; a `--profile minimal` nightly does not).
 - `make test` — `deploy` then `run` (the normal iteration command).
 - `make kill` — close the app on the TV.
+- **`make SYMBOLS=1 symbols`** — build with DWARF and split it into **`pkg/plxnative.debug`**, the
+  file that turns an address in a stranger's crash report into a source line. The binary users get
+  is stripped, so the only thing that can pair the two is the **GNU build id** — an allocated note
+  that `-Wl,--build-id=sha1` puts on every link (unconditionally; it costs 20 bytes and `strip`
+  preserves it). Verified end to end 2026-08-29: the full binary, the `.debug` and the stripped one
+  all carry the same id, and `addr2line -e pkg/plxnative.debug` resolves an address the stripped
+  binary answers `?? ??:0` for. **It is opt-in for one reason and it is not build time** — a
+  debuginfo cross build is 30 s cold and the artifact that SHIPS is unchanged (6.93 MB stripped, a
+  hair *smaller* than without) — but its target dir is 356 MB, and this repo already keys a
+  separate `rust-modules/target*` per configuration and multiplies that again per worktree.
+  `SYMBOLS` is in the `RUST_CFG` stamp beside `RELEASE`, and it has to be: a debuginfo build and a
+  plain one produce **different build ids from identical sources**, so without the stamp
+  `make RELEASE=1 ipk` followed by `make RELEASE=1 SYMBOLS=1 symbols` would hand you a `.debug`
+  matching nothing that was ever shipped. Cut both in one invocation:
+  `make RELEASE=1 SYMBOLS=1 ipk symbols`. `make symbols` without the flag REFUSES rather than
+  writing the empty shell `objcopy --only-keep-debug` produces from a binary with no DWARF.
 - `make ipk` — repackage the installable `pkg/<app id>_<version>_arm.ipk`. The version
   comes from `pkg/appinfo.json` (the single source; `ci/check-package.py` asserts the control
   file agrees), and the archive is **reproducible** — `ci/mkipk.py` normalises tar identity and

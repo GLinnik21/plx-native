@@ -210,10 +210,32 @@ CFLAGS       = --sysroot=$(SYSROOT) -O2 -Wall -Wextra $(WERROR) -Iinclude -Isrc 
 # a function name (tools/crash-report.sh / the crash-triage skill). Same codegen, bigger
 # binary — deploy it only while chasing a crash.
 ifeq ($(DEBUG),1)
-# -DPLX_DEBUG lets the C shim keep core dumps enabled for a post-mortem (src/main.c's
+# -DPLX_DEBUG lets the C shim keep core dumps enabled for a post-mortem (src/crashtrace.c's
 # setrlimit(RLIMIT_CORE, 0) — a shipping build must not write 200 MB into the TV's app
 # partition). This is the only thing DEBUG=1 changes about behaviour rather than debuginfo.
 CFLAGS      += -g -DPLX_DEBUG
+RUST_DEBUGINFO = -C debuginfo=2
+endif
+
+# SYMBOLS=1 — the same DWARF, WITHOUT DEBUG=1's behaviour change, for producing a separated
+# `pkg/plxnative.debug` that a symbol server can match to a stripped shipped binary by build id.
+# `make symbols` below is the whole recipe.
+#
+# **NOT the default, and the numbers are why** (measured 2026-08-29 on the dev Mac, cold):
+#
+#   full cross build with debuginfo=2   30 s wall / 145 s CPU   (the same build is seconds warm)
+#   its target dir                      356 MB   vs a normal one's share of a tree already at 26 GB
+#   the Rust staticlib                  148 MB   vs 19.6 MB
+#   the linked binary                    86.7 MB vs 10.0 MB
+#   -> pkg/plxnative.debug               79.8 MB
+#   -> stripped, i.e. what ships          6.93 MB vs 6.99 MB from a non-debuginfo build
+#
+# So it costs nothing that SHIPS — the stripped artifact is if anything a hair smaller — and the
+# time is bearable. What it costs is disk, ~356 MB per feature-keyed target dir, on a machine whose
+# `rust-modules/target*` already runs to tens of gigabytes across the configurations this repo
+# keys, and where a worktree fleet multiplies that again. That is the only reason this is opt-in.
+ifeq ($(SYMBOLS),1)
+CFLAGS      += -g
 RUST_DEBUGINFO = -C debuginfo=2
 endif
 
@@ -315,7 +337,7 @@ LIBS_REAL = -lSDL2 -lSDL2_ttf -lGLESv2 -lluna-service2 -lglib-2.0 \
 # actually tested in. The feature is not in the default set at all, so no ordinary build and no
 # forgotten flag can produce it.
 RUST_FEATFLAGS = $(if $(RELEASE),--no-default-features,)$(if $(LAB), --features lab-diagnostics,)
-RUST_TDIR      = target$(if $(RELEASE),-release,)$(if $(LAB),-lab,)
+RUST_TDIR      = target$(if $(RELEASE),-release,)$(if $(LAB),-lab,)$(if $(SYMBOLS),-sym,)
 # OVERRIDING RUST_FEATFLAGS BY HAND? PASS RUST_TDIR TOO. This dir is keyed on RELEASE, not on the
 # flag set, so `make RUST_FEATFLAGS=...` alone lands in the SAME target/ as an ordinary build:
 # cargo's staticlib looks up to date, the stamp below deletes pkg/plxnative, and make relinks the
@@ -336,7 +358,14 @@ RUST_STAMP     = pkg/.build-config
 # unreachable, and `make RELEASE=1` shipped the libraries built for a DEV configuration — while
 # the comment two blocks below claimed otherwise. Building release-first then dev is worse: the
 # swscale staging rule globs a prefix that has none and the build dies.
-RUST_CFG       = features:$(RUST_FEATFLAGS)
+# SYMBOLS belongs in the stamp for the same reason RELEASE and the FFmpeg configuration do, and the
+# failure it prevents is the sharpest one here: a debuginfo build and a plain one produce DIFFERENT
+# BUILD IDs (measured — 3ede46f8… vs cc4a5c7b… for the same sources), and the build id is the only
+# thing that matches a separated `.debug` back to the binary a crash came from. Without this,
+# `make RELEASE=1 ipk` followed by `make RELEASE=1 SYMBOLS=1 symbols` silently relinks a different
+# binary and hands you a `.debug` that will never match anything a user's television reports — the
+# same shape as `make RELEASE=1 && make deploy`, which is the trap this whole mechanism exists for.
+RUST_CFG       = features:$(RUST_FEATFLAGS)$(if $(SYMBOLS),+symbols,)
 # Handled by $(shell) during PARSING, and by DELETING the output rather than by timestamps.
 # Both choices are load-bearing, and both were arrived at by measuring the failures:
 #   * A rule cannot do it. macOS ships GNU make 3.81, which decides whether a target is up to date
@@ -838,6 +867,36 @@ STAGE       := ipkroot/data/usr/palm/applications/$(APPID)
 #   - ci/mkipk.py normalises uid/gid/uname/gname/mtime/mode/order and the gzip header. `tar czf`
 #     was embedding `gleblinnik/staff` in every shipped archive.
 #   - `ar` gets D (deterministic): binutils' default embeds the builder's uid and a real mtime.
+# `make SYMBOLS=1 symbols` — separate the debug info into `pkg/plxnative.debug`.
+#
+# What this is FOR: a crash reported from a stranger's television carries an address, and the
+# binary they are running is stripped. Matching the two needs a debug file identified by the same
+# BUILD ID, which `-Wl,--build-id=sha1` on the link puts in an allocated note that survives
+# `strip`. Verified end to end 2026-08-29 — full, `.debug` and stripped all carry
+# `cc4a5c7b3923da5e872ee3c8f5054a3b23f07568`, and `addr2line -e pkg/plxnative.debug` resolves an
+# address the stripped binary answers `?? ??:0` for.
+#
+# **It refuses without SYMBOLS=1 rather than producing an empty shell.** `objcopy --only-keep-debug`
+# on a binary with no `.debug_*` sections succeeds and writes a file; that file matches nothing and
+# fails only much later, at the symbol server, on somebody else's crash. Fail here instead.
+symbols: pkg/plxnative
+ifneq ($(SYMBOLS),1)
+	@echo "make symbols needs SYMBOLS=1 — without it this binary carries no DWARF and" >&2
+	@echo "objcopy would write an empty .debug that silently matches nothing." >&2
+	@echo "  correct: make RELEASE=1 SYMBOLS=1 ipk symbols" >&2
+	@false
+else
+	$(TOOLPREFIX)objcopy --only-keep-debug pkg/plxnative pkg/plxnative.debug
+	@# The build ids MUST agree, and asserting it here is the point: everything downstream —
+	@# the DIF upload, the symbol server's lookup, `addr2line` against the right file — keys on
+	@# this one value, and a mismatch is invisible until a real crash fails to symbolize.
+	@bin=$$($(TOOLPREFIX)readelf -n pkg/plxnative | sed -n 's/.*Build ID: //p'); \
+	 dbg=$$($(TOOLPREFIX)readelf -n pkg/plxnative.debug 2>/dev/null | sed -n 's/.*Build ID: //p'); \
+	 if [ -z "$$bin" ]; then echo "pkg/plxnative has NO build id — is -Wl,--build-id still on the link?" >&2; exit 1; fi; \
+	 if [ "$$bin" != "$$dbg" ]; then echo "build id mismatch: binary $$bin, debug $$dbg" >&2; exit 1; fi; \
+	 echo "symbols: pkg/plxnative.debug  build-id $$bin  ($$(du -h pkg/plxnative.debug | cut -f1))"
+endif
+
 ipk: pkg/plxnative $(APPINFO) release-guard
 	@echo "packaging $(if $(RELEASE),RELEASE,dev) build ($(RUST_CFG)) as $(APPID) [$(FLAVOR)]"
 	rm -rf ipkroot/data/usr && mkdir -p $(STAGE)/licenses
@@ -1182,5 +1241,5 @@ fetch-profile:
 	-$(SCP) root@$(TV):$(RUNDIR)/plxnative-hwcnt.jsonl pkg/plxnative-hwcnt.jsonl
 	@ls -l pkg/plxnative-*.jsonl 2>/dev/null || echo "no profiler output in $(RUNDIR) on the TV ($(APPID))"
 
-.PHONY: all setup-env deploy run run-stream kill check lint test ipk clean tv-lock-require threadprobe sockprobe logmprobe mali-hwcnt-probe sim sim-run sim-shot sim-token sim-clean macapp macapp-zip fixtures fixtures-quick fixtures-pipeline fetch-profile \
+.PHONY: symbols all setup-env deploy run run-stream kill check lint test ipk clean tv-lock-require threadprobe sockprobe logmprobe mali-hwcnt-probe sim sim-run sim-shot sim-token sim-clean macapp macapp-zip fixtures fixtures-quick fixtures-pipeline fetch-profile \
         release-guard lab-guard install uninstall $(QUERY_GOALS)
