@@ -4146,6 +4146,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
     // crashed and the fault is reachable even when whatever is being chased stops the app reaching
     // a screen. Compiled out with `devtriggers`; a no-op in every other build.
     crate::dev::crash_on_purpose();
+    // The first reportable event, and it is a marker with no fields on purpose — everything that
+    // would qualify a launch (model, firmware, version, locale) is a session constant and belongs
+    // in a sender's envelope, not repeated on every record. Nothing listens today; see
+    // `crate::diag::event`.
+    crate::diag::event(crate::diag::schema::DiagEvent::AppLaunch);
     // FIRST, before SDL and before anything can fail: which television is this. A report from
     // hardware nobody here owns is worth far more when its opening line names the firmware — see
     // `webos`'s module doc. Reads one file; cannot fail the boot.
@@ -4694,6 +4699,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         // spring-back after key-up) so `ok_armed` marks "a press is in flight, commit it from the
         // per-frame loop when press::take_commit fires". Only ever set on Home's grid.
         let mut ok_armed = false;
+        // Which route name was last REPORTED as an event. Not `route` itself: several `Route`
+        // values share one name (every `Route::Player { overlay }` is "player"), and an overlay
+        // opening is not a screen change.
+        let mut last_route_reported: &'static str = "";
         let mut press_tried = false; // dev: /tmp/plxnative-press fires one simulated grid-card press
         let mut press_release_at = 0u32; // …and the tick at which that simulated press releases
         let mut itemmenu_tried = false; // dev: /tmp/plxnative-itemmenu opens the card context menu once
@@ -7275,6 +7284,14 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 Route::Player { .. } => "player",
                 _ => "home",
             };
+            // …and the same name as a reportable event, on CHANGE only. Per-frame would be a
+            // firehose of one fact; what is worth knowing is which screens get used, which is a
+            // transition count. `&'static str` from the table above, so nothing runtime-built can
+            // reach the wire — see `diag::schema`.
+            if rn != last_route_reported {
+                last_route_reported = rn;
+                crate::diag::event(crate::diag::schema::DiagEvent::RouteEntered { screen: rn });
+            }
             // The lab envelope's `route` field, from the SAME name the heartbeat and the focus
             // fingerprint print — a snapshot that disagreed with the log about which screen the
             // tester was on would be worse than one that omitted the field. Compiles away in every

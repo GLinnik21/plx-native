@@ -19,6 +19,28 @@
 
 pub(crate) mod scrub;
 
+// UNGATED for the same reason `scrub` is, and it is the same lesson: the guarantee this module
+// provides is its TESTS — that no event can carry a runtime string, and that `PRIVACY.md` lists
+// every event — and tests behind a feature the default gate does not build are tests that never
+// run. `scrub`'s 31 assertions sat unexecuted for as long as they existed.
+pub(crate) mod schema;
+
+/// **Report one event.** The single door, so a call site carries no `#[cfg]` and cannot know
+/// whether anything is listening — which is what `lab/mod.rs` does and what keeps the feature
+/// attributes off ~25 scattered sites (the hazard `.claude/hooks/release-config-check.py` exists
+/// for: a hand-written `cfg` pair where a spliced-in function swallows its neighbour's attribute).
+///
+/// Today nothing listens: there is no consent apparatus, no queue and no endpoint, so this is a
+/// sink in every build. It exists NOW because the call sites are the part that has to be right —
+/// each one is a decision about what may be observed — and because a schema with no producers is
+/// an allowlist nobody has checked against reality.
+pub(crate) fn event(e: schema::DiagEvent) {
+    // Deliberately not even logged. `crate::log` writes to the event log, and an event stream
+    // duplicated into the primary debugging surface would double its volume to say nothing new —
+    // every one of these is derived from a line already there.
+    let _ = e;
+}
+
 // Gated to their present consumer. Phase G/H widen these to
 // `any(feature = "lab-diagnostics", feature = "telemetry")` when the Sentry and PostHog clients
 // become second callers — deliberately not widened ahead of a caller, because `warnings = "deny"`

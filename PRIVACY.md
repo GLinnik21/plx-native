@@ -126,6 +126,34 @@ be held to them rather than announcing them alongside the thing itself:
 
 None of that exists today. `make check` builds no telemetry code and there is no endpoint.
 
+### The schema, as it stands
+
+Term 6 says the structure would be documented here before it ships, so here it is as it is being
+built — **no sender exists, nothing is stored, and nothing leaves the television**. It is written
+down now precisely because a document produced alongside a working uploader is a document nobody
+had to live with.
+
+| event | fields |
+|---|---|
+| `app.launch` | *(none)* |
+| `route.entered` | `screen` — one of a fixed list of screen names |
+| `signin.completed` | *(none)* |
+
+Three things are true of that table by construction rather than by care, and
+`rust-modules/src/diag/schema.rs` is where you can check each one:
+
+- **No field can hold text this app read at runtime.** Every value is either absent or one of a
+  fixed set of names compiled into the binary. A test greps the type for an owned string and fails
+  the build if one appears.
+- **The list is exhaustive.** One enum, one serialiser, one name list, and a test that fails if any
+  of the three falls behind the others.
+- **This table is part of that check.** A new event that is not listed here fails `make check`, so
+  the document cannot lag the code.
+
+What is deliberately *not* in it: anything identifying the television, the account or the household.
+Model, firmware and app version are per-session facts that would belong to an upload envelope, not
+to every record, and no envelope exists yet either.
+
 ---
 
 ## Your rights

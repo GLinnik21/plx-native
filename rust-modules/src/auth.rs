@@ -626,6 +626,10 @@ fn finish_sign_in(ac: &AccountClient, epoch: u64) {
         session::save(&snap);
         if users.len() > 1 {
             log("auth: showing who's-watching");
+            // Sign-in reached a usable state. BOTH settling arms report it — this one and the
+            // single-user one below — because "did the QR flow work" is one question and a Plex
+            // Home roster is not a different answer to it.
+            crate::diag::event(crate::diag::schema::DiagEvent::SignInCompleted);
             with_ctl(|c| {
                 c.users = users;
                 c.phase = Phase::Profiles;
@@ -636,6 +640,7 @@ fn finish_sign_in(ac: &AccountClient, epoch: u64) {
         } else {
             // no Plex Home (or a single user): use the owner's server token as-is.
             log("auth: single user — ready, entering Home");
+            crate::diag::event(crate::diag::schema::DiagEvent::SignInCompleted);
             with_ctl(|c| {
                 c.phase = Phase::Ready;
                 c.apply_pending = true;
