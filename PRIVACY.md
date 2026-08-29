@@ -117,6 +117,12 @@ be held to them rather than announcing them alongside the thing itself:
 5. **Never**: media titles, ratingKeys, search terms, subtitle text, server names or addresses, your
    Plex account, or anything derived from the MAC address or serial number.
 6. The literal structure sent would be documented **in this file**, field by field, before it ships.
+7. **Turning it off would stop collection and discard anything not yet sent — but what had already
+   been sent would age out on a retention clock rather than being erased on request.** Stated here
+   because it is a limitation rather than a choice: the candidate services can only delete data that
+   belongs to an *account*, and the entire design is that these reports belong to nobody. That is the
+   right trade — an identifier that made erasure possible would be an identifier worth having in the
+   first place — but it is not the same as deletion and would not be described as if it were.
 
 None of that exists today. `make check` builds no telemetry code and there is no endpoint.
 
