@@ -470,6 +470,40 @@ pub(crate) fn session_candidates() -> Vec<PathBuf> {
     v
 }
 
+/// Candidate locations for the telemetry decision, best first — **the same tier as the session**,
+/// and that choice has a consequence worth stating rather than discovering.
+///
+/// It goes here, not in [`runtime_dir`], because the runtime root on a television is `/tmp` and
+/// `/tmp` is cleared by a reboot: a consent decision that evaporated overnight would re-ask a
+/// person who had already answered, which is both worse for them and the exact pattern that makes
+/// a consent prompt feel like nagging rather than a choice.
+///
+/// **So it outlives an uninstall, and it outlives a change of owner short of a factory reset.**
+/// webOS gives a native app no uninstall hook, so nothing can clear this on the way out. That is
+/// why the file holds a DECISION and, only after opt-in, one random identifier — and why
+/// withdrawing consent DELETES that identifier rather than merely disabling it. Recorded in
+/// `PRIVACY.md`, because a user cannot audit a file they cannot reach.
+///
+/// Outside the `plxnative-` trigger namespace by construction, since it is not in the runtime root
+/// at all — so it cannot suppress the who's-watching picker the way anything in `/tmp` would.
+pub(crate) fn telemetry_candidates() -> Vec<PathBuf> {
+    let mut v = Vec::new();
+    // A steerable build keeps its own, for exactly the reason the session file does: several
+    // simulators must not share one decision (or one identifier).
+    if ENV_STEERABLE {
+        v.push(in_runtime_dir("telemetry.json"));
+    }
+    let id = app_id();
+    v.extend([
+        PathBuf::from(format!("/media/developer/{id}-telemetry.json")),
+        PathBuf::from(format!("/media/internal/.{id}-telemetry.json")),
+        in_app_dir("telemetry.json"),
+    ]);
+    // No legacy/migration entry, and no `flavour().is_none()` arm: there is no older location, and
+    // the two installs are two devices — a decision taken in one is not a decision about the other.
+    v
+}
+
 /// Candidate locations for the persisted **last place** ([`crate::coldstart`]), best first.
 ///
 /// The same three directories [`session_candidates`] uses, and deliberately **NOT**

@@ -898,7 +898,11 @@ fn save_locked(s: &Session) {
 /// permissive mode, and the tmp file is where it exists first. `set_permissions` covers a stale tmp
 /// left by an older build, whose mode `open` would not touch — and the `truncate` above means it is
 /// zero bytes while we do it.
-fn write_atomic(path: &std::path::Path, json: &[u8]) -> bool {
+/// `pub(crate)` since 2026-08-29 so `crate::telemetry` writes its file the same way rather than
+/// growing a second implementation of this. It is a generic 0600 atomic write that happens to live
+/// beside its first caller; the alternative was two copies of a routine whose whole value is that
+/// its failure modes have already been found once, on the file holding the credentials.
+pub(crate) fn write_atomic(path: &std::path::Path, json: &[u8]) -> bool {
     use std::io::Write;
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     let Some(tmp) = tmp_path(path) else { return false };

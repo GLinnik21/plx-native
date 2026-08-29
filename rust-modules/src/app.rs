@@ -4146,6 +4146,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
     // crashed and the fault is reachable even when whatever is being chased stops the app reaching
     // a screen. Compiled out with `devtriggers`; a no-op in every other build.
     crate::dev::crash_on_purpose();
+    // The stored telemetry decision, BEFORE the first event can be reported — `diag::event` reads
+    // a snapshot this publishes, and with none installed it refuses everything. So the ordering is
+    // the fail-closed guarantee, not a convenience.
+    crate::telemetry::boot();
     // The first reportable event, and it is a marker with no fields on purpose — everything that
     // would qualify a launch (model, firmware, version, locale) is a session constant and belongs
     // in a sender's envelope, not repeated on every record. Nothing listens today; see

@@ -35,9 +35,20 @@ pub(crate) mod schema;
 /// each one is a decision about what may be observed — and because a schema with no producers is
 /// an allowlist nobody has checked against reality.
 pub(crate) fn event(e: schema::DiagEvent) {
-    // Deliberately not even logged. `crate::log` writes to the event log, and an event stream
-    // duplicated into the primary debugging surface would double its volume to say nothing new —
-    // every one of these is derived from a line already there.
+    // **The gate, and it is here rather than at the call sites on purpose**: one place to be right,
+    // and no site can forget it. Reads a published snapshot — never the disk, never a lock — which
+    // is the shape `diag::scrub`'s identity list had to be rebuilt into after wiring it to
+    // `session::peek()` put five file reads on every log line and deadlocked the `auth` tests.
+    //
+    // Every event declared today is a USAGE event. When error events arrive they ask the other
+    // switch, and the mapping becomes a `match` on the variant.
+    if !crate::telemetry::consent::allows_usage() {
+        return;
+    }
+    // Nothing listens yet: there is no queue and no endpoint. Deliberately not logged either —
+    // `crate::log` writes to the event log, and an event stream duplicated into the primary
+    // debugging surface would double its volume to say nothing new, since every one of these is
+    // derived from a line already there.
     let _ = e;
 }
 
