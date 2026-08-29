@@ -821,9 +821,11 @@ mod tests {
             assert!(bottom <= floor, "{k:?}: the first row ends at {bottom}, under the keyboard at {floor}");
         }
         // The ACTUAL numbers `super`'s layout note quotes, so a doc claim nobody can reproduce
-        // cannot come back: a poster shelf ends at 701 against a MEASURED panel edge of 756.
-        // (683 until 2026-08-23, when the field and `CONTENT_TOP` moved down 18px with the top bar.)
-        assert_eq!(stack_top(&[Kind::Movie], 0) + HEAD_TO_ROW + CARD_H, 701.0);
+        // cannot come back: a poster shelf ends at 735 against a MEASURED panel edge of 756 — 21px
+        // of clearance, and the tightest this layout has ever been. (683 until 2026-08-23, when the
+        // field moved down 18px with the top bar; 701 until 2026-08-30, when the capsule went and
+        // `CONTENT_TOP` moved to the design's 300 to clear the scope block under a 72px query.)
+        assert_eq!(stack_top(&[Kind::Movie], 0) + HEAD_TO_ROW + CARD_H, 735.0);
         assert_eq!(floor, 756.0);
     }
 

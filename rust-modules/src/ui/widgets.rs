@@ -6158,7 +6158,7 @@ mod tests {
         let lib = area(crate::ui::library::GRID_TOP);
         let search = area(crate::ui::search::CONTENT_TOP);
         assert_eq!(lib, 1920.0 * 320.0, "the Library band: 1920 wide, 0..232 grown 88 below");
-        assert_eq!(search, 1920.0 * 354.0, "Search's field sits 34px lower, and the band with it");
+        assert_eq!(search, 1920.0 * 388.0, "Search's content starts 68px lower, and the band with it");
         for (name, a) in [("library", lib), ("search", search)] {
             assert!(
                 a > 1.9 * crate::gfx::GLASS_REGION_BUDGET,

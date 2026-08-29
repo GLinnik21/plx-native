@@ -1,28 +1,36 @@
-//! The query capsule, its caret, and the scope line beside it.
+//! The query LINE, its caret, and the scope block under it.
 //!
 //! ## The design, so it does not have to be re-derived from the mock
 //!
 //! - The field carries **no magnifier**. The pill above it is the mark, and repeating it here says
 //!   nothing the screen has not already said.
-//! - Focused (or editing) it wears the one control fill, `theme::ACCENT`, with `ACCENT_INK` on it.
-//!   Holding a query while focus is elsewhere it drops to `CONTROL_IDLE_FILL`/`CONTROL_IDLE_INK`,
-//!   so the query stays legible without claiming focus it does not have.
-//! - The placeholder is **unconditional**: an empty focused field is the word "Search" in the
-//!   on-accent hint ink (`ROW_VALUE_INK_ON_DIM`), never a blank capsule with a lone caret.
+//! - **There is no capsule.** The query IS the type, at `size::HERO` on the flat ground. It wore a
+//!   control face until 2026-08-30 — `ACCENT` focused, `CONTROL_IDLE_FILL` holding a query while
+//!   focus was elsewhere — and the design took the plate away: with nothing to fill, FOCUS is
+//!   carried by INK WEIGHT alone (`TEXT_HEADING` with it, `TEXT_SECONDARY` without), plus the
+//!   caret, which exists only while the television's own keyboard is up.
+//! - The placeholder is **unconditional**: an empty field is "Search your library" at the same
+//!   rung in `TEXT_TERTIARY` — a step back from either query ink — never a bare caret on an empty
+//!   row.
 //! - The run scrolls so the **CARET** stays on screen — see [`run_layout`]. There is a real
 //!   insertion point now (`super`'s `CARET`), because the television's own panel delegates its
 //!   `◀`/`▶` keys to the app: the field is the thing that owns the text, so it is the thing that
 //!   has to move the cursor. What there still is no route to is a POINTER cursor — no selection,
 //!   no click-to-position.
-//! - The caret is 3px × 34px and **blinks** (`super::BLINK_MS`), drawn only while `editing`.
-//!   This doc argued the opposite for one release — solid, on the grounds that `ui::idle` cannot
-//!   see a clock — and the argument was right about the mechanism and wrong about the conclusion:
-//!   an animator that reports to the gate on its PHASE FLIP alone costs two presents a second, and
-//!   a text field with a dead cursor reads on a television as a field that is not taking input.
-//!   That was the first thing reported about this screen from the couch.
-//! - The **scope line** sits at x=950 on the field's own row, CAPTION/tertiary, and is stated only
-//!   when the scope is smaller than the user's whole account: one plain fact, no warning tint and
-//!   no Retry (the retry that re-kicks one source lives on that section's Library).
+//! - The caret is **5px wide and one CAP BAND tall**, sitting on the run's baseline, drawn only
+//!   while `editing` — and **solid**. `Search Screen.dc.html` states both halves of that: "nothing
+//!   pulses in this app, and a blinking caret holds the GL loop awake". **This reverses a change
+//!   made from the couch**, and the note is left standing rather than deleted: the field blinked
+//!   because a dead cursor "reads on a television as a field that is not taking input", which was
+//!   the first thing reported about this screen. The blink is one constant away
+//!   (`super::BLINK_MS`, and the phase this module used to read) if that report comes back.
+//! - The **scope block** sits UNDER the query at `super::SCOPE_Y`, left-aligned on the app's own
+//!   margin — a 72px line has no right-hand half to put a caption in. It is stated in EVERY state,
+//!   one source included: this is the one screen where you cannot see what you are looking at. One
+//!   plain fact, no warning tint and no Retry (the retry that re-kicks one source lives on that
+//!   section's Library). Above it, and only while the query is one character short of running, the
+//!   design's `minHint` line — a fact about the field, ranked above the scope fact and inked one
+//!   step brighter.
 //!
 //! ## The two pieces of arithmetic worth extracting
 //!
@@ -40,43 +48,45 @@ use crate::ui::label::Label;
 use crate::ui::search::{View, FIELD};
 use crate::ui::{theme, Painter, Rect};
 use std::ffi::{CStr, CString};
+use std::os::raw::c_int;
 
-/// Inner padding, both ends — the air between the capsule's arc and the run inside it. From
-/// `Search Screen.dc.html` directly, which is why it is not a `theme::space` rung: this is the
-/// design's stated inset for THIS control, not a gap between stacked blocks.
-const PAD_X: f32 = 32.0;
-/// The caret, from the design. Solid, never animated; see the module doc.
-const CARET_W: f32 = 3.0;
-const CARET_H: f32 = 34.0;
+/// The caret's width, from the design. Its HEIGHT is not a constant: it is the run's own cap band
+/// (`text::text_cap_band` at [`RUN_SZ`]), which is what "52 of 72" in the design means and what
+/// keeps the bar the height of the letters beside it if the face ever changes.
+const CARET_W: f32 = 5.0;
 /// Clearance between the caret and the PLACEHOLDER behind it — the only gap the caret needs, since
 /// against a real run it stands at the insertion point with no lead at all (see [`run_layout`]).
 const HINT_GAP: f32 = 4.0;
-/// The one-character hint, and the air before it.
-///
-/// **It lives in the FIELD, which is the whole design decision.** One character in, the query has
-/// not started ([`crate::search::MIN_QUERY`]) and the screen owes the user that fact — but the
-/// region below still holds their recent terms, and replacing those with an instruction because a
-/// key was pressed takes content away for pressing a key. So the hint sits where the eye already
-/// is, right after the caret, in the placeholder's own dim ink, and is CONSUMED by the next
-/// keystroke rather than dismissed.
-///
-/// (`Search Screen.dc.html` carries the alternative as a `minHint` prop — a `Searching starts at
-/// two characters` line above the scope caption — and ships with this one as the default. The other
-/// is not built: it puts a second sentence in a column that already has one, and the fact belongs
-/// to the field.)
-const GHOST: &CStr = c"one more character";
-const GHOST_GAP: f32 = 14.0;
-/// Where the scope line starts — its own column on the field's row, clear of the 820-wide capsule.
-const SCOPE_X: f32 = 950.0;
+// The one-character hint used to be drawn IN the field — `one more character`, right after the
+// caret in the placeholder's ink — on the argument that the fact belongs to the field and that the
+// region below must keep the user's recent terms rather than be replaced by an instruction. The
+// second half of that argument is why the hint is not in the results region, and it still stands;
+// the first half was a choice between two placements the design carries as one `minHint` prop, and
+// the one it SHIPS is beside the field ([`MIN_HINT`]). Drawing both would state one fact twice on
+// one screen. The predicate survives as `min_hint_shown` and now drives that line.
+/// The QUERY's own rung. `HERO` is the app's largest, and this line is the largest thing on the
+/// screen by design — what the user typed is the subject of the page.
+const RUN_SZ: c_int = theme::size::HERO;
+/// The line the scope block draws while the query is one character short of running
+/// ([`crate::search::MIN_QUERY`]) — the design's `minHint` in its "beside the field" placement,
+/// which is the one it ships with. It sits ABOVE the scope line and one ink step brighter, because
+/// it is a fact about what the field is doing and the other is a fact about where it is looking.
+const MIN_HINT: &CStr = c"Searching starts at two characters";
+/// The scope block's own height — the two caption lines it can hold, plus the gap between them.
+/// [`super::CHROME_BOTTOM`] is measured off it, so this is the number that says where the app's
+/// chrome stops and the result band begins.
+pub(crate) const SCOPE_H: f32 = 2.0 * theme::size::CAPTION as f32 * 1.35 + MIN_HINT_GAP;
+/// Between the two caption lines of the scope block.
+const MIN_HINT_GAP: f32 = 6.0;
 /// …and how much room it gets: the rest of the row, out to the app's own right margin. It is the
 /// LAST run on this row, so it is the one that gives way — elided to this rather than allowed to
 /// run off the panel. A `const` because the elide (in [`build`]) and the frame it is drawn into (in
 /// [`draw_scope`]) are now on opposite sides of the memo, and a budget measured in one place and
 /// drawn in the other is how a run comes to be elided to a width nothing clips it at.
-const SCOPE_W: f32 = crate::ui::consts::SCR_W - crate::ui::consts::MARGIN_X - SCOPE_X;
+const SCOPE_W: f32 = 1200.0;
 /// Drawn whenever the query has nothing readable in it, focused or not. A `CStr` literal, so the
 /// one string this module knows at compile time costs no per-frame allocation.
-const PLACEHOLDER: &CStr = c"Search";
+const PLACEHOLDER: &CStr = c"Search your library";
 
 /// What a source is called before the roster has named it. The line still has to be a sentence —
 /// an empty run in the middle of one reads as a rendering fault, not as a missing fact — and at
@@ -86,64 +96,62 @@ const UNNAMED_OWN: &str = "your server";
 const UNNAMED_SHARE: &str = "a shared server";
 
 pub(crate) fn draw(p: Painter, v: &View) {
-    // The two faces, CROSS-FADED on `super`'s focus spring rather than swapped — see `super::HOT`
-    // for why this control owes the rest of the app that motion, and `theme::cross` for why it is
-    // not `theme::mix` (both pairs differ in ALPHA as well as hue, and `mix` would land the
-    // destination colour at the source's opacity).
+    // **No plate.** There is nothing to fill, so focus is the INK: heading weight while the field
+    // holds it, one step back when it does not. Still CROSS-FADED on `super`'s focus spring rather
+    // than swapped — see `super::HOT` for why this control owes the rest of the app that motion,
+    // and `theme::cross` for why it is not `theme::mix` (the pair differs in ALPHA as well as hue,
+    // and `mix` would land the destination colour at the source's opacity).
     let hot = v.hot;
-    let fill = theme::cross(theme::CONTROL_IDLE_FILL, theme::ACCENT, hot);
-    let ink = theme::cross(theme::CONTROL_IDLE_INK, theme::ACCENT_INK, hot);
-    // The placeholder and the one-character hint share one quiet role, on whichever face is under
-    // them. They ride the same scalar, so nothing on this control can be half-swapped.
-    let hint_ink = theme::cross(theme::TEXT_TERTIARY, theme::ROW_VALUE_INK_ON_DIM, hot);
-    let rad = FIELD.h * 0.5;
-    // The card system's resting shadow, the same one every pill in `widgets::Button` carries: an
-    // ACCENT capsule with no shadow measures barely above its surround and the shape disappears,
-    // leaving the dark label floating.
-    p.shadow(FIELD, rad, theme::CARD_SHADOW_REST_BLUR, theme::CARD_SHADOW_REST_DY,
-        theme::with_a(theme::CARD_SHADOW, theme::CARD_SHADOW_REST_A));
-    p.rrect(FIELD, rad, rad, fill);
+    let ink = theme::cross(theme::TEXT_SECONDARY, theme::TEXT_HEADING, hot);
+    // The placeholder does NOT ride that fade: it is a step back from either query ink and says the
+    // same thing focused or not, which is what makes it a placeholder rather than a dim query.
+    let hint_ink = theme::TEXT_TERTIARY;
 
-    let inner = Rect::new(FIELD.x + PAD_X, FIELD.y, FIELD.w - PAD_X * 2.0, FIELD.h);
+    let inner = FIELD;
     // Verbatim — `search::query` keeps the trailing space precisely because this is what draws it.
     // The two cuts [`run_and_head`] makes (the NUL, and the caret back to a char boundary) are
     // argued there.
     let (q, head) = run_and_head(crate::search::query(), v.caret);
     let cq = CString::new(q).unwrap_or_default();
-    let run_w = crate::text::text_width(cq.as_ptr(), theme::size::BODY, 0);
+    let run_w = crate::text::text_width(cq.as_ptr(), RUN_SZ, 1);
     let ch = CString::new(head).unwrap_or_default();
-    let caret_w = crate::text::text_width(ch.as_ptr(), theme::size::BODY, 0);
+    let caret_w = crate::text::text_width(ch.as_ptr(), RUN_SZ, 1);
     let (run_dx, caret_dx) = run_layout(run_w, caret_w, inner.w, v.editing);
 
-    // Scissor, so the head of an overlong run is CUT at the padding rather than sliding out over
-    // the capsule's left arc. Global GL state — cleared before the scope line, which is outside it.
+    // Scissor, so the head of an overlong run is CUT at the app's own margin rather than sliding
+    // out across it. With the capsule gone this is the ONLY thing bounding the line, which is why
+    // `FIELD` survives as a rect at all. Global GL state — cleared before the scope block below.
     p.clip(inner);
     // Whitespace is not a readable query: `search::draw` gates the whole screen below on the
     // TRIMMED string, so a lone typed space must not leave this capsule blank and hintless while
     // the rest of the screen says nothing has been asked.
     if q.trim().is_empty() {
         // The caret is the insertion point, so it precedes the hint rather than sitting under it.
+        // (`Search Screen.dc.html` puts the placeholder and the caret in one run, which draws the
+        // bar AFTER the words — a mock's edge case: there, the caret always follows the whole
+        // string because the string is the only thing in the slot. Here it is a real insertion
+        // point the `◀`/`▶` keys move, and it cannot both be that and sit behind a placeholder.)
         let px = if v.editing { inner.x + caret_dx + CARET_W + HINT_GAP } else { inner.x };
-        Label::new(PLACEHOLDER.as_ptr(), theme::size::BODY, hint_ink).draw(p, Rect::new(px, inner.y, inner.w, inner.h));
+        Label::new(PLACEHOLDER.as_ptr(), RUN_SZ, hint_ink).bold().draw(p, Rect::new(px, inner.y, inner.w, inner.h));
     } else {
-        Label::new(cq.as_ptr(), theme::size::BODY, ink)
+        Label::new(cq.as_ptr(), RUN_SZ, ink)
+            .bold()
             .draw(p, Rect::new(inner.x + run_dx, inner.y, inner.w, inner.h));
     }
-    if v.editing && v.caret_on {
-        let cr = Rect::new(inner.x + caret_dx, FIELD.cy() - CARET_H * 0.5, CARET_W, CARET_H);
-        p.rrect(cr, CARET_W * 0.5, CARET_W * 0.5, ink);
+    if v.editing {
+        // One CAP BAND tall, sitting on the run's own baseline — the design's "52 of 72", derived
+        // from the face rather than transcribed, so it stays the height of the letters beside it.
+        // Square, not rounded: at 5px a radius is a lozenge, and the design draws a bar.
+        let ty = crate::text::text_vcenter_y(RUN_SZ, 1, inner.cy());
+        let (ct, cb) = crate::text::text_cap_band(RUN_SZ, 1);
+        let cr = Rect::new(inner.x + caret_dx, ty + ct, CARET_W, cb - ct);
+        p.rect(cr, 0.0, ink, ink, 0.0);
     }
     // One character in, after the insertion point — see [`GHOST`]. Placed off the caret's own slot
     // whether or not a bar is drawn, so the run does not shuffle sideways when the panel closes.
-    if ghost_shown(q) {
-        Label::new(GHOST.as_ptr(), theme::size::BODY, hint_ink).draw(
-            p,
-            Rect::new(inner.x + caret_dx + CARET_W + GHOST_GAP, inner.y, inner.w, inner.h),
-        );
-    }
     p.clip_clear();
 
-    draw_scope(p);
+    draw_scope(p, min_hint_shown(q));
 }
 
 /// The run this capsule DRAWS, and the slice of it that sits before the insertion point — the two
@@ -192,7 +200,7 @@ fn run_and_head(q: &str, caret: usize) -> (&str, &str) {
 /// Written against `MIN_QUERY` rather than as `== 1` so it stays true if the minimum ever moves —
 /// at three, "one more character" is right at two and wrong at one, which is a copy question this
 /// predicate would then be the place to answer.
-fn ghost_shown(q: &str) -> bool {
+fn min_hint_shown(q: &str) -> bool {
     let n = q.trim().chars().count();
     n > 0 && n + 1 == crate::search::MIN_QUERY
 }
@@ -564,11 +572,24 @@ pub(super) fn sources() -> (usize, Option<&'static str>) {
 
 /// State the scope, if there is anything to state. Everything this reads was resolved by
 /// [`with_scope`], so the draw is one `Label` on one already-elided run.
-fn draw_scope(p: Painter) {
+/// The field's own FACTS, stacked under the query and left-aligned on it.
+///
+/// Two lines at most, and the order is the ranking: what the field is DOING first (`min_hint` — the
+/// query has not started yet), then where it is LOOKING. The second is stated in every state; the
+/// first only while the query is one character short, and it is inked one step brighter because it
+/// is the answer to "why is nothing happening".
+fn draw_scope(p: Painter, min_hint: bool) {
+    let line_h = theme::size::CAPTION as f32 * 1.35;
+    let mut y = super::SCOPE_Y;
+    if min_hint {
+        Label::new(MIN_HINT.as_ptr(), theme::size::CAPTION, theme::TEXT_SECONDARY)
+            .draw(p, Rect::new(FIELD.x, y, SCOPE_W, line_h));
+        y += line_h + MIN_HINT_GAP;
+    }
     with_scope(|s| {
         let Some(line) = s.line.as_ref() else { return };
         Label::new(line.as_ptr(), theme::size::CAPTION, theme::TEXT_TERTIARY)
-            .draw(p, Rect::new(SCOPE_X, FIELD.y, SCOPE_W, FIELD.h));
+            .draw(p, Rect::new(FIELD.x, y, SCOPE_W, line_h));
     });
 }
 

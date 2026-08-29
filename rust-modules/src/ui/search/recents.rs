@@ -106,12 +106,15 @@ const CAP: usize = super::MAX_RECENTS;
 pub(super) const HDR: &std::ffi::CStr = c"RECENT SEARCHES";
 /// The Clear control's label and the air above it. A `space::MD` rung, not a hand-tuned gap: it
 /// separates two different KINDS of thing (the list, then a verb), which is exactly the rung's job.
-const CLEAR: &std::ffi::CStr = c"Clear";
+const CLEAR: &std::ffi::CStr = c"Clear recent searches";
 const CLEAR_GAP: f32 = theme::space::MD;
 
-/// The block's left edge and width — the field's column (see above).
+/// The block's left edge and width. `x` is the field's column; the WIDTH is its own number and no
+/// longer the field's, because the field became the full content width when its capsule went and a
+/// list of short terms does not want 1728px of row. 820 is the design's, and it is what the field
+/// itself used to be.
 const BLOCK_X: f32 = super::FIELD.x;
-const BLOCK_W: f32 = super::FIELD.w;
+const BLOCK_W: f32 = 820.0;
 /// Where a row's own content starts. `table::CONTENT_X` is public for exactly this: a caller that
 /// draws beside a list starting its text on the same line the rows do, rather than re-deriving two
 /// private constants and drifting from them.
@@ -124,7 +127,11 @@ const ROWS_TOP: f32 = super::CONTENT_TOP + table::HDR_H;
 /// The bottom edge of the Clear control at a FULL list — the number the four-term cap exists to
 /// keep under the raised keyboard's top edge. Asserted by a host test, not by the eye.
 const BLOCK_BOTTOM: f32 =
-    ROWS_TOP + super::MAX_RECENTS as f32 * table::ROW_H + CLEAR_GAP + super::FIELD.h;
+    ROWS_TOP + super::MAX_RECENTS as f32 * table::ROW_H + CLEAR_GAP + CLEAR_H;
+/// The Clear control's own height — one control height, and no longer `FIELD.h`: the field is a
+/// line box now (80px for a 72px run), not a control, so reading its height here would have
+/// measured this block against the wrong object.
+const CLEAR_H: f32 = 60.0;
 
 // ---- The store --------------------------------------------------------------------------------
 
@@ -517,7 +524,7 @@ fn draw_block(p: Painter, v: &View, rows: &[CString]) {
     // Clearing is a CONTROL: it leaves the column of words and becomes the shared pill, at the
     // rows' own text x so it reads as belonging to the block without sitting in their column.
     let by = ROWS_TOP + shown as f32 * table::ROW_H + CLEAR_GAP;
-    let cr = Rect::new(TEXT_X, by, clear_w(), super::FIELD.h);
+    let cr = Rect::new(TEXT_X, by, clear_w(), CLEAR_H);
     // Clear sits at `MAX_RECENTS`, one past the last term it could ever follow — the index
     // `mod.rs` reserves for it whatever `shown` turns out to be.
     super::note_recent_rect(super::MAX_RECENTS, cr);
