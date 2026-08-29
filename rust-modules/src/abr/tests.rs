@@ -523,15 +523,99 @@ fn one_quantisation_dip_in_a_filling_reserve_is_not_a_starvation() {
          answer to",
         dip.slope_ms_per_s,
     );
+    // **This assertion was inverted on 2026-08-29 and the inversion is the record of a second,
+    // deeper fix.** It used to require the horizon to be INSIDE `starvation_fallback_secs`, on the
+    // grounds that only the derivative was keeping the branch shut. That was true while the
+    // eviction horizon was computed on `conservative_kbps`: `T = B·R/(R−C)` with `C` discounted
+    // put `T` at 17 s here, and — because `T` is increasing in `B` while `B` is capped by the
+    // plant ceiling — it could not have escaped the band at ANY reserve this playback could
+    // reach. The horizon half was permanently armed and the derivative was the only thing left.
+    // Computing it on the measured rate, which is the rule `controller.rs` already followed for
+    // HLS, moves it to 52 s. Both guards now hold, independently, and that is the point: the
+    // derivative closed the channel, and the basis fix disarmed the condition behind it.
     assert!(
-        dip.horizon_secs.is_some_and(|s| s <= 20),
-        "the manufactured horizon is present and inside `starvation_fallback_secs` — {:?}s — so \
-         this test really does exercise the branch, and only the derivative keeps it shut",
+        dip.horizon_secs.is_none_or(|s| s > 20),
+        "the eviction horizon is computed on the measured rate now, so a link carrying the file \
+         has no imminent horizon at all — got {:?}s",
         dip.horizon_secs,
     );
     assert_eq!(
         dip.fallback, None,
         "one negative sample in a filling reserve may not cost a reload and a visible blink",
+    );
+}
+
+/// **Conservatism belongs to admission, not to eviction — and Original must say so in the same
+/// words `controller.rs` does.**
+///
+/// The HLS side computes its emergency horizon on `immediate_network`, the measured rate floored
+/// by the fast estimate, and its comment calls the choice load-bearing: *"It does not belong to
+/// EVICTION, where the claim is that the link in front of you cannot carry what is already
+/// playing, and the evidence for that has to be observed rather than discounted into existence."*
+/// Original computed the same horizon on `conservative_kbps` and inherited exactly the failure
+/// that comment predicts.
+///
+/// It is not a matter of degree, because the plant has a ceiling. `T = B·R/(R−C)` is increasing in
+/// `B`, and `B ≤ B_max = lead + queue_bytes·8/R` — about 5 s for a source this size. On the
+/// discounted rate that gives `T_max ≈ 17 s`, permanently inside `starvation_fallback_secs`: the
+/// horizon half of the imminent test was satisfied on **every window the playback could produce**,
+/// including a completely full buffer. On the measured rate the same ceiling gives ~55 s.
+///
+/// Both readings are asserted here so the parity cannot regress silently in either direction.
+#[test]
+fn the_eviction_horizon_is_measured_not_discounted() {
+    let source = 25_264;
+    let requirement = source_requirement_kbps(source, &AbrPolicy::measured());
+    let mut mode = original(source);
+    // A link measuring 31 037 kbps against a 25 264 kbps file: 1.23x, carrying it with room.
+    for window in 1..=4_u64 {
+        mode.observe_saturated(
+            window_bytes(31_037) * window,
+            ORIGINAL_WINDOW_US * window,
+            Some(1_000 * i64::try_from(window).unwrap()),
+            HOUR_MS,
+        )
+        .unwrap();
+    }
+    let settled = mode
+        .observe_saturated(window_bytes(31_037) * 5, ORIGINAL_WINDOW_US * 5, Some(4_814), HOUR_MS)
+        .unwrap();
+
+    // The published `safe=` is still the discounted number, because it still chooses the fallback
+    // RUNG — an admission decision, and the one place the discount belongs.
+    assert!(
+        settled.conservative_kbps < requirement,
+        "the discounted rate is still below the requirement ({} < {}) — which is precisely why \
+         computing the horizon on it manufactured a deficit",
+        settled.conservative_kbps,
+        requirement,
+    );
+    // What the DECISION is taken on is the measurement, and the measurement covers the file.
+    assert!(
+        settled.measured_kbps < requirement,
+        "even the raw rate is under the VBR-inflated requirement, so this is not a case the \
+         allowance alone rescues",
+    );
+    assert!(
+        settled.horizon_secs.is_none_or(|s| s > AbrPolicy::measured().starvation_fallback_secs),
+        "a link delivering 1.23x the source may not read as imminent starvation — got {:?}s",
+        settled.horizon_secs,
+    );
+    assert_eq!(settled.fallback, None);
+
+    // And the rule still bites when the link really does fall behind: same reserve, a rate a
+    // quarter of the source.
+    let mut collapsed = original(source);
+    collapsed
+        .observe_saturated(window_bytes(6_000), ORIGINAL_WINDOW_US, Some(6_000), HOUR_MS)
+        .unwrap();
+    let falling = collapsed
+        .observe_saturated(window_bytes(6_000) * 2, ORIGINAL_WINDOW_US * 2, Some(3_000), HOUR_MS)
+        .unwrap();
+    assert_eq!(
+        falling.fallback,
+        Some(OriginalExit::ImminentStarvation),
+        "an observed collapse still evicts — the basis changed, not the rule",
     );
 }
 
@@ -658,7 +742,7 @@ fn a_deficit_that_persists_costs_original_the_argument() {
             .observe_saturated(
                 window_bytes(50_000) * window,
                 ORIGINAL_WINDOW_US * window,
-                Some(30_000 - 200 * i64::try_from(window).unwrap()),
+                Some(20_000 - 200 * i64::try_from(window).unwrap()),
                 HOUR_MS,
             )
             .unwrap();

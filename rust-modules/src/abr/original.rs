@@ -656,7 +656,36 @@ impl OriginalModeController {
 
         let requirement = source_requirement_kbps(self.source_kbps, &self.policy);
         let conservative = self.delivery.conservative_kbps();
-        let horizon = starvation_horizon(buffered_ms, requirement, conservative);
+        // **The EVICTION horizon is computed on the MEASURED rate, not on `conservative_kbps` —
+        // which is the rule `controller.rs` already states, follows and calls load-bearing, and
+        // which this side was violating.** Its words, at the HLS emergency horizon:
+        //
+        // > Conservatism belongs to ADMISSION — a rung you have not tried might be dearer than you
+        // > think, so plan against a lower bound. It does not belong to EVICTION, where the claim
+        // > is that the link in front of you cannot carry what is already playing, and the
+        // > evidence for that has to be observed rather than discounted into existence.
+        //
+        // `immediate` is the same construction that side uses (`immediate_network`): this window's
+        // rate, floored by the fast estimate so one lucky burst cannot excuse a link that has
+        // stopped delivering.
+        //
+        // **What the discount was doing here, in the device's numbers.** 25 264 kbps source,
+        // R = 34 106. The live link measured 31 037 and the discount published 23 932, so the
+        // model saw a 10 174 kbps deficit where the true one was 3 069 — 92 % of it composition.
+        // Worse, it was PERMANENT: `T = B·R/(R−C)` is increasing in `B` and `B` is bounded by the
+        // plant ceiling `B_max = lead + queue_bytes·8/R` ≈ 5.0 s for a source this size, so
+        // `T_max = 5.0 × 34 106/10 174 = 16.8 s`, under `starvation_fallback_secs`. The imminent
+        // branch's horizon half was satisfied on EVERY window the playback could ever produce,
+        // saturated or not — the reserve's own physical ceiling could not buy its way out. On the
+        // measured rate the same ceiling gives `T_max = 5.0 × 34 106/3 069 = 55 s`, and the branch
+        // becomes reachable only when the link genuinely stops covering the file.
+        //
+        // That is why the derivative guards below are necessary and were not sufficient: they
+        // close the channel through which the permanently-armed condition fired, and the condition
+        // stays armed for the next one. `conservative` is still published as `safe=` and still
+        // chooses the fallback RUNG, which is an admission decision and is where it belongs.
+        let immediate = self.delivery.fast_kbps.min(measured_kbps);
+        let horizon = starvation_horizon(buffered_ms, requirement, immediate);
         let unsafe_horizon = horizon
             .seconds
             .is_some_and(|secs| secs < self.policy.starvation_safe_secs);
