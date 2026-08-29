@@ -13,6 +13,7 @@
 //! destroys it, that the event path fails closed — and a test behind a feature the default gate
 //! does not build is a test that never runs. What will be gated is the sending.
 pub(crate) mod consent;
+pub(crate) mod crashreport;
 pub(crate) mod posthog;
 pub(crate) mod queue;
 pub(crate) mod sender;
