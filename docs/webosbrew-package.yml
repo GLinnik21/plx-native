@@ -111,9 +111,11 @@ description: |
     bit depth, so 10-bit is still claimed without asking.
 
   The app talks to the Plex Media Servers your account can reach, to plex.tv to sign in, and to
-  discover.provider.plex.tv for cast biographies — and to nothing else. There is no analytics, no
-  telemetry and no crash reporting. Sign-in to your Plex account is encrypted; traffic to a media
-  server is not (above).
+  discover.provider.plex.tv for cast biographies. Crash reports and usage are two separate
+  switches, both OFF by default and both reversible; the screen that asks shows you the exact
+  messages before you answer, and no title, search term, server name or address can appear in one.
+  With both off the app sends nothing to its developer at all. Sign-in to your Plex account is
+  encrypted; traffic to a media server is not (above).
 
   Not affiliated with, endorsed by, or sponsored by Plex GmbH or LG Electronics.
 

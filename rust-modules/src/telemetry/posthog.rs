@@ -258,7 +258,7 @@ mod tests {
             let (name, _) = schema::serialize(e);
             let s = parse(&single("phc_k", "id1", e, "test", Some("2026-08-29T00:00:00Z")));
             assert_eq!(s["event"], name);
-            assert!(schema::EVENT_NAMES.contains(&name));
+            assert!(schema::EVENT_SPECS.iter().any(|s| s.name == name));
         }
     }
 

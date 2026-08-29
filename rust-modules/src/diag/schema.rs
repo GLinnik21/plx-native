@@ -184,20 +184,106 @@ pub(crate) fn serialize(e: DiagEvent) -> (&'static str, Vec<(&'static str, Value
     }
 }
 
-/// Every event name this build can emit, for the document test and for a sender that wants to
-/// declare its schema up front. Kept beside [`serialize`] so a new variant that forgets one is
-/// caught by the round-trip test rather than by a reader.
-#[allow(dead_code)] // still test-only: its caller is a schema declaration the sender has not
-// needed yet, unlike `serialize`, which the PostHog body now calls for real
-pub(crate) const EVENT_NAMES: &[&str] = &[
-    "app.launch",
-    "route.entered",
-    "signin.completed",
-    "playback.requested",
-    "playback.started",
-    "playback.failed",
-    "playback.ended",
+/// **The registry: one declaration per event, carrying its name, its fields and what each field
+/// may hold.** `PRIVACY.md`'s schema table is rendered from this and checked against it, and so is
+/// [`serialize`].
+///
+/// It replaced a NAME LIST plus a grep. The name list caught a variant that shipped undeclared and
+/// could say nothing about fields — so a field added to an existing event changed what leaves the
+/// television with no document, and no test, noticing. And the in-app notice was guarded by
+/// grepping `src/telemetry` for a call to `net::post_ca`, which is a proxy for "can this build
+/// send" and answers nothing about WHAT. A registry is the thing itself: the promise `PRIVACY.md`
+/// makes is about fields and their domains, so that is what is declared, once, here.
+///
+/// `domain` is prose and it is the column a reader of the privacy document actually reads. It is
+/// held beside the field rather than in the document because the document is the OUTPUT — written
+/// there, the two drift, and the one that goes stale is the one nobody compiles.
+///
+/// **`#[cfg(test)]`, and that is the honest shape rather than a compromise.** This is a
+/// SPECIFICATION, checked against the implementation; at runtime [`serialize`] *is* the schema, and
+/// nothing needs a second copy of it in the shipped binary. The alternative was an
+/// `#[allow(dead_code)]`, and this file's own doc argues against exactly that: a standing allowance
+/// is how a genuinely dead declaration later hides in plain sight. Every comparison that gives this
+/// registry its value — against `serialize`, against `PRIVACY.md`, against the consent screen's
+/// preview — is a test, and `make check` runs them all.
+#[cfg(test)]
+pub(crate) const EVENT_SPECS: &[EventSpec] = &[
+    EventSpec { name: "app.launch", fields: &[] },
+    EventSpec {
+        name: "route.entered",
+        fields: &[F { key: "screen", domain: "one of a fixed list of screen names" }],
+    },
+    EventSpec { name: "signin.completed", fields: &[] },
+    EventSpec { name: "playback.requested", fields: &[F { key: "playback_id", domain: PLAYBACK_ID }] },
+    EventSpec {
+        name: "playback.started",
+        fields: &[
+            F { key: "playback_id", domain: PLAYBACK_ID },
+            F { key: "mode", domain: MODE },
+            F { key: "raster", domain: "`sd` / `hd` / `fhd` / `uhd` / `unknown` — never the raster" },
+            F { key: "fps", domain: "a fixed rung: `24`/`25`/`30`/`50`/`60`/`100`/`other`/`unknown` — never the measured rate" },
+            F { key: "video", domain: "a codec name from a fixed table; anything else is `other`" },
+            F { key: "audio", domain: "a codec name from a fixed table; anything else is `other`" },
+            F { key: "startup", domain: "`<1s` / `1-3s` / `3-10s` / `10s+` — never the interval" },
+        ],
+    },
+    EventSpec {
+        name: "playback.failed",
+        fields: &[
+            F { key: "playback_id", domain: PLAYBACK_ID },
+            F { key: "mode", domain: MODE },
+            F { key: "kind", domain: "`decision_refused` / `no_video_transcode_target` / `no_video_track` / `unspecified`" },
+        ],
+    },
+    EventSpec {
+        name: "playback.ended",
+        fields: &[
+            F { key: "playback_id", domain: PLAYBACK_ID },
+            F { key: "mode", domain: MODE },
+            F { key: "watched", domain: "`abandoned` / `some` / `most` / `finished` — never a position or a duration" },
+        ],
+    },
 ];
+
+#[cfg(test)]
+const PLAYBACK_ID: &str = "a random number minted per attempt, never stored and never reused";
+#[cfg(test)]
+const MODE: &str = "`direct` or `transcode`";
+
+/// One event's contract. See [`EVENT_SPECS`].
+#[cfg(test)]
+pub(crate) struct EventSpec {
+    pub name: &'static str,
+    pub fields: &'static [F],
+}
+
+/// One field's contract: its key, and what it may hold in the words the privacy document prints.
+#[cfg(test)]
+pub(crate) struct F {
+    pub key: &'static str,
+    pub domain: &'static str,
+}
+
+/// The schema table exactly as `PRIVACY.md` carries it. **The document is the OUTPUT** — a test
+/// asserts the file contains this verbatim and prints the block on failure, so the fix to a stale
+/// document is a paste rather than an act of authorship.
+#[cfg(test)]
+pub(crate) fn privacy_table() -> String {
+    let mut out = String::from("| event | fields |\n|---|---|\n");
+    for spec in EVENT_SPECS {
+        let fields = if spec.fields.is_empty() {
+            "*(none)*".to_string()
+        } else {
+            spec.fields
+                .iter()
+                .map(|f| format!("`{}` — {}", f.key, f.domain))
+                .collect::<Vec<_>>()
+                .join("; ")
+        };
+        out.push_str(&format!("| `{}` | {fields} |\n", spec.name));
+    }
+    out
+}
 
 #[cfg(test)]
 mod tests {
@@ -239,15 +325,24 @@ mod tests {
         all
     }
 
-    /// Every variant serialises, to a name that is in [`EVENT_NAMES`], with no duplicate field
-    /// keys. The name list is what a sender declares and what the privacy document lists, so a
-    /// variant whose name is missing from it would ship undeclared.
+    /// **What is SENT is exactly what is DECLARED — name and every field key, in order.**
+    ///
+    /// This is what the old name list could not do. It caught a variant that shipped with no
+    /// declaration and said nothing about fields, so adding a field to an existing event changed
+    /// what leaves the television with neither the document nor a test noticing. The registry makes
+    /// that a compile-adjacent failure: the serialiser and the declaration are compared key by key.
     #[test]
-    fn every_variant_serialises_to_a_declared_name() {
+    fn every_variant_sends_exactly_the_fields_it_declares() {
         for e in every_variant() {
             let (name, fields) = serialize(e);
-            assert!(EVENT_NAMES.contains(&name), "{name} is not in EVENT_NAMES");
-            let mut keys: Vec<&str> = fields.iter().map(|(k, _)| *k).collect();
+            let spec = EVENT_SPECS
+                .iter()
+                .find(|s| s.name == name)
+                .unwrap_or_else(|| panic!("{name} is not declared in EVENT_SPECS"));
+            let sent: Vec<&str> = fields.iter().map(|(k, _)| *k).collect();
+            let declared: Vec<&str> = spec.fields.iter().map(|f| f.key).collect();
+            assert_eq!(sent, declared, "{name} sends fields it does not declare, or vice versa");
+            let mut keys = sent.clone();
             keys.sort_unstable();
             let n = keys.len();
             keys.dedup();
@@ -255,14 +350,38 @@ mod tests {
         }
     }
 
-    /// …and every declared name is actually produced by some variant. Otherwise `EVENT_NAMES`
-    /// grows names nothing emits, and a sender declaring a schema would announce events that
-    /// cannot happen.
+    /// …and every declared event is actually produced by some variant. Otherwise the registry — and
+    /// with it the privacy document — grows entries describing events that cannot happen, which is
+    /// a different kind of untrue document from an incomplete one and no better.
     #[test]
-    fn every_declared_name_is_produced_by_a_variant() {
+    fn every_declared_event_is_produced_by_a_variant() {
         let produced: Vec<&str> = every_variant().into_iter().map(|e| serialize(e).0).collect();
-        for n in EVENT_NAMES {
-            assert!(produced.contains(n), "{n} is declared but no variant produces it");
+        for s in EVENT_SPECS {
+            assert!(produced.contains(&s.name), "{} is declared but no variant produces it", s.name);
+        }
+    }
+
+    /// **No field's declared domain may name a thing that must never be sent.** A cheap check on
+    /// prose, and it is aimed at the one way a registry could rot into decoration: somebody adds a
+    /// field whose domain honestly says "the item title", the document renders it, and the row
+    /// reads as though it had been reviewed.
+    #[test]
+    fn no_declared_domain_admits_content() {
+        for s in EVENT_SPECS {
+            for f in s.fields {
+                let d = f.domain.to_ascii_lowercase();
+                for banned in
+                    ["title", "search", "query", "path", "url", "address", "rating key", "server name"]
+                {
+                    assert!(
+                        !d.contains(banned),
+                        "{}.{} declares a domain mentioning {banned:?}: {}",
+                        s.name,
+                        f.key,
+                        f.domain
+                    );
+                }
+            }
         }
     }
 
@@ -277,13 +396,19 @@ mod tests {
     #[test]
     fn no_variant_can_carry_a_runtime_string() {
         let src = include_str!("schema.rs");
-        // Only the declaration region — the test module below legitimately handles strings.
-        let decls = src.split("#[cfg(test)]").next().expect("the file has a body");
+        // **Exactly the region the claim is about**: the event type, the value vocabulary and the
+        // serialiser. It used to be everything above the test module, which is wider than the
+        // property — `privacy_table` renders a DOCUMENT and legitimately returns a `String`, and a
+        // guard that has to be argued with is one somebody eventually deletes. Narrowing it here
+        // rather than adding an exemption keeps the failure meaning one thing.
+        let from = src.find("pub(crate) enum DiagEvent").expect("the event type");
+        let to = src.find("pub(crate) const EVENT_SPECS").expect("the registry");
+        let decls = &src[from..to];
         for (i, line) in decls.lines().enumerate() {
             let code = line.split("//").next().unwrap_or("");
             assert!(
                 !code.contains("String") && !code.contains("Cow<"),
-                "line {} introduces an owned string into the schema: {line}",
+                "line {} of the schema's declaration region introduces an owned string: {line}",
                 i + 1
             );
         }
@@ -296,18 +421,18 @@ mod tests {
     /// has to gain a row in the same change or `make check` fails. It reads the file from the
     /// repository root rather than embedding a copy, so the two cannot drift.
     #[test]
-    fn the_privacy_document_lists_every_event() {
+    fn the_privacy_document_carries_the_generated_table() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("rust-modules has a parent")
             .join("PRIVACY.md");
         let doc = std::fs::read_to_string(&root).expect("PRIVACY.md is readable");
-        for n in EVENT_NAMES {
-            assert!(
-                doc.contains(&format!("`{n}`")),
-                "PRIVACY.md does not list the event `{n}` — the document is the promise, so it \
-                 changes in the same commit as the schema"
-            );
-        }
+        let want = privacy_table();
+        assert!(
+            doc.contains(&want),
+            "PRIVACY.md's schema table is not the one this build would send. The document is the \
+             OUTPUT of `diag::schema::EVENT_SPECS`, so the fix is to paste the block below over \
+             the table in PRIVACY.md — not to edit the registry to match the document.\n\n{want}"
+        );
     }
 }

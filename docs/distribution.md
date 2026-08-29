@@ -611,8 +611,12 @@ world-readable `/tmp` on the TV across many runs.
   `diag::scrub`'s `no_log_call_site_interpolates_viewing_content` greps the tree to keep it that
   way, and is itself proven to fail on a reintroduced leak.
 
-**Verified clean, no action:** no analytics, no telemetry, no crash upload; the only outbound hosts
-are the user's PMS, plex.tv and `discover.provider.plex.tv`; TLS verification is on
+**Verified clean, no action:** the only outbound hosts are the user's PMS, plex.tv and
+`discover.provider.plex.tv` — plus, since the telemetry work, Sentry and PostHog in the EU, and
+those two only after an explicit opt-in on a screen that shows the exact payloads first (both
+switches default off; `PRIVACY.md` carries the schema, generated from `diag::schema::EVENT_SPECS`).
+This line read "no analytics, no telemetry, no crash upload" and was a statement of fact about the
+audited build rather than a promise, so it is updated rather than qualified. TLS verification is on
 (`net.rs:96-97`); `auth.json` is created `0600` via `OpenOptionsExt::mode` — correctly, in `open(2)`'s
 own mode argument rather than create-then-chmod (`session.rs:154`).
 

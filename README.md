@@ -61,8 +61,15 @@ interface drawn on top of it. That's the thing a browser-based client can't do.
   Skip Intro / Skip Credits, Up Next with auto-advance, and progress reported back to your server.
 
 **Your library never leaves your network.** The app talks to your own Plex Media Server, to
-`plex.tv` to sign in, and to `discover.provider.plex.tv` for cast biographies. No analytics, no
-telemetry, no crash reporting. I didn't leave it out to be virtuous — I just never wanted any.
+`plex.tv` to sign in, and to `discover.provider.plex.tv` for cast biographies.
+
+**Crash reports and usage are OFF, and stay off unless you turn them on.** Two separate switches,
+both off by default, both reversible, and the screen that asks shows you the exact messages that
+would be sent before you answer. Turning both off deletes the random identifier that television
+used. No title, search term, subtitle line, server name or address can appear in any of them — not
+as a matter of care but of construction: there is no field that could hold one. [`PRIVACY.md`](PRIVACY.md)
+is the whole statement, including the schema, which is generated from the code rather than written
+alongside it.
 
 ## Before you install
 

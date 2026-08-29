@@ -543,8 +543,19 @@ mod tests {
     #[test]
     fn the_preview_shows_every_event_this_build_can_emit() {
         let text = preview();
-        for n in crate::diag::schema::EVENT_NAMES {
-            assert!(text.contains(n), "the payload preview does not show `{n}`");
+        for s in crate::diag::schema::EVENT_SPECS {
+            assert!(text.contains(s.name), "the payload preview does not show `{}`", s.name);
+            // …and every FIELD, which the name check alone would miss: a field added to an event
+            // that is already previewed changes what a person is consenting to while the screen
+            // still shows the old shape.
+            for f in s.fields {
+                assert!(
+                    text.contains(f.key),
+                    "the payload preview does not show `{}`'s field `{}`",
+                    s.name,
+                    f.key
+                );
+            }
         }
     }
 

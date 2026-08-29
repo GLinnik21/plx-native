@@ -156,7 +156,8 @@ screen name, or a video and audio format. There is no field in any of them that 
 from your library. You can read the exact messages, in full, on the same screen the switches are \
 on.
 
-Reports go to Sentry and PostHog, both in the European Union, and are deleted after 13 months.
+Reports go to Sentry and PostHog, both in the European Union, and are kept no longer than 13 \
+ months.
 
 WHAT IS NEVER SENT
 
@@ -638,47 +639,42 @@ mod tests {
     }
 
 
-    /// **The in-app privacy notice must stop claiming "no telemetry" the moment anything can send.**
+    /// **The notice may not claim silence while this build can send.**
     ///
-    /// [`PRIVACY`] opens with *"There is no analytics, no telemetry, no crash upload, and no server
-    /// of mine for them to reach."* That is true of this build and is the one sentence on this
-    /// screen that a shipped sender would turn into a false statement — on a surface LG requires to
-    /// be readable IN the app, which is to say a compliance surface rather than a doc.
+    /// It replaced a grep for `net::post_ca` under `src/telemetry`, which asked "can this build
+    /// send at all" — a proxy, and one that could only ever fire once, on the day a sender landed.
+    /// It could say nothing about whether the notice DESCRIBED what would be sent, which is the
+    /// thing LG requires to be readable in the app and the thing a viewer is relying on.
     ///
-    /// Nothing else would catch it. The telemetry modules are being built alongside this text with
-    /// their own green tests; none of them reads this file, and prose does not compile. So the test
-    /// is structural, in the shape `diag::schema`'s document test already uses: it asks whether the
-    /// telemetry tree has acquired a CALLER of the network, and fails if it has while this claim
-    /// still stands.
-    ///
-    /// `net::post_ca` is the probe because it is the only door — `post_pinned` is lab-only and
-    /// `https_post` is the plex.tv path. When a sender lands, this test fails, and the fix is to
-    /// rewrite the notice in the same commit rather than after somebody notices.
+    /// Deliberately narrow, because the siblings above already cover the rest: the recipients, the
+    /// region and the retention are
+    /// [`the_privacy_page_names_the_recipients_region_and_retention`]'s, and the defaults are
+    /// [`the_privacy_page_states_the_consent_position`]'s. What is left here is the two things
+    /// neither of them can see — that both consent CATEGORIES are described in the words the
+    /// consent screen uses, and that no earlier phrasing claiming silence has survived the sender
+    /// landing. `diag::schema::EVENT_SPECS` checks the FIELD-level promise against `PRIVACY.md`;
+    /// this is the sofa-readable half of the same claim.
     #[test]
-    fn the_privacy_notice_and_the_ability_to_send_cannot_both_be_true() {
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/telemetry");
-        let mut sends = false;
-        if let Ok(entries) = std::fs::read_dir(&dir) {
-            for e in entries.flatten() {
-                let Ok(src) = std::fs::read_to_string(e.path()) else { continue };
-                // Only the declaration half — a doc comment naming the function is not a call.
-                let code: String =
-                    src.lines().filter_map(|l| l.split("//").next()).collect::<Vec<_>>().join("\n");
-                if code.contains("post_ca(") {
-                    sends = true;
-                }
-            }
+    fn the_notice_cannot_claim_silence_while_this_build_can_send() {
+        let p = PRIVACY.to_ascii_lowercase();
+        // The two switches, in the words the consent screen offers them in.
+        assert!(p.contains("crash"), "the notice never describes the errors switch");
+        assert!(p.contains("screens"), "the notice never describes the usage switch");
+        // Phrasings that were true before a sender existed and would be a false statement now. The
+        // full stop on the second is load-bearing: the notice legitimately opens "sends nothing to
+        // its developer UNLESS you switch it on", and matching that would fail the honest wording.
+        for stale in [
+            "no analytics, no telemetry",
+            "sends nothing to its developer.",
+            "no telemetry of any kind",
+            "nothing leaves this television",
+        ] {
+            assert!(
+                !p.contains(stale),
+                "the notice still tells the viewer {stale:?}, but this build can send. That notice \
+                 is what LG requires to be readable IN the app; it changes in the SAME commit that \
+                 gives the app the ability, not afterwards."
+            );
         }
-        let claims_silence = PRIVACY.contains("no analytics, no telemetry");
-        assert!(
-            !(sends && claims_silence),
-            "something under src/telemetry now calls net::post_ca, but the in-app privacy notice \
-             still tells the viewer this app sends nothing to its developer. That notice is what \
-             LG requires to be readable IN the app; it changes in the SAME commit that gives the \
-             app the ability, not afterwards."
-        );
-        // And the claim must not simply be deleted while nothing sends — that would quietly drop a
-        // true and reassuring statement, which is its own kind of drift.
-        assert!(sends || claims_silence, "the no-telemetry claim vanished without a sender landing");
     }
 }

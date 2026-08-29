@@ -14,15 +14,16 @@ notes say when it changed.*
 
 | | |
 |---|---|
-| Sent to the developer | **Nothing.** |
+| Sent to the developer | **Nothing, unless you switch it on.** Two switches, both off by default, and you see the exact messages before you answer. |
 | Sent to Plex | What signing in to Plex requires, and what playing a file requires. |
 | Sent to your server | The requests any Plex client makes. |
-| Stored on the TV | Your session token, where you were last, and three log files. |
-| Third-party analytics | **None.** There is no SDK for one in the binary. |
+| Stored on the TV | Your session token, where you were last, your answer to the two switches, and three log files. |
+| Third-party analytics | **Off by default.** If you turn it on: Sentry and PostHog, in the EU, with no identity attached. There is no SDK for either in the binary — the messages are built by hand, and the schema is below. |
 | Advertising identifiers | **Never read.** LG's `LGUDID` is not called. |
 
 There is no account with me, because there is no *me* to have an account with — no server, no
-database, no mailing list.
+database, no mailing list. The switches above do not create one: what they send is joined to a
+random number that television invented for itself and can delete, not to you.
 
 ---
 
@@ -37,9 +38,13 @@ not by this one — I am a third-party client and I receive none of it.
 **Your Plex Media Servers**, at a LAN address where one answers and a public one otherwise. Browsing,
 playback, and the progress reports that make "resume where you left off" work. Your server is yours.
 
+**Sentry and PostHog, in the European Union — and only if you switched a telemetry switch on.** Both
+off by default. What they receive, field by field, is the table further down, and that table is
+generated from the code rather than written beside it.
+
 **Nothing else.** `ci/check-elf.sh` and the per-release audit under `docs/release-audits/` measure the
 outbound hostnames in the shipped binary, so this is a property of the bytes rather than a promise in
-prose.
+prose — including the two above, which appear there or do not.
 
 ---
 
@@ -103,30 +108,57 @@ capture listener that exist in a development build. Measured per release on the 
 
 ---
 
-## If telemetry is ever added
+## Telemetry
 
-It has been designed and not built. Recording the terms here in advance, so that a future version can
-be held to them rather than announcing them alongside the thing itself:
+**Two switches, both off until you turn them on.** Crash reports and usage statistics are separate
+questions, so they are separate answers. The screen that asks shows you the exact messages that
+would be sent, in full, before you answer — and it is asked once: dismissing it with both off IS a
+no, and it is not asked again.
 
-1. **Opt-in, off by default, and never bundled.** Crash reports and usage statistics would be two
-   independent switches, because they are two different questions.
-2. **Nothing stored to enable it before you say yes.** No identifier is generated until you opt in.
+These were written down as terms before any of it was built, so a version could be held to them
+rather than announcing them alongside the thing itself. They are now the description of what ships,
+and each one is checked by something rather than promised:
+
+1. **Opt-in, off by default, never bundled.** Two independent switches.
+2. **Nothing is stored to enable it before you say yes.** No identifier exists until you opt in, and
+   turning both switches off deletes it. If the television has no source of randomness the opt-in is
+   refused outright rather than an identifier being invented from a clock or a MAC address.
 3. **You can read the payload on screen before it is sent**, in full, as it would be transmitted.
-4. **Compiled out entirely** unless the build asks for it, so a binary without it does not carry a
-   dormant SDK — you can check with `strings`.
+   That preview is generated from the same code that builds the real messages, so an event nobody
+   documented appears in front of you rather than in a dashboard.
+4. **A build carries an endpoint only if one was compiled into it.** A binary built without one has
+   no address to send to — `strings` on the binary answers that, and each release audit reports
+   what it found there.
 5. **Never**: media titles, ratingKeys, search terms, subtitle text, server names or addresses, your
-   Plex account, or anything derived from the MAC address or serial number.
-6. The literal structure sent would be documented **in this file**, field by field, before it ships.
-7. **Turning it off would stop collection and discard anything not yet sent — but what had already
-   been sent would age out on a retention clock rather than being erased on request.** Stated here
-   because it is a limitation rather than a choice: the candidate services can only delete data that
-   belongs to an *account*, and the entire design is that these reports belong to nobody. That is the
-   right trade — an identifier that made erasure possible would be an identifier worth having in the
-   first place — but it is not the same as deletion and would not be described as if it were.
+   Plex account, or anything derived from the MAC address or serial number. This is structural, not
+   careful: there is no field in the message type that could hold text this app read at runtime.
+6. The literal structure sent is documented **in this file**, field by field, below — and the table
+   is generated from the code, so an event or a field that is not in it fails the build.
+7. **Turning it off stops collection and discards anything not yet sent — but what has already been
+   sent ages out on a retention clock rather than being erased on request.** Stated because it is a
+   limitation rather than a choice: these services can only delete data belonging to an *account*,
+   and the whole design is that these reports belong to nobody. That is the right trade — an
+   identifier that made erasure possible would be an identifier worth not having — but it is not
+   the same as deletion and is not described as if it were.
 
-As of this writing the consent screen, the queue and the senders are built, and a build
-carries an endpoint only if one was compiled into it — a binary built without one has no
-address to send to, which `strings` on the binary can be used to check.
+### Where it goes, and for how long
+
+Sentry and PostHog, both in the **European Union**. Sentry receives crash reports; PostHog receives
+usage events. Neither receives the other's.
+
+**Kept no longer than 13 months, and in practice less** — that ceiling is the commitment; the actual
+figures are the services' own, and both are shorter: PostHog's free plan retains product analytics
+for one year, and Sentry retains errors for 30 to 90 days depending on plan. If the PostHog side
+ever moves to a paid plan the retention gets *longer*, and that is a change to this document before
+it is a change to a billing page.
+
+There is deliberately **no scheduled deletion job**, and it is worth saying why rather than leaving
+its absence to be read as an oversight. One was designed and dropped for three independent reasons:
+the storage already expires the data sooner than the ceiling above; PostHog has no rolling
+delete-by-timestamp — its deletion primitive is *person*-scoped, and these events carry no person by
+construction, so the job could not do what it claimed; and a scheduled GitHub Action on a public
+repository is disabled after 60 days of inactivity and may be delayed or dropped, which is not a
+mechanism a commitment can rest on.
 
 ### The schema, as it stands
 
@@ -140,10 +172,10 @@ new event that is not in this table fails `make check`.
 | `app.launch` | *(none)* |
 | `route.entered` | `screen` — one of a fixed list of screen names |
 | `signin.completed` | *(none)* |
-| `playback.requested` | `playback_id` |
-| `playback.started` | `playback_id`; `mode` — `direct` or `transcode`; `raster` — `sd`/`hd`/`fhd`/`uhd`; `fps` — one of `24`/`25`/`30`/`50`/`60`/`100`/`other`/`unknown`; `video`, `audio` — codec names from a fixed table, anything else being `other`; `startup` — `<1s`/`1-3s`/`3-10s`/`10s+` |
-| `playback.failed` | `playback_id`; `mode`; `kind` — one of `decision_refused`, `no_video_transcode_target`, `no_video_track`, `unspecified` |
-| `playback.ended` | `playback_id`; `mode`; `watched` — `abandoned`/`some`/`most`/`finished` |
+| `playback.requested` | `playback_id` — a random number minted per attempt, never stored and never reused |
+| `playback.started` | `playback_id` — a random number minted per attempt, never stored and never reused; `mode` — `direct` or `transcode`; `raster` — `sd` / `hd` / `fhd` / `uhd` / `unknown` — never the raster; `fps` — a fixed rung: `24`/`25`/`30`/`50`/`60`/`100`/`other`/`unknown` — never the measured rate; `video` — a codec name from a fixed table; anything else is `other`; `audio` — a codec name from a fixed table; anything else is `other`; `startup` — `<1s` / `1-3s` / `3-10s` / `10s+` — never the interval |
+| `playback.failed` | `playback_id` — a random number minted per attempt, never stored and never reused; `mode` — `direct` or `transcode`; `kind` — `decision_refused` / `no_video_transcode_target` / `no_video_track` / `unspecified` |
+| `playback.ended` | `playback_id` — a random number minted per attempt, never stored and never reused; `mode` — `direct` or `transcode`; `watched` — `abandoned` / `some` / `most` / `finished` — never a position or a duration |
 
 **`playback_id` is not an identifier of you or of this television.** It is a random number minted
 afresh each time Play is pressed, never written to disk and never reused. It exists so that the four

@@ -57,7 +57,7 @@ A crash writes no core file.
 
 **What it reads outside its own directory:** the television's own codec table at `/etc/umediaserver/device_codec_capability_config.json`, and its firmware identity at `/var/run/nyx/os_info.json` and `/var/run/nyx/device_info.json`. All three are published by the platform, read once at boot, never written.
 
-**What it reaches:** `plex.tv` and `discover.provider.plex.tv` over TLS, and the Plex Media Servers your account can reach — your own and any shared with you — at a LAN address where one answers and a public one otherwise. **No analytics, no telemetry, no crash upload.** Nothing is sent anywhere else.
+**What it reaches:** `plex.tv` and `discover.provider.plex.tv` over TLS, and the Plex Media Servers your account can reach — your own and any shared with you — at a LAN address where one answers and a public one otherwise. **And, only if you switched it on, Sentry and PostHog in the European Union** — two switches, both off by default, both reversible, described in full in [PRIVACY.md](https://github.com/GLinnik21/plx-native/blob/main/PRIVACY.md). Nothing is sent anywhere else. A build carries an endpoint only if one was compiled into it, so `strings` on the binary answers the question directly, and each release audit reports what it found there.
 
 **What listens:** nothing. A release build compiles out the whole `/tmp` trigger surface, the remote-control FIFO and the TCP capture listener that exist in a development build. Each audit measures this on the shipped bytes rather than asserting it.
 
