@@ -500,7 +500,7 @@ Operation cases (each also re-checks not-stuck / no-error afterward):
 | `resume_transcode` | `movie_av1_no_dp_audio` | `resume(transcode): restart at offset 600s`, first timeline near 600s |
 | `audio_switch_native` | `episode_hevc_4k_hdr10_eac3` | native audio switch (eac3→eac3) — `audio switch (native)`, codec **stays 174** |
 | `audio_switch_transcode` | `movie_h264_ac3_many_audio` | English (DTS) audio → transcode — `re-transcode` + `reload_transcode`, codec 174 (HEVC target; the video is re-encoded H264→HEVC — an audio-only/video-copy transcode is a future improvement) |
-| `subtitle_text_srt` | `movie_h264_ac3_1080p` | embedded subtitle soft-render on the **default `ff.rs` demuxer** — `sub cue [..] "text"` lines |
+| `subtitle_text_srt` | `movie_h264_ac3_1080p` | embedded subtitle soft-render on the **default `ff.rs` demuxer** — `sub cue [..] len=<n>` lines |
 | `subtitle_image_pgs` | `movie_hevc_4k_pgs_subs` | **PGS image subtitle** client-render on HEVC 4K direct-play — `ff.rs` software-decodes the bitmap and logs `image cue [..] WxH at X,Y rects=N canvas=WxH` (op flagged `"image": true`) |
 
 ### Key log signals asserted (filter `smp_cb type=43 num=0 str=$` first)
@@ -515,7 +515,10 @@ Operation cases (each also re-checks not-stuck / no-error afterward):
 - **seek:** `seek(in-place)` / `in-place seek: ... sendSegment=1` / `seek(transcode)` /
   `reload_at: fresh Load at 140s`.
 - **audio switch:** `audio switch (native)` / `re-transcode:` + `reload_transcode:`.
-- **subtitles (text):** `sub cue [<a>..<b>ms] "<text>"`.
+- **subtitles (text):** `sub cue [<a>..<b>ms] len=<n>` — the cue's character COUNT, never its
+  text; `len>0` means a text cue for the selected track arrived. The obvious "improvement" to
+  this line is to put the text back, and it must not be made: subtitle text is LG Content
+  Viewing Information and the event log gets photographed into issue threads.
 - **subtitles (image PGS/VobSub):** `image cue [<t>ms] <W>x<H> at <x>,<y> rects=<N>
   canvas=<W>x<H>` (a decoded display-set pushed to the render store — `rects` is how many bitmaps
   it carries, `canvas` the stream's authoring canvas the renderer scales them from, `0x0` when the
@@ -536,7 +539,7 @@ Operation cases (each also re-checks not-stuck / no-error afterward):
 ## Subtitle soft-render
 
 The **demuxer (`ff.rs`) demuxes embedded text subtitles** (SRT/subrip,
-ASS/SSA, mov_text) and emits `sub cue [..] "text"` lines. It pushes cues for **all** text tracks (tagged by
+ASS/SSA, mov_text) and emits `sub cue [..] len=<n>` lines. It pushes cues for **all** text tracks (tagged by
 index) and the renderer filters by the selected `desired_sub_idx`, so a mid-play track switch is
 instant (no ~10-20s buffer-gap wait). Image subs (PGS/VobSub/DVB) are now client-rendered too:
 `ff.rs` software-decodes the selected bitmap track (`avcodec_decode_subtitle2`), converts each

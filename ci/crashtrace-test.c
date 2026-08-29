@@ -12,11 +12,14 @@
  *
  *   1. a real fatal signal reaches the handler at all;
  *   2. a record is actually WRITTEN, to both descriptors, in the shape the tools parse;
- *   3. the process still DIES OF THE ORIGINAL SIGNAL. That is the re-raise to `SIG_DFL`, and it is
- *      the whole reason webOS's crashd/librdx still captures a real backtrace and SAM still sees a
- *      `WIFSIGNALED` exit. It has no other witness: a handler that quietly `_exit`ed would look
- *      identical in the log and would silently disable the platform's own crash reporting — which
- *      is exactly what this app did before the re-raise was added, and nothing noticed.
+ *   3. the process still DIES OF THE ORIGINAL SIGNAL. That is the re-raise to `SIG_DFL`, and what
+ *      it buys is SAM seeing a `WIFSIGNALED` exit — NOT a crashd backtrace, which this firmware
+ *      never produces for us: `core_pattern` is the bare string `core` and `RLIMIT_CORE` is 0, so
+ *      no core is written and the report chain never starts (measured, twice, with deliberate
+ *      SIGSEGVs and an empty `/var/log/reports/librdx/`). This comment claimed the backtrace as its
+ *      own rationale, which made an empty librdx directory read as a regression rather than as the
+ *      expected result. The status has no other witness: a handler that quietly `_exit`ed would
+ *      look identical in the log — which is exactly what this app did for seven weeks, unnoticed.
  *   4. a genuine memory fault, not just `raise()`. The null write below is the real thing: the
  *      kernel raises SIGSEGV from a faulting instruction, so the PC in the record is a real
  *      faulting PC and `si_addr` is the address that could not be touched.

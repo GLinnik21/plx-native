@@ -53,6 +53,19 @@ looking at:
 
 ## What this app does not have
 
-No account of its own, no server, no payment path, no user-generated content, and — today — no
-telemetry endpoint. It signs in to **your** Plex account and talks to **your** servers.
-[PRIVACY.md](PRIVACY.md) is the full account of what leaves the television.
+No account of its own, no server, no payment path, and no user-generated content. It signs in to
+**your** Plex account and talks to **your** servers.
+
+**It does have telemetry, and that hedge used to say it did not.** A release binary carries a Sentry
+DSN and a PostHog project key — both **write-only ingest credentials**, publishable by design, which
+permit sending to a project and grant no read of anything in it. After an explicit opt-in (two
+switches, both off by default) it POSTs to `ingest.de.sentry.io` and `eu.i.posthog.com`. The Sentry
+**auth token** is the real secret in this system: it can read and delete the project, it never
+enters the binary, and it exists only as a GitHub Actions secret used by `sentry-cli` in the release
+workflow.
+
+In scope for a report, and worth naming since a "no telemetry endpoint" line told researchers not to
+look here: the consent gate failing open, an identifier existing before an opt-in or surviving a
+withdrawal, anything that gets a runtime string past `diag::schema`'s no-owned-strings guarantee,
+and the spool's file mode or its contents. [PRIVACY.md](PRIVACY.md) is the full account of what
+leaves the television.

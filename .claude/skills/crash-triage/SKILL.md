@@ -16,8 +16,10 @@ description: >
 > `tools/tv-lock.sh acquire --why "reproduce <crash>"`. See the **`tv-lock`** skill.
 
 The C tracer (`src/crashtrace.c`) catches the fatal signals, writes what it knows, then
-**re-raises to `SIG_DFL`** so the OS crash daemon still captures a real backtrace. Per
-crash it emits:
+**re-raises to `SIG_DFL`** so SAM sees a real `WIFSIGNALED` death — and **not** so a crash daemon
+produces a backtrace, which on this firmware it never does (see §"do not go looking for a crashd
+backtrace" above; `core_pattern` is the bare string `core` and `RLIMIT_CORE` is 0, so no core is
+written and the report chain never starts). Per crash it emits:
 
 ```
 *** SIGNAL 11 (SIGSEGV) addr=0x6bcf pc=0xf5a4dd08 lr=0x0
@@ -198,10 +200,12 @@ Four things to check, and the third and fourth are the ones no host test can rea
 3. **`at:` and `bin:` lines.** These come from `/proc/self/maps` and exist on no development Mac;
    `ci/crashtrace-test.c` grades the reader against fixtures, but only the set proves it against
    the real file. `bin:` must name the install you deployed to.
-4. **A SAM `exit_status` with `WIFSIGNALED` set, and a fresh `/var/log/reports/librdx/` entry.**
-   This is the re-raise, and it is the whole reason the OS still produces a real backtrace. A
-   status of `35584` here means the re-raise regressed — that is `(128+11) << 8`, a clean exit
-   wearing a signal's number.
+4. **A SAM `exit_status` with `WIFSIGNALED` set — and an EMPTY `/var/log/reports/librdx/`.**
+   The status is the re-raise and the only thing it buys. The empty directory is the expected
+   result, not a clue: no core is written, so no report is ever generated. This step used to demand
+   a fresh librdx entry as a PASS criterion, which fails a perfectly healthy tracer and sends you
+   hunting a directory that is empty by construction. A status of `35584` means the re-raise
+   regressed — that is `(128+11) << 8`, a clean exit wearing a signal's number.
 
 `segv` is a genuine null write, so the PC is a real faulting PC. The other kinds — `abrt`, `bus`,
 `ill`, `trap` — go through `raise` and prove each of the five `sigaction` calls took, but their PC
@@ -221,9 +225,10 @@ ssh root@"$(make -s print-tv)" "rm -f $RUN/plxnative-crashtest"
   bracketed number in `/var/log/messages`) or the app's own `SDL_GetTicks` stamps — never
   by time of day.
 - **`lr=0x0` is normal** for a signal delivered asynchronously; only `pc` is meaningful then.
-- **The crash daemon's reports** (`/var/log/reports/librdx/`) are the real backtraces and
-  exist *because* the tracer re-raises. The driver lists them; pull one when the single
-  frame isn't enough.
+- **There are no crash-daemon reports to pull.** `/var/log/reports/librdx/` is empty by
+  construction and this bullet used to say the opposite — that the re-raise produces real
+  backtraces there. When two frames plus registers are not enough, the answer is
+  `pkg/plxnative.debug` and `addr2line`, not that directory.
 - **Older notes say `/tmp/poc-*`.** The app was renamed; the names are all `plxnative-*` now,
   and they sit in the install's runtime root rather than always in `/tmp`.
 - **`com.beb.plxnative` is a PREFIX of `com.beb.plxnative.debug`.** Anything that picks a crash

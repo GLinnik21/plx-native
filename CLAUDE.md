@@ -162,9 +162,13 @@ full one-time setup + troubleshooting.
   decides staleness from a stat taken before prerequisites run, so no stamp-mtime scheme works.
   Each feature set also gets its own `--target-dir`, because cargo does not hash its output and
   would otherwise report the dev build fresh while the release `.a` sat at that path.
-  **`make check` cannot see a break in this configuration and neither can the PR gate** — both
-  build the default feature set, and `--no-default-features` is first compiled during a release
-  cut. So a **`PostToolUse` hook** (`.claude/hooks/release-config-check.py`) type-checks it after
+  **`make check` cannot see a break in this configuration** — it builds the default feature set —
+  **but the PR gate now can**: `.github/workflows/ci.yml` type-checks `--no-default-features` and
+  both `hostsim` configurations on every push. Until that landed, `--no-default-features` was first
+  compiled during a release cut, i.e. after the change had merged. The
+  **`PostToolUse` hook** (`.claude/hooks/release-config-check.py`) stays and is now the fast path
+  rather than the only one — it catches the break before the push, and CI does not run in somebody
+  else's checkout. It type-checks after
   every edit to a `rust-modules/src/**.rs`; it costs well under a second warm, because cargo keys
   fingerprints by feature set and the two configurations coexist in one `target/`. The hazard it
   guards is hand-written `#[cfg(feature = "devtriggers")]` PAIRS, where a spliced-in function
@@ -1256,7 +1260,15 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   the one screen in the app that cannot be reached headlessly at all: arming anything to reach it
   is what hides it. It forces the question regardless of a stored decision, so it is also how the
   screen is re-examined after answering once.
-- **The binary carries NO credentials** (no compiled PMS token, no demo URL). PMS access comes
+- **The binary carries no credential that grants access to anything of YOURS** — no compiled PMS
+  token, no demo URL, and never the Sentry auth token, which can read and delete the project and
+  lives only as a GitHub secret. A RELEASE build does carry two **write-only ingest credentials**
+  (`PLX_SENTRY_DSN`, `PLX_POSTHOG_KEY`, compiled in via `option_env!`): they permit sending to a
+  project and reading nothing from it, `strings` finds them, `ci/gen-release-audit.py` prints them
+  into the audit on purpose, and `release.yml` REFUSES to publish without them. The distinction is
+  the point, and this line read "NO credentials" flatly — which stops a reader before they reach
+  it. A build with no credential compiled in cannot report at all, which is the guarantee that
+  replaced the cargo feature that used to claim it. PMS access comes
   from the signed-in session (QR login) or, for automated runs only, `/tmp/plxnative-token` — which
   `tests/run.py` always injects (it reads the owner token from the gitignored
   `src/config.local.h` on the HOST; that macro is never compiled in). An interactive boot with

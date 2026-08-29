@@ -128,7 +128,7 @@ impl Page {
 /// **Rewritten when the sender landed, and by a test rather than by anyone remembering.** This used
 /// to open "There is no analytics, no telemetry, no crash upload, and no server of mine for them to
 /// reach", which was true and became false the moment `telemetry::sender` gained a `net::post_ca`
-/// call. [`the_privacy_notice_and_the_ability_to_send_cannot_both_be_true`] failed on that commit
+/// call. [`the_notice_cannot_claim_silence_while_this_build_can_send`] failed on that commit
 /// and is the reason these words changed in it. The opening sentence is deliberately still a strong
 /// claim — nothing is sent unless a switch is on, and the switches start off — because that is the
 /// claim the code actually supports, and the honest version of a weaker one is not a vaguer
@@ -151,9 +151,9 @@ joined to anything sent before.
 
 WHAT IS IN A REPORT
 
-The app version, the webOS version, the model, and what broke: a signal name and an address, or a \
-screen name, or a video and audio format. There is no field in any of them that can carry text \
-from your library. You can read the exact messages, in full, on the same screen the switches are \
+What broke, and nothing about your television: a signal name and an address, or a screen name, or \
+a video and audio format as a class. There is no field in any of them that can carry text from your \
+library. You can read the exact messages, in full, on the same screen the switches are \
 on.
 
 Reports go to Sentry and PostHog, both in the European Union, and are kept no longer than 13 \
@@ -569,11 +569,17 @@ mod tests {
         assert!(PRIVACY.contains("PRIVACY.md"));
     }
 
-    /// The privacy page must not claim more than the code does. These two sentences are the ones a
-    /// future telemetry feature makes FALSE, and this test is what fails when it does — so nobody
-    /// can ship a sender while the screen still says nothing is sent.
+    /// **The privacy page must not claim more than the code does**, in the direction that matters:
+    /// these are the sentences a viewer relies on, so each is pinned to the wording the mechanism
+    /// actually supports.
+    ///
+    /// It was called `the_privacy_page_states_the_no_telemetry_position_it_can_be_held_to` and
+    /// asserted that the page claimed silence, which was right until a sender existed and is now
+    /// backwards as a NAME while the body has been rewritten around it. A test whose name says the
+    /// opposite of what it checks is worse than no test: it is the thing a reader greps for to
+    /// confirm the guarantee, and it tells them the guarantee is the old one.
     #[test]
-    fn the_privacy_page_states_the_no_telemetry_position_it_can_be_held_to() {
+    fn the_privacy_page_states_the_consent_position_it_can_be_held_to() {
         // The claim as it now stands: nothing is sent unless a switch is on, and they start off.
         assert!(PRIVACY.contains("sends nothing to its developer unless you switch it on"));
         assert!(PRIVACY.contains("off until you do"));
@@ -649,7 +655,7 @@ mod tests {
     /// Deliberately narrow, because the siblings above already cover the rest: the recipients, the
     /// region and the retention are
     /// [`the_privacy_page_names_the_recipients_region_and_retention`]'s, and the defaults are
-    /// [`the_privacy_page_states_the_consent_position`]'s. What is left here is the two things
+    /// [`the_privacy_page_states_the_consent_position_it_can_be_held_to`]'s. What is left here is the two things
     /// neither of them can see — that both consent CATEGORIES are described in the words the
     /// consent screen uses, and that no earlier phrasing claiming silence has survived the sender
     /// landing. `diag::schema::EVENT_SPECS` checks the FIELD-level promise against `PRIVACY.md`;

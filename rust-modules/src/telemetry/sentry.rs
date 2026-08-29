@@ -29,15 +29,20 @@
 //!
 //! # What is NOT here
 //!
-//! The send. That needs a CA-verified unpinned POST (`net::post_ca`, which does not exist yet) and
-//! a DSN, and it is deliberately the only part that does — so this file's tests never need either.
+//! The send. It needs a CA-verified unpinned POST and a DSN, and both live in [`super::sender`] —
+//! which is why this file's tests need neither.
 //!
-//! # Why every item carries `//!
-//! The same reason `consent`'s four do, and they go the same way: **the only non-test caller of any
-//! of this is the sender**, and the sender is the next commit. Gating the module on a feature
-//! instead would make the warnings vanish and take the tests with them, which is exactly how
-//! `diag::scrub`'s 31 assertions sat unexecuted for as long as they existed. The attributes are the
-//! honest version — they say "no caller yet" out loud, and `make check` still grades the format.
+//! # The sender exists, and one item here sat uncalled straight through it
+//!
+//! This header used to read "the only non-test caller of any of this is the sender, and the sender
+//! is the next commit", with an `#[allow(dead_code)]` on every item. The sender landed and the
+//! attributes did not move — so when [`envelope`] turned out never to be called, its attribute read
+//! as an accurate note about work not yet done rather than as the alarm it was. The bare event went
+//! to the envelope endpoint for as long as that lasted, and the endpoint answered `200`.
+//!
+//! What is still uncalled is deliberate and says so per item. `consent`'s header already warns that
+//! a stale allowance hides a dead function; this file is the other polarity, and the worse one — it
+//! hid a LIVE one that should have had a caller.
 
 /// Where a DSN says to send, and who it says we are. Every field is derived from the DSN string;
 /// none of it is secret — the public key is a write-only ingest credential that any binary sending

@@ -870,7 +870,8 @@ check: lint
 	@# …and then ACTUALLY CRASH a process, five times, through the real handler (src/crashtrace.c,
 	@# linked alone — no SDL, no Rust). It asks the one question no log can answer, which is HOW the
 	@# process died: a handler that quietly exits looks identical in the crash log and silently
-	@# disables webOS's own crashd backtrace and SAM's WIFSIGNALED status. That is not hypothetical
+	@# costs SAM its WIFSIGNALED status. (Not a crashd backtrace — this firmware writes no core, so
+	@# there is never one to lose; an empty /var/log/reports/librdx/ is expected.) Not hypothetical
 	@# — it is what this app did for seven weeks, because the signal is MASKED inside its own
 	@# handler, so `raise()` returned and the `_exit(128+sig)` beneath it ran every time.
 	cc -O1 -Wall -Wextra -Werror -Isrc -o $(CRASHTRACE_TEST_BIN) ci/crashtrace-test.c src/crashtrace.c && $(CRASHTRACE_TEST_BIN)

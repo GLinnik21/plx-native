@@ -5,10 +5,10 @@
 //! kill, somebody pulling the plug because the picture froze. So the queue is on disk, and the
 //! interesting questions are all about what a half-finished write looks like afterwards.
 //!
-//! Everything in this file is pure: bytes in, records out. The disk, the worker and the sender are
-//! elsewhere, which is what lets a power cut be *tested* rather than argued about. Every item
-//! therefore carries `//! written. Per item rather than one blanket on the module, so an item that goes dead LATER still
-//! has to be touched by somebody.
+//! Everything in this file is pure: bytes in, records out. The disk is [`super::spool`], which owns
+//! the file and the one lock every read and write goes through; the worker is
+//! `telemetry::flush_soon`; the sender is [`super::sender`]. That split is what lets a power cut be
+//! *tested* rather than argued about.
 //!
 //! # Four of these tests were fake, and the tests are the whole deliverable
 //!

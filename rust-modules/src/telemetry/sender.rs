@@ -9,7 +9,7 @@
 //!
 //! The DSN and the PostHog project key arrive through `option_env!`, set by the Makefile out of the
 //! gitignored `pkg/telemetry.local.json`. A checkout without that file compiles to `None` and
-//! [`enabled`] is `false` at COMPILE time — there is no endpoint in the binary to reach, so a fork,
+//! [`configured`] is `false` at COMPILE time — there is no endpoint in the binary to reach, so a fork,
 //! a CI runner and anyone building from source get an app that provably cannot report, without
 //! having to trust a runtime flag.
 //!

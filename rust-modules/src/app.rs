@@ -218,7 +218,14 @@ use crate::ui::widgets::Pill;
 /// persistent crash log BEFORE it unwinds. A panic that crosses an extern "C" boundary
 /// (e.g. libav calling ff::read_cb/seek_cb) aborts the process (SIGABRT) — by then the
 /// message is gone, so capturing it here is the only way to see WHAT panicked. Pairs with
-/// main.c's crash tracer, which re-raises the signal for a full webOS crashd backtrace.
+/// `src/crashtrace.c` — not `main.c`, which the tracer left in 2026-08-29 — whose re-raise buys SAM
+/// a real `WIFSIGNALED` status and **nothing else**: `core_pattern` on this firmware is the bare
+/// string `core` and `RLIMIT_CORE` is 0, so no core is written and no crashd report is ever
+/// generated. `crashtrace.c` says so itself. Two deliberate SIGSEGVs produced the signal status and
+/// an empty `/var/log/reports/librdx/`.
+///
+/// The line this hook writes is also the crash channel's PANIC input: `telemetry::crashreport`
+/// reads the log on the next launch, hashes the message and sends the location only.
 fn install_panic_logger() {
     let default = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -4179,8 +4186,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
     crate::telemetry::boot();
     // The first reportable event, and it is a marker with no fields on purpose — everything that
     // would qualify a launch (model, firmware, version, locale) is a session constant and belongs
-    // in a sender's envelope, not repeated on every record. Nothing listens today; see
-    // `crate::diag::event`.
+    // in a sender's envelope, not repeated on every record. It reaches PostHog when the usage
+    // switch is on and this build carries a key; `crate::diag::event` is the gate and fails closed
+    // on either. (This comment said "nothing listens today" for as long as that was true and for a
+    // while after.)
     crate::diag::event(crate::diag::schema::DiagEvent::AppLaunch);
     // FIRST, before SDL and before anything can fail: which television is this. A report from
     // hardware nobody here owns is worth far more when its opening line names the firmware — see

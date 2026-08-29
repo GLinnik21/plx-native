@@ -40,9 +40,14 @@
 //! whatever queues a record, and putting it here would make every test in this file depend on a
 //! clock. So the caller passes an ISO 8601 string and this file stays a function.
 //!
-//! # Why every item carries `//!
-//! Same reason as [`super::sentry`] and [`super::consent`]: the only non-test caller is a sender,
-//! and no sender exists. Gating the module on a feature would take the tests with it.
+//! # One item here is uncalled, on purpose
+//!
+//! [`batch`] has none: the worker sends one record at a time, because a spool commit acknowledges
+//! by `event_id` and a batch that half-succeeds cannot say which half. It is kept because the two
+//! endpoints put `distinct_id` in DIFFERENT places — top level for `/i/v0/e/`, inside `properties`
+//! for `/batch/` — which is the trap it exists to have already solved.
+//!
+//! This header used to say no sender existed at all. It does: [`super::sender`].
 
 use crate::diag::schema::{self, DiagEvent, Value};
 

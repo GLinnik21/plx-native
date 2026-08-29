@@ -185,8 +185,9 @@ pub(crate) fn read(_name: &str) -> Option<String> {
 /// prove the recorder records before you trust an empty recording. The crash tracer
 /// (`src/crashtrace.c`) is the app's only witness to a fatal signal on a television, and until
 /// 2026-08-29 nothing had ever exercised it deliberately — which is how it went seven weeks with a
-/// re-raise that did not re-raise, silently costing every crash its `WIFSIGNALED` status and its
-/// crashd backtrace, with a log that looked perfectly normal either way.
+/// re-raise that did not re-raise, silently costing every crash its `WIFSIGNALED` status — and only
+/// that: no crashd backtrace was lost, because this firmware writes no core and so produces none.
+/// The log looked perfectly normal either way, which is the whole reason it went seven weeks.
 ///
 /// `segv` is a genuine null write, so the kernel raises the signal from a faulting instruction and
 /// the record carries a real faulting PC and a real `si_addr`. The rest go through `raise`, which

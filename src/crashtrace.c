@@ -10,9 +10,10 @@
  * So that the SIGNAL PATH can be tested too. It lifted out of `main.c` on 2026-08-29 for exactly
  * one reason: `ci/crashtrace-test.c` links THIS FILE and nothing else, installs the handler onto a
  * temporary file, faults a child process on purpose and then asserts both halves of the contract —
- * that a record was written, and that the child still died of the original signal, which is the
- * re-raise that keeps webOS's own crash daemon working. Neither is decidable from `main.c`, which
- * drags in the whole app.
+ * that a record was written, and that the child still died of the original signal, which is what
+ * the re-raise buys — a real `WIFSIGNALED` status for SAM, and NOT a crashd backtrace; see the note
+ * on the re-raise itself, which measured that. Neither half is decidable from `main.c`, which drags
+ * in the whole app.
  *
  * What that host test cannot see is stated where it lives, but the short version belongs here too:
  * on a Mac there is no `/proc/self/maps`, so `scan_maps` returns immediately and the `at:`/`bin:`

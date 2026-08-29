@@ -29,7 +29,7 @@
 //!
 //! Three things move together and the tests fail if they do not: the variant, its arm in
 //! [`serialize`], and its row in `PRIVACY.md`'s schema table. That last one is
-//! [`the_privacy_document_lists_every_event`], and it is the mechanism behind the promise that the
+//! [`the_privacy_document_carries_the_generated_table`], and it is the mechanism behind the promise that the
 //! document is written *before* the thing ships rather than after.
 //!
 //! **A variant may not carry a `String`.** [`no_variant_can_carry_a_runtime_string`] greps this
