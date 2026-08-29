@@ -63,6 +63,19 @@ devtriggers = []
 # in two menus, one overlay, pinned diagnostic POSTs and an opt-in pinned HTTPS long-poll worker.
 # Everything else compiles identically.
 lab-diagnostics = []
+
+# The opt-in telemetry client: crash/error reports to Sentry and product events to PostHog, both
+# hand-rolled over the libcurl we already dlopen. Like `lab-diagnostics` and unlike `devtools`/
+# `devtriggers`, it is **deliberately not in the default set**, so it cannot ship by forgetting a
+# flag — the safe direction for this one is off. `make RELEASE=1 TELEMETRY=1` is what builds a
+# store artifact that carries it, and `ci/check-package.py` asserts which configuration a package
+# is so the release audit can say so per-artifact.
+#
+# It is NOT the same switch as user consent. This decides whether the code exists in the binary at
+# all (the Jellyfin/Expo lesson: a dependency people can `strings` out counts as collection even
+# when dormant); consent decides whether a build that HAS the code ever sends anything, and both
+# toggles behind it default to off.
+telemetry = []
 # The desktop UI simulator. OFF by default, so no ordinary `make`, `make check` or harness run is
 # affected in any way; `cargo build --features hostsim` selects it.
 #

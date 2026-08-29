@@ -2405,7 +2405,11 @@ fn play_up_next(
 ) -> bool {
     // clone off the `&'static` store BEFORE anything can replace it (see up_next::take)
     let Some(u) = crate::ui::up_next::take() else { return false };
-    log(&format!("up next: S{}E{} rk={} '{}'", u.season, u.index, u.rk, u.ep_title));
+    // The ratingKey, not the episode title: `rk` is the handle every other line and every harness
+    // assertion already uses, and the title is LG's "Content Viewing Information" — the one
+    // category this app's Data Safety declaration answers "Not collected" to. `diag::scrub` is a
+    // backstop for shapes like this; not writing it is the mechanism.
+    log(&format!("up next: S{}E{} rk={}", u.season, u.index, u.rk));
     let (rk, resume) = (u.rk.clone(), crate::metadata::resume_ns(u.resume_ms, u.dur_ms));
     close_player_overlays();
     crate::player::stop_bufferfeed(mt);

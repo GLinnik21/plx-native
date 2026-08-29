@@ -759,6 +759,34 @@ fn seed_fresh_quality(s: &mut Session, persisted: bool, auto_ready: bool) {
     }
 }
 
+/// **Hand the scrubber this household's names**, so `crate::log` can redact them without ever
+/// touching this module.
+///
+/// The scrubber used to call [`peek`] per line, which took [`IO`] and read the file — a deadlock
+/// against every writer here (`save_locked` logs while holding the lock) and a syscall storm on
+/// the log path besides. Ownership is inverted now: the session layer PUSHES on every change and
+/// `diag::scrub` keeps a cached snapshot.
+///
+/// Called on load, on save and on a successful `update`, i.e. everywhere the set of names can
+/// move — including a user switch and a roster refresh, both of which land through `update`.
+fn publish_identities(s: &Session) {
+    let mut v: Vec<String> = vec![
+        s.server.name.clone(),
+        s.server.machine_id.clone(),
+        s.user.title.clone(),
+    ];
+    for u in &s.home_users {
+        v.push(u.title.clone());
+        v.push(u.uuid.clone());
+    }
+    for src in &s.sources {
+        v.push(src.name.clone());
+        v.push(src.machine_id.clone());
+        v.push(src.shared_by.clone());
+    }
+    crate::diag::scrub::set_identities(v);
+}
+
 /// Load the persisted session, ensuring a stable `client_id` exists (generated + saved on first
 /// boot). Never returns an error — a missing/corrupt file degrades to a fresh, logged-out session.
 /// Falls back to the pre-relocation path once and re-saves at the new one (migration).
@@ -772,6 +800,7 @@ pub fn load() -> Session {
         s.client_id = new_client_id();
         save_locked(&s);
     }
+    publish_identities(&s);
     s
 }
 
@@ -827,6 +856,9 @@ pub fn save(s: &Session) {
 
 /// [`save`] with the lock already held.
 fn save_locked(s: &Session) {
+    // Before the write, not after: a failed persist still means these names are live in THIS run,
+    // and the log wants them redacted either way.
+    publish_identities(s);
     let Ok(json) = serde_json::to_vec_pretty(s) else { return };
     // Try each candidate; the first that accepts the write wins. A total failure is still
     // non-fatal — but it is LOGGED, because the symptom (sign in again, every boot, forever) is

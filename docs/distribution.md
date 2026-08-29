@@ -571,17 +571,40 @@ world-readable `/tmp` on the TV across many runs.
   fills it. This is squarely webosbrew rule 3 ("be considerate to users' TV").
   Fix: `setrlimit(RLIMIT_CORE, 0)` in a release build; the tracer's own PC+maps log is what triage
   actually uses.
-- **STILL OPEN — the one unfixed item on this list.** The event log prints the server name + LAN
-  address, Plex Home profile names and episode titles, and it is written by EVERY build: the four
-  log sinks are deliberately outside the `devtriggers` gate (`dev.rs`'s module doc says why — they
-  are how on-device crash triage works at all). `/tmp` is mode 1777 in the production jail too, so
-  on a shipped install that file is world-readable. There is a token redactor on the *host* side
-  (`tests/run.py` `RE_TOKEN`) and none on the device.
+- ~~**STILL OPEN — the one unfixed item on this list.**~~ **CLOSED 2026-08-29**, in two halves that
+  landed a fortnight apart, and the entry is kept because both halves were mis-stated while open.
 
-  Impact is bounded — it is read-only and needs code execution on the TV already — but its three
-  neighbours above are now compiled out and this is not, so do not read the group as closed.
-  The fix is a mode-0600 open plus dropping titles and profile names from the log, or logging
-  ratingKeys instead of titles.
+  The item read: the event log prints the server name + LAN address, Plex Home profile names and
+  episode titles, it is written by EVERY build (the four log sinks are deliberately outside the
+  `devtriggers` gate — `dev.rs`'s module doc says why), and `/tmp` is mode 1777 in the production
+  jail, so on a shipped install that file is world-readable. The proposed fix was "a mode-0600 open
+  plus dropping titles and profile names from the log, or logging ratingKeys instead of titles".
+
+  **The MODE half was already fixed when this paragraph still claimed otherwise** — `src/main.c`'s
+  `open_log_0600` creates all three sinks 0600 with an explicit `fchmod` (an append target that
+  survived a previous run keeps its old mode). This entry went stale without anything failing,
+  which is the failure mode the whole `doc-claim-auditor` skill exists for.
+
+  **The CONTENT half is now done**, and not the way this entry proposed. "Log ratingKeys instead of
+  titles" is right for the local file and wrong as a general rule: a ratingKey plus a server
+  identity is viewing history, i.e. LG's own *Content Viewing Information*, so it must not leave
+  the device even though it is the right thing to keep on a 0600 local disk. So there are two
+  exits, and they differ in exactly one respect:
+
+  * `crate::log` now applies **`diag::scrub::scrub_local`** to every line before the write —
+    credentials, hosts, bare addresses, Plex GUIDs, `q='…'` search queries and the household names
+    the session layer publishes. It **rewrites only and never drops**: a line vanishing from the
+    primary debugging surface is worse than a leaky one.
+  * Anything crossing the network takes `diag::scrub::scrub`, which may refuse a line outright.
+
+  Three call sites were the actual leaks and were fixed at source, because **a scrubber cannot
+  catch a title** — nothing distinguishes `'The One Where Ross Finds Out'` from
+  `task: spawn 'labup' REFUSED`: `app.rs`'s Up Next line logs `rk=` and not the episode title;
+  `search.rs`'s seven sites log `q[Nch]` and not the query; and `player/mod.rs` logged **34
+  characters of the viewer's actual subtitle dialogue** and now logs `len=`. That last one was the
+  most sensitive line the log has ever carried and it was not in this entry's list at all.
+  `diag::scrub`'s `no_log_call_site_interpolates_viewing_content` greps the tree to keep it that
+  way, and is itself proven to fail on a reintroduced leak.
 
 **Verified clean, no action:** no analytics, no telemetry, no crash upload; the only outbound hosts
 are the user's PMS, plex.tv and `discover.provider.plex.tv`; TLS verification is on

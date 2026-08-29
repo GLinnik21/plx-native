@@ -66,7 +66,7 @@ pub(crate) fn showing() -> bool {
     match phase() {
         PHASE_IDLE => false,
         PHASE_SENDING => true,
-        _ => crate::lab::ring::t_ms() < UNTIL_MS.load(Relaxed),
+        _ => crate::diag::ring::t_ms() < UNTIL_MS.load(Relaxed),
     }
 }
 
@@ -83,7 +83,7 @@ fn set_phase(p: u8, detail: String) {
     *DETAIL.lock().unwrap_or_else(|e| e.into_inner()) = detail;
     UNTIL_MS.store(
         match p {
-            PHASE_OK | PHASE_FAIL => crate::lab::ring::t_ms().saturating_add(TOAST_MS),
+            PHASE_OK | PHASE_FAIL => crate::diag::ring::t_ms().saturating_add(TOAST_MS),
             _ => 0,
         },
         Relaxed,
@@ -126,7 +126,7 @@ pub(crate) fn request(reason: &str) {
 fn send(url: &str, secret: &str, session: &str, pin: &str, seq: u32, doc: String) -> (u8, String) {
     let raw = doc.into_bytes();
     let raw_len = raw.len();
-    let (body, encoding) = match crate::lab::zlib::gzip(&raw) {
+    let (body, encoding) = match crate::diag::zlib::gzip(&raw) {
         Some(gz) => (gz, "gzip"),
         None => (raw, "identity"),
     };

@@ -170,20 +170,27 @@ by forgetting a flag.
 | `lab/mod.rs` | the feature boundary, boot/config gating and the main-thread control mailbox seam |
 | `lab/config.rs` | reads `lab.json` **from the app directory** (`paths::in_app_dir("lab.json")`) once at boot: `{endpoint, session, secret, pin, control, trigger_wcodes[]}`. Absent or malformed → the feature is inert and says so in one log line. Missing `control` is false, so an older package remains upload-only. |
 | `lab/control.rs` | one persistent pinned HTTPS long-poll worker, ordered command parsing, the main-thread mailbox, dispatch acknowledgement and bounded reconnect backoff |
-| `lab/ring.rs` | the bounded buffer: `VecDeque<(u32 t_ms, String)>`, capped by **both** 4000 records and 768 KB of text, evicting oldest, counting evictions. One `Mutex`. |
-| `lab/snapshot.rs` | envelope construction from `Diag` + `webos` + `devcaps` + `paths` + uptime, and the **second redaction pass** (§6). Pure and host-testable. |
+| `diag/ring.rs` | the bounded buffer: `VecDeque<(u32 t_ms, String)>`, capped by **both** 4000 records and 768 KB of text, evicting oldest, counting evictions. One `Mutex`. |
+| `lab/snapshot.rs` | envelope construction from `Diag` + `webos` + `devcaps` + `paths` + uptime. Pure and host-testable. |
+| `diag/scrub.rs` | the **redaction pass** (§6), moved out of `lab/snapshot.rs` on 2026-08-29 when `crate::log` became a second caller. Ungated, so its assertions finally run in the default `make check` — under `lab/` they were skipped by every build that did not set the feature. Two exits: `scrub` may refuse a line, `scrub_local` may only rewrite one. |
+| `diag/zlib.rs` | the one-symbol `compress2` table and the gzip envelope (§5) |
 | `lab/upload.rs` | gzip (optional, §5) then one `net::post_pinned`, on a `task::spawn_small` worker. Single-flight: a second BLUE while one is in flight is refused, not queued. |
 
 **The tap** is two lines in `lib.rs::log`, after `redact_tokens`:
 
 ```rust
-let line = redact_tokens(m);
-#[cfg(feature = "lab-diagnostics")]
-crate::lab::ring::record(&line);
+let line = diag::scrub::scrub_local(m);   // was: redact_tokens(m)
+lab::record(&line);                        // a no-op without the feature
 ```
 
 so the ring is a strict subset of what the event log already contains — there is no second logging
 system and no call site to update.
+
+**Since 2026-08-29 the tap sits below the FULL local scrub, not just the token backstop.** The line
+the ring sees has already had credentials, hosts, bare addresses, viewing identity and household
+names rewritten, so the upload's own `scrub` pass is now genuinely defence in depth rather than the
+first line of defence. `scrub_local` never DROPS a record — the drop belongs to the network exit —
+so the ring's contents still correspond one-to-one with the file on disk.
 
 **Sizing.** 4000 records / 768 KB is minutes, not seconds: a settled screen writes a line a second
 (the heartbeat), and the noisiest thing this app does — a playback join — writes on the order of

@@ -913,7 +913,11 @@ RE_POS = re.compile(r"loop=\d+ .*?\bpos=(\d+)s")
 # apply a coalesced target — the normal `seek(in-place)` and the stuck-watchdog `retry reopen` —
 # which is exactly why op_seek_rapid keys on it instead of on either line. See that docstring.
 RE_COALESCED = re.compile(r"\bcoalesced=(\d+)")
-RE_SUBCUE = re.compile(r'sub cue \[\d+\.\.\d+ms\]\s+"(.*)"')
+# The cue's LENGTH, not its text. The app used to log 34 characters of the actual dialogue, which
+# is LG "Content Viewing Information" in a file that gets photographed into issue threads; it logs
+# `len=` now. This grades the same property more directly — `len>0` IS "a cue with text arrived",
+# where the old regex had to capture the dialogue and then test it for non-emptiness.
+RE_SUBCUE = re.compile(r"sub cue \[\d+\.\.\d+ms\]\s+len=(\d+)")
 # image (PGS/VobSub) subtitle cue: the demuxer decoded a bitmap display-set for the selected
 # track and pushed it to the render store (ff.rs decode_bitmap_cue). Distinct from the text
 # `sub cue` signal — image subs carry no text, only geometry.
@@ -2833,9 +2837,9 @@ def op_audio_transcode(lines):
 def op_subtitle(lines):
     for ln in lines:
         m = RE_SUBCUE.search(ln)
-        if m and m.group(1).strip():
+        if m and int(m.group(1)) > 0:
             return True, f"sub cue rendered :: {ln.strip()}"
-    return False, "no `sub cue [..] \"text\"` line with non-empty text"
+    return False, "no `sub cue [..] len=N` line with N > 0 (no text cue decoded for the selected track)"
 
 
 def op_image_subtitle(lines):

@@ -2097,8 +2097,12 @@ fn request_alt_sources(sid: crate::plex::ServerId, rk: &str, guid: &str) {
     let _ = crate::task::spawn_small("altsrc", move || {
         let list = catch_unwind(|| resolve_alt_sources(&others, &guid)).unwrap_or_default();
         // The one line that makes this chain debuggable from a device log. A guid is a public
-        // metadata id — not an address, a token or a machine — so it is safe to log, and it is the
-        // only string that identifies WHICH lookup this was.
+        // metadata id — not an address, a token or a machine. It was filed as "safe to log" on
+        // exactly that reasoning, and the reasoning is incomplete: a Plex GUID names the WORK,
+        // globally and stably, which is LG's "Content Viewing Information" and the one category
+        // this app's Data Safety declaration answers "Not collected" to. It stays here because it
+        // is the only string that says WHICH lookup this was, and `diag::scrub::scrub_viewing`
+        // rewrites it to `plex://<guid>` before the line reaches the disk.
         crate::log(&format!("altsrc: asked {n} source(s) for {guid} -> {} copy(ies)", list.len()));
         *ALT_SLOT.lock().unwrap_or_else(|e| e.into_inner()) = Some(AltResult { gen, roster_gen, sid, rk, list });
     });

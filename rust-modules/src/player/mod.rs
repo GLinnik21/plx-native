@@ -782,8 +782,13 @@ pub(crate) fn push_subtitle_cue(track: i32, start_ns: i64, end_ns: i64, payload:
         return;
     }
     if track == SHARED.desired_sub_idx.load(Relaxed) {
-        log(&format!("sub cue [{}..{}ms] {:?}", start_ns / 1_000_000, end_ns / 1_000_000,
-            text.chars().take(34).collect::<String>()));
+        // LENGTH, never the dialogue. This line used to carry 34 characters of what the viewer
+        // was watching — the most sensitive thing the event log has ever held, in a file that gets
+        // photographed into public issue threads. `len=` answers every question the text answered
+        // for triage (did a cue arrive, at what time, was it empty, is the track the right one)
+        // without being viewing content.
+        log(&format!("sub cue [{}..{}ms] len={}", start_ns / 1_000_000, end_ns / 1_000_000,
+            text.chars().count()));
     }
     push_subtitle_text(track, start_ns, end_ns, text);
 }

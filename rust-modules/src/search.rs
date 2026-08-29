@@ -580,7 +580,7 @@ pub(crate) fn pump(dt: f32) -> bool {
             if *s >= SETTLE_S {
                 *addr_of_mut!(ARMED) = false;
                 if let Some(q) = terms(query()) {
-                    crate::log(&format!("search: q='{q}' settled, asking {} source(s)", nsrc()));
+                    crate::log(&format!("search: q[{}ch] settled, asking {} source(s)", q.chars().count(), nsrc()));
                 }
             }
         }
@@ -620,7 +620,7 @@ pub(crate) fn pump(dt: f32) -> bool {
     let state = state_from_refs(&sources, terms(query()).is_some());
     let moved = state != self::state();
     if moved {
-        crate::log(&format!("search: q='{}' state={}", query().trim(), state.name()));
+        crate::log(&format!("search: q[{}ch] state={}", query().trim().chars().count(), state.name()));
         unsafe { *addr_of_mut!(STATE) = state };
     }
     if !landed && !moved && !roster_changed {
@@ -644,7 +644,7 @@ fn record(i: usize, what: Option<Projection>) {
         // source's already-drawn results out of the merge for a two-second backoff, over an error
         // about a request whose answer we are holding.
         None if unsafe { (*addr_of!(SRC))[i].status } == Status::Answered => {
-            crate::log(&format!("search: q='{q}' sid={i} late failure ignored — already answered"));
+            crate::log(&format!("search: q[{}ch] sid={i} late failure ignored — already answered", q.chars().count()));
         }
         None => {
             unsafe {
@@ -652,12 +652,12 @@ fn record(i: usize, what: Option<Projection>) {
                 s.status = Status::Failed;
                 s.retry_cd = RETRY_FRAMES;
             }
-            crate::log(&format!("search: q='{q}' sid={i} FAILED, retry in {RETRY_FRAMES}f"));
+            crate::log(&format!("search: q[{}ch] sid={i} FAILED, retry in {RETRY_FRAMES}f", q.chars().count()));
         }
         Some(items) => {
             let counts: Vec<String> =
                 KINDS.iter().enumerate().map(|(k, kind)| format!("{}={}", kind.title(), items[k].len())).collect();
-            crate::log(&format!("search: q='{q}' sid={i} hubs {}", counts.join(" ")));
+            crate::log(&format!("search: q[{}ch] sid={i} hubs {}", q.chars().count(), counts.join(" ")));
             // The two fields an answer decides, and `retry_cd` is deliberately not one of them: a
             // source that has answered is refused by `maybe_spawn` on `status` alone, and the next
             // query resets the whole record through `Source::EMPTY`. (Assigning a whole `Source`
@@ -687,7 +687,7 @@ fn rebuild() {
     let sources = live_sources(&live);
     let shelves = merge_refs(&sources);
     let items: usize = shelves.iter().map(|s| s.items.len()).sum();
-    crate::log(&format!("search: q='{}' shelves={} items={}", query().trim(), shelves.len(), items));
+    crate::log(&format!("search: q[{}ch] shelves={} items={}", query().trim().chars().count(), shelves.len(), items));
     unsafe { *addr_of_mut!(SHELVES) = shelves };
 }
 
@@ -807,7 +807,7 @@ fn maybe_spawn(i: usize) {
     let sid = ServerId::from_raw(i as u16);
     let gen = GEN.load(Ordering::SeqCst);
     IN_FLIGHT[i].store(true, Ordering::SeqCst);
-    crate::log(&format!("search: q='{q}' sid={i} asking limit={LIMIT}"));
+    crate::log(&format!("search: q[{}ch] sid={i} asking limit={LIMIT}", q.chars().count()));
     let spawned = crate::task::spawn_small("search", move || {
         // the mailbox is filled OUTSIDE the guard so a panicking fetch still lands — as a FAILURE
         // (None), not as an answer of "this server has nothing"

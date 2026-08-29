@@ -378,6 +378,23 @@ which the linking section explains is load-bearing rather than tidy.
   `getaddrinfo`, walks either address family, and speaks cleartext. `aq.rs` — one-producer/
   one-consumer AU FIFO with byte-cap backpressure. Both are Rust ports of the deleted C headers;
   the hand-rolled `mkv.rs` demuxer they fed is retired — `ff.rs` is the only demux path.)
+- `rust-modules/src/diag/` — **the redaction pass and the diagnostic plumbing every off-device
+  report shares**. `scrub.rs` is the one that matters and it is **UNGATED**: `crate::log` runs
+  `scrub_local` on every line in every build, so credentials, hosts, bare addresses, Plex GUIDs,
+  search queries and this household's names are rewritten **before the write**, not on the way out.
+  **Two exits, differing in exactly one respect** — `scrub` (network) may DROP a line it cannot
+  make safe; `scrub_local` (disk) may only rewrite one, because a line silently vanishing from the
+  primary debugging surface is worse than a leaky one. `ring.rs`/`zlib.rs` stay feature-gated to
+  their consumer. Lifted out of `lab/` on 2026-08-29 — which also fixed the fact that the 31
+  assertions guarding this function **never ran in `make check`**, `lab/` being wholly behind a
+  feature the default gate does not build.
+  **A title cannot be scrubbed** (nothing distinguishes it from `task: spawn 'labup' REFUSED`), so
+  the mechanism for viewing content is that call sites do not write it, pinned by a test that greps
+  the tree — see `no_log_call_site_interpolates_viewing_content`. Adding a `log(&format!(…))` that
+  interpolates an item title, a search query or subtitle text will fail `make check`.
+  Identities come from `plex::session::publish_identities`, PUSHED on load/save; the scrubber must
+  never call `session::peek()` from the log path — it takes the session lock and reads files, which
+  deadlocked the whole `auth` test block and put five `read`s on every log line.
 - `rust-modules/src/dynlib.rs` — the runtime library binder (`dlopen`, by SONAME candidate list or
   by absolute path). **Four** callers in a lab build and three in every other, each for its own
   reason: `net.rs` binds **curl** by candidate list because its SONAME moves between releases;
@@ -388,7 +405,7 @@ which the linking section explains is load-bearing rather than tidy.
   must still be able to SIGN IN. That table is frozen to the oldest supported set:
   `curl_multi_poll`/`curl_multi_wakeup` resolve on the dev Mac, are absent on the dev television,
   and first appear at webOS 7.4.0 — so binding them would have emptied this table on four of the
-  nine gated releases. The fourth is `lab/zlib.rs`, which binds **one** symbol — `compress2` — in
+  nine gated releases. The fourth is `diag/zlib.rs`, which binds **one** symbol — `compress2` — in
   a table of its own so that a television without libz degrades to an uncompressed upload rather
   than emptying anybody else's table; it exists only in a `lab-diagnostics` build, which is not the
   default set, so an ordinary binary really does have three. (**ACB** is the same idea but not this

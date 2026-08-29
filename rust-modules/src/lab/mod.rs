@@ -43,13 +43,9 @@ pub(crate) mod control;
 #[cfg(feature = "lab-diagnostics")]
 pub(crate) mod config;
 #[cfg(feature = "lab-diagnostics")]
-pub(crate) mod ring;
-#[cfg(feature = "lab-diagnostics")]
 pub(crate) mod snapshot;
 #[cfg(feature = "lab-diagnostics")]
 pub(crate) mod upload;
-#[cfg(feature = "lab-diagnostics")]
-pub(crate) mod zlib;
 
 /// A command delivered by Lab Control and waiting for the SDL main thread.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,7 +65,7 @@ pub(crate) struct ControlCommand {
 pub(crate) fn boot() {
     #[cfg(feature = "lab-diagnostics")]
     {
-        ring::start_clock();
+        crate::diag::ring::start_clock();
         match config::get() {
             Some(c) => crate::log(&format!(
                 "lab: armed session={} endpoint={} control={} triggers={:?} ring={}rec/{}KiB",
@@ -77,8 +73,8 @@ pub(crate) fn boot() {
                 c.endpoint,
                 if c.control { "on" } else { "off" },
                 c.trigger_wcodes,
-                ring::MAX_RECORDS,
-                ring::MAX_BYTES / 1024
+                crate::diag::ring::MAX_RECORDS,
+                crate::diag::ring::MAX_BYTES / 1024
             )),
             None => crate::log(&format!("lab: INERT — {}", config::why_not())),
         }
@@ -114,7 +110,7 @@ pub(crate) fn command_done(_id: u32, _ok: bool) {
 #[inline]
 pub(crate) fn record(_line: &str) {
     #[cfg(feature = "lab-diagnostics")]
-    ring::record(_line);
+    crate::diag::ring::record(_line);
 }
 
 /// Is this press the configured lab trigger? Consulted by `ui::consts::is_bound` so that pressing
