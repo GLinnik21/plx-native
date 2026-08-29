@@ -130,6 +130,16 @@ const CURLOPT_CUSTOMREQUEST: c_int = 10036;
 /// of the endpoint's identity — a narrower trust root than the television's CA store, not a wider
 /// one. No private key is in this binary; a pin is a hash of a public key.
 const CURLOPT_PINNEDPUBLICKEY: c_int = 10230;
+
+/// `CURLOPT_CAINFO` (OBJECTPOINT + 65) — a path to a PEM bundle to verify the peer against,
+/// INSTEAD of whatever trust store this firmware shipped with in 2019.
+///
+/// **It is not pinning and must not be read as pinning**, which is the confusion
+/// [`CURLOPT_PINNEDPUBLICKEY`]'s own doc exists to prevent from the other side: this selects which
+/// roots are trusted, and any certificate chaining to one of them still validates. What it buys is
+/// independence from a store nobody can update on a television, on a path whose far end is not a
+/// Plex service and whose CA may rotate.
+const CURLOPT_CAINFO: c_int = 10065;
 // curl.h info ids (CURLINFO_LONG = 0x200000).
 const CURLINFO_RESPONSE_CODE: c_int = 0x20_0002;
 const CURL_GLOBAL_ALL: c_long = 3;
@@ -509,18 +519,45 @@ pub(crate) fn request(
     follow_redirects: bool,
     max_body: Option<usize>,
 ) -> Option<Resp> {
-    request_pinned(url, headers, verb, body, t, follow_redirects, max_body, None)
+    request_tls(url, headers, verb, body, t, follow_redirects, max_body, Tls::Ca)
 }
 
-/// [`request`], plus an optional **certificate pin**. One extra parameter rather than a second
+/// **How the peer is verified.** Three modes, and they are an enum rather than an
+/// `Option<&str>` for one reason: the pinned one turns CA verification OFF, so "pinned" and
+/// "CA-verified" are opposites that a bare string parameter let a caller hold at the same time.
+/// Making them variants means the compiler enforces what a comment used to ask for.
+pub(crate) enum Tls<'a> {
+    /// CA-verified against **the television's own trust store**. The default, and what every
+    /// plex.tv and PMS call has always used — `request` is exactly this.
+    Ca,
+    /// CA-verified against **a PEM bundle we ship**, by absolute path. Same verification, different
+    /// roots: it exists so a third-party endpoint's CA rotation is not at the mercy of a store
+    /// baked into a 2019 firmware.
+    CaBundle(&'a str),
+    /// **Pinned**, and CA verification deliberately off — see [`CURLOPT_PINNEDPUBLICKEY`]. Only the
+    /// lab receiver, which is a self-signed certificate on a developer's Mac.
+    #[cfg_attr(not(feature = "lab-diagnostics"), allow(dead_code))]
+    Pinned(&'a str),
+}
+
+/// The same three, owning their `CString`s so the pointers handed to curl outlive `perform`.
+enum TlsCfg {
+    Ca,
+    CaBundle(CString),
+    #[cfg_attr(not(feature = "lab-diagnostics"), allow(dead_code))]
+    Pinned(CString),
+}
+
+/// [`request`], plus an explicit [`Tls`] mode. One extra parameter rather than a second
 /// transport: everything about a pinned request — the header list, the verb shapes, the bounded
 /// sink, the `CURLcode` naming, the fallback serialisation — is identical, and a copy of this
 /// function would be a second place for all of it to drift.
 ///
-/// `pin` is a `CURLOPT_PINNEDPUBLICKEY` value. Passing one also turns CA verification OFF, because
-/// the endpoint it exists for has no CA-issued certificate; see [`CURLOPT_PINNEDPUBLICKEY`].
+/// One extra parameter rather than a second transport: everything else about a request — the header
+/// list, the verb shapes, the bounded sink, the `CURLcode` naming, the fallback serialisation — is
+/// identical, and a copy of this function would be a second place for all of it to drift.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn request_pinned(
+pub(crate) fn request_tls(
     url: &str,
     headers: &[String],
     verb: &str,
@@ -528,7 +565,7 @@ pub(crate) fn request_pinned(
     t: Timeouts,
     follow_redirects: bool,
     max_body: Option<usize>,
-    pin: Option<&str>,
+    tls: Tls<'_>,
 ) -> Option<Resp> {
     // Every fallible CString is built BEFORE the easy handle exists. The RAII guards below still
     // make later early returns safe, but this ordering also means malformed caller input never
@@ -536,9 +573,10 @@ pub(crate) fn request_pinned(
     let verb_c = CString::new(verb).ok()?;
     let url_c = CString::new(url).ok()?;
     let ua = CString::new(crate::plex::identity::user_agent()).ok()?;
-    let pin_c = match pin {
-        Some(p) => Some(CString::new(p).ok()?),
-        None => None,
+    let tls_c = match tls {
+        Tls::Ca => TlsCfg::Ca,
+        Tls::CaBundle(p) => TlsCfg::CaBundle(CString::new(p).ok()?),
+        Tls::Pinned(p) => TlsCfg::Pinned(CString::new(p).ok()?),
     };
     let hdr_owned: Vec<CString> = headers
         .iter()
@@ -593,14 +631,34 @@ pub(crate) fn request_pinned(
         // certificate anyone cared to present. So an unsupported option is a REFUSAL, before
         // verification is touched: a lab upload that does not happen costs a log, and one sent to
         // whoever answered costs the log's contents.
-        if let Some(p) = pin_c.as_ref() {
-            let rc = curl_easy_setopt_ptr(easy.0, CURLOPT_PINNEDPUBLICKEY, p.as_ptr() as *const c_void);
-            if rc != 0 {
-                crate::log(&format!("net: this libcurl refuses CURLOPT_PINNEDPUBLICKEY (rc={rc}) — refusing to send unpinned"));
-                return None;
+        match &tls_c {
+            // The two lines above already ARE this mode. Named rather than left implicit, because
+            // "CA-verified and unpinned" being the DEFAULT is the fact a plan written against this
+            // module got wrong — it called for a new request mode to obtain what `request` had
+            // been doing since it was written.
+            TlsCfg::Ca => {}
+            // A bundle we ship. The return code is checked for the same reason the pin's is, but
+            // the failure it guards is milder and worth stating so nobody "simplifies" the pinned
+            // check to match: a REJECTED `CURLOPT_CAINFO` leaves the device's own store in force,
+            // which still verifies, whereas a rejected pin would leave nothing verifying at all.
+            // Refusing here is a deliberate over-reaction — if we could not select the roots we
+            // meant to, the honest report is that the send did not happen.
+            TlsCfg::CaBundle(p) => {
+                let rc = curl_easy_setopt_ptr(easy.0, CURLOPT_CAINFO, p.as_ptr() as *const c_void);
+                if rc != 0 {
+                    crate::log(&format!("net: this libcurl refuses CURLOPT_CAINFO (rc={rc}) — refusing to send against an unknown trust store"));
+                    return None;
+                }
             }
-            curl_easy_setopt_long(easy.0, CURLOPT_SSL_VERIFYPEER, 0 as c_long);
-            curl_easy_setopt_long(easy.0, CURLOPT_SSL_VERIFYHOST, 0 as c_long);
+            TlsCfg::Pinned(p) => {
+                let rc = curl_easy_setopt_ptr(easy.0, CURLOPT_PINNEDPUBLICKEY, p.as_ptr() as *const c_void);
+                if rc != 0 {
+                    crate::log(&format!("net: this libcurl refuses CURLOPT_PINNEDPUBLICKEY (rc={rc}) — refusing to send unpinned"));
+                    return None;
+                }
+                curl_easy_setopt_long(easy.0, CURLOPT_SSL_VERIFYPEER, 0 as c_long);
+                curl_easy_setopt_long(easy.0, CURLOPT_SSL_VERIFYHOST, 0 as c_long);
+            }
         }
         curl_easy_setopt_long(easy.0, CURLOPT_NOSIGNAL, 1 as c_long);
         curl_easy_setopt_long(easy.0, CURLOPT_CONNECTTIMEOUT, t.connect_s);
@@ -693,8 +751,71 @@ pub(crate) fn post_pinned(
     pin: &str,
     t: Timeouts,
 ) -> Option<Resp> {
-    request_pinned(url, headers, "POST", Some(body), t, false, Some(4096), Some(pin))
+    request_tls(url, headers, "POST", Some(body), t, false, Some(4096), Tls::Pinned(pin))
 }
+
+/// Blocking **CA-verified, unpinned** HTTPS POST to a third-party endpoint — the telemetry sinks.
+///
+/// # Why this exists, given that [`https_post`] is already CA-verified and unpinned
+///
+/// The plan this was built to called for a new request mode on the grounds that [`post_pinned`]
+/// sets `SSL_VERIFYPEER=0`, so "Sentry and PostHog need the opposite". They do — and `request` has
+/// been that opposite since it was written: `VERIFYPEER=1`/`VERIFYHOST=2` unconditionally, dropped
+/// only inside the pinning branch. The premise was wrong, and the mode it asked for already
+/// existed. Recording that rather than quietly building it, because "add a mode that is already
+/// the default" is the kind of finding that otherwise gets rediscovered.
+///
+/// What a telemetry sender genuinely needs beyond [`https_post`] is three other things:
+///
+/// * **a bounded response sink.** `https_post` passes `max_body: None`. plex.tv is a service this
+///   app is built around; a telemetry endpoint is not, and an unbounded sink on a 1.68 GB
+///   television is a memory risk for a reply we only read a status code from;
+/// * **its own deadlines.** [`API`] is tuned for a call a person is waiting on. A background flush
+///   holding a worker for 25 s to report a crash that already happened has the priority backwards;
+/// * **our own roots, when we ship them.** The device's trust store was frozen in 2019 and cannot
+///   be updated; a third party's CA rotation should not be able to end reporting on every
+///   television at once. When `roots.pem` sits beside the binary this uses it, and says which it
+///   used — otherwise "which trust store verified that" is unanswerable after the fact.
+///
+/// **Never pinned, deliberately.** Pinning a third party's SPKI means going dark at their next key
+/// rotation, on televisions nobody can update. That is the opposite trade from the lab receiver's.
+#[allow(dead_code)] // no sender yet — see `telemetry::sentry`
+pub(crate) fn post_ca(url: &str, headers: &[String], body: &[u8], t: Timeouts) -> Option<Resp> {
+    let bundle = shipped_ca_bundle(crate::paths::app_dir());
+    // Once per process, not per send. Which trust store verified a telemetry endpoint is a fact
+    // that is unanswerable after the event and free to state before it — but it does not change
+    // between sends, and a line per upload would drown the log it is written into.
+    static SAID: std::sync::Once = std::sync::Once::new();
+    SAID.call_once(|| match &bundle {
+        Some(p) => crate::log(&format!("net: telemetry TLS verifies against the shipped bundle ({p})")),
+        None => crate::log("net: telemetry TLS verifies against the DEVICE trust store (no roots.pem beside the binary)"),
+    });
+    let tls = match bundle.as_deref() {
+        Some(p) => Tls::CaBundle(p),
+        None => Tls::Ca,
+    };
+    request_tls(url, headers, "POST", Some(body), t, false, Some(TELEMETRY_MAX_REPLY), tls)
+}
+
+/// The shipped PEM bundle beside the binary, if there is one.
+///
+/// Split out from [`post_ca`] because the interesting behaviour is the FALLBACK, and the fallback
+/// is silent by nature: no bundle means the device's own 2019 trust store verifies instead, which
+/// works right up until it does not. A host test can watch this choose, and cannot watch a socket.
+///
+/// `to_str` rather than a lossy conversion — a path that is not UTF-8 cannot become a `CString`
+/// curl would open, and answering `None` sends us down the working path rather than into a
+/// guaranteed error 77.
+fn shipped_ca_bundle(dir: &std::path::Path) -> Option<String> {
+    let p = dir.join("roots.pem");
+    p.is_file().then(|| p.to_str().map(str::to_owned)).flatten()
+}
+
+/// How much of a telemetry endpoint's reply is worth keeping. Both vendors answer a small JSON
+/// object and the only field either sender acts on is the status code; the body is kept at all so a
+/// rejection can be logged with the server's own explanation, which is the difference between
+/// debugging a 400 and guessing at one.
+const TELEMETRY_MAX_REPLY: usize = 4096;
 
 /// Redirect-following HTTPS GET for a PUBLIC, credential-free resource. The QR image fetch is the
 /// only caller: at most five HTTP(S)-only redirects are followed, and an HTTPS request may never
@@ -779,5 +900,51 @@ mod legacy_tests {
             libc::pthread_mutex_unlock(&mut lock);
             libc::pthread_mutex_destroy(&mut lock);
         }
+    }
+}
+
+#[cfg(test)]
+mod tls_mode_tests {
+    use super::*;
+
+    /// **The fallback is the interesting half, and it is silent.** With no `roots.pem` beside the
+    /// binary a telemetry POST verifies against the television's own 2019 trust store — which works
+    /// until a third party rotates to a root that firmware never shipped, and then stops working on
+    /// every set at once with nothing to read. Pinned here so the day the bundle starts shipping,
+    /// the change in behaviour is a test diff rather than a discovery.
+    #[test]
+    fn a_missing_bundle_falls_back_to_the_device_trust_store() {
+        let dir = std::env::temp_dir().join("plx-net-ca-absent");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        assert_eq!(shipped_ca_bundle(&dir), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// …and a bundle that IS there is selected, by absolute path. FFmpeg's `$ORIGIN` lesson applies
+    /// to curl too: nothing beside this binary is on any search path, so the only workable form is
+    /// the one `app_dir()` resolves at runtime.
+    #[test]
+    fn a_shipped_bundle_is_selected_by_absolute_path() {
+        let dir = std::env::temp_dir().join("plx-net-ca-present");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        std::fs::write(dir.join("roots.pem"), b"-----BEGIN CERTIFICATE-----\n").expect("write");
+        let got = shipped_ca_bundle(&dir).expect("the bundle beside the binary is found");
+        assert!(got.ends_with("roots.pem"));
+        assert!(std::path::Path::new(&got).is_absolute(), "curl is given an absolute path");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A DIRECTORY named `roots.pem` is not a bundle. `exists()` would accept it and hand curl a
+    /// path it fails to read as error 77 — a send that dies at perform rather than falling back to
+    /// the store that would have worked.
+    #[test]
+    fn a_directory_named_like_the_bundle_is_not_one() {
+        let dir = std::env::temp_dir().join("plx-net-ca-dir");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("roots.pem")).expect("temp dirs");
+        assert_eq!(shipped_ca_bundle(&dir), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
