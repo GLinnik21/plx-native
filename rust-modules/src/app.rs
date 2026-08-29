@@ -6124,6 +6124,13 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             if is_started() {
                 crate::player::pump(mt, now);
             }
+            // **Unconditional, and NOT inside the `is_started` block above.** `player::state()`
+            // derives two of its answers outside the pump entirely — `Resolving` while a plan is in
+            // flight, and `Error` for a `/decision` refusal, which happens before an engine exists —
+            // so gating this on a started engine would silently miss the earliest and most certain
+            // failure there is. It observes the value the HUD renders and reports only transitions,
+            // so the steady-state cost is one atomic load.
+            crate::player::report::tick();
             // end-of-stream: the pipeline drained at the credits → hand off to Up Next when the
             // show has another episode queued, else leave the player (back to the detail page or
             // home, whichever is behind), instead of freezing on the last frame.

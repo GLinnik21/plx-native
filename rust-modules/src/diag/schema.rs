@@ -65,22 +65,75 @@ pub(crate) enum DiagEvent {
     /// Until it does, this stays a marker and the interesting half — "how many people get stuck on
     /// the QR screen" — is answered by the ABSENCE of this event after an `app.launch`.
     SignInCompleted,
+
+    // ---- playback -----------------------------------------------------------------------------
+    //
+    // Four events for one attempt, joined by `playback_id`. Without that join a funnel cannot
+    // connect a failure to the start it belongs to, and "how often does playback fail" becomes two
+    // unrelated counters.
+    //
+    // **`playback_id` is a random number minted per attempt, and it is not an identity.** It is
+    // reset every time and never stored, so it cannot link two playbacks on one television, let
+    // alone two televisions. It exists to make the four events of ONE attempt joinable inside a
+    // session, which is exactly as much as a funnel needs.
+    //
+    // **Every descriptive field is a BUCKET, and that is a privacy decision rather than a
+    // simplification.** Exact duration + exact raster + exact frame rate + codec is enough to
+    // identify a specific file in a specific library; the same fields as classes answer every
+    // question this channel exists to answer ("does 4K HEVC fail more than 1080p h264") and
+    // identify nothing.
+    /// **A viewer pressed Play.** The denominator: `started / requested` is the success rate, and a
+    /// `requested` with no `started` after it is the failure this channel exists to see — the one
+    /// an owner reports as "it just sat there".
+    ///
+    /// It fires at the PRESS, not where the plan lands, and carries no `mode` as a consequence. The
+    /// first draft put it at the engine's `load:` seam, which a `/decision` refusal never reaches —
+    /// so the earliest and most certain failure there is would have produced a `failed` with no
+    /// `requested` before it, i.e. a funnel that silently under-counts exactly the case it was
+    /// built for. Direct-play-versus-transcode is not yet knowable at the press; both `started` and
+    /// `failed` carry it, which is where the question is actually asked.
+    PlaybackRequested { playback_id: i64 },
+    /// The first frame of this attempt reached the panel — the transition into `Playing`, once.
+    PlaybackStarted {
+        playback_id: i64,
+        mode: &'static str,
+        /// `sd` / `hd` / `fhd` / `uhd`, never the raster.
+        raster: &'static str,
+        /// A fixed rung, never the measured rate.
+        fps: &'static str,
+        video: &'static str,
+        audio: &'static str,
+        /// How long from `requested` to a picture, as a class.
+        startup: &'static str,
+    },
+    /// This attempt failed, once. `kind` is `player::FailureKind`'s stable code — never the
+    /// on-screen wording, which is prose and will be re-worded.
+    PlaybackFailed { playback_id: i64, mode: &'static str, kind: &'static str },
+    /// A real teardown — the viewer stopped, or the item ran out. **Not** a seek, a reload or an
+    /// app-switch suspend, all of which end an ENGINE without ending a playback.
+    PlaybackEnded { playback_id: i64, mode: &'static str, watched: &'static str },
 }
 
 /// A serialised field value. The set is the whole vocabulary, and the important thing about it is
 /// what is ABSENT: there is no `String` arm, which is what makes "a runtime string cannot reach
 /// the wire" a property of the type rather than a rule people remember to follow.
 ///
-/// **`Int` and `Bool` are not here yet, for the third time in this file and for the same reason.**
-/// No event declared today carries a number, so declaring the arm would be dead code, and reaching
-/// for `#[allow]` to keep a vocabulary that describes nothing is how an allowlist stops being one.
-/// The very next event — `playback.started`, with a raster and a frame rate — brings `Int` with it.
+/// **`Int` arrived with the playback events, exactly as this doc predicted it would** — and it
+/// carries only `playback_id`, which is a random number minted per attempt. `Bool` is still not
+/// here: nothing declared today is a flag, and an arm no variant produces is a vocabulary that
+/// describes nothing, which is how an allowlist stops being one.
+///
+/// Note what `Int` did NOT bring with it. The raster and the frame rate `playback.started` reports
+/// are `Str` buckets, not numbers, for the reason that event's own comment gives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Value {
     /// From a fixed table in this crate — never a runtime-built string. The guarantee is not the
     /// `'static` lifetime, which a leaked allocation would satisfy; it is that every producer in
     /// [`serialize`] is a literal or a `match` over an enum.
     Str(&'static str),
+    /// A number. The only producer today is `playback_id` — see [`DiagEvent`]'s playback block for
+    /// why a random per-attempt integer is not an identifier.
+    Int(i64),
 }
 
 /// One event's name and fields, ready for a sender to wrap in whatever envelope it needs.
@@ -97,6 +150,37 @@ pub(crate) fn serialize(e: DiagEvent) -> (&'static str, Vec<(&'static str, Value
         DiagEvent::AppLaunch => ("app.launch", Vec::new()),
         DiagEvent::RouteEntered { screen } => ("route.entered", vec![("screen", Value::Str(screen))]),
         DiagEvent::SignInCompleted => ("signin.completed", Vec::new()),
+        DiagEvent::PlaybackRequested { playback_id } => {
+            ("playback.requested", vec![("playback_id", Value::Int(playback_id))])
+        }
+        DiagEvent::PlaybackStarted { playback_id, mode, raster, fps, video, audio, startup } => (
+            "playback.started",
+            vec![
+                ("playback_id", Value::Int(playback_id)),
+                ("mode", Value::Str(mode)),
+                ("raster", Value::Str(raster)),
+                ("fps", Value::Str(fps)),
+                ("video", Value::Str(video)),
+                ("audio", Value::Str(audio)),
+                ("startup", Value::Str(startup)),
+            ],
+        ),
+        DiagEvent::PlaybackFailed { playback_id, mode, kind } => (
+            "playback.failed",
+            vec![
+                ("playback_id", Value::Int(playback_id)),
+                ("mode", Value::Str(mode)),
+                ("kind", Value::Str(kind)),
+            ],
+        ),
+        DiagEvent::PlaybackEnded { playback_id, mode, watched } => (
+            "playback.ended",
+            vec![
+                ("playback_id", Value::Int(playback_id)),
+                ("mode", Value::Str(mode)),
+                ("watched", Value::Str(watched)),
+            ],
+        ),
     }
 }
 
@@ -105,7 +189,15 @@ pub(crate) fn serialize(e: DiagEvent) -> (&'static str, Vec<(&'static str, Value
 /// caught by the round-trip test rather than by a reader.
 #[allow(dead_code)] // still test-only: its caller is a schema declaration the sender has not
 // needed yet, unlike `serialize`, which the PostHog body now calls for real
-pub(crate) const EVENT_NAMES: &[&str] = &["app.launch", "route.entered", "signin.completed"];
+pub(crate) const EVENT_NAMES: &[&str] = &[
+    "app.launch",
+    "route.entered",
+    "signin.completed",
+    "playback.requested",
+    "playback.started",
+    "playback.failed",
+    "playback.ended",
+];
 
 #[cfg(test)]
 mod tests {
@@ -120,12 +212,28 @@ mod tests {
             DiagEvent::AppLaunch,
             DiagEvent::RouteEntered { screen: "home" },
             DiagEvent::SignInCompleted,
+            DiagEvent::PlaybackRequested { playback_id: 7 },
+            DiagEvent::PlaybackStarted {
+                playback_id: 7,
+                mode: "direct",
+                raster: "fhd",
+                fps: "24",
+                video: "h264",
+                audio: "ac3",
+                startup: "1-3s",
+            },
+            DiagEvent::PlaybackFailed { playback_id: 7, mode: "transcode", kind: "no_video_track" },
+            DiagEvent::PlaybackEnded { playback_id: 7, mode: "direct", watched: "most" },
         ];
         for e in &all {
             match e {
                 DiagEvent::AppLaunch => {}
                 DiagEvent::RouteEntered { .. } => {}
                 DiagEvent::SignInCompleted => {}
+                DiagEvent::PlaybackRequested { .. } => {}
+                DiagEvent::PlaybackStarted { .. } => {}
+                DiagEvent::PlaybackFailed { .. } => {}
+                DiagEvent::PlaybackEnded { .. } => {}
             }
         }
         all

@@ -14,6 +14,7 @@
 pub(crate) mod engine;
 mod ffi;
 mod pump;
+pub(crate) mod report;
 mod shared;
 pub(crate) mod threads;
 
@@ -291,7 +292,54 @@ pub(crate) fn state() -> shared::PlaybackState {
 /// they can never disagree about what happened. `no_pass` is the read-out's cue to draw the
 /// filled PLEX PASS capsule: a support FACT beside the reason, never the cause (see the arm
 /// comment above).
+/// **Why a playback failed, as a closed set.** Drives the wording below AND the telemetry code, so
+/// the two are one decision.
+///
+/// The variants are exactly the outcomes `error_shape` can tell apart TODAY. That is deliberate and
+/// it is the whole discipline of this type: a variant nothing can produce is a category that will
+/// read as "never happens" on a dashboard when it really means "the app cannot see it". The list
+/// the plan sketched had five more — a failed `Load`, a video-plane bind that did not take, a
+/// stalled feed, no decoded frames, a dead link — and every one of them arrives here today as
+/// [`Unspecified`](FailureKind::Unspecified), because nothing upstream distinguishes them yet. They
+/// become variants when the code that could name them exists, not before.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FailureKind {
+    /// `/decision` refused the item outright — the server can neither direct play nor convert it.
+    /// The earliest and most certain failure: it happens before an engine exists.
+    DecisionRefused,
+    /// Transcoding, and the server produced no video stream — it found no usable video target.
+    NoVideoTranscodeTarget,
+    /// Direct playing, and the stream carries no video track, so the file disagrees with the PMS
+    /// metadata that made us choose direct play.
+    NoVideoTrack,
+    /// Everything else. Honest rather than tidy — see the type's doc.
+    Unspecified,
+}
+
+impl FailureKind {
+    /// The stable wire code. Written out rather than derived from the variant name, because a
+    /// rename is a refactor and must not silently re-partition a year of dashboards.
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            FailureKind::DecisionRefused => "decision_refused",
+            FailureKind::NoVideoTranscodeTarget => "no_video_transcode_target",
+            FailureKind::NoVideoTrack => "no_video_track",
+            FailureKind::Unspecified => "unspecified",
+        }
+    }
+}
+
 pub(crate) struct ErrorShape {
+    /// **The stable, machine-readable reason** — the one field here meant for a wire rather than
+    /// for a person. Every other field is prose that will be re-worded, localised or shortened, and
+    /// a dashboard keyed on any of them breaks the day somebody improves a sentence.
+    ///
+    /// It is not a parallel classification either: `panel`, `caption` and `readout` are all derived
+    /// FROM it, so the words on screen and the code on the wire cannot come to disagree about what
+    /// happened. (`panel` was the obvious thing to key telemetry on, and undercounts: a grep for
+    /// `panel: "` finds three arms where there are four outcomes, because one builds its string
+    /// through an inner `if`.)
+    pub kind: FailureKind,
     pub caption: &'static std::ffi::CStr,
     /// the diagnostics panel's verdict suffix ("" = no reason known) — includes the
     /// subscription fact in words, because the panel is plain text
@@ -339,6 +387,7 @@ fn error_shape(
     // server's own ffmpeg cannot decode, which no subscription changes.
     if let Some(v) = verdict {
         return ErrorShape {
+            kind: FailureKind::DecisionRefused,
             caption: c"Playback failed — the server cannot play or convert this file",
             // The panel's line is ours and static; the server's sentence rides on `detail`, whose
             // surface (the full-screen read-out) is the one that can hold a whole sentence.
@@ -350,6 +399,7 @@ fn error_shape(
     }
     match (no_video, transcoding) {
         (true, true) => ErrorShape {
+            kind: FailureKind::NoVideoTranscodeTarget,
             caption: c"Playback failed — server sent audio only",
             panel: if no_pass {
                 "server sent audio only — it found no usable video transcode target (server has no Plex Pass)"
@@ -361,6 +411,7 @@ fn error_shape(
             no_pass,
         },
         (true, false) => ErrorShape {
+            kind: FailureKind::NoVideoTrack,
             caption: c"Playback failed — no video in the file",
             panel: "the stream carries no video track",
             readout: "This file has no video track",
@@ -368,6 +419,7 @@ fn error_shape(
             no_pass: false,
         },
         _ => ErrorShape {
+            kind: FailureKind::Unspecified,
             caption: c"Playback failed",
             panel: "",
             readout: "",

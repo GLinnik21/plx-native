@@ -3081,6 +3081,13 @@ pub(crate) fn request_play(sid: ServerId, rk: &str, part: &str, vcodec: &str, ac
     if part.is_empty() && rk.is_empty() {
         return;
     }
+    // **The playback funnel's denominator, minted HERE and not where the plan lands.** Every way
+    // into playback comes through this one function, including the ones that go on to be refused at
+    // `/decision` — and a refusal never reaches the engine, so anchoring the attempt any later
+    // would have produced a `playback.failed` with no `playback.requested` before it: a funnel that
+    // under-counts exactly the failure it exists to measure. It is after the empty-request guard
+    // above, so a press that resolves to nothing is not an attempt.
+    crate::player::report::requested();
     // The fields a play REQUEST owns, as against the ones only a landing may install: the HUD
     // strings (published now, so the pre-roll has a title through the whole resolve) and the five
     // the OUTGOING item leaves behind. Everything else — url, session ids, codecs — stays as it is

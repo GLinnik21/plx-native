@@ -64,8 +64,15 @@ fn props(e: DiagEvent, environment: &str) -> serde_json::Map<String, serde_json:
     // was given and passes it down.
     m.insert("environment".into(), serde_json::Value::String(environment.to_string()));
     for (k, v) in fields {
-        let Value::Str(s) = v;
-        m.insert(k.to_string(), serde_json::Value::String(s.to_string()));
+        // Exhaustive on purpose: a new `Value` arm must be a compile error here, not a field that
+        // quietly stops being sent.
+        m.insert(
+            k.to_string(),
+            match v {
+                Value::Str(s) => serde_json::Value::String(s.to_string()),
+                Value::Int(n) => serde_json::Value::Number(n.into()),
+            },
+        );
     }
     // Last, and unconditional. See the module doc.
     m.insert(ANON.into(), serde_json::Value::Bool(false));

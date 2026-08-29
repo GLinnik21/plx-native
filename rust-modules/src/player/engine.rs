@@ -963,6 +963,17 @@ fn teardown(mt: &MainThread, for_reload: bool) {
 
     // capture the final-position report BEFORE teardown zeroes playpos/duration (a reload is
     // not a stop — don't scrobble "stopped", it would falsely pause/mark-watched the item)
+    // **The one place a playback really ENDS.** `for_reload` covers a direct-play seek reload, an
+    // ABR rung change and an app-switch suspend — each of which destroys an ENGINE and keeps the
+    // playback — so reporting an ending on any of them would turn the completion rate into a
+    // measure of how often people scrub. Read before the teardown below zeroes both values, for
+    // the same reason `final_report` is.
+    if !for_reload {
+        crate::player::report::ended(
+            SHARED.playpos_ns.load(Ordering::Relaxed),
+            SHARED.duration_ns.load(Ordering::Relaxed),
+        );
+    }
     let final_report = if for_reload {
         None
     } else {

@@ -340,6 +340,27 @@ pub(crate) fn preview() -> String {
         DiagEvent::AppLaunch,
         DiagEvent::RouteEntered { screen: "home" },
         DiagEvent::SignInCompleted,
+        // Representative values, not placeholders: every one of these is a real bucket the app can
+        // actually emit, so what the person reads here is the shape of what would be sent. The
+        // `playback_id` shown is the only number on the list, and its whole point is that it is a
+        // fresh random one each time — see this screen's own no-32-hex-run assertion for the
+        // property that matters, which is that no IDENTIFIER exists while this screen is up.
+        DiagEvent::PlaybackRequested { playback_id: 4815162342 },
+        DiagEvent::PlaybackStarted {
+            playback_id: 4815162342,
+            mode: "direct",
+            raster: "fhd",
+            fps: "24",
+            video: "h264",
+            audio: "ac3",
+            startup: "1-3s",
+        },
+        DiagEvent::PlaybackFailed {
+            playback_id: 4815162342,
+            mode: "transcode",
+            kind: "no_video_transcode_target",
+        },
+        DiagEvent::PlaybackEnded { playback_id: 4815162342, mode: "direct", watched: "finished" },
     ] {
         let body =
             // The REAL environment this build would report, not a placeholder: it is the one

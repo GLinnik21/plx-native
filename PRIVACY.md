@@ -124,20 +124,38 @@ be held to them rather than announcing them alongside the thing itself:
    right trade — an identifier that made erasure possible would be an identifier worth having in the
    first place — but it is not the same as deletion and would not be described as if it were.
 
-None of that exists today. `make check` builds no telemetry code and there is no endpoint.
+As of this writing the consent screen, the queue and the senders are built, and a build
+carries an endpoint only if one was compiled into it — a binary built without one has no
+address to send to, which `strings` on the binary can be used to check.
 
 ### The schema, as it stands
 
-Term 6 says the structure would be documented here before it ships, so here it is as it is being
-built — **no sender exists, nothing is stored, and nothing leaves the television**. It is written
-down now precisely because a document produced alongside a working uploader is a document nobody
-had to live with.
+Term 6 says the structure is documented here before it ships, so here it is. It was written down
+before the sender existed, precisely because a document produced alongside a working uploader is a
+document nobody had to live with — and it is kept honest mechanically rather than by intention: a
+new event that is not in this table fails `make check`.
 
 | event | fields |
 |---|---|
 | `app.launch` | *(none)* |
 | `route.entered` | `screen` — one of a fixed list of screen names |
 | `signin.completed` | *(none)* |
+| `playback.requested` | `playback_id` |
+| `playback.started` | `playback_id`; `mode` — `direct` or `transcode`; `raster` — `sd`/`hd`/`fhd`/`uhd`; `fps` — one of `24`/`25`/`30`/`50`/`60`/`100`/`other`/`unknown`; `video`, `audio` — codec names from a fixed table, anything else being `other`; `startup` — `<1s`/`1-3s`/`3-10s`/`10s+` |
+| `playback.failed` | `playback_id`; `mode`; `kind` — one of `decision_refused`, `no_video_transcode_target`, `no_video_track`, `unspecified` |
+| `playback.ended` | `playback_id`; `mode`; `watched` — `abandoned`/`some`/`most`/`finished` |
+
+**`playback_id` is not an identifier of you or of this television.** It is a random number minted
+afresh each time Play is pressed, never written to disk and never reused. It exists so that the four
+events of one attempt can be joined to each other — without it, "how often does playback fail"
+becomes two unrelated counters. It cannot link two playbacks, let alone two televisions.
+
+**Everything descriptive on those events is a CLASS, not a measurement**, and that is deliberate.
+An exact duration, an exact raster, an exact frame rate and a codec together are enough to identify
+one particular file in one particular library. The classes answer the questions this exists to
+answer — does 4K HEVC fail more often than 1080p h264, does playback take longer to start on large
+files — and identify nothing. **No title, rating key, file name, path, server name or address
+appears on any of them**, and there is no field that could carry one.
 
 Three things are true of that table by construction rather than by care, and
 `rust-modules/src/diag/schema.rs` is where you can check each one:
