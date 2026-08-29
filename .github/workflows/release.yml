@@ -266,6 +266,12 @@ jobs:
           # reports as `production`, and the reason a locally built one cannot.
           PLX_SENTRY_DSN: ${{ vars.PLX_SENTRY_DSN }}
           PLX_POSTHOG_KEY: ${{ vars.PLX_POSTHOG_KEY }}
+          # Declared EMPTY rather than merely absent. The step below refuses a release that carries
+          # development credentials, and an assertion on a variable this file never names reads as
+          # dead code to the next person editing it — which is how a guard gets deleted. It also
+          # makes the check hold if a `set -u` is ever added to that script.
+          PLX_SENTRY_DSN_DEV: ""
+          PLX_POSTHOG_KEY_DEV: ""
         run: |
           make -j"$(nproc)"
           make ipk symbols

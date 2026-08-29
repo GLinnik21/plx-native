@@ -28,6 +28,11 @@ jobs:
   host-checks:
     name: host checks (NOT a device gate)
     runs-on: ubuntu-latest
+    # Job scope, not step scope: the install step and the feature-set checks below have to name ONE
+    # toolchain. `cargo +<name>` against a toolchain the job never installed fails with a rustup
+    # error that reads nothing like "these two lines disagree".
+    env:
+      RUST_NIGHTLY: nightly
     steps:
       - uses: actions/checkout@v4
 
@@ -39,8 +44,6 @@ jobs:
           rustup toolchain install "$RUST_NIGHTLY" --profile minimal \
             --component clippy --component rust-src
           rustup run "$RUST_NIGHTLY" rustc --version
-        env:
-          RUST_NIGHTLY: nightly
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -48,6 +51,31 @@ jobs:
 
       - name: make check (lint + host unit suite)
         run: make check
+
+      - name: Type-check the RELEASE feature set
+        # **`make check` cannot see a break in this configuration, and neither could this gate
+        # until now.** Both build the DEFAULT feature set, and `--no-default-features` — what every
+        # shipped binary is — was first compiled during a release cut, i.e. after the change had
+        # been merged. The hazard is specific: hand-written `#[cfg(feature = "devtriggers")]` PAIRS,
+        # where a spliced-in function swallows its neighbour's attribute and takes a call site out
+        # of the release build with it.
+        #
+        # A `PostToolUse` hook does this locally after every edit to `rust-modules/src/**.rs`, and a
+        # local hook is a backstop, not a gate: it runs in one person's checkout and not on a fork's
+        # pull request. Cheap here for the same reason it is cheap there — cargo keys fingerprints
+        # by feature set, so the two configurations coexist in one `target/` and this is a warm
+        # incremental check rather than a second build.
+        run: cd rust-modules && cargo "+$RUST_NIGHTLY" check --lib --no-default-features
+
+      - name: Type-check the simulator feature set
+        # The host simulator is a real build configuration with real users (the `ui-sim` skill, and
+        # `make macapp`, which ships `--release --no-default-features --features hostsim` to
+        # somebody who has none of this installed). Nothing else in CI compiles it, so a change that
+        # only breaks the Mac side merges green and is found by a person trying to demo the app.
+        run: |
+          cd rust-modules
+          cargo "+$RUST_NIGHTLY" check --lib --features hostsim
+          cargo "+$RUST_NIGHTLY" check --lib --no-default-features --features hostsim
 
       - name: Report suite size
         # CLAUDE.md's stated test count has gone stale twice. Print the real number rather than
