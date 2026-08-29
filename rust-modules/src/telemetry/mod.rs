@@ -14,6 +14,7 @@
 //! does not build is a test that never runs. What will be gated is the sending.
 pub(crate) mod consent;
 pub(crate) mod posthog;
+pub(crate) mod queue;
 pub(crate) mod sentry;
 
 use consent::Consent;
