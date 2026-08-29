@@ -3896,14 +3896,31 @@ fn hls_demux(
                         loser.server, loser.transition, loser.total,
                     ));
                 }
+                // **`slow=/unc=/n=/cons=/need=` are the comparison the verdict was TAKEN on, and
+                // without them this line is not merely terse — it reads as absurd.** `measured=42012kbps
+                // ... verdict=Insufficient` against a 25 Mbit/s film invites exactly one reading, and
+                // it is the wrong one: nothing judged 42 Mbit/s too slow for a 25 Mbit/s file. What
+                // happened is `conservative_kbps` = 29 689 against `need` = 34 106, i.e. the estimator's
+                // own discount against the VBR allowance, neither of which appeared anywhere in the log.
+                // Seven consecutive refusals were recorded on a healthy link on 2026-08-29 with no way
+                // to tell from the log which quantity was short, or that the gate was converging to a
+                // value it could never clear. `[[silent-instrument-trap]]`.
+                let (slow, unc, n, cons, need) =
+                    recovery.as_ref().map(|gate| gate.basis()).unwrap_or_default();
                 crate::player::log(&format!(
-                    "abr: Original probe #{} measured={}kbps {}KiB/{}ms complete={} left={}s verdict={:?}",
+                    "abr: Original probe #{} measured={}kbps {}KiB/{}ms complete={} left={}s \
+                     slow={}kbps unc={}pm n={} cons={}kbps need={}kbps verdict={:?}",
                     recovery.as_ref().map(|gate| gate.probes()).unwrap_or(0),
                     probe.kbps,
                     probe.bytes / 1024,
                     probe.active_us / 1_000,
                     probe.completed as i32,
                     remaining_ms / 1_000,
+                    slow,
+                    unc,
+                    n,
+                    cons,
+                    need,
                     verdict,
                 ));
                 if verdict == Some(crate::abr::RecoveryVerdict::Recover) {

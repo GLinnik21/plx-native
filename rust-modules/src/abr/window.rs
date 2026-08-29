@@ -42,23 +42,48 @@
 //! `q` and is correct either way. The distinction decides only where a good `sigma` is needed, and
 //! therefore which candidates the rule can price today.
 //!
-//! # The guarantee is an INEQUALITY, and the reason matters
+//! # What `eps` is, and what it is NOT — downgraded 2026-08-29
+//!
+//! This section used to open with a probability:
 //!
 //! ```text
 //! P( A_next > k-th largest of { T_i(q) } )  <=  k/(n+1)
 //! ```
 //!
-//! **Not an equality.** The map `g_q(b_i, A_i)` is indexed by the query, so it is not a fixed
-//! function of the bag and the transferred values are not exchangeable. What carries the exact
-//! result is the RAW order statistic — the identity map, genuinely fixed — and since every transfer
-//! factor is `>= 1` the transferred bound dominates it pointwise, so the exceedance event is a
-//! subset and the probability can only fall. Conservative by construction.
+//! and argue it via domination: the transferred values are not exchangeable (the map `g_q` is
+//! indexed by the query), but the RAW order statistic is "the identity map, genuinely fixed", and
+//! every transfer factor is `>= 1`, so the transferred bound dominates the raw one pointwise and
+//! the exceedance probability can only fall.
 //!
-//! This distinction is not pedantry: an earlier draft of the specification wrote `=` and then read
-//! "measured exceedance is below nominal" as evidence that exchangeability holds. It is not — the
-//! under-shoot is forced by the domination and would appear under any degree of non-exchangeability.
-//! The diagnostic that does test it is the raw control (`tools/abr-transfer-bound.py`, `RAW ctrl`),
-//! which lands at nominal on the device corpus while the transferred column sits 2-4x under.
+//! **The domination step is real; the raw bound it dominates is not available.** The quantity being
+//! bounded is the cost of the CANDIDATE at query bytes `q`. An upshift — the only direction this
+//! rule gates — has `q > b_i`, so `A_next` is the cost of a strictly larger transfer than any
+//! sample in the window: stochastically larger, not exchangeable with the raw `A_i`, and the raw
+//! inequality fails in exactly the direction that matters. Dominating a bound that does not hold
+//! proves nothing. The sound repair routes through counterfactual same-size costs
+//! `A_i(q) = O0_i + q*tau_i` — but that needs the affine model with per-segment coefficients
+//! identically distributed across the window and the next draw, which is the same-link precondition
+//! this project's own corpus refutes on 36.6% of pairs.
+//!
+//! Two further reasons the coverage reading is unavailable, either sufficient alone: the controller
+//! INVOKES this rule only at moments selected by the same recent data (dwell expired, reserve above
+//! the gate, not draining, no reject block), and order-statistic coverage is marginal rather than
+//! conditional; and the window's own contents are shaped by the collapse reset, which guarantees an
+//! evaluated window holds only post-collapse samples. [`AdmissionPolicy`] has the full account.
+//!
+//! **What the rule delivers instead**, and it is enough: a DETERMINISTIC property — at most `k-1` of
+//! the last `n` transferred values exceed the bound — plus conditions (1) and (2) as deterministic
+//! statements about the last `n*D` of media under the worst-case transfer. `eps` is the design ratio
+//! `k/(n+1)`, chosen for the window length it implies. Nothing in the decision path reads it as a
+//! probability: `bound_us` is telemetry with no consumer outside the read-out, and `admits` consumes
+//! only `n`.
+//!
+//! The empirical record stays worth having and stays EMPIRICAL: the raw control
+//! (`tools/abr-transfer-bound.py`, `RAW ctrl`) lands at nominal on the stationary device corpus
+//! while the transferred column sits 2-4x under, and about 2x OVER on swept legs. An earlier draft
+//! read the under-shoot as evidence that exchangeability holds; it is not, being forced by the
+//! domination. A ratio realized 2-4x off in either direction is a design dial, not a coverage
+//! guarantee.
 //!
 //! # The two admission conditions
 //!
@@ -113,8 +138,45 @@ struct Acquisition {
 
 /// **The two numbers that decide `n`, both explicit choices under the classification rule.**
 ///
-/// `eps` is (4), a product/SLO choice: the tolerated probability that one acquisition exceeds the
-/// bound. `k` is ALSO (4) and was missed by an earlier draft that said "nothing else is chosen" —
+/// # `eps` is a DESIGN RATIO, not a probability — downgraded 2026-08-29
+///
+/// This doc said "the tolerated **probability** that one acquisition exceeds the bound", and that
+/// reading is not available here. Three independent reasons, any one sufficient:
+///
+/// 1. **The domination proof needs a raw bound that does not hold.** The module doc argues the
+///    transferred bound dominates the raw k-th largest, "and the raw comparison is the identity
+///    map on the bag — genuinely fixed, genuinely exchangeable". But the quantity being bounded is
+///    the cost of the CANDIDATE at query bytes `q`, and an upshift — the only gated direction —
+///    has `q > b_i`, so that draw is stochastically larger than every window sample and is not
+///    exchangeable with them. Dominating a bound that does not hold proves nothing. The repair
+///    routes through counterfactual same-size costs `A_i(q) = O0_i + q*tau_i`, which needs the
+///    affine model with identically-distributed per-segment coefficients — the assumption the
+///    project's own corpus refutes on 36.6% of pairs.
+/// 2. **Invocation is data-dependent.** Order-statistic coverage is MARGINAL, over the joint draw.
+///    The controller consults this rule only when the dwell has expired, a dearer target was
+///    selected from the budget, the reserve is above the gate and not draining, and no reject
+///    block is live — every one a function of the same recent data. Conditioning on "the window
+///    looks healthy" selects windows whose k-th largest is low, so conditional exceedance exceeds
+///    `k/(n+1)` even for i.i.d. samples. No exotic dependence is needed.
+/// 3. **The sample is shaped.** The collapse reset guarantees an evaluated window holds only
+///    post-collapse samples (survivorship, in the anti-conservative direction), and the window
+///    survives a pause while `on_resume` demotes the ESTIMATE — pre-pause acquisitions keep
+///    informing the bound after the estimator has retracted its confidence in that era.
+///
+/// **What the rule does deliver**, and what should be argued about instead: (i) a deterministic
+/// property — at most `k-1` of the last `n` transferred values exceed the bound; (ii) conditions
+/// (1) and (2) as deterministic statements about the last `n*D` of media under the worst-case
+/// transfer; (iii) an EMPIRICAL, marginal exceedance record from the corpus — at nominal on
+/// stationary legs, about 2x over on swept ones. A number realized 2-4x off in either direction is
+/// a design ratio, not a probability.
+///
+/// **The downgrade costs nothing operationally**, which is why it is safe to state plainly:
+/// `bound_us` is telemetry and has no consumer outside the read-out, and the deciders — `admits`'
+/// two conditions — consume only `n`. `eps`'s real content already was "the dial that sets
+/// `n = k/eps - 1`", i.e. the evidence length and, through (2), the proof span.
+///
+/// `eps` is (4), a product/SLO choice: the design exceedance ratio `k/(n+1)`, chosen for the
+/// window length it implies. `k` is ALSO (4) and was missed by an earlier draft that said "nothing else is chosen" —
 /// `eps` pins only the RATIO `k/(n+1)`, leaving `k` free. It is not neutral, because it sets the
 /// window length `n = k/eps - 1`, and the window is two other things at once: the estimator's
 /// exposure to a link that is changing, and — through condition (2) — the span of media the reserve
@@ -126,7 +188,8 @@ struct Acquisition {
 /// `eps`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct AdmissionPolicy {
-    /// Tolerated per-acquisition exceedance, in per-mille. (4).
+    /// The design exceedance ratio `k/(n+1)`, in per-mille — NOT a coverage probability; see the
+    /// struct doc. (4).
     pub(crate) epsilon_pm: u32,
     /// Order statistic. (4). See the struct doc for what choosing it means.
     pub(crate) k: u32,
@@ -149,15 +212,36 @@ impl AdmissionPolicy {
     /// R28's theorem itself, UNCLAMPED — the length the policy asks for. Both readers above are
     /// about the same number, and it was written out twice: `window_len` computed it and clamped,
     /// `is_clamped` recomputed it to compare. One expression could move without the other.
+    ///
+    /// **CEILED, and every other bound in this file already says why.** The rule wants
+    /// `k/(n+1) <= eps`, i.e. `n >= ceil(1000k/eps) - 1`; a floored division returns a window one
+    /// sample SHORT whenever `eps` does not divide `1000k`, and a shorter window means a LARGER
+    /// realized eps than the one asked for. That is a weakening, and — unlike the clamp, which
+    /// `is_clamped` reports — it was silent: `is_clamped()` stays false, and
+    /// `AdmissionReadout`'s doc attributed every divergence to clamping.
+    ///
+    /// Nothing shipped is affected. At `(k=1, eps=50pm)` the division is exact (1000/50 = 20,
+    /// n = 19), as it is at all four settings the tests pin. Over `k = 1..4, eps = 10..500pm`,
+    /// **1 810 of 1 964 settings carried the silent error**, worst realized inflation 1.497x
+    /// (`k=1, eps=334pm`: n = 1, realized 500 pm). So this is robustness for a policy nobody has
+    /// chosen yet, not a change to the one in force.
     fn requested_len(self) -> u64 {
-        (u64::from(self.k.max(1)) * 1_000 / u64::from(self.epsilon_pm.max(1))).saturating_sub(1)
+        (u64::from(self.k.max(1)) * 1_000)
+            .div_ceil(u64::from(self.epsilon_pm.max(1)))
+            .saturating_sub(1)
     }
 
-    /// The realized exceedance ceiling at the length actually used — which is `eps` only when the
-    /// window is not clamped.
+    /// The realized design ratio `k/(n+1)` at the length actually used — which is `eps` only when
+    /// the window is neither clamped nor shortened by an inexact division. A RATIO, not a
+    /// coverage probability (see the struct doc).
+    ///
+    /// **Also ceiled**, for the reason every other bound here is: this is a ceiling on exceedance,
+    /// so truncating it reports a guarantee STRONGER than the one the window delivers. The error
+    /// is under 1 pm and the direction is the one that matters — it is the number the harness
+    /// parses as `eps=`.
     pub(crate) fn effective_epsilon_pm(self) -> u32 {
         let n = self.window_len() as u64;
-        (u64::from(self.k.max(1)) * 1_000 / (n + 1)).min(1_000) as u32
+        (u64::from(self.k.max(1)) * 1_000).div_ceil(n + 1).min(1_000) as u32
     }
 }
 
@@ -240,7 +324,8 @@ impl AdmissionReadout {
     ///   without a reset, which is the context a verdict after a regime change has to be read in.
     /// * `eps` — `k/(n+1)` at the length actually USED. It differs from the requested eps exactly
     ///   when `clamp=1`, which is the only way the guarantee offered is weaker than the one asked.
-    /// * `bound` — the k-th largest transferred acquisition, milliseconds: the eps-level ceiling on
+    /// * `bound` — the k-th largest transferred acquisition, milliseconds: the order statistic the design
+    ///   ratio names, and a bound on
     ///   what the next one costs.
     /// * `demand`/`supply` — condition (1), `sum T_i` against `n*D`, both in milliseconds so the
     ///   comparison is readable without arithmetic.
@@ -401,7 +486,9 @@ impl AcquisitionWindow {
         scaled.min(i64::MAX as u128) as i64
     }
 
-    /// The `k`-th largest transferred value — the eps-level bound on the next acquisition.
+    /// The `k`-th largest transferred value — the order statistic `eps` names. A deterministic
+    /// property of the window (at most `k-1` samples exceed it), not a coverage bound on the next
+    /// acquisition; see [`AdmissionPolicy`].
     ///
     /// `None` when the window is shorter than `n`: a bound from fewer samples than the SLO asks for
     /// does not carry the SLO, and returning a number anyway is how an unearned guarantee ships.
@@ -604,7 +691,12 @@ mod tests {
         let p = policy(1, 1);
         assert!(p.is_clamped());
         assert_eq!(p.window_len(), WINDOW_CAPACITY);
-        assert_eq!(p.effective_epsilon_pm(), 1_000 / (WINDOW_CAPACITY as u32 + 1));
+        // `1/65 = 15.38 pm`, so the honest CEILING is 16. This assertion used to recompute the
+        // implementation's own floored division and therefore agreed with it by construction —
+        // it could not have caught the direction error it exists to guard, and it asserted 15,
+        // a guarantee stronger than the window delivers. Stated as a value now, from the
+        // arithmetic rather than from the code.
+        assert_eq!(p.effective_epsilon_pm(), 16, "1/65 = 15.38pm, and a ceiling rounds UP");
         assert!(p.effective_epsilon_pm() > 1, "a clamp can only WEAKEN the guarantee");
     }
 

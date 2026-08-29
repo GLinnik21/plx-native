@@ -246,13 +246,22 @@ pub(crate) struct AbrPolicy {
 impl AbrPolicy {
     pub(crate) fn measured() -> Self {
         Self {
-            // **eps = 50pm, k = 1, so n = 19.** Stated as what it costs a viewer rather than as
-            // a percentage: one acquisition in twenty may exceed the bound, and at the 2 s segment
-            // this pipeline requests that is **one exceedance per ~40 s of playback**. An
-            // exceedance is not a stall — it is one segment arriving later than the bound
-            // promised, which condition (2) has already required the reserve to absorb — so the
-            // quantity being chosen is how often the reserve is drawn on, not how often the
-            // picture stops.
+            // **eps = 50pm, k = 1, so n = 19.** The frequency reading below is an EMPIRICAL,
+            // MARGINAL expectation and not a guarantee this rule delivers — `AdmissionPolicy`'s
+            // doc has the three reasons the coverage reading is unavailable (the raw bound the
+            // domination argument rests on does not hold for an upshift; invocation is selected by
+            // the same data; the window's contents are shaped by the collapse reset). Read against
+            // the corpus rather than against the number: at nominal on stationary legs, about 2x
+            // over on swept ones.
+            //
+            // Stated as what it costs a viewer rather than as a percentage: about one acquisition
+            // in twenty exceeding the bound, and at the 2 s segment this pipeline requests that is
+            // **one exceedance per ~40 s of playback**. An exceedance is not a stall — it is one
+            // segment arriving later than the bound promised, which condition (2) has already
+            // required the reserve to absorb — so the quantity being chosen is how often the
+            // reserve is drawn on, not how often the picture stops. What the choice really fixes,
+            // deterministically, is the EVIDENCE LENGTH `n = 19` and, through (2), the `n*D` span
+            // of media survival is proven over.
             //
             // `k = 1` takes the window's maximum: the tightest bound available at this eps, and
             // the most sensitive to a single outlier. It is the conservative end of the one axis

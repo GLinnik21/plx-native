@@ -194,6 +194,28 @@ impl OriginalRecovery {
         self.probes
     }
 
+    /// **The comparison the verdict was actually taken on**, for the log — the estimate's central
+    /// value, its uncertainty, how many probes are behind it, the discounted rate that is compared,
+    /// and the requirement it is compared against.
+    ///
+    /// Without it the line reads `measured=42012kbps ... verdict=Insufficient` against a 25 Mbit/s
+    /// file, which is not merely terse but actively misleading: it invites the reading that 42
+    /// Mbit/s was judged too slow for a 25 Mbit/s source, when what happened is that
+    /// `conservative_kbps` was 29 689 against a requirement of 34 106. The operative numbers were
+    /// unreconstructable from the event log, and this gate is precisely where a run gets stuck —
+    /// seven consecutive refusals on a healthy link, with nothing on the line to say which
+    /// quantity was short. `[[silent-instrument-trap]]`: the instrument has to be able to show the
+    /// thing before its silence means anything.
+    pub(crate) fn basis(&self) -> (u32, u32, u32, u32, u32) {
+        (
+            self.probe.slow_kbps,
+            self.probe.uncertainty_pm,
+            self.probe.samples,
+            self.probe.conservative_kbps(),
+            source_requirement_kbps(self.source_kbps, &self.policy),
+        )
+    }
+
     /// The basis of the decision THIS probe reached, for one log line. `None` whenever the last
     /// probe did not reach one — before the first, and after either of `observe_probe`'s two early
     /// exits (`!observation.completed`, and a conservative rate under the requirement), which is
