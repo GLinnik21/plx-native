@@ -233,6 +233,41 @@ def scan_strings(blob: bytes, rx: re.Pattern, limit: int = 40, trim: bool = Fals
 
 
 # ---------------------------------------------------------------------------- the generated block
+
+# Endpoint literals, read out of the SHIPPED BYTES rather than from a build variable.
+#
+# Two jobs, and the second is the one that made this a row rather than a footnote.
+#
+# **It tells a reader where their data goes**, from the artifact they downloaded, without trusting
+# any claim in this document or in the app. `PRIVACY.md` and the Data Safety declaration both say
+# "Sentry and PostHog, in the EU"; this is the line that can be checked against a binary.
+#
+# **And it restores the reproducibility claim.** The endpoints are compiled in from a gitignored
+# file, so a third party rebuilding this commit gets a different binary and a different sha256
+# unless they use the same values. The values are WRITE-ONLY ingest credentials and publishable by
+# design -- any client that sends anything must carry them, which is why printing them here costs
+# nothing -- so recording them is what lets anybody reproduce the package byte for byte. Without
+# this row, "reproducible" would have quietly become "reproducible by the maintainer".
+SENTRY_DSN_RE = re.compile(rb"https://[0-9a-f]{8,}@[A-Za-z0-9.-]*ingest\.[a-z]{2}\.sentry\.io/\d+")
+POSTHOG_KEY_RE = re.compile(rb"phc_[A-Za-z0-9]{20,}")
+
+
+def telemetry_endpoints(binary: bytes) -> str:
+    dsn = SENTRY_DSN_RE.findall(binary)
+    key = POSTHOG_KEY_RE.findall(binary)
+    if not dsn and not key:
+        return ("none — this build carries no endpoint at all and **cannot report anything**. "
+                "`option_env!` resolved to `None` at compile time, so there is no URL in these "
+                "bytes to reach")
+    parts = []
+    for d in sorted({x.decode() for x in dsn}):
+        region = "EU" if ".de.sentry.io" in d else "**NOT the EU region**"
+        parts.append(f"Sentry `{d}` ({region})")
+    for k in sorted({x.decode() for x in key}):
+        parts.append(f"PostHog `{k}`")
+    return "; ".join(parts) + " — write-only ingest credentials, publishable by design"
+
+
 def generate(args) -> str:
     dist = Path(args.dist)
     version = args.tag.lstrip("v")
@@ -355,6 +390,7 @@ def generate(args) -> str:
         row("dev-trigger surface",
             ("absent — " if is_release else "**PRESENT** — ")
             + ", ".join(f"`{k}`×{v}" for k, v in dev_hits.items())),
+        row("telemetry endpoints", telemetry_endpoints(binary)),
     ]
     out += [table(rows, ("field", "value")), ""]
     out.append("The witnesses are literals from `dev.rs`'s `DIAG` array, which is "
