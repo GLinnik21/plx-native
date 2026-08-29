@@ -1,23 +1,25 @@
-//! **Telemetry: the decision, and one day the senders.**
+//! **Telemetry: the decision, the spool, and the worker that drains it.**
 //!
-//! Today this is [`consent`] and its storage, plus the wire FORMATS in [`sentry`] and [`posthog`] — and nothing that can
-//! send: there is no queue, no socket and no endpoint, and `diag::event` is a sink. The module
-//! grows in that order on purpose. Consent is the part that has to be right before anything can be
-//! sent and is answerable entirely on the host; the envelope is the part whose failures are silent
-//! 400s from a server that explains nothing, so it is worth pinning to tests while there is still
-//! no network to hide behind. Building both first means the sender arrives into a shape that
-//! already refuses to send and already frames correctly when it does.
+//! Five pieces and one ordering. [`consent`] and its storage are the part that has to be right
+//! before anything can be sent and are answerable entirely on the host. [`sentry`] and [`posthog`]
+//! are the wire FORMATS, whose failures are silent 400s from a server that explains nothing, so
+//! they were pinned to tests while there was still no network to hide behind. [`queue`] is the
+//! framing and the caps, pure; [`spool`] is the file those bytes live in and the one owner every
+//! read and write goes through; [`sender`] is the socket, and the place the credential split
+//! decides which project this build reports to at all.
 //!
-//! **Ungated**, like `diag::scrub` and `diag::schema`, and for the reason both of those record:
-//! the guarantees here are the tests — that no identifier exists before an opt-in, that withdrawal
-//! destroys it, that the event path fails closed — and a test behind a feature the default gate
-//! does not build is a test that never runs. What will be gated is the sending.
+//! **Ungated**, like `diag::scrub` and `diag::schema`, and for the reason both of those record: the
+//! guarantees here are the tests — that no identifier exists before an opt-in, that withdrawal
+//! destroys what it withdrew, that the event path fails closed, that a record queued while a flush
+//! was on the network is not erased by that flush's commit — and a test behind a feature the
+//! default gate does not build is a test that never runs.
 pub(crate) mod consent;
 pub(crate) mod crashreport;
 pub(crate) mod posthog;
 pub(crate) mod queue;
 pub(crate) mod sender;
 pub(crate) mod sentry;
+pub(crate) mod spool;
 
 use consent::Consent;
 
@@ -67,7 +69,12 @@ pub(crate) fn record(c: Consent) {
     if !stored {
         crate::log("telemetry: could not persist the decision to ANY candidate path");
     }
-    consent::install(c);
+    consent::install(c.clone());
+    // Install first, then purge. A record queued between the two would be one the new decision
+    // already governs, so it is caught by the next flush's per-record check; the other order leaves
+    // a window in which a record of a just-withdrawn category is written by a path still reading
+    // the old consent and then never looked at again.
+    spool::purge_withdrawn(&c);
 }
 
 // ---- the spool, and the one worker that drains it ---------------------------------------------
@@ -78,50 +85,9 @@ pub(crate) fn record(c: Consent) {
 /// exists to prevent, arriving by a different door.
 static FLUSHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Read the spool from the first candidate that has one.
-fn load_spool() -> Vec<queue::Record> {
-    crate::paths::telemetry_spool_candidates()
-        .iter()
-        .find_map(|p| std::fs::read(p).ok())
-        .map(|b| {
-            let d = queue::decode_all(&b);
-            if d.dropped_bytes > 0 {
-                // Expected after a power cut, and worth one line either way: a non-zero count after
-                // a CLEAN shutdown means something worse than a torn write.
-                crate::log(&format!(
-                    "telemetry: spool recovered {} records, {} bytes discarded",
-                    d.records.len(),
-                    d.dropped_bytes
-                ));
-            }
-            d.records
-        })
-        .unwrap_or_default()
-}
-
-/// Write the spool back, trimmed. Atomic, like the decision file — a torn spool is survivable by
-/// construction, but there is no reason to manufacture one on every flush.
-fn save_spool(records: &[queue::Record]) {
-    let (kept, dropped) = queue::trim(records.to_vec());
-    if dropped > 0 {
-        // Never silent. A queue that discards without saying so is a queue whose numbers are wrong
-        // in a direction nobody can see.
-        crate::log(&format!("telemetry: spool over cap, dropped {dropped} oldest records"));
-    }
-    let bytes: Vec<u8> = kept.iter().filter_map(queue::encode).flatten().collect();
-    let stored = crate::paths::telemetry_spool_candidates()
-        .iter()
-        .any(|p| crate::plex::session::write_atomic(p, &bytes));
-    if !stored {
-        crate::log("telemetry: could not persist the spool to ANY candidate path");
-    }
-}
-
-/// Queue one record for later. Cheap, main-thread-safe, and it does NOT send.
+/// Queue one record for later. Main-thread-safe, and it does NOT send.
 pub(crate) fn enqueue(r: queue::Record) {
-    let mut all = load_spool();
-    all.push(r);
-    save_spool(&all);
+    spool::append(&r);
 }
 
 /// Drain the spool on a worker thread.
@@ -160,7 +126,7 @@ pub(crate) fn flush_soon() {
 
 /// The flush itself, on the worker.
 fn flush_now(c: &consent::Consent) {
-    let all = load_spool();
+    let all = spool::read();
     if all.is_empty() {
         return;
     }
@@ -190,7 +156,7 @@ fn flush_now(c: &consent::Consent) {
         }
     }
     if !retired.is_empty() {
-        save_spool(&queue::ack(all, &retired));
+        spool::commit_retiring(&retired);
     }
 }
 

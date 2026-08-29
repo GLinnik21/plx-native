@@ -58,7 +58,6 @@ use serde::{Deserialize, Serialize};
 /// Which consent switch a record belongs to. Stored per record because withdrawal purges **one**
 /// category, and a record that could not say which it was would have to be purged by both or
 /// neither — the first loses reports somebody consented to, the second keeps reports they did not.
-#[allow(dead_code)] // no worker yet — see the module doc
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Category {
     /// crash and error reports
@@ -70,7 +69,6 @@ pub(crate) enum Category {
 /// Where the record goes. Stored rather than derived from the category, because the mapping is
 /// today's routing and not a fact about the record: an error could be worth sending to both, and a
 /// spool written by one build is read by the next.
-#[allow(dead_code)] // no worker yet — see the module doc
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Dest {
     Sentry,
@@ -78,7 +76,6 @@ pub(crate) enum Dest {
 }
 
 /// One queued send.
-#[allow(dead_code)] // no worker yet — see the module doc
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Record {
     pub category: Category,
@@ -153,24 +150,19 @@ mod body_b64 {
 /// the failure would be an allocator abort with no log, from a module whose entire job is to
 /// preserve a report. The bound is checked against the frame header, not against a buffer already
 /// read.
-#[allow(dead_code)] // no worker yet — see the module doc
 pub(crate) const MAX_RECORD: usize = 256 * 1024;
 
 /// The whole spool's byte ceiling. See the module doc: this is the cap that means something.
-#[allow(dead_code)] // no worker yet — see the module doc
 pub(crate) const MAX_BYTES: usize = 512 * 1024;
 
 /// And the record ceiling, which is the weaker of the two and exists to bound decode time.
-#[allow(dead_code)] // no worker yet — see the module doc
 pub(crate) const MAX_RECORDS: usize = 200;
 
-#[allow(dead_code)] // no worker yet — see the module doc
 const HEADER: usize = 8;
 
 /// CRC-32/IEEE, bitwise. No table: 256 words of static data to checksum at most half a megabyte a
 /// few times per boot is the wrong trade, and the bitwise form is the one that is obviously correct
 /// by inspection.
-#[allow(dead_code)] // no worker yet — see the module doc
 fn crc32(data: &[u8]) -> u32 {
     let mut crc = 0xFFFF_FFFFu32;
     for &b in data {
@@ -186,7 +178,6 @@ fn crc32(data: &[u8]) -> u32 {
 /// Frame one record. `None` if it serialises to more than [`MAX_RECORD`] — a record too big to
 /// store is dropped at the point it is created, where there is a caller to log it, rather than
 /// becoming a frame no reader will accept.
-#[allow(dead_code)] // no worker yet — see the module doc
 pub(crate) fn encode(r: &Record) -> Option<Vec<u8>> {
     let payload = serde_json::to_vec(r).ok()?;
     if payload.len() > MAX_RECORD {
@@ -200,7 +191,6 @@ pub(crate) fn encode(r: &Record) -> Option<Vec<u8>> {
 }
 
 /// What a decode found, including what it had to throw away.
-#[allow(dead_code)] // no worker yet — see the module doc
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Decoded {
     pub records: Vec<Record>,
@@ -214,7 +204,6 @@ pub(crate) struct Decoded {
 ///
 /// Never panics and never allocates on an untrusted length — see [`MAX_RECORD`]. An empty input is
 /// an empty queue, not an error: that is what a first boot looks like.
-#[allow(dead_code)] // no worker yet — see the module doc
 pub(crate) fn decode_all(buf: &[u8]) -> Decoded {
     let mut records = Vec::new();
     let mut at = 0usize;
@@ -256,17 +245,23 @@ pub(crate) fn decode_all(buf: &[u8]) -> Decoded {
 /// Byte-cap first is deliberate: applying the record cap first can leave a set that still exceeds
 /// the byte cap (200 crash records are not 200 launches), so the byte pass has to run last to be
 /// the one that binds.
-#[allow(dead_code)] // no worker yet — see the module doc
 pub(crate) fn trim(mut records: Vec<Record>) -> (Vec<Record>, usize) {
     let before = records.len();
     if records.len() > MAX_RECORDS {
         records.drain(..records.len() - MAX_RECORDS);
     }
-    let mut total: usize = records.iter().filter_map(|r| encode(r).map(|e| e.len())).sum();
-    while total > MAX_BYTES && !records.is_empty() {
-        let head = records.remove(0);
-        total -= encode(&head).map(|e| e.len()).unwrap_or(0);
+    // Measure ONCE. This used to encode every record to sum the total and then encode the head
+    // again for each one it dropped, and `remove(0)` shifted the whole vector each time — so
+    // trimming k records off a full spool cost k extra serialisations of records that were about
+    // to be thrown away. `trim` runs on every compaction and every flush commit.
+    let sizes: Vec<usize> = records.iter().map(|r| encode(r).map_or(0, |e| e.len())).collect();
+    let mut total: usize = sizes.iter().sum();
+    let mut cut = 0usize;
+    while total > MAX_BYTES && cut < records.len() {
+        total -= sizes[cut];
+        cut += 1;
     }
+    records.drain(..cut);
     let dropped = before - records.len();
     (records, dropped)
 }
@@ -275,7 +270,6 @@ pub(crate) fn trim(mut records: Vec<Record>) -> (Vec<Record>, usize) {
 ///
 /// Per-category rather than wholesale, because the two switches are independent: turning off usage
 /// must not discard crash reports somebody is still consenting to send.
-#[allow(dead_code)] // no worker yet — see the module doc
 pub(crate) fn purge(records: Vec<Record>, category: Category) -> Vec<Record> {
     records.into_iter().filter(|r| r.category != category).collect()
 }
@@ -285,7 +279,6 @@ pub(crate) fn purge(records: Vec<Record>, category: Category) -> Vec<Record> {
 /// Acknowledgement is by `event_id` rather than by count, and that is the whole point: a flush that
 /// sends three and gets two accepted must not advance a cursor by three, and cannot express "the
 /// middle one failed" as a number at all.
-#[allow(dead_code)] // no worker yet — see the module doc
 pub(crate) fn ack(records: Vec<Record>, accepted: &[String]) -> Vec<Record> {
     records.into_iter().filter(|r| !accepted.contains(&r.event_id)).collect()
 }
