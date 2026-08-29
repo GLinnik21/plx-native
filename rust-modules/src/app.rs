@@ -3136,6 +3136,15 @@ fn key_account(over: BarHost, sym: c_uint, wcode: c_uint, route: &mut Route) {
                 crate::auth::sign_out();
                 *route = Route::Login;
             }
+            // Opens a popover of its own over the same page, so the ROUTE does not move — the
+            // account menu has already closed itself, and `ui::legal` takes the key ladder from
+            // here until it closes. Reachable signed OUT as well: a person who cannot sign in has
+            // still received a copy of this software, and LG requires the privacy notice to be
+            // readable in the app rather than only on the store listing.
+            crate::ui::account_menu::Action::Legal => {
+                crate::ui::legal::open();
+                *route = over.route();
+            }
             // Lab builds only, and it changes no route: the tester stays where they were, and the
             // toast says what happened. Returning to the page the popover stood on is the same
             // dismissal `Action::None` does.
@@ -4981,6 +4990,25 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     // turn by being matched on like `Account`/`ItemMenu` do; it takes it by being
                     // the top of the chain and `continue`ing on every key. That is also the whole
                     // of its modality: with the arm here, nothing behind the sheet is reachable.
+                    // Legal sits ABOVE the exit alert, and the ordering is load-bearing rather
+                    // than arbitrary: the alert's host is Home's ROOT, which is exactly where the
+                    // account menu that opens Legal is reachable from — so with the arms the other
+                    // way round, BACK out of the privacy notice would raise "Exit PlxNative?"
+                    // instead of closing the notice. Like the alert it is a `Popover` and not a
+                    // `Route` (one owner, `ui::legal`), so it takes its turn by being high in the
+                    // chain and `continue`ing on every key; that IS its modality.
+                    if crate::ui::legal::is_open() {
+                        if is_ok(sym) {
+                            crate::ui::legal::on_ok();
+                        } else if is_back(sym, wcode) {
+                            crate::ui::legal::on_back();
+                        } else if sym == SDLK_UP {
+                            crate::ui::legal::on_updown(-1);
+                        } else if sym == SDLK_DOWN {
+                            crate::ui::legal::on_updown(1);
+                        }
+                        continue;
+                    }
                     if crate::ui::exit_alert::is_open() {
                         key_exit_alert(sym, wcode, last_input, &mut ok_armed);
                         continue;
@@ -5435,6 +5463,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             crate::ui::account_menu::Action::SignOut => {
                                 crate::auth::sign_out();
                                 route = Route::Login;
+                            }
+                            // the pointer twin of `key_account`'s Legal arm
+                            crate::ui::account_menu::Action::Legal => {
+                                crate::ui::legal::open();
+                                route = over.route();
                             }
                             // the pointer twin of `key_account`'s arm — lab builds only
                             crate::ui::account_menu::Action::SendDiagnostics => {
@@ -6763,6 +6796,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // route term to test it with — and it can only be up over Home, whose arm above has
             // already run.
             crate::ui::exit_alert::update(dt);
+            // Self-gated like the alert, and for the same reason: not a route, so there is no
+            // route term to test it with.
+            crate::ui::legal::update(dt);
             if matches!(route, Route::Account { .. }) {
                 crate::ui::account_menu::update(dt);
             }
@@ -7092,6 +7128,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             // lift: the alert is about the APP, not about an element on the page,
                             // so there is nothing behind it the panel is talking about.
                             crate::ui::exit_alert::draw_scrim();
+                            // Same class again, and with no opener to lift either: the notice is
+                            // about the APP, not about anything on the page behind it.
+                            crate::ui::legal::draw_scrim();
                         };
                         if let Some(reg) = crate::gfx::blur_direct_region() {
                             crate::gfx::blur_snapshot_direct(reg, &mut page);
@@ -7107,6 +7146,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         // rather than a route. Drawn AFTER the two popovers for the reason its
                         // key arm is drawn first: nothing outranks it.
                         crate::ui::exit_alert::draw();
+                        // Above the alert, mirroring the key ladder — the two can be open at once
+                        // only in the order Legal-over-alert, and whichever answers BACK first must
+                        // also be the one on top.
+                        crate::ui::legal::draw();
                         // dev: the blurred route transition, then the load dial's glass surfaces.
                         // LAST on the non-player path, so the snapshot either takes is of the
                         // COMPLETE page — which is the honest source for a surface that sits on

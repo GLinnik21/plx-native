@@ -38,6 +38,12 @@ pub enum Action {
     ChangeProfile,
     SignIn,
     SignOut,
+    /// **Legal** — the privacy notice, the open-source notices, the source offer and the trademark
+    /// attribution ([`crate::ui::legal`]). Offered in EVERY build and in **both** account states,
+    /// which is the point: someone who cannot sign in has still received a copy of this software,
+    /// and LG's Privacy Guideline requires the policy to be readable *in the app* rather than only
+    /// on the store listing.
+    Legal,
     /// **Lab builds only** — snapshot the diagnostic ring and upload it (`crate::lab`). It is in
     /// this menu because it must be reachable with the D-PAD ALONE: the remote trigger is a colour
     /// button (BLUE, `wcode` 489 on the dev set), and an LG Cloud Test Lab virtual remote may not
@@ -87,12 +93,12 @@ fn rows_for(acc: &Account) -> &'static [Action] {
     // slice and [`action_at`]'s index mapping keeps working unchanged. Six arms is the price of
     // not allocating a row vector per open; the alternative was a `Vec` in a static.
     match (acc.signed_in, acc.can_switch, crate::lab::menu_row_enabled()) {
-        (false, _, false) => &[Action::SignIn],
-        (false, _, true) => &[Action::SignIn, Action::SendDiagnostics],
-        (true, true, false) => &[Action::ChangeProfile, Action::SignOut],
-        (true, true, true) => &[Action::ChangeProfile, Action::SignOut, Action::SendDiagnostics],
-        (true, false, false) => &[Action::SignOut],
-        (true, false, true) => &[Action::SignOut, Action::SendDiagnostics],
+        (false, _, false) => &[Action::SignIn, Action::Legal],
+        (false, _, true) => &[Action::SignIn, Action::Legal, Action::SendDiagnostics],
+        (true, true, false) => &[Action::ChangeProfile, Action::SignOut, Action::Legal],
+        (true, true, true) => &[Action::ChangeProfile, Action::SignOut, Action::Legal, Action::SendDiagnostics],
+        (true, false, false) => &[Action::SignOut, Action::Legal],
+        (true, false, true) => &[Action::SignOut, Action::Legal, Action::SendDiagnostics],
     }
 }
 
@@ -125,6 +131,7 @@ fn label(a: Action) -> &'static str {
         Action::ChangeProfile => "Change profile",
         Action::SignIn => "Sign in",
         Action::SignOut => "Sign out",
+        Action::Legal => "Legal",
         Action::SendDiagnostics => "Send diagnostics",
         Action::None => "",
     }
@@ -132,7 +139,7 @@ fn label(a: Action) -> &'static str {
 
 /// Rows that leave for another screen carry the drill-in chevron; "Sign out" acts in place.
 fn drills_in(a: Action) -> bool {
-    matches!(a, Action::ChangeProfile | Action::SignIn)
+    matches!(a, Action::ChangeProfile | Action::SignIn | Action::Legal)
 }
 
 pub fn open() {
@@ -335,7 +342,7 @@ mod tests {
     fn signed_out_offers_only_sign_in() {
         let (name, rows) = menu(&Session::default(), None);
         assert_eq!(name, "Account");
-        assert_eq!(rows, vec!["Sign in"]);
+        assert_eq!(rows, vec!["Sign in", "Legal"]);
     }
 
     /// THE BUG: a signed-in account with no Plex Home never gets a profile written, so the active
@@ -346,7 +353,7 @@ mod tests {
         let s = local(Session { account_token: "acct".into(), home_users: vec![owner("Gleb")], ..Default::default() });
         let (name, rows) = menu(&s, Some(&UserRef::default()));
         assert_eq!(name, "Gleb");
-        assert_eq!(rows, vec!["Change profile", "Sign out"]);
+        assert_eq!(rows, vec!["Change profile", "Sign out", "Legal"]);
     }
 
     /// A picked managed profile names the header even though the roster also could.
@@ -360,7 +367,7 @@ mod tests {
         let active = UserRef { title: "Kid".into(), ..Default::default() };
         let (name, rows) = menu(&s, Some(&active));
         assert_eq!(name, "Kid");
-        assert_eq!(rows, vec!["Change profile", "Sign out"]);
+        assert_eq!(rows, vec!["Change profile", "Sign out", "Legal"]);
     }
 
     /// The roster hop looks for a NAMED entry, admin first: an admin tile that happens to carry an
@@ -383,7 +390,7 @@ mod tests {
         let s = local(Session { account_token: "acct".into(), ..Default::default() });
         let (name, rows) = menu(&s, Some(&UserRef::default()));
         assert_eq!(name, "Account");
-        assert_eq!(rows, vec!["Change profile", "Sign out"]);
+        assert_eq!(rows, vec!["Change profile", "Sign out", "Legal"]);
     }
 
     /// A server-only session (no plex.tv token) is still signed IN — it is streaming — but cannot
@@ -395,7 +402,7 @@ mod tests {
         let s = local(Session { user: UserRef { title: "Gleb".into(), ..Default::default() }, ..Default::default() });
         let (name, rows) = menu(&s, None);
         assert_eq!(name, "Gleb");
-        assert_eq!(rows, vec!["Sign out"]);
+        assert_eq!(rows, vec!["Sign out", "Legal"]);
     }
 
     /// The seam `open()` actually uses: the crate-global active profile really does reach the
@@ -436,27 +443,49 @@ mod tests {
         let nameless = local(Session { account_token: "acct".into(), ..Default::default() }).account(None);
         assert_eq!(chip_label(&nameless), HEADER_FALLBACK);
 
-        // signed out: the chip says exactly what the one row behind it says
+        // Signed out: the chip says exactly what the ACCOUNT row behind it says. That row is
+        // first, and the assertion is on `[0]` rather than on the whole set — the set also carries
+        // Legal, which is not an account action and which the chip has never claimed to speak for.
         let out = Session::default().account(None);
         assert_eq!(chip_label(&out), label(Action::SignIn));
-        assert_eq!(rows_for(&out), &[Action::SignIn]);
+        assert_eq!(rows_for(&out)[0], Action::SignIn);
     }
 
     /// Every row set maps position → action by the list it drew, and anything off the end is None
     /// (not the other set's action at that index, which is exactly what the old fixed 0/1 map did).
     #[test]
+    fn legal_is_offered_in_every_account_state() {
+        // LG's Privacy Guideline requires the privacy notice to be reachable IN the app, and the
+        // one state where it is easiest to forget is signed OUT — where someone who cannot get past
+        // the QR screen has still received a copy of this software. Asserted across every row set
+        // rather than on one, because `rows_for` is a six-arm match and five of the arms are the
+        // easy ones.
+        for s in [
+            Session::default(),
+            local(Session { account_token: "acct".into(), ..Default::default() }),
+            local(Session::default()),
+        ] {
+            let rows = rows_for(&s.account(None));
+            assert!(rows.contains(&Action::Legal), "no Legal row in {rows:?}");
+        }
+    }
+
+    #[test]
     fn selection_maps_by_the_drawn_row_list() {
         let signed_out = rows_for(&Session::default().account(None));
         assert_eq!(action_at(signed_out, 0), Action::SignIn);
-        assert_eq!(action_at(signed_out, 1), Action::None);
+        assert_eq!(action_at(signed_out, 1), Action::Legal);
+        assert_eq!(action_at(signed_out, 2), Action::None);
         let s = local(Session { account_token: "acct".into(), ..Default::default() });
         let full = rows_for(&s.account(None));
         assert_eq!(action_at(full, 0), Action::ChangeProfile);
         assert_eq!(action_at(full, 1), Action::SignOut);
-        assert_eq!(action_at(full, 2), Action::None);
+        assert_eq!(action_at(full, 2), Action::Legal);
+        assert_eq!(action_at(full, 3), Action::None);
         assert_eq!(action_at(full, -1), Action::None);
         let no_switch = rows_for(&local(Session::default()).account(None));
         assert_eq!(action_at(no_switch, 0), Action::SignOut);
-        assert_eq!(action_at(no_switch, 1), Action::None);
+        assert_eq!(action_at(no_switch, 1), Action::Legal);
+        assert_eq!(action_at(no_switch, 2), Action::None);
     }
 }
