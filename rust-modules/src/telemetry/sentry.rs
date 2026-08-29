@@ -137,6 +137,35 @@ pub(crate) fn new_event_id() -> Option<String> {
     super::mint_install_id() // same 16 random bytes as hex; a different draw each call
 }
 
+/// **`image_addr` for this binary is the lowest `PT_LOAD` vaddr — `0x10000` — and NOT zero.**
+///
+/// Device-adjacent measurement, 2026-08-29, against the real Sentry EU project with a real armv7
+/// DIF uploaded. This is the number that decides whether a crash report is a source line or a bare
+/// address, and getting it wrong fails SILENTLY in the worst way: the image still resolves, the
+/// event carries no processing error, and the frame simply comes back
+/// `symbolicatorStatus: "missing_symbol"` — indistinguishable from "we never uploaded symbols".
+///
+/// Both were tried, same address, same DIF, minutes apart:
+///
+/// | `image_addr` | result |
+/// |---|---|
+/// | `0x0` | `missing_symbol`, no error reported |
+/// | `0x10000` | `symbolicated` -> `plx_crash_install`, `crashtrace.c:290` |
+///
+/// The reason is that Symbolicator computes `rva = instruction_addr - image_addr` and an ELF's
+/// symbol addresses are relative to its own load base, which for this non-PIE executable is the
+/// first `PT_LOAD`'s vaddr rather than 0. The plan this was built to said "since the binary is
+/// ET_EXEC, frames are absolute `instruction_addr` — no `addr_mode`", which is correct about the
+/// FRAME and silent about the image, and the silence is the whole trap: absolute frames plus a zero
+/// image base looks obviously right and yields nothing.
+///
+/// Read from the ELF rather than hardcoded would be better still, and is not possible here — the
+/// running process cannot read its own program headers without parsing `/proc/self/exe`. It is a
+/// constant because it is a property of the link, and `ci/check-elf.sh` is where a change to it
+/// would be caught.
+#[allow(dead_code)] // no sender yet — see the module doc
+pub(crate) const IMAGE_ADDR: &str = "0x10000";
+
 /// The compressed-item ceiling. **200 KiB, and it is the COMPRESSED figure** — the 1 MiB number
 /// that gets quoted is the decompressed one, and budgeting against it means an interesting crash
 /// is the one that gets refused.
@@ -294,6 +323,17 @@ mod tests {
              declaration both claim EU storage, and Sentry fixes an organisation's region at \
              creation — it cannot be moved, only replaced with a new org"
         );
+    }
+
+    /// **The measured `image_addr`.** Pinned as a number because the failure it prevents is silent:
+    /// with `0x0` the same address, the same DIF and the same project return `missing_symbol` with
+    /// no error attached, which reads exactly like never having uploaded symbols at all. Verified
+    /// end to end against the live EU project on 2026-08-29 — `0x10000` resolved
+    /// `0x88ef8` to `plx_crash_install` at `crashtrace.c:290`, matching `addr2line` locally.
+    #[test]
+    fn the_image_base_is_the_load_vaddr_not_zero() {
+        assert_eq!(IMAGE_ADDR, "0x10000");
+        assert_ne!(IMAGE_ADDR, "0x0", "a zero image base silently yields missing_symbol");
     }
 
     /// The budget is the COMPRESSED ceiling, and it is 200 KiB rather than the 1 MiB decompressed
