@@ -7,7 +7,7 @@
 use crate::gfx::{delete_tex, upload_rgba};
 use crate::ui::consts::{SCR_H, SCR_W};
 use crate::ui::theme;
-use crate::ui::widgets::{Spinner, StatusKind, StatusOverlay, TabPill, TransportButton};
+use crate::ui::widgets::{ControlGround, Spinner, StatusKind, StatusOverlay, TabPill, TransportButton};
 use crate::ui::{Env, Painter, Rect, View};
 use std::ffi::CString;
 use std::os::raw::{c_int, c_uint};
@@ -964,6 +964,11 @@ pub(crate) fn draw_hud(slot: ControlSlot, busy: Busy, focus: i32, btn: i32, tab:
             for i in 0..BTN_N {
                 TransportButton::new(i, Rect::new(btn_x(i), BTN_Y, BTN_S, BTN_S))
                     .focused(focus == 1 && btn == i)
+                    // The whole control row stands on the VIDEO PLANE — see `ControlGround`. It is
+                    // the HUD's own bottom ramp (drawn at the top of this function) that makes the
+                    // unkeyed face legal: the picture is unreadable, but the ground under these
+                    // discs is known to be dark.
+                    .ground(ControlGround::Unkeyed)
                     .scale(row_pop(i))
                     .draw(&e, p);
             }
@@ -1116,7 +1121,12 @@ pub(crate) fn draw_hud(slot: ControlSlot, busy: Busy, focus: i32, btn: i32, tab:
         let on = focus == 2 && tab == i as i32;
         let pw = TabPill::width(label.chars().count(), theme::size::BODY);
         if let Ok(cs) = CString::new(*label) {
-            TabPill::new(cs.as_ptr(), theme::size::BODY, Rect::new(px, py, pw, ph)).focused(on).draw(&e, p);
+            TabPill::new(cs.as_ptr(), theme::size::BODY, Rect::new(px, py, pw, ph))
+                .focused(on)
+                // Same row band, same ramp, same ground as the transport discs — everything the
+                // HUD draws stands on the video plane (`ControlGround`).
+                .ground(ControlGround::Unkeyed)
+                .draw(&e, p);
         }
         px += pw + 16.0;
     }

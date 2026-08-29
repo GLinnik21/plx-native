@@ -11,7 +11,7 @@
 #![allow(dead_code)]
 use crate::metadata::{self, MarkerKind};
 use crate::ui::theme;
-use crate::ui::widgets::Button;
+use crate::ui::widgets::{Button, ControlGround};
 use crate::ui::{Env, Painter, Rect, View};
 use std::ffi::CString;
 
@@ -85,5 +85,8 @@ pub(crate) fn draw(p: Painter, pr: Prompt, focused: bool) {
     Button::new(label.as_ptr(), theme::size::BODY, rect(pr))
         .scale(crate::ui::player_hud::row_pop(0))
         .focused(focused)
+        // It stands in the transport discs' own slot, over the video plane and on the HUD's ramp,
+        // so it wears their ground as well as their pop — see `ControlGround`.
+        .ground(ControlGround::Unkeyed)
         .draw(&Env::inert(), p);
 }

@@ -33,6 +33,49 @@ uniform vec4 u_rimcol;
 // stop that line is to let it FADE where the surface turns away, not to scissor it: a hard cut
 // lands at the widest point of a cap and reads as the outline breaking off mid-air.
 uniform float u_rimtop;
+// THE CAPSULE OUTLINE — three circular arcs per corner, blended, and NOT a stadium. `w` of the
+// second vector is the switch: 0 leaves every capsule in this app exactly the rounded rect it has
+// always been. The numbers are solved on the CPU (`ui::pill`, the port of the design project's
+// `pillPath.js`) because the big arc's radius comes out of a bisection — 73 000px on a 260x61
+// control — and a shader is the wrong place for it.
+//   u_pill1 = (big radius R, blend radius f, end radius r, big arc's centre y)
+//   u_pill2 = (end circle's centre x, blend centre x, blend centre y, enabled)
+// Both centres are in the box's own CENTRED frame, folded into the top-right quadrant, which the
+// shape's two axes of symmetry make sufficient.
+uniform highp vec4 u_pill1;
+uniform highp vec4 u_pill2;
+// THE INNER GLOW — `(top depth px, top weight, bottom depth px, bottom weight)`, 0 disables it and
+// the branch below costs nothing. The design states the focused control's edge over VIDEO as a
+// perimeter line plus two soft inset shadows, a strong one along the top and a .55 one along the
+// bottom: light spilling INWARD off the edge, which is what stops a near-white capsule reading as a
+// flat chip when the frame behind it is unknown. It is the same lamp as u_rimcol, so it takes that
+// colour and only the falloff is its own.
+uniform vec4 u_glow;
+// Which arc governs a point already folded into that quadrant — `(centre, radius)`. The outline is
+// SMOOTH, so at each hand-over the two arcs agree on the distance and on the normal both, and there
+// is no seam to place: the test is simply which side of the tangency direction the point falls on,
+// and the direction's x is monotone across each arc's own span.
+highp vec3 pillArc(highp vec2 q){
+  highp vec2 bc = vec2(0.0, u_pill1.w);
+  highp vec2 ec = vec2(u_pill2.x, 0.0);
+  highp vec2 fc = u_pill2.yz;
+  if (normalize(q - bc).x <= normalize(fc - bc).x) return vec3(bc, u_pill1.x);
+  // the blend CONTAINS the end circle and touches it from the inside, so the contact sits on the
+  // far side of it and the tangency direction points AWAY from the blend's centre
+  if (normalize(q - ec).x >= normalize(ec - fc).x) return vec3(ec, u_pill1.z);
+  return vec3(fc, u_pill1.y);
+}
+highp float sdPill(highp vec2 p){
+  highp vec2 q = vec2(abs(p.x), -abs(p.y));
+  highp vec3 a = pillArc(q);
+  return length(q - a.xy) - a.z;
+}
+highp vec2 pillNormal(highp vec2 p){
+  highp vec2 q = vec2(abs(p.x), -abs(p.y));
+  highp vec3 a = pillArc(q);
+  highp vec2 n = normalize(q - a.xy + vec2(1e-5));
+  return vec2(p.x < 0.0 ? -n.x : n.x, p.y > 0.0 ? -n.y : n.y);
+}
 highp float sdBox(highp vec2 p, highp vec2 b, highp float r){
   highp vec2 q = abs(p) - b + vec2(r);
   return length(max(q,0.0)) + min(max(q.x,q.y),0.0) - r;
@@ -76,7 +119,8 @@ void main(){
     return;
   }
   highp float rad = (p.x > 0.0) ? u_radR : u_radius;
-  float d = sdBox(p, hsz, rad);
+  bool pill = u_pill2.w > 0.5;
+  float d = pill ? sdPill(p) : sdBox(p, hsz, rad);
   vec4 fill = mix(u_colTop, u_colBot, vy);
   float aFill = 1.0 - smoothstep(-1.0, 1.0, d);
   // COVERAGE GOES IN THE ALPHA AND NOWHERE ELSE. This blends with straight alpha
@@ -107,10 +151,23 @@ void main(){
     // +y is DOWN here (v_uv runs top to bottom), so the top edge's normal is (0,-1) and this is 1
     // there, 0 at the widest point of either cap, and 0 across the whole bottom. Continuous by
     // construction: the extra weight dies out along the arc instead of being cut off on it.
-    rim += rimShape * u_rimtop * max(-sdBoxNormal(p, hsz, rad).y, 0.0);
+    highp vec2 nrm = pill ? pillNormal(p) : sdBoxNormal(p, hsz, rad);
+    rim += rimShape * u_rimtop * max(-nrm.y, 0.0);
   }
-  a = max(a, rim);
-  rgb += u_rimcol.rgb * (rim / max(a, 1.0 / 512.0));
+  // …and the glow, which is the same light one step further in: a falloff from the edge INWARD,
+  // weighted by the surface normal so each side dies out where the face turns away — the reason the
+  // rim's own top boost is built that way, and for the same reason (a hard cut lands mid-arc and
+  // reads as the outline breaking off). It lives ON the face, so it is scaled by the fill's own
+  // coverage rather than by the rim's shape.
+  float glow = 0.0;
+  if (u_glow.y > 0.001 || u_glow.w > 0.001) {
+    highp vec2 gn = pill ? pillNormal(p) : sdBoxNormal(p, hsz, rad);
+    highp float inw = max(-d, 0.0);
+    glow = ((1.0 - smoothstep(0.0, max(u_glow.x, 0.001), inw)) * u_glow.y * max(-gn.y, 0.0)
+          + (1.0 - smoothstep(0.0, max(u_glow.z, 0.001), inw)) * u_glow.w * max(gn.y, 0.0)) * aFill;
+  }
+  a = max(a, max(rim, glow));
+  rgb += u_rimcol.rgb * ((rim + glow) / max(a, 1.0 / 512.0));
   if (u_focus > 0.001) {
     float ring = (1.0 - smoothstep(1.5, 4.0, abs(d - 5.0))) * u_focus;
     float glow = exp(-max(d, 0.0) / 14.0) * 0.40 * u_focus * step(0.0, d);

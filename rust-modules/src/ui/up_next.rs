@@ -35,7 +35,7 @@
 use crate::route::UpNext;
 use crate::ui::label::{HAlign, Label};
 use crate::ui::theme;
-use crate::ui::widgets::{draw_card, Button};
+use crate::ui::widgets::{draw_card, Button, ControlGround};
 use crate::ui::{Env, Painter, Rect, View};
 use std::ffi::CString;
 use std::os::raw::c_int;
@@ -268,6 +268,11 @@ pub(crate) fn draw(p: Painter, focused: bool, btn: c_int, now: u32) {
     // slot and share its cursor, so they share its springs (`player_hud::row_pop`).
     Button::new(CREDITS_LABEL.as_ptr(), theme::size::BODY, l.credits)
         .focused(focused && btn == BTN_CREDITS)
+        // Both buttons on this card stand on LIVE CREDITS — the video plane, under this card's own
+        // scrim — so both take the unkeyed ground (`ControlGround`). It is what the app's
+        // `ControlStyle::Keyline` was hand-rolling for exactly this surface, and the right way
+        // round: a light film over the scrim rather than a darker plate cut into the picture.
+        .ground(ControlGround::Unkeyed)
         .scale(crate::ui::player_hud::row_pop(BTN_CREDITS))
         .draw(&e, p);
 
@@ -278,6 +283,7 @@ pub(crate) fn draw(p: Painter, focused: bool, btn: c_int, now: u32) {
     let Ok(label) = CString::new(NEXT_LABEL) else { return };
     let mut b = Button::new(label.as_ptr(), theme::size::BODY, l.next)
         .focused(focused && btn == BTN_NEXT)
+        .ground(ControlGround::Unkeyed)
         .scale(crate::ui::player_hud::row_pop(BTN_NEXT));
     if armed() {
         // It animates from a CLOCK, so `ui::idle`'s spring instrumentation cannot see it — the trap

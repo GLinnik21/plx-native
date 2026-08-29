@@ -264,6 +264,11 @@ static mut LOC_RADR: c_int = 0;
 static mut LOC_RIMW: c_int = 0;
 static mut LOC_RIMCOL: c_int = 0;
 static mut LOC_RIMTOP: c_int = 0;
+/// The capsule outline's two solved vectors and the focused face's inner glow — see
+/// `shaders/fs_src.frag`, and [`pill_off`] for the default every other draw sends.
+static mut LOC_PILL1: c_int = 0;
+static mut LOC_PILL2: c_int = 0;
+static mut LOC_GLOW: c_int = 0;
 
 static mut APROG: c_uint = 0;
 static mut AL_RECT: c_int = 0;
@@ -493,6 +498,9 @@ pub(crate) fn init_gl() {
         LOC_RIMW = glGetUniformLocation(PROG, c"u_rimw".as_ptr());
         LOC_RIMCOL = glGetUniformLocation(PROG, c"u_rimcol".as_ptr());
         LOC_RIMTOP = glGetUniformLocation(PROG, c"u_rimtop".as_ptr());
+        LOC_PILL1 = glGetUniformLocation(PROG, c"u_pill1".as_ptr());
+        LOC_PILL2 = glGetUniformLocation(PROG, c"u_pill2".as_ptr());
+        LOC_GLOW = glGetUniformLocation(PROG, c"u_glow".as_ptr());
         glUniform2f(LOC_SCREEN, SCR_W, SCR_H);
 
         let mut vbo: c_uint = 0;
@@ -576,6 +584,49 @@ pub(crate) fn init_gl() {
     }
 }
 
+/// The CAPSULE OUTLINE's solved geometry as the shader takes it — `[R, f, r, big centre y, end
+/// centre x, blend centre x, blend centre y, enabled]`. Built by [`crate::ui::pill::Pill::args`];
+/// the renderer only ever forwards it.
+pub(crate) type PillArgs = [f32; 8];
+/// The focused face's INNER GLOW — `[top depth px, top weight, bottom depth px, bottom weight]`.
+/// The design draws it as two inset shadows either side of the perimeter line; this is the same
+/// light as a falloff inward from the edge, weighted by the surface normal so it dies out where the
+/// face turns away instead of stopping on an arc.
+pub(crate) type GlowArgs = [f32; 4];
+
+/// Send "this draw is an ordinary rounded rect, with no inner glow" — the state every PROG path but
+/// the capsule's must leave behind. Uniforms are per-PROGRAM and persist across draws, so a shape
+/// left armed would put the last capsule's outline on the next scrim.
+#[inline]
+unsafe fn pill_off() {
+    unsafe {
+        glUniform4f(LOC_PILL1, 0.0, 0.0, 0.0, 0.0);
+        glUniform4f(LOC_PILL2, 0.0, 0.0, 0.0, 0.0);
+        glUniform4f(LOC_GLOW, 0.0, 0.0, 0.0, 0.0);
+    }
+}
+
+/// [`pill_off`]'s opposite: arm an outline and a glow, either of which may be absent.
+#[inline]
+unsafe fn pill_on(pill: Option<&PillArgs>, glow: Option<&GlowArgs>) {
+    unsafe {
+        match pill {
+            Some(p) => {
+                glUniform4f(LOC_PILL1, p[0], p[1], p[2], p[3]);
+                glUniform4f(LOC_PILL2, p[4], p[5], p[6], p[7]);
+            }
+            None => {
+                glUniform4f(LOC_PILL1, 0.0, 0.0, 0.0, 0.0);
+                glUniform4f(LOC_PILL2, 0.0, 0.0, 0.0, 0.0);
+            }
+        }
+        match glow {
+            Some(g) => glUniform4f(LOC_GLOW, g[0], g[1], g[2], g[3]),
+            None => glUniform4f(LOC_GLOW, 0.0, 0.0, 0.0, 0.0),
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_rect(
     x: f32,
@@ -613,6 +664,7 @@ pub(crate) fn draw_rect(
         glUniform1f(LOC_RIMW, 0.0);
         glUniform4f(LOC_RIMCOL, 0.0, 0.0, 0.0, 0.0); // no edge-sheen (default)
         glUniform1f(LOC_RIMTOP, 0.0);
+        pill_off();
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     }
 }
@@ -621,6 +673,16 @@ pub(crate) fn draw_rect(
 /// the same fill pass — the no-texture (skeleton / chip disc) counterpart of [`draw_tex_stroked`].
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_rect_sheened(x: f32, y: f32, w: f32, h: f32, radius: f32, top: *const f32, bot: *const f32, rimw: f32, rimcol: *const f32, rimtop: f32) {
+    draw_rect_shaped(x, y, w, h, radius, top, bot, rimw, rimcol, rimtop, None, None)
+}
+
+/// [`draw_rect_sheened`] with the CAPSULE OUTLINE and the focused face's inner glow — the control
+/// family's own entry point. `radius` is still the stadium's, and it stays load-bearing with an
+/// outline armed: the flat fast-path and the interior early-out are both keyed off it, and the
+/// solved outline is strictly inside the stadium, so a conservative test against the larger shape is
+/// conservative against this one too.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_rect_shaped(x: f32, y: f32, w: f32, h: f32, radius: f32, top: *const f32, bot: *const f32, rimw: f32, rimcol: *const f32, rimtop: f32, pill: Option<&PillArgs>, glow: Option<&GlowArgs>) {
     if culled(x, y, w, h) || gate(Class::Rect, x, y, w, h) {
         return;
     }
@@ -638,6 +700,7 @@ pub(crate) fn draw_rect_sheened(x: f32, y: f32, w: f32, h: f32, radius: f32, top
         glUniform1f(LOC_RIMW, rimw);
         glUniform4fv(LOC_RIMCOL, 1, rimcol);
         glUniform1f(LOC_RIMTOP, rimtop);
+        pill_on(pill, glow);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     }
 }
@@ -703,6 +766,7 @@ pub(crate) fn draw_rrect(x: f32, y: f32, w: f32, h: f32, rad_l: f32, rad_r: f32,
         glUniform1f(LOC_RIMW, 0.0);
         glUniform4f(LOC_RIMCOL, 0.0, 0.0, 0.0, 0.0); // no edge-sheen (default)
         glUniform1f(LOC_RIMTOP, 0.0);
+        pill_off();
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     }
 }
@@ -726,6 +790,7 @@ pub(crate) fn draw_rrect_sheened(x: f32, y: f32, w: f32, h: f32, rad_l: f32, rad
         glUniform1f(LOC_RIMW, rimw);
         glUniform4fv(LOC_RIMCOL, 1, rimcol);
         glUniform1f(LOC_RIMTOP, rimtop);
+        pill_off();
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     }
 }

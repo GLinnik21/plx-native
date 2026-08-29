@@ -42,6 +42,7 @@ pub mod profiles; // "who's watching" Plex Home picker + PIN keypad
 pub mod player_hud;
 pub mod skip_pill; // in-player Skip Intro / Skip Credits pill (server marker driven)
 pub mod stats; // the "Stats for nerds" diagnostics overlay — how bug reports leave a stranger's TV
+pub mod pill; // THE CAPSULE OUTLINE — three blended arcs per corner, solved; not a stadium
 pub mod popover; // shared modal open/appear choreography (track menu / info / chapters / account)
 pub mod press; // tvOS-style click: OK-down dips the focused card, OK-up springs it back + activates
 pub mod overdraw; // dev-only DRAW-CLASS ledger + mask — the attribution instrument (docs/backdrop-blur-profiling.md Part 5)
@@ -416,9 +417,48 @@ impl Painter {
     /// `rim_top` is extra weight on the edge facing UP, fading to nothing where the surface turns
     /// away — a container's brighter top line, continuous round its caps. 0 for a plain perimeter.
     pub fn rect_rimmed(self, r: Rect, rad: f32, top: [f32; 4], bot: [f32; 4], rim: [f32; 4], rim_top: f32) {
+        self.rect_rimmed_w(r, rad, top, bot, rim, rim_top, theme::CARD_SHEEN_W)
+    }
+    /// [`rect_rimmed`](Self::rect_rimmed) with the rim's WIDTH named too — for the one edge in the
+    /// app that is not the 1px card constant ([`theme::CONTROL_RIM_FOCUS_UNKEYED_W`], the focused
+    /// control face over the video plane). Same single pass; `rect_rimmed` is this at
+    /// [`theme::CARD_SHEEN_W`], so the two cannot drift.
+    pub fn rect_rimmed_w(self, r: Rect, rad: f32, top: [f32; 4], bot: [f32; 4], rim: [f32; 4], rim_top: f32, rim_w: f32) {
         let (t, b) = (self.c(top), self.c(bot));
         let rim = self.c(rim);
-        crate::gfx::draw_rect_sheened(r.x + self.dx, r.y + self.dy, r.w, r.h, rad, t.as_ptr(), b.as_ptr(), theme::CARD_SHEEN_W, rim.as_ptr(), rim_top * self.a);
+        crate::gfx::draw_rect_sheened(r.x + self.dx, r.y + self.dy, r.w, r.h, rad, t.as_ptr(), b.as_ptr(), rim_w, rim.as_ptr(), rim_top * self.a);
+    }
+    /// A CONTROL FACE: [`rect_rimmed_w`](Self::rect_rimmed_w) plus the two things only a control
+    /// wears — the **CAPSULE OUTLINE** (three blended arcs per corner rather than a stadium,
+    /// [`crate::ui::pill`]) and the focused face's inner glow, both in the same pass. `pill` is
+    /// `None` for a DISC, which is a circle in this design and stays one; when it is `Some`, `r` is
+    /// the BOX that outline was solved for — taller than the control's optical height by
+    /// [`crate::ui::pill::box_h`].
+    ///
+    /// One draw, exactly as the stadium was: the outline replaces the SDF the fragment shader
+    /// already evaluates, so a capsule costs what a rounded rect costs plus two normalizes on its
+    /// edge fragments.
+    #[allow(clippy::too_many_arguments)]
+    pub fn face_rimmed(self, r: Rect, rad: f32, pill: Option<&crate::ui::pill::Pill>, top: [f32; 4], bot: [f32; 4], rim: [f32; 4], rim_top: f32, rim_w: f32, glow: Option<[f32; 4]>) {
+        let (t, b) = (self.c(top), self.c(bot));
+        let rim = self.c(rim);
+        let args = pill.map(|p| p.args());
+        // the glow is light on the FACE, so it fades with the painter's own cascade like the fill
+        let glow = glow.map(|g| [g[0], g[1] * self.a, g[2], g[3] * self.a]);
+        crate::gfx::draw_rect_shaped(
+            r.x + self.dx,
+            r.y + self.dy,
+            r.w,
+            r.h,
+            rad,
+            t.as_ptr(),
+            b.as_ptr(),
+            rim_w,
+            rim.as_ptr(),
+            rim_top * self.a,
+            args.as_ref(),
+            glow.as_ref(),
+        );
     }
     /// Flat rounded-rect fill + the 1px perimeter edge-sheen in one pass (the flat-colour placeholder tile).
     pub fn rrect_sheened(self, r: Rect, rad: f32, col: [f32; 4]) {

@@ -259,8 +259,77 @@ pub const CONTROL_SPENT_FILL: [f32; 4] = mix(COOL_0, NEUTRAL_500, 0.24);
 
 /// Idle (unfocused) control disc/pill fill — solid dark, faintly translucent.
 pub const CONTROL_IDLE_FILL: [f32; 4] = with_a(NEUTRAL_600, 0.92);
-/// White glyph/label over an idle control.
+/// White glyph/label over an idle control. Both grounds ink it the same: the design system states
+/// one `--control-idle-ink`, and the UNKEYED face below is a white film over a black ramp, which is
+/// still a dark surface — see [`CONTROL_IDLE_FILL_UNKEYED`].
 pub const CONTROL_IDLE_INK: [f32; 4] = WHITE;
+
+// ── The UNKEYED ground: a control standing on the VIDEO PLANE ────────────────
+// Everything above assumes the ground can be SAMPLED — the page read its own artwork and a control
+// answers to it. The player cannot: the picture lives on the hardware video plane, never enters our
+// framebuffer, cannot be dimmed by a scrim and changes every frame. So the player HUD declares
+// itself `ControlGround::Unkeyed` (`widgets::ControlGround`) and the two roles below replace the two
+// the keyed ground supplies. The design system says the same thing as a CSS scope
+// (`[data-ground="unkeyed"]` in `tokens/colors.css`), which is why this is a pair of tokens and not
+// a pair of call-site literals.
+
+/// The idle control face on the **unkeyed** ground — a LIGHT FILM where [`CONTROL_IDLE_FILL`] is a
+/// dark plate, and the polarity is settled the hard way round.
+///
+/// A control over video does NOT float on a bare frame: the HUD lays its own black ramp over the
+/// picture first, so the ground under it is reliably DARK even though the picture itself is
+/// unreadable. A white film at a low alpha is therefore always LIGHTER than the scrim beneath it —
+/// the chip reads as an object catching light rather than a hole punched in the frame, and the
+/// picture stays faintly alive through it. The dark plate cannot promise either: over a snow frame
+/// it is the hole, and the ramp is the only thing that makes any of this decidable at all.
+///
+/// **Legal only under that ramp.** A control on bare video would have to bring the scrim itself.
+///
+/// Same stop as [`HAIRLINE`] and deliberately its own role — retuning a divider must not restyle
+/// every control the player draws.
+pub const CONTROL_IDLE_FILL_UNKEYED: [f32; 4] = with_a(WHITE, 0.10);
+/// The **focused** control's edge on the unkeyed ground — the one place in the app a rim goes to
+/// pure white instead of [`CARD_SHEEN`]'s .22.
+///
+/// The focused face is [`ACCENT`], a near-white capsule, and the brightest ground the app can be
+/// asked to sit on is a snow frame: the line has to stay brighter than BOTH, and light is the only
+/// thing the two polarities of an unknown frame agree on. It is not an ink line — an even dark ring
+/// reads as a moulded plastic edge, i.e. volume drawn ON the control rather than the control's own
+/// boundary.
+///
+/// The idle face keeps the ordinary constant rim: over the ramp there is nothing to argue with.
+pub const CONTROL_RIM_FOCUS_UNKEYED: [f32; 4] = WHITE;
+/// Its stroke width — a quarter px over [`CARD_SHEEN_W`], the design's `inset 0 0 0 1.25px`.
+/// Nothing brighter than white is available to boost the crown with, which is why the unkeyed rim
+/// asks for no top weight and carries its light INWARD instead — see
+/// [`CONTROL_RIM_FOCUS_UNKEYED_GLOW`].
+pub const CONTROL_RIM_FOCUS_UNKEYED_W: f32 = 1.25;
+/// **The unkeyed focused face's ÉTLIV** — the light that spills inward off that pure-white line, as
+/// `[top depth px, top weight, bottom depth px, bottom weight]`.
+///
+/// The design states it as two inset shadows either side of the perimeter —
+/// `inset 0 5px 6px -3px white` and `inset 0 -3px 5px -3px white .55` — i.e. a strong fall from the
+/// top edge and a weaker one from the bottom, over a face that is near-white already. It is what
+/// stops the capsule reading as a flat chip when the frame behind it is unknown: an edge alone says
+/// where the object stops, and this says the object has a TOP. The weights are the design's; the
+/// depths are its blur radii read as how far the light reaches in, which is what an SDF falloff can
+/// express and a CSS spread cannot be transcribed into.
+pub const CONTROL_RIM_FOCUS_UNKEYED_GLOW: [f32; 4] = [5.0, 1.0, 2.5, 0.55];
+
+/// **THE FOCUS CAST** — what a control face casts once the remote is on it, as two stops of
+/// `(dy, blur, alpha)` over [`CARD_SHADOW`]'s black.
+///
+/// At REST a control face casts NOTHING: it is held by its edge (`widgets::control_rim`), and this
+/// file's history is emphatic that two elevations for one control family is what the design system
+/// removed. That rule survives — what changed is that FOCUS is an elevation. "The remote is here"
+/// is then fill, scale AND lift, none of which depends on the ground being readable, which is the
+/// property the player needed and the one a pure fill cannot have over an unknown frame.
+///
+/// The design writes it as `drop-shadow(0 5px 16px black .34) drop-shadow(0 1px 3px black .20)`.
+/// **A drop-shadow's blur is a standard deviation where a box-shadow's is a diameter**, and this
+/// renderer's is the latter, so 16 and 3 arrive here doubled — transcribing the CSS numbers
+/// literally would draw a shadow half the size the design asks for.
+pub const CONTROL_CAST_FOCUS: [(f32, f32, f32); 2] = [(5.0, 32.0, 0.34), (1.0, 6.0, 0.20)];
 
 // ── Surfaces / backgrounds ───────────────────────────────────────────────────
 /// Flat shelf/app base (both gradient stops) — Apple TV's shelf gray **#2C2C2E (44,44,46)**. A
@@ -998,6 +1067,24 @@ pub mod alert {
 pub const CARD_SHEEN: [f32; 4] = with_a(WHITE, 0.22);
 /// Stroke width (px) of the perimeter edge-highlight.
 pub const CARD_SHEEN_W: f32 = 1.0;
+
+// ── THE CAPSULE OUTLINE ──────────────────────────────────────────────────────
+// The two FREE numbers of the control capsule's shape; everything else about it is solved from
+// them and the box (`ui::pill`, and `tokens/shape.css` for the full construction). A capsule here
+// is not a stadium: it has no straight side and no ellipse, only circular arcs joined by blends.
+
+/// The end circle's radius over the box HEIGHT. Tangency forces it strictly below .5 — a circle of
+/// exactly half the height could only touch the big arc at its apex, and that shape is the stadium,
+/// which has no solution here. The leftover band `(.5 − this) × height` is both how far the ends sit
+/// inside the box and how far the top and bottom bow, so this is **the dial between a stadium and a
+/// pillow**: .45 shows the side's curve plainly on a wide button, .492 is 0.8% of the height and
+/// reads as almost a stadium — which is the shipped value, and which is why the visible change at
+/// this app's 60px controls is the blended CORNER rather than a bowed side.
+pub const PILL_END_R: f32 = 0.492;
+/// How much of that band the blend arc may use, which is what fixes the big arc's radius. More
+/// slack → a bigger big arc → a flatter top; at 1 it runs away and the shape returns to a stadium
+/// (`ui::pill::solve` returns `None`, and the caller draws the stadium it already had).
+pub const PILL_BLEND_SLACK: f32 = 0.86;
 /// Drop-shadow ink under a raised card — pure black (the design's `rgba(0,0,0,…)`), alpha supplied per
 /// call (× the resting→lifted focus ramp). Only the alpha/rgb matter for the folded card shadow (the
 /// rgb is used by the chip's standalone shadow); its own token (not `scrim_black`) so it can be tuned alone.
