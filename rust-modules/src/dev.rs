@@ -40,7 +40,7 @@
 // `test` as well as the feature: `any_trigger_present` is the only caller and it is cfg'd out of a
 // release build, but the test below asserts this list's contents and runs with default features.
 #[cfg(any(feature = "devtriggers", test))]
-const DIAG: [&str; 19] = [
+const DIAG: [&str; 20] = [
     "plxnative-events.log",
     "plxnative-stderr.log",
     "plxnative-crash.log",
@@ -76,6 +76,10 @@ const DIAG: [&str; 19] = [
     // The forced Stats-for-nerds overlay. It only changes presentation, and grading a playback
     // case without the read-out risks a failure whose evidence was never put on screen.
     "plxnative-stats",
+    // A deliberate crash happens before the picker could ever be reached, so whether it suppresses
+    // one is moot — but leaving it out of this list would be a silent inconsistency for the next
+    // reader, and the honest reading is that it changes no screen.
+    "plxnative-crashtest",
 ];
 
 /// Is the trigger `name` (bare, without the `plxnative-` prefix) present?
@@ -173,6 +177,56 @@ pub(crate) fn read(name: &str) -> Option<String> {
 pub(crate) fn read(_name: &str) -> Option<String> {
     None
 }
+
+/// **Crash the app on purpose** — `plxnative-crashtest=<segv|abrt|bus|ill|trap>`.
+///
+/// Not a feature. An INSTRUMENT for the instrument, and it exists because of the rule this repo
+/// keeps re-learning: prove the instrument can see the thing before you read its silence, and
+/// prove the recorder records before you trust an empty recording. The crash tracer
+/// (`src/crashtrace.c`) is the app's only witness to a fatal signal on a television, and until
+/// 2026-08-29 nothing had ever exercised it deliberately — which is how it went seven weeks with a
+/// re-raise that did not re-raise, silently costing every crash its `WIFSIGNALED` status and its
+/// crashd backtrace, with a log that looked perfectly normal either way.
+///
+/// `segv` is a genuine null write, so the kernel raises the signal from a faulting instruction and
+/// the record carries a real faulting PC and a real `si_addr`. The rest go through `raise`, which
+/// proves each of the five `sigaction` calls took but cannot produce a meaningful PC.
+///
+/// **Compiled out of a release build** with the rest of `devtriggers`, so a shipped binary has no
+/// path to it at all. Called from `plex_run` before anything else so it is reachable even when the
+/// fault being chased makes the app unable to reach a screen.
+#[cfg(feature = "devtriggers")]
+pub(crate) fn crash_on_purpose() {
+    let Some(kind) = read("crashtest") else { return };
+    // The signal numbers are Linux's, written out rather than taken from a libc crate: this crate
+    // binds no libc, and these five have been stable in the Linux ABI since it had one.
+    let sig = match kind.as_str() {
+        "" | "segv" => 11,
+        "abrt" => 6,
+        "bus" => 7,
+        "ill" => 4,
+        "trap" => 5,
+        other => {
+            crate::log(&format!("crashtest: unknown kind {other:?} — not crashing"));
+            return;
+        }
+    };
+    // Logged BEFORE the fault, and flushed by `crate::log`'s own O_APPEND write, so the event log
+    // says the death was deliberate. Without this line a deliberate crash is indistinguishable
+    // from the real one somebody is hunting.
+    crate::log(&format!("crashtest: DELIBERATE crash, kind={kind} signal={sig}"));
+    if sig == 11 {
+        // A real memory fault. `write_volatile` so the optimiser cannot decide a null write is
+        // undefined and therefore removable — which it may, and then this proves nothing.
+        unsafe { std::ptr::null_mut::<u8>().write_volatile(1) };
+    }
+    unsafe extern "C" {
+        fn raise(sig: i32) -> i32;
+    }
+    unsafe { raise(sig) };
+}
+#[cfg(not(feature = "devtriggers"))]
+pub(crate) fn crash_on_purpose() {}
 
 /// A test-only playback policy override from `plxnative-quality`.
 ///

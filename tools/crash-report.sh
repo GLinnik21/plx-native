@@ -250,6 +250,11 @@ hr
 echo "== stderr tail (Rust panics land here: $STDERRLOG)"
 tv "tail -20 $STDERRLOG 2>/dev/null" || echo "  (none)"
 hr
+# 768 = exit(3). A signal death shows WIFSIGNALED in the low byte — but ONLY on a build from
+# 2026-08-29 or later: before that the tracer's re-raise silently did not re-raise (the signal is
+# masked inside its own handler, so `raise` returned and `_exit(128+sig)` ran), and every crash
+# reported as a clean exit. On an old build read 35584 as SIGSEGV, 34304 as SIGABRT, 33792 as
+# SIGILL — `(128+sig) << 8` — and expect no crashd report beside it.
 echo "== SAM exit status for $APPID (768 = exit(3); a signal death shows WIFSIGNALED in the low byte)"
 # Filtered to this install, and anchored on the RIGHT: /var/log/messages carries both apps' lines,
 # and `com.beb.plxnative` is a prefix of `com.beb.plxnative.debug`, so a plain grep for the stable

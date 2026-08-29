@@ -13,10 +13,13 @@ Media Server (PMS) entirely in-app.
 
 **Almost everything is Rust** in `rust-modules/src/` (UI, event loop, input, player orchestration,
 the streaming/demux pipeline, and the Plex data layer), compiled to a static lib and linked in
-(see the Makefile). Only two things stay C: `src/main.c` — a small **boot shim** (the async-
-signal-safe crash tracer, the event-log handle, stderr capture, process bring-up) that then calls
-the Rust `plex_run()` — and `src/starfish.c`, the **StarfishMediaAPIs C++/ACB seam** (`src/svg.c`
-is the third C file, the nanosvg rasterizer).
+(see the Makefile). Only two things stay C: `src/main.c` — a small **boot shim** (the event-log
+handle, stderr capture, process bring-up) that then calls the Rust `plex_run()` — and
+`src/starfish.c`, the **StarfishMediaAPIs C++/ACB seam**. Two more `.c` files sit beside them:
+`src/svg.c` (the nanosvg rasterizer) and, since 2026-08-29, `src/crashtrace.c` — the async-signal-
+safe **crash tracer**, lifted out of `main.c` into its own translation unit for one reason, that
+`ci/crashtrace-test.c` links it ALONE and can therefore fault a process on purpose and check how it
+died. Doing that immediately found a seven-week-old bug no log could have shown (below).
 
 Target device: LG 49SM9000PLA, webOS 4.5, rooted, reached as `root` over ssh. **Its address is NOT
 in the repo** — it comes from the gitignored **`.tv-host`** (one line, an IP or hostname), which the
@@ -349,10 +352,14 @@ which the linking section explains is load-bearing rather than tidy.
 
 - `Makefile` — build/deploy/run/ipk; toolchain, the bundled-FFmpeg build + staging + its ABI gate
   (one header tree, not the old dual one), TV ssh creds.
-- `src/main.c` — the **boot shim** (crash tracer, event-log/stderr setup, process bring-up), with
-  the tracer's pure half in `src/crashfmt.h` (host-tested by `ci/crashfmt-test.c` in `make check`); calls
-  the Rust `plex_run()`. `src/starfish.c` — the StarfishMediaAPIs C++/ACB seam. `src/svg.c` —
-  nanosvg rasterizer. These three are the *entire* C side.
+- `src/main.c` — the **boot shim** (event-log/stderr setup, process bring-up); calls the Rust
+  `plex_run()`. `src/crashtrace.c` (+ `crashtrace.h`) — the **fatal-signal tracer**, its own TU so
+  the signal path can be tested; `src/crashfmt.h` is its pure half. **Both halves are host-tested in
+  `make check`** — `ci/crashfmt-test.c` grades the parsing, `ci/crashtrace-test.c` crashes five
+  processes on purpose and checks the record AND the exit status. `src/starfish.c` — the
+  StarfishMediaAPIs C++/ACB seam. `src/svg.c` — nanosvg rasterizer. These four are the *entire* C
+  side. Reach for `/tmp/plxnative-crashtest=<segv|abrt|bus|ill|trap>` to fault the app deliberately
+  ON the television — `segv` is a real null write, the rest are `raise`.
 - `rust-modules/src/` — the app core (Rust): `app.rs` (event loop/input), `system.rs` (wayland),
   `player/` (buffer-feed engine + worker threads — **`rust-modules/src/player/CLAUDE.md` is the
   playback deep-dive; read it before touching playback**), `ff.rs` (THE demuxer — the **bundled,
@@ -608,11 +615,22 @@ which the linking section explains is load-bearing rather than tidy.
   so the OS/crashd still captures a real backtrace. Call the result a **fault event, not a
   backtrace** — `backtrace()` is not async-signal-safe and ARM unwinding out of a handler commonly
   stops at `gsignal()`, so two frames plus registers plus the faulting module is the honest ceiling.
-  **The handler became genuinely async-signal-safe on 2026-08-29 and was not before**: it called
-  `fprintf`/`fopen`/`fgets`/`sscanf`/`fclose`, none of which is on POSIX's list, so a fault inside
-  the allocator or while another thread held a stdio lock could have deadlocked or refaulted and
-  lost the report — in the crash class most worth having one for. It is now `open`/`read`/`write`
-  and hand-rolled formatting, with both descriptors opened before `sigaction` arms it. The PURE half
+  **Two things about it were broken until 2026-08-29 and neither was visible in a log.**
+  (1) The handler was not async-signal-safe: it called `fprintf`/`fopen`/`fgets`/`sscanf`/`fclose`,
+  none of which is on POSIX's list, so a fault inside the allocator or while another thread held a
+  stdio lock could have deadlocked or refaulted and lost the report — in the crash class most worth
+  having one for. It is now `open`/`read`/`write` and hand-rolled formatting, with both descriptors
+  opened before `sigaction` arms it. (2) **THE RE-RAISE DID NOT RE-RAISE**, from the day it was
+  added (2026-07-09) until then, so every sentence anywhere in this repo claiming crashd captured a
+  backtrace for this app was FALSE for seven weeks. `sigaction` without `SA_NODEFER` masks the
+  signal for the duration of its own handler, so `raise(sig)` only marked it pending, returned 0,
+  and fell through to the `_exit(128 + sig)` beneath it — commented "only reached if raise() somehow
+  returns", and reached every single time. The result was a CLEAN EXIT: no core, no
+  `/var/log/reports/librdx/` report, and `WIFEXITED` rather than `WIFSIGNALED` for SAM. The commit
+  that introduced it was fixing this same failure in an earlier form (a bare `_exit(3)`) and swapped
+  one clean exit for a more plausible-looking one. The fix is a `sigprocmask(SIG_UNBLOCK)` before
+  the `raise`. **Consequence for anyone reading an OLD device log: a SAM `exit_status` of 35584
+  (`139 << 8`) is a SIGSEGV, not an exit** — and there will be no crashd report beside it to find. The PURE half
   (record formatting, and deciding what a maps line means) lives in **`src/crashfmt.h`** so that
   `make check` can compile and RUN it on the Mac — `ci/crashfmt-test.c`, which is where the parsing
   bugs of this tracer have historically been, and which on being written by watching it fail

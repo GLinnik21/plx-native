@@ -4139,6 +4139,13 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
     // tells a human to read the first line to learn which install wrote a log would have been
     // wrong by one line.
     let _ = crate::paths::app_dir();
+    // …and then, if asked, DIE. `plxnative-crashtest` is the instrument for the instrument: the
+    // crash tracer is the app's only witness to a fatal signal on a television, and a recorder
+    // nobody has ever deliberately triggered is a recorder whose silence proves nothing. Placed
+    // HERE, after the two identity lines and before SDL, so the log still says which install
+    // crashed and the fault is reachable even when whatever is being chased stops the app reaching
+    // a screen. Compiled out with `devtriggers`; a no-op in every other build.
+    crate::dev::crash_on_purpose();
     // FIRST, before SDL and before anything can fail: which television is this. A report from
     // hardware nobody here owns is worth far more when its opening line names the firmware — see
     // `webos`'s module doc. Reads one file; cannot fail the boot.

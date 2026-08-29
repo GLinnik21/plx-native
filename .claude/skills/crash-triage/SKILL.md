@@ -15,7 +15,7 @@ description: >
 > log`) — but the moment you RE-RUN to reproduce, take the television's lock first:
 > `tools/tv-lock.sh acquire --why "reproduce <crash>"`. See the **`tv-lock`** skill.
 
-The C tracer (`src/main.c`) catches the fatal signals, writes what it knows, then
+The C tracer (`src/crashtrace.c`) catches the fatal signals, writes what it knows, then
 **re-raises to `SIG_DFL`** so the OS crash daemon still captures a real backtrace. Per
 crash it emits:
 
@@ -35,9 +35,18 @@ unwinding out of a handler commonly stops at `gsignal()`, and deferring does not
 then the stack is gone. The real backtrace comes from crashd, in `/var/log/reports/librdx/`, which
 is what the re-raise exists to preserve.
 
-The `reg:` line arrived 2026-08-29 with the rewrite that made the handler actually
-async-signal-safe (it had been calling `fprintf`/`fopen`/`sscanf`), so a log from an older build
-will not have it. **Read it when the PC does not resolve**: r0-r3 are the first four arguments at
+**A log from before 2026-08-29 has no crashd report to go with it, whatever this page says about
+the re-raise.** The re-raise was added on 2026-07-09 and did not work: `sigaction` masks the signal
+inside its own handler, so `raise()` only marked it pending and the `_exit(128 + sig)` below it ran
+— a clean exit, no core, no `/var/log/reports/librdx/` entry, `WIFEXITED` for SAM. So when triaging
+an old crash, **read a SAM `exit_status` of 35584 as a SIGSEGV** (`139 << 8`), 34304 as a SIGABRT
+(`134 << 8`), and do not conclude from an absent crashd report that the process did not take a
+signal. It was found by `ci/crashtrace-test.c`, which faults a process on purpose and asks how it
+died — the one question the crash log cannot answer about itself.
+
+The `reg:` line arrived with the same change (the rewrite that made the handler actually
+async-signal-safe — it had been calling `fprintf`/`fopen`/`sscanf`), so an older log will not have
+it. **Read it when the PC does not resolve**: r0-r3 are the first four arguments at
 the call, `fp`/`sp` bound the frame, and a `cpsr` with bit 5 set says the fault was in Thumb code.
 
 All paths are relative to the repo root. The TV address comes from the `Makefile`

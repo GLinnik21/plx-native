@@ -453,8 +453,20 @@ $(RUST_LIB): $(RUST_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.lock rust
 
 # link C objects + the Rust staticlib. gcc pulls in libgcc_s (the ARM-EHABI
 # unwinder Rust's panic_unwind std references) + libc/pthread/dl/m/rt itself.
+# `--build-id` is UNCONDITIONAL and costs 20 bytes in an allocated note section. It is the only
+# stable identifier that survives `strip` and matches a separated `.debug` file back to the binary
+# it came from — which is what every symbol server, Sentry's included, keys a debug image on, and
+# what makes "is this .debug the one for that crash?" answerable at all. Until 2026-08-29 the ELF
+# carried only `.note.ABI-tag` and there was no such identifier; `tools/crash-report.sh` compares
+# whole-file md5s instead, which works only while the local binary is byte-identical to the shipped
+# one and says nothing once the shipped one has been stripped.
+#
+# sha1 explicitly rather than the linker's default: the default is a configure-time choice of the
+# binutils build, so pinning it here is what keeps two different NDK installs producing the same
+# id for the same input — which the reproducible-package guarantee (`ci/mkipk.py`, and the sha256
+# every user's television verifies) depends on.
 pkg/plxnative: $(OBJS) $(RUST_LIB) $(FFMPEG_STAGED) Makefile
-	$(CC) $(CFLAGS) $(OBJS) $(RUST_LIB) $(LIBS_REAL) -ldl -lpthread -lm -o $@
+	$(CC) $(CFLAGS) -Wl,--build-id=sha1 $(OBJS) $(RUST_LIB) $(LIBS_REAL) -ldl -lpthread -lm -o $@
 
 # --- NDK bootstrap -----------------------------------------------------------
 # Download + extract + relocate the webosbrew native-toolchain into $(WEBOS_SDK).
@@ -726,6 +738,7 @@ test: deploy run
 # confusing thing to find. `$(TMPDIR)` is set on macOS and empty on a Linux runner, hence the
 # fallback.
 CRASHFMT_TEST_BIN := $(or $(TMPDIR),/tmp/)plx-crashfmt-test
+CRASHTRACE_TEST_BIN := $(or $(TMPDIR),/tmp/)plx-crashtrace-test
 
 check: lint
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" cargo +$(RUST_NIGHTLY) test --lib
@@ -744,6 +757,13 @@ check: lint
 	@# the test by watching it fail is what disproved the justification main.c had carried since
 	@# the tracer was written. Milliseconds, no NDK, no device.
 	cc -O1 -Wall -Wextra -Werror -Isrc -o $(CRASHFMT_TEST_BIN) ci/crashfmt-test.c && $(CRASHFMT_TEST_BIN)
+	@# …and then ACTUALLY CRASH a process, five times, through the real handler (src/crashtrace.c,
+	@# linked alone — no SDL, no Rust). It asks the one question no log can answer, which is HOW the
+	@# process died: a handler that quietly exits looks identical in the crash log and silently
+	@# disables webOS's own crashd backtrace and SAM's WIFSIGNALED status. That is not hypothetical
+	@# — it is what this app did for seven weeks, because the signal is MASKED inside its own
+	@# handler, so `raise()` returned and the `_exit(128+sig)` beneath it ran every time.
+	cc -O1 -Wall -Wextra -Werror -Isrc -o $(CRASHTRACE_TEST_BIN) ci/crashtrace-test.c src/crashtrace.c && $(CRASHTRACE_TEST_BIN)
 	@# The harness's own host unit tests (tests/test_harness.py, stdlib unittest, ~0.5s — most of
 	@# it is five `run.py --list` subprocesses, not test logic; measure before budgeting). run.py
 	@# decides WHAT gets driven on the one television and had no test of any kind until 2026-08-22.
