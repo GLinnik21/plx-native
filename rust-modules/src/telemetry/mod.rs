@@ -1,6 +1,6 @@
 //! **Telemetry: the decision, and one day the senders.**
 //!
-//! Today this is [`consent`] and its storage, plus [`sentry`]'s wire FORMAT — and nothing that can
+//! Today this is [`consent`] and its storage, plus the wire FORMATS in [`sentry`] and [`posthog`] — and nothing that can
 //! send: there is no queue, no socket and no endpoint, and `diag::event` is a sink. The module
 //! grows in that order on purpose. Consent is the part that has to be right before anything can be
 //! sent and is answerable entirely on the host; the envelope is the part whose failures are silent
@@ -13,6 +13,7 @@
 //! destroys it, that the event path fails closed — and a test behind a feature the default gate
 //! does not build is a test that never runs. What will be gated is the sending.
 pub(crate) mod consent;
+pub(crate) mod posthog;
 pub(crate) mod sentry;
 
 use consent::Consent;

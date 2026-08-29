@@ -86,12 +86,12 @@ pub(crate) enum Value {
 /// One event's name and fields, ready for a sender to wrap in whatever envelope it needs.
 ///
 /// Returning the pair rather than a JSON string keeps this file free of any one vendor's format:
-/// the Sentry and PostHog bodies differ in shape, and both are built from this.
-/// `#[allow(dead_code)]` with its reason, in the shape `webos::device()` already uses here: the
-/// only non-test caller is a SENDER, and no sender exists yet. The alternative — gating this
-/// module on a feature so the warning goes away — is precisely what kept `scrub`'s tests from ever
-/// running, and the tests are the whole point of this file.
-#[allow(dead_code)]
+/// the Sentry and PostHog bodies differ in shape, and both are built from this. That was a
+/// prediction when this function was written and is now load-bearing — `telemetry::posthog` calls
+/// it to build both of PostHog's two endpoint shapes, which put the identity in different places,
+/// from one description of the event. It carried an `#[allow(dead_code)]` until that caller
+/// existed; the attribute is gone rather than left behind, because a stale allowance is how a
+/// genuinely dead function later hides in plain sight.
 pub(crate) fn serialize(e: DiagEvent) -> (&'static str, Vec<(&'static str, Value)>) {
     match e {
         DiagEvent::AppLaunch => ("app.launch", Vec::new()),
@@ -103,7 +103,8 @@ pub(crate) fn serialize(e: DiagEvent) -> (&'static str, Vec<(&'static str, Value
 /// Every event name this build can emit, for the document test and for a sender that wants to
 /// declare its schema up front. Kept beside [`serialize`] so a new variant that forgets one is
 /// caught by the round-trip test rather than by a reader.
-#[allow(dead_code)]
+#[allow(dead_code)] // still test-only: its caller is a schema declaration the sender has not
+// needed yet, unlike `serialize`, which the PostHog body now calls for real
 pub(crate) const EVENT_NAMES: &[&str] = &["app.launch", "route.entered", "signin.completed"];
 
 #[cfg(test)]
