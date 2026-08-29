@@ -1,15 +1,19 @@
 //! **Telemetry: the decision, and one day the senders.**
 //!
-//! Today this is [`consent`] and its storage, and nothing else — there is no queue, no envelope and
-//! no endpoint, and `diag::event` is a sink. The module exists at this size on purpose: consent is
-//! the part that has to be right before anything can be sent, it is answerable entirely on the
-//! host, and building it first means the senders arrive into a shape that already refuses to send.
+//! Today this is [`consent`] and its storage, plus [`sentry`]'s wire FORMAT — and nothing that can
+//! send: there is no queue, no socket and no endpoint, and `diag::event` is a sink. The module
+//! grows in that order on purpose. Consent is the part that has to be right before anything can be
+//! sent and is answerable entirely on the host; the envelope is the part whose failures are silent
+//! 400s from a server that explains nothing, so it is worth pinning to tests while there is still
+//! no network to hide behind. Building both first means the sender arrives into a shape that
+//! already refuses to send and already frames correctly when it does.
 //!
 //! **Ungated**, like `diag::scrub` and `diag::schema`, and for the reason both of those record:
 //! the guarantees here are the tests — that no identifier exists before an opt-in, that withdrawal
 //! destroys it, that the event path fails closed — and a test behind a feature the default gate
 //! does not build is a test that never runs. What will be gated is the sending.
 pub(crate) mod consent;
+pub(crate) mod sentry;
 
 use consent::Consent;
 
