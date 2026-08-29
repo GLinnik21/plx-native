@@ -41,6 +41,13 @@ pub(crate) fn boot() {
         if c.install_id.is_some() { "yes" } else { "none" }
     ));
     consent::install(c);
+    // **After the install, and before anything in this process can fault.** The records being read
+    // were written by a process that no longer exists — that is the whole reason the crash log is
+    // on disk — so this is the only moment they can be turned into reports. It queues; it does not
+    // send. The flush is spawned later, after `net::global_init`, which is a separate ordering
+    // constraint that has already been got wrong once: a boot flush ahead of it logged
+    // `holding 5 records` directly above `net: bound libcurl`.
+    crashreport::report_pending();
 }
 
 /// The first candidate that exists and parses. Same search-order shape as the session file, and

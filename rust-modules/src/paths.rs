@@ -503,6 +503,29 @@ pub(crate) fn telemetry_spool_candidates() -> Vec<PathBuf> {
         .collect()
 }
 
+/// How much of the append-only crash log has already been reported, beside the spool.
+///
+/// **A watermark rather than a truncation, and that is the whole reason this file exists.**
+/// `plxnative-crash.log` is append-only and survives a relaunch BY DESIGN — CLAUDE.md names it the
+/// thing to read after a crash-and-restart and `tools/crash-report.sh` parses it — so the telemetry
+/// reader may not consume it. Recording a byte offset lets a human and this module read the same
+/// file without either disturbing the other.
+///
+/// Not in the runtime root with the log it points into, deliberately. The runtime root is `/tmp` on
+/// this television: a watermark that vanished with a reboot would re-report every crash still in
+/// the log, and the one thing worse than losing a crash report is sending it four times. It lives
+/// beside the decision that authorised sending it, which is also the directory that survives a
+/// reinstall.
+pub(crate) fn telemetry_crashmark_candidates() -> Vec<PathBuf> {
+    telemetry_candidates()
+        .into_iter()
+        .map(|p| p.with_file_name(p.file_name().map_or_else(
+            || "telemetry-crashmark.json".into(),
+            |n| n.to_string_lossy().replace("telemetry.json", "telemetry-crashmark.json"),
+        )))
+        .collect()
+}
+
 pub(crate) fn telemetry_candidates() -> Vec<PathBuf> {
     let mut v = Vec::new();
     // A steerable build keeps its own, for exactly the reason the session file does: several

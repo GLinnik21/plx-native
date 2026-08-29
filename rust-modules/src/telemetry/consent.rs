@@ -150,6 +150,14 @@ pub(crate) fn allows_usage() -> bool {
     CURRENT.read().map(|g| g.as_ref().is_some_and(|c| c.usage)).unwrap_or(false)
 }
 
+/// May an ERROR report be sent? The crash channel's twin of [`allows_usage`], failing closed for
+/// the same reason and read at the same one place — `crashreport::report_pending`, which is the
+/// only thing that opens the crash log at all. Consent gates the READ, not just the send: a
+/// television whose owner said no is not scanned for faults.
+pub(crate) fn allows_errors() -> bool {
+    CURRENT.read().map(|g| g.as_ref().is_some_and(|c| c.errors)).unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

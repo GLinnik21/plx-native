@@ -35,6 +35,33 @@ grep -q 'Flags:.*soft-float' <<<"$H" || fail "not soft-float ABI (the NDK's soft
 "$READELF" -A "$BIN" | grep -q 'Tag_CPU_arch: v7' || fail "not ARMv7 (Tag_CPU_arch)"
 ok "ELF32 / ARM / soft-float / ARMv7"
 
+echo "== crash-report identity =="
+# Two facts a Sentry crash report is built out of, and BOTH fail silently when wrong: a frame comes
+# back `symbolicatorStatus: "missing_symbol"` with no error attached, which is indistinguishable
+# from never having uploaded symbols at all. There is no way to notice from the dashboard, so they
+# are asserted here, on the artifact.
+#
+# (1) The IMAGE BASE. Symbolicator computes `rva = instruction_addr - image_addr`, and for this
+# non-PIE executable that base is the lowest PT_LOAD vaddr rather than 0. The app derives it from
+# its own program headers at runtime (`telemetry::sentry::image_addr`), so this is not what the
+# report USES — it is the check that the fallback constant, and the value measured against the live
+# project on 2026-08-29, still describe the link.
+grep -q 'Type: *EXEC' <<<"$H" || fail "no longer ET_EXEC — the image base is now a load bias (telemetry::sentry::image_addr returns None for ET_DYN and would fall back to a WRONG constant)"
+# One variable for the expectation, named once: written twice, a change to the comparison and a
+# change to the message drift apart, and the failure then reports "is X, not X".
+WANT_BASE=0x00010000
+LOAD_BASE=$("$READELF" -l "$BIN" | awk '/^  LOAD/{print $3}' | LC_ALL=C sort | head -1)
+[ "$LOAD_BASE" = "$WANT_BASE" ] \
+  || fail "lowest PT_LOAD is $LOAD_BASE, not $WANT_BASE — update telemetry::sentry::IMAGE_ADDR and re-verify that a real crash still symbolicates"
+
+# (2) The BUILD ID. It is the only thing that pairs a stripped binary a stranger's television
+# faulted in with the pkg/plxnative.debug a release uploaded. `-Wl,--build-id=sha1` is
+# unconditional on every link and `strip` preserves it, so an absent one means the flag was lost.
+"$READELF" -n "$BIN" | grep -qi 'Build ID: *[0-9a-f]\{40\}' \
+  || fail "no 40-hex GNU build id — -Wl,--build-id=sha1 was lost, and nothing can then pair a \
+crash report with its symbols"
+ok "ET_EXEC, image base $LOAD_BASE, sha1 build id present"
+
 echo "== CP15 barrier regression =="
 # The SIGILL bug: default arm-*-gnueabi (ARMv6) codegen emits `mcr p15,...,c7,c10,5`, which is
 # UNDEFINED on the A53. rust-modules/.cargo/config.toml names the exact scenario that reintroduces

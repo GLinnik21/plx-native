@@ -159,12 +159,200 @@ pub(crate) fn new_event_id() -> Option<String> {
 /// FRAME and silent about the image, and the silence is the whole trap: absolute frames plus a zero
 /// image base looks obviously right and yields nothing.
 ///
-/// Read from the ELF rather than hardcoded would be better still, and is not possible here — the
-/// running process cannot read its own program headers without parsing `/proc/self/exe`. It is a
-/// constant because it is a property of the link, and `ci/check-elf.sh` is where a change to it
-/// would be caught.
-#[allow(dead_code)] // no sender yet — see the module doc
+/// **This is the FALLBACK, not the source of truth** — [`image_addr`] derives the number from the
+/// running binary's own program headers. It stays written down because it is the measured value
+/// above, so a build whose `/proc/self/exe` is unreadable still reports the number that was proven
+/// to symbolicate rather than a zero that silently would not.
+///
+/// This doc used to say deriving it "is not possible here — the running process cannot read its own
+/// program headers without parsing `/proc/self/exe`", which names the method and then treats it as
+/// a reason not to. `paths::app_dir` has read that link since long before this module existed.
 pub(crate) const IMAGE_ADDR: &str = "0x10000";
+
+/// **The image base this binary actually links at**, as the `0x…` string a Sentry debug image wants.
+///
+/// Derived rather than declared: `Symbolicator` computes `rva = instruction_addr - image_addr`, so
+/// this number decides whether a crash is a source line or nothing at all, and it is a property of
+/// the LINK — a linker script change, a switch to PIE, a different toolchain default would each
+/// move it with no other symptom. Resolved once per process; the read is ~64 KiB of the head of
+/// `/proc/self/exe`, not the whole 7 MB binary.
+///
+/// Falls back to [`IMAGE_ADDR`] whenever the answer cannot be trusted — no `/proc` (the macOS
+/// simulator), a Mach-O rather than an ELF, a big-endian object, or `ET_DYN`, where the vaddr in
+/// the program header is an offset from a load bias this function cannot see. A wrong non-zero
+/// base and a zero base fail identically and invisibly, so "I could not tell" must resolve to the
+/// value that was measured to work, never to a guess.
+pub(crate) fn image_addr() -> &'static str {
+    static V: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    V.get_or_init(|| {
+        read_head("/proc/self/exe").as_deref().map(image_addr_of).unwrap_or_else(|| IMAGE_ADDR.to_string())
+    })
+}
+
+/// The pure half of [`image_addr`], so a test grades the expression the app actually uses rather
+/// than a re-derivation of it.
+fn image_addr_of(buf: &[u8]) -> String {
+    lowest_load_vaddr(buf).map(|v| format!("0x{v:x}")).unwrap_or_else(|| IMAGE_ADDR.to_string())
+}
+
+/// The head of a file — enough to hold an ELF header and every program header after it. Bounded
+/// rather than a whole read: this runs at boot on a set with 1.68 GB, and the binary is 7 MB.
+fn read_head(path: &str) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let mut buf = Vec::new();
+    std::fs::File::open(path).ok()?.take(64 * 1024).read_to_end(&mut buf).ok()?;
+    Some(buf)
+}
+
+/// **The GNU build id of the running binary, as lowercase hex** — the only thing that can pair a
+/// crash report with the `plxnative.debug` a release cut and uploaded.
+///
+/// `-Wl,--build-id=sha1` is unconditional on every link (CLAUDE.md: it costs 20 bytes and `strip`
+/// preserves it), and a debuginfo build and a plain one produce DIFFERENT ids from identical
+/// sources — which is why `SYMBOLS` is in the `RUST_CFG` stamp, and why this has to be read from
+/// the binary that is actually running rather than baked in at compile time by anything.
+///
+/// Empty when it cannot be read, and a caller must then send NO debug image: an image carrying a
+/// wrong or absent id is what produces `missing_symbol` with no error, the failure mode
+/// [`IMAGE_ADDR`]'s doc records from the other direction.
+pub(crate) fn build_id() -> &'static str {
+    static V: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    V.get_or_init(|| {
+        read_head("/proc/self/exe").as_deref().and_then(gnu_build_id).unwrap_or_default()
+    })
+}
+
+/// Sentry's `debug_id` for an ELF: the first 16 bytes of the build id, read as a **little-endian**
+/// UUID.
+///
+/// The byte swap is the whole content of this function and it is not decoration — `symbolic`, the
+/// library on Sentry's side, builds an ELF debug id with `Uuid::from_slice_le`, so the first three
+/// UUID fields are byte-reversed relative to the build id's own order. Emitting the bytes in file
+/// order instead produces a perfectly well-formed UUID that matches no uploaded object, and the
+/// symptom is a frame that comes back unsymbolicated with no error attached — see [`IMAGE_ADDR`].
+///
+/// `None` for a build id shorter than 16 bytes, which no `sha1` id is.
+pub(crate) fn debug_id(build_id_hex: &str) -> Option<String> {
+    let b: Vec<u8> = (0..build_id_hex.len() / 2)
+        .map(|i| u8::from_str_radix(&build_id_hex[i * 2..i * 2 + 2], 16).ok())
+        .collect::<Option<Vec<u8>>>()?;
+    if b.len() < 16 {
+        return None;
+    }
+    Some(format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{}",
+        b[3], b[2], b[1], b[0],
+        b[5], b[4],
+        b[7], b[6],
+        b[8], b[9],
+        b[10..16].iter().map(|x| format!("{x:02x}")).collect::<String>()
+    ))
+}
+
+/// Walk an ELF's `PT_NOTE` segments for `NT_GNU_BUILD_ID`. Pure, for the reason
+/// [`lowest_load_vaddr`] is.
+///
+/// Note records are `[namesz][descsz][type]` then the name and the descriptor, each padded to four
+/// bytes — and the PADDING is the part that is easy to drop, because `"GNU\0"` is exactly four
+/// bytes and so a parser that forgets to round up reads correctly on every ELF anyone would test
+/// with and wrongly on the one that has a different note first.
+pub(crate) fn gnu_build_id(buf: &[u8]) -> Option<String> {
+    const PT_NOTE: u32 = 4;
+    const NT_GNU_BUILD_ID: u32 = 3;
+    if buf.len() < 64 || &buf[..4] != b"\x7fELF" || buf[5] != 1 {
+        return None;
+    }
+    let is64 = buf[4] == 2;
+    let u16at = |o: usize| -> Option<u16> { Some(u16::from_le_bytes(buf.get(o..o + 2)?.try_into().ok()?)) };
+    let u32at = |o: usize| -> Option<u32> { Some(u32::from_le_bytes(buf.get(o..o + 4)?.try_into().ok()?)) };
+    let u64at = |o: usize| -> Option<u64> { Some(u64::from_le_bytes(buf.get(o..o + 8)?.try_into().ok()?)) };
+    let (phoff, phentsize, phnum) = if is64 {
+        (u64at(32)? as usize, u16at(54)? as usize, u16at(56)? as usize)
+    } else {
+        (u32at(28)? as usize, u16at(42)? as usize, u16at(44)? as usize)
+    };
+    for i in 0..phnum {
+        let base = phoff.checked_add(i.checked_mul(phentsize)?)?;
+        if u32at(base)? != PT_NOTE {
+            continue;
+        }
+        let (off, size) = if is64 {
+            (u64at(base + 8)? as usize, u64at(base + 32)? as usize)
+        } else {
+            (u32at(base + 4)? as usize, u32at(base + 16)? as usize)
+        };
+        let mut at = off;
+        let end = off.checked_add(size)?;
+        while at + 12 <= end && at + 12 <= buf.len() {
+            let namesz = u32at(at)? as usize;
+            let descsz = u32at(at + 4)? as usize;
+            let kind = u32at(at + 8)?;
+            let name_at = at + 12;
+            let desc_at = name_at.checked_add(namesz.next_multiple_of(4))?;
+            let desc_end = desc_at.checked_add(descsz)?;
+            if kind == NT_GNU_BUILD_ID && buf.get(name_at..name_at + namesz) == Some(b"GNU\0") {
+                let d = buf.get(desc_at..desc_end)?;
+                return Some(d.iter().map(|b| format!("{b:02x}")).collect());
+            }
+            let next = desc_at.checked_add(descsz.next_multiple_of(4))?;
+            if next <= at {
+                break; // a zero-length note would otherwise spin here forever
+            }
+            at = next;
+        }
+    }
+    None
+}
+
+/// The lowest `PT_LOAD` virtual address in an ELF image. Pure — the caller owns the read, which is
+/// what makes every branch here host-testable against a hand-built header.
+///
+/// `None` for anything this cannot answer honestly: not an ELF, big-endian, `ET_DYN` (see
+/// [`image_addr`]), a truncated header, or no `PT_LOAD` at all.
+pub(crate) fn lowest_load_vaddr(buf: &[u8]) -> Option<u64> {
+    const PT_LOAD: u32 = 1;
+    const ET_EXEC: u16 = 2;
+    if buf.len() < 64 || &buf[..4] != b"\x7fELF" {
+        return None;
+    }
+    let is64 = match buf[4] {
+        1 => false,
+        2 => true,
+        _ => return None,
+    };
+    if buf[5] != 1 {
+        return None; // big-endian: every field below is read little-endian
+    }
+    let u16at = |o: usize| -> Option<u16> { Some(u16::from_le_bytes(buf.get(o..o + 2)?.try_into().ok()?)) };
+    let u32at = |o: usize| -> Option<u32> { Some(u32::from_le_bytes(buf.get(o..o + 4)?.try_into().ok()?)) };
+    let u64at = |o: usize| -> Option<u64> { Some(u64::from_le_bytes(buf.get(o..o + 8)?.try_into().ok()?)) };
+
+    if u16at(16)? != ET_EXEC {
+        return None;
+    }
+    let (phoff, phentsize, phnum) = if is64 {
+        (u64at(32)? as usize, u16at(54)? as usize, u16at(56)? as usize)
+    } else {
+        (u32at(28)? as usize, u16at(42)? as usize, u16at(44)? as usize)
+    };
+    // `p_vaddr` is the field after `p_offset` in both classes, at different widths and — because
+    // ELF64 moves `p_flags` up to second — different offsets. Getting this pair wrong reads a file
+    // offset as a load address, which on this binary happens to be a plausible small number.
+    let vaddr_at = if is64 { 16 } else { 8 };
+    let min_entry = if is64 { 24 } else { 12 };
+    if phentsize < min_entry || phnum == 0 {
+        return None;
+    }
+    (0..phnum)
+        .filter_map(|i| {
+            let base = phoff.checked_add(i.checked_mul(phentsize)?)?;
+            if u32at(base)? != PT_LOAD {
+                return None;
+            }
+            if is64 { u64at(base + vaddr_at) } else { u32at(base + vaddr_at).map(u64::from) }
+        })
+        .min()
+}
 
 /// The compressed-item ceiling. **200 KiB, and it is the COMPRESSED figure** — the 1 MiB number
 /// that gets quoted is the decompressed one, and budgeting against it means an interesting crash
@@ -342,5 +530,123 @@ mod tests {
     #[test]
     fn the_budget_is_the_compressed_ceiling() {
         assert_eq!(MAX_COMPRESSED, 204_800);
+    }
+
+    // ---- the ELF the app reads about ITSELF ---------------------------------------------------
+
+    /// A minimal little-endian ELF32 `ET_EXEC` image: header, `n` program headers, and whatever
+    /// note bytes a caller wants appended. Hand-built rather than a checked-in fixture so every
+    /// offset this parser reads is stated once, here, where a wrong one is visible.
+    fn elf32(phdrs: &[[u32; 8]], notes: &[u8], note_off: u32) -> Vec<u8> {
+        const EHDR: usize = 52;
+        const PHENT: usize = 32;
+        let mut v = vec![0u8; EHDR];
+        v[..4].copy_from_slice(b"\x7fELF");
+        v[4] = 1; // ELFCLASS32
+        v[5] = 1; // ELFDATA2LSB
+        v[6] = 1;
+        v[16..18].copy_from_slice(&2u16.to_le_bytes()); // ET_EXEC
+        v[18..20].copy_from_slice(&40u16.to_le_bytes()); // EM_ARM
+        v[28..32].copy_from_slice(&(EHDR as u32).to_le_bytes()); // e_phoff
+        v[40..42].copy_from_slice(&(EHDR as u16).to_le_bytes()); // e_ehsize
+        v[42..44].copy_from_slice(&(PHENT as u16).to_le_bytes()); // e_phentsize
+        v[44..46].copy_from_slice(&(phdrs.len() as u16).to_le_bytes()); // e_phnum
+        for ph in phdrs {
+            for w in ph {
+                v.extend_from_slice(&w.to_le_bytes());
+            }
+        }
+        v.resize(note_off.max(v.len() as u32) as usize, 0);
+        v.extend_from_slice(notes);
+        v.resize(v.len().max(64), 0); // the parser refuses anything shorter than an ELF64 header
+        v
+    }
+
+    /// One ELF note: `[namesz][descsz][type]`, then the name and the descriptor, **each padded to
+    /// four bytes**. The padding is the part a hand-rolled walker forgets, and forgetting it reads
+    /// correctly on every object anyone would test with — `"GNU\0"` is exactly four bytes — and
+    /// wrongly on the one whose first note has a name that is not.
+    fn note(name: &[u8], kind: u32, desc: &[u8]) -> Vec<u8> {
+        let mut v = Vec::new();
+        v.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        v.extend_from_slice(&(desc.len() as u32).to_le_bytes());
+        v.extend_from_slice(&kind.to_le_bytes());
+        v.extend_from_slice(name);
+        v.resize(v.len().next_multiple_of(4), 0);
+        v.extend_from_slice(desc);
+        v.resize(v.len().next_multiple_of(4), 0);
+        v
+    }
+
+    /// **The image base is the LOWEST `PT_LOAD`, not the first one written down.** A link that
+    /// emits its segments out of order, or adds one below the text, would otherwise move the base
+    /// and every frame with it — and the failure is `missing_symbol` with no error, per the table
+    /// above.
+    #[test]
+    fn the_image_base_is_the_lowest_load_segment() {
+        //          p_type      offset  vaddr     paddr  filesz  memsz  flags  align
+        let data = [1u32, 0x8000, 0x30000, 0, 0x100, 0x100, 6, 0x1000];
+        let text = [1u32, 0x0000, 0x10000, 0, 0x8000, 0x8000, 5, 0x1000];
+        let phdr = [6u32, 0x34, 0x10034, 0, 0x40, 0x40, 4, 4];
+        // Deliberately NOT in address order, and with a non-LOAD segment first.
+        let b = elf32(&[phdr, data, text], &[], 0);
+        assert_eq!(lowest_load_vaddr(&b), Some(0x10000));
+        assert_eq!(image_addr_of(&b), "0x10000", "and it agrees with the measured constant");
+    }
+
+    /// Everything this cannot answer honestly answers `None`, and the caller then falls back to the
+    /// measured constant. A wrong non-zero base and a zero base fail identically and invisibly, so
+    /// "I could not tell" must never resolve to a guess.
+    #[test]
+    fn anything_unanswerable_is_refused_rather_than_guessed() {
+        let text = [1u32, 0, 0x10000, 0, 0x8000, 0x8000, 5, 0x1000];
+        let mut dynamic = elf32(&[text], &[], 0);
+        dynamic[16..18].copy_from_slice(&3u16.to_le_bytes()); // ET_DYN: vaddr is not the load address
+        assert_eq!(lowest_load_vaddr(&dynamic), None);
+
+        let mut be = elf32(&[text], &[], 0);
+        be[5] = 2; // big-endian: every field below is read little-endian
+        assert_eq!(lowest_load_vaddr(&be), None);
+
+        assert_eq!(lowest_load_vaddr(b"not an elf at all, not remotely, no"), None);
+        assert_eq!(lowest_load_vaddr(&elf32(&[], &[], 0)), None, "no PT_LOAD");
+        // A header whose `e_phoff` points past the end of what was read. Not a corruption case so
+        // much as the ordinary bound on `read_head`: this parser sees the first 64 KiB, and an
+        // unreadable table must be "I do not know" rather than an entry read out of whatever bytes
+        // happened to be at that offset.
+        let mut far = elf32(&[text], &[], 0);
+        far[28..32].copy_from_slice(&0x10_0000u32.to_le_bytes());
+        assert_eq!(lowest_load_vaddr(&far), None);
+    }
+
+    /// **The build id is found past a note that precedes it**, which is the padding case above. A
+    /// walker that advances by `namesz` instead of `align4(namesz)` finds the GNU note only when it
+    /// happens to be first.
+    #[test]
+    fn the_build_id_note_is_found_behind_another_note() {
+        let id: Vec<u8> = (0u8..20).collect();
+        let mut notes = note(b"Linux\0", 0x100, &[1, 2, 3]); // namesz 6 -> two bytes of padding
+        notes.extend_from_slice(&note(b"GNU\0", 3, &id));
+        let off = 52 + 32 * 2; // after two program headers
+        let seg = [4u32, off, 0, 0, notes.len() as u32, 0, 4, 4]; // PT_NOTE
+        let text = [1u32, 0, 0x10000, 0, 0x8000, 0x8000, 5, 0x1000];
+        let b = elf32(&[seg, text], &notes, off);
+        assert_eq!(
+            gnu_build_id(&b).as_deref(),
+            Some("000102030405060708090a0b0c0d0e0f10111213")
+        );
+    }
+
+    /// **Sentry's ELF `debug_id` byte-swaps the first three UUID fields.** `symbolic` builds it
+    /// with `Uuid::from_slice_le`, so emitting the build id's bytes in file order produces a
+    /// perfectly well-formed UUID that pairs with nothing — and the symptom is a frame that comes
+    /// back unsymbolicated with no error attached.
+    #[test]
+    fn the_debug_id_reads_the_build_id_as_a_little_endian_uuid() {
+        let id = "000102030405060708090a0b0c0d0e0f10111213"; // 20 bytes, sha1
+        assert_eq!(debug_id(id).as_deref(), Some("03020100-0504-0706-0809-0a0b0c0d0e0f"));
+        // The trailing four bytes of a sha1 id are not part of the UUID at all.
+        assert_eq!(debug_id(id), debug_id(&id[..32]));
+        assert_eq!(debug_id("0011"), None, "shorter than 16 bytes is not a debug id");
     }
 }
