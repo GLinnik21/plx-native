@@ -106,6 +106,19 @@ impl Caps {
 }
 
 static CAPS: OnceLock<Caps> = OnceLock::new();
+/// Did [`probe`] READ the table, or is [`caps`] returning [`Caps::assumed`]?
+///
+/// The two are indistinguishable from the values alone — on the 49SM9000PLA they are equal by
+/// construction, and on every other set the fallback silently claims that set's profile. The event
+/// log says which happened, in one line at boot, and that was enough while a log was the only
+/// consumer. It stopped being enough when the diagnostics read-out started printing these values:
+/// its output format is a PHOTOGRAPH, from a television nobody here owns, and a panel that prints
+/// the dev set's decoder profile as if it had measured the reporter's is the [[silent-instrument-
+/// trap]] shape exactly — an instrument that cannot say it did not measure.
+///
+/// **`false` when `probe` has not run**, which covers host tests as well as a boot that never got
+/// here: "not measured" is the honest reading of both.
+static MEASURED: OnceLock<bool> = OnceLock::new();
 
 /// What this device decodes. Falls back to [`Caps::assumed`] if [`probe`] has not run — the
 /// boot calls it first, so that path exists for host tests, not the TV.
@@ -220,9 +233,11 @@ fn parse(s: &str) -> Option<Caps> {
 /// Read the table once and log what was derived. Called at boot right after `webos::probe`,
 /// before anything can fail; safe when the file does not exist (older/odd firmware → assumed).
 pub(crate) fn probe() {
+    let mut measured = false;
     let caps = match std::fs::read_to_string(CAPS_TABLE) {
         Ok(s) => match parse(&s) {
             Some(c) => {
+                measured = true;
                 crate::log(&format!(
                     "devcaps: hevc={} {}x{} vp9={} audio={} (device table)",
                     c.hevc, c.hevc_max.0, c.hevc_max.1, c.vp9, c.audio
@@ -243,7 +258,13 @@ pub(crate) fn probe() {
             Caps::assumed()
         }
     };
+    let _ = MEASURED.set(measured);
     let _ = CAPS.set(caps);
+}
+
+/// Whether [`caps`] reflects THIS set's table or the assumed profile — see [`MEASURED`].
+pub(crate) fn measured() -> bool {
+    *MEASURED.get().unwrap_or(&false)
 }
 
 #[cfg(test)]

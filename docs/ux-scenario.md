@@ -330,6 +330,20 @@ The **profile chip** at the top left. Focusing it expands the chip to show the c
 OK opens a popover headed *ACCOUNT*. Signed in, it offers switching profile and **signing out**
 (checklist #21); signed out, it offers **Sign in**, which is the figure above.
 
+Two more rows are offered in **every** state, signed in or out, and that is the point of them — a
+person who cannot get past the sign-in screen has still received a copy of this software, and both
+of these are about the software rather than about an account. *(The figure above predates them.)*
+
+- **Diagnostics** — an On/Off switch for the read-out described at §5.11; the same switch the
+  player's *More* popover labels *Stats for nerds*. Off the player it lists what the **set** is
+  rather than what the pipeline is doing, which is the report for the failure that never reaches a
+  player at all: "it installs, it opens, it finds nothing."
+- **Legal** — a submenu of four notices readable on the television: **Privacy**, **Open source
+  licences**, **Source code** and **Trademarks**. LG's Privacy Guideline requires the privacy policy
+  to be readable *in the app* rather than only on the store listing, the LGPL's §6 binds once the
+  program shows its own copyright at runtime, and Plex's trademark attribution binds because "Plex"
+  appears in this interface. UP/DOWN scrolls a notice; BACK leaves it.
+
 ### 5.8 Detail
 
 ![Detail page](screenshots/ux-detail.jpg)
@@ -374,6 +388,34 @@ server's own verdict beneath it where there is one, and the way out — *"Press 
 The figure is a real server verdict (*"Cannot convert this item. Implementation for video encoder
 'hevc' not found."*). The screen is shaped to survive being photographed off a panel and pasted into
 a bug report, which is the state it is usually seen in.
+
+### 5.11 Diagnostics read-out
+
+*(No figure yet, and deliberately not a simulator one: on a Mac every hardware row reads "unknown"
+because there is no nyx and no codec table to read, so a picture of that state would present the
+panel's failure mode as its normal one. This figure is owed from a television.)*
+
+A panel the viewer turns on, photographs and turns off — the app's answer to "it does not work on my
+set" from hardware nobody here owns. Two ways in, one switch:
+
+- during playback, **More → Stats for nerds** (§6.3);
+- anywhere else, the **profile chip → Diagnostics** (§5.7).
+
+It takes **no buttons at all**: every key keeps working underneath it, which is what lets you watch
+the numbers move as you press play, and it turns off by picking the same row again.
+
+What it shows depends on whether anything has been asked to play. **During or after a playback** it
+is the pipeline: the source and the server, the codec chain from your file through your server to
+what was declared to the decoder, the video plane, how far Load got, whether the demuxer produced
+anything, what was fed and whether it was accepted, HTTP status, and the adaptive controller's own
+inputs — with a strip chart of the two feed lanes, because a lane that stops is a shape rather than
+a number. **Before anything has played** it is the set instead: model and board, the firmware
+codename, what the decoder claims *and whether that table was actually readable*, and whether the
+server ever answered. Those are the facts a report needs when the app opens and finds nothing, which
+is the failure that never reaches a player at all.
+
+Nothing on it names a title, a person, a library, a server or an address, and no value is ever a URL
+or a path — a photograph cannot be redacted after the fact, and it lands in a public issue thread.
 
 ---
 

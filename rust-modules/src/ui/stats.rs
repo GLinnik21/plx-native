@@ -1,10 +1,25 @@
 //! **Stats for nerds** — the on-screen diagnostics read-out, toggled from the player's `…` overflow
-//! popover ([`crate::ui::more_menu`]).
+//! popover ([`crate::ui::more_menu`]) and, since 2026-08-29, from the account menu
+//! ([`crate::ui::account_menu`]) on every other route.
 //!
-//! PLAYER-ONLY today: `app.rs` draws it inside the player branch, so a toggle offered anywhere else
-//! would tick a box and show nothing. A Home entry point (for "starts but finds no server", which
-//! never reaches a player) is a real gap and a separate change — do not advertise it here until the
-//! draw call exists.
+//! It was PLAYER-ONLY until then, and this doc said so: `app.rs` drew it inside the player branch,
+//! so a toggle offered anywhere else would have ticked a box and shown nothing. The gap that
+//! paragraph named — *"starts but finds no server", which never reaches a player* — is the report
+//! this app most often needs from a stranger and was the one it could not produce. The draw call
+//! now runs on both sides of `app.rs`'s player/non-player split, and the `else` half covers every
+//! other route at once, so no route can be forgotten. The two positions differ deliberately: on the
+//! player it is genuinely last, and off it the panel draws over the PAGE but UNDER the app's modal
+//! surfaces — because on that path something sits in its corner, namely the account popover that
+//! carries the row turning it off. Drawn last it hid its own off-switch.
+//!
+//! **Off the player the panel shows a DIFFERENT set of rows, and that is not a decoration.** Every
+//! pipeline row reads a [`crate::player::Diag`] that has never been filled in, so all nine of them
+//! report a zero — `stream never opened`, `no callbacks`, `NOTHING demuxed` — and most carry a
+//! fault tint. Photographed on a Home screen where nothing is wrong, that is a picture of a broken
+//! app, which is the exact opposite of what this panel is for. So when nothing has been asked to
+//! play this session ([`never_played`]) the list is [`device_rows`] instead: what the SET is, what
+//! its decoder claims, and what the server said — the facts a "it just does not work on my TV"
+//! report needs and no log a stranger can reach will ever carry.
 //!
 //! # Why this exists, which is not why YouTube's does
 //!
@@ -171,6 +186,10 @@ static mut HIST_HEAD: usize = 0;
 static mut NEXT_SAMPLE: u32 = 0;
 static mut ROWS: Vec<Field> = Vec::new();
 static mut HEAD: [String; 2] = [String::new(), String::new()];
+/// Which list [`ROWS`] currently holds: the device block ([`device_rows`]) rather than the
+/// pipeline one. Sampled with the rows so the layout cannot disagree with the content — both
+/// [`panel_rect`] and [`draw`] read it, and the card is shorter and chartless in this state.
+static mut IDLE: bool = false;
 
 /// Re-sample if the hold has expired. Main-thread only (it is called from the frame loop).
 pub(crate) fn update(now: u32) {
@@ -193,7 +212,11 @@ pub(crate) fn update(now: u32) {
         // every row's value. At 2 Hz that orphaned ~1.4 KB and ~23 allocations every sample, on a
         // panel explicitly designed to be left up for the length of a film.
         drop(addr_of_mut!(HEAD).replace(header(&d, now)));
-        drop(addr_of_mut!(ROWS).replace(rows(&d, prev, now)));
+        // ONE decision per sample, held with the rows it chose. Deciding this in `draw` instead
+        // would let the panel measure one list and paint another on the frame the first Load lands.
+        let idle = never_played(&d, crate::player::state());
+        addr_of_mut!(IDLE).write(idle);
+        drop(addr_of_mut!(ROWS).replace(if idle { device_rows() } else { rows(&d, prev, now) }));
         addr_of_mut!(PREV_FED).write((d.fed_v, d.fed_a, now));
         // the same two rates the Fed row prints, kept as a ring so the chart can show their shape
         let (rv, ra) = fed_rates(&d, prev, now).unwrap_or((0, 0));
@@ -268,6 +291,97 @@ fn playback_line(d: &crate::player::Diag, now: u32) -> String {
         return format!("{s} (stalled {stuck} s)");
     }
     s.to_string()
+}
+
+/// **Has anything been asked to play this session?** — which of the two lists [`update`] samples.
+///
+/// `Idle` alone would be wrong, and the reason is the case that matters most: `Idle` is also where
+/// a playback that FINISHED or that failed and was cleared comes to rest, and there the pipeline
+/// block is exactly what a reader wants — the post-mortem. `load_at == 0` is what separates the two,
+/// since it is set once per session at the moment a Load is sent and never returns to zero.
+///
+/// The resolve and connect stages need no clause of their own: they are Load-less but they are not
+/// `Idle`, so they keep the pipeline block and its `Load waiting · no callbacks · no connection`
+/// row — the one sentence that says where such an attempt is stuck.
+///
+/// Pure, with the process-global state passed in, so both arms are host-testable.
+fn never_played(d: &crate::player::Diag, st: crate::player::PlaybackState) -> bool {
+    matches!(st, crate::player::PlaybackState::Idle) && d.load_at == 0
+}
+
+/// **The read-out with no playback behind it: what this SET is.**
+///
+/// The report this app cannot otherwise get. Every diagnostic surface it has — the event log, the
+/// ~40 triggers, the remote FIFO, ssh — needs either a rooted television or a `devtriggers` build,
+/// and the one failure that reaches us most often ("it installs, it opens, it finds nothing") never
+/// reaches a player at all, so until now it could produce no artefact whatsoever. These five rows
+/// are photographable from a Home screen with the remote alone.
+///
+/// The panel's content rules are unchanged and every one of them holds here by construction: no
+/// path, no URL, no credential, no stable identity. A MODEL and a BOARD are product identities
+/// shared by every unit LG built — they are what a decode or plane bug correlates with, and they
+/// say nothing about a household. `lab::snapshot`'s envelope has carried the same three fields
+/// since it was written; this is the same rule reaching the surface a stranger can actually use.
+fn device_rows() -> Vec<Field> {
+    let hw = crate::webos::device();
+    let i = crate::webos::info();
+    let c = crate::devcaps::caps();
+    let mut v = Vec::with_capacity(5);
+
+    // WHICH SET. The question every report from hardware nobody here owns opens with, and the one
+    // no log a stranger can reach has ever answered. Empty when nyx did not answer — never a
+    // plausible default, which is `webos::Hardware`'s own rule for the same reason.
+    let set: Vec<&str> = [hw.model.as_str(), hw.board.as_str(), hw.hw_revision.as_str()]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect();
+    v.push(
+        Field::new("Set", if set.is_empty() { "unknown — nyx did not answer".to_string() } else { set.join(" · ") })
+            .fault(set.is_empty()),
+    );
+
+    // The firmware CODENAME, which is the half the header line drops for width and the key
+    // webosbrew buckets its firmware by — so it is the field that turns "webOS 4.10.2" into an
+    // image somebody else can go and look at.
+    v.push(Field::new(
+        "Firmware",
+        match (i.name.as_str(), i.codename.as_str()) {
+            // Bare "unknown": the head line above already carries the REASON in this state
+            // ("webOS unknown — os_info.json unreadable"), and a photograph should not spend two
+            // of its five rows on one fact.
+            ("", "") => "unknown".to_string(),
+            ("", cn) => cn.to_string(),
+            (n, "") => n.to_string(),
+            (n, cn) => format!("{n} · {cn}"),
+        },
+    ));
+
+    // What the SoC's own table claims, and — the half that cannot be left out — WHETHER IT WAS
+    // READ. `devcaps` falls back to the 49SM9000PLA profile when the table is missing or
+    // unparseable, so the values alone cannot tell a measurement from this project's dev set. A
+    // panel whose output is a photograph must not print the second as if it were the first.
+    let measured = crate::devcaps::measured();
+    v.push(
+        Field::new(
+            "Decoder",
+            format!(
+                "{} · {} · {}",
+                if c.hevc { format!("HEVC {}x{}", c.hevc_max.0, c.hevc_max.1) } else { "no HEVC".to_string() },
+                if c.vp9 { "VP9" } else { "no VP9" },
+                if measured { "device table" } else { "ASSUMED" },
+            ),
+        )
+        .fault(!measured),
+    );
+    v.push(Field::new("Audio", c.audio.clone()));
+
+    // The same row the pipeline block leads with, minus the direct-play/transcode half that has no
+    // meaning yet: it answers "did the server ever reply", which IS the failure when nothing plays.
+    v.push(Field::new(
+        "Server",
+        server_line(&crate::plex::serverinfo::version(), crate::plex::serverinfo::subscription()),
+    ));
+    v
 }
 
 /// The whole read-out, in the order a maintainer reads it: **what the model decided, then what the
@@ -869,11 +983,18 @@ fn panel_rect() -> Rect {
     // emitted fell out of the bottom of the card onto the transport.
     let w = FIELD_COL_W + 2.0 * PAD;
     let rows = unsafe { &*addr_of_mut!(ROWS) };
-    let lines = FieldList::wrapped_line_count(rows, FIELD_COL_W).max(PANEL_ROWS);
+    // The DEVICE block is five rows and has no chart: the chart plots fed-AU rates, and nothing has
+    // been fed. Holding the pipeline block's height there would draw a card two thirds empty with a
+    // flat zero graph under it — which reads as an instrument that is broken rather than one with
+    // nothing to plot, on the panel whose entire output format is a photograph.
+    let idle = unsafe { addr_of_mut!(IDLE).read() };
+    let floor = if idle { 0 } else { PANEL_ROWS };
+    let chart = if idle { 0.0 } else { CHART_H };
+    let lines = FieldList::wrapped_line_count(rows, FIELD_COL_W).max(floor);
     // The cap is the safe area, not a content decision — but the panel is now sized so that
     // reaching it means something has gone wrong with the content, not with the layout.
     let max_h = crate::ui::player_hud::CTRL_Y - MARGIN - PAD;
-    let h = (HEAD_H + FieldList::height(lines) + CHART_H + PAD).min(max_h);
+    let h = (HEAD_H + FieldList::height(lines) + chart + PAD).min(max_h);
     // x on the app's own side margin, not [`MARGIN`]: the panel's whole output format is a
     // PHOTOGRAPH of a television, so it is the one overlay that must sit inside the overscan frame
     // even though nothing on it is pressable. 60 cleared it vertically and missed it by 36 across.
@@ -926,7 +1047,11 @@ pub(crate) fn draw() {
 
     // The chart sits in the band `panel_rect` reserved for it, under the rows. Its top is measured
     // from the SAME line count the list drew with, so a wrapped row pushes it down instead of
-    // being drawn over by it.
+    // being drawn over by it — and it is reserved no band at all in the device state, so this must
+    // read the same flag `panel_rect` sized with.
+    if unsafe { addr_of_mut!(IDLE).read() } {
+        return;
+    }
     let cy = top + FieldList::height(FieldList::wrapped_line_count(rows, FIELD_COL_W));
     draw_chart(p, Rect::new(inner, cy, FIELD_COL_W, (frame.y + frame.h - PAD - cy).max(0.0)));
 }
@@ -1041,6 +1166,79 @@ mod tests {
             let Some(val) = f.val.as_deref() else { continue };
             let lines = crate::ui::widgets::value_lines(val, FIELD_COL_W);
             assert_eq!(lines.len(), 1, "`{}` wraps to {} lines: {val}", f.key, lines.len());
+        }
+    }
+
+    /// **The predicate that chooses the two lists**, and the case it has to get right is the one
+    /// that is NOT obvious: a playback that finished, or that failed and was cleared, is `Idle`
+    /// too — and there the pipeline block is precisely what a reader wants.
+    #[test]
+    fn only_a_session_that_never_loaded_gets_the_device_block() {
+        use crate::player::PlaybackState as S;
+        let fresh = crate::player::Diag::default();
+        assert!(never_played(&fresh, S::Idle), "boot, nothing asked to play");
+        // Every non-idle state keeps the pipeline block, including the two that precede a Load and
+        // so still have `load_at == 0` — those are where "Load waiting · no connection" is the
+        // answer, not a decoy.
+        for st in [S::Resolving, S::Connecting, S::Buffering, S::Seeking, S::Playing, S::Error] {
+            assert!(!never_played(&fresh, st), "{st:?} is a playback attempt");
+        }
+        // …and back at Idle after something HAS played, the post-mortem is the point.
+        let played = crate::player::Diag { load_at: 4_200, ..Default::default() };
+        assert!(!never_played(&played, S::Idle), "a finished session keeps its pipeline rows");
+    }
+
+    /// The device block obeys the same one-line rule as the pipeline block, and says what it does
+    /// NOT know rather than inventing it — `webos`/`devcaps` are unprobed under `cargo test`, so
+    /// this runs in exactly the all-empty state a set whose nyx and codec table are unreadable
+    /// would produce.
+    #[test]
+    fn the_device_block_fits_and_admits_what_it_could_not_read() {
+        let v = device_rows();
+        assert!(v.len() <= PANEL_ROWS, "{} rows", v.len());
+        for f in &v {
+            let Some(val) = f.val.as_deref() else { continue };
+            let lines = crate::ui::widgets::value_lines(val, FIELD_COL_W);
+            assert_eq!(lines.len(), 1, "`{}` wraps to {} lines: {val}", f.key, lines.len());
+        }
+        let val = |key: &str| v.iter().find(|f| f.key == key).and_then(|f| f.val.clone()).unwrap_or_default();
+        // Unprobed is UNKNOWN, not a plausible default — and it is a fault, because a report whose
+        // set cannot be named is a report that cannot be acted on.
+        assert!(val("Set").starts_with("unknown"), "Set = {}", val("Set"));
+        assert!(
+            v.iter().find(|f| f.key == "Set").map(|f| f.tone == crate::ui::widgets::Tone::Fault).unwrap_or(false),
+            "an unnamed set is a fault"
+        );
+        // THE POINT of `devcaps::measured`: with no table read, the row must not print this
+        // project's dev-set profile as though it had measured the reporter's television.
+        assert!(val("Decoder").contains("ASSUMED"), "Decoder = {}", val("Decoder"));
+    }
+
+    /// The device card is SHORTER and has no chart. Both come off one sampled flag, so the measure
+    /// and the paint cannot disagree — the failure the two-rules version of this panel already had
+    /// once, when reserved rows fell out of the bottom of the card onto the transport.
+    #[test]
+    fn the_device_card_drops_the_row_floor_and_the_chart() {
+        let _g = crate::testlock::serial();
+        unsafe {
+            let saved_rows = addr_of_mut!(ROWS).replace(device_rows());
+            let saved_idle = addr_of_mut!(IDLE).read();
+
+            addr_of_mut!(IDLE).write(false);
+            let pipeline_h = panel_rect().h;
+            addr_of_mut!(IDLE).write(true);
+            let device_h = panel_rect().h;
+
+            drop(addr_of_mut!(ROWS).replace(saved_rows));
+            addr_of_mut!(IDLE).write(saved_idle);
+
+            assert!(device_h < pipeline_h, "device {device_h} not shorter than pipeline {pipeline_h}");
+            // Exactly the chart band plus the rows the floor would have reserved but the content
+            // does not fill — no fudge factor, which is what makes this an assertion about the
+            // layout rule rather than about a number somebody measured once.
+            let n = FieldList::wrapped_line_count(&device_rows(), FIELD_COL_W);
+            let reserved = FieldList::height(PANEL_ROWS) - FieldList::height(n);
+            assert!((pipeline_h - device_h - reserved - CHART_H).abs() < 0.5);
         }
     }
 

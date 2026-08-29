@@ -3145,6 +3145,15 @@ fn key_account(over: BarHost, sym: c_uint, wcode: c_uint, route: &mut Route) {
                 crate::ui::legal::open();
                 *route = over.route();
             }
+            // The same switch the player's `…` popover carries, reachable off the player — where
+            // it is the ONLY diagnostic surface a stranger has, because everything else this repo
+            // debugs with is either behind `devtriggers` or behind ssh. It takes no keys and is
+            // not a route: the menu closes and the panel is simply up, over whatever page was
+            // behind it, until this row is picked again.
+            crate::ui::account_menu::Action::Diagnostics => {
+                crate::ui::stats::toggle();
+                *route = over.route();
+            }
             // Lab builds only, and it changes no route: the tester stays where they were, and the
             // toast says what happened. Returning to the page the popover stood on is the same
             // dismissal `Action::None` does.
@@ -5469,6 +5478,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                 crate::ui::legal::open();
                                 route = over.route();
                             }
+                            // …and of its Diagnostics arm
+                            crate::ui::account_menu::Action::Diagnostics => {
+                                crate::ui::stats::toggle();
+                                route = over.route();
+                            }
                             // the pointer twin of `key_account`'s arm — lab builds only
                             crate::ui::account_menu::Action::SendDiagnostics => {
                                 crate::lab::request_upload("menu");
@@ -7011,7 +7025,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         }
                         // LAST, over everything including the centred "Buffering…" read-out whose
                         // block sits where this panel wants to be. It is not chrome and not an
-                        // overlay route: it stays up until it is turned off.
+                        // overlay route: it stays up until it is turned off. Nothing here occludes
+                        // its own off-switch: the panel is top-left and `more_menu`, which carries
+                        // the toggle, is a right-edge popover.
                         crate::ui::stats::draw();
                     } else {
                         // Resolve every glass owner BEFORE anything on this route draws — that is
@@ -7136,6 +7152,22 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             crate::gfx::blur_snapshot_direct(reg, &mut page);
                         }
                         crate::ui::profile::phase("main.ui", || page());
+                        // The diagnostics read-out, off the player. It drew ONLY inside the branch
+                        // above until 2026-08-29, which is why its module doc had to warn that a
+                        // toggle offered anywhere else would tick a box and show nothing — and why
+                        // the failure this app is reported for most ("it opens and finds nothing")
+                        // could produce no artefact at all: it never reaches a player.
+                        //
+                        // **Here rather than on the frame's common tail, and the simulator is what
+                        // settled it.** On the player path the panel is genuinely last; here it is
+                        // over the PAGE and under the app's modal surfaces, because on this path
+                        // something DOES sit in its corner — `account_menu`, which carries the row
+                        // that turns it off. Drawn last it covered the account chip and then the
+                        // popover itself, so the switch could only be found by pressing keys at a
+                        // menu you cannot see. A control must be visible over the thing it
+                        // controls. Two call sites, and the `else` covers every non-player route,
+                        // so a new route still cannot be forgotten.
+                        crate::ui::stats::draw();
                         if matches!(route, Route::Account { .. }) {
                             crate::ui::account_menu::draw(); // profile popover, over the page it opened on
                         }
