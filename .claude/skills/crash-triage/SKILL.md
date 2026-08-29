@@ -167,6 +167,48 @@ make FLAVOR=<f> deploy             # the SAME flavour you are triaging, then rep
 own — hence the `touch`. Verified output after that: `plex_run at rust-modules/src/app.rs:248`,
 `main at src/main.c:92`. Same codegen, larger binary; deploy it only while chasing a crash.
 
+## Prove the tracer works before reading its silence
+
+An empty `plxnative-crash.log` means one of two things and they are opposite: nothing crashed, or
+the recorder is broken. **Two of the three ways this recorder can be broken have actually happened**
+— it spent seven weeks re-raising nothing, and before that it `_exit(3)`d — and in both cases the
+log looked entirely normal. So when a crash is suspected and the log is empty, fault the app on
+purpose and check the recorder end to end.
+
+```bash
+tools/tv-lock.sh acquire --why "prove the crash tracer"
+make deploy                                     # a devtriggers build; RELEASE=1 compiles this out
+RUN=$(make -s print-rundir)
+ssh root@"$(make -s print-tv)" "echo segv > $RUN/plxnative-crashtest"
+make run RUN_SECS=12                            # it will die at once, on purpose
+tools/crash-report.sh                           # the record, symbolized
+```
+
+Four things to check, and the third and fourth are the ones no host test can reach:
+
+1. `crashtest: DELIBERATE crash, kind=segv signal=11` in the event log — so nobody later mistakes
+   this for the bug they were hunting.
+2. `*** SIGNAL 11 (SIGSEGV) addr=0x0 pc=0x… lr=0x…` in the crash log, with a `reg:` line under it.
+3. **`at:` and `bin:` lines.** These come from `/proc/self/maps` and exist on no development Mac;
+   `ci/crashtrace-test.c` grades the reader against fixtures, but only the set proves it against
+   the real file. `bin:` must name the install you deployed to.
+4. **A SAM `exit_status` with `WIFSIGNALED` set, and a fresh `/var/log/reports/librdx/` entry.**
+   This is the re-raise, and it is the whole reason the OS still produces a real backtrace. A
+   status of `35584` here means the re-raise regressed — that is `(128+11) << 8`, a clean exit
+   wearing a signal's number.
+
+`segv` is a genuine null write, so the PC is a real faulting PC. The other kinds — `abrt`, `bus`,
+`ill`, `trap` — go through `raise` and prove each of the five `sigaction` calls took, but their PC
+points into `raise` and is worth nothing.
+
+**Clear the trigger afterwards.** `tests/run.py` sweeps `plxnative-*` on exit; `make run` does not,
+so a by-hand session leaves it armed and the next launch dies too — which reads exactly like the
+app having become unlaunchable.
+
+```bash
+ssh root@"$(make -s print-tv)" "rm -f $RUN/plxnative-crashtest"
+```
+
 ## Gotchas
 
 - **pmlog's wall clock is hours off on this TV.** Correlate by monotonic uptime (the
