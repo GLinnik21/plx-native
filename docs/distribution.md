@@ -562,13 +562,18 @@ world-readable `/tmp` on the TV across many runs.
   `/tmp/plxnative-token` beats the stored session outright (`app.rs:362`), and any unrecognised
   `plxnative-*` file suppresses the who's-watching picker (`app.rs:402-413`). The clean fix is a
   cargo feature the release build does not enable, so a public binary reads nothing from `/tmp`.
-- **A crash writes a ~200 MB core into the app directory.** `main.c:75-77` restores `SIG_DFL` and
-  re-raises (correct for crashd triage), the jail sets `setrlimit CORE INF INF`, and
+- **A crash writes a ~200 MB core into the app directory.** The tracer (now `src/crashtrace.c`)
+  restores `SIG_DFL` and re-raises, the jail sets `setrlimit CORE INF INF`, and
   `/proc/sys/kernel/core_pattern` is the bare string `core` — i.e. relative to cwd = the app dir.
   Measured on the device: a **209,965,056-byte** `core` from Jul 18 is sitting there now, on a
   partition (`/dev/mmcblk0p53`, which backs both `/media/developer` and `/media/cryptofs`) with
   **615.6 MB total and 207.3 MB free — shared with every app installed on the TV.** One more crash
   fills it. This is squarely webosbrew rule 3 ("be considerate to users' TV").
+  *(The parenthetical here used to read "correct for crashd triage". It was not: the re-raise
+  silently did not re-raise between 2026-07-09 and 2026-08-29 — the signal is masked inside its own
+  handler, so `raise` returned and the `_exit(128+sig)` below it ran, producing a clean exit with no
+  core at all. The measured 209,965,056-byte core predates the re-raise being added, and the hazard
+  described here is real again now that it works.)*
   Fix: `setrlimit(RLIMIT_CORE, 0)` in a release build; the tracer's own PC+maps log is what triage
   actually uses.
 - ~~**STILL OPEN — the one unfixed item on this list.**~~ **CLOSED 2026-08-29**, in two halves that
