@@ -104,10 +104,18 @@ printf '%s' "$TOKEN" > "$DIR/plxnative-token"
 : > "$DIR/plxnative-detailplay"  # press Play once the detail page has landed
 printf '%s' "$RK" > "$DIR/plxnative-detail"
 
+# **A bare `wait` here HANGS the whole matrix**, and it did: the simulator is an SDL application
+# and under `nohup` there is no controlling terminal, so a plain TERM does not always end it — the
+# scenario then sat in `wait` forever with its legs already applied and its verdict never printed,
+# which reads exactly like a slow run. Escalate instead: TERM, a bounded grace, then KILL, and
+# never block on a process that has already been sent both.
 cleanup() {
-  kill "$SIM_PID" 2>/dev/null
-  kill "$NETCOND_PID" 2>/dev/null
-  wait "$SIM_PID" "$NETCOND_PID" 2>/dev/null
+  kill "$SIM_PID" "$NETCOND_PID" 2>/dev/null
+  local waited=0
+  while [ $waited -lt 20 ] && kill -0 "$SIM_PID" 2>/dev/null; do sleep 0.25; waited=$((waited+1)); done
+  kill -9 "$SIM_PID" "$NETCOND_PID" 2>/dev/null
+  wait "$SIM_PID" 2>/dev/null || true
+  wait "$NETCOND_PID" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
 
