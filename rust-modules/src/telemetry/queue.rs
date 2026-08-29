@@ -7,8 +7,7 @@
 //!
 //! Everything in this file is pure: bytes in, records out. The disk, the worker and the sender are
 //! elsewhere, which is what lets a power cut be *tested* rather than argued about. Every item
-//! therefore carries `#[allow(dead_code)]` — the only non-test caller is that worker, and it is not
-//! written. Per item rather than one blanket on the module, so an item that goes dead LATER still
+//! therefore carries `//! written. Per item rather than one blanket on the module, so an item that goes dead LATER still
 //! has to be touched by somebody.
 //!
 //! # Four of these tests were fake, and the tests are the whole deliverable
@@ -92,7 +91,6 @@ pub(crate) struct Record {
 
 /// The body is arbitrary bytes and the frame is JSON, so it is base64 in transit through serde.
 /// Hand-rolled: the crate has no base64 dependency and this is the only place that needs one.
-#[allow(dead_code)] // reached only through `Record`'s serde impls, which have no caller yet
 mod body_b64 {
     const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 

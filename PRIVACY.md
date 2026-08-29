@@ -1,7 +1,8 @@
 # Privacy
 
-**PlxNative sends nothing to its developer.** No analytics, no telemetry, no crash upload, no
-"anonymous usage statistics", and no endpoint of mine exists for it to send them to. This document
+**PlxNative sends nothing to its developer unless you switch it on, and it is off until you do.**
+Two switches — crash reports, and which screens and formats get used — both off by default, both
+reversible, and the screen that asks shows you the exact messages before you answer. This document
 is the whole account of what the app stores, reads and reaches, written to be checkable rather than
 reassuring — every claim names the file that implements it.
 
@@ -42,9 +43,13 @@ playback, and the progress reports that make "resume where you left off" work. Y
 off by default. What they receive, field by field, is the table further down, and that table is
 generated from the code rather than written beside it.
 
-**Nothing else.** `ci/check-elf.sh` and the per-release audit under `docs/release-audits/` measure the
-outbound hostnames in the shipped binary, so this is a property of the bytes rather than a promise in
-prose — including the two above, which appear there or do not.
+**Nothing else.** Each release audit under `docs/release-audits/` lists the host-shaped strings
+found in the shipped binary, so the claim is checkable against the artifact — with the limit that
+script states about itself: it is a FLOOR on what the app can reach and never a proof of absence,
+since a hostname assembled at runtime from pieces leaves no literal to find. (This paragraph used to
+credit `ci/check-elf.sh` with the same measurement. It makes none — it grades the ELF's class, ABI,
+linkage and build identity, and its one grep for a *path* is for build-host paths leaking into the
+binary, which is a different thing that happens to share a word.)
 
 ---
 
@@ -219,9 +224,24 @@ to every record, and no envelope exists yet either.
 
 ## Your rights
 
-There is no data of yours in my possession, so there is nothing to request, correct or delete — the
-files above are on your own television and uninstalling removes them. If that ever changes this
-document changes with it, in the same commit.
+**With both switches off, there is no data of yours in my possession** — nothing to request,
+correct or delete, because nothing was ever sent.
+
+**With one on, there is, and here is the honest shape of it.** What has been sent carries no name,
+no account and no address — only the random per-attempt numbers described above — so I cannot find
+"your" records to erase on request even in principle, and neither can Sentry or PostHog, whose
+deletion tools work on accounts these reports deliberately do not have. What happens instead is that
+it expires: the retention above, never longer than 13 months. Turning a switch off stops collection
+at once and destroys anything still queued on the television, which is the part that IS under your
+control.
+
+**The files on the television survive an uninstall**, and that is a platform fact rather than a
+choice: webOS gives a native app no uninstall hook, so nothing of mine runs on the way out. Delete
+them yourself if you want them gone — `<app id>-auth.json`, `<app id>-lastplace.json`,
+`<app id>-telemetry.json`, `<app id>-telemetry-spool.bin` and `<app id>-telemetry-crashmark.json`,
+under `/media/developer` or `/media/internal` depending on how the app was installed. This is
+written down because `rust-modules/src/paths.rs` cites this document as the place a user can learn
+it, and until now it did not say so.
 
 **Questions:** open an issue at <https://github.com/GLinnik21/plx-native/issues>, or e-mail
 glinnik21@gmail.com. Security reports go through [SECURITY.md](SECURITY.md) instead.

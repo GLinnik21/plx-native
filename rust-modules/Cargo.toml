@@ -64,18 +64,31 @@ devtriggers = []
 # Everything else compiles identically.
 lab-diagnostics = []
 
-# The opt-in telemetry client: crash/error reports to Sentry and product events to PostHog, both
-# hand-rolled over the libcurl we already dlopen. Like `lab-diagnostics` and unlike `devtools`/
-# `devtriggers`, it is **deliberately not in the default set**, so it cannot ship by forgetting a
-# flag — the safe direction for this one is off. `make RELEASE=1 TELEMETRY=1` is what builds a
-# store artifact that carries it, and `ci/check-package.py` asserts which configuration a package
-# is so the release audit can say so per-artifact.
+# **There is no `telemetry` cargo feature, and this comment is here so nobody adds one back.**
 #
-# It is NOT the same switch as user consent. This decides whether the code exists in the binary at
-# all (the Jellyfin/Expo lesson: a dependency people can `strings` out counts as collection even
-# when dormant); consent decides whether a build that HAS the code ever sends anything, and both
-# toggles behind it default to off.
-telemetry = []
+# There WAS one, declared here, gating nothing: `mod telemetry;` in `lib.rs` has always been
+# unconditional, no `cfg` in the crate named it, and the `make RELEASE=1 TELEMETRY=1` this comment
+# prescribed set a variable the Makefile does not know — `RUST_FEATFLAGS` knows only `RELEASE` and
+# `LAB`. So it read as the safety argument for the whole subsystem while being a no-op, which is
+# worse than not having one. A doc audit found it.
+#
+# Ungated is also the RIGHT answer, for the reason `diag::scrub` and `diag::schema` are: the
+# guarantees here are their tests — that no identifier exists before an opt-in, that no runtime
+# string can reach the wire, that the privacy document lists every field — and a test behind a
+# feature the default gate does not build is a test that never runs. `scrub`'s 31 assertions sat
+# unexecuted for as long as they existed.
+#
+# **What actually stops a build from reporting is the ENDPOINT, not a flag**, and it is the stronger
+# guarantee of the two because it is a property of the artifact rather than of an invocation:
+# `telemetry::sender` reads its credentials through `option_env!`, so a fork, a CI runner and anyone
+# building from source compile `None` and the binary carries no address to send to. `strings` on the
+# binary settles it either way, and `.github/workflows/release.yml` asserts the production endpoints
+# ARE in the packaged bytes before it will publish — the same check, pointed the other way.
+#
+# The Jellyfin/Expo lesson the old comment cited (a dependency people can `strings` out counts as
+# collection even when dormant) does not reach this code: there is no SDK and no dependency, only
+# this crate's own modules, and what a reader would `strings` for is exactly the endpoint that is
+# absent without the credential.
 # The desktop UI simulator. OFF by default, so no ordinary `make`, `make check` or harness run is
 # affected in any way; `cargo build --features hostsim` selects it.
 #

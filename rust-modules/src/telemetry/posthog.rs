@@ -40,8 +40,7 @@
 //! whatever queues a record, and putting it here would make every test in this file depend on a
 //! clock. So the caller passes an ISO 8601 string and this file stays a function.
 //!
-//! # Why every item carries `#[allow(dead_code)]`
-//!
+//! # Why every item carries `//!
 //! Same reason as [`super::sentry`] and [`super::consent`]: the only non-test caller is a sender,
 //! and no sender exists. Gating the module on a feature would take the tests with it.
 
@@ -118,7 +117,12 @@ pub(crate) fn single(
 /// `historical_migration` is sent explicitly as `false`. It is optional, but this is a spool that
 /// can be days behind a television that was switched off, so "are you backfilling history?" is a
 /// question the payload will look like it is answering. Saying no out loud costs one field.
-#[allow(dead_code)] // no sender yet — see the module doc
+// Genuinely uncalled, and re-audited rather than inherited: the worker sends one record at a
+// time, because a spool commit acknowledges by `event_id` and a batch that half-succeeds cannot
+// say which half. Kept because the two endpoints put `distinct_id` in DIFFERENT places — top
+// level for `/i/v0/e/`, inside `properties` for `/batch/` — which is the trap this function
+// exists to have already solved when a batch is worth having.
+#[allow(dead_code)]
 pub(crate) fn batch(
     api_key: &str,
     distinct_id: &str,

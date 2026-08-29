@@ -30,10 +30,18 @@ pub(crate) mod schema;
 /// attributes off ~25 scattered sites (the hazard `.claude/hooks/release-config-check.py` exists
 /// for: a hand-written `cfg` pair where a spliced-in function swallows its neighbour's attribute).
 ///
-/// Today nothing listens: there is no consent apparatus, no queue and no endpoint, so this is a
-/// sink in every build. It exists NOW because the call sites are the part that has to be right —
-/// each one is a decision about what may be observed — and because a schema with no producers is
-/// an allowlist nobody has checked against reality.
+/// **It fails closed and it QUEUES; it never sends.** Three gates, in order: consent for this
+/// event's category, an install identifier that actually exists, and a build that carries an
+/// endpoint at all. Any of them missing is a silent return, which is the only safe direction —
+/// and the reason the boot log states which destinations this build can reach, since "consented
+/// but not wired" and "sent" look identical from every other line.
+///
+/// Sending happens on `telemetry::flush_soon`'s worker. This is the frame loop: a send opens a
+/// socket and can block for the sender's whole timeout.
+///
+/// It was a sink in every build when it was written, deliberately — the call sites are the part
+/// that has to be right, each one being a decision about what may be observed, and a schema with
+/// no producers is an allowlist nobody has checked against reality.
 pub(crate) fn event(e: schema::DiagEvent) {
     // **The gate, and it is here rather than at the call sites on purpose**: one place to be right,
     // and no site can forget it. Reads a published snapshot — never the disk, never a lock — which
@@ -71,10 +79,12 @@ pub(crate) fn event(e: schema::DiagEvent) {
     });
 }
 
-// Gated to their present consumer. Phase G/H widen these to
-// `any(feature = "lab-diagnostics", feature = "telemetry")` when the Sentry and PostHog clients
-// become second callers — deliberately not widened ahead of a caller, because `warnings = "deny"`
-// turns "compiled but unused" into a build error, and that is the check doing the work here.
+// Gated to their present consumer, which is still only the lab bridge. The telemetry client turned
+// out not to want either — it frames its own bodies and posts them uncompressed — so this stayed a
+// one-consumer gate rather than widening, and there is no `feature = "telemetry"` to widen to (see
+// `Cargo.toml`: that feature existed, gated nothing, and is gone). Deliberately not widened ahead
+// of a caller either way, because `warnings = "deny"` turns "compiled but unused" into a build
+// error, and that is the check doing the work here.
 #[cfg(feature = "lab-diagnostics")]
 pub(crate) mod ring;
 #[cfg(feature = "lab-diagnostics")]

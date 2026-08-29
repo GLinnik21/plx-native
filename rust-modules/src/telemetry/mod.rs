@@ -78,7 +78,6 @@ fn load() -> Consent {
 /// A total write failure is logged and still applied to this session. The alternative is refusing
 /// to honour something a person just chose because a disk is full, which is worse in both
 /// directions: it ignores a "no", and it ignores a "yes".
-#[allow(dead_code)] // its caller is the consent screen, which lands with the UI
 pub(crate) fn record(c: Consent) {
     let Ok(json) = serde_json::to_vec_pretty(&c) else { return };
     let stored = crate::paths::telemetry_candidates()
@@ -191,7 +190,6 @@ fn flush_now(c: &consent::Consent) {
 /// this account. A read failure yields `None`, and [`consent::apply`]'s caller must then treat the
 /// opt-in as not yet complete rather than inventing a fallback — a "random" identifier built from a
 /// clock or a MAC is exactly the identifier this design refuses.
-#[allow(dead_code)] // its caller is the consent screen, which lands with the UI
 pub(crate) fn mint_install_id() -> Option<String> {
     let mut buf = [0u8; 16];
     use std::io::Read;

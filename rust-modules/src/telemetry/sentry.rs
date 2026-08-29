@@ -32,8 +32,7 @@
 //! The send. That needs a CA-verified unpinned POST (`net::post_ca`, which does not exist yet) and
 //! a DSN, and it is deliberately the only part that does — so this file's tests never need either.
 //!
-//! # Why every item carries `#[allow(dead_code)]`
-//!
+//! # Why every item carries `//!
 //! The same reason `consent`'s four do, and they go the same way: **the only non-test caller of any
 //! of this is the sender**, and the sender is the next commit. Gating the module on a feature
 //! instead would make the warnings vanish and take the tests with them, which is exactly how
@@ -44,7 +43,6 @@
 /// none of it is secret — the public key is a write-only ingest credential that any binary sending
 /// anything has to carry, which is why it is publishable by design and why this type is ordinary.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)] // no sender yet — see the module doc
 pub(crate) struct Dsn {
     /// `https://o0.ingest.de.sentry.io` — scheme and host, no path
     pub origin: String,
@@ -56,7 +54,6 @@ pub(crate) struct Dsn {
 
 impl Dsn {
     /// The envelope endpoint this DSN addresses.
-    #[allow(dead_code)] // no sender yet — see the module doc
     pub(crate) fn envelope_url(&self) -> String {
         format!("{}/api/{}/envelope/", self.origin, self.project_id)
     }
@@ -64,7 +61,6 @@ impl Dsn {
     /// The `X-Sentry-Auth` header value. `sentry_version=7` is the protocol this file implements;
     /// `sentry_client` is ours and is what a Sentry-side filter would key on if this ever needed
     /// one.
-    #[allow(dead_code)] // no sender yet — see the module doc
     pub(crate) fn auth_header(&self) -> String {
         format!(
             "X-Sentry-Auth: Sentry sentry_version=7, sentry_client=plxnative/{}, sentry_key={}",
@@ -85,7 +81,6 @@ impl Dsn {
 /// Hand-rolled rather than a URL crate, for this crate's usual reason: the input is one shape, the
 /// parse cannot fail in an interesting way, and the alternative is a dependency in a binary that
 /// ships to televisions.
-#[allow(dead_code)] // no sender yet — see the module doc
 pub(crate) fn parse_dsn(dsn: &str) -> Option<Dsn> {
     let dsn = dsn.trim();
     let (scheme, rest) = dsn.split_once("://")?;
@@ -122,7 +117,11 @@ pub(crate) fn parse_dsn(dsn: &str) -> Option<Dsn> {
 /// stored" field of LG's Data Safety declaration) rests on it, and Sentry fixes an organisation's
 /// region at creation: it cannot be moved later, only replaced. A build that quietly shipped a
 /// `.us.` DSN would make a published document false, and nothing else would notice.
-#[allow(dead_code)] // no sender yet — see the module doc
+// Test-only, and that is the point of it: `the_configured_dsn_parses_and_is_eu` asserts this
+// installation's DSN is an EU one, because `PRIVACY.md` and the LG Data Safety filing both claim
+// EU storage and Sentry fixes an organisation's region at creation — it cannot be moved, only
+// replaced. Nothing at runtime should ask: a build either has an EU DSN or should not ship.
+#[allow(dead_code)]
 pub(crate) fn is_eu_region(d: &Dsn) -> bool {
     d.origin.contains(".de.sentry.io")
 }
@@ -132,7 +131,6 @@ pub(crate) fn is_eu_region(d: &Dsn) -> bool {
 /// Minted when a record is QUEUED, not when it is sent, and stored with it: a retry must reuse it
 /// or one crash over a flaky link becomes several issues. That is a property of the caller, and the
 /// reason this returns a value rather than writing one anywhere.
-#[allow(dead_code)] // no sender yet — see the module doc
 pub(crate) fn new_event_id() -> Option<String> {
     super::mint_install_id() // same 16 random bytes as hex; a different draw each call
 }
@@ -357,7 +355,10 @@ pub(crate) fn lowest_load_vaddr(buf: &[u8]) -> Option<u64> {
 /// The compressed-item ceiling. **200 KiB, and it is the COMPRESSED figure** — the 1 MiB number
 /// that gets quoted is the decompressed one, and budgeting against it means an interesting crash
 /// is the one that gets refused.
-#[allow(dead_code)] // no sender yet — see the module doc
+#[allow(dead_code)] // no compression on this path — `queue::MAX_RECORD` bounds an item long
+// before this would, and nothing gzips a Sentry item today. Kept because the number is the
+// COMPRESSED ceiling and the 1 MiB figure everyone quotes is the decompressed one, which is the
+// mistake this constant exists to have already made once.
 pub(crate) const MAX_COMPRESSED: usize = 200 * 1024;
 
 /// Frame one item into an envelope: an envelope header line, an item header line, then the payload.
@@ -365,7 +366,6 @@ pub(crate) const MAX_COMPRESSED: usize = 200 * 1024;
 /// Newline-delimited, and the item header's `length` is the payload's byte length — the field this
 /// function exists to get right, since a wrong one makes the receiver parse the next line as
 /// payload and reject the whole envelope with a message about neither.
-#[allow(dead_code)] // no sender yet — see the module doc
 pub(crate) fn envelope(event_id: &str, item_type: &str, payload: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(payload.len() + 160);
     out.extend_from_slice(format!("{{\"event_id\":\"{event_id}\"}}\n").as_bytes());

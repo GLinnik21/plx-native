@@ -232,6 +232,30 @@ pub(crate) fn allowed(r: &Record, c: &consent::Consent) -> bool {
 
 /// The URL and headers a record is sent to, or `None` if this build has no configuration for its
 /// destination.
+/// **What actually goes on the wire, which is not always what is in the spool.**
+///
+/// The spool holds the EVENT, because that is the thing consent was given for and the thing
+/// `queue::ack` identifies; the envelope is transport framing and belongs here, where the URL and
+/// the headers are chosen.
+///
+/// **Sentry's endpoint accepted the unframed event with a 200 and an echoed id, and stored
+/// nothing.** `route` has always addressed `/envelope/` with `Content-Type:
+/// application/x-sentry-envelope`, and `sentry::envelope` was written, tested — and never called;
+/// the raw event JSON went out instead. The receiver parses the first line as the ENVELOPE HEADER,
+/// which a single-line event object happens to satisfy, finds no item lines after it, and returns
+/// `200 {"id": <the header's event_id>}` for an envelope carrying nothing.
+///
+/// So the response is not evidence, and that is the part worth carrying away rather than the bug:
+/// posting a body of nothing but `{"event_id":"…"}` — not an event by any reading — gets the same
+/// 200 and the same echoed id. Measured against the live endpoint, which is how this was settled;
+/// no amount of reading the status code could have.
+fn wire_body(r: &Record) -> Vec<u8> {
+    match r.dest {
+        Dest::Sentry => sentry::envelope(&r.event_id, "event", &r.body),
+        Dest::PostHog => r.body.clone(),
+    }
+}
+
 fn route(r: &Record) -> Option<(String, Vec<String>)> {
     match r.dest {
         Dest::Sentry => {
@@ -285,7 +309,7 @@ pub(crate) fn send_one(r: &Record) -> (Verdict, Option<u64>) {
         crate::log(&format!("telemetry: no endpoint for {:?} in this build — record discarded", r.dest));
         return (Verdict::Hopeless, None);
     };
-    match crate::net::post_ca(&url, &headers, &r.body, TIMEOUTS) {
+    match crate::net::post_ca(&url, &headers, &wire_body(r), TIMEOUTS) {
         Some(resp) => {
             let v = classify(resp.status);
             // The response body is bounded and kept precisely so a rejection can be logged with the
@@ -315,6 +339,50 @@ pub(crate) fn send_one(r: &Record) -> (Verdict, Option<u64>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **What is posted to an envelope endpoint must be an ENVELOPE.**
+    ///
+    /// This shipped wrong and the transport could not say so: `route` addressed `/envelope/` with
+    /// the envelope content type while `send_one` posted the bare event, and Sentry answered
+    /// `200 {"id": …}` because a single-line event object parses as an envelope HEADER — an
+    /// envelope carrying zero items, accepted, stored nowhere. Measured against the live endpoint:
+    /// a body of nothing but `{"event_id":"…"}` gets the same 200 and the same echoed id.
+    ///
+    /// Graded structurally, since no status code can grade it: the Sentry wire body is three parts
+    /// — a header line, an item header whose `length` is the payload's byte length, and the payload
+    /// itself — and the length is the field a hand-rolled framer gets wrong.
+    #[test]
+    fn a_sentry_record_goes_on_the_wire_as_a_framed_envelope() {
+        let mut r = rec(Category::Errors, Dest::Sentry);
+        r.event_id = "a".repeat(32);
+        r.body = br#"{"event_id":"aaa","level":"fatal"}"#.to_vec();
+        let wire = wire_body(&r);
+
+        let text = String::from_utf8(wire.clone()).expect("utf-8");
+        let mut lines = text.split('\n');
+        let head = lines.next().expect("an envelope header line");
+        assert!(head.contains(&r.event_id), "the header must carry the event id: {head}");
+        let item = lines.next().expect("an item header line");
+        assert!(item.contains("\"type\":\"event\""), "item header: {item}");
+        assert!(
+            item.contains(&format!("\"length\":{}", r.body.len())),
+            "the item length must be the payload's byte length, or the receiver parses the next \
+             line as payload and rejects the whole envelope complaining about neither: {item}"
+        );
+        assert!(text.contains(std::str::from_utf8(&r.body).unwrap()), "the payload survives whole");
+        assert_ne!(wire, r.body, "the bare event was posted to an envelope endpoint");
+    }
+
+    /// …and PostHog's body is passed through untouched. Its endpoint takes a plain JSON object, so
+    /// framing it would break the channel that currently works — which is the mistake symmetrical
+    /// to the one above, and the reason this is a per-destination decision rather than a wrapper
+    /// applied on the way out.
+    #[test]
+    fn a_posthog_record_is_posted_exactly_as_it_was_queued() {
+        let mut r = rec(Category::Usage, Dest::PostHog);
+        r.body = br#"{"api_key":"phc_x","event":"app.launch"}"#.to_vec();
+        assert_eq!(wire_body(&r), r.body);
+    }
 
     fn rec(cat: Category, dest: Dest) -> Record {
         Record { category: cat, dest, event_id: "e".into(), body: b"{}".to_vec() }

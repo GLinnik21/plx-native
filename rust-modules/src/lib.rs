@@ -19,8 +19,8 @@ mod curlio; // the HTTPS media plane: a remote file pulled by byte range over li
 mod dev; // the /tmp/plxnative-* trigger surface, behind one `devtriggers` feature — read it before adding a trigger
 mod devcaps; // what this SoC decodes — the TV's own codec table, read once at boot (the capability profile + direct-play gate derive from it)
 #[macro_use]
-mod diag;
-mod telemetry; // scrub/ring/zlib shared by every off-device report — the ONE redaction pass lives here
+mod diag; // scrub/ring/zlib/schema shared by every off-device report — the ONE redaction pass lives here
+mod telemetry; // the opt-in crash + usage channels: consent, the spool, the worker, the two wire formats
 mod dynlib; // dlopen-by-SONAME-candidate: the libraries whose major moves between webOS releases
 mod egl; // boot-time EGL capability probe (extensions, swap behaviour, buffer age) — diagnostic only
 mod ff; // THE demuxer — the FFmpeg 9.0 this app BUNDLES and pins (majors 63/63/61), dlopen'd by absolute path beside the binary, never the television's
