@@ -615,8 +615,25 @@ check(binary.exists(), f"the staged payload carries the binary ({binary.name})")
 # `release-guard` (RELEASE is non-empty), print "SKIP — neither shipped configuration", and package
 # a dev-trigger binary under the released id on a green run. "This package carries no dev-trigger
 # surface" is a property of the BYTES and needs no stamp to grade.
+# THE GNU BUILD ID, which nothing else in this repo would notice the loss of.
+#
+# It is the only identifier that survives `strip` into the binary a user runs, and therefore the
+# only thing that can match a separated `pkg/plxnative.debug` back to a crash reported from a
+# television. Dropping `-Wl,--build-id=sha1` from the link would break every future symbolication
+# silently: the package builds, installs, runs and crashes exactly as before, and the failure
+# surfaces months later as a debug file that matches nothing — by which time the build that
+# produced the crash is gone.
+#
+# Matched as the NOTE STRUCTURE rather than by shelling out to readelf, so this stays stdlib-only
+# and does not need the NDK on the runner: namesz=4, descsz=20 (sha1), type=3 (NT_GNU_BUILD_ID),
+# then the name "GNU\0". Little-endian, which every target this project has ever had is.
+BUILD_ID_NOTE = b"\x04\x00\x00\x00\x14\x00\x00\x00\x03\x00\x00\x00GNU\x00"
+
 if binary.exists():
-    has_dev = DEV_WITNESS in binary.read_bytes()
+    blob = binary.read_bytes()
+    check(BUILD_ID_NOTE in blob,
+          "the packaged binary carries a GNU build id (-Wl,--build-id=sha1 is still on the link)")
+    has_dev = DEV_WITNESS in blob
     if IS_STABLE:
         check(not has_dev,
               f"the {PACKAGED_ID} package carries no dev-trigger surface — that id is what users install")
