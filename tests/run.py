@@ -2745,7 +2745,7 @@ def op_seek_rapid(lines, final_s):
     )
 
 
-def op_seek_transcode(lines, target_s):
+def op_seek_transcode(lines, target_s, min_climb_after_s=0):
     # transcode seeks now RELOAD the pipeline (reload_transcode: fresh Load = correct GStreamer
     # segment, no stale-segment artifacts). Older builds flushed+refed (`seek(transcode)`) or fell
     # back to reload_at.
@@ -2756,7 +2756,40 @@ def op_seek_transcode(lines, target_s):
     reached, err = _reached_target(lines, target_s)
     if err:
         return False, err
+    # **Reaching the target proves the seek landed; it does not prove the playback SURVIVED it,
+    # and those come apart exactly where the interesting bugs are.** A session the client stopped
+    # by its own hand (the 2026-08-29 encoder-name collision) reloads correctly, reaches its
+    # target, reports 18 timelines and then dies seconds later — and every assertion above passes
+    # on that log, because the seek DISCONTINUITY is itself counted as climb by the global
+    # `timeline_climb`. `min_climb_after_s` grades the series from the target ONWARD, which is
+    # the only window a post-seek death is visible in.
+    if min_climb_after_s:
+        after = [t for t, _ in progress_secs(lines[lines.index(hit) + 1:]) if t >= target_s - 5]
+        span = (max(after) - min(after)) if len(after) >= 2 else 0
+        if span < min_climb_after_s:
+            return False, (f"the seek landed but the playback did not survive it: only {span}s of "
+                           f"progress after the target ({len(after)} sample(s) from "
+                           f"{min(after) if after else '-'}s), need >={min_climb_after_s}s")
+        return True, (f"transcode/reload seek OK; reached {reached}s, then {span}s of progress "
+                      f"over {len(after)} sample(s) :: {hit.strip()}")
     return True, f"transcode/reload seek OK; reached {reached}s :: {hit.strip()}"
+
+
+def a_no_demux_failure(lines):
+    """The demuxer giving up is a death `no_playing_error` cannot see.
+
+    `no_playing_error` greps the STARFISH error surface (`smp_cb type=18` / `Playing error`).
+    A pipeline that dies on the acquisition side never gets there: `ff.rs` reports
+    `hls: demux failed: …` (a stopped or hopelessly slow encoder arrives as
+    `HLS segment was not produced in time`, because 404 is `NotReady` by design and the retry
+    budget cannot tell the two apart). On the host simulator there is no Starfish at all, so the
+    Starfish-side assertion is structurally silent there — which is how a dead pre-fix run scored
+    five green assertions out of five.
+    """
+    bad = next((ln for ln in lines
+                if "demux failed" in ln or "not produced in time" in ln), None)
+    return bad is None, ("no demux failure" if bad is None else
+                         f"the demuxer gave up :: {bad.strip()}")
 
 
 def op_audio_native(lines):
@@ -3356,6 +3389,8 @@ def evaluate(case, lines):
     if "min_play_rate_pm" in exp:
         results.append(("play_rate", *a_play_rate(lines, exp["min_play_rate_pm"])))
     results.append(("timeline_post", *a_timeline_post(lines)))
+    if exp.get("no_demux_failure"):
+        results.append(("no_demux_failure", *a_no_demux_failure(lines)))
     if exp.get("no_playing_error", True):
         results.append(("no_error", *a_no_error(lines)))
 
@@ -3369,7 +3404,8 @@ def evaluate(case, lines):
         elif k == "seek" and op.get("mode") == "inplace":
             results.append(("seek_inplace", *op_seek_inplace(lines, op.get("target_s", 140))))
         elif k == "seek":
-            results.append(("seek_transcode", *op_seek_transcode(lines, op.get("target_s", 140))))
+            results.append(("seek_transcode", *op_seek_transcode(
+                lines, op.get("target_s", 140), op.get("min_climb_after_s", 0))))
         elif k == "skip":
             results.append(("skip_marker", *op_skip_marker(
                 lines, op["marker"].capitalize(),

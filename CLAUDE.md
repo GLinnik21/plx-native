@@ -621,6 +621,42 @@ answers the other post-change question: did this change make any claim in the pr
 exists because nothing compiles CLAUDE.md, which is why the paragraph below has to open by telling
 you its own numbers are wrong.
 
+> ### FIXING A REPORTED BUG STARTS WITH A TEST THAT REPRODUCES WHAT WAS REPORTED, AND YOU MUST WATCH IT FAIL.
+>
+> **The first artifact is not the fix. It is a failing test that reproduces the SYMPTOM AS
+> DESCRIBED** — the maintainer's own words, their scenario, their sequence — and you have to
+> *see it red* against the broken build before you touch anything. A test written after the fix
+> and green on the first run is evidence about nothing: it proves the code does what it now does.
+>
+> **This is not a style preference; it has already failed here in exactly the way it always
+> fails.** On 2026-08-29 a client-side bug killed a playback after a seek. The fix was landed
+> first and the regression case written after it, and the case was green on the television — so
+> it looked done. Replayed against the log of the BROKEN build, that case scored **five green
+> assertions out of five on a run that died** with `HLS segment was not produced in time`. Two
+> separate reasons, both of which generalise: the global `timeline_climb` counted the seek
+> DISCONTINUITY as 313 s of progress, and `no_playing_error` greps the *Starfish* error surface,
+> which a death on the acquisition side never reaches. It took `no_demux_failure` plus a
+> post-target progress floor (`min_climb_after_s`) to make the case discriminate — and only the
+> replay against the broken log could have shown that, because on the fixed build every version
+> of the case looks identical.
+>
+> So, in order: **reproduce → watch it fail → fix → watch it pass → keep the failing artifact.**
+> Two rules fall out of it.
+>
+> * **A test you cannot run against the broken code is not yet evidence.** Sometimes the fix
+>   changes the signature the test calls (it did here: `prime` lost its `generation` parameter, so
+>   the unit test cannot compile against the old code). Then simulate the defect narrowly, watch
+>   the test go red, and **say in the commit that the red was simulated rather than historical** —
+>   it is a weaker claim and must not be reported as the stronger one.
+> * **Keep the broken run's log.** It is the only thing that can answer "would this test have
+>   caught it", and that question cannot be asked of a fixed build at all. Replaying a case's real
+>   assertions over a saved failing log costs seconds (`run.evaluate(case, lines)` off a saved
+>   `plxnative-events.log`) and is the cheapest audit in this repo.
+>
+> The host simulator makes the whole loop cheap and takes no television: `tools/abr-scenario.sh`
+> builds and runs one scenario end to end, so an A/B of two builds over one scenario is minutes,
+> not a device session.
+
 > ### THERE IS ONE TELEVISION AND IT IS A MUTEX. TAKE THE LOCK.
 >
 > There is exactly one dev set, one app instance on it, and webOS enforces nothing: two

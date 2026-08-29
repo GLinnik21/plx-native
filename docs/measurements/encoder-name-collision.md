@@ -99,6 +99,11 @@ including both new cases, over the harness's own conditioning proxy:
                                   [PASS] auto_original_squeeze_released  <- the reported scenario
 ```
 
+**Read that green with the next section in hand:** at the moment it was taken,
+`auto_seek_after_switch` did not yet discriminate — it would have passed the broken build too. The
+run above is honest about the fixed build's behaviour and says nothing about the case's power. It
+was re-run after the assertions were strengthened.
+
 One authoring error is worth recording, because it failed on the first pass and the failure looked
 like the fix: `auto_seek_after_switch` first declared `mode: "inplace"`, copied from the direct-play
 seek cases. This item transcodes, and a transcode seek is a **rebuild** — `route::transcode_seek`
@@ -117,6 +122,36 @@ could ask for landed **before the controller had ever switched**.
 `delay=<ms>` (a token distinct from `gap=`, which is the cadence *between* rapid steps) is what
 makes the wait expressible without a throwaway first seek — a throwaway would appear in the very
 log the case grades. `tests/manifest.json` gains `auto_seek_after_switch` on top of it.
+
+### The regression case passed the broken build
+
+Recorded here because it is the most transferable thing in this file, and because it was found by
+being asked the obvious question — *why not write the test first and watch it fail?*
+
+The case was written **after** the fix and was green on the television, which looked like enough.
+Replayed against the saved log of the **broken** build — a run that died on `HLS segment was not
+produced in time` fourteen seconds after the seek — it scored **five green assertions out of
+five**. Two independent reasons, both of which generalise well past this bug:
+
+* **The global `timeline_climb` counted the seek DISCONTINUITY as progress.** Position went 1 s to
+  314 s, so the assertion reported "climb 313s, need >=30s" and passed — on a log whose last
+  fourteen seconds are the whole of its post-seek life.
+* **`no_playing_error` greps the Starfish error surface** (`smp_cb type=18` / `Playing error`). A
+  death on the *acquisition* side never reaches it: `ff.rs` reports `hls: demux failed: …` and
+  stops. On the host simulator there is no Starfish at all, so that assertion is structurally
+  silent there — the same blindness the rest of this repo files under
+  `[[silent-instrument-trap]]`.
+
+What it took to make the case discriminate: **`no_demux_failure`** (the death line is its own
+assertion, not a hoped-for side effect of another one) and **`min_climb_after_s`** on the seek
+operation, which grades the position series from the target ONWARD — the only window in which a
+post-seek death is visible at all. Replayed again: pre-fix **FAIL** on both, post-fix **PASS** on
+all six.
+
+The general form is now a rule at the head of `CLAUDE.md`'s testing section. The mechanical part
+worth repeating: **keep the failing run's log**, because "would this test have caught it" is a
+question a fixed build cannot answer, and replaying a case's real assertions over a saved
+`plxnative-events.log` costs seconds.
 
 The same pass added **`max_reloads`**, and it closes a hole the flap investigation left open:
 `no_reload` cannot grade a mode-switching Auto case, which legitimately reloads twice — out of

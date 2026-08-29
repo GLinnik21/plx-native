@@ -2749,6 +2749,66 @@ class ReloadCeiling(unittest.TestCase):
         self.assertIn("fresh Load", why)
 
 
+class PostSeekSurvival(unittest.TestCase):
+    """Reaching a seek target and SURVIVING it are different claims, and they came apart.
+
+    The first version of `auto_seek_after_switch` passed the broken build: replayed against the
+    pre-fix simulator log — a run that died on `HLS segment was not produced in time` — all five
+    of its assertions were green. The global `timeline_climb` counted the seek DISCONTINUITY as
+    313 s of climb, and `no_playing_error` greps the Starfish surface, which an acquisition-side
+    death never reaches. These pin the two assertions added to close that.
+    """
+
+    def _log(self, positions, tail=()):
+        out = ["reload_transcode: fresh Load at offset 300s"]
+        out += [f"loop=60 fps=60 pos={t}s play=1000pm" for t in positions]
+        return out + list(tail)
+
+    def test_a_seek_that_lands_and_then_dies_fails(self):
+        """The pre-fix shape: the target is reached, then 14 s and silence."""
+        ok, why = run.op_seek_transcode(self._log(range(300, 315)), 300, min_climb_after_s=45)
+        self.assertFalse(ok)
+        self.assertIn("did not survive", why)
+
+    def test_a_seek_that_lands_and_keeps_playing_passes(self):
+        ok, why = run.op_seek_transcode(self._log(range(300, 480)), 300, min_climb_after_s=45)
+        self.assertTrue(ok, why)
+
+    def test_progress_before_the_seek_does_not_count(self):
+        """The discontinuity is exactly what the global climb assertion mistook for progress."""
+        lines = ([f"loop=60 fps=60 pos={t}s play=1000pm" for t in range(1, 200)]
+                 + self._log(range(300, 310)))
+        ok, why = run.op_seek_transcode(lines, 300, min_climb_after_s=45)
+        self.assertFalse(ok, why)
+
+    def test_without_the_floor_the_old_behaviour_is_unchanged(self):
+        """Every existing seek case passes 0 and must grade exactly as before."""
+        ok, _ = run.op_seek_transcode(self._log(range(300, 315)), 300)
+        self.assertTrue(ok)
+
+
+class DemuxFailureAssertion(unittest.TestCase):
+    """`no_playing_error` cannot see a death on the acquisition side."""
+
+    def test_the_death_line_from_the_incident_is_caught(self):
+        ok, why = run.a_no_demux_failure(
+            ["abr: committed Up to 2000kbps",
+             "hls: demux failed: HLS segment was not produced in time"])
+        self.assertFalse(ok)
+        self.assertIn("not produced in time", why)
+
+    def test_a_healthy_log_passes(self):
+        ok, why = run.a_no_demux_failure(["abr: committed Up to 4000kbps", "loop=60 pos=400s"])
+        self.assertTrue(ok, why)
+
+    def test_it_is_opt_in_so_no_existing_case_changes(self):
+        self.assertNotIn("no_demux_failure", run.load_manifest.__doc__ or "")
+        case = {"rk": "1", "operations": [{"op": "play"}],
+                "expect": {"require_video_bound": False}}
+        names = [n for n, _, _ in run.evaluate(case, ["loop=60 pos=1s"])[1]]
+        self.assertNotIn("no_demux_failure", names)
+
+
 class AbrCasesAreWiredUp(unittest.TestCase):
     """The two cases added for the 2026-08-29 incident, against the real tracked manifest."""
 
@@ -2775,6 +2835,17 @@ class AbrCasesAreWiredUp(unittest.TestCase):
         c = self._case("auto_seek_after_switch")
         seek = next(o for o in c["operations"] if o["op"] == "seek")
         self.assertNotEqual(seek.get("mode"), "inplace")
+
+    def test_the_seek_case_grades_survival_not_just_arrival(self):
+        """Without both of these the case passes the very build it was written against.
+
+        Verified by replay: the first version scored 5/5 green on the pre-fix simulator log, a
+        run that died on `HLS segment was not produced in time` fourteen seconds after the seek.
+        """
+        c = self._case("auto_seek_after_switch")
+        seek = next(o for o in c["operations"] if o["op"] == "seek")
+        self.assertGreaterEqual(seek.get("min_climb_after_s", 0), 30)
+        self.assertTrue(c["expect"].get("no_demux_failure"))
 
     def test_the_flap_case_releases_the_squeeze_and_bounds_the_blinks(self):
         c = self._case("auto_original_squeeze_released")
