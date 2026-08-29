@@ -349,7 +349,8 @@ which the linking section explains is load-bearing rather than tidy.
 
 - `Makefile` — build/deploy/run/ipk; toolchain, the bundled-FFmpeg build + staging + its ABI gate
   (one header tree, not the old dual one), TV ssh creds.
-- `src/main.c` — the **boot shim** (crash tracer, event-log/stderr setup, process bring-up); calls
+- `src/main.c` — the **boot shim** (crash tracer, event-log/stderr setup, process bring-up), with
+  the tracer's pure half in `src/crashfmt.h` (host-tested by `ci/crashfmt-test.c` in `make check`); calls
   the Rust `plex_run()`. `src/starfish.c` — the StarfishMediaAPIs C++/ACB seam. `src/svg.c` —
   nanosvg rasterizer. These three are the *entire* C side.
 - `rust-modules/src/` — the app core (Rust): `app.rs` (event loop/input), `system.rs` (wayland),
@@ -602,8 +603,20 @@ which the linking section explains is load-bearing rather than tidy.
   session) and drops to Home; on foreground `0x106` it **reloads** and resumes at the saved position
   with a single `Load`. In-app Home/Settings are *overlays* and do **not** fire these — only a real OS
   app-switch does. Preserve the suspend/reload pairing if you touch playback or routing.
-- **Crash forensics:** the C tracer (`main.c`) logs the faulting PC + `/proc/self/maps` line, then
-  **re-raises to `SIG_DFL`** so the OS/crashd still captures a real backtrace. Two logs, both in the
+- **Crash forensics:** the C tracer (`main.c`) logs the faulting PC and LR, **the ARM registers
+  around them** and the `/proc/self/maps` line(s) containing either, then **re-raises to `SIG_DFL`**
+  so the OS/crashd still captures a real backtrace. Call the result a **fault event, not a
+  backtrace** — `backtrace()` is not async-signal-safe and ARM unwinding out of a handler commonly
+  stops at `gsignal()`, so two frames plus registers plus the faulting module is the honest ceiling.
+  **The handler became genuinely async-signal-safe on 2026-08-29 and was not before**: it called
+  `fprintf`/`fopen`/`fgets`/`sscanf`/`fclose`, none of which is on POSIX's list, so a fault inside
+  the allocator or while another thread held a stdio lock could have deadlocked or refaulted and
+  lost the report — in the crash class most worth having one for. It is now `open`/`read`/`write`
+  and hand-rolled formatting, with both descriptors opened before `sigaction` arms it. The PURE half
+  (record formatting, and deciding what a maps line means) lives in **`src/crashfmt.h`** so that
+  `make check` can compile and RUN it on the Mac — `ci/crashfmt-test.c`, which is where the parsing
+  bugs of this tracer have historically been, and which on being written by watching it fail
+  disproved a justification `main.c` had carried since the tracer existed. Two logs, both in the
   install's runtime root (`/tmp`, or `/tmp/<app id>` for a flavoured install): `plxnative-events.log`
   is truncated each launch; **`plxnative-crash.log` is append-only and survives the relaunch** — read it
   after a crash+restart. Note pmlog's wall clock is ~3h skewed on this TV, so correlate by **monotonic

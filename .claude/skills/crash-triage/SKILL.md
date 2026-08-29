@@ -21,12 +21,24 @@ crash it emits:
 
 ```
 *** SIGNAL 11 (SIGSEGV) addr=0x6bcf pc=0xf5a4dd08 lr=0x0
+reg: sp=0x… fp=0x… ip=0x… cpsr=0x… r0=0x… r1=0x… … r10=0x…
 at:  <the /proc/self/maps line containing pc or lr>    -- which library faulted
 bin: <the maps line for our own executable>            -- our load base, for addr2line
 ```
 
 Turning `pc` into a source location needs `pc - load_base` fed to `addr2line`. Nothing in
 the repo did that arithmetic until `tools/crash-report.sh`.
+
+**Call it a FAULT EVENT, not a backtrace, when you write it up.** Two frames and the registers is
+what an async-signal-safe handler can honestly produce: `backtrace()` is not on the safe list, ARM
+unwinding out of a handler commonly stops at `gsignal()`, and deferring does not help because by
+then the stack is gone. The real backtrace comes from crashd, in `/var/log/reports/librdx/`, which
+is what the re-raise exists to preserve.
+
+The `reg:` line arrived 2026-08-29 with the rewrite that made the handler actually
+async-signal-safe (it had been calling `fprintf`/`fopen`/`sscanf`), so a log from an older build
+will not have it. **Read it when the PC does not resolve**: r0-r3 are the first four arguments at
+the call, `fp`/`sp` bound the frame, and a `cpsr` with bit 5 set says the fault was in Thumb code.
 
 All paths are relative to the repo root. The TV address comes from the `Makefile`
 (override with `TV=…`); no addresses or credentials live in this skill.

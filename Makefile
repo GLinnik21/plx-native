@@ -721,6 +721,12 @@ test: deploy run
 # variable — the suite is the only place that guarantee is ever checked. Host-side cosmetics are not
 # worth a device guarantee. The television is unaffected either way (`make run` and `tests/run.py`
 # both clear the log on the TV), so this is only about not confusing yourself locally.
+# Built into the shell's temp dir rather than the tree: it is a host binary in a repository whose
+# every other artifact is ARM, and one that landed in `src/` or `pkg/` would be a genuinely
+# confusing thing to find. `$(TMPDIR)` is set on macOS and empty on a Linux runner, hence the
+# fallback.
+CRASHFMT_TEST_BIN := $(or $(TMPDIR),/tmp/)plx-crashfmt-test
+
 check: lint
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" cargo +$(RUST_NIGHTLY) test --lib
 	@# The flavour transform, host-side and free. Its central assertion — that the STABLE transform
@@ -730,6 +736,14 @@ check: lint
 	@# it would be too late to learn otherwise. It also cross-checks the three copies of the app id
 	@# (here, ci/flavor.py, rust-modules/src/paths.rs), which no compiler can.
 	python3 ci/flavor.py --selftest
+	@# The crash tracer's PURE half (src/crashfmt.h), compiled and RUN with the host compiler.
+	@# The tracer runs in signal context on ARM and can only be graded on a television — but the
+	@# part of it that has ever been wrong is the parsing, and a `bin:` line naming the wrong
+	@# mapping is silent: tools/crash-report.sh subtracts that base and answers with a confident
+	@# wrong function. Splitting the pure half out is what makes that decidable here, and writing
+	@# the test by watching it fail is what disproved the justification main.c had carried since
+	@# the tracer was written. Milliseconds, no NDK, no device.
+	cc -O1 -Wall -Wextra -Werror -Isrc -o $(CRASHFMT_TEST_BIN) ci/crashfmt-test.c && $(CRASHFMT_TEST_BIN)
 	@# The harness's own host unit tests (tests/test_harness.py, stdlib unittest, ~0.5s — most of
 	@# it is five `run.py --list` subprocesses, not test logic; measure before budgeting). run.py
 	@# decides WHAT gets driven on the one television and had no test of any kind until 2026-08-22.

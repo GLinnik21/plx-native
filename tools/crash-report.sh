@@ -12,6 +12,7 @@
 #
 # The C tracer (src/main.c) writes, per crash:
 #     *** SIGNAL <n> (<name>) addr=0x… pc=0x… lr=0x…
+#     reg: sp=0x… fp=0x… ip=0x… cpsr=0x… r0=0x… … r10=0x…     (2026-08-29 and later builds)
 #     at:  <the /proc/self/maps line containing pc or lr>     (which library faulted)
 #     bin: <the maps line for our own binary>                 (our load base)
 # and then re-raises to SIG_DFL so the OS crash daemon still captures a real backtrace.
@@ -194,7 +195,11 @@ else
   # would not do: `com.beb.plxnative` is a PREFIX of `com.beb.plxnative.debug`, so triaging the
   # stable install would happily accept the debug install's load base and hand addr2line an offset
   # into the wrong binary — which does not fail, it answers with a confident wrong function.
-  # (src/main.c's tracer documents the same trap for the /plxnative name itself.)
+  # A RELATED but different guard sits on the tracer's side, in src/crashfmt.h: it emits a `bin:`
+  # line only for a path whose `/plxnative` is followed by a separator, so `plxnative.new` (what
+  # `make deploy` scp's before the rename) and `plxnative-sim` cannot be mistaken for the binary.
+  # That file's header records which of the two comments' historical justifications was measured
+  # FALSE — worth reading before writing a third one.
   binline=$(echo "$block" | grep '^bin: ' | grep -F "/$APPID/" | tail -1)
   if [ -z "$binline" ] && echo "$block" | grep -q '^bin: '; then
     echo "  *** this crash's bin: line does not name $APPID:"
