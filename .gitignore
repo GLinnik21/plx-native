@@ -134,3 +134,4 @@ pkg/.ffabi-host-ok
 rust-modules/target-sym/
 rust-modules/target-release-sym/
 pkg/plxnative.debug
+pkg/telemetry.local.json

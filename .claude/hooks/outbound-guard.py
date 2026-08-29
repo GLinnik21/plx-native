@@ -215,6 +215,12 @@ PRIVATE_FILES = (
     # `tools/plxnative-lab start`, staged into a `make LAB=1` package, and gitignored — the exact
     # shape of thing this hook exists to keep out of a PR body.
     "pkg/lab.json",
+    # The telemetry endpoints and credentials (`docs/telemetry.md` when it exists). The DSN's public
+    # key and the PostHog project key are publishable BY DESIGN — they are write-only ingest
+    # credentials, and any binary that sends anything has to carry them. The Sentry AUTH TOKEN in
+    # the same file is not: it can read and delete this project's data. One file, guarded as a
+    # whole, because a hook that tried to distinguish them would be one edit away from being wrong.
+    "pkg/telemetry.local.json",
     "local.env",
     ".tv-dpad-pass",
     ".tv-remote-url",

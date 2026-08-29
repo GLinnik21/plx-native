@@ -1,0 +1,18 @@
+{
+  "_comment": [
+    "Copy to pkg/telemetry.local.json and fill in. GITIGNORED, and listed in",
+    ".claude/hooks/outbound-guard.py's PRIVATE_FILES so none of these values can reach a PR body,",
+    "an issue comment or a commit message. Nothing here is compiled in yet.",
+    "",
+    "sentry_dsn / posthog_key are WRITE-ONLY ingest credentials and are publishable by design --",
+    "any binary that sends anything must carry them. sentry_auth_token is NOT: it can read and",
+    "delete this project's data. It is only used from the dev Mac, by sentry-cli, to upload debug",
+    "files; it is never compiled into the app."
+  ],
+  "sentry_dsn": "https://<public_key>@oNNNNNN.ingest.de.sentry.io/<project_id>",
+  "sentry_auth_token": "sntrys_...",
+  "sentry_org": "<org-slug>",
+  "sentry_project": "<project-slug>",
+  "posthog_key": "phc_...",
+  "posthog_host": "https://eu.i.posthog.com"
+}
