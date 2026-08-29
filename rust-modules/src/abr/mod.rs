@@ -120,9 +120,21 @@ pub(crate) struct AbrPolicy {
     pub(crate) buffer_target_ms: i64,
     /// **How much of the REACHABLE ceiling `B*` may ask for** (N3's alpha). The target is
     /// `min(buffer_target_ms, alpha * B_max_est(R))`, and this term is what stops it being a
-    /// promise the byte caps cannot keep. At the shipped target it binds only above ~19 700 kbps of
-    /// video ES — P1080High and Uhd alone — so it is inert on eleven of thirteen rungs today. It
-    /// becomes the live term, and its device validation stops being optional, if the target rises.
+    /// promise the byte caps cannot keep.
+    ///
+    /// **The inertness arithmetic here was the 8 MiB video queue's and is now stale.** It read:
+    /// "at the shipped target it binds only above ~19 700 kbps of video ES — P1080High and Uhd
+    /// alone — so it is inert on eleven of thirteen rungs today". That crossover is
+    /// `alpha*B_max < 2 500`, i.e. `R_v > 67 108 864/3 400 ~ 19 738`, computed against
+    /// `AQ_VIDEO_BYTES = 8 MiB`. Phase 0 grew that cap to **10 MiB** (`player/engine.rs`), so
+    /// `alpha*B_max` now runs 2 825 ms (Uhd) to 23 645 ms (P240) — above `buffer_target_ms` at
+    /// EVERY rung, and the `min` therefore takes the target at all thirteen.
+    ///
+    /// So this term is inert in `B*` on thirteen of thirteen rather than eleven — but it is NOT
+    /// dead, and the difference matters: it is live in the I3b(b) upshift reserve gate
+    /// (`controller.rs`, `min(3*segment, alpha*B_max_est)`) at every rung from 10 000 up, where it
+    /// is the binding half. It becomes the live term in `B*` too, and its device validation stops
+    /// being optional, if the target rises.
     pub(crate) buffer_reserve_fraction_pm: u32,
     /// **How fast a reserve deficit must close**, wall clock (N3's `H`). A candidate that leaves
     /// the reserve short may claim `C_safe * H / (H + D)`, so the horizon is what converts "we are
@@ -138,9 +150,20 @@ pub(crate) struct AbrPolicy {
     /// above it, so the average is a lower bound on demand, not the demand. Spending the entire
     /// measured link on the average merely postpones starvation to the first busy scene.
     pub(crate) vbr_allowance_pm: u32,
-    /// Cold-start Original admission, where there is exactly one probe and no history. Higher than
-    /// [`Self::vbr_allowance_pm`] on purpose: at that moment the estimate has no dispersion to
-    /// discount, so the margin has to carry the uncertainty itself.
+    /// Cold-start Original admission, where there is exactly one probe and no history: at that
+    /// moment the estimate has no dispersion to discount, so this margin has to carry the
+    /// uncertainty itself.
+    ///
+    /// **This doc said "Higher than [`Self::vbr_allowance_pm`] on purpose" and the two are EQUAL
+    /// in `measured()` — both 1 350.** The sentence was a design intent that the value never
+    /// carried, and the gap it describes is real but points the other way: cold start compares a
+    /// RAW measurement against 1.35x, while recovery compares an uncertainty-DISCOUNTED one
+    /// against the same 1.35x, so the effective bar is 1.35x when the estimate has one sample and
+    /// 1.69x-2.70x once it has a history. The moment we know least is the moment we admit most
+    /// easily — the inverse of what this comment claimed, and `docs/adaptive-playback-plan.md`
+    /// §6.3(4) already files the 1.35-vs-1.69 pair as a defect ("do not leave two undocumented
+    /// gates 2x apart"). Resolving that is a policy change and is not made here; what is fixed is
+    /// the doc asserting a relation the constants do not have.
     pub(crate) bootstrap_confidence_pm: u32,
     /// How fast an unmeasured gap costs confidence. One of these is a widening; four is a demotion
     /// to a prior ([`CapacityEstimate::age_ms`]).
