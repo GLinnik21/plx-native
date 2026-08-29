@@ -5806,15 +5806,34 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 if let Some(s) = crate::dev::read("autoseek") {
                     let mut steps: Vec<String> =
                         s.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect();
-                    if let Some(g) = steps.first().and_then(|f| f.strip_prefix("gap=")) {
-                        seek_gap_ms = g.parse().unwrap_or(300).max(50);
+                    // `gap=` is the cadence BETWEEN steps; `delay=` is how long to wait before the
+                    // FIRST one. They are two different quantities and conflating them costs a
+                    // whole class of case: an ABR transaction has to COMMIT before a seek can
+                    // exercise what happens either side of one, and a commit needs tens of seconds
+                    // of samples, while the first step otherwise fires at the fixed ~12 s above.
+                    // Expressing that with `gap=` alone forces a throwaway first seek to soak up
+                    // the wait — which puts a seek the case did not ask for into the log it grades.
+                    // Either order, so a script never has to remember which came first.
+                    let mut first_delay_ms = 0u32;
+                    loop {
+                        let Some(head) = steps.first().cloned() else { break };
+                        if let Some(g) = head.strip_prefix("gap=") {
+                            seek_gap_ms = g.parse().unwrap_or(300).max(50);
+                        } else if let Some(d) = head.strip_prefix("delay=") {
+                            first_delay_ms = d.parse().unwrap_or(0);
+                        } else {
+                            break;
+                        }
                         steps.remove(0);
                     }
                     if steps.is_empty() {
                         steps.push("140".to_string());
                     }
                     seek_script_last = crate::player::playpos_ns();
-                    seek_script_at = now.wrapping_sub(seek_gap_ms); // fire the first step now
+                    // The fire test is `now - seek_script_at >= seek_gap_ms`, so backing the origin
+                    // off by one gap fires the first step at once and adding the delay pushes it
+                    // out by exactly that much. `delay=0` is the historical behaviour, unchanged.
+                    seek_script_at = now.wrapping_sub(seek_gap_ms).wrapping_add(first_delay_ms);
                     seek_script = steps;
                 }
             }

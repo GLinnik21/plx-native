@@ -103,6 +103,12 @@ printf '%s' "$TOKEN" > "$DIR/plxnative-token"
 : > "$DIR/plxnative-noidle"      # the present gate would otherwise stall a settled screen
 : > "$DIR/plxnative-detailplay"  # press Play once the detail page has landed
 printf '%s' "$RK" > "$DIR/plxnative-detail"
+# A seek is not a link condition, but it is the other half of the state space this tool exists to
+# reach: `transcode_seek` REUSES the encoder session id, so the transactions either side of a seek
+# are the only ones whose names can collide. `AUTOSEEK` takes the trigger's own grammar verbatim
+# (`gap=<ms>` then comma-separated absolute/relative steps) and the first step fires ~12 s after
+# the player route is entered, so `gap=` is how you put a seek AFTER a commit rather than before.
+[ -n "${AUTOSEEK:-}" ] && printf '%s' "$AUTOSEEK" > "$DIR/plxnative-autoseek"
 
 # **A bare `wait` here HANGS the whole matrix**, and it did: the simulator is an SDL application
 # and under `nohup` there is no controlling terminal, so a plain TERM does not always end it — the
@@ -149,7 +155,7 @@ cleanup
 # ---- what the controller did --------------------------------------------------
 echo
 echo "-- mode and rung changes ------------------------------------------------"
-grep -aE 'route: Auto|auto: |reload_at:|reload_transcode:|abr: (committed|tx |seed|mode chose)|Original probe|abr: source' "$LOG" \
+grep -aE 'route: Auto|auto: |reload_at:|reload_transcode:|abr: (committed|tx |seed|mode chose)|Original probe|abr: source|autoseek:|not produced in time' "$LOG" \
   | sed 's/^/   /' || true
 echo
 # `grep -c` exits 1 on a count of zero, so `|| echo 0` fires ON TOP of the 0 it already printed

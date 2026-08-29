@@ -797,7 +797,21 @@ def triggers_for_case(case, url_base=None):
             # the content "140" converge to a byte-identical `steps == ["140"]` before any seek
             # logic runs. There is no second path to preserve. The app's empty-file default
             # survives as a by-hand affordance, exercised by no case, which is its correct status.
-            files.append(("plxnative-autoseek", str(op.get("target_s", 140))))
+            #
+            # `delay_ms` is what makes a seek reachable from an ABR case. The app fires the first
+            # step at a fixed ~12 s after the player route is entered, and an ABR transaction needs
+            # tens of seconds of samples before it can COMMIT — so without a delay every seek in
+            # this suite lands before the controller has ever switched, and the state either side
+            # of a seek-after-a-switch is untestable. It is not the same quantity as `gap_ms` (the
+            # cadence BETWEEN rapid steps) and the app parses them as two tokens for that reason;
+            # expressing the wait as a gap would need a throwaway first seek, which would then be
+            # in the log this case grades.
+            target = str(op.get("target_s", 140))
+            delay_ms = op.get("delay_ms")
+            files.append((
+                "plxnative-autoseek",
+                f"delay={int(delay_ms)},{target}" if delay_ms else target,
+            ))
         elif kind == "skip":
             files.append(("plxnative-marker", op["marker"]))
         elif kind == "marker":
@@ -2282,6 +2296,25 @@ def a_no_reload(lines):
                          f"session reloaded :: {bad.strip()}")
 
 
+def a_reload_ceiling(lines, limit):
+    """Bound the number of fresh `Load`s — the assertion `no_reload` cannot express.
+
+    A mode-switching Auto case legitimately reloads: once to leave Original when the link stops
+    covering the source, once to come back when it recovers. Zero is therefore the wrong gate and
+    absent is no gate at all, which is the state that let the Original flap ship — the controller
+    left and re-entered Original repeatedly on a link that was carrying the film, and every
+    existing assertion (climb, play rate, no error) was satisfied throughout, because each
+    individual reload is brief and the film keeps advancing.
+
+    A reload is a visible blink: it is a fresh Starfish `Load`, the picture goes and comes back.
+    So this counts what the viewer counts.
+    """
+    reloads = [ln for ln in lines if "reload_at:" in ln or "reload_transcode:" in ln]
+    n = len(reloads)
+    where = " | ".join(ln.strip()[:90] for ln in reloads[:6]) or "<none>"
+    return n <= limit, f"{n} reload(s), ceiling {limit} :: {where}"
+
+
 def gst_clock_ms(line):
     """GStreamer debug's H:MM:SS.nanoseconds clock as milliseconds, or None."""
     m = RE_GST_CLOCK.search(line)
@@ -3318,6 +3351,8 @@ def evaluate(case, lines):
     if exp.get("require_video_bound", True):
         results.append(("video_bound", *a_video_bound(lines)))
     results.append(("timeline_climb", *a_timeline_climb(lines, exp.get("min_timeline_climb_s", 12))))
+    if "max_reloads" in exp:
+        results.append(("reload_ceiling", *a_reload_ceiling(lines, exp["max_reloads"])))
     if "min_play_rate_pm" in exp:
         results.append(("play_rate", *a_play_rate(lines, exp["min_play_rate_pm"])))
     results.append(("timeline_post", *a_timeline_post(lines)))
