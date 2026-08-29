@@ -586,4 +586,48 @@ mod tests {
         }
     }
 
+
+    /// **The in-app privacy notice must stop claiming "no telemetry" the moment anything can send.**
+    ///
+    /// [`PRIVACY`] opens with *"There is no analytics, no telemetry, no crash upload, and no server
+    /// of mine for them to reach."* That is true of this build and is the one sentence on this
+    /// screen that a shipped sender would turn into a false statement — on a surface LG requires to
+    /// be readable IN the app, which is to say a compliance surface rather than a doc.
+    ///
+    /// Nothing else would catch it. The telemetry modules are being built alongside this text with
+    /// their own green tests; none of them reads this file, and prose does not compile. So the test
+    /// is structural, in the shape `diag::schema`'s document test already uses: it asks whether the
+    /// telemetry tree has acquired a CALLER of the network, and fails if it has while this claim
+    /// still stands.
+    ///
+    /// `net::post_ca` is the probe because it is the only door — `post_pinned` is lab-only and
+    /// `https_post` is the plex.tv path. When a sender lands, this test fails, and the fix is to
+    /// rewrite the notice in the same commit rather than after somebody notices.
+    #[test]
+    fn the_privacy_notice_and_the_ability_to_send_cannot_both_be_true() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/telemetry");
+        let mut sends = false;
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for e in entries.flatten() {
+                let Ok(src) = std::fs::read_to_string(e.path()) else { continue };
+                // Only the declaration half — a doc comment naming the function is not a call.
+                let code: String =
+                    src.lines().filter_map(|l| l.split("//").next()).collect::<Vec<_>>().join("\n");
+                if code.contains("post_ca(") {
+                    sends = true;
+                }
+            }
+        }
+        let claims_silence = PRIVACY.contains("no analytics, no telemetry");
+        assert!(
+            !(sends && claims_silence),
+            "something under src/telemetry now calls net::post_ca, but the in-app privacy notice \
+             still tells the viewer this app sends nothing to its developer. That notice is what \
+             LG requires to be readable IN the app; it changes in the SAME commit that gives the \
+             app the ability, not afterwards."
+        );
+        // And the claim must not simply be deleted while nothing sends — that would quietly drop a
+        // true and reassuring statement, which is its own kind of drift.
+        assert!(sends || claims_silence, "the no-telemetry claim vanished without a sender landing");
+    }
 }
