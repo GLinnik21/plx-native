@@ -1251,6 +1251,11 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   `/tmp/plxnative-token` beats the stored session entirely — so headless runs always land on a
   deterministic Home.
   `/tmp/plxnative-pickuser=<index>` forces the picker anyway and auto-picks that roster tile.
+  **`/tmp/plxnative-consent` is the same escape hatch for the CONSENT question**, and it exists
+  because that screen is suppressed BY the presence of any trigger — so without an override it is
+  the one screen in the app that cannot be reached headlessly at all: arming anything to reach it
+  is what hides it. It forces the question regardless of a stored decision, so it is also how the
+  screen is re-examined after answering once.
 - **The binary carries NO credentials** (no compiled PMS token, no demo URL). PMS access comes
   from the signed-in session (QR login) or, for automated runs only, `/tmp/plxnative-token` — which
   `tests/run.py` always injects (it reads the owner token from the gitignored

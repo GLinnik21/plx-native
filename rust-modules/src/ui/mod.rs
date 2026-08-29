@@ -15,6 +15,7 @@ pub mod alt_sources; // "Also available": the same item on a second pinned sourc
 pub mod anim;
 pub mod card_row;
 pub mod chapters_panel;
+pub(crate) mod consent;
 pub mod consts;
 pub mod detail;
 pub mod exit_alert; // the app's ONE decision alert: BACK at Home's root asks before it quits

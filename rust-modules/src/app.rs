@@ -3110,8 +3110,35 @@ fn commit_onboarding() -> bool {
 /// when the press lands, which is what puts the user one BACK from it either way.) `enter` is what the
 /// route's own BACK and its `Start watching` both come through, which is why there is one exit and
 /// not two.
+/// Put the telemetry question on screen, if this boot is one that should see it.
+///
+/// **Called on arrival at Home, not at boot**, and that is the whole of the placement decision: a
+/// first-run install boots to the QR screen, so a boot-time check would miss exactly the case the
+/// screen exists for — and asking somebody about crash reports before they have managed to sign in
+/// is asking while they still have nothing to lose by leaving.
+///
+/// Cheap and idempotent: `should_show` is false once a decision has been recorded, and false on any
+/// automated boot, so both call sites can simply ask. Nothing is stored by asking.
+fn maybe_ask_consent() {
+    let c = crate::telemetry::consent::current().unwrap_or_default();
+    // dev: /tmp/plxnative-consent forces the question even on an automated boot — the same escape
+    // hatch `plxnative-pickuser` is for the who's-watching picker, and needed for the same reason
+    // taken to its logical end. This screen is suppressed BY the presence of any trigger, so
+    // without a trigger that overrides the suppression it is the one screen in the app that cannot
+    // be reached headlessly at all: arming anything to reach it is what hides it.
+    if crate::dev::flag("consent") {
+        crate::ui::consent::open(&c);
+        return;
+    }
+    if crate::ui::consent::should_show(&c, crate::dev::any_trigger_present()) {
+        crate::ui::consent::open(&c);
+    }
+}
+
 fn enter_home_from_onboard(trail: &mut Trail) -> Route {
     trail.reset();
+    // First arrival at Home after signing in — the moment the plan names for this question.
+    maybe_ask_consent();
     // The selection just recorded is an input to Home's merge (`pms::feeds_home`), and the merge
     // re-runs off `browse`'s section generation — which `record_pins`/`toggle_pin` have already
     // bumped. Nothing to kick here; Home builds from the answer on its first frame.
@@ -4736,7 +4763,14 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 crate::ui::onboard::enter();
                 Route::Onboard
             }
-            BootTo::Home => Route::Home,
+            BootTo::Home => {
+                // The already-signed-in case: an existing install that has never been asked, or
+                // one whose policy version was bumped. The first-run case comes through
+                // `enter_home_from_onboard` instead, because a fresh install boots to the QR
+                // screen and is not at Home yet.
+                maybe_ask_consent();
+                Route::Home
+            }
             BootTo::Login => Route::Login,
             BootTo::Profiles => Route::Profiles,
         };
@@ -5026,6 +5060,27 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     // instead of closing the notice. Like the alert it is a `Popover` and not a
                     // `Route` (one owner, `ui::legal`), so it takes its turn by being high in the
                     // chain and `continue`ing on every key; that IS its modality.
+                    // ABOVE Legal, and therefore above everything: the consent question is the
+                    // one panel that must be answered before the app is usable, and unlike the
+                    // exit alert it is not answering a press the person just made — it is the
+                    // reason the boot stopped. Same mechanism as the two below it (a `Popover`,
+                    // not a `Route`, taking its turn by height in the chain and `continue`ing on
+                    // every key), which is also the whole of its modality. Its BACK does not
+                    // cancel: it COMMITS what is on screen, because both switches starting off
+                    // means dismissing IS a refusal, and re-asking a decided question every boot
+                    // is the pattern the screen exists to avoid.
+                    if crate::ui::consent::is_open() {
+                        if is_ok(sym) {
+                            crate::ui::consent::on_ok();
+                        } else if is_back(sym, wcode) {
+                            crate::ui::consent::on_back();
+                        } else if sym == SDLK_UP {
+                            crate::ui::consent::on_updown(-1);
+                        } else if sym == SDLK_DOWN {
+                            crate::ui::consent::on_updown(1);
+                        }
+                        continue;
+                    }
                     if crate::ui::legal::is_open() {
                         if is_ok(sym) {
                             crate::ui::legal::on_ok();
@@ -6833,6 +6888,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // Self-gated like the alert, and for the same reason: not a route, so there is no
             // route term to test it with.
             crate::ui::legal::update(dt);
+            crate::ui::consent::update(dt);
             if matches!(route, Route::Account { .. }) {
                 crate::ui::account_menu::update(dt);
             }
@@ -7167,6 +7223,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             // Same class again, and with no opener to lift either: the notice is
                             // about the APP, not about anything on the page behind it.
                             crate::ui::legal::draw_scrim();
+                            // And the consent question over all of them, mirroring the key ladder.
+                            crate::ui::consent::draw_scrim();
                         };
                         if let Some(reg) = crate::gfx::blur_direct_region() {
                             crate::gfx::blur_snapshot_direct(reg, &mut page);
@@ -7202,6 +7260,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         // only in the order Legal-over-alert, and whichever answers BACK first must
                         // also be the one on top.
                         crate::ui::legal::draw();
+                        // Top of the stack, mirroring the top of the key ladder — the boot stopped
+                        // for this, so nothing may be drawn over it.
+                        crate::ui::consent::draw();
                         // dev: the blurred route transition, then the load dial's glass surfaces.
                         // LAST on the non-player path, so the snapshot either takes is of the
                         // COMPLETE page — which is the honest source for a surface that sits on

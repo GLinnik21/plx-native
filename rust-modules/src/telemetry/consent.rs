@@ -33,15 +33,13 @@
 //! put five file reads on every log line and deadlocked the whole `auth` test block. The fix there
 //! and the design here are the same: the writer PUBLISHES, the hot path reads a snapshot.
 //!
-//! # Why four `#[allow(dead_code)]`s, and when they go
+//! # The four `#[allow(dead_code)]`s are gone
 //!
-//! [`POLICY_VERSION`], [`should_ask`], [`apply`] and `telemetry::record` all have exactly one
-//! non-test caller between them — the consent SCREEN — and it is not built yet. They are here now
-//! because they are the part that must be correct before anything can be sent, and because they
-//! are answerable on the host while the screen is not. The alternative was to gate the module on a
-//! feature so the warnings vanish, which is precisely what kept `diag::scrub`'s 31 assertions from
-//! ever running. Each attribute carries the same reason, and all four are deleted by the commit
-//! that adds the screen.
+//! [`POLICY_VERSION`], [`should_ask`], [`apply`] and `telemetry::record` carried one between them,
+//! each naming the consent SCREEN as the missing caller. `ui::consent` is that screen, and the
+//! attributes were deleted by the commit that added it rather than left behind — which was the
+//! stated plan and is worth having actually happened, because a stale allowance is how a genuinely
+//! dead function later hides in plain sight.
 use std::sync::RwLock;
 
 /// The version of *what is collected and why*. Bumping it re-asks.
@@ -51,7 +49,6 @@ use std::sync::RwLock;
 /// declared.** A raster added beside an existing width and height does not; a new event does. The
 /// incentive gradient runs towards never bumping — every bump costs consent — which is exactly why
 /// the rule lives here rather than in a reviewer's head.
-#[allow(dead_code)] // see the module doc: its readers are `apply` and the consent screen
 pub(crate) const POLICY_VERSION: u32 = 1;
 
 /// The stored decision. Serde-serialised to the telemetry file; every field is read and written, so
@@ -97,7 +94,6 @@ impl Consent {
 /// heartbeat on a known route, and every `sim-shot` script drives a screen it chose. That is the
 /// same rule `coldstart` already follows, and getting it wrong would not fail loudly — it would
 /// quietly re-point every headless run at a screen nobody wrote an assertion for.
-#[allow(dead_code)] // caller: the consent screen (see the module doc)
 pub(crate) fn should_ask(c: &Consent, automated: bool) -> bool {
     !automated && !c.answered()
 }
@@ -114,7 +110,6 @@ pub(crate) fn should_ask(c: &Consent, automated: bool) -> bool {
 /// * saying no to everything DROPS the identifier (see the module doc);
 /// * the answer is recorded against the current [`POLICY_VERSION`] either way, so a "no" is a real
 ///   answer and is not re-asked until the policy itself changes.
-#[allow(dead_code)] // caller: the consent screen (see the module doc)
 pub(crate) fn apply(prev: &Consent, errors: bool, usage: bool, mint: impl FnOnce() -> String) -> Consent {
     let next = Consent { asked_version: POLICY_VERSION, errors, usage, install_id: None };
     Consent {
@@ -137,6 +132,13 @@ pub(crate) fn install(c: Consent) {
     if let Ok(mut g) = CURRENT.write() {
         *g = Some(c);
     }
+}
+
+/// The decision as last published, if one has been. `None` means nothing has been loaded yet —
+/// distinct from "a decision that allows nothing", which is what a refusal looks like, and the
+/// consent screen needs to tell those apart to seed itself honestly.
+pub(crate) fn current() -> Option<Consent> {
+    CURRENT.read().ok().and_then(|g| g.clone())
 }
 
 /// May a USAGE event be reported? Read from the snapshot, so this is safe to call per event.
