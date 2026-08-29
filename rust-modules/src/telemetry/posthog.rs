@@ -56,9 +56,13 @@ const ANON: &str = "$process_person_profile";
 ///
 /// `distinct_id` is deliberately NOT added here — it goes in a different place per endpoint, which
 /// is the whole point of this module, so each shape adds it itself and the test can tell them apart.
-fn props(e: DiagEvent) -> serde_json::Map<String, serde_json::Value> {
+fn props(e: DiagEvent, environment: &str) -> serde_json::Map<String, serde_json::Value> {
     let (_, fields) = schema::serialize(e);
     let mut m = serde_json::Map::new();
+    // Which side of the world this build is on. A parameter rather than a constant read here, so
+    // this module keeps knowing nothing about credentials — `sender` derives it from the pair it
+    // was given and passes it down.
+    m.insert("environment".into(), serde_json::Value::String(environment.to_string()));
     for (k, v) in fields {
         let Value::Str(s) = v;
         m.insert(k.to_string(), serde_json::Value::String(s.to_string()));
@@ -86,6 +90,7 @@ pub(crate) fn single(
     api_key: &str,
     distinct_id: &str,
     e: DiagEvent,
+    environment: &str,
     timestamp: Option<&str>,
 ) -> Vec<u8> {
     let (name, _) = schema::serialize(e);
@@ -93,7 +98,7 @@ pub(crate) fn single(
     body.insert("api_key".into(), api_key.into());
     body.insert("event".into(), name.into());
     body.insert("distinct_id".into(), distinct_id.into());
-    body.insert("properties".into(), serde_json::Value::Object(props(e)));
+    body.insert("properties".into(), serde_json::Value::Object(props(e, environment)));
     if let Some(ts) = timestamp {
         body.insert("timestamp".into(), ts.into());
     }
@@ -110,13 +115,14 @@ pub(crate) fn single(
 pub(crate) fn batch(
     api_key: &str,
     distinct_id: &str,
+    environment: &str,
     events: &[(DiagEvent, &str)],
 ) -> Vec<u8> {
     let entries: Vec<serde_json::Value> = events
         .iter()
         .map(|(e, ts)| {
             let (name, _) = schema::serialize(*e);
-            let mut p = props(*e);
+            let mut p = props(*e, environment);
             // THE difference. Top-level here would be an ordinary ignored property, and the batch
             // would arrive with no identity while still answering 200.
             p.insert("distinct_id".into(), serde_json::Value::String(distinct_id.to_string()));
@@ -159,13 +165,13 @@ mod tests {
     #[test]
     fn every_event_on_both_endpoints_is_anonymous() {
         for e in all() {
-            let s = parse(&single("phc_k", "id1", e, Some("2026-08-29T00:00:00Z")));
+            let s = parse(&single("phc_k", "id1", e, "test", Some("2026-08-29T00:00:00Z")));
             assert_eq!(
                 s["properties"][ANON],
                 serde_json::json!(false),
                 "a single-event body was not anonymous: {e:?}"
             );
-            let b = parse(&batch("phc_k", "id1", &[(e, "2026-08-29T00:00:00Z")]));
+            let b = parse(&batch("phc_k", "id1", "test", &[(e, "2026-08-29T00:00:00Z")]));
             assert_eq!(
                 b["batch"][0]["properties"][ANON],
                 serde_json::json!(false),
@@ -182,14 +188,14 @@ mod tests {
     /// ingest still answers 200. There is no failure to notice.
     #[test]
     fn the_two_endpoints_disagree_about_where_identity_goes() {
-        let s = parse(&single("phc_k", "id1", DiagEvent::AppLaunch, Some("2026-08-29T00:00:00Z")));
+        let s = parse(&single("phc_k", "id1", DiagEvent::AppLaunch, "test", Some("2026-08-29T00:00:00Z")));
         assert_eq!(s["distinct_id"], "id1", "/i/v0/e/ carries distinct_id at the top level");
         assert!(
             s["properties"].get("distinct_id").is_none(),
             "/i/v0/e/ must NOT also put it in properties"
         );
 
-        let b = parse(&batch("phc_k", "id1", &[(DiagEvent::AppLaunch, "2026-08-29T00:00:00Z")]));
+        let b = parse(&batch("phc_k", "id1", "test", &[(DiagEvent::AppLaunch, "2026-08-29T00:00:00Z")]));
         let entry = &b["batch"][0];
         assert_eq!(
             entry["properties"]["distinct_id"], "id1",
@@ -209,7 +215,7 @@ mod tests {
     fn a_batch_carries_one_api_key_at_the_top() {
         let evs: Vec<(DiagEvent, &str)> =
             all().into_iter().map(|e| (e, "2026-08-29T00:00:00Z")).collect();
-        let b = parse(&batch("phc_k", "id1", &evs));
+        let b = parse(&batch("phc_k", "id1", "test", &evs));
         assert_eq!(b["api_key"], "phc_k");
         assert_eq!(b["historical_migration"], serde_json::json!(false));
         let arr = b["batch"].as_array().expect("batch is an array");
@@ -229,6 +235,7 @@ mod tests {
             "phc_k",
             "id1",
             DiagEvent::RouteEntered { screen: "detail" },
+            "test",
             Some("2026-08-29T00:00:00Z"),
         ));
         assert_eq!(s["event"], "route.entered");
@@ -242,7 +249,7 @@ mod tests {
     fn the_wire_name_is_the_schema_name() {
         for e in all() {
             let (name, _) = schema::serialize(e);
-            let s = parse(&single("phc_k", "id1", e, Some("2026-08-29T00:00:00Z")));
+            let s = parse(&single("phc_k", "id1", e, "test", Some("2026-08-29T00:00:00Z")));
             assert_eq!(s["event"], name);
             assert!(schema::EVENT_NAMES.contains(&name));
         }
@@ -252,10 +259,10 @@ mod tests {
     /// arrival, the right default given this television's ~3h clock skew.
     #[test]
     fn an_absent_timestamp_is_omitted_rather_than_blank() {
-        let b = parse(&single("phc_k", "id1", DiagEvent::AppLaunch, None));
+        let b = parse(&single("phc_k", "id1", DiagEvent::AppLaunch, "test", None));
         assert!(b.get("timestamp").is_none(), "a blank timestamp would be worse than none");
         assert_eq!(b["event"], "app.launch");
-        let with = parse(&single("phc_k", "id1", DiagEvent::AppLaunch, Some("T")));
+        let with = parse(&single("phc_k", "id1", DiagEvent::AppLaunch, "test", Some("T")));
         assert_eq!(with["timestamp"], "T");
     }
 
@@ -263,7 +270,7 @@ mod tests {
     /// flush with nothing in it is an ordinary event, not an error.
     #[test]
     fn an_empty_batch_is_still_well_formed() {
-        let b = parse(&batch("phc_k", "id1", &[]));
+        let b = parse(&batch("phc_k", "id1", "test", &[]));
         assert_eq!(b["batch"].as_array().map(|a| a.len()), Some(0));
         assert_eq!(b["api_key"], "phc_k");
     }

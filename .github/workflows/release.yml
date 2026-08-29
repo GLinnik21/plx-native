@@ -250,13 +250,22 @@ jobs:
           # separated .debug back to the binary a stranger's television crashed in. Two steps would
           # hand us a .debug matching nothing that ever shipped.
           SYMBOLS: "1"
-          # The telemetry endpoints. WRITE-ONLY ingest credentials, publishable by design — every
-          # client that sends anything carries them — but they live in a gitignored file, so without
-          # these a CI-built release compiles `option_env!` to None and the shipped app provably
-          # cannot report anything. That is the safe direction and it is also silent, which is why
-          # the assertion below checks that they took.
-          PLX_SENTRY_DSN: ${{ secrets.PLX_SENTRY_DSN }}
-          PLX_POSTHOG_KEY: ${{ secrets.PLX_POSTHOG_KEY }}
+          # The PRODUCTION telemetry endpoints, and `vars` rather than `secrets` DELIBERATELY.
+          # They are write-only client identifiers: they permit sending TO a project and grant no
+          # read of anything in it, and `strings` finds both in every shipped binary, so treating
+          # them as secret is theatre. It would also be actively harmful here — GitHub masks a
+          # secret's value everywhere it appears in a log, and `ci/gen-release-audit.py` reads the
+          # endpoints back OUT of the packaged binary and prints them, which is the row that lets a
+          # stranger confirm where their television reports to. Masked, that row reads `***`.
+          # Only SENTRY_AUTH_TOKEN, in the upload step below, is a real secret: it can read and
+          # delete the project.
+          #
+          # These live ONLY here. A developer's machine gets the `_DEV` pair instead
+          # (`make telemetry-local`), and `telemetry::sender::ENVIRONMENT` is derived from WHICH
+          # pair a build was handed — so this block is also the whole reason a shipped binary
+          # reports as `production`, and the reason a locally built one cannot.
+          PLX_SENTRY_DSN: ${{ vars.PLX_SENTRY_DSN }}
+          PLX_POSTHOG_KEY: ${{ vars.PLX_POSTHOG_KEY }}
         run: |
           make -j"$(nproc)"
           make ipk symbols
@@ -279,15 +288,40 @@ jobs:
           [ "$(idof pkg/plxnative)" = "$(idof pkg/plxnative.debug)" ] \
             || { echo "::error::build id mismatch between the shipped binary and its .debug"; exit 1; }
           echo "build-id $(idof pkg/plxnative)"
-          # And that the endpoints reached the binary. A release that silently cannot report is
-          # exactly the outcome nobody would notice until a crash never arrived.
-          if [ -n "${PLX_SENTRY_DSN}${PLX_POSTHOG_KEY}" ]; then
-            grep -q 'tel:' pkg/.build-config \
-              || { echo "::error::telemetry endpoints were set but did not reach the build"; exit 1; }
-          else
-            echo "::warning::no telemetry endpoints configured — this release cannot report crashes."
-            echo "::warning::set the PLX_SENTRY_DSN and PLX_POSTHOG_KEY repository secrets."
-          fi
+          # **The telemetry configuration FAILS CLOSED here, and only here.** For a local build,
+          # "no endpoint -> telemetry compiled out" is the right default and the safe one. For an
+          # OFFICIAL RELEASE it is a configuration failure: a binary that silently cannot report is
+          # indistinguishable from a healthy one until months later, when the crash that should
+          # have arrived never did. This step used to warn and continue.
+          [ -n "$PLX_SENTRY_DSN" ] \
+            || { echo "::error::PLX_SENTRY_DSN is unset — refusing to ship a release that cannot report a crash. Set it as a repository VARIABLE (not a secret)."; exit 1; }
+          [ -n "$PLX_POSTHOG_KEY" ] \
+            || { echo "::error::PLX_POSTHOG_KEY is unset — refusing to ship a release that cannot report usage. Set it as a repository VARIABLE (not a secret)."; exit 1; }
+          # The DEVELOPMENT pair must be ABSENT. Supplying both is already a compile error —
+          # `telemetry::sender`'s const block refuses it, because the environment a build reports
+          # is derived from which pair it was given and two pairs have no answer — so this is the
+          # same assertion, made earlier and in words that name the workflow rather than the crate.
+          [ -z "$PLX_SENTRY_DSN_DEV$PLX_POSTHOG_KEY_DEV" ] \
+            || { echo "::error::development telemetry credentials are present in a release build"; exit 1; }
+          grep -q 'tel:' pkg/.build-config \
+            || { echo "::error::telemetry endpoints were set but did not reach the build"; exit 1; }
+          # And that the binary carries the PRODUCTION endpoint specifically, rather than merely
+          # "some endpoint". `option_env!` yields a `&'static str`, so a configured DSN is in
+          # `.rodata` verbatim; finding it there is what proves `telemetry::sender`'s const block
+          # took the production branch, and so that `ENVIRONMENT` is `production` and every event
+          # from this release lands in the right project. Substring, not whole-line: Rust string
+          # literals are not NUL-terminated and adjacent ones merge into one `strings` record.
+          strings pkg/plxnative | grep -qF "$PLX_SENTRY_DSN" \
+            || { echo "::error::the packaged binary does not carry the production Sentry DSN"; exit 1; }
+          strings pkg/plxnative | grep -qF "$PLX_POSTHOG_KEY" \
+            || { echo "::error::the packaged binary does not carry the production PostHog key"; exit 1; }
+          # Fingerprints, not values. These are publishable, but they are also usable to write junk
+          # into the project and burn a free-tier quota, and a workflow log is a far more casually
+          # read surface than the audit file — which does record them in full, deliberately, being
+          # the document that makes the package reproducible by somebody other than the maintainer.
+          echo "telemetry fingerprints (sha256, first 16):"
+          printf '  sentry  %s\n' "$(printf %s "$PLX_SENTRY_DSN"  | sha256sum | cut -c1-16)"
+          printf '  posthog %s\n' "$(printf %s "$PLX_POSTHOG_KEY" | sha256sum | cut -c1-16)"
           # ...and carry the stamp to the publish job under a NON-HIDDEN name: upload-artifact
           # silently drops dotfiles, so `pkg/.build-config` would never arrive and the audit would
           # lose the row recording which configuration was built.

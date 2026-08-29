@@ -371,22 +371,42 @@ RUST_STAMP     = pkg/.build-config
 # building from source get a binary with no endpoint in it at all. That is the safe direction and
 # it is a property of the artifact rather than of a runtime flag.
 #
-# Both are WRITE-ONLY ingest credentials and publishable by design -- any client that sends
-# anything must carry one. The Sentry AUTH TOKEN is a different thing entirely (it can read and
-# delete the project's data), is not read here, and is never compiled in; it is used from this Mac
-# by sentry-cli. `python3 -c` rather than a grep because the file is JSON and a value can contain a
-# `:` or a `/`; `|| true` because the whole point is that a checkout without the file still builds.
+# **FOUR values, in two PAIRS, and the pair decides the environment.** This is not symmetry for its
+# own sake: the build's `environment` field is derived from WHICH pair it was given
+# (`telemetry::sender::ENVIRONMENT`), so a binary cannot label itself `production` while sending to
+# the dev project. The first draft derived it from the feature set instead, and
+# `make RELEASE=1 FLAVOR=debug deploy` -- an ordinary command -- would have done exactly that:
+# `RELEASE=1` drops `devtriggers`, so it read as production, while the key still came from the local
+# file and the data still went to dev. Destination and label diverging silently is the worst
+# outcome for a field whose only job is to say which side data is on.
+#
+# The DEV pair is what a developer's machine holds; the PRODUCTION pair exists only as a GitHub
+# repository variable and is injected by the release workflow. So a local build physically cannot
+# reach production -- not because a flag was set, but because the value is not on the machine.
+#
+# All four are WRITE-ONLY ingest credentials and publishable by design -- any client that sends
+# anything must carry one, and `strings` finds them in any shipped binary. The Sentry AUTH TOKEN is
+# a different thing entirely (it can read and delete the project's data), is not read here, and is
+# never compiled in; it lives only as a GitHub secret and is used only by `sentry-cli` in CI.
+# `python3 -c` rather than a grep because the file is JSON and a value can contain a `:` or a `/`;
+# `|| true` because the whole point is that a checkout without the file still builds.
 TELEMETRY_JSON = pkg/telemetry.local.json
 telemetry_val = $(shell python3 -c "import json,sys;print(json.load(open('$(TELEMETRY_JSON)')).get('$(1)',''))" 2>/dev/null || true)
-PLX_SENTRY_DSN  ?= $(call telemetry_val,sentry_dsn)
-PLX_POSTHOG_KEY ?= $(call telemetry_val,posthog_key)
+# The dev pair: read from the working copy, written there by `make telemetry-local`.
+PLX_SENTRY_DSN_DEV  ?= $(call telemetry_val,sentry_dsn_dev)
+PLX_POSTHOG_KEY_DEV ?= $(call telemetry_val,posthog_key_dev)
+# The production pair: deliberately NOT read from the file. Only the environment can supply these,
+# which in practice means the release workflow. Reading them from the working copy is precisely the
+# bug this whole arrangement exists to make impossible.
+PLX_SENTRY_DSN  ?=
+PLX_POSTHOG_KEY ?=
 
 # In the stamp, and it has to be: switching a build from unconfigured to configured changes what
 # the binary CAN DO and nothing about the sources, so without this the configuration would be
 # baked in from whichever build happened to run first -- the same class of trap as
 # `make RELEASE=1 && make deploy`. The values are hashed rather than written, so the stamp file
 # (which is not gitignored) never contains a credential.
-TELEMETRY_CFG  = $(shell printf '%s|%s' '$(PLX_SENTRY_DSN)' '$(PLX_POSTHOG_KEY)' | shasum | cut -c1-12)
+TELEMETRY_CFG  = $(shell printf '%s|%s|%s|%s' '$(PLX_SENTRY_DSN)' '$(PLX_POSTHOG_KEY)' '$(PLX_SENTRY_DSN_DEV)' '$(PLX_POSTHOG_KEY_DEV)' | shasum | cut -c1-12)
 RUST_CFG       = features:$(RUST_FEATFLAGS)$(if $(SYMBOLS),+symbols,)+tel:$(TELEMETRY_CFG)
 # Handled by $(shell) during PARSING, and by DELETING the output rather than by timestamps.
 # Both choices are load-bearing, and both were arrived at by measuring the failures:
@@ -500,6 +520,7 @@ RUST_INPUTS := $(shell find rust-modules/src assets -type f 2>/dev/null)
 $(RUST_LIB): $(RUST_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.lock rust-modules/.cargo/config.toml Makefile $(FFABI_STAMP)
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" $(RUST_ENV) \
 	  PLX_SENTRY_DSN='$(PLX_SENTRY_DSN)' PLX_POSTHOG_KEY='$(PLX_POSTHOG_KEY)' \
+	  PLX_SENTRY_DSN_DEV='$(PLX_SENTRY_DSN_DEV)' PLX_POSTHOG_KEY_DEV='$(PLX_POSTHOG_KEY_DEV)' \
 	  cargo +$(RUST_NIGHTLY) build --release --target $(RUST_TARGET) \
 	    --target-dir $(RUST_TDIR) $(RUST_FEATFLAGS)
 
@@ -544,6 +565,36 @@ NDK_URL = https://github.com/webosbrew/native-toolchain/releases/download/$(NDK_
 # where an unverified 156 MB download actually matters.
 NDK_SHA256_linux-aarch64 = 45a2d12ff557457d92cde4fddaa77a6f1090fca03adc43bb74397e5e0c379501
 NDK_SHA256 = $(NDK_SHA256_$(NDK_PLAT))
+# Fetch this checkout's DEV telemetry credentials from GitHub into the gitignored local file.
+#
+# **GitHub is the single source of truth for every credential**, including the dev ones; the working
+# copy is a cache and never an origin. That is what makes a fresh clone or a second worktree one
+# command instead of a hunt — `[[worktree-fleet-hazards]]` records forgotten gitignored files as a
+# recurring cost here, and this is one of them.
+#
+# It fetches ONLY the `_DEV` pair, and being the sole writer of this file is what keeps the dev /
+# production separation true. The production pair is never written to disk on a developer's machine.
+#
+# The AUTH TOKEN is deliberately absent and cannot be fetched: `gh` reads repository VARIABLES but
+# GitHub secrets are write-only through the API, and the only consumer — `sentry-cli` — runs in CI.
+# So the one genuinely dangerous credential never lands on this machine at all.
+#
+# No `gh`, no network, or never having run this: the build simply carries no endpoint and sends
+# nothing, which is the safe direction and already the behaviour.
+telemetry-local:
+	@command -v gh >/dev/null || { echo "telemetry-local: needs the gh CLI (brew install gh)"; exit 1; }
+	@gh auth status >/dev/null 2>&1 || { echo "telemetry-local: gh is not authenticated (gh auth login)"; exit 1; }
+	@set -e; \
+	  dsn=$$(gh variable get PLX_SENTRY_DSN_DEV 2>/dev/null || true); \
+	  key=$$(gh variable get PLX_POSTHOG_KEY_DEV 2>/dev/null || true); \
+	  if [ -z "$$dsn$$key" ]; then \
+	    echo "telemetry-local: neither PLX_SENTRY_DSN_DEV nor PLX_POSTHOG_KEY_DEV is set on the repo"; \
+	    exit 1; \
+	  fi; \
+	  python3 -c 'import json,sys; json.dump({"_comment":["Written by `make telemetry-local`. GITIGNORED. DEV credentials only — the production pair lives solely in GitHub repository variables and is injected by the release workflow.","No auth token here: gh cannot read secrets, and sentry-cli runs in CI."],"sentry_dsn_dev":sys.argv[1],"posthog_key_dev":sys.argv[2],"sentry_org":"gleb-linnik","sentry_project":"plx-native","posthog_host":"https://eu.i.posthog.com"}, open("$(TELEMETRY_JSON)","w"), indent=2)' "$$dsn" "$$key"; \
+	  chmod 0600 $(TELEMETRY_JSON); \
+	  echo "telemetry-local: wrote $(TELEMETRY_JSON) (dev credentials; environment=development)"
+
 setup-env:
 	@test "$(NDK_PLAT)" != UNSUPPORTED || { \
 	  echo "no webOS NDK published for $(NDK_OS)-$(NDK_HOST) at $(NDK_REL)."; \
@@ -793,7 +844,14 @@ CRASHFMT_TEST_BIN := $(or $(TMPDIR),/tmp/)plx-crashfmt-test
 CRASHTRACE_TEST_BIN := $(or $(TMPDIR),/tmp/)plx-crashtrace-test
 
 check: lint
-	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" cargo +$(RUST_NIGHTLY) test --lib
+	@# The telemetry credentials are passed here too, and that is not decoration: `ENVIRONMENT` and
+	@# the two compile-time refusals are derived from them, so a host suite run WITHOUT them grades a
+	@# configuration nobody builds. With them, `the_environment_matches_the_credential_pair_that_was_
+	@# supplied` checks this checkout's actual configuration rather than the empty one.
+	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" \
+	  PLX_SENTRY_DSN='$(PLX_SENTRY_DSN)' PLX_POSTHOG_KEY='$(PLX_POSTHOG_KEY)' \
+	  PLX_SENTRY_DSN_DEV='$(PLX_SENTRY_DSN_DEV)' PLX_POSTHOG_KEY_DEV='$(PLX_POSTHOG_KEY_DEV)' \
+	  cargo +$(RUST_NIGHTLY) test --lib
 	@# The flavour transform, host-side and free. Its central assertion — that the STABLE transform
 	@# is the identity — is the mechanical guarantee that having a second app id cannot perturb the
 	@# released .ipk, whose sha256 every user's television verifies at install. That property is
@@ -1130,6 +1188,7 @@ pkg/.ffabi-host-ok: ci/ffabi-assert.c $(FFMPEG_HOST_INC)/libavformat/avformat.h 
 # would exercise the upload path over a playback that never started.
 sim: $(FFMPEG_HOST_STAGED) pkg/.ffabi-host-ok
 	PLX_SENTRY_DSN='$(PLX_SENTRY_DSN)' PLX_POSTHOG_KEY='$(PLX_POSTHOG_KEY)' \
+	  PLX_SENTRY_DSN_DEV='$(PLX_SENTRY_DSN_DEV)' PLX_POSTHOG_KEY_DEV='$(PLX_POSTHOG_KEY_DEV)' \
 	  cargo build --manifest-path rust-modules/Cargo.toml --target-dir $(SIM_TDIR)$(if $(LAB),-lab,) --features hostsim$(if $(LAB), --features lab-diagnostics,) --bin plxnative-sim
 
 # Interactive: opens a window. Ctrl-C to quit.
@@ -1265,5 +1324,5 @@ fetch-profile:
 	-$(SCP) root@$(TV):$(RUNDIR)/plxnative-hwcnt.jsonl pkg/plxnative-hwcnt.jsonl
 	@ls -l pkg/plxnative-*.jsonl 2>/dev/null || echo "no profiler output in $(RUNDIR) on the TV ($(APPID))"
 
-.PHONY: symbols all setup-env deploy run run-stream kill check lint test ipk clean tv-lock-require threadprobe sockprobe logmprobe mali-hwcnt-probe sim sim-run sim-shot sim-token sim-clean macapp macapp-zip fixtures fixtures-quick fixtures-pipeline fetch-profile \
+.PHONY: symbols all setup-env telemetry-local deploy run run-stream kill check lint test ipk clean tv-lock-require threadprobe sockprobe logmprobe mali-hwcnt-probe sim sim-run sim-shot sim-token sim-clean macapp macapp-zip fixtures fixtures-quick fixtures-pipeline fetch-profile \
         release-guard lab-guard install uninstall $(QUERY_GOALS)

@@ -342,7 +342,16 @@ pub(crate) fn preview() -> String {
         DiagEvent::SignInCompleted,
     ] {
         let body =
-            crate::telemetry::posthog::single("<project key>", "<random id>", e, Some("<time>"));
+            // The REAL environment this build would report, not a placeholder: it is the one
+            // field on the preview that differs between a developer's build and a shipped one, and
+            // showing the wrong side would make the panel lie about where the data goes.
+            crate::telemetry::posthog::single(
+                "<project key>",
+                "<random id>",
+                e,
+                crate::telemetry::sender::ENVIRONMENT,
+                Some("<time>"),
+            );
         // **Pretty-printed, and that is not cosmetic.** Compact JSON has almost no spaces, so a
         // greedy word-wrapper sees one enormous unbreakable word, fails to fit it, and ELIDES —
         // which the first capture of this panel showed as every object trailing off in "…", cutting

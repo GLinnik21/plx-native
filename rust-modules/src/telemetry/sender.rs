@@ -57,10 +57,59 @@ const fn non_empty(v: Option<&'static str>) -> Option<&'static str> {
     }
 }
 
-/// The Sentry DSN, if this build was configured with one. See the module doc.
-const SENTRY_DSN: Option<&str> = non_empty(option_env!("PLX_SENTRY_DSN"));
-/// The PostHog project key, likewise.
-const POSTHOG_KEY: Option<&str> = non_empty(option_env!("PLX_POSTHOG_KEY"));
+// ---- the credential PAIRS, and the environment they decide ------------------------------------
+
+/// The production pair. Supplied only by the release workflow, out of GitHub repository variables —
+/// deliberately never read from the working copy, so a developer's machine cannot hold them.
+const SENTRY_DSN_PROD: Option<&str> = non_empty(option_env!("PLX_SENTRY_DSN"));
+const POSTHOG_KEY_PROD: Option<&str> = non_empty(option_env!("PLX_POSTHOG_KEY"));
+
+/// The development pair, from `pkg/telemetry.local.json` via `make telemetry-local`.
+const SENTRY_DSN_DEV: Option<&str> = non_empty(option_env!("PLX_SENTRY_DSN_DEV"));
+const POSTHOG_KEY_DEV: Option<&str> = non_empty(option_env!("PLX_POSTHOG_KEY_DEV"));
+
+const HAS_PROD: bool = SENTRY_DSN_PROD.is_some() || POSTHOG_KEY_PROD.is_some();
+const HAS_DEV: bool = SENTRY_DSN_DEV.is_some() || POSTHOG_KEY_DEV.is_some();
+
+/// **The two configurations that are refused at COMPILE time.**
+///
+/// A `const` block, so these are build errors rather than something to discover from a dashboard.
+/// Both describe a binary whose label would not match its behaviour, which is the one failure this
+/// whole arrangement exists to prevent.
+const _: () = {
+    if HAS_PROD && HAS_DEV {
+        panic!(
+            "telemetry: both the production and the development credentials were supplied. \
+             The environment is derived from WHICH pair a build was given, so a binary holding \
+             both has no answer. The production pair belongs only to the release workflow."
+        );
+    }
+    if HAS_PROD && cfg!(feature = "devtriggers") {
+        panic!(
+            "telemetry: production credentials in a build that still has the dev-trigger surface. \
+             A binary that reports as production must be the one users get — pass RELEASE=1, or \
+             use the development credentials (`make telemetry-local`)."
+        );
+    }
+};
+
+/// **Which side of the world this build is on, derived from its credentials rather than its
+/// features.**
+///
+/// The first design read this off `cfg!(feature = "devtriggers")`, and an ordinary command breaks
+/// that: `make RELEASE=1 FLAVOR=debug deploy` drops the feature, so the build would call itself
+/// `production` while its key — still from the local file — sent everything to the dev project.
+/// Label and destination diverging silently is the worst outcome for a field whose only job is to
+/// say which side data is on. Deriving both from the same value makes disagreement impossible.
+///
+/// An unconfigured build reads `development`. Nothing can be sent from one, so the value is
+/// unobservable; `development` is simply the honest reading of "not the shipped configuration".
+pub(crate) const ENVIRONMENT: &str = if HAS_PROD { "production" } else { "development" };
+
+/// The DSN this build actually uses — the production one, or the development one, never both.
+const SENTRY_DSN: Option<&str> = if HAS_PROD { SENTRY_DSN_PROD } else { SENTRY_DSN_DEV };
+/// The PostHog key this build actually uses.
+const POSTHOG_KEY: Option<&str> = if HAS_PROD { POSTHOG_KEY_PROD } else { POSTHOG_KEY_DEV };
 /// PostHog's EU ingest host. A constant rather than configuration: the region is a claim
 /// `PRIVACY.md` and the LG Data Safety declaration both make, so it should not be movable by an
 /// environment variable nobody reads.
@@ -202,7 +251,7 @@ pub(crate) fn posthog_body(
 ) -> Option<Vec<u8>> {
     // `None` for the timestamp: PostHog stamps on arrival, which on a television whose clock runs
     // ~3h off is strictly better than what we could tell it. See `posthog::single`.
-    Some(posthog::single(POSTHOG_KEY?, distinct_id, e, None))
+    Some(posthog::single(POSTHOG_KEY?, distinct_id, e, ENVIRONMENT, None))
 }
 
 /// Attempt one record. Returns the verdict and, when a server asked for one, the hold in seconds.
@@ -336,6 +385,46 @@ mod tests {
         assert_eq!(non_empty(None), None);
         assert_eq!(non_empty(Some("https://k@o1.ingest.de.sentry.io/2")),
                    Some("https://k@o1.ingest.de.sentry.io/2"));
+    }
+
+    /// **The environment agrees with the credentials, whatever this checkout happens to have.**
+    ///
+    /// Written as a relation rather than an expected value, because the answer depends on how the
+    /// build was configured — which is the whole design. What must never happen is the two
+    /// disagreeing, and that is checkable in every configuration.
+    #[test]
+    fn the_environment_matches_the_credential_pair_that_was_supplied() {
+        assert_eq!(ENVIRONMENT, if HAS_PROD { "production" } else { "development" });
+        // The active credentials come from the same side as the label.
+        if HAS_PROD {
+            assert_eq!(SENTRY_DSN, SENTRY_DSN_PROD);
+            assert_eq!(POSTHOG_KEY, POSTHOG_KEY_PROD);
+        } else {
+            assert_eq!(SENTRY_DSN, SENTRY_DSN_DEV);
+            assert_eq!(POSTHOG_KEY, POSTHOG_KEY_DEV);
+        }
+        // And the two sides are never both live — the `const` block above refuses to compile such
+        // a build, so this asserts the invariant holds rather than re-deriving it.
+        assert!(!(HAS_PROD && HAS_DEV));
+    }
+
+    /// A dev-featured build is never production. The counter-example that killed the first design
+    /// was the other direction (`RELEASE=1 FLAVOR=debug` labelling itself production while sending
+    /// to dev); this is the invariant that replaced it, and the `const` block makes the violating
+    /// build fail to compile at all.
+    #[test]
+    fn a_build_with_dev_triggers_is_never_production() {
+        if cfg!(feature = "devtriggers") {
+            assert_eq!(ENVIRONMENT, "development");
+        }
+    }
+
+    /// The environment reaches the wire, on the channel that carries product data.
+    #[test]
+    fn the_environment_is_a_property_on_every_event() {
+        let body = posthog::single("k", "id", crate::diag::schema::DiagEvent::AppLaunch, "development", None);
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["properties"]["environment"], "development");
     }
 
     /// A configured DSN produces the envelope endpoint and the auth header the protocol wants —
