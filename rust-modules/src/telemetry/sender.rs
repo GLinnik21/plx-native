@@ -268,6 +268,21 @@ fn route(r: &Record) -> Option<(String, Vec<String>)> {
                 ],
             ))
         }
+        // **PostHog's 200 proves the SHAPE, not the destination.** Measured against the live
+        // endpoint, 2026-08-30, three bodies:
+        //
+        // | body | answer |
+        // |---|---|
+        // | a well-formed event | `200 {"status":"Ok"}` |
+        // | an event with no `event` name | `400 …missing event name attribute` |
+        // | a well-formed event with a **bogus api_key** | `200 {"status":"Ok"}` |
+        //
+        // So this endpoint does validate — unlike Sentry's envelope endpoint, which accepted a
+        // body of nothing but `{"event_id":"…"}` — and a 400 here is worth reading, because it
+        // names the field. But a typo'd, rotated or revoked key reports perfect success forever
+        // and stores nothing, and no log line on this side can ever say so. The only checks that
+        // reach it are `release.yml` asserting the key is in the packaged bytes, and a human
+        // looking at the project.
         Dest::PostHog => {
             POSTHOG_KEY?;
             Some((
