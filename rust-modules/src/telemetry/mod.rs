@@ -117,7 +117,6 @@ fn save_spool(records: &[queue::Record]) {
 }
 
 /// Queue one record for later. Cheap, main-thread-safe, and it does NOT send.
-#[allow(dead_code)] // callers arrive with the event call sites and the panic hook
 pub(crate) fn enqueue(r: queue::Record) {
     let mut all = load_spool();
     all.push(r);
@@ -132,16 +131,20 @@ pub(crate) fn enqueue(r: queue::Record) {
 ///
 /// Returns immediately. A refused spawn is a return value rather than a panic — `task::spawn_small`
 /// exists because `thread::spawn` panics on EAGAIN and killed this app once.
-#[allow(dead_code)] // caller: boot, and the flush that follows an enqueue
 pub(crate) fn flush_soon() {
     use std::sync::atomic::Ordering;
     if !sender::configured() {
         return; // nothing in this build to send to — see `sender`'s module doc
     }
+    // A decision must EXIST — nothing loaded means nothing consented.
     let Some(c) = consent::current() else { return };
-    if !c.any() {
-        return;
-    }
+    // …but deliberately no `if !c.any() { return }`. A withdrawal is exactly when the spool most
+    // needs draining: `flush_now` retires a record whose category is now off without sending it,
+    // so the purge rides the same path instead of needing one of its own. Returning early here
+    // would leave records on disk that nobody has consented to, which is the opposite of what a
+    // withdrawal is for. With both switches off the flush loads the spool, retires everything and
+    // writes back an empty file, sending nothing.
+    let _ = c.any();
     if FLUSHING.swap(true, Ordering::AcqRel) {
         return; // one at a time — see FLUSHING
     }
@@ -160,30 +163,33 @@ fn flush_now(c: &consent::Consent) {
     if all.is_empty() {
         return;
     }
-    let mut accepted: Vec<String> = Vec::new();
+    // Records that leave the spool, whether because a server took them or because nobody consents
+    // to them any more. One list, because `queue::ack` asks one question — is this record still
+    // ours to keep — and the two reasons for "no" need no distinction downstream.
+    let mut retired: Vec<String> = Vec::new();
     for r in &all {
         // Per record, against its own category — a spool written before a withdrawal can still hold
         // records of a category that is now off.
         if !sender::allowed(r, c) {
-            accepted.push(r.event_id.clone()); // drop it: consent for it no longer exists
+            retired.push(r.event_id.clone()); // never sent: consent for it no longer exists
             continue;
         }
         match sender::send_one(r) {
-            (sender::Verdict::Done, _) => accepted.push(r.event_id.clone()),
-            (sender::Verdict::Hopeless, _) => accepted.push(r.event_id.clone()),
+            (sender::Verdict::Done, _) => retired.push(r.event_id.clone()),
+            (sender::Verdict::Hopeless, _) => retired.push(r.event_id.clone()),
             // Held. Stop the whole flush rather than working down the list: whatever stopped this
             // record — rate limit, dead link, a server having a bad day — applies to the next one
             // too, and hammering an endpoint that just said stop is how a client earns a longer
             // ban. The hold is honoured by simply not trying again until the next flush.
             (sender::Verdict::Keep, hold) => {
                 let s = hold.unwrap_or(sender::DEFAULT_HOLD_S);
-                crate::log(&format!("telemetry: holding {} records, ~{s}s", all.len() - accepted.len()));
+                crate::log(&format!("telemetry: holding {} records, ~{s}s", all.len() - retired.len()));
                 break;
             }
         }
     }
-    if !accepted.is_empty() {
-        save_spool(&queue::ack(all, &accepted));
+    if !retired.is_empty() {
+        save_spool(&queue::ack(all, &retired));
     }
 }
 

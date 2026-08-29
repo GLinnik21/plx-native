@@ -220,6 +220,11 @@ fn commit() {
     } else {
         crate::telemetry::record(next);
     }
+    // A decision can only make sending MORE restricted or newly possible, and both want a flush:
+    // an opt-in drains anything this session queued, and a withdrawal is the moment the spool's
+    // now-unconsented records get dropped — `flush_now` treats a record whose category is off as
+    // acknowledged, so the purge happens on the same path rather than needing its own.
+    crate::telemetry::flush_soon();
     close();
 }
 
@@ -337,7 +342,7 @@ pub(crate) fn preview() -> String {
         DiagEvent::SignInCompleted,
     ] {
         let body =
-            crate::telemetry::posthog::single("<project key>", "<random id>", e, "<time>");
+            crate::telemetry::posthog::single("<project key>", "<random id>", e, Some("<time>"));
         // **Pretty-printed, and that is not cosmetic.** Compact JSON has almost no spaces, so a
         // greedy word-wrapper sees one enormous unbreakable word, fails to fit it, and ELIDES —
         // which the first capture of this panel showed as every object trailing off in "…", cutting

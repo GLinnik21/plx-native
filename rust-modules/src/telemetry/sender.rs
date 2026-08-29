@@ -196,13 +196,13 @@ fn route(r: &Record) -> Option<(String, Vec<String>)> {
 ///
 /// Lives here rather than in [`posthog`] because the KEY does — that module is a pure serialiser
 /// and should keep having no idea what this installation's credentials are.
-#[allow(dead_code)] // caller: the event call sites, which land with the breadcrumb seeding
 pub(crate) fn posthog_body(
     e: crate::diag::schema::DiagEvent,
     distinct_id: &str,
-    timestamp: &str,
 ) -> Option<Vec<u8>> {
-    Some(posthog::single(POSTHOG_KEY?, distinct_id, e, timestamp))
+    // `None` for the timestamp: PostHog stamps on arrival, which on a television whose clock runs
+    // ~3h off is strictly better than what we could tell it. See `posthog::single`.
+    Some(posthog::single(POSTHOG_KEY?, distinct_id, e, None))
 }
 
 /// Attempt one record. Returns the verdict and, when a server asked for one, the hold in seconds.
@@ -322,7 +322,7 @@ mod tests {
         if !configured() {
             assert!(route(&rec(Category::Errors, Dest::Sentry)).is_none());
             assert!(route(&rec(Category::Usage, Dest::PostHog)).is_none());
-            assert!(posthog_body(crate::diag::schema::DiagEvent::AppLaunch, "id", "t").is_none());
+            assert!(posthog_body(crate::diag::schema::DiagEvent::AppLaunch, "id").is_none());
         }
     }
 

@@ -45,11 +45,30 @@ pub(crate) fn event(e: schema::DiagEvent) {
     if !crate::telemetry::consent::allows_usage() {
         return;
     }
-    // Nothing listens yet: there is no queue and no endpoint. Deliberately not logged either —
-    // `crate::log` writes to the event log, and an event stream duplicated into the primary
-    // debugging surface would double its volume to say nothing new, since every one of these is
-    // derived from a line already there.
-    let _ = e;
+    // An identifier only exists after an opt-in, which `allows_usage` implies — but READ it rather
+    // than assume it. "Implies" is how an invariant becomes a panic, and the failure here would be
+    // a report with a fabricated id, which is the one outcome the whole design refuses.
+    let Some(id) = crate::telemetry::consent::current().and_then(|c| c.install_id) else {
+        return;
+    };
+    let Some(body) = crate::telemetry::sender::posthog_body(e, &id) else {
+        return; // this build carries no PostHog key — see `telemetry::sender`
+    };
+    let Some(event_id) = crate::telemetry::sentry::new_event_id() else {
+        return; // no randomness source, so nothing could acknowledge this record
+    };
+    // Queued, never sent from here: this is the frame loop, and a send opens a socket. The worker
+    // in `telemetry::flush_soon` drains it.
+    //
+    // Deliberately not logged. `crate::log` writes the event log, and an event stream duplicated
+    // into the primary debugging surface would double its volume to say nothing new — every one of
+    // these is derived from a line already there.
+    crate::telemetry::enqueue(crate::telemetry::queue::Record {
+        category: crate::telemetry::queue::Category::Usage,
+        dest: crate::telemetry::queue::Dest::PostHog,
+        event_id,
+        body,
+    });
 }
 
 // Gated to their present consumer. Phase G/H widen these to

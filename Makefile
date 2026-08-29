@@ -1129,7 +1129,8 @@ pkg/.ffabi-host-ok: ci/ffabi-assert.c $(FFMPEG_HOST_INC)/libavformat/avformat.h 
 # The host FFmpeg is a prerequisite of BOTH configurations: a lab simulator that cannot demux
 # would exercise the upload path over a playback that never started.
 sim: $(FFMPEG_HOST_STAGED) pkg/.ffabi-host-ok
-	cargo build --manifest-path rust-modules/Cargo.toml --target-dir $(SIM_TDIR)$(if $(LAB),-lab,) --features hostsim$(if $(LAB), --features lab-diagnostics,) --bin plxnative-sim
+	PLX_SENTRY_DSN='$(PLX_SENTRY_DSN)' PLX_POSTHOG_KEY='$(PLX_POSTHOG_KEY)' \
+	  cargo build --manifest-path rust-modules/Cargo.toml --target-dir $(SIM_TDIR)$(if $(LAB),-lab,) --features hostsim$(if $(LAB), --features lab-diagnostics,) --bin plxnative-sim
 
 # Interactive: opens a window. Ctrl-C to quit.
 sim-run: sim

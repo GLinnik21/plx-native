@@ -4348,6 +4348,22 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         // means this device has no libcurl we can bind, so plex.tv sign-in will not work — the app
         // still runs, and `net::global_init` has already said so in the event log.
         let _ = crate::net::global_init();
+        // Drain whatever the LAST session left behind, on a worker — and **after `global_init`,
+        // which is the whole reason this line is here and not beside `telemetry::boot()` 170 lines
+        // up.** It was there first, and the end-to-end run showed why that was wrong: the worker
+        // reached `post_ca` before libcurl was bound, `net::available()` was false, every record
+        // came back Keep, and the log read `holding 5 records` immediately ABOVE `net: bound
+        // libcurl`. So the first flush of every launch failed, always, and the failure was
+        // indistinguishable from a television with no network. Worse than the lost flush: curl's
+        // own init is documented as not thread-safe, and a worker that got there first would have
+        // been doing it off the main thread.
+        //
+        // Boot is the right cadence for a television. Sessions are long, and the reports most worth
+        // having are about how one ENDED — a crash is the end, so the record was written by a
+        // process that no longer exists and this is the first moment anything can send it. A record
+        // queued during THIS session goes out at the next launch, or sooner if a consent change
+        // flushes.
+        crate::telemetry::flush_soon();
 
         // NO token is compiled into this binary. PMS access comes from the signed-in session,
         // or — for automated runs only (the regression harness, headless captures) — from the

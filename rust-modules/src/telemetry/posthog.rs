@@ -69,17 +69,35 @@ fn props(e: DiagEvent) -> serde_json::Map<String, serde_json::Value> {
 }
 
 /// A body for **`POST <host>/i/v0/e/`** — one event, `distinct_id` at the TOP LEVEL.
-#[allow(dead_code)] // no sender yet — see the module doc
-pub(crate) fn single(api_key: &str, distinct_id: &str, e: DiagEvent, timestamp: &str) -> Vec<u8> {
+/// **The timestamp is optional, and omitting it is the RIGHT default on this hardware.**
+///
+/// `timestamp` is optional in PostHog's API; when it is absent the server stamps the event on
+/// arrival. This television's wall clock runs about three hours off — `CLAUDE.md`'s crash-forensics
+/// note measures it, and it is why every correlation in this repository is done on monotonic
+/// `SDL_GetTicks` rather than pmlog time. Sending that clock would make every event wrong by hours
+/// in whichever direction the skew runs, and wrong in a way nothing downstream could detect or
+/// correct. Ingest time is late by however long the spool held the record, which is a bounded and
+/// obvious error rather than an invisible one.
+///
+/// It stays a parameter rather than being removed because the preview screen wants a stable
+/// placeholder, and because a record that HAS a trustworthy time (one carrying a monotonic-anchored
+/// reading, if that ever lands) should be able to say so.
+pub(crate) fn single(
+    api_key: &str,
+    distinct_id: &str,
+    e: DiagEvent,
+    timestamp: Option<&str>,
+) -> Vec<u8> {
     let (name, _) = schema::serialize(e);
-    let body = serde_json::json!({
-        "api_key": api_key,
-        "event": name,
-        "distinct_id": distinct_id,
-        "properties": props(e),
-        "timestamp": timestamp,
-    });
-    serde_json::to_vec(&body).unwrap_or_default()
+    let mut body = serde_json::Map::new();
+    body.insert("api_key".into(), api_key.into());
+    body.insert("event".into(), name.into());
+    body.insert("distinct_id".into(), distinct_id.into());
+    body.insert("properties".into(), serde_json::Value::Object(props(e)));
+    if let Some(ts) = timestamp {
+        body.insert("timestamp".into(), ts.into());
+    }
+    serde_json::to_vec(&serde_json::Value::Object(body)).unwrap_or_default()
 }
 
 /// A body for **`POST <host>/batch/`** — many events, one `api_key`, and `distinct_id` INSIDE each
@@ -141,7 +159,7 @@ mod tests {
     #[test]
     fn every_event_on_both_endpoints_is_anonymous() {
         for e in all() {
-            let s = parse(&single("phc_k", "id1", e, "2026-08-29T00:00:00Z"));
+            let s = parse(&single("phc_k", "id1", e, Some("2026-08-29T00:00:00Z")));
             assert_eq!(
                 s["properties"][ANON],
                 serde_json::json!(false),
@@ -164,7 +182,7 @@ mod tests {
     /// ingest still answers 200. There is no failure to notice.
     #[test]
     fn the_two_endpoints_disagree_about_where_identity_goes() {
-        let s = parse(&single("phc_k", "id1", DiagEvent::AppLaunch, "2026-08-29T00:00:00Z"));
+        let s = parse(&single("phc_k", "id1", DiagEvent::AppLaunch, Some("2026-08-29T00:00:00Z")));
         assert_eq!(s["distinct_id"], "id1", "/i/v0/e/ carries distinct_id at the top level");
         assert!(
             s["properties"].get("distinct_id").is_none(),
@@ -211,7 +229,7 @@ mod tests {
             "phc_k",
             "id1",
             DiagEvent::RouteEntered { screen: "detail" },
-            "2026-08-29T00:00:00Z",
+            Some("2026-08-29T00:00:00Z"),
         ));
         assert_eq!(s["event"], "route.entered");
         assert_eq!(s["properties"]["screen"], "detail");
@@ -224,10 +242,21 @@ mod tests {
     fn the_wire_name_is_the_schema_name() {
         for e in all() {
             let (name, _) = schema::serialize(e);
-            let s = parse(&single("phc_k", "id1", e, "2026-08-29T00:00:00Z"));
+            let s = parse(&single("phc_k", "id1", e, Some("2026-08-29T00:00:00Z")));
             assert_eq!(s["event"], name);
             assert!(schema::EVENT_NAMES.contains(&name));
         }
+    }
+
+    /// **No timestamp means no field**, not an empty string — which is what lets PostHog stamp on
+    /// arrival, the right default given this television's ~3h clock skew.
+    #[test]
+    fn an_absent_timestamp_is_omitted_rather_than_blank() {
+        let b = parse(&single("phc_k", "id1", DiagEvent::AppLaunch, None));
+        assert!(b.get("timestamp").is_none(), "a blank timestamp would be worse than none");
+        assert_eq!(b["event"], "app.launch");
+        let with = parse(&single("phc_k", "id1", DiagEvent::AppLaunch, Some("T")));
+        assert_eq!(with["timestamp"], "T");
     }
 
     /// An empty batch is still a well-formed body rather than a panic or a malformed array. A spool
