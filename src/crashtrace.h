@@ -17,4 +17,15 @@
  */
 void plx_crash_install(int event_fd, int crash_fd);
 
+/* Scan a `/proc/self/maps`-shaped file and emit an `at:` line for every mapping containing `pc` or
+ * `lr`, and a `bin:` line for every mapping of our own executable. Writes to the descriptors given
+ * to [`plx_crash_install`].
+ *
+ * The handler calls this with `/proc/self/maps`. It is exported, rather than being a static with a
+ * hardcoded path, so `ci/crashtrace-test.c` can point it at a fixture — which is the only way to
+ * exercise the cases that actually break a chunked reader (a line straddling the 4 KiB boundary, a
+ * final line with no newline, a line longer than the buffer) and the only way to exercise ANY of
+ * it on a host with no `/proc`. Async-signal-safe, like everything it calls. */
+void plx_crash_scan_maps_file(const char *path, unsigned long pc, unsigned long lr);
+
 #endif /* PLX_CRASHTRACE_H */

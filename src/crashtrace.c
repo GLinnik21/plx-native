@@ -136,14 +136,21 @@ static void emit_map_line(const char *line, size_t n, unsigned long pc, unsigned
     }
 }
 
-/* Read /proc/self/maps with raw read(2) and scan it a line at a time in place.
+/* Read a maps file with raw read(2) and scan it a line at a time in place.
+ *
+ * The PATH is a parameter, and that is the only concession this file makes to being testable: the
+ * handler passes `/proc/self/maps`, and `ci/crashtrace-test.c` passes a fixture. It matters because
+ * this reader is the newest thing here and its failure is silent — a partial line dropped at a
+ * chunk boundary, or a final line without a trailing newline, costs exactly the `bin:` line that
+ * every symbolication downstream depends on, and the record still looks well-formed without it.
+ * There is no host on which `/proc/self/maps` could exercise those cases deliberately.
  *
  * Chunked rather than slurped: this file is tens of kilobytes on a set with the video pipeline up
  * (the app peaks at 31 threads, each with a stack mapping), it has no size to `stat`, and a static
  * buffer big enough for the worst case is memory this process holds for its whole life to use once
  * at death. A 4 KiB window with a carried partial line costs the same syscalls and is bounded. */
-static void scan_maps(unsigned long pc, unsigned long lr) {
-    int m = open("/proc/self/maps", O_RDONLY);
+void plx_crash_scan_maps_file(const char *path, unsigned long pc, unsigned long lr) {
+    int m = open(path, O_RDONLY);
     if (m < 0) return;
     size_t held = 0;
     for (;;) {
@@ -222,7 +229,7 @@ static void crash_handler(int sig, siginfo_t *si, void *uc) {
 #if defined(__arm__)
     emit_regs(&c->uc_mcontext);
 #endif
-    scan_maps(pc, lr);
+    plx_crash_scan_maps_file("/proc/self/maps", pc, lr);
 
     /* Re-raise with the DEFAULT disposition so the signal actually kills us: the kernel dumps core
      * (where cores are enabled — see the RLIMIT_CORE note below), webOS crashd/librdx captures a

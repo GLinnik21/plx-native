@@ -169,6 +169,145 @@ static void one_case(const char *name, int sig, const char *signame, enum how ho
     unlink(path);
 }
 
+/* ---- the maps scan, against fixtures -----------------------------------------------------------
+ *
+ * The reader is chunked — 4 KiB at a time with a carried partial line — and every way that breaks
+ * is SILENT: a line lost at a chunk boundary, or a final line with no trailing newline, costs the
+ * `bin:` line, and the record still looks perfectly well-formed without it while every
+ * symbolication downstream fails. `/proc/self/maps` cannot be made to have those shapes on purpose,
+ * and on this Mac it does not exist at all, which is why the scan takes its path as a parameter.
+ */
+
+/* Run the scan over `content` and return what was written.
+ *
+ * Assertions below count `"at: "` and `"bin: "` WITHOUT a leading newline, because the first line
+ * of a scan has nothing before it — counting `"\nat: "` silently misses it, which is how the first
+ * version of these cases failed against perfectly correct code. Neither string can occur inside a
+ * mapping path in these fixtures. */
+static const char *scan(const char *content, unsigned long pc, unsigned long lr) {
+    static char out[64 * 1024];
+    char maps[256], sink[256];
+    snprintf(maps, sizeof maps, "/tmp/plx-crashtrace-maps-%d", (int)getpid());
+    snprintf(sink, sizeof sink, "/tmp/plx-crashtrace-sink-%d", (int)getpid());
+
+    int mf = open(maps, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    (void)!write(mf, content, strlen(content));
+    close(mf);
+
+    int sf = open(sink, O_WRONLY | O_CREAT | O_TRUNC | O_APPEND, 0600);
+    /* One sink, not two: the duplicate-write property is already asserted by the crash cases, and
+     * counting occurrences here would double every number for no extra evidence. */
+    plx_crash_install(sf, -1);
+    plx_crash_scan_maps_file(maps, pc, lr);
+    close(sf);
+
+    size_t len = 0;
+    const char *got = slurp(sink, &len);
+    memcpy(out, got, len < sizeof out ? len + 1 : sizeof out - 1);
+    out[sizeof out - 1] = 0;
+    unlink(maps);
+    unlink(sink);
+    return out;
+}
+
+/* A maps line of the given size, for the mapping named. `pad` inflates the pathname so a fixture
+ * can be pushed past a chunk boundary. */
+static void map_line(char *out, size_t cap, const char *lo, const char *hi, const char *path, int pad) {
+    char pads[4096];
+    int n = pad < (int)sizeof pads - 1 ? pad : (int)sizeof pads - 1;
+    memset(pads, 'x', (size_t)n);
+    pads[n] = 0;
+    snprintf(out, cap, "%s-%s r-xp 00000000 b3:35 12345 /media/developer/apps/%s%s\n", lo, hi, pads, path);
+}
+
+static const char *OURS = "com.beb.plxnative/plxnative";
+
+static void maps_cases(void) {
+    /* The ordinary case, first: one of our own mappings containing the PC. It must produce BOTH
+     * lines from the one mapping — `at:` because it holds the fault and `bin:` because it is us. */
+    {
+        char line[512];
+        map_line(line, sizeof line, "00010000", "0097f000", OURS, 0);
+        const char *got = scan(line, 0x20000, 0);
+        expect("maps: our mapping holding the pc", count(got, "at: ") == 1, "no at: line");
+        expect("maps: our mapping holding the pc", count(got, "bin: ") == 1, "no bin: line");
+    }
+
+    /* **A LINE STRADDLING THE 4 KiB CHUNK BOUNDARY.** The whole reason the reader carries a partial
+     * line. Padding pushes our own mapping so it begins before the boundary and ends after it; a
+     * reader that restarted per chunk would lose it entirely and the crash would be unsymbolicatable
+     * with nothing in the record to say why. */
+    {
+        static char buf[16 * 1024];
+        size_t n = 0;
+        /* filler mappings up to just short of 4096 bytes */
+        while (n < 4096 - 60) {
+            char line[512];
+            map_line(line, sizeof line, "b5000000", "b5001000", "other/libfiller.so", 0);
+            size_t l = strlen(line);
+            if (n + l > sizeof buf - 600) break;
+            memcpy(buf + n, line, l);
+            n += l;
+        }
+        char ours[512];
+        map_line(ours, sizeof ours, "00010000", "0097f000", OURS, 0);
+        memcpy(buf + n, ours, strlen(ours));
+        n += strlen(ours);
+        buf[n] = 0;
+        /* the boundary really is inside our line */
+        expect("maps: fixture actually straddles a chunk", n > 4096 && n - strlen(ours) < 4096,
+               "the fixture does not cross 4096 — the test would prove nothing");
+        const char *got = scan(buf, 0x20000, 0);
+        expect("maps: a line straddling the 4 KiB boundary survives", count(got, "bin: ") == 1,
+               "the bin: line was lost at the chunk boundary");
+        expect("maps: a line straddling the 4 KiB boundary survives", count(got, "at: ") == 1,
+               "the at: line was lost at the chunk boundary");
+    }
+
+    /* A final line with NO trailing newline. The kernel always terminates them, but a truncated
+     * read does not, and the reader has an explicit tail flush for it. */
+    {
+        char line[512];
+        map_line(line, sizeof line, "00010000", "0097f000", OURS, 0);
+        line[strlen(line) - 1] = 0;   /* drop the \n */
+        const char *got = scan(line, 0x20000, 0);
+        expect("maps: a final line with no newline is still emitted", count(got, "bin: ") == 1,
+               "the unterminated tail was dropped");
+    }
+
+    /* A line LONGER than the 512-byte line buffer is truncated, not dropped: the range at the
+     * front is the part that decides `at:`, and losing the whole line would lose that too. */
+    {
+        char line[4096];
+        map_line(line, sizeof line, "b5000000", "b5240000", "other/libhuge.so", 900);
+        const char *got = scan(line, 0xb5100000UL, 0);
+        expect("maps: an over-long line is truncated, not dropped", count(got, "at: ") == 1,
+               "a line longer than the buffer lost its at: classification");
+    }
+
+    /* A mapping that is neither ours nor holding the fault says nothing at all. */
+    {
+        char line[512];
+        map_line(line, sizeof line, "b5000000", "b5240000", "other/libidle.so", 0);
+        const char *got = scan(line, 0x20000, 0);
+        expect("maps: an unrelated mapping is silent", got[0] == 0, "it emitted something");
+    }
+
+    /* An absent file is not a crash inside the crash handler. */
+    {
+        char sink[256];
+        snprintf(sink, sizeof sink, "/tmp/plx-crashtrace-sink-none-%d", (int)getpid());
+        int sf = open(sink, O_WRONLY | O_CREAT | O_TRUNC | O_APPEND, 0600);
+        plx_crash_install(sf, -1);
+        plx_crash_scan_maps_file("/nonexistent/maps", 0x20000, 0);
+        close(sf);
+        size_t len = 0;
+        slurp(sink, &len);
+        expect("maps: an unreadable file writes nothing and does not fault", len == 0, "it wrote something");
+        unlink(sink);
+    }
+}
+
 int main(void) {
     /* A genuine memory fault first: it is the only case that exercises the kernel-raised path, a
      * real faulting PC and a real si_addr. */
@@ -182,10 +321,13 @@ int main(void) {
     one_case("SIGILL",  SIGILL,  "SIGILL",  RAISE);
     one_case("SIGTRAP", SIGTRAP, "SIGTRAP", RAISE);
 
+    /* …and then the maps scan, which the crashes above cannot reach on a host with no /proc. */
+    maps_cases();
+
     if (failures) {
         fprintf(stderr, "crashtrace: %d assertion(s) failed\n", failures);
         return 1;
     }
-    printf("crashtrace: ok (5 deliberate crashes, records written, all re-raised)\n");
+    printf("crashtrace: ok (5 deliberate crashes re-raised; maps scan graded against fixtures)\n");
     return 0;
 }
