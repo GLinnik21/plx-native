@@ -156,7 +156,8 @@ APPPORT      = $(if $(filter stable,$(FLAVOR)),8910,8911)
 # it here also survives the next block that gets added above `all:`.
 .DEFAULT_GOAL := all
 
-QUERY_GOALS = print-flavor print-appid print-appdir print-rundir print-eventlog print-appport print-tv
+QUERY_GOALS = print-flavor print-appid print-appdir print-rundir print-eventlog print-appport print-tv \
+              print-simbin
 print-flavor:   ; @echo '$(FLAVOR)'
 print-appid:    ; @echo '$(APPID)'
 print-appdir:   ; @echo '$(APPDIR)'
@@ -164,6 +165,11 @@ print-rundir:   ; @echo '$(RUNDIR)'
 print-eventlog: ; @echo '$(EVENTLOG)'
 print-appport:  ; @echo '$(APPPORT)'
 print-tv:       ; @echo '$(TV)'
+# Where `make sim` put the simulator. It is `$(SIM_TDIR)`-derived and `SIM_TDIR` is deliberately
+# overridable — agents running several simulators at once keep separate target dirs, and the
+# `macapp` build has its own — so a tool that restates the path silently runs another lane's
+# binary. Same argument as `print-appdir`: ask, never restate.
+print-simbin:   ; @echo '$(SIM_BIN)'
 
 # --- webOS NDK toolchain -----------------------------------------------------
 WEBOS_SDK   ?= $(HOME)/webos-ndk/arm-webos-linux-gnueabi_sdk-buildroot

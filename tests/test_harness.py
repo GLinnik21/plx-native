@@ -2674,5 +2674,188 @@ class TheAbrWindowLineMatchesTheHarnessRegex(unittest.TestCase):
             self.assertEqual(run.abr_samples([line]), [])
 
 
+class AbrSeekSupport(unittest.TestCase):
+    """The seek arm of an ABR case, which is the one this suite could not express.
+
+    A collision between a candidate encoder's name and the live session's is only reachable
+    either side of a seek — `route::transcode_seek` reuses the session id on purpose — and only
+    once a transaction has COMMITTED, which needs tens of seconds of samples. The app fires the
+    first seek step at a fixed ~12 s, so without a delay every seek in this suite lands before
+    the controller has ever switched, and the state is untestable. These pin the two halves that
+    make it expressible.
+    """
+
+    def _seek_trigger(self, op):
+        case = {"rk": "1", "operations": [{"op": "play"}, op], "expect": {}}
+        files = dict((n, v) for n, v in run.triggers_for_case(case))
+        return files["plxnative-autoseek"]
+
+    def test_a_plain_seek_still_writes_the_bare_target(self):
+        """`delay_ms` is opt-in: every existing case must keep the byte-identical trigger."""
+        self.assertEqual(self._seek_trigger({"op": "seek", "target_s": 140}), "140")
+
+    def test_a_delayed_seek_writes_the_delay_token_the_app_parses(self):
+        self.assertEqual(
+            self._seek_trigger({"op": "seek", "target_s": 300, "delay_ms": 75000}),
+            "delay=75000,300")
+
+    def test_delay_is_not_spelled_as_gap(self):
+        """They are different quantities and the app parses them as different tokens.
+
+        Expressing the wait as `gap=` would need a throwaway first seek to soak it up, which
+        would then appear in the very log the case grades.
+        """
+        self.assertNotIn("gap=", self._seek_trigger(
+            {"op": "seek", "target_s": 300, "delay_ms": 75000}))
+
+    def test_a_rapid_script_is_passed_through_untouched(self):
+        self.assertEqual(
+            self._seek_trigger({"op": "seek", "mode": "rapid", "script": "gap=50,120,+10"}),
+            "gap=50,120,+10")
+
+
+class ReloadCeiling(unittest.TestCase):
+    """`max_reloads`: the assertion the Original flap needed and `no_reload` cannot express.
+
+    A mode-switching Auto case legitimately reloads twice — out of Original and back. Zero is
+    the wrong gate, absent is no gate, and every other assertion is blind: a reload is brief, so
+    climb, play rate and no-error all hold through a flapping session.
+    """
+
+    def _lines(self, n):
+        out = ["abr: steady rung=4000kbps"]
+        for i in range(n):
+            out.append(f"reload_at: fresh Load at {100 + i}s")
+        return out
+
+    def test_within_the_budget_passes(self):
+        for n in (0, 1, 2):
+            ok, why = run.a_reload_ceiling(self._lines(n), 2)
+            self.assertTrue(ok, why)
+
+    def test_one_reload_over_the_budget_fails(self):
+        ok, why = run.a_reload_ceiling(self._lines(3), 2)
+        self.assertFalse(ok)
+        self.assertIn("3 reload", why)
+
+    def test_both_reload_spellings_are_counted(self):
+        lines = ["reload_at: fresh Load at 10s", "reload_transcode: fresh Load at offset 300s"]
+        ok, why = run.a_reload_ceiling(lines, 1)
+        self.assertFalse(ok, why)
+        self.assertIn("2 reload", why)
+
+    def test_the_evidence_names_the_reloads_so_a_failure_is_readable(self):
+        _, why = run.a_reload_ceiling(self._lines(3), 2)
+        self.assertIn("fresh Load", why)
+
+
+class PostSeekSurvival(unittest.TestCase):
+    """Reaching a seek target and SURVIVING it are different claims, and they came apart.
+
+    The first version of `auto_seek_after_switch` passed the broken build: replayed against the
+    pre-fix simulator log — a run that died on `HLS segment was not produced in time` — all five
+    of its assertions were green. The global `timeline_climb` counted the seek DISCONTINUITY as
+    313 s of climb, and `no_playing_error` greps the Starfish surface, which an acquisition-side
+    death never reaches. These pin the two assertions added to close that.
+    """
+
+    def _log(self, positions, tail=()):
+        out = ["reload_transcode: fresh Load at offset 300s"]
+        out += [f"loop=60 fps=60 pos={t}s play=1000pm" for t in positions]
+        return out + list(tail)
+
+    def test_a_seek_that_lands_and_then_dies_fails(self):
+        """The pre-fix shape: the target is reached, then 14 s and silence."""
+        ok, why = run.op_seek_transcode(self._log(range(300, 315)), 300, min_climb_after_s=45)
+        self.assertFalse(ok)
+        self.assertIn("did not survive", why)
+
+    def test_a_seek_that_lands_and_keeps_playing_passes(self):
+        ok, why = run.op_seek_transcode(self._log(range(300, 480)), 300, min_climb_after_s=45)
+        self.assertTrue(ok, why)
+
+    def test_progress_before_the_seek_does_not_count(self):
+        """The discontinuity is exactly what the global climb assertion mistook for progress."""
+        lines = ([f"loop=60 fps=60 pos={t}s play=1000pm" for t in range(1, 200)]
+                 + self._log(range(300, 310)))
+        ok, why = run.op_seek_transcode(lines, 300, min_climb_after_s=45)
+        self.assertFalse(ok, why)
+
+    def test_without_the_floor_the_old_behaviour_is_unchanged(self):
+        """Every existing seek case passes 0 and must grade exactly as before."""
+        ok, _ = run.op_seek_transcode(self._log(range(300, 315)), 300)
+        self.assertTrue(ok)
+
+
+class DemuxFailureAssertion(unittest.TestCase):
+    """`no_playing_error` cannot see a death on the acquisition side."""
+
+    def test_the_death_line_from_the_incident_is_caught(self):
+        ok, why = run.a_no_demux_failure(
+            ["abr: committed Up to 2000kbps",
+             "hls: demux failed: HLS segment was not produced in time"])
+        self.assertFalse(ok)
+        self.assertIn("not produced in time", why)
+
+    def test_a_healthy_log_passes(self):
+        ok, why = run.a_no_demux_failure(["abr: committed Up to 4000kbps", "loop=60 pos=400s"])
+        self.assertTrue(ok, why)
+
+    def test_it_is_opt_in_so_no_existing_case_changes(self):
+        self.assertNotIn("no_demux_failure", run.load_manifest.__doc__ or "")
+        case = {"rk": "1", "operations": [{"op": "play"}],
+                "expect": {"require_video_bound": False}}
+        names = [n for n, _, _ in run.evaluate(case, ["loop=60 pos=1s"])[1]]
+        self.assertNotIn("no_demux_failure", names)
+
+
+class AbrCasesAreWiredUp(unittest.TestCase):
+    """The two cases added for the 2026-08-29 incident, against the real tracked manifest."""
+
+    def _case(self, name):
+        m = json.load(open(os.path.join(os.path.dirname(__file__), "manifest.json")))
+        return next(c for c in m["cases"] if c["name"] == name)
+
+    def test_the_seek_case_seeks_after_a_commit_can_have_happened(self):
+        c = self._case("auto_seek_after_switch")
+        seek = next(o for o in c["operations"] if o["op"] == "seek")
+        self.assertEqual(c["quality"], "auto")
+        # The commit needs the admission window; the seek must land after it, not at the app's
+        # fixed ~12 s. 60 s is the floor that makes the case mean what its name says.
+        self.assertGreaterEqual(seek["delay_ms"], 60000)
+        self.assertLess(12 + seek["delay_ms"] / 1000, c["run_secs"])
+
+    def test_the_seek_case_does_not_claim_an_in_place_seek(self):
+        """The item transcodes, and a transcode seek is a REBUILD, never an `av_seek`.
+
+        `mode: inplace` asserts a `seek(in-place)` line that this path cannot emit; it failed on
+        device that way, with the seek itself perfectly healthy. Pinned because the mistake is
+        invisible in review — every other seek case in the suite is direct-play.
+        """
+        c = self._case("auto_seek_after_switch")
+        seek = next(o for o in c["operations"] if o["op"] == "seek")
+        self.assertNotEqual(seek.get("mode"), "inplace")
+
+    def test_the_seek_case_grades_survival_not_just_arrival(self):
+        """Without both of these the case passes the very build it was written against.
+
+        Verified by replay: the first version scored 5/5 green on the pre-fix simulator log, a
+        run that died on `HLS segment was not produced in time` fourteen seconds after the seek.
+        """
+        c = self._case("auto_seek_after_switch")
+        seek = next(o for o in c["operations"] if o["op"] == "seek")
+        self.assertGreaterEqual(seek.get("min_climb_after_s", 0), 30)
+        self.assertTrue(c["expect"].get("no_demux_failure"))
+
+    def test_the_flap_case_releases_the_squeeze_and_bounds_the_blinks(self):
+        c = self._case("auto_original_squeeze_released")
+        modes = [leg["mode"] for leg in c["link_profile"]]
+        self.assertEqual(modes[0], "pass", "it must start at full speed")
+        self.assertEqual(modes[-1], "pass", "and be RELEASED to full speed — the reported case")
+        self.assertTrue(any(m.startswith("rate:") for m in modes), "with a real drop between")
+        # Two Loads is the whole budget: one to leave Original, one to come back.
+        self.assertEqual(c["expect"]["max_reloads"], 2)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

@@ -797,7 +797,21 @@ def triggers_for_case(case, url_base=None):
             # the content "140" converge to a byte-identical `steps == ["140"]` before any seek
             # logic runs. There is no second path to preserve. The app's empty-file default
             # survives as a by-hand affordance, exercised by no case, which is its correct status.
-            files.append(("plxnative-autoseek", str(op.get("target_s", 140))))
+            #
+            # `delay_ms` is what makes a seek reachable from an ABR case. The app fires the first
+            # step at a fixed ~12 s after the player route is entered, and an ABR transaction needs
+            # tens of seconds of samples before it can COMMIT — so without a delay every seek in
+            # this suite lands before the controller has ever switched, and the state either side
+            # of a seek-after-a-switch is untestable. It is not the same quantity as `gap_ms` (the
+            # cadence BETWEEN rapid steps) and the app parses them as two tokens for that reason;
+            # expressing the wait as a gap would need a throwaway first seek, which would then be
+            # in the log this case grades.
+            target = str(op.get("target_s", 140))
+            delay_ms = op.get("delay_ms")
+            files.append((
+                "plxnative-autoseek",
+                f"delay={int(delay_ms)},{target}" if delay_ms else target,
+            ))
         elif kind == "skip":
             files.append(("plxnative-marker", op["marker"]))
         elif kind == "marker":
@@ -2282,6 +2296,25 @@ def a_no_reload(lines):
                          f"session reloaded :: {bad.strip()}")
 
 
+def a_reload_ceiling(lines, limit):
+    """Bound the number of fresh `Load`s — the assertion `no_reload` cannot express.
+
+    A mode-switching Auto case legitimately reloads: once to leave Original when the link stops
+    covering the source, once to come back when it recovers. Zero is therefore the wrong gate and
+    absent is no gate at all, which is the state that let the Original flap ship — the controller
+    left and re-entered Original repeatedly on a link that was carrying the film, and every
+    existing assertion (climb, play rate, no error) was satisfied throughout, because each
+    individual reload is brief and the film keeps advancing.
+
+    A reload is a visible blink: it is a fresh Starfish `Load`, the picture goes and comes back.
+    So this counts what the viewer counts.
+    """
+    reloads = [ln for ln in lines if "reload_at:" in ln or "reload_transcode:" in ln]
+    n = len(reloads)
+    where = " | ".join(ln.strip()[:90] for ln in reloads[:6]) or "<none>"
+    return n <= limit, f"{n} reload(s), ceiling {limit} :: {where}"
+
+
 def gst_clock_ms(line):
     """GStreamer debug's H:MM:SS.nanoseconds clock as milliseconds, or None."""
     m = RE_GST_CLOCK.search(line)
@@ -2712,7 +2745,7 @@ def op_seek_rapid(lines, final_s):
     )
 
 
-def op_seek_transcode(lines, target_s):
+def op_seek_transcode(lines, target_s, min_climb_after_s=0):
     # transcode seeks now RELOAD the pipeline (reload_transcode: fresh Load = correct GStreamer
     # segment, no stale-segment artifacts). Older builds flushed+refed (`seek(transcode)`) or fell
     # back to reload_at.
@@ -2723,7 +2756,40 @@ def op_seek_transcode(lines, target_s):
     reached, err = _reached_target(lines, target_s)
     if err:
         return False, err
+    # **Reaching the target proves the seek landed; it does not prove the playback SURVIVED it,
+    # and those come apart exactly where the interesting bugs are.** A session the client stopped
+    # by its own hand (the 2026-08-29 encoder-name collision) reloads correctly, reaches its
+    # target, reports 18 timelines and then dies seconds later — and every assertion above passes
+    # on that log, because the seek DISCONTINUITY is itself counted as climb by the global
+    # `timeline_climb`. `min_climb_after_s` grades the series from the target ONWARD, which is
+    # the only window a post-seek death is visible in.
+    if min_climb_after_s:
+        after = [t for t, _ in progress_secs(lines[lines.index(hit) + 1:]) if t >= target_s - 5]
+        span = (max(after) - min(after)) if len(after) >= 2 else 0
+        if span < min_climb_after_s:
+            return False, (f"the seek landed but the playback did not survive it: only {span}s of "
+                           f"progress after the target ({len(after)} sample(s) from "
+                           f"{min(after) if after else '-'}s), need >={min_climb_after_s}s")
+        return True, (f"transcode/reload seek OK; reached {reached}s, then {span}s of progress "
+                      f"over {len(after)} sample(s) :: {hit.strip()}")
     return True, f"transcode/reload seek OK; reached {reached}s :: {hit.strip()}"
+
+
+def a_no_demux_failure(lines):
+    """The demuxer giving up is a death `no_playing_error` cannot see.
+
+    `no_playing_error` greps the STARFISH error surface (`smp_cb type=18` / `Playing error`).
+    A pipeline that dies on the acquisition side never gets there: `ff.rs` reports
+    `hls: demux failed: …` (a stopped or hopelessly slow encoder arrives as
+    `HLS segment was not produced in time`, because 404 is `NotReady` by design and the retry
+    budget cannot tell the two apart). On the host simulator there is no Starfish at all, so the
+    Starfish-side assertion is structurally silent there — which is how a dead pre-fix run scored
+    five green assertions out of five.
+    """
+    bad = next((ln for ln in lines
+                if "demux failed" in ln or "not produced in time" in ln), None)
+    return bad is None, ("no demux failure" if bad is None else
+                         f"the demuxer gave up :: {bad.strip()}")
 
 
 def op_audio_native(lines):
@@ -3318,9 +3384,13 @@ def evaluate(case, lines):
     if exp.get("require_video_bound", True):
         results.append(("video_bound", *a_video_bound(lines)))
     results.append(("timeline_climb", *a_timeline_climb(lines, exp.get("min_timeline_climb_s", 12))))
+    if "max_reloads" in exp:
+        results.append(("reload_ceiling", *a_reload_ceiling(lines, exp["max_reloads"])))
     if "min_play_rate_pm" in exp:
         results.append(("play_rate", *a_play_rate(lines, exp["min_play_rate_pm"])))
     results.append(("timeline_post", *a_timeline_post(lines)))
+    if exp.get("no_demux_failure"):
+        results.append(("no_demux_failure", *a_no_demux_failure(lines)))
     if exp.get("no_playing_error", True):
         results.append(("no_error", *a_no_error(lines)))
 
@@ -3334,7 +3404,8 @@ def evaluate(case, lines):
         elif k == "seek" and op.get("mode") == "inplace":
             results.append(("seek_inplace", *op_seek_inplace(lines, op.get("target_s", 140))))
         elif k == "seek":
-            results.append(("seek_transcode", *op_seek_transcode(lines, op.get("target_s", 140))))
+            results.append(("seek_transcode", *op_seek_transcode(
+                lines, op.get("target_s", 140), op.get("min_climb_after_s", 0))))
         elif k == "skip":
             results.append(("skip_marker", *op_skip_marker(
                 lines, op["marker"].capitalize(),

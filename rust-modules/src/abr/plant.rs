@@ -252,6 +252,27 @@ impl BufferEstimate {
         self.slope_ms_per_s < -DRAIN_EPS_MS_PER_S
     }
 
+    /// **The mirror of [`Self::draining`], at the same epsilon and for the same reason** — the
+    /// reserve is measurably GROWING, as opposed to flat-within-noise.
+    ///
+    /// It exists because a small reserve has two completely different meanings and the LEVEL alone
+    /// cannot tell them apart: a reserve that is nearly gone and still falling is an emergency, and
+    /// a reserve that is nearly gone because a fresh `Load` just consumed the prime is a stream
+    /// warming up. Both read as "under `emergency_buffer_ms`".
+    ///
+    /// Device-reproduced 2026-08-29 on the host simulator: five seconds after a correct recovery
+    /// into 4K Dolby Vision direct play, `EmergencyLowBuffer` fired on `buf=1181ms
+    /// slope=1113ms/s starve=none` — a reserve refilling at better than one millisecond of media
+    /// per millisecond of wall clock, with an INFINITE starvation horizon beside it, because
+    /// `conservative_kbps` had already cleared the requirement. The reload it caused was the second
+    /// visible blink in ten seconds.
+    ///
+    /// It is deliberately NOT `!draining()`: the band between them is flat-within-noise, where an
+    /// emergency guard should still be free to act.
+    pub(crate) fn filling(&self) -> bool {
+        self.slope_ms_per_s > DRAIN_EPS_MS_PER_S
+    }
+
     pub(crate) fn starving(&self) -> bool {
         self.buffered_ms <= 2_000
             || (self.buffered_ms <= 6_000 && self.draining_samples >= 2)

@@ -194,6 +194,28 @@ impl OriginalRecovery {
         self.probes
     }
 
+    /// **The comparison the verdict was actually taken on**, for the log — the estimate's central
+    /// value, its uncertainty, how many probes are behind it, the discounted rate that is compared,
+    /// and the requirement it is compared against.
+    ///
+    /// Without it the line reads `measured=42012kbps ... verdict=Insufficient` against a 25 Mbit/s
+    /// file, which is not merely terse but actively misleading: it invites the reading that 42
+    /// Mbit/s was judged too slow for a 25 Mbit/s source, when what happened is that
+    /// `conservative_kbps` was 29 689 against a requirement of 34 106. The operative numbers were
+    /// unreconstructable from the event log, and this gate is precisely where a run gets stuck —
+    /// seven consecutive refusals on a healthy link, with nothing on the line to say which
+    /// quantity was short. `[[silent-instrument-trap]]`: the instrument has to be able to show the
+    /// thing before its silence means anything.
+    pub(crate) fn basis(&self) -> (u32, u32, u32, u32, u32) {
+        (
+            self.probe.slow_kbps,
+            self.probe.uncertainty_pm,
+            self.probe.samples,
+            self.probe.conservative_kbps(),
+            source_requirement_kbps(self.source_kbps, &self.policy),
+        )
+    }
+
     /// The basis of the decision THIS probe reached, for one log line. `None` whenever the last
     /// probe did not reach one — before the first, and after either of `observe_probe`'s two early
     /// exits (`!observation.completed`, and a conservative rate under the requirement), which is
@@ -636,16 +658,82 @@ impl OriginalModeController {
             self.delivery.collapse(measured_kbps);
         }
         self.delivery.update(observation);
-        self.buffer
-            .update(Some(buffered_ms), i64::try_from(active_delta / 1_000).unwrap_or(1).max(1));
+        // **WALL, not active-read.** `slope_ms_per_s` is a rate of change of the reserve, and the
+        // reserve is spent by the PLAYHEAD — one millisecond of media per millisecond of wall
+        // clock. `active_delta` is body-read time, which is the right denominator for a CAPACITY
+        // (a reader parked on backpressure must not measure as a slow link — that is
+        // `ORIGINAL_WINDOW_US`'s whole point) and the wrong one for a reserve derivative: parking
+        // is exactly what a healthy link does, so `t_active < t_wall` precisely when the reserve
+        // is filling, and the slope came out inflated by `t_wall / t_active`.
+        //
+        // Device-measured 2026-08-29 on a 4K DV film: the line printed `slope=1020ms/s` while the
+        // reserve grew 749 -> 4814 ms over 8 s of playback, i.e. +508 ms per wall second. A factor
+        // of two, in the direction that reads as healthier than the truth — and `slope_ms_per_s`
+        // is then compared against `DRAIN_EPS_MS_PER_S`, a threshold stated in wall seconds, and
+        // sits beside `starvation_horizon`, which is wall seconds throughout.
+        //
+        // `observe_saturated` passes `now_ms = active_us / 1_000`, so every existing host test is
+        // byte-identical across this change: there, wall and active ARE the same clock.
+        self.buffer.update(Some(buffered_ms), wall_delta.max(1));
 
         let requirement = source_requirement_kbps(self.source_kbps, &self.policy);
         let conservative = self.delivery.conservative_kbps();
-        let horizon = starvation_horizon(buffered_ms, requirement, conservative);
+        // **The EVICTION horizon is computed on the MEASURED rate, not on `conservative_kbps` —
+        // which is the rule `controller.rs` already states, follows and calls load-bearing, and
+        // which this side was violating.** Its words, at the HLS emergency horizon:
+        //
+        // > Conservatism belongs to ADMISSION — a rung you have not tried might be dearer than you
+        // > think, so plan against a lower bound. It does not belong to EVICTION, where the claim
+        // > is that the link in front of you cannot carry what is already playing, and the
+        // > evidence for that has to be observed rather than discounted into existence.
+        //
+        // `immediate` is the same construction that side uses (`immediate_network`): this window's
+        // rate, floored by the fast estimate so one lucky burst cannot excuse a link that has
+        // stopped delivering.
+        //
+        // **What the discount was doing here, in the device's numbers.** 25 264 kbps source,
+        // R = 34 106. The live link measured 31 037 and the discount published 23 932, so the
+        // model saw a 10 174 kbps deficit where the true one was 3 069 — 92 % of it composition.
+        // Worse, it was PERMANENT: `T = B·R/(R−C)` is increasing in `B` and `B` is bounded by the
+        // plant ceiling `B_max = lead + queue_bytes·8/R` ≈ 5.0 s for a source this size, so
+        // `T_max = 5.0 × 34 106/10 174 = 16.8 s`, under `starvation_fallback_secs`. The imminent
+        // branch's horizon half was satisfied on EVERY window the playback could ever produce,
+        // saturated or not — the reserve's own physical ceiling could not buy its way out. On the
+        // measured rate the same ceiling gives `T_max = 5.0 × 34 106/3 069 = 55 s`, and the branch
+        // becomes reachable only when the link genuinely stops covering the file.
+        //
+        // That is why the derivative guards below are necessary and were not sufficient: they
+        // close the channel through which the permanently-armed condition fired, and the condition
+        // stays armed for the next one. `conservative` is still published as `safe=` and still
+        // chooses the fallback RUNG, which is an admission decision and is where it belongs.
+        let immediate = self.delivery.fast_kbps.min(measured_kbps);
+        let horizon = starvation_horizon(buffered_ms, requirement, immediate);
         let unsafe_horizon = horizon
             .seconds
             .is_some_and(|secs| secs < self.policy.starvation_safe_secs);
-        if unsafe_horizon && !cold_start {
+        // **The same premise test the imminent branch carries, one level up — and it was missing
+        // here, which is why fixing that branch alone only DELAYED the abandon by two seconds.**
+        //
+        // `unsafe_horizon` is `T < starvation_safe_secs` and `T = B·R/(R−C)` is a forecast under
+        // one premise: that the reserve is being consumed at `(R−C)/R`. `R` is the whole-file
+        // average inflated by `vbr_allowance_pm` and `C` is the measurement discounted by
+        // `uncertainty_pm`, so `R − C` is positive across a wide band in which the link is
+        // comfortably carrying the file — a band this deficit is *manufactured* inside rather than
+        // observed. `the_prime_remnant_is_not_a_starving_reserve` already says so in as many
+        // words ("it is arithmetic on an uncertainty floor, not an observation").
+        //
+        // So the tally requires the drain to be OBSERVED, exactly as the imminent branch requires
+        // it. Without this the accumulator ran for six consecutive windows with the reserve rising
+        // at +783 ms/s, reached `sustained_unsafe_deficit_ms` on the seventh, and handed the
+        // decision to `choose_mode` — a second, slower route to the same wrong reload.
+        //
+        // **`draining()` and not "not filling"**, because the reserve saturates. `B_max` is the
+        // queue caps plus the pump's feed-ahead lead, and a healthy stream sits AT that ceiling
+        // with a slope of ~0; "not filling" would resume the tally on a FULL buffer, which is the
+        // one state that most conclusively refutes starvation. A link that is genuinely marginal
+        // still gets counted the moment a VBR peak starts eating the reserve — that is what
+        // `draining()` is, and it costs the tally only the delay of becoming observable.
+        if unsafe_horizon && !cold_start && self.buffer.draining() {
             self.unsafe_deficit_ms = self.unsafe_deficit_ms.saturating_add(wall_delta);
         } else {
             self.unsafe_deficit_ms = 0;
@@ -682,7 +770,34 @@ impl OriginalModeController {
         }
         // RAW delta, not the smoothed slope: this branch exists for the case where the estimates
         // are wrong, so it must not consult a trend that lags the drop it is watching for.
-        if buffered_ms <= self.policy.emergency_buffer_ms && self.buffer.last_delta_ms < 0 {
+        //
+        // **`&& !filling()`, because a small reserve has two meanings and the LEVEL cannot tell
+        // them apart.** Nearly gone and still falling is the emergency this guard is for. Nearly
+        // gone because a fresh `Load` just consumed the prime is a stream WARMING UP, and every
+        // mode entry starts there by construction — `primed: v=749ms a=908ms` is a normal join.
+        //
+        // Host-simulator reproduction, 2026-08-29, five seconds after a CORRECT recovery into 4K
+        // Dolby Vision direct play:
+        //
+        // ```text
+        // reload_at: fresh Load at 129s
+        // auto: Original -> HLS EmergencyLowBuffer measured=25911kbps safe=21168kbps
+        //       need=21104kbps buf=1181ms slope=1113ms/s starve=none held=0ms
+        // reload_transcode: fresh Load at offset 126s
+        // ```
+        //
+        // `starve=none` is the whole argument: the horizon is INFINITE because `conservative_kbps`
+        // had already cleared the requirement — the model's own capacity test said the link was
+        // sufficient — while the reserve refilled at better than one millisecond of media per
+        // millisecond of wall clock. Two reloads in ten seconds, both visible.
+        //
+        // The raw delta stays the trigger, so a genuine cliff is still acted on the window it
+        // happens. `filling()` only disqualifies a reserve measurably going the other way, and it
+        // is not `!draining()`: the flat-within-noise band between them is left to the guard.
+        if buffered_ms <= self.policy.emergency_buffer_ms
+            && self.buffer.last_delta_ms < 0
+            && !self.buffer.filling()
+        {
             return Some(OriginalExit::EmergencyLowBuffer);
         }
         // **The horizon's own premise has to be observed, not assumed.** `starvation_horizon` is
@@ -709,10 +824,42 @@ impl OriginalModeController {
         // so a reserve that is falling for any reason still gets a horizon computed from a rate
         // rather than from the observed drain. Replacing that is the plant-model work the plan of
         // record defers; this removes the case the device actually produced and claims no more.
+        // **`draining()` here, `last_delta_ms` in the emergency guard above, and the split is the
+        // argument rather than an inconsistency.** Both branches want "the reserve is actually
+        // falling"; they differ in what a wrong answer costs, so they read the derivative at
+        // different noise tolerances.
+        //
+        // `EmergencyLowBuffer` fires under `emergency_buffer_ms` (2 000 ms), where the next window
+        // may be the stall. There the RAW delta is right: acting on noise costs one downshift,
+        // waiting for a trend costs the picture.
+        //
+        // This branch fires with a reserve that can be arbitrarily large — 4 814 ms in the device
+        // case below — and it costs a full pipeline reload and a visible blink. A single raw
+        // sample cannot support that, because `buffered_ms` is
+        // `min(video_tail, audio_tail) - playpos` (`ff.rs::progressive_buffered_ms`) and `playpos`
+        // comes off a **5 Hz** position callback, so B carries ~200 ms of quantisation. One window
+        // is 750 ms of read; against a reserve filling at ~500 ms/s the expected travel is ~380 ms
+        // and the quantisation is ~200 ms, so the SIGN of a single delta is very nearly a coin
+        // flip on a healthy link. Over the eight windows a joined stream actually runs, at least
+        // one negative sample is close to certain.
+        //
+        // Device-measured 2026-08-29, and this is the whole of the bug: a 25 264 kbps 4K Dolby
+        // Vision + Atmos source, joined at 943 s, playing at full speed (`play=985..1031pm`) with
+        // the reserve climbing 749 -> 4 814 ms, abandoned after 8 seconds on
+        // `starve=16 ... slope=1020ms/s` — a starvation horizon and a FILLING reserve on the same
+        // line. The switch back cost a second reload eight seconds after the first, and the two
+        // Loads are the two blinks the viewer saw.
+        //
+        // **It is not sluggish against a real collapse**, which is the objection to reading a
+        // smoothed slope at all. The EWMA is 3:1, so one window is a quarter of the step: a
+        // reserve falling 3 000 ms in a 750 ms window contributes a sample slope of -4 000 ms/s
+        // and pulls a slope sitting at +1 000 straight to -250, past `DRAIN_EPS_MS_PER_S`, on that
+        // same window. What it cannot do is cross on the ±200 ms of quantisation noise, which is
+        // exactly the discrimination this branch was missing.
         let imminent = horizon
             .seconds
             .is_some_and(|secs| secs <= self.policy.starvation_fallback_secs)
-            && self.buffer.last_delta_ms < 0;
+            && self.buffer.draining();
         if imminent {
             return Some(OriginalExit::ImminentStarvation);
         }

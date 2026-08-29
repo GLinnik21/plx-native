@@ -133,12 +133,46 @@ from ~40 s to 14.9 s and the horizon has reached 16 s against a `starvation_fall
 The remaining 818 pm window is the fresh `Load` the mode switch costs, and is what the case's
 `min_play_rate_pm` floor is sized to admit.
 
-**One detail in that line is worth keeping**, because it decides which of two similar-looking
-quantities the new guard may read: `slope=8446ms/s` — the SMOOTHED EWMA — is strongly POSITIVE at
-the moment of a correct fallback, because it still carries the healthy opening leg. Only the raw
-`last_delta_ms` was negative. A guard written against `draining()` would have blocked this exit;
-the one that shipped reads the raw delta, for the reason `EmergencyLowBuffer` already gave beside
-it.
+**One detail in that line looked worth keeping and was WRONG — the conclusion is retracted here,
+2026-08-29, and the guard it argued against has since shipped.**
+
+The paragraph this replaces read: `slope=8446ms/s` — the smoothed EWMA — is strongly POSITIVE at
+the moment of a correct fallback, because it still carries the healthy opening leg; only the raw
+`last_delta_ms` was negative; **so a guard written against `draining()` would have blocked this
+exit.** That inference is sound and its premise is not. `+8446 ms/s` was not the healthy opening
+leg persisting through a drain — it was a **fabricated first sample**, the seed
+`BufferEstimate::update` produced when `self.buffered_ms` still held zero, so the first `delta` was
+the whole reserve rather than a change in it. This measurement is dated **2026-08-27**;
+`da4a245b playback: two estimators that seeded themselves from a fabricated first sample` landed
+**2026-08-28**, the day after, and removed exactly that number. The reasoning survived the
+arithmetic it was built on by one day.
+
+Re-measured on the host simulator through a loopback `netcond`, same item and same profile
+(`tools/abr-scenario.sh squeeze_regression movie_h264_ac3_1080p "0:pass 30:rate:2500"`):
+
+```
+auto: Original -> HLS ImminentStarvation measured=2611kbps safe=1305kbps need=14355kbps
+      buf=7453ms slope=-876ms/s starve=8 held=1184ms target=720kbps
+auto: Original became unsustainable at 1305kbps; switching to 720kbps 854x480 HLS
+abr: committed Up to 2000kbps 1280x720 out=716x300      → pos=44s play=1033pm
+```
+
+**`slope=-876ms/s`.** The smoothed slope is negative at the moment of a correct fallback, so
+`draining()` is true and the guard passes it through. A real four-fold deficit moves this
+estimator without difficulty; what it will not do is cross on the ±200 ms of quantisation the 5 Hz
+playhead puts into `buffered_ms`, which is the discrimination the raw delta could not make. The
+device case that forced the change is the other side of the same test: a 4K Dolby Vision film
+abandoned with `slope=+1020ms/s` on a link carrying it at 1.5x, two reloads in ten seconds. Both
+directions are now pinned in `abr/tests.rs`
+(`one_quantisation_dip_in_a_filling_reserve_is_not_a_starvation` and
+`a_collapse_leaves_original_for_the_best_sustainable_state`).
+
+The retraction is left in place rather than edited away because the mistake is the reusable part:
+**a number read out of a log is evidence about the code that produced it, and that code has a
+date.** Nothing in the original paragraph was careless — it quoted the line correctly and reasoned
+correctly from it. It was simply arguing from an instrument that was repaired the next morning.
+`[[silent-instrument-trap]]`'s sibling: prove the instrument was sound *when the reading was
+taken*, not merely that it is sound now.
 
 ## 7. Corroboration from the AU queue
 

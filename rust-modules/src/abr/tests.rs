@@ -466,8 +466,273 @@ fn the_prime_remnant_is_not_a_starving_reserve() {
     assert_eq!(second.fallback, None, "a filling reserve on a link that covers the file");
 }
 
+/// **The same film, eight windows in — where `the_prime_remnant_is_not_a_starving_reserve` stops
+/// looking.** (Device, 2026-08-29.)
+///
+/// That test guards windows 1 and 2, which is where `orig-first-window-fallback.md` found the
+/// defect. The guard it installed — `last_delta_ms < 0` — protects those two windows for a reason
+/// that expires: window 1 has no derivative at all, and window 2's is the whole of a rising prime.
+/// From window 3 on, the raw delta is a **sign test on a signal whose quantisation is comparable
+/// to its per-window travel**, and the reserve is `min(video_tail, audio_tail) - playpos` with
+/// `playpos` off a 5 Hz callback — so one negative sample out of eight is close to certain on a
+/// perfectly healthy link.
+///
+/// This is that film's actual failure, in its own numbers: a 25 264 kbps 4K Dolby Vision + Atmos
+/// source on a link measuring 31 037 kbps, reserve climbing ~600 ms per window, and ONE window
+/// where it dips 114 ms — a fifth of the quantisation step. The horizon is 17 s against a
+/// `starvation_fallback_secs` of 20, so the old conjunction fires and the film loses 4K direct
+/// play for a 720p transcode. The log line was
+/// `ImminentStarvation ... buf=4814ms slope=1020ms/s starve=16` — a starvation verdict beside a
+/// filling reserve.
+///
+/// Differential by construction: against unmodified code the final `assert` fails.
+#[test]
+fn one_quantisation_dip_in_a_filling_reserve_is_not_a_starvation() {
+    let mut mode = original(25_264);
+    // Reserve as the device carried it: the prime remnant, then ~600 ms of gain per window.
+    let climb = [749_i64, 1_300, 1_900, 2_500, 3_100, 3_700, 4_300, 4_814];
+    for (i, buffered) in climb.iter().enumerate() {
+        let windows = (i + 1) as u64;
+        let observation = mode
+            .observe_saturated(
+                window_bytes(31_037) * windows,
+                ORIGINAL_WINDOW_US * windows,
+                Some(*buffered),
+                HOUR_MS,
+            )
+            .unwrap();
+        assert_eq!(
+            observation.fallback, None,
+            "window {windows}: the reserve is rising and the film is playing at speed",
+        );
+    }
+    // The dip. 114 ms against a ~200 ms quantisation step and a ~600 ms per-window trend: this is
+    // the measurement's noise floor, not an observation about the link.
+    let windows = climb.len() as u64 + 1;
+    let dip = mode
+        .observe_saturated(
+            window_bytes(31_037) * windows,
+            ORIGINAL_WINDOW_US * windows,
+            Some(4_700),
+            HOUR_MS,
+        )
+        .unwrap();
+    assert!(
+        dip.slope_ms_per_s > 0,
+        "the smoothed reserve is still rising ({}ms/s) — which is the evidence the verdict has to \
+         answer to",
+        dip.slope_ms_per_s,
+    );
+    // **This assertion was inverted on 2026-08-29 and the inversion is the record of a second,
+    // deeper fix.** It used to require the horizon to be INSIDE `starvation_fallback_secs`, on the
+    // grounds that only the derivative was keeping the branch shut. That was true while the
+    // eviction horizon was computed on `conservative_kbps`: `T = B·R/(R−C)` with `C` discounted
+    // put `T` at 17 s here, and — because `T` is increasing in `B` while `B` is capped by the
+    // plant ceiling — it could not have escaped the band at ANY reserve this playback could
+    // reach. The horizon half was permanently armed and the derivative was the only thing left.
+    // Computing it on the measured rate, which is the rule `controller.rs` already followed for
+    // HLS, moves it to 52 s. Both guards now hold, independently, and that is the point: the
+    // derivative closed the channel, and the basis fix disarmed the condition behind it.
+    assert!(
+        dip.horizon_secs.is_none_or(|s| s > 20),
+        "the eviction horizon is computed on the measured rate now, so a link carrying the file \
+         has no imminent horizon at all — got {:?}s",
+        dip.horizon_secs,
+    );
+    assert_eq!(
+        dip.fallback, None,
+        "one negative sample in a filling reserve may not cost a reload and a visible blink",
+    );
+}
+
+/// **Conservatism belongs to admission, not to eviction — and Original must say so in the same
+/// words `controller.rs` does.**
+///
+/// The HLS side computes its emergency horizon on `immediate_network`, the measured rate floored
+/// by the fast estimate, and its comment calls the choice load-bearing: *"It does not belong to
+/// EVICTION, where the claim is that the link in front of you cannot carry what is already
+/// playing, and the evidence for that has to be observed rather than discounted into existence."*
+/// Original computed the same horizon on `conservative_kbps` and inherited exactly the failure
+/// that comment predicts.
+///
+/// It is not a matter of degree, because the plant has a ceiling. `T = B·R/(R−C)` is increasing in
+/// `B`, and `B ≤ B_max = lead + queue_bytes·8/R` — about 5 s for a source this size. On the
+/// discounted rate that gives `T_max ≈ 17 s`, permanently inside `starvation_fallback_secs`: the
+/// horizon half of the imminent test was satisfied on **every window the playback could produce**,
+/// including a completely full buffer. On the measured rate the same ceiling gives ~55 s.
+///
+/// Both readings are asserted here so the parity cannot regress silently in either direction.
+#[test]
+fn the_eviction_horizon_is_measured_not_discounted() {
+    let source = 25_264;
+    let requirement = source_requirement_kbps(source, &AbrPolicy::measured());
+    let mut mode = original(source);
+    // A link measuring 31 037 kbps against a 25 264 kbps file: 1.23x, carrying it with room.
+    for window in 1..=4_u64 {
+        mode.observe_saturated(
+            window_bytes(31_037) * window,
+            ORIGINAL_WINDOW_US * window,
+            Some(1_000 * i64::try_from(window).unwrap()),
+            HOUR_MS,
+        )
+        .unwrap();
+    }
+    let settled = mode
+        .observe_saturated(window_bytes(31_037) * 5, ORIGINAL_WINDOW_US * 5, Some(4_814), HOUR_MS)
+        .unwrap();
+
+    // The published `safe=` is still the discounted number, because it still chooses the fallback
+    // RUNG — an admission decision, and the one place the discount belongs.
+    assert!(
+        settled.conservative_kbps < requirement,
+        "the discounted rate is still below the requirement ({} < {}) — which is precisely why \
+         computing the horizon on it manufactured a deficit",
+        settled.conservative_kbps,
+        requirement,
+    );
+    // What the DECISION is taken on is the measurement, and the measurement covers the file.
+    assert!(
+        settled.measured_kbps < requirement,
+        "even the raw rate is under the VBR-inflated requirement, so this is not a case the \
+         allowance alone rescues",
+    );
+    assert!(
+        settled.horizon_secs.is_none_or(|s| s > AbrPolicy::measured().starvation_fallback_secs),
+        "a link delivering 1.23x the source may not read as imminent starvation — got {:?}s",
+        settled.horizon_secs,
+    );
+    assert_eq!(settled.fallback, None);
+
+    // And the rule still bites when the link really does fall behind: same reserve, a rate a
+    // quarter of the source.
+    let mut collapsed = original(source);
+    collapsed
+        .observe_saturated(window_bytes(6_000), ORIGINAL_WINDOW_US, Some(6_000), HOUR_MS)
+        .unwrap();
+    let falling = collapsed
+        .observe_saturated(window_bytes(6_000) * 2, ORIGINAL_WINDOW_US * 2, Some(3_000), HOUR_MS)
+        .unwrap();
+    assert_eq!(
+        falling.fallback,
+        Some(OriginalExit::ImminentStarvation),
+        "an observed collapse still evicts — the basis changed, not the rule",
+    );
+}
+
+/// **A stream that has just joined has a small reserve BY CONSTRUCTION, and the emergency guard
+/// may not read that as the reserve being gone.** (Host simulator, 2026-08-29.)
+///
+/// Every mode entry begins here: the `Load` completes, the prime is consumed, and the reserve
+/// starts at a few hundred milliseconds and climbs. `emergency_buffer_ms` is 2 000, so the whole
+/// warm-up sits underneath it, and the only thing separating "warming up" from "about to stall" is
+/// the DIRECTION — which is why the level alone cannot decide it.
+///
+/// This is what the fix for `one_quantisation_dip_in_a_filling_reserve_is_not_a_starvation`
+/// uncovered: with the imminent branch and the deficit tally both requiring an observed drain, the
+/// simulator's 4K Dolby Vision recovery blinked anyway, five seconds after a CORRECT recovery,
+/// on `EmergencyLowBuffer measured=25911kbps safe=21168kbps need=21104kbps buf=1181ms
+/// slope=1113ms/s starve=none`. An infinite starvation horizon — the model's own capacity test
+/// saying the link was sufficient — beside a reserve refilling at better than real time, and a
+/// reload anyway.
+///
+/// Differential by construction: against unmodified code the final `assert` fails.
+#[test]
+fn a_reserve_refilling_after_a_join_is_not_an_emergency() {
+    let mut mode = original(15_633);
+    // The prime remnant, then the reserve climbing ~1.1 s per window — a link comfortably ahead.
+    for (window, buffered) in [(1_u64, 300_i64), (2, 1_400)] {
+        let observation = mode
+            .observe_saturated(
+                window_bytes(25_911) * window,
+                ORIGINAL_WINDOW_US * window,
+                Some(buffered),
+                HOUR_MS,
+            )
+            .unwrap();
+        assert_eq!(observation.fallback, None, "window {window} of a warm-up");
+    }
+    // One negative raw sample, still deep inside `emergency_buffer_ms`. This is the exact shape
+    // the guard fired on.
+    let dip = mode
+        .observe_saturated(window_bytes(25_911) * 3, ORIGINAL_WINDOW_US * 3, Some(1_181), HOUR_MS)
+        .unwrap();
+    assert!(
+        dip.buffered_ms <= AbrPolicy::measured().emergency_buffer_ms,
+        "the reserve must really be inside the emergency band, or this grades nothing",
+    );
+    assert!(
+        dip.slope_ms_per_s > 0,
+        "and it must really be refilling ({}ms/s)",
+        dip.slope_ms_per_s,
+    );
+    assert_eq!(
+        dip.fallback, None,
+        "a reserve climbing out of the prime is a stream starting, not a stream starving",
+    );
+}
+
+/// **The reserve derivative is per WALL second, because that is what spends the reserve.**
+///
+/// `ORIGINAL_WINDOW_US` deliberately measures capacity over ACTIVE body-read time, so a reader
+/// parked on backpressure does not measure as a slow link. Feeding that same denominator to the
+/// buffer estimate was a units error: parking is what a HEALTHY link does, so `t_active < t_wall`
+/// exactly when the reserve is filling, and the slope came out inflated by `t_wall / t_active`.
+/// Device-measured: a printed `slope=1020ms/s` against a real +508 ms per wall second.
+///
+/// It matters because `slope_ms_per_s` is then compared against `DRAIN_EPS_MS_PER_S`, which is
+/// stated in wall seconds, and sits beside `starvation_horizon`, which is wall seconds throughout.
+///
+/// `observe_saturated` cannot see this — it passes `now_ms = active_us / 1_000`, making the two
+/// clocks identical — so this test calls `observe` directly, which is the only way to separate
+/// them.
+#[test]
+fn the_reserve_slope_is_measured_on_the_wall_clock_not_on_read_time() {
+    let mut mode = original(25_264);
+    // One window of active read that took twice as long in wall time: the reader spent half of it
+    // parked on a full queue, which is the healthy case.
+    mode.observe(window_bytes(31_037), ORIGINAL_WINDOW_US, Some(1_000), HOUR_MS, 1_500)
+        .unwrap();
+    let second = mode
+        .observe(
+            window_bytes(31_037) * 2,
+            ORIGINAL_WINDOW_US * 2,
+            Some(2_500),
+            HOUR_MS,
+            3_000,
+        )
+        .unwrap();
+    // 1 500 ms of reserve gained over 1 500 ms of wall clock is +1 000 ms/s. Over the 750 ms of
+    // active read the same gain would read +2 000 ms/s — the doubling this test exists to refuse.
+    assert_eq!(
+        second.slope_ms_per_s, 1_000,
+        "gained 1500ms of reserve across 1500ms of wall clock",
+    );
+}
+
 /// A moderate deficit that will not go away eventually loses the argument on its own — before
 /// starvation is imminent, and with no counter deciding anything by itself.
+///
+/// **RE-EXPRESSED 2026-08-29: the reserve now FALLS, and holding it constant was asserting the
+/// defect** — the same shape as `a_collapse_leaves_original_for_the_best_sustainable_state`'s own
+/// re-expression, for the same reason.
+///
+/// This fixture used to hold `Some(30_000)` across all fourteen windows, and that world is
+/// self-contradictory: a reserve that neither grows nor shrinks while the film plays says delivery
+/// EQUALS consumption exactly, which is the definition of a link that is carrying the file. The
+/// only thing asserting a deficit there was `R − C` — `vbr_allowance_pm` inflating the requirement
+/// and `uncertainty_pm` discounting the measurement, against each other, with no observation on
+/// either side. Counting that toward `sustained_unsafe_deficit_ms` is what let a 4K Dolby Vision
+/// film be abandoned with its reserve rising at +783 ms/s (see
+/// `one_quantisation_dip_in_a_filling_reserve_is_not_a_starvation`).
+///
+/// It also could not stay: a flat reserve is what SATURATION looks like — `B_max` is the queue
+/// caps plus the pump's feed-ahead lead — so the old fixture's own steady state was the one state
+/// that most conclusively refutes starvation.
+///
+/// So the shortfall is now observable: 200 ms of reserve lost per window, a slope of −266 ms/s,
+/// past `DRAIN_EPS_MS_PER_S` and nowhere near imminent. What the test grades is unchanged — a
+/// persistent, non-imminent deficit eventually loses the utility argument — and it now grades it
+/// on a scenario that can happen.
 #[test]
 fn a_deficit_that_persists_costs_original_the_argument() {
     let mut mode = original(60_000);
@@ -477,7 +742,7 @@ fn a_deficit_that_persists_costs_original_the_argument() {
             .observe_saturated(
                 window_bytes(50_000) * window,
                 ORIGINAL_WINDOW_US * window,
-                Some(30_000),
+                Some(20_000 - 200 * i64::try_from(window).unwrap()),
                 HOUR_MS,
             )
             .unwrap();
