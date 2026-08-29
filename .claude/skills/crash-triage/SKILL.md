@@ -32,8 +32,14 @@ the repo did that arithmetic until `tools/crash-report.sh`.
 **Call it a FAULT EVENT, not a backtrace, when you write it up.** Two frames and the registers is
 what an async-signal-safe handler can honestly produce: `backtrace()` is not on the safe list, ARM
 unwinding out of a handler commonly stops at `gsignal()`, and deferring does not help because by
-then the stack is gone. The real backtrace comes from crashd, in `/var/log/reports/librdx/`, which
-is what the re-raise exists to preserve.
+then the stack is gone.
+
+**And do not go looking for a crashd backtrace to fill the gap — you will not get one.** Device-
+verified 2026-08-29 with a deliberate SIGSEGV: the re-raise gets SAM a real `exit_status: 11`, and
+`/var/log/reports/librdx/` stays empty. `core_pattern` here is the bare string `core`, so the report
+chain begins with a core FILE, and every build that is not `DEBUG=1` sets `RLIMIT_CORE` to 0 — for
+good reason, on a 615.6 MB partition shared with every installed app that had 125.9 MB free. So the
+fault event below IS the evidence. Treat an empty librdx directory as expected, not as a clue.
 
 **A log from before 2026-08-29 has no crashd report to go with it, whatever this page says about
 the re-raise.** The re-raise was added on 2026-07-09 and did not work: `sigaction` masks the signal

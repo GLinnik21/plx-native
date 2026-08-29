@@ -91,6 +91,13 @@ full one-time setup + troubleshooting.
   matching nothing that was ever shipped. Cut both in one invocation:
   `make RELEASE=1 SYMBOLS=1 ipk symbols`. `make symbols` without the flag REFUSES rather than
   writing the empty shell `objcopy --only-keep-debug` produces from a binary with no DWARF.
+  **`SYMBOLS=1` is sticky the way `RELEASE=1` is: pass it to EVERY invocation in the session.** It
+  is in the stamp, so a bare `make run` after `make SYMBOLS=1 deploy` deletes `pkg/plxnative` at
+  parse time and leaves you unable to symbolize the crash you just captured — the stamp working as
+  designed, but it costs a rebuild to notice. **Device-verified end to end 2026-08-29**: a
+  deliberate SIGSEGV on the set resolved through `pkg/plxnative.debug` to
+  `dev::crash_on_purpose at rust-modules/src/dev.rs:218` — file and line, from a binary the
+  television runs, matched by build id alone.
 - `make ipk` — repackage the installable `pkg/<app id>_<version>_arm.ipk`. The version
   comes from `pkg/appinfo.json` (the single source; `ci/check-package.py` asserts the control
   file agrees), and the archive is **reproducible** — `ci/mkipk.py` normalises tar identity and
@@ -628,7 +635,13 @@ which the linking section explains is load-bearing rather than tidy.
   app-switch does. Preserve the suspend/reload pairing if you touch playback or routing.
 - **Crash forensics:** the C tracer (`main.c`) logs the faulting PC and LR, **the ARM registers
   around them** and the `/proc/self/maps` line(s) containing either, then **re-raises to `SIG_DFL`**
-  so the OS/crashd still captures a real backtrace. Call the result a **fault event, not a
+  so SAM sees a real signal death (`exit_status: 11` for a SIGSEGV — device-verified 2026-08-29 with
+  a deliberate crash). **It does NOT also get you a crashd backtrace, and this line used to say it
+  did**: `core_pattern` on this firmware is the bare string `core`, so the report chain starts from
+  a core FILE, and `setrlimit(RLIMIT_CORE, 0)` means none is written. Two deliberate SIGSEGVs
+  produced the signal status and no `/var/log/reports/librdx/` entry. Suppressing cores stays right
+  — 615.6 MB shared partition, 125.9 MB free, ~200 MB core — so the two are simply exclusive, and
+  this app's crash evidence is its own fault event plus SAM's status. Call the result a **fault event, not a
   backtrace** — `backtrace()` is not async-signal-safe and ARM unwinding out of a handler commonly
   stops at `gsignal()`, so two frames plus registers plus the faulting module is the honest ceiling.
   **Two things about it were broken until 2026-08-29 and neither was visible in a log** — and the

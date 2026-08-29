@@ -15,7 +15,9 @@
 #     reg: sp=0x… fp=0x… ip=0x… cpsr=0x… r0=0x… … r10=0x…     (2026-08-29 and later builds)
 #     at:  <the /proc/self/maps line containing pc or lr>     (which library faulted)
 #     bin: <the maps line for our own binary>                 (our load base)
-# and then re-raises to SIG_DFL so the OS crash daemon still captures a real backtrace.
+# and then re-raises to SIG_DFL so SAM records a real signal death (exit_status = the bare signal
+# number). That does NOT also produce a crashd backtrace — cores are disabled, see the librdx
+# section at the bottom — so the record below is the evidence, not a preamble to a better one.
 # Turning pc into a source line needs `pc - load_base` fed to addr2line — this script is
 # the only thing in the repo that does that arithmetic.
 #
@@ -200,7 +202,17 @@ else
   # `make deploy` scp's before the rename) and `plxnative-sim` cannot be mistaken for the binary.
   # That file's header records which of the two comments' historical justifications was measured
   # FALSE — worth reading before writing a third one.
-  binline=$(echo "$block" | grep '^bin: ' | grep -F "/$APPID/" | tail -1)
+  #
+  # …and WHICH OF SEVERAL. The tracer emits one `bin:` line per mapping of the executable, and a
+  # real crash produces three — `r-xp` text, `r--p` rodata, `rw-p` data. This used to `tail -1`,
+  # which takes the DATA mapping: its range does not contain any code address, so every genuine
+  # crash was reported as "outside our binary" and symbolized nothing. Measured on the set
+  # 2026-08-29 with a deliberate SIGSEGV; the tool had never been run against a crash with more
+  # than one such line. Take the EXECUTABLE mapping — the only one a PC can be in.
+  binline=$(echo "$block" | grep '^bin: ' | grep -F "/$APPID/" | grep ' r-xp ' | head -1)
+  # Older logs, and any future mapping shape this does not anticipate: fall back rather than
+  # silently symbolizing nothing.
+  [ -n "$binline" ] || binline=$(echo "$block" | grep '^bin: ' | grep -F "/$APPID/" | head -1)
   if [ -z "$binline" ] && echo "$block" | grep -q '^bin: '; then
     echo "  *** this crash's bin: line does not name $APPID:"
     echo "$block" | grep '^bin: ' | tail -1 | sed 's/^/      /'
@@ -210,6 +222,23 @@ else
   base=$(echo "$binline" | sed -n 's/^bin: *\([0-9a-f]*\)-.*/\1/p' | head -1)
   # the executable's text mapping bounds what we can symbolize
   top=$(echo "$binline"  | sed -n 's/^bin: *[0-9a-f]*-\([0-9a-f]*\).*/\1/p' | head -1)
+  # Which ELF kind decides the arithmetic below; read from the LOCAL binary, which the md5 check
+  # above has already established is the one that crashed.
+  elftype=$("$READELF" -h "$BIN" 2>/dev/null | sed -n 's/ *Type: *\([A-Z]*\).*/\1/p' | head -1)
+  # Prefer the separated debug file when one has been produced (`make SYMBOLS=1 symbols`): the
+  # stripped/ordinary binary gives a function name and `??:?`, the .debug gives file:line. Only if
+  # its build id matches, or it is a different build and would answer confidently and wrongly.
+  SYMBIN="$BIN"
+  if [ -f "$BIN.debug" ]; then
+    idb=$("$READELF" -n "$BIN" 2>/dev/null | sed -n 's/.*Build ID: //p' | head -1)
+    idd=$("$READELF" -n "$BIN.debug" 2>/dev/null | sed -n 's/.*Build ID: //p' | head -1)
+    if [ -n "$idb" ] && [ "$idb" = "$idd" ]; then
+      SYMBIN="$BIN.debug"
+      echo "  symbols: $BIN.debug (build id $idb)"
+    else
+      echo "  NOTE: $BIN.debug is from a DIFFERENT build (id $idd vs $idb) — ignoring it."
+    fi
+  fi
   echo "  signal : ${sig:-?}"
   echo "  faulted in: ${at:-<no maps line — pc outside every mapping>}"
 
@@ -228,8 +257,23 @@ else
         echo "  $reg 0x$val -> outside our binary (see the 'faulted in' line above)"
         continue
       fi
-      off=$(python3 -c "print(hex(int('$val',16) - int('$base',16)))")
-      line=$("$ADDR2LINE" -f -C -p -e "$BIN" "$off" 2>/dev/null)
+      # **DO NOT SUBTRACT THE BASE FOR AN ET_EXEC BINARY.** `pkg/plxnative` is `Type: EXEC`
+      # (`readelf -h`), so it is mapped at its LINK-TIME addresses and the PC already IS the
+      # address addr2line wants; the mapping base is 0x10000 and subtracting it shifts every
+      # lookup by 64 KiB into an unrelated function. Measured: the real faulting PC 0x18df2c
+      # resolves to `dev::crash_on_purpose` — the function that crashed — while `pc - base`
+      # resolves to `plex::serverinfo::version`. That is the failure this tool warns about twice
+      # in its own comments: not an error, a confident wrong answer.
+      #
+      # The subtraction is kept for the ET_DYN case rather than deleted, because it becomes right
+      # the day this binary is built as a PIE — and then a hardcoded "use the absolute address"
+      # would be the same bug facing the other way.
+      if [ "$elftype" = "DYN" ]; then
+        off=$(python3 -c "print(hex(int('$val',16) - int('$base',16)))")
+      else
+        off="0x$val"
+      fi
+      line=$("$ADDR2LINE" -f -C -p -e "$SYMBIN" "$off" 2>/dev/null)
       echo "  $reg 0x$val  (base 0x$base, offset $off) -> $line"
     done
   else
@@ -264,7 +308,12 @@ APPID_RE=$(printf '%s' "$APPID" | sed 's/\./\\./g')
 sam=$(tv "grep -a exit_status /var/log/messages 2>/dev/null | grep -aE '$APPID_RE([^.a-zA-Z0-9]|\$)' | tail -5")
 [ -n "$sam" ] && printf '%s\n' "$sam" || echo "  (none naming $APPID)"
 hr
-echo "== crash daemon reports (real backtraces, thanks to the re-raise)"
+# EXPECTED TO BE EMPTY for this app, and that is not a symptom. `core_pattern` on this firmware is
+# the bare string `core`, so the report chain starts from a core FILE, and every non-DEBUG build
+# sets RLIMIT_CORE to 0 (a ~200 MB core on a 615.6 MB partition shared with every installed app).
+# Device-verified 2026-08-29: a deliberate SIGSEGV gives SAM `exit_status: 11` and NO librdx entry.
+# Listed anyway because a report from ANOTHER process here is often the real context for ours.
+echo "== crash daemon reports (usually EMPTY for us — cores are off; see the note above)"
 tv 'ls -lt /var/log/reports/librdx/ 2>/dev/null | head -5' || echo "  (none)"
 echo
 echo "Correlate by monotonic uptime, never wall clock — pmlog's clock is hours off on this TV."

@@ -231,11 +231,25 @@ static void crash_handler(int sig, siginfo_t *si, void *uc) {
 #endif
     plx_crash_scan_maps_file("/proc/self/maps", pc, lr);
 
-    /* Re-raise with the DEFAULT disposition so the signal actually kills us: the kernel dumps core
-     * (where cores are enabled — see the RLIMIT_CORE note below), webOS crashd/librdx captures a
-     * full symbolicated backtrace in /var/log/reports/librdx/, and the parent (SAM) sees a real
-     * signal crash (WIFSIGNALED) instead of a clean exit. The old `_exit(3)` hid every crash from
-     * the system tracer.
+    /* Re-raise with the DEFAULT disposition so the signal actually kills us, and the parent (SAM)
+     * sees a real signal crash — `exit_status: 11` for a SIGSEGV, device-verified 2026-08-29 —
+     * instead of a clean exit. The old `_exit(3)` hid every crash from the system tracer.
+     *
+     * **It does NOT get us a crashd backtrace, and this comment used to say it did.** Measured on
+     * the dev set: two deliberate SIGSEGVs produced the WIFSIGNALED status above and NO report in
+     * `/var/log/reports/librdx/`. The reason is structural — `/proc/sys/kernel/core_pattern` on
+     * this firmware is the bare string `core`, i.e. the kernel writes a core FILE into the process
+     * cwd and the report chain starts from that file, while `setrlimit(RLIMIT_CORE, 0)` below means
+     * no core is ever written. The two are mutually exclusive, and suppressing cores is the right
+     * choice: the partition is 615.6 MB shared with every app the user has installed and had
+     * 125.9 MB free when this was measured, against a ~200 MB core.
+     *
+     * (Not proven all the way: writing a core to confirm the chain would have needed ~200 MB that
+     * was not there, so the core→report link is inference from `core_pattern` rather than a
+     * measurement. What IS measured is that we get no report.)
+     *
+     * So the honest summary is that this app's crash evidence is its OWN fault event, plus SAM's
+     * status. That is an argument for the tracer being good, not for turning cores back on.
      *
      * # THE UNBLOCK IS THE WHOLE THING, and without it none of the paragraph above was true
      *
