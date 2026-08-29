@@ -3713,7 +3713,6 @@ fn hls_demux(
             controller,
             recovery,
             false,
-            0u64,
             // A latched `Recover` verdict, waiting for a quiescent segment to act on.
             0u32,
         )
@@ -3804,7 +3803,6 @@ fn hls_demux(
             controller,
             recovery,
             probe_inflight,
-            generation,
             recover_kbps,
         )) = adaptive.as_mut()
         else {
@@ -4035,14 +4033,13 @@ fn hls_demux(
         // emits it; nothing below has to remember to.
         let mut tx = TxTrace::open(proposal, controller.current(), sample, &controller.delivery());
         publish_hls_abr_action(proposal, None);
-        *generation = generation.saturating_add(1);
         let offset_secs = SHARED
             .disp_base
             .load(Ordering::Relaxed)
             .max(0)
             .saturating_add(timeline.end().0.saturating_mul(1_000_000))
             / 1_000_000_000;
-        let primed = match control.prime(active_encoder, proposal, *generation, offset_secs) {
+        let primed = match control.prime(active_encoder, proposal, offset_secs) {
             Ok(primed) => primed,
             Err(refusal) => {
                 // **The cause is the SERVER's answer, not a guess at this call site.** `prime`

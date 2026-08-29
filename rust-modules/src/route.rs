@@ -361,6 +361,31 @@ pub(crate) fn transcode_session() -> String {
 /// never publish itself after the stop owner has retired the playback.
 static ACTIVE_ENCODER: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 
+/// **Candidate encoder names are allocated HERE, process-globally, and that is the whole point.**
+///
+/// The name is `<logical_session>-abr-<n>`, and the two halves used to have different lifetimes:
+/// `logical_session` is `sess()`, which SURVIVES a seek (`transcode_seek` reuses the id
+/// deliberately — stopping it would cut the stream the demux worker is reading), while `n` was a
+/// `u64` local to the demux worker, reset to 0 by every `Load`. So a playback that committed one
+/// switch and was then scrubbed came back with `ACTIVE_ENCODER = <sess>-abr-1` and a counter at
+/// zero, and the next transaction primed a candidate named `<sess>-abr-1` — **the live session's
+/// own id**.
+///
+/// Both exits then kill the playback, which is why it presents as a server fault rather than as a
+/// client bug. On rollback, `abandon(candidate)` is `transcode_stop` on the live encoder. On
+/// commit, `replace_active_encoder(expected, candidate)` trivially succeeds when the two are
+/// equal, and the caller's `retire(previous)` stops the session it just switched to. The symptom
+/// is a run of 404s and `HLS segment was not produced in time`, because 404 is `NotReady` by
+/// design and the retry loop cannot tell a stopped session from a slow one.
+///
+/// A monotonic global makes the collision unrepresentable rather than merely unlikely, so `prime`
+/// takes no generation from its caller: there is no value a worker could pass that repeats one.
+static ENCODER_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn next_encoder_generation() -> u64 {
+    ENCODER_GENERATION.fetch_add(1, Ordering::Relaxed) + 1
+}
+
 fn install_active_encoder(value: &str) {
     *ACTIVE_ENCODER.lock().unwrap_or_else(|e| e.into_inner()) = value.to_owned();
 }
@@ -487,12 +512,15 @@ impl HlsAbrControl {
         &self,
         expected_encoder: &str,
         proposal: crate::abr::Proposal,
-        generation: u64,
         offset_secs: i64,
     ) -> Result<PrimedHls, PrimeRefusal> {
         if !is_active_encoder(expected_encoder) {
             return Err(PrimeRefusal::Session);
         }
+        // Allocated here rather than taken from the worker: see `ENCODER_GENERATION`. A
+        // worker-scoped counter outlived by `logical_session` is what let a candidate be named
+        // after the live encoder and then stopped as if it were a spare.
+        let generation = next_encoder_generation();
         if !self.fixture_base.is_empty() {
             let encoder_session = format!("{}-abr-{generation}", self.logical_session);
             return Ok(PrimedHls {
@@ -4675,6 +4703,68 @@ fn a_declared_4k_source_makes_the_uhd_actuator_feasible() {
         let (control, encoder) = hls_abr_control().expect("Auto HLS control");
         assert_eq!(control.initial_rung, crate::abr::Rung::P720Low);
         assert_eq!(encoder, "encoder-1");
+        restore_quality(Quality::Original);
+        reset_session();
+        install_active_encoder("");
+    }
+
+    /// **The incident this pins killed a playback from inside the client and read as a server
+    /// fault.** A switch commits, so the live encoder is `<sess>-abr-1`; a scrub reloads the demux
+    /// worker, which used to restart its generation counter at 0 while `transcode_seek` kept the
+    /// session id; the next transaction primed a candidate named `<sess>-abr-1` — the live session.
+    /// Rollback then stopped it via `abandon`, commit via `retire(previous)`, and the demuxer saw a
+    /// run of 404s it correctly reports as "not produced in time".
+    ///
+    /// The assertion is deliberately about the NAME rather than about any one exit: both exits are
+    /// safe exactly when a candidate can never be called what the live encoder is called.
+    #[test]
+    fn a_candidate_is_never_named_after_the_encoder_it_would_replace() {
+        let _g = fresh_registry();
+        restore_quality(Quality::Auto);
+        apply_plan(
+            Plan {
+                // Two DIFFERENT fields, and their divergence is what makes the collision
+                // possible: `sess` is the candidate namespace (`logical_session`), `tsession`
+                // seeds the live encoder. Before any switch they agree, as they do on the wire.
+                sess: "sess-42".into(),
+                tsession: "sess-42".into(),
+                delivery: crate::plex::TranscodeDelivery::FixedHls { seconds_per_segment: 2 },
+                ceiling: Some(crate::abr::Rung::P1080M12.ceiling()),
+                ..Default::default()
+            },
+            "rk-auto",
+        );
+        // The fixture base is what lets `prime` answer without a client; the naming it exercises
+        // is the same line the live path takes.
+        session_mut(|s| s.auto_fixture_base = "http://fixture.invalid".into());
+        let (control, first_encoder) = hls_abr_control().expect("Auto HLS control");
+        let proposal = crate::abr::Proposal {
+            rung: crate::abr::Rung::P1080M6,
+            direction: crate::abr::Direction::Down,
+        };
+
+        let candidate = control
+            .prime(&first_encoder, proposal, 0)
+            .expect("the fixture path primes")
+            .encoder_session;
+        assert_ne!(candidate, first_encoder, "a candidate may not be the live encoder");
+        // The switch commits: the candidate is now what the playback is reading.
+        assert!(control.commit(&first_encoder, &candidate), "the commit swap takes");
+
+        // The seek. `transcode_seek` reuses the session id on purpose, and the reload builds a
+        // fresh worker — which is exactly the state that used to reset the counter to zero.
+        let (control, live) = hls_abr_control().expect("Auto HLS control survives the reload");
+        assert_eq!(live, candidate, "the seek carries the committed encoder, as it must");
+
+        let after_seek = control
+            .prime(&live, proposal, 890)
+            .expect("the fixture path primes")
+            .encoder_session;
+        assert_ne!(
+            after_seek, live,
+            "the first post-seek candidate must not be named after the live session",
+        );
+
         restore_quality(Quality::Original);
         reset_session();
         install_active_encoder("");
