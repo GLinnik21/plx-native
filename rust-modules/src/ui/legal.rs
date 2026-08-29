@@ -167,8 +167,8 @@ and addresses, and the numbers that identify items in your library.
 WHAT IS STORED HERE
 
 Your sign-in, as one access token per server, in a file only this app can read. Where you were when \
-you last closed the app. Your answer to the two switches above. Three log files, which a reboot \
-clears.
+you last closed the app. Your answer to the two switches above, and — only while one is on — the \
+messages still waiting to be sent. Three log files, which a reboot clears.
 
 WHAT THE LOG MAY NOT CONTAIN
 

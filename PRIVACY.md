@@ -58,6 +58,17 @@ it and the identifier is regenerated next time.
 **Where you were** — `<app id>-lastplace.json` beside it: the page, your profile id, one server id and
 one item id, so the app reopens where you left it.
 
+**Your answer to the two telemetry switches** — `<app id>-telemetry.json`, beside the other two. It
+holds the two booleans and, only after you turn one on, the random identifier described above.
+Turning both off deletes that identifier from the file.
+
+**Two files that exist only while telemetry is on**, beside it and both 0600:
+`<app id>-telemetry-spool.bin` is the queue of messages waiting to be sent — capped at half a
+megabyte, oldest dropped first, and emptied as they go — and `<app id>-telemetry-crashmark.json`
+holds a single number, how much of the crash log has already been reported. That number is why a
+crash is reported once rather than on every launch, and why the crash log itself can stay
+append-only for you to read.
+
 **Three log files** in `/tmp`, all created 0600 (`src/main.c`), two truncated each launch and the
 crash log append-only so it survives a restart. `/tmp` is cleared by a reboot.
 
