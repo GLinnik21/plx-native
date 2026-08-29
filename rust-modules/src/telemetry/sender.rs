@@ -124,7 +124,20 @@ const TIMEOUTS: crate::net::Timeouts =
 /// Could this build send anything at all? False at compile time in any checkout without the
 /// configuration file — see the module doc.
 pub(crate) fn configured() -> bool {
-    SENTRY_DSN.is_some() || POSTHOG_KEY.is_some()
+    has_sentry() || has_posthog()
+}
+
+/// Per DESTINATION, because one configured and the other not is the ordinary case here — the two
+/// are separate services with separate credentials, and this project has already spent a stretch
+/// with a Sentry key and no PostHog one. [`configured`] answers "can this build send at all", which
+/// is the wrong question for a log line: it is `true` while half the app is silently discarding
+/// every record it produces.
+pub(crate) fn has_sentry() -> bool {
+    SENTRY_DSN.is_some()
+}
+
+pub(crate) fn has_posthog() -> bool {
+    POSTHOG_KEY.is_some()
 }
 
 /// What to do with a record after an attempt.
@@ -261,6 +274,15 @@ pub(crate) fn send_one(r: &Record) -> (Verdict, Option<u64>) {
     let Some((url, headers)) = route(r) else {
         // No configuration for this destination in this build. Hopeless rather than Keep: nothing
         // about a later attempt will differ, and keeping would spool forever.
+        //
+        // **Logged, and it was not.** This is the one exit that discards a record without ever
+        // opening a socket, and it looked from the outside exactly like a successful send: the
+        // spool drained to zero, no line was written, and the event never arrived. Verifying the
+        // crash channel end to end is what surfaced it — there was no way to tell "delivered" from
+        // "silently dropped for want of a key", which is precisely the question a verification is
+        // asking. One destination missing while the other is configured is the ordinary case here,
+        // not an exotic one.
+        crate::log(&format!("telemetry: no endpoint for {:?} in this build — record discarded", r.dest));
         return (Verdict::Hopeless, None);
     };
     match crate::net::post_ca(&url, &headers, &r.body, TIMEOUTS) {
@@ -269,7 +291,18 @@ pub(crate) fn send_one(r: &Record) -> (Verdict, Option<u64>) {
             // The response body is bounded and kept precisely so a rejection can be logged with the
             // server's own explanation — the difference between debugging a 400 and guessing at one.
             if v != Verdict::Done {
-                crate::log(&format!("telemetry: {:?} -> {} ({v:?})", r.dest, resp.status));
+                // **With the server's own explanation.** The comment above promised this and the
+                // line did not carry it, which is the difference between debugging a 400 and
+                // guessing at one — Sentry and PostHog both answer a malformed envelope with a
+                // sentence naming the field. Bounded hard and scrubbed like every other line
+                // (`crate::log` runs `scrub_local` before the write), because it is third-party
+                // text landing in the primary debugging surface.
+                let why = String::from_utf8_lossy(&resp.body);
+                let why: String = why.chars().filter(|c| !c.is_control()).take(160).collect();
+                crate::log(&format!(
+                    "telemetry: {:?} -> {} ({v:?}) {why}",
+                    r.dest, resp.status
+                ));
             }
             (v, None)
         }

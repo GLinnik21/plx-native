@@ -41,6 +41,17 @@ pub(crate) fn boot() {
         if c.install_id.is_some() { "yes" } else { "none" }
     ));
     consent::install(c);
+    // **Which destinations this build can actually reach**, once, at boot. A decision of `usage=true`
+    // in a build with no PostHog key sends nothing, and every other line in this log looks
+    // identical either way — `diag::event` returns before the queue, correctly and silently. This
+    // is the line that says whether telemetry is WIRED, as against merely consented to, and it
+    // names no endpoint: which projects those are is a release-audit fact, not a per-boot one.
+    crate::log(&format!(
+        "telemetry: env={} sentry={} posthog={}",
+        sender::ENVIRONMENT,
+        if sender::has_sentry() { "yes" } else { "no" },
+        if sender::has_posthog() { "yes" } else { "no" }
+    ));
     // **After the install, and before anything in this process can fault.** The records being read
     // were written by a process that no longer exists — that is the whole reason the crash log is
     // on disk — so this is the only moment they can be turned into reports. It queues; it does not
@@ -164,6 +175,12 @@ fn flush_now(c: &consent::Consent) {
     }
     if !retired.is_empty() {
         spool::commit_retiring(&retired);
+        // **One line per flush that did something.** Without it a successful flush is
+        // indistinguishable from a flush that never ran, from the outside and from a log — the
+        // spool ends at zero bytes either way. That ambiguity is not hypothetical: it is what the
+        // first end-to-end verification of the crash channel ran into, and the answer took a code
+        // change rather than a closer read.
+        crate::log(&format!("telemetry: flushed {} of {} record(s)", retired.len(), all.len()));
     }
 }
 
