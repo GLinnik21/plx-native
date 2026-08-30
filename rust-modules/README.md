@@ -3,8 +3,9 @@
 This crate is a `staticlib` linked into the C binary (`pkg/plxnative`). It began as a
 gradual, module-by-module C→Rust migration; today it IS the app — UI, event loop, player
 engine, demux pipeline, and the Plex data layer all live here (see `docs/agent-reference.md`
-for the architecture). The C side only boots the process and wraps the Starfish C++ seam;
-the crate's C surface is down to `plex_run` + the two starfish callbacks.
+for the architecture). The C side boots the process, records an async-signal-safe fallback crash
+line and image marker, and wraps the Starfish C++ seam. Its Rust calls are `plex_run`,
+`plx_crash_write_image_marker`, `plx_sentry_spool_external`, and the two Starfish callbacks.
 
 ## Ported to Rust (10) — the whole data / logic / UI / render / platform stack
 
@@ -27,7 +28,8 @@ the crate's C surface is down to `plex_run` + the two starfish callbacks.
   via `__asm__`, an `sret` `std::string` return, a 64 KB in-place object buffer)
   plus the ACB video-plane bind. The engine that *drives* it is Rust (`player/`).
 - **`src/main.c`** — the boot shim: crash tracer, event-log/stderr setup, process
-  bring-up; it calls the Rust `plex_run()` and owns nothing else.
+  bring-up, native-crash reporter re-entry and the fallback image marker; it calls the Rust
+  entry points named above and owns no application state.
 - **`src/svg.c`** — the vendored nanosvg rasterizer (header-only C).
 
 Rust *can* do the Starfish FFI (`#[link_name = "<mangled>"]` mirrors the C

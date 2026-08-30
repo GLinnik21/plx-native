@@ -614,7 +614,8 @@ world-readable `/tmp` on the TV across many runs.
 **Verified clean, no action:** the only outbound hosts are the user's PMS, plex.tv and
 `discover.provider.plex.tv` — plus, since the telemetry work, Sentry and PostHog in the EU, and
 those two only after an explicit opt-in on a screen that shows the exact payloads first (both
-switches default off; `PRIVACY.md` carries the schema, generated from `diag::schema::EVENT_SPECS`).
+switches default off; `PRIVACY.md` carries the schemas: usage is generated from
+`diag::schema::EVENT_SPECS`, while native crashes are checked against their sanitizer allowlist).
 This line read "no analytics, no telemetry, no crash upload" and was a statement of fact about the
 audited build rather than a promise, so it is updated rather than qualified. TLS verification is on
 (`net.rs:96-97`); `auth.json` is created `0600` via `OpenOptionsExt::mode` — correctly, in `open(2)`'s

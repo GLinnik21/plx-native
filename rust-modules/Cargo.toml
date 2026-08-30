@@ -85,10 +85,10 @@ lab-diagnostics = []
 # binary settles it either way, and `.github/workflows/release.yml` asserts the production endpoints
 # ARE in the packaged bytes before it will publish — the same check, pointed the other way.
 #
-# The Jellyfin/Expo lesson the old comment cited (a dependency people can `strings` out counts as
-# collection even when dormant) does not reach this code: there is no SDK and no dependency, only
-# this crate's own modules, and what a reader would `strings` for is exactly the endpoint that is
-# absent without the credential.
+# The linked Sentry Native capture library changes that old comment's premise but not the gate: it
+# is built without a network transport and is not initialized unless BOTH a compiled endpoint and
+# stored error-report consent exist. What a reader can `strings` for is therefore still the thing
+# that makes collection possible — the endpoint — and it is absent from an unconfigured artifact.
 # The desktop UI simulator. OFF by default, so no ordinary `make`, `make check` or harness run is
 # affected in any way; `cargo build --features hostsim` selects it.
 #

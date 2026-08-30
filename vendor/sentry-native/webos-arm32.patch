@@ -1,0 +1,275 @@
+diff --git a/src/backends/native/minidump/sentry_minidump_linux.c b/src/backends/native/minidump/sentry_minidump_linux.c
+index a30e19e..2712a39 100644
+--- a/src/backends/native/minidump/sentry_minidump_linux.c
++++ b/src/backends/native/minidump/sentry_minidump_linux.c
+@@ -11,6 +11,7 @@
+ #    include <string.h>
+ #    include <sys/ptrace.h>
+ #    include <sys/stat.h>
++#    include <sys/syscall.h>
+ #    include <sys/types.h>
+ #    include <sys/uio.h>
+ #    include <sys/user.h>
+@@ -19,6 +20,19 @@
+ #    include <time.h>
+ #    include <unistd.h>
+ 
++#    if defined(__GLIBC__) && defined(__GLIBC_PREREQ)
++#        if !__GLIBC_PREREQ(2, 15)
++static ssize_t
++process_vm_readv(pid_t pid, const struct iovec *local_iov,
++    unsigned long local_iov_count, const struct iovec *remote_iov,
++    unsigned long remote_iov_count, unsigned long flags)
++{
++    return syscall(__NR_process_vm_readv, pid, local_iov, local_iov_count,
++        remote_iov, remote_iov_count, flags);
++}
++#        endif
++#    endif
++
+ #    include "../../../modulefinder/sentry_modulefinder_linux.h"
+ #    include "sentry_alloc.h"
+ #    include "sentry_logger.h"
+diff --git a/src/backends/native/sentry_crash_daemon.c b/src/backends/native/sentry_crash_daemon.c
+index a2cf4df..7eacfe0 100644
+--- a/src/backends/native/sentry_crash_daemon.c
++++ b/src/backends/native/sentry_crash_daemon.c
+@@ -37,10 +37,23 @@
+ #    include <inttypes.h>
+ #    include <signal.h>
+ #    include <sys/stat.h>
++#    include <sys/syscall.h>
+ #    include <sys/types.h>
+ #    include <sys/uio.h>
+ #    include <sys/wait.h>
+ #    include <unistd.h>
++#    if defined(__GLIBC__) && defined(__GLIBC_PREREQ)
++#        if !__GLIBC_PREREQ(2, 15)
++static ssize_t
++process_vm_readv(pid_t pid, const struct iovec *local_iov,
++    unsigned long local_iov_count, const struct iovec *remote_iov,
++    unsigned long remote_iov_count, unsigned long flags)
++{
++    return syscall(__NR_process_vm_readv, pid, local_iov, local_iov_count,
++        remote_iov, remote_iov_count, flags);
++}
++#        endif
++#    endif
+ #    if defined(SENTRY_PLATFORM_MACOS)
+ #        include <crt_externs.h>
+ #        include <mach-o/dyld.h>
+@@ -393,6 +406,41 @@ build_registers_from_ctx(const sentry_crash_context_t *ctx, size_t thread_idx)
+         registers, "sp", sentry__value_new_addr(uctx->uc_mcontext.sp));
+     sentry_value_set_by_key(
+         registers, "pc", sentry__value_new_addr(uctx->uc_mcontext.pc));
++#    elif defined(__arm__)
++    sentry_value_set_by_key(
++        registers, "r0", sentry__value_new_addr(uctx->uc_mcontext.arm_r0));
++    sentry_value_set_by_key(
++        registers, "r1", sentry__value_new_addr(uctx->uc_mcontext.arm_r1));
++    sentry_value_set_by_key(
++        registers, "r2", sentry__value_new_addr(uctx->uc_mcontext.arm_r2));
++    sentry_value_set_by_key(
++        registers, "r3", sentry__value_new_addr(uctx->uc_mcontext.arm_r3));
++    sentry_value_set_by_key(
++        registers, "r4", sentry__value_new_addr(uctx->uc_mcontext.arm_r4));
++    sentry_value_set_by_key(
++        registers, "r5", sentry__value_new_addr(uctx->uc_mcontext.arm_r5));
++    sentry_value_set_by_key(
++        registers, "r6", sentry__value_new_addr(uctx->uc_mcontext.arm_r6));
++    sentry_value_set_by_key(
++        registers, "r7", sentry__value_new_addr(uctx->uc_mcontext.arm_r7));
++    sentry_value_set_by_key(
++        registers, "r8", sentry__value_new_addr(uctx->uc_mcontext.arm_r8));
++    sentry_value_set_by_key(
++        registers, "r9", sentry__value_new_addr(uctx->uc_mcontext.arm_r9));
++    sentry_value_set_by_key(
++        registers, "r10", sentry__value_new_addr(uctx->uc_mcontext.arm_r10));
++    sentry_value_set_by_key(
++        registers, "fp", sentry__value_new_addr(uctx->uc_mcontext.arm_fp));
++    sentry_value_set_by_key(
++        registers, "ip", sentry__value_new_addr(uctx->uc_mcontext.arm_ip));
++    sentry_value_set_by_key(
++        registers, "sp", sentry__value_new_addr(uctx->uc_mcontext.arm_sp));
++    sentry_value_set_by_key(
++        registers, "lr", sentry__value_new_addr(uctx->uc_mcontext.arm_lr));
++    sentry_value_set_by_key(
++        registers, "pc", sentry__value_new_addr(uctx->uc_mcontext.arm_pc));
++    sentry_value_set_by_key(registers, "cpsr",
++        sentry__value_new_addr(uctx->uc_mcontext.arm_cpsr));
+ #    endif
+ 
+ #elif defined(SENTRY_PLATFORM_MACOS)
+@@ -546,11 +594,12 @@ read_stack_value(const uint8_t *stack_buf, uint64_t stack_start,
+     uint64_t stack_size, uint64_t addr, uint64_t *out_value)
+ {
+     if (addr < stack_start
+-        || addr + sizeof(uint64_t) > stack_start + stack_size) {
++        || addr + sizeof(uintptr_t) > stack_start + stack_size) {
+         return false;
+     }
+     uint64_t offset = addr - stack_start;
+-    memcpy(out_value, stack_buf + offset, sizeof(uint64_t));
++    *out_value = 0;
++    memcpy(out_value, stack_buf + offset, sizeof(uintptr_t));
+     return true;
+ }
+ 
+@@ -965,10 +1014,19 @@ build_stacktrace_for_thread(
+             uint64_t saved_fp = 0;
+             uint64_t return_addr = 0;
+ 
+-            // Read saved frame pointer and return address
+-            // Frame layout: [FP+0] = saved FP, [FP+8] = return addr
++            // Read saved frame pointer and return address. ARM's APCS frame
++            // record puts the saved FP immediately before the return address:
++            // [FP-4] = saved FP, [FP] = return address. Other supported
++            // architectures use [FP] followed by the return address.
++#if defined(__arm__)
++            uint64_t saved_fp_addr = current_fp - sizeof(uintptr_t);
++            uint64_t return_addr_addr = current_fp;
++#else
++            uint64_t saved_fp_addr = current_fp;
++            uint64_t return_addr_addr = current_fp + sizeof(uintptr_t);
++#endif
+             if (!read_stack_value(stack_buf, stack_start, stack_size,
+-                    current_fp, &saved_fp)) {
++                    saved_fp_addr, &saved_fp)) {
+                 SENTRY_DEBUGF(
+                     "Cannot read saved FP at 0x%llx (stack: 0x%llx - 0x%llx)",
+                     (unsigned long long)current_fp,
+@@ -977,9 +1035,9 @@ build_stacktrace_for_thread(
+                 break;
+             }
+             if (!read_stack_value(stack_buf, stack_start, stack_size,
+-                    current_fp + sizeof(uint64_t), &return_addr)) {
++                    return_addr_addr, &return_addr)) {
+                 SENTRY_DEBUGF("Cannot read return addr at 0x%llx",
+-                    (unsigned long long)(current_fp + sizeof(uint64_t)));
++                    (unsigned long long)return_addr_addr);
+                 break;
+             }
+ 
+diff --git a/src/modulefinder/sentry_modulefinder_linux.c b/src/modulefinder/sentry_modulefinder_linux.c
+index a361dba..d25c5c6 100644
+--- a/src/modulefinder/sentry_modulefinder_linux.c
++++ b/src/modulefinder/sentry_modulefinder_linux.c
+@@ -20,7 +20,15 @@
+ #include <sys/uio.h>
+ #include <unistd.h>
+ 
+-#if defined(__ANDROID_API__) && __ANDROID_API__ < 23
++#if defined(__ANDROID_API__) && __ANDROID_API__ < 23
++#    define SENTRY_NEEDS_PROCESS_VM_READV_SYSCALL 1
++#elif defined(__GLIBC__) && defined(__GLIBC_PREREQ)
++#    if !__GLIBC_PREREQ(2, 15)
++#        define SENTRY_NEEDS_PROCESS_VM_READV_SYSCALL 1
++#    endif
++#endif
++
++#if defined(SENTRY_NEEDS_PROCESS_VM_READV_SYSCALL)
+ static ssize_t
+ process_vm_readv(pid_t __pid, const struct iovec *__local_iov,
+     unsigned long __local_iov_count, const struct iovec *__remote_iov,
+@@ -29,6 +37,7 @@ process_vm_readv(pid_t __pid, const struct iovec *__local_iov,
+     return syscall(__NR_process_vm_readv, __pid, __local_iov, __local_iov_count,
+         __remote_iov, __remote_iov_count, __flags);
+ }
++#    undef SENTRY_NEEDS_PROCESS_VM_READV_SYSCALL
+ #endif
+ 
+ #define ENSURE(Ptr)                                                            \
+diff --git a/src/backends/native/sentry_crash_handler.c b/src/backends/native/sentry_crash_handler.c
+index 1fba605..49bf295 100644
+--- a/src/backends/native/sentry_crash_handler.c
++++ b/src/backends/native/sentry_crash_handler.c
+@@ -243,6 +243,31 @@ safe_build_stack_path(
+     return pos;
+ }
+ #    endif
++
++// Invoke the signal disposition Sentry replaced. PlxNative installs an
++// async-signal-safe bounded tracer first, so daemon failure still leaves a
++// local PC/register record. A normal completed daemon event must not call it:
++// the next boot would otherwise queue two Sentry events for one crash.
++static void
++chain_previous_handler(int signum, siginfo_t *info, void *context)
++{
++    for (size_t i = 0; i < g_crash_signal_count; i++) {
++        if (g_crash_signals[i] != signum) {
++            continue;
++        }
++        struct sigaction *previous = &g_previous_handlers[i];
++        if (previous->sa_handler == SIG_DFL
++            || previous->sa_handler == SIG_IGN) {
++            return;
++        }
++        if ((previous->sa_flags & SA_SIGINFO) != 0) {
++            previous->sa_sigaction(signum, info, context);
++        } else if (previous->sa_handler) {
++            previous->sa_handler(signum);
++        }
++        return;
++    }
++}
+ 
+ /**
+  * Signal handler (signal-safe)
+@@ -262,7 +287,8 @@ crash_signal_handler(int signum, siginfo_t *info, void *context)
+ 
+     sentry_crash_ipc_t *ipc = g_crash_ipc;
+     if (!ipc || !ipc->shmem) {
+-        // No IPC available, just re-raise
++        // No IPC available: preserve the application's bounded fallback.
++        chain_previous_handler(signum, info, context);
+         raise(signum);
+         return;
+     }
+@@ -655,6 +681,7 @@ crash_signal_handler(int signum, siginfo_t *info, void *context)
+     sentry_handle_exception(&sentry_uctx);
+ 
+     // Try to notify daemon
++    bool daemon_completed = false;
+     if (sentry__atomic_compare_swap(&ctx->state, SENTRY_CRASH_STATE_READY,
+             SENTRY_CRASH_STATE_CRASHED)) {
+ 
+@@ -672,6 +699,7 @@ crash_signal_handler(int signum, siginfo_t *info, void *context)
+                 processing_started = true;
+             } else if (state == SENTRY_CRASH_STATE_DONE) {
+                 // Daemon finished processing (no logging - signal-safe)
++                daemon_completed = true;
+                 goto daemon_handling;
+             }
+ 
+@@ -686,6 +714,12 @@ crash_signal_handler(int signum, siginfo_t *info, void *context)
+     }
+ 
+ daemon_handling:
++    if (!daemon_completed) {
++        // The saved tracer re-raises and normally does not return. If another
++        // saved handler does, Sentry's termination path below remains final.
++        chain_previous_handler(signum, info, context);
++    }
++
+     // Re-raise signal to let system handle it
+     SENTRY_DEBUG("Wait complete, allowing process to terminate");
+
+diff --git a/src/backends/native/sentry_crash_context.h b/src/backends/native/sentry_crash_context.h
+--- a/src/backends/native/sentry_crash_context.h
++++ b/src/backends/native/sentry_crash_context.h
+@@ -89,6 +89,15 @@
+         10000 // 10s max wait for daemon
+ #endif
++// The webOS 4.5 Cortex-A9 needs more than the upstream 10-second budget on a
++// cold first crash: the daemon was still enumerating /proc/<pid>/maps when the
++// handler timed out and let the process die, so the resulting event had no
++// modules and could not be symbolicated. Keep the parent alive long enough for
++// the out-of-process walk; warm crashes normally finish inside 10 seconds.
++#if defined(SENTRY_PLATFORM_LINUX) && defined(__arm__)
++#    undef SENTRY_CRASH_HANDLER_WAIT_TIMEOUT_MS
++#    define SENTRY_CRASH_HANDLER_WAIT_TIMEOUT_MS 30000
++#endif
+ #define SENTRY_CRASH_DAEMON_WAIT_TIMEOUT_MS                                    \
+     5000 // 5 seconds between daemon health checks
+ #define SENTRY_CRASH_HANDLER_POLL_INTERVAL_MS                                  \
+ 

@@ -35,14 +35,16 @@ install, `com.beb.plxnative.debug`, can sit beside it on the same set (`FLAVOR`,
 ## Build / deploy / run
 
 The `Makefile` is the entire dev loop. Requires the **webOS NDK** (install with `make
-setup-env`), a **Rust nightly toolchain + `rust-src`** (for `-Z build-std`), and `sshpass`
-(Homebrew, for deploy/run). See the **`setup-environment` skill** (`.agents/skills/`) for the
-full one-time setup + troubleshooting.
+setup-env`), a **Rust nightly toolchain + `rust-src`** (for `-Z build-std`), CMake (Homebrew, for
+the pinned Sentry Native cross-build), and `sshpass` (Homebrew, for deploy/run). See the
+**`setup-environment` skill** (`.agents/skills/`) for the full one-time setup + troubleshooting.
 
 - `make setup-env` — download + extract + `relocate-sdk.sh` the webOS NDK into `$(WEBOS_SDK)`
   (default `~/webos-ndk/…`). One-time; re-run `relocate-sdk.sh` if you move the SDK.
 - `make` — build `pkg/plxnative` (the ARM binary), and, first, the FFmpeg it ships
-  (`ci/build-ffmpeg.sh`; ~2 minutes cold, nothing after). Also compiles `ci/ffabi-assert.c` against
+  (`ci/build-ffmpeg.sh`; ~2 minutes cold, nothing after) plus the checksum-pinned Sentry Native
+  static libraries and out-of-process handler (`ci/build-sentry-native.sh`; CMake, patched for the
+  webOS glibc-2.12/ARM32 ABI). Also compiles `ci/ffabi-assert.c` against
   `vendor/ffmpeg-prefix/include` — **the headers the shipped libraries were built from**, installed
   by the same invocation that produced them — which is what proves `ff.rs`'s ABI table. **One**
   header tree per target, **one** FFmpeg. This line long said BOTH vendored trees (n3.3 and n4.0)
@@ -57,7 +59,7 @@ full one-time setup + troubleshooting.
   runtime major-selected table returning: this picks between two ABIs of ONE version at COMPILE
   time, on evidence the compiler holds — and deriving the second half is what found
   `AVSubtitleRect` modelled with `flags` in the wrong place.
-- `make deploy` — scp the binary + this flavour's `appinfo.json` + the fonts (UNCONDITIONALLY —
+- `make deploy` — scp the binary + native crash handler + this flavour's `appinfo.json` + the fonts (UNCONDITIONALLY —
   the old `test -f || scp` guard meant a changed font could never reach the TV) into that
   install's app dir. Refuses if the flavour has never been installed, naming
   `make FLAVOR=… install`, and refuses a dev build on the stable id (see `release-guard`).
@@ -99,6 +101,10 @@ full one-time setup + troubleshooting.
   deliberate SIGSEGV on the set resolved through `pkg/plxnative.debug` to
   `dev::crash_on_purpose at rust-modules/src/dev.rs:218` — file and line, from a binary the
   television runs, matched by build id alone.
+  `make SYMBOLS=1 sentry-symbols` additionally runs Sentry CLI's local DIF check and uploads that
+  exact binary/debug pair with source context; it requires `SENTRY_AUTH_TOKEN`. The release
+  workflow treats a missing token, unusable DIF or failed upload as a release failure, because an
+  accepted native event with no matching DIF is not a working crash report.
 - `make ipk` — repackage the installable `pkg/<app id>_<version>_arm.ipk`. The version
   comes from `pkg/appinfo.json` (the single source; `ci/check-package.py` asserts the control
   file agrees), and the archive is **reproducible** — `ci/mkipk.py` normalises tar identity and
@@ -638,17 +644,38 @@ which the linking section explains is load-bearing rather than tidy.
   session) and drops to Home; on foreground `0x106` it **reloads** and resumes at the saved position
   with a single `Load`. In-app Home/Settings are *overlays* and do **not** fire these — only a real OS
   app-switch does. Preserve the suspend/reload pairing if you touch playback or routing.
-- **Crash forensics:** the C tracer (`main.c`) logs the faulting PC and LR, **the ARM registers
-  around them** and the `/proc/self/maps` line(s) containing either, then **re-raises to `SIG_DFL`**
-  so SAM sees a real signal death (`exit_status: 11` for a SIGSEGV — device-verified 2026-08-29 with
-  a deliberate crash). **It does NOT also get you a crashd backtrace, and this line used to say it
-  did**: `core_pattern` on this firmware is the bare string `core`, so the report chain starts from
+- **Crash forensics has two layers.** With error-report consent and a compiled Sentry endpoint,
+  Sentry Native's patched ARM32 backend replaces the signal disposition and wakes the shipped
+  `sentry-crash` daemon. The dying process stays stopped while the daemon copies `ucontext`, walks
+  the APCS frame chain, enumerates threads/modules and writes a JSON event with ARM registers and a
+  real multi-frame stack. The SDK has **no HTTP transport and writes no minidump**: it launches the
+  same `plxnative` binary in spool-only mode, which moves the bounded envelope into the install's
+  runtime root. A healthy launch rejects user/request scope, strips path prefixes and queues the
+  event through the existing consent-aware sender. `-fno-omit-frame-pointer` / Rust
+  `force-frame-pointers=yes` are therefore crash-reporting ABI, not optional debug flags.
+
+  The patched ARM handler waits up to 30 seconds for that walk. The upstream 10-second budget was
+  too short for the first cold crash on this Cortex-A9: the parent died while the daemon was still
+  opening `/proc/<pid>/maps`, producing an accepted envelope with no modules and therefore no
+  symbolication. Warm crashes usually finish within the original budget; the longer ceiling is a
+  failure bound, not an added delay after a completed report.
+
+  The always-armed fallback is still the C tracer (`main.c`). It writes a startup `img:` marker
+  (build id, load address, mapped size), then on a fault logs PC/LR, **the ARM registers around
+  them** and the `/proc/self/maps` line(s) containing either. Native chains this saved handler when
+  its daemon is unavailable or times out, so the bounded local record survives a daemon failure
+  without duplicating a successful native event; closing or withdrawing consent restores it as the
+  primary handler. It **re-raises to `SIG_DFL`** so
+  SAM sees a real signal death (`exit_status: 11` for a SIGSEGV — device-verified 2026-08-29).
+  **This fallback does NOT also get a system crashd backtrace, and this line used to say it did**:
+  `core_pattern` on this firmware is the bare string `core`, so the report chain starts from
   a core FILE, and `setrlimit(RLIMIT_CORE, 0)` means none is written. Two deliberate SIGSEGVs
   produced the signal status and no `/var/log/reports/librdx/` entry. Suppressing cores stays right
   — 615.6 MB shared partition, 125.9 MB free, ~200 MB core — so the two are simply exclusive, and
-  this app's crash evidence is its own fault event plus SAM's status. Call the result a **fault event, not a
-  backtrace** — `backtrace()` is not async-signal-safe and ARM unwinding out of a handler commonly
-  stops at `gsignal()`, so two frames plus registers plus the faulting module is the honest ceiling.
+  the fallback evidence is its own fault event plus SAM's status. Call that local C record a
+  **fault event, not a backtrace** — `backtrace()` is not async-signal-safe and ARM unwinding in the
+  crashing process commonly stops at `gsignal()`, so two frames plus registers plus the faulting
+  module is the honest ceiling.
   **Two things about it were broken until 2026-08-29 and neither was visible in a log** — and the
   first of them had been **written down and left undone for five weeks**, as finding **C3** of
   `docs/architecture-review-2026-07-26.md`, which named the same six unsafe calls and prescribed the

@@ -64,12 +64,12 @@ interface drawn on top of it. That's the thing a browser-based client can't do.
 `plex.tv` to sign in, and to `discover.provider.plex.tv` for cast biographies.
 
 **Crash reports and usage are OFF, and stay off unless you turn them on.** Two separate switches,
-both off by default, both reversible, and the screen that asks shows you the exact messages that
-would be sent before you answer. Turning both off deletes the random identifier that television
-used. No title, search term, subtitle line, server name or address can appear in any of them — not
-as a matter of care but of construction: there is no field that could hold one. [`PRIVACY.md`](PRIVACY.md)
-is the whole statement, including the schema, which is generated from the code rather than written
-alongside it.
+both off by default, both reversible, and the screen that asks shows every exact schema with
+runtime values replaced by placeholders before you answer. Turning both off deletes the random identifier that television
+used. No title, search term, subtitle line, server name or address can appear in any of them. Usage
+events structurally cannot carry runtime text; native crash envelopes pass a separate fixed
+allowlist that rejects user/request scopes and removes directory names. [`PRIVACY.md`](PRIVACY.md)
+is the whole statement, including the mechanically checked schemas.
 
 ## Before you install
 

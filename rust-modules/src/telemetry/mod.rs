@@ -15,6 +15,7 @@
 //! default gate does not build is a test that never runs.
 pub(crate) mod consent;
 pub(crate) mod crashreport;
+pub(crate) mod native;
 pub(crate) mod posthog;
 pub(crate) mod queue;
 pub(crate) mod sender;
@@ -28,7 +29,7 @@ use consent::Consent;
 /// Called once at boot, before anything can report. A missing or unparsable file is the DEFAULT
 /// decision — everything off, unanswered — which is the only safe reading: a file we cannot
 /// understand is not consent.
-pub(crate) fn boot() {
+pub(crate) fn boot() -> native::Guard {
     let c = load();
     // Logged because the alternative is a silent behavioural difference between two televisions.
     // No identifier in the line: it is the one field here worth not putting in a log that gets
@@ -38,9 +39,13 @@ pub(crate) fn boot() {
         c.answered(),
         c.errors,
         c.usage,
-        if c.install_id.is_some() { "yes" } else { "none" }
+        if c.install_id.is_some() {
+            "yes"
+        } else {
+            "none"
+        }
     ));
-    consent::install(c);
+    consent::install(c.clone());
     // **Which destinations this build can actually reach**, once, at boot. A decision of `usage=true`
     // in a build with no PostHog key sends nothing, and every other line in this log looks
     // identical either way — `diag::event` returns before the queue, correctly and silently. This
@@ -58,7 +63,13 @@ pub(crate) fn boot() {
     // send. The flush is spawned later, after `net::global_init`, which is a separate ordering
     // constraint that has already been got wrong once: a boot flush ahead of it logged
     // `holding 5 records` directly above `net: bound libcurl`.
-    crashreport::report_pending();
+    // Queue a completed out-of-process event first. The local C/panic log may describe the same
+    // crash; report_pending consumes the native keys so one process death remains one Sentry event.
+    let native_crashes = native::import_pending();
+    crashreport::report_pending(&native_crashes);
+    // The SDK capture backend starts only after consent is published and old fallback records are
+    // safely queued. Its guard lives for the whole app and restores the C tracer on clean exit.
+    native::sync(&c)
 }
 
 /// The first candidate that exists and parses. Same search-order shape as the session file, and
@@ -79,7 +90,9 @@ fn load() -> Consent {
 /// to honour something a person just chose because a disk is full, which is worse in both
 /// directions: it ignores a "no", and it ignores a "yes".
 pub(crate) fn record(c: Consent) {
-    let Ok(json) = serde_json::to_vec_pretty(&c) else { return };
+    let Ok(json) = serde_json::to_vec_pretty(&c) else {
+        return;
+    };
     let stored = crate::paths::telemetry_candidates()
         .iter()
         .any(|p| crate::plex::session::write_atomic(p, &json));
@@ -92,6 +105,7 @@ pub(crate) fn record(c: Consent) {
     // a window in which a record of a just-withdrawn category is written by a path still reading
     // the old consent and then never looked at again.
     spool::purge_withdrawn(&c);
+    native::sync_change(&c);
 }
 
 // ---- the spool, and the one worker that drains it ---------------------------------------------
@@ -167,7 +181,10 @@ fn flush_now(c: &consent::Consent) {
             // ban. The hold is honoured by simply not trying again until the next flush.
             (sender::Verdict::Keep, hold) => {
                 let s = hold.unwrap_or(sender::DEFAULT_HOLD_S);
-                crate::log(&format!("telemetry: holding {} records, ~{s}s", all.len() - retired.len()));
+                crate::log(&format!(
+                    "telemetry: holding {} records, ~{s}s",
+                    all.len() - retired.len()
+                ));
                 break;
             }
         }
@@ -179,7 +196,11 @@ fn flush_now(c: &consent::Consent) {
         // spool ends at zero bytes either way. That ambiguity is not hypothetical: it is what the
         // first end-to-end verification of the crash channel ran into, and the answer took a code
         // change rather than a closer read.
-        crate::log(&format!("telemetry: flushed {} of {} record(s)", retired.len(), all.len()));
+        crate::log(&format!(
+            "telemetry: flushed {} of {} record(s)",
+            retired.len(),
+            all.len()
+        ));
     }
 }
 
@@ -193,7 +214,10 @@ fn flush_now(c: &consent::Consent) {
 pub(crate) fn mint_install_id() -> Option<String> {
     let mut buf = [0u8; 16];
     use std::io::Read;
-    std::fs::File::open("/dev/urandom").ok()?.read_exact(&mut buf).ok()?;
+    std::fs::File::open("/dev/urandom")
+        .ok()?
+        .read_exact(&mut buf)
+        .ok()?;
     Some(buf.iter().map(|b| format!("{b:02x}")).collect())
 }
 
@@ -208,7 +232,9 @@ mod tests {
     fn a_minted_identifier_is_random_hex() {
         let Some(a) = mint_install_id() else { return }; // no /dev/urandom: nothing to assert
         assert_eq!(a.len(), 32, "16 bytes as hex");
-        assert!(a.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        assert!(a
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
         let b = mint_install_id().expect("second read");
         assert_ne!(a, b, "two mints produced the same identifier");
     }

@@ -4,55 +4,57 @@
 //! Not affiliated with, endorsed by, or sponsored by Plex GmbH or LG Electronics.
 //!
 //! plxnative-modules — the Rust app core, built as a staticlib and linked into the C
-//! boot shim. The crate's C surface is tiny: C calls `plex_run` (app.rs) and forwards
-//! the two starfish callbacks (`sf_on_event`/`acb_on_event`, player/mod.rs); everything
-//! else is Rust-internal (the per-module `repr(C)` shapes are migration legacy, not ABI).
+//! boot shim. The crate's C surface is tiny: C calls `plex_run` (app.rs), writes the fallback
+//! image marker through `plx_crash_write_image_marker`, re-enters the native-crash spool through
+//! `plx_sentry_spool_external`, and forwards the two Starfish callbacks (`sf_on_event`/
+//! `acb_on_event`, player/mod.rs). Everything else is Rust-internal (the per-module `repr(C)`
+//! shapes are migration legacy, not ABI).
+mod abr; // client-managed fixed-session HLS controller: estimate, propose, prime, then commit
 mod app; // plex_run — the Rust app core / event loop (the entry inverted from main.c)
 mod aq;
-mod abr; // client-managed fixed-session HLS controller: estimate, propose, prime, then commit
-mod cbuf; // fixed NUL-terminated C-string buffer read/write (shared by pms/route/posters)
-mod coldstart; // where the app was when it last stopped, persisted — the COLD-start restore (LG checklist #3)
 mod auth; // plex.tv login/boot flow controller (PIN/QR → discovery → who's-watching → install)
 mod browse; // Library browse: per-section paged catalog (sparse store + off-thread page fetches)
 mod capture; // dev live UI capture stream: own-GLES-frame grab → MPEG1/TS or JPEG → TCP (UI plane only)
+mod cbuf; // fixed NUL-terminated C-string buffer read/write (shared by pms/route/posters)
+mod coldstart; // where the app was when it last stopped, persisted — the COLD-start restore (LG checklist #3)
 mod curlio; // the HTTPS media plane: a remote file pulled by byte range over libcurl-multi (stream.rs is the plaintext-socket twin)
 mod dev; // the /tmp/plxnative-* trigger surface, behind one `devtriggers` feature — read it before adding a trigger
 mod devcaps; // what this SoC decodes — the TV's own codec table, read once at boot (the capability profile + direct-play gate derive from it)
 #[macro_use]
-mod diag; // scrub/ring/zlib/schema shared by every off-device report — the ONE redaction pass lives here
-mod telemetry; // the opt-in crash + usage channels: consent, the spool, the worker, the two wire formats
+mod diag; // typed usage schema plus log/lab scrub, ring and zlib; native crashes have a separate allowlist
 mod dynlib; // dlopen-by-SONAME-candidate: the libraries whose major moves between webOS releases
 mod egl; // boot-time EGL capability probe (extensions, swap behaviour, buffer age) — diagnostic only
 mod ff; // THE demuxer — the FFmpeg 9.0 this app BUNDLES and pins (majors 63/63/61), dlopen'd by absolute path beside the binary, never the television's
 mod focusprobe; // dev: one diffable line naming everything app.rs's key ladder can move, logged when it changes
 mod fontcov; // which codepoints a font file can draw, read from its cmap — text.rs's fallback chain, and the host gate that stops tofu shipping
 mod gfx;
+#[cfg(feature = "devtriggers")]
+mod gpu_timer; // async EXT_disjoint_timer_query timing; no glFinish on the timing path
 mod hls; // strict parser/auth/timeline for the measured one-variant PMS HLS shape
 mod http; // the ONE door out of the control plane: dispatch a Plex REST request on its origin's scheme (stream.rs for http, net.rs/libcurl for https)
 #[cfg(feature = "devtriggers")]
 mod hwcnt; // direct userspace Mali r12p0 vinstr reader for the phase profiler
-#[cfg(feature = "devtriggers")]
-mod gpu_timer; // async EXT_disjoint_timer_query timing; no glFinish on the timing path
 mod img;
 mod lab; // Cloud Lab bridge: pinned diagnostic uploads + optional outbound command long-poll
 mod metadata; // item detail data layer (detail page): full metadata + seasons/episodes + cast + related
 mod net; // HTTPS client over the TV's libcurl (plex.tv account/login calls — stream.rs can't do TLS/DNS)
+mod paths; // where the app's own files live — /proc/self/exe, not a hardcoded install prefix
 mod person; // person/actor page data layer: the header handed in by the cast row + /library/people/{id}/media
 mod player; // buffer-feed video engine (was playback.c) — step 5
 mod plex; // typed Plex API layer (rust-modules/src/plex/) — one method per PMS operation (the live READ layer; playback ops still in route.rs)
-mod paths; // where the app's own files live — /proc/self/exe, not a hardcoded install prefix
 mod pms;
 mod posters;
 mod remote; // dev/testing remote-control channel: a FIFO the loop drains into synthetic SDL keys
 mod route; // play_movie route selection (direct-play vs transcode) — step 3
 mod search; // Search data layer: /hubs/search fanned out across every source, merged into typed shelves
-mod stream;
-mod surface; // what we are actually drawing into — drawable vs the 1920x1080 logical canvas
 #[cfg(feature = "hostsim")]
 mod shot; // simulator screenshots: read the frame back and write a PNG (see the module doc)
+mod stream;
+mod surface; // what we are actually drawing into — drawable vs the 1920x1080 logical canvas
 mod svg; // runtime SVG rasterizer FFI (src/svg.c / nanosvg) — vector icon assets
 mod system;
 mod task; // the one spawn: a refused thread is a return value, not a panic that kills the app
+mod telemetry; // the opt-in crash + usage channels: consent, the spool, the worker, the two wire formats
 mod viewstate; // watched / unwatched / remove-from-deck: the PMS view-state WRITES, off the SDL thread
 
 #[cfg(test)]
@@ -75,8 +77,8 @@ pub(crate) mod testlock {
 }
 mod text;
 mod textinput; // the TV's own on-screen keyboard, via plain SDL_StartTextInput (see the module doc)
-mod webos; // which webOS this set is — nyx's os_info.json, read once at boot (release + codename)
-mod ui; // retui — retained UI framework; ui/home.rs now owns the home-screen C ABI
+mod ui;
+mod webos; // which webOS this set is — nyx's os_info.json, read once at boot (release + codename) // retui — retained UI framework; ui/home.rs now owns the home-screen C ABI
 
 /// Strip any PMS/plex.tv token from a line bound for the event log.
 ///
@@ -105,7 +107,9 @@ pub(crate) fn redact_tokens(m: &str) -> std::borrow::Cow<'_, str> {
         out.push_str("<redacted>");
         let after = &rest[at + KEY.len()..];
         // the value ends at the next query separator or any whitespace — whichever comes first
-        let end = after.find(|c: char| c == '&' || c.is_whitespace()).unwrap_or(after.len());
+        let end = after
+            .find(|c: char| c == '&' || c.is_whitespace())
+            .unwrap_or(after.len());
         rest = &after[end..];
     }
     out.push_str(rest);
@@ -138,7 +142,11 @@ pub(crate) fn log(m: &str) {
     // strict subset of the file every other tool reads and inherits the credential backstop above.
     // A compile-time no-op without the `lab-diagnostics` feature — see `crate::lab`.
     lab::record(&line);
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(p) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(p)
+    {
         let _ = writeln!(f, "{line}");
     }
 }
@@ -185,7 +193,10 @@ mod redact_tests {
         let out = redact_tokens(line);
         assert!(!out.contains("aBcD1234xyzQ"), "token survived: {out}");
         assert!(out.contains("X-Plex-Token=<redacted>"));
-        assert!(out.contains("start.mkv"), "the diagnostic half must survive");
+        assert!(
+            out.contains("start.mkv"),
+            "the diagnostic half must survive"
+        );
     }
 
     /// A token in the MIDDLE keeps the parameters after it — the redaction ends at `&`, so a line

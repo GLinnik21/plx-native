@@ -15,8 +15,16 @@ description: >
 > log`) — but the moment you RE-RUN to reproduce, take the television's lock first:
 > `tools/tv-lock.sh acquire --why "reproduce <crash>"`. See the **`tv-lock`** skill.
 
-The C tracer (`src/crashtrace.c`) catches the fatal signals, writes what it knows, then
-**re-raises to `SIG_DFL`** so SAM sees a real `WIFSIGNALED` death — and **not** so a crash daemon
+There are now two evidence paths. When crash-report consent and a compiled endpoint are both
+present, the patched Sentry Native ARM32 handler wakes the shipped `sentry-crash` process. That
+process reads the stopped target, walks its frame chain and records the crashing thread's stack,
+registers, modules and build ids. Its transport is disabled; the next healthy PlxNative launch
+sanitises the envelope and sends it from the ordinary telemetry spool. That Sentry event **is a
+backtrace** when it contains multiple frames.
+
+The local, always-available fallback is the C tracer (`src/crashtrace.c`). It catches the fatal
+signals, writes what it knows, then **re-raises to `SIG_DFL`** so SAM sees a real `WIFSIGNALED`
+death — and **not** so a crash daemon
 produces a backtrace, which on this firmware it never does (see §"do not go looking for a crashd
 backtrace" above; `core_pattern` is the bare string `core` and `RLIMIT_CORE` is 0, so no core is
 written and the report chain never starts). Per crash it emits:
@@ -31,8 +39,8 @@ bin: <the maps line for our own executable>            -- our load base, for add
 Turning `pc` into a source location needs `pc - load_base` fed to `addr2line`. Nothing in
 the repo did that arithmetic until `tools/crash-report.sh`.
 
-**Call it a FAULT EVENT, not a backtrace, when you write it up.** Two frames and the registers is
-what an async-signal-safe handler can honestly produce: `backtrace()` is not on the safe list, ARM
+**Call the local C record a FAULT EVENT, not a backtrace, when you write it up.** Two frames and the
+registers are what an async-signal-safe handler can honestly produce: `backtrace()` is not on the safe list, ARM
 unwinding out of a handler commonly stops at `gsignal()`, and deferring does not help because by
 then the stack is gone.
 
@@ -225,10 +233,12 @@ ssh root@"$(make -s print-tv)" "rm -f $RUN/plxnative-crashtest"
   bracketed number in `/var/log/messages`) or the app's own `SDL_GetTicks` stamps — never
   by time of day.
 - **`lr=0x0` is normal** for a signal delivered asynchronously; only `pc` is meaningful then.
-- **There are no crash-daemon reports to pull.** `/var/log/reports/librdx/` is empty by
+- **There are no system crashd reports to pull.** `/var/log/reports/librdx/` is empty by
   construction and this bullet used to say the opposite — that the re-raise produces real
-  backtraces there. When two frames plus registers are not enough, the answer is
-  `pkg/plxnative.debug` and `addr2line`, not that directory.
+  backtraces there. Do not confuse LG's absent `crashd` output with the app's shipped
+  `sentry-crash` daemon: the latter hands its envelope to the telemetry queue and normally leaves
+  no report file behind after a healthy restart. For consent-off/unconfigured builds, use
+  `pkg/plxnative.debug` and `addr2line` on the local fault event.
 - **Older notes say `/tmp/poc-*`.** The app was renamed; the names are all `plxnative-*` now,
   and they sit in the install's runtime root rather than always in `/tmp`.
 - **`com.beb.plxnative` is a PREFIX of `com.beb.plxnative.debug`.** Anything that picks a crash

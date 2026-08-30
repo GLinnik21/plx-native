@@ -205,7 +205,10 @@ SYSROOT      = $(WEBOS_SDK)/arm-webos-linux-gnueabi/sysroot
 #
 # Escape hatch while mid-edit: `make WERROR= …` (and see Cargo.toml for the Rust equivalent).
 WERROR      ?= -Werror
-CFLAGS       = --sysroot=$(SYSROOT) -O2 -Wall -Wextra $(WERROR) -Iinclude -Isrc -Ivendor/nanosvg -D_GNU_SOURCE
+# The out-of-process crash walker follows ARM's APCS frame chain. Keeping r11 frame pointers in
+# every C frame is therefore part of the crash-reporting ABI, not debug-only codegen; without it a
+# valid envelope contains only the faulting PC. Rust's matching flag is in RUST_ENV/config.toml.
+CFLAGS       = --sysroot=$(SYSROOT) -O2 -fno-omit-frame-pointer -Wall -Wextra $(WERROR) -Iinclude -Isrc -Ivendor/nanosvg -D_GNU_SOURCE
 # DEBUG=1 keeps DWARF in the binary so a crash PC symbolizes to file:line instead of just
 # a function name (tools/crash-report.sh / the crash-triage skill). Same codegen, bigger
 # binary — deploy it only while chasing a crash.
@@ -273,7 +276,7 @@ RUST_REMAP   = --remap-path-prefix=$(HOME)=/build \
 ifeq ($(CAPLINTS),1)
 RUST_CAPLINTS = --cap-lints=warn
 endif
-RUST_ENV = RUSTFLAGS="-C target-cpu=cortex-a9 -C target-feature=-neon $(RUST_DEBUGINFO) $(RUST_CAPLINTS) $(RUST_REMAP)"
+RUST_ENV = RUSTFLAGS="-C target-cpu=cortex-a9 -C target-feature=-neon -C force-frame-pointers=yes $(RUST_DEBUGINFO) $(RUST_CAPLINTS) $(RUST_REMAP)"
 # -Iinclude keeps the TV's SDL2/GLES2 headers (its SDL is a 2.0.4 fork) ahead of
 # the NDK's newer sysroot copies, so we compile against the ABI the TV runs.
 
@@ -497,6 +500,23 @@ FFMPEG_SONAMES = libavutil-plx.so.61 libavcodec-plx.so.63 libavformat-plx.so.63 
                  $(if $(RELEASE),,libswscale-plx.so.10)
 FFMPEG_STAGED = $(addprefix pkg/,$(FFMPEG_SONAMES))
 
+# Sentry Native supplies only the async-signal-safe capture and out-of-process ARM stack walk. Its
+# HTTP transport is compiled out: the resulting envelope is handed back to this executable in
+# spool-only mode and sent later by telemetry::sender, behind the app's own consent and retry rules.
+# The pinned source, webOS/glibc-2.12/ARM32 patch and build recipe live in ci/build-sentry-native.sh.
+SENTRY_NATIVE_PREFIX = vendor/sentry-native-prefix
+SENTRY_NATIVE_LIB     = $(SENTRY_NATIVE_PREFIX)/lib/libsentry.a
+SENTRY_UNWIND_LIB     = $(SENTRY_NATIVE_PREFIX)/lib/libunwind.a
+SENTRY_HANDLER        = $(SENTRY_NATIVE_PREFIX)/bin/sentry-crash
+SENTRY_NATIVE_STAMP   = $(SENTRY_NATIVE_PREFIX)/.built
+SENTRY_NATIVE_INPUTS  = ci/build-sentry-native.sh vendor/sentry-native/webos-arm32.patch
+
+$(SENTRY_NATIVE_STAMP): $(SENTRY_NATIVE_INPUTS)
+	WEBOS_SDK=$(WEBOS_SDK) ./ci/build-sentry-native.sh
+	@touch $@
+
+sentry-native: $(SENTRY_NATIVE_STAMP)
+
 $(FFMPEG_INC)/libavformat/avformat.h:
 	RELEASE=$(RELEASE) ./ci/build-ffmpeg.sh
 
@@ -538,8 +558,9 @@ $(RUST_LIB): $(RUST_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.lock rust
 # binutils build, so pinning it here is what keeps two different NDK installs producing the same
 # id for the same input — which the reproducible-package guarantee (`ci/mkipk.py`, and the sha256
 # every user's television verifies) depends on.
-pkg/plxnative: $(OBJS) $(RUST_LIB) $(FFMPEG_STAGED) Makefile
-	$(CC) $(CFLAGS) -Wl,--build-id=sha1 $(OBJS) $(RUST_LIB) $(LIBS_REAL) -ldl -lpthread -lm -o $@
+pkg/plxnative: $(OBJS) $(RUST_LIB) $(FFMPEG_STAGED) $(SENTRY_NATIVE_STAMP) Makefile
+	$(CC) $(CFLAGS) -Wl,--build-id=sha1 $(OBJS) $(RUST_LIB) $(SENTRY_NATIVE_LIB) \
+	  $(SENTRY_UNWIND_LIB) $(LIBS_REAL) -ldl -lrt -lpthread -lm -o $@
 
 # --- NDK bootstrap -----------------------------------------------------------
 # Download + extract + relocate the webosbrew native-toolchain into $(WEBOS_SDK).
@@ -644,7 +665,7 @@ ICONS     = $(if $(filter stable,$(FLAVOR)),pkg/icon.png pkg/largeIcon.png,pkg/d
 # a Cloud Test Lab set has no ssh and the package is the only channel into it. GITIGNORED, 0600,
 # and in `.claude/hooks/outbound-guard.py`'s PRIVATE_FILES — it carries a live credential.
 LAB_FILES = $(if $(LAB),pkg/lab.json,)
-APP_FILES = pkg/plxnative $(APPINFO) $(ICONS) pkg/splash.png \
+APP_FILES = pkg/plxnative $(SENTRY_HANDLER) $(APPINFO) $(ICONS) pkg/splash.png \
             pkg/appfont.ttf pkg/appfont-bold.ttf pkg/appfont-cjk.ttf pkg/OFL.txt \
             THIRD-PARTY-NOTICES.md \
             $(LAB_FILES) \
@@ -683,7 +704,7 @@ pkg/.flavor/$(FLAVOR)/appinfo.json: pkg/appinfo.json ci/flavor.py ci/mkipk.py
 # prerequisites run left to right, and a cold `make deploy` spends ~2 minutes building FFmpeg
 # before it touches the television. Taking the lock first would hold the set through a build that
 # needs no television — and, on the short implicit lease, could even let it expire before the scp.
-deploy: pkg/plxnative $(FFMPEG_STAGED) $(APPINFO) release-guard tv-lock-require
+deploy: pkg/plxnative $(FFMPEG_STAGED) $(SENTRY_NATIVE_STAMP) $(APPINFO) release-guard tv-lock-require
 	@echo "deploying $(if $(RELEASE),RELEASE,dev) build ($(RUST_CFG)) to $(APPID) [$(FLAVOR)]"
 	@$(SSH) 'test -d $(APPDIR)' || { \
 	  echo "$(APPDIR) does not exist on $(TV) — the $(FLAVOR) flavour is not installed."; \
@@ -701,6 +722,13 @@ deploy: pkg/plxnative $(FFMPEG_STAGED) $(APPINFO) release-guard tv-lock-require
 	# that is not fast, and this is ~2.1 MB on every deploy. Unconditional, like the fonts —
 	# a CHANGED library must be able to reach the TV.
 	$(SCP) $(FFMPEG_STAGED) root@$(TV):$(APPDIR)/
+	# The native crash daemon is a separate process so it can read the dying process's stack while
+	# the signal handler keeps that process parked. It has no network transport of its own. Stage
+	# then rename: an already-running app keeps the old daemon executable open, and scp directly to
+	# that inode fails with ETXTBSY (observed on the first handler upgrade). Renaming is atomic and
+	# leaves the old process on its old inode while the next launch gets this one.
+	$(SCP) $(SENTRY_HANDLER) root@$(TV):$(APPDIR)/sentry-crash.new
+	$(SSH) 'chmod 755 $(APPDIR)/sentry-crash.new && mv $(APPDIR)/sentry-crash.new $(APPDIR)/sentry-crash'
 	# ...then retire any FFmpeg from a PREVIOUS version. `scp` only adds, so bumping the bundled
 	# release left the old majors sitting in the app directory forever — observed on the dev TV,
 	# which was carrying libavcodec-plx.so.60 and .so.58 from an earlier experiment alongside the
@@ -750,7 +778,11 @@ deploy: pkg/plxnative $(FFMPEG_STAGED) $(APPINFO) release-guard tv-lock-require
 	@if [ -n "$(TURBOJPEG_SO)" ]; then \
 	  $(SSH) 'test -f $(APPDIR)/libturbojpeg.so.0' || $(SCP) $(TURBOJPEG_SO) root@$(TV):$(APPDIR)/libturbojpeg.so.0; \
 	else echo "note: no libturbojpeg in the sysroot — capture JPEG mode will use the slow encoder"; fi
-	$(SSH) 'mv $(APPDIR)/plxnative.new $(APPDIR)/plxnative && chmod +x $(APPDIR)/plxnative'
+	@# `scp` preserves the host mode. This checkout runs under umask 077, so `chmod +x` left a
+	@# root-owned 0700 binary: SAM could launch it before entering the app jail, but Sentry's
+	@# same-uid external reporter could not `execv` it to spool a crash envelope. The .ipk builder
+	@# already normalises this member to 0755; make the fast deploy path identical.
+	$(SSH) 'mv $(APPDIR)/plxnative.new $(APPDIR)/plxnative && chmod 755 $(APPDIR)/plxnative'
 
 # NB (this webOS build): luna-send must stay subscribed (-i) for the launch to
 # take; SAM keeps stale "running" state after a hard kill, so close via SAM
@@ -978,6 +1010,20 @@ else
 	 if [ "$$bin" != "$$dbg" ]; then echo "build id mismatch: binary $$bin, debug $$dbg" >&2; exit 1; fi; \
 	 echo "symbols: pkg/plxnative.debug  build-id $$bin  ($$(du -h pkg/plxnative.debug | cut -f1))"
 endif
+
+# Validate and upload the exact debug file that matches `pkg/plxnative`. This is a separate target
+# so a development build used for an on-device crash test gets the same fail-closed pairing as CI.
+# `SENTRY_AUTH_TOKEN` is read only from the process environment and is never echoed or written.
+SENTRY_ORG     ?= gleb-linnik
+SENTRY_PROJECT ?= plx-native
+SENTRY_CLI     ?= npx --yes @sentry/cli@latest
+sentry-symbols: symbols
+	@test -n "$${SENTRY_AUTH_TOKEN:-}" || { \
+	  echo "sentry-symbols: SENTRY_AUTH_TOKEN is required" >&2; exit 1; }
+	@SENTRY_ORG='$(SENTRY_ORG)' SENTRY_PROJECT='$(SENTRY_PROJECT)' \
+	  $(SENTRY_CLI) debug-files check pkg/plxnative.debug
+	@SENTRY_ORG='$(SENTRY_ORG)' SENTRY_PROJECT='$(SENTRY_PROJECT)' \
+	  $(SENTRY_CLI) debug-files upload --include-sources pkg/plxnative.debug pkg/plxnative
 
 ipk: pkg/plxnative $(APPINFO) release-guard
 	@echo "packaging $(if $(RELEASE),RELEASE,dev) build ($(RUST_CFG)) as $(APPID) [$(FLAVOR)]"
@@ -1325,5 +1371,5 @@ fetch-profile:
 	-$(SCP) root@$(TV):$(RUNDIR)/plxnative-hwcnt.jsonl pkg/plxnative-hwcnt.jsonl
 	@ls -l pkg/plxnative-*.jsonl 2>/dev/null || echo "no profiler output in $(RUNDIR) on the TV ($(APPID))"
 
-.PHONY: symbols all setup-env telemetry-local deploy run run-stream kill check lint test ipk clean tv-lock-require threadprobe sockprobe logmprobe mali-hwcnt-probe sim sim-run sim-shot sim-token sim-clean macapp macapp-zip fixtures fixtures-quick fixtures-pipeline fetch-profile \
+.PHONY: symbols sentry-symbols sentry-native all setup-env telemetry-local deploy run run-stream kill check lint test ipk clean tv-lock-require threadprobe sockprobe logmprobe mali-hwcnt-probe sim sim-run sim-shot sim-token sim-clean macapp macapp-zip fixtures fixtures-quick fixtures-pipeline fetch-profile \
         release-guard lab-guard install uninstall $(QUERY_GOALS)

@@ -1,8 +1,8 @@
-//! **The allowlist of what may ever be reported off this television, as a TYPE.**
+//! **The allowlist of usage events that may be reported off this television, as a TYPE.**
 //!
 //! `PRIVACY.md` promises that titles, ratingKeys, search terms, subtitle text, server names and
 //! addresses are never sent. This file is what makes that a checkable statement rather than a
-//! good intention: every reportable event is a variant of [`DiagEvent`], every field of every
+//! good intention for usage telemetry: every usage event is a variant of [`DiagEvent`], every field of every
 //! variant is a number, a bool or a `&'static str` from a fixed table, and one exhaustive
 //! serializer turns them into a wire record. **There is no field a caller can put a runtime string
 //! into**, so a call site cannot leak one by accident the way `log(&format!(…))` could — which is
@@ -37,7 +37,7 @@
 //! the whole design, and the answer to "but this one is safe" is that every leak in this
 //! repository's history was written by somebody who had just finished thinking that.
 
-/// One reportable event. See the module doc before adding a variant.
+/// One reportable usage event. See the module doc before adding a variant.
 ///
 /// **Device facts are deliberately absent.** Model, board, firmware, app version and locale are
 /// per-SESSION constants, not per-event facts: they belong in the envelope a sender builds once,
@@ -108,10 +108,18 @@ pub(crate) enum DiagEvent {
     },
     /// This attempt failed, once. `kind` is `player::FailureKind`'s stable code — never the
     /// on-screen wording, which is prose and will be re-worded.
-    PlaybackFailed { playback_id: i64, mode: &'static str, kind: &'static str },
+    PlaybackFailed {
+        playback_id: i64,
+        mode: &'static str,
+        kind: &'static str,
+    },
     /// A real teardown — the viewer stopped, or the item ran out. **Not** a seek, a reload or an
     /// app-switch suspend, all of which end an ENGINE without ending a playback.
-    PlaybackEnded { playback_id: i64, mode: &'static str, watched: &'static str },
+    PlaybackEnded {
+        playback_id: i64,
+        mode: &'static str,
+        watched: &'static str,
+    },
 }
 
 /// A serialised field value. The set is the whole vocabulary, and the important thing about it is
@@ -148,12 +156,23 @@ pub(crate) enum Value {
 pub(crate) fn serialize(e: DiagEvent) -> (&'static str, Vec<(&'static str, Value)>) {
     match e {
         DiagEvent::AppLaunch => ("app.launch", Vec::new()),
-        DiagEvent::RouteEntered { screen } => ("route.entered", vec![("screen", Value::Str(screen))]),
-        DiagEvent::SignInCompleted => ("signin.completed", Vec::new()),
-        DiagEvent::PlaybackRequested { playback_id } => {
-            ("playback.requested", vec![("playback_id", Value::Int(playback_id))])
+        DiagEvent::RouteEntered { screen } => {
+            ("route.entered", vec![("screen", Value::Str(screen))])
         }
-        DiagEvent::PlaybackStarted { playback_id, mode, raster, fps, video, audio, startup } => (
+        DiagEvent::SignInCompleted => ("signin.completed", Vec::new()),
+        DiagEvent::PlaybackRequested { playback_id } => (
+            "playback.requested",
+            vec![("playback_id", Value::Int(playback_id))],
+        ),
+        DiagEvent::PlaybackStarted {
+            playback_id,
+            mode,
+            raster,
+            fps,
+            video,
+            audio,
+            startup,
+        } => (
             "playback.started",
             vec![
                 ("playback_id", Value::Int(playback_id)),
@@ -165,7 +184,11 @@ pub(crate) fn serialize(e: DiagEvent) -> (&'static str, Vec<(&'static str, Value
                 ("startup", Value::Str(startup)),
             ],
         ),
-        DiagEvent::PlaybackFailed { playback_id, mode, kind } => (
+        DiagEvent::PlaybackFailed {
+            playback_id,
+            mode,
+            kind,
+        } => (
             "playback.failed",
             vec![
                 ("playback_id", Value::Int(playback_id)),
@@ -173,7 +196,11 @@ pub(crate) fn serialize(e: DiagEvent) -> (&'static str, Vec<(&'static str, Value
                 ("kind", Value::Str(kind)),
             ],
         ),
-        DiagEvent::PlaybackEnded { playback_id, mode, watched } => (
+        DiagEvent::PlaybackEnded {
+            playback_id,
+            mode,
+            watched,
+        } => (
             "playback.ended",
             vec![
                 ("playback_id", Value::Int(playback_id)),
@@ -308,8 +335,16 @@ mod tests {
                 audio: "ac3",
                 startup: "1-3s",
             },
-            DiagEvent::PlaybackFailed { playback_id: 7, mode: "transcode", kind: "no_video_track" },
-            DiagEvent::PlaybackEnded { playback_id: 7, mode: "direct", watched: "most" },
+            DiagEvent::PlaybackFailed {
+                playback_id: 7,
+                mode: "transcode",
+                kind: "no_video_track",
+            },
+            DiagEvent::PlaybackEnded {
+                playback_id: 7,
+                mode: "direct",
+                watched: "most",
+            },
         ];
         for e in &all {
             match e {
@@ -341,7 +376,10 @@ mod tests {
                 .unwrap_or_else(|| panic!("{name} is not declared in EVENT_SPECS"));
             let sent: Vec<&str> = fields.iter().map(|(k, _)| *k).collect();
             let declared: Vec<&str> = spec.fields.iter().map(|f| f.key).collect();
-            assert_eq!(sent, declared, "{name} sends fields it does not declare, or vice versa");
+            assert_eq!(
+                sent, declared,
+                "{name} sends fields it does not declare, or vice versa"
+            );
             let mut keys = sent.clone();
             keys.sort_unstable();
             let n = keys.len();
@@ -355,9 +393,16 @@ mod tests {
     /// a different kind of untrue document from an incomplete one and no better.
     #[test]
     fn every_declared_event_is_produced_by_a_variant() {
-        let produced: Vec<&str> = every_variant().into_iter().map(|e| serialize(e).0).collect();
+        let produced: Vec<&str> = every_variant()
+            .into_iter()
+            .map(|e| serialize(e).0)
+            .collect();
         for s in EVENT_SPECS {
-            assert!(produced.contains(&s.name), "{} is declared but no variant produces it", s.name);
+            assert!(
+                produced.contains(&s.name),
+                "{} is declared but no variant produces it",
+                s.name
+            );
         }
     }
 
@@ -370,9 +415,16 @@ mod tests {
         for s in EVENT_SPECS {
             for f in s.fields {
                 let d = f.domain.to_ascii_lowercase();
-                for banned in
-                    ["title", "search", "query", "path", "url", "address", "rating key", "server name"]
-                {
+                for banned in [
+                    "title",
+                    "search",
+                    "query",
+                    "path",
+                    "url",
+                    "address",
+                    "rating key",
+                    "server name",
+                ] {
                     assert!(
                         !d.contains(banned),
                         "{}.{} declares a domain mentioning {banned:?}: {}",
@@ -401,8 +453,12 @@ mod tests {
         // property — `privacy_table` renders a DOCUMENT and legitimately returns a `String`, and a
         // guard that has to be argued with is one somebody eventually deletes. Narrowing it here
         // rather than adding an exemption keeps the failure meaning one thing.
-        let from = src.find("pub(crate) enum DiagEvent").expect("the event type");
-        let to = src.find("pub(crate) const EVENT_SPECS").expect("the registry");
+        let from = src
+            .find("pub(crate) enum DiagEvent")
+            .expect("the event type");
+        let to = src
+            .find("pub(crate) const EVENT_SPECS")
+            .expect("the registry");
         let decls = &src[from..to];
         for (i, line) in decls.lines().enumerate() {
             let code = line.split("//").next().unwrap_or("");

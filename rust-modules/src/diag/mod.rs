@@ -1,4 +1,4 @@
-//! **Diagnostics plumbing shared by every channel that reports something off this device.**
+//! **Typed usage events plus the log/lab diagnostics plumbing.**
 //!
 //! Three pieces, lifted out of `lab/` on 2026-08-29 when a second consumer appeared. They were
 //! written for the Cloud Lab bridge, they were correct, and none of them was lab-shaped:
@@ -14,14 +14,15 @@
 //! still writes a log file — and the whole point of moving `scrub` here was that its assertions
 //! run in the default `make check`, which `lab/`'s cfg had been quietly excluding them from.
 //!
-//! There is ONE scrubber. If a future channel needs different redaction, it takes a different exit
-//! from this module rather than a second implementation of it.
+//! Logs and Cloud Lab diagnostics have ONE scrubber and take different exits from it. Native Sentry
+//! envelopes are deliberately different data: `telemetry::native` applies a fixed JSON field
+//! allowlist and path sanitizer before they enter the common consent-gated telemetry spool.
 
 pub(crate) mod scrub;
 
 // UNGATED for the same reason `scrub` is, and it is the same lesson: the guarantee this module
-// provides is its TESTS — that no event can carry a runtime string, and that `PRIVACY.md` lists
-// every event — and tests behind a feature the default gate does not build are tests that never
+// provides is its TESTS — that no usage event can carry a runtime string, and that `PRIVACY.md`
+// lists every usage event — and tests behind a feature the default gate does not build are tests that never
 // run. `scrub`'s 31 assertions sat unexecuted for as long as they existed.
 pub(crate) mod schema;
 

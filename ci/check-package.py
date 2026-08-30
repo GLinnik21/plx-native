@@ -822,7 +822,7 @@ for loc in staged_locales:
 
 print("== ipk payload ==")
 expected = {
-    "plxnative", "appinfo.json", "icon.png", "largeIcon.png", "splash.png",
+    "plxnative", "sentry-crash", "appinfo.json", "icon.png", "largeIcon.png", "splash.png",
     # appfont-cjk.ttf is the fallback face. Its absence is not a cosmetic loss: every Korean,
     # Japanese and Chinese title in the library becomes tofu, which is LG checklist #6 and #48.
     "appfont.ttf", "appfont-bold.ttf", "appfont-cjk.ttf", "OFL.txt",
@@ -834,9 +834,14 @@ if data_tar.exists():
     with tarfile.open(data_tar) as t:
         members = [m for m in t.getmembers() if m.isfile()]
         names = {Path(m.name).name for m in members}
+        modes = {Path(m.name).name: m.mode & 0o777 for m in members}
         paths = {m.name.lstrip("./") for m in members}
         owners = {(m.uname, m.gname) for m in members}
     check(expected <= names, f"payload carries all {len(expected)} app files")
+    check(modes.get("plxnative") == 0o755,
+          "native app is executable by its jailed runtime uid")
+    check(modes.get("sentry-crash") == 0o755,
+          "native crash handler is executable in the archive")
     # **The simulator's Mach-O FFmpeg lives in pkg/ too, and must never be in the package.** It
     # cannot get there today — `APP_FILES` is an explicit list, not a glob — but "cannot" is a
     # property of one Makefile line, and what it guards against is 2 MB of unrunnable arm64 shipped

@@ -49,7 +49,10 @@ use std::sync::RwLock;
 /// declared.** A raster added beside an existing width and height does not; a new event does. The
 /// incentive gradient runs towards never bumping — every bump costs consent — which is exactly why
 /// the rule lives here rather than in a reviewer's head.
-pub(crate) const POLICY_VERSION: u32 = 1;
+// Version 2 adds native stack frames, registers, module build identities and OS build metadata to
+// crash reports. Existing answers were given against the smaller PC/LR-only schema, so they must
+// be asked again rather than silently expanded.
+pub(crate) const POLICY_VERSION: u32 = 2;
 
 /// The stored decision. Serde-serialised to the telemetry file; every field is read and written, so
 /// none of them is dead even while only one accessor has a caller.
@@ -110,8 +113,18 @@ pub(crate) fn should_ask(c: &Consent, automated: bool) -> bool {
 /// * saying no to everything DROPS the identifier (see the module doc);
 /// * the answer is recorded against the current [`POLICY_VERSION`] either way, so a "no" is a real
 ///   answer and is not re-asked until the policy itself changes.
-pub(crate) fn apply(prev: &Consent, errors: bool, usage: bool, mint: impl FnOnce() -> String) -> Consent {
-    let next = Consent { asked_version: POLICY_VERSION, errors, usage, install_id: None };
+pub(crate) fn apply(
+    prev: &Consent,
+    errors: bool,
+    usage: bool,
+    mint: impl FnOnce() -> String,
+) -> Consent {
+    let next = Consent {
+        asked_version: POLICY_VERSION,
+        errors,
+        usage,
+        install_id: None,
+    };
     Consent {
         install_id: match (&prev.install_id, next.any()) {
             (_, false) => None,
@@ -147,7 +160,10 @@ pub(crate) fn current() -> Option<Consent> {
 /// has not loaded a decision has not been given one, and the only safe reading of "I do not know"
 /// here is no.
 pub(crate) fn allows_usage() -> bool {
-    CURRENT.read().map(|g| g.as_ref().is_some_and(|c| c.usage)).unwrap_or(false)
+    CURRENT
+        .read()
+        .map(|g| g.as_ref().is_some_and(|c| c.answered() && c.usage))
+        .unwrap_or(false)
 }
 
 /// May an ERROR report be sent? The crash channel's twin of [`allows_usage`], failing closed for
@@ -155,7 +171,10 @@ pub(crate) fn allows_usage() -> bool {
 /// only thing that opens the crash log at all. Consent gates the READ, not just the send: a
 /// television whose owner said no is not scanned for faults.
 pub(crate) fn allows_errors() -> bool {
-    CURRENT.read().map(|g| g.as_ref().is_some_and(|c| c.errors)).unwrap_or(false)
+    CURRENT
+        .read()
+        .map(|g| g.as_ref().is_some_and(|c| c.answered() && c.errors))
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -179,9 +198,14 @@ mod tests {
     fn no_identifier_exists_before_anyone_says_yes() {
         let fresh = Consent::default();
         assert!(fresh.install_id.is_none());
-        let after_no = apply(&fresh, false, false, || panic!("minted an identifier for a refusal"));
+        let after_no = apply(&fresh, false, false, || {
+            panic!("minted an identifier for a refusal")
+        });
         assert!(after_no.install_id.is_none());
-        assert!(after_no.answered(), "a refusal IS an answer and is not re-asked");
+        assert!(
+            after_no.answered(),
+            "a refusal IS an answer and is not re-asked"
+        );
         assert!(!should_ask(&after_no, false));
     }
 
@@ -190,7 +214,11 @@ mod tests {
     fn the_first_yes_mints_one_identifier() {
         for (errors, usage) in [(true, false), (false, true), (true, true)] {
             let c = apply(&Consent::default(), errors, usage, || "abc123".into());
-            assert_eq!(c.install_id.as_deref(), Some("abc123"), "errors={errors} usage={usage}");
+            assert_eq!(
+                c.install_id.as_deref(),
+                Some("abc123"),
+                "errors={errors} usage={usage}"
+            );
         }
     }
 
@@ -200,7 +228,9 @@ mod tests {
     #[test]
     fn a_second_yes_keeps_the_identifier_it_already_had() {
         let first = apply(&Consent::default(), false, true, || "abc123".into());
-        let second = apply(&first, true, true, || panic!("re-minted on a second opt-in"));
+        let second = apply(&first, true, true, || {
+            panic!("re-minted on a second opt-in")
+        });
         assert_eq!(second.install_id.as_deref(), Some("abc123"));
     }
 
@@ -211,7 +241,10 @@ mod tests {
     fn withdrawing_everything_destroys_the_identifier() {
         let on = apply(&Consent::default(), true, true, || "abc123".into());
         let off = apply(&on, false, false, || panic!("minted on a withdrawal"));
-        assert!(off.install_id.is_none(), "the identifier did not survive the withdrawal");
+        assert!(
+            off.install_id.is_none(),
+            "the identifier did not survive the withdrawal"
+        );
         assert!(off.answered(), "and it is still an answered question");
 
         // …and coming back later is a genuinely fresh identity, not the old one resumed.
@@ -232,9 +265,26 @@ mod tests {
     /// A policy bump re-asks, and does NOT silently carry the old answer forward as consent.
     #[test]
     fn a_policy_bump_re_asks() {
-        let old = Consent { asked_version: POLICY_VERSION - 1, usage: true, ..Default::default() };
-        assert!(!old.answered(), "an answer to an older policy is not an answer to this one");
+        let old = Consent {
+            asked_version: POLICY_VERSION - 1,
+            usage: true,
+            ..Default::default()
+        };
+        assert!(
+            !old.answered(),
+            "an answer to an older policy is not an answer to this one"
+        );
         assert!(should_ask(&old, false));
+        let _g = crate::testlock::serial();
+        let saved = CURRENT.read().ok().and_then(|g| g.clone());
+        install(old);
+        assert!(
+            !allows_usage(),
+            "an old yes must not authorize fields added by the new policy"
+        );
+        if let Ok(mut g) = CURRENT.write() {
+            *g = saved;
+        }
     }
 
     /// **An automated boot never sees the question**, whatever the stored state — the rule
@@ -254,10 +304,21 @@ mod tests {
 
         install(Consent::default());
         assert!(!allows_usage(), "a default decision allows nothing");
-        install(Consent { asked_version: POLICY_VERSION, usage: true, ..Default::default() });
+        install(Consent {
+            asked_version: POLICY_VERSION,
+            usage: true,
+            ..Default::default()
+        });
         assert!(allows_usage());
-        install(Consent { asked_version: POLICY_VERSION, errors: true, ..Default::default() });
-        assert!(!allows_usage(), "consenting to ERRORS does not consent to usage");
+        install(Consent {
+            asked_version: POLICY_VERSION,
+            errors: true,
+            ..Default::default()
+        });
+        assert!(
+            !allows_usage(),
+            "consenting to ERRORS does not consent to usage"
+        );
 
         if let Ok(mut g) = CURRENT.write() {
             *g = saved;

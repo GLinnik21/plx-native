@@ -345,10 +345,10 @@ jobs:
         # and its .debug are asserted to share a build id twenty lines up, and nothing can come
         # between that assertion and this upload.
         #
-        # **Never fails the release.** A missing secret, a Sentry outage or an expired token must not
-        # stop a build that is otherwise good from reaching the people waiting for it — the cost of
-        # skipping is that one release is harder to debug, and the cost of failing is that it does
-        # not ship. It is loud about skipping, which is the part that matters.
+        # **Fails the release.** A build whose native crash addresses have no matching DIF is not a
+        # working crash-reporting build: ingest accepts it silently and the dashboard shows bare
+        # addresses. The binary/debug build-id assertion above catches a wrong pair; this step
+        # catches a missing token, unusable DIF and failed upload.
         #
         # `--include-sources` bundles every source the DWARF references, so Sentry can show source
         # context around a frame. Checked before enabling it: 1961 files are referenced and NONE of
@@ -361,18 +361,15 @@ jobs:
           SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT || 'plx-native' }}
         run: |
           if [ -z "$SENTRY_AUTH_TOKEN" ]; then
-            echo "::warning::SENTRY_AUTH_TOKEN is not set — skipping debug-file upload."
-            echo "::warning::Crashes from this release will symbolicate to bare addresses."
-            exit 0
+            echo "::error::SENTRY_AUTH_TOKEN is not set — refusing to ship unsymbolicatable crash reports."
+            exit 1
           fi
           # `debug-files check` first: it is the step that says whether Symbolicator can use this
           # object at all, and its answer (`Arch: arm`, `Usable: yes`) is the one thing no vendor
-          # documentation states about armv7. A failure here is worth seeing in the log even though
-          # it does not fail the job.
-          npx --yes @sentry/cli@latest debug-files check pkg/plxnative.debug || true
+          # documentation states about armv7.
+          npx --yes @sentry/cli@latest debug-files check pkg/plxnative.debug
           npx --yes @sentry/cli@latest debug-files upload \
-              --include-sources pkg/plxnative.debug pkg/plxnative \
-            || echo "::warning::debug-file upload failed — this release will not symbolicate."
+              --include-sources pkg/plxnative.debug pkg/plxnative
 
       - name: ELF + packaging assertions
         # REQUIRE_PACKAGE: this step runs AFTER `make ipk`, so "nothing staged" here means the build

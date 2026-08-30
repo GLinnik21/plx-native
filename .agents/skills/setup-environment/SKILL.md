@@ -8,7 +8,7 @@ description: >
   teammate onboarding, or errors like "arm-webos-linux-gnueabi-gcc: command not
   found", "cannot find -lSDL2 / -lplayerAPIs", "No such file or directory
   ...sysroot...", `cargo +nightly` / `-Z build-std` failures, or a binary that
-  SIGILLs on the TV. Also use it to understand *why* the build is structured the
+  SIGILLs on the TV, or "cmake is required" while building Sentry Native. Also use it to understand *why* the build is structured the
   way it is (why some libs are real and two are still stubs). Reach for this before
   hand-debugging toolchain/link errors — most of them are a missing or mis-located
   NDK.
@@ -26,7 +26,8 @@ environment" means getting three things in place so `make` works:
    `-Z build-std`, which recompiles `std` with our codegen flags (needed to avoid
    a SIGILL on the TV — see "Why build-std" below). That requires the nightly
    toolchain and the `rust-src` component.
-3. **Host CLI tools** — `curl`, `tar`, and `sshpass` (deploy/run over ssh).
+3. **Host CLI tools** — `curl`, `tar`, CMake (the pinned Sentry Native build), and `sshpass`
+   (deploy/run over ssh).
 
 The end state you're verifying: `make` produces `pkg/plxnative`, and it runs on the
 TV with no missing-symbol or illegal-instruction errors.
@@ -45,6 +46,7 @@ Then make sure the Rust side is ready (safe to re-run — no-ops if already done
 rustup toolchain install nightly
 rustup component add rust-src --toolchain nightly
 rustup component add clippy   --toolchain nightly   # `make check` runs `make lint` first
+brew install cmake        # builds the pinned, statically linked Sentry Native capture backend
 brew install sshpass      # deploy/run only; skip if you won't touch the TV
 ```
 
@@ -103,6 +105,12 @@ at runtime the TV's real library (matching that SONAME via `DT_NEEDED`) is loade
 instead. So **adding a call to a new FFmpeg/curl function means adding its name to
 the matching `stub/*_stub.c`** or the link fails — only the name must match, an
 empty `void foo(void){}` body is fine (it never runs on the host).
+
+Sentry Native is a different case: `ci/build-sentry-native.sh` downloads a checksum-pinned source
+archive, applies the tracked webOS/glibc-2.12/ARM32 patch, and cross-builds `libsentry.a`,
+`libunwind.a` and the separate `sentry-crash` daemon with CMake. The libraries are statically
+linked and the daemon is packaged beside the app; this adds no Sentry shared-library SONAME to the
+television. Its HTTP transport is compiled out.
 
 If you add a dependency on a *new* library that the TV has and the **sysroot also
 has**, prefer linking it real (add `-l<name>` to `LIBS_REAL`) over writing a stub —
@@ -167,6 +175,7 @@ the path with `make -s print-eventlog FLAVOR=debug` rather than typing one. The
 | `cannot find -lSDL2 / -lplayerAPIs / -lpf-1.0` | Wrong/incomplete sysroot (partial download, or `WEBOS_SDK` points somewhere stale). Re-extract; verify `find $SYSROOT -name 'libplayerAPIs.so*'`. |
 | `error: "-Z build-std" ... rust-src` or `cargo +nightly` fails | Missing nightly or rust-src: `rustup toolchain install nightly && rustup component add rust-src --toolchain nightly`. |
 | `make check` dies at `make lint` with `no such command: clippy` | The nightly was installed with `--profile minimal`, which omits clippy (the default profile ships it): `rustup component add clippy --toolchain nightly`. `make check` runs `lint` first; the cross-build itself never needs clippy. |
+| `build-sentry-native: cmake is required` | Install the host build generator with `brew install cmake`. It runs the webOS cross-compiler; it does not compile target code with the Mac toolchain. |
 | Binary is `Tag_CPU_arch: v6`, or SIGILLs on the TV at first atomic | `RUSTFLAGS_TV` got dropped, or std wasn't rebuilt. Ensure `-C target-cpu=cortex-a9` and `-Z build-std` are intact; `rm` the stale `libplxnative_modules.a` and rebuild. |
 | `relocation R_ARM_MOVW_ABS_NC ... recompile with -fPIC` when building a stub | A stub needs PIC. Stubs already use `-fPIC` in `STUBFLAGS`; if you added a bespoke stub rule, add `-fPIC`. |
 | Deploy/run steps fail with `sshpass: command not found` | `brew install sshpass`. The TV must be on and reachable (`make TV=<ip> ...`). |

@@ -26,6 +26,8 @@ FILE *elogf = NULL;   /* shared event/diagnostic log (extern in app.h); used by 
  * ONLY writer is the signal handler, and stdio is not usable there. See `src/crashtrace.c`. */
 
 extern int plex_run(const char *pms_host, int pms_port);  /* Rust app core (no creds — session or /tmp/plxnative-token) */
+extern int plx_sentry_spool_external(const char *path); /* Sentry daemon's spool-only re-entry */
+extern void plx_crash_write_image_marker(int fd); /* identify this binary in the append-only log */
 
 /* Where this INSTALL's runtime files live — `/tmp/plxnative-events.log` for the app users get,
  * `/tmp/com.beb.plxnative.debug/plxnative-events.log` for a developer build installed beside it.
@@ -101,7 +103,11 @@ static FILE *open_log_0600(const char *path, int flags) {
 }
 
 int main(int argc, char **argv) {
-    (void)argc; (void)argv;
+    /* Sentry Native launches this executable with exactly one envelope path after the crashed
+     * process is already beyond saving. Recognise and move it BEFORE opening (and truncating) any
+     * ordinary app log, starting SDL, or arming another handler. A lookalike argument returns 0 and
+     * proceeds as a normal launch; Rust validates the exact SDK directory, UUID and file type. */
+    if (argc == 2 && plx_sentry_spool_external(argv[1])) return 0;
     elogf = open_event_log();
     /* The crash handler's own descriptors, both opened BEFORE `install_crash_tracer` arms the
      * handler — so a signal can never reach code that has to open something first, which is the
@@ -116,6 +122,9 @@ int main(int argc, char **argv) {
      * but a crash tracer must not depend on that continuing to be true.) */
     int event_fd = open_fd_0600(runtime_path("plxnative-events.log"), O_APPEND);
     int crash_fd = open_fd_0600(runtime_path("plxnative-crash.log"), O_APPEND); /* append: keep prior crashes across relaunches */
+    /* Written while allocation and ELF parsing are safe. The signal path then needs only numbers,
+     * while the next launch can still pair a record with THIS executable after a deploy. */
+    plx_crash_write_image_marker(crash_fd);
     /* stderr is REPLACED, so it must go through freopen — but create the file at 0600 first, and
      * freopen's "a" then reuses that inode rather than making a fresh 0644 one. Two calls to
      * runtime_path(), which alternates buffers, so they cannot alias even though the first result

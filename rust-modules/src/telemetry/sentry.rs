@@ -1,11 +1,10 @@
-//! **The Sentry envelope, hand-rolled** — the pure half: parse a DSN, frame an envelope, budget it.
+//! **The Sentry wire envelope, hand-rolled** — parse a DSN, frame an envelope, budget it.
 //!
-//! No SDK, and that is a decision with reasons rather than a preference: `sentry-rust` pulls tokio
-//! and reqwest into a crate that has neither, `sentry-native` does not list armv7, `minidump-writer`
-//! grades `arm × unknown-linux-gnu` "untested, needs more work" and wants ptrace from a second
-//! process, and Crashpad has no armv7 at all. Against that, the envelope format is a documented,
-//! versioned, newline-delimited wire format that this file implements in about a hundred lines and
-//! that `make check` can grade end to end without a network.
+//! Sentry Native is now linked for the one job hand-written code cannot do after death: an
+//! out-of-process ARM stack walk. Its HTTP transport is compiled out. This file remains the only
+//! wire implementation, so SDK crash events and hand-built panic/fallback events use the same
+//! consent-aware spool, retry rules and CA-verified POST. The newline-delimited format stays pure
+//! and host-testable without a network.
 //!
 //! **Everything here is pure.** A DSN goes in as a string, bytes come out. There is no socket, no
 //! endpoint and no credential in this file — which is what lets the whole format be tested against
@@ -188,14 +187,19 @@ pub(crate) const IMAGE_ADDR: &str = "0x10000";
 pub(crate) fn image_addr() -> &'static str {
     static V: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     V.get_or_init(|| {
-        read_head("/proc/self/exe").as_deref().map(image_addr_of).unwrap_or_else(|| IMAGE_ADDR.to_string())
+        read_head("/proc/self/exe")
+            .as_deref()
+            .map(image_addr_of)
+            .unwrap_or_else(|| IMAGE_ADDR.to_string())
     })
 }
 
 /// The pure half of [`image_addr`], so a test grades the expression the app actually uses rather
 /// than a re-derivation of it.
 fn image_addr_of(buf: &[u8]) -> String {
-    lowest_load_vaddr(buf).map(|v| format!("0x{v:x}")).unwrap_or_else(|| IMAGE_ADDR.to_string())
+    lowest_load_vaddr(buf)
+        .map(|v| format!("0x{v:x}"))
+        .unwrap_or_else(|| IMAGE_ADDR.to_string())
 }
 
 /// The head of a file — enough to hold an ELF header and every program header after it. Bounded
@@ -203,7 +207,11 @@ fn image_addr_of(buf: &[u8]) -> String {
 fn read_head(path: &str) -> Option<Vec<u8>> {
     use std::io::Read;
     let mut buf = Vec::new();
-    std::fs::File::open(path).ok()?.take(64 * 1024).read_to_end(&mut buf).ok()?;
+    std::fs::File::open(path)
+        .ok()?
+        .take(64 * 1024)
+        .read_to_end(&mut buf)
+        .ok()?;
     Some(buf)
 }
 
@@ -221,8 +229,53 @@ fn read_head(path: &str) -> Option<Vec<u8>> {
 pub(crate) fn build_id() -> &'static str {
     static V: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     V.get_or_init(|| {
-        read_head("/proc/self/exe").as_deref().and_then(gnu_build_id).unwrap_or_default()
+        read_head("/proc/self/exe")
+            .as_deref()
+            .and_then(gnu_build_id)
+            .unwrap_or_default()
     })
+}
+
+/// The mapped span of this executable's loadable ELF segments.
+///
+/// Sentry's debug-image schema uses a size as well as an address. Like [`image_addr`], this is a
+/// link property and is read from the binary that is actually running, not from the next build
+/// that happens to process its crash log.
+pub(crate) fn image_size() -> u64 {
+    static V: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        read_head("/proc/self/exe")
+            .as_deref()
+            .and_then(load_span)
+            .unwrap_or(0)
+    })
+}
+
+/// Append the running image's identity to the crash log before any signal can arrive.
+///
+/// The signal handler itself cannot parse ELF or allocate. This normal-startup marker associates
+/// every later fallback record with the binary that actually crashed even if another binary is
+/// deployed before the log is read.
+#[no_mangle]
+pub extern "C" fn plx_crash_write_image_marker(fd: std::os::raw::c_int) {
+    if fd < 0 {
+        return;
+    }
+    let line = if build_id().is_empty() {
+        // Still delimit this process. Otherwise a rare ELF-read failure would let a later crash
+        // inherit the preceding process's perfectly valid, but now wrong, build identity.
+        "img: unavailable\n".to_string()
+    } else {
+        format!(
+            "img: build_id={} image_addr={} image_size=0x{:x}\n",
+            build_id(),
+            image_addr(),
+            image_size()
+        )
+    };
+    unsafe {
+        let _ = libc::write(fd, line.as_ptr().cast(), line.len());
+    }
 }
 
 /// Sentry's `debug_id` for an ELF: the first 16 bytes of the build id, read as a **little-endian**
@@ -244,11 +297,20 @@ pub(crate) fn debug_id(build_id_hex: &str) -> Option<String> {
     }
     Some(format!(
         "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{}",
-        b[3], b[2], b[1], b[0],
-        b[5], b[4],
-        b[7], b[6],
-        b[8], b[9],
-        b[10..16].iter().map(|x| format!("{x:02x}")).collect::<String>()
+        b[3],
+        b[2],
+        b[1],
+        b[0],
+        b[5],
+        b[4],
+        b[7],
+        b[6],
+        b[8],
+        b[9],
+        b[10..16]
+            .iter()
+            .map(|x| format!("{x:02x}"))
+            .collect::<String>()
     ))
 }
 
@@ -266,13 +328,24 @@ pub(crate) fn gnu_build_id(buf: &[u8]) -> Option<String> {
         return None;
     }
     let is64 = buf[4] == 2;
-    let u16at = |o: usize| -> Option<u16> { Some(u16::from_le_bytes(buf.get(o..o + 2)?.try_into().ok()?)) };
-    let u32at = |o: usize| -> Option<u32> { Some(u32::from_le_bytes(buf.get(o..o + 4)?.try_into().ok()?)) };
-    let u64at = |o: usize| -> Option<u64> { Some(u64::from_le_bytes(buf.get(o..o + 8)?.try_into().ok()?)) };
+    let u16at =
+        |o: usize| -> Option<u16> { Some(u16::from_le_bytes(buf.get(o..o + 2)?.try_into().ok()?)) };
+    let u32at =
+        |o: usize| -> Option<u32> { Some(u32::from_le_bytes(buf.get(o..o + 4)?.try_into().ok()?)) };
+    let u64at =
+        |o: usize| -> Option<u64> { Some(u64::from_le_bytes(buf.get(o..o + 8)?.try_into().ok()?)) };
     let (phoff, phentsize, phnum) = if is64 {
-        (u64at(32)? as usize, u16at(54)? as usize, u16at(56)? as usize)
+        (
+            u64at(32)? as usize,
+            u16at(54)? as usize,
+            u16at(56)? as usize,
+        )
     } else {
-        (u32at(28)? as usize, u16at(42)? as usize, u16at(44)? as usize)
+        (
+            u32at(28)? as usize,
+            u16at(42)? as usize,
+            u16at(44)? as usize,
+        )
     };
     for i in 0..phnum {
         let base = phoff.checked_add(i.checked_mul(phentsize)?)?;
@@ -326,17 +399,28 @@ pub(crate) fn lowest_load_vaddr(buf: &[u8]) -> Option<u64> {
     if buf[5] != 1 {
         return None; // big-endian: every field below is read little-endian
     }
-    let u16at = |o: usize| -> Option<u16> { Some(u16::from_le_bytes(buf.get(o..o + 2)?.try_into().ok()?)) };
-    let u32at = |o: usize| -> Option<u32> { Some(u32::from_le_bytes(buf.get(o..o + 4)?.try_into().ok()?)) };
-    let u64at = |o: usize| -> Option<u64> { Some(u64::from_le_bytes(buf.get(o..o + 8)?.try_into().ok()?)) };
+    let u16at =
+        |o: usize| -> Option<u16> { Some(u16::from_le_bytes(buf.get(o..o + 2)?.try_into().ok()?)) };
+    let u32at =
+        |o: usize| -> Option<u32> { Some(u32::from_le_bytes(buf.get(o..o + 4)?.try_into().ok()?)) };
+    let u64at =
+        |o: usize| -> Option<u64> { Some(u64::from_le_bytes(buf.get(o..o + 8)?.try_into().ok()?)) };
 
     if u16at(16)? != ET_EXEC {
         return None;
     }
     let (phoff, phentsize, phnum) = if is64 {
-        (u64at(32)? as usize, u16at(54)? as usize, u16at(56)? as usize)
+        (
+            u64at(32)? as usize,
+            u16at(54)? as usize,
+            u16at(56)? as usize,
+        )
     } else {
-        (u32at(28)? as usize, u16at(42)? as usize, u16at(44)? as usize)
+        (
+            u32at(28)? as usize,
+            u16at(42)? as usize,
+            u16at(44)? as usize,
+        )
     };
     // `p_vaddr` is the field after `p_offset` in both classes, at different widths and — because
     // ELF64 moves `p_flags` up to second — different offsets. Getting this pair wrong reads a file
@@ -352,18 +436,78 @@ pub(crate) fn lowest_load_vaddr(buf: &[u8]) -> Option<u64> {
             if u32at(base)? != PT_LOAD {
                 return None;
             }
-            if is64 { u64at(base + vaddr_at) } else { u32at(base + vaddr_at).map(u64::from) }
+            if is64 {
+                u64at(base + vaddr_at)
+            } else {
+                u32at(base + vaddr_at).map(u64::from)
+            }
         })
         .min()
+}
+
+/// Size of the address range covered by all `PT_LOAD` segments in one `ET_EXEC` ELF.
+fn load_span(buf: &[u8]) -> Option<u64> {
+    const PT_LOAD: u32 = 1;
+    const ET_EXEC: u16 = 2;
+    if buf.len() < 64 || &buf[..4] != b"\x7fELF" || buf[5] != 1 {
+        return None;
+    }
+    let is64 = match buf[4] {
+        1 => false,
+        2 => true,
+        _ => return None,
+    };
+    let u16at =
+        |o: usize| -> Option<u16> { Some(u16::from_le_bytes(buf.get(o..o + 2)?.try_into().ok()?)) };
+    let u32at =
+        |o: usize| -> Option<u32> { Some(u32::from_le_bytes(buf.get(o..o + 4)?.try_into().ok()?)) };
+    let u64at =
+        |o: usize| -> Option<u64> { Some(u64::from_le_bytes(buf.get(o..o + 8)?.try_into().ok()?)) };
+    if u16at(16)? != ET_EXEC {
+        return None;
+    }
+    let (phoff, phentsize, phnum) = if is64 {
+        (
+            u64at(32)? as usize,
+            u16at(54)? as usize,
+            u16at(56)? as usize,
+        )
+    } else {
+        (
+            u32at(28)? as usize,
+            u16at(42)? as usize,
+            u16at(44)? as usize,
+        )
+    };
+    let minimum = if is64 { 48 } else { 24 };
+    if phentsize < minimum || phnum == 0 {
+        return None;
+    }
+    let mut low = u64::MAX;
+    let mut high = 0u64;
+    for i in 0..phnum {
+        let base = phoff.checked_add(i.checked_mul(phentsize)?)?;
+        if u32at(base)? != PT_LOAD {
+            continue;
+        }
+        let (vaddr, memsz) = if is64 {
+            (u64at(base + 16)?, u64at(base + 40)?)
+        } else {
+            (u64::from(u32at(base + 8)?), u64::from(u32at(base + 20)?))
+        };
+        low = low.min(vaddr);
+        high = high.max(vaddr.checked_add(memsz)?);
+    }
+    (low != u64::MAX && high > low).then_some(high - low)
 }
 
 /// The compressed-item ceiling. **200 KiB, and it is the COMPRESSED figure** — the 1 MiB number
 /// that gets quoted is the decompressed one, and budgeting against it means an interesting crash
 /// is the one that gets refused.
 #[allow(dead_code)] // no compression on this path — `queue::MAX_RECORD` bounds an item long
-// before this would, and nothing gzips a Sentry item today. Kept because the number is the
-// COMPRESSED ceiling and the 1 MiB figure everyone quotes is the decompressed one, which is the
-// mistake this constant exists to have already made once.
+                    // before this would, and nothing gzips a Sentry item today. Kept because the number is the
+                    // COMPRESSED ceiling and the 1 MiB figure everyone quotes is the decompressed one, which is the
+                    // mistake this constant exists to have already made once.
 pub(crate) const MAX_COMPRESSED: usize = 200 * 1024;
 
 /// Frame one item into an envelope: an envelope header line, an item header line, then the payload.
@@ -375,7 +519,11 @@ pub(crate) fn envelope(event_id: &str, item_type: &str, payload: &[u8]) -> Vec<u
     let mut out = Vec::with_capacity(payload.len() + 160);
     out.extend_from_slice(format!("{{\"event_id\":\"{event_id}\"}}\n").as_bytes());
     out.extend_from_slice(
-        format!("{{\"type\":\"{item_type}\",\"length\":{}}}\n", payload.len()).as_bytes(),
+        format!(
+            "{{\"type\":\"{item_type}\",\"length\":{}}}\n",
+            payload.len()
+        )
+        .as_bytes(),
     );
     out.extend_from_slice(payload);
     out.push(b'\n');
@@ -394,8 +542,13 @@ mod tests {
         assert_eq!(d.origin, "https://o4507.ingest.de.sentry.io");
         assert_eq!(d.public_key, "abc123def456");
         assert_eq!(d.project_id, "1234567");
-        assert_eq!(d.envelope_url(), "https://o4507.ingest.de.sentry.io/api/1234567/envelope/");
-        assert!(d.auth_header().starts_with("X-Sentry-Auth: Sentry sentry_version=7,"));
+        assert_eq!(
+            d.envelope_url(),
+            "https://o4507.ingest.de.sentry.io/api/1234567/envelope/"
+        );
+        assert!(d
+            .auth_header()
+            .starts_with("X-Sentry-Auth: Sentry sentry_version=7,"));
         assert!(d.auth_header().contains("sentry_key=abc123def456"));
     }
 
@@ -407,14 +560,17 @@ mod tests {
         for bad in [
             "",
             "not a dsn",
-            "https://o4507.ingest.de.sentry.io/1234567",          // no key
-            "https://abc123@o4507.ingest.de.sentry.io/",          // trailing slash, empty id
-            "https://abc123@o4507.ingest.de.sentry.io",           // no path at all
-            "https://abc123@/1234567",                            // no host
+            "https://o4507.ingest.de.sentry.io/1234567", // no key
+            "https://abc123@o4507.ingest.de.sentry.io/", // trailing slash, empty id
+            "https://abc123@o4507.ingest.de.sentry.io",  // no path at all
+            "https://abc123@/1234567",                   // no host
             "https://abc123@o4507.ingest.de.sentry.io/notanumber", // id is not numeric
-            "https://@o4507.ingest.de.sentry.io/1234567",         // empty key
+            "https://@o4507.ingest.de.sentry.io/1234567", // empty key
         ] {
-            assert!(parse_dsn(bad).is_none(), "accepted a malformed DSN: {bad:?}");
+            assert!(
+                parse_dsn(bad).is_none(),
+                "accepted a malformed DSN: {bad:?}"
+            );
         }
     }
 
@@ -452,10 +608,20 @@ mod tests {
         let env = envelope("0123456789abcdef0123456789abcdef", "event", payload);
         let text = String::from_utf8(env).expect("utf-8");
         let mut lines = text.split('\n');
-        assert_eq!(lines.next().unwrap(), r#"{"event_id":"0123456789abcdef0123456789abcdef"}"#);
-        assert_eq!(lines.next().unwrap(), format!(r#"{{"type":"event","length":{}}}"#, payload.len()));
+        assert_eq!(
+            lines.next().unwrap(),
+            r#"{"event_id":"0123456789abcdef0123456789abcdef"}"#
+        );
+        assert_eq!(
+            lines.next().unwrap(),
+            format!(r#"{{"type":"event","length":{}}}"#, payload.len())
+        );
         assert_eq!(lines.next().unwrap().as_bytes(), payload);
-        assert_eq!(lines.next().unwrap(), "", "the envelope ends with a newline");
+        assert_eq!(
+            lines.next().unwrap(),
+            "",
+            "the envelope ends with a newline"
+        );
     }
 
     /// An empty payload still frames correctly — `length: 0` is legal and is what an item with no
@@ -473,8 +639,13 @@ mod tests {
     fn an_event_id_is_undashed_lowercase_hex() {
         let Some(id) = new_event_id() else { return }; // no /dev/urandom on this host
         assert_eq!(id.len(), 32);
-        assert!(!id.contains('-'), "an event_id must not be a dashed UUID: {id}");
-        assert!(id.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        assert!(
+            !id.contains('-'),
+            "an event_id must not be a dashed UUID: {id}"
+        );
+        assert!(id
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
     }
 
     /// **The DSN this project actually configured parses, and is in the EU region.**
@@ -493,7 +664,9 @@ mod tests {
             .parent()
             .expect("rust-modules has a parent")
             .join("pkg/telemetry.local.json");
-        let Ok(text) = std::fs::read_to_string(&path) else { return }; // not configured here
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return;
+        }; // not configured here
         let Some(dsn) = text
             .lines()
             .find_map(|l| l.trim().strip_prefix(r#""sentry_dsn": ""#))
@@ -526,7 +699,10 @@ mod tests {
     #[test]
     fn the_image_base_is_the_load_vaddr_not_zero() {
         assert_eq!(IMAGE_ADDR, "0x10000");
-        assert_ne!(IMAGE_ADDR, "0x0", "a zero image base silently yields missing_symbol");
+        assert_ne!(
+            IMAGE_ADDR, "0x0",
+            "a zero image base silently yields missing_symbol"
+        );
     }
 
     /// The budget is the COMPRESSED ceiling, and it is 200 KiB rather than the 1 MiB decompressed
@@ -596,7 +772,16 @@ mod tests {
         // Deliberately NOT in address order, and with a non-LOAD segment first.
         let b = elf32(&[phdr, data, text], &[], 0);
         assert_eq!(lowest_load_vaddr(&b), Some(0x10000));
-        assert_eq!(image_addr_of(&b), "0x10000", "and it agrees with the measured constant");
+        assert_eq!(
+            load_span(&b),
+            Some(0x20100),
+            "size reaches the end of the highest LOAD"
+        );
+        assert_eq!(
+            image_addr_of(&b),
+            "0x10000",
+            "and it agrees with the measured constant"
+        );
     }
 
     /// Everything this cannot answer honestly answers `None`, and the caller then falls back to the
@@ -613,7 +798,10 @@ mod tests {
         be[5] = 2; // big-endian: every field below is read little-endian
         assert_eq!(lowest_load_vaddr(&be), None);
 
-        assert_eq!(lowest_load_vaddr(b"not an elf at all, not remotely, no"), None);
+        assert_eq!(
+            lowest_load_vaddr(b"not an elf at all, not remotely, no"),
+            None
+        );
         assert_eq!(lowest_load_vaddr(&elf32(&[], &[], 0)), None, "no PT_LOAD");
         // A header whose `e_phoff` points past the end of what was read. Not a corruption case so
         // much as the ordinary bound on `read_head`: this parser sees the first 64 KiB, and an
@@ -649,9 +837,16 @@ mod tests {
     #[test]
     fn the_debug_id_reads_the_build_id_as_a_little_endian_uuid() {
         let id = "000102030405060708090a0b0c0d0e0f10111213"; // 20 bytes, sha1
-        assert_eq!(debug_id(id).as_deref(), Some("03020100-0504-0706-0809-0a0b0c0d0e0f"));
+        assert_eq!(
+            debug_id(id).as_deref(),
+            Some("03020100-0504-0706-0809-0a0b0c0d0e0f")
+        );
         // The trailing four bytes of a sha1 id are not part of the UUID at all.
         assert_eq!(debug_id(id), debug_id(&id[..32]));
-        assert_eq!(debug_id("0011"), None, "shorter than 16 bytes is not a debug id");
+        assert_eq!(
+            debug_id("0011"),
+            None,
+            "shorter than 16 bytes is not a debug id"
+        );
     }
 }

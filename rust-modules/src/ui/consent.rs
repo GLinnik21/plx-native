@@ -26,11 +26,11 @@
 //! plain one, and not only tonally: a solo MIT project writing like a legal department is what reads
 //! as pretending to be a company, which is the thing this audience reacts to.
 //!
-//! **"See exactly what's sent" renders the literal payload** — Syncthing's preview, and the reason
-//! the claim below it is checkable rather than reassuring. It is a real serialisation of the real
-//! schema, not a mock-up: [`preview`] builds it from `diag::schema` through the same
-//! `telemetry::posthog` body every send would use, so a variant added without being declared shows
-//! up here.
+//! **"See exactly what's sent" renders every literal schema** — Syncthing's preview, and the reason
+//! the claim below it is checkable rather than reassuring. Usage examples go through the real
+//! serializer. Native and fallback examples replace runtime values with explicit placeholders;
+//! tests compare their object keys with the sanitizer allowlist, so an added field cannot bypass
+//! this screen.
 //!
 //! # BACK commits what is on screen, and does not re-ask
 //!
@@ -84,8 +84,9 @@ const TITLE: &str = "Want to help me fix bugs?";
 ///
 /// **The "not included" line is a checkable statement about the payload**, not a promise about
 /// intent. An earlier draft said something closer to "I couldn't see them if I wanted to", which is
-/// unverifiable and therefore worthless. This version is only sayable because `diag::schema` makes
-/// it structurally true: no event variant can carry a runtime string.
+/// unverifiable and therefore worthless. This version is only sayable because usage events cannot
+/// carry runtime strings and native envelopes must pass a fixed allowlist that rejects content and
+/// identity scopes.
 const BODY: &str = "\
 Hi — I'm Gleb. I build PlxNative on my own, for free, and I own exactly one LG television. When the \
 app breaks on someone else's, I usually never find out.
@@ -214,8 +215,10 @@ fn commit() {
     // honest resolution: the alternative is inventing one from a clock or a MAC, which is precisely
     // the kind of identifier this whole design refuses.
     if next.any() && next.install_id.as_deref().unwrap_or("").is_empty() {
-        crate::log("consent: no /dev/urandom — recording the answer as a refusal rather than \
-                    inventing an identifier");
+        crate::log(
+            "consent: no /dev/urandom — recording the answer as a refusal rather than \
+                    inventing an identifier",
+        );
         crate::telemetry::record(consent::apply(&prev, false, false, String::new));
     } else {
         crate::telemetry::record(next);
@@ -319,23 +322,41 @@ pub(crate) fn update(dt: f32) {
 
 // ---- the payload preview ---------------------------------------------------------------------
 
-/// **The literal thing that would be sent**, built from the real schema through the real body
-/// serialiser.
+/// **The exact schemas that may be sent**, built through their real body serialisers and sanitizer.
 ///
 /// Not a mock-up, and that is the entire value: a hand-written sample drifts from the code the
 /// moment anybody adds a field, and then the screen that exists to make the claim checkable is
-/// itself a claim nobody checks. Because this runs `posthog::single` over every
-/// [`DiagEvent`](crate::diag::schema::DiagEvent) the build can emit, an event added without being
-/// declared appears here, in front of the person being asked to consent to it.
+/// itself a claim nobody checks. This runs `posthog::single` over every
+/// [`DiagEvent`](crate::diag::schema::DiagEvent) the build can emit, and the native preview is
+/// tested against the native sanitizer's field allowlist. A schema change therefore appears here,
+/// in front of the person being asked to consent to it.
 ///
 /// The identifier shown is a placeholder: at the moment this screen is on display no identifier
 /// exists — minting one before the answer is exactly what `consent::apply` refuses to do.
 pub(crate) fn preview() -> String {
     use crate::diag::schema::DiagEvent;
     let mut out = String::from(
-        "Every message this app would send, in full. Nothing else is sent. The identifier is \
-         random and is created only if you say yes.\n\n",
+        "Every schema this app can send, with dynamic values shown as placeholders. Nothing else \
+         is sent. The usage identifier is random and is created only if you say yes.\n\n",
     );
+    out.push_str("Native crash report (only when crash reporting is on):\n");
+    let crash = crate::telemetry::native::preview_event();
+    let crash_text = serde_json::from_slice::<serde_json::Value>(&crash)
+        .ok()
+        .and_then(|v| serde_json::to_string_pretty(&v).ok())
+        .unwrap_or_else(|| String::from_utf8_lossy(&crash).into_owned());
+    out.push_str(&crash_text);
+    for (label, body) in crate::telemetry::crashreport::preview_events() {
+        out.push_str("\n\n");
+        out.push_str(label);
+        out.push_str(" (only if native capture is unavailable):\n");
+        let text = serde_json::from_slice::<serde_json::Value>(&body)
+            .ok()
+            .and_then(|v| serde_json::to_string_pretty(&v).ok())
+            .unwrap_or_else(|| String::from_utf8_lossy(&body).into_owned());
+        out.push_str(&text);
+    }
+    out.push_str("\n\nUsage events (only when usage reporting is on):\n");
     for e in [
         DiagEvent::AppLaunch,
         DiagEvent::RouteEntered { screen: "home" },
@@ -345,7 +366,9 @@ pub(crate) fn preview() -> String {
         // `playback_id` shown is the only number on the list, and its whole point is that it is a
         // fresh random one each time — see this screen's own no-32-hex-run assertion for the
         // property that matters, which is that no IDENTIFIER exists while this screen is up.
-        DiagEvent::PlaybackRequested { playback_id: 4815162342 },
+        DiagEvent::PlaybackRequested {
+            playback_id: 4815162342,
+        },
         DiagEvent::PlaybackStarted {
             playback_id: 4815162342,
             mode: "direct",
@@ -360,7 +383,11 @@ pub(crate) fn preview() -> String {
             mode: "transcode",
             kind: "no_video_transcode_target",
         },
-        DiagEvent::PlaybackEnded { playback_id: 4815162342, mode: "direct", watched: "finished" },
+        DiagEvent::PlaybackEnded {
+            playback_id: 4815162342,
+            mode: "direct",
+            watched: "finished",
+        },
     ] {
         let body =
             // The REAL environment this build would report, not a placeholder: it is the one
@@ -427,12 +454,17 @@ fn draw_question() {
     let title_h = title.measure_h(CONTENT_W);
     let paras = paragraphs();
     let para_hs: Vec<f32> = paras.iter().map(|t| t.measure_h(CONTENT_W)).collect();
-    let prose_h: f32 = para_hs.iter().sum::<f32>()
-        + theme::space::MD * (para_hs.len().saturating_sub(1)) as f32;
+    let prose_h: f32 =
+        para_hs.iter().sum::<f32>() + theme::space::MD * (para_hs.len().saturating_sub(1)) as f32;
     let rows_h = table().measured_height();
     let h = (PAD + title_h + theme::space::MD + prose_h + theme::space::LG + rows_h + PAD)
         .min(SCR_H as f32 - 2.0 * EDGE_CLEAR);
-    let r = Rect { x: (SCR_W as f32 - PANEL_W) * 0.5, y: (SCR_H as f32 - h) * 0.5, w: PANEL_W, h };
+    let r = Rect {
+        x: (SCR_W as f32 - PANEL_W) * 0.5,
+        y: (SCR_H as f32 - h) * 0.5,
+        w: PANEL_W,
+        h,
+    };
 
     let p = p0.content_painter(p0.appear());
     p0.panel(p, r, theme::ALERT_PANEL_RAD);
@@ -442,26 +474,63 @@ fn draw_question() {
     // wrong: the panel opened with a paragraph and no title, and the question turned up halfway
     // down as a caps label, reading as a group name rather than as what is being asked.
     let mut y = r.y + PAD;
-    title.draw(p, Rect { x: r.x + PAD, y, w: CONTENT_W, h: title_h });
+    title.draw(
+        p,
+        Rect {
+            x: r.x + PAD,
+            y,
+            w: CONTENT_W,
+            h: title_h,
+        },
+    );
     y += title_h + theme::space::MD;
     for (tv, ph) in paras.iter().zip(&para_hs) {
-        tv.draw(p, Rect { x: r.x + PAD, y, w: CONTENT_W, h: *ph });
+        tv.draw(
+            p,
+            Rect {
+                x: r.x + PAD,
+                y,
+                w: CONTENT_W,
+                h: *ph,
+            },
+        );
         y += ph + theme::space::MD;
     }
     y += theme::space::LG - theme::space::MD; // the last paragraph already paid a gap
-    table().draw(p, Rect { x: r.x + PAD, y, w: CONTENT_W, h: rows_h });
+    table().draw(
+        p,
+        Rect {
+            x: r.x + PAD,
+            y,
+            w: CONTENT_W,
+            h: rows_h,
+        },
+    );
 }
 
 fn draw_preview() {
     let p0 = preview_pop();
     let h = SCR_H as f32 - 2.0 * EDGE_CLEAR;
-    let r = Rect { x: (SCR_W as f32 - PANEL_W) * 0.5, y: EDGE_CLEAR, w: PANEL_W, h };
+    let r = Rect {
+        x: (SCR_W as f32 - PANEL_W) * 0.5,
+        y: EDGE_CLEAR,
+        w: PANEL_W,
+        h,
+    };
     let p = p0.content_painter(p0.appear());
     p0.panel(p, r, theme::ALERT_PANEL_RAD);
 
     let title = TextView::new(ROW_PREVIEW, theme::size::HEADLINE, theme::TEXT_PRIMARY).bold();
     let title_h = title.measure_h(CONTENT_W);
-    title.draw(p, Rect { x: r.x + PAD, y: r.y + PAD, w: CONTENT_W, h: title_h });
+    title.draw(
+        p,
+        Rect {
+            x: r.x + PAD,
+            y: r.y + PAD,
+            w: CONTENT_W,
+            h: title_h,
+        },
+    );
 
     let hint = KeyHint::new(c"Press", c"BACK", c"to return");
     let hint_h = KeyHint::height() + KeyHint::pad_below();
@@ -483,11 +552,19 @@ fn draw_preview() {
             // flush left and the nesting that made pretty-printing worth doing would be gone. Carry
             // it as an x offset instead, which also keeps every line a real wrapping unit.
             let indent = line.len() - line.trim_start().len();
-            let tv = TextView::new(line.trim_start(), theme::size::CAPTION, theme::TEXT_SECONDARY)
-                .leading(34.0);
+            let tv = TextView::new(
+                line.trim_start(),
+                theme::size::CAPTION,
+                theme::TEXT_SECONDARY,
+            )
+            .leading(34.0);
             // An empty line is a paragraph gap; it still costs its leading, which is what separates
             // the three objects.
-            let lh = if line.trim().is_empty() { 34.0 } else { tv.measure_h(CONTENT_W) };
+            let lh = if line.trim().is_empty() {
+                34.0
+            } else {
+                tv.measure_h(CONTENT_W)
+            };
             v.push((y, lh, tv, indent as f32 * INDENT_PX));
             y += lh;
         }
@@ -500,18 +577,35 @@ fn draw_preview() {
 
     // Hard-clip and draw offset, the way `TableView::draw` and the Legal reader both do. Released
     // before returning — a leaked clip is global GL state, see `ui::guard`.
-    let clip = Rect { x: r.x + PAD, y: body_top, w: CONTENT_W, h: body_h };
+    let clip = Rect {
+        x: r.x + PAD,
+        y: body_top,
+        w: CONTENT_W,
+        h: body_h,
+    };
     p.clip(clip);
     for (by, bh, tv, ind) in &views {
         let top = clip.y - scroll + by;
         if top + bh < clip.y || top > clip.y + clip.h {
             continue;
         }
-        tv.draw(p, Rect { x: clip.x + ind, y: top, w: CONTENT_W - ind, h: *bh });
+        tv.draw(
+            p,
+            Rect {
+                x: clip.x + ind,
+                y: top,
+                w: CONTENT_W - ind,
+                h: *bh,
+            },
+        );
     }
     p.clip_clear();
 
-    hint.draw(p, r.x + r.w - PAD - hint.width(), r.y + h - PAD - KeyHint::height() * 0.5);
+    hint.draw(
+        p,
+        r.x + r.w - PAD - hint.width(),
+        r.y + h - PAD - KeyHint::height() * 0.5,
+    );
 }
 
 #[cfg(test)]
@@ -524,7 +618,10 @@ mod tests {
     #[test]
     fn an_automated_boot_never_sees_the_question() {
         assert!(!should_show(&Consent::default(), true));
-        assert!(should_show(&Consent::default(), false), "…but an ordinary first boot does");
+        assert!(
+            should_show(&Consent::default(), false),
+            "…but an ordinary first boot does"
+        );
     }
 
     /// An answered decision is not re-asked, whichever way it went. Re-asking a decided question is
@@ -533,7 +630,10 @@ mod tests {
     fn an_answered_question_is_not_asked_again() {
         for (e, u) in [(false, false), (true, false), (false, true), (true, true)] {
             let answered = consent::apply(&Consent::default(), e, u, || "id".into());
-            assert!(!should_show(&answered, false), "re-asked after errors={e} usage={u}");
+            assert!(
+                !should_show(&answered, false),
+                "re-asked after errors={e} usage={u}"
+            );
         }
     }
 
@@ -544,7 +644,11 @@ mod tests {
     fn the_preview_shows_every_event_this_build_can_emit() {
         let text = preview();
         for s in crate::diag::schema::EVENT_SPECS {
-            assert!(text.contains(s.name), "the payload preview does not show `{}`", s.name);
+            assert!(
+                text.contains(s.name),
+                "the payload preview does not show `{}`",
+                s.name
+            );
             // …and every FIELD, which the name check alone would miss: a field added to an event
             // that is already previewed changes what a person is consenting to while the screen
             // still shows the old shape.
@@ -556,6 +660,29 @@ mod tests {
                     f.key
                 );
             }
+        }
+        for crash_field in [
+            "stacktrace",
+            "registers",
+            "threads",
+            "debug_meta",
+            "image_size",
+        ] {
+            assert!(
+                text.contains(crash_field),
+                "the native crash schema omits `{crash_field}`"
+            );
+        }
+        for fallback_field in [
+            "C fault fallback",
+            "Rust panic fallback",
+            "fingerprint",
+            "culprit",
+        ] {
+            assert!(
+                text.contains(fallback_field),
+                "the fallback schema omits `{fallback_field}`"
+            );
         }
     }
 
@@ -573,14 +700,24 @@ mod tests {
     #[test]
     fn the_preview_cannot_contain_a_real_identifier() {
         let text = preview();
-        assert!(text.contains("created only if you say yes"), "the intro explains the placeholder");
-        assert!(text.contains("<random id>"), "and the field itself is a placeholder");
+        assert!(
+            text.contains("created only if you say yes"),
+            "the intro explains the placeholder"
+        );
+        assert!(
+            text.contains("<random id>"),
+            "and the field itself is a placeholder"
+        );
         // 32 lowercase hex in a row is what a minted id looks like; nothing here may match it.
         let bytes: Vec<char> = text.chars().collect();
-        let run = bytes
-            .windows(32)
-            .any(|w| w.iter().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
-        assert!(!run, "the preview contains something shaped like a real install id");
+        let run = bytes.windows(32).any(|w| {
+            w.iter()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+        });
+        assert!(
+            !run,
+            "the preview contains something shaped like a real install id"
+        );
     }
 
     /// The row table and the id list cannot drift: a row added to one and not the other is the
@@ -615,6 +752,9 @@ mod tests {
         assert!(BODY.contains("when it crashes"), "why");
         assert!(BODY.contains("works exactly the same"), "optional");
         assert!(BODY.contains("Settings → Privacy"), "where to change it");
-        assert!(BODY.contains("are not included in what's sent"), "the checkable payload claim");
+        assert!(
+            BODY.contains("are not included in what's sent"),
+            "the checkable payload claim"
+        );
     }
 }

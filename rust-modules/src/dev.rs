@@ -171,7 +171,9 @@ pub(crate) fn arm_gst_logging() {}
 /// empty file must not read the same as an absent one.
 #[cfg(feature = "devtriggers")]
 pub(crate) fn read(name: &str) -> Option<String> {
-    std::fs::read_to_string(path(name)).ok().map(|s| s.trim().to_string())
+    std::fs::read_to_string(path(name))
+        .ok()
+        .map(|s| s.trim().to_string())
 }
 #[cfg(not(feature = "devtriggers"))]
 pub(crate) fn read(_name: &str) -> Option<String> {
@@ -182,8 +184,9 @@ pub(crate) fn read(_name: &str) -> Option<String> {
 ///
 /// Not a feature. An INSTRUMENT for the instrument, and it exists because of the rule this repo
 /// keeps re-learning: prove the instrument can see the thing before you read its silence, and
-/// prove the recorder records before you trust an empty recording. The crash tracer
-/// (`src/crashtrace.c`) is the app's only witness to a fatal signal on a television, and until
+/// prove the recorder records before you trust an empty recording. The fallback C crash tracer is
+/// always one witness; when crash consent and a DSN are present, Sentry Native's out-of-process
+/// handler is a second witness that can safely inspect the stopped process. Until
 /// 2026-08-29 nothing had ever exercised it deliberately — which is how it went seven weeks with a
 /// re-raise that did not re-raise, silently costing every crash its `WIFSIGNALED` status — and only
 /// that: no crashd backtrace was lost, because this firmware writes no core and so produces none.
@@ -194,11 +197,13 @@ pub(crate) fn read(_name: &str) -> Option<String> {
 /// proves each of the five `sigaction` calls took but cannot produce a meaningful PC.
 ///
 /// **Compiled out of a release build** with the rest of `devtriggers`, so a shipped binary has no
-/// path to it at all. Called from `plex_run` before anything else so it is reachable even when the
-/// fault being chased makes the app unable to reach a screen.
+/// path to it at all. Called after telemetry boot (so native capture can be armed) but before SDL
+/// or any screen is created, so it remains reachable when the fault being chased prevents UI boot.
 #[cfg(feature = "devtriggers")]
 pub(crate) fn crash_on_purpose() {
-    let Some(kind) = read("crashtest") else { return };
+    let Some(kind) = read("crashtest") else {
+        return;
+    };
     // The signal numbers are Linux's, written out rather than taken from a libc crate: this crate
     // binds no libc, and these five have been stable in the Linux ABI since it had one.
     let sig = match kind.as_str() {
@@ -215,7 +220,9 @@ pub(crate) fn crash_on_purpose() {
     // Logged BEFORE the fault, and flushed by `crate::log`'s own O_APPEND write, so the event log
     // says the death was deliberate. Without this line a deliberate crash is indistinguishable
     // from the real one somebody is hunting.
-    crate::log(&format!("crashtest: DELIBERATE crash, kind={kind} signal={sig}"));
+    crate::log(&format!(
+        "crashtest: DELIBERATE crash, kind={kind} signal={sig}"
+    ));
     if sig == 11 {
         // A real memory fault. `write_volatile` so the optimiser cannot decide a null write is
         // undefined and therefore removable — which it may, and then this proves nothing.
@@ -297,7 +304,11 @@ fn parse_playback_quality(value: &str) -> Option<crate::plex::session::PlaybackQ
 fn parse_quality_switch_script(
     raw: &str,
 ) -> Option<(u32, Vec<crate::plex::session::PlaybackQuality>)> {
-    let mut steps: Vec<&str> = raw.split(',').map(str::trim).filter(|t| !t.is_empty()).collect();
+    let mut steps: Vec<&str> = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .collect();
     let mut gap_ms = None;
     if let Some(g) = steps.first().and_then(|f| f.strip_prefix("gap=")) {
         gap_ms = Some(g.parse().ok()?);
@@ -315,7 +326,11 @@ fn parse_quality_switch_script(
         .iter()
         .map(|t| parse_playback_quality(t))
         .collect::<Option<Vec<_>>>()?;
-    if qs.is_empty() { None } else { Some((gap_ms.unwrap_or(0), qs)) }
+    if qs.is_empty() {
+        None
+    } else {
+        Some((gap_ms.unwrap_or(0), qs))
+    }
 }
 
 pub(crate) fn quality_switch_script() -> Option<(u32, Vec<crate::plex::session::PlaybackQuality>)> {
@@ -445,8 +460,14 @@ impl DevServer {
         // `scheme` field is to put a TLS origin through the registry headlessly, and a description
         // that cannot say which one it injected is the `[[silent-instrument-trap]]` again. It is
         // byte-identical for the plaintext servers every overlay writes today.
-        let where_ = self.origin().map(|o| o.log_form()).unwrap_or_else(|| format!("{}:{}", self.host, self.port));
-        format!("name={:?} handle={:?} {where_} mid={mid}", self.name, self.handle)
+        let where_ = self
+            .origin()
+            .map(|o| o.log_form())
+            .unwrap_or_else(|| format!("{}:{}", self.host, self.port));
+        format!(
+            "name={:?} handle={:?} {where_} mid={mid}",
+            self.name, self.handle
+        )
     }
 
     /// A short, stable, NON-reversible tag for a shared server — enough to tell two shares apart in
@@ -481,7 +502,8 @@ impl DevServer {
         if self.host.is_empty() {
             return None;
         }
-        crate::plex::probe::dial_port(self.port).map(|p| crate::plex::Origin::new(self.scheme, &self.host, p))
+        crate::plex::probe::dial_port(self.port)
+            .map(|p| crate::plex::Origin::new(self.scheme, &self.host, p))
     }
 }
 
@@ -751,7 +773,10 @@ mod tests {
     fn quality_trigger_accepts_only_persisted_policy_spellings() {
         use crate::plex::session::PlaybackQuality;
 
-        assert_eq!(super::parse_playback_quality("auto"), Some(PlaybackQuality::Auto));
+        assert_eq!(
+            super::parse_playback_quality("auto"),
+            Some(PlaybackQuality::Auto)
+        );
         assert_eq!(
             super::parse_playback_quality("original"),
             Some(PlaybackQuality::Original)
@@ -806,7 +831,11 @@ mod tests {
             .unwrap();
         let armed = super::is_armed_trigger(&entry);
         let _ = std::fs::remove_dir_all(&d);
-        assert!(!armed, "a directory named {} read as an armed trigger", d.display());
+        assert!(
+            !armed,
+            "a directory named {} read as an armed trigger",
+            d.display()
+        );
     }
 
     /// An empty trigger file and an absent one mean different things to several call sites
@@ -828,7 +857,11 @@ mod tests {
         std::fs::write(&p, "").unwrap();
         let got = super::read("devtest-empty");
         let _ = std::fs::remove_file(p);
-        assert_eq!(got.as_deref(), Some(""), "an empty trigger must not read as absent");
+        assert_eq!(
+            got.as_deref(),
+            Some(""),
+            "an empty trigger must not read as absent"
+        );
     }
 
     /// **How an https origin is exercised without a plex.tv account that has one.** The
@@ -840,15 +873,32 @@ mod tests {
     /// what every overlay written before this field meant.
     #[test]
     fn a_dev_server_scheme_defaults_to_http_and_can_be_told_https() {
-        let one = |json: &str| super::parse_servers(json).expect("parses").pop().expect("one server");
+        let one = |json: &str| {
+            super::parse_servers(json)
+                .expect("parses")
+                .pop()
+                .expect("one server")
+        };
 
         let plain = one(r#"{"machine_id":"m","host":"10.0.0.2","port":32400,"token":"t"}"#);
-        assert_eq!(plain.scheme, crate::plex::Scheme::Http, "an overlay that says nothing means http");
-        assert_eq!(plain.origin().expect("dialable").base(), "http://10.0.0.2:32400");
+        assert_eq!(
+            plain.scheme,
+            crate::plex::Scheme::Http,
+            "an overlay that says nothing means http"
+        );
+        assert_eq!(
+            plain.origin().expect("dialable").base(),
+            "http://10.0.0.2:32400"
+        );
 
-        let tls = one(r#"{"machine_id":"m","host":"nas.hash.plex.direct","port":32400,"token":"t","scheme":"https"}"#);
+        let tls = one(
+            r#"{"machine_id":"m","host":"nas.hash.plex.direct","port":32400,"token":"t","scheme":"https"}"#,
+        );
         assert!(tls.origin().expect("dialable").is_tls());
-        assert_eq!(tls.origin().unwrap().base(), "https://nas.hash.plex.direct:32400");
+        assert_eq!(
+            tls.origin().unwrap().base(),
+            "https://nas.hash.plex.direct:32400"
+        );
         assert!(tls.usable());
 
         // A scheme this app does not speak fails the WHOLE trigger, loudly — the caller logs the
@@ -858,7 +908,10 @@ mod tests {
 
         // and the port narrowing still applies: an out-of-range one costs the server, not the run
         let wrapped = one(r#"{"machine_id":"m","host":"10.0.0.2","port":4294999696,"token":"t"}"#);
-        assert!(wrapped.origin().is_none() && !wrapped.usable(), "32400 is what that number wraps to");
+        assert!(
+            wrapped.origin().is_none() && !wrapped.usable(),
+            "32400 is what that number wraps to"
+        );
     }
 
     /// The wire format the harness writes: a JSON ARRAY of servers, and — because a human arming
@@ -901,7 +954,10 @@ mod tests {
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].name, "Bob's Plex");
         assert_eq!(v[0].machine_id, "friend222");
-        assert_eq!(v[0].handle, "bob", "the owner's handle — an empty one means YOUR OWN server");
+        assert_eq!(
+            v[0].handle, "bob",
+            "the owner's handle — an empty one means YOUR OWN server"
+        );
         assert_eq!(v[0].host, "10.0.0.9");
         assert_eq!(v[0].port, 32400);
         assert!(v[0].usable());
@@ -926,7 +982,10 @@ mod tests {
     #[test]
     fn servers_malformed_is_an_error_not_an_empty_list() {
         assert!(super::parse_servers("{not json").is_err());
-        assert!(super::parse_servers("").unwrap().is_empty(), "an empty file = no extra servers");
+        assert!(
+            super::parse_servers("").unwrap().is_empty(),
+            "an empty file = no extra servers"
+        );
         assert!(super::parse_servers("[]").unwrap().is_empty());
         // …and the error text goes to the EVENT LOG, so it must not quote the input back. It is a
         // half-written credentials file: the byte after the truncation could be the token.
@@ -936,7 +995,10 @@ mod tests {
             Err(e) => e,
             Ok(_) => panic!("truncated JSON must not parse"),
         };
-        assert!(!e.contains("SECRETTOKENVALUE"), "the parse error echoed the input: {e}");
+        assert!(
+            !e.contains("SECRETTOKENVALUE"),
+            "the parse error echoed the input: {e}"
+        );
     }
 
     /// Half a credential is worse than none — it reaches the server and 401s. The boot log says so
@@ -953,7 +1015,10 @@ mod tests {
                 {"host":"10.0.0.9","port":4294999696,"token":"t"}]"#,
         )
         .unwrap();
-        assert!(v.iter().all(|s| !s.usable()), "no-token / no-host / no-port / a port that wraps");
+        assert!(
+            v.iter().all(|s| !s.usable()),
+            "no-token / no-host / no-port / a port that wraps"
+        );
     }
 
     /// The one formatter this type has must not be a way for a token to reach the event log.
@@ -965,9 +1030,15 @@ mod tests {
         )
         .unwrap();
         let d = v[0].describe();
-        assert!(!d.contains("SECRETTOKENVALUE"), "describe() leaked the token: {d}");
+        assert!(
+            !d.contains("SECRETTOKENVALUE"),
+            "describe() leaked the token: {d}"
+        );
         assert!(d.contains("10.0.0.9:32400"), "{d}");
-        assert!(d.contains("mid=01234567.."), "the machine id is truncated, not dropped: {d}");
+        assert!(
+            d.contains("mid=01234567.."),
+            "the machine id is truncated, not dropped: {d}"
+        );
     }
 
     /// …and a SHARED server names nothing at all. The event log is pasted into public issues and PR
@@ -981,11 +1052,22 @@ mod tests {
         )
         .unwrap();
         let d = v[0].describe();
-        for leak in ["SECRETTOKENVALUE", "Film Club", "friend", "10.9.9.7", "31234", "0123456789", "01234567"] {
+        for leak in [
+            "SECRETTOKENVALUE",
+            "Film Club",
+            "friend",
+            "10.9.9.7",
+            "31234",
+            "0123456789",
+            "01234567",
+        ] {
             assert!(!d.contains(leak), "describe() leaked {leak:?}: {d}");
         }
         assert!(d.contains("SHARED"), "a share still says it is one: {d}");
-        assert!(d.contains("port_set=true"), "…and that its credentials look complete: {d}");
+        assert!(
+            d.contains("port_set=true"),
+            "…and that its credentials look complete: {d}"
+        );
     }
 
     /// The correlation tag is stable for one server and different for another — the whole point of
@@ -1000,8 +1082,16 @@ mod tests {
             .unwrap()[0]
                 .describe()
         };
-        assert_eq!(mk("aaaaaaaaaaaa"), mk("aaaaaaaaaaaa"), "same machine, same tag");
-        assert_ne!(mk("aaaaaaaaaaaa"), mk("bbbbbbbbbbbb"), "two shares must be tellable apart");
+        assert_eq!(
+            mk("aaaaaaaaaaaa"),
+            mk("aaaaaaaaaaaa"),
+            "same machine, same tag"
+        );
+        assert_ne!(
+            mk("aaaaaaaaaaaa"),
+            mk("bbbbbbbbbbbb"),
+            "two shares must be tellable apart"
+        );
     }
 
     /// The tag is computed in TWO languages: `tests/run.py`'s `server_ref`/`describe_server` print
@@ -1042,7 +1132,10 @@ mod tests {
                 "dovi":{"profile":8,"bl_compat":1,"el_present":false},"atmos":false}"#,
         )
         .unwrap();
-        assert_eq!(p.url, "http://192.0.2.10:8020/pipe_hevc_eac3_4k_dovi_p8.mkv");
+        assert_eq!(
+            p.url,
+            "http://192.0.2.10:8020/pipe_hevc_eac3_4k_dovi_p8.mkv"
+        );
         assert_eq!((p.vcodec.as_str(), p.acodec.as_str()), ("hevc", "eac3"));
         assert!((p.fps - 23.976).abs() < 1e-9);
         assert!(!p.atmos);
@@ -1055,13 +1148,19 @@ mod tests {
     /// anything" — not a parse failure and not an inherited value.
     #[test]
     fn omitted_fields_default_to_a_silent_declaration() {
-        let p = super::parse_playurl(r#"{"url":"http://10.0.0.2:8020/a.mkv","vcodec":"h264","acodec":"ac3"}"#)
-            .unwrap();
+        let p = super::parse_playurl(
+            r#"{"url":"http://10.0.0.2:8020/a.mkv","vcodec":"h264","acodec":"ac3"}"#,
+        )
+        .unwrap();
         assert_eq!(p.fps, 0.0);
         assert!(!p.atmos);
         let dv = p.dovi.to_dovi();
         assert!(!dv.present);
-        assert_eq!(dv, crate::metadata::Dovi::NONE, "an absent dovi node must be silence itself");
+        assert_eq!(
+            dv,
+            crate::metadata::Dovi::NONE,
+            "an absent dovi node must be silence itself"
+        );
     }
 
     /// The synthetic Auto case carries only public fixture coordinates and a declared source
@@ -1082,9 +1181,22 @@ mod tests {
     /// `present` is DERIVED, so it cannot disagree with the profile in either direction.
     #[test]
     fn dovi_presence_follows_the_profile() {
-        let none = super::PlayDovi { profile: 0, bl_compat: 1, el_present: true }.to_dovi();
-        assert!(!none.present, "profile 0 is not Dolby Vision whatever else is set");
-        let p7 = super::PlayDovi { profile: 7, bl_compat: 6, el_present: true }.to_dovi();
+        let none = super::PlayDovi {
+            profile: 0,
+            bl_compat: 1,
+            el_present: true,
+        }
+        .to_dovi();
+        assert!(
+            !none.present,
+            "profile 0 is not Dolby Vision whatever else is set"
+        );
+        let p7 = super::PlayDovi {
+            profile: 7,
+            bl_compat: 6,
+            el_present: true,
+        }
+        .to_dovi();
         assert!(p7.present);
         assert_eq!((p7.profile, p7.bl_compat, p7.el_present), (7, 6, true));
     }
@@ -1116,7 +1228,10 @@ mod tests {
     #[test]
     fn the_harness_payload_carries_no_apostrophe() {
         let payload = r#"{"url":"http://192.0.2.10:8020/pipe_h264_ac3_1080p.mkv","vcodec":"h264","acodec":"ac3","fps":24.0}"#;
-        assert!(!payload.contains('\''), "would break apply_triggers' single-quoted printf");
+        assert!(
+            !payload.contains('\''),
+            "would break apply_triggers' single-quoted printf"
+        );
         assert!(super::parse_playurl(payload).is_ok());
     }
 
@@ -1128,9 +1243,21 @@ mod tests {
     #[test]
     fn every_quality_wire_name_parses_back_to_itself() {
         use crate::plex::session::PlaybackQuality as Q;
-        for q in [Q::Auto, Q::Original, Q::P1080High, Q::P1080, Q::P720, Q::P720Low, Q::P480] {
+        for q in [
+            Q::Auto,
+            Q::Original,
+            Q::P1080High,
+            Q::P1080,
+            Q::P720,
+            Q::P720Low,
+            Q::P480,
+        ] {
             let name = super::quality_wire_name(q);
-            assert_eq!(super::parse_playback_quality(name), Some(q), "{name} does not round-trip");
+            assert_eq!(
+                super::parse_playback_quality(name),
+                Some(q),
+                "{name} does not round-trip"
+            );
         }
     }
 
@@ -1141,14 +1268,26 @@ mod tests {
     fn a_quality_script_fails_closed_and_never_substitutes() {
         use crate::plex::session::PlaybackQuality as Q;
         let parse = super::parse_quality_switch_script;
-        assert_eq!(parse("720p_4_mbps"), Some((0, vec![Q::P720])), "one step needs no cadence");
+        assert_eq!(
+            parse("720p_4_mbps"),
+            Some((0, vec![Q::P720])),
+            "one step needs no cadence"
+        );
         assert_eq!(
             parse("gap=9000,1080p_8_mbps,auto"),
             Some((9_000, vec![Q::P1080, Q::Auto])),
             "a leading gap is consumed, not treated as a rung",
         );
-        assert_eq!(parse("gap=9000,nonsense"), None, "a typo must arm NOTHING, not a default");
-        assert_eq!(parse("gap=oops,auto"), None, "an invalid cadence must not become zero");
+        assert_eq!(
+            parse("gap=9000,nonsense"),
+            None,
+            "a typo must arm NOTHING, not a default"
+        );
+        assert_eq!(
+            parse("gap=oops,auto"),
+            None,
+            "an invalid cadence must not become zero"
+        );
         assert_eq!(
             parse("720p_4_mbps,auto"),
             None,

@@ -104,12 +104,24 @@ const _: () = {
 ///
 /// An unconfigured build reads `development`. Nothing can be sent from one, so the value is
 /// unobservable; `development` is simply the honest reading of "not the shipped configuration".
-pub(crate) const ENVIRONMENT: &str = if HAS_PROD { "production" } else { "development" };
+pub(crate) const ENVIRONMENT: &str = if HAS_PROD {
+    "production"
+} else {
+    "development"
+};
 
 /// The DSN this build actually uses — the production one, or the development one, never both.
-const SENTRY_DSN: Option<&str> = if HAS_PROD { SENTRY_DSN_PROD } else { SENTRY_DSN_DEV };
+const SENTRY_DSN: Option<&str> = if HAS_PROD {
+    SENTRY_DSN_PROD
+} else {
+    SENTRY_DSN_DEV
+};
 /// The PostHog key this build actually uses.
-const POSTHOG_KEY: Option<&str> = if HAS_PROD { POSTHOG_KEY_PROD } else { POSTHOG_KEY_DEV };
+const POSTHOG_KEY: Option<&str> = if HAS_PROD {
+    POSTHOG_KEY_PROD
+} else {
+    POSTHOG_KEY_DEV
+};
 /// PostHog's EU ingest host. A constant rather than configuration: the region is a claim
 /// `PRIVACY.md` and the LG Data Safety declaration both make, so it should not be movable by an
 /// environment variable nobody reads.
@@ -118,8 +130,12 @@ const POSTHOG_HOST: &str = "https://eu.i.posthog.com";
 /// Deadlines for a background flush. Deliberately shorter than [`net::API`](crate::net::API), which
 /// is tuned for a call somebody is waiting on: a worker holding a thread for 25 s to report a crash
 /// that already happened has the priority backwards.
-const TIMEOUTS: crate::net::Timeouts =
-    crate::net::Timeouts { connect_s: 6, total_s: 12, low_speed_bps: 0, low_speed_s: 0 };
+const TIMEOUTS: crate::net::Timeouts = crate::net::Timeouts {
+    connect_s: 6,
+    total_s: 12,
+    low_speed_bps: 0,
+    low_speed_s: 0,
+};
 
 /// Could this build send anything at all? False at compile time in any checkout without the
 /// configuration file — see the module doc.
@@ -134,6 +150,15 @@ pub(crate) fn configured() -> bool {
 /// every record it produces.
 pub(crate) fn has_sentry() -> bool {
     SENTRY_DSN.is_some()
+}
+
+/// The ingest-only DSN for the native capture backend's event header.
+///
+/// Sentry Native has no transport in this build; the value is still required in the envelope it
+/// writes for an external reporter. The ordinary sender discards that header and frames the
+/// sanitised body with this same compile-time destination later.
+pub(crate) fn sentry_dsn() -> Option<&'static str> {
+    SENTRY_DSN
 }
 
 pub(crate) fn has_posthog() -> bool {
@@ -224,6 +249,9 @@ pub(crate) const DEFAULT_HOLD_S: u64 = 60;
 /// records of a category that is now off, and the whole point of storing the category with the
 /// record is that this question has an answer.
 pub(crate) fn allowed(r: &Record, c: &consent::Consent) -> bool {
+    if !c.answered() {
+        return false;
+    }
     match r.category {
         Category::Errors => c.errors,
         Category::Usage => c.usage,
@@ -303,7 +331,13 @@ pub(crate) fn posthog_body(
 ) -> Option<Vec<u8>> {
     // `None` for the timestamp: PostHog stamps on arrival, which on a television whose clock runs
     // ~3h off is strictly better than what we could tell it. See `posthog::single`.
-    Some(posthog::single(POSTHOG_KEY?, distinct_id, e, ENVIRONMENT, None))
+    Some(posthog::single(
+        POSTHOG_KEY?,
+        distinct_id,
+        e,
+        ENVIRONMENT,
+        None,
+    ))
 }
 
 /// Attempt one record. Returns the verdict and, when a server asked for one, the hold in seconds.
@@ -321,7 +355,10 @@ pub(crate) fn send_one(r: &Record) -> (Verdict, Option<u64>) {
         // "silently dropped for want of a key", which is precisely the question a verification is
         // asking. One destination missing while the other is configured is the ordinary case here,
         // not an exotic one.
-        crate::log(&format!("telemetry: no endpoint for {:?} in this build — record discarded", r.dest));
+        crate::log(&format!(
+            "telemetry: no endpoint for {:?} in this build — record discarded",
+            r.dest
+        ));
         return (Verdict::Hopeless, None);
     };
     match crate::net::post_ca(&url, &headers, &wire_body(r), TIMEOUTS) {
@@ -376,7 +413,10 @@ mod tests {
         let text = String::from_utf8(wire.clone()).expect("utf-8");
         let mut lines = text.split('\n');
         let head = lines.next().expect("an envelope header line");
-        assert!(head.contains(&r.event_id), "the header must carry the event id: {head}");
+        assert!(
+            head.contains(&r.event_id),
+            "the header must carry the event id: {head}"
+        );
         let item = lines.next().expect("an item header line");
         assert!(item.contains("\"type\":\"event\""), "item header: {item}");
         assert!(
@@ -384,8 +424,14 @@ mod tests {
             "the item length must be the payload's byte length, or the receiver parses the next \
              line as payload and rejects the whole envelope complaining about neither: {item}"
         );
-        assert!(text.contains(std::str::from_utf8(&r.body).unwrap()), "the payload survives whole");
-        assert_ne!(wire, r.body, "the bare event was posted to an envelope endpoint");
+        assert!(
+            text.contains(std::str::from_utf8(&r.body).unwrap()),
+            "the payload survives whole"
+        );
+        assert_ne!(
+            wire, r.body,
+            "the bare event was posted to an envelope endpoint"
+        );
     }
 
     /// …and PostHog's body is passed through untouched. Its endpoint takes a plain JSON object, so
@@ -400,7 +446,12 @@ mod tests {
     }
 
     fn rec(cat: Category, dest: Dest) -> Record {
-        Record { category: cat, dest, event_id: "e".into(), body: b"{}".to_vec() }
+        Record {
+            category: cat,
+            dest,
+            event_id: "e".into(),
+            body: b"{}".to_vec(),
+        }
     }
 
     /// The three-way split, at every boundary that matters. A two-way "did it work" collapses two
@@ -412,7 +463,11 @@ mod tests {
             assert_eq!(classify(s), Verdict::Done, "{s}");
         }
         for s in [408, 429, 500, 502, 503, 599] {
-            assert_eq!(classify(s), Verdict::Keep, "{s} is the server's problem, not the payload's");
+            assert_eq!(
+                classify(s),
+                Verdict::Keep,
+                "{s} is the server's problem, not the payload's"
+            );
         }
         for s in [400, 401, 403, 404, 413, 422, 499] {
             assert_eq!(classify(s), Verdict::Hopeless, "{s} will never be accepted");
@@ -433,13 +488,19 @@ mod tests {
     fn a_delta_seconds_retry_after_is_read() {
         assert_eq!(retry_after_secs("Retry-After: 120"), Some(120));
         assert_eq!(retry_after_secs("retry-after: 5"), Some(5));
-        assert_eq!(retry_after_secs("Content-Type: x\r\nRETRY-AFTER: 30\r\nX: y"), Some(30));
+        assert_eq!(
+            retry_after_secs("Content-Type: x\r\nRETRY-AFTER: 30\r\nX: y"),
+            Some(30)
+        );
     }
 
     /// Sentry's own header carries the wait as a leading integer before its category list.
     #[test]
     fn sentrys_rate_limit_header_is_read_the_same_way() {
-        assert_eq!(retry_after_secs("X-Sentry-Rate-Limits: 60:transaction:key"), Some(60));
+        assert_eq!(
+            retry_after_secs("X-Sentry-Rate-Limits: 60:transaction:key"),
+            Some(60)
+        );
         assert_eq!(retry_after_secs("x-sentry-rate-limits: 2700"), Some(2700));
     }
 
@@ -450,7 +511,10 @@ mod tests {
     /// better than a confidently wrong number.
     #[test]
     fn an_http_date_retry_after_falls_back_rather_than_guessing() {
-        assert_eq!(retry_after_secs("Retry-After: Wed, 21 Oct 2026 07:28:00 GMT"), None);
+        assert_eq!(
+            retry_after_secs("Retry-After: Wed, 21 Oct 2026 07:28:00 GMT"),
+            None
+        );
     }
 
     /// No such header is `None`, and a header with no digits is too.
@@ -467,8 +531,12 @@ mod tests {
     /// category is stored with the record.
     #[test]
     fn a_withdrawn_category_is_refused_even_from_an_old_spool() {
-        let errors_only =
-            consent::Consent { asked_version: 1, errors: true, usage: false, install_id: None };
+        let errors_only = consent::Consent {
+            asked_version: consent::POLICY_VERSION,
+            errors: true,
+            usage: false,
+            install_id: None,
+        };
         assert!(allowed(&rec(Category::Errors, Dest::Sentry), &errors_only));
         assert!(!allowed(&rec(Category::Usage, Dest::PostHog), &errors_only));
 
@@ -499,8 +567,10 @@ mod tests {
     fn an_empty_environment_variable_is_not_a_configuration() {
         assert_eq!(non_empty(Some("")), None);
         assert_eq!(non_empty(None), None);
-        assert_eq!(non_empty(Some("https://k@o1.ingest.de.sentry.io/2")),
-                   Some("https://k@o1.ingest.de.sentry.io/2"));
+        assert_eq!(
+            non_empty(Some("https://k@o1.ingest.de.sentry.io/2")),
+            Some("https://k@o1.ingest.de.sentry.io/2")
+        );
     }
 
     /// **The environment agrees with the credentials, whatever this checkout happens to have.**
@@ -510,7 +580,14 @@ mod tests {
     /// disagreeing, and that is checkable in every configuration.
     #[test]
     fn the_environment_matches_the_credential_pair_that_was_supplied() {
-        assert_eq!(ENVIRONMENT, if HAS_PROD { "production" } else { "development" });
+        assert_eq!(
+            ENVIRONMENT,
+            if HAS_PROD {
+                "production"
+            } else {
+                "development"
+            }
+        );
         // The active credentials come from the same side as the label.
         if HAS_PROD {
             assert_eq!(SENTRY_DSN, SENTRY_DSN_PROD);
@@ -538,7 +615,13 @@ mod tests {
     /// The environment reaches the wire, on the channel that carries product data.
     #[test]
     fn the_environment_is_a_property_on_every_event() {
-        let body = posthog::single("k", "id", crate::diag::schema::DiagEvent::AppLaunch, "development", None);
+        let body = posthog::single(
+            "k",
+            "id",
+            crate::diag::schema::DiagEvent::AppLaunch,
+            "development",
+            None,
+        );
         let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(v["properties"]["environment"], "development");
     }
@@ -550,7 +633,9 @@ mod tests {
         let Some(_) = SENTRY_DSN else { return };
         let (url, headers) = route(&rec(Category::Errors, Dest::Sentry)).expect("routes");
         assert!(url.ends_with("/envelope/"), "{url}");
-        assert!(headers.iter().any(|h| h.starts_with("Content-Type: application/x-sentry-envelope")));
+        assert!(headers
+            .iter()
+            .any(|h| h.starts_with("Content-Type: application/x-sentry-envelope")));
         assert!(headers.iter().any(|h| h.starts_with("X-Sentry-Auth:")));
     }
 

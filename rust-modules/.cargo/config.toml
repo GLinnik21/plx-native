@@ -11,6 +11,8 @@
 #                          cortex-a9 (ARMv7-A) emits the dedicated `dmb`.
 #   target-feature=-neon   NEON is unnecessary (VFP stays on) and dodges crates whose NEON
 #                          path needs unstable intrinsics.
+#   force-frame-pointers   the out-of-process ARM crash walker follows the APCS r11 chain; this
+#                          turns a faulting PC into the Rust call stack that led to it.
 #
 # On that second flag rustc emits `unstable feature specified for -Ctarget-feature: neon` on every
 # ARM build, and it is the ONE warning this tree cannot clear — measured 2026-08-15, so do not
@@ -32,7 +34,7 @@
 # fingerprint differently, so they rebuild over each other if pointed at the same --target-dir.
 # The Makefile's own dirs (target/, target-release/) are unaffected.
 [target.arm-unknown-linux-gnueabi]
-rustflags = ["-C", "target-cpu=cortex-a9", "-C", "target-feature=-neon"]
+rustflags = ["-C", "target-cpu=cortex-a9", "-C", "target-feature=-neon", "-C", "force-frame-pointers=yes"]
 
 # std itself must be rebuilt with the flags above — the precompiled std ships the CP15
 # barriers. Needs the nightly toolchain + the rust-src component.

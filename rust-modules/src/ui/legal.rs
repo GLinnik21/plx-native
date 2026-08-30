@@ -86,7 +86,12 @@ pub(crate) enum Page {
 impl Page {
     /// Row order. `account_menu`'s own comment records the bug this shape avoids: a row appended in
     /// one place and not the other is exactly the index drift that made a menu open the wrong thing.
-    pub(crate) const ALL: [Page; 4] = [Page::Privacy, Page::OpenSource, Page::Source, Page::Trademarks];
+    pub(crate) const ALL: [Page; 4] = [
+        Page::Privacy,
+        Page::OpenSource,
+        Page::Source,
+        Page::Trademarks,
+    ];
 
     fn title(self) -> &'static str {
         match self {
@@ -101,9 +106,13 @@ impl Page {
     /// a good many people will read only this line and never open the page.
     fn subtitle(self) -> &'static str {
         match self {
-            Page::Privacy => "What this app stores and what it sends. Nothing is sent to its developer.",
+            Page::Privacy => {
+                "What this app stores and what it sends. Nothing is sent to its developer."
+            }
             Page::OpenSource => "The open source components this app uses, and their licences.",
-            Page::Source => "Where to get the complete source, including the FFmpeg it was built from.",
+            Page::Source => {
+                "Where to get the complete source, including the FFmpeg it was built from."
+            }
             Page::Trademarks => "Plex and LG trademark attribution.",
         }
     }
@@ -151,10 +160,11 @@ joined to anything sent before.
 
 WHAT IS IN A REPORT
 
-What broke, and nothing about your television: a signal name and an address, or a screen name, or \
-a video and audio format as a class. There is no field in any of them that can carry text from your \
-library. You can read the exact messages, in full, on the same screen the switches are \
-on.
+For a native crash: the signal, instruction and caller frames, ARM registers, thread ids and \
+internal labels, module basenames and addresses, and app/kernel build facts needed to symbolicate \
+it. Usage reports contain only a screen name or video/audio format classes. Neither schema has a \
+field for titles, searches, subtitles, accounts or servers. You can read every exact schema, with \
+runtime values shown as placeholders, on the same screen the switches are on.
 
 Reports go to Sentry and PostHog, both in the European Union, and are kept no longer than 13 \
  months.
@@ -248,7 +258,6 @@ LG and webOS are trademarks of LG Electronics Inc.
 
 PlxNative is an independent application. It is not produced by, endorsed by, or affiliated with \
 Plex, Inc. or LG Electronics Inc.";
-
 
 /// One block of a document: a heading or a paragraph.
 ///
@@ -446,7 +455,15 @@ fn draw_menu() {
     };
     let p = pop.content_painter(pop.appear());
     pop.panel(p, r, theme::ALERT_PANEL_RAD);
-    table().draw(p, Rect { x: r.x + PAD, y: r.y + PAD, w: CONTENT_W, h: h - 2.0 * PAD });
+    table().draw(
+        p,
+        Rect {
+            x: r.x + PAD,
+            y: r.y + PAD,
+            w: CONTENT_W,
+            h: h - 2.0 * PAD,
+        },
+    );
 }
 
 fn draw_reader() {
@@ -467,7 +484,15 @@ fn draw_reader() {
     // whim is worse than the vertical space it costs.
     let title = TextView::new(page.title(), theme::size::HEADLINE, theme::TEXT_PRIMARY).bold();
     let title_h = title.measure_h(CONTENT_W);
-    title.draw(p, Rect { x: r.x + PAD, y: r.y + PAD, w: CONTENT_W, h: title_h });
+    title.draw(
+        p,
+        Rect {
+            x: r.x + PAD,
+            y: r.y + PAD,
+            w: CONTENT_W,
+            h: title_h,
+        },
+    );
 
     let hint = KeyHint::new(c"Press", c"BACK", c"to return");
     let hint_h = KeyHint::height() + KeyHint::pad_below();
@@ -513,7 +538,12 @@ fn draw_reader() {
     // Hard-clip to the body column and draw the stack offset upward, the way `TableView::draw`
     // clips its own overflow. Released before returning — the clip is global GL state and
     // `ui::guard` documents what a leaked one does to every later frame.
-    let clip = Rect { x: r.x + PAD, y: body_top, w: CONTENT_W, h: body_h };
+    let clip = Rect {
+        x: r.x + PAD,
+        y: body_top,
+        w: CONTENT_W,
+        h: body_h,
+    };
     p.clip(clip);
     for (by, bh, tv) in &views {
         let top = clip.y - scroll + by;
@@ -522,13 +552,25 @@ fn draw_reader() {
         if top + bh < clip.y || top > clip.y + clip.h {
             continue;
         }
-        tv.draw(p, Rect { x: clip.x, y: top, w: CONTENT_W, h: *bh });
+        tv.draw(
+            p,
+            Rect {
+                x: clip.x,
+                y: top,
+                w: CONTENT_W,
+                h: *bh,
+            },
+        );
     }
     p.clip_clear();
 
     // Right-pinned on the footer baseline, the form `about_panel` settled on for this family —
     // its own note says not to re-derive the centred variant.
-    hint.draw(p, r.x + r.w - PAD - hint.width(), r.y + h - PAD - KeyHint::height() * 0.5);
+    hint.draw(
+        p,
+        r.x + r.w - PAD - hint.width(),
+        r.y + h - PAD - KeyHint::height() * 0.5,
+    );
 }
 
 #[cfg(test)]
@@ -583,9 +625,15 @@ mod tests {
         // The claim as it now stands: nothing is sent unless a switch is on, and they start off.
         assert!(PRIVACY.contains("sends nothing to its developer unless you switch it on"));
         assert!(PRIVACY.contains("off until you do"));
-        assert!(PRIVACY.contains("both off by default"), "the default is the point");
+        assert!(
+            PRIVACY.contains("both off by default"),
+            "the default is the point"
+        );
         assert!(PRIVACY.contains("reversible at any time"), "Art. 7(3)");
-        assert!(PRIVACY.contains("does not ask for it"), "the LGUDID position");
+        assert!(
+            PRIVACY.contains("does not ask for it"),
+            "the LGUDID position"
+        );
     }
 
     /// The page names the two recipients, the region and the retention — the three facts a reader
@@ -602,9 +650,13 @@ mod tests {
     /// finds this page months later must be able to check the promise they were given.
     #[test]
     fn the_privacy_page_repeats_the_payload_claim() {
-        assert!(PRIVACY.contains("Titles."), "the never-sent list leads with titles");
+        assert!(
+            PRIVACY.contains("Titles."),
+            "the never-sent list leads with titles"
+        );
         assert!(PRIVACY.contains("What you searched for."));
-        assert!(PRIVACY.contains("no field in any of them that can carry text"));
+        assert!(PRIVACY.contains("Neither schema has a field for titles"));
+        assert!(PRIVACY.contains("module basenames"));
     }
 
     /// The blank-line split is what turns a wall of text into a document, so it is pinned rather
@@ -614,8 +666,15 @@ mod tests {
     #[test]
     fn a_document_splits_into_headings_and_paragraphs() {
         let bs = blocks(PRIVACY);
-        assert!(bs.len() >= 8, "the privacy notice is a document, not one run: {}", bs.len());
-        assert!(matches!(bs[0], Block::Para(_)), "it opens on prose, not a heading");
+        assert!(
+            bs.len() >= 8,
+            "the privacy notice is a document, not one run: {}",
+            bs.len()
+        );
+        assert!(
+            matches!(bs[0], Block::Para(_)),
+            "it opens on prose, not a heading"
+        );
         let heads: Vec<&str> = bs
             .iter()
             .filter_map(|b| match b {
@@ -644,7 +703,6 @@ mod tests {
         }
     }
 
-
     /// **The notice may not claim silence while this build can send.**
     ///
     /// It replaced a grep for `net::post_ca` under `src/telemetry`, which asked "can this build
@@ -664,8 +722,14 @@ mod tests {
     fn the_notice_cannot_claim_silence_while_this_build_can_send() {
         let p = PRIVACY.to_ascii_lowercase();
         // The two switches, in the words the consent screen offers them in.
-        assert!(p.contains("crash"), "the notice never describes the errors switch");
-        assert!(p.contains("screens"), "the notice never describes the usage switch");
+        assert!(
+            p.contains("crash"),
+            "the notice never describes the errors switch"
+        );
+        assert!(
+            p.contains("screens"),
+            "the notice never describes the usage switch"
+        );
         // Phrasings that were true before a sender existed and would be a false statement now. The
         // full stop on the second is load-bearing: the notice legitimately opens "sends nothing to
         // its developer UNLESS you switch it on", and matching that would fail the honest wording.

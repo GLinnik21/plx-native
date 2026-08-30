@@ -79,6 +79,10 @@ pkg/.flavor/
 # reads twice. Slashless, both a real directory and a link to one are ignored.
 vendor/ffmpeg-build
 vendor/ffmpeg-prefix
+vendor/sentry-native-*.tar.gz
+vendor/sentry-native-src
+vendor/sentry-native-build
+vendor/sentry-native-prefix
 # A NESTED vendor/, which is not a thing anyone writes on purpose — it is what
 # `cp -R <repo>/vendor <worktree>/vendor` produces when the destination already exists,
 # and seeding parallel worktrees that way put 30,247 build-artefact files (280 MB, plus
