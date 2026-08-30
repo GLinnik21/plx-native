@@ -391,9 +391,11 @@ which the linking section explains is load-bearing rather than tidy.
   the signal path can be tested; `src/crashfmt.h` is its pure half. **Both halves are host-tested in
   `make check`** — `ci/crashfmt-test.c` grades the parsing, `ci/crashtrace-test.c` crashes five
   processes on purpose and checks the record AND the exit status. `src/starfish.c` — the
-  StarfishMediaAPIs C++/ACB seam. `src/svg.c` — nanosvg rasterizer. These four are the *entire* C
-  side. Reach for `/tmp/plxnative-crashtest=<segv|abrt|bus|ill|trap>` to fault the app deliberately
-  ON the television — `segv` is a real null write, the rest are `raise`.
+  StarfishMediaAPIs C++/ACB seam. `src/svg.c` — nanosvg rasterizer. `src/sentry_context.c` — the
+  narrow C wrapper that keeps Sentry's opaque by-value object ABI out of Rust. These five are the
+  entire normal C side (`gpdebug.c` is an opt-in allocator instrument). Reach for
+  `/tmp/plxnative-crashtest=<segv|abrt|bus|ill|trap>` to fault the app deliberately ON the
+  television — `segv` is a real null write, the rest are `raise`.
 - `rust-modules/src/` — the app core (Rust): `app.rs` (event loop/input), `system.rs` (wayland),
   `player/` (buffer-feed engine + worker threads — **`rust-modules/src/player/CLAUDE.md` is the
   playback deep-dive; read it before touching playback**), `ff.rs` (THE demuxer — the **bundled,
@@ -646,9 +648,17 @@ which the linking section explains is load-bearing rather than tidy.
   app-switch does. Preserve the suspend/reload pairing if you touch playback or routing.
 - **Crash forensics has two layers.** With error-report consent and a compiled Sentry endpoint,
   Sentry Native's patched ARM32 backend replaces the signal disposition and wakes the shipped
-  `sentry-crash` daemon. The dying process stays stopped while the daemon copies `ucontext`, walks
-  the APCS frame chain, enumerates threads/modules and writes a JSON event with ARM registers and a
-  real multi-frame stack. The SDK has **no HTTP transport and writes no minidump**: it launches the
+  `sentry-crash` daemon. The dying process stays stopped while the daemon copies its `ucontext`,
+  enumerates the other Linux LWPs, `PTRACE_ATTACH`es them, snapshots PC/SP/FP with
+  `PTRACE_GETREGS`, and keeps them stopped while it walks every APCS frame chain. That lifetime is
+  the Linux counterpart of KSCrash's suspend → context → unwind → resume sequence; enumerating
+  `/proc/<pid>/task` alone only produces names and zeroed contexts. The crashed thread keeps up to
+  128 frames and each other thread up to 32 to reduce pressure on the 256 KiB durable-record
+  ceiling; the importer still rejects an oversized envelope rather than claiming a bound for an
+  arbitrary 256-LWP process. The JSON therefore carries ARM registers and real multi-frame stacks
+  for all successfully captured threads, plus modules and both Linux-kernel and webOS firmware
+  context.
+  The SDK has **no HTTP transport and writes no minidump**: it launches the
   same `plxnative` binary in spool-only mode, which moves the bounded envelope into the install's
   runtime root. A healthy launch rejects user/request scope, strips path prefixes and queues the
   event through the existing consent-aware sender. `-fno-omit-frame-pointer` / Rust

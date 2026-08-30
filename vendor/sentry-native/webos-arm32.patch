@@ -30,11 +30,38 @@ index a30e19e..2712a39 100644
  #    include "../../../modulefinder/sentry_modulefinder_linux.h"
  #    include "sentry_alloc.h"
  #    include "sentry_logger.h"
+diff --git a/src/backends/sentry_backend_native.c b/src/backends/sentry_backend_native.c
+--- a/src/backends/sentry_backend_native.c
++++ b/src/backends/sentry_backend_native.c
+@@ -691,6 +691,23 @@ native_backend_flush_scope(
+             sentry_value_set_by_key(event, "contexts", event_contexts);
+         }
+ 
++        // PlxNative adds one privacy-reviewed firmware context. Do not copy
++        // all custom contexts into the crash snapshot: the application-side
++        // importer deliberately allowlists only `os` and `webos`.
++        sentry_value_t webos_context
++            = sentry_value_get_by_key(scope->contexts, "webos");
++        if (!sentry_value_is_null(webos_context)) {
++            sentry_value_t event_contexts
++                = sentry_value_get_by_key(event, "contexts");
++            if (sentry_value_is_null(event_contexts)) {
++                event_contexts = sentry_value_new_object();
++                sentry_value_set_by_key(event, "contexts", event_contexts);
++            }
++            sentry_value_set_by_key(
++                event_contexts, "webos", webos_context);
++            sentry_value_incref(webos_context);
++        }
++
+         // Also copy other scope data (user, tags, extra, etc.)
+         sentry_value_t user = scope->user;
+         if (!sentry_value_is_null(user)) {
 diff --git a/src/backends/native/sentry_crash_daemon.c b/src/backends/native/sentry_crash_daemon.c
-index a2cf4df..7eacfe0 100644
+index a2cf4df..a39bd85 100644
 --- a/src/backends/native/sentry_crash_daemon.c
 +++ b/src/backends/native/sentry_crash_daemon.c
-@@ -37,10 +37,23 @@
+@@ -37,10 +37,28 @@
  #    include <inttypes.h>
  #    include <signal.h>
  #    include <sys/stat.h>
@@ -43,6 +70,11 @@ index a2cf4df..7eacfe0 100644
  #    include <sys/uio.h>
  #    include <sys/wait.h>
  #    include <unistd.h>
++#    if (defined(SENTRY_PLATFORM_LINUX) || defined(SENTRY_PLATFORM_ANDROID)) \
++        && defined(__arm__)
++#        include <sys/ptrace.h>
++#        include <sys/user.h>
++#    endif
 +#    if defined(__GLIBC__) && defined(__GLIBC_PREREQ)
 +#        if !__GLIBC_PREREQ(2, 15)
 +static ssize_t
@@ -58,7 +90,7 @@ index a2cf4df..7eacfe0 100644
  #    if defined(SENTRY_PLATFORM_MACOS)
  #        include <crt_externs.h>
  #        include <mach-o/dyld.h>
-@@ -393,6 +406,41 @@ build_registers_from_ctx(const sentry_crash_context_t *ctx, size_t thread_idx)
+@@ -393,6 +411,41 @@ build_registers_from_ctx(const sentry_crash_context_t *ctx, size_t thread_idx)
          registers, "sp", sentry__value_new_addr(uctx->uc_mcontext.sp));
      sentry_value_set_by_key(
          registers, "pc", sentry__value_new_addr(uctx->uc_mcontext.pc));
@@ -100,7 +132,20 @@ index a2cf4df..7eacfe0 100644
  #    endif
  
  #elif defined(SENTRY_PLATFORM_MACOS)
-@@ -546,11 +594,12 @@ read_stack_value(const uint8_t *stack_buf, uint64_t stack_start,
+@@ -537,6 +590,12 @@
+  */
+ #define MAX_STACK_FRAMES 128
+ 
++// A process with thirty ordinary application threads can otherwise exceed the
++// application's 256 KiB durable-record ceiling. The crashed thread keeps the
++// full budget; the other threads are diagnostic context, where the top 32
++// frames are enough to identify a lock wait, decoder loop or worker task.
++#define MAX_OTHER_THREAD_STACK_FRAMES 32
++
+ /**
+  * Read a pointer-sized value from the stack buffer.
+  * Returns true if successful, false if address is outside the buffer.
+@@ -546,11 +605,12 @@ read_stack_value(const uint8_t *stack_buf, uint64_t stack_start,
      uint64_t stack_size, uint64_t addr, uint64_t *out_value)
  {
      if (addr < stack_start
@@ -115,7 +160,40 @@ index a2cf4df..7eacfe0 100644
      return true;
  }
  
-@@ -965,10 +1014,19 @@ build_stacktrace_for_thread(
+@@ -635,6 +695,9 @@ build_stacktrace_for_thread(
+     uint64_t ip = 0;
+     uint64_t fp = 0;
+     uint64_t sp = 0;
++    const int frame_limit = thread_idx == SIZE_MAX
++        ? MAX_STACK_FRAMES
++        : MAX_OTHER_THREAD_STACK_FRAMES;
+ #if defined(SENTRY_PLATFORM_LINUX) || defined(SENTRY_PLATFORM_ANDROID)
+     // Use thread-specific context, defaulting to crashed thread
+     const ucontext_t *thread_context = &ctx->platform.context;
+@@ -937,7 +1000,7 @@
+ #endif
+ 
+     // Add the crashing frame (instruction pointer)
+-    if (ip != 0 && is_valid_code_addr(ip)) {
++    if (ip != 0 && is_valid_code_addr(ip) && frame_count < frame_limit) {
+         temp_frames[frame_count] = sentry_value_new_object();
+         sentry_value_set_by_key(temp_frames[frame_count], "instruction_addr",
+             sentry__value_new_addr(ip));
+@@ -949,7 +1012,7 @@
+     }
+ 
+     // Walk the frame pointer chain if we have stack memory
+-    if (stack_buf && fp != 0 && frame_count < MAX_STACK_FRAMES) {
++    if (stack_buf && fp != 0 && frame_count < frame_limit) {
+         uint64_t current_fp = fp;
+         int walk_count = 0;
+ 
+@@ -961,14 +1024,23 @@
+                 (unsigned long long)stack_end);
+         }
+ 
+-        while (walk_count < MAX_STACK_FRAMES - frame_count) {
++        while (walk_count < frame_limit - frame_count) {
              uint64_t saved_fp = 0;
              uint64_t return_addr = 0;
  
@@ -138,7 +216,7 @@ index a2cf4df..7eacfe0 100644
                  SENTRY_DEBUGF(
                      "Cannot read saved FP at 0x%llx (stack: 0x%llx - 0x%llx)",
                      (unsigned long long)current_fp,
-@@ -977,9 +1035,9 @@ build_stacktrace_for_thread(
+@@ -977,9 +1049,9 @@
                  break;
              }
              if (!read_stack_value(stack_buf, stack_start, stack_size,
@@ -150,6 +228,126 @@ index a2cf4df..7eacfe0 100644
                  break;
              }
  
+@@ -1056,6 +1128,86 @@
+ #if defined(SENTRY_PLATFORM_LINUX) || defined(SENTRY_PLATFORM_ANDROID)
+ #    include <elf.h>
+ 
++#    if defined(__arm__)
++// KSCrash's all-thread report first suspends every non-crashing Mach thread,
++// then snapshots its register state and unwinds while the thread is still
++// stopped. Linux exposes the same primitive per LWP through ptrace. Keep every
++// successfully captured LWP stopped until the native event has been serialized;
++// otherwise its stack can move after PC/SP/FP were sampled and the frame chain
++// becomes a hybrid of two moments.
++static pid_t g_attached_threads[SENTRY_CRASH_MAX_THREADS];
++static size_t g_attached_thread_count = 0;
++
++static bool
++capture_arm_thread_context(pid_t tid, ucontext_t *uctx)
++{
++    if (ptrace(PTRACE_ATTACH, tid, NULL, NULL) != 0) {
++        SENTRY_DEBUGF("ptrace(PTRACE_ATTACH) failed for thread %d: %s", tid,
++            strerror(errno));
++        return false;
++    }
++
++    int status = 0;
++    pid_t waited;
++    do {
++        waited = waitpid(tid, &status, __WALL);
++    } while (waited < 0 && errno == EINTR);
++    if (waited != tid || !WIFSTOPPED(status)) {
++        SENTRY_DEBUGF("waitpid after PTRACE_ATTACH failed for thread %d: %s",
++            tid, waited < 0 ? strerror(errno) : "thread did not stop");
++        ptrace(PTRACE_DETACH, tid, NULL, NULL);
++        return false;
++    }
++
++    struct user_regs regs;
++    memset(&regs, 0, sizeof(regs));
++    if (ptrace(PTRACE_GETREGS, tid, NULL, &regs) != 0) {
++        SENTRY_DEBUGF("PTRACE_GETREGS failed for thread %d: %s", tid,
++            strerror(errno));
++        ptrace(PTRACE_DETACH, tid, NULL, NULL);
++        return false;
++    }
++
++    memset(uctx, 0, sizeof(*uctx));
++    uctx->uc_mcontext.arm_r0 = regs.uregs[0];
++    uctx->uc_mcontext.arm_r1 = regs.uregs[1];
++    uctx->uc_mcontext.arm_r2 = regs.uregs[2];
++    uctx->uc_mcontext.arm_r3 = regs.uregs[3];
++    uctx->uc_mcontext.arm_r4 = regs.uregs[4];
++    uctx->uc_mcontext.arm_r5 = regs.uregs[5];
++    uctx->uc_mcontext.arm_r6 = regs.uregs[6];
++    uctx->uc_mcontext.arm_r7 = regs.uregs[7];
++    uctx->uc_mcontext.arm_r8 = regs.uregs[8];
++    uctx->uc_mcontext.arm_r9 = regs.uregs[9];
++    uctx->uc_mcontext.arm_r10 = regs.uregs[10];
++    uctx->uc_mcontext.arm_fp = regs.uregs[11];
++    uctx->uc_mcontext.arm_ip = regs.uregs[12];
++    uctx->uc_mcontext.arm_sp = regs.uregs[13];
++    uctx->uc_mcontext.arm_lr = regs.uregs[14];
++    uctx->uc_mcontext.arm_pc = regs.uregs[15];
++    uctx->uc_mcontext.arm_cpsr = regs.uregs[16];
++
++    g_attached_threads[g_attached_thread_count++] = tid;
++    SENTRY_DEBUGF(
++        "Thread %d stopped and captured: PC=0x%lx SP=0x%lx FP=0x%lx", tid,
++        (unsigned long)regs.uregs[15], (unsigned long)regs.uregs[13],
++        (unsigned long)regs.uregs[11]);
++    return true;
++}
++
++static void
++release_captured_arm_threads(void)
++{
++    while (g_attached_thread_count > 0) {
++        pid_t tid = g_attached_threads[--g_attached_thread_count];
++        if (ptrace(PTRACE_DETACH, tid, NULL, NULL) != 0 && errno != ESRCH) {
++            SENTRY_DEBUGF(
++                "PTRACE_DETACH failed for thread %d: %s", tid, strerror(errno));
++        }
++    }
++}
++#    endif
++
+ /**
+  * Extract Build ID from ELF file (for debug_meta)
+  * Returns the Build ID length, or 0 if not found
+@@ -1367,6 +1519,18 @@
+     ctx->platform.num_threads = thread_count;
+     SENTRY_DEBUGF("Enumerated %zu threads from /proc/%d/task", thread_count,
+         ctx->crashed_pid);
++
++#    if defined(__arm__)
++    size_t captured = 0;
++    for (size_t i = 1; i < thread_count; i++) {
++        if (capture_arm_thread_context(ctx->platform.threads[i].tid,
++                &ctx->platform.threads[i].context)) {
++            captured++;
++        }
++    }
++    SENTRY_DEBUGF("Captured %zu of %zu non-crashed thread contexts", captured,
++        thread_count > 0 ? thread_count - 1 : 0);
++#    endif
+ }
+ #endif // SENTRY_PLATFORM_LINUX || SENTRY_PLATFORM_ANDROID
+ 
+@@ -3443,6 +3607,13 @@
+         sentry_options_free(options);
+     }
+     if (crash_processed) {
++#if (defined(SENTRY_PLATFORM_LINUX) || defined(SENTRY_PLATFORM_ANDROID)) \
++    && defined(__arm__)
++        // Match KSCrash's suspend/snapshot/unwind/resume lifetime. Do this
++        // immediately before waking the fatal-signal handler so no captured
++        // stack can move while the event is being serialized or handed off.
++        release_captured_arm_threads();
++#endif
+         // Mark as done
+         SENTRY_DEBUG("Marking crash state as DONE");
+         sentry__atomic_store(&ipc->shmem->state, SENTRY_CRASH_STATE_DONE);
 diff --git a/src/modulefinder/sentry_modulefinder_linux.c b/src/modulefinder/sentry_modulefinder_linux.c
 index a361dba..d25c5c6 100644
 --- a/src/modulefinder/sentry_modulefinder_linux.c

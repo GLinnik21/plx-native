@@ -216,9 +216,10 @@ the random usage install id:
 |---|---|
 | event | random per-crash `event_id`; crash time; `platform=native`; `level=fatal`; app release; `development` or `production`; ELF build id (`dist`); Sentry Native SDK name/version |
 | exception | signal number and fixed signal name; handled=false; the faulting instruction and caller frames; ARM integer registers `r0`–`r10`, `fp`, `ip`, `sp`, `lr`, `pc`, `cpsr` |
-| threads | kernel thread ids, internal thread labels, and which thread crashed/currently ran |
+| threads | kernel thread ids, internal thread labels, which thread crashed/currently ran, and — for each non-crashing thread whose kernel context can be captured — ARM registers plus at most 32 caller frames |
 | modules | basename only; mapped address and size; ELF code/debug id. Directory names are removed before queueing |
 | OS context | Linux kernel version and kernel build suffix reported by `uname` |
+| webOS context | webOS name, release, release codename and API version from `/var/run/nyx/os_info.json`; no model, board, serial or device id |
 
 The native SDK is compiled with `SENTRY_TRANSPORT=none`. Its out-of-process daemon is what can read
 the stopped process safely; it writes an envelope and relaunches PlxNative in spool-only mode.

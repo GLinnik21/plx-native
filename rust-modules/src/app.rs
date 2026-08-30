@@ -4552,6 +4552,12 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
     // tells a human to read the first line to learn which install wrote a log would have been
     // wrong by one line.
     let _ = crate::paths::app_dir();
+    // Before the crash backend is armed, identify the firmware it would need to report. Sentry's
+    // scope is snapshotted into the crash event file during `telemetry::boot`; probing afterwards
+    // leaves only `Linux 4.4.84`, which does not distinguish webOS releases at all. This reads one
+    // flat platform file, cannot fail the boot, and deliberately does not expose model/board to
+    // the crash channel.
+    crate::webos::probe();
     // The stored telemetry decision, BEFORE the first event can be reported — `diag::event` reads
     // a snapshot this publishes, and with none installed it refuses everything. So the ordering is
     // the fail-closed guarantee, not a convenience.
@@ -4569,10 +4575,6 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
     // on either. (This comment said "nothing listens today" for as long as that was true and for a
     // while after.)
     crate::diag::event(crate::diag::schema::DiagEvent::AppLaunch);
-    // FIRST, before SDL and before anything can fail: which television is this. A report from
-    // hardware nobody here owns is worth far more when its opening line names the firmware — see
-    // `webos`'s module doc. Reads one file; cannot fail the boot.
-    crate::webos::probe();
     // And what it DECODES, from the device's own codec table — the capability profile and the
     // direct-play gate derive from this instead of asserting the dev TV's abilities as universal
     // (issue #22's bug class; docs/plex-pass-audit.md's closing section). Same contract as

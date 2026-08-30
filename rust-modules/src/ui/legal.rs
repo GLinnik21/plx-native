@@ -160,11 +160,12 @@ joined to anything sent before.
 
 WHAT IS IN A REPORT
 
-For a native crash: the signal, instruction and caller frames, ARM registers, thread ids and \
-internal labels, module basenames and addresses, and app/kernel build facts needed to symbolicate \
-it. Usage reports contain only a screen name or video/audio format classes. Neither schema has a \
-field for titles, searches, subtitles, accounts or servers. You can read every exact schema, with \
-runtime values shown as placeholders, on the same screen the switches are on.
+For a native crash: the signal, instruction and caller frames for the crashed and other captured \
+threads, ARM registers, thread ids and internal labels, module basenames and addresses, and \
+app/webOS/kernel build facts needed to reproduce and symbolicate it. Usage reports contain only a \
+screen name or video/audio format classes. Neither schema has a field for titles, searches, \
+subtitles, accounts or servers. You can read every exact schema, with runtime values shown as \
+placeholders, on the same screen the switches are on.
 
 Reports go to Sentry and PostHog, both in the European Union, and are kept no longer than 13 \
  months.

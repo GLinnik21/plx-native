@@ -17,9 +17,12 @@ description: >
 
 There are now two evidence paths. When crash-report consent and a compiled endpoint are both
 present, the patched Sentry Native ARM32 handler wakes the shipped `sentry-crash` process. That
-process reads the stopped target, walks its frame chain and records the crashing thread's stack,
-registers, modules and build ids. Its transport is disabled; the next healthy PlxNative launch
-sanitises the envelope and sends it from the ordinary telemetry spool. That Sentry event **is a
+process reads the stopped target, walks its frame chain, then suspends the other Linux LWPs with
+`ptrace`, captures their registers and walks their frame chains before resuming them. It records
+up to 128 frames for the crashing thread plus up to 32 for each captured non-crashing thread,
+registers, modules, Linux/webOS versions and build ids. Its transport is disabled; the next
+healthy PlxNative launch sanitises the envelope and sends it from the ordinary telemetry spool.
+That Sentry event **is a
 backtrace** when it contains multiple frames.
 
 The local, always-available fallback is the C tracer (`src/crashtrace.c`). It catches the fatal

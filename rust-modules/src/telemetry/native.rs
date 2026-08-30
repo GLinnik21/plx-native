@@ -251,6 +251,7 @@ const TOP_FIELDS: &[&str] = &[
 ];
 const SDK_FIELDS: &[&str] = &["name", "version"];
 const OS_FIELDS: &[&str] = &["type", "name", "version", "build", "kernel_version"];
+const WEBOS_FIELDS: &[&str] = &["type", "name", "release", "codename", "api"];
 const EXCEPTION_CONTAINER_FIELDS: &[&str] = &["values"];
 const EXCEPTION_FIELDS: &[&str] = &["type", "value", "mechanism", "stacktrace"];
 const MECHANISM_FIELDS: &[&str] = &["type", "handled", "meta"];
@@ -336,13 +337,20 @@ fn sanitise_event(event: &mut serde_json::Value, event_id: &str) {
         .and_then(serde_json::Value::as_object_mut)
     {
         // The SDK creates a random trace/span pair even though this application does no tracing;
-        // retaining only OS context removes that identifier and any future context by default.
-        contexts.retain(|key, _| key == "os");
+        // retaining only kernel + our fixed firmware context removes that identifier and any
+        // future context by default. Hardware identity is deliberately not allowlisted.
+        contexts.retain(|key, _| key == "os" || key == "webos");
         if let Some(os) = contexts
             .get_mut("os")
             .and_then(serde_json::Value::as_object_mut)
         {
             retain_fields(os, OS_FIELDS);
+        }
+        if let Some(webos) = contexts
+            .get_mut("webos")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            retain_fields(webos, WEBOS_FIELDS);
         }
     }
     if let Some(sdk) = event
@@ -449,8 +457,12 @@ pub(crate) fn preview_event() -> Vec<u8> {
         "environment": super::sender::ENVIRONMENT,
         "dist": "<ELF build id>",
         "sdk": {"name": "plxnative", "version": "0.13.9"},
-        "contexts": {"os": {"type": "os", "name": "Linux", "version": "<kernel release>",
-            "build": "<kernel build suffix>", "kernel_version": "<kernel release>"}},
+        "contexts": {
+            "os": {"type": "os", "name": "Linux", "version": "<kernel release>",
+                "build": "<kernel build suffix>", "kernel_version": "<kernel release>"},
+            "webos": {"type": "webos", "name": "webOS TV", "release": "<webOS release>",
+                "codename": "<webOS release codename>", "api": "<webOS API version>"}
+        },
         "exception": {"values": [{
             "type": "SIGSEGV",
             "value": "Fatal crash: SIGSEGV",
@@ -474,8 +486,20 @@ pub(crate) fn preview_event() -> Vec<u8> {
             }
         }]},
         "threads": {"values": [{"id": "<thread id>", "name": "<internal thread label>",
-            "crashed": true, "current": true,
-            "stacktrace": {"frames": [], "registers": {}}}]},
+            "crashed": false, "current": false,
+            "stacktrace": {
+                "frames": [{"instruction_addr": "<thread instruction address>",
+                    "symbol_addr": "<symbol address>", "function": "<compiled function>",
+                    "package": "/private/app/plxnative", "filename": "/private/source/example.rs",
+                    "lineno": "<source line>", "colno": "<source column>", "in_app": true,
+                    "trust": "context", "addr_mode": "abs"}],
+                "registers": {"r0": "<address>", "r1": "<address>", "r2": "<address>",
+                    "r3": "<address>", "r4": "<address>", "r5": "<address>",
+                    "r6": "<address>", "r7": "<address>", "r8": "<address>",
+                    "r9": "<address>", "r10": "<address>", "fp": "<address>",
+                    "ip": "<address>", "sp": "<address>", "lr": "<address>",
+                    "pc": "<address>", "cpsr": "<flags>"}
+            }}]},
         "debug_meta": {"images": [{
             "type": "elf", "code_file": "/private/app/plxnative",
             "debug_file": "/private/app/plxnative.debug", "code_id": "<ELF code id>",
@@ -627,6 +651,12 @@ mod sdk {
         fn sentry_options_set_crash_reporting_mode(options: *mut c_void, value: c_int);
         fn sentry_init(options: *mut c_void) -> c_int;
         fn sentry_close() -> c_int;
+        fn plx_sentry_set_webos_context(
+            name: *const c_char,
+            release: *const c_char,
+            codename: *const c_char,
+            api: *const c_char,
+        );
     }
 
     fn cstring(value: impl Into<Vec<u8>>) -> Option<CString> {
@@ -666,6 +696,16 @@ mod sdk {
         let Some(dist) = cstring(super::super::sentry::build_id()) else {
             return;
         };
+        let webos = crate::webos::info();
+        let webos_name = cstring(webos.name.as_bytes());
+        let webos_release = cstring(webos.release.as_bytes());
+        let webos_codename = cstring(webos.codename.as_bytes());
+        let webos_api = cstring(webos.api.as_bytes());
+        let ptr = |value: &Option<CString>| {
+            value
+                .as_ref()
+                .map_or(std::ptr::null(), |value| value.as_ptr())
+        };
 
         unsafe {
             let options = sentry_options_new();
@@ -686,6 +726,12 @@ mod sdk {
             sentry_options_set_debug(options, 0);
             sentry_options_set_crash_reporting_mode(options, 1); // NATIVE, no minidump
             if sentry_init(options) == 0 {
+                plx_sentry_set_webos_context(
+                    ptr(&webos_name),
+                    ptr(&webos_release),
+                    ptr(&webos_codename),
+                    ptr(&webos_api),
+                );
                 ACTIVE.store(true, Ordering::Release);
                 crate::log("telemetry: native ARM crash capture active");
             } else {
@@ -778,6 +824,7 @@ mod tests {
         assert_keys(&value, "", TOP_FIELDS);
         assert_keys(&value, "/sdk", SDK_FIELDS);
         assert_keys(&value, "/contexts/os", OS_FIELDS);
+        assert_keys(&value, "/contexts/webos", WEBOS_FIELDS);
         assert_keys(&value, "/exception", EXCEPTION_CONTAINER_FIELDS);
         assert_keys(&value, "/exception/values/0", EXCEPTION_FIELDS);
         assert_keys(&value, "/exception/values/0/mechanism", MECHANISM_FIELDS);
@@ -804,6 +851,17 @@ mod tests {
         );
         assert_keys(&value, "/threads", THREADS_FIELDS);
         assert_keys(&value, "/threads/values/0", THREAD_FIELDS);
+        assert_keys(&value, "/threads/values/0/stacktrace", STACK_FIELDS);
+        assert_keys(
+            &value,
+            "/threads/values/0/stacktrace/registers",
+            REGISTER_FIELDS,
+        );
+        assert_keys(
+            &value,
+            "/threads/values/0/stacktrace/frames/0",
+            FRAME_FIELDS,
+        );
         assert_keys(&value, "/debug_meta", DEBUG_META_FIELDS);
         assert_keys(&value, "/debug_meta/images/0", IMAGE_FIELDS);
     }
@@ -845,7 +903,12 @@ mod tests {
                 "extra": {"future_sdk_field": "must-not-pass"},
                 "arbitrary": "must-not-pass",
                 "sdk": {"name": "plxnative", "version": "0.13.9", "future": "must-not-pass"},
-                "contexts": {"os": {"name": "Linux", "future": "must-not-pass"}},
+                "contexts": {
+                    "os": {"name": "Linux", "future": "must-not-pass"},
+                    "webos": {"type": "webos", "name": "webOS TV", "release": "4.10.2",
+                        "codename": "goldilocks2-grampians", "api": "4.1.0",
+                        "model": "must-not-pass", "future": "must-not-pass"}
+                },
                 "exception": {"values": [{
                     "mechanism": {"meta": {"signal": {"number": 11, "name": "SIGSEGV"}}},
                     "stacktrace": {"frames": [
@@ -895,6 +958,8 @@ mod tests {
         );
         assert_eq!(v["debug_meta"]["images"][0]["code_file"], "plxnative");
         assert_eq!(v["debug_meta"]["images"][0]["image_size"], 4096);
+        assert_eq!(v["contexts"]["webos"]["release"], "4.10.2");
+        assert!(v["contexts"]["webos"].get("model").is_none());
     }
 
     #[test]

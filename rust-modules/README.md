@@ -4,8 +4,9 @@ This crate is a `staticlib` linked into the C binary (`pkg/plxnative`). It began
 gradual, module-by-module C→Rust migration; today it IS the app — UI, event loop, player
 engine, demux pipeline, and the Plex data layer all live here (see `docs/agent-reference.md`
 for the architecture). The C side boots the process, records an async-signal-safe fallback crash
-line and image marker, and wraps the Starfish C++ seam. Its Rust calls are `plex_run`,
-`plx_crash_write_image_marker`, `plx_sentry_spool_external`, and the two Starfish callbacks.
+line and image marker, wraps the Starfish C++ seam, and keeps Sentry's opaque value ABI on the C
+side. Its Rust entry points are `plex_run`, `plx_crash_write_image_marker`,
+`plx_sentry_spool_external`, and the two Starfish callbacks.
 
 ## Ported to Rust (10) — the whole data / logic / UI / render / platform stack
 
@@ -22,14 +23,17 @@ line and image marker, and wraps the Starfish C++ seam. Its Rust calls are `plex
 | `system` | SDL/wayland platform glue | the over-allocated `SDL_SysWMinfo` buffer lives here |
 | `ui_home` | home screen + navigation | reusable component seed (card/pill/circle/label) |
 
-## Left as C by design (3)
+## Left as C by design (5)
 
 - **`src/starfish.c`** — LG's `StarfishMediaAPIs` (the mangled C++ methods called
   via `__asm__`, an `sret` `std::string` return, a 64 KB in-place object buffer)
   plus the ACB video-plane bind. The engine that *drives* it is Rust (`player/`).
-- **`src/main.c`** — the boot shim: crash tracer, event-log/stderr setup, process
-  bring-up, native-crash reporter re-entry and the fallback image marker; it calls the Rust
-  entry points named above and owns no application state.
+- **`src/main.c`** — the boot shim: event-log/stderr setup, process bring-up, native-crash reporter
+  re-entry and the fallback image marker; it calls the Rust entry points named above and owns no
+  application state.
+- **`src/crashtrace.c`** — the async-signal-safe fallback fault recorder installed by the shim.
+- **`src/sentry_context.c`** — a narrow string-only wrapper around Sentry's opaque, by-value
+  `sentry_value_t`; Rust calls it without having to reproduce that ARM32 ABI.
 - **`src/svg.c`** — the vendored nanosvg rasterizer (header-only C).
 
 Rust *can* do the Starfish FFI (`#[link_name = "<mangled>"]` mirrors the C
