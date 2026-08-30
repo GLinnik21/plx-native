@@ -61,18 +61,24 @@ the user's eyes while they are still typing.
 rows and the Clear control all have to finish above its edge. The fifth is *dropped*, not scrolled:
 a list you cannot see the end of asks to be paged, and there is no paging in this product.
 
-### The caret does not blink, and that is a system decision
+### The caret and the one-character hint stay in the field
 
-`ui/search/field.rs` states it: the caret is 3px × 34px and **solid**. A blinking caret is a
-clock-driven animation, and `ui::idle` — the whole-frame present gate — cannot see one structurally;
-it detects motion from the spring integrators and from explicit `invalidate()` calls. A blink would
-therefore either freeze (drawn once, never repainted) or hold the GL loop awake forever and give
-back the measured idle saving. Both failure modes have shipped in this app before, in
-`Xfade::tick` and `Spinner::draw`.
+`ui/search/field.rs` states it: the caret is 5px wide, one HERO cap band tall and **blinks** in
+530ms phases while the television's keyboard is up. That is intentional device feedback: the
+solid bar specified by the design component read on the couch as a field that was not accepting
+input. The implementation still obeys `ui::idle` — the whole-frame present gate cannot see a clock
+structurally, so `step_blink` calls `invalidate()` only when the phase flips. The open keyboard
+therefore costs about two presents a second instead of holding the GL loop awake, and with the
+keyboard down the phase parks ON and costs nothing.
 
-The practical consequence for anyone adding motion here: **a clock-driven animation must report, or
-it must not exist.** See `fps:search-idle` in §5, which is the assertion that catches the second
-failure mode.
+One character short of `MIN_QUERY`, `one more character` appears at BODY after that caret. It is
+part of the field, not a second caption above the scope line: it explains the control at the place
+the eye is already following and is consumed by the next keystroke. The scope remains one CAPTION
+line at `SCOPE_Y` in every query state.
+
+The practical consequence for anyone adding motion here: **a clock-driven animation must report
+only when its pixels change.** See `fps:search-idle` in §5, which is the assertion that catches an
+animation keeping a settled screen awake.
 
 ### Five files, because the state machine is not the drawing
 

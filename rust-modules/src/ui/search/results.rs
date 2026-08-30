@@ -467,12 +467,12 @@ pub(crate) fn draw(p: Painter, v: &View) {
     // higher, so the whole region rides ONE translate and every y below stays a flow coordinate.
     // Content scrolls UP, and has to be CUT above rather than painted over the chrome. The shelves
     // ride one translate and nothing else bounds them, so a scrolled row rose behind the tab strip
-    // and the query capsule and was drawn ON TOP of both — device-observed, and invisible until
+    // and the bare query line and was drawn ON TOP of both — device-observed, and invisible until
     // something was actually scrolled.
     //
     // **The cut is now ABOVE the field, and it is a bound rather than a treatment.** It sat just
     // BELOW the field, which made it the only thing standing between a scrolling poster and the
-    // chrome — and a scissor is a razor: a tile crossing the capsule lost its top half to a hard
+    // chrome — and a scissor is a razor: a tile crossing the query line lost its top half to a hard
     // horizontal line, which is what got photographed. `super::draw_scroll_scrim` does that job
     // properly now (the Library's veil, and the draw order that lets it be opaque), so this only
     // has to stop a tile reaching the tab strip, and it cuts inside the veil's own opaque band
@@ -591,7 +591,7 @@ pub(crate) fn focused_tile_rect() -> Option<Rect> {
 ///
 /// Under the SAME scissor the shelves are drawn through, cut at the chrome rather than at
 /// `BAND_CLEAR`: a lifted tile is drawn after `draw_scroll_scrim`'s opaque band, so without a bound
-/// a half-scrolled poster would paint over the query capsule and the tab strip — the exact artefact
+/// a half-scrolled poster would paint over the query line and the tab strip — the exact artefact
 /// [`hit_band`] records for the pointer. Set and cleared in one breath, as `Painter::clip`'s global
 /// GL state requires.
 pub(crate) fn redraw_focused_tile() {
@@ -883,7 +883,9 @@ mod tests {
         // a floor, not a cull.
         let cross = tile(floor - 100.0);
         let r = hit_band(cross, floor).expect("the part below the chrome is still a target");
-        assert_eq!((r.y, r.h), (floor, CARD_H - 100.0));
+        assert_eq!(r.y, floor);
+        assert!((r.h - (CARD_H - 100.0)).abs() < 0.001,
+            "fractional caption leading must not turn a 275px visible band into {}px", r.h);
         assert_eq!((r.x, r.w), (cross.x, cross.w));
         assert!(!r.contains(r.x + 1.0, floor - 1.0), "…and nothing above the line is inside it any more");
 

@@ -507,7 +507,7 @@ mod tests {
         // which is what `home::update`'s and `library`'s reveal rules keep clear of the edge.
         r.push(("home focused card block, revealed", Rect::new(MARGIN_X, SCR_H - MARGIN_Y - CARD_H - 96.0, CARD_W, CARD_H + 96.0)));
 
-        // Search: the query capsule, and the scope line beside it.
+        // Search: the bare query line, and the scope line below it.
         r.push(("search field", crate::ui::search::FIELD));
         r.push(("search first shelf heading", Rect::new(MARGIN_X, crate::ui::search::CONTENT_TOP, 400.0, 40.0)));
 

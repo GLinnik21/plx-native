@@ -62,7 +62,7 @@ use std::sync::Mutex;
 pub(crate) const MIN_QUERY: usize = 2;
 
 /// The typed shelves, in the order they are drawn — **fixed**, never the server's ranking.
-/// `Search Screen.dc.html`: "Results are ranked inside a shelf, never across them."
+/// `ui_kits/tv-app/SearchScreen.jsx`: "Results are ranked inside a shelf, never across them."
 pub(crate) const KINDS: [Kind; 5] = [Kind::Movie, Kind::Show, Kind::Episode, Kind::Person, Kind::Collection];
 
 /// How many shelves there are — the index space every per-source projection is keyed by.

@@ -13,7 +13,7 @@ use crate::ui::label::{Label, VAlign};
 use crate::ui::text_view::TextView;
 use crate::ui::theme;
 use crate::ui::widgets::{
-    AmbientWash, Art, Button, CircleButton, PageDots, HERO_BASE_SCRIM_Y0,
+    AmbientWash, Art, Button, CircleButton, ControlPalette, PageDots, HERO_BASE_SCRIM_Y0,
 };
 // `guard` was a private copy of this barrier living here; it is now the shared `ui::guard` (its
 // doc comment carries the FFI-unwind rationale + the GL-scissor repair the local copy was missing).
@@ -572,6 +572,7 @@ impl View for Backdrop {
 
         let cur = hero_index() as c_int;
         if cur != self.keyed {
+            crate::gfx::control_ground_invalidate();
             self.art_out_a.jump(self.art_a.pos); // the leaving layer keeps the reveal it had
             // prefetch HIT ⇒ no fade at all. Past the dive `tex` is the cull's 0 rather than an
             // answer about the store, so a re-key down there (only a hub refetch can move the index
@@ -1165,18 +1166,29 @@ fn hero_actions(hero: &PmsMovie, env: &Env, p: Painter, dx: f32, live: bool) {
     if !on_axis(tx + dx, mark.x + pd + HERO_PAGER_PAD - tx, SCR_W, 0.0) {
         return;
     }
+    // Read the ACTUAL, already-scrimmed pixels under the settled live row. During a carousel slide
+    // the outgoing controls have already painted by the time the incoming row draws, so sampling
+    // then would measure another button rather than the backdrop; both rows hold the last honest
+    // key until the incoming one settles. A re-key marks that answer stale in `Backdrop::update`.
+    let sample_rect = [pill.x + dx, pill.y, info.x + info.w - pill.x, pill.h];
+    let may_read = live && dx.abs() < 0.5 && crate::ui::nav::page_alpha() >= 0.999;
+    let palette = crate::gfx::sample_control_ground(sample_rect, may_read)
+        .map(ControlPalette::ambient)
+        .unwrap_or_default();
     // The pop belongs to the LIVE row only: mid-flip the outgoing ghost carries the same `hf`, and a
     // ghost that popped would draw a second focused control sliding off the panel.
     let pop = |i: usize| if live { unsafe { addr_of!(HERO_POP).as_ref().unwrap().scale(i) } } else { 1.0 };
     Button::new(plabel.as_ptr(), theme::size::BODY, pill)
         .icon(Icon::Play)
         .focused(hf == 0)
+        .palette(palette)
         .scale(pop(0))
         .draw(env, p);
     CircleButton::new(c"".as_ptr())
         .icon(Icon::Info)
         .at(info.x, info.y)
         .focused(hf == 1)
+        .palette(palette)
         .scale(pop(1))
         .draw(env, p);
     // The pager is an **INDICATOR, not a control**: it says the billboard pages, and that is all it

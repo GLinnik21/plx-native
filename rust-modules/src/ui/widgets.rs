@@ -1712,7 +1712,7 @@ const NAV_SCRIM_KNEE_F: f32 = 18.0 / 44.0;
 /// line — `components/panels/route-screen.card.html` is its reference drawing).
 ///
 /// Two lines and a scroll. `chrome_bottom` is the lowest thing the BAR draws — the Library's toolbar
-/// chips, Search's query capsule — and everything above it stays solidly backed, so a control never
+/// chips, Search's query/scope chrome — and everything above it stays solidly backed, so a control never
 /// sits on ground that is fading out from under it. `content_top` is where the caller's own scrolling
 /// content begins, and the veil has reached nothing by then. `scroll` is how far that content has
 /// travelled; nothing is drawn at rest, which keeps a settled screen free of it entirely.
@@ -2150,8 +2150,8 @@ pub(crate) fn redraw_profile_chip() {
     crate::ui::guard(|| profile_chip(Painter::root().alpha(crate::ui::nav::chrome_alpha())));
 }
 
-// ---- CircleButton: circular disc + centered glyph, same ControlStyle family as Button /
-// TransportButton (focused = ACCENT, idle = solid dark disc). The hero + detail +/i/> circles. ----
+// ---- CircleButton: circular disc + centered glyph, same keyed/unkeyed ControlStyle family as
+// Button / TransportButton. The hero + detail +/i/> circles. ----
 
 /// The **UNFURL**: a focused disc grows rightward into a capsule carrying the verb its press
 /// performs — icon-only at rest, LABELLED on focus.
@@ -2194,6 +2194,8 @@ pub struct CircleButton {
     pub style: ControlStyle,
     /// WHICH GROUND this disc stands on — see [`ControlGround`].
     pub ground: ControlGround,
+    /// Local page palette. It is copied in by a Hero row and ignored on an unkeyed ground.
+    pub palette: ControlPalette,
     /// The FOCUS POP, as a factor on the frame — see [`CircleButton::scale`].
     pub scale: f32,
     /// The unfurled label and how far open it is (0..1) — see [`DISC_LABEL_LEAD`]. `None` is a
@@ -2209,6 +2211,7 @@ impl CircleButton {
             focused: false,
             style: ControlStyle::Accent,
             ground: ControlGround::Keyed,
+            palette: ControlPalette::default(),
             scale: 1.0,
             label: None,
         }
@@ -2261,6 +2264,11 @@ impl CircleButton {
     /// Stand this disc on a named [`ControlGround`] — see [`Button::ground`].
     pub fn ground(mut self, g: ControlGround) -> Self {
         self.ground = g;
+        self
+    }
+    /// Answer to a page-drawn ground with the palette it published for this control row.
+    pub fn palette(mut self, palette: ControlPalette) -> Self {
+        self.palette = palette;
         self
     }
     /// Give this disc the [UNFURL](DISC_LABEL_LEAD): `text` is the verb the press performs and `e`
@@ -2343,7 +2351,8 @@ impl View for CircleButton {
     fn draw(&self, _e: &Env, p: Painter) {
         let base = self.frame;
         let r = base.scaled(self.scale);
-        let (face, ink) = self.style.colors(self.focused, self.ground);
+        let face = self.style.face(self.focused, self.ground, self.palette);
+        let ink = face.ink;
         // The DISC is the frame's HEIGHT, not its width: an unfurled control is a capsule, and
         // taking the radius and the glyph box off `w` would swell both as it opened. At rest the
         // two are the same number, which is why every plain caller is unaffected.
@@ -2355,7 +2364,7 @@ impl View for CircleButton {
         if self.focused {
             control_cast(p, plate, plate.h * 0.5);
         }
-        control_rim(p, plate, plate.h * 0.5, face, self.focused, self.ground);
+        control_rim(p, plate, plate.h * 0.5, face.top, face.body, self.focused, self.ground);
         // Resolve the unfurl from the FRAME, before anything is placed by it: `cap_label_w` answers
         // `None` for a frame that is not a capsule, and that verdict governs the GLYPH as well as
         // the word. Sliding the icon off the caller's raw `e` was a real defect — a control whose
@@ -2855,8 +2864,8 @@ impl View for StatusOverlay<'_> {
 }
 
 // ---- TransportButton: circular control button with a runtime-rasterized SVG glyph
-// (0 = subtitles/CC, 1 = audio, 2 = more/overflow). Focused = accent fill + dark icon; idle = faint
-// fill + white icon. Mirrors the mockup's round icon buttons. ----
+// (0 = subtitles/CC, 1 = audio, 2 = more/overflow). The player supplies Unkeyed, so focused is a
+// flat accent + dark icon and idle is a light film + white icon. ----
 pub struct TransportButton {
     pub frame: Rect,
     pub which: i32,
@@ -2867,13 +2876,21 @@ pub struct TransportButton {
     /// caller's ground would be the one control in the app whose look depends on where it happens
     /// to be used rather than on what it was told.
     pub ground: ControlGround,
+    pub palette: ControlPalette,
     /// The FOCUS POP, as a factor on the frame — see [`CircleButton::scale`], whose contract this
     /// shares (these discs are that same face at 64px).
     pub scale: f32,
 }
 impl TransportButton {
     pub fn new(which: i32, frame: Rect) -> Self {
-        Self { frame, which, focused: false, ground: ControlGround::Keyed, scale: 1.0 }
+        Self {
+            frame,
+            which,
+            focused: false,
+            ground: ControlGround::Keyed,
+            palette: ControlPalette::default(),
+            scale: 1.0,
+        }
     }
     pub fn focused(mut self, f: bool) -> Self {
         self.focused = f;
@@ -2882,6 +2899,10 @@ impl TransportButton {
     /// Stand this disc on a named [`ControlGround`] — see [`Button::ground`].
     pub fn ground(mut self, g: ControlGround) -> Self {
         self.ground = g;
+        self
+    }
+    pub fn palette(mut self, palette: ControlPalette) -> Self {
+        self.palette = palette;
         self
     }
     pub fn scale(mut self, s: f32) -> Self {
@@ -2896,7 +2917,8 @@ impl View for TransportButton {
         // The design system builds this disc AS a `CircleButton` at 64px, so it takes the shared
         // control face rather than spelling one of its own: the two used to be the same three
         // tokens written twice, which is how a ground (or a palette) reaches one and not the other.
-        let (bg, ink) = ControlStyle::Accent.colors(self.focused, self.ground);
+        let face = ControlStyle::Accent.face(self.focused, self.ground, self.palette);
+        let ink = face.ink;
         // **The same edge every other control wears** — [`control_rim`], not a bare `rect`. This was
         // the one control family the rim missed: `Button` and `CircleButton` both took it and these
         // discs kept a plain fill, so the transport read as a different material from the disc pair
@@ -2913,7 +2935,7 @@ impl View for TransportButton {
         if self.focused {
             control_cast(p, r, r.w * 0.5);
         }
-        control_rim(p, r, r.w * 0.5, bg, self.focused, self.ground);
+        control_rim(p, r, r.w * 0.5, face.top, face.body, self.focused, self.ground);
         let id = match self.which {
             1 => Icon::Audio,
             2 => Icon::More,
@@ -3335,7 +3357,7 @@ impl View for TabPill {
                 // rather than a bare fill. That is not cosmetic on the unkeyed ground: the idle face
                 // there is a 10% film, and the rim is the only thing separating it from what it
                 // stands on. A SEGMENT keeps the bare fill: its edge is its strip's business.
-                control_rim(p, r, rad, bg, self.focused, self.ground);
+                control_rim(p, r, rad, bg, bg, self.focused, self.ground);
             } else {
                 p.rrect(r, rad, rad, bg);
             }
@@ -3779,7 +3801,7 @@ fn last_section_in(search: usize) -> usize {
     search.saturating_sub(1)
 }
 /// The Search pill is SQUARE: 60×60, the icon's own air rather than a word's, so a mark does not
-/// wear the padding a label needs (`Search Screen.dc.html`). Every other pill keeps
+/// wear the padding a label needs (`ui_kits/tv-app/SearchScreen.jsx`). Every other pill keeps
 /// [`TAB_PILL_PAD`].
 const TAB_ICON_PILL_W: f32 = TAB_PILL_H;
 /// The mark inside it, at 1.15× the strip's own type rung (BODY 28 → 32) — the design system's
@@ -4978,8 +5000,9 @@ pub(crate) fn draw_tab_row(p: Painter) {
 /// by then; the hero Play pill has been `Accent` for months.
 #[derive(Clone, Copy)]
 pub enum ControlStyle {
-    /// focus-driven: focused → ACCENT + dark ink; idle → solid dark disc + white ink. The
-    /// default, and the shared look of the transport buttons / info-card actions / detail buttons.
+    /// Focus-driven: on a keyed page both states take the local [`ControlPalette`] hue (a bright
+    /// two-stop focused face and a dark idle face); over video focus is flat ACCENT and idle is a
+    /// white film. Dark ink on focus, white ink at rest in both cases.
     Accent,
     /// caller supplies the exact fill + ink.
     Custom { fill: [f32; 4], ink: [f32; 4] },
@@ -5001,8 +5024,9 @@ pub enum ControlStyle {
     Keyline,
     /// The **destructive** face — the control that ends something (the exit alert's *Exit*).
     ///
-    /// Idle it states the hue TWICE: the plate is [`Accent`]'s neutral one carrying
-    /// [`theme::DANGER_IDLE_TINT`] of [`theme::DANGER`] ([`theme::CONTROL_DANGER_IDLE_FILL`]) and
+    /// Idle it states the hue TWICE: the plate is [`Accent`]'s local idle face carrying
+    /// [`theme::DANGER_IDLE_TINT`] of [`theme::DANGER`] (the static fallback is
+    /// [`theme::CONTROL_DANGER_IDLE_FILL`]) and
     /// the label is drawn in the danger ink itself. That is not belt-and-braces — at ten feet a
     /// 16% tint on a dark plate is a shade of grey, and the point of the pair is that the action
     /// is NAMED as destructive before the remote ever reaches it. Focused, the hue takes the whole
@@ -5034,19 +5058,123 @@ pub enum ControlStyle {
 /// [`CircleButton::ground`], [`TransportButton::ground`] — and the player HUD is the only caller
 /// that sets it.
 ///
-/// **It changes exactly two things, and neither of them is focus.** Focus is still the fill and the
-/// pop, identically on both grounds; what moves is the IDLE FACE's polarity and the FOCUSED rim's
-/// weight. Anything else about a control that differed by ground would be a second design system.
+/// It changes the parts that require KNOWING the ground: `Keyed` accepts a [`ControlPalette`] for
+/// both face levels, while `Unkeyed` drops that palette, uses the HUD's light film and stronger
+/// idle edge at rest, flattens focus back to [`theme::ACCENT`] and raises its rim to pure white.
+/// Focus still means the same
+/// thing on both grounds — bright face, dark ink, pop and cast — but video cannot borrow a hue from
+/// pixels this process never sees.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ControlGround {
     /// The app's own pages — a ground we drew and can therefore answer to. Every control that is
     /// not in the player HUD, and the default.
     Keyed,
-    /// The VIDEO PLANE, under the HUD's own ramp: idle becomes the light film
-    /// ([`theme::CONTROL_IDLE_FILL_UNKEYED`]) and the focused edge the pure-white line
-    /// ([`theme::CONTROL_RIM_FOCUS_UNKEYED`]).
+    /// The VIDEO PLANE, under the HUD's own ramp: ambient tint is disabled, idle becomes the light
+    /// film ([`theme::CONTROL_IDLE_FILL_UNKEYED`]) with its visible idle edge
+    /// ([`theme::CONTROL_RIM_IDLE_UNKEYED`]); focus is flat [`theme::ACCENT`] and its edge is the
+    /// pure-white line ([`theme::CONTROL_RIM_FOCUS_UNKEYED`]).
     Unkeyed,
 }
+
+/// The colours a keyed control derives from its page's local ground sample.
+///
+/// Home and Detail read the pixels they already rendered under the row — artwork AFTER its scrims,
+/// not the PMS artwork envelope. The sample's LIGHTNESS never reaches the control: it contributes
+/// only OKLCH hue and a fraction of chroma. That is the difference between a white object catching
+/// the scene's light and a white chip averaged toward a dark photograph (which turns muddy). A
+/// screen computes this once for its control row and copies it into every face; the player may
+/// receive one accidentally, but [`ControlGround::Unkeyed`] ignores it by construction.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ControlPalette {
+    focus_top: [f32; 4],
+    focus_body: [f32; 4],
+    idle: [f32; 4],
+    spent: [f32; 4],
+}
+
+impl Default for ControlPalette {
+    fn default() -> Self {
+        Self::ambient([theme::SURFACE_APP[0], theme::SURFACE_APP[1], theme::SURFACE_APP[2]])
+    }
+}
+
+impl ControlPalette {
+    /// Resolve the design system's local `--ambient-key` into the focused top/body, idle face and
+    /// countdown-spent roles. `key` is display-encoded sRGB, matching the renderer's plain 888
+    /// framebuffer.
+    pub fn ambient(key: [f32; 3]) -> Self {
+        let lab = srgb_to_oklab([key[0], key[1], key[2], 1.0]);
+        let chroma = lab[1].hypot(lab[2]);
+        let (ha, hb) = if chroma > 1e-6 { (lab[1] / chroma, lab[2] / chroma) } else { (0.0, 0.0) };
+        let keyed = |l: f32, scale: f32, alpha: f32| {
+            oklab_to_srgb([l, ha * chroma * scale, hb * chroma * scale], alpha)
+        };
+        let focus_top = keyed(theme::CONTROL_FOCUS_FACE_L, theme::CONTROL_FOCUS_AMBIENT_C, 1.0);
+        let focus_body = keyed(
+            theme::CONTROL_FOCUS_FACE_L - theme::CONTROL_FOCUS_BODY_STEP,
+            theme::CONTROL_FOCUS_AMBIENT_C,
+            1.0,
+        );
+        let idle = keyed(theme::CONTROL_IDLE_FACE_L, theme::CONTROL_IDLE_AMBIENT_C, theme::CONTROL_IDLE_FACE_A);
+        let spent = theme::mix(focus_top, theme::SURFACE_APP, 1.0 - theme::CONTROL_SPENT_FOCUS_W);
+        Self { focus_top, focus_body, idle, spent }
+    }
+
+    fn focus_face(self) -> ([f32; 4], [f32; 4]) {
+        (self.focus_top, self.focus_body)
+    }
+}
+
+/// sRGB → OKLab, following the CSS Color 4 matrices used by relative `oklch(from …)` colors.
+fn srgb_to_oklab(c: [f32; 4]) -> [f32; 3] {
+    let lin = |v: f32| if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
+    let (r, g, b) = (lin(c[0]), lin(c[1]), lin(c[2]));
+    let l = (0.412_221_46 * r + 0.536_332_55 * g + 0.051_445_995 * b).cbrt();
+    let m = (0.211_903_5 * r + 0.680_699_5 * g + 0.107_396_96 * b).cbrt();
+    let s = (0.088_302_46 * r + 0.281_718_85 * g + 0.629_978_7 * b).cbrt();
+    [
+        0.210_454_26 * l + 0.793_617_8 * m - 0.004_072_047 * s,
+        1.977_998_5 * l - 2.428_592_2 * m + 0.450_593_7 * s,
+        0.025_904_037 * l + 0.782_771_77 * m - 0.808_675_77 * s,
+    ]
+}
+
+/// OKLab → display-encoded sRGB. If the requested tint falls outside sRGB, reduce CHROMA along the
+/// same hue until it fits instead of clipping a channel: clipping would also move the authored
+/// lightness, precisely the part of the focus contract artwork is not allowed to change.
+fn oklab_to_srgb(c: [f32; 3], alpha: f32) -> [f32; 4] {
+    let linear = |lab: [f32; 3]| {
+        let l = lab[0] + 0.396_337_78 * lab[1] + 0.215_803_76 * lab[2];
+        let m = lab[0] - 0.105_561_346 * lab[1] - 0.063_854_17 * lab[2];
+        let s = lab[0] - 0.089_484_18 * lab[1] - 1.291_485_5 * lab[2];
+        let (l, m, s) = (l * l * l, m * m * m, s * s * s);
+        [
+            4.076_741_7 * l - 3.307_711_6 * m + 0.230_969_94 * s,
+            -1.268_438 * l + 2.609_757_4 * m - 0.341_319_4 * s,
+            -0.004_196_086_3 * l - 0.703_418_6 * m + 1.707_614_7 * s,
+        ]
+    };
+    let in_gamut = |rgb: [f32; 3]| rgb.iter().all(|v| *v >= 0.0 && *v <= 1.0);
+    let mut rgb = linear(c);
+    if !in_gamut(rgb) {
+        let (mut lo, mut hi) = (0.0, 1.0);
+        for _ in 0..12 {
+            let k = (lo + hi) * 0.5;
+            let candidate = linear([c[0], c[1] * k, c[2] * k]);
+            if in_gamut(candidate) {
+                lo = k;
+                rgb = candidate;
+            } else {
+                hi = k;
+            }
+        }
+    }
+    let encode = |v: f32| {
+        (if v <= 0.003_130_8 { 12.92 * v } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 }).clamp(0.0, 1.0)
+    };
+    [encode(rgb[0]), encode(rgb[1]), encode(rgb[2]), alpha]
+}
+
 impl ControlGround {
     /// The idle control face on this ground. The ONE place the two fills are chosen between, so a
     /// widget can never hand-pick the wrong one.
@@ -5056,6 +5184,14 @@ impl ControlGround {
             ControlGround::Unkeyed => theme::CONTROL_IDLE_FILL_UNKEYED,
         }
     }
+}
+
+#[derive(Clone, Copy)]
+struct ControlFace {
+    top: [f32; 4],
+    body: [f32; 4],
+    ink: [f32; 4],
+    spent: [f32; 4],
 }
 
 /// A control's EDGE — the 1px perimeter the design system has always asked every control to wear
@@ -5089,16 +5225,25 @@ impl ControlGround {
 /// invisible by construction, which is the sign it is an edge and not a fill.
 ///
 /// **[`ControlGround::Unkeyed`] is the one exception, and it is the ground asking, not the state.**
-/// Over the video plane the focused face has to hold against a frame that may be brighter than it
-/// is, so that one combination takes [`theme::CONTROL_RIM_FOCUS_UNKEYED`] — pure white, a quarter
-/// px heavier, and no top boost, there being nothing brighter than white to crown it with. The idle
-/// face keeps the constant on both grounds: it is the light film, and the ramp under it is known.
-fn control_rim(p: Painter, r: Rect, rad: f32, face: [f32; 4], focused: bool, ground: ControlGround) {
+/// Over the video plane both states use the 1.25px unkeyed geometry. Idle takes
+/// [`theme::CONTROL_RIM_IDLE_UNKEYED`] because the keyed 1px/.22 card edge disappeared between the
+/// light film and the panel's video composition; focus raises that same geometry to
+/// [`theme::CONTROL_RIM_FOCUS_UNKEYED`] — pure white, with no top boost because nothing is brighter
+/// than white. Keyed controls keep the same card edge in both states.
+fn control_rim(
+    p: Painter,
+    r: Rect,
+    rad: f32,
+    top_face: [f32; 4],
+    body_face: [f32; 4],
+    focused: bool,
+    ground: ControlGround,
+) {
     let (rim, top, w) = control_rim_spec(focused, ground);
     // the ÉTLIV — light spilling inward off that line. It belongs to the one edge that is a STATE,
     // so it arrives and leaves with it.
     let glow = (focused && ground == ControlGround::Unkeyed).then_some(theme::CONTROL_RIM_FOCUS_UNKEYED_GLOW);
-    p.face_rimmed(r, rad, face_outline(r).as_ref(), face, face, rim, top, w, glow);
+    p.face_rimmed(r, rad, face_outline(r).as_ref(), top_face, body_face, rim, top, w, glow);
 }
 
 /// **The outline a control face of this shape draws to** — the blended capsule
@@ -5152,36 +5297,70 @@ fn control_cast(p: Painter, r: Rect, rad: f32) {
 /// with no painter in it — the one place the two edges are chosen between, so a test can grade the
 /// choice without a GL context (nothing on the host draws a pixel).
 fn control_rim_spec(focused: bool, ground: ControlGround) -> ([f32; 4], f32, f32) {
-    if focused && ground == ControlGround::Unkeyed {
-        // No top boost: the perimeter is already pure white and there is nothing brighter to crown
-        // it with — the design's two soft inner glows are what the extra width stands in for.
-        return (theme::CONTROL_RIM_FOCUS_UNKEYED, 0.0, theme::CONTROL_RIM_FOCUS_UNKEYED_W);
+    if ground == ControlGround::Unkeyed {
+        if focused {
+            // No top boost: the perimeter is already pure white and there is nothing brighter to
+            // crown it with — the design's two soft inner glows carry its volume inward instead.
+            return (theme::CONTROL_RIM_FOCUS_UNKEYED, 0.0, theme::CONTROL_RIM_FOCUS_UNKEYED_W);
+        }
+        // Preserve the shared lamp's .06 crown step while giving the film enough base edge to
+        // survive the TV's separate-plane video composition.
+        return (
+            theme::CONTROL_RIM_IDLE_UNKEYED,
+            theme::GLASS_RIM_LIGHT[3] - theme::CARD_SHEEN[3],
+            theme::CONTROL_RIM_FOCUS_UNKEYED_W,
+        );
     }
     (theme::CARD_SHEEN, theme::GLASS_RIM_LIGHT[3] - theme::CARD_SHEEN[3], theme::CARD_SHEEN_W)
 }
 
 impl ControlStyle {
-    /// (fill, ink) for this style at the given focus state, on the given [`ControlGround`].
-    ///
-    /// The ground reaches exactly one arm — [`Accent`](ControlStyle::Accent)'s IDLE face, which is
-    /// the design system's `--control-idle-fill` and the only role its unkeyed scope overrides.
-    /// Focus is ground-independent by contract (`the_ground_moves_the_idle_face_and_nothing_else`),
-    /// and the three remaining styles have no over-video caller: `Keyline` was this app's own
-    /// hand-rolled answer to the same problem and now has none at all, `Danger` lives in the exit
-    /// alert over Home, and `Custom` is by definition the caller's business.
-    pub(crate) fn colors(self, focused: bool, ground: ControlGround) -> ([f32; 4], [f32; 4]) {
+    /// Full face material for this style and ground. A keyed Accent has two focused stops and a
+    /// palette-derived idle stop; an unkeyed Accent deliberately flattens back to the fixed video
+    /// treatment because no colour can be sampled from that plane.
+    fn face(self, focused: bool, ground: ControlGround, palette: ControlPalette) -> ControlFace {
+        let flat = |fill, ink, spent| ControlFace { top: fill, body: fill, ink, spent };
         match self {
-            ControlStyle::Accent if focused => (crate::ui::ACCENT, crate::ui::ACCENT_INK),
-            ControlStyle::Accent => (ground.idle_fill(), theme::CONTROL_IDLE_INK),
-            ControlStyle::Custom { fill, ink } => (fill, ink),
-            ControlStyle::Keyline if focused => (crate::ui::ACCENT, crate::ui::ACCENT_INK),
-            ControlStyle::Keyline => (theme::PILL_KEYLINE_BG, theme::TEXT_HEADING),
-            // The hue takes the WHOLE face on focus, exactly as `Accent`'s near-white does —
-            // same shape, same rim, same shadow, one substitution. That is the sentence
-            // `ControlStyle::Danger` makes: the colour belongs to the action, the fill to focus.
-            ControlStyle::Danger if focused => (theme::DANGER, theme::TEXT_PRIMARY),
-            ControlStyle::Danger => (theme::CONTROL_DANGER_IDLE_FILL, theme::CONTROL_DANGER_IDLE_INK),
+            ControlStyle::Accent if ground == ControlGround::Unkeyed && focused => {
+                flat(theme::ACCENT, theme::ACCENT_INK, theme::CONTROL_SPENT_FILL)
+            }
+            ControlStyle::Accent if ground == ControlGround::Unkeyed => {
+                flat(theme::CONTROL_IDLE_FILL_UNKEYED, theme::CONTROL_IDLE_INK, theme::CONTROL_SPENT_FILL)
+            }
+            ControlStyle::Accent if focused => ControlFace {
+                top: palette.focus_top,
+                body: palette.focus_body,
+                ink: theme::ACCENT_INK,
+                spent: palette.spent,
+            },
+            ControlStyle::Accent => flat(palette.idle, theme::CONTROL_IDLE_INK, palette.spent),
+            ControlStyle::Custom { fill, ink } => flat(fill, ink, theme::CONTROL_SPENT_FILL),
+            ControlStyle::Keyline if focused && ground == ControlGround::Keyed => ControlFace {
+                top: palette.focus_top,
+                body: palette.focus_body,
+                ink: theme::ACCENT_INK,
+                spent: palette.spent,
+            },
+            ControlStyle::Keyline if focused => flat(theme::ACCENT, theme::ACCENT_INK, theme::CONTROL_SPENT_FILL),
+            ControlStyle::Keyline => flat(theme::PILL_KEYLINE_BG, theme::TEXT_HEADING, theme::CONTROL_SPENT_FILL),
+            ControlStyle::Danger if focused => flat(theme::DANGER, theme::TEXT_PRIMARY, theme::DANGER),
+            ControlStyle::Danger => {
+                let idle = if ground == ControlGround::Keyed {
+                    theme::mix(palette.idle, theme::DANGER, theme::DANGER_IDLE_TINT)
+                } else {
+                    theme::CONTROL_DANGER_IDLE_FILL
+                };
+                flat(idle, theme::CONTROL_DANGER_IDLE_INK, theme::DANGER)
+            }
         }
+    }
+
+    /// Compatibility projection of the default shelf palette to one `(top fill, ink)` pair. New
+    /// painting code uses [`ControlStyle::face`] so it cannot silently discard the focused body's
+    /// second stop; this remains for pure state tests and callers that genuinely need one colour.
+    pub(crate) fn colors(self, focused: bool, ground: ControlGround) -> ([f32; 4], [f32; 4]) {
+        let f = self.face(focused, ground, ControlPalette::default());
+        (f.top, f.ink)
     }
 }
 
@@ -5206,6 +5385,9 @@ pub struct Button {
     /// WHICH GROUND this pill stands on — see [`ControlGround`]. [`Keyed`](ControlGround::Keyed)
     /// unless the caller says otherwise, which is every screen but the player HUD.
     pub ground: ControlGround,
+    /// Local page palette. Hero rows publish one from their artwork; flat pages keep the default
+    /// shelf key and the video ground ignores it.
+    pub palette: ControlPalette,
     /// The FOCUS POP, as a factor on the frame — see [`Button::scale`].
     pub scale: f32,
     /// 0..1 left-to-right FILL sweep across the pill; None = an ordinary button.
@@ -5232,6 +5414,7 @@ impl Button {
             focused: false,
             style: ControlStyle::Accent,
             ground: ControlGround::Keyed,
+            palette: ControlPalette::default(),
             scale: 1.0,
             progress: None,
         }
@@ -5268,6 +5451,11 @@ impl Button {
     /// player HUD, whose ground is the video plane and cannot be sampled. Nothing else needs it.
     pub fn ground(mut self, g: ControlGround) -> Self {
         self.ground = g;
+        self
+    }
+    /// Answer to a page-drawn ground with the palette it published for this control row.
+    pub fn palette(mut self, palette: ControlPalette) -> Self {
+        self.palette = palette;
         self
     }
 
@@ -5316,7 +5504,7 @@ impl Button {
     /// The pill's filled background, including the countdown sweep when one is set. Takes the rect
     /// rather than reading `self.frame`, because the drawn plate is the POPPED one
     /// ([`Button::scale`]) and the sweep has to ride it.
-    fn plate(&self, p: Painter, r: Rect, bg: [f32; 4]) {
+    fn plate(&self, p: Painter, r: Rect, face: ControlFace) {
         // The DRAWN box, which is not the laid-out frame: a capsule's ends are under half its box,
         // so the box carries the deficit and the ends come out at the frame's own height
         // (`face_box`). A stadium and a disc are returned untouched.
@@ -5330,14 +5518,14 @@ impl Button {
             // live video — see `theme::PILL_KEYLINE_BG`)
             p.rrect(r, rad, rad, theme::PILL_KEYLINE);
             let s = BTN_KEYLINE_W;
-            p.rrect(Rect::new(r.x + s, r.y + s, r.w - 2.0 * s, r.h - 2.0 * s), rad - s, rad - s, bg);
+            p.rrect(Rect::new(r.x + s, r.y + s, r.w - 2.0 * s, r.h - 2.0 * s), rad - s, rad - s, face.top);
         } else {
             // FOCUS is an elevation as well as a fill — see `control_cast`. Under the face, so the
             // near-opaque focused plate covers everything the shadow's own interior cut leaves.
             if self.focused {
                 control_cast(p, b, rad);
             }
-            control_rim(p, b, rad, bg, self.focused, self.ground);
+            control_rim(p, b, rad, face.top, face.body, self.focused, self.ground);
         }
         let Some(frac) = self.progress else { return };
         let w = b.w * frac.clamp(0.0, 1.0);
@@ -5349,7 +5537,7 @@ impl Button {
         // sweep is drawn to the same OUTLINE with no edge of its own: a stadium here would spill
         // outside the capsule at the ends, which is precisely where a countdown is watched.
         p.clip(Rect::new(b.x, b.y, w, b.h));
-        let spent = theme::CONTROL_SPENT_FILL;
+        let spent = face.spent;
         p.face_rimmed(b, rad, face_outline(b).as_ref(), spent, spent, [0.0; 4], 0.0, 0.0, None);
         p.clip_clear();
     }
@@ -5357,7 +5545,8 @@ impl Button {
 impl View for Button {
     fn draw(&self, _e: &Env, p: Painter) {
         let r = self.frame.scaled(self.scale);
-        let (bg, ink) = self.style.colors(self.focused, self.ground);
+        let face = self.style.face(self.focused, self.ground, self.palette);
+        let ink = face.ink;
         // **Nothing at REST, a lift on FOCUS** — `plate` draws [`control_cast`] under the face and
         // only when the remote is on it. A control face is held by its EDGE ([`control_rim`], the
         // card's own .22 sheen) and that is the whole of its resting elevation; what it wears when
@@ -5370,7 +5559,7 @@ impl View for Button {
         // ground has nothing to separate. `theme::CONTROL_CAST_FOCUS` is what the design system
         // asks for, and it is still ONE elevation for the family: the resting control casts
         // nothing, which is the half of that rule worth keeping.
-        self.plate(p, r, bg);
+        self.plate(p, r, face);
         // center the [icon + gap + label] group in the pill; the label sits on the pill centre by
         // its cap band, so descenders (the g's in "From Beginning") don't drag the caps upward
         let ty = crate::text::text_vcenter_y(self.sz, 1, r.y + r.h * 0.5);
@@ -5713,6 +5902,39 @@ pub(crate) fn rating_group(p: Painter, x: f32, cy: f32, caption: &str, cells: &[
 mod tests {
     use super::*;
 
+    /// A keyed control carries the HERO's colour without borrowing its darkness. Blue artwork and
+    /// amber artwork must therefore produce different hues at the SAME authored face lightness,
+    /// while the body stays the same hue one lightness step below the lit top. This is the part of
+    /// `components/core/control-focus.card.html` the old static `ACCENT` face could not express.
+    #[test]
+    fn an_ambient_key_tints_both_levels_of_the_focused_face() {
+        let blue = ControlPalette::ambient([0x0a as f32 / 255.0, 0x63 as f32 / 255.0, 0xb4 as f32 / 255.0]);
+        let amber = ControlPalette::ambient([0xb8 as f32 / 255.0, 0x72 as f32 / 255.0, 0x1c as f32 / 255.0]);
+        let (blue_top, blue_body) = blue.focus_face();
+        let (amber_top, amber_body) = amber.focus_face();
+
+        let bt = srgb_to_oklab(blue_top);
+        let bb = srgb_to_oklab(blue_body);
+        let at = srgb_to_oklab(amber_top);
+        let ab = srgb_to_oklab(amber_body);
+        assert!((bt[0] - theme::CONTROL_FOCUS_FACE_L).abs() < 0.002);
+        assert!((at[0] - theme::CONTROL_FOCUS_FACE_L).abs() < 0.002);
+        assert!((bt[0] - bb[0] - theme::CONTROL_FOCUS_BODY_STEP).abs() < 0.003);
+        assert!((at[0] - ab[0] - theme::CONTROL_FOCUS_BODY_STEP).abs() < 0.003);
+        assert!(bt[2] < 0.0 && at[2] > 0.0, "blue and amber keys must remain opposite hues");
+    }
+
+    /// Video is the explicit exception: its pixels live on another plane, so even a supplied key
+    /// is ignored. The focused face stays flat ACCENT and the idle face stays the HUD's light film.
+    #[test]
+    fn an_unkeyed_control_never_samples_the_ambient_palette() {
+        let palette = ControlPalette::ambient([0.04, 0.39, 0.71]);
+        let focus = ControlStyle::Accent.face(true, ControlGround::Unkeyed, palette);
+        let idle = ControlStyle::Accent.face(false, ControlGround::Unkeyed, palette);
+        assert_eq!((focus.top, focus.body, focus.ink), (theme::ACCENT, theme::ACCENT, theme::ACCENT_INK));
+        assert_eq!((idle.top, idle.body), (theme::CONTROL_IDLE_FILL_UNKEYED, theme::CONTROL_IDLE_FILL_UNKEYED));
+    }
+
     /// **A control row's pop animates BOTH ways**, which is the whole reason it is an array of
     /// springs and not one global scalar. Walking focus from control 0 to control 1 must leave 0
     /// still shrinking while 1 grows — a single spring could only snap the outgoing face to rest,
@@ -5900,8 +6122,11 @@ mod tests {
     /// so a palette retune moves this test with the design instead of breaking it.
     #[test]
     fn the_danger_face_tints_when_idle_and_takes_the_whole_hue_when_focused() {
-        let (idle_fill, idle_ink) = ControlStyle::Danger.colors(false, ControlGround::Keyed);
-        let (foc_fill, foc_ink) = ControlStyle::Danger.colors(true, ControlGround::Keyed);
+        let palette = ControlPalette::default();
+        let idle = ControlStyle::Danger.face(false, ControlGround::Keyed, palette);
+        let foc = ControlStyle::Danger.face(true, ControlGround::Keyed, palette);
+        let (idle_fill, idle_ink) = (idle.top, idle.ink);
+        let (foc_fill, foc_ink) = (foc.top, foc.ink);
 
         // FOCUSED: the hue is the face, under primary ink — the same substitution `Accent` makes
         // with its near-white, so focus reads identically across the whole control family.
@@ -5910,9 +6135,9 @@ mod tests {
 
         // IDLE: the neutral plate with the hue leaned into it, and the label in the hue itself —
         // the action is NAMED before the remote reaches it.
-        assert_eq!(idle_fill, theme::CONTROL_DANGER_IDLE_FILL);
+        assert_eq!(idle_fill, theme::mix(palette.idle, theme::DANGER, theme::DANGER_IDLE_TINT));
         assert_eq!(idle_ink, theme::DANGER);
-        let (neutral, _) = ControlStyle::Accent.colors(false, ControlGround::Keyed);
+        let neutral = ControlStyle::Accent.face(false, ControlGround::Keyed, palette).top;
         assert_ne!(idle_fill, neutral, "an idle destructive plate is not the neutral one");
         assert_eq!(
             idle_fill[3], neutral[3],
@@ -5952,39 +6177,26 @@ mod tests {
         assert!(styled(ControlStyle::Keyline, false), "the control case: Keyline idle still does");
     }
 
-    /// **The ground moves the IDLE face and nothing else.** [`ControlGround`] exists because the
-    /// player cannot sample what it is standing on; it is not a second design system, and the line
-    /// between "answers to its ground" and "a different control" is exactly this test.
-    ///
-    /// Focus is the case worth pinning rather than the idle one everybody would think to check: a
-    /// second focused face is the change that looks harmless in a diff and reads, from the couch,
-    /// as the focus ring meaning two different things in two places.
+    /// The unkeyed scope drops the ambient contract WHOLE. The player cannot sample its video
+    /// plane, so idle becomes the HUD's film and focus becomes flat ACCENT; a keyed page uses the
+    /// same focus semantics (bright face, dark ink, pop and cast) but lets both face levels answer
+    /// to the page hue. That is one control system with two knowability contracts, not two ranks.
     #[test]
-    fn the_ground_moves_the_idle_face_and_nothing_else() {
-        let (kf, ki) = ControlStyle::Accent.colors(false, ControlGround::Keyed);
-        let (uf, ui) = ControlStyle::Accent.colors(false, ControlGround::Unkeyed);
-        assert_eq!(kf, theme::CONTROL_IDLE_FILL);
-        assert_eq!(uf, theme::CONTROL_IDLE_FILL_UNKEYED);
-        assert_ne!(kf, uf, "the idle face is the whole difference between the two grounds");
-        assert_eq!(ki, ui, "…and the ink is not part of it — one `--control-idle-ink`");
+    fn the_unkeyed_ground_drops_the_ambient_contract_whole() {
+        let palette = ControlPalette::ambient([0.04, 0.39, 0.71]);
+        let keyed_idle = ControlStyle::Accent.face(false, ControlGround::Keyed, palette);
+        let video_idle = ControlStyle::Accent.face(false, ControlGround::Unkeyed, palette);
+        assert_eq!(keyed_idle.top, palette.idle);
+        assert_eq!(video_idle.top, theme::CONTROL_IDLE_FILL_UNKEYED);
+        assert_ne!(keyed_idle.top, video_idle.top);
+        assert_eq!(keyed_idle.ink, video_idle.ink, "one `--control-idle-ink`");
 
-        assert_eq!(
-            ControlStyle::Accent.colors(true, ControlGround::Keyed),
-            ControlStyle::Accent.colors(true, ControlGround::Unkeyed),
-            "FOCUS is ground-independent: the fill and the ink are the same on video as on a page"
-        );
-
-        // The remaining styles have no over-video caller, and none of them reads the ground — so
-        // the day one lands there it is a decision somebody has to make, not one this match made
-        // for them by falling through.
-        for s in [ControlStyle::Keyline, ControlStyle::Danger] {
-            for focused in [false, true] {
-                assert_eq!(
-                    s.colors(focused, ControlGround::Keyed),
-                    s.colors(focused, ControlGround::Unkeyed),
-                );
-            }
-        }
+        let keyed_focus = ControlStyle::Accent.face(true, ControlGround::Keyed, palette);
+        let video_focus = ControlStyle::Accent.face(true, ControlGround::Unkeyed, palette);
+        assert_eq!((keyed_focus.top, keyed_focus.body), palette.focus_face());
+        assert_ne!(keyed_focus.top, keyed_focus.body, "a keyed focus has a lit top and shaded body");
+        assert_eq!((video_focus.top, video_focus.body), (theme::ACCENT, theme::ACCENT));
+        assert_eq!(keyed_focus.ink, video_focus.ink, "focus ink keeps the same meaning on both grounds");
     }
 
     /// **Why the unkeyed idle face is a light FILM and not a darker plate** — the polarity argument,
@@ -6021,21 +6233,23 @@ mod tests {
         );
     }
 
-    /// **The focused edge is the second and last thing the ground owns**, and the only rim in the
-    /// app that is a STATE rather than the card constant. Over video the focused face is a
-    /// near-white capsule that may be standing on a snow frame, so its line goes to pure white and
-    /// a quarter px heavier; every other combination — idle on either ground, focused on a page —
-    /// keeps the constant, which is the rule `control_rim`'s own doc states.
+    /// The video film needs an edge of its own: applying the keyed card constant unchanged leaves
+    /// only a 0.12-alpha step over the film, which disappeared on the panel. The idle unkeyed rim
+    /// must therefore be brighter and wider than the keyed constant, while remaining visibly below
+    /// the pure-white focused edge so focus still has somewhere to go.
     #[test]
-    fn only_a_focused_control_over_video_takes_the_brighter_edge() {
-        let (rim, top, w) = control_rim_spec(true, ControlGround::Unkeyed);
-        assert_eq!(rim, theme::CONTROL_RIM_FOCUS_UNKEYED);
-        assert!(rim[3] > theme::CARD_SHEEN[3], "brighter than the constant it replaces");
-        assert!(w > theme::CARD_SHEEN_W, "and heavier — it stands in for two soft inner glows");
-        assert_eq!(top, 0.0, "nothing is brighter than white, so there is no crown to add");
+    fn an_idle_control_over_video_keeps_a_visible_edge_below_focus() {
+        let (idle, idle_top, idle_w) = control_rim_spec(false, ControlGround::Unkeyed);
+        let (focus, focus_top, focus_w) = control_rim_spec(true, ControlGround::Unkeyed);
+        assert!(idle[3] > theme::CARD_SHEEN[3], "the film needs more edge than a keyed dark plate");
+        assert!(idle[3] < focus[3], "idle remains quieter than focus");
+        assert!(idle_w > theme::CARD_SHEEN_W, "device rasterization needs the full unkeyed width");
+        assert_eq!(idle_w, focus_w, "ground owns one stroke geometry; state owns its brightness");
+        assert!(idle_top > 0.0, "idle keeps the shared lamp on its crown");
+        assert_eq!(focus_top, 0.0, "nothing is brighter than the focused white edge");
 
+        assert_eq!(focus, theme::CONTROL_RIM_FOCUS_UNKEYED);
         let constant = (theme::CARD_SHEEN, theme::GLASS_RIM_LIGHT[3] - theme::CARD_SHEEN[3], theme::CARD_SHEEN_W);
-        assert_eq!(control_rim_spec(false, ControlGround::Unkeyed), constant, "idle over video");
         assert_eq!(control_rim_spec(true, ControlGround::Keyed), constant, "focused on a page");
         assert_eq!(control_rim_spec(false, ControlGround::Keyed), constant);
     }
@@ -6077,7 +6291,7 @@ mod tests {
         assert_eq!(
             pill(ControlGround::Keyed, true),
             pill(ControlGround::Unkeyed, true),
-            "focus is ground-independent here as everywhere else in the control family"
+            "this standalone tab has no ambient palette input, so only its idle ground treatment moves"
         );
 
         let seg = |g: ControlGround, selected: bool| {

@@ -18,19 +18,18 @@
 //!   has to move the cursor. What there still is no route to is a POINTER cursor — no selection,
 //!   no click-to-position.
 //! - The caret is **5px wide and one CAP BAND tall**, sitting on the run's baseline, drawn only
-//!   while `editing` — and **solid**. `Search Screen.dc.html` states both halves of that: "nothing
-//!   pulses in this app, and a blinking caret holds the GL loop awake". **This reverses a change
-//!   made from the couch**, and the note is left standing rather than deleted: the field blinked
-//!   because a dead cursor "reads on a television as a field that is not taking input", which was
-//!   the first thing reported about this screen. The blink is one constant away
-//!   (`super::BLINK_MS`, and the phase this module used to read) if that report comes back.
-//! - The **scope block** sits UNDER the query at `super::SCOPE_Y`, left-aligned on the app's own
+//!   while `editing`, and **blinks**. This deliberately differs from the current `SearchField`
+//!   component's solid bar: on the television a dead cursor read as a field that was not accepting
+//!   input. `super::step_blink` reports only phase flips, so the open keyboard costs about two
+//!   presents a second and a finished screen with the keyboard down stays idle.
+//! - One character short of [`crate::search::MIN_QUERY`], the field adds **"one more character"**
+//!   at `size::BODY` after the caret. It stays with the control whose state it explains and is
+//!   consumed by the next keystroke; the recent terms below do not disappear for pressing a key.
+//! - The **scope line** sits UNDER the query at `super::SCOPE_Y`, left-aligned on the app's own
 //!   margin — a 72px line has no right-hand half to put a caption in. It is stated in EVERY state,
 //!   one source included: this is the one screen where you cannot see what you are looking at. One
 //!   plain fact, no warning tint and no Retry (the retry that re-kicks one source lives on that
-//!   section's Library). Above it, and only while the query is one character short of running, the
-//!   design's `minHint` line — a fact about the field, ranked above the scope fact and inked one
-//!   step brighter.
+//!   section's Library).
 //!
 //! ## The two pieces of arithmetic worth extracting
 //!
@@ -38,7 +37,7 @@
 //! each is the kind of thing that is wrong by a few pixels, one word or one byte and invisible in a
 //! screenshot — and [`run_and_head`]'s failure is not cosmetic at all, since a slice cut off a char
 //! boundary panics inside the SDL event loop. They are not the whole risk, though — [`draw`] and
-//! [`draw_scope`] carry the composition (the fill branch, the scissor pair and three placements),
+//! [`draw_scope`] carry the composition (the scissor pair and four placements),
 //! and that is where a defect hides from both the tests and the eye. The registry projection the
 //! scope line is written from is no longer part of that: it is [`with_scope`], built once per change
 //! and shared with [`super::empty`] — see the section comment above it for what that fixed.
@@ -54,36 +53,26 @@ use std::os::raw::c_int;
 /// (`text::text_cap_band` at [`RUN_SZ`]), which is what "52 of 72" in the design means and what
 /// keeps the bar the height of the letters beside it if the face ever changes.
 const CARET_W: f32 = 5.0;
-/// Clearance between the caret and the PLACEHOLDER behind it — the only gap the caret needs, since
-/// against a real run it stands at the insertion point with no lead at all (see [`run_layout`]).
-const HINT_GAP: f32 = 4.0;
-// The one-character hint used to be drawn IN the field — `one more character`, right after the
-// caret in the placeholder's ink — on the argument that the fact belongs to the field and that the
-// region below must keep the user's recent terms rather than be replaced by an instruction. The
-// second half of that argument is why the hint is not in the results region, and it still stands;
-// the first half was a choice between two placements the design carries as one `minHint` prop, and
-// the one it SHIPS is beside the field ([`MIN_HINT`]). Drawing both would state one fact twice on
-// one screen. The predicate survives as `min_hint_shown` and now drives that line.
+/// The design's air between a run and its caret: 8px at the 72px HERO rung.
+const CARET_GAP: f32 = 8.0;
+/// The one-character instruction, drawn inside the field after the caret.
+const GHOST: &CStr = c"one more character";
+/// One BODY-sized rung between the caret and the instruction beside it.
+const GHOST_GAP: f32 = 28.0;
 /// The QUERY's own rung. `HERO` is the app's largest, and this line is the largest thing on the
 /// screen by design — what the user typed is the subject of the page.
 const RUN_SZ: c_int = theme::size::HERO;
-/// The line the scope block draws while the query is one character short of running
-/// ([`crate::search::MIN_QUERY`]) — the design's `minHint` in its "beside the field" placement,
-/// which is the one it ships with. It sits ABOVE the scope line and one ink step brighter, because
-/// it is a fact about what the field is doing and the other is a fact about where it is looking.
-const MIN_HINT: &CStr = c"Searching starts at two characters";
-/// The scope block's own height — the two caption lines it can hold, plus the gap between them.
+/// The scope block's own height: exactly one caption line. The minimum-query instruction belongs
+/// to the field above, so reserving a second line here would move the scope away from its token.
 /// [`super::CHROME_BOTTOM`] is measured off it, so this is the number that says where the app's
 /// chrome stops and the result band begins.
-pub(crate) const SCOPE_H: f32 = 2.0 * theme::size::CAPTION as f32 * 1.35 + MIN_HINT_GAP;
-/// Between the two caption lines of the scope block.
-const MIN_HINT_GAP: f32 = 6.0;
+pub(crate) const SCOPE_H: f32 = theme::size::CAPTION as f32 * 1.35;
 /// …and how much room it gets: the rest of the row, out to the app's own right margin. It is the
 /// LAST run on this row, so it is the one that gives way — elided to this rather than allowed to
 /// run off the panel. A `const` because the elide (in [`build`]) and the frame it is drawn into (in
 /// [`draw_scope`]) are now on opposite sides of the memo, and a budget measured in one place and
 /// drawn in the other is how a run comes to be elided to a width nothing clips it at.
-const SCOPE_W: f32 = 1200.0;
+const SCOPE_W: f32 = FIELD.w;
 /// Drawn whenever the query has nothing readable in it, focused or not. A `CStr` literal, so the
 /// one string this module knows at compile time costs no per-frame allocation.
 const PLACEHOLDER: &CStr = c"Search your library";
@@ -112,10 +101,21 @@ pub(crate) fn draw(p: Painter, v: &View) {
     // The two cuts [`run_and_head`] makes (the NUL, and the caret back to a char boundary) are
     // argued there.
     let (q, head) = run_and_head(crate::search::query(), v.caret);
+    let blank = q.trim().is_empty();
     let cq = CString::new(q).unwrap_or_default();
-    let run_w = crate::text::text_width(cq.as_ptr(), RUN_SZ, 1);
     let ch = CString::new(head).unwrap_or_default();
-    let caret_w = crate::text::text_width(ch.as_ptr(), RUN_SZ, 1);
+    // An empty field draws the placeholder as its run, so the caret follows those visible words
+    // just as the current SearchField component does. On the first keystroke the placeholder is
+    // replaced, not edited, and the caret follows the new query.
+    let (run_w, caret_w) = if blank {
+        let w = crate::text::text_width(PLACEHOLDER.as_ptr(), RUN_SZ, 1);
+        (w, w)
+    } else {
+        (
+            crate::text::text_width(cq.as_ptr(), RUN_SZ, 1),
+            crate::text::text_width(ch.as_ptr(), RUN_SZ, 1),
+        )
+    };
     let (run_dx, caret_dx) = run_layout(run_w, caret_w, inner.w, v.editing);
 
     // Scissor, so the head of an overlong run is CUT at the app's own margin rather than sliding
@@ -123,38 +123,48 @@ pub(crate) fn draw(p: Painter, v: &View) {
     // `FIELD` survives as a rect at all. Global GL state — cleared before the scope block below.
     p.clip(inner);
     // Whitespace is not a readable query: `search::draw` gates the whole screen below on the
-    // TRIMMED string, so a lone typed space must not leave this capsule blank and hintless while
+    // TRIMMED string, so a lone typed space must not leave this line blank and hintless while
     // the rest of the screen says nothing has been asked.
-    if q.trim().is_empty() {
-        // The caret is the insertion point, so it precedes the hint rather than sitting under it.
-        // (`Search Screen.dc.html` puts the placeholder and the caret in one run, which draws the
-        // bar AFTER the words — a mock's edge case: there, the caret always follows the whole
-        // string because the string is the only thing in the slot. Here it is a real insertion
-        // point the `◀`/`▶` keys move, and it cannot both be that and sit behind a placeholder.)
-        let px = if v.editing { inner.x + caret_dx + CARET_W + HINT_GAP } else { inner.x };
-        Label::new(PLACEHOLDER.as_ptr(), RUN_SZ, hint_ink).bold().draw(p, Rect::new(px, inner.y, inner.w, inner.h));
+    if blank {
+        Label::new(PLACEHOLDER.as_ptr(), RUN_SZ, hint_ink)
+            .bold()
+            .draw(p, Rect::new(inner.x + run_dx, inner.y, inner.w, inner.h));
     } else {
         Label::new(cq.as_ptr(), RUN_SZ, ink)
             .bold()
             .draw(p, Rect::new(inner.x + run_dx, inner.y, inner.w, inner.h));
     }
-    if v.editing {
+    if caret_shown(v.editing, v.caret_on) {
         // One CAP BAND tall, sitting on the run's own baseline — the design's "52 of 72", derived
         // from the face rather than transcribed, so it stays the height of the letters beside it.
         // Square, not rounded: at 5px a radius is a lozenge, and the design draws a bar.
         let ty = crate::text::text_vcenter_y(RUN_SZ, 1, inner.cy());
         let (ct, cb) = crate::text::text_cap_band(RUN_SZ, 1);
         let cr = Rect::new(inner.x + caret_dx, ty + ct, CARET_W, cb - ct);
-        p.rect(cr, 0.0, ink, ink, 0.0);
+        p.rect(cr, 0.0, theme::TEXT_PRIMARY, theme::TEXT_PRIMARY, 0.0);
     }
-    // One character in, after the insertion point — see [`GHOST`]. Placed off the caret's own slot
-    // whether or not a bar is drawn, so the run does not shuffle sideways when the panel closes.
+    // One character in, after the insertion point — the component's BODY-sized instruction. It is
+    // placed off the caret's own slot whether or not the bar is drawn, so dismissing the panel does
+    // not shuffle the line. Different sizes share the HERO run's baseline, never their top edges.
+    if ghost_shown(q) {
+        let run_y = crate::text::text_vcenter_y(RUN_SZ, 1, inner.cy());
+        let ghost_y = crate::text::baseline_y(theme::size::BODY, 0, RUN_SZ, 1, run_y);
+        p.text(
+            GHOST.as_ptr(),
+            inner.x + caret_dx + CARET_W + GHOST_GAP,
+            ghost_y,
+            theme::size::BODY,
+            hint_ink,
+            0,
+            0,
+        );
+    }
     p.clip_clear();
 
-    draw_scope(p, min_hint_shown(q));
+    draw_scope(p);
 }
 
-/// The run this capsule DRAWS, and the slice of it that sits before the insertion point — the two
+/// The run this field DRAWS, and the slice of it that sits before the insertion point — the two
 /// slices [`draw`] measures, CUT once so the two cuts can never drift apart. (They are still
 /// MEASURED separately, which is a different thing and not fixed here: `head` is shaped on its own,
 /// so a kern pair straddling the insertion point is applied to the run and not to the head, and the
@@ -200,9 +210,16 @@ fn run_and_head(q: &str, caret: usize) -> (&str, &str) {
 /// Written against `MIN_QUERY` rather than as `== 1` so it stays true if the minimum ever moves —
 /// at three, "one more character" is right at two and wrong at one, which is a copy question this
 /// predicate would then be the place to answer.
-fn min_hint_shown(q: &str) -> bool {
+fn ghost_shown(q: &str) -> bool {
     let n = q.trim().chars().count();
     n > 0 && n + 1 == crate::search::MIN_QUERY
+}
+
+/// The bar belongs to BOTH states: the keyboard must be up, and the blink must be in its ON phase.
+/// Kept as a pure predicate so a future design pass cannot silently turn the intentional blink
+/// back into an always-on bar by dropping `View::caret_on` from the draw condition.
+fn caret_shown(editing: bool, phase_on: bool) -> bool {
+    editing && phase_on
 }
 
 /// Where the run and the caret sit, as offsets from the padded box's left edge. `caret_w` is the
@@ -223,19 +240,21 @@ fn min_hint_shown(q: &str) -> bool {
 /// of a query nobody types on a remote.
 ///
 /// `caret` reserves the bar's own block in the budget, so it never hangs off the end of the field
-/// it belongs to. The returned caret offset is meaningful only when `caret` is set; the caller
-/// draws no bar otherwise.
+/// it belongs to. The returned offset is also used by the one-character hint when the bar is not
+/// drawn, so the gap is always present; `caret` controls only whether the box must reserve it.
 ///
-/// The bar sits AT the insertion point with no lead, because that is where the next glyph lands. A
-/// gap would show as the caret jumping backwards on the first keystroke of every search.
+/// The bar sits one [`CARET_GAP`] after the insertion point — the current SearchField component's
+/// explicit air. The returned offset includes that gap, while the run shift is still derived from
+/// the measured head and therefore follows the real insertion point.
 fn run_layout(run_w: f32, caret_w: f32, box_w: f32, caret: bool) -> (f32, f32) {
-    let tail = if caret { CARET_W } else { 0.0 };
+    let tail = if caret { CARET_GAP + CARET_W } else { 0.0 };
     let avail = (box_w - tail).max(0.0);
     // Never scroll further than the run's own overflow: a short query must sit at the left edge
     // whatever the caret is doing, and the second clamp is what stops a caret at position 0 from
     // dragging an already-short run off the box.
     let over = (caret_w - avail).max(0.0).min((run_w - avail).max(0.0));
-    (-over, caret_w - over)
+    let caret_x = (caret_w - over + CARET_GAP).min((box_w - CARET_W).max(0.0));
+    (-over, caret_x)
 }
 
 /// One search SOURCE, as the scope line sees it. A borrowed projection of the server registry
@@ -260,7 +279,7 @@ impl Scope<'_> {
     /// **The two sides are named at different LEVELS, and that is the design rather than an
     /// inconsistency.** Your own server is one thing you own and recognise by its machine name
     /// ("Gleb's Mac mini"); a share is experienced as the LIBRARY it gave you ("Film Club"), and
-    /// its hostname is a string that means nothing to anyone watching. `Search Screen.dc.html`
+    /// its hostname is a string that means nothing to anyone watching. `SearchScreen.jsx`
     /// writes exactly that pair, and `browse::BrowseSource::name` states the rule outright: the
     /// Sources list is "the only place in the app a machine is named".
     ///
@@ -295,7 +314,7 @@ impl Scope<'_> {
 ///
 /// **Stated for a SINGLE source too**, which this file argued against for one release: the scope is
 /// then the user's whole account, so a line saying so never changes, and unchanging chrome is worth
-/// deleting. Two things overturned it. `Search Screen.dc.html` makes the point that a row whose
+/// deleting. Two things overturned it. `SearchScreen.jsx` makes the point that a row whose
 /// right half empties out when a server is removed reads as a missing element rather than as a
 /// simplification — the line is not chrome, it is the field's answer to the one question this
 /// screen cannot show you, which is where you are looking. And the empty states no longer carry
@@ -353,7 +372,7 @@ fn scope_text(src: &[Scope]) -> Option<String> {
 
 /// Name a set of sources, collapsing to a COUNT once naming them all stops being a sentence.
 ///
-/// `Search Screen.dc.html` designs one share ("Searching <your server> and <their library> ·
+/// `SearchScreen.jsx` designs one share ("Searching <your server> and <their library> ·
 /// <handle>"), and enumerating is right at that size. It does not survive N: the registry holds
 /// sixteen slots, each share can carry several libraries, and "A and B and C and D and E" is a
 /// list rather than the "one plain fact" the design asks for — while the handle can only ever
@@ -574,22 +593,14 @@ pub(super) fn sources() -> (usize, Option<&'static str>) {
 /// [`with_scope`], so the draw is one `Label` on one already-elided run.
 /// The field's own FACTS, stacked under the query and left-aligned on it.
 ///
-/// Two lines at most, and the order is the ranking: what the field is DOING first (`min_hint` — the
-/// query has not started yet), then where it is LOOKING. The second is stated in every state; the
-/// first only while the query is one character short, and it is inked one step brighter because it
-/// is the answer to "why is nothing happening".
-fn draw_scope(p: Painter, min_hint: bool) {
+/// One line: where the field is LOOKING. The minimum-query instruction sits in the field itself,
+/// after the caret, so the scope never moves when the query grows from one character to two.
+fn draw_scope(p: Painter) {
     let line_h = theme::size::CAPTION as f32 * 1.35;
-    let mut y = super::SCOPE_Y;
-    if min_hint {
-        Label::new(MIN_HINT.as_ptr(), theme::size::CAPTION, theme::TEXT_SECONDARY)
-            .draw(p, Rect::new(FIELD.x, y, SCOPE_W, line_h));
-        y += line_h + MIN_HINT_GAP;
-    }
     with_scope(|s| {
         let Some(line) = s.line.as_ref() else { return };
         Label::new(line.as_ptr(), theme::size::CAPTION, theme::TEXT_TERTIARY)
-            .draw(p, Rect::new(FIELD.x, y, SCOPE_W, line_h));
+            .draw(p, Rect::new(FIELD.x, super::SCOPE_Y, SCOPE_W, line_h));
     });
 }
 
@@ -612,11 +623,30 @@ mod tests {
         s
     }
 
+    /// The current SearchField component keeps the one-character instruction in the query line,
+    /// after the caret. The block below therefore owns exactly one caption line: scope. Reserving
+    /// a second line here is the stale layout that put "Searching starts…" above it.
+    #[test]
+    fn the_scope_block_is_one_line_because_the_minimum_hint_lives_in_the_field() {
+        assert_eq!(SCOPE_H, theme::size::CAPTION as f32 * 1.35);
+        assert!(ghost_shown("a"));
+        assert!(!ghost_shown(""));
+        assert!(!ghost_shown("ab"));
+    }
+
+    #[test]
+    fn the_caret_is_visible_only_during_the_on_phase_of_an_editing_field() {
+        assert!(caret_shown(true, true));
+        assert!(!caret_shown(true, false), "the OFF phase must actually hide the bar");
+        assert!(!caret_shown(false, true), "a parked ON phase must not draw without the keyboard");
+        assert!(!caret_shown(false, false));
+    }
+
     #[test]
     fn a_run_that_fits_starts_at_the_edge_and_the_caret_trails_it() {
         let (run, caret) = run_layout(100.0, 100.0, 756.0, true);
         assert_eq!(run, 0.0);
-        assert_eq!(caret, 100.0);
+        assert_eq!(caret, 100.0 + CARET_GAP);
     }
 
     #[test]
@@ -625,7 +655,7 @@ mod tests {
         let (run, caret) = run_layout(900.0, 900.0, box_w, true);
         assert!(run < 0.0, "the run must slide LEFT, not clip on the right");
         // the tail of the string is what stays on screen…
-        assert_eq!(run + 900.0, box_w - CARET_W);
+        assert_eq!(run + 900.0, box_w - CARET_GAP - CARET_W);
         // …and the caret's right edge is exactly the box's
         assert_eq!(caret + CARET_W, box_w);
     }
@@ -637,23 +667,27 @@ mod tests {
         assert_eq!(run + 900.0, box_w);
     }
 
-    /// The insertion point, exactly: the bar stands where the first glyph will be painted, so it
-    /// cannot appear to jump backwards on the first keystroke.
+    /// Even at the start of a run the caret keeps the component's explicit air after the insertion
+    /// point. A box too narrow to hold it is covered by the degenerate case below.
     #[test]
-    fn an_empty_query_puts_the_caret_at_the_start_of_the_run() {
+    fn an_empty_run_keeps_the_designs_caret_gap() {
         let (run, caret) = run_layout(0.0, 0.0, 756.0, true);
         assert_eq!(run, 0.0);
-        assert_eq!(caret, 0.0);
+        assert_eq!(caret, CARET_GAP);
     }
 
-    /// The caret marks where the NEXT glyph lands, at every length — the property the whole
-    /// left-clip exists to preserve. (With the caret at the run's END, which is where typing keeps
-    /// it; the cases where it is not are the test below.)
+    /// The caret follows the NEXT glyph position with the component's fixed visual gap, at every
+    /// length — the property the whole left-clip exists to preserve. (With the caret at the run's
+    /// END, which is where typing keeps it; the cases where it is not are the test below.)
     #[test]
-    fn the_caret_is_the_insertion_point_whether_or_not_the_run_has_slid() {
+    fn the_caret_follows_the_insertion_point_whether_or_not_the_run_has_slid() {
         for run_w in [0.0, 1.0, 400.0, 753.0, 900.0, 5000.0] {
             let (run, caret) = run_layout(run_w, run_w, 756.0, true);
-            assert_eq!(caret, run + run_w, "caret must sit at the run's end for run_w={run_w}");
+            assert_eq!(
+                caret,
+                run + run_w + CARET_GAP,
+                "caret must keep the design gap after the run for run_w={run_w}",
+            );
         }
     }
 
@@ -665,13 +699,13 @@ mod tests {
     #[test]
     fn the_run_scrolls_to_the_caret_rather_than_to_the_tail() {
         let box_w = 756.0;
-        let avail = box_w - CARET_W;
+        let avail = box_w - CARET_GAP - CARET_W;
         // the caret at the FRONT of a long run: no scroll at all, and the tail is what is cut
         let (run, caret) = run_layout(2000.0, 0.0, box_w, true);
-        assert_eq!((run, caret), (0.0, 0.0), "a caret at the front pins the run to the left edge");
+        assert_eq!((run, caret), (0.0, CARET_GAP), "a caret at the front pins the run to the left edge");
         // …stepped just inside the box: still no scroll, the bar simply stands further along
         let (run, caret) = run_layout(2000.0, avail - 10.0, box_w, true);
-        assert_eq!((run, caret), (0.0, avail - 10.0));
+        assert_eq!((run, caret), (0.0, avail - 10.0 + CARET_GAP));
         // …and past it: the run slides by exactly the overflow, parking the bar on the right edge
         let (run, caret) = run_layout(2000.0, 1000.0, box_w, true);
         assert_eq!(run, -(1000.0 - avail), "the run slides to bring the caret back inside");
@@ -679,7 +713,10 @@ mod tests {
         // the caret is always drawn INSIDE the box, at every position in a very long query
         for c in [0.0, 1.0, 500.0, 1999.0, 2000.0] {
             let (_, caret) = run_layout(2000.0, c, box_w, true);
-            assert!((0.0..=avail).contains(&caret), "caret at {c} drew at {caret}, outside the field");
+            assert!(
+                (0.0..=box_w - CARET_W).contains(&caret),
+                "caret at {c} drew at {caret}, outside the field",
+            );
         }
     }
 
@@ -764,7 +801,7 @@ mod tests {
     }
 
     /// **The two sides are named at different levels, and a share is never named by its machine.**
-    /// `Search Screen.dc.html` writes "Searching &lt;your server&gt; and &lt;their library&gt; · &lt;handle&gt;", and
+    /// `SearchScreen.jsx` writes "Searching &lt;your server&gt; and &lt;their library&gt; · &lt;handle&gt;", and
     /// `browse::BrowseSource::name` states the invariant: the Sources list is the only place in the
     /// app a machine is named. A hostname is a string that means nothing to someone watching.
     ///
