@@ -140,7 +140,7 @@ RE="$HOME/webos-ndk/arm-webos-linux-gnueabi_sdk-buildroot/bin/arm-webos-linux-gn
 The decisive check is on the TV itself: `make test` (deploy + run) and read the
 event log it prints. A healthy boot shows the GL context, `ff: avformat=...`, `acb
 create=1`, and rising FPS with no `SIGILL` / `undefined symbol`. See the main
-`CLAUDE.md` "Testing / verification" section for the full event-log surface.
+`docs/agent-reference.md` "Testing / verification" section for the full event-log surface.
 
 **On a television that has never had this checkout's developer build, that first `make
 test` stops before it deploys**, saying the app directory does not exist. That is

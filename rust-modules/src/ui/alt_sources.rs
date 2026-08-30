@@ -532,7 +532,7 @@ pub(crate) fn draw() {
 //
 // Reached through `dev::read`, so the whole of it is absent from a `RELEASE=1` build at compile
 // time along with the rest of the `/tmp` surface. The trigger literal is
-// `/tmp/plxnative-shared`, spelled here for the catalog grep in the root `CLAUDE.md`.
+// `/tmp/plxnative-shared`, spelled here for the catalog grep in `docs/agent-reference.md`.
 
 /// Which item the stand-in has been built for, so it is built ONCE per page rather than every
 /// frame. Cleared by [`reset`] with the rest of the store.

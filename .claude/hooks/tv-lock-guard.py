@@ -274,7 +274,7 @@ def main():
         "  tools/tv-lock.sh release                     # hand it back\n"
         "\n"
         "Host-only work needs no lock and is not blocked: make check, make sim (the ui-sim skill\n"
-        "runs N simulators at once). See .claude/skills/tv-lock/SKILL.md.\n")
+        "runs N simulators at once). See .agents/skills/tv-lock/SKILL.md.\n")
     return 2
 
 

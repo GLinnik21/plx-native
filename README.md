@@ -201,7 +201,8 @@ default, and `FLAVOR=stable` without `RELEASE=1` is refused rather than merely d
 | `tests/` | the on-device regression suite |
 | `ci/`, `.github/` | packaging, ELF/package assertions, release automation |
 
-`CLAUDE.md` is the orientation document — architecture, the build, and all the non-obvious things
+`AGENTS.md` is the concise shared agent contract; `docs/agent-reference.md` is the detailed
+orientation document — architecture, the build, and all the non-obvious things
 that took a while to work out. Each major subsystem has one of its own next to the code.
 
 ## Contributing

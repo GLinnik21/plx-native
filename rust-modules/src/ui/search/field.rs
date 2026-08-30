@@ -159,7 +159,7 @@ pub(crate) fn draw(p: Painter, v: &View) {
 /// MEASURED separately, which is a different thing and not fixed here: `head` is shaped on its own,
 /// so a kern pair straddling the insertion point is applied to the run and not to the head, and the
 /// bar can sit a pixel or so off where the next glyph lands. Inter's `kern` is deliberately kept —
-/// `tools/cut-inter.py`, and the root `CLAUDE.md` calls it load-bearing — so this is real, but it
+/// `tools/cut-inter.py`, and `docs/agent-reference.md` calls it load-bearing — so this is real, but it
 /// is a sub-pixel placement question that only a panel can judge, and `text_width` cannot be
 /// reached from the host suite at all.)
 ///
@@ -598,7 +598,7 @@ mod tests {
     use super::*;
 
     /// Every name here is a PLACEHOLDER. This repository is public and a real share's machine name
-    /// and account handle are a third party's — see the root `CLAUDE.md`.
+    /// and account handle are a third party's — see `docs/agent-reference.md`.
     fn own(name: &str) -> Scope<'_> {
         Scope { name, libs: Vec::new(), handle: "", owned: true, live: true }
     }

@@ -51,7 +51,7 @@ CASES = [
     (ALLOW, "tools/tv-session.sh log 'route='"),
     (ALLOW, "tools/tv-session.sh status"),
     (ALLOW, "tools/crash-report.sh --flavor debug"),
-    (ALLOW, ".claude/skills/wake-tv/wake-tv.sh"),
+    (ALLOW, ".agents/skills/wake-tv/wake-tv.sh"),
     (ALLOW, 'pgrep -fl "tests/run.py|capture-screen|make deploy"'),   # the pre-flight itself
     (ALLOW, 'ps aux | grep -c "[s]sh .*192.0.2.10"'),
     (ALLOW, 'git commit -m "make deploy now takes the TV lock; tests/run.py releases it"'),
@@ -61,7 +61,7 @@ CASES = [
 ]
 
 
-HEREDOC_DOC = """cat > .claude/skills/tv-lock/SKILL.md <<'EOF'
+HEREDOC_DOC = """cat > .agents/skills/tv-lock/SKILL.md <<'EOF'
 Take the lock before `make deploy`, and never a raw `ssh root@1.2.3.4`.
   tools/tv-session.sh up --screen home
 EOF"""

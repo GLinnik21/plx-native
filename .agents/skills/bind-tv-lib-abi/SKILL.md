@@ -16,7 +16,7 @@ description: >
 # Binding the TV's own libraries — prove it before you write it
 
 We link against hand-written stub `.so` files carrying the TV's real SONAMEs (see
-`CLAUDE.md`), so **the link always succeeds**. Nothing checks that a symbol exists on
+`docs/agent-reference.md`), so **the link always succeeds**. Nothing checks that a symbol exists on
 the device, and nothing checks that a struct layout you took from an upstream header
 matches the build the TV actually ships. Both fail only at runtime — as a wrong value,
 or a SIGSEGV, on a device with no debugger.

@@ -541,7 +541,7 @@ unsafe fn stream_time_base(s: *mut AVStream) -> AVRational {
 /// Split from the pointer walk in [`dovi_conf`] on purpose — this half is the only half worth
 /// testing, and it is testable precisely because it never touches FFmpeg. (A test that had to
 /// enter the library would take `dlopen`'s `None` branch on Darwin and pass without executing
-/// anything, which is the failure shape the root `CLAUDE.md` warns about by name.)
+/// anything, which is the failure shape `docs/agent-reference.md` warns about by name.)
 ///
 /// A SHORT buffer yields `None` rather than a partial record. FFmpeg allocates these with
 /// `av_dovi_alloc` and its own demuxers always write all nine bytes, so this cannot happen today

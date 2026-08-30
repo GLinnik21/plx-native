@@ -31,7 +31,7 @@
 #
 # Config: TV host, app id, install directory and runtime root all come from `make -s print-…`.
 # Nothing about the network or any credential is stored here.
-# See .claude/skills/crash-triage/SKILL.md.
+# See .agents/skills/crash-triage/SKILL.md.
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -100,7 +100,7 @@ hr() { printf '%s\n' "----------------------------------------------------------
 # ---- 0. is the TV even up? a sleeping TV mimics every failure ----------------
 echo "== triaging $APPID [$FLAVOR] on ${HOST:-<no TV address>}"
 if ! tv true; then
-  echo "TV ${HOST:-<no TV address>} is unreachable — wake it first (.claude/skills/wake-tv/wake-tv.sh)."
+  echo "TV ${HOST:-<no TV address>} is unreachable — wake it first (.agents/skills/wake-tv/wake-tv.sh)."
   echo "NOTE: a sleeping TV makes every log assertion fail as 'no line found'; that is"
   echo "      not a crash. Re-run whatever failed after waking before triaging."
   exit 2

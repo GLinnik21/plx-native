@@ -2,7 +2,7 @@
 
 This crate is a `staticlib` linked into the C binary (`pkg/plxnative`). It began as a
 gradual, module-by-module C→Rust migration; today it IS the app — UI, event loop, player
-engine, demux pipeline, and the Plex data layer all live here (see the root `CLAUDE.md`
+engine, demux pipeline, and the Plex data layer all live here (see `docs/agent-reference.md`
 for the architecture). The C side only boots the process and wraps the Starfish C++ seam;
 the crate's C surface is down to `plex_run` + the two starfish callbacks.
 

@@ -154,7 +154,7 @@ case "$cmd" in
     # shellcheck disable=SC2087
     ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$TV" \
       'find / -name "*.so*" -type f 2>/dev/null | grep -iE "player|/libpf|acb|cbe|smp|starfish|umedia|vpq|dile|dolby"' \
-      > "$LAB/paths.txt" || die "ssh failed (TV asleep? .claude/skills/wake-tv/wake-tv.sh)"
+      > "$LAB/paths.txt" || die "ssh failed (TV asleep? .agents/skills/wake-tv/wake-tv.sh)"
     while read -r p; do
       [ -n "$p" ] || continue
       scp -q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$TV:$p" "$BIN/" 2>/dev/null || true

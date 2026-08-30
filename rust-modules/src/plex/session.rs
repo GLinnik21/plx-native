@@ -16,7 +16,7 @@
 //! entry there and behaves exactly as it always has.
 //!
 //! **Nothing here carries a timestamp**, deliberately: this TV's wall clock runs ~3 h skewed
-//! (root `CLAUDE.md`), so a stored "last seen" would be a number that cannot be compared with
+//! (`docs/agent-reference.md`), so a stored "last seen" would be a number that cannot be compared with
 //! anything and would invite an expiry rule built on it.
 use super::origin::Origin;
 use super::probe::Location;

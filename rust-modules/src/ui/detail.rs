@@ -2289,7 +2289,7 @@ fn draw_backdrop(p: Painter, m: Option<&PmsMovie>, scroll: f32, amb: AmbientWash
         // frame whose aspect and resolution we do not control, and a squashed face is worse than a
         // cropped one. `Rect::cover` is a no-op on a 16:9 source, so an ordinary show/movie backdrop
         // is pixel-identical to before, and it returns the frame unchanged while the size is still 0
-        // (the pre-decode window). Not snapped: scaled content never is (root `CLAUDE.md`'s
+        // (the pre-decode window). Not snapped: scaled content never is (`docs/agent-reference.md`'s
         // rasterization contract) and the cover rect is fractional by construction.
         let frame = Rect::FULL.cover(art_w, art_h);
         p.tex(art_tex, frame, 0.0, theme::with_a(theme::dim(theme::TINT_WHITE, d), art_a)); // white dimmed by scroll `d`

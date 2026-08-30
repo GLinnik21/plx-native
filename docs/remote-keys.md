@@ -21,7 +21,7 @@ done offline is read out of the television's own harvested `libSDL2`, which is s
 
 An `SDL_KEYDOWN` / `SDL_KEYUP` from LG's SDL fork is read by raw byte offset, because the fork's
 `SDL_KeyboardEvent` is **shifted four bytes** against the headers (`app.rs::decode_key`, and the
-gotcha in the root `CLAUDE.md`):
+gotcha in `docs/agent-reference.md`):
 
 | offset | field | the app calls it |
 | --- | --- | --- |

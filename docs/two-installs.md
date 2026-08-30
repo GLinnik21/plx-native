@@ -488,7 +488,7 @@ database; CLAUDE.md is explicit about this, using
 releases needs the actual `.so` files, which for other releases we do not have at all.
 
 What we *do* have is this television's own binaries, and the way to read them is
-`.claude/skills/decompile-tv-lib/` (`decomp.sh str` for the string pool, `xref` for who references
+`.agents/skills/decompile-tv-lib/` (`decomp.sh str` for the string pool, `xref` for who references
 a literal, `fn` to decompile). The `DolbyHdrInfo` and `contents.immersive` nodes in
 `docs/dolby-vision.md` §2 were both recovered exactly that way and neither was guessable.
 

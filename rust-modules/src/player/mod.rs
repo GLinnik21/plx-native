@@ -431,7 +431,7 @@ const FAILTEST_VERDICT: &str = "Cannot convert this item. Implementation for vid
 ///
 /// The subscription comes from [`playing_subscription`], the same reader the real path uses, so the
 /// arm being photographed is the real resolver on real state. `/tmp/plxnative-nopass` is what makes
-/// the capsule reachable and it applies to EVERY server, so the pairing the root `CLAUDE.md`
+/// the capsule reachable and it applies to EVERY server, so the pairing `docs/agent-reference.md`
 /// documents is unaffected — but note the arm still has to be looked at from the player route,
 /// i.e. after a play, which is when `route::cur_sid` names a server at all.
 fn failtest_arm() -> Option<ErrorShape> {

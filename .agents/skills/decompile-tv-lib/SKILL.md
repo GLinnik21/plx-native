@@ -24,7 +24,7 @@ has already cost this project a wrong assumption. The binaries are the only auth
 `decomp.sh` is the whole interface.
 
 ```sh
-D=.claude/skills/decompile-tv-lib/decomp.sh
+D=.agents/skills/decompile-tv-lib/decomp.sh
 
 $D pull                          # harvest the media stack off the TV (needs the TV awake)
 $D list                          # what is harvested
@@ -117,7 +117,7 @@ Two further results from the same pass, both of which would have been expensive 
 - **Never modify anything on the device.** `pull` is read-only `scp`; the TV is a shared mutex
   (`tools/tv-lock.sh` / the `tv-lock` skill — harvesting takes no lock, but anything that RUNS the
   app does)
-  and other work may be running against it. Wake it with `.claude/skills/wake-tv/wake-tv.sh`.
+  and other work may be running against it. Wake it with `.agents/skills/wake-tv/wake-tv.sh`.
 - Record what you harvested. `pull` writes `MANIFEST.txt` with a sha256 per file, so a finding
   can be tied to the exact binary it came from — firmware updates change these.
 - **Findings from decompilation are for interoperability**, on hardware the owner owns. Keep

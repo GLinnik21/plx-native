@@ -2970,7 +2970,7 @@ unsafe fn begin_fresh_press(
 ///
 /// Split out for one blunt reason: `begin_fresh_press` calls `hide_cursor`, which names a
 /// webOS-only SDL symbol, so a host test that reaches it fails at `ld` rather than at an assertion
-/// (the boundary the testing section of the root `CLAUDE.md` describes — the crate links today only
+/// (the boundary the testing section of `docs/agent-reference.md` describes — the crate links today only
 /// because nothing reachable from a test calls it and the linker dead-strips it). This half touches
 /// no SDL at all, so the invariant is gradeable by `make check` instead of only by a television.
 fn note_global_press(sym: c_uint, wcode: c_uint, now: u32, hud: &mut HudState, ok_armed: &mut bool) {
