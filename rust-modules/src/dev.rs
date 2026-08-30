@@ -194,7 +194,7 @@ pub(crate) fn read(_name: &str) -> Option<String> {
 ///
 /// `segv` is a genuine null write, so the kernel raises the signal from a faulting instruction and
 /// the record carries a real faulting PC and a real `si_addr`. The rest go through `raise`, which
-/// proves each of the five `sigaction` calls took but cannot produce a meaningful PC.
+/// proves five of the seven `sigaction` calls took but cannot produce a meaningful PC.
 ///
 /// **Compiled out of a release build** with the rest of `devtriggers`, so a shipped binary has no
 /// path to it at all. Called after telemetry boot (so native capture can be armed) but before SDL

@@ -17,9 +17,10 @@ description: >
 
 There are now two evidence paths. When crash-report consent and a compiled endpoint are both
 present, the patched Sentry Native ARM32 handler wakes the shipped `sentry-crash` process. That
-process reads the stopped target, walks its frame chain, then suspends the other Linux LWPs with
-`ptrace`, captures their registers and walks their frame chains before resuming them. It records
-up to 128 frames for the crashing thread plus up to 32 for each captured non-crashing thread,
+process reads the stopped target, suspends the other Linux LWPs with `ptrace`, captures their
+registers, then walks the crashing and captured threads' frame chains before resuming them. It
+records up to 128 frames for the crashing thread plus up to 32 for each captured non-crashing
+thread,
 registers, modules, Linux/webOS versions and build ids. Its transport is disabled; the next
 healthy PlxNative launch sanitises the envelope and sends it from the ordinary telemetry spool.
 That Sentry event **is a
@@ -166,6 +167,9 @@ and it is worse than none, for the reason in the gotchas below.
   usual cause. No log will tell you this.
 - **SIGABRT / SIGTRAP (6 / 5)** — usually a **Rust panic** crossing the FFI boundary. The
   PC is inside `abort()` and is worthless; the evidence is `<rundir>/plxnative-stderr.log`.
+- **SIGFPE / SIGSYS (8 / 31)** — arithmetic trap or a rejected system call. They are uncommon,
+  but both Sentry and the local tracer cover them so an internal daemon write failure still leaves
+  a bounded record.
 - **No signal at all, app just gone** — not a caught crash. Check the SAM exit status, an
   OOM/memchute kill, or a deliberate close.
 
@@ -219,7 +223,7 @@ Four things to check, and the third and fourth are the ones no host test can rea
    regressed — that is `(128+11) << 8`, a clean exit wearing a signal's number.
 
 `segv` is a genuine null write, so the PC is a real faulting PC. The other kinds — `abrt`, `bus`,
-`ill`, `trap` — go through `raise` and prove each of the five `sigaction` calls took, but their PC
+`ill`, `trap` — go through `raise` and prove five of the seven `sigaction` calls took, but their PC
 points into `raise` and is worth nothing.
 
 **Clear the trigger afterwards.** `tests/run.py` sweeps `plxnative-*` on exit; `make run` does not,

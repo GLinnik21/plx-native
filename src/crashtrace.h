@@ -6,8 +6,8 @@
 #ifndef PLX_CRASHTRACE_H
 #define PLX_CRASHTRACE_H
 
-/* Arm the handler on SIGSEGV/SIGABRT/SIGBUS/SIGILL/SIGTRAP, ignore SIGPIPE process-wide, and (in a
- * non-PLX_DEBUG build) suppress core dumps.
+/* Arm the handler on SIGSEGV/SIGABRT/SIGBUS/SIGFPE/SIGILL/SIGSYS/SIGTRAP, ignore SIGPIPE
+ * process-wide, and (in a non-PLX_DEBUG build) suppress core dumps.
  *
  * `event_fd` and `crash_fd` are the two sinks the record is written to, raw and already open — the
  * caller opens them BEFORE calling this, which is what guarantees a signal can never arrive at

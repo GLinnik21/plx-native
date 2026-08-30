@@ -79,7 +79,9 @@ static const char *signame(int sig) {
         case SIGSEGV: return "SIGSEGV";
         case SIGABRT: return "SIGABRT";  /* incl. a Rust panic that crosses an FFI boundary */
         case SIGBUS:  return "SIGBUS";
+        case SIGFPE:  return "SIGFPE";
         case SIGILL:  return "SIGILL";
+        case SIGSYS:  return "SIGSYS";
         case SIGTRAP: return "SIGTRAP";
         default:      return "SIG?";
     }
@@ -249,8 +251,10 @@ static void crash_handler(int sig, siginfo_t *si, void *uc) {
      * was not there, so the core→report link is inference from `core_pattern` rather than a
      * measurement. What IS measured is that we get no report.)
      *
-     * So the honest summary is that this app's crash evidence is its OWN fault event, plus SAM's
-     * status. That is an argument for the tracer being good, not for turning cores back on.
+     * So the honest summary of the always-local/system evidence is this app's OWN fault event plus
+     * SAM's status. With consent and a configured endpoint, Sentry Native may additionally preserve
+     * a bounded multi-thread report for every successfully captured thread. That is an argument
+     * for the tracer being good, not for turning cores back on.
      *
      * # THE UNBLOCK IS THE WHOLE THING, and without it none of the paragraph above was true
      *
@@ -296,7 +300,9 @@ void plx_crash_install(int ev_fd, int cr_fd) {
     sigaction(SIGSEGV, &sa, NULL);
     sigaction(SIGABRT, &sa, NULL);
     sigaction(SIGBUS, &sa, NULL);
+    sigaction(SIGFPE, &sa, NULL);
     sigaction(SIGILL, &sa, NULL);    /* UBSan/overflow traps fire SIGILL/SIGTRAP */
+    sigaction(SIGSYS, &sa, NULL);
     sigaction(SIGTRAP, &sa, NULL);
 
     /* Ignore SIGPIPE for the whole process. A Rust program gets this from std::rt::init, but
@@ -304,7 +310,7 @@ void plx_crash_install(int ev_fd, int cr_fd) {
        disposition (terminate). stream.rs sends the PMS request with flags 0, so a server that
        closes between connect and write (PMS restart, transcoder session reaped, keep-alive
        race) would kill the app outright, with no crash-log line: the tracer above handles only
-       SEGV/ABRT/BUS/ILL/TRAP. capture.rs already dodges this per-call with MSG_NOSIGNAL
+       SEGV/ABRT/BUS/FPE/ILL/SYS/TRAP. capture.rs already dodges this per-call with MSG_NOSIGNAL
        ("SIGPIPE would kill the app", capture.rs); this covers every other socket in one line. */
     signal(SIGPIPE, SIG_IGN);
 

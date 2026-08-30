@@ -33,6 +33,56 @@ index a30e19e..2712a39 100644
 diff --git a/src/backends/sentry_backend_native.c b/src/backends/sentry_backend_native.c
 --- a/src/backends/sentry_backend_native.c
 +++ b/src/backends/sentry_backend_native.c
+@@ -638,7 +638,7 @@ native_backend_write_attachments(const sentry_path_t *event_path)
+-
++
+ static void
+ native_backend_flush_scope(
+-    sentry_backend_t *backend, const sentry_options_t *UNUSED(options))
++    sentry_backend_t *backend, const sentry_options_t *options)
+ {
+     native_backend_state_t *state = (native_backend_state_t *)backend->data;
+     if (!state || !state->event_path) {
+@@ -653,12 +653,36 @@ native_backend_flush_scope(
+     }
+-
++
+     // Create event with current scope
+-    sentry_value_t event = sentry_value_new_object();
++    //
++    // On webOS/ARM this is the last safe point at which the process may use
++    // libc time-zone state and the SDK allocator. The fatal-signal handler
++    // deliberately does not call sentry_handle_exception() there: glibc's
++    // gmtime_r() reaches getenv("TZ") and a real TV reproduced a recursive
++    // SIGSEGV before the daemon could be notified. Give the daemon a complete
++    // event identity and fixed option metadata ahead of time instead.
++    sentry_value_t event = sentry_value_new_event();
+     sentry_value_set_by_key(
+         event, "level", sentry__value_new_level(SENTRY_LEVEL_FATAL));
+-
++
+     // Apply scope with contexts (includes OS, device info from Sentry)
+     SENTRY_WITH_SCOPE (scope) {
++        if (scope->release && scope->release[0]) {
++            sentry_value_set_by_key(event, "release",
++                sentry_value_new_string(scope->release));
++        }
++        if (options && options->dist && options->dist[0]) {
++            sentry_value_set_by_key(
++                event, "dist", sentry_value_new_string(options->dist));
++        }
++        if (scope->environment && scope->environment[0]) {
++            sentry_value_set_by_key(event, "environment",
++                sentry_value_new_string(scope->environment));
++        }
++        if (!sentry_value_is_null(scope->client_sdk)) {
++            sentry_value_set_by_key(event, "sdk", scope->client_sdk);
++            sentry_value_incref(scope->client_sdk);
++        }
++
+         // Get contexts from scope (includes OS info)
+         sentry_value_t os_context
+             = sentry_value_get_by_key(scope->contexts, "os");
 @@ -691,6 +691,23 @@ native_backend_flush_scope(
              sentry_value_set_by_key(event, "contexts", event_contexts);
          }
@@ -315,7 +365,32 @@ index a2cf4df..a39bd85 100644
  /**
   * Extract Build ID from ELF file (for debug_meta)
   * Returns the Build ID length, or 0 if not found
-@@ -1367,6 +1519,18 @@
+@@ -1215,13 +1367,23 @@ capture_modules_from_proc_maps(sentry_crash_context_t *ctx)
+         const char *pathname = line + pathname_offset;
+         // Trim newline
+         size_t len = strlen(pathname);
+         if (len > 0 && pathname[len - 1] == '\n') {
++            line[pathname_offset + len - 1] = '\0';
+             len--;
+         }
+         if (len == 0) {
+             continue;
+         }
+-
++
++        // /proc/maps also contains character devices such as /dev/mali0.
++        // Reading one as an ELF file can block the crash daemon inside the
++        // driver's read(), so debug images are regular mapped files only.
++        struct stat st;
++        if (stat(pathname, &st) != 0 || !S_ISREG(st.st_mode)) {
++            SENTRY_DEBUGF("Skipping non-regular mapping: %s", pathname);
++            continue;
++        }
++
+         // Check if this file is already captured - if so, extend size if needed
+         sentry_module_info_t *existing_mod = NULL;
+         for (uint32_t j = 0; j < ctx->module_count; j++) {
+@@ -1367,6 +1529,18 @@
      ctx->platform.num_threads = thread_count;
      SENTRY_DEBUGF("Enumerated %zu threads from /proc/%d/task", thread_count,
          ctx->crashed_pid);
@@ -334,6 +409,23 @@ index a2cf4df..a39bd85 100644
  }
  #endif // SENTRY_PLATFORM_LINUX || SENTRY_PLATFORM_ANDROID
  
+@@ -1963,8 +2127,14 @@ build_native_crash_event(
+     // Set platform to native
+     sentry_value_set_by_key(
+         event, "platform", sentry_value_new_string("native"));
+-
++
++    // The daemon is ordinary process context; stamp the actual crash-processing
++    // time here rather than asking the fatal-signal handler to enter libc's
++    // non-signal-safe time-zone machinery.
++    sentry_value_set_by_key(event, "timestamp", sentry__value_new_string_owned(
++        sentry__usec_time_to_iso8601(sentry__usec_time())));
++
+     // Set level to fatal
+     sentry_value_set_by_key(event, "level", sentry_value_new_string("fatal"));
+-
++
+     // Build exception
 @@ -3443,6 +3607,13 @@
          sentry_options_free(options);
      }
@@ -381,15 +473,17 @@ diff --git a/src/backends/native/sentry_crash_handler.c b/src/backends/native/se
 index 1fba605..49bf295 100644
 --- a/src/backends/native/sentry_crash_handler.c
 +++ b/src/backends/native/sentry_crash_handler.c
-@@ -243,6 +243,31 @@ safe_build_stack_path(
+@@ -243,6 +243,33 @@ safe_build_stack_path(
      return pos;
  }
  #    endif
 +
 +// Invoke the signal disposition Sentry replaced. PlxNative installs an
-+// async-signal-safe bounded tracer first, so daemon failure still leaves a
-+// local PC/register record. A normal completed daemon event must not call it:
-+// the next boot would otherwise queue two Sentry events for one crash.
++// async-signal-safe bounded tracer first, so every crash leaves a local
++// PC/register record even if the daemon reaches DONE after failing to write
++// its envelope. The next healthy boot imports the native envelope first and
++// consumes a matching local record by build ID + signal, preserving one
++// Sentry event per process death.
 +static void
 +chain_previous_handler(int signum, siginfo_t *info, void *context)
 +{
@@ -413,7 +507,7 @@ index 1fba605..49bf295 100644
  
  /**
   * Signal handler (signal-safe)
-@@ -262,7 +287,8 @@ crash_signal_handler(int signum, siginfo_t *info, void *context)
+@@ -262,7 +289,8 @@ crash_signal_handler(int signum, siginfo_t *info, void *context)
  
      sentry_crash_ipc_t *ipc = g_crash_ipc;
      if (!ipc || !ipc->shmem) {
@@ -423,31 +517,49 @@ index 1fba605..49bf295 100644
          raise(signum);
          return;
      }
-@@ -655,6 +681,7 @@ crash_signal_handler(int signum, siginfo_t *info, void *context)
+@@ -294,8 +322,11 @@ crash_signal_handler(int signum, siginfo_t *info, void *context)
+     // Capture backtrace using libunwind (DWARF-based, works without frame
+-    // pointers). This runs in the signal handler, which is safe because
+-    // libunwind's core unwinding API (unw_init_local2, unw_step, unw_get_reg)
+-    // is async-signal-safe. The daemon will prefer this over FP-based walking.
+-#        ifdef SENTRY_WITH_UNWINDER_LIBUNWIND
++    // pointers). Do not enter it on webOS/ARM: libunwind's first unw_step()
++    // initializes its method table through getenv("UNW_ARM_UNWIND_METHOD"),
++    // which reproduced a recursive SIGSEGV before daemon notification. This
++    // target is built with forced frame pointers, so the daemon performs the
++    // crashed thread's walk out-of-process instead.
++#        if defined(SENTRY_WITH_UNWINDER_LIBUNWIND) \
++            && !(defined(SENTRY_PLATFORM_LINUX) && defined(__arm__))
+     ctx->platform.backtrace_count = 0;
+     {
+         unw_cursor_t cursor;
+@@ -649,12 +677,16 @@ crash_signal_handler(int signum, siginfo_t *info, void *context)
+-    // Call Sentry's exception handler to invoke on_crash/before_send hooks
+-    // Note: With page allocator enabled, this is now signal-safe
++    // Ordinary platforms run the SDK hooks here. webOS/ARM must not: its
++    // gmtime_r() enters getenv("TZ") and reproduced a recursive SIGSEGV before
++    // this handler could notify the daemon. The native backend has already
++    // persisted the fixed scope fields that the out-of-process builder needs.
++#    if !(defined(SENTRY_PLATFORM_LINUX) && defined(__arm__))
+     sentry_ucontext_t sentry_uctx;
+     sentry_uctx.signum = signum;
+     sentry_uctx.siginfo = info;
+     sentry_uctx.user_context = uctx;
      sentry_handle_exception(&sentry_uctx);
++#    endif
  
      // Try to notify daemon
-+    bool daemon_completed = false;
      if (sentry__atomic_compare_swap(&ctx->state, SENTRY_CRASH_STATE_READY,
              SENTRY_CRASH_STATE_CRASHED)) {
  
-@@ -672,6 +699,7 @@ crash_signal_handler(int signum, siginfo_t *info, void *context)
-                 processing_started = true;
-             } else if (state == SENTRY_CRASH_STATE_DONE) {
-                 // Daemon finished processing (no logging - signal-safe)
-+                daemon_completed = true;
-                 goto daemon_handling;
-             }
- 
-@@ -686,6 +714,12 @@ crash_signal_handler(int signum, siginfo_t *info, void *context)
+@@ -686,6 +714,11 @@ crash_signal_handler(int signum, siginfo_t *info, void *context)
      }
  
  daemon_handling:
-+    if (!daemon_completed) {
-+        // The saved tracer re-raises and normally does not return. If another
-+        // saved handler does, Sentry's termination path below remains final.
-+        chain_previous_handler(signum, info, context);
-+    }
++    // The saved PlxNative tracer writes its bounded local record, then
++    // re-raises and normally does not return. If another saved handler does,
++    // Sentry's termination path below remains final.
++    chain_previous_handler(signum, info, context);
 +
      // Re-raise signal to let system handle it
      SENTRY_DEBUG("Wait complete, allowing process to terminate");

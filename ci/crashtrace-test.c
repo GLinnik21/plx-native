@@ -317,11 +317,13 @@ int main(void) {
     one_case("SIGSEGV (real null dereference)", SIGSEGV, "SIGSEGV", FAULT);
 
     /* Then every other signal the tracer arms, by `raise`. These prove the handler is installed on
-     * each one and that each re-raises — `sigaction` is called five times and a missing line there
+     * each one and that each re-raises — `sigaction` is called seven times and a missing line there
      * would be invisible until the day that signal actually fired. */
     one_case("SIGABRT", SIGABRT, "SIGABRT", RAISE);
     one_case("SIGBUS",  SIGBUS,  "SIGBUS",  RAISE);
+    one_case("SIGFPE",  SIGFPE,  "SIGFPE",  RAISE);
     one_case("SIGILL",  SIGILL,  "SIGILL",  RAISE);
+    one_case("SIGSYS",  SIGSYS,  "SIGSYS",  RAISE);
     one_case("SIGTRAP", SIGTRAP, "SIGTRAP", RAISE);
 
     /* …and then the maps scan, which the crashes above cannot reach on a host with no /proc. */
@@ -331,6 +333,6 @@ int main(void) {
         fprintf(stderr, "crashtrace: %d assertion(s) failed\n", failures);
         return 1;
     }
-    printf("crashtrace: ok (5 deliberate crashes re-raised; maps scan graded against fixtures)\n");
+    printf("crashtrace: ok (7 deliberate crashes re-raised; maps scan graded against fixtures)\n");
     return 0;
 }

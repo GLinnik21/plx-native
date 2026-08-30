@@ -389,7 +389,7 @@ which the linking section explains is load-bearing rather than tidy.
 - `src/main.c` — the **boot shim** (event-log/stderr setup, process bring-up); calls the Rust
   `plex_run()`. `src/crashtrace.c` (+ `crashtrace.h`) — the **fatal-signal tracer**, its own TU so
   the signal path can be tested; `src/crashfmt.h` is its pure half. **Both halves are host-tested in
-  `make check`** — `ci/crashfmt-test.c` grades the parsing, `ci/crashtrace-test.c` crashes five
+  `make check`** — `ci/crashfmt-test.c` grades the parsing, `ci/crashtrace-test.c` crashes seven
   processes on purpose and checks the record AND the exit status. `src/starfish.c` — the
   StarfishMediaAPIs C++/ACB seam. `src/svg.c` — nanosvg rasterizer. `src/sentry_context.c` — the
   narrow C wrapper that keeps Sentry's opaque by-value object ABI out of Rust. These five are the
@@ -672,10 +672,13 @@ which the linking section explains is load-bearing rather than tidy.
 
   The always-armed fallback is still the C tracer (`main.c`). It writes a startup `img:` marker
   (build id, load address, mapped size), then on a fault logs PC/LR, **the ARM registers around
-  them** and the `/proc/self/maps` line(s) containing either. Native chains this saved handler when
-  its daemon is unavailable or times out, so the bounded local record survives a daemon failure
-  without duplicating a successful native event; closing or withdrawing consent restores it as the
-  primary handler. It **re-raises to `SIG_DFL`** so
+  them** and the `/proc/self/maps` line(s) containing either. Native always chains this saved
+  handler after the daemon's attempt (and immediately when the daemon is unavailable), so the
+  bounded local record survives even a daemon that reaches `DONE` after failing to write its
+  envelope. On the next healthy boot the native envelope is imported first; a matching local
+  record is consumed by build id + signal, so one process death still becomes one Sentry event.
+  Closing or withdrawing consent restores the tracer as the primary handler. It **re-raises to
+  `SIG_DFL`** so
   SAM sees a real signal death (`exit_status: 11` for a SIGSEGV — device-verified 2026-08-29).
   **This fallback does NOT also get a system crashd backtrace, and this line used to say it did**:
   `core_pattern` on this firmware is the bare string `core`, so the report chain starts from
