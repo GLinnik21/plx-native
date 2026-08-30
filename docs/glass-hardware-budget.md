@@ -905,9 +905,10 @@ can is the one above: continuous presents, and the frame-time distribution rathe
 
 ### Two more things the build settled, both by looking
 
-* **On Search the material has almost nothing to show.** The band's height there is 208 px of
-  *chrome* — the tab strip and the query capsule — and the result shelves are scissored at
-  `CHROME_BOTTOM`, so the only live content behind the band is the 40 px between 208 and 248.
+* **On Search the material has almost nothing to show.** The opaque chrome floor is the scope
+  line's bottom at about 262 px — the tab strip, bare query run and scope — and the result shelves
+  are scissored at `CHROME_BOTTOM`, so the only live content behind the band is the 38 px ramp
+  between that floor and `CONTENT_TOP` 300.
   Photographed on the panel: the Library band frosts real posters, and the Search band is flat grey
   with a veiled shelf heading at its bottom edge. Search would be paying the full bill for a blur of
   the app's own ground.

@@ -30,8 +30,8 @@ use crate::ui::theme;
 // `dotted_run` lives in `widgets` now — the facts row and the bio panel's identity line are one
 // idiom two screens apart, and this file is where it was written first, not where it belongs.
 use crate::ui::widgets::{
-    dotted_run, resolve_tex_wh_on, AmbientWash, Art, Button, CircleButton, PosterMark, SelMark,
-    TabGround, TabPill, TabStrip, HERO_BASE_SCRIM_Y0,
+    dotted_run, resolve_tex_wh_on, AmbientWash, Art, Button, CircleButton, ControlPalette,
+    PosterMark, SelMark, TabGround, TabPill, TabStrip, HERO_BASE_SCRIM_Y0,
 };
 use crate::ui::{hero_alpha, on_axis, Column, Env, Painter, Rect, ScrollColumn, Spring, View}; // View: Button/CircleButton::draw
 use std::ffi::CString;
@@ -1431,6 +1431,7 @@ pub(crate) fn is_show() -> bool {
 /// Reset focus + all scroll springs to the top of a freshly-opened page — shared by open/open_rk
 /// so the two entry points can't drift (the retained-scroll fields must ALL be zeroed on a new item).
 fn reset_view_state(v: &mut DetailView) {
+    crate::gfx::control_ground_invalidate();
     v.section = 0;
     v.col = 0;
     // re-derived by the next `hero_col`; listed here because it is retained hero-row state, even
@@ -3084,9 +3085,9 @@ fn draw_ratings(p: Painter, x: f32, row_y: f32) {
 }
 
 fn draw_buttons(p: Painter, env: &Env, y: f32) {
-    // One shared control family (widgets::Button/CircleButton, all on the default
-    // ControlStyle::Accent — the same as the info card): the focused control fills warm ACCENT with
-    // dark ink, the rest are solid dark discs. Play reuses the pill Button; the ▶| disc restarts a
+    // One shared control family (widgets::Button/CircleButton, all ControlStyle::Accent) keyed to
+    // the already-rendered ground beneath this Hero row: focus is a bright, subtly ground-tinted
+    // face with dark ink, idle is the same hue at its dark level. Play reuses the pill Button; the ▶| disc restarts a
     // resumable item from 00:00; the ✓/− toggle writes watch state. Both discs UNFURL their verb on
     // focus (`disc_verb`), which is the only way either says what it does. They are placed by an
     // ACCUMULATED x, not per-control constants, because what sits between them comes and goes — see
@@ -3103,6 +3104,17 @@ fn draw_buttons(p: Painter, env: &Env, y: f32) {
     let set = hero_set();
     let cw = hero_widths();
     let rect = |i: c_int| hero_btn_rect_at(set, i, y, cw);
+    let (_, n) = hero_ctls(set);
+    let last = rect(n as c_int - 1);
+    // `p` is translated by `-scroll`, while the readback rect is in screen coordinates. Sample only
+    // while the Hero is fully present; a partially faded route/scroll would become the cached key
+    // for the opaque resting page. Every control in the row shares this broad diffuse answer.
+    let scroll = view().column.scroll.pos;
+    let row = [MARGIN_X, y - scroll, last.x + last.w - MARGIN_X, CD];
+    let may_read = crate::ui::nav::page_alpha() >= 0.999 && hero_alpha(scroll, HERO_FADE) > 0.99;
+    let palette = crate::gfx::sample_control_ground(row, may_read)
+        .map(ControlPalette::ambient)
+        .unwrap_or_default();
     // The FOCUS POP, per control (`widgets::CtlPop`). It is a factor on the frame, applied by the
     // widget about the control's centre, so it does NOT feed `hero_btn_rect_at` — the row's
     // accumulation stays the resting one and the controls beside a popped one do not shuffle. The
@@ -3123,6 +3135,7 @@ fn draw_buttons(p: Painter, env: &Env, y: f32) {
     Button::new(plabel.as_ptr(), theme::size::BODY, rect(BTN_PLAY))
         .icon(crate::ui::icons::Icon::Play)
         .focused(focus == BTN_PLAY)
+        .palette(palette)
         .scale(pop(BTN_PLAY))
         .draw(env, p);
     if restart {
@@ -3138,7 +3151,16 @@ fn draw_buttons(p: Painter, env: &Env, y: f32) {
         // What the arrow does NOT say is WHAT it restarts — on a show page that is the on-deck
         // episode, not the series — and that is answered where it always was, by the unfurled verb,
         // in the words the menu already uses.
-        draw_disc(p, env, crate::ui::icons::Icon::Restart, HeroCtl::Restart, rect(BTN_RESTART), focus == BTN_RESTART, pop(BTN_RESTART));
+        draw_disc(
+            p,
+            env,
+            crate::ui::icons::Icon::Restart,
+            HeroCtl::Restart,
+            rect(BTN_RESTART),
+            focus == BTN_RESTART,
+            pop(BTN_RESTART),
+            palette,
+        );
     }
     // "Also available" — drawn ONLY while a second pinned source holds this item (`hero_ctls`), so
     // the 90% single-server library never pays a control for it. The trailing chevron is what says
@@ -3148,6 +3170,7 @@ fn draw_buttons(p: Painter, env: &Env, y: f32) {
         Button::new(ALT_LABEL.as_ptr(), theme::size::BODY, rect(i))
             .trailing_icon(crate::ui::icons::Icon::ChevronDown)
             .focused(focus == i)
+            .palette(palette)
             .scale(pop(i))
             .draw(env, p);
     }
@@ -3170,7 +3193,7 @@ fn draw_buttons(p: Painter, env: &Env, y: f32) {
         (HeroCtl::MarkUnwatched, crate::ui::icons::Icon::Minus),
     ] {
         let Some(i) = index_of(set, ctl) else { continue }; // one of the two faces, never both
-        draw_disc(p, env, icon, ctl, rect(i), focus == i, pop(i));
+        draw_disc(p, env, icon, ctl, rect(i), focus == i, pop(i), palette);
     }
 }
 
@@ -3189,8 +3212,14 @@ fn draw_disc(
     r: Rect,
     focused: bool,
     scale: f32,
+    palette: ControlPalette,
 ) {
-    let mut b = CircleButton::new(c"".as_ptr()).icon(icon).frame(r).focused(focused).scale(scale);
+    let mut b = CircleButton::new(c"".as_ptr())
+        .icon(icon)
+        .frame(r)
+        .focused(focused)
+        .palette(palette)
+        .scale(scale);
     if let Some((slot, label)) = disc_verb(ctl, watch_names_show()) {
         b = b.label(label.as_ptr(), view().disc_unfurl[slot].pos);
     }

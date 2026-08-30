@@ -128,7 +128,7 @@ pub enum Icon {
     /// opens the overflow popover (`ui/more_menu.rs`). Overflow, so it sits at the END of the row.
     More,
     /// The magnifier — the only pill in the shared top strip that is a MARK instead of a word
-    /// (`Search Screen.dc.html`). Drawn at 1.15× the strip's own type rung, inked exactly as a
+    /// (`ui_kits/tv-app/SearchScreen.jsx`). Drawn at 1.15× the strip's own type rung, inked exactly as a
     /// label would be, so it reads as one of the row rather than as an ornament on it.
     ///
     /// ONE `<path>`, two subpaths (the ring as a pair of half-arcs, then the handle), both STROKED

@@ -1,4 +1,4 @@
-//! search — the Search screen (`Search Screen.dc.html`).
+//! search — the Search screen (`ui_kits/tv-app/SearchScreen.jsx` in the design system).
 //!
 //! The last pill in the shared top strip, and the only one that is a mark instead of a word. Text
 //! entry is the TELEVISION's own keyboard ([`crate::textinput`]), so this screen owns no keyboard
@@ -12,7 +12,7 @@
 //!
 //! | file | draws |
 //! |---|---|
-//! | [`field`] | the query capsule, the caret, and the scope line beside it |
+//! | [`field`] | the bare query line, its caret + one-character hint, and the scope below |
 //! | [`recents`] | the empty-query state: the user's own recent terms, and Clear |
 //! | [`results`] | the typed shelves |
 //! | [`empty`] | "You haven't searched yet" / "No results for …" |
@@ -25,7 +25,7 @@
 //! With the keyboard raised, **nothing the app owns hides behind it**. The TV puts the panel over
 //! the bottom [`KEYBOARD_H`], so its top edge is at **756** (measured, see that constant), and the
 //! field, the first shelf's heading and that shelf's full row of posters all finish above it:
-//! [`CONTENT_TOP`] 248 + [`HEAD_TO_ROW`] 60 + a 375-tall poster = **683**, seventy-three clear.
+//! [`CONTENT_TOP`] 300 + [`HEAD_TO_ROW`] 60 + a 375-tall poster = **735**, twenty-one clear.
 //! (This paragraph has now been wrong twice, in opposite directions: first 699 — "exactly on its
 //! top edge", a number `CONTENT_TOP` = 264 would give and nothing draws — then 700, from a
 //! `KEYBOARD_H` nobody had measured. `results`'
@@ -75,7 +75,7 @@ pub(crate) mod results;
 
 /// Where every state's content starts, and what a scrolled shelf returns to.
 ///
-/// `Search Screen.dc.html`'s own derivation, and it is the SCOPE BLOCK that fixes it now rather
+/// `ui_kits/tv-app/SearchScreen.jsx`'s own derivation, and it is the SCOPE BLOCK that fixes it now rather
 /// than the field: the block's caption bottom (`SCOPE_Y` + one CAPTION line ≈ 262) plus one 40
 /// rung. It was 266 while the field was a capsule with the scope line beside it on the same row.
 pub(crate) const CONTENT_TOP: f32 = 300.0;
@@ -90,7 +90,7 @@ pub(crate) const LABEL_BLOCK: f32 = 114.0;
 /// clearance the layout above keeps.
 ///
 /// **MEASURED, off four device captures 2026-08-15**, not estimated: the panel's top edge is at
-/// y=756 on every one of them, to the pixel, which is the 324 `Search Screen.dc.html` states. It
+/// y=756 on every one of them, to the pixel, which is the 324 `SearchScreen.jsx` states. It
 /// was 380 — a guess, 56px too tall — and the cost was not slack but a layout decision made against
 /// a number that was never true: [`MAX_RECENTS`] was cut to four because five would not clear a
 /// keyboard top edge 56px higher than the real one.
@@ -121,7 +121,7 @@ pub(crate) const FIELD: Rect = Rect {
 /// A 72px line has no right-hand half to put a caption in, which is the whole reason it moved: the
 /// scope line used to sit at x=950 on the capsule's row, in the space the capsule did not use.
 pub(crate) const SCOPE_Y: f32 = FIELD.y + FIELD.h + 12.0;
-/// Where the app's own chrome ends and the result band begins — the field's bottom edge.
+/// Where the app's own chrome ends and the result band begins — the scope line's bottom edge.
 ///
 /// It is the navigation scrim's OPAQUE floor: [`crate::ui::widgets::nav_scrim`] fills flat from the
 /// top of the panel down to here and only THEN ramps out to [`CONTENT_TOP`], so this is the line
@@ -130,20 +130,14 @@ pub(crate) const SCOPE_Y: f32 = FIELD.y + FIELD.h + 12.0;
 /// [`results`] records its pointer rects against. A tile the user cannot see is a tile the pointer
 /// must not be able to reach.
 pub(crate) const CHROME_BOTTOM: f32 = SCOPE_Y + field::SCOPE_H;
-/// Terms kept. **Five**, which is `Search Screen.dc.html`'s number and was four here for a reason
-/// that turned out to be arithmetic against a wrong constant: the header, the rows and the Clear
-/// control all have to finish above the raised keyboard, and [`KEYBOARD_H`] claimed a panel 56px
-/// taller than the real one. At the measured height a full block ends at 690 against a panel edge
-/// of 756 — `recents`' own test grades the clearance rather than the count.
-///
-/// The sixth is DROPPED, not scrolled — a list you cannot see the end of asks to be paged, and
-/// there is no paging in this product.
-///
-/// **Four**, which is the design's own number again and its own arithmetic: with [`CONTENT_TOP`]
+/// Terms kept. **Four**, which is the design's own number and its own arithmetic: with [`CONTENT_TOP`]
 /// at 300 the block runs 300 + header 58 + 4×60 + 24 + a 60 control = 682 against a raised panel
 /// whose top edge is at 756. It was five while `CONTENT_TOP` was 266 — the count is a consequence
 /// of where the content starts, not a preference, and `recents`' own test grades the clearance
 /// rather than the number.
+///
+/// The fifth is DROPPED, not scrolled — a list you cannot see the end of asks to be paged, and
+/// there is no paging in this product.
 pub(crate) const MAX_RECENTS: usize = 4;
 
 /// The RESULT BAND's content cross-fade — the Library's [`Xfade`] doing the same job one screen
@@ -270,17 +264,16 @@ static mut HOT: Spring = Spring::at(0.0);
 /// recents pick, `enter`'s pre-seed, a profile switch wiping the store), so a raw offset held here
 /// is a promise this module cannot keep on its own.
 static mut CARET: usize = 0;
-/// Milliseconds the caret spends in each phase. A **blink**, which this screen deliberately did not
-/// have: the field's own doc argued a solid bar because `ui::idle` cannot see a clock, so a blink
-/// would either freeze under the present gate or defeat it. Both halves are answered rather than
-/// traded — [`step_blink`] reports to the gate ONLY on the phase flip, so a field with the panel up
-/// costs ~2 presents a second instead of 60, and a settled screen with the panel DOWN is untouched
-/// (nothing blinks when nothing is being typed into). The user asked for it on the device, and a
-/// text field with no blinking caret reads as a text field that is not accepting input.
+/// Milliseconds the caret spends in each phase. [`step_blink`] reports to the present gate ONLY
+/// on a phase flip, so an open keyboard costs about two presents a second rather than keeping the
+/// GL loop awake at 60 fps. With the keyboard down the phase is parked ON and costs nothing.
+///
+/// This blink is intentional device feedback, not decoration: a solid cursor read on the couch as
+/// a field that was not accepting input. The design component calls for a solid caret, but the TV
+/// interaction wins here.
 const BLINK_MS: f32 = 530.0;
-/// Time inside the current blink phase, in ms. Reset to 0 (a full ON phase) by every edit, so the
-/// bar is solid while you are actually typing — the standard behaviour, and the reason a caret that
-/// blinked THROUGH a keystroke would look like a dropped character.
+/// Time inside the current blink phase, in ms. Every edit resets it to a full ON phase so a
+/// keystroke never appears to make the insertion point disappear.
 static mut BLINK_T: f32 = 0.0;
 
 /// **The** hit-rect store: every target under the field that a region PAINTED this frame, as the
@@ -740,7 +733,7 @@ pub(crate) fn update(dt: f32) {
     // Typed text FIRST: a commit this frame changes the query, `set_query` wipes the shelves under
     // it synchronously, and the clamp below is what has to see that.
     pump_text();
-    // The roster's LIBRARY names, for the scope line beside the field. Only the Library screen runs
+    // The roster's LIBRARY names, for the scope line below the field. Only the Library screen runs
     // the full `browse::pump`, so a boot straight into this one knew it had two sources and could
     // not name either of them.
     crate::browse::discover_pump();
@@ -1976,7 +1969,7 @@ mod tests {
 
     /// The blink is a CLOCK, so it owes `ui::idle` the two halves `ui/CLAUDE.md` demands: it must
     /// ask for a frame when the bar changes state, and must ask for nothing in between — a blink
-    /// that reported every frame would cost the whole idle saving to animate one 3px bar.
+    /// that reported every frame would cost the whole idle saving to animate one 5px bar.
     #[test]
     fn the_caret_blinks_and_reports_only_on_the_flip() {
         let _s = crate::testlock::serial();
@@ -2010,7 +2003,7 @@ mod tests {
         typed("s");
         assert!(blink_on(unsafe { addr_of!(BLINK_T).read() }), "a keystroke leaves the bar solid");
         // …and with the panel down nothing animates at all: this must not hold a settled screen
-        // awake, which is the entire reason the field drew a solid bar before.
+        // awake, which is the entire reason the blink reports only on its phase flips.
         leave();
         asked(false); // the edit above raised a DISCRETE invalidate; spend it before grading quiet
         for f in 0..200 {

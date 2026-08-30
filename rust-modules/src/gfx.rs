@@ -2617,6 +2617,96 @@ pub(crate) fn sample_ground(r: [f32; 4], may_read: bool) -> Option<[f32; 3]> {
     }
 }
 
+/// The Hero controls' own ground sample. This is deliberately NOT [`sample_ground`]: the top bar
+/// asks for the brightest local patch so it can solve a contrast floor, while a control face asks
+/// for the colour of the material it is standing on. Sharing either the result or the rate latch
+/// would make one of those two answers silently wrong.
+///
+/// Five broad boxes are averaged in LINEAR light across the whole action row. That is the visual
+/// model of a very thick, diffuse glass body: it collects the local scene over a wide support, but
+/// neither displaces nor re-draws it. The sampled colour only keys the control's fixed-lightness
+/// OKLCH face; there is no blur texture and therefore no refraction. Crucially this reads after the
+/// backdrop art and its scrims have painted, so an authored green `UltraBlurColors` corner can
+/// never tint a button green when the actual ground under it is blue-black.
+const CONTROL_GROUND_SAMPLE_EVERY: u32 = 30;
+const CONTROL_GROUND_TAPS: usize = 5;
+const CONTROL_GROUND_TAP_PX: c_int = 49;
+static mut CONTROL_GROUND_RGB: Option<[f32; 3]> = None;
+static mut CONTROL_GROUND_AT: u32 = 0;
+static mut CONTROL_GROUND_DIRTY: bool = true;
+
+/// Mark a Hero's sampled ground stale when the item behind the row changes. The last honest answer
+/// remains available during the carousel/route transition; the first settled draw replaces it.
+pub(crate) fn control_ground_invalidate() {
+    unsafe {
+        CONTROL_GROUND_AT = 0;
+        CONTROL_GROUND_DIRTY = true;
+    }
+}
+
+/// Average display-encoded sRGB samples as radiance and encode the result back to sRGB.
+/// Kept pure so the material's defining operation is host-testable without an OpenGL context.
+fn diffuse_ground_mean(samples: impl IntoIterator<Item = [f32; 3]>) -> [f32; 3] {
+    let lin = |v: f32| if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
+    let enc = |v: f32| if v <= 0.0031308 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
+    let mut acc = [0.0f32; 3];
+    let mut n = 0usize;
+    for sample in samples {
+        for c in 0..3 {
+            acc[c] += lin(sample[c]);
+        }
+        n += 1;
+    }
+    if n == 0 {
+        return [0.0; 3];
+    }
+    let k = n as f32;
+    [enc(acc[0] / k), enc(acc[1] / k), enc(acc[2] / k)]
+}
+
+/// Sample the pixels already rendered beneath one Hero action row.
+pub(crate) fn sample_control_ground(r: [f32; 4], may_read: bool) -> Option<[f32; 3]> {
+    unsafe {
+        if !may_read || BLUR_IN_PASS {
+            return *std::ptr::addr_of!(CONTROL_GROUND_RGB);
+        }
+        let at = (*std::ptr::addr_of!(CONTROL_GROUND_AT)).wrapping_add(1);
+        CONTROL_GROUND_AT = at;
+        if !*std::ptr::addr_of!(CONTROL_GROUND_DIRTY)
+            && (*std::ptr::addr_of!(CONTROL_GROUND_RGB)).is_some()
+            && at % CONTROL_GROUND_SAMPLE_EVERY != 0
+        {
+            return *std::ptr::addr_of!(CONTROL_GROUND_RGB);
+        }
+
+        let (gx, gy, gw, gh) = crate::surface::viewport();
+        let (sx, sy) = (gw as f32 / SCR_W, gh as f32 / SCR_H);
+        let cy = gy + gh - 1 - ((r[1] + r[3] * 0.5) * sy) as c_int;
+        let n = CONTROL_GROUND_TAP_PX as usize;
+        let mut buf = vec![0u8; n * n * 4];
+        let mut taps = [[0.0f32; 3]; CONTROL_GROUND_TAPS];
+        for (i, tap) in taps.iter_mut().enumerate() {
+            let f = (i as f32 + 0.5) / CONTROL_GROUND_TAPS as f32;
+            let x = gx + ((r[0] + r[2] * f) * sx) as c_int;
+            glReadPixels(
+                (x - CONTROL_GROUND_TAP_PX / 2).clamp(gx, gx + gw - CONTROL_GROUND_TAP_PX),
+                (cy - CONTROL_GROUND_TAP_PX / 2).clamp(gy, gy + gh - CONTROL_GROUND_TAP_PX),
+                CONTROL_GROUND_TAP_PX,
+                CONTROL_GROUND_TAP_PX,
+                GL_RGBA,
+                GL_UNSIGNED_BYTE,
+                buf.as_mut_ptr() as *mut c_void,
+            );
+            *tap = diffuse_ground_mean(buf.chunks_exact(4).map(|p| {
+                [p[0] as f32 / 255.0, p[1] as f32 / 255.0, p[2] as f32 / 255.0]
+            }));
+        }
+        CONTROL_GROUND_RGB = Some(diffuse_ground_mean(taps));
+        CONTROL_GROUND_DIRTY = false;
+        *std::ptr::addr_of!(CONTROL_GROUND_RGB)
+    }
+}
+
 /// The authored rect a blur source pass may draw into; nothing outside it can affect the result.
 static mut CULL_RECT: Option<[f32; 4]> = None;
 
@@ -3306,6 +3396,18 @@ pub(crate) fn cap_cycle(want_960: bool, buf: &mut Vec<u8>) -> Option<(c_int, c_i
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Thick diffuse material collects radiance across the WHOLE support. It must not inherit the
+    /// hue of one authored corner (the green-envelope failure), nor choose the brightest tap like the
+    /// top-bar contrast sampler: equal red and blue grounds produce their linear-light mean.
+    #[test]
+    fn control_ground_is_a_broad_linear_light_mean() {
+        let got = diffuse_ground_mean([[1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]);
+        let want = 0.735_356_9;
+        assert!((got[0] - want).abs() < 1e-5);
+        assert!(got[1].abs() < 1e-6);
+        assert!((got[2] - want).abs() < 1e-5);
+    }
 
     /// The card path's UV rect is EXACTLY the identity `vs_img.vert` used to hard-code before it
     /// took a general offset — `(a_pos - 0.5) * s + 0.5`. Graded at both ends of the quad rather

@@ -30,7 +30,7 @@
 //!
 //! **The scope hint is gone with it.** It said "Titles, people and collections in <server>." under
 //! the headline, and it was the second place on one screen to state what is being searched — the
-//! field's scope line beside the capsule is the first. The design's note is that repeating it
+//! field's scope line below the query is the first. The design's note is that repeating it
 //! "makes the screen look like it is arguing"; the consequence is that [`field::scope_text`] now
 //! states the scope for a SINGLE source too, since this line is no longer there to carry that case.
 //!

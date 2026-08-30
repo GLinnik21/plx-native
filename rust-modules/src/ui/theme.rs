@@ -249,13 +249,31 @@ pub const ACCENT_INK: [f32; 4] = NEUTRAL_950;
 /// Alias for [`ACCENT_INK`] read from the "ink over accent" intent. The one legitimate alias in this
 /// file: it is the same ROLE under a second name, not a second role that happens to share a stop.
 pub const INK_ON_ACCENT: [f32; 4] = ACCENT_INK;
+/// Fixed OKLCH lightness of a keyed focused control's lit top. The rendered ground contributes hue
+/// and a measured fraction of chroma only; it may never make the focus face darker.
+pub const CONTROL_FOCUS_FACE_L: f32 = 0.972;
+/// Fraction of the ambient key's OKLCH chroma carried by a focused face. Above roughly .45 the
+/// control reads as a coloured button instead of white material catching the page's light.
+pub const CONTROL_FOCUS_AMBIENT_C: f32 = 0.36;
+/// Pure OKLCH-lightness step from the focused face's lit top to its body. Both stops keep the same
+/// hue and chroma, so the gradient reads as glare rather than grey laid over the tint.
+pub const CONTROL_FOCUS_BODY_STEP: f32 = 0.06;
+/// Fixed OKLCH lightness of an idle control face on a keyed page.
+pub const CONTROL_IDLE_FACE_L: f32 = 0.215;
+/// Fraction of the ambient key's OKLCH chroma carried by an idle keyed face.
+pub const CONTROL_IDLE_AMBIENT_C: f32 = 0.45;
+/// Opacity of an idle keyed face. Named separately because its RGB is derived from the local key.
+pub const CONTROL_IDLE_FACE_A: f32 = 0.92;
+/// Share of the focused top retained by the spent half of a countdown control; the balance is the
+/// shelf ground, in sRGB just like the design system's `color-mix`.
+pub const CONTROL_SPENT_FOCUS_W: f32 = 0.76;
 /// The *spent* portion of a control that is counting down ([`Button::progress`](crate::ui::widgets::Button::progress)).
 /// [`ACCENT`] mixed a quarter of the way to the shelf ([`SURFACE_APP`]), NOT a different hue: the
 /// control stays focused-looking end to end, so the sweep reads as time passing rather than as the
 /// focus state changing. Deliberately close enough to `ACCENT` that [`ACCENT_INK`] stays legible on
 /// BOTH sides — the first version flipped the ink at the sweep line and cut the label in half
 /// mid-word.
-pub const CONTROL_SPENT_FILL: [f32; 4] = mix(COOL_0, NEUTRAL_500, 0.24);
+pub const CONTROL_SPENT_FILL: [f32; 4] = mix(COOL_0, NEUTRAL_500, 1.0 - CONTROL_SPENT_FOCUS_W);
 
 /// Idle (unfocused) control disc/pill fill — solid dark, faintly translucent.
 pub const CONTROL_IDLE_FILL: [f32; 4] = with_a(NEUTRAL_600, 0.92);
@@ -268,10 +286,10 @@ pub const CONTROL_IDLE_INK: [f32; 4] = WHITE;
 // Everything above assumes the ground can be SAMPLED — the page read its own artwork and a control
 // answers to it. The player cannot: the picture lives on the hardware video plane, never enters our
 // framebuffer, cannot be dimmed by a scrim and changes every frame. So the player HUD declares
-// itself `ControlGround::Unkeyed` (`widgets::ControlGround`) and the two roles below replace the two
-// the keyed ground supplies. The design system says the same thing as a CSS scope
-// (`[data-ground="unkeyed"]` in `tokens/colors.css`), which is why this is a pair of tokens and not
-// a pair of call-site literals.
+// itself `ControlGround::Unkeyed` (`widgets::ControlGround`) and the roles below replace those the
+// keyed ground supplies. The design system says the same thing as a CSS scope
+// (`[data-ground="unkeyed"]` in `tokens/colors.css`), which is why these are tokens and not
+// call-site literals.
 
 /// The idle control face on the **unkeyed** ground — a LIGHT FILM where [`CONTROL_IDLE_FILL`] is a
 /// dark plate, and the polarity is settled the hard way round.
@@ -288,6 +306,11 @@ pub const CONTROL_IDLE_INK: [f32; 4] = WHITE;
 /// Same stop as [`HAIRLINE`] and deliberately its own role — retuning a divider must not restyle
 /// every control the player draws.
 pub const CONTROL_IDLE_FILL_UNKEYED: [f32; 4] = with_a(WHITE, 0.10);
+/// The idle film's edge on the unkeyed ground. The keyed card constant ([`CARD_SHEEN`], .22 at
+/// 1px) left only a faint alpha step over the .10 film and disappeared in the TV panel's video
+/// composition. This edge keeps the same white material and 1.25px geometry as unkeyed focus, but
+/// at .34 remains clearly subordinate to focus's pure-white perimeter.
+pub const CONTROL_RIM_IDLE_UNKEYED: [f32; 4] = with_a(WHITE, 0.34);
 /// The **focused** control's edge on the unkeyed ground — the one place in the app a rim goes to
 /// pure white instead of [`CARD_SHEEN`]'s .22.
 ///
@@ -297,9 +320,9 @@ pub const CONTROL_IDLE_FILL_UNKEYED: [f32; 4] = with_a(WHITE, 0.10);
 /// reads as a moulded plastic edge, i.e. volume drawn ON the control rather than the control's own
 /// boundary.
 ///
-/// The idle face keeps the ordinary constant rim: over the ramp there is nothing to argue with.
 pub const CONTROL_RIM_FOCUS_UNKEYED: [f32; 4] = WHITE;
-/// Its stroke width — a quarter px over [`CARD_SHEEN_W`], the design's `inset 0 0 0 1.25px`.
+/// The unkeyed stroke width — a quarter px over [`CARD_SHEEN_W`], the design's
+/// `inset 0 0 0 1.25px`. Both states keep one geometry; state changes brightness, not shape.
 /// Nothing brighter than white is available to boost the crown with, which is why the unkeyed rim
 /// asks for no top weight and carries its light INWARD instead — see
 /// [`CONTROL_RIM_FOCUS_UNKEYED_GLOW`].

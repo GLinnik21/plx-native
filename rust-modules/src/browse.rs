@@ -757,7 +757,7 @@ pub(crate) fn section_count() -> usize {
 /// The LIBRARY titles this source contributed, in table order — what a source is called in
 /// CONTENT, as opposed to [`BrowseSource::name`], which is its machine and belongs in the Sources
 /// list. A friend's server is experienced as the library it gave you ("Film Club"), never as a
-/// hostname; `Search Screen.dc.html`'s scope line names it that way, and the app's own rule is
+/// hostname; `ui_kits/tv-app/SearchScreen.jsx` names its scope that way, and the app's own rule is
 /// "people in content, machines in settings".
 ///
 /// Empty while the section table is still landing, which the caller must read as "not yet known"
@@ -1915,7 +1915,7 @@ fn land_discovery() {
 ///
 /// It exists because the section table is only populated by [`pump`], which runs from the Library
 /// screen alone. A boot straight into Search therefore knew the roster ("2 sources") and not one
-/// library NAME, and the scope line beside the field — whose whole job is naming them — fell back
+/// library NAME, and the scope line below the field — whose whole job is naming them — fell back
 /// to "a shared server" forever. Cheap and idempotent: the same single-flight and per-source
 /// backoff [`pump`] relies on, so calling it every frame from a second screen costs one comparison
 /// once the answers are in.
