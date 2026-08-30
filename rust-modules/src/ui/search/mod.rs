@@ -73,10 +73,12 @@ pub(crate) mod field;
 pub(crate) mod recents;
 pub(crate) mod results;
 
-/// Field bottom (166 + one control height) plus one 40 rung — where every state's content starts,
-/// and what a scrolled shelf returns to. It moved down 18px with [`FIELD`] on 2026-08-23; the
-/// raised keyboard's clearance absorbed it (`recents`' block test still passes with 48px to spare).
-pub(crate) const CONTENT_TOP: f32 = 266.0;
+/// Where every state's content starts, and what a scrolled shelf returns to.
+///
+/// `Search Screen.dc.html`'s own derivation, and it is the SCOPE BLOCK that fixes it now rather
+/// than the field: the block's caption bottom (`SCOPE_Y` + one CAPTION line ≈ 262) plus one 40
+/// rung. It was 266 while the field was a capsule with the scope line beside it on the same row.
+pub(crate) const CONTENT_TOP: f32 = 300.0;
 /// Shelf heading to the top of its row: the 30px heading plus a 30px gap, as `home.rs` draws it.
 pub(crate) const HEAD_TO_ROW: f32 = 60.0;
 /// The caption pair reserved under every tile. Reserved whether or not it is drawn, so nothing
@@ -96,15 +98,29 @@ pub(crate) const LABEL_BLOCK: f32 = 114.0;
 /// If a firmware ever moves it, this is the one constant to re-measure (a `DISPLAY` capture with the
 /// panel up, scan a column for the discontinuity) — everything else on this screen is derived.
 pub(crate) const KEYBOARD_H: f32 = 324.0;
-/// The field: 820 wide at the app's own side margin, on the one control height.
+/// The field: **the full content width, and no capsule in it**.
 ///
-/// `x` is `consts::MARGIN_X` rather than a literal 90 — it always MEANT the app's side margin, and
-/// spelling it twice is how it stayed at 90 when the margin moved to the overscan-safe 96. `y` is
-/// 36px under `widgets::TOP_BAR_BOTTOM` (130), and moved down 18px with that bar on 2026-08-23; it
-/// is still a hand-maintained literal, which is the same shape the `x` above just stopped being —
-/// derive it the next time this screen is opened for anything else.
-pub(crate) const FIELD: Rect =
-    Rect { x: crate::ui::consts::MARGIN_X, y: 166.0, w: 820.0, h: 60.0 };
+/// It was an 820-wide control-height capsule until 2026-08-30. The design took the fill away — the
+/// query IS the type, at `size::HERO` on the flat ground — and once there is nothing to fill there
+/// is nothing to bound either: the run is the width of the page's own column, and this rect is a
+/// LINE BOX rather than a face. `field::draw` paints no plate inside it; it clips to it, which is
+/// what stops the head of an overlong query sliding out over the margin.
+///
+/// `x` is `consts::MARGIN_X` rather than the design's literal 90 — it always MEANT the app's side
+/// margin, and spelling it twice is how it stayed at 90 when the margin moved to the overscan-safe
+/// 96. `y` is `widgets::TOP_BAR_BOTTOM` + 8 and `h` is the design's 80, which is the box a 72px run
+/// sits in, not a control height.
+pub(crate) const FIELD: Rect = Rect {
+    x: crate::ui::consts::MARGIN_X,
+    y: 138.0,
+    w: crate::ui::consts::SCR_W - 2.0 * crate::ui::consts::MARGIN_X,
+    h: 80.0,
+};
+/// The scope block's top — the field's own fact, UNDER the query now.
+///
+/// A 72px line has no right-hand half to put a caption in, which is the whole reason it moved: the
+/// scope line used to sit at x=950 on the capsule's row, in the space the capsule did not use.
+pub(crate) const SCOPE_Y: f32 = FIELD.y + FIELD.h + 12.0;
 /// Where the app's own chrome ends and the result band begins — the field's bottom edge.
 ///
 /// It is the navigation scrim's OPAQUE floor: [`crate::ui::widgets::nav_scrim`] fills flat from the
@@ -113,7 +129,7 @@ pub(crate) const FIELD: Rect =
 /// must stay one number — the argument [`draw`] passes that function, and the floor
 /// [`results`] records its pointer rects against. A tile the user cannot see is a tile the pointer
 /// must not be able to reach.
-pub(crate) const CHROME_BOTTOM: f32 = FIELD.y + FIELD.h;
+pub(crate) const CHROME_BOTTOM: f32 = SCOPE_Y + field::SCOPE_H;
 /// Terms kept. **Five**, which is `Search Screen.dc.html`'s number and was four here for a reason
 /// that turned out to be arithmetic against a wrong constant: the header, the rows and the Clear
 /// control all have to finish above the raised keyboard, and [`KEYBOARD_H`] claimed a panel 56px
@@ -122,7 +138,13 @@ pub(crate) const CHROME_BOTTOM: f32 = FIELD.y + FIELD.h;
 ///
 /// The sixth is DROPPED, not scrolled — a list you cannot see the end of asks to be paged, and
 /// there is no paging in this product.
-pub(crate) const MAX_RECENTS: usize = 5;
+///
+/// **Four**, which is the design's own number again and its own arithmetic: with [`CONTENT_TOP`]
+/// at 300 the block runs 300 + header 58 + 4×60 + 24 + a 60 control = 682 against a raised panel
+/// whose top edge is at 756. It was five while `CONTENT_TOP` was 266 — the count is a consequence
+/// of where the content starts, not a preference, and `recents`' own test grades the clearance
+/// rather than the number.
+pub(crate) const MAX_RECENTS: usize = 4;
 
 /// The RESULT BAND's content cross-fade — the Library's [`Xfade`] doing the same job one screen
 /// over. A query change replaces everything below the field, and a replacement that CUTS reads as

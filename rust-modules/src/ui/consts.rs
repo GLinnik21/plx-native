@@ -218,7 +218,7 @@ pub fn is_back(sym: c_uint, wcode: c_uint) -> bool {
 
 /// One press, in the vocabulary `app.rs`'s key ladder dispatches on — resolved by [`classify`]
 /// from the TWO independent fields a webOS `SDL_KeyboardEvent` carries (the SDL `sym` at +24 and
-/// the webOS `wcode` at +20; the raw-offset reading is a gotcha in the root `CLAUDE.md`).
+/// the webOS `wcode` at +20; the raw-offset reading is a gotcha in `docs/agent-reference.md`).
 ///
 /// [`Key::Other`] is every press `classify` does not name, which includes spellings the ladder
 /// still tests by hand where it needs them: the CH▲/CH▼ rocker ([`WCODE_CH_UP_KEY`]/

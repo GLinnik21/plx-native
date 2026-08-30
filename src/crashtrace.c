@@ -325,4 +325,3 @@ void plx_crash_install(int ev_fd, int cr_fd) {
     setrlimit(RLIMIT_CORE, &(struct rlimit){ 0, 0 });
 #endif
 }
-

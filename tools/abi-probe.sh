@@ -13,7 +13,7 @@
 # SONAMEs, so THE LINK ALWAYS SUCCEEDS — a symbol that does not exist on the device, or a
 # struct offset taken from upstream headers that do not match this build, fails only at
 # runtime, as a wrong value or a SIGSEGV, on a device with no debugger. Prove it here first.
-# See .claude/skills/bind-tv-lib-abi/SKILL.md for the full procedure.
+# See .agents/skills/bind-tv-lib-abi/SKILL.md for the full procedure.
 #
 # The TV itself has no binutils (only `strings`), so every inspection runs HOST-side with
 # the NDK's cross binutils against a pulled copy. Copies are cached in .abi-cache/

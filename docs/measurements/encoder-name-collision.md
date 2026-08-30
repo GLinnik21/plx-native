@@ -148,7 +148,7 @@ operation, which grades the position series from the target ONWARD — the only 
 post-seek death is visible at all. Replayed again: pre-fix **FAIL** on both, post-fix **PASS** on
 all six.
 
-The general form is now a rule at the head of `CLAUDE.md`'s testing section. The mechanical part
+The general form is now a rule at the head of `docs/agent-reference.md`'s testing section. The mechanical part
 worth repeating: **keep the failing run's log**, because "would this test have caught it" is a
 question a fixed build cannot answer, and replaying a case's real assertions over a saved
 `plxnative-events.log` costs seconds.

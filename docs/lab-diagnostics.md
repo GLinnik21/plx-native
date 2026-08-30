@@ -213,7 +213,7 @@ budget is declared in `appinfo.json`, which is why both caps exist rather than a
 **The overlay**: `Uploading diagnostics…` → `Diagnostics uploaded (142 KB)` / `Upload failed: <reason>`,
 auto-dismissing after ~4 s, drawn from `theme` tokens through the existing `Label`/card widgets, and
 calling `ui::idle::invalidate()` on every state change — it animates from a clock, not a spring, so
-the present gate cannot see it otherwise (root `CLAUDE.md`, the `Xfade`/`Spinner` precedent).
+the present gate cannot see it otherwise (`docs/agent-reference.md`, the `Xfade`/`Spinner` precedent).
 
 **Threading.** `Diag` is main-thread-only by contract, so the snapshot is built on the SDL thread
 (one ring clone, sub-millisecond) and *moved* into the worker. Gzip and the blocking curl call
@@ -244,7 +244,7 @@ channel:
 `net.rs` change: the body of `request` gains an internal `pin: Option<&CStr>` parameter; the
 existing `request` passes `None` (no behaviour change, one line), and the `#[cfg(feature =
 "lab-diagnostics")] post_pinned(...)` wrapper serves both upload and control. Handed to the **`fw-compat-reviewer`**
-before push, per the root `CLAUDE.md`, because it touches the curl seam.
+before push, per `docs/agent-reference.md`, because it touches the curl seam.
 
 **Compression** is `compress2` from libz, bound through `dynlib!` as its own one-symbol table (libz
 is present wherever libcurl and OpenSSL are, and on macOS). All-or-nothing loading means a set

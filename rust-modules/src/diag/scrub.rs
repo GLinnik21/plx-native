@@ -17,7 +17,7 @@
 //! * [`scrub_local`] **rewrites only and never drops.** It is what the on-disk event log gets. A
 //!   line silently vanishing from `plxnative-events.log` is strictly worse for debugging than a
 //!   leaky one — that file is what `make run`, `tests/run.py`'s assertions and `crash-triage` all
-//!   read, and the root CLAUDE.md calls it "the primary debugging surface".
+//!   read, and `docs/agent-reference.md` calls it "the primary debugging surface".
 //!
 //! So: rewrite locally, rewrite-or-refuse remotely, and never a second scrubber anywhere.
 

@@ -35,7 +35,7 @@
 //!
 //! # Sending twice is worse than not sending
 //!
-//! `plxnative-crash.log` is append-only and survives relaunch **by design** — CLAUDE.md calls it the
+//! `plxnative-crash.log` is append-only and survives relaunch **by design** — `docs/agent-reference.md` calls it the
 //! thing to read after a crash-and-restart, and `tools/crash-report.sh` parses it. So this module
 //! may not truncate it. Instead it records how many bytes it has already reported and skips them,
 //! which means a human and this module can both read the file without either disturbing the other.

@@ -439,7 +439,7 @@ fn decode_text_at(ev: &[u8], off: usize) -> String {
 /// SDL this branch is unreachable, and `encode_event` cuts on a boundary too, which is why nothing
 /// the simulator or the `txt:` token can drive reaches it either. Whether **LG's fork** does the
 /// same is a question for the television's own `libSDL2`, not for a header or another client:
-/// `.claude/skills/decompile-tv-lib/` is how the `+16 inputSource` offset above was settled, and it
+/// `.agents/skills/decompile-tv-lib/` is how the `+16 inputSource` offset above was settled, and it
 /// is how this would be. Until then the branch costs one comparison and cannot make a correct
 /// commit wrong.
 fn drop_cut_tail(b: &[u8]) -> &[u8] {

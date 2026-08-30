@@ -210,7 +210,7 @@ fn read_head(path: &str) -> Option<Vec<u8>> {
 /// **The GNU build id of the running binary, as lowercase hex** — the only thing that can pair a
 /// crash report with the `plxnative.debug` a release cut and uploaded.
 ///
-/// `-Wl,--build-id=sha1` is unconditional on every link (CLAUDE.md: it costs 20 bytes and `strip`
+/// `-Wl,--build-id=sha1` is unconditional on every link (`docs/agent-reference.md`: it costs 20 bytes and `strip`
 /// preserves it), and a debuginfo build and a plain one produce DIFFERENT ids from identical
 /// sources — which is why `SYMBOLS` is in the `RUST_CFG` stamp, and why this has to be read from
 /// the binary that is actually running rather than baked in at compile time by anything.

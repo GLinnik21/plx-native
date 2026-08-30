@@ -41,11 +41,18 @@ focus capsule with them instead of being a separate colour story.
 
 ### The layout is dictated by the keyboard
 
-The TV's own panel covers the bottom ~380px (`ui/search/mod.rs`'s `KEYBOARD_H`). The rule the
-numbers come from: **with the keyboard raised, nothing the app owns hides behind it.** The field
-(`FIELD`, 820×60 at the app's side margin), the first shelf's heading and that shelf's full row of
-posters are sized to land exactly on its top edge — `CONTENT_TOP` 248 + `HEAD_TO_ROW` 60 + a
-375-tall poster = 699, against a 1080-tall authored surface with 380 taken.
+The TV's own panel covers the bottom **324px**, MEASURED off four device captures (`ui/search/mod.rs`'s
+`KEYBOARD_H`; it was a 380px guess until 2026-08-15). The rule the numbers come from: **with the
+keyboard raised, nothing the app owns hides behind it.** The field, the first shelf's heading and
+that shelf's full row of posters are sized to land above its top edge — `CONTENT_TOP` 300 +
+`HEAD_TO_ROW` 60 + a 375-tall poster = 735, against a panel edge at 756.
+
+Both of those numbers have moved since this section was first written, and in opposite directions:
+the keyboard turned out to be 56px shorter than the guess, and `CONTENT_TOP` moved down twice — once
+with the top bar, and once when the field stopped being an 820×60 capsule and became a full-width
+`size::HERO` line with its scope block underneath. What did not move is the rule, and
+`results.rs`'s `the_first_shelfs_whole_row_clears_the_raised_keyboard` is where the arithmetic is
+graded rather than described.
 
 That is also why **nothing scrolls while the panel is up**: the result set has to be stable under
 the user's eyes while they are still typing.

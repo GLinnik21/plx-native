@@ -90,7 +90,7 @@ fn set_phase(p: u8, detail: String) {
     );
     // A toast is a clock-driven overlay, not a spring — `ui::idle::note_spring` cannot see it, and
     // an uninvalidated one appears only on the next keypress (the failure mode `Xfade` and
-    // `Spinner` both shipped with; see the root CLAUDE.md's note on the present gate).
+    // `Spinner` both shipped with; see `docs/agent-reference.md`'s note on the present gate).
     crate::ui::idle::invalidate();
 }
 

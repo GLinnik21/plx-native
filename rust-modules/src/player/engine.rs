@@ -34,7 +34,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 //     it. What it does with it there is still inferred, not traced.
 //   * `option.appId` in the Load payload, this key, has NOT been traced into `libpf` at all.
 //     `tools/fwcompat.py` is a symbol inventory and a JSON key path lives in `.rodata`, so no tool
-//     in this repository can answer it; `.claude/skills/decompile-tv-lib/` is the only route, and
+//     in this repository can answer it; `.agents/skills/decompile-tv-lib/` is the only route, and
 //     `docs/two-installs.md` §7 states the question rather than an answer.
 //
 // So: sending the true id is the conservative move on a field whose consumer is unknown, not a fix

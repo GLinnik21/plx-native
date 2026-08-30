@@ -528,7 +528,7 @@ class DefaultTier(unittest.TestCase):
                               capture_output=True, text=True, timeout=120)
 
     def test_the_bare_command_is_the_synthetic_tier(self):
-        """Documented in three places (tests/README.md, CLAUDE.md, --help); pinned in one."""
+        """Documented in three places (tests/README.md, docs/agent-reference.md, --help); pinned in one."""
         out = self._list()
         self.assertIn("pipe_", out.stdout, "a bare --list must show the synthetic cases")
         self.assertNotIn("dp_h264_ac3_1080p", out.stdout,

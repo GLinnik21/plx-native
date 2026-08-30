@@ -87,7 +87,7 @@ fn props(e: DiagEvent, environment: &str) -> serde_json::Map<String, serde_json:
 /// **The timestamp is optional, and omitting it is the RIGHT default on this hardware.**
 ///
 /// `timestamp` is optional in PostHog's API; when it is absent the server stamps the event on
-/// arrival. This television's wall clock runs about three hours off — `CLAUDE.md`'s crash-forensics
+/// arrival. This television's wall clock runs about three hours off — `docs/agent-reference.md`'s crash-forensics
 /// note measures it, and it is why every correlation in this repository is done on monotonic
 /// `SDL_GetTicks` rather than pmlog time. Sending that clock would make every event wrong by hours
 /// in whichever direction the skew runs, and wrong in a way nothing downstream could detect or

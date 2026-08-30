@@ -305,7 +305,7 @@ LIBS_REAL = -lSDL2 -lSDL2_ttf -lGLESv2 -lluna-service2 -lglib-2.0 \
 # survived the bundling by 100 lines. Left alone it points the next reader at version tolerance we
 # no longer need and at a library we no longer use — which is how "just use the TV's libavformat
 # for https" keeps coming back, when the copy we ship is configured --disable-network and cannot
-# open a URL at all. Root CLAUDE.md's "Linking" section carries the same account at length.
+# open a URL at all. `docs/agent-reference.md`'s "Linking" section carries the same account at length.
 
 # Rust-first build. The app is Rust (rust-modules/, compiled to a staticlib and
 # linked in); C is only main.c (boot shim) + starfish.c (the StarfishMediaAPIs

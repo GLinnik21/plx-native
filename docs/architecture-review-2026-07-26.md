@@ -406,7 +406,7 @@ so they are recorded with the reason.
   `browse::reset()` wedge, the Makefile dependency gaps, the fontless ipk, the non-atomic
   `g_smp_ready`, the absent lint gate, and the two libc calls that block a host `cargo test`.
 - **Not audited:** `tools/stream-screen.py` and `tests/run.py` internals beyond their interfaces,
-  the `vendor/nanosvg` source, `src/gpdebug.c`, the `.claude/skills/` content, the stale `rust-poc/`
+  the `vendor/nanosvg` source, `src/gpdebug.c`, the `.agents/skills/` content, the stale `rust-poc/`
   tree, and the GLSL beyond the dead `u_focus` branch. Nothing was run on the TV for this review.
 
 ---
@@ -541,7 +541,7 @@ auditor): its oracle would be the stock headers that disagree with the device. �
 `NDK_REL ?= webos-d7ed7ee.6`; `Makefile:90` is a bare `cargo +nightly build -Z build-std=…`. There
 is no `rust-toolchain.toml` and no `.cargo/config.toml` anywhere in the tree, and `rust-src` — a
 hard prerequisite of `-Z build-std` — exists only as prose (`CLAUDE.md:27`,
-`.claude/skills/setup-environment/SKILL.md:45-46`), so a fresh machine fails inside cargo. The
+`.agents/skills/setup-environment/SKILL.md:45-46`), so a fresh machine fails inside cargo. The
 installed nightly is `1.98.0-nightly (c397dae80 2026-07-02)`; **do not** use the
 `nightly-2026-06-26` in the original finding — that string is a stable `rustc --version`, misread.
 Two corrections to the finding's rationale: the CP15/SIGILL behaviour is governed by
@@ -551,7 +551,7 @@ missing is a rollback point and the `rust-src` auto-install. Keep
 `PATH="$$HOME/.cargo/bin:$$PATH"` at `Makefile:89`; it locates cargo and has nothing to do with
 channel selection. → **Wave 0**, alongside item 2's `.cargo/config.toml`
 
-**A9 — the root `CLAUDE.md` undercounts the playback workers, omitting the one that causes §2.3's
+**A9 — `docs/agent-reference.md` undercounts the playback workers, omitting the one that causes §2.3's
 second race.** `CLAUDE.md:97` says "Two worker threads (demux, media/load)". `engine.rs` spawns
 three — `:294` `ff::demux`, `:305` `load_thread`, `:315` `timeline_thread` — and joins three
 (`:486-494`). The third is the ~10 s timeline reporter, and it is exactly the thread that reads
@@ -661,7 +661,7 @@ Recorded so the next reviewer does not re-derive them. Read with §5.
   demand-paged, and the removed code is dead/duplicated. It also drops FUNC symbols 10,672 → 2,526,
   degrading `tools/crash-report.sh` — the only symbolication path, which has no DWARF in release
   and calls `addr2line` without `-i`. Worth doing for deploy speed, bundled with that mitigation.
-- **The build needs a stub-symbol/device ABI gate.** `.claude/skills/bind-tv-lib-abi/SKILL.md` is
+- **The build needs a stub-symbol/device ABI gate.** `.agents/skills/bind-tv-lib-abi/SKILL.md` is
   that gate, by design, and all 21 avcodec stub symbols probe PRESENT today. Wiring it into
   `deploy` puts an ssh/cache dependency on `make test`.
 - **`make clean` must also wipe `rust-modules/target`.** 3.5 GB and `-Z build-std` means the next

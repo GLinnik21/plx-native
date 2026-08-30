@@ -70,7 +70,7 @@ impl Remote {
                 // The errno is the diagnosis, precisely because the `mkfifo` above ignores EEXIST
                 // on purpose: `open` therefore attaches to whatever object already sits at this
                 // path, and errno is what says what was wrong with it. EACCES is the hazard
-                // CLAUDE.md already records for the event log — "never pre-create the event log
+                // `docs/agent-reference.md` already records for the event log — "never pre-create the event log
                 // on the TV — a root-owned file left in place is one it cannot write" — reaching
                 // the same 1777 `/tmp` from the same jailed uid, one path over.
                 //

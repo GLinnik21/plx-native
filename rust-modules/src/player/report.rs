@@ -149,7 +149,7 @@ fn mode() -> &'static str {
 /// the DIFFERENCE of two readings is ever used, so any monotonic origin will do.
 ///
 /// Never a wall clock either way: pmlog's on this television runs about three hours off, which is
-/// why CLAUDE.md says to correlate a crash by monotonic time and not by time of day.
+/// why `docs/agent-reference.md` says to correlate a crash by monotonic time and not by time of day.
 fn now_ms() -> i64 {
     static ORIGIN: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
     ORIGIN.get_or_init(std::time::Instant::now).elapsed().as_millis() as i64

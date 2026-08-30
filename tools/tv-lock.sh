@@ -39,7 +39,7 @@
 # lease minted against it would expire in the past or three hours late. Hosts are NTP-synced to
 # each other; the television is not synced to anything that matters here.
 #
-# See .claude/skills/tv-lock/SKILL.md for the workflow, and CLAUDE.md's testing section for what
+# See .agents/skills/tv-lock/SKILL.md for the workflow, and docs/agent-reference.md's testing section for what
 # the lock does and does not protect (it cannot see a human watching a film with the remote).
 set -uo pipefail
 
@@ -290,7 +290,7 @@ need_host() {
 ensure_awake() {
   ssh_tv true && return 0
   info "TV not answering — waking (Wake-on-LAN)"
-  TV_HOST="$HOST" "$REPO/.claude/skills/wake-tv/wake-tv.sh" >/dev/null 2>&1
+  TV_HOST="$HOST" "$REPO/.agents/skills/wake-tv/wake-tv.sh" >/dev/null 2>&1
   ssh_tv true
 }
 
@@ -410,7 +410,7 @@ cmd_renew() {
   esac
 }
 
-# The pre-flight the CLAUDE.md block used to spell by hand. It answers the OTHER half of the
+# The pre-flight the agent-reference block used to spell by hand. It answers the OTHER half of the
 # question the lock cannot: a lease says no other LOCKED job is on the set, and this says whether
 # anybody is on it anyway — an older job, a colleague, a human with the remote.
 preflight_note() {

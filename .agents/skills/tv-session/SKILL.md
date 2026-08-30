@@ -1,20 +1,13 @@
 ---
 name: tv-session
 description: >
-  Boot the app on the LG webOS dev TV into a chosen screen, look at it, drive it live,
-  and hand the TV back. Use whenever a change must be seen or verified on the device:
-  "show me the home screen", "screenshot the library grid", "does this UI change look
-  right", "reproduce it on device", "click through the detail page", "give me a live view
-  of the TV", "run it and show me the log", "I want the TV back". ALSO covers watching and
-  driving the TV from OFF-NETWORK — "let me test it from my phone", "I'm not at home",
-  "open it in Safari", "can you forward a port / open a port on the router", "improve the
-  streaming fps" — via `up --remote`, which publishes an authenticated D-pad-only page over
-  an HTTPS tunnel (and explains why a router port forward is the wrong answer here). Covers
-  the /tmp/plxnative-* boot triggers (which screen each reaches, and why a stale one silently
-  changes what you are looking at), token/picker boot gating, the remote FIFO for live key
-  and click injection, and which capture source can actually see the video plane. Use this
-  instead of generic run/verify patterns — this is a cross-compiled ARM TV binary with no
-  host runtime, so behaviour is the only test.
+  Boot the app on the LG webOS dev TV into a chosen screen, inspect it, drive it live, collect
+  screenshots or logs, and hand the TV back. Use for on-device UI or playback verification,
+  reproducing a bug on the set, navigating a live screen, capturing the video plane, or giving
+  the user a live view. Also covers off-network phone/Safari access through the authenticated
+  `up --remote` HTTPS tunnel, the `/tmp/plxnative-*` boot triggers, token and profile-picker boot
+  gates, remote key/click injection, and capture-source choice. Use this instead of generic
+  run/verify commands when behavior must be proven on the cross-compiled ARM television.
 ---
 
 # Working on the TV
@@ -206,8 +199,8 @@ the remote FIFO (`tv-session.sh key` / `click`).
    used to spell out, and a count written here rots without anything failing.
 
 **The catalog is the source, not a doc.** There are ~40 triggers worth knowing and
-`CLAUDE.md` highlights only the common ones. **Run the two-part catalog command from
-`CLAUDE.md`** (the "The catalog is the source, not this list" bullet) rather than any copy —
+`docs/agent-reference.md` highlights only the common ones. **Run the two-part catalog command from
+`docs/agent-reference.md`** (the "The catalog is the source, not this list" bullet) rather than any copy —
 it is deliberately not transcribed here, because it has already been transcribed once too often.
 What it gives you is the set of **names**, which is the same for both installs; the `/tmp`
 literals inside it are just where the stable install's root is.

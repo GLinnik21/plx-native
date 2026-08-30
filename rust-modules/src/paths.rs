@@ -506,7 +506,7 @@ pub(crate) fn telemetry_spool_candidates() -> Vec<PathBuf> {
 /// How much of the append-only crash log has already been reported, beside the spool.
 ///
 /// **A watermark rather than a truncation, and that is the whole reason this file exists.**
-/// `plxnative-crash.log` is append-only and survives a relaunch BY DESIGN — CLAUDE.md names it the
+/// `plxnative-crash.log` is append-only and survives a relaunch BY DESIGN — `docs/agent-reference.md` names it the
 /// thing to read after a crash-and-restart and `tools/crash-report.sh` parses it — so the telemetry
 /// reader may not consume it. Recording a byte offset lets a human and this module read the same
 /// file without either disturbing the other.

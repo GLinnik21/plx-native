@@ -41,7 +41,7 @@
 //!
 //! * **Decoder/render health.** This television publishes no trustworthy dropped-frame or
 //!   decoder-starvation counter — the heartbeat's `vtick=`/`vgap=` pair counts a 5 Hz position
-//!   callback and reads flat straight through a visible stutter (see the CLAUDE.md instrument
+//!   callback and reads flat straight through a visible stutter (see the `docs/agent-reference.md` instrument
 //!   note). A proxy invented here would be an unfalsifiable input to every decision below, so
 //!   candidate feasibility asks the device's codec table (a fact) and nothing asks the decoder
 //!   how it feels.

@@ -573,7 +573,7 @@ def tv_awake(tv, timeout=8):
 def require_tv(tv, name):
     """**A sleeping television is not a test result.** Abort the run instead of grading it.
 
-    This set drops to standby on its own (`.claude/skills/wake-tv/`), and when it does mid-suite
+    This set drops to standby on its own (`.agents/skills/wake-tv/`), and when it does mid-suite
     EVERY assertion of every remaining case fails at once — `stream_path`, `load_decl`, `codec`,
     `video_bound`, `pos_climb`, `server_wire` — because the app never launched and the log is a
     boot banner. Measured 2026-08-28: a 19-case ABR tier reported **14 failures** that way, four
@@ -590,7 +590,7 @@ def require_tv(tv, name):
     sys.exit(
         f"\nTELEVISION UNREACHABLE before `{name}` — stopping rather than grading.\n"
         f"  Every assertion would fail at once and would read as a code regression.\n"
-        f"  Wake it and re-run:  .claude/skills/wake-tv/wake-tv.sh\n"
+        f"  Wake it and re-run:  .agents/skills/wake-tv/wake-tv.sh\n"
     )
 
 

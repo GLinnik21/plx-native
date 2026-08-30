@@ -58,7 +58,7 @@
 # "running" state so a launch without a close-first is a no-op — and there are now TWO installs
 # on the one television, so every step also has to say which of them it meant, or the ticks below
 # are green against the other app's log. This asserts each step instead of assuming it.
-# See .claude/skills/tv-session/SKILL.md.
+# See .agents/skills/tv-session/SKILL.md.
 #
 # Config: TV host from $TV, else the Makefile's TV default. The app id, the install directory
 # and the runtime root are ASKED FOR (`make -s print-…`), never restated here — see the block
@@ -180,7 +180,7 @@ app_pids() {
 # WRONG data (an fps number measured while somebody else's binary was deployed underneath, a
 # capture of a screen the other job navigated away from). Every subcommand here that DRIVES the
 # set goes through the lock; the two read-only ones only say who is on it. tools/tv-lock.sh is the
-# mechanism and .claude/skills/tv-lock/SKILL.md is the workflow.
+# mechanism and .agents/skills/tv-lock/SKILL.md is the workflow.
 LOCKTOOL="$REPO/tools/tv-lock.sh"
 require_lock() {  # $1 = what this session is for, for the holder read-out
   [ -x "$LOCKTOOL" ] || return 0
@@ -199,7 +199,7 @@ info() { printf '  · %s\n' "$*"; }
 ensure_awake() {
   if tvq true; then ok "TV reachable"; return 0; fi
   info "TV asleep — waking"
-  "$REPO/.claude/skills/wake-tv/wake-tv.sh" >/dev/null 2>&1
+  "$REPO/.agents/skills/wake-tv/wake-tv.sh" >/dev/null 2>&1
   if tvq true; then ok "TV woken"; return 0; fi
   bad "TV unreachable (see the wake-tv skill)"; return 1
 }

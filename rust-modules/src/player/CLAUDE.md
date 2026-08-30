@@ -4,7 +4,7 @@ This is the in-process **buffer-feed** playback engine (was `src/playback.c`): i
 stream, demuxes it to access units, and `Feed()`s them to LG's StarfishMediaAPIs while `libAcbAPI`
 binds the decoded sink to the hardware video plane. The Starfish/ACB calls cross into C at the seam
 `src/starfish.c` (outside this dir — edits there almost always pair with edits here); the **ABI and
-bind-order gotchas for that seam live in THIS file**, below. The root `CLAUDE.md` carries only the
+bind-order gotchas for that seam live in THIS file**, below. `docs/agent-reference.md` carries only the
 one-paragraph playback summary.
 
 ## Pipeline
@@ -24,7 +24,7 @@ different mechanism per arm: `engine::teardown` fires `stream::http_shutdown` at
 is not one any `shutdown(2)` of ours can reach. Exactly one of the two ever has anything to do. Ours ships beside the binary as `libav*-plx.so.*`, is `dlopen`'d by absolute path
 and pinned to majors 63/63/61, and is built `--disable-network` with `file` as its only protocol —
 so the AVIO is not merely how bytes reach it today, it is the only way they *can*. See the root
-`CLAUDE.md` linking section for why. It
+`docs/agent-reference.md` linking section for why. It
 emits Annex-B video AUs (param sets prepended at each keyframe) and raw AC3/EAC3/AAC audio frames,
 and seeks by time via `av_seek_frame` (libavformat's own Cues index).
 
@@ -113,7 +113,8 @@ the seam or the Engine, so its presence in a signature keeps meaning something.
   `av_read_frame` never returns an error, so the reopen never happens and the seek never lands —
   it just runs out the stuck-watchdog on pre-seek packets and escalates to a full reload. This
   survived a long time because the test suite's cases inherited a server-side `viewOffset`, so the
-  seek under test usually had nowhere to go (fixed 2026-07-28; see the root `CLAUDE.md` testing note).
+  seek under test usually had nowhere to go (fixed 2026-07-28; see the
+  `docs/agent-reference.md` testing note).
 - **Seeks are in-place** (Kodi-style): flush + `av_seek_frame` to the target,
   then on the first post-seek keyframe `feed_stream` re-anchors the GStreamer segment
   (`setTimeToDecode` + `sendSegmentEvent`) — no reload/decoder re-init. A transcode seek instead
@@ -126,7 +127,8 @@ the seam or the Engine, so its presence in a signature keeps meaning something.
   `frames` in the presented callback, cleared **only** in `reset_session`. The HUD divides its two
   busy indicators on it (`ui::player_hud::busy_surface`); anything else asking "has this session put
   a picture on the panel" wants `player::seen_frame()`, not `frames() > 0`.
-- **App-switch lifecycle** (handled in `app.rs`; details in the root `CLAUDE.md` gotchas): OS
+- **App-switch lifecycle** (handled in `app.rs`; details in the
+  `docs/agent-reference.md` gotchas): OS
   background suspends the buffer-feed preserving the session, foreground reloads and resumes with a
   single `Load`. Preserve the suspend/reload pairing if you touch playback.
 
@@ -146,4 +148,4 @@ everything on `dynlib!` those are gone, so a test that actually calls FFmpeg now
 Linux, which is why `tools/sockprobe.c` exists. So anything about *playback behaviour* is only
 observable on device: deploy and read `/tmp/plxnative-events.log` (feed stats, bind steps,
 seek/rebase, `RECEIVE_GOOD_VIDEO`). The `tests/` harness drives real playback per case — see the root
-`CLAUDE.md` testing section (run as GUEST by default; never run two harness jobs at once).
+`docs/agent-reference.md` testing section (run as GUEST by default; never run two harness jobs at once).

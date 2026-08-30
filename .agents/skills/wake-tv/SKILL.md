@@ -19,9 +19,9 @@ All paths below are relative to the repo root.
 ## Run (the only path)
 
 ```bash
-.claude/skills/wake-tv/wake-tv.sh            # wake + wait for ssh; no-op if already up
-.claude/skills/wake-tv/wake-tv.sh status     # one probe: UP/DOWN (exit 0 = up)
-.claude/skills/wake-tv/wake-tv.sh standby    # clean standby (for testing the cycle)
+.agents/skills/wake-tv/wake-tv.sh            # wake + wait for ssh; no-op if already up
+.agents/skills/wake-tv/wake-tv.sh status     # one probe: UP/DOWN (exit 0 = up)
+.agents/skills/wake-tv/wake-tv.sh standby    # clean standby (for testing the cycle)
 ```
 
 Verified live (three real cycles): wake from **overnight** standby took **18 s**;
@@ -61,7 +61,7 @@ no `wakeonlan` binary on a stock Mac) and working SSH auth to the TV.
   either way, and it matters more since the runtime root moved: a flavoured install keeps its
   whole root there (`/tmp/<app id>`: triggers, FIFO, logs), and the stable install keeps its
   triggers and all three logs directly in `/tmp`. A wipe would also contradict what three places
-  promise about `plxnative-crash.log` being append-only and surviving a relaunch (`CLAUDE.md`,
+  promise about `plxnative-crash.log` being append-only and surviving a relaunch (`docs/agent-reference.md`,
   `crash-triage`, `docs/two-installs.md` §3.1) — though "survives the relaunch" and "survives a
   power cycle" are different claims, and only the first has ever been exercised.
   *Settled by:* before going to standby, note `md5sum` and size of `<rundir>/plxnative-crash.log`

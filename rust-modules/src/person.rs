@@ -1084,7 +1084,7 @@ fn fetch_profile(guid: &str) -> Option<crate::plex::discover::PersonProfile> {
 
 /// HOST SUITE: this is the crate's TLS seam, and the dev Mac has no libcurl to satisfy it — a test
 /// that merely *reaches* this function fails to **link**, not to assert (the boundary the root
-/// `CLAUDE.md` calls structural limit #1, and the reason `ff.rs` cfg-gates its `#[link]`s). `pump`
+/// `docs/agent-reference.md` calls structural limit #1, and the reason `ff.rs` cfg-gates its `#[link]`s). `pump`
 /// is called by tests, so the reference has to be cut here rather than avoided by discipline.
 /// Everything downstream of the request — the mailbox, the generation guard, the unknown-vs-failed
 /// distinction and the roles mapping — is exercised directly through [`land`]/[`pump`]/[`roles_line`],

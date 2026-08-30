@@ -2289,7 +2289,7 @@ fn draw_backdrop(p: Painter, m: Option<&PmsMovie>, scroll: f32, amb: AmbientWash
         // frame whose aspect and resolution we do not control, and a squashed face is worse than a
         // cropped one. `Rect::cover` is a no-op on a 16:9 source, so an ordinary show/movie backdrop
         // is pixel-identical to before, and it returns the frame unchanged while the size is still 0
-        // (the pre-decode window). Not snapped: scaled content never is (root `CLAUDE.md`'s
+        // (the pre-decode window). Not snapped: scaled content never is (`docs/agent-reference.md`'s
         // rasterization contract) and the cover rect is fractional by construction.
         let frame = Rect::FULL.cover(art_w, art_h);
         p.tex(art_tex, frame, 0.0, theme::with_a(theme::dim(theme::TINT_WHITE, d), art_a)); // white dimmed by scroll `d`
@@ -4323,7 +4323,7 @@ fn related_tile_rect(i: usize) -> Option<Rect> {
 /// The split is not cosmetic. `section_screen_top` walks the `ScrollColumn` flow, which sums
 /// `block_h` over the present blocks, and `block_h(2)` measures an episode's title through
 /// `TextView` — i.e. through SDL_ttf. That is a native library the host suite has no link for, so a
-/// test that called the wrapper would not fail an assertion, it would fail to LINK (`CLAUDE.md`'s
+/// test that called the wrapper would not fail an assertion, it would fail to LINK (`docs/agent-reference.md`'s
 /// structural limit #1). Everything worth grading here is in this function; the wrapper is two
 /// lookups.
 fn related_tile_rect_at(i: usize, top: f32, scroll_x: f32) -> Rect {

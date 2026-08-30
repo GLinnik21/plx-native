@@ -313,7 +313,7 @@ library you care about — which is what `test_user` is for.
 ## Prerequisites
 
 - The same toolchain the main dev loop needs: the webOS NDK (`make setup-env`), `sshpass`,
-  and (for `--build`) the Rust nightly + `rust-src` (see the repo `Makefile` / `CLAUDE.md`).
+  and (for `--build`) the Rust nightly + `rust-src` (see the repo `Makefile` / `docs/agent-reference.md`).
 - `tests/manifest.local.json` present — `cp tests/manifest.local.json.example` and fill in the
   PMS host/port, the TV address, `test_user`, and **as many `item` ratingKeys as your library can
   actually supply**; leave the rest bracketed and the cases that need them are skipped (below).
