@@ -231,6 +231,18 @@ Two things worth knowing first:
   computer draws a pixel or decodes a frame, so a green host suite proves less than it looks like
   it does. Say in the PR what you verified and how.
 
+## Acknowledgements
+
+<a href="https://sentry.io/for/good/">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/sentry-wordmark-light.svg">
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/sentry-wordmark-dark.svg">
+    <img alt="Sentry" src="docs/assets/sentry-wordmark-dark.svg" width="160">
+  </picture>
+</a>
+
+Error monitoring for PlxNative is sponsored by [Sentry](https://sentry.io/for/good/).
+
 ## Licence
 
 [MIT](LICENSE), © 2026 Gleb Linnik.

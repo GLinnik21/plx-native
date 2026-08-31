@@ -723,6 +723,18 @@ pub(crate) fn report_pending(native_crashes: &[super::native::CrashKey]) {
     }
 }
 
+/// Make crash consent prospective. When error reporting is switched on, faults already present in
+/// the append-only local log belong to the period in which no upload was authorised. Advancing the
+/// private watermark before publishing the new consent keeps those local diagnostics local while
+/// allowing the next crash to be reported normally.
+pub(crate) fn discard_pending_before_opt_in() {
+    let path = crate::paths::in_runtime_dir("plxnative-crash.log");
+    let Ok(meta) = std::fs::metadata(path) else {
+        return;
+    };
+    write_mark(meta.len());
+}
+
 /// Where in the crash log to start reading, given its size and the watermark.
 ///
 /// Pure, because the interesting case cannot be produced on demand: **a log SHORTER than the mark

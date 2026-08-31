@@ -57,14 +57,23 @@ pub(crate) fn event(e: schema::DiagEvent) {
     // An identifier only exists after an opt-in, which `allows_usage` implies — but READ it rather
     // than assume it. "Implies" is how an invariant becomes a panic, and the failure here would be
     // a report with a fabricated id, which is the one outcome the whole design refuses.
-    let Some(id) = crate::telemetry::consent::current().and_then(|c| c.install_id) else {
+    let Some(_) = crate::telemetry::consent::current().and_then(|c| c.install_id) else {
         return;
     };
-    let Some(body) = crate::telemetry::sender::posthog_body(e, &id) else {
-        return; // this build carries no PostHog key — see `telemetry::sender`
-    };
-    let Some(event_id) = crate::telemetry::sentry::new_event_id() else {
+    if !crate::telemetry::sender::has_posthog() {
+        return;
+    }
+    let Some(event_id) = random_hex_id() else {
         return; // no randomness source, so nothing could acknowledge this record
+    };
+    let Some(session_id) = session_id() else {
+        return;
+    };
+    let occurred_at_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64);
+    let Some(body) = schema::UsageEnvelope::capture(e, occurred_at_ms, session_id).encode() else {
+        return;
     };
     // Queued, never sent from here: this is the frame loop, and a send opens a socket. The worker
     // in `telemetry::flush_soon` drains it.
@@ -80,6 +89,38 @@ pub(crate) fn event(e: schema::DiagEvent) {
     });
 }
 
+/// A process-local session identity. Random and never persisted separately: queued events carry the
+/// value they were born with, so a later boot cannot merge an offline session into its own.
+fn session_id() -> Option<&'static str> {
+    static SESSION: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    SESSION.get_or_init(random_uuid_v4).as_deref()
+}
+
+fn random_bytes() -> Option<[u8; 16]> {
+    use std::io::Read;
+    let mut bytes = [0u8; 16];
+    std::fs::File::open("/dev/urandom")
+        .ok()?
+        .read_exact(&mut bytes)
+        .ok()?;
+    Some(bytes)
+}
+
+/// Generic durable-record identity; no analytics code depends on a crash vendor for IDs.
+fn random_hex_id() -> Option<String> {
+    Some(random_bytes()?.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+fn random_uuid_v4() -> Option<String> {
+    let mut b = random_bytes()?;
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    Some(format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]
+    ))
+}
+
 // Gated to their present consumer, which is still only the lab bridge. The telemetry client turned
 // out not to want either — it frames its own bodies and posts them uncompressed — so this stayed a
 // one-consumer gate rather than widening, and there is no `feature = "telemetry"` to widen to (see
@@ -90,3 +131,20 @@ pub(crate) fn event(e: schema::DiagEvent) {
 pub(crate) mod ring;
 #[cfg(feature = "lab-diagnostics")]
 pub(crate) mod zlib;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn durable_record_and_session_ids_have_their_required_shapes() {
+        let Some(record) = random_hex_id() else { return };
+        assert_eq!(record.len(), 32);
+        assert!(record.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+
+        let Some(session) = random_uuid_v4() else { return };
+        assert_eq!(session.len(), 36);
+        assert_eq!(&session[14..15], "4", "UUID version");
+        assert!(matches!(&session[19..20], "8" | "9" | "a" | "b"), "UUID variant");
+    }
+}

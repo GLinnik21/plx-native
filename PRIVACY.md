@@ -1,7 +1,8 @@
 # Privacy
 
 **PlxNative sends nothing to its developer unless you switch it on, and it is off until you do.**
-Two switches — crash reports, and which screens and formats get used — both off by default, both
+Two switches — crash reports, and anonymous usage events such as screens, feature actions, sign-in
+outcomes and playback format/outcome classes — both off by default, both
 reversible, and the screen that asks shows you the exact schemas (with dynamic values as explicit
 placeholders) before you answer. This document
 is the whole account of what the app stores, reads and reaches, written to be checkable rather than
@@ -66,12 +67,13 @@ it and the identifier is regenerated next time.
 one item id, so the app reopens where you left it.
 
 **Your answer to the two telemetry switches** — `<app id>-telemetry.json`, beside the other two. It
-holds the two booleans and, only after you turn one on, the random identifier described above.
-Turning both off deletes that identifier from the file.
+holds the two booleans and, only while usage analytics is on, the random identifier described above.
+Turning usage analytics off deletes that identifier even if crash reporting remains on.
 
 **Two files that exist only while telemetry is on**, beside it and both 0600:
 `<app id>-telemetry-spool.bin` is the queue of messages waiting to be sent — capped at half a
-megabyte, oldest dropped first, and emptied as they go — and `<app id>-telemetry-crashmark.json`
+megabyte, with crash reports retained ahead of usage events and newest retained within each
+category, and emptied as they go — and `<app id>-telemetry-crashmark.json`
 holds a single number, how much of the crash log has already been reported. That number is why a
 crash is reported once rather than on every launch, and why the crash log itself can stay
 append-only for you to read.
@@ -147,9 +149,11 @@ rather than announcing them alongside the thing itself. They are now the descrip
 and each one is checked by something rather than promised:
 
 1. **Opt-in, off by default, never bundled.** Two independent switches.
-2. **Nothing is stored to enable it before you say yes.** No identifier exists until you opt in, and
-   turning both switches off deletes it. If the television has no source of randomness the opt-in is
-   refused outright rather than an identifier being invented from a clock or a MAC address.
+2. **Nothing is stored to enable it before you say yes.** No usage identifier exists until you opt
+   into usage analytics, and turning that switch off deletes it independently of crash reporting.
+   If the television has no source of randomness the usage opt-in is refused outright rather than
+   an identifier being invented from a clock or a MAC address; anonymous crash reporting does not
+   need that identifier.
 3. **You can read every payload schema on screen before it is sent.** Usage examples run through
    their real serializer; the native crash example runs through the same path sanitizer as a real
    envelope. Runtime-only addresses, ids and times are visibly labelled placeholders. An event or
@@ -204,9 +208,16 @@ is enforced by the sanitizer's field allowlist and an exact preview test. Either
 | `app.launch` | *(none)* |
 | `route.entered` | `screen` — one of a fixed list of screen names |
 | `signin.completed` | *(none)* |
+| `signin.started` | *(none)* |
+| `signin.failed` | `kind` — `pin_create` / `authorization` / `discovery` / `other` |
+| `signin.cancelled` | *(none)* |
+| `feature.used` | `feature` — one of a fixed list of feature names |
 | `playback.requested` | `playback_id` — a random number minted per attempt, never stored and never reused |
 | `playback.started` | `playback_id` — a random number minted per attempt, never stored and never reused; `mode` — `direct` or `transcode`; `raster` — `sd` / `hd` / `fhd` / `uhd` / `unknown` — never the raster; `fps` — a fixed rung: `24`/`25`/`30`/`50`/`60`/`100`/`other`/`unknown` — never the measured rate; `video` — a codec name from a fixed table; anything else is `other`; `audio` — a codec name from a fixed table; anything else is `other`; `startup` — `<1s` / `1-3s` / `3-10s` / `10s+` — never the interval |
 | `playback.failed` | `playback_id` — a random number minted per attempt, never stored and never reused; `mode` — `direct` or `transcode`; `kind` — `decision_refused` / `no_video_transcode_target` / `no_video_track` / `unspecified` |
+| `playback.cancelled` | `playback_id` — a random number minted per attempt, never stored and never reused; `mode` — `direct` or `transcode` |
+| `playback.abandoned` | `playback_id` — a random number minted per attempt, never stored and never reused; `mode` — `direct` or `transcode` |
+| `playback.quality` | `playback_id` — a random number minted per attempt, never stored and never reused; `rebuffers` — `0` / `1` / `2-3` / `4+`; `buffering` — `none` / `<2s` / `2-10s` / `10s+` — never the interval |
 | `playback.ended` | `playback_id` — a random number minted per attempt, never stored and never reused; `mode` — `direct` or `transcode`; `watched` — `abandoned` / `some` / `most` / `finished` — never a position or a duration |
 
 When **crash reporting** is on, a fatal native event has this separate schema. It is not joined to
@@ -229,9 +240,14 @@ retry spool and TLS sender. No minidump, core, attachment, log, breadcrumb, titl
 included. A Rust panic fallback sends its validated compile-time source location and a hash of the
 panic message, never the message itself.
 
+Every usage event also carries its original event time and a random per-process `session_id`, so
+events held while the television is offline remain in the session in which they occurred. The
+session id is not reused after the app exits; the timestamp says when the event occurred and never
+contains a media position.
+
 **`playback_id` is not an identifier of you or of this television.** It is a random number minted
-afresh each time Play is pressed, never written to disk and never reused. It exists so that the four
-events of one attempt can be joined to each other — without it, "how often does playback fail"
+afresh each time Play is pressed, never written separately and never reused. It exists so that the
+lifecycle events of one attempt can be joined to each other — without it, "how often does playback fail"
 becomes two unrelated counters. It cannot link two playbacks, let alone two televisions.
 
 **Everything descriptive on those events is a CLASS, not a measurement**, and that is deliberate.
@@ -266,7 +282,8 @@ correct or delete, because nothing was ever sent.
 
 **With one on, there is, and here is the honest shape of it.** What has been sent carries no name,
 no name, Plex/LG account or network address — only the random usage install id (when usage is on),
-per-attempt playback numbers, and per-crash event ids described above — so I cannot find
+a random per-process usage session id, per-attempt playback numbers, and per-crash event ids
+described above — so I cannot find
 "your" records to erase on request even in principle, and neither can Sentry or PostHog, whose
 deletion tools work on accounts these reports deliberately do not have. What happens instead is that
 it expires: the retention above, never longer than 13 months. Turning a switch off stops collection

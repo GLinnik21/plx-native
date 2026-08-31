@@ -130,15 +130,6 @@ pub(crate) fn is_eu_region(d: &Dsn) -> bool {
     d.origin.contains(".de.sentry.io")
 }
 
-/// A 32-character lowercase hex id, which is what Sentry's `event_id` must be — **no dashes**.
-///
-/// Minted when a record is QUEUED, not when it is sent, and stored with it: a retry must reuse it
-/// or one crash over a flaky link becomes several issues. That is a property of the caller, and the
-/// reason this returns a value rather than writing one anywhere.
-pub(crate) fn new_event_id() -> Option<String> {
-    super::mint_install_id() // same 16 random bytes as hex; a different draw each call
-}
-
 /// **`image_addr` for this binary is the lowest `PT_LOAD` vaddr — `0x10000` — and NOT zero.**
 ///
 /// Device-adjacent measurement, 2026-08-29, against the real Sentry EU project with a real armv7
@@ -631,21 +622,6 @@ mod tests {
         let env = envelope("0123456789abcdef0123456789abcdef", "event", b"");
         let text = String::from_utf8(env).unwrap();
         assert!(text.contains(r#""length":0"#), "{text}");
-    }
-
-    /// `event_id` is 32 lowercase hex characters and carries NO dashes. A dashed UUID — the obvious
-    /// thing to reach for — is rejected by the ingest endpoint.
-    #[test]
-    fn an_event_id_is_undashed_lowercase_hex() {
-        let Some(id) = new_event_id() else { return }; // no /dev/urandom on this host
-        assert_eq!(id.len(), 32);
-        assert!(
-            !id.contains('-'),
-            "an event_id must not be a dashed UUID: {id}"
-        );
-        assert!(id
-            .chars()
-            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
     }
 
     /// **The DSN this project actually configured parses, and is in the EU region.**

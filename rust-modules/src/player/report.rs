@@ -1,9 +1,9 @@
-//! **Playback, as four events joined by one attempt.**
+//! **Playback lifecycle events joined by one attempt.**
 //!
-//! `requested` -> `started` | `failed` -> `ended`. The interesting number is the gap between the
-//! first two: `started / requested` is the success rate, and a `requested` with no `started` after
-//! it is the failure this whole channel exists to see — the one an owner reports as "it just sat
-//! there".
+//! `requested -> started -> failed|ended|abandoned`, or
+//! `requested -> failed|cancelled|abandoned`. The interesting number is the gap between requested
+//! and a terminal outcome: `started / requested` is the startup success rate without leaving a
+//! silent unresolved bucket for "it just sat there".
 //!
 //! # These are TRANSITIONS, not log lines
 //!
@@ -33,7 +33,7 @@ use crate::diag::schema::DiagEvent;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, Ordering::Relaxed};
 
 /// The current attempt's opaque id — random, per attempt, never stored. See `DiagEvent`'s playback
-/// block: it joins one attempt's four events and cannot link two playbacks, let alone two sets.
+/// block: it joins one attempt's lifecycle events and cannot link two playbacks, let alone two sets.
 static ATTEMPT: AtomicI64 = AtomicI64::new(0);
 /// The last state this module reported a transition FROM.
 static LAST: AtomicU8 = AtomicU8::new(0);
@@ -41,6 +41,14 @@ static LAST: AtomicU8 = AtomicU8::new(0);
 static SAW_START: AtomicBool = AtomicBool::new(false);
 static SAW_FAIL: AtomicBool = AtomicBool::new(false);
 static SAW_END: AtomicBool = AtomicBool::new(false);
+/// At most one bounded rebuffer summary, emitted when a started attempt reaches an observable
+/// terminal or replacement path. The app deliberately does not report dropped frames: LG's
+/// position callback is a fixed 5 Hz clock and looks identical on smooth and visibly stuttering
+/// playback, so treating it as frame cadence would fabricate data.
+static SAW_QUALITY: AtomicBool = AtomicBool::new(false);
+static REBUFFER_COUNT: AtomicU8 = AtomicU8::new(0);
+static REBUFFER_AT_MS: AtomicI64 = AtomicI64::new(0);
+static REBUFFER_TOTAL_MS: AtomicI64 = AtomicI64::new(0);
 /// When this attempt was requested, in `SDL_GetTicks` milliseconds — the same monotonic clock every
 /// other timestamp in this app uses, because pmlog's wall clock on this television runs ~3h off.
 static REQUESTED_MS: AtomicI64 = AtomicI64::new(0);
@@ -50,14 +58,66 @@ static REQUESTED_MS: AtomicI64 = AtomicI64::new(0);
 /// Mints the id and clears every latch, so a second Play on the same item is a second attempt with
 /// its own funnel rather than a silent no-op against the first one's latches.
 pub(crate) fn requested() {
+    resolve_replaced_attempt();
     let id = new_attempt_id();
     ATTEMPT.store(id, Relaxed);
     SAW_START.store(false, Relaxed);
     SAW_FAIL.store(false, Relaxed);
     SAW_END.store(false, Relaxed);
+    SAW_QUALITY.store(false, Relaxed);
+    REBUFFER_COUNT.store(0, Relaxed);
+    REBUFFER_AT_MS.store(0, Relaxed);
+    REBUFFER_TOTAL_MS.store(0, Relaxed);
     REQUESTED_MS.store(now_ms(), Relaxed);
     LAST.store(super::shared::PlaybackState::Resolving as u8, Relaxed);
     crate::diag::event(DiagEvent::PlaybackRequested { playback_id: id });
+}
+
+/// Resolve an attempt before a newer Play overwrites its join key. Before first frame this is an
+/// explicit cancellation; after first frame it is an abandoned viewing session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Replacement {
+    None,
+    Cancelled,
+    Abandoned,
+}
+
+fn replacement(saw_start: bool, saw_fail: bool, saw_end: bool) -> Replacement {
+    if saw_fail || saw_end {
+        Replacement::None
+    } else if saw_start {
+        Replacement::Abandoned
+    } else {
+        Replacement::Cancelled
+    }
+}
+
+fn resolve_replaced_attempt() {
+    let id = ATTEMPT.swap(0, Relaxed);
+    if id == 0 {
+        return;
+    }
+    match replacement(SAW_START.load(Relaxed), SAW_FAIL.load(Relaxed), SAW_END.load(Relaxed)) {
+        Replacement::None => {}
+        Replacement::Cancelled => {
+            crate::diag::event(DiagEvent::PlaybackCancelled { playback_id: id, mode: mode() });
+        }
+        Replacement::Abandoned => {
+            report_quality(id);
+            crate::diag::event(DiagEvent::PlaybackAbandoned { playback_id: id, mode: mode() });
+        }
+    }
+}
+
+/// The process is leaving an unresolved attempt. Unlike a newer Play, this was not a replacement
+/// choice, so classify it as abandonment; if playback had started, close its quality summary too.
+pub(crate) fn abandon_pending() {
+    let id = ATTEMPT.load(Relaxed);
+    if id == 0 || SAW_FAIL.load(Relaxed) || SAW_END.swap(true, Relaxed) {
+        return;
+    }
+    report_quality(id);
+    crate::diag::event(DiagEvent::PlaybackAbandoned { playback_id: id, mode: mode() });
 }
 
 /// What a frame's state change is worth reporting, if anything.
@@ -99,6 +159,7 @@ fn transition(
 pub(crate) fn tick() {
     let now = super::state();
     let prev = super::shared::PlaybackState::from_u8(LAST.swap(now as u8, Relaxed));
+    note_rebuffer(prev, now, SAW_START.load(Relaxed));
     match transition(prev, now, SAW_START.load(Relaxed), SAW_FAIL.load(Relaxed)) {
         Some(What::Started) => {
             SAW_START.store(true, Relaxed);
@@ -114,6 +175,7 @@ pub(crate) fn tick() {
         }
         Some(What::Failed) => {
             SAW_FAIL.store(true, Relaxed);
+            report_quality(ATTEMPT.load(Relaxed));
             crate::diag::event(DiagEvent::PlaybackFailed {
                 playback_id: ATTEMPT.load(Relaxed),
                 mode: mode(),
@@ -127,14 +189,83 @@ pub(crate) fn tick() {
 /// **A real teardown.** Called from the one place playback actually ends — never from a seek, a
 /// rung change or a suspend, each of which destroys an engine and keeps the playback.
 pub(crate) fn ended(position_ns: i64, duration_ns: i64) {
-    if !SAW_START.load(Relaxed) || SAW_END.swap(true, Relaxed) {
-        return; // nothing started, or already reported
+    if SAW_END.swap(true, Relaxed) || SAW_FAIL.load(Relaxed) {
+        return; // already terminal
     }
+    let id = ATTEMPT.load(Relaxed);
+    if id == 0 {
+        return;
+    }
+    if !SAW_START.load(Relaxed) {
+        crate::diag::event(DiagEvent::PlaybackAbandoned { playback_id: id, mode: mode() });
+        return;
+    }
+    report_quality(id);
     crate::diag::event(DiagEvent::PlaybackEnded {
-        playback_id: ATTEMPT.load(Relaxed),
+        playback_id: id,
         mode: mode(),
         watched: watched_class(position_ns, duration_ns),
     });
+}
+
+fn note_rebuffer(
+    prev: super::shared::PlaybackState,
+    now: super::shared::PlaybackState,
+    saw_start: bool,
+) {
+    use super::shared::PlaybackState as S;
+    if starts_rebuffer(prev, now, saw_start) {
+        let _ = REBUFFER_COUNT.fetch_update(Relaxed, Relaxed, |n| Some(n.saturating_add(1)));
+        REBUFFER_AT_MS.store(now_ms().max(1), Relaxed);
+    } else if now != S::Buffering {
+        finish_rebuffer_window();
+    }
+}
+
+fn starts_rebuffer(
+    prev: super::shared::PlaybackState,
+    now: super::shared::PlaybackState,
+    saw_start: bool,
+) -> bool {
+    use super::shared::PlaybackState as S;
+    saw_start && prev == S::Playing && now == S::Buffering
+}
+
+fn finish_rebuffer_window() {
+    let at = REBUFFER_AT_MS.swap(0, Relaxed);
+    if at > 0 {
+        REBUFFER_TOTAL_MS.fetch_add((now_ms() - at).max(0), Relaxed);
+    }
+}
+
+fn report_quality(playback_id: i64) {
+    if playback_id == 0 || !SAW_START.load(Relaxed) || SAW_QUALITY.swap(true, Relaxed) {
+        return;
+    }
+    finish_rebuffer_window();
+    crate::diag::event(DiagEvent::PlaybackQuality {
+        playback_id,
+        rebuffers: rebuffer_count_class(REBUFFER_COUNT.load(Relaxed)),
+        buffering: rebuffer_time_class(REBUFFER_TOTAL_MS.load(Relaxed)),
+    });
+}
+
+fn rebuffer_count_class(n: u8) -> &'static str {
+    match n {
+        0 => "0",
+        1 => "1",
+        2..=3 => "2-3",
+        _ => "4+",
+    }
+}
+
+fn rebuffer_time_class(ms: i64) -> &'static str {
+    match ms {
+        ..=0 => "none",
+        1..=1_999 => "<2s",
+        2_000..=9_999 => "2-10s",
+        _ => "10s+",
+    }
 }
 
 fn mode() -> &'static str {
@@ -269,6 +400,29 @@ pub(crate) fn watched_class(position_ns: i64, duration_ns: i64) -> &'static str 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn replacing_an_attempt_always_gives_the_old_one_a_terminal_outcome() {
+        assert_eq!(replacement(false, false, false), Replacement::Cancelled);
+        assert_eq!(replacement(true, false, false), Replacement::Abandoned);
+        assert_eq!(replacement(false, true, false), Replacement::None);
+        assert_eq!(replacement(true, false, true), Replacement::None);
+    }
+
+    #[test]
+    fn quality_is_bounded_and_seek_priming_is_not_a_rebuffer() {
+        assert_eq!(rebuffer_count_class(0), "0");
+        assert_eq!(rebuffer_count_class(1), "1");
+        assert_eq!(rebuffer_count_class(3), "2-3");
+        assert_eq!(rebuffer_count_class(u8::MAX), "4+");
+        assert_eq!(rebuffer_time_class(0), "none");
+        assert_eq!(rebuffer_time_class(1_999), "<2s");
+        assert_eq!(rebuffer_time_class(2_000), "2-10s");
+        assert_eq!(rebuffer_time_class(10_000), "10s+");
+        assert!(starts_rebuffer(S::Playing, S::Buffering, true));
+        assert!(!starts_rebuffer(S::Seeking, S::Buffering, true));
+        assert!(!starts_rebuffer(S::Playing, S::Buffering, false));
+    }
 
     use super::super::shared::PlaybackState as S;
 

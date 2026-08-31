@@ -202,6 +202,9 @@ pub(crate) fn on_ok() {
                 let ord = tracks()
                     .map(|t| metadata::audio_ordinal(&t.audio, sel.max(0) as usize))
                     .unwrap_or(sel);
+                crate::diag::event(crate::diag::schema::DiagEvent::FeatureUsed {
+                    feature: crate::diag::schema::Feature::AudioTrack,
+                });
                 crate::route::commit_audio_selection(ord, &s.codec, s.id);
             }
         }
@@ -213,6 +216,7 @@ pub(crate) fn on_ok() {
         } else {
             vis.get((sel - 1) as usize).map(|&i| i as c_int).unwrap_or(-1)
         };
+        let changed = unsafe { addr_of!(ACTIVE_SUB).read() } != new_sub;
         unsafe { addr_of_mut!(ACTIVE_SUB).write(new_sub) }
         // the client renderer takes the EMBEDDED-subtitle ordinal (what the demuxer
         // enumerates); an external pick (transcode-only row) renders nothing — it's burned
@@ -220,6 +224,11 @@ pub(crate) fn on_ok() {
             .filter(|_| new_sub >= 0)
             .map(|t| metadata::sub_render_ordinal(&t.subs, new_sub as usize))
             .unwrap_or(-1);
+        if changed {
+            crate::diag::event(crate::diag::schema::DiagEvent::FeatureUsed {
+                feature: crate::diag::schema::Feature::SubtitleTrack,
+            });
+        }
         crate::route::commit_subtitle_selection(ridx, sub_stream_id());
     }
 }

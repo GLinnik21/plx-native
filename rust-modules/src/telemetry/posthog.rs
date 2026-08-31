@@ -33,12 +33,11 @@
 //!
 //! [`DiagEvent`]: crate::diag::schema::DiagEvent
 //!
-//! # Timestamps are a PARAMETER, deliberately
+//! # Timestamps belong to the durable event
 //!
-//! The dev television's wall clock runs about three hours off, and this repo has a documented rule
-//! about it. Reconciling monotonic uptime against one wall-clock reading is a policy, it belongs to
-//! whatever queues a record, and putting it here would make every test in this file depend on a
-//! clock. So the caller passes an ISO 8601 string and this file stays a function.
+//! The queue captures Unix milliseconds with the event. This pure serializer converts that stored
+//! value to ISO 8601 at send time and reads no clock, so an offline spool cannot move an event into
+//! the next launch merely because that is when delivery resumed.
 //!
 //! # One item here is uncalled, on purpose
 //!
@@ -49,7 +48,9 @@
 //!
 //! This header used to say no sender existed at all. It does: [`super::sender`].
 
-use crate::diag::schema::{self, DiagEvent, Value};
+use crate::diag::schema::{DiagEvent, UsageEnvelope, UsageValue};
+#[cfg(test)]
+use crate::diag::schema::{self, Value};
 
 /// The flag that keeps an event anonymous. Spelled once, here, so a typo is one test away rather
 /// than one silent person profile per install.
@@ -60,13 +61,17 @@ const ANON: &str = "$process_person_profile";
 ///
 /// `distinct_id` is deliberately NOT added here — it goes in a different place per endpoint, which
 /// is the whole point of this module, so each shape adds it itself and the test can tell them apart.
+#[cfg(test)]
 fn props(e: DiagEvent, environment: &str) -> serde_json::Map<String, serde_json::Value> {
     let (_, fields) = schema::serialize(e);
     let mut m = serde_json::Map::new();
     // Which side of the world this build is on. A parameter rather than a constant read here, so
     // this module keeps knowing nothing about credentials — `sender` derives it from the pair it
     // was given and passes it down.
-    m.insert("environment".into(), serde_json::Value::String(environment.to_string()));
+    m.insert(
+        "environment".into(),
+        serde_json::Value::String(environment.to_string()),
+    );
     for (k, v) in fields {
         // Exhaustive on purpose: a new `Value` arm must be a compile error here, not a field that
         // quietly stops being sent.
@@ -83,20 +88,97 @@ fn props(e: DiagEvent, environment: &str) -> serde_json::Map<String, serde_json:
     m
 }
 
-/// A body for **`POST <host>/i/v0/e/`** — one event, `distinct_id` at the TOP LEVEL.
-/// **The timestamp is optional, and omitting it is the RIGHT default on this hardware.**
-///
-/// `timestamp` is optional in PostHog's API; when it is absent the server stamps the event on
-/// arrival. This television's wall clock runs about three hours off — `docs/agent-reference.md`'s crash-forensics
-/// note measures it, and it is why every correlation in this repository is done on monotonic
-/// `SDL_GetTicks` rather than pmlog time. Sending that clock would make every event wrong by hours
-/// in whichever direction the skew runs, and wrong in a way nothing downstream could detect or
-/// correct. Ingest time is late by however long the spool held the record, which is a bounded and
-/// obvious error rather than an invisible one.
-///
-/// It stays a parameter rather than being removed because the preview screen wants a stable
-/// placeholder, and because a record that HAS a trustworthy time (one carrying a monotonic-anchored
-/// reading, if that ever lands) should be able to say so.
+fn envelope_props(
+    event: &UsageEnvelope,
+    environment: &str,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut properties = serde_json::Map::new();
+    properties.insert("environment".into(), environment.into());
+    for (key, value) in &event.fields {
+        properties.insert(
+            key.clone(),
+            match value {
+                UsageValue::Str(s) => s.clone().into(),
+                UsageValue::Int(n) => (*n).into(),
+            },
+        );
+    }
+    properties.insert("$session_id".into(), event.session_id.clone().into());
+    properties.insert(ANON.into(), false.into());
+    properties
+}
+
+/// Render a durable internal event for PostHog only when it is about to leave the spool.
+pub(crate) fn captured(
+    api_key: &str,
+    distinct_id: &str,
+    event: &UsageEnvelope,
+    environment: &str,
+) -> Vec<u8> {
+    render_captured(
+        api_key,
+        distinct_id,
+        event,
+        environment,
+        &rfc3339_millis(event.occurred_at_ms),
+    )
+}
+
+fn render_captured(
+    api_key: &str,
+    distinct_id: &str,
+    event: &UsageEnvelope,
+    environment: &str,
+    timestamp: &str,
+) -> Vec<u8> {
+    let body = serde_json::json!({
+        "api_key": api_key,
+        "event": event.name,
+        "distinct_id": distinct_id,
+        "properties": envelope_props(event, environment),
+        "timestamp": timestamp,
+    });
+    serde_json::to_vec(&body).unwrap_or_default()
+}
+
+/// The consent screen's exact sender shape, with runtime-only metadata visibly labelled.
+pub(crate) fn preview(
+    api_key: &str,
+    distinct_id: &str,
+    event: DiagEvent,
+    environment: &str,
+) -> Vec<u8> {
+    let envelope = UsageEnvelope::capture(event, 0, "<random session id>");
+    render_captured(api_key, distinct_id, &envelope, environment, "<event time>")
+}
+
+/// UTC RFC3339 without a clock dependency. Input is Unix milliseconds captured with the event.
+fn rfc3339_millis(epoch_ms: u64) -> String {
+    let seconds = epoch_ms / 1_000;
+    let millis = epoch_ms % 1_000;
+    let days = (seconds / 86_400) as i64;
+    let day_seconds = seconds % 86_400;
+    // Howard Hinnant's civil_from_days, with Unix day zero shifted to the civil epoch.
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let mut year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = mp + if mp < 10 { 3 } else { -9 };
+    year += i64::from(month <= 2);
+    let hour = day_seconds / 3_600;
+    let minute = day_seconds % 3_600 / 60;
+    let second = day_seconds % 60;
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}Z")
+}
+
+/// Legacy/test-only shape helper for **`POST <host>/i/v0/e/`**. Production durable events use
+/// [`captured`] and always carry their original occurrence time; this helper keeps the older
+/// endpoint-shape tests able to exercise an explicitly absent timestamp.
+#[cfg(test)]
 pub(crate) fn single(
     api_key: &str,
     distinct_id: &str,
@@ -109,7 +191,10 @@ pub(crate) fn single(
     body.insert("api_key".into(), api_key.into());
     body.insert("event".into(), name.into());
     body.insert("distinct_id".into(), distinct_id.into());
-    body.insert("properties".into(), serde_json::Value::Object(props(e, environment)));
+    body.insert(
+        "properties".into(),
+        serde_json::Value::Object(props(e, environment)),
+    );
     if let Some(ts) = timestamp {
         body.insert("timestamp".into(), ts.into());
     }
@@ -127,7 +212,7 @@ pub(crate) fn single(
 // say which half. Kept because the two endpoints put `distinct_id` in DIFFERENT places — top
 // level for `/i/v0/e/`, inside `properties` for `/batch/` — which is the trap this function
 // exists to have already solved when a batch is worth having.
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn batch(
     api_key: &str,
     distinct_id: &str,
@@ -141,7 +226,10 @@ pub(crate) fn batch(
             let mut p = props(*e, environment);
             // THE difference. Top-level here would be an ordinary ignored property, and the batch
             // would arrive with no identity while still answering 200.
-            p.insert("distinct_id".into(), serde_json::Value::String(distinct_id.to_string()));
+            p.insert(
+                "distinct_id".into(),
+                serde_json::Value::String(distinct_id.to_string()),
+            );
             serde_json::json!({ "event": name, "properties": p, "timestamp": ts })
         })
         .collect();
@@ -163,7 +251,43 @@ mod tests {
         vec![
             DiagEvent::AppLaunch,
             DiagEvent::RouteEntered { screen: "home" },
+            DiagEvent::SignInStarted,
             DiagEvent::SignInCompleted,
+            DiagEvent::SignInFailed {
+                kind: schema::SignInFailure::Authorization,
+            },
+            DiagEvent::SignInCancelled,
+            DiagEvent::FeatureUsed {
+                feature: schema::Feature::Pause,
+            },
+            DiagEvent::PlaybackRequested { playback_id: 7 },
+            DiagEvent::PlaybackStarted {
+                playback_id: 7,
+                mode: "direct",
+                raster: "fhd",
+                fps: "24",
+                video: "h264",
+                audio: "ac3",
+                startup: "1-3s",
+            },
+            DiagEvent::PlaybackFailed {
+                playback_id: 7,
+                mode: "direct",
+                kind: "network",
+            },
+            DiagEvent::PlaybackCancelled {
+                playback_id: 7,
+                mode: "direct",
+            },
+            DiagEvent::PlaybackAbandoned {
+                playback_id: 7,
+                mode: "direct",
+            },
+            DiagEvent::PlaybackEnded {
+                playback_id: 7,
+                mode: "direct",
+                watched: "most",
+            },
         ]
     }
 
@@ -181,13 +305,24 @@ mod tests {
     #[test]
     fn every_event_on_both_endpoints_is_anonymous() {
         for e in all() {
-            let s = parse(&single("phc_k", "id1", e, "test", Some("2026-08-29T00:00:00Z")));
+            let s = parse(&single(
+                "phc_k",
+                "id1",
+                e,
+                "test",
+                Some("2026-08-29T00:00:00Z"),
+            ));
             assert_eq!(
                 s["properties"][ANON],
                 serde_json::json!(false),
                 "a single-event body was not anonymous: {e:?}"
             );
-            let b = parse(&batch("phc_k", "id1", "test", &[(e, "2026-08-29T00:00:00Z")]));
+            let b = parse(&batch(
+                "phc_k",
+                "id1",
+                "test",
+                &[(e, "2026-08-29T00:00:00Z")],
+            ));
             assert_eq!(
                 b["batch"][0]["properties"][ANON],
                 serde_json::json!(false),
@@ -204,14 +339,28 @@ mod tests {
     /// ingest still answers 200. There is no failure to notice.
     #[test]
     fn the_two_endpoints_disagree_about_where_identity_goes() {
-        let s = parse(&single("phc_k", "id1", DiagEvent::AppLaunch, "test", Some("2026-08-29T00:00:00Z")));
-        assert_eq!(s["distinct_id"], "id1", "/i/v0/e/ carries distinct_id at the top level");
+        let s = parse(&single(
+            "phc_k",
+            "id1",
+            DiagEvent::AppLaunch,
+            "test",
+            Some("2026-08-29T00:00:00Z"),
+        ));
+        assert_eq!(
+            s["distinct_id"], "id1",
+            "/i/v0/e/ carries distinct_id at the top level"
+        );
         assert!(
             s["properties"].get("distinct_id").is_none(),
             "/i/v0/e/ must NOT also put it in properties"
         );
 
-        let b = parse(&batch("phc_k", "id1", "test", &[(DiagEvent::AppLaunch, "2026-08-29T00:00:00Z")]));
+        let b = parse(&batch(
+            "phc_k",
+            "id1",
+            "test",
+            &[(DiagEvent::AppLaunch, "2026-08-29T00:00:00Z")],
+        ));
         let entry = &b["batch"][0];
         assert_eq!(
             entry["properties"]["distinct_id"], "id1",
@@ -229,15 +378,20 @@ mod tests {
     /// times for no benefit.
     #[test]
     fn a_batch_carries_one_api_key_at_the_top() {
-        let evs: Vec<(DiagEvent, &str)> =
-            all().into_iter().map(|e| (e, "2026-08-29T00:00:00Z")).collect();
+        let evs: Vec<(DiagEvent, &str)> = all()
+            .into_iter()
+            .map(|e| (e, "2026-08-29T00:00:00Z"))
+            .collect();
         let b = parse(&batch("phc_k", "id1", "test", &evs));
         assert_eq!(b["api_key"], "phc_k");
         assert_eq!(b["historical_migration"], serde_json::json!(false));
         let arr = b["batch"].as_array().expect("batch is an array");
         assert_eq!(arr.len(), evs.len());
         for entry in arr {
-            assert!(entry.get("api_key").is_none(), "the key is not repeated per entry");
+            assert!(
+                entry.get("api_key").is_none(),
+                "the key is not repeated per entry"
+            );
             assert!(entry["event"].is_string());
         }
     }
@@ -265,7 +419,13 @@ mod tests {
     fn the_wire_name_is_the_schema_name() {
         for e in all() {
             let (name, _) = schema::serialize(e);
-            let s = parse(&single("phc_k", "id1", e, "test", Some("2026-08-29T00:00:00Z")));
+            let s = parse(&single(
+                "phc_k",
+                "id1",
+                e,
+                "test",
+                Some("2026-08-29T00:00:00Z"),
+            ));
             assert_eq!(s["event"], name);
             assert!(schema::EVENT_SPECS.iter().any(|s| s.name == name));
         }
@@ -276,9 +436,18 @@ mod tests {
     #[test]
     fn an_absent_timestamp_is_omitted_rather_than_blank() {
         let b = parse(&single("phc_k", "id1", DiagEvent::AppLaunch, "test", None));
-        assert!(b.get("timestamp").is_none(), "a blank timestamp would be worse than none");
+        assert!(
+            b.get("timestamp").is_none(),
+            "a blank timestamp would be worse than none"
+        );
         assert_eq!(b["event"], "app.launch");
-        let with = parse(&single("phc_k", "id1", DiagEvent::AppLaunch, "test", Some("T")));
+        let with = parse(&single(
+            "phc_k",
+            "id1",
+            DiagEvent::AppLaunch,
+            "test",
+            Some("T"),
+        ));
         assert_eq!(with["timestamp"], "T");
     }
 
@@ -289,5 +458,22 @@ mod tests {
         let b = parse(&batch("phc_k", "id1", "test", &[]));
         assert_eq!(b["batch"].as_array().map(|a| a.len()), Some(0));
         assert_eq!(b["api_key"], "phc_k");
+    }
+
+    #[test]
+    fn a_durable_event_keeps_its_original_time_and_session() {
+        let event = UsageEnvelope::capture(
+            DiagEvent::RouteEntered { screen: "detail" },
+            1_787_961_234_567,
+            "0198f00d-1234-4567-89ab-0123456789ab",
+        );
+        let body = parse(&captured("phc_k", "install", &event, "test"));
+        assert_eq!(body["timestamp"], "2026-08-28T23:53:54.567Z");
+        assert_eq!(
+            body["properties"]["$session_id"],
+            "0198f00d-1234-4567-89ab-0123456789ab"
+        );
+        assert_eq!(body["properties"]["screen"], "detail");
+        assert_eq!(body["properties"][ANON], false);
     }
 }

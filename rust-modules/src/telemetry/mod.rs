@@ -90,6 +90,7 @@ fn load() -> Consent {
 /// to honour something a person just chose because a disk is full, which is worse in both
 /// directions: it ignores a "no", and it ignores a "yes".
 pub(crate) fn record(c: Consent) {
+    let enabling_errors = newly_enables_errors(consent::current().as_ref(), &c);
     let Ok(json) = serde_json::to_vec_pretty(&c) else {
         return;
     };
@@ -98,6 +99,12 @@ pub(crate) fn record(c: Consent) {
         .any(|p| crate::plex::session::write_atomic(p, &json));
     if !stored {
         crate::log("telemetry: could not persist the decision to ANY candidate path");
+    }
+    // Consent is prospective: crash diagnostics accumulated while this switch was off stay local.
+    // Do this before publishing `c`, so there is no interval in which an old record can be read as
+    // newly authorised.
+    if enabling_errors {
+        crashreport::discard_pending_before_opt_in();
     }
     consent::install(c.clone());
     // Install first, then purge. A record queued between the two would be one the new decision
@@ -108,6 +115,10 @@ pub(crate) fn record(c: Consent) {
     native::sync_change(&c);
 }
 
+fn newly_enables_errors(previous: Option<&Consent>, next: &Consent) -> bool {
+    next.errors && previous.map_or(true, |c| !c.errors)
+}
+
 // ---- the spool, and the one worker that drains it ---------------------------------------------
 
 /// Guards against two flushes at once. A spool is a read-modify-write of one file, so two workers
@@ -115,6 +126,9 @@ pub(crate) fn record(c: Consent) {
 /// re-sending records that were accepted, which is the duplicate-issue failure `event_id` reuse
 /// exists to prevent, arriving by a different door.
 static FLUSHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// At most one sleeping retry worker. Manual flushes may happen while it waits; the eventual wake
+/// is harmless, while spawning one sleeper per flush would consume this small device's thread cap.
+static RETRY_SCHEDULED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Queue one record for later. Main-thread-safe, and it does NOT send.
 pub(crate) fn enqueue(r: queue::Record) {
@@ -147,8 +161,23 @@ pub(crate) fn flush_soon() {
         return; // one at a time — see FLUSHING
     }
     let ok = crate::task::spawn_small("telemetry", move || {
-        flush_now(&c);
+        let retry = flush_now(&c);
         FLUSHING.store(false, Ordering::Release);
+        if let Some(seconds) = retry {
+            if RETRY_SCHEDULED.swap(true, Ordering::AcqRel) {
+                return;
+            }
+            // A retry is an actual schedule, not merely a number in a log. This worker owns no
+            // spool lock and has a small stack; when it wakes it goes through FLUSHING again.
+            let scheduled = crate::task::spawn_small("telemetry-retry", move || {
+                std::thread::sleep(std::time::Duration::from_secs(seconds));
+                RETRY_SCHEDULED.store(false, Ordering::Release);
+                flush_soon();
+            });
+            if !scheduled {
+                RETRY_SCHEDULED.store(false, Ordering::Release);
+            }
+        }
     });
     if !ok {
         FLUSHING.store(false, Ordering::Release);
@@ -156,52 +185,66 @@ pub(crate) fn flush_soon() {
 }
 
 /// The flush itself, on the worker.
-fn flush_now(c: &consent::Consent) {
+fn flush_now(c: &consent::Consent) -> Option<u64> {
     let all = spool::read();
     if all.is_empty() {
-        return;
+        return None;
     }
     // Records that leave the spool, whether because a server took them or because nobody consents
     // to them any more. One list, because `queue::ack` asks one question — is this record still
     // ours to keep — and the two reasons for "no" need no distinction downstream.
     let mut retired: Vec<String> = Vec::new();
-    for r in &all {
-        // Per record, against its own category — a spool written before a withdrawal can still hold
-        // records of a category that is now off.
-        if !sender::allowed(r, c) {
-            retired.push(r.event_id.clone()); // never sent: consent for it no longer exists
-            continue;
-        }
-        match sender::send_one(r) {
-            (sender::Verdict::Done, _) => retired.push(r.event_id.clone()),
-            (sender::Verdict::Hopeless, _) => retired.push(r.event_id.clone()),
-            // Held. Stop the whole flush rather than working down the list: whatever stopped this
-            // record — rate limit, dead link, a server having a bad day — applies to the next one
-            // too, and hammering an endpoint that just said stop is how a client earns a longer
-            // ban. The hold is honoured by simply not trying again until the next flush.
-            (sender::Verdict::Keep, hold) => {
-                let s = hold.unwrap_or(sender::DEFAULT_HOLD_S);
-                crate::log(&format!(
-                    "telemetry: holding {} records, ~{s}s",
-                    all.len() - retired.len()
-                ));
-                break;
-            }
-        }
+    let (newly_retired, retry) = process_records(&all, c, sender::send_one);
+    retired.extend(newly_retired);
+    if let Some(s) = retry {
+        crate::log(&format!(
+            "telemetry: holding {} records, ~{s}s",
+            all.len() - retired.len()
+        ));
     }
     if !retired.is_empty() {
         spool::commit_retiring(&retired);
-        // **One line per flush that did something.** Without it a successful flush is
-        // indistinguishable from a flush that never ran, from the outside and from a log — the
-        // spool ends at zero bytes either way. That ambiguity is not hypothetical: it is what the
-        // first end-to-end verification of the crash channel ran into, and the answer took a code
-        // change rather than a closer read.
         crate::log(&format!(
             "telemetry: flushed {} of {} record(s)",
             retired.len(),
             all.len()
         ));
     }
+    retry
+}
+
+/// Process each destination as an independent logical lane. A dead/rate-limited Sentry endpoint
+/// cannot prevent a later PostHog record from being attempted, or vice versa.
+fn process_records(
+    all: &[queue::Record],
+    c: &consent::Consent,
+    mut send: impl FnMut(&queue::Record) -> (sender::Verdict, Option<u64>),
+) -> (Vec<String>, Option<u64>) {
+    let mut retired = Vec::new();
+    let mut retry: Option<u64> = None;
+    for dest in [queue::Dest::Sentry, queue::Dest::PostHog] {
+        for r in all.iter().filter(|r| r.dest == dest) {
+            // Per record, against its own category — a spool written before a withdrawal can still
+            // hold records of a category that is now off.
+            if !sender::allowed(r, c) {
+                retired.push(r.event_id.clone());
+                continue;
+            }
+            match send(r) {
+                (sender::Verdict::Done, _) | (sender::Verdict::Hopeless, _) => {
+                    retired.push(r.event_id.clone())
+                }
+                // Stop this lane only. The failure applies to later records for the same endpoint,
+                // but says nothing about the independent service in the other lane.
+                (sender::Verdict::Keep, hold) => {
+                    let s = hold.unwrap_or(sender::DEFAULT_HOLD_S);
+                    retry = Some(retry.map_or(s, |old| old.min(s)));
+                    break;
+                }
+            }
+        }
+    }
+    (retired, retry)
 }
 
 /// 16 bytes of `/dev/urandom` as lowercase hex — the ONLY way an `install_id` is ever produced.
@@ -224,6 +267,52 @@ pub(crate) fn mint_install_id() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_an_errors_off_to_on_transition_discards_preconsent_crashes() {
+        let state = |errors| Consent {
+            asked_version: consent::POLICY_VERSION,
+            errors,
+            usage: false,
+            install_id: None,
+        };
+        assert!(newly_enables_errors(None, &state(true)));
+        assert!(newly_enables_errors(Some(&state(false)), &state(true)));
+        assert!(!newly_enables_errors(Some(&state(true)), &state(true)));
+        assert!(!newly_enables_errors(Some(&state(true)), &state(false)));
+    }
+
+    #[test]
+    fn a_held_destination_does_not_block_the_other_destination() {
+        let record = |id: &str, category, dest| queue::Record {
+            category,
+            dest,
+            event_id: id.into(),
+            body: b"{}".to_vec(),
+        };
+        let all = vec![
+            record("s1", queue::Category::Errors, queue::Dest::Sentry),
+            record("p1", queue::Category::Usage, queue::Dest::PostHog),
+        ];
+        let c = consent::Consent {
+            asked_version: consent::POLICY_VERSION,
+            errors: true,
+            usage: true,
+            install_id: Some("id".into()),
+        };
+        let mut attempted = Vec::new();
+        let (retired, retry) = process_records(&all, &c, |r| {
+            attempted.push(r.event_id.clone());
+            if r.dest == queue::Dest::Sentry {
+                (sender::Verdict::Keep, Some(7))
+            } else {
+                (sender::Verdict::Done, None)
+            }
+        });
+        assert_eq!(attempted, vec!["s1", "p1"]);
+        assert_eq!(retired, vec!["p1"]);
+        assert_eq!(retry, Some(7));
+    }
 
     /// The identifier is 32 hex characters and two mints differ. Not a randomness test — it is a
     /// test that the SOURCE is the device and not a constant, which is the failure that would make

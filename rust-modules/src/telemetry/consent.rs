@@ -1,15 +1,15 @@
 //! **The decision, and the identity that only exists because of it.**
 //!
 //! Two independent switches — errors and usage — both off until somebody turns them on, plus the
-//! random identifier that is minted *by* the first opt-in and destroyed by the last withdrawal.
+//! random identifier that is minted by usage opt-in and destroyed by usage withdrawal.
 //! Everything in this file is either a pure transition over a [`Consent`] value or the storage
 //! under it, so the compliance-critical half is host-tested and needs no television and no vendor.
 //!
 //! # The three rules that shape it
 //!
 //! **Nothing is stored to enable telemetry before consent.** Only the decision itself and the
-//! policy version it was given against. In particular no identifier: [`apply`] mints one on the
-//! transition into consent, never at boot, never "just in case", and
+//! policy version it was given against. In particular no usage identifier: [`apply`] mints one on
+//! the transition into usage consent, never for errors-only consent, never at boot or "just in case", and
 //! [`no_identifier_exists_before_anyone_says_yes`] is the test that keeps it that way.
 //!
 //! **Two switches, because they are two questions.** Crash reports and usage statistics are judged
@@ -17,7 +17,7 @@
 //! error reporting — and bundling them into one "analytics?" toggle is the shape that reads as a
 //! trick. Two `bool`s, both defaulting to false, and consenting to one says nothing about the other.
 //!
-//! **Withdrawal DELETES the identifier**, and that is a change from the plan this was built to,
+//! **Usage withdrawal DELETES the identifier**, and that is a change from the plan this was built to,
 //! forced by a measurement. The plan said keep the id, request deletion from the vendor, and rotate
 //! only once that succeeded. Neither vendor can delete anonymous data belonging to no account
 //! (`PRIVACY.md` term 7 records why), so "keep it pending a deletion" would be keeping it forever.
@@ -69,8 +69,9 @@ pub(crate) struct Consent {
     /// which screens and features get used
     #[serde(default)]
     pub usage: bool,
-    /// 16 random bytes as lowercase hex, minted on the first opt-in and dropped on the last
-    /// withdrawal. **Never derived from anything**: not the serial, not the MAC, not LG's `LGUDID`,
+    /// 16 random bytes as lowercase hex, minted when usage analytics is enabled and dropped when
+    /// usage analytics is withdrawn. **Never derived from anything**: not the serial, not the MAC,
+    /// not LG's `LGUDID`,
     /// not the Plex account id, not `X-Plex-Client-Identifier`, not the server's
     /// `machineIdentifier`. A derived identifier would survive this file being deleted, which is
     /// the property that makes it an identifier rather than a preference.
@@ -83,8 +84,7 @@ impl Consent {
     pub(crate) fn answered(&self) -> bool {
         self.asked_version >= POLICY_VERSION
     }
-    /// Is anything switched on at all? Used by [`apply`] to decide whether an identifier should
-    /// exist, which is the whole of the "nothing is stored before consent" rule in one place.
+    /// Is anything switched on at all?
     pub(crate) fn any(&self) -> bool {
         self.errors || self.usage
     }
@@ -108,9 +108,9 @@ pub(crate) fn should_ask(c: &Consent, automated: bool) -> bool {
 /// a test can prove the mint was never reached.
 ///
 /// Four behaviours, and each is a test below:
-/// * saying yes to anything, with no identifier yet, mints one;
-/// * saying yes again does NOT re-mint — a second opt-in is not a new install;
-/// * saying no to everything DROPS the identifier (see the module doc);
+/// * enabling usage, with no identifier yet, mints one;
+/// * enabling usage again does NOT re-mint;
+/// * disabling usage DROPS the identifier, independently of crash consent;
 /// * the answer is recorded against the current [`POLICY_VERSION`] either way, so a "no" is a real
 ///   answer and is not re-asked until the policy itself changes.
 pub(crate) fn apply(
@@ -126,7 +126,7 @@ pub(crate) fn apply(
         install_id: None,
     };
     Consent {
-        install_id: match (&prev.install_id, next.any()) {
+        install_id: match (&prev.install_id, usage) {
             (_, false) => None,
             (Some(id), true) => Some(id.clone()),
             (None, true) => Some(mint()),
@@ -209,10 +209,10 @@ mod tests {
         assert!(!should_ask(&after_no, false));
     }
 
-    /// One "yes" to either switch mints exactly one identifier.
+    /// Only usage analytics needs a stable identifier. Crash reports use independent event ids.
     #[test]
     fn the_first_yes_mints_one_identifier() {
-        for (errors, usage) in [(true, false), (false, true), (true, true)] {
+        for (errors, usage) in [(false, true), (true, true)] {
             let c = apply(&Consent::default(), errors, usage, || "abc123".into());
             assert_eq!(
                 c.install_id.as_deref(),
@@ -220,6 +220,14 @@ mod tests {
                 "errors={errors} usage={usage}"
             );
         }
+    }
+
+    #[test]
+    fn errors_only_never_mints_a_usage_identifier() {
+        let c = apply(&Consent::default(), true, false, || {
+            panic!("minted a usage identifier for crash reporting")
+        });
+        assert!(c.errors && !c.usage && c.install_id.is_none());
     }
 
     /// …and a SECOND yes does not re-mint. Turning the other switch on later is the same install
@@ -252,14 +260,15 @@ mod tests {
         assert_eq!(again.install_id.as_deref(), Some("def456"));
     }
 
-    /// Turning off ONE switch while the other stays on keeps the identifier — the person has not
-    /// withdrawn, they have narrowed. Dropping it here would split their own reports in half.
+    /// Withdrawing usage destroys its identity even while independent crash consent remains on.
     #[test]
-    fn narrowing_is_not_withdrawing() {
+    fn withdrawing_usage_while_errors_remain_destroys_the_identifier() {
         let both = apply(&Consent::default(), true, true, || "abc123".into());
-        let one = apply(&both, true, false, || panic!("re-minted on a narrowing"));
-        assert_eq!(one.install_id.as_deref(), Some("abc123"));
-        assert!(one.any());
+        let errors = apply(&both, true, false, || panic!("re-minted on a withdrawal"));
+        assert!(errors.errors && !errors.usage);
+        assert!(errors.install_id.is_none());
+        let again = apply(&errors, true, true, || "def456".into());
+        assert_eq!(again.install_id.as_deref(), Some("def456"));
     }
 
     /// A policy bump re-asks, and does NOT silently carry the old answer forward as consent.

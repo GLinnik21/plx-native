@@ -280,7 +280,25 @@ pub(crate) fn allowed(r: &Record, c: &consent::Consent) -> bool {
 fn wire_body(r: &Record) -> Vec<u8> {
     match r.dest {
         Dest::Sentry => sentry::envelope(&r.event_id, "event", &r.body),
-        Dest::PostHog => r.body.clone(),
+        Dest::PostHog => {
+            let Some(event) = crate::diag::schema::UsageEnvelope::decode(&r.body) else {
+                // Old spools already contain a PostHog capture body. A body that claims the new
+                // neutral shape but has an unknown version is different: never leak that internal
+                // representation onto a vendor endpoint.
+                return if crate::diag::schema::UsageEnvelope::claims_neutral_format(&r.body) {
+                    Vec::new()
+                } else {
+                    r.body.clone()
+                };
+            };
+            let Some(id) = consent::current().and_then(|c| c.install_id) else {
+                return Vec::new();
+            };
+            let Some(key) = POSTHOG_KEY else {
+                return Vec::new();
+            };
+            posthog::captured(key, &id, &event, ENVIRONMENT)
+        }
     }
 }
 
@@ -319,25 +337,6 @@ fn route(r: &Record) -> Option<(String, Vec<String>)> {
             ))
         }
     }
-}
-
-/// Build a PostHog body for one event, if this build is configured for it.
-///
-/// Lives here rather than in [`posthog`] because the KEY does — that module is a pure serialiser
-/// and should keep having no idea what this installation's credentials are.
-pub(crate) fn posthog_body(
-    e: crate::diag::schema::DiagEvent,
-    distinct_id: &str,
-) -> Option<Vec<u8>> {
-    // `None` for the timestamp: PostHog stamps on arrival, which on a television whose clock runs
-    // ~3h off is strictly better than what we could tell it. See `posthog::single`.
-    Some(posthog::single(
-        POSTHOG_KEY?,
-        distinct_id,
-        e,
-        ENVIRONMENT,
-        None,
-    ))
 }
 
 /// Attempt one record. Returns the verdict and, when a server asked for one, the hold in seconds.
@@ -434,15 +433,20 @@ mod tests {
         );
     }
 
-    /// …and PostHog's body is passed through untouched. Its endpoint takes a plain JSON object, so
-    /// framing it would break the channel that currently works — which is the mistake symmetrical
-    /// to the one above, and the reason this is a per-destination decision rather than a wrapper
-    /// applied on the way out.
+    /// A legacy PostHog body is passed through untouched. New records carry a neutral envelope,
+    /// but an upgrade must still drain the old plain JSON objects already on disk.
     #[test]
     fn a_posthog_record_is_posted_exactly_as_it_was_queued() {
         let mut r = rec(Category::Usage, Dest::PostHog);
         r.body = br#"{"api_key":"phc_x","event":"app.launch"}"#.to_vec();
         assert_eq!(wire_body(&r), r.body);
+    }
+
+    #[test]
+    fn an_unknown_neutral_usage_version_is_not_posted_as_vendor_json() {
+        let mut r = rec(Category::Usage, Dest::PostHog);
+        r.body = br#"{"version":99,"occurred_at_ms":1,"session_id":"s","name":"app.launch","fields":[]}"#.to_vec();
+        assert!(wire_body(&r).is_empty(), "future internal storage escaped onto the wire");
     }
 
     fn rec(cat: Category, dest: Dest) -> Record {
@@ -555,7 +559,6 @@ mod tests {
         if !configured() {
             assert!(route(&rec(Category::Errors, Dest::Sentry)).is_none());
             assert!(route(&rec(Category::Usage, Dest::PostHog)).is_none());
-            assert!(posthog_body(crate::diag::schema::DiagEvent::AppLaunch, "id").is_none());
         }
     }
 

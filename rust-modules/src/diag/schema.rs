@@ -51,30 +51,31 @@ pub(crate) enum DiagEvent {
     AppLaunch,
     /// A screen was entered. `screen` comes from `app.rs`'s own route-name table, the same
     /// `&'static str` the heartbeat and the lab envelope print, so the three cannot disagree.
-    RouteEntered { screen: &'static str },
-    /// plex.tv sign-in finished and the app reached Home or the profile picker.
-    ///
-    /// **No outcome field, and that is a finding rather than a simplification.** The plan called
-    /// for `signin.completed` / `signin.failed` with a reason enum; going to wire it, the failure
-    /// sites turn out not to exist. `auth::pin_denied` — the obvious candidate — is about the
-    /// PROFILE pin on a Plex Home switch, not about the plex.tv link code, and there is no place
-    /// in the login poll that distinguishes "denied" from "expired" from "the network went away".
-    /// So a reason enum here would have been three names describing nothing.
-    ///
-    /// The right order is to make the app *observe* those outcomes first and report them second.
-    /// Until it does, this stays a marker and the interesting half — "how many people get stuck on
-    /// the QR screen" — is answered by the ABSENCE of this event after an `app.launch`.
+    RouteEntered {
+        screen: &'static str,
+    },
+    /// plex.tv sign-in finished and the app reached Home or the profile picker. A user-initiated
+    /// flow is bracketed by `started` and exactly one completed/failed/cancelled event; failures
+    /// carry only the fixed coarse stage, never server text or an account value.
     SignInCompleted,
+    SignInStarted,
+    SignInFailed {
+        kind: SignInFailure,
+    },
+    SignInCancelled,
+    FeatureUsed {
+        feature: Feature,
+    },
 
     // ---- playback -----------------------------------------------------------------------------
     //
-    // Four events for one attempt, joined by `playback_id`. Without that join a funnel cannot
+    // Playback lifecycle events for one attempt, joined by `playback_id`. Without that join a funnel cannot
     // connect a failure to the start it belongs to, and "how often does playback fail" becomes two
     // unrelated counters.
     //
     // **`playback_id` is a random number minted per attempt, and it is not an identity.** It is
     // reset every time and never stored, so it cannot link two playbacks on one television, let
-    // alone two televisions. It exists to make the four events of ONE attempt joinable inside a
+    // alone two televisions. It exists to make the events of ONE attempt joinable inside a
     // session, which is exactly as much as a funnel needs.
     //
     // **Every descriptive field is a BUCKET, and that is a privacy decision rather than a
@@ -92,7 +93,9 @@ pub(crate) enum DiagEvent {
     /// `requested` before it, i.e. a funnel that silently under-counts exactly the case it was
     /// built for. Direct-play-versus-transcode is not yet knowable at the press; both `started` and
     /// `failed` carry it, which is where the question is actually asked.
-    PlaybackRequested { playback_id: i64 },
+    PlaybackRequested {
+        playback_id: i64,
+    },
     /// The first frame of this attempt reached the panel — the transition into `Playing`, once.
     PlaybackStarted {
         playback_id: i64,
@@ -120,6 +123,61 @@ pub(crate) enum DiagEvent {
         mode: &'static str,
         watched: &'static str,
     },
+    PlaybackCancelled {
+        playback_id: i64,
+        mode: &'static str,
+    },
+    PlaybackAbandoned {
+        playback_id: i64,
+        mode: &'static str,
+    },
+    PlaybackQuality {
+        playback_id: i64,
+        rebuffers: &'static str,
+        buffering: &'static str,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Feature {
+    Pause,
+    Seek,
+    AudioTrack,
+    SubtitleTrack,
+    SkipIntro,
+    SkipCredits,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SignInFailure {
+    PinCreate,
+    Authorization,
+    Discovery,
+    Other,
+}
+
+impl SignInFailure {
+    fn code(self) -> &'static str {
+        match self {
+            Self::PinCreate => "pin_create",
+            Self::Authorization => "authorization",
+            Self::Discovery => "discovery",
+            Self::Other => "other",
+        }
+    }
+}
+
+impl Feature {
+    fn code(self) -> &'static str {
+        match self {
+            Self::Pause => "pause",
+            Self::Seek => "seek",
+            Self::AudioTrack => "audio_track",
+            Self::SubtitleTrack => "subtitle_track",
+            Self::SkipIntro => "skip_intro",
+            Self::SkipCredits => "skip_credits",
+        }
+    }
 }
 
 /// A serialised field value. The set is the whole vocabulary, and the important thing about it is
@@ -144,6 +202,74 @@ pub(crate) enum Value {
     Int(i64),
 }
 
+/// Versioned, vendor-neutral usage record stored in the durable telemetry spool.
+///
+/// The spool owns the fact that an event happened; a sender owns how that fact is represented for
+/// a particular service. Keeping those sides apart also preserves the original occurrence time
+/// while a television is offline instead of letting an ingest service mistake the next boot for
+/// the moment every queued action happened.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct UsageEnvelope {
+    pub version: u8,
+    pub occurred_at_ms: u64,
+    pub session_id: String,
+    pub name: String,
+    pub fields: Vec<(String, UsageValue)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+pub(crate) enum UsageValue {
+    Str(String),
+    Int(i64),
+}
+
+impl UsageEnvelope {
+    pub(crate) const VERSION: u8 = 1;
+
+    pub(crate) fn capture(event: DiagEvent, occurred_at_ms: u64, session_id: &str) -> Self {
+        let (name, fields) = serialize(event);
+        Self {
+            version: Self::VERSION,
+            occurred_at_ms,
+            session_id: session_id.to_string(),
+            name: name.to_string(),
+            fields: fields
+                .into_iter()
+                .map(|(key, value)| {
+                    (
+                        key.to_string(),
+                        match value {
+                            Value::Str(s) => UsageValue::Str(s.to_string()),
+                            Value::Int(n) => UsageValue::Int(n),
+                        },
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    pub(crate) fn encode(&self) -> Option<Vec<u8>> {
+        serde_json::to_vec(self).ok()
+    }
+
+    pub(crate) fn decode(bytes: &[u8]) -> Option<Self> {
+        let value: Self = serde_json::from_slice(bytes).ok()?;
+        (value.version == Self::VERSION).then_some(value)
+    }
+
+    /// Does this body claim to be one of our neutral durable envelopes, even if its version is not
+    /// understood? Legacy PostHog bodies predate this shape and have no `version` field. Senders
+    /// may pass those through, but must fail closed on a future/invalid internal envelope rather
+    /// than posting its storage representation as if it were vendor wire JSON.
+    pub(crate) fn claims_neutral_format(bytes: &[u8]) -> bool {
+        serde_json::from_slice::<serde_json::Value>(bytes)
+            .ok()
+            .and_then(|v| v.get("version").cloned())
+            .is_some()
+    }
+}
+
 /// One event's name and fields, ready for a sender to wrap in whatever envelope it needs.
 ///
 /// Returning the pair rather than a JSON string keeps this file free of any one vendor's format:
@@ -160,6 +286,15 @@ pub(crate) fn serialize(e: DiagEvent) -> (&'static str, Vec<(&'static str, Value
             ("route.entered", vec![("screen", Value::Str(screen))])
         }
         DiagEvent::SignInCompleted => ("signin.completed", Vec::new()),
+        DiagEvent::SignInStarted => ("signin.started", Vec::new()),
+        DiagEvent::SignInFailed { kind } => {
+            ("signin.failed", vec![("kind", Value::Str(kind.code()))])
+        }
+        DiagEvent::SignInCancelled => ("signin.cancelled", Vec::new()),
+        DiagEvent::FeatureUsed { feature } => (
+            "feature.used",
+            vec![("feature", Value::Str(feature.code()))],
+        ),
         DiagEvent::PlaybackRequested { playback_id } => (
             "playback.requested",
             vec![("playback_id", Value::Int(playback_id))],
@@ -208,6 +343,32 @@ pub(crate) fn serialize(e: DiagEvent) -> (&'static str, Vec<(&'static str, Value
                 ("watched", Value::Str(watched)),
             ],
         ),
+        DiagEvent::PlaybackCancelled { playback_id, mode } => (
+            "playback.cancelled",
+            vec![
+                ("playback_id", Value::Int(playback_id)),
+                ("mode", Value::Str(mode)),
+            ],
+        ),
+        DiagEvent::PlaybackAbandoned { playback_id, mode } => (
+            "playback.abandoned",
+            vec![
+                ("playback_id", Value::Int(playback_id)),
+                ("mode", Value::Str(mode)),
+            ],
+        ),
+        DiagEvent::PlaybackQuality {
+            playback_id,
+            rebuffers,
+            buffering,
+        } => (
+            "playback.quality",
+            vec![
+                ("playback_id", Value::Int(playback_id)),
+                ("rebuffers", Value::Str(rebuffers)),
+                ("buffering", Value::Str(buffering)),
+            ],
+        ),
     }
 }
 
@@ -241,6 +402,10 @@ pub(crate) const EVENT_SPECS: &[EventSpec] = &[
         fields: &[F { key: "screen", domain: "one of a fixed list of screen names" }],
     },
     EventSpec { name: "signin.completed", fields: &[] },
+    EventSpec { name: "signin.started", fields: &[] },
+    EventSpec { name: "signin.failed", fields: &[F { key: "kind", domain: "`pin_create` / `authorization` / `discovery` / `other`" }] },
+    EventSpec { name: "signin.cancelled", fields: &[] },
+    EventSpec { name: "feature.used", fields: &[F { key: "feature", domain: "one of a fixed list of feature names" }] },
     EventSpec { name: "playback.requested", fields: &[F { key: "playback_id", domain: PLAYBACK_ID }] },
     EventSpec {
         name: "playback.started",
@@ -260,6 +425,22 @@ pub(crate) const EVENT_SPECS: &[EventSpec] = &[
             F { key: "playback_id", domain: PLAYBACK_ID },
             F { key: "mode", domain: MODE },
             F { key: "kind", domain: "`decision_refused` / `no_video_transcode_target` / `no_video_track` / `unspecified`" },
+        ],
+    },
+    EventSpec {
+        name: "playback.cancelled",
+        fields: &[F { key: "playback_id", domain: PLAYBACK_ID }, F { key: "mode", domain: MODE }],
+    },
+    EventSpec {
+        name: "playback.abandoned",
+        fields: &[F { key: "playback_id", domain: PLAYBACK_ID }, F { key: "mode", domain: MODE }],
+    },
+    EventSpec {
+        name: "playback.quality",
+        fields: &[
+            F { key: "playback_id", domain: PLAYBACK_ID },
+            F { key: "rebuffers", domain: "`0` / `1` / `2-3` / `4+`" },
+            F { key: "buffering", domain: "`none` / `<2s` / `2-10s` / `10s+` — never the interval" },
         ],
     },
     EventSpec {
@@ -325,6 +506,14 @@ mod tests {
             DiagEvent::AppLaunch,
             DiagEvent::RouteEntered { screen: "home" },
             DiagEvent::SignInCompleted,
+            DiagEvent::SignInStarted,
+            DiagEvent::SignInFailed {
+                kind: SignInFailure::Authorization,
+            },
+            DiagEvent::SignInCancelled,
+            DiagEvent::FeatureUsed {
+                feature: Feature::Pause,
+            },
             DiagEvent::PlaybackRequested { playback_id: 7 },
             DiagEvent::PlaybackStarted {
                 playback_id: 7,
@@ -345,16 +534,36 @@ mod tests {
                 mode: "direct",
                 watched: "most",
             },
+            DiagEvent::PlaybackCancelled {
+                playback_id: 7,
+                mode: "direct",
+            },
+            DiagEvent::PlaybackAbandoned {
+                playback_id: 7,
+                mode: "direct",
+            },
+            DiagEvent::PlaybackQuality {
+                playback_id: 7,
+                rebuffers: "1",
+                buffering: "<2s",
+            },
         ];
         for e in &all {
             match e {
                 DiagEvent::AppLaunch => {}
                 DiagEvent::RouteEntered { .. } => {}
                 DiagEvent::SignInCompleted => {}
+                DiagEvent::SignInStarted => {}
+                DiagEvent::SignInFailed { .. } => {}
+                DiagEvent::SignInCancelled => {}
+                DiagEvent::FeatureUsed { .. } => {}
                 DiagEvent::PlaybackRequested { .. } => {}
                 DiagEvent::PlaybackStarted { .. } => {}
                 DiagEvent::PlaybackFailed { .. } => {}
                 DiagEvent::PlaybackEnded { .. } => {}
+                DiagEvent::PlaybackCancelled { .. } => {}
+                DiagEvent::PlaybackAbandoned { .. } => {}
+                DiagEvent::PlaybackQuality { .. } => {}
             }
         }
         all
@@ -457,8 +666,8 @@ mod tests {
             .find("pub(crate) enum DiagEvent")
             .expect("the event type");
         let to = src
-            .find("pub(crate) const EVENT_SPECS")
-            .expect("the registry");
+            .find("pub(crate) struct UsageEnvelope")
+            .expect("the durable envelope boundary");
         let decls = &src[from..to];
         for (i, line) in decls.lines().enumerate() {
             let code = line.split("//").next().unwrap_or("");
@@ -468,6 +677,27 @@ mod tests {
                 i + 1
             );
         }
+    }
+
+    #[test]
+    fn a_usage_envelope_round_trips_occurrence_metadata() {
+        let original = UsageEnvelope::capture(
+            DiagEvent::PlaybackRequested { playback_id: 42 },
+            1_234_567,
+            "session-a",
+        );
+        let bytes = original.encode().expect("serialises");
+        assert_eq!(UsageEnvelope::decode(&bytes), Some(original));
+
+        let future = br#"{"version":99,"occurred_at_ms":1,"session_id":"s","name":"app.launch","fields":[]}"#;
+        assert!(
+            UsageEnvelope::decode(future).is_none(),
+            "unknown spool schemas fail closed"
+        );
+        assert!(UsageEnvelope::claims_neutral_format(future));
+        assert!(!UsageEnvelope::claims_neutral_format(
+            br#"{"api_key":"legacy","event":"app.launch"}"#
+        ));
     }
 
     /// The privacy document lists every event this build can emit.

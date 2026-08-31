@@ -153,17 +153,19 @@ plex.tv, to sign in and to list the servers your account can reach. Your Plex Me
 browse and to play. Plex's own privacy policy governs what Plex sees; I am a third-party client and \
 I receive none of it.
 
-And, only if you asked for it: crash reports, and which screens and video formats get used. Two \
+And, only if you asked for it: crash reports, and anonymous screens, features, sign-in and playback \
+usage events. Two \
 separate switches, both off by default, both reversible at any time in Settings, Privacy. Turning \
-them both off deletes the random identifier this television used, so anything sent later cannot be \
+usage reporting off deletes the random identifier this television used, so anything sent later cannot be \
 joined to anything sent before.
 
 WHAT IS IN A REPORT
 
 For a native crash: the signal, instruction and caller frames for the crashed and other captured \
 threads, ARM registers, thread ids and internal labels, module basenames and addresses, and \
-app/webOS/kernel build facts needed to reproduce and symbolicate it. Usage reports contain only a \
-screen name or video/audio format classes. Neither schema has a field for titles, searches, \
+app/webOS/kernel build facts needed to reproduce and symbolicate it. Usage reports contain fixed \
+screen/feature/sign-in/playback outcome and format classes, a per-attempt playback id, occurrence \
+time and a random per-process session id. Neither schema has a field for titles, searches, \
 subtitles, accounts or servers. You can read every exact schema, with runtime values shown as \
 placeholders, on the same screen the switches are on.
 

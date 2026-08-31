@@ -91,8 +91,8 @@ const BODY: &str = "\
 Hi — I'm Gleb. I build PlxNative on my own, for free, and I own exactly one LG television. When the \
 app breaks on someone else's, I usually never find out.
 
-If you switch these on, the app can tell me when it crashes, and which video formats and screens \
-actually get used. That's the whole thing.
+If you switch these on, the app can tell me when it crashes; which screens and features get used; \
+whether sign-in and playback succeed; and broad video/audio classes. That's the whole thing.
 
 Titles, libraries, accounts and server addresses are not included in what's sent. Either way \
 PlxNative works exactly the same, and you can change your mind any time in Settings → Privacy.";
@@ -100,7 +100,7 @@ PlxNative works exactly the same, and you can change your mind any time in Setti
 const ROW_ERRORS: &str = "Tell me when it crashes";
 const ROW_ERRORS_SUB: &str = "Crash and error reports.";
 const ROW_USAGE: &str = "Tell me which features get used";
-const ROW_USAGE_SUB: &str = "Which screens and video formats, never what you watch.";
+const ROW_USAGE_SUB: &str = "Screens, features and coarse outcomes/formats — never what you watch.";
 const ROW_PREVIEW: &str = "See exactly what's sent";
 const ROW_CONTINUE: &str = "Continue";
 
@@ -211,10 +211,11 @@ fn commit() {
     let next = consent::apply(&prev, errors, usage, || {
         crate::telemetry::mint_install_id().unwrap_or_default()
     });
-    // A mint that failed leaves an empty id, which is not an identity. Refusing the opt-in is the
-    // honest resolution: the alternative is inventing one from a clock or a MAC, which is precisely
-    // the kind of identifier this whole design refuses.
-    if next.any() && next.install_id.as_deref().unwrap_or("").is_empty() {
+    // Only usage analytics needs an install identity. Crash reports are deliberately anonymous,
+    // so an errors-only answer must remain valid even if randomness is unavailable. A failed usage
+    // mint, on the other hand, is not an identity: refuse that opt-in rather than inventing one
+    // from a clock or a MAC.
+    if next.usage && next.install_id.as_deref().unwrap_or("").is_empty() {
         crate::log(
             "consent: no /dev/urandom — recording the answer as a refusal rather than \
                     inventing an identifier",
@@ -326,7 +327,7 @@ pub(crate) fn update(dt: f32) {
 ///
 /// Not a mock-up, and that is the entire value: a hand-written sample drifts from the code the
 /// moment anybody adds a field, and then the screen that exists to make the claim checkable is
-/// itself a claim nobody checks. This runs `posthog::single` over every
+/// itself a claim nobody checks. This runs `posthog::preview` over every
 /// [`DiagEvent`](crate::diag::schema::DiagEvent) the build can emit, and the native preview is
 /// tested against the native sanitizer's field allowlist. A schema change therefore appears here,
 /// in front of the person being asked to consent to it.
@@ -361,6 +362,14 @@ pub(crate) fn preview() -> String {
         DiagEvent::AppLaunch,
         DiagEvent::RouteEntered { screen: "home" },
         DiagEvent::SignInCompleted,
+        DiagEvent::SignInStarted,
+        DiagEvent::SignInFailed {
+            kind: crate::diag::schema::SignInFailure::Authorization,
+        },
+        DiagEvent::SignInCancelled,
+        DiagEvent::FeatureUsed {
+            feature: crate::diag::schema::Feature::Seek,
+        },
         // Representative values, not placeholders: every one of these is a real bucket the app can
         // actually emit, so what the person reads here is the shape of what would be sent. The
         // `playback_id` shown is the only number on the list, and its whole point is that it is a
@@ -383,6 +392,19 @@ pub(crate) fn preview() -> String {
             mode: "transcode",
             kind: "no_video_transcode_target",
         },
+        DiagEvent::PlaybackCancelled {
+            playback_id: 4815162342,
+            mode: "direct",
+        },
+        DiagEvent::PlaybackAbandoned {
+            playback_id: 4815162342,
+            mode: "direct",
+        },
+        DiagEvent::PlaybackQuality {
+            playback_id: 4815162342,
+            rebuffers: "1",
+            buffering: "<2s",
+        },
         DiagEvent::PlaybackEnded {
             playback_id: 4815162342,
             mode: "direct",
@@ -393,12 +415,11 @@ pub(crate) fn preview() -> String {
             // The REAL environment this build would report, not a placeholder: it is the one
             // field on the preview that differs between a developer's build and a shipped one, and
             // showing the wrong side would make the panel lie about where the data goes.
-            crate::telemetry::posthog::single(
+            crate::telemetry::posthog::preview(
                 "<project key>",
                 "<random id>",
                 e,
                 crate::telemetry::sender::ENVIRONMENT,
-                Some("<time>"),
             );
         // **Pretty-printed, and that is not cosmetic.** Compact JSON has almost no spaces, so a
         // greedy word-wrapper sees one enormous unbreakable word, fails to fit it, and ELIDES —

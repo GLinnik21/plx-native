@@ -158,6 +158,9 @@ struct Ctl {
     // to retain its client id, so the mere presence of `session.account_token` cannot distinguish
     // a discovery failure from a pin-create/poll failure carrying a stale credential.
     authorized_in_flow: bool,
+    /// True only while a user-initiated plex.tv sign-in attempt is unresolved. Stored-session
+    /// discovery and profile switching deliberately never set it.
+    signin_active: bool,
     // which picker `start_switch` raised — read by `cancel`, and by nothing else
     from: Picker,
 }
@@ -232,8 +235,14 @@ pub fn users() -> Vec<UserTile> {
 pub fn start_login() {
     cancel_network_work();
     let epoch = network_epoch();
+    crate::diag::event(crate::diag::schema::DiagEvent::SignInStarted);
     with_ctl(|c| {
-        *c = Ctl { phase: Phase::Creating, session: session::load(), ..Ctl::default() };
+        *c = Ctl {
+            phase: Phase::Creating,
+            session: session::load(),
+            signin_active: true,
+            ..Ctl::default()
+        };
     });
     if !crate::task::spawn_small("login", move || login_thread(epoch)) {
         // Phase::Creating is a spinner with a worker behind it. Without the worker it never ends,
@@ -254,9 +263,11 @@ pub fn retry() {
     };
     cancel_network_work();
     let epoch = network_epoch();
+    crate::diag::event(crate::diag::schema::DiagEvent::SignInStarted);
     with_ctl(|c| {
         c.error.clear();
         c.phase = Phase::Discovering;
+        c.signin_active = true;
     });
     if !crate::task::spawn_small("rediscover", move || retry_discovery_thread(cid, token, epoch)) {
         set_error_if_live(epoch, "Couldn't restart server discovery. Try again.");
@@ -309,6 +320,7 @@ pub fn retry() {
 /// it inherits should not be the permissive one; the practical effect is confined to the dev-only
 /// `/tmp/plxnative-login` boot, which is the one way to reach that screen over a live session.
 pub fn cancel() -> bool {
+    finish_signin_cancelled();
     let (sess, _) = cancel_and_load_session();
     resume_stored(sess)
 }
@@ -629,7 +641,7 @@ fn finish_sign_in(ac: &AccountClient, epoch: u64) {
             // Sign-in reached a usable state. BOTH settling arms report it — this one and the
             // single-user one below — because "did the QR flow work" is one question and a Plex
             // Home roster is not a different answer to it.
-            crate::diag::event(crate::diag::schema::DiagEvent::SignInCompleted);
+            finish_signin_completed();
             with_ctl(|c| {
                 c.users = users;
                 c.phase = Phase::Profiles;
@@ -640,7 +652,7 @@ fn finish_sign_in(ac: &AccountClient, epoch: u64) {
         } else {
             // no Plex Home (or a single user): use the owner's server token as-is.
             log("auth: single user — ready, entering Home");
-            crate::diag::event(crate::diag::schema::DiagEvent::SignInCompleted);
+            finish_signin_completed();
             with_ctl(|c| {
                 c.phase = Phase::Ready;
                 c.apply_pending = true;
@@ -2010,9 +2022,37 @@ fn switch_thread(index: usize, pin: Option<String>) {
 fn set_error(msg: &str) {
     log(&format!("auth: ERROR {msg}"));
     with_ctl(|c| {
+        if c.signin_active {
+            let kind = match c.phase {
+                Phase::Creating => crate::diag::schema::SignInFailure::PinCreate,
+                Phase::Waiting => crate::diag::schema::SignInFailure::Authorization,
+                Phase::Discovering => crate::diag::schema::SignInFailure::Discovery,
+                _ => crate::diag::schema::SignInFailure::Other,
+            };
+            crate::diag::event(crate::diag::schema::DiagEvent::SignInFailed { kind });
+            c.signin_active = false;
+        }
         c.error = msg.to_owned();
         c.phase = Phase::Error;
     });
+}
+
+fn finish_signin_cancelled() {
+    let report = with_ctl(|c| settle_signin(&mut c.signin_active));
+    if report {
+        crate::diag::event(crate::diag::schema::DiagEvent::SignInCancelled);
+    }
+}
+
+fn finish_signin_completed() {
+    let report = with_ctl(|c| settle_signin(&mut c.signin_active));
+    if report {
+        crate::diag::event(crate::diag::schema::DiagEvent::SignInCompleted);
+    }
+}
+
+fn settle_signin(active: &mut bool) -> bool {
+    std::mem::take(active)
 }
 
 fn set_error_if_live(epoch: u64, msg: &str) {
@@ -2024,6 +2064,17 @@ mod tests {
     use super::*;
     use crate::plex::probe::Scheme;
     use std::cell::RefCell;
+
+    #[test]
+    fn only_a_live_qr_attempt_can_settle_as_an_activation() {
+        let mut qr_attempt = true;
+        assert!(settle_signin(&mut qr_attempt));
+        assert!(!qr_attempt);
+        assert!(!settle_signin(&mut qr_attempt), "a retry or duplicate completion is not activation");
+
+        let mut stored_session_discovery = false;
+        assert!(!settle_signin(&mut stored_session_discovery));
+    }
 
     fn resource(json: &str) -> Resource {
         serde_json::from_str(json).expect("fixture parses")

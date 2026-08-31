@@ -1002,6 +1002,9 @@ fn request_seek(x: i64) {
 /// mechanism as background-restore). `repause_at` is that re-freeze wait target. A scrub while
 /// playing takes the else branch and simply resumes at the new position.
 fn commit_seek(target: i64, repause_at: &mut i64) {
+    crate::diag::event(crate::diag::schema::DiagEvent::FeatureUsed {
+        feature: crate::diag::schema::Feature::Seek,
+    });
     request_seek(target);
     set_scrub(-1);
     if paused() {
@@ -2564,7 +2567,14 @@ fn activate_ctrl_row(
                 false
             }
         }
-        ControlSlot::Skip(pr) => match pr.action {
+        ControlSlot::Skip(pr) => {
+            crate::diag::event(crate::diag::schema::DiagEvent::FeatureUsed {
+                feature: match pr.kind {
+                    crate::metadata::MarkerKind::Intro => crate::diag::schema::Feature::SkipIntro,
+                    crate::metadata::MarkerKind::Credits => crate::diag::schema::Feature::SkipCredits,
+                },
+            });
+            match pr.action {
             SkipAction::Seek(ns) => {
                 // Retire the segment FIRST: the seek lands on the preceding keyframe, which
                 // is usually still inside it, so without this the button comes straight back
@@ -2579,7 +2589,8 @@ fn activate_ctrl_row(
                 finish_playback(mt, route, play_from, refresh_hubs_at, hud_nav, trail);
                 true
             }
-        },
+            }
+        }
         ControlSlot::Discs => false,
     }
 }
@@ -4026,6 +4037,9 @@ unsafe fn key_ok(
             let np = !paused();
             set_paused(np);
             if np {
+                crate::diag::event(crate::diag::schema::DiagEvent::FeatureUsed {
+                    feature: crate::diag::schema::Feature::Pause,
+                });
                 crate::player::pause(mt);
             } else {
                 crate::player::resume(mt);
@@ -4168,6 +4182,9 @@ unsafe fn key_ok(
 fn key_pause(mt: &crate::task::MainThread, route: Route, now: u32) {
     if matches!(route, Route::Player { .. }) && !paused() {
         set_paused(true);
+        crate::diag::event(crate::diag::schema::DiagEvent::FeatureUsed {
+            feature: crate::diag::schema::Feature::Pause,
+        });
         crate::player::pause(mt);
     }
     extend_hud(now, HUD_LINGER_MS);
@@ -6015,6 +6032,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                     let np = !paused();
                                     set_paused(np);
                                     if np {
+                                        crate::diag::event(crate::diag::schema::DiagEvent::FeatureUsed {
+                                            feature: crate::diag::schema::Feature::Pause,
+                                        });
                                         crate::player::pause(mt);
                                     } else {
                                         crate::player::resume(mt);
@@ -8545,6 +8565,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             }
         }
 
+        crate::player::report::abandon_pending();
         if is_started() {
             crate::player::stop_bufferfeed(mt);
         }

@@ -48,7 +48,8 @@
 //! Both are enforced, but a record count is the weaker one: a crash record carrying registers, a
 //! maps line and breadcrumbs is orders of magnitude larger than `app.launch`, so "200 records" is
 //! not a size. The byte cap is what keeps this off a 615 MB partition shared with every other app.
-//! Dropping is **oldest-first** — a new crash is worth more than an old one — and the count is
+//! Crash/error records have priority over usage records; within each category the newest survive.
+//! The dropped count is
 //! returned rather than swallowed, because a queue that silently discards is a queue whose numbers
 //! are wrong in a direction nobody can see.
 
@@ -238,28 +239,31 @@ pub(crate) fn decode_all(buf: &[u8]) -> Decoded {
     Decoded { records, dropped_bytes: buf.len() - at }
 }
 
-/// Enforce both caps, oldest-first, and say how many went.
+/// Enforce both caps and say how many went.
 ///
-/// Byte-cap first is deliberate: applying the record cap first can leave a set that still exceeds
-/// the byte cap (200 crash records are not 200 launches), so the byte pass has to run last to be
-/// the one that binds.
+/// Error records have priority over usage records, so route-event volume cannot erase the crash
+/// reports this durable queue principally exists to preserve. Within each category, newest wins;
+/// the retained set is restored to its original FIFO order before being written.
 pub(crate) fn trim(mut records: Vec<Record>) -> (Vec<Record>, usize) {
     let before = records.len();
-    if records.len() > MAX_RECORDS {
-        records.drain(..records.len() - MAX_RECORDS);
+    // Usage volume must never evict a crash report. Within a category, newest still wins.
+    // Select newest records up to both caps, visiting Errors before Usage, then restore FIFO order.
+    let mut selected = Vec::new();
+    let mut bytes = 0usize;
+    for category in [Category::Errors, Category::Usage] {
+        for (index, record) in records.iter().enumerate().rev() {
+            if record.category != category || selected.len() >= MAX_RECORDS {
+                continue;
+            }
+            let size = encode(record).map_or(0, |e| e.len());
+            if bytes.saturating_add(size) <= MAX_BYTES {
+                selected.push((index, record.clone()));
+                bytes += size;
+            }
+        }
     }
-    // Measure ONCE. This used to encode every record to sum the total and then encode the head
-    // again for each one it dropped, and `remove(0)` shifted the whole vector each time — so
-    // trimming k records off a full spool cost k extra serialisations of records that were about
-    // to be thrown away. `trim` runs on every compaction and every flush commit.
-    let sizes: Vec<usize> = records.iter().map(|r| encode(r).map_or(0, |e| e.len())).collect();
-    let mut total: usize = sizes.iter().sum();
-    let mut cut = 0usize;
-    while total > MAX_BYTES && cut < records.len() {
-        total -= sizes[cut];
-        cut += 1;
-    }
-    records.drain(..cut);
+    selected.sort_unstable_by_key(|(index, _)| *index);
+    records = selected.into_iter().map(|(_, record)| record).collect();
     let dropped = before - records.len();
     (records, dropped)
 }
@@ -433,6 +437,19 @@ mod tests {
         assert!(total <= MAX_BYTES, "kept {total} bytes against a {MAX_BYTES} cap");
         assert_eq!(kept.last().unwrap().event_id, "id39", "the newest record survived");
         assert_ne!(kept.first().unwrap().event_id, "id0", "the oldest was dropped first");
+    }
+
+    #[test]
+    fn usage_volume_never_evicts_an_error_record() {
+        let crash = rec("crash", Category::Errors, b"fault");
+        let mut rs = vec![crash.clone()];
+        rs.extend((0..MAX_RECORDS + 20).map(|i| {
+            rec(&format!("usage-{i}"), Category::Usage, b"route")
+        }));
+        let (kept, dropped) = trim(rs);
+        assert!(dropped > 0);
+        assert!(kept.contains(&crash), "usage records evicted the crash report");
+        assert!(kept.len() <= MAX_RECORDS);
     }
 
     /// The record cap binds independently — many tiny records, well under the byte cap.
