@@ -21,9 +21,10 @@
 pub(crate) mod scrub;
 
 // UNGATED for the same reason `scrub` is, and it is the same lesson: the guarantee this module
-// provides is its TESTS — that no usage event can carry a runtime string, and that `PRIVACY.md`
-// lists every usage event — and tests behind a feature the default gate does not build are tests that never
-// run. `scrub`'s 31 assertions sat unexecuted for as long as they existed.
+// provides is its TESTS — that action fields cannot carry runtime strings, that bounded context
+// fields stay within their allowlisted schema, and that `PRIVACY.md` lists every usage event — and
+// tests behind a feature the default gate does not build are tests that never run. `scrub`'s 31
+// assertions sat unexecuted for as long as they existed.
 pub(crate) mod schema;
 
 /// **Report one event.** The single door, so a call site carries no `#[cfg]` and cannot know
@@ -44,6 +45,16 @@ pub(crate) mod schema;
 /// that has to be right, each one being a decision about what may be observed, and a schema with
 /// no producers is an allowlist nobody has checked against reality.
 pub(crate) fn event(e: schema::DiagEvent) {
+    event_for(e, None);
+}
+
+/// Report an action against the exact Plex server it used. This is the only honest source for
+/// connection class in a multi-server account; generic events deliberately pass no server.
+pub(crate) fn event_for_server(e: schema::DiagEvent, server: crate::plex::ServerId) {
+    event_for(e, Some(server));
+}
+
+fn event_for(e: schema::DiagEvent, server: Option<crate::plex::ServerId>) {
     // **The gate, and it is here rather than at the call sites on purpose**: one place to be right,
     // and no site can forget it. Reads a published snapshot — never the disk, never a lock — which
     // is the shape `diag::scrub`'s identity list had to be rebuilt into after wiring it to
@@ -72,7 +83,16 @@ pub(crate) fn event(e: schema::DiagEvent) {
     let occurred_at_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as u64);
-    let Some(body) = schema::UsageEnvelope::capture(e, occurred_at_ms, session_id).encode() else {
+    let envelope = match server {
+        Some(server) => schema::UsageEnvelope::capture_for_server(
+            e,
+            occurred_at_ms,
+            session_id,
+            server,
+        ),
+        None => schema::UsageEnvelope::capture(e, occurred_at_ms, session_id),
+    };
+    let Some(body) = envelope.encode() else {
         return;
     };
     // Queued, never sent from here: this is the frame loop, and a send opens a socket. The worker

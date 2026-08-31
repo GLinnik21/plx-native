@@ -3087,7 +3087,7 @@ pub(crate) fn request_play(sid: ServerId, rk: &str, part: &str, vcodec: &str, ac
     // would have produced a `playback.failed` with no `playback.requested` before it: a funnel that
     // under-counts exactly the failure it exists to measure. It is after the empty-request guard
     // above, so a press that resolves to nothing is not an attempt.
-    crate::player::report::requested();
+    crate::player::report::requested(sid);
     // The fields a play REQUEST owns, as against the ones only a landing may install: the HUD
     // strings (published now, so the pre-roll has a title through the whole resolve) and the five
     // the OUTGOING item leaves behind. Everything else — url, session ids, codecs — stays as it is

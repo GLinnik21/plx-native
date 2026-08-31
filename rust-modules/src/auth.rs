@@ -1180,7 +1180,10 @@ fn activate_candidate(plan: &ProbePlan, c: &Candidate, origin: &Origin) {
     // Registration can re-point by publishing a fresh Client. The link write must follow that
     // publication every time or the new client silently returns to UNKNOWN.
     if let Some(client) = crate::plex::client_for(id) {
-        client.set_link(c.location);
+        client.set_connection(
+            c.location,
+            Some(if c.ipv6 { crate::plex::IpVersion::V6 } else { crate::plex::IpVersion::V4 }),
+        );
         // First activation is already usable while the rest of the race settles. Publish the same
         // fact now; the per-server settlement below repeats it with the final winning tier.
         crate::plex::publish_probe_result(id, Outcome::Reachable);
@@ -1798,7 +1801,7 @@ fn install_roster(sources: &[SourceRef], primary: Option<usize>) -> Vec<ServerId
         // Registration may have re-pointed the slot by publishing a fresh Client, whose link is
         // deliberately unknown. Restore the winner only AFTER that publication, every time.
         if let (Some(link), Some(client)) = (s.tier, crate::plex::client_for(id)) {
-            client.set_link(link);
+            client.set_connection(link, crate::plex::IpVersion::of_host(&s.address));
         }
         // …and say WHOSE it is. Registering without this was the bug that made the whole shared-
         // source feature invisible on the only path a real user takes: `ServerFacts` stayed unset,

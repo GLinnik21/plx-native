@@ -252,6 +252,7 @@ const TOP_FIELDS: &[&str] = &[
 const SDK_FIELDS: &[&str] = &["name", "version"];
 const OS_FIELDS: &[&str] = &["type", "name", "version", "build", "kernel_version"];
 const WEBOS_FIELDS: &[&str] = &["type", "name", "release", "codename", "api"];
+const HARDWARE_FIELDS: &[&str] = &["type", "model", "soc", "revision"];
 const EXCEPTION_CONTAINER_FIELDS: &[&str] = &["values"];
 const EXCEPTION_FIELDS: &[&str] = &["type", "value", "mechanism", "stacktrace"];
 const MECHANISM_FIELDS: &[&str] = &["type", "handled", "meta"];
@@ -337,9 +338,9 @@ fn sanitise_event(event: &mut serde_json::Value, event_id: &str) {
         .and_then(serde_json::Value::as_object_mut)
     {
         // The SDK creates a random trace/span pair even though this application does no tracing;
-        // retaining only kernel + our fixed firmware context removes that identifier and any
-        // future context by default. Hardware identity is deliberately not allowlisted.
-        contexts.retain(|key, _| key == "os" || key == "webos");
+        // retaining only kernel + our fixed firmware/hardware compatibility contexts removes that
+        // identifier and any future context by default.
+        contexts.retain(|key, _| key == "os" || key == "webos" || key == "hardware");
         if let Some(os) = contexts
             .get_mut("os")
             .and_then(serde_json::Value::as_object_mut)
@@ -351,6 +352,12 @@ fn sanitise_event(event: &mut serde_json::Value, event_id: &str) {
             .and_then(serde_json::Value::as_object_mut)
         {
             retain_fields(webos, WEBOS_FIELDS);
+        }
+        if let Some(hardware) = contexts
+            .get_mut("hardware")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            retain_fields(hardware, HARDWARE_FIELDS);
         }
     }
     if let Some(sdk) = event
@@ -461,7 +468,9 @@ pub(crate) fn preview_event() -> Vec<u8> {
             "os": {"type": "os", "name": "Linux", "version": "<kernel release>",
                 "build": "<kernel build suffix>", "kernel_version": "<kernel release>"},
             "webos": {"type": "webos", "name": "webOS TV", "release": "<webOS release>",
-                "codename": "<webOS release codename>", "api": "<webOS API version>"}
+                "codename": "<webOS release codename>", "api": "<webOS API version>"},
+            "hardware": {"type": "hardware", "model": "<device model class>",
+                "soc": "<SoC/platform class>", "revision": "<hardware revision class>"}
         },
         "exception": {"values": [{
             "type": "SIGSEGV",
@@ -656,6 +665,9 @@ mod sdk {
             release: *const c_char,
             codename: *const c_char,
             api: *const c_char,
+            model: *const c_char,
+            soc: *const c_char,
+            hardware_revision: *const c_char,
         );
     }
 
@@ -701,6 +713,10 @@ mod sdk {
         let webos_release = cstring(webos.release.as_bytes());
         let webos_codename = cstring(webos.codename.as_bytes());
         let webos_api = cstring(webos.api.as_bytes());
+        let hardware = crate::webos::device();
+        let model = cstring(hardware.model.as_bytes());
+        let soc = cstring(hardware.board.as_bytes());
+        let hardware_revision = cstring(hardware.hw_revision.as_bytes());
         let ptr = |value: &Option<CString>| {
             value
                 .as_ref()
@@ -731,6 +747,9 @@ mod sdk {
                     ptr(&webos_release),
                     ptr(&webos_codename),
                     ptr(&webos_api),
+                    ptr(&model),
+                    ptr(&soc),
+                    ptr(&hardware_revision),
                 );
                 ACTIVE.store(true, Ordering::Release);
                 crate::log("telemetry: native ARM crash capture active");
@@ -825,6 +844,7 @@ mod tests {
         assert_keys(&value, "/sdk", SDK_FIELDS);
         assert_keys(&value, "/contexts/os", OS_FIELDS);
         assert_keys(&value, "/contexts/webos", WEBOS_FIELDS);
+        assert_keys(&value, "/contexts/hardware", HARDWARE_FIELDS);
         assert_keys(&value, "/exception", EXCEPTION_CONTAINER_FIELDS);
         assert_keys(&value, "/exception/values/0", EXCEPTION_FIELDS);
         assert_keys(&value, "/exception/values/0/mechanism", MECHANISM_FIELDS);
@@ -907,7 +927,9 @@ mod tests {
                     "os": {"name": "Linux", "future": "must-not-pass"},
                     "webos": {"type": "webos", "name": "webOS TV", "release": "4.10.2",
                         "codename": "goldilocks2-grampians", "api": "4.1.0",
-                        "model": "must-not-pass", "future": "must-not-pass"}
+                        "model": "must-not-pass", "future": "must-not-pass"},
+                    "hardware": {"type": "hardware", "model": "m16p3s", "soc": "M19_DVB",
+                        "revision": "BOARD_PT_1ST", "serial": "must-not-pass"}
                 },
                 "exception": {"values": [{
                     "mechanism": {"meta": {"signal": {"number": 11, "name": "SIGSEGV"}}},
@@ -960,6 +982,8 @@ mod tests {
         assert_eq!(v["debug_meta"]["images"][0]["image_size"], 4096);
         assert_eq!(v["contexts"]["webos"]["release"], "4.10.2");
         assert!(v["contexts"]["webos"].get("model").is_none());
+        assert_eq!(v["contexts"]["hardware"]["soc"], "M19_DVB");
+        assert!(v["contexts"]["hardware"].get("serial").is_none());
     }
 
     #[test]

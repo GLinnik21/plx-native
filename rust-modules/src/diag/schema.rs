@@ -39,11 +39,12 @@
 
 /// One reportable usage event. See the module doc before adding a variant.
 ///
-/// **Device facts are deliberately absent.** Model, board, firmware, app version and locale are
-/// per-SESSION constants, not per-event facts: they belong in the envelope a sender builds once,
-/// not repeated on every record. Putting them here would also have been the plan's own
-/// over-fingerprinting finding arriving by the back door — a stable, rare, identifying tuple
-/// attached to every single event.
+/// Device facts are deliberately absent from the EVENT variant. Firmware, model, SoC and app
+/// version are session constants, so [`UsageContext`] captures them once into the vendor-neutral
+/// durable envelope instead of making every call site carry them. They are compatibility
+/// dimensions: webOS APIs and media behaviour genuinely differ across these classes, and LG Store
+/// distribution is segmented by the same hardware families. Unique device identifiers remain
+/// structurally absent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DiagEvent {
     /// The app reached its event loop. A marker with no fields — "how many launches" is the
@@ -213,8 +214,125 @@ pub(crate) struct UsageEnvelope {
     pub version: u8,
     pub occurred_at_ms: u64,
     pub session_id: String,
+    #[serde(default)]
+    pub context: UsageContext,
     pub name: String,
     pub fields: Vec<(String, UsageValue)>,
+}
+
+/// Compatibility dimensions shared by every usage event in one process.
+///
+/// These values come from the app build, nyx's platform-owned inventory files, and the coarse
+/// classification of the winning Plex connection. They are intentionally the fields needed to
+/// correlate playback failures with a shipped webOS/API/SoC class and connection path. There is no
+/// serial, MAC-derived LGUDID, network address, account value or Plex identity.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct UsageContext {
+    pub app_version: String,
+    pub webos_release: String,
+    pub webos_api: String,
+    pub webos_codename: String,
+    pub device_model: String,
+    pub soc: String,
+    pub hardware_revision: String,
+    pub server_connection: String,
+    pub ip_version: String,
+}
+
+impl Default for UsageContext {
+    fn default() -> Self {
+        Self {
+            app_version: "unknown".into(),
+            webos_release: "unknown".into(),
+            webos_api: "unknown".into(),
+            webos_codename: "unknown".into(),
+            device_model: "unknown".into(),
+            soc: "unknown".into(),
+            hardware_revision: "unknown".into(),
+            server_connection: "unknown".into(),
+            ip_version: "unknown".into(),
+        }
+    }
+}
+
+impl UsageContext {
+    /// Read the already-probed platform inventory. `webos::probe` runs before telemetry boot and
+    /// before the first usage event; an unavailable field is reported honestly as `unknown`.
+    pub(crate) fn current() -> Self {
+        Self::for_server(None)
+    }
+
+    /// Capture network facts for the server the action actually addressed. A generic screen or
+    /// app event has no one server when an account owns N of them, so `None` stays `unknown`
+    /// instead of inheriting whichever registry slot happens to be current.
+    pub(crate) fn for_server(server: Option<crate::plex::ServerId>) -> Self {
+        let os = crate::webos::info();
+        let hw = crate::webos::device();
+        let (server_connection, ip_version) = server.and_then(crate::plex::client_for).map_or(
+            ("unknown", "unknown"),
+            |client| {
+                let connection = match client.link() {
+                    Some(crate::plex::probe::Location::Local) => "local",
+                    Some(crate::plex::probe::Location::Remote) => "remote",
+                    Some(crate::plex::probe::Location::Relay) => "relay",
+                    None => "unknown",
+                };
+                let ip = match client.ip_version() {
+                    Some(crate::plex::IpVersion::V4) => "v4",
+                    Some(crate::plex::IpVersion::V6) => "v6",
+                    None => "unknown",
+                };
+                (connection, ip)
+            },
+        );
+        Self {
+            app_version: dimension(env!("CARGO_PKG_VERSION")),
+            webos_release: dimension(&os.release),
+            webos_api: dimension(&os.api),
+            webos_codename: dimension(&os.codename),
+            device_model: dimension(&hw.model),
+            soc: dimension(&hw.board),
+            hardware_revision: dimension(&hw.hw_revision),
+            server_connection: server_connection.into(),
+            ip_version: ip_version.into(),
+        }
+    }
+
+    /// What the consent preview shows before the app has permission to capture real values.
+    pub(crate) fn preview() -> Self {
+        Self {
+            app_version: "<app version>".into(),
+            webos_release: "<webOS release>".into(),
+            webos_api: "<webOS API version>".into(),
+            webos_codename: "<webOS codename>".into(),
+            device_model: "<device model class>".into(),
+            soc: "<SoC/platform class>".into(),
+            hardware_revision: "<hardware revision class>".into(),
+            server_connection: "<local / remote / relay / unknown>".into(),
+            ip_version: "<v4 / v6 / unknown>".into(),
+        }
+    }
+}
+
+/// Keep platform-owned dimensions bounded and single-line without inventing a taxonomy that would
+/// merge two Store compatibility classes. All known nyx values use this alphabet.
+fn dimension(value: &str) -> String {
+    let value: String = value
+        .chars()
+        .take(64)
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if value.is_empty() {
+        "unknown".into()
+    } else {
+        value
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -228,11 +346,35 @@ impl UsageEnvelope {
     pub(crate) const VERSION: u8 = 1;
 
     pub(crate) fn capture(event: DiagEvent, occurred_at_ms: u64, session_id: &str) -> Self {
+        Self::capture_with_context(event, occurred_at_ms, session_id, UsageContext::current())
+    }
+
+    pub(crate) fn capture_for_server(
+        event: DiagEvent,
+        occurred_at_ms: u64,
+        session_id: &str,
+        server: crate::plex::ServerId,
+    ) -> Self {
+        Self::capture_with_context(
+            event,
+            occurred_at_ms,
+            session_id,
+            UsageContext::for_server(Some(server)),
+        )
+    }
+
+    pub(crate) fn capture_with_context(
+        event: DiagEvent,
+        occurred_at_ms: u64,
+        session_id: &str,
+        context: UsageContext,
+    ) -> Self {
         let (name, fields) = serialize(event);
         Self {
             version: Self::VERSION,
             occurred_at_ms,
             session_id: session_id.to_string(),
+            context,
             name: name.to_string(),
             fields: fields
                 .into_iter()
@@ -262,6 +404,7 @@ impl UsageEnvelope {
     /// understood? Legacy PostHog bodies predate this shape and have no `version` field. Senders
     /// may pass those through, but must fail closed on a future/invalid internal envelope rather
     /// than posting its storage representation as if it were vendor wire JSON.
+    #[cfg(test)]
     pub(crate) fn claims_neutral_format(bytes: &[u8]) -> bool {
         serde_json::from_slice::<serde_json::Value>(bytes)
             .ok()
@@ -453,6 +596,21 @@ pub(crate) const EVENT_SPECS: &[EventSpec] = &[
     },
 ];
 
+/// Properties attached to every usage event by the durable envelope. Kept separate from
+/// [`EVENT_SPECS`] because these classify the app/device/network context, not the action itself.
+#[cfg(test)]
+pub(crate) const CONTEXT_SPECS: &[F] = &[
+    F { key: "app_version", domain: "the PlxNative package version" },
+    F { key: "webos_release", domain: "the webOS release reported by nyx" },
+    F { key: "webos_api", domain: "the webOS API version reported by nyx" },
+    F { key: "webos_codename", domain: "the webOS firmware family reported by nyx" },
+    F { key: "device_model", domain: "the LG model/platform class reported by nyx" },
+    F { key: "soc", domain: "the SoC/board class reported by nyx" },
+    F { key: "hardware_revision", domain: "the hardware revision class reported by nyx" },
+    F { key: "server_connection", domain: "`local` / `remote` / `relay` / `unknown`" },
+    F { key: "ip_version", domain: "`v4` / `v6` / `unknown`" },
+];
+
 #[cfg(test)]
 const PLAYBACK_ID: &str = "a random number minted per attempt, never stored and never reused";
 #[cfg(test)]
@@ -489,6 +647,15 @@ pub(crate) fn privacy_table() -> String {
                 .join("; ")
         };
         out.push_str(&format!("| `{}` | {fields} |\n", spec.name));
+    }
+    out
+}
+
+#[cfg(test)]
+pub(crate) fn privacy_context_table() -> String {
+    let mut out = String::from("| property | value |\n|---|---|\n");
+    for field in CONTEXT_SPECS {
+        out.push_str(&format!("| `{}` | {} |\n", field.key, field.domain));
     }
     out
 }
@@ -700,6 +867,14 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn runtime_dimensions_are_bounded_single_line_values() {
+        assert_eq!(dimension("4.10.2-31"), "4.10.2-31");
+        assert_eq!(dimension("M19 DVB\nsecret"), "M19_DVB_secret");
+        assert_eq!(dimension(""), "unknown");
+        assert_eq!(dimension(&"x".repeat(80)).len(), 64);
+    }
+
     /// The privacy document lists every event this build can emit.
     ///
     /// `PRIVACY.md` promises, as a binding term, that the literal structure sent is documented
@@ -719,6 +894,11 @@ mod tests {
             "PRIVACY.md's schema table is not the one this build would send. The document is the \
              OUTPUT of `diag::schema::EVENT_SPECS`, so the fix is to paste the block below over \
              the table in PRIVACY.md — not to edit the registry to match the document.\n\n{want}"
+        );
+        let context = privacy_context_table();
+        assert!(
+            doc.contains(&context),
+            "PRIVACY.md does not contain the generated usage context table:\n\n{context}"
         );
     }
 }

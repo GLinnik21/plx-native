@@ -134,12 +134,8 @@ static HW: OnceLock<Hardware> = OnceLock::new();
 
 /// What the set is. All-empty when the file could not be read.
 ///
-/// `#[allow(dead_code)]` with its reason: the only READER is `lab::snapshot`, which is behind the
-/// `lab-diagnostics` feature, while [`probe_hw`] logs the same record in every build (that line is
-/// the point — a bug report from a set nobody here owns should name the hardware whether or not
-/// the reporter had a lab build). Gating the accessor on the feature instead would leave the
-/// static and the probe unused in the default build, i.e. the same warning one layer down.
-#[allow(dead_code)]
+/// Shared by the opt-in compatibility telemetry and the local lab snapshot. The values come from
+/// the same boot probe, so diagnostics never need to rediscover or reinterpret the device later.
 pub(crate) fn device() -> &'static Hardware {
     HW.get_or_init(Hardware::default)
 }

@@ -21,7 +21,7 @@ notes say when it changed.*
 | Sent to Plex | What signing in to Plex requires, and what playing a file requires. |
 | Sent to your server | The requests any Plex client makes. |
 | Stored on the TV | Your session token, where you were last, your answer to the two switches, three log files, and bounded telemetry queues while enabled. |
-| Third-party analytics | **Off by default.** If you turn it on: Sentry and PostHog, in the EU. Crash reports carry no install identifier; usage has one random, locally deletable install id. Sentry Native captures crashes but has no network transport; PlxNative sanitises and sends every message itself. |
+| Third-party analytics | **Off by default.** If you turn it on: Sentry and PostHog, in the EU. Crash reports carry no install identifier; usage has one random, locally deletable install id plus app/webOS/model/SoC/hardware and coarse network-path compatibility classes. Sentry Native captures crashes but has no network transport; PlxNative sanitises and sends every message itself. |
 | Advertising identifiers | **Never read.** LG's `LGUDID` is not called. |
 
 There is no account with me, because there is no *me* to have an account with — no server, no
@@ -117,11 +117,13 @@ access to the same server could work out which item a number refers to.
 
 ---
 
-## What is read and never written
+## Platform inventory
 
 The television's own codec table (`/etc/umediaserver/device_codec_capability_config.json`) and its
 firmware identity (`/var/run/nyx/os_info.json`, `/var/run/nyx/device_info.json`). All three are
-published by the platform and read once at boot, to decide what can be played directly.
+published by the platform and read once at boot, to decide what can be played directly. When usage
+analytics is enabled, the app/webOS/API/codename/model/SoC/hardware-revision compatibility classes
+listed below are also included with usage events. No serial number or LG device identifier is read.
 
 **`LGUDID` is deliberately not read.** webOS offers a device identifier through
 `luna://com.webos.service.sm/deviceid/getIDs`; it is derived from the MAC address, and this app never
@@ -162,8 +164,9 @@ and each one is checked by something rather than promised:
    no address to send to — `strings` on the binary answers that, and each release audit reports
    what it found there.
 5. **Never**: media titles, ratingKeys, search terms, subtitle text, server names or addresses, your
-   Plex account, or anything derived from the MAC address or serial number. Usage event types cannot
-   hold runtime text. Native reports are constrained to SDK machine state, reject user/request
+   Plex account, or anything derived from the MAC address or serial number. Usage EVENT types cannot
+   hold runtime text; the separate bounded context can hold only the platform compatibility and
+   coarse connection classes declared below. Native reports are constrained to SDK machine state, reject user/request
    scopes, and reduce every module/source path to its basename before the durable queue accepts it.
 6. The literal structure sent is documented **in this file**, field by field, below. The usage
    table is generated from the typed event declarations, so an event or field missing from it fails
@@ -203,6 +206,25 @@ document nobody had to live with. The usage table is rendered from `EVENT_SPECS`
 is enforced by the sanitizer's field allowlist and an exact preview test. Either drifting fails
 `make check`.
 
+Every usage event also carries this compatibility and connection context. Values are capped at 64
+ASCII characters and taken from the app build, nyx's platform inventory and the winning Plex
+connection classification. Network classes are attached only when an action addresses one exact
+server; generic app/screen events use `unknown`, because an account may have N servers and there is
+no honest single answer. `server_connection` and `ip_version` are classes only: no address,
+hostname, port, server id or server name is included.
+
+| property | value |
+|---|---|
+| `app_version` | the PlxNative package version |
+| `webos_release` | the webOS release reported by nyx |
+| `webos_api` | the webOS API version reported by nyx |
+| `webos_codename` | the webOS firmware family reported by nyx |
+| `device_model` | the LG model/platform class reported by nyx |
+| `soc` | the SoC/board class reported by nyx |
+| `hardware_revision` | the hardware revision class reported by nyx |
+| `server_connection` | `local` / `remote` / `relay` / `unknown` |
+| `ip_version` | `v4` / `v6` / `unknown` |
+
 | event | fields |
 |---|---|
 | `app.launch` | *(none)* |
@@ -230,7 +252,8 @@ the random usage install id:
 | threads | kernel thread ids, internal thread labels, which thread crashed/currently ran, and — for each non-crashing thread whose kernel context can be captured — ARM registers plus at most 32 caller frames |
 | modules | basename only; mapped address and size; ELF code/debug id. Directory names are removed before queueing |
 | OS context | Linux kernel version and kernel build suffix reported by `uname` |
-| webOS context | webOS name, release, release codename and API version from `/var/run/nyx/os_info.json`; no model, board, serial or device id |
+| webOS context | webOS name, release, release codename and API version from `/var/run/nyx/os_info.json` |
+| hardware context | model/platform, SoC/board and hardware revision classes from `/var/run/nyx/device_info.json`; no serial or device id |
 
 The native SDK is compiled with `SENTRY_TRANSPORT=none`. Its out-of-process daemon is what can read
 the stopped process safely; it writes an envelope and relaunches PlxNative in spool-only mode.
@@ -257,21 +280,23 @@ answer — does 4K HEVC fail more often than 1080p h264, does playback take long
 files — and identify nothing. **No title, rating key, file name, path, server name or address
 appears on any of them**, and there is no field that could carry one.
 
-Three things are true of the usage table by construction rather than by care, and
+Three things are true of the usage event table by construction rather than by care, and
 `rust-modules/src/diag/schema.rs` is where you can check each one:
 
-- **No field can hold text this app read at runtime.** Every value is either absent or one of a
+- **No event field can hold text this app read at runtime.** Every event value is either absent or one of a
   fixed set of names compiled into the binary. A test greps the type for an owned string and fails
-  the build if one appears.
+  the build if one appears. Runtime platform strings live only in the separately declared, bounded
+  context table above.
 - **The list is exhaustive.** One enum, one serialiser, one name list, and a test that fails if any
   of the three falls behind the others.
 - **This table is part of that check.** A new event that is not listed here fails `make check`, so
   the document cannot lag the code.
 
-What is deliberately *not* in usage events: anything identifying the television, the account or
-the household. The native crash event includes app and kernel build facts because those are
-required to reproduce and symbolicate a crash, but no device model, LG id, Plex id or usage install
-id.
+What is deliberately *not* in usage events: a serial number, LGUDID, MAC/IP address, hostname,
+server identity, account or household content. Model/SoC/hardware and firmware classes are included
+because they define Store distribution and media/API compatibility. The native crash event includes
+app and kernel build facts because those are required to reproduce and symbolicate a crash, but no
+LG id, Plex id or usage install id.
 
 ---
 
@@ -281,9 +306,9 @@ id.
 correct or delete, because nothing was ever sent.
 
 **With one on, there is, and here is the honest shape of it.** What has been sent carries no name,
-no name, Plex/LG account or network address — only the random usage install id (when usage is on),
-a random per-process usage session id, per-attempt playback numbers, and per-crash event ids
-described above — so I cannot find
+Plex/LG account or network address — only the random usage install id (when usage is on), a random
+per-process usage session id, per-attempt playback numbers, per-crash event ids, and the
+compatibility classes above. I cannot find
 "your" records to erase on request even in principle, and neither can Sentry or PostHog, whose
 deletion tools work on accounts these reports deliberately do not have. What happens instead is that
 it expires: the retention above, never longer than 13 months. Turning a switch off stops collection

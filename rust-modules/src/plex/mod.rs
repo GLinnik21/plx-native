@@ -69,7 +69,7 @@ pub(crate) mod discover;
 
 // The re-exports are the public surface the call sites import.
 #[allow(unused_imports)]
-pub use client::{Client, StreamUrl};
+pub use client::{Client, IpVersion, StreamUrl};
 // WHERE a server is, as one value. `Origin` is what `register_origin`/`install` take and what a
 // `Client` carries; `Scheme` is re-exported beside it because `dev::DevServer` deserializes one
 // straight out of the `plxnative-servers` trigger.

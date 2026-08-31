@@ -282,14 +282,10 @@ fn wire_body(r: &Record) -> Vec<u8> {
         Dest::Sentry => sentry::envelope(&r.event_id, "event", &r.body),
         Dest::PostHog => {
             let Some(event) = crate::diag::schema::UsageEnvelope::decode(&r.body) else {
-                // Old spools already contain a PostHog capture body. A body that claims the new
-                // neutral shape but has an unknown version is different: never leak that internal
-                // representation onto a vendor endpoint.
-                return if crate::diag::schema::UsageEnvelope::claims_neutral_format(&r.body) {
-                    Vec::new()
-                } else {
-                    r.body.clone()
-                };
+                // Retire both legacy vendor JSON and unknown future neutral records. Passing old
+                // capture bodies through would make the exact-schema consent preview false after
+                // an upgrade; guessing how to enrich them would invent occurrence/context facts.
+                return Vec::new();
             };
             let Some(id) = consent::current().and_then(|c| c.install_id) else {
                 return Vec::new();
@@ -360,7 +356,15 @@ pub(crate) fn send_one(r: &Record) -> (Verdict, Option<u64>) {
         ));
         return (Verdict::Hopeless, None);
     };
-    match crate::net::post_ca(&url, &headers, &wire_body(r), TIMEOUTS) {
+    let body = wire_body(r);
+    if body.is_empty() {
+        crate::log(&format!(
+            "telemetry: obsolete or unsupported {:?} record discarded before send",
+            r.dest
+        ));
+        return (Verdict::Hopeless, None);
+    }
+    match crate::net::post_ca(&url, &headers, &body, TIMEOUTS) {
         Some(resp) => {
             let v = classify(resp.status);
             // The response body is bounded and kept precisely so a rejection can be logged with the
@@ -433,13 +437,13 @@ mod tests {
         );
     }
 
-    /// A legacy PostHog body is passed through untouched. New records carry a neutral envelope,
-    /// but an upgrade must still drain the old plain JSON objects already on disk.
+    /// A legacy PostHog body is retired rather than sent outside the exact current schema shown on
+    /// the consent screen. It cannot be enriched honestly: its occurrence/context facts are gone.
     #[test]
-    fn a_posthog_record_is_posted_exactly_as_it_was_queued() {
+    fn a_legacy_posthog_record_is_not_sent_after_the_schema_upgrade() {
         let mut r = rec(Category::Usage, Dest::PostHog);
         r.body = br#"{"api_key":"phc_x","event":"app.launch"}"#.to_vec();
-        assert_eq!(wire_body(&r), r.body);
+        assert!(wire_body(&r).is_empty());
     }
 
     #[test]

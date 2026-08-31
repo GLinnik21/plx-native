@@ -30,11 +30,14 @@
 //! the completion rate a measure of how often people scrub.
 
 use crate::diag::schema::DiagEvent;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU16, AtomicU8, Ordering::Relaxed};
 
 /// The current attempt's opaque id — random, per attempt, never stored. See `DiagEvent`'s playback
 /// block: it joins one attempt's lifecycle events and cannot link two playbacks, let alone two sets.
 static ATTEMPT: AtomicI64 = AtomicI64::new(0);
+/// Registry slot of the server this attempt addresses. Captured when the plan commits so a later
+/// server switch cannot relabel the attempt's analytics.
+static ATTEMPT_SERVER: AtomicU16 = AtomicU16::new(crate::plex::ServerId::UNSET.raw());
 /// The last state this module reported a transition FROM.
 static LAST: AtomicU8 = AtomicU8::new(0);
 /// One `started`/`failed`/`ended` per attempt.
@@ -57,10 +60,11 @@ static REQUESTED_MS: AtomicI64 = AtomicI64::new(0);
 ///
 /// Mints the id and clears every latch, so a second Play on the same item is a second attempt with
 /// its own funnel rather than a silent no-op against the first one's latches.
-pub(crate) fn requested() {
+pub(crate) fn requested(server: crate::plex::ServerId) {
     resolve_replaced_attempt();
     let id = new_attempt_id();
     ATTEMPT.store(id, Relaxed);
+    ATTEMPT_SERVER.store(server.raw(), Relaxed);
     SAW_START.store(false, Relaxed);
     SAW_FAIL.store(false, Relaxed);
     SAW_END.store(false, Relaxed);
@@ -70,7 +74,12 @@ pub(crate) fn requested() {
     REBUFFER_TOTAL_MS.store(0, Relaxed);
     REQUESTED_MS.store(now_ms(), Relaxed);
     LAST.store(super::shared::PlaybackState::Resolving as u8, Relaxed);
-    crate::diag::event(DiagEvent::PlaybackRequested { playback_id: id });
+    emit(DiagEvent::PlaybackRequested { playback_id: id });
+}
+
+fn emit(event: DiagEvent) {
+    let sid = crate::plex::ServerId::from_raw(ATTEMPT_SERVER.load(Relaxed));
+    crate::diag::event_for_server(event, sid);
 }
 
 /// Resolve an attempt before a newer Play overwrites its join key. Before first frame this is an
@@ -100,11 +109,11 @@ fn resolve_replaced_attempt() {
     match replacement(SAW_START.load(Relaxed), SAW_FAIL.load(Relaxed), SAW_END.load(Relaxed)) {
         Replacement::None => {}
         Replacement::Cancelled => {
-            crate::diag::event(DiagEvent::PlaybackCancelled { playback_id: id, mode: mode() });
+            emit(DiagEvent::PlaybackCancelled { playback_id: id, mode: mode() });
         }
         Replacement::Abandoned => {
             report_quality(id);
-            crate::diag::event(DiagEvent::PlaybackAbandoned { playback_id: id, mode: mode() });
+            emit(DiagEvent::PlaybackAbandoned { playback_id: id, mode: mode() });
         }
     }
 }
@@ -117,7 +126,7 @@ pub(crate) fn abandon_pending() {
         return;
     }
     report_quality(id);
-    crate::diag::event(DiagEvent::PlaybackAbandoned { playback_id: id, mode: mode() });
+    emit(DiagEvent::PlaybackAbandoned { playback_id: id, mode: mode() });
 }
 
 /// What a frame's state change is worth reporting, if anything.
@@ -163,7 +172,7 @@ pub(crate) fn tick() {
     match transition(prev, now, SAW_START.load(Relaxed), SAW_FAIL.load(Relaxed)) {
         Some(What::Started) => {
             SAW_START.store(true, Relaxed);
-            crate::diag::event(DiagEvent::PlaybackStarted {
+            emit(DiagEvent::PlaybackStarted {
                 playback_id: ATTEMPT.load(Relaxed),
                 mode: mode(),
                 raster: raster_class(super::SHARED.video_h.load(Relaxed)),
@@ -176,7 +185,7 @@ pub(crate) fn tick() {
         Some(What::Failed) => {
             SAW_FAIL.store(true, Relaxed);
             report_quality(ATTEMPT.load(Relaxed));
-            crate::diag::event(DiagEvent::PlaybackFailed {
+            emit(DiagEvent::PlaybackFailed {
                 playback_id: ATTEMPT.load(Relaxed),
                 mode: mode(),
                 kind: super::error_now().kind.code(),
@@ -197,11 +206,11 @@ pub(crate) fn ended(position_ns: i64, duration_ns: i64) {
         return;
     }
     if !SAW_START.load(Relaxed) {
-        crate::diag::event(DiagEvent::PlaybackAbandoned { playback_id: id, mode: mode() });
+        emit(DiagEvent::PlaybackAbandoned { playback_id: id, mode: mode() });
         return;
     }
     report_quality(id);
-    crate::diag::event(DiagEvent::PlaybackEnded {
+    emit(DiagEvent::PlaybackEnded {
         playback_id: id,
         mode: mode(),
         watched: watched_class(position_ns, duration_ns),
@@ -243,7 +252,7 @@ fn report_quality(playback_id: i64) {
         return;
     }
     finish_rebuffer_window();
-    crate::diag::event(DiagEvent::PlaybackQuality {
+    emit(DiagEvent::PlaybackQuality {
         playback_id,
         rebuffers: rebuffer_count_class(REBUFFER_COUNT.load(Relaxed)),
         buffering: rebuffer_time_class(REBUFFER_TOTAL_MS.load(Relaxed)),

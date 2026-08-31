@@ -86,13 +86,15 @@ const TITLE: &str = "Want to help me fix bugs?";
 /// intent. An earlier draft said something closer to "I couldn't see them if I wanted to", which is
 /// unverifiable and therefore worthless. This version is only sayable because usage events cannot
 /// carry runtime strings and native envelopes must pass a fixed allowlist that rejects content and
-/// identity scopes.
+/// identity scopes. Usage action fields remain fixed typed values; the only runtime strings are
+/// the separately allowlisted and bounded compatibility/network dimensions shown in the preview.
 const BODY: &str = "\
 Hi — I'm Gleb. I build PlxNative on my own, for free, and I own exactly one LG television. When the \
 app breaks on someone else's, I usually never find out.
 
 If you switch these on, the app can tell me when it crashes; which screens and features get used; \
-whether sign-in and playback succeed; and broad video/audio classes. That's the whole thing.
+whether sign-in and playback succeed; broad video/audio classes; and which app, webOS, model/SoC \
+and coarse server-connection class saw it. That's the whole thing.
 
 Titles, libraries, accounts and server addresses are not included in what's sent. Either way \
 PlxNative works exactly the same, and you can change your mind any time in Settings → Privacy.";
@@ -100,7 +102,7 @@ PlxNative works exactly the same, and you can change your mind any time in Setti
 const ROW_ERRORS: &str = "Tell me when it crashes";
 const ROW_ERRORS_SUB: &str = "Crash and error reports.";
 const ROW_USAGE: &str = "Tell me which features get used";
-const ROW_USAGE_SUB: &str = "Screens, features and coarse outcomes/formats — never what you watch.";
+const ROW_USAGE_SUB: &str = "Features, outcomes and compatibility/network classes — never what you watch.";
 const ROW_PREVIEW: &str = "See exactly what's sent";
 const ROW_CONTINUE: &str = "Continue";
 
@@ -681,6 +683,13 @@ mod tests {
                     f.key
                 );
             }
+        }
+        for f in crate::diag::schema::CONTEXT_SPECS {
+            assert!(
+                text.contains(f.key),
+                "the payload preview does not show context field `{}`",
+                f.key
+            );
         }
         for crash_field in [
             "stacktrace",

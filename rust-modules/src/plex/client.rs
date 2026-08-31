@@ -22,6 +22,7 @@ use super::origin::Origin;
 use super::probe::Location;
 use super::servers::ServerId;
 use crate::http::{self, Method};
+use std::net::IpAddr;
 use std::sync::atomic::{AtomicU32, AtomicU8, Ordering::Relaxed};
 use std::sync::RwLock;
 
@@ -118,6 +119,10 @@ pub struct Client {
     /// would have read the old value a microsecond earlier anyway. A re-point does not carry it
     /// over: a new address is a new tier, and whoever re-points is the one who knows it.
     link: AtomicU8,
+    /// Address family of the connection that won discovery. Kept separately from `Origin::host`:
+    /// an HTTPS origin is normally a `plex.direct` hostname, while the winning candidate still
+    /// knows whether the address behind that certificate name was v4 or v6.
+    ip_version: AtomicU8,
 }
 
 /// The source of every [`Client::token_gen`] value, process-wide. Only the UNIQUENESS matters
@@ -130,6 +135,24 @@ fn next_gen() -> u32 {
 /// [`Client::link`] before discovery has activated a candidate. Distinct from every real tier on
 /// purpose: "unknown" is not "local", and the policy treats the two differently.
 const LINK_UNKNOWN: u8 = 0;
+const IP_UNKNOWN: u8 = 0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IpVersion {
+    V4,
+    V6,
+}
+
+impl IpVersion {
+    /// Classify a numeric peer address without pretending that an unresolved DNS name is IPv4.
+    /// `Origin::host()` is deliberately unbracketed, so both literal forms parse directly.
+    pub fn of_host(host: &str) -> Option<Self> {
+        match host.parse::<IpAddr>().ok()? {
+            IpAddr::V4(_) => Some(Self::V4),
+            IpAddr::V6(_) => Some(Self::V6),
+        }
+    }
+}
 
 /// `Location` ⇄ `u8`, so the tier fits in an atomic. Written as two total matches rather than a
 /// cast: `Location`'s declaration ORDER is its preference order (`probe`'s derived `Ord` is the
@@ -178,6 +201,7 @@ impl Client {
             platform: super::identity::PLATFORM.into(),
             token_gen: AtomicU32::new(next_gen()),
             link: AtomicU8::new(LINK_UNKNOWN),
+            ip_version: AtomicU8::new(IP_UNKNOWN),
         }
     }
 
@@ -276,11 +300,31 @@ impl Client {
     pub fn set_link(&self, l: Location) {
         self.link.store(link_code(l), Relaxed);
     }
+    /// Publish both coarse network facts from the winning probe candidate. No address, hostname or
+    /// port survives this boundary — only the path class and IP generation analytics needs.
+    pub fn set_connection(&self, l: Location, ip_version: Option<IpVersion>) {
+        self.set_link(l);
+        self.ip_version.store(
+            match ip_version {
+                Some(IpVersion::V4) => 1,
+                Some(IpVersion::V6) => 2,
+                None => IP_UNKNOWN,
+            },
+            Relaxed,
+        );
+    }
     /// How this server is reached, `None` while nothing has said. Feed it to
     /// [`super::transcoder::link_policy`] rather than matching on it at a call site — a relay is
     /// not the only fact a tier could ever carry, and the policy is the one place that decides.
     pub fn link(&self) -> Option<Location> {
         link_of_code(self.link.load(Relaxed))
+    }
+    pub fn ip_version(&self) -> Option<IpVersion> {
+        match self.ip_version.load(Relaxed) {
+            1 => Some(IpVersion::V4),
+            2 => Some(IpVersion::V6),
+            _ => None,
+        }
     }
 
     // ---- transport choke points: the only code that touches crate::stream ----
@@ -597,11 +641,19 @@ mod tests {
     fn a_client_starts_with_no_known_link_and_remembers_the_one_it_is_told() {
         let c = a_client("mach-A", "tok-a");
         assert_eq!(c.link(), None, "nothing has probed anything yet");
+        assert_eq!(c.ip_version(), None, "nor has anything named an address family");
 
         for l in [Location::Local, Location::Remote, Location::Relay] {
             c.set_link(l);
             assert_eq!(c.link(), Some(l), "the tier must round trip through the atomic");
         }
+        c.set_connection(Location::Remote, Some(IpVersion::V4));
+        assert_eq!(c.ip_version(), Some(IpVersion::V4));
+        c.set_connection(Location::Relay, Some(IpVersion::V6));
+        assert_eq!(c.ip_version(), Some(IpVersion::V6));
+        assert_eq!(IpVersion::of_host("192.0.2.1"), Some(IpVersion::V4));
+        assert_eq!(IpVersion::of_host("2001:db8::1"), Some(IpVersion::V6));
+        assert_eq!(IpVersion::of_host("server.example"), None);
     }
 
     /// The token generation is per-CLIENT (it was a process-global `TOKEN_GEN`). Two properties

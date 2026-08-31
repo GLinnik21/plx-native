@@ -83,13 +83,14 @@ diff --git a/src/backends/sentry_backend_native.c b/src/backends/sentry_backend_
          // Get contexts from scope (includes OS info)
          sentry_value_t os_context
              = sentry_value_get_by_key(scope->contexts, "os");
-@@ -691,6 +691,23 @@ native_backend_flush_scope(
+@@ -691,6 +691,38 @@ native_backend_flush_scope(
              sentry_value_set_by_key(event, "contexts", event_contexts);
          }
  
-+        // PlxNative adds one privacy-reviewed firmware context. Do not copy
-+        // all custom contexts into the crash snapshot: the application-side
-+        // importer deliberately allowlists only `os` and `webos`.
++        // PlxNative adds two privacy-reviewed compatibility contexts. Do not
++        // copy all custom contexts into the crash snapshot: the application-
++        // side importer deliberately allowlists only `os`, `webos` and
++        // `hardware`.
 +        sentry_value_t webos_context
 +            = sentry_value_get_by_key(scope->contexts, "webos");
 +        if (!sentry_value_is_null(webos_context)) {
@@ -102,6 +103,20 @@ diff --git a/src/backends/sentry_backend_native.c b/src/backends/sentry_backend_
 +            sentry_value_set_by_key(
 +                event_contexts, "webos", webos_context);
 +            sentry_value_incref(webos_context);
++        }
++
++        sentry_value_t hardware_context
++            = sentry_value_get_by_key(scope->contexts, "hardware");
++        if (!sentry_value_is_null(hardware_context)) {
++            sentry_value_t event_contexts
++                = sentry_value_get_by_key(event, "contexts");
++            if (sentry_value_is_null(event_contexts)) {
++                event_contexts = sentry_value_new_object();
++                sentry_value_set_by_key(event, "contexts", event_contexts);
++            }
++            sentry_value_set_by_key(
++                event_contexts, "hardware", hardware_context);
++            sentry_value_incref(hardware_context);
 +        }
 +
          // Also copy other scope data (user, tags, extra, etc.)

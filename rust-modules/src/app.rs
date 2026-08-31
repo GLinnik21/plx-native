@@ -4572,8 +4572,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
     // Before the crash backend is armed, identify the firmware it would need to report. Sentry's
     // scope is snapshotted into the crash event file during `telemetry::boot`; probing afterwards
     // leaves only `Linux 4.4.84`, which does not distinguish webOS releases at all. This reads one
-    // flat platform file, cannot fail the boot, and deliberately does not expose model/board to
-    // the crash channel.
+    // flat platform file and cannot fail the boot. The crash channel receives only the reviewed
+    // compatibility fields (webOS/API/model/SoC/hardware revision), never device identifiers.
     crate::webos::probe();
     // The stored telemetry decision, BEFORE the first event can be reported — `diag::event` reads
     // a snapshot this publishes, and with none installed it refuses everything. So the ordering is
@@ -4873,7 +4873,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                                  // `install` may re-point the slot by publishing a fresh Client, whose link starts
                                                  // unknown. Restore the persisted/raced winner only after that publication.
             if let Some(link) = tier {
-                crate::plex::client().set_link(link);
+                crate::plex::client()
+                    .set_connection(link, crate::plex::IpVersion::of_host(origin.host()));
             }
             // Every additional server this boot was handed credentials for joins the REGISTRY
             // beside it — the granted roster `browse` addresses its section table by. Registration

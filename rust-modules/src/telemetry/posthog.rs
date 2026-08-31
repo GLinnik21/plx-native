@@ -48,7 +48,7 @@
 //!
 //! This header used to say no sender existed at all. It does: [`super::sender`].
 
-use crate::diag::schema::{DiagEvent, UsageEnvelope, UsageValue};
+use crate::diag::schema::{DiagEvent, UsageContext, UsageEnvelope, UsageValue};
 #[cfg(test)]
 use crate::diag::schema::{self, Value};
 
@@ -103,6 +103,20 @@ fn envelope_props(
             },
         );
     }
+    let context = &event.context;
+    for (key, value) in [
+        ("app_version", &context.app_version),
+        ("webos_release", &context.webos_release),
+        ("webos_api", &context.webos_api),
+        ("webos_codename", &context.webos_codename),
+        ("device_model", &context.device_model),
+        ("soc", &context.soc),
+        ("hardware_revision", &context.hardware_revision),
+        ("server_connection", &context.server_connection),
+        ("ip_version", &context.ip_version),
+    ] {
+        properties.insert(key.into(), value.clone().into());
+    }
     properties.insert("$session_id".into(), event.session_id.clone().into());
     properties.insert(ANON.into(), false.into());
     properties
@@ -148,7 +162,12 @@ pub(crate) fn preview(
     event: DiagEvent,
     environment: &str,
 ) -> Vec<u8> {
-    let envelope = UsageEnvelope::capture(event, 0, "<random session id>");
+    let envelope = UsageEnvelope::capture_with_context(
+        event,
+        0,
+        "<random session id>",
+        UsageContext::preview(),
+    );
     render_captured(api_key, distinct_id, &envelope, environment, "<event time>")
 }
 
@@ -462,10 +481,22 @@ mod tests {
 
     #[test]
     fn a_durable_event_keeps_its_original_time_and_session() {
-        let event = UsageEnvelope::capture(
+        let context = UsageContext {
+            app_version: "0.5.0".into(),
+            webos_release: "4.10.2".into(),
+            webos_api: "4.1.0".into(),
+            webos_codename: "goldilocks2-grampians".into(),
+            device_model: "m16p3s".into(),
+            soc: "M19_DVB".into(),
+            hardware_revision: "BOARD_PT_1ST".into(),
+            server_connection: "local".into(),
+            ip_version: "v4".into(),
+        };
+        let event = UsageEnvelope::capture_with_context(
             DiagEvent::RouteEntered { screen: "detail" },
             1_787_961_234_567,
             "0198f00d-1234-4567-89ab-0123456789ab",
+            context,
         );
         let body = parse(&captured("phc_k", "install", &event, "test"));
         assert_eq!(body["timestamp"], "2026-08-28T23:53:54.567Z");
@@ -474,6 +505,10 @@ mod tests {
             "0198f00d-1234-4567-89ab-0123456789ab"
         );
         assert_eq!(body["properties"]["screen"], "detail");
+        assert_eq!(body["properties"]["webos_release"], "4.10.2");
+        assert_eq!(body["properties"]["soc"], "M19_DVB");
+        assert_eq!(body["properties"]["server_connection"], "local");
+        assert_eq!(body["properties"]["ip_version"], "v4");
         assert_eq!(body["properties"][ANON], false);
     }
 }

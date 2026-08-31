@@ -93,7 +93,7 @@ impl ServerId {
         self.0 != Self::UNSET.0
     }
     /// The raw slot number, for logging/persistence. Round trips through [`ServerId::from_raw`].
-    pub fn raw(self) -> u16 {
+    pub const fn raw(self) -> u16 {
         self.0
     }
     /// `const` so a fixed slot can name a server in a `const` — which is what lets the host tests

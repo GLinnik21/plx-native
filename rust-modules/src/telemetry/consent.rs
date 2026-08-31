@@ -49,10 +49,10 @@ use std::sync::RwLock;
 /// declared.** A raster added beside an existing width and height does not; a new event does. The
 /// incentive gradient runs towards never bumping — every bump costs consent — which is exactly why
 /// the rule lives here rather than in a reviewer's head.
-// Version 2 adds native stack frames, registers, module build identities and OS build metadata to
-// crash reports. Existing answers were given against the smaller PC/LR-only schema, so they must
-// be asked again rather than silently expanded.
-pub(crate) const POLICY_VERSION: u32 = 2;
+// Version 3 adds webOS/model/SoC/hardware compatibility dimensions to both channels and coarse
+// local/remote/relay plus IPv4/IPv6 classes to usage. Existing answers were given against a schema
+// without them, so they must be asked again rather than silently expanded.
+pub(crate) const POLICY_VERSION: u32 = 3;
 
 /// The stored decision. Serde-serialised to the telemetry file; every field is read and written, so
 /// none of them is dead even while only one accessor has a caller.
