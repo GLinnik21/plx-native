@@ -76,9 +76,13 @@ pub(crate) fn boot() -> native::Guard {
 /// for the same reason: which of the two `/media` directories is writable depends on the jail
 /// profile, so the answer cannot be a literal.
 fn load() -> Consent {
-    crate::paths::telemetry_candidates()
+    load_from(&crate::paths::telemetry_candidates())
+}
+
+fn load_from(candidates: &[std::path::PathBuf]) -> Consent {
+    candidates
         .iter()
-        .filter_map(|p| std::fs::read(p).ok())
+        .filter_map(|p| crate::plex::session::read_owned_regular(p))
         .find_map(|b| serde_json::from_slice::<Consent>(&b).ok())
         .unwrap_or_default()
 }
@@ -111,6 +115,16 @@ pub(crate) fn record(c: Consent) {
     // already governs, so it is caught by the next flush's per-record check; the other order leaves
     // a window in which a record of a just-withdrawn category is written by a path still reading
     // the old consent and then never looked at again.
+    spool::purge_withdrawn(&c);
+    native::sync_change(&c);
+}
+
+/// Withdraw every in-memory telemetry permission and purge queued/native reports without writing a
+/// replacement consent file. Used by full local-data erasure, where recreating even a default
+/// settings file would make the operation's name false.
+pub(crate) fn forget_local() {
+    let c = Consent::default();
+    consent::install(c.clone());
     spool::purge_withdrawn(&c);
     native::sync_change(&c);
 }
@@ -334,6 +348,36 @@ mod tests {
     fn an_unparsable_file_is_not_consent() {
         let c: Consent = serde_json::from_slice(b"{ not json").unwrap_or_default();
         assert!(!c.any() && !c.answered());
+    }
+
+    #[test]
+    fn a_symlink_cannot_supply_telemetry_consent() {
+        use std::os::unix::fs::symlink;
+        let _g = crate::testlock::serial();
+        let dir = std::env::temp_dir().join(format!(
+            "plxnative-consent-symlink-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir(&dir);
+        let victim = dir.join("attacker.json");
+        let candidate = dir.join("consent.json");
+        let _ = std::fs::remove_file(&candidate);
+        std::fs::write(
+            &victim,
+            format!(
+                r#"{{"asked_version":{},"errors":true,"usage":true}}"#,
+                consent::POLICY_VERSION
+            ),
+        )
+        .unwrap();
+        symlink(&victim, &candidate).unwrap();
+
+        let loaded = load_from(&[candidate.clone()]);
+        assert!(!loaded.any() && !loaded.answered());
+
+        let _ = std::fs::remove_file(candidate);
+        let _ = std::fs::remove_file(victim);
+        let _ = std::fs::remove_dir(dir);
     }
 
     /// A file written by a FUTURE build, carrying fields this one does not know, still parses —

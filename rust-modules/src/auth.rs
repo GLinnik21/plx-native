@@ -37,6 +37,8 @@ pub enum Phase {
     Ready,
     /// A step failed; show the message and allow a retry.
     Error,
+    /// All local state was erased. No worker runs until the user explicitly starts sign-in.
+    Deleted,
 }
 
 /// Does an error retry need a new account sign-in, or only another server-discovery pass?
@@ -356,14 +358,9 @@ fn may_resume(from: Picker, stored_is_protected: bool) -> bool {
         // Home is behind this picker and its user is already signed in as that profile: BACK hands
         // back exactly what they were holding when they opened it, PIN or no PIN.
         Picker::ChangeProfile => true,
-        // The sign-in ceremony's own picker: the ACCOUNT credential was presented seconds ago and
-        // the profile PIN hangs off it, so BACK still resumes. This arm is a JUDGEMENT rather than
-        // a deduction, and it is the one thing here left exactly as it was found — at that moment
-        // the stored session names no profile at all, so what BACK resumes on is the OWNER's server
-        // token, and "the person who signed in is still the person holding the remote" is an
-        // assumption about a room. Flipping it to `!stored_is_protected` would cost that flow one
-        // profile pick and nothing else (the picker is fully usable, *Sign out* included).
-        Picker::SignedIn => true,
+        // The account was authorized, but nobody selected a household profile. Resuming here uses
+        // the owner's server token and bypasses the profile PIN boundary entirely.
+        Picker::SignedIn => false,
         // Nobody has identified themselves yet, so resuming a protected profile IS the bypass.
         Picker::Boot => !stored_is_protected,
     }
@@ -559,6 +556,26 @@ pub fn sign_out() {
     session::set_current(None);
     with_ctl(|c| *c = Ctl::default());
     start_login();
+}
+
+/// Forget credentials and every live server token without immediately minting a new client id or
+/// starting the Plex PIN flow. Settings' "Delete all local data" parks on [`Phase::Deleted`]; the
+/// login screen starts a fresh flow only after an explicit OK press.
+pub fn erase_local_state() {
+    let _gate = ACTIVATION_GATE.lock().unwrap_or_else(|e| e.into_inner());
+    AUTH_EPOCH.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    session::clear();
+    crate::plex::revoke_all();
+    drop(_gate);
+    session::set_current(None);
+    with_ctl(|c| *c = deleted_ctl());
+}
+
+fn deleted_ctl() -> Ctl {
+    Ctl {
+        phase: Phase::Deleted,
+        ..Ctl::default()
+    }
 }
 
 // ---- worker threads ----
@@ -4274,8 +4291,8 @@ mod tests {
     ///
     /// So every row of the rule is graded here, and most of them are the ones that must NOT change:
     /// a boot picker over an unprotected profile still resumes (nothing is being bypassed), and
-    /// *Change profile* and the sign-in picker still resume whatever they are over (you are already
-    /// that profile / you just proved you hold the account).
+    /// *Change profile* resumes the identity already active behind it; the sign-in picker requires
+    /// an explicit profile selection because an account credential is not a household PIN.
     ///
     /// The last section is the SECOND road to the same escalation, and it survived the first fix: a
     /// sign-in abandoned at the picker persists a session that names no profile, whose token is the
@@ -4290,11 +4307,8 @@ mod tests {
         assert!(may_resume(Picker::Boot, false));
         assert!(may_resume(Picker::ChangeProfile, true));
         assert!(may_resume(Picker::ChangeProfile, false));
-        assert!(
-            may_resume(Picker::SignedIn, true),
-            "the account credential was just presented"
-        );
-        assert!(may_resume(Picker::SignedIn, false));
+        assert!(!may_resume(Picker::SignedIn, true));
+        assert!(!may_resume(Picker::SignedIn, false));
         // and the DEFAULT is the strict one: it is read only where no picker named itself, and
         // "we cannot say who is asking" must not answer with the credentials.
         assert_eq!(Picker::default(), Picker::Boot);
@@ -4353,8 +4367,7 @@ mod tests {
         // profile chosen (`login_thread` saves the moment they exist, so walking away does not cost
         // the sign-in). `pms_token()` on that file is the OWNER's server token and the roster is >1,
         // so the next boot raises a picker over it — where BACK was handing the owner's credentials
-        // to whoever pressed it. The sign-in picker itself keeps resuming, because the account
-        // credential was presented seconds ago.
+        // to whoever pressed it. The sign-in picker must require an explicit profile selection too.
         let mut unchosen = signed_in_as("u-adult");
         unchosen.user = UserRef::default();
         assert!(
@@ -4372,12 +4385,23 @@ mod tests {
 
         picker(Picker::SignedIn);
         assert!(
-            resume_stored(unchosen),
-            "the sign-in's own picker is unchanged"
+            !resume_stored(unchosen),
+            "the sign-in picker must require an explicit profile selection"
         );
-        assert_eq!(phase(), Phase::Ready);
-        assert!(with_ctl(|c| c.apply_pending));
+        assert_eq!(phase(), Phase::Profiles);
+        assert!(with_ctl(|c| !c.apply_pending));
 
         with_ctl(|c| *c = Ctl::default());
+    }
+
+    #[test]
+    fn local_erasure_parks_without_credentials_or_an_automatic_sign_in() {
+        let c = deleted_ctl();
+        assert_eq!(c.phase, Phase::Deleted);
+        assert!(c.session.client_id.is_empty());
+        assert!(c.session.account_token.is_empty());
+        assert!(!c.signin_active);
+        assert!(!c.apply_pending);
+        assert!(c.pin_code.is_empty());
     }
 }

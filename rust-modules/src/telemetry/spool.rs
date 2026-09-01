@@ -89,7 +89,7 @@ pub(crate) fn read() -> Vec<Record> {
 
 fn read_locked() -> Vec<Record> {
     let Some(p) = path() else { return Vec::new() };
-    let Ok(bytes) = std::fs::read(&p) else {
+    let Some(bytes) = crate::plex::session::read_owned_regular(&p) else {
         return Vec::new();
     };
     let d = queue::decode_all(&bytes);
@@ -124,7 +124,7 @@ const UNKNOWN: usize = usize::MAX;
 /// It used to be a read-modify-write of the whole spool, per event, on that same thread.
 pub(crate) fn append(r: &Record) -> bool {
     use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 
     let _g = lock();
     let Some(p) = path() else { return false };
@@ -140,18 +140,25 @@ pub(crate) fn append(r: &Record) -> bool {
         return write_locked(&all);
     }
 
-    // 0600 on create for the reason `write_atomic` does it: `/tmp` on this television is 1777 and
-    // shared with every other app on the set. An existing file keeps its own mode, which the
-    // compaction path — the only thing that creates this file fresh — has already set.
+    // `resolve`/compaction creates the file through `write_atomic`, so ordinary append only opens
+    // an existing object. O_NOFOLLOW plus fstat closes the fixed-name symlink/TOCTOU path in the
+    // shared runtime directory; the fd, rather than a second pathname lookup, is what is checked.
     let opened = std::fs::OpenOptions::new()
         .append(true)
-        .create(true)
-        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open(&p);
     let Ok(mut f) = opened else {
         crate::log("telemetry: could not open the spool for append");
         return false;
     };
+    let Ok(meta) = f.metadata() else { return false };
+    if !meta.file_type().is_file()
+        || meta.uid() != unsafe { libc::geteuid() }
+        || meta.permissions().mode() & 0o077 != 0
+    {
+        crate::log("telemetry: refused an unsafe spool file");
+        return false;
+    }
     if f.write_all(&frame).is_err() {
         return false;
     }
@@ -381,6 +388,21 @@ mod tests {
         std::fs::write(&s.0, &bytes).expect("torn write");
 
         assert_eq!(ids(), vec!["first".to_string(), "second".to_string()]);
+    }
+
+    #[test]
+    fn a_precreated_spool_symlink_cannot_redirect_telemetry_bytes() {
+        use std::os::unix::fs::symlink;
+        let _g = crate::testlock::serial();
+        let s = Scratch::new("symlink");
+        let victim = s.0.with_extension("victim");
+        std::fs::write(&victim, b"unchanged").unwrap();
+        symlink(&victim, &s.0).unwrap();
+
+        assert!(!append(&rec("secret-event")));
+        assert_eq!(std::fs::read(&victim).unwrap(), b"unchanged");
+
+        let _ = std::fs::remove_file(victim);
     }
 
     /// **The cap holds with nothing draining it.** A television that cannot reach the internet for

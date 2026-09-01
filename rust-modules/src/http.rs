@@ -181,10 +181,62 @@ fn request_with(
     headers: &[&str],
     body_policy: BodyPolicy,
 ) -> Option<Reply> {
+    if !credential_transport_allowed(origin, path, headers) {
+        return None;
+    }
     match origin.scheme() {
         Scheme::Http => plaintext(origin, path, method, headers, body_policy),
         Scheme::Https => tls(origin, path, method, headers, body_policy),
     }
+}
+
+fn carries_credential(path: &str, headers: &[&str]) -> bool {
+    path.to_ascii_lowercase().contains("x-plex-token=")
+        || headers.iter().any(|header| {
+            header
+                .split_once(':')
+                .is_some_and(|(name, _)| {
+                    name.trim().eq_ignore_ascii_case("x-plex-token")
+                        || name.trim().eq_ignore_ascii_case("authorization")
+                })
+        })
+}
+
+pub(crate) fn credential_transport_allowed_by_policy(
+    origin: &Origin,
+    path: &str,
+    headers: &[&str],
+    allow_plaintext_credentials: bool,
+) -> bool {
+    origin.is_tls() || !carries_credential(path, headers) || allow_plaintext_credentials
+}
+
+/// The shared control/media credential boundary. Store builds fail closed on a token-bearing HTTP
+/// URL; only a build that explicitly carries the developer-trigger feature may exercise a local
+/// plaintext PMS for lab work. The log names neither URL nor token.
+pub(crate) fn credential_transport_allowed(
+    origin: &Origin,
+    path: &str,
+    headers: &[&str],
+) -> bool {
+    let allowed = credential_transport_allowed_by_policy(
+        origin,
+        path,
+        headers,
+        cfg!(feature = "devtriggers"),
+    );
+    if !origin.is_tls() && carries_credential(path, headers) {
+        static REPORTED: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+        if !REPORTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            if allowed {
+                crate::log("security: developer build allows plaintext PMS credentials");
+            } else {
+                crate::log("security: refused plaintext PMS credentials; HTTPS required");
+            }
+        }
+    }
+    allowed
 }
 
 /// The plaintext arm: [`crate::stream`]'s raw socket.
@@ -409,6 +461,44 @@ mod tests {
     fn the_shared_accept_header_is_a_bare_line() {
         assert_eq!(ACCEPT_JSON, "Accept: application/json");
         assert!(!ACCEPT_JSON.contains('\r') && !ACCEPT_JSON.contains('\n'));
+    }
+
+    #[test]
+    fn store_policy_refuses_credentials_over_plaintext_http() {
+        let http = Origin::http("127.0.0.1", 32400);
+        let https = Origin::parse("https://127-0-0-1.hash.plex.direct:32400").unwrap();
+        let token_path = "/identity?X-Plex-Token=secret";
+
+        assert!(!credential_transport_allowed_by_policy(
+            &http,
+            token_path,
+            &[],
+            false,
+        ));
+        assert!(!credential_transport_allowed_by_policy(
+            &http,
+            "/identity",
+            &["Authorization: Bearer secret"],
+            false,
+        ));
+        assert!(credential_transport_allowed_by_policy(
+            &https,
+            token_path,
+            &[],
+            false,
+        ));
+        assert!(credential_transport_allowed_by_policy(
+            &http,
+            "/identity",
+            &[ACCEPT_JSON],
+            false,
+        ));
+        assert!(credential_transport_allowed_by_policy(
+            &http,
+            token_path,
+            &[],
+            true,
+        ));
     }
 
     #[test]

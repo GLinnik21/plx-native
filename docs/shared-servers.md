@@ -153,8 +153,9 @@ wget -q -T 8 -O - http://<public-ip>:31234/identity
 → <MediaContainer size="0" … machineIdentifier="…" version="1.43.3"/>   in 1.2 s
 ```
 
-That is precisely — and only — what `stream.rs` can already do: `AF_INET`, dotted quad, port from
-the connection, plain HTTP, chunked supported. **For this server, transport is not the blocker.**
+That unauthenticated `/identity` response proves the endpoint is reachable. It does not prove the
+authenticated transport: stable browse and playback require an HTTPS origin, while token-bearing
+plaintext is available only in an explicit developer-trigger lab build.
 
 Also measured, because they shape the playback story:
 
@@ -221,16 +222,16 @@ and curl is *push*, and `stream.rs`'s single-closer teardown protocol has to be 
 terms. The bundled FFmpeg cannot help — it is built `--disable-network`,
 `--enable-protocol=file` (`ci/build-ffmpeg.sh:122,129`) and pinned to majors 63/63/61.
 
-**But none of that is on the critical path for the server we actually have.** §2(c) shows its usable
-connection is plain HTTP on a numeric IP, reachable from the TV, with `httpsRequired=false`. So the
-work that makes *this* share appear in the app is entirely **connection selection + the multi-server
-data model** — no new transport at all.
+**That plaintext endpoint is useful reachability evidence, not a stable authenticated route.**
+§2(c) shows that the TV can reach it, but a public build still needs one of the server's advertised
+HTTPS origins before it may attach the token. Connection selection and the multi-server data model
+remain necessary; secure transport is part of the same acceptance path.
 
 Two caveats that make TLS a real follow-up rather than a nicety:
 
-1. **Plain HTTP over the WAN puts `X-Plex-Token` in the clear**, in the query string, across the
-   public internet — and it is written into the *owner's* PMS access log. Fine for a personal build
-   today; not something to ship broadly.
+1. **Historical risk, now closed for stable builds:** plain HTTP over the WAN puts
+   `X-Plex-Token` in the clear. The current transport boundary refuses every token-bearing HTTP
+   control or media URL unless the binary explicitly includes the developer-trigger feature.
 2. The plain-HTTP route is **the owner's setting, not ours**. If they flip *Require secure
    connections* to Required, or their port-forward stops exposing the plain port, it disappears and
    only the curl path reaches them. Same for any share that is relay-only.
@@ -573,7 +574,8 @@ Three consequences, all of which the code now states:
 
 **There is no add-a-server-by-address on the television, and there will not be.** The list is the
 plex.tv grant — the existing registry — and nothing else. This is a product decision, not a
-transport limitation: hostname/IPv6 plaintext and HTTPS control/media are all supported now.
+transport limitation: HTTPS control/media are supported in stable builds; plaintext
+hostname/IPv4/IPv6 origins remain available only in explicit developer-trigger lab builds.
 
 **The selection is keyed by PROFILE.** `Session::pinned: Vec<PinnedLib>` hung off the `Session`,
 which is one per install — so a household could hold exactly one opinion about a friend's films,

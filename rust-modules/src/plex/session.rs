@@ -1,8 +1,8 @@
 //! Persisted login session — what makes the client **offline-first**. After the one-time online
 //! login (account token → server discovery → profile switch), the chosen server's verified
-//! [`Origin`] and the profile's token are written here. A later boot can therefore resume the same
-//! LAN, remote, or relay HTTP(S) origin without plex.tv; offline operation remains possible when
-//! that stored origin is reachable. Lives in the writable app dir (device-only; never in the
+//! [`Origin`] and the profile's token are written here. A stable build can therefore resume a
+//! stored HTTPS origin without plex.tv when it remains reachable; an explicit developer-trigger
+//! build may also resume a plaintext HTTP origin for lab use. Lives in the writable app dir (device-only; never in the
 //! repo). The token fields are secrets — this file's contents are never logged.
 //!
 //! ## One server, and then the ROSTER
@@ -767,19 +767,81 @@ pub fn peek() -> Session {
 
 /// [`peek`] with the lock already held — the read half every entry point here shares.
 fn peek_locked() -> Session {
-    parsed_locked().unwrap_or_default()
+    match read_locked() {
+        ReadState::Ready { session, .. } => session,
+        ReadState::Missing | ReadState::Locked => Session::default(),
+    }
 }
 
-/// The first parsable candidate, retaining whether a persisted session existed at all. `Session`
-/// alone cannot carry that fact: a real legacy file may validly deserialize to the same empty
-/// fields as `Default`, including no `client_id`.
-fn parsed_locked() -> Option<Session> {
-    // First candidate that both EXISTS and PARSES wins. Parse is part of the test on purpose: a
-    // half-written file at a preferred location must not shadow a good one further down the list.
+const SECURE_FORMAT: &str = "plxnative-secure-session";
+
+#[derive(Deserialize, Serialize)]
+struct SecureEnvelope {
+    format: String,
+    version: u8,
+    sealed: crate::keymanager::Sealed,
+}
+
+enum ReadState {
+    Missing,
+    Ready {
+        session: Session,
+        plaintext: bool,
+    },
+    /// A recognized encrypted file whose device key is temporarily or permanently unavailable.
+    /// It must shadow every lower-priority candidate: treating it as corrupt and then writing a
+    /// fresh client id would destroy the only copy of the credentials.
+    Locked,
+}
+
+/// The first usable candidate, retaining whether an encrypted file exists but cannot be opened.
+fn read_locked() -> ReadState {
+    for path in auth_paths() {
+        let Some(bytes) = read_owned_regular(&path) else {
+            continue;
+        };
+        if let Ok(envelope) = serde_json::from_slice::<SecureEnvelope>(&bytes) {
+            if envelope.format == SECURE_FORMAT && envelope.version == 1 {
+                let Some(plain) = crate::keymanager::open(&envelope.sealed) else {
+                    crate::log("session: secure file is present but its device key is unavailable");
+                    return ReadState::Locked;
+                };
+                return serde_json::from_slice(&plain)
+                    .map(|session| ReadState::Ready {
+                        session,
+                        plaintext: false,
+                    })
+                    .unwrap_or(ReadState::Locked);
+            }
+        }
+        if identifies_secure_envelope(&bytes) {
+            crate::log("session: unsupported or damaged secure envelope is locked");
+            return ReadState::Locked;
+        }
+        if let Ok(session) = serde_json::from_slice(&bytes) {
+            return ReadState::Ready {
+                session,
+                plaintext: true,
+            };
+        }
+    }
+    ReadState::Missing
+}
+
+fn identifies_secure_envelope(bytes: &[u8]) -> bool {
+    serde_json::from_slice::<serde_json::Value>(bytes)
+        .ok()
+        .and_then(|v| v.as_object().cloned())
+        .is_some_and(|o| {
+            o.get("format").and_then(serde_json::Value::as_str) == Some(SECURE_FORMAT)
+                || (o.contains_key("sealed") && o.contains_key("version"))
+        })
+}
+
+fn has_secure_locked() -> bool {
     auth_paths()
         .iter()
-        .filter_map(|p| std::fs::read(p).ok())
-        .find_map(|b| serde_json::from_slice(&b).ok())
+        .any(|path| read_owned_regular(path).is_some_and(|b| identifies_secure_envelope(&b)))
 }
 
 /// Seed a quality only for a genuinely absent file. A parsable legacy file remains distinguishable
@@ -824,12 +886,24 @@ fn publish_identities(s: &Session) {
 /// Falls back to the pre-relocation path once and re-saves at the new one (migration).
 pub fn load() -> Session {
     let _io = io();
-    let parsed = parsed_locked();
-    let persisted = parsed.is_some();
-    let mut s = parsed.unwrap_or_default();
+    let read = read_locked();
+    let persisted = !matches!(read, ReadState::Missing);
+    let locked = matches!(read, ReadState::Locked);
+    let plaintext = matches!(read, ReadState::Ready { plaintext: true, .. });
+    let mut s = match read {
+        ReadState::Ready { session, .. } => session,
+        ReadState::Missing | ReadState::Locked => Session::default(),
+    };
     seed_fresh_quality(&mut s, persisted, crate::route::auto_quality_ready());
     if s.client_id.is_empty() {
         s.client_id = new_client_id();
+        if !locked {
+            save_locked(&s);
+        }
+    } else if plaintext {
+        // Offer every plaintext session to the Key Manager immediately. This also moves a
+        // parsable legacy-path file to the preferred location; without a usable service it stays
+        // an atomic mode-0600 plaintext fallback.
         save_locked(&s);
     }
     publish_identities(&s);
@@ -873,14 +947,17 @@ pub fn update(edit: impl FnOnce(&Session) -> Option<Session>) -> bool {
 /// earlier. Anything changing one field of a file somebody else also writes must go through
 /// [`update`], or it overwrites their change with whatever it last read.
 ///
-/// **Credentials at rest: 0600, set in `open(2)`'s own mode argument — never create-then-chmod.**
-/// This file holds the plex.tv account token, every per-user PMS access token and the Plex Home
-/// roster, and it lives on a ROOTED TV whose `/media/developer` is world-readable — the same box
-/// where `/tmp` is a dumping ground for dev triggers. `fs::write` creates with `0666 & !umask`
-/// (0644 here), so the tokens were readable by every other uid on the device from the instant they
-/// hit the disk. Passing the mode through `OpenOptionsExt` means the file never *exists* in a
-/// permissive mode, which a chmod after the write cannot promise: the window between create and
-/// chmod is exactly when the secret is already on disk.
+/// **Credentials at rest: device-key encryption when an authenticated public Key Manager is
+/// available, and 0600 in every case.** The probe uses TV 24+'s
+/// `com.webos.service.keymanager3`. The legacy `com.palm.keymanager` service is not used because
+/// its AES-CFB interface cannot authenticate ciphertext. A firmware that does not expose or permit
+/// keymanager3 keeps the compatible 0600 plaintext fallback. An existing encrypted file is never
+/// downgraded merely because its service is temporarily unavailable.
+///
+/// The mode is set in `open(2)`'s own argument — never create-then-chmod. `fs::write` creates with
+/// `0666 & !umask` (0644 here), so a fallback token file would be readable by every other uid from
+/// the instant it hit the disk. Passing the mode through `OpenOptionsExt` means it never *exists*
+/// in a permissive mode, which a chmod after the write cannot promise.
 pub fn save(s: &Session) {
     let _io = io();
     save_locked(s);
@@ -894,6 +971,35 @@ fn save_locked(s: &Session) {
     let Ok(json) = serde_json::to_vec_pretty(s) else {
         return;
     };
+    if let Some(sealed) = crate::keymanager::seal(&json) {
+        let envelope = SecureEnvelope {
+            format: SECURE_FORMAT.to_string(),
+            version: 1,
+            sealed,
+        };
+        let Ok(protected) = serde_json::to_vec_pretty(&envelope) else {
+            return;
+        };
+        for winner in auth_paths() {
+            if write_atomic(&winner, &protected) {
+                // A successful migration must not leave an older plaintext token file at a
+                // lower-priority jail path where another uid can recover it.
+                for stale in auth_paths().into_iter().filter(|p| p != &winner) {
+                    remove_temp_siblings(&stale);
+                    let _ = std::fs::remove_file(stale);
+                }
+                return;
+            }
+        }
+        crate::log("session: key manager succeeded but the protected file could not be written");
+        return;
+    }
+    // Never turn an already protected session back into plaintext because a service was
+    // temporarily unavailable during a save. Preserve the previous ciphertext instead.
+    if has_secure_locked() {
+        crate::log("session: preserving the existing secure file; refusing a plaintext downgrade");
+        return;
+    }
     // Try each candidate; the first that accepts the write wins. A total failure is still
     // non-fatal — but it is LOGGED, because the symptom (sign in again, every boot, forever) is
     // otherwise indistinguishable from a server-side auth problem and impossible to report.
@@ -916,51 +1022,135 @@ fn save_locked(s: &Session) {
 /// reader between the truncate and the `write_all` sees zero bytes; a power cut or a kill in that
 /// same gap leaves zero bytes *on disk*, and `peek` reads both as "no session" — sign in again.
 ///
-/// The tmp file is a **sibling**, named off the resolved path rather than picked. `rename(2)` is
+/// The tmp file is a **sibling**, named off the resolved path. `rename(2)` is
 /// only atomic within one filesystem, and the webOS jail's writable directories are separate mounts
 /// (`/media/developer`, `/media/internal`, the app dir — see [`auth_paths`]); a tmp under `/tmp`
-/// would demote this to a cross-device copy, i.e. exactly the truncate-in-place it replaces. One
-/// fixed `.tmp` suffix is enough because [`IO`] means only one writer is ever in here, and a stale
-/// one left by a crash is overwritten rather than read — it is not one of [`auth_paths`]'s
-/// candidates, so `peek`'s search cannot pick it up.
+/// would demote this to a cross-device copy, i.e. exactly the truncate-in-place it replaces. Its
+/// suffix is random and opened with `create_new` + `O_NOFOLLOW`: the module lock serializes our
+/// writers, but it does not serialize another uid able to create a sibling entry.
 ///
-/// `sync_all` before the rename is what makes the promise survive the plug being pulled, which on a
+/// `sync_all` before the rename and on the parent after it is what makes the promise survive the
+/// plug being pulled, which on a
 /// television is an ordinary way to end a session: without it the rename can be visible while the
 /// data behind it is not, and the file that comes back is the empty one. It costs a flush of a
 /// couple of kilobytes on a path that runs at sign-in, at a profile switch, at a roster change and
 /// at a committed search term — never per frame.
 ///
 /// The 0600 mode is [`save`]'s rule applied one file earlier: the secret must never *exist* in a
-/// permissive mode, and the tmp file is where it exists first. `set_permissions` covers a stale tmp
-/// left by an older build, whose mode `open` would not touch — and the `truncate` above means it is
-/// zero bytes while we do it.
+/// permissive mode, and the tmp file is where it exists first.
 /// `pub(crate)` since 2026-08-29 so `crate::telemetry` writes its file the same way rather than
 /// growing a second implementation of this. It is a generic 0600 atomic write that happens to live
 /// beside its first caller; the alternative was two copies of a routine whose whole value is that
 /// its failure modes have already been found once, on the file holding the credentials.
 pub(crate) fn write_atomic(path: &std::path::Path, json: &[u8]) -> bool {
     use std::io::Write;
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-    let Some(tmp) = tmp_path(path) else {
+    use std::os::unix::fs::MetadataExt;
+    let Some(parent) = path.parent() else {
         return false;
     };
-    let opened = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&tmp);
-    let Ok(mut f) = opened else { return false };
-    let _ = f.set_permissions(std::fs::Permissions::from_mode(0o600));
+    if let Ok(meta) = std::fs::symlink_metadata(path) {
+        if !meta.file_type().is_file() || meta.uid() != unsafe { libc::geteuid() } {
+            return false;
+        }
+    }
+    let Some((tmp, mut f)) = create_private_temp(path) else {
+        return false;
+    };
     let written = f.write_all(json).is_ok() && f.sync_all().is_ok();
     drop(f); // the rename must not race our own open handle on a filesystem that cares
     if written && std::fs::rename(&tmp, path).is_ok() {
+        if let Ok(dir) = std::fs::File::open(parent) {
+            let _ = dir.sync_all();
+        }
+        remove_temp_siblings(path);
         return true;
     }
     // Leave no half-written credentials behind under a name the next writer would overwrite
     // anyway — and none at all if this candidate turned out to be unwritable.
     let _ = std::fs::remove_file(&tmp);
     false
+}
+
+fn create_private_temp(path: &std::path::Path) -> Option<(std::path::PathBuf, std::fs::File)> {
+    use std::os::unix::fs::OpenOptionsExt;
+    for attempt in 0..16u64 {
+        let tmp = random_tmp_path(path, attempt)?;
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(&tmp)
+        {
+            Ok(file) => return Some((tmp, file)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => return None,
+        }
+    }
+    None
+}
+
+fn random_tmp_path(path: &std::path::Path, attempt: u64) -> Option<std::path::PathBuf> {
+    use std::io::Read;
+    static FALLBACK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let mut nonce = [0u8; 8];
+    if std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| f.read_exact(&mut nonce))
+        .is_err()
+    {
+        nonce = FALLBACK
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            .wrapping_add(attempt)
+            .to_ne_bytes();
+    }
+    let mut name = path.file_name()?.to_os_string();
+    name.push(format!(".tmp.{:016x}", u64::from_ne_bytes(nonce)));
+    Some(path.with_file_name(name))
+}
+
+pub(crate) fn read_owned_regular(path: &std::path::Path) -> Option<Vec<u8>> {
+    use std::io::Read;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)
+        .ok()?;
+    let meta = file.metadata().ok()?;
+    if !meta.file_type().is_file() || meta.uid() != unsafe { libc::geteuid() } {
+        return None;
+    }
+    const MAX_FILE: u64 = 4 * 1024 * 1024;
+    let mut bytes = Vec::new();
+    file.by_ref()
+        .take(MAX_FILE + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    (bytes.len() as u64 <= MAX_FILE).then_some(bytes)
+}
+
+fn remove_temp_siblings(path: &std::path::Path) {
+    use std::os::unix::fs::MetadataExt;
+    if let Some(legacy) = tmp_path(path) {
+        let _ = std::fs::remove_file(legacy);
+    }
+    let (Some(parent), Some(file_name)) = (path.parent(), path.file_name()) else {
+        return;
+    };
+    let prefix = format!("{}.tmp.", file_name.to_string_lossy());
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if !entry.file_name().to_string_lossy().starts_with(&prefix) {
+            continue;
+        }
+        if let Ok(meta) = std::fs::symlink_metadata(entry.path()) {
+            if meta.file_type().is_symlink() || meta.uid() == unsafe { libc::geteuid() } {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
 }
 
 /// The sibling [`write_atomic`] writes through, for a resolved candidate path. One definition
@@ -985,9 +1175,14 @@ pub fn clear() {
     // siblings go too — `peek` cannot read one, so it is not a resurrection risk, but a sign-out
     // that leaves a live account token in a file on a rooted television is not a sign-out.
     for path in auth_paths() {
-        if let Some(tmp) = tmp_path(&path) {
-            let _ = std::fs::remove_file(tmp);
+        if let Some(bytes) = read_owned_regular(&path) {
+            if let Ok(envelope) = serde_json::from_slice::<SecureEnvelope>(&bytes) {
+                if envelope.format == SECURE_FORMAT && envelope.version == 1 {
+                    crate::keymanager::remove(&envelope.sealed.backend, &envelope.sealed.key);
+                }
+            }
         }
+        remove_temp_siblings(&path);
         let _ = std::fs::remove_file(path);
     }
 }
@@ -1811,6 +2006,85 @@ mod tests {
         std::fs::write(t.tmp(), b"{}").unwrap();
         clear();
         assert!(!t.file().exists() && !t.tmp().exists());
+    }
+
+    /// A temporary LS2/key-store failure must never turn ciphertext back into plaintext or make
+    /// `load` overwrite it with a newly minted, logged-out client id. The host has no Luna bus,
+    /// which is the exact unavailable-key condition this policy has to survive.
+    #[test]
+    fn an_unopenable_secure_session_is_preserved_without_plaintext_downgrade() {
+        let _g = crate::testlock::serial();
+        let t = TempSession::new("secure-locked");
+        let envelope = SecureEnvelope {
+            format: SECURE_FORMAT.to_string(),
+            version: 1,
+            sealed: crate::keymanager::Sealed {
+                backend: crate::keymanager::Backend::Keymanager3,
+                key: "plxnative.session.v1".to_string(),
+                iv: "AAAAAAAAAAAAAAAAAAAAAA==".to_string(),
+                data: "c2VjcmV0".to_string(),
+            },
+        };
+        let original = serde_json::to_vec_pretty(&envelope).unwrap();
+        std::fs::write(t.file(), &original).unwrap();
+
+        let loaded = load();
+        assert!(!loaded.client_id.is_empty(), "the run still gets an ephemeral id");
+        assert_eq!(std::fs::read(t.file()).unwrap(), original);
+
+        save(&signed_in());
+        assert_eq!(
+            std::fs::read(t.file()).unwrap(),
+            original,
+            "an unavailable service cannot leak the replacement session as plaintext"
+        );
+    }
+
+    #[test]
+    fn an_unknown_secure_envelope_version_is_locked_and_never_rewritten_as_plaintext() {
+        let _g = crate::testlock::serial();
+        let t = TempSession::new("secure-future-version");
+        let original = br#"{
+  "format": "plxnative-secure-session",
+  "version": 2,
+  "sealed": {
+    "backend": "keymanager3",
+    "key": "plxnative.session.v2",
+    "iv": "future-iv",
+    "data": "future-ciphertext"
+  }
+}"#;
+        std::fs::write(t.file(), original).unwrap();
+
+        let loaded = load();
+        assert!(!loaded.client_id.is_empty(), "the run still gets an ephemeral id");
+        assert_eq!(
+            std::fs::read(t.file()).unwrap(),
+            original,
+            "rollback must preserve an envelope it does not understand"
+        );
+
+        save(&signed_in());
+        assert_eq!(
+            std::fs::read(t.file()).unwrap(),
+            original,
+            "a future secure envelope must shadow every plaintext replacement"
+        );
+    }
+
+    #[test]
+    fn a_precreated_tmp_symlink_cannot_redirect_session_bytes() {
+        use std::os::unix::fs::symlink;
+        let _g = crate::testlock::serial();
+        let t = TempSession::new("tmp-symlink");
+        let victim = t.dir.join("attacker-readable");
+        std::fs::write(&victim, b"unchanged").unwrap();
+        symlink(&victim, t.tmp()).unwrap();
+
+        save(&signed_in());
+
+        assert_eq!(std::fs::read(&victim).unwrap(), b"unchanged");
+        assert_eq!(peek().account_token, "acct");
     }
 
     #[test]

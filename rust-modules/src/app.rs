@@ -3496,10 +3496,23 @@ fn delete_all_local_data() -> Result<(), String> {
             failures.push(e);
         }
     }
+    for name in [
+        "plxnative-events.log",
+        "plxnative-crash.log",
+        "plxnative-stderr.log",
+        "plxnative-anim.log",
+        "plxnative-gst.log",
+        "plxnative-gputime.jsonl",
+        "plxnative-hwcnt.jsonl",
+    ] {
+        if let Err(e) = remove(&crate::paths::in_runtime_dir(name)) {
+            failures.push(e);
+        }
+    }
     crate::ui::search::recents::clear();
     crate::metadata::clear();
-    crate::telemetry::record(crate::telemetry::consent::Consent::default());
-    crate::auth::sign_out();
+    crate::telemetry::forget_local();
+    crate::auth::erase_local_state();
     if failures.is_empty() {
         Ok(())
     } else {

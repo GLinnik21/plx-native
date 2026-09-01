@@ -723,9 +723,13 @@ mod tests {
             "found only {} dg_ fields — the parse broke",
             declared.len()
         );
+        let writers: Vec<String> = WRITERS
+            .iter()
+            .map(|src| src.chars().filter(|c| !c.is_whitespace()).collect())
+            .collect();
 
         for f in declared {
-            let written = WRITERS.iter().any(|src| {
+            let written = writers.iter().any(|src| {
                 src.contains(&format!("dg_{f}.store(")) || src.contains(&format!("dg_{f}.fetch_"))
             });
             assert!(written, "dg_{f} is declared and read but NOTHING writes it — the panel would print its sentinel as fact");

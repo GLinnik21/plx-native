@@ -35,6 +35,7 @@ mod http; // the ONE door out of the control plane: dispatch a Plex REST request
 #[cfg(feature = "devtriggers")]
 mod hwcnt; // direct userspace Mali r12p0 vinstr reader for the phase profiler
 mod img;
+mod keymanager; // public LS2 key stores: keymanager3, legacy Palm service, or unavailable
 mod lab; // Cloud Lab bridge: pinned diagnostic uploads + optional outbound command long-poll
 mod metadata; // item detail data layer (detail page): full metadata + seasons/episodes + cast + related
 mod net; // HTTPS client over the TV's libcurl (plex.tv account/login calls — stream.rs can't do TLS/DNS)
@@ -127,6 +128,27 @@ fn events_log() -> std::path::PathBuf {
     paths::in_runtime_dir("plxnative-events.log")
 }
 
+fn open_private_log_append(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
+        .open(path)?;
+    let meta = file.metadata()?;
+    if !meta.file_type().is_file() || meta.uid() != unsafe { libc::geteuid() } {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "unsafe log sink",
+        ));
+    }
+    if meta.permissions().mode() & 0o777 != 0o600 {
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(file)
+}
+
 pub(crate) fn log(m: &str) {
     use std::io::Write;
     // Through the instance root, not a literal: several host simulators run at once, and one
@@ -142,11 +164,7 @@ pub(crate) fn log(m: &str) {
     // strict subset of the file every other tool reads and inherits the credential backstop above.
     // A compile-time no-op without the `lab-diagnostics` feature — see `crate::lab`.
     lab::record(&line);
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(p)
-    {
+    if let Ok(mut f) = open_private_log_append(&p) {
         let _ = writeln!(f, "{line}");
     }
 }
@@ -238,5 +256,37 @@ mod redact_tests {
         let out = redact_tokens("séance ☃ ?X-Plex-Token=Q1 — après");
         assert!(!out.contains("Q1"));
         assert!(out.contains("séance") && out.contains("après"));
+    }
+}
+
+#[cfg(test)]
+mod private_log_tests {
+    use super::open_private_log_append;
+    use std::io::Write;
+    use std::os::unix::fs::{symlink, PermissionsExt};
+
+    #[test]
+    fn a_symlink_cannot_redirect_the_rust_log_sink() {
+        let _g = crate::testlock::serial();
+        let dir = std::env::temp_dir().join(format!("plx-rust-log-{}", std::process::id()));
+        let _ = std::fs::create_dir(&dir);
+        let victim = dir.join("victim");
+        let sink = dir.join("sink");
+        let _ = std::fs::remove_file(&sink);
+        std::fs::write(&victim, b"unchanged").unwrap();
+        symlink(&victim, &sink).unwrap();
+        assert!(open_private_log_append(&sink).is_err());
+        assert_eq!(std::fs::read(&victim).unwrap(), b"unchanged");
+        let _ = std::fs::remove_file(&sink);
+
+        std::fs::write(&sink, b"").unwrap();
+        std::fs::set_permissions(&sink, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let mut file = open_private_log_append(&sink).unwrap();
+        file.write_all(b"safe").unwrap();
+        assert_eq!(std::fs::metadata(&sink).unwrap().permissions().mode() & 0o777, 0o600);
+
+        let _ = std::fs::remove_file(sink);
+        let _ = std::fs::remove_file(victim);
+        let _ = std::fs::remove_dir(dir);
     }
 }

@@ -775,6 +775,10 @@ pub(crate) fn start_bufferfeed(mt: &MainThread) -> bool {
                                                       // Rebuilding the origin from an address would put the refusal back in a subtler form: the
                                                       // certificate is issued for the `plex.direct` NAME, so a TLS connection to the dotted quad
                                                       // behind it fails validation however well the packets flow (`plex/origin.rs`).
+        if !crate::http::credential_transport_allowed(&su.origin, &su.path, &[]) {
+            crate::log("stream: refused insecure credential transport");
+            return false;
+        }
         let path = su.path;
         log(&format!(
             "stream: {} path={}",

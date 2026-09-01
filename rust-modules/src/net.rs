@@ -661,6 +661,18 @@ pub(crate) fn request_tls(
         )
     };
     unsafe {
+        macro_rules! require_setopt {
+            ($call:expr, $name:literal) => {{
+                let rc = $call;
+                if rc != 0 {
+                    crate::log(&format!(
+                        "net: libcurl refused security option {} (rc={rc}); request cancelled",
+                        $name
+                    ));
+                    return None;
+                }
+            }};
+        }
         let h = curl_easy_init();
         if h.is_null() {
             return None;
@@ -676,26 +688,42 @@ pub(crate) fn request_tls(
         );
         // No curl call in this module may escape HTTP(S). The public QR fetch is the only one that
         // follows redirects; it is capped, and an HTTPS start may never downgrade to plaintext.
-        curl_easy_setopt_long(easy.0, CURLOPT_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS);
-        curl_easy_setopt_long(easy.0, CURLOPT_FOLLOWLOCATION, follow_redirects as c_long);
+        require_setopt!(
+            curl_easy_setopt_long(easy.0, CURLOPT_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS),
+            "CURLOPT_PROTOCOLS"
+        );
+        require_setopt!(
+            curl_easy_setopt_long(easy.0, CURLOPT_FOLLOWLOCATION, follow_redirects as c_long),
+            "CURLOPT_FOLLOWLOCATION"
+        );
         if follow_redirects {
-            curl_easy_setopt_long(easy.0, CURLOPT_MAXREDIRS, PUBLIC_MAX_REDIRECTS);
-            curl_easy_setopt_long(
-                easy.0,
-                CURLOPT_REDIR_PROTOCOLS,
-                allowed_redirect_protocols(url.as_bytes()),
+            require_setopt!(
+                curl_easy_setopt_long(easy.0, CURLOPT_MAXREDIRS, PUBLIC_MAX_REDIRECTS),
+                "CURLOPT_MAXREDIRS"
+            );
+            require_setopt!(
+                curl_easy_setopt_long(
+                    easy.0,
+                    CURLOPT_REDIR_PROTOCOLS,
+                    allowed_redirect_protocols(url.as_bytes()),
+                ),
+                "CURLOPT_REDIR_PROTOCOLS"
             );
         }
-        curl_easy_setopt_long(easy.0, CURLOPT_SSL_VERIFYPEER, 1 as c_long);
-        curl_easy_setopt_long(easy.0, CURLOPT_SSL_VERIFYHOST, 2 as c_long);
+        require_setopt!(
+            curl_easy_setopt_long(easy.0, CURLOPT_SSL_VERIFYPEER, 1 as c_long),
+            "CURLOPT_SSL_VERIFYPEER"
+        );
+        require_setopt!(
+            curl_easy_setopt_long(easy.0, CURLOPT_SSL_VERIFYHOST, 2 as c_long),
+            "CURLOPT_SSL_VERIFYHOST"
+        );
         // A pinned request replaces CA verification with key pinning — see
         // [`CURLOPT_PINNEDPUBLICKEY`]. Written AFTER the two defaults above so the ordinary path is
         // still one unconditional pair of lines that cannot be reached with the wrong value.
         //
-        // **THE RETURN CODE IS CHECKED HERE AND NOWHERE ELSE IN THIS FUNCTION, AND THAT ASYMMETRY
-        // IS THE POINT.** Every other `setopt` above fails safe: a libcurl that refuses
-        // `CURLOPT_TIMEOUT` gives a request without a deadline, which is worse but not unsafe. This
-        // one fails OPEN. If the option is rejected — an older libcurl, or a TLS backend whose
+        // Every security-relevant option above is fail-closed. Pinning is additionally important:
+        // if the option is rejected — an older libcurl, or a TLS backend whose
         // pinning support post-dates it, which is neither a symbol nor a library and so is
         // invisible to `tools/fwcompat.py` — then the two lines under it would still run and the
         // request would go out with **no pinning and no CA verification at all**, accepting any
@@ -731,8 +759,14 @@ pub(crate) fn request_tls(
                     crate::log(&format!("net: this libcurl refuses CURLOPT_PINNEDPUBLICKEY (rc={rc}) — refusing to send unpinned"));
                     return None;
                 }
-                curl_easy_setopt_long(easy.0, CURLOPT_SSL_VERIFYPEER, 0 as c_long);
-                curl_easy_setopt_long(easy.0, CURLOPT_SSL_VERIFYHOST, 0 as c_long);
+                require_setopt!(
+                    curl_easy_setopt_long(easy.0, CURLOPT_SSL_VERIFYPEER, 0 as c_long),
+                    "CURLOPT_SSL_VERIFYPEER"
+                );
+                require_setopt!(
+                    curl_easy_setopt_long(easy.0, CURLOPT_SSL_VERIFYHOST, 0 as c_long),
+                    "CURLOPT_SSL_VERIFYHOST"
+                );
             }
         }
         curl_easy_setopt_long(easy.0, CURLOPT_NOSIGNAL, 1 as c_long);

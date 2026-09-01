@@ -93,9 +93,31 @@ pub fn draw() {
     match auth::phase() {
         Phase::Waiting => draw_waiting(p, &env, s),
         Phase::Error => draw_status(p, &env, s, &auth::error(), true),
+        Phase::Deleted => draw_deleted(p),
         Phase::Discovering => draw_status(p, &env, s, "Finding your server\u{2026}", false),
         _ => draw_status(p, &env, s, "Connecting to Plex\u{2026}", false),
     }
+}
+
+fn draw_deleted(p: Painter) {
+    let layout = RouteLayout::screen();
+    layout.draw_narrative(
+        p,
+        "Local data deleted",
+        "Credentials, preferences, telemetry, and local diagnostics have been removed.",
+        theme::size::LABEL,
+    );
+    TextView::new("Press OK to sign in", theme::size::BODY, theme::TEXT_TERTIARY)
+        .h(HAlign::Center)
+        .draw(
+            p,
+            Rect::new(
+                layout.content.x,
+                layout.content.cy(),
+                layout.content.w,
+                50.0,
+            ),
+        );
 }
 
 fn draw_waiting(p: Painter, env: &Env, s: &mut Scene) {
@@ -254,6 +276,10 @@ fn qr_layout(layout: RouteLayout) -> QrLayout {
 }
 
 pub fn key(sym: c_uint, wcode: c_uint) {
+    if auth::phase() == Phase::Deleted && is_ok(sym) {
+        auth::start_login();
+        return;
+    }
     if auth::phase() == Phase::Error && is_ok(sym) {
         auth::retry();
         return;

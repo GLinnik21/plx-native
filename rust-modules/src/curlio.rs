@@ -604,6 +604,9 @@ impl CurlSource {
         reservation: OpenReservation,
         deadline: Option<std::time::Instant>,
     ) -> Result<Box<CurlSource>, OpenErr> {
+        if !media_url_allowed(url) {
+            return Err(OpenErr::Local);
+        }
         let url_c = CString::new(url).map_err(|_| OpenErr::Local)?;
         let ua = CString::new(crate::plex::identity::user_agent()).map_err(|_| OpenErr::Local)?;
         let multi = unsafe { curl_multi_init() };
@@ -678,6 +681,20 @@ impl CurlSource {
             None
         };
         unsafe {
+            macro_rules! require_setopt {
+                ($call:expr, $name:literal) => {{
+                    let rc = $call;
+                    if rc != 0 {
+                        crate::player::log(&format!(
+                            "curlio: libcurl refused security option {} (rc={rc}); stream cancelled",
+                            $name
+                        ));
+                        crate::net::curl_easy_cleanup(easy);
+                        self.easy = std::ptr::null_mut();
+                        return Err(OpenErr::Local);
+                    }
+                }};
+            }
             let xp = &mut *self.xfer as *mut Xfer as *mut c_void;
             crate::net::curl_easy_setopt_ptr(easy, CURLOPT_URL, self.url.as_ptr() as *const c_void);
             crate::net::curl_easy_setopt_ptr(
@@ -704,25 +721,43 @@ impl CurlSource {
             // NAME, which is the entire reason an Origin is parsed from a URL and never rebuilt
             // from an address (`plex/origin.rs`). Turning either of these off would make an
             // https URL "work" against the wrong server.
-            crate::net::curl_easy_setopt_long(easy, CURLOPT_SSL_VERIFYPEER, 1);
-            crate::net::curl_easy_setopt_long(easy, CURLOPT_SSL_VERIFYHOST, 2);
+            require_setopt!(
+                crate::net::curl_easy_setopt_long(easy, CURLOPT_SSL_VERIFYPEER, 1),
+                "CURLOPT_SSL_VERIFYPEER"
+            );
+            require_setopt!(
+                crate::net::curl_easy_setopt_long(easy, CURLOPT_SSL_VERIFYHOST, 2),
+                "CURLOPT_SSL_VERIFYHOST"
+            );
             // We are on a worker thread; curl must not install signal handlers. This is also what
             // makes DNS uncancellable on a synchronous resolver — see the module doc.
             crate::net::curl_easy_setopt_long(easy, CURLOPT_NOSIGNAL, 1);
-            crate::net::curl_easy_setopt_long(easy, CURLOPT_FOLLOWLOCATION, 1);
-            crate::net::curl_easy_setopt_long(easy, CURLOPT_MAXREDIRS, 5);
+            require_setopt!(
+                crate::net::curl_easy_setopt_long(easy, CURLOPT_FOLLOWLOCATION, 1),
+                "CURLOPT_FOLLOWLOCATION"
+            );
+            require_setopt!(
+                crate::net::curl_easy_setopt_long(easy, CURLOPT_MAXREDIRS, 5),
+                "CURLOPT_MAXREDIRS"
+            );
             // A redirect must not downgrade a TLS media request. On the television's libcurl
             // 7.53.1 the redirect default is broader than HTTP(S), and even current curl permits
             // https -> http unless the caller narrows it. The token is in the URL, so a downgrade
             // would expose both it and the stream. A plaintext request may upgrade to TLS; a TLS
             // request may remain TLS only.
             let redirect_protocols = allowed_redirect_protocols(self.url.as_bytes());
-            crate::net::curl_easy_setopt_long(
-                easy,
-                CURLOPT_PROTOCOLS,
-                CURLPROTO_HTTP | CURLPROTO_HTTPS,
+            require_setopt!(
+                crate::net::curl_easy_setopt_long(
+                    easy,
+                    CURLOPT_PROTOCOLS,
+                    CURLPROTO_HTTP | CURLPROTO_HTTPS,
+                ),
+                "CURLOPT_PROTOCOLS"
             );
-            crate::net::curl_easy_setopt_long(easy, CURLOPT_REDIR_PROTOCOLS, redirect_protocols);
+            require_setopt!(
+                crate::net::curl_easy_setopt_long(easy, CURLOPT_REDIR_PROTOCOLS, redirect_protocols),
+                "CURLOPT_REDIR_PROTOCOLS"
+            );
             crate::net::curl_easy_setopt_long(easy, CURLOPT_CONNECTTIMEOUT, CONNECT_TIMEOUT_S);
             if let Some(at) = deadline {
                 let left_ms = at
@@ -1061,7 +1096,8 @@ impl ThroughputSample {
 }
 
 /// Read at most `target_bytes` from a URL before `budget` expires, without taking over the live
-/// demuxer's abort registry. The caller owns the policy; this function reports only observation.
+/// demuxer's abort registry. The lower curl boundary enforces the same credential-transport policy
+/// as the live demuxer; this function otherwise reports only observation.
 /// Dropping the source stops the request as soon as the sample is complete, so the prefix is not
 /// retained and the remainder of the movie is never downloaded here.
 pub(crate) fn sample_throughput(
@@ -1095,6 +1131,22 @@ pub(crate) fn sample_throughput(
         elapsed: started.elapsed(),
         target_reached: bytes >= target_bytes,
     })
+}
+
+fn media_url_allowed(url: &str) -> bool {
+    let (origin, path) = crate::plex::origin::split(url);
+    crate::http::credential_transport_allowed(&origin, path, &[])
+}
+
+#[cfg(test)]
+fn media_url_allowed_by_policy(url: &str, allow_plaintext_credentials: bool) -> bool {
+    let (origin, path) = crate::plex::origin::split(url);
+    crate::http::credential_transport_allowed_by_policy(
+        &origin,
+        path,
+        &[],
+        allow_plaintext_credentials,
+    )
 }
 
 impl Drop for CurlSource {
@@ -1330,6 +1382,22 @@ mod tests {
     use super::*;
     use std::io::Write;
     use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    fn lower_media_layer_refuses_plaintext_credentials_in_store_policy() {
+        assert!(!media_url_allowed_by_policy(
+            "http://192.0.2.1:32400/video.mkv?X-Plex-Token=secret",
+            false,
+        ));
+        assert!(media_url_allowed_by_policy(
+            "https://example.invalid/video.mkv?X-Plex-Token=secret",
+            false,
+        ));
+        assert!(media_url_allowed_by_policy(
+            "http://192.0.2.1:32400/video.mkv?X-Plex-Token=secret",
+            true,
+        ));
+    }
 
     /// **The gate every curl-driven test here opens with**, and it returns a HELD LOCK.
     ///

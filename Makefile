@@ -881,6 +881,7 @@ test: deploy run
 # fallback.
 CRASHFMT_TEST_BIN := $(or $(TMPDIR),/tmp/)plx-crashfmt-test
 CRASHTRACE_TEST_BIN := $(or $(TMPDIR),/tmp/)plx-crashtrace-test
+PRIVATE_LOG_TEST_BIN := $(or $(TMPDIR),/tmp/)plx-private-log-test
 
 check: lint
 	@# The telemetry credentials are passed here too, and that is not decoration: `ENVIRONMENT` and
@@ -914,6 +915,7 @@ check: lint
 	@# — it is what this app did for seven weeks, because the signal is MASKED inside its own
 	@# handler, so `raise()` returned and the `_exit(128+sig)` beneath it ran every time.
 	cc -O1 -Wall -Wextra -Werror -Isrc -o $(CRASHTRACE_TEST_BIN) ci/crashtrace-test.c src/crashtrace.c && $(CRASHTRACE_TEST_BIN)
+	cc -O1 -Wall -Wextra -Werror -Isrc -o $(PRIVATE_LOG_TEST_BIN) ci/private-log-test.c && $(PRIVATE_LOG_TEST_BIN)
 	@# The harness's own host unit tests (tests/test_harness.py, stdlib unittest, ~0.5s — most of
 	@# it is five `run.py --list` subprocesses, not test logic; measure before budgeting). run.py
 	@# decides WHAT gets driven on the one television and had no test of any kind until 2026-08-22.

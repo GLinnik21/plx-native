@@ -15,7 +15,8 @@ bundle around it. Every UI change, every Plex data-layer change, is the same cod
 
 **Can:** sign in with the real plex.tv QR flow, discover the account's servers, browse Home, the
 libraries, Search, detail pages, seasons, episodes, cast, the who's-watching picker, watched state
-— against a real Plex Media Server on the LAN. It persists the session and comes back signed in.
+— against a real Plex Media Server that advertises a usable HTTPS origin. It persists the session
+and comes back signed in.
 
 **Cannot: play video.** The decode path is LG's in-process `StarfishMediaAPIs` bound to the
 hardware video plane via ACB — 29 symbols that exist on a television and nowhere else.
@@ -24,9 +25,10 @@ hardware video plane via ACB — 29 symbols that exist on a television and nowhe
 the simulator's contract; the bundle inherits it. A Mac playback backend would be a new media
 engine, not a packaging change.
 
-Browsing is not LAN-only: the same `http.rs` control façade runs here, using `stream.rs` for
-plaintext hostname/IPv4/IPv6 origins and `net.rs`/libcurl for HTTPS PMS control. The media path is
-also present structurally (`curlio.rs` for HTTPS), but playback still ends at the host FFI seam
+Browsing is not LAN-only: the same `http.rs` control façade runs here through `net.rs`/libcurl for
+HTTPS PMS control. The plaintext transport remains in the shared core, but authenticated requests
+cannot use it because the distributable host build has developer triggers disabled. The HTTPS
+media path is also present structurally (`curlio.rs`), but playback still ends at the host FFI seam
 described above because macOS has no Starfish/ACB decoder backend.
 
 ## What had to change for it to work at all

@@ -20,8 +20,8 @@ answers what a QA pass would find.
 | Ship via **webOS Homebrew Channel**? | **Yes** — it is a real, current, native-app-friendly path. ~1 day of packaging work plus the licence fixes below. |
 | Ship via **LG Content Store**? | **Submittable — this was a "no" here until 2026-08-23 and the "no" was wrong.** Seller Lounge parses this project's ipk as **File Type: Native** and asks for the native SDK version, chipset and resolution. The old verdict rested on a `develop/*` **web-runtime** page (*"Only `web` is allowed currently"*), which is not authority over a native app. What remains is a QA problem, not a permission problem — §2, and `docs/lg-self-checklist.md` for the four items that genuinely fail. |
 | Runs on **newer webOS**? | 32-bit armv7 is *not* the problem — it stays the native userland through webOS 26. **ACB is the problem**: `libAcbAPI` exists on webOS 4.x only. Today's binary does not reach `main()` on 5.0+. |
-| Is **private data** in the repo? | Git history is clean of credentials. **Mostly resolved 2026-08-02:** the 252 (not ~40) `/Users/gleblinnik/…` paths are remapped to 0, and both runtime surfaces — the squattable `/tmp` FIFO and the unauthenticated `0.0.0.0:8910` listener — are compiled out of a release build along with the whole trigger surface. Left: the **event log is still written by every build** and names the server, its LAN address, profile names and episode titles into a world-readable `/tmp` (§4 — the one item on that list not compiled out); `192.168.0.3` is still baked into a binary built on *this* machine (release comes from CI, which has no `config.local.h`); and the token still wants rotating. |
-| Needs a **rooted** TV? | **No** — device-proven, see §3.5. But the app currently only works under the **Dev Mode** install prefix; a Homebrew-Channel install breaks fonts and login. |
+| Is **private data** in the repo? | Git history is clean of credentials. Release CI has no `config.local.h`, remaps host paths, compiles out the trigger/FIFO/capture surfaces, and verifies the shipped bytes. Runtime logs are mode 0600 and scrub tokens, server addresses, household names and media text before writing; §4 records the remaining diagnostic surface. |
+| Needs a **rooted** TV? | **No** — the unprivileged Dev Mode jail is device-proven in §3.5. Homebrew and retail layouts now use probed writable paths; Key Manager permission is capability-tested and denial keeps the mode-0600 fallback. A real LG Content Store entitlement/install is still an acceptance test, not something the rooted development set can prove. |
 | **Licensing** clear? | Font blocker **CLEARED 2026-08-01** — Inter (OFL 1.1) replaced Monotype Arial. FFmpeg/LGPL is fine. The repo still has **no LICENSE file at all**. |
 | **Trademarks**? | Plex itself is fine (their guidelines have an explicit permitted formula). **Rotten Tomatoes marks have no licensing route that exists**, and the TMDB logo ships without its mandatory attribution. |
 
@@ -31,11 +31,13 @@ answers what a QA pass would find.
 3. ~~10 icons reproduce Rotten Tomatoes / TMDB / IMDb marks, tinted in those brands' exact hex.~~
    **CLEARED 2026-08-02** — see §11.
 4. `X-Plex-Product: Plex for webOS` — Plex's own first-party naming pattern, on a platform that has an official Plex app.
-5. Release builds bake in the dev's LAN IP and home-directory paths.
-6. `remote.rs:36-38` creates/opens `/tmp/plxnative-remote` unconditionally every boot (`app.rs:1603`) without checking ownership — squattable on a shared `/tmp`.
-7. **The app only works under the Dev Mode install prefix.** A Homebrew-Channel install lands at
-   `/media/cryptofs/…`, where the hardcoded font paths silently fall back to DroidSans and the
-   session file cannot be written at all — a permanent re-login loop. See §3.5.
+5. ~~Release builds bake in the developer's LAN IP and home-directory paths.~~ **CLEARED:** release
+   CI has no local config and the artifact gates inspect the compiled bytes.
+6. ~~The release opens the squattable `/tmp/plxnative-remote`.~~ **CLEARED:** the whole developer
+   trigger/FIFO/capture surface is compiled out and asserted absent from release artifacts.
+7. ~~Only the Dev Mode prefix can retain fonts and login.~~ **CLEARED:** font assets are packaged
+   and persistent state uses the probed Dev Mode/Homebrew/retail candidate order in §3.5. Store
+   installation and Key Manager entitlement remain runtime acceptance tests rather than root needs.
 
 ---
 
@@ -391,6 +393,11 @@ worth having and this section is wrong.
 
 ### 3.5 Root is NOT required — but the install *prefix* is the live bug
 
+This section proves the native app runs without privilege under LG's stock **Dev Mode** jail. It
+does not by itself prove an LG Content Store entitlement. Key Manager access is therefore probed at
+runtime; denial on a retail/store install falls back to the app-owned 0600 session file and does
+not turn root into a requirement.
+
 **Device-proven 2026-08-01 on the 49SM9000PLA.** The running app is `Uid: 6910`, `Gid: 5000`,
 `CapEff: 0`, chrooted to `/var/palm/jail/com.beb.plxnative`, with `libplayerAPIs`, `libAcbAPI`,
 `libmali`, `libEGL/GLESv2`, `libwayland-webos-client`, `libavformat.so.57` and `libcurl.so.5` all
@@ -456,8 +463,11 @@ same resolver instead of open-coding it.
 The session file became a **probed search order**, because there is no single writable persistent
 directory common to both layouts: `/media/developer/<id>-auth.json` (Dev Mode, survives a
 reinstall) → `/media/internal/.<id>-auth.json` (the production jail's only rw persistent location)
-→ `<appdir>/auth.json` → the legacy path, read-only, for migration. `peek()` takes the first that
-exists *and parses* so a half-written file at a preferred location cannot shadow a good one;
+→ `<appdir>/auth.json` → the legacy path, read-only, for migration. `peek()` takes the first plain
+file that parses, so a half-written file at a preferred location cannot shadow a good one. A
+recognized encrypted envelope deliberately does shadow lower candidates when its device key is
+unavailable: skipping it could resurrect stale plaintext and a later save could destroy the only
+live credentials;
 `clear()` removes all of them or the search would resurrect a stale session; and `save()` now
 **logs** when every candidate fails, turning an unexplainable infinite login loop into a
 reportable bug. The DroidSans fallback logs once per boot for the same reason.
