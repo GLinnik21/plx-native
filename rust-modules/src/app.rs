@@ -1116,14 +1116,14 @@ impl MenuHost {
 /// Which screen a popover on the SHARED TOP BAR is sitting over — the three pages that wear the
 /// bar, and so the three the profile chip can be pressed from.
 ///
-/// [`MenuHost`]'s twin, and it exists for the same reason: the profile menu is a popover on a LIVE
-/// screen, so the route has to name the screen underneath — both to go on drawing and updating it
+/// [`MenuHost`]'s twin, and it exists for the same reason: the profile menu is a popover on a host
+/// screen, so the route has to name the screen underneath — both to draw its stationary snapshot
 /// and to know where the popover closes back to.
 ///
 /// [`Route::Account`] was a UNIT variant while Home was the only screen whose chip could be
 /// pressed, and every one of the dozen-odd places that read it therefore said Home outright: the
 /// page under the panel ([`page_of`]), the dismissal's destination ([`key_account`] and the pointer
-/// arm), the update arm that keeps the underlay animating. Making the chip a stop on all three
+/// arm), and the host-page lifecycle arm. Making the chip a stop on all three
 /// screens without this would have swapped the page under the popover to Home on the press frame —
 /// a hard cut, no transition — and then dropped the user on Home when they dismissed it.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1215,6 +1215,19 @@ enum Route {
     },
 }
 
+/// Host page parked while the shared Home-source route is being used as a Settings editor.
+static mut SETTINGS_HOME_RETURN: Option<Route> = None;
+
+/// The route immediately before the first-run consent pair.  Consent is a reversible wizard, so
+/// BACK from its first question has to restore the step that actually preceded it rather than
+/// guessing from persisted pins after that step may already have committed.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ConsentReturn {
+    Profiles,
+    Sources,
+}
+static mut FIRST_RUN_CONSENT_RETURN: ConsentReturn = ConsentReturn::Profiles;
+
 /// Which routes draw the shared top tab bar — the ONE test behind `ui::nav`'s
 /// continuous-chrome rule. Exhaustive for the same reason `Nav::wears_tab_bar` is: a new
 /// screen must not be able to answer this by accident. (Both popovers draw a live page
@@ -1268,13 +1281,45 @@ fn node_wears_tab_bar(n: &Node) -> bool {
 /// left by a navigation out of either is the screen underneath, which is what both the teardown and
 /// the spot below have to be asked about.
 ///
-/// It is also what the DRAW and the UPDATE ask: a popover's page keeps painting and keeps
-/// animating behind it, which is the whole difference between a popover and a page.
+/// DRAW always asks it. UPDATE is a separate policy: an item menu keeps its anchored page live,
+/// while the profile menu freezes its page and takes one cached glass snapshot of it.
 fn page_of(r: Route) -> Route {
     match r {
         Route::ItemMenu { over } => over.route(),
         Route::Account { over } => over.route(),
         other => other,
+    }
+}
+
+/// Does the page named by [`page_of`] keep stepping while a surface above it owns interaction?
+///
+/// Drawing and updating are deliberately separate questions.  A compact popover still needs its
+/// host pixels behind it, but neither the profile menu nor a full-screen Settings/first-run route
+/// benefits from advancing an invisible focus tree. The profile menu uses cached glass for that
+/// same lifetime, so no hidden animation or repeated snapshot work remains.
+fn host_page_updates(r: Route, full_screen_modal: bool) -> bool {
+    !full_screen_modal && !matches!(r, Route::Account { .. })
+}
+
+#[cfg(test)]
+mod host_page_lifecycle_tests {
+    use super::*;
+
+    #[test]
+    fn full_screen_routes_and_the_profile_menu_freeze_the_hidden_page() {
+        assert!(!host_page_updates(Route::Home, true));
+        assert!(!host_page_updates(
+            Route::Account {
+                over: BarHost::Home,
+            },
+            false,
+        ));
+        assert!(host_page_updates(
+            Route::ItemMenu {
+                over: MenuHost::Home,
+            },
+            false,
+        ));
     }
 }
 
@@ -1470,16 +1515,8 @@ fn apply_coldstart(p: crate::coldstart::Place, route: &mut Route, trail: &mut Tr
     match p {
         Place::Home => return,
         Place::Library { tab } => {
-            // **Only onto a strip that already exists.** `library::enter` opens with
-            // `browse::ensure_sections`, which is a BLOCKING discovery GET whenever the boot's own
-            // `activate_server` did not land one — so on a server that has stopped answering this
-            // would park the main loop for `stream`'s connect plus read timeout, at boot, in front
-            // of the first interactive frame. `tab_count` is the same table projected and asks
-            // nobody, so it is the honest non-blocking form of "did discovery happen".
-            if crate::browse::tab_count() == 0 {
-                log("coldstart: no library strip yet — staying on Home");
-                return;
-            }
+            // Type destinations exist before discovery; entry is UI-only and the page shows its
+            // Loading/Empty/Failed state while the section worker settles.
             // A HARD CUT, for the `plxnative-library` boot's reason: a transition means "this
             // screen replaced that one", and at boot there is no outgoing screen to replace.
             // `enter` clamps the pill into the strip that actually exists, so a record naming a
@@ -1972,10 +2009,8 @@ enum Nav {
     /// always the Home pill). One word for both is why they were named apart: on the way
     /// back from the Library the selection moves to Home while focus stays on `Movies`.
     Home { focus_pill: Option<usize> },
-    /// The Library browse grid on TAB `tab` (0-based, Home excluded — the strip prepends
-    /// it). A tab, not a section: the strip is a projection of the section table
-    /// (`browse::tabs`), so several libraries can share one pill and `browse::tab_section`
-    /// is what resolves this to the library that opens.
+    /// The Library browse grid on permanent TYPE tab `tab` (0-based, Home excluded). Discovery
+    /// later resolves it to an owned-first, then shared library of that type.
     Library(usize),
     /// A page that STACKS — a detail page or a person page. The [`Node`] is BOTH what
     /// mounts at the floor (through the very `enter_node` a BACK pop uses, whose re-open
@@ -2571,24 +2606,26 @@ fn activate_ctrl_row(
             crate::diag::event(crate::diag::schema::DiagEvent::FeatureUsed {
                 feature: match pr.kind {
                     crate::metadata::MarkerKind::Intro => crate::diag::schema::Feature::SkipIntro,
-                    crate::metadata::MarkerKind::Credits => crate::diag::schema::Feature::SkipCredits,
+                    crate::metadata::MarkerKind::Credits => {
+                        crate::diag::schema::Feature::SkipCredits
+                    }
                 },
             });
             match pr.action {
-            SkipAction::Seek(ns) => {
-                // Retire the segment FIRST: the seek lands on the preceding keyframe, which
-                // is usually still inside it, so without this the button comes straight back
-                // (see `metadata::mark_skipped`).
-                crate::metadata::mark_skipped(pr.marker);
-                request_seek(ns);
-                resume_if_paused(mt);
-                false
-            }
-            // a `final` credits segment: skipping it IS finishing the item
-            SkipAction::Finish => {
-                finish_playback(mt, route, play_from, refresh_hubs_at, hud_nav, trail);
-                true
-            }
+                SkipAction::Seek(ns) => {
+                    // Retire the segment FIRST: the seek lands on the preceding keyframe, which
+                    // is usually still inside it, so without this the button comes straight back
+                    // (see `metadata::mark_skipped`).
+                    crate::metadata::mark_skipped(pr.marker);
+                    request_seek(ns);
+                    resume_if_paused(mt);
+                    false
+                }
+                // a `final` credits segment: skipping it IS finishing the item
+                SkipAction::Finish => {
+                    finish_playback(mt, route, play_from, refresh_hubs_at, hud_nav, trail);
+                    true
+                }
             }
         }
         ControlSlot::Discs => false,
@@ -3362,11 +3399,15 @@ mod unsupported_key_tests {
 /// Onboarding screens (login / who's-watching / the Home-sources question) own every fresh key —
 /// nothing is behind them, so route the key to the active screen and skip all other handlers.
 ///
-/// Returns `true` when the screen has finished with the flow and the caller should route Home.
-/// Only [`Route::Onboard`] ever answers so: the other two are driven by `auth`'s phase, which the
-/// per-frame block at the bottom of the loop reads, while this one is a question with an answer
-/// and no worker behind it.
-unsafe fn key_onboarding(route: Route, sym: c_uint, wcode: c_uint, ok_armed: &mut bool) -> bool {
+/// Returns the source-picker action. Login and Who's Watching remain worker-driven and therefore
+/// report `None`; Shared Sources reports an explicit commit, Settings cancellation, or first-run
+/// BACK as three different outcomes so dismissal can never be mistaken for an answer.
+unsafe fn key_onboarding(
+    route: Route,
+    sym: c_uint,
+    wcode: c_uint,
+    ok_armed: &mut bool,
+) -> crate::ui::onboard::Action {
     if matches!(route, Route::Onboard) {
         // The action PILL is a control face (`onboard`'s `ACTION_POP`) → tvOS press, committed on
         // the spring-back by `commit_onboarding`. A `TableView` row is not a control face and keeps
@@ -3374,12 +3415,9 @@ unsafe fn key_onboarding(route: Route, sym: c_uint, wcode: c_uint, ok_armed: &mu
         if is_ok(sym) && crate::ui::onboard::focus_is_ctl() {
             crate::ui::press::begin_ctl(SDL_GetTicks());
             *ok_armed = true;
-            return false;
+            return crate::ui::onboard::Action::None;
         }
-        return matches!(
-            crate::ui::onboard::key(sym, wcode),
-            crate::ui::onboard::Action::Done
-        );
+        return crate::ui::onboard::key(sym, wcode);
     }
     if matches!(route, Route::Profiles) {
         // BOTH of this screen's press surfaces defer, for the one reason: each has a spring that
@@ -3399,17 +3437,71 @@ unsafe fn key_onboarding(route: Route, sym: c_uint, wcode: c_uint, ok_armed: &mu
     } else {
         crate::ui::login::key(sym, wcode);
     }
-    false
+    crate::ui::onboard::Action::None
+}
+
+/// Every non-None answer leaves this instance of the source picker, but WHERE it leaves is retained
+/// in the action: Done/Cancel go forward or back to Settings; first-run Back goes to Profiles.
+#[cfg(test)]
+fn onboarding_action_leaves(action: crate::ui::onboard::Action) -> bool {
+    matches!(
+        action,
+        crate::ui::onboard::Action::Done
+            | crate::ui::onboard::Action::Back
+            | crate::ui::onboard::Action::Cancel
+    )
+}
+
+/// Settings remains open behind its Home editor, but it must not own input while that child route
+/// is visible. The draw stack and input stack must answer the same ownership question.
+fn settings_root_owns_input(route: Route, settings_open: bool, home_editor: bool) -> bool {
+    settings_open && !(matches!(route, Route::Onboard) && home_editor)
+}
+
+#[cfg(test)]
+mod settings_child_input_tests {
+    use super::*;
+
+    #[test]
+    fn home_editor_owns_input_while_settings_remains_open_behind_it() {
+        assert!(!settings_root_owns_input(Route::Onboard, true, true));
+        assert!(settings_root_owns_input(Route::Home, true, false));
+        assert!(!settings_root_owns_input(Route::Home, false, false));
+    }
+
+    #[test]
+    fn back_cancel_leaves_the_settings_home_editor() {
+        assert!(onboarding_action_leaves(crate::ui::onboard::Action::Cancel));
+        assert!(onboarding_action_leaves(crate::ui::onboard::Action::Done));
+        assert!(onboarding_action_leaves(crate::ui::onboard::Action::Back));
+        assert!(!onboarding_action_leaves(crate::ui::onboard::Action::None));
+    }
 }
 
 /// Commit the onboarding-question screen's focused stop — the deferred half of [`key_onboarding`]'s
 /// `Onboard` arm. Returns what [`key_onboarding`] returns: whether the flow is finished and the
 /// caller should route Home.
-fn commit_onboarding() -> bool {
-    matches!(
-        crate::ui::onboard::on_ok(),
-        crate::ui::onboard::Action::Done
-    )
+fn commit_onboarding() -> crate::ui::onboard::Action {
+    crate::ui::onboard::on_ok()
+}
+
+/// BACK from Shared Sources returns to the identity step and records no source answer. Starting a
+/// ChangeProfile flow re-seeds the roster from the persisted session immediately, so this is a
+/// real usable picker rather than a static screen with no worker behind it.
+fn enter_profiles_from_onboard() -> Route {
+    crate::auth::start_switch(crate::auth::Picker::ChangeProfile);
+    crate::ui::profiles::enter();
+    Route::Profiles
+}
+
+fn apply_onboarding_action(action: crate::ui::onboard::Action, trail: &mut Trail) -> Option<Route> {
+    match action {
+        crate::ui::onboard::Action::None => None,
+        crate::ui::onboard::Action::Back => Some(enter_profiles_from_onboard()),
+        crate::ui::onboard::Action::Done | crate::ui::onboard::Action::Cancel => {
+            Some(enter_home_from_onboard(trail))
+        }
+    }
 }
 
 /// Leave the first-run question for Home.
@@ -3430,26 +3522,51 @@ fn commit_onboarding() -> bool {
 ///
 /// Cheap and idempotent: `should_show` is false once a decision has been recorded, and false on any
 /// automated boot, so both call sites can simply ask. Nothing is stored by asking.
-fn maybe_ask_consent() {
+fn maybe_ask_consent(from: ConsentReturn) {
     let c = crate::telemetry::consent::current().unwrap_or_default();
-    // dev: /tmp/plxnative-consent forces the question even on an automated boot — the same escape
-    // hatch `plxnative-pickuser` is for the who's-watching picker, and needed for the same reason
-    // taken to its logical end. This screen is suppressed BY the presence of any trigger, so
-    // without a trigger that overrides the suppression it is the one screen in the app that cannot
-    // be reached headlessly at all: arming anything to reach it is what hides it.
-    if crate::dev::flag("consent") {
+    // dev: /tmp/plxnative-consent[=<crash|product>] forces either first-run purpose even on an
+    // automated boot. This screen is suppressed BY the presence of any trigger, so without an
+    // override it cannot be reached headlessly at all. Selecting Product changes display state
+    // only; no answer is stored by a harness boot.
+    if let Some(target) = crate::dev::read("consent") {
+        unsafe { FIRST_RUN_CONSENT_RETURN = from };
         crate::ui::consent::open(&c);
+        if target.trim() == "product" {
+            crate::ui::consent::show_product_for_dev();
+        }
         return;
     }
     if crate::ui::consent::should_show(&c, crate::dev::any_trigger_present()) {
+        unsafe { FIRST_RUN_CONSENT_RETURN = from };
         crate::ui::consent::open(&c);
     }
 }
 
+fn return_from_first_run_consent() -> Route {
+    match unsafe { FIRST_RUN_CONSENT_RETURN } {
+        ConsentReturn::Sources => {
+            crate::ui::onboard::enter();
+            Route::Onboard
+        }
+        ConsentReturn::Profiles => enter_profiles_from_onboard(),
+    }
+}
+
 fn enter_home_from_onboard(trail: &mut Trail) -> Route {
+    if crate::ui::onboard::settings_mode() {
+        crate::ui::settings::refresh();
+        let saved = unsafe {
+            let p = std::ptr::addr_of_mut!(SETTINGS_HOME_RETURN);
+            let saved = p.read().unwrap_or(Route::Home);
+            p.write(None);
+            saved
+        };
+        crate::ui::onboard::finish_settings();
+        return saved;
+    }
     trail.reset();
     // First arrival at Home after signing in — the moment the plan names for this question.
-    maybe_ask_consent();
+    maybe_ask_consent(ConsentReturn::Sources);
     // The selection just recorded is an input to Home's merge (`pms::feeds_home`), and the merge
     // re-runs off `browse`'s section generation — which `record_pins`/`toggle_pin` have already
     // bumped. Nothing to kick here; Home builds from the answer on its first frame.
@@ -3480,28 +3597,21 @@ fn key_account(over: BarHost, sym: c_uint, wcode: c_uint, route: &mut Route) {
             }
             crate::ui::account_menu::Action::SignIn => {
                 crate::auth::start_login();
+                crate::ui::login::enter();
                 *route = Route::Login;
             }
             crate::ui::account_menu::Action::SignOut => {
                 crate::auth::sign_out();
+                crate::ui::login::enter();
                 *route = Route::Login;
             }
-            // Opens a popover of its own over the same page, so the ROUTE does not move — the
-            // account menu has already closed itself, and `ui::legal` takes the key ladder from
-            // here until it closes. Reachable signed OUT as well: a person who cannot sign in has
-            // still received a copy of this software, and LG requires the privacy notice to be
-            // readable in the app rather than only on the store listing.
-            crate::ui::account_menu::Action::Legal => {
-                crate::ui::legal::open();
-                *route = over.route();
-            }
-            // The same switch the player's `…` popover carries, reachable off the player — where
-            // it is the ONLY diagnostic surface a stranger has, because everything else this repo
-            // debugs with is either behind `devtriggers` or behind ssh. It takes no keys and is
-            // not a route: the menu closes and the panel is simply up, over whatever page was
-            // behind it, until this row is picked again.
-            crate::ui::account_menu::Action::Diagnostics => {
-                crate::ui::stats::toggle();
+            // Opens the Settings popover over the same page, so the ROUTE does not move. Its
+            // Privacy and Legal children take the key ladder while they are open, then reveal this
+            // root again. Reachable signed OUT as well: a person who cannot sign in has still
+            // received a copy of this software, and LG requires the privacy notice to be readable
+            // in the app rather than only on the store listing.
+            crate::ui::account_menu::Action::Settings => {
+                crate::ui::settings::open();
                 *route = over.route();
             }
             // Lab builds only, and it changes no route: the tester stays where they were, and the
@@ -3520,6 +3630,52 @@ fn key_account(over: BarHost, sym: c_uint, wcode: c_uint, route: &mut Route) {
         *route = over.route();
     } else {
         crate::ui::account_menu::move_focus(sym as c_int);
+    }
+}
+
+fn perform_settings_action(action: crate::ui::settings::Action, route: &mut Route) {
+    match action {
+        crate::ui::settings::Action::Home => {
+            unsafe { SETTINGS_HOME_RETURN = Some(*route) };
+            crate::ui::onboard::enter_settings();
+            *route = Route::Onboard;
+        }
+        crate::ui::settings::Action::Privacy => {
+            let current = crate::telemetry::consent::current().unwrap_or_default();
+            crate::ui::consent::open_settings(&current);
+        }
+        crate::ui::settings::Action::Legal => crate::ui::legal::open(),
+        crate::ui::settings::Action::About => crate::ui::legal::open_about(),
+        crate::ui::settings::Action::None => {}
+    }
+}
+
+/// The one destructive Settings operation. Individual UI rows never remove their own files.
+fn delete_all_local_data() -> Result<(), String> {
+    let remove = |path: &std::path::Path| match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("{}: {e}", path.display())),
+    };
+    let mut failures = Vec::new();
+    for path in crate::paths::last_place_candidates()
+        .into_iter()
+        .chain(crate::paths::telemetry_candidates())
+        .chain(crate::paths::telemetry_spool_candidates())
+        .chain(crate::paths::telemetry_crashmark_candidates())
+    {
+        if let Err(e) = remove(&path) {
+            failures.push(e);
+        }
+    }
+    crate::ui::search::recents::clear();
+    crate::metadata::clear();
+    crate::telemetry::record(crate::telemetry::consent::Consent::default());
+    crate::auth::sign_out();
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; "))
     }
 }
 
@@ -4854,10 +5010,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                     // …and any view-state write still queued or owed a refresh. It belongs to the account
                                     // that pressed it, and the refresh it owes would land on shelves this reset just wiped.
             crate::viewstate::reset();
-            let nmov = crate::pms::pms_fetch_hubs();
-            // section discovery (one small GET) so Home's library tab pills carry real titles
-            let nsec = crate::browse::ensure_sections();
-            log(&format!("pms: nmovies={nmov} nsections={nsec}"));
+            // Catalog activation is request-only. Home and section discovery both use their
+            // existing worker/mailbox pumps, so a remote endpoint cannot park the SDL loop here.
+            crate::pms::request_refetch_hubs();
+            crate::browse::discover_pump();
+            log("pms: catalog activation queued");
         };
         // Install the PMS client (the read layer AND the playback path) as the CURRENT server,
         // then fetch the catalog. Used by the boot gate and again when a login resolves; a later
@@ -5073,11 +5230,13 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         }
         // dev: /tmp/plxnative-glasshz=<presents-per-refresh> moves the shared dynamic-backdrop
         // cadence for the cost curve in `docs/backdrop-blur-profiling.md` — 1 is a refresh on every
-        // present (60 Hz while the UI presents at 60) and is what ships, 3 is ~20 Hz, 4 is 15 Hz.
+        // present (60 Hz while the UI presents at 60), 3 is ~20 Hz, 4 is 15 Hz.
         // ABSENT, nothing here runs and the cadence is exactly the shipped one. It is a profiling
         // knob, so it also turns on the heartbeat's `snap=` field (refreshes per second), which
         // is the only way to check the cadence that RAN against the one that was asked for — and
-        // is why `fps:home-acct-glass` arms it at the shipped 1 rather than leaving it absent.
+        // The production Account menu no longer arms or consumes this path: its host is frozen and
+        // its glass snapshot is cached for the whole open lifetime.  The knob remains for explicit
+        // material profiling, not as part of an Account FPS scene.
         let glass_hz_armed = if let Some(v) = crate::dev::read("glasshz") {
             let asked: u32 = v.parse().unwrap_or(0);
             let got = crate::ui::widgets::set_dynamic_period(asked);
@@ -5115,6 +5274,15 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         // vertical-scroll judder for the frame-drop detector / retui profiler.
         let home_osc = crate::dev::flag("homeosc");
         let mut home_osc_last = 0u32;
+        // dev: the two Home transition scenes the old home-hero/home-grid pair could not see.
+        // `heroosc` continuously pages the real carousel; `homefoldosc` alternates the real
+        // hero↔first-shelf snap. Their intervals overlap the spring lifetime so the FPS heartbeat
+        // samples motion rather than the efficient idle gaps at either end.
+        let hero_osc = crate::dev::flag("heroosc");
+        let mut hero_osc_last = 0u32;
+        let home_fold_osc = crate::dev::flag("homefoldosc");
+        let mut home_fold_osc_last = 0u32;
+        let mut home_fold_down = true;
         // dev: /tmp/plxnative-libosc — the Library twin of homeosc: sweep the browse grid focus
         // down↔up perpetually for the library_scroll FPS scene.
         let lib_osc = crate::dev::flag("libosc");
@@ -5131,6 +5299,31 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         // library actually matches, or there are no shelves to sweep and the scene grades nothing.
         let search_osc = crate::dev::flag("searchosc");
         let mut search_osc_last = 0u32;
+        // dev: /tmp/plxnative-settings=<root|home|privacy|legal> opens the Settings modal (and,
+        // optionally, one of its real child panels) once Home is available. `settingsosc` turns
+        // that settled modal into a continuous render-throughput scene: it alternates the focused
+        // row and explicitly keeps the present gate awake. Without the latter an efficient,
+        // completely healthy modal intentionally reports ~0 fps after its springs settle, which
+        // cannot grade the screen's fill cost. The paired settings-idle scene omits the oscillator
+        // and guards the inverse contract.
+        let settings_boot = crate::dev::read("settings");
+        let settings_osc = crate::dev::flag("settingsosc");
+        let mut settings_osc_last = 0u32;
+        let mut settings_osc_down = true;
+        // The profile menu freezes its host and uses one cached backdrop. Drive the menu's own
+        // TableView for a strict FPS scene; reusing `homeosc` would now correctly move nothing and
+        // would grade the idle keepalive rather than the popover.
+        let account_osc = crate::dev::flag("acctosc");
+        let mut account_osc_last = 0u32;
+        let mut account_osc_down = true;
+        // First-run route oscillators keep their real focus models moving so the device FPS suite
+        // grades the composition rather than a settled screen that correctly stops presenting.
+        let consent_osc = crate::dev::flag("consentosc");
+        let mut consent_osc_last = 0u32;
+        let mut consent_osc_down = true;
+        let onboard_osc = crate::dev::flag("onboardosc");
+        let mut onboard_osc_last = 0u32;
+        let mut onboard_osc_right = true;
         // dev: /tmp/plxnative-navosc — bounce the ROUTE on a timer, so the page cross-fade
         // (`ui::nav`) is FPS-gated like every other motion in the app. These are the only scenes
         // that change route, and therefore the only ones that sample a whole-screen cascade alpha
@@ -5228,7 +5421,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 // one whose policy version was bumped. The first-run case comes through
                 // `enter_home_from_onboard` instead, because a fresh install boots to the QR
                 // screen and is not at Home yet.
-                maybe_ask_consent();
+                maybe_ask_consent(ConsentReturn::Profiles);
                 Route::Home
             }
             BootTo::Login => Route::Login,
@@ -5302,6 +5495,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         // `route::url()` is empty — so a replay is a second trip through the entry below.
         let mut replay_left: u32 = replay_budget(crate::dev::read("replay").as_deref());
         let mut grid_tried = false;
+        let mut settings_tried = settings_boot.is_none();
         let mut seek_tried = false;
         // /tmp/plxnative-autoseek seek script (see the parse site): pending steps, the tick of
         // the last fired step, the gap between steps, and the last REQUESTED target (the base
@@ -5567,19 +5761,39 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     // exit alert it is not answering a press the person just made — it is the
                     // reason the boot stopped. Same mechanism as the two below it (a `Popover`,
                     // not a `Route`, taking its turn by height in the chain and `continue`ing on
-                    // every key), which is also the whole of its modality. Its BACK does not
-                    // cancel: it COMMITS what is on screen, because both switches starting off
-                    // means dismissing IS a refusal, and re-asking a decided question every boot
-                    // is the pattern the screen exists to avoid.
+                    // every key), which is also the whole of its modality. First-run BACK is
+                    // navigation, never an answer: Product returns to Crash, and Crash restores
+                    // Profiles or Shared Sources. Only the explicit Share / Don’t Share rows write
+                    // a decision. Settings BACK discards its draft.
                     if crate::ui::consent::is_open() {
                         if is_ok(sym) {
                             crate::ui::consent::on_ok();
+                            if crate::ui::consent::take_delete_request() {
+                                match delete_all_local_data() {
+                                    Ok(()) => {
+                                        crate::ui::settings::close();
+                                        crate::ui::login::enter();
+                                        trail.reset();
+                                        route = Route::Login;
+                                    }
+                                    Err(e) => crate::log(&format!(
+                                        "privacy: local-data deletion failed: {e}"
+                                    )),
+                                }
+                            }
                         } else if is_back(sym, wcode) {
                             crate::ui::consent::on_back();
+                            if crate::ui::consent::take_first_run_back_request() {
+                                route = return_from_first_run_consent();
+                            }
                         } else if sym == SDLK_UP {
                             crate::ui::consent::on_updown(-1);
                         } else if sym == SDLK_DOWN {
                             crate::ui::consent::on_updown(1);
+                        } else if sym == SDLK_LEFT {
+                            crate::ui::consent::on_left_right(-1);
+                        } else if sym == SDLK_RIGHT {
+                            crate::ui::consent::on_left_right(1);
                         }
                         continue;
                     }
@@ -5592,6 +5806,27 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             crate::ui::legal::on_updown(-1);
                         } else if sym == SDLK_DOWN {
                             crate::ui::legal::on_updown(1);
+                        } else if sym == SDLK_LEFT {
+                            crate::ui::legal::on_left_right(-1);
+                        } else if sym == SDLK_RIGHT {
+                            crate::ui::legal::on_left_right(1);
+                        }
+                        continue;
+                    }
+                    if settings_root_owns_input(
+                        route,
+                        crate::ui::settings::is_open(),
+                        crate::ui::onboard::settings_mode(),
+                    ) {
+                        if is_ok(sym) {
+                            let action = crate::ui::settings::on_ok();
+                            perform_settings_action(action, &mut route);
+                        } else if is_back(sym, wcode) {
+                            crate::ui::settings::on_back();
+                        } else if sym == SDLK_UP {
+                            crate::ui::settings::on_updown(-1);
+                        } else if sym == SDLK_DOWN {
+                            crate::ui::settings::on_updown(1);
                         }
                         continue;
                     }
@@ -5600,8 +5835,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         continue;
                     }
                     if matches!(route, Route::Login | Route::Profiles | Route::Onboard) {
-                        if key_onboarding(route, sym, wcode, &mut ok_armed) {
-                            route = enter_home_from_onboard(&mut trail);
+                        let action = key_onboarding(route, sym, wcode, &mut ok_armed);
+                        if let Some(next) = apply_onboarding_action(action, &mut trail) {
+                            route = next;
                         }
                         continue;
                     }
@@ -5912,6 +6148,19 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         crate::ui::press::cancel();
                         ok_armed = false;
                     }
+                    if crate::ui::consent::is_open() || crate::ui::legal::is_open() {
+                        continue;
+                    }
+                    if settings_root_owns_input(
+                        route,
+                        crate::ui::settings::is_open(),
+                        crate::ui::onboard::settings_mode(),
+                    ) {
+                        let (cx, cy) = ptr_xy(&ev);
+                        let action = crate::ui::settings::click(cx, cy);
+                        perform_settings_action(action, &mut route);
+                        continue;
+                    }
                     // The exit alert's modality, pointer half — the twin of the key ladder's first
                     // arm, and here for the reason `item_menu`'s arm sits above Home's: without it
                     // a click that misses the sheet falls through onto the shelf behind it and
@@ -6033,9 +6282,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                     let np = !paused();
                                     set_paused(np);
                                     if np {
-                                        crate::diag::event(crate::diag::schema::DiagEvent::FeatureUsed {
-                                            feature: crate::diag::schema::Feature::Pause,
-                                        });
+                                        crate::diag::event(
+                                            crate::diag::schema::DiagEvent::FeatureUsed {
+                                                feature: crate::diag::schema::Feature::Pause,
+                                            },
+                                        );
                                         crate::player::pause(mt);
                                     } else {
                                         crate::player::resume(mt);
@@ -6207,20 +6458,17 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             }
                             crate::ui::account_menu::Action::SignIn => {
                                 crate::auth::start_login();
+                                crate::ui::login::enter();
                                 route = Route::Login;
                             }
                             crate::ui::account_menu::Action::SignOut => {
                                 crate::auth::sign_out();
+                                crate::ui::login::enter();
                                 route = Route::Login;
                             }
                             // the pointer twin of `key_account`'s Legal arm
-                            crate::ui::account_menu::Action::Legal => {
-                                crate::ui::legal::open();
-                                route = over.route();
-                            }
-                            // …and of its Diagnostics arm
-                            crate::ui::account_menu::Action::Diagnostics => {
-                                crate::ui::stats::toggle();
+                            crate::ui::account_menu::Action::Settings => {
+                                crate::ui::settings::open();
                                 route = over.route();
                             }
                             // the pointer twin of `key_account`'s arm — lab builds only
@@ -6410,12 +6658,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 // dev: /tmp/plxnative-library[=N] boots straight into the Library browse grid on
                 // TAB PILL N (empty file = 0) — the deterministic entry for the library FPS scenes.
                 //
-                // N is a PILL, not a section index, and the two stopped being the same thing when
-                // the strip became one pill per TYPE (`browse::tab_section`). With one source they
-                // are still the identity map, which is every install this trigger has ever booted;
-                // with a friend's server granted, the pills are your own libraries plus any type
-                // only they have, so `library=1` is the second PILL rather than the second row of
-                // the table.
+                // N is a permanent TYPE pill, not a section index: 0=Movies, 1=TV Shows.
                 if let Some(s) = crate::dev::read("library") {
                     let tab = s.parse::<usize>().unwrap_or(0);
                     // A HARD CUT, deliberately: a transition means "this screen replaced that one",
@@ -6444,6 +6687,32 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     if let Ok(n) = s.parse::<c_int>() {
                         crate::ui::home::set_hero_idx(n);
                     }
+                }
+            }
+            // Retry until Home exists: an injected test identity can still spend the first few
+            // frames in bootstrap, and a one-shot timestamp would turn a slow sign-in into a
+            // misleading "never entered overlay=settings" performance failure.
+            if !settings_tried && now.wrapping_sub(t0) > 800 {
+                if matches!(route, Route::Home) {
+                    settings_tried = true;
+                    crate::ui::settings::open();
+                    match settings_boot.as_deref().map(str::trim).unwrap_or("root") {
+                        "" | "root" => {}
+                        "home" => {
+                            perform_settings_action(crate::ui::settings::Action::Home, &mut route)
+                        }
+                        "privacy" => {
+                            let current = crate::telemetry::consent::current().unwrap_or_default();
+                            crate::ui::consent::open_settings(&current);
+                        }
+                        "legal" => crate::ui::legal::open(),
+                        other => log(&format!(
+                            "settings: unknown boot target {other:?}; opened root"
+                        )),
+                    }
+                } else if now.wrapping_sub(t0) > 12_000 {
+                    settings_tried = true;
+                    log("settings: boot target timed out before Home became available");
                 }
             }
             // dev: /tmp/plxnative-press simulates a real OK TAP on the focused grid card ONCE, so a
@@ -6911,17 +7180,15 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             }
             // post-playback home refresh (armed by every exit_player): refetch the hubs so
             // Continue Watching shows the new resume point / next episode; the small delay lets
-            // the final timeline PUT land server-side first. Blocking (~100ms LAN) but the user
-            // just navigated, so a one-frame hitch here is invisible.
+            // the final timeline PUT land server-side first. The request is worker-only; the
+            // landing logs the resulting item count when it actually commits.
             if refresh_hubs_at != 0
                 && now.wrapping_sub(refresh_hubs_at) < 0x8000_0000
                 && !matches!(route, Route::Player { .. })
             {
                 refresh_hubs_at = 0;
-                let nmov = crate::pms::refetch_hubs_reconcile();
-                log(&format!(
-                    "home: hubs refreshed after playback ({nmov} items)"
-                ));
+                crate::pms::request_refetch_hubs();
+                log("home: hubs refresh queued after playback");
             }
             // lost-keyup safety: the remote streams 0x101 repeats (~50ms) while a key is physically down,
             // so once past the initial settle a stale heartbeat means the release keyup was dropped —
@@ -7265,8 +7532,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     if crate::ui::exit_alert::is_open() {
                         commit_exit_alert(&mut running);
                     } else if matches!(route, Route::Onboard) {
-                        if commit_onboarding() {
-                            route = enter_home_from_onboard(&mut trail);
+                        if let Some(next) = apply_onboarding_action(commit_onboarding(), &mut trail)
+                        {
+                            route = next;
                         }
                     } else {
                         match route {
@@ -7495,7 +7763,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         route = Route::Onboard;
                     } else {
                         log("login: server installed — entering Home");
-                        route = enter_home_from_profile(maybe_ask_consent);
+                        route =
+                            enter_home_from_profile(|| maybe_ask_consent(ConsentReturn::Profiles));
                     }
                 } else {
                     match crate::auth::phase() {
@@ -7505,7 +7774,12 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             }
                             route = Route::Profiles;
                         }
-                        _ => route = Route::Login,
+                        _ => {
+                            if route != Route::Login {
+                                crate::ui::login::enter();
+                            }
+                            route = Route::Login;
+                        }
                     }
                 }
             }
@@ -7685,17 +7959,32 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     // (headless pad capture) exactly like OK on the remote
                     crate::ui::profiles::pick(idx);
                 }
-            // **`page_of`, not the bare route, for every screen below.** A popover is drawn on a
-            // LIVE screen — that is what makes it a popover and not a page — so the screen under it
-            // keeps updating, or every spring behind the panel freezes mid-pop and the page snaps
-            // back into motion when the menu closes. Spelling the hosts out here instead has bitten
-            // both popovers: the context menu's page had to stay live under it and only the detail
-            // arm ever said so (as a second `matches!` arm), and the Account popover kept HOME
-            // animating while the user stood on the Library. Asking `page_of` says it once, and is
-            // what lets a new `MenuHost` or `BarHost` land without editing five gates. The set is
-            // unchanged for the routes that existed before, since `page_of` maps Home, `Account
-            // over Home` and `ItemMenu over Home` to exactly this arm.
-            } else if matches!(page_of(route), Route::Home) {
+            // **`page_of`, not the bare route, for every screen below.** A popover still DRAWS the
+            // page it was opened over, but whether that page also UPDATES is the explicit
+            // `host_page_updates` policy above.  ItemMenu keeps its anchored host live; Account
+            // freezes its host so invisible hero/shelf work cannot steal frames from the menu.
+            // Asking `page_of` here keeps the host identity in one place while the lifecycle policy
+            // remains separately testable instead of being inferred from route shape.
+            } else if host_page_updates(
+                route,
+                crate::ui::settings::is_open() || crate::ui::consent::freezes_host(),
+            ) && matches!(page_of(route), Route::Home)
+            {
+                if hero_osc && now.wrapping_sub(hero_osc_last) > 700 {
+                    hero_osc_last = now;
+                    crate::ui::home::dev_flip_hero();
+                }
+                if home_fold_osc && now.wrapping_sub(home_fold_osc_last) > 700 {
+                    home_fold_osc_last = now;
+                    if home_fold_down {
+                        set_snap(1.0);
+                        set_fr(0);
+                    } else {
+                        set_snap(0.0);
+                        crate::ui::home::set_hero_focus(0);
+                    }
+                    home_fold_down = !home_fold_down;
+                }
                 // dev: sweep the grid focus top↔bottom to reproduce the vertical-scroll judder headlessly
                 if home_osc && now.wrapping_sub(home_osc_last) > 350 {
                     home_osc_last = now;
@@ -7713,7 +8002,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     crate::ui::home::home_update(dt);
                 });
                 underlay_moving |= moving;
-            } else if matches!(page_of(route), Route::Library) {
+            } else if host_page_updates(
+                route,
+                crate::ui::settings::is_open() || crate::ui::consent::freezes_host(),
+            ) && matches!(page_of(route), Route::Library)
+            {
                 // dev: libosc sweeps the browse-grid focus down↔up (the library_scroll FPS scene).
                 // Only while the PAGE holds focus, for `detail_osc`'s reason: the context-menu
                 // popover is modal, and sweeping focus under it walks the anchor out from under it.
@@ -7746,7 +8039,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 });
                 underlay_moving |= moving;
             }
-            if matches!(page_of(route), Route::Search) {
+            if host_page_updates(
+                route,
+                crate::ui::settings::is_open() || crate::ui::consent::freezes_host(),
+            ) && matches!(page_of(route), Route::Search)
+            {
                 // dev: searchosc sweeps the result shelves' focus down↔up (the fps:search-type
                 // scene). Same 350ms step / 3s reversal as homeosc and libosc, so the three read
                 // the same in a log and one settle predicate covers all of them. Frozen under the
@@ -7783,10 +8080,67 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // route term to test it with — and it can only be up over Home, whose arm above has
             // already run.
             crate::ui::exit_alert::update(dt);
+            if account_osc && matches!(route, Route::Account { .. }) {
+                crate::ui::idle::invalidate();
+                if now.wrapping_sub(account_osc_last) > 520 {
+                    account_osc_last = now;
+                    let sym = if account_osc_down { SDLK_DOWN } else { SDLK_UP };
+                    account_osc_down = !account_osc_down;
+                    crate::ui::account_menu::move_focus(sym as c_int);
+                }
+            }
+            if settings_osc && crate::ui::settings::is_open() {
+                // This is deliberately continuous. Row springs naturally settle between D-pad
+                // steps, so measuring only their duty cycle would grade timing policy rather than
+                // the GPU cost of the Settings composition the user asked to hold at 50 fps.
+                crate::ui::idle::invalidate();
+                // Keep presenting continuously, but move focus at a human D-pad cadence. At 120ms
+                // the target alternated before TableView's pill spring could reach either row: ink
+                // changed immediately while the white plate hovered at their midpoint, a test-only
+                // picture that looked like broken production focus.
+                if now.wrapping_sub(settings_osc_last) > 520 {
+                    settings_osc_last = now;
+                    let delta = if settings_osc_down { 1 } else { -1 };
+                    settings_osc_down = !settings_osc_down;
+                    if matches!(route, Route::Onboard) && crate::ui::onboard::settings_mode() {
+                        let sym = if delta > 0 { SDLK_DOWN } else { SDLK_UP };
+                        crate::ui::onboard::key(sym, 0);
+                    } else if crate::ui::legal::is_open() {
+                        crate::ui::legal::on_updown(delta);
+                    } else if crate::ui::consent::is_open() {
+                        crate::ui::consent::on_updown(delta);
+                    } else {
+                        crate::ui::settings::on_updown(delta);
+                    }
+                }
+            }
+            if consent_osc && crate::ui::consent::is_open() && !crate::ui::settings::is_open() {
+                crate::ui::idle::invalidate();
+                if now.wrapping_sub(consent_osc_last) > 520 {
+                    consent_osc_last = now;
+                    let delta = if consent_osc_down { 1 } else { -1 };
+                    consent_osc_down = !consent_osc_down;
+                    crate::ui::consent::on_updown(delta);
+                }
+            }
+            if onboard_osc && matches!(route, Route::Onboard) {
+                crate::ui::idle::invalidate();
+                if now.wrapping_sub(onboard_osc_last) > 520 {
+                    onboard_osc_last = now;
+                    let sym = if onboard_osc_right {
+                        SDLK_RIGHT
+                    } else {
+                        SDLK_LEFT
+                    };
+                    onboard_osc_right = !onboard_osc_right;
+                    crate::ui::onboard::key(sym, 0);
+                }
+            }
             // Self-gated like the alert, and for the same reason: not a route, so there is no
             // route term to test it with.
             crate::ui::legal::update(dt);
             crate::ui::consent::update(dt);
+            crate::ui::settings::update(dt);
             if matches!(route, Route::Account { .. }) {
                 crate::ui::account_menu::update(dt);
             }
@@ -8113,11 +8467,6 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             if matches!(page_of(route), Route::Library | Route::Search) {
                                 crate::ui::widgets::nav_glass_prepare();
                             }
-                            if matches!(route, Route::Account { .. }) {
-                                crate::ui::account_menu::prepare_present(
-                                    underlay_moving || crate::ui::idle::present_dirty(),
-                                );
-                            }
                             // The person page's bio alert, the other refreshing backdrop in the app.
                             // It needs the cadence resolved for the reason its own `POP` records: a
                             // CACHED snapshot would be taken on the frame it opened, with its scrim
@@ -8146,17 +8495,33 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             // was rejected for by eye, and it was this dispatch, not the material.
                             //
                             // **`page_of`, not the bare route** — the same reason one altitude up: a
-                            // POPOVER draws the page it stands on, and BOTH of them can stand on more
-                            // than one. Every screen stays live under its context menu (the popover is
-                            // anchored beside a tile that has to still be there to be beside, and its
-                            // scrim lifts that tile back out of the dim), and the account menu sits
-                            // over any of the three screens that wear the top bar. Spelled out as
+                            // POPOVER names the page it stands on, and BOTH of them can stand on more
+                            // than one. ItemMenu keeps its screen live because the popover is anchored
+                            // beside a tile that has to remain there. Account instead draws that page
+                            // once into `FrameCache` and keeps only its menu live, but it still needs
+                            // the correct host on that first frame. It may sit over any of the three
+                            // screens that wear the top bar. Spelled out as
                             // routes, only the detail arm ever said so and this closure's `else` meant
                             // "Home" — so the Library, Search and person page all fell through to
                             // `home_draw` the moment they became menu hosts, and the account popover
                             // drew Home over the Library the moment the profile chip became pressable
                             // there.
-                            let page_route = page_of(route);
+                            let page_route = if matches!(route, Route::Onboard)
+                                && crate::ui::onboard::settings_mode()
+                            {
+                                std::ptr::addr_of!(SETTINGS_HOME_RETURN)
+                                    .read()
+                                    .unwrap_or(Route::Home)
+                            } else {
+                                page_of(route)
+                            };
+                            // A compact modal still exposes most of its host, so unlike Settings it
+                            // cannot replace the page with an opaque ground. Account freezes that
+                            // page into one framebuffer texture instead: first frame draws the real
+                            // tree once, later frames submit one quad while the menu's own scrim,
+                            // selection spring and panel stay live above it.
+                            let cached_account_host = matches!(route, Route::Account { .. })
+                                && crate::ui::account_menu::draw_cached_host();
                             let mut page = || {
                                 if matches!(page_route, Route::Login) {
                                     crate::ui::login::draw();
@@ -8201,7 +8566,14 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                 // and one more: the un-dimmed copy has to be in the SNAPSHOT too, or
                                 // the panel's glass frosts a dimmed picture of the very card it is
                                 // about (`Popover::scrim_lifting`).
-                                crate::ui::account_menu::draw_scrim();
+                                // Account's VISIBLE pass draws this after capturing the undimmed
+                                // host. The direct blur-source pass still needs it here so the
+                                // panel's one cached backdrop contains the same dim + lifted chip.
+                                if !matches!(route, Route::Account { .. })
+                                    || crate::gfx::blur_source_pass()
+                                {
+                                    crate::ui::account_menu::draw_scrim();
+                                }
                                 crate::ui::item_menu::draw_scrim();
                                 // The third member of that class, and the only one with no opener to
                                 // lift: the alert is about the APP, not about an element on the page,
@@ -8209,14 +8581,32 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                 crate::ui::exit_alert::draw_scrim();
                                 // Same class again, and with no opener to lift either: the notice is
                                 // about the APP, not about anything on the page behind it.
+                                crate::ui::settings::draw_scrim();
                                 crate::ui::legal::draw_scrim();
                                 // And the consent question over all of them, mirroring the key ladder.
                                 crate::ui::consent::draw_scrim();
                             };
-                            if let Some(reg) = crate::gfx::blur_direct_region() {
-                                crate::gfx::blur_snapshot_direct(reg, &mut page);
+                            if !cached_account_host {
+                                if let Some(reg) = crate::gfx::blur_direct_region() {
+                                    crate::gfx::blur_snapshot_direct(reg, &mut page);
+                                }
                             }
-                            crate::ui::profile::phase("main.ui", || page());
+                            // Settings owns a frozen, already-blurred image of the host. After its
+                            // first visible draw, repainting the full Home hero and shelves beneath
+                            // an opaque full-screen modal only burns fill-rate on the T820. Closing
+                            // Settings clears the flag, so the live page resumes on the next frame.
+                            if !cached_account_host
+                                && !crate::ui::settings::host_ground_ready()
+                                && !crate::ui::consent::host_ground_ready()
+                            {
+                                crate::ui::profile::phase("main.ui", || page());
+                            }
+                            if matches!(route, Route::Account { .. }) {
+                                if !cached_account_host {
+                                    crate::ui::account_menu::capture_host();
+                                }
+                                crate::ui::account_menu::draw_scrim();
+                            }
                             // The diagnostics read-out, off the player. It drew ONLY inside the branch
                             // above until 2026-08-29, which is why its module doc had to warn that a
                             // toggle offered anywhere else would tick a box and show nothing — and why
@@ -8246,6 +8636,12 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             // Above the alert, mirroring the key ladder — the two can be open at once
                             // only in the order Legal-over-alert, and whichever answers BACK first must
                             // also be the one on top.
+                            crate::ui::settings::draw();
+                            if matches!(route, Route::Onboard)
+                                && crate::ui::onboard::settings_mode()
+                            {
+                                crate::ui::onboard::draw();
+                            }
                             crate::ui::legal::draw();
                             // Top of the stack, mirroring the top of the key ladder — the boot stopped
                             // for this, so nothing may be drawn over it.
@@ -8457,23 +8853,35 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 // as the opposite of what it says: the field that used to be `FPS=` is now `loop=`,
                 // and `fps=` now means what it always should have — frames actually presented,
                 // previously `pres=`. An old `FPS=60` is a LOOP rate and says nothing about frames.
-                let ov = match route {
-                    Route::Player {
-                        overlay: Overlay::Info,
-                    } => " overlay=info",
-                    Route::Player {
-                        overlay: Overlay::Chapters,
-                    } => " overlay=chapters",
-                    Route::Player {
-                        overlay: Overlay::Menu,
-                    } => " overlay=menu",
-                    Route::Player {
-                        overlay: Overlay::More,
-                    } => " overlay=more",
-                    Route::Player {
-                        overlay: Overlay::None,
-                    } => " overlay=none",
-                    _ => "",
+                let ov = if crate::ui::settings::is_open() {
+                    if crate::ui::legal::is_open() {
+                        " overlay=legal"
+                    } else if crate::ui::consent::is_open() {
+                        " overlay=privacy"
+                    } else {
+                        " overlay=settings"
+                    }
+                } else if crate::ui::consent::is_open() {
+                    " overlay=consent"
+                } else {
+                    match route {
+                        Route::Player {
+                            overlay: Overlay::Info,
+                        } => " overlay=info",
+                        Route::Player {
+                            overlay: Overlay::Chapters,
+                        } => " overlay=chapters",
+                        Route::Player {
+                            overlay: Overlay::Menu,
+                        } => " overlay=menu",
+                        Route::Player {
+                            overlay: Overlay::More,
+                        } => " overlay=more",
+                        Route::Player {
+                            overlay: Overlay::None,
+                        } => " overlay=none",
+                        _ => "",
+                    }
                 };
                 // `pos=<s>` rides the heartbeat while frames are actually being presented: the
                 // same SHARED.playpos_ns the /:/timeline reporter posts, but at 1 Hz instead of
@@ -8601,7 +9009,10 @@ mod route_tests {
     fn profile_handoff_runs_the_home_consent_arrival_gate() {
         let mut arrived = false;
         let route = enter_home_from_profile(|| arrived = true);
-        assert!(arrived, "profile handoff skipped the Home consent arrival gate");
+        assert!(
+            arrived,
+            "profile handoff skipped the Home consent arrival gate"
+        );
         assert!(matches!(route, Route::Home));
     }
 

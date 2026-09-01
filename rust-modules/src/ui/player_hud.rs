@@ -7,7 +7,9 @@
 use crate::gfx::{delete_tex, upload_rgba};
 use crate::ui::consts::{SCR_H, SCR_W};
 use crate::ui::theme;
-use crate::ui::widgets::{ControlGround, Spinner, StatusKind, StatusOverlay, TabPill, TransportButton};
+use crate::ui::widgets::{
+    ControlGround, Spinner, StatusKind, StatusOverlay, TabPill, TransportButton,
+};
 use crate::ui::{Env, Painter, Rect, View};
 use std::ffi::CString;
 use std::os::raw::{c_int, c_uint};
@@ -120,7 +122,12 @@ const SUB_CEIL_Y: f32 = SCR_H - 300.0;
 fn sub_screen_rect(r: (i32, i32, i32, i32), cw: i32, ch: i32) -> Rect {
     let sx = if cw > 0 { SCR_W / cw as f32 } else { 1.0 };
     let sy = if ch > 0 { SCR_H / ch as f32 } else { 1.0 };
-    Rect::new(r.0 as f32 * sx, r.1 as f32 * sy, r.2 as f32 * sx, r.3 as f32 * sy)
+    Rect::new(
+        r.0 as f32 * sx,
+        r.1 as f32 * sy,
+        r.2 as f32 * sx,
+        r.3 as f32 * sy,
+    )
 }
 
 /// How far UP to shift the rects of a display set that overhang the transport, so they clear it.
@@ -288,7 +295,12 @@ pub(crate) fn update(slot: ControlSlot, focus: i32, btn: i32, dt: f32, now: u32)
 /// Control `i`'s focus pop this frame — the read half of [`ROW_POP`], for the two stand-ins that
 /// draw into this row from their own modules (`up_next`, `skip_pill`).
 pub(crate) fn row_pop(i: c_int) -> f32 {
-    unsafe { std::ptr::addr_of!(ROW_POP).as_ref().unwrap().scale(i.max(0) as usize) }
+    unsafe {
+        std::ptr::addr_of!(ROW_POP)
+            .as_ref()
+            .unwrap()
+            .scale(i.max(0) as usize)
+    }
 }
 /// Index of the `…` overflow disc within the row — the LAST one. Exported because `app.rs` routes
 /// its OK and its click, and a second literal `2` over there is exactly the drift `ControlSlot`
@@ -422,7 +434,8 @@ pub(crate) fn slot() -> ControlSlot {
     let has_next = crate::route::up_next().is_some();
     // Server marker first; the synthesized tail only exists where credits DETECTION does not
     // (a Plex Pass server feature) — see `metadata::synthesized_tail_marker`.
-    let m = crate::metadata::active_marker().or_else(|| crate::metadata::synthesized_tail_marker(has_next));
+    let m = crate::metadata::active_marker()
+        .or_else(|| crate::metadata::synthesized_tail_marker(has_next));
     slot_for(m, has_next)
 }
 
@@ -655,7 +668,12 @@ static mut PAUSE_SEEN: Option<bool> = None;
 
 /// Step the resume clock — once per frame, from `app.rs`'s update phase, beside [`update`].
 fn note_transport(now: u32) {
-    let (at, seen) = unsafe { (&mut *std::ptr::addr_of_mut!(PLAY_AT), &mut *std::ptr::addr_of_mut!(PAUSE_SEEN)) };
+    let (at, seen) = unsafe {
+        (
+            &mut *std::ptr::addr_of_mut!(PLAY_AT),
+            &mut *std::ptr::addr_of_mut!(PAUSE_SEEN),
+        )
+    };
     if !crate::player::is_started() {
         *at = None;
         *seen = None;
@@ -703,7 +721,9 @@ fn readout_frame() -> Rect {
 /// disappeared 4.5 s in with the HUD linger, leaving exactly the silent black screen the read-out
 /// exists to prevent. A read-out is not transport chrome.
 pub(crate) fn draw_readout(busy: Busy, now: u32) {
-    let Busy::Readout(kind, caption) = busy else { return };
+    let Busy::Readout(kind, caption) = busy else {
+        return;
+    };
     if kind == StatusKind::Failed {
         // The failure read-out has its own composed layout (`Player Screen.dc.html`, which
         // superseded the retired `Plex Pass Awareness.dc.html` as the spec for this screen)
@@ -713,7 +733,9 @@ pub(crate) fn draw_readout(busy: Busy, now: u32) {
         // it before reading") and the caption's suffix is re-derived as the reason.
         return draw_failed_readout(Painter::root());
     }
-    StatusOverlay::new(readout_frame(), caption, kind).phase(now).draw(&hud_env(), Painter::root());
+    StatusOverlay::new(readout_frame(), caption, kind)
+        .phase(now)
+        .draw(&hud_env(), Painter::root());
 }
 
 // ---- the failure read-out (`Player Screen.dc.html`) -----------------------------------------
@@ -743,7 +765,15 @@ const FR_HINT_TOP: f32 = FR_REASON_TOP + FR_REASON_SLOT + 56.0;
 fn fr_line(p: Painter, text: &std::ffi::CStr, top: f32, sz: i32, bold: i32, col: [f32; 4]) {
     let (cap_top, _) = crate::text::text_cap_band(sz, bold);
     let w = crate::text::text_width(text.as_ptr(), sz, bold);
-    p.text(text.as_ptr(), (SCR_W - w) * 0.5, top - cap_top, sz, col, 0, bold);
+    p.text(
+        text.as_ptr(),
+        (SCR_W - w) * 0.5,
+        top - cap_top,
+        sz,
+        col,
+        0,
+        bold,
+    );
 }
 
 fn draw_failed_readout(p: Painter) {
@@ -759,14 +789,33 @@ fn draw_failed_readout(p: Painter) {
     // glyph: the same triangle as the facts row at 96, secondary ink — outline, because a solid
     // triangle at this size reads as an error state we do not have (the verdict is the words)
     let gx = (SCR_W - FR_GLYPH_S) * 0.5;
-    crate::ui::icons::draw(p, crate::ui::icons::Icon::Alert, Rect::new(gx, FR_GLYPH_TOP, FR_GLYPH_S, FR_GLYPH_S), theme::TEXT_SECONDARY);
-    fr_line(p, c"Playback failed", FR_VERDICT_TOP, theme::size::TITLE, 1, theme::TEXT_PRIMARY);
+    crate::ui::icons::draw(
+        p,
+        crate::ui::icons::Icon::Alert,
+        Rect::new(gx, FR_GLYPH_TOP, FR_GLYPH_S, FR_GLYPH_S),
+        theme::TEXT_SECONDARY,
+    );
+    fr_line(
+        p,
+        c"Playback failed",
+        FR_VERDICT_TOP,
+        theme::size::TITLE,
+        1,
+        theme::TEXT_PRIMARY,
+    );
     // the reason slot: line one is the reason; line two is EITHER the server's own sentence (a
     // `/decision` refusal) or — only ever on a known-free server — the subscription FACT. Never
     // both: see `FR_SLOT_LINE2`.
     if !e.readout.is_empty() {
         if let Ok(c) = std::ffi::CString::new(e.readout) {
-            fr_line(p, &c, FR_REASON_TOP, theme::size::BODY, 0, theme::TEXT_SECONDARY);
+            fr_line(
+                p,
+                &c,
+                FR_REASON_TOP,
+                theme::size::BODY,
+                0,
+                theme::TEXT_SECONDARY,
+            );
         }
     }
     if !e.detail.is_empty() {
@@ -780,7 +829,10 @@ fn draw_failed_readout(p: Painter) {
         crate::ui::text_view::TextView::new(&e.detail, theme::size::CAPTION, theme::TEXT_TERTIARY)
             .h(crate::ui::label::HAlign::Center)
             .max_lines(2)
-            .draw(p, Rect::new((SCR_W - FR_DETAIL_W) * 0.5, FR_SLOT_LINE2, FR_DETAIL_W, 0.0));
+            .draw(
+                p,
+                Rect::new((SCR_W - FR_DETAIL_W) * 0.5, FR_SLOT_LINE2, FR_DETAIL_W, 0.0),
+            );
     }
     if e.no_pass {
         let words = c"This server has no";
@@ -790,7 +842,15 @@ fn draw_failed_readout(p: Painter) {
         let x = (SCR_W - (ww + GAP + cw)) * 0.5;
         let line_top = FR_SLOT_LINE2; // the slot's second line — shared with the quoted verdict
         let (cap_top, baseline) = crate::text::text_cap_band(theme::size::BODY, 0);
-        p.text(words.as_ptr(), x, line_top - cap_top, theme::size::BODY, theme::TEXT_SECONDARY, 0, 0);
+        p.text(
+            words.as_ptr(),
+            x,
+            line_top - cap_top,
+            theme::size::BODY,
+            theme::TEXT_SECONDARY,
+            0,
+            0,
+        );
         let cy = line_top + (baseline - cap_top) * 0.5;
         crate::ui::widgets::pass_capsule(p, x + ww + GAP, cy, true);
     }
@@ -801,7 +861,13 @@ fn draw_failed_readout(p: Painter) {
 /// "{pre} [KEY] {post}", centred at cap-top `top` — CAPTION tertiary prose around a keyline cap
 /// (min-w 74, h 36, r 8), the cap's label MICRO bold. The keyline is a knockout on the video
 /// ground, which is black here by construction.
-fn draw_hint_with_keycap(p: Painter, pre: &std::ffi::CStr, key: &std::ffi::CStr, post: &std::ffi::CStr, top: f32) {
+fn draw_hint_with_keycap(
+    p: Painter,
+    pre: &std::ffi::CStr,
+    key: &std::ffi::CStr,
+    post: &std::ffi::CStr,
+    top: f32,
+) {
     const CAP_H: f32 = 36.0;
     const CAP_MIN_W: f32 = 74.0;
     const CAP_PAD: f32 = 12.0;
@@ -809,7 +875,8 @@ fn draw_hint_with_keycap(p: Painter, pre: &std::ffi::CStr, key: &std::ffi::CStr,
     let sz = theme::size::CAPTION;
     let pw = crate::text::text_width(pre.as_ptr(), sz, 0);
     let ow = crate::text::text_width(post.as_ptr(), sz, 0);
-    let kw = (crate::text::text_width(key.as_ptr(), theme::size::MICRO, 1) + 2.0 * CAP_PAD).max(CAP_MIN_W);
+    let kw = (crate::text::text_width(key.as_ptr(), theme::size::MICRO, 1) + 2.0 * CAP_PAD)
+        .max(CAP_MIN_W);
     let total = pw + GAP + kw + GAP + ow;
     let x = (SCR_W - total) * 0.5;
     let (cap_top, baseline) = crate::text::text_cap_band(sz, 0);
@@ -820,11 +887,37 @@ fn draw_hint_with_keycap(p: Painter, pre: &std::ffi::CStr, key: &std::ffi::CStr,
     let kr = Rect::new(kx, cy - CAP_H * 0.5, kw, CAP_H);
     const STROKE: f32 = 1.5;
     p.rrect(kr, 8.0, 8.0, [1.0, 1.0, 1.0, 0.34]);
-    p.rrect(Rect::new(kr.x + STROKE, kr.y + STROKE, kr.w - 2.0 * STROKE, kr.h - 2.0 * STROKE), 8.0 - STROKE, 8.0 - STROKE, [0.0, 0.0, 0.0, 1.0]);
+    p.rrect(
+        Rect::new(
+            kr.x + STROKE,
+            kr.y + STROKE,
+            kr.w - 2.0 * STROKE,
+            kr.h - 2.0 * STROKE,
+        ),
+        8.0 - STROKE,
+        8.0 - STROKE,
+        [0.0, 0.0, 0.0, 1.0],
+    );
     let kty = crate::text::text_vcenter_y(theme::size::MICRO, 1, cy);
     let ktw = crate::text::text_width(key.as_ptr(), theme::size::MICRO, 1);
-    p.text(key.as_ptr(), kx + (kw - ktw) * 0.5, kty, theme::size::MICRO, theme::TEXT_SECONDARY, 0, 1);
-    p.text(post.as_ptr(), kx + kw + GAP, ty, sz, theme::TEXT_TERTIARY, 0, 0);
+    p.text(
+        key.as_ptr(),
+        kx + (kw - ktw) * 0.5,
+        kty,
+        theme::size::MICRO,
+        theme::TEXT_SECONDARY,
+        0,
+        1,
+    );
+    p.text(
+        post.as_ptr(),
+        kx + kw + GAP,
+        ty,
+        sz,
+        theme::TEXT_TERTIARY,
+        0,
+        0,
+    );
 }
 
 /// x of control button `idx`, left to right: 0 = Subtitles, 1 = Audio, 2 = More.
@@ -886,9 +979,24 @@ pub(crate) fn scrub_frac_x(mx: f32) -> f32 {
 /// the knob vs "53" right.) The box width is measured on a same-shape template with every digit
 /// as '0', so the box — and the returned extents — stay stable while digits tick instead of
 /// wobbling with proportional digit widths. Returns the label's (left, right) x extents.
-fn draw_clock(p: Painter, text: &str, cx: f32, y: f32, sz: i32, col: [f32; 4], lo: f32, hi: f32) -> (f32, f32) {
-    let template: String = text.chars().map(|c| if c.is_ascii_digit() { '0' } else { c }).collect();
-    let w = CString::new(template).ok().map(|t| crate::text::text_width(t.as_ptr(), sz, 1)).unwrap_or(0.0);
+fn draw_clock(
+    p: Painter,
+    text: &str,
+    cx: f32,
+    y: f32,
+    sz: i32,
+    col: [f32; 4],
+    lo: f32,
+    hi: f32,
+) -> (f32, f32) {
+    let template: String = text
+        .chars()
+        .map(|c| if c.is_ascii_digit() { '0' } else { c })
+        .collect();
+    let w = CString::new(template)
+        .ok()
+        .map(|t| crate::text::text_width(t.as_ptr(), sz, 1))
+        .unwrap_or(0.0);
     let half = w * 0.5;
     let cx = cx.clamp(lo + half, (hi - half).max(lo + half));
     if let Ok(cs) = CString::new(text) {
@@ -905,7 +1013,15 @@ fn draw_clock(p: Painter, text: &str, cx: f32, y: f32, sz: i32, col: [f32; 4], l
 /// `busy`: the caller's single resolve of who owns the working signal — see [`busy_surface`]; the
 /// transport draws its inline spinner only when it is [`Busy::Transport`], and the centred read-out
 /// is [`draw_readout`]'s, drawn by the caller AFTER this.
-pub(crate) fn draw_hud(slot: ControlSlot, busy: Busy, focus: i32, btn: i32, tab: i32, now: u32, transport: bool) {
+pub(crate) fn draw_hud(
+    slot: ControlSlot,
+    busy: Busy,
+    focus: i32,
+    btn: i32,
+    tab: i32,
+    now: u32,
+    transport: bool,
+) {
     // A FAILURE owns the frame, and it outranks every branch below — including the Up Next card,
     // which cannot coexist with one but must not be the arm that decides so. `Player Screen.dc.html`
     // sets `hudDisplay:none` AND `tabsDisplay:none` on the failed variant, and its read-out block
@@ -931,179 +1047,270 @@ pub(crate) fn draw_hud(slot: ControlSlot, busy: Busy, focus: i32, btn: i32, tab:
     // bottom scrim: transparent -> dark
     let clr = theme::scrim_black(0.0);
     let drk = theme::scrim_black(0.86);
-    p.rect(Rect::new(0.0, SCR_H - SCRIM_H, SCR_W, SCRIM_H), 0.0, clr, drk, 0.0);
+    p.rect(
+        Rect::new(0.0, SCR_H - SCRIM_H, SCR_W, SCRIM_H),
+        0.0,
+        clr,
+        drk,
+        0.0,
+    );
 
     let white = theme::TEXT_PRIMARY;
     let dim = theme::TEXT_SECONDARY;
     let track = theme::RAIL_TRACK;
 
     if transport {
-    // title block under the playbar: for an episode, "S1, E1 · Episode Name" (white) sits above the
-    // SHOW title; for a movie, the route ctxline over the movie title. (Apple-TV layout.)
-    if let Some(n) = crate::metadata::now_playing().filter(|n| n.is_episode) {
-        // `fmt::episode_kicker` outright — this line was a byte-identical hand-spelling of it, which
-        // is the drift that formatter exists to prevent (the pre-roll ctx line and the Up Next
-        // caption already read it, and the whole point is that all three say the same thing).
-        if let Ok(cs) = CString::new(crate::ui::fmt::episode_kicker(n.season, n.index, &n.ep_title)) {
-            p.text(cs.as_ptr(), SB_X, SCR_H - 312.0, theme::size::CAPTION, white, 0, 1);
+        // title block under the playbar: for an episode, "S1, E1 · Episode Name" (white) sits above the
+        // SHOW title; for a movie, the route ctxline over the movie title. (Apple-TV layout.)
+        if let Some(n) = crate::metadata::now_playing().filter(|n| n.is_episode) {
+            // `fmt::episode_kicker` outright — this line was a byte-identical hand-spelling of it, which
+            // is the drift that formatter exists to prevent (the pre-roll ctx line and the Up Next
+            // caption already read it, and the whole point is that all three say the same thing).
+            if let Ok(cs) = CString::new(crate::ui::fmt::episode_kicker(
+                n.season,
+                n.index,
+                &n.ep_title,
+            )) {
+                p.text(
+                    cs.as_ptr(),
+                    SB_X,
+                    SCR_H - 312.0,
+                    theme::size::CAPTION,
+                    white,
+                    0,
+                    1,
+                );
+            }
+            if let Ok(cs) = CString::new(n.title.clone()) {
+                p.text(cs.as_ptr(), SB_X, SCR_H - 278.0, HUD_TITLE_SZ, white, 0, 1);
+            }
+        } else {
+            p.text(
+                crate::route::ctxline_cptr(),
+                SB_X,
+                SCR_H - 312.0,
+                theme::size::CAPTION,
+                dim,
+                0,
+                0,
+            );
+            p.text(
+                crate::route::title_cptr(),
+                SB_X,
+                SCR_H - 278.0,
+                HUD_TITLE_SZ,
+                white,
+                0,
+                1,
+            );
         }
-        if let Ok(cs) = CString::new(n.title.clone()) {
-            p.text(cs.as_ptr(), SB_X, SCR_H - 278.0, HUD_TITLE_SZ, white, 0, 1);
-        }
-    } else {
-        p.text(crate::route::ctxline_cptr(), SB_X, SCR_H - 312.0, theme::size::CAPTION, dim, 0, 0);
-        p.text(crate::route::title_cptr(), SB_X, SCR_H - 278.0, HUD_TITLE_SZ, white, 0, 1);
-    }
 
-    // The right control row, from the slot the CALLER resolved — so what is drawn and what a
-    // keypress activates are the same value, not two derivations of it.
-    match slot {
-        ControlSlot::UpNext(_) => crate::ui::up_next::draw(p, focus == 1, btn, now),
-        ControlSlot::Skip(pr) => crate::ui::skip_pill::draw(p, pr, focus == 1),
-        ControlSlot::Discs => {
-            for i in 0..BTN_N {
-                TransportButton::new(i, Rect::new(btn_x(i), BTN_Y, BTN_S, BTN_S))
-                    .focused(focus == 1 && btn == i)
-                    // The whole control row stands on the VIDEO PLANE — see `ControlGround`. It is
-                    // the HUD's own bottom ramp (drawn at the top of this function) that makes the
-                    // unkeyed face legal: the picture is unreadable, but the ground under these
-                    // discs is known to be dark.
-                    .ground(ControlGround::Unkeyed)
-                    .scale(row_pop(i))
-                    .draw(&e, p);
+        // The right control row, from the slot the CALLER resolved — so what is drawn and what a
+        // keypress activates are the same value, not two derivations of it.
+        match slot {
+            ControlSlot::UpNext(_) => crate::ui::up_next::draw(p, focus == 1, btn, now),
+            ControlSlot::Skip(pr) => crate::ui::skip_pill::draw(p, pr, focus == 1),
+            ControlSlot::Discs => {
+                for i in 0..BTN_N {
+                    TransportButton::new(i, Rect::new(btn_x(i), BTN_Y, BTN_S, BTN_S))
+                        .focused(focus == 1 && btn == i)
+                        // The whole control row stands on the VIDEO PLANE — see `ControlGround`. It is
+                        // the HUD's own bottom ramp (drawn at the top of this function) that makes the
+                        // unkeyed face legal: the picture is unreadable, but the ground under these
+                        // discs is known to be dark.
+                        .ground(ControlGround::Unkeyed)
+                        .scale(row_pop(i))
+                        .draw(&e, p);
+                }
             }
         }
-    }
 
-    // scrubber
-    let sx = SB_X;
-    let sw = sb_w();
-    let sy = SB_Y;
-    let sh = SB_H;
-    let scrub = crate::player::TX.scrub_ns.load(Relaxed);
-    // while a seek is loading, freeze the playhead at the target (no wobble through the reopen);
-    // else follow the live scrub preview, else the real playhead.
-    let loading = crate::player::loading();
-    // Hoisted so the display position and the PUBLISHED one are one sample: the state read-out
-    // below takes its travel direction from the difference between them, and two loads of a live
-    // atomic can straddle a tick.
-    let livepos = crate::player::playpos_ns();
-    // ONE sample of the seek target too, for the reason the line above hoists the playhead: the
-    // condition and the value were two loads of the same live atomic and could straddle a tick.
-    let seekdisp = crate::player::seek_display_ns();
-    let dispos = if loading && seekdisp >= 0 {
-        seekdisp
-    } else if scrub >= 0 {
-        scrub
-    } else {
-        livepos
-    };
-    let dur = crate::player::duration_ns();
-    let frac = if dur > 0 { (dispos as f64 / dur as f64).clamp(0.0, 1.0) } else { 0.0 };
-    p.rect(Rect::new(sx, sy, sw, sh), sh * 0.5, track, track, 0.0);
-    let fw = (sw as f64 * frac) as f32;
-    if fw > sh * 0.5 {
-        p.rrect(Rect::new(sx, sy, fw, sh), sh * 0.5, 0.0, white);
-    } else if fw > 0.0 {
-        p.rrect(Rect::new(sx, sy, fw, sh), fw * 0.5, 0.0, white);
-    }
-    // playhead: a focus-glowing knob when the scrubber is focused, a plain knob while scrubbing,
-    // else a thin tick.
-    let hx = sx + fw;
-    let cy = sy + sh * 0.5;
-    if focus == 0 {
-        let glow = [1.0f32, 1.0, 1.0, 0.22];
-        p.rect(Rect::new(hx - 17.0, cy - 17.0, 34.0, 34.0), 17.0, glow, glow, 0.0);
-        p.rect(Rect::new(hx - 11.0, cy - 11.0, 22.0, 22.0), 11.0, white, white, 0.0);
-    } else if scrub >= 0 {
-        p.rect(Rect::new(hx - 9.0, cy - 9.0, 18.0, 18.0), 9.0, white, white, 0.0);
-    } else {
-        p.rect(Rect::new(hx - 1.5, sy - 4.0, 3.0, sh + 8.0), 0.0, white, white, 0.0);
-    }
-
-    // elapsed under the playhead (':' centered on the knob, clamped to the bar); remaining at the
-    // right — hidden once the moving elapsed label would overlap it (near the end of the movie).
-    let ty = sy + 30.0;
-    let (el_l, el_r) = draw_clock(p, &fmt_time(dispos, false), hx, ty, theme::size::CAPTION, white, sx, sx + sw);
-    let rem = fmt_time(dur - dispos, true);
-    // MEASURE the label, never estimate it. `chars * CAPTION * 0.52` was an Arial-calibrated
-    // constant guarding a real behaviour — the remaining clock hides before the moving elapsed
-    // clock can reach it — and it only ever worked because it over-estimated: under Arial it
-    // returned ~99.8px against a true ~85px. Under the shipped Inter that margin had already
-    // halved, and freezing tabular figures (which the clock's own template idiom requires, see
-    // `draw_clock`) widens numerals further, leaving about a pixel of slack. At that point the
-    // guard stops guarding and the two clocks can overlap near the end of a long item.
-    // Same '0'-template `draw_clock` uses, so the two agree by construction: with tabular figures
-    // the template's width IS the real string's width at every tick.
-    let rem_tmpl: String = rem.chars().map(|c| if c.is_ascii_digit() { '0' } else { c }).collect();
-    let rem_w = CString::new(rem_tmpl)
-        .ok()
-        .map(|t| crate::text::text_width(t.as_ptr(), theme::size::CAPTION, 1))
-        .unwrap_or(0.0);
-    let rem_l = sx + sw - rem_w;
-    let rem_shown = el_r + 20.0 < rem_l;
-    if rem_shown {
-        if let Ok(cs) = CString::new(rem.as_str()) {
-            p.text(cs.as_ptr(), sx + sw, ty, theme::size::CAPTION, dim, 2, 0);
-        }
-    }
-    // transport state indicator just past the elapsed clock — the four-state READ-OUT resolved by
-    // [`transport_mark`] (rewind / pause / fast-forward / play, plus the narrowed spinner), and
-    // NOTHING while playing steadily. A read-out, not an action toggle: nothing here is focusable
-    // or hit-tested, and the control row stays the three discs it has always been.
-    // Gated on `busy`, not on `loading()`: with `loading()` the transport lit the same spinner the
-    // centred read-out was already showing, for the whole of every load AND every seek. Centered on
-    // the clock's line box; drops to the clock's LEFT when the right side is against the remaining
-    // label / screen edge.
-    let paused = crate::player::TX.paused.load(Relaxed);
-    let mark = transport_mark(paused, busy, scrub >= 0, dispos, livepos, since_play_ms(now));
-    if mark != TransportMark::None {
-        // pause bars under-fill their viewBox (14/24 tall) — a 30px box renders ~17px of ink,
-        // matching the CAPTION clock's cap height so the glyph reads as the label's size. The two
-        // travel marks are drawn to that SAME 14-unit band (see `Icon::Rewind`), which is what lets
-        // one box serve the whole family without the slot changing weight as the state flips.
-        let isz = 30.0f32;
-        // The odd member of the family — `play.svg` is authored to 16 units where the other three
-        // are 14 — is corrected by asking `icons::band` rather than by a constant here. See that
-        // function: the metric is a property of the asset, and this was the second screen to
-        // transcribe one out of an SVG by hand.
-        // **The gap is measured to the INK, not to the box.** Every member of this family carries a
-        // different left bearing inside its 24-unit viewBox — pause's bars open at x=7, play's
-        // triangle at x=6, the travel marks at x=2.6 — so ONE box origin gives each state a
-        // visibly different gap after the clock, and the slot appears to twitch as the state flips.
-        // Measuring to the ink makes the gap the eye sees a single number. It is also what the old
-        // spacing really was: a box placed 14px out put pause's ink at 14 + 7/24*30 ~= 23px, which
-        // is the gap that read as too wide. The bearings come from `icons::ink_x`, not from a table
-        // here — they are the asset's, and this screen was the second place to copy them out.
-        const GAP: f32 = 14.0;
-        let glyph = match mark {
-            TransportMark::Pause => Some(crate::ui::icons::Icon::Pause),
-            TransportMark::Play => Some(crate::ui::icons::Icon::Play),
-            TransportMark::Rewind => Some(crate::ui::icons::Icon::Rewind),
-            TransportMark::FastForward => Some(crate::ui::icons::Icon::FastForward),
-            TransportMark::Working | TransportMark::None => None,
+        // scrubber
+        let sx = SB_X;
+        let sw = sb_w();
+        let sy = SB_Y;
+        let sh = SB_H;
+        let scrub = crate::player::TX.scrub_ns.load(Relaxed);
+        // while a seek is loading, freeze the playhead at the target (no wobble through the reopen);
+        // else follow the live scrub preview, else the real playhead.
+        let loading = crate::player::loading();
+        // Hoisted so the display position and the PUBLISHED one are one sample: the state read-out
+        // below takes its travel direction from the difference between them, and two loads of a live
+        // atomic can straddle a tick.
+        let livepos = crate::player::playpos_ns();
+        // ONE sample of the seek target too, for the reason the line above hoists the playhead: the
+        // condition and the value were two loads of the same live atomic and could straddle a tick.
+        let seekdisp = crate::player::seek_display_ns();
+        let dispos = if loading && seekdisp >= 0 {
+            seekdisp
+        } else if scrub >= 0 {
+            scrub
+        } else {
+            livepos
         };
-        let ink = glyph.map_or((0.0, 1.0), crate::ui::icons::ink_x);
-        let icy = ty + crate::text::text_height(theme::size::CAPTION, 1) * 0.5; // vertical center of the clock line
-        // scaled so every member of the family lands the SAME height of ink in this one box
-        let bs = glyph.map_or(isz, |g| {
-            isz * crate::ui::icons::band(crate::ui::icons::Icon::Pause) / crate::ui::icons::band(g)
-        });
-        // **Rewind sits to the LEFT of the clock; everything else to the right.** The mark points
-        // the way the playhead is travelling, so `<<` after the time would point back at the number
-        // it is leaving. The right-hand placement still falls back to the left when the remaining
-        // label or the screen edge crowds it, which is the case this branch was originally for.
-        let need = (ink.1 - ink.0) * bs + 6.0;
-        let room_right = el_r + GAP + need < if rem_shown { rem_l - 8.0 } else { sx + sw };
-        let on_left = mark == TransportMark::Rewind || !room_right;
-        // Placed by ink on whichever side it lands: the trailing edge sits GAP before the clock's
-        // left, or the leading edge GAP after the clock's right.
-        let bx = if on_left { el_l - GAP - ink.1 * bs } else { el_r + GAP - ink.0 * bs };
-        match glyph {
-            Some(id) => crate::ui::icons::draw(p, id, Rect::new(bx, icy - bs * 0.5, bs, bs), white),
-            None => Spinner::new(bx + isz * 0.5, icy, Spinner::R_INLINE).phase(now).tint(white).draw(&e, p),
+        let dur = crate::player::duration_ns();
+        let frac = if dur > 0 {
+            (dispos as f64 / dur as f64).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        p.rect(Rect::new(sx, sy, sw, sh), sh * 0.5, track, track, 0.0);
+        let fw = (sw as f64 * frac) as f32;
+        if fw > sh * 0.5 {
+            p.rrect(Rect::new(sx, sy, fw, sh), sh * 0.5, 0.0, white);
+        } else if fw > 0.0 {
+            p.rrect(Rect::new(sx, sy, fw, sh), fw * 0.5, 0.0, white);
         }
-    }
+        // playhead: a focus-glowing knob when the scrubber is focused, a plain knob while scrubbing,
+        // else a thin tick.
+        let hx = sx + fw;
+        let cy = sy + sh * 0.5;
+        if focus == 0 {
+            let glow = [1.0f32, 1.0, 1.0, 0.22];
+            p.rect(
+                Rect::new(hx - 17.0, cy - 17.0, 34.0, 34.0),
+                17.0,
+                glow,
+                glow,
+                0.0,
+            );
+            p.rect(
+                Rect::new(hx - 11.0, cy - 11.0, 22.0, 22.0),
+                11.0,
+                white,
+                white,
+                0.0,
+            );
+        } else if scrub >= 0 {
+            p.rect(
+                Rect::new(hx - 9.0, cy - 9.0, 18.0, 18.0),
+                9.0,
+                white,
+                white,
+                0.0,
+            );
+        } else {
+            p.rect(
+                Rect::new(hx - 1.5, sy - 4.0, 3.0, sh + 8.0),
+                0.0,
+                white,
+                white,
+                0.0,
+            );
+        }
+
+        // elapsed under the playhead (':' centered on the knob, clamped to the bar); remaining at the
+        // right — hidden once the moving elapsed label would overlap it (near the end of the movie).
+        let ty = sy + 30.0;
+        let (el_l, el_r) = draw_clock(
+            p,
+            &fmt_time(dispos, false),
+            hx,
+            ty,
+            theme::size::CAPTION,
+            white,
+            sx,
+            sx + sw,
+        );
+        let rem = fmt_time(dur - dispos, true);
+        // MEASURE the label, never estimate it. `chars * CAPTION * 0.52` was an Arial-calibrated
+        // constant guarding a real behaviour — the remaining clock hides before the moving elapsed
+        // clock can reach it — and it only ever worked because it over-estimated: under Arial it
+        // returned ~99.8px against a true ~85px. Under the shipped Inter that margin had already
+        // halved, and freezing tabular figures (which the clock's own template idiom requires, see
+        // `draw_clock`) widens numerals further, leaving about a pixel of slack. At that point the
+        // guard stops guarding and the two clocks can overlap near the end of a long item.
+        // Same '0'-template `draw_clock` uses, so the two agree by construction: with tabular figures
+        // the template's width IS the real string's width at every tick.
+        let rem_tmpl: String = rem
+            .chars()
+            .map(|c| if c.is_ascii_digit() { '0' } else { c })
+            .collect();
+        let rem_w = CString::new(rem_tmpl)
+            .ok()
+            .map(|t| crate::text::text_width(t.as_ptr(), theme::size::CAPTION, 1))
+            .unwrap_or(0.0);
+        let rem_l = sx + sw - rem_w;
+        let rem_shown = el_r + 20.0 < rem_l;
+        if rem_shown {
+            if let Ok(cs) = CString::new(rem.as_str()) {
+                p.text(cs.as_ptr(), sx + sw, ty, theme::size::CAPTION, dim, 2, 0);
+            }
+        }
+        // transport state indicator just past the elapsed clock — the four-state READ-OUT resolved by
+        // [`transport_mark`] (rewind / pause / fast-forward / play, plus the narrowed spinner), and
+        // NOTHING while playing steadily. A read-out, not an action toggle: nothing here is focusable
+        // or hit-tested, and the control row stays the three discs it has always been.
+        // Gated on `busy`, not on `loading()`: with `loading()` the transport lit the same spinner the
+        // centred read-out was already showing, for the whole of every load AND every seek. Centered on
+        // the clock's line box; drops to the clock's LEFT when the right side is against the remaining
+        // label / screen edge.
+        let paused = crate::player::TX.paused.load(Relaxed);
+        let mark = transport_mark(
+            paused,
+            busy,
+            scrub >= 0,
+            dispos,
+            livepos,
+            since_play_ms(now),
+        );
+        if mark != TransportMark::None {
+            // pause bars under-fill their viewBox (14/24 tall) — a 30px box renders ~17px of ink,
+            // matching the CAPTION clock's cap height so the glyph reads as the label's size. The two
+            // travel marks are drawn to that SAME 14-unit band (see `Icon::Rewind`), which is what lets
+            // one box serve the whole family without the slot changing weight as the state flips.
+            let isz = 30.0f32;
+            // The odd member of the family — `play.svg` is authored to 16 units where the other three
+            // are 14 — is corrected by asking `icons::band` rather than by a constant here. See that
+            // function: the metric is a property of the asset, and this was the second screen to
+            // transcribe one out of an SVG by hand.
+            // **The gap is measured to the INK, not to the box.** Every member of this family carries a
+            // different left bearing inside its 24-unit viewBox — pause's bars open at x=7, play's
+            // triangle at x=6, the travel marks at x=2.6 — so ONE box origin gives each state a
+            // visibly different gap after the clock, and the slot appears to twitch as the state flips.
+            // Measuring to the ink makes the gap the eye sees a single number. It is also what the old
+            // spacing really was: a box placed 14px out put pause's ink at 14 + 7/24*30 ~= 23px, which
+            // is the gap that read as too wide. The bearings come from `icons::ink_x`, not from a table
+            // here — they are the asset's, and this screen was the second place to copy them out.
+            const GAP: f32 = 14.0;
+            let glyph = match mark {
+                TransportMark::Pause => Some(crate::ui::icons::Icon::Pause),
+                TransportMark::Play => Some(crate::ui::icons::Icon::Play),
+                TransportMark::Rewind => Some(crate::ui::icons::Icon::Rewind),
+                TransportMark::FastForward => Some(crate::ui::icons::Icon::FastForward),
+                TransportMark::Working | TransportMark::None => None,
+            };
+            let ink = glyph.map_or((0.0, 1.0), crate::ui::icons::ink_x);
+            let icy = ty + crate::text::text_height(theme::size::CAPTION, 1) * 0.5; // vertical center of the clock line
+                                                                                    // scaled so every member of the family lands the SAME height of ink in this one box
+            let bs = glyph.map_or(isz, |g| {
+                isz * crate::ui::icons::band(crate::ui::icons::Icon::Pause)
+                    / crate::ui::icons::band(g)
+            });
+            // **Rewind sits to the LEFT of the clock; everything else to the right.** The mark points
+            // the way the playhead is travelling, so `<<` after the time would point back at the number
+            // it is leaving. The right-hand placement still falls back to the left when the remaining
+            // label or the screen edge crowds it, which is the case this branch was originally for.
+            let need = (ink.1 - ink.0) * bs + 6.0;
+            let room_right = el_r + GAP + need < if rem_shown { rem_l - 8.0 } else { sx + sw };
+            let on_left = mark == TransportMark::Rewind || !room_right;
+            // Placed by ink on whichever side it lands: the trailing edge sits GAP before the clock's
+            // left, or the leading edge GAP after the clock's right.
+            let bx = if on_left {
+                el_l - GAP - ink.1 * bs
+            } else {
+                el_r + GAP - ink.0 * bs
+            };
+            match glyph {
+                Some(id) => {
+                    crate::ui::icons::draw(p, id, Rect::new(bx, icy - bs * 0.5, bs, bs), white)
+                }
+                None => Spinner::new(bx + isz * 0.5, icy, Spinner::R_INLINE)
+                    .phase(now)
+                    .tint(white)
+                    .draw(&e, p),
+            }
+        }
     } // end `if transport`
 
     // bottom tabs as pills — Chapters only appears when the item actually has chapters
@@ -1144,10 +1351,16 @@ pub(crate) fn draw_hud(slot: ControlSlot, busy: Busy, focus: i32, btn: i32, tab:
 #[cfg(test)]
 pub(crate) fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
     out.push(("player scrubber", Rect::new(SB_X, SB_Y, sb_w(), SB_H)));
-    out.push(("player control row", Rect::new(CTRL_RIGHT - CTRL_ROW_W, CTRL_Y, CTRL_ROW_W, CTRL_H)));
+    out.push((
+        "player control row",
+        Rect::new(CTRL_RIGHT - CTRL_ROW_W, CTRL_Y, CTRL_ROW_W, CTRL_H),
+    ));
     let py = (SB_Y + SCR_H) * 0.5 - BTN_S * 0.5;
     out.push(("player bottom tab row", Rect::new(SB_X, py, 0.0, BTN_S)));
-    out.push(("player title / elapsed clock", Rect::new(SB_X, SCR_H - 312.0, 0.0, 0.0)));
+    out.push((
+        "player title / elapsed clock",
+        Rect::new(SB_X, SCR_H - 312.0, 0.0, 0.0),
+    ));
 }
 
 #[cfg(test)]
@@ -1157,11 +1370,21 @@ mod tests {
     use crate::ui::skip_pill::SkipAction;
 
     fn marker(kind: MarkerKind, final_seg: bool) -> Marker {
-        Marker { kind, start_ms: 1_000, end_ms: 2_000, final_seg }
+        Marker {
+            kind,
+            start_ms: 1_000,
+            end_ms: 2_000,
+            final_seg,
+        }
     }
 
     fn seg(start_ms: i64, end_ms: i64, final_seg: bool) -> Marker {
-        Marker { kind: MarkerKind::Credits, start_ms, end_ms, final_seg }
+        Marker {
+            kind: MarkerKind::Credits,
+            start_ms,
+            end_ms,
+            final_seg,
+        }
     }
 
     // A rail 1000px wide over a 1000ms item: 1px per ms, so an offset reads straight off the x.
@@ -1180,7 +1403,11 @@ mod tests {
         let cy = BTN_Y + BTN_S * 0.5;
         for i in 0..BTN_N {
             let cx = btn_x(i) + BTN_S * 0.5;
-            assert_eq!(icon_hit(ControlSlot::Discs, cx, cy), Some(i), "disc {i} centre");
+            assert_eq!(
+                icon_hit(ControlSlot::Discs, cx, cy),
+                Some(i),
+                "disc {i} centre"
+            );
         }
     }
 
@@ -1190,11 +1417,23 @@ mod tests {
     /// silently let the Skip pill shrink the row.
     #[test]
     fn the_disc_row_is_right_anchored_and_spans_ctrl_row_w() {
-        assert_eq!(btn_x(BTN_N - 1) + BTN_S, CTRL_RIGHT, "last disc must end at the row's edge");
+        assert_eq!(
+            btn_x(BTN_N - 1) + BTN_S,
+            CTRL_RIGHT,
+            "last disc must end at the row's edge"
+        );
         for i in 1..BTN_N {
-            assert_eq!(btn_x(i) - (btn_x(i - 1) + BTN_S), BTN_GAP, "gap before disc {i}");
+            assert_eq!(
+                btn_x(i) - (btn_x(i - 1) + BTN_S),
+                BTN_GAP,
+                "gap before disc {i}"
+            );
         }
-        assert_eq!(CTRL_RIGHT - btn_x(0), CTRL_ROW_W, "drawn span vs the stand-in floor");
+        assert_eq!(
+            CTRL_RIGHT - btn_x(0),
+            CTRL_ROW_W,
+            "drawn span vs the stand-in floor"
+        );
     }
 
     /// A point in the row's band but in a GAP, or past either end, belongs to no disc — the click
@@ -1203,16 +1442,36 @@ mod tests {
     #[test]
     fn gaps_and_the_row_ends_belong_to_no_disc() {
         let cy = BTN_Y + BTN_S * 0.5;
-        assert_eq!(icon_hit(ControlSlot::Discs, btn_x(0) - 1.0, cy), None, "left of the row");
-        assert_eq!(icon_hit(ControlSlot::Discs, CTRL_RIGHT + 1.0, cy), None, "right of the row");
+        assert_eq!(
+            icon_hit(ControlSlot::Discs, btn_x(0) - 1.0, cy),
+            None,
+            "left of the row"
+        );
+        assert_eq!(
+            icon_hit(ControlSlot::Discs, CTRL_RIGHT + 1.0, cy),
+            None,
+            "right of the row"
+        );
         for i in 1..BTN_N {
             let mid = btn_x(i) - BTN_GAP * 0.5;
-            assert_eq!(icon_hit(ControlSlot::Discs, mid, cy), None, "gap before disc {i}");
+            assert_eq!(
+                icon_hit(ControlSlot::Discs, mid, cy),
+                None,
+                "gap before disc {i}"
+            );
         }
         // and the band itself is bounded vertically
         let cx = btn_x(0) + BTN_S * 0.5;
-        assert_eq!(icon_hit(ControlSlot::Discs, cx, BTN_Y - 1.0), None, "above the row");
-        assert_eq!(icon_hit(ControlSlot::Discs, cx, BTN_Y + BTN_S + 1.0), None, "below the row");
+        assert_eq!(
+            icon_hit(ControlSlot::Discs, cx, BTN_Y - 1.0),
+            None,
+            "above the row"
+        );
+        assert_eq!(
+            icon_hit(ControlSlot::Discs, cx, BTN_Y + BTN_S + 1.0),
+            None,
+            "below the row"
+        );
     }
 
     /// While a stand-in owns the row the discs are not on screen, so nothing in that band may
@@ -1222,7 +1481,11 @@ mod tests {
         let cy = BTN_Y + BTN_S * 0.5;
         let slot = slot_for(Some(marker(MarkerKind::Intro, false)), false);
         for i in 0..BTN_N {
-            assert_eq!(icon_hit(slot, btn_x(i) + BTN_S * 0.5, cy), None, "disc {i} under a stand-in");
+            assert_eq!(
+                icon_hit(slot, btn_x(i) + BTN_S * 0.5, cy),
+                None,
+                "disc {i} under a stand-in"
+            );
         }
     }
 
@@ -1233,16 +1496,27 @@ mod tests {
     fn the_control_row_picks_the_most_specific_occupant() {
         // no segment under the playhead → the ordinary Subtitles + Audio pair
         assert!(slot_for(None, false).is_discs());
-        assert!(slot_for(None, true).is_discs(), "a queued successor alone changes nothing");
+        assert!(
+            slot_for(None, true).is_discs(),
+            "a queued successor alone changes nothing"
+        );
         assert_eq!(slot_for(None, true).items(), BTN_N);
-        assert_eq!(slot_for(None, true).primary_btn(), 0, "the discs open on Subtitles");
+        assert_eq!(
+            slot_for(None, true).primary_btn(),
+            0,
+            "the discs open on Subtitles"
+        );
 
         // an intro is always Skip, successor or not — "what's next" is an end-of-episode idea
         for has_next in [false, true] {
             let slot = slot_for(Some(marker(MarkerKind::Intro, false)), has_next);
             assert!(matches!(slot, ControlSlot::Skip(p) if p.kind == MarkerKind::Intro));
             assert_eq!(slot.items(), 1, "a Skip pill is the row's only item");
-            assert_eq!(slot.primary_btn(), 0, "…so it is also the one focus lands on");
+            assert_eq!(
+                slot.primary_btn(),
+                0,
+                "…so it is also the one focus lands on"
+            );
         }
 
         // credits WITH somewhere to go → Up Next outranks Skip Credits…
@@ -1300,7 +1574,10 @@ mod tests {
         assert!(standin_left_the_ring(true, discs, true));
 
         // the steady state it must NOT fire on: the discs were already there, so nothing vanished
-        assert!(!standin_left_the_ring(false, discs, true), "walking UP to the discs is not a lost stand-in");
+        assert!(
+            !standin_left_the_ring(false, discs, true),
+            "walking UP to the discs is not a lost stand-in"
+        );
 
         // nothing to take back if the ring is elsewhere, or if a stand-in still owns the row
         assert!(!standin_left_the_ring(true, discs, false));
@@ -1324,7 +1601,13 @@ mod tests {
     /// not merely close to it, or every Blu-ray subtitle in the library moves a pixel.
     #[test]
     fn image_sub_1080p_canvas_is_identity() {
-        assert_rect(sub_screen_rect((300, 900, 1320, 96), 1920, 1080), 300.0, 900.0, 1320.0, 96.0);
+        assert_rect(
+            sub_screen_rect((300, 900, 1320, 96), 1920, 1080),
+            300.0,
+            900.0,
+            1320.0,
+            96.0,
+        );
     }
 
     /// The bug this unit exists for: a DVD VobSub rip is authored on a 720×480 canvas, so drawn
@@ -1333,45 +1616,90 @@ mod tests {
     #[test]
     fn image_sub_dvd_canvas_fills_the_panel() {
         // a full-width, near-bottom VobSub line
-        assert_rect(sub_screen_rect((0, 400, 720, 60), 720, 480), 0.0, 900.0, 1920.0, 135.0);
+        assert_rect(
+            sub_screen_rect((0, 400, 720, 60), 720, 480),
+            0.0,
+            900.0,
+            1920.0,
+            135.0,
+        );
         // and an inset one keeps its position within the picture
         let r = sub_screen_rect((180, 240, 360, 48), 720, 480);
         assert_rect(r, 480.0, 540.0, 960.0, 108.0);
-        assert!(close(r.x + r.w * 0.5, SCR_W * 0.5), "a canvas-centred rect stays centred");
+        assert!(
+            close(r.x + r.w * 0.5, SCR_W * 0.5),
+            "a canvas-centred rect stays centred"
+        );
     }
 
     /// PAL (720×576) and 4K PGS (3840×2160) are the other two canvases in the wild; the 4K one
     /// scales DOWN, which the old 1:1 path drew at double size and half off-screen.
     #[test]
     fn image_sub_pal_and_4k_canvases() {
-        assert_rect(sub_screen_rect((0, 480, 720, 72), 720, 576), 0.0, 900.0, 1920.0, 135.0);
-        assert_rect(sub_screen_rect((600, 1800, 2640, 192), 3840, 2160), 300.0, 900.0, 1320.0, 96.0);
+        assert_rect(
+            sub_screen_rect((0, 480, 720, 72), 720, 576),
+            0.0,
+            900.0,
+            1920.0,
+            135.0,
+        );
+        assert_rect(
+            sub_screen_rect((600, 1800, 2640, 192), 3840, 2160),
+            300.0,
+            900.0,
+            1320.0,
+            96.0,
+        );
     }
 
     /// A decoder that never declares a canvas (0) must fall back to 1:1 — the behaviour of the
     /// whole path before this change — rather than divide by zero or blank the cue.
     #[test]
     fn image_sub_unknown_canvas_stays_1to1() {
-        assert_rect(sub_screen_rect((300, 900, 1320, 96), 0, 0), 300.0, 900.0, 1320.0, 96.0);
-        assert_rect(sub_screen_rect((300, 900, 1320, 96), -1, 1080), 300.0, 900.0, 1320.0, 96.0);
+        assert_rect(
+            sub_screen_rect((300, 900, 1320, 96), 0, 0),
+            300.0,
+            900.0,
+            1320.0,
+            96.0,
+        );
+        assert_rect(
+            sub_screen_rect((300, 900, 1320, 96), -1, 1080),
+            300.0,
+            900.0,
+            1320.0,
+            96.0,
+        );
     }
 
     /// The HUD lift: image cues rise just enough to clear the transport, and only then.
     #[test]
     fn image_sub_lifts_only_over_the_transport() {
         let dialogue = Rect::new(300.0, 900.0, 1320.0, 135.0); // bottom 1035, overhangs
-        // transport down: nothing moves, ever
+                                                               // transport down: nothing moves, ever
         assert_eq!(hud_lift([dialogue].into_iter(), false), 0.0);
         // transport up: a bottom-anchored cue rises exactly its overhang, landing ON the ceiling
         let lift = hud_lift([dialogue].into_iter(), true);
-        assert!(close(1035.0 - lift, SUB_CEIL_Y), "lifted bottom should sit at the ceiling");
+        assert!(
+            close(1035.0 - lift, SUB_CEIL_Y),
+            "lifted bottom should sit at the ceiling"
+        );
         // a sign at the top of frame already clears it and must stay put
         let sign = Rect::new(100.0, 100.0, 200.0, 100.0);
         assert_eq!(hud_lift([sign].into_iter(), true), 0.0);
         assert!(!overhangs(sign) && overhangs(dialogue));
         // a set too tall to lift is clamped instead of being pushed off the top of the screen
-        assert_eq!(hud_lift([Rect::new(0.0, 0.0, 1920.0, SCR_H)].into_iter(), true), 0.0);
-        assert_eq!(hud_lift([Rect::new(0.0, 50.0, 1920.0, SCR_H - 50.0)].into_iter(), true), 50.0);
+        assert_eq!(
+            hud_lift([Rect::new(0.0, 0.0, 1920.0, SCR_H)].into_iter(), true),
+            0.0
+        );
+        assert_eq!(
+            hud_lift(
+                [Rect::new(0.0, 50.0, 1920.0, SCR_H - 50.0)].into_iter(),
+                true
+            ),
+            50.0
+        );
     }
 
     /// The multi-rect case the lift has to get right, and the reason it is measured over the
@@ -1383,17 +1711,29 @@ mod tests {
         let sign = Rect::new(100.0, 100.0, 200.0, 100.0);
         let dialogue = Rect::new(300.0, 900.0, 1320.0, 135.0);
         let lift = hud_lift([sign, dialogue].into_iter(), true);
-        assert!(close(lift, 1035.0 - SUB_CEIL_Y), "the sign's top must not clamp the lift");
-        assert!(close(dialogue.y + dialogue.h - lift, SUB_CEIL_Y), "dialogue clears the transport");
+        assert!(
+            close(lift, 1035.0 - SUB_CEIL_Y),
+            "the sign's top must not clamp the lift"
+        );
+        assert!(
+            close(dialogue.y + dialogue.h - lift, SUB_CEIL_Y),
+            "dialogue clears the transport"
+        );
         assert!(!overhangs(sign), "and the sign is not shifted at all");
 
         // two-line dialogue: different overhangs, ONE shift, so the gap between them survives
         let l1 = Rect::new(300.0, 900.0, 1320.0, 50.0); // bottom 950
         let l2 = Rect::new(300.0, 960.0, 1320.0, 50.0); // bottom 1010
         let two = hud_lift([l1, l2].into_iter(), true);
-        assert!(close(two, 1010.0 - SUB_CEIL_Y), "measured over the group, not per rect");
+        assert!(
+            close(two, 1010.0 - SUB_CEIL_Y),
+            "measured over the group, not per rect"
+        );
         assert!(overhangs(l1) && overhangs(l2), "both take the same shift");
-        assert!(close((l2.y - two) - (l1.y + l1.h - two), 10.0), "their 10px gap is preserved");
+        assert!(
+            close((l2.y - two) - (l1.y + l1.h - two), 10.0),
+            "their 10px gap is preserved"
+        );
     }
 
     // ---- who owns the "the pipeline is working" signal -----------------------------------------
@@ -1401,8 +1741,15 @@ mod tests {
     use crate::player::PlaybackState as S;
 
     /// Every state the enum has, so a state added later cannot quietly escape the table below.
-    const ALL_STATES: [S; 7] =
-        [S::Idle, S::Resolving, S::Connecting, S::Buffering, S::Seeking, S::Playing, S::Error];
+    const ALL_STATES: [S; 7] = [
+        S::Idle,
+        S::Resolving,
+        S::Connecting,
+        S::Buffering,
+        S::Seeking,
+        S::Playing,
+        S::Error,
+    ];
 
     /// The whole point of routing both surfaces through one function: for any state, and either
     /// answer to "has this session shown a picture", there is exactly ONE indicator — never two
@@ -1446,7 +1793,11 @@ mod tests {
     #[test]
     fn the_post_seek_buffering_tail_does_not_flash_the_centre_readout() {
         assert_eq!(busy_surface(S::Buffering, true), Busy::Transport);
-        assert_eq!(busy_surface(S::Resolving, true), Busy::Transport, "auto-advance over a live picture");
+        assert_eq!(
+            busy_surface(S::Resolving, true),
+            Busy::Transport,
+            "auto-advance over a live picture"
+        );
         assert_eq!(busy_surface(S::Connecting, true), Busy::Transport);
     }
 
@@ -1454,11 +1805,23 @@ mod tests {
     /// kind↔caption pairing the enum carries (both are chosen once, by this function).
     #[test]
     fn a_cold_start_and_a_reload_both_own_the_whole_panel() {
-        assert_eq!(busy_surface(S::Resolving, false), Busy::Readout(StatusKind::Working, c"Preparing\u{2026}"));
-        assert_eq!(busy_surface(S::Connecting, false), Busy::Readout(StatusKind::Working, c"Connecting\u{2026}"));
-        assert_eq!(busy_surface(S::Buffering, false), Busy::Readout(StatusKind::Working, c"Buffering\u{2026}"));
+        assert_eq!(
+            busy_surface(S::Resolving, false),
+            Busy::Readout(StatusKind::Working, c"Preparing\u{2026}")
+        );
+        assert_eq!(
+            busy_surface(S::Connecting, false),
+            Busy::Readout(StatusKind::Working, c"Connecting\u{2026}")
+        );
+        assert_eq!(
+            busy_surface(S::Buffering, false),
+            Busy::Readout(StatusKind::Working, c"Buffering\u{2026}")
+        );
         // tapping RIGHT during pre-roll (or `/tmp/plxnative-autoseek`): no picture to mark up
-        assert_eq!(busy_surface(S::Seeking, false), Busy::Readout(StatusKind::Working, c"Seeking\u{2026}"));
+        assert_eq!(
+            busy_surface(S::Seeking, false),
+            Busy::Readout(StatusKind::Working, c"Seeking\u{2026}")
+        );
     }
 
     /// A dead producer has no picture and no position, only a message — so it is the centred
@@ -1467,7 +1830,10 @@ mod tests {
     #[test]
     fn a_dead_producer_reads_out_whether_or_not_a_picture_was_up() {
         for seen in [false, true] {
-            assert_eq!(busy_surface(S::Error, seen), Busy::Readout(StatusKind::Failed, c"Playback failed"));
+            assert_eq!(
+                busy_surface(S::Error, seen),
+                Busy::Readout(StatusKind::Failed, c"Playback failed")
+            );
         }
     }
 
@@ -1483,16 +1849,28 @@ mod tests {
     #[test]
     fn only_a_failure_takes_the_frame_away_from_the_transport() {
         for seen in [false, true] {
-            assert!(readout_owns_frame(busy_surface(S::Error, seen)), "a failure hides the transport");
+            assert!(
+                readout_owns_frame(busy_surface(S::Error, seen)),
+                "a failure hides the transport"
+            );
         }
         for st in [S::Resolving, S::Connecting, S::Buffering, S::Seeking] {
             let b = busy_surface(st, false);
-            assert!(matches!(b, Busy::Readout(StatusKind::Working, _)), "{st:?} is a read-out");
-            assert!(!readout_owns_frame(b), "{st:?} is mid-flight — the transport stays up under it");
+            assert!(
+                matches!(b, Busy::Readout(StatusKind::Working, _)),
+                "{st:?} is a read-out"
+            );
+            assert!(
+                !readout_owns_frame(b),
+                "{st:?} is mid-flight — the transport stays up under it"
+            );
         }
         // and the two non-read-out surfaces are never a reason to blank the frame
         assert!(!readout_owns_frame(busy_surface(S::Playing, true)));
-        assert!(!readout_owns_frame(busy_surface(S::Seeking, true)), "a seek over a live picture");
+        assert!(
+            !readout_owns_frame(busy_surface(S::Seeking, true)),
+            "a seek over a live picture"
+        );
     }
 
     /// The geometry regression, guarding against a new `OVERLAY_BOTTOM`: the read-out centres on
@@ -1506,13 +1884,20 @@ mod tests {
     #[test]
     fn the_readout_is_centred_and_still_clears_the_transport() {
         let f = readout_frame();
-        assert_eq!(f.cy(), SCR_H * 0.5, "the wait is about the whole picture, so it centres on it");
+        assert_eq!(
+            f.cy(),
+            SCR_H * 0.5,
+            "the wait is about the whole picture, so it centres on it"
+        );
         assert_eq!(f.cx(), SCR_W * 0.5);
         assert!(
             f.cy() + StatusOverlay::above() < SCR_H - SCRIM_H,
             "the read-out must not reach into the transport scrim"
         );
-        assert!(f.cy() - StatusOverlay::above() > 0.0, "nor off the top of the panel");
+        assert!(
+            f.cy() - StatusOverlay::above() > 0.0,
+            "nor off the top of the panel"
+        );
     }
 
     // ---- the transport state read-out ---------------------------------------------------------
@@ -1542,7 +1927,10 @@ mod tests {
     /// is paused, whatever the clock still says.
     #[test]
     fn paused_shows_pause_and_outranks_a_live_resume_clock() {
-        assert_eq!(transport_mark(true, Busy::None, false, 42 * S, 42 * S, None), TransportMark::Pause);
+        assert_eq!(
+            transport_mark(true, Busy::None, false, 42 * S, 42 * S, None),
+            TransportMark::Pause
+        );
         assert_eq!(
             transport_mark(true, Busy::None, false, 42 * S, 42 * S, Some(200)),
             TransportMark::Pause
@@ -1559,7 +1947,10 @@ mod tests {
             transport_mark(false, Busy::None, true, 52 * S, 42 * S, None),
             TransportMark::FastForward
         );
-        assert_eq!(transport_mark(false, Busy::None, true, 32 * S, 42 * S, None), TransportMark::Rewind);
+        assert_eq!(
+            transport_mark(false, Busy::None, true, 32 * S, 42 * S, None),
+            TransportMark::Rewind
+        );
         // a chapter/marker hop or a rapid-seek burst: scrub cleared, the seek in flight, the frozen
         // playhead sitting at the target while the published position is still where we left
         assert_eq!(
@@ -1576,7 +1967,10 @@ mod tests {
     /// the slot had when its two states were spinner-over-pause.
     #[test]
     fn a_paused_scrub_still_reads_as_travel() {
-        assert_eq!(transport_mark(true, Busy::None, true, 32 * S, 42 * S, None), TransportMark::Rewind);
+        assert_eq!(
+            transport_mark(true, Busy::None, true, 32 * S, 42 * S, None),
+            TransportMark::Rewind
+        );
         assert_eq!(
             transport_mark(true, Busy::Transport, false, 90 * S, 42 * S, None),
             TransportMark::FastForward
@@ -1601,7 +1995,14 @@ mod tests {
         );
         // and the centred read-out's own states never reach this slot
         assert_eq!(
-            transport_mark(false, Busy::Readout(StatusKind::Working, c"Buffering…"), false, 0, 0, None),
+            transport_mark(
+                false,
+                Busy::Readout(StatusKind::Working, c"Buffering…"),
+                false,
+                0,
+                0,
+                None
+            ),
             TransportMark::None
         );
     }
@@ -1611,7 +2012,10 @@ mod tests {
     /// been resumed, which is a fresh start rather than a resume and draws nothing.
     #[test]
     fn the_play_mark_expires_and_a_never_resumed_session_has_none() {
-        assert_eq!(transport_mark(false, Busy::None, false, 0, 0, Some(0)), TransportMark::Play);
+        assert_eq!(
+            transport_mark(false, Busy::None, false, 0, 0, Some(0)),
+            TransportMark::Play
+        );
         assert_eq!(
             transport_mark(false, Busy::None, false, 0, 0, Some(PLAY_MARK_MS - 1)),
             TransportMark::Play
@@ -1621,7 +2025,10 @@ mod tests {
             TransportMark::None,
             "the couple of seconds is a boundary, not a suggestion"
         );
-        assert_eq!(transport_mark(false, Busy::None, false, 0, 0, None), TransportMark::None);
+        assert_eq!(
+            transport_mark(false, Busy::None, false, 0, 0, None),
+            TransportMark::None
+        );
     }
 
     /// A resume the user asked for while the playhead is also travelling: the travel is the newer

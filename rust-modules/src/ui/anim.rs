@@ -31,7 +31,7 @@ struct Entry {
     frames: u32,
     ms: f32,
     start: f32,
-    peak_over: f32,             // furthest past the target (in the travel direction)
+    peak_over: f32, // furthest past the target (in the travel direction)
     last: Option<(u32, f32, f32)>, // last settled episode: (frames, ms, overshoot %)
 }
 static mut ENTRIES: Vec<Entry> = Vec::new();
@@ -98,7 +98,10 @@ pub(crate) fn probe(name: &'static str, pos: f32, vel: f32, target: f32, dt: f32
         let travel = (e.target - e.start).abs().max(1e-6);
         let over_pct = e.peak_over / travel * 100.0;
         e.last = Some((e.frames, e.ms, over_pct));
-        log(&format!("anim {}: {}f {:.0}ms overshoot={:.1}%", e.name, e.frames, e.ms, over_pct));
+        log(&format!(
+            "anim {}: {}f {:.0}ms overshoot={:.1}%",
+            e.name, e.frames, e.ms, over_pct
+        ));
     }
 }
 
@@ -106,7 +109,11 @@ pub(crate) fn probe(name: &'static str, pos: f32, vel: f32, target: f32, dt: f32
 // get large, and it should never drown the primary /tmp/plxnative-events.log debugging surface.
 fn log(m: &str) {
     use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&crate::paths::in_runtime_dir("plxnative-anim.log")) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&crate::paths::in_runtime_dir("plxnative-anim.log"))
+    {
         let _ = writeln!(f, "{m}");
     }
 }
@@ -146,18 +153,35 @@ pub(crate) fn draw_overlay() {
     let w = 560.0f32;
     let top = 46.0f32;
     let bg = [0.0f32, 0.0, 0.0, 0.74];
-    p.rect(Rect::new(x - 18.0, top - 6.0, w, es.len() as f32 * row + 58.0), 12.0, bg, bg, 0.0);
+    p.rect(
+        Rect::new(x - 18.0, top - 6.0, w, es.len() as f32 * row + 58.0),
+        12.0,
+        bg,
+        bg,
+        0.0,
+    );
     if let Ok(t) = std::ffi::CString::new("ANIM DEBUG") {
         p.text(t.as_ptr(), x, top, 22, [0.55, 0.92, 0.6, 1.0], 0, 1);
     }
     let mut y = top + 44.0;
     for e in es.iter() {
-        let col = if e.moving { [1.0f32, 0.86, 0.32, 1.0] } else { [0.72f32, 0.74, 0.80, 1.0] };
+        let col = if e.moving {
+            [1.0f32, 0.86, 0.32, 1.0]
+        } else {
+            [0.72f32, 0.74, 0.80, 1.0]
+        };
         let last = e
             .last
             .map(|(f, ms, o)| format!("   last {f}f {ms:.0}ms over {o:.1}%"))
             .unwrap_or_default();
-        let line = format!("{}  {:.3} \u{2192} {:.3}  v={:.2}{}", e.name, e.cur(), e.target, e.vel, last);
+        let line = format!(
+            "{}  {:.3} \u{2192} {:.3}  v={:.2}{}",
+            e.name,
+            e.cur(),
+            e.target,
+            e.vel,
+            last
+        );
         if let Ok(t) = std::ffi::CString::new(line) {
             p.text(t.as_ptr(), x, y, 18, col, 0, 0);
         }

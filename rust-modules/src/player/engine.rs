@@ -153,22 +153,22 @@ pub(crate) struct Engine {
     /// webOS 5+ only: the source size the exported window was last placed with, so a corrective
     /// re-place happens exactly once if the demuxer publishes the real one later. 0 = never placed.
     pub placed_src: (c_int, c_int),
-    pub eos_pushed: bool,      // Kodi VIDEO_DRAIN: pushEOS() sent once at true EOF
-    pub rebase_pending: bool,  // g_rebase_pending
+    pub eos_pushed: bool, // Kodi VIDEO_DRAIN: pushEOS() sent once at true EOF
+    pub rebase_pending: bool, // g_rebase_pending
     // In-place seek only: keyframes this far AHEAD of the seek target are stale frames the demuxer
     // produced from its pre-flush read position before the reopen+av_seek won the race (playback
     // drifts forward during a long scrub) — reject them so the rebase anchors on the REAL post-seek
     // keyframe, not the drifted one. `rebase_drops` caps the rejections so a sparse-keyframe file or
     // a genuinely-failed av_seek can't hang the rebase.
     pub rebase_drops: i32,
-    pub seek_armed_at: u32,    // SDL-ticks when the current in-place seek was armed (stuck watchdog)
-    pub seek_retries: i32,     // cheap reopen-retries attempted before escalating to a full reload
-    pub flushed: bool,         // Kodi m_flushed: set on an in-place seek flush; the first
+    pub seek_armed_at: u32, // SDL-ticks when the current in-place seek was armed (stuck watchdog)
+    pub seek_retries: i32,  // cheap reopen-retries attempted before escalating to a full reload
+    pub flushed: bool,      // Kodi m_flushed: set on an in-place seek flush; the first
     // post-flush keyframe triggers setTimeToDecode + sendSegmentEvent (the fresh GStreamer
     // segment a bare flush() omits), then clears this.
     pub max_fed_video_pts: i64, // high-water fed pts, VIDEO lane (g_max_fed_pts)
     pub max_fed_audio_pts: i64, // high-water fed pts, AUDIO lane (two-lane feed)
-    pub seek_base_pts: i64,    // fed pts of the first post-seek keyframe (prime measures buffer
+    pub seek_base_pts: i64,     // fed pts of the first post-seek keyframe (prime measures buffer
     // depth as max_fed_video_pts - seek_base_pts, since the in-place seek feeds REAL pts, not 0-based)
     // prime-then-play: after a seek/resume the pipeline is PAUSED and data is buffered before
     // Play, so the clock doesn't free-run through the demux reopen / transcode-restart gap (that
@@ -244,8 +244,10 @@ pub(crate) fn acb_init(mt: &MainThread) {
             ACB_OK.store(false, Ordering::Relaxed);
         }
         ffi::VP_NONE => {
-            log("vplane: this device has NEITHER libAcbAPI nor SDL's exported window — audio \
-                 will play and the picture will not appear. Please report your webOS version.");
+            log(
+                "vplane: this device has NEITHER libAcbAPI nor SDL's exported window — audio \
+                 will play and the picture will not appear. Please report your webOS version.",
+            );
             ACB_OK.store(false, Ordering::Relaxed);
         }
         _ => acb_init_acb(mt),
@@ -287,7 +289,12 @@ fn bf_split(data: &[u8], aud5: u8) -> Vec<usize> {
     let mut au = Vec::new();
     let mut i = 0usize;
     while i + 4 < data.len() {
-        if data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 0 && data[i + 3] == 1 && data[i + 4] == aud5 {
+        if data[i] == 0
+            && data[i + 1] == 0
+            && data[i + 2] == 0
+            && data[i + 3] == 1
+            && data[i + 4] == aud5
+        {
             au.push(i);
             i += 4;
         }
@@ -326,8 +333,14 @@ fn build_av_payload(video: &str, audio: &str, mw: i32, mh: i32) -> String {
                 r#""seperatedPTS":true}"#,
                 &format!(r#""seperatedPTS":true,"videoFpsValue":{num},"videoFpsScale":{den}}}"#),
             )
-            .replace(r#""audioOnly":false"#, r#""audioOnly":false,"adaptiveResolution":true"#);
-        log(&format!("esInfo: videoFps {num}/{den} + adaptiveResolution (src {:.3})", crate::route::stream_fps()));
+            .replace(
+                r#""audioOnly":false"#,
+                r#""audioOnly":false,"adaptiveResolution":true"#,
+            );
+        log(&format!(
+            "esInfo: videoFps {num}/{den} + adaptiveResolution (src {:.3})",
+            crate::route::stream_fps()
+        ));
     }
     let p = with_dolby_hdr_info(&p, video, crate::route::stream_dovi().presentation_now());
     with_immersive(&p, crate::route::stream_immersive())
@@ -401,9 +414,14 @@ fn with_immersive(p: &str, atmos: bool) -> String {
 /// present exactly once in `PAYLOAD_AV`. A `replace` that finds nothing is a silent no-node, which
 /// is why the miss is logged rather than assumed away.
 fn with_dolby_hdr_info(p: &str, video: &str, dv: crate::metadata::DvPresentation) -> String {
-    let Some(n) = dv.declared() else { return p.to_string() };
+    let Some(n) = dv.declared() else {
+        return p.to_string();
+    };
     if crate::metadata::dv_node_suppressed() {
-        log(&format!("dv: DolbyHdrInfo P{} SUPPRESSED by /tmp/plxnative-dvnonode (direct play kept)", n.profile_id));
+        log(&format!(
+            "dv: DolbyHdrInfo P{} SUPPRESSED by /tmp/plxnative-dvnonode (direct play kept)",
+            n.profile_id
+        ));
         return p.to_string();
     }
     if video != "H265" {
@@ -411,7 +429,10 @@ fn with_dolby_hdr_info(p: &str, video: &str, dv: crate::metadata::DvPresentation
         // only, and that branch's payload codec is the file's own hevc — so this is the guard that
         // says so out loud rather than declaring Dolby Vision over an H264 elementary stream. A
         // malformed sourceInfo does not fail loudly; it wedges the sink.
-        log(&format!("dv: DolbyHdrInfo P{} NOT sent — payload video codec is {video}, not H265", n.profile_id));
+        log(&format!(
+            "dv: DolbyHdrInfo P{} NOT sent — payload video codec is {video}, not H265",
+            n.profile_id
+        ));
         return p.to_string();
     }
     let anchor = r#""provider":"plxnative""#;
@@ -483,7 +504,9 @@ fn with_window_id(mt: &MainThread, p: &str) -> String {
         log("windowId: payload has no appId anchor — NOT spliced; video will not bind");
         return p.to_string();
     }
-    log(&format!("vplane: exported windowId={id} spliced into the Load payload"));
+    log(&format!(
+        "vplane: exported windowId={id} spliced into the Load payload"
+    ));
     p.replace(&anchor, &format!(r#"{anchor},"windowId":"{id}""#))
 }
 
@@ -544,7 +567,12 @@ pub(crate) fn start_bufferfeed(mt: &MainThread) -> bool {
                 url = p.url.clone();
                 crate::route::set_url(&url);
                 crate::route::set_stream_declaration(
-                    &p.vcodec, &p.acodec, p.fps, p.dovi.to_dovi(), p.atmos);
+                    &p.vcodec,
+                    &p.acodec,
+                    p.fps,
+                    p.dovi.to_dovi(),
+                    p.atmos,
+                );
                 if p.auto_source_kbps > 0 && !p.auto_hls_base.is_empty() {
                     // A fixture that starts in HLS hands back the playlist to open: the route's
                     // own `url` has already moved, and this local copy is what everything below
@@ -580,20 +608,38 @@ pub(crate) fn start_bufferfeed(mt: &MainThread) -> bool {
     if url.is_empty() {
         if let Some(data) = crate::dev::read_sample("sample.h264") {
             let au = bf_split(&data, 0x09);
-            log(&format!("bf_split h264: {} AUs in {} bytes", au.len(), data.len()));
+            log(&format!(
+                "bf_split h264: {} AUs in {} bytes",
+                au.len(),
+                data.len()
+            ));
             if au.len() < 2 {
                 return false;
             }
-            sample = Some(Box::new(SampleBuf { data, au, next: 0, loops: 0 }));
+            sample = Some(Box::new(SampleBuf {
+                data,
+                au,
+                next: 0,
+                loops: 0,
+            }));
         } else if let Some(data) = crate::dev::read_sample("sample.h265") {
             // Phase 0 probe: feed a local HEVC Annex-B sample to test native HEVC decode.
             let au = bf_split(&data, 0x46);
-            log(&format!("bf_split h265: {} AUs in {} bytes", au.len(), data.len()));
+            log(&format!(
+                "bf_split h265: {} AUs in {} bytes",
+                au.len(),
+                data.len()
+            ));
             if au.len() < 2 {
                 return false;
             }
             is_h265 = true;
-            sample = Some(Box::new(SampleBuf { data, au, next: 0, loops: 0 }));
+            sample = Some(Box::new(SampleBuf {
+                data,
+                au,
+                next: 0,
+                loops: 0,
+            }));
         } else {
             // nothing to play: no selected item, no /tmp/plxnative-url, no local sample. (The old
             // baked-in demo-movie fallback is gone — the binary carries no URLs/credentials.)
@@ -621,10 +667,16 @@ pub(crate) fn start_bufferfeed(mt: &MainThread) -> bool {
         video_declared = if hevc { "H265" } else { "H264" };
         // Record what the payload ACTUALLY says, for the diagnostics read-out — including the
         // video-only case, where `dg_load_a == 0` is the whole explanation for silence.
-        SHARED.dg_load_v.store(if hevc { 2 } else { 1 }, Ordering::Relaxed);
+        SHARED
+            .dg_load_v
+            .store(if hevc { 2 } else { 1 }, Ordering::Relaxed);
         if no_audio {
             SHARED.dg_load_a.store(0, Ordering::Relaxed);
-            if hevc { PAYLOAD_H265 } else { PAYLOAD_V }
+            if hevc {
+                PAYLOAD_H265
+            } else {
+                PAYLOAD_V
+            }
         } else {
             let vc = video_declared;
             // LG's pipeline names E-AC3 "AC3 PLUS" (Dolby Digital Plus), NOT "EAC3" — the
@@ -635,7 +687,14 @@ pub(crate) fn start_bufferfeed(mt: &MainThread) -> bool {
                 "aac" => "AAC",
                 _ => "AC3",
             };
-            SHARED.dg_load_a.store(match ac { "AC3 PLUS" => 2, "AAC" => 3, _ => 1 }, Ordering::Relaxed);
+            SHARED.dg_load_a.store(
+                match ac {
+                    "AC3 PLUS" => 2,
+                    "AAC" => 3,
+                    _ => 1,
+                },
+                Ordering::Relaxed,
+            );
             audio_declared = ac;
             // Sink envelope = the panel max (4K) regardless of codec. The pipeline reads the
             // true dims from the bitstream (SPS), so on the dev set (webOS 4.10) this is just a
@@ -691,8 +750,12 @@ pub(crate) fn start_bufferfeed(mt: &MainThread) -> bool {
             video_declared,
             audio_declared,
             crate::route::stream_fps(),
-            dv.present as i32, dv.profile, dv.bl_compat, dv.el_present as i32,
-            crate::route::stream_immersive() as i32));
+            dv.present as i32,
+            dv.profile,
+            dv.bl_compat,
+            dv.el_present as i32,
+            crate::route::stream_immersive() as i32
+        ));
     }
 
     // fd = -1 (CLOSED) so a teardown before/without http_open doesn't close(0)
@@ -704,16 +767,20 @@ pub(crate) fn start_bufferfeed(mt: &MainThread) -> bool {
 
     if stream {
         let su = crate::plex::StreamUrl::parse(&url); // the typed layer's URL splitter
-        // **The whole ORIGIN goes down, not a `(host, port)` pair, because the SCHEME chooses the
-        // transport**: `ff::demux` reads http through `crate::stream`'s cleartext socket and https
-        // through `crate::curlio`. This used to REFUSE an https origin outright — cleartext to a
-        // TLS port is a hang or a garbage response with nothing in the log — and that refusal is
-        // what a remote QA reviewer, with no PMS on their LAN, would have hit on every Play.
-        // Rebuilding the origin from an address would put the refusal back in a subtler form: the
-        // certificate is issued for the `plex.direct` NAME, so a TLS connection to the dotted quad
-        // behind it fails validation however well the packets flow (`plex/origin.rs`).
+                                                      // **The whole ORIGIN goes down, not a `(host, port)` pair, because the SCHEME chooses the
+                                                      // transport**: `ff::demux` reads http through `crate::stream`'s cleartext socket and https
+                                                      // through `crate::curlio`. This used to REFUSE an https origin outright — cleartext to a
+                                                      // TLS port is a hang or a garbage response with nothing in the log — and that refusal is
+                                                      // what a remote QA reviewer, with no PMS on their LAN, would have hit on every Play.
+                                                      // Rebuilding the origin from an address would put the refusal back in a subtler form: the
+                                                      // certificate is issued for the `plex.direct` NAME, so a TLS connection to the dotted quad
+                                                      // behind it fails validation however well the packets flow (`plex/origin.rs`).
         let path = su.path;
-        log(&format!("stream: {} path={}", su.origin.log_form(), &path[..path.len().min(80)]));
+        log(&format!(
+            "stream: {} path={}",
+            su.origin.log_form(),
+            &path[..path.len().min(80)]
+        ));
         let origin = su.origin;
         // Two-lane feed: the demuxer routes es=1 video to aq_video and es=2 audio to
         // aq_audio, each with its own cap + feeder.
@@ -852,7 +919,10 @@ pub(crate) fn start_bufferfeed(mt: &MainThread) -> bool {
     super::INPLACE_SEEK_OK.store(ffi::vp_mode() != ffi::VP_EXPORTED, Ordering::Relaxed);
     engine_install(mt, eng);
     TX.started.store(true, Ordering::Relaxed);
-    log(&format!("SMP: media thread spawned, stream={}", stream as i32));
+    log(&format!(
+        "SMP: media thread spawned, stream={}",
+        stream as i32
+    ));
     true
 }
 
@@ -882,7 +952,10 @@ pub(crate) fn resume_at(resume_ns: i64) {
         // transcode: the encode restarts at &offset (0-based); disp_base carries the offset
         SHARED.disp_base.store(resume_ns, Ordering::Relaxed);
         SHARED.playpos_ns.store(resume_ns, Ordering::Relaxed);
-        log(&format!("resume(transcode): restart at offset {}s", resume_ns / 1_000_000_000));
+        log(&format!(
+            "resume(transcode): restart at offset {}s",
+            resume_ns / 1_000_000_000
+        ));
     }
 }
 
@@ -900,7 +973,10 @@ pub(crate) fn reload_at(mt: &MainThread, target_ns: i64) {
         log("reload_at: no url (ignored)");
         return;
     }
-    log(&format!("reload_at: fresh Load at {}s", target_ns / 1_000_000_000));
+    log(&format!(
+        "reload_at: fresh Load at {}s",
+        target_ns / 1_000_000_000
+    ));
     teardown(mt, true); // reload mode: preserve the session (no url-clear / stop-scrobble)
     arm_seek(target_ns);
     start_bufferfeed(mt);
@@ -913,7 +989,10 @@ pub(crate) fn reload_at(mt: &MainThread, target_ns: i64) {
 /// chosen stream and the choice survives later seeks.
 pub(crate) fn switch_audio_native(mt: &MainThread, audio_idx: i32, pos_ns: i64) {
     SHARED.desired_audio_idx.store(audio_idx, Ordering::Relaxed);
-    log(&format!("switch_audio_native: audio_idx={audio_idx} at {}s", pos_ns / 1_000_000_000));
+    log(&format!(
+        "switch_audio_native: audio_idx={audio_idx} at {}s",
+        pos_ns / 1_000_000_000
+    ));
     reload_at(mt, pos_ns); // fresh direct-play Load at the current position, new audio stream
 }
 
@@ -930,7 +1009,10 @@ pub(crate) fn reload_transcode(mt: &MainThread, offset_ns: i64) {
         log("reload_transcode: no url (ignored)");
         return;
     }
-    log(&format!("reload_transcode: fresh Load at offset {}s", offset_ns / 1_000_000_000));
+    log(&format!(
+        "reload_transcode: fresh Load at offset {}s",
+        offset_ns / 1_000_000_000
+    ));
     teardown(mt, true); // keep the session; reload mode
     SHARED.disp_base.store(offset_ns, Ordering::Relaxed); // transcode is 0-based at content=offset
     SHARED.playpos_ns.store(offset_ns, Ordering::Relaxed);
@@ -980,7 +1062,11 @@ fn teardown(mt: &MainThread, for_reload: bool) {
         let rk = crate::route::cur_rk();
         let dur = SHARED.duration_ns.load(Ordering::Relaxed);
         if !rk.is_empty() && dur > 0 {
-            Some((rk, SHARED.playpos_ns.load(Ordering::Relaxed) / 1_000_000, dur / 1_000_000))
+            Some((
+                rk,
+                SHARED.playpos_ns.load(Ordering::Relaxed) / 1_000_000,
+                dur / 1_000_000,
+            ))
         } else {
             None
         }
@@ -992,7 +1078,10 @@ fn teardown(mt: &MainThread, for_reload: bool) {
     }
     if stream {
         // abort BOTH lanes: unblock the demux if it's parked in aq_push on a full lane
-        for q in [eng.aq_video.as_mut(), eng.aq_audio.as_mut()].into_iter().flatten() {
+        for q in [eng.aq_video.as_mut(), eng.aq_audio.as_mut()]
+            .into_iter()
+            .flatten()
+        {
             crate::aq::aq_abort(&mut **q);
         }
         let p = SHARED.hs_ptr.load(Ordering::Acquire);
@@ -1063,7 +1152,10 @@ fn teardown(mt: &MainThread, for_reload: bool) {
     // 4. drain + destroy both queues (drain_aq also clears both pendings)
     if stream {
         drain_aq(&mut eng);
-        for q in [eng.aq_video.as_mut(), eng.aq_audio.as_mut()].into_iter().flatten() {
+        for q in [eng.aq_video.as_mut(), eng.aq_audio.as_mut()]
+            .into_iter()
+            .flatten()
+        {
             crate::aq::aq_destroy(&mut **q);
         }
     }
@@ -1242,7 +1334,9 @@ fn pts_nudge_ns() -> i64 {
         .unwrap_or(DEFAULT);
     NUDGE.store(v, Ordering::Relaxed);
     if v != DEFAULT {
-        log(&format!("ptsnudge: video PTS nudge overridden to {v} ns (default {DEFAULT})"));
+        log(&format!(
+            "ptsnudge: video PTS nudge overridden to {v} ns (default {DEFAULT})"
+        ));
     }
     v
 }
@@ -1285,12 +1379,16 @@ pub(crate) fn feed_stream(mt: &MainThread, eng: &mut Engine) {
                 if eng.flushed {
                     let target = SHARED.seek_target_ns.load(Ordering::Relaxed);
                     let stale = target >= 0
-                        && (pts - target > SEEK_STALE_AHEAD_NS || target - pts > SEEK_STALE_BEHIND_NS);
+                        && (pts - target > SEEK_STALE_AHEAD_NS
+                            || target - pts > SEEK_STALE_BEHIND_NS);
                     if stale && eng.rebase_drops < MAX_REBASE_DROPS {
                         eng.rebase_drops += 1;
                         if eng.rebase_drops == 1 {
-                            log(&format!("rebase: dropping stale kf pts={}s (target {}s)",
-                                pts / 1_000_000_000, target / 1_000_000_000));
+                            log(&format!(
+                                "rebase: dropping stale kf pts={}s (target {}s)",
+                                pts / 1_000_000_000,
+                                target / 1_000_000_000
+                            ));
                         }
                         eng.pending_video = None;
                         continue;
@@ -1307,7 +1405,11 @@ pub(crate) fn feed_stream(mt: &MainThread, eng: &mut Engine) {
                     // the content-info path (loadSpi_getInfo + setContentInfo(ptsToDecode)), which
                     // re-anchors the decode position while Playing. Then always inject the fresh
                     // GStreamer SEGMENT so the sink re-bases instead of stalling.
-                    let ci = if ok == 0 { unsafe { ffi::sf_set_content_info(mt, pts) } } else { 1 };
+                    let ci = if ok == 0 {
+                        unsafe { ffi::sf_set_content_info(mt, pts) }
+                    } else {
+                        1
+                    };
                     let seg = unsafe { ffi::sf_send_segment(mt) };
                     log(&format!("in-place seek: setTimeToDecode({pts}) rv={ok} setContentInfo={ci} sendSegment={seg}"));
                     if seg == 0 {
@@ -1325,8 +1427,10 @@ pub(crate) fn feed_stream(mt: &MainThread, eng: &mut Engine) {
                         // naming the cause — only the `sendSegment=0` above, whose consequence
                         // was not stated anywhere.
                         super::INPLACE_SEEK_OK.store(false, Ordering::Relaxed);
-                        log("in-place seek DOWNGRADE: sendSegment=0 (CustomPipeline unreachable) \
-                             -> reload-per-seek for the rest of this session");
+                        log(
+                            "in-place seek DOWNGRADE: sendSegment=0 (CustomPipeline unreachable) \
+                             -> reload-per-seek for the rest of this session",
+                        );
                     }
                     eng.flushed = false;
                 } else {
@@ -1336,8 +1440,10 @@ pub(crate) fn feed_stream(mt: &MainThread, eng: &mut Engine) {
                 }
                 eng.rebase_pending = false; // releases the AUDIO lane (which holds until this clears)
                 eng.seek_base_pts = pts + SHARED.pts_shift.load(Ordering::Relaxed); // fed-pts base
-                log(&format!("rebase: first post-seek keyframe pts={pts} -> pts_shift={}",
-                    SHARED.pts_shift.load(Ordering::Relaxed)));
+                log(&format!(
+                    "rebase: first post-seek keyframe pts={pts} -> pts_shift={}",
+                    SHARED.pts_shift.load(Ordering::Relaxed)
+                ));
             } else {
                 eng.pending_video = None; // drop pre-keyframe AUs
                 continue;
@@ -1357,7 +1463,11 @@ pub(crate) fn feed_stream(mt: &MainThread, eng: &mut Engine) {
         // pts-ordered, so if the head is over budget everything behind it is too; breaking is right.
         if !eng.prime_play {
             let pres = SHARED.pres_fed.load(Ordering::Relaxed);
-            let budget = if es == 1 { MAX_FEED_AHEAD_NS } else { MAX_FEED_AHEAD_NS + AUDIO_SLACK_NS };
+            let budget = if es == 1 {
+                MAX_FEED_AHEAD_NS
+            } else {
+                MAX_FEED_AHEAD_NS + AUDIO_SLACK_NS
+            };
             if pres != PRES_NONE && fp - pres > budget {
                 SHARED.dg_feed_state.store(4, Ordering::Relaxed); // waiting for a frame
                 break;
@@ -1376,11 +1486,18 @@ pub(crate) fn feed_stream(mt: &MainThread, eng: &mut Engine) {
         // The video-buffer fallback still starts an audioless/briefly-starved stream (no hang).
         let vbuf = eng.max_fed_video_pts - eng.seek_base_pts;
         let abuf = eng.max_fed_audio_pts - eng.seek_base_pts;
-        if eng.prime_play && vbuf >= PRIME_NS && (abuf >= PRIME_AUDIO_NS || vbuf >= PRIME_VIDEO_MAX_NS) {
+        if eng.prime_play
+            && vbuf >= PRIME_NS
+            && (abuf >= PRIME_AUDIO_NS || vbuf >= PRIME_VIDEO_MAX_NS)
+        {
             unsafe { ffi::sf_play(mt) };
             eng.prime_play = false;
             SHARED.seeking.store(false, Ordering::Relaxed); // playback resumed at the new position → HUD spinner off
-            log(&format!("primed: v={}ms a={}ms -> Play", vbuf / 1_000_000, abuf / 1_000_000));
+            log(&format!(
+                "primed: v={}ms a={}ms -> Play",
+                vbuf / 1_000_000,
+                abuf / 1_000_000
+            ));
         }
         // The log cadence counts ATTEMPTS (its `reply=` field is the only record of a rejected
         // feed, and tests/run.py greps `feed v#`), so it keeps its own counter. VTOT counts what
@@ -1389,18 +1506,23 @@ pub(crate) fn feed_stream(mt: &MainThread, eng: &mut Engine) {
             let v = VATT.fetch_add(1, Ordering::Relaxed) + 1;
             if v <= 4 || v % 100 == 0 {
                 let qb = crate::aq::aq_bytes(qp);
-                log(&format!("feed v#{v} sz={len} fed={fp} reply={} qbytes={qb}", r as u8 as char));
+                log(&format!(
+                    "feed v#{v} sz={len} fed={fp} reply={} qbytes={qb}",
+                    r as u8 as char
+                ));
             }
         }
         if (r as u8) != b'O' {
             // 'B' BufferFull -> keep pending, retry next tick (VIDEO lane only)
-            SHARED.dg_feed_state.store(if (r as u8) == b'B' { 2 } else { 3 }, Ordering::Relaxed);
+            SHARED
+                .dg_feed_state
+                .store(if (r as u8) == b'B' { 2 } else { 3 }, Ordering::Relaxed);
             break;
         }
         SHARED.dg_feed_state.store(1, Ordering::Relaxed); // accepting
-        // COUNTED HERE, below the reply test, so `Fed` means AUs the pipeline TOOK. Counted above
-        // it, a permanently-full sink re-offered and re-counted the same retained AU every tick,
-        // and the read-out showed a brisk feed rate through a stall.
+                                                          // COUNTED HERE, below the reply test, so `Fed` means AUs the pipeline TOOK. Counted above
+                                                          // it, a permanently-full sink re-offered and re-counted the same retained AU every tick,
+                                                          // and the read-out showed a brisk feed rate through a stall.
         if es == 1 {
             VTOT.fetch_add(1, Ordering::Relaxed);
         }
@@ -1464,7 +1586,10 @@ pub(crate) fn feed_audio_lane(mt: &MainThread, eng: &mut Engine) {
         let a = AATT.fetch_add(1, Ordering::Relaxed) + 1;
         if a <= 4 || a % 200 == 0 {
             let qb = crate::aq::aq_bytes(qp);
-            log(&format!("feed a#{a} sz={len} fed={fp} reply={} qbytes={qb}", r as u8 as char));
+            log(&format!(
+                "feed a#{a} sz={len} fed={fp} reply={} qbytes={qb}",
+                r as u8 as char
+            ));
         }
         if (r as u8) == b'O' {
             ATOT.fetch_add(1, Ordering::Relaxed); // accepted, not attempted — see feed_stream
@@ -1512,7 +1637,13 @@ mod payload_tests {
     use crate::metadata::Dovi;
 
     fn p5() -> Dovi {
-        Dovi { present: true, profile: 5, bl_compat: 0, el_present: false, ..Dovi::NONE }
+        Dovi {
+            present: true,
+            profile: 5,
+            bl_compat: 0,
+            el_present: false,
+            ..Dovi::NONE
+        }
     }
 
     /// **Every Load payload must carry the `appId` placeholder, exactly once**, because that key
@@ -1528,9 +1659,16 @@ mod payload_tests {
     /// literal id it replaced: an id can be spelled correctly by accident, `@APPID@` cannot.
     #[test]
     fn every_load_payload_carries_the_app_id_placeholder_exactly_once() {
-        for (name, p) in [("PAYLOAD_V", PAYLOAD_V), ("PAYLOAD_AV", PAYLOAD_AV), ("PAYLOAD_H265", PAYLOAD_H265)] {
-            assert_eq!(p.matches(r#""appId":"@APPID@""#).count(), 1,
-                       "{name} must carry the appId placeholder exactly once — webOS 5+ video binds on it");
+        for (name, p) in [
+            ("PAYLOAD_V", PAYLOAD_V),
+            ("PAYLOAD_AV", PAYLOAD_AV),
+            ("PAYLOAD_H265", PAYLOAD_H265),
+        ] {
+            assert_eq!(
+                p.matches(r#""appId":"@APPID@""#).count(),
+                1,
+                "{name} must carry the appId placeholder exactly once — webOS 5+ video binds on it"
+            );
         }
     }
 
@@ -1545,14 +1683,27 @@ mod payload_tests {
     #[test]
     fn the_shipped_app_composes_the_payload_it_always_did() {
         let want = r#""appId":"com.beb.plxnative""#;
-        for (name, p) in [("PAYLOAD_V", PAYLOAD_V), ("PAYLOAD_AV", PAYLOAD_AV), ("PAYLOAD_H265", PAYLOAD_H265)] {
+        for (name, p) in [
+            ("PAYLOAD_V", PAYLOAD_V),
+            ("PAYLOAD_AV", PAYLOAD_AV),
+            ("PAYLOAD_H265", PAYLOAD_H265),
+        ] {
             let composed = p.replace("@APPID@", crate::paths::STABLE_APP_ID);
-            assert!(composed.contains(want), "{name} no longer composes the shipped key");
+            assert!(
+                composed.contains(want),
+                "{name} no longer composes the shipped key"
+            );
             // key ORDER too: `appId` stays the first key of `option`, where it has always been.
-            assert!(composed.contains(&format!(r#""option":{{{want},"#)), "{name} moved the appId key");
+            assert!(
+                composed.contains(&format!(r#""option":{{{want},"#)),
+                "{name} moved the appId key"
+            );
         }
         // And the anchor the splice looks for is the composed key, not a restatement of it.
-        assert_eq!(super::app_id_key(), format!(r#""appId":"{}""#, crate::paths::app_id()));
+        assert_eq!(
+            super::app_id_key(),
+            format!(r#""appId":"{}""#, crate::paths::app_id())
+        );
         assert!(super::with_app_id(PAYLOAD_V).contains(&super::app_id_key()));
         assert!(!super::with_app_id(PAYLOAD_V).contains("@APPID@"));
     }
@@ -1585,14 +1736,18 @@ mod payload_tests {
         // the trailing `}` above is `contents` closing: the node is the last key INSIDE it, not a
         // sibling of `contents` in `externalStreamingInfo`
         assert!(out.contains(r#""DolbyHdrInfo":{"trackType":"single","encryptionType":"clear","profileId":5}},"streamQualityInfo""#));
-        assert!(!out.contains(r#""profileId":"5""#), "getInt wants an integer, not a string");
+        assert!(
+            !out.contains(r#""profileId":"5""#),
+            "getInt wants an integer, not a string"
+        );
         // the codec string stays `H265` — `getVideoCaps` maps it to `video/x-h265` and falls
         // THROUGH into its Dolby Vision tail; there is no DVHE/DVH1 entry in that table, and
         // inventing one would describe a stream the pipeline has no decoder row for
         assert!(out.contains(r#""video":"H265""#), "{out}");
         assert!(!out.contains("DVHE") && !out.contains("dvh1"), "{out}");
         // and NOTHING else moved: take the node back out and the payload is what came in
-        const NODE: &str = r#","DolbyHdrInfo":{"trackType":"single","encryptionType":"clear","profileId":5}"#;
+        const NODE: &str =
+            r#","DolbyHdrInfo":{"trackType":"single","encryptionType":"clear","profileId":5}"#;
         assert_eq!(out.replace(NODE, ""), base);
     }
 
@@ -1602,7 +1757,13 @@ mod payload_tests {
     /// `RELEASE=1` build compiles in and what every boot without `/tmp/plxnative-dv` does today.
     #[test]
     fn nothing_is_spliced_unless_the_stream_is_declared() {
-        let p7 = Dovi { present: true, profile: 7, bl_compat: 6, el_present: true, ..Dovi::NONE };
+        let p7 = Dovi {
+            present: true,
+            profile: 7,
+            bl_compat: 6,
+            el_present: true,
+            ..Dovi::NONE
+        };
         for dv in [
             Dovi::NONE.presentation(true),
             p7.presentation(true),
@@ -1619,10 +1780,16 @@ mod payload_tests {
     #[test]
     fn an_atmos_track_splices_immersive_into_contents() {
         let out = with_immersive(PAYLOAD_AV, true);
-        assert!(out.contains(r#""provider":"plxnative","immersive":"ATMOS"}"#), "{out}");
+        assert!(
+            out.contains(r#""provider":"plxnative","immersive":"ATMOS"}"#),
+            "{out}"
+        );
         // the trailing `}` is `contents` closing — the node is INSIDE it, not a sibling of
         // `contents` in `externalStreamingInfo`, which is where libpf would never look
-        assert!(out.contains(r#""immersive":"ATMOS"},"streamQualityInfo""#), "{out}");
+        assert!(
+            out.contains(r#""immersive":"ATMOS"},"streamQualityInfo""#),
+            "{out}"
+        );
         // and nothing else moved
         assert_eq!(out.replace(r#","immersive":"ATMOS""#, ""), PAYLOAD_AV);
     }
@@ -1643,7 +1810,10 @@ mod payload_tests {
     #[test]
     fn dolby_vision_and_atmos_are_siblings_inside_contents() {
         let base = PAYLOAD_AV.replace(r#""video":"H264""#, r#""video":"H265""#);
-        let out = with_immersive(&with_dolby_hdr_info(&base, "H265", p5().presentation(true)), true);
+        let out = with_immersive(
+            &with_dolby_hdr_info(&base, "H265", p5().presentation(true)),
+            true,
+        );
         assert!(
             out.contains(
                 r#""provider":"plxnative","immersive":"ATMOS","DolbyHdrInfo":{"trackType":"single","encryptionType":"clear","profileId":5}}"#
@@ -1664,6 +1834,9 @@ mod payload_tests {
     /// parsed before anything decodes, and a malformed one wedges the sink instead of failing.
     #[test]
     fn a_declaration_never_rides_a_non_hevc_payload() {
-        assert_eq!(with_dolby_hdr_info(PAYLOAD_AV, "H264", p5().presentation(true)), PAYLOAD_AV);
+        assert_eq!(
+            with_dolby_hdr_info(PAYLOAD_AV, "H264", p5().presentation(true)),
+            PAYLOAD_AV
+        );
     }
 }

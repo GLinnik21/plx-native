@@ -20,7 +20,9 @@ pub(crate) fn load_thread(payload: SendPtr<c_char>) {
         // Publish it. This used to be logged and discarded, so a refused payload was
         // indistinguishable from a slow one and the pump waited on a `loadCompleted` that could
         // never come.
-        super::SHARED.load_failed.store(true, std::sync::atomic::Ordering::Release);
+        super::SHARED
+            .load_failed
+            .store(true, std::sync::atomic::Ordering::Release);
     }
 }
 
@@ -54,7 +56,10 @@ pub(crate) struct ReportStop {
 
 impl ReportStop {
     pub(crate) fn new() -> std::sync::Arc<Self> {
-        std::sync::Arc::new(ReportStop { flag: std::sync::Mutex::new(false), cv: std::sync::Condvar::new() })
+        std::sync::Arc::new(ReportStop {
+            flag: std::sync::Mutex::new(false),
+            cv: std::sync::Condvar::new(),
+        })
     }
 
     /// Tell this reporter to exit, and wake it so it notices now rather than up to 10 s from now.
@@ -78,7 +83,11 @@ impl ReportStop {
             if now >= deadline {
                 return false;
             }
-            g = self.cv.wait_timeout(g, deadline - now).unwrap_or_else(|e| e.into_inner()).0;
+            g = self
+                .cv
+                .wait_timeout(g, deadline - now)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
         }
     }
 }
@@ -93,7 +102,11 @@ impl ReportStop {
 /// catch it, and the device harness grades progress from the app's own heartbeat rather than from
 /// the server it landed on. (`report_timeline` logs a report that fails to land now — but one that
 /// lands on the WRONG server does not fail, so that line would never have caught this.)
-pub(crate) fn timeline_thread(sid: crate::plex::ServerId, rk: String, stop: std::sync::Arc<ReportStop>) {
+pub(crate) fn timeline_thread(
+    sid: crate::plex::ServerId,
+    rk: String,
+    stop: std::sync::Arc<ReportStop>,
+) {
     use crate::plex::TimelineState;
     loop {
         if stop.wait_or_stop(REPORT_INTERVAL_S) {
@@ -111,7 +124,11 @@ pub(crate) fn timeline_thread(sid: crate::plex::ServerId, rk: String, stop: std:
             TimelineState::Playing
         };
         crate::route::report_timeline(sid, &rk, state, t, d);
-        super::log(&format!("timeline {} t={}s/{}s", state.as_str(), t / 1000, d / 1000));
+        super::log(&format!(
+            "timeline {} t={}s/{}s",
+            state.as_str(),
+            t / 1000,
+            d / 1000
+        ));
     }
 }
-

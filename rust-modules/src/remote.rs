@@ -86,7 +86,10 @@ impl Remote {
                 ));
                 return None;
             }
-            Some(Remote { fd, buf: String::new() })
+            Some(Remote {
+                fd,
+                buf: String::new(),
+            })
         }
     }
 
@@ -100,7 +103,8 @@ impl Remote {
             if n <= 0 {
                 break; // EAGAIN (empty) or error → nothing more this frame
             }
-            self.buf.push_str(&String::from_utf8_lossy(&tmp[..n as usize]));
+            self.buf
+                .push_str(&String::from_utf8_lossy(&tmp[..n as usize]));
             if (n as usize) < tmp.len() {
                 break;
             }
@@ -157,7 +161,10 @@ mod tests {
     /// is the half under test. (`Drop` then `close(-1)`s, which is a harmless EBADF too.)
     /// Returns the tokens it emitted and the tail it kept for the next frame.
     fn drain_buffer(pre: &str) -> (Vec<String>, String) {
-        let mut r = Remote { fd: -1, buf: pre.to_string() };
+        let mut r = Remote {
+            fd: -1,
+            buf: pre.to_string(),
+        };
         let mut out = Vec::new();
         r.drain(|t| out.push(t.to_string()));
         (out, r.buf.clone())
@@ -175,8 +182,14 @@ mod tests {
     fn a_multibyte_whitespace_does_not_panic_the_tokenizer() {
         for pre in ["down\u{a0}", "\u{3000}", "ok\u{2028}", "up\u{a0}\u{3000}"] {
             let (toks, tail) = drain_buffer(pre);
-            assert!(toks.is_empty(), "{pre:?}: no ASCII terminator, so nothing is complete yet");
-            assert_eq!(tail, pre, "{pre:?}: the unterminated tail must be carried over intact");
+            assert!(
+                toks.is_empty(),
+                "{pre:?}: no ASCII terminator, so nothing is complete yet"
+            );
+            assert_eq!(
+                tail, pre,
+                "{pre:?}: the unterminated tail must be carried over intact"
+            );
         }
     }
 
@@ -196,6 +209,9 @@ mod tests {
     fn complete_tokens_fire_and_a_partial_one_is_held_over() {
         let (toks, tail) = drain_buffer("down ok\r\nck:100,200\nle");
         assert_eq!(toks, ["down", "ok", "ck:100,200"]);
-        assert_eq!(tail, "le", "the partial token must survive to be completed next frame");
+        assert_eq!(
+            tail, "le",
+            "the partial token must survive to be completed next frame"
+        );
     }
 }

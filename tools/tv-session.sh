@@ -18,8 +18,8 @@
 #                     the close, the launch, the triggers and the log all follow it.
 #
 # `up` options:
-#   --screen <name>   home (default) | profiles | library[=N] | detail=<rk> | person=<movie rk>
-#                     | player=<rk> | login | account | itemmenu
+#   --screen <name>   home (default) | onboard | consent=crash|product | profiles | library[=N]
+#                     | detail=<rk> | person=<movie rk> | player=<rk> | login | account | itemmenu
 #   --guest           run as the managed test user rather than the owner (default: owner)
 #   --stream[=PORT]   also start tools/stream-screen.py for a live browser view (default 8909)
 #                     STREAM_RES=480x270 makes mpeg encode ~4x cheaper (see the skill)
@@ -392,6 +392,12 @@ cmd_up() {
   local files=() want_route=""
   case "$screen" in
     home)      want_route=home ;;
+    # First-run routes are normally one-shot gates and therefore need named session entries for
+    # visual verification after they have been answered. These triggers alter presentation state
+    # only; they do not record source or reporting choices.
+    onboard)   files+=("plxnative-firstrun="); want_route=onboard ;;
+    consent=crash) files+=("plxnative-consent=crash"); want_route=home ;;
+    consent=product) files+=("plxnative-consent=product"); want_route=home ;;
     # The picker is what an ORDINARY boot shows: it needs the stored session and NO
     # automation. An injected token suppresses it (token beats session), and
     # plxnative-pickuser forces it only to auto-pick a tile and move straight on — so

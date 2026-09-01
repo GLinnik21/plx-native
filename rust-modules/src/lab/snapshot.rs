@@ -250,8 +250,9 @@ pub(crate) fn body(
     // empty envelope line would make the whole upload unreadable, so the fallback still says what
     // happened in the same shape.
     lines.push(
-        serde_json::to_string(&env)
-            .unwrap_or_else(|_| r#"{"kind":"envelope","error":"envelope did not serialise"}"#.into()),
+        serde_json::to_string(&env).unwrap_or_else(|_| {
+            r#"{"kind":"envelope","error":"envelope did not serialise"}"#.into()
+        }),
     );
     for l in &kept {
         if let Ok(s) = serde_json::to_string(l) {
@@ -286,7 +287,6 @@ fn caps() -> Caps {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -302,12 +302,29 @@ mod tests {
     /// from dropping, and the test directly below this one is the assertion that it does not.
     #[test]
     fn an_unanticipated_credential_shape_is_refused_outright() {
-        assert!(matches!(scrub("auth ok, Bearer eyJhbGciOi.abc"), Scrubbed::Refuse));
+        assert!(matches!(
+            scrub("auth ok, Bearer eyJhbGciOi.abc"),
+            Scrubbed::Refuse
+        ));
         let recs = vec![
-            Rec { t_ms: 1, msg: "keep me".into() },
-            Rec { t_ms: 2, msg: "Bearer eyJ.abc".into() },
+            Rec {
+                t_ms: 1,
+                msg: "keep me".into(),
+            },
+            Rec {
+                t_ms: 2,
+                msg: "Bearer eyJ.abc".into(),
+            },
         ];
-        let doc = body(1, "key", "s", "home", &crate::player::Diag::default(), recs, 0);
+        let doc = body(
+            1,
+            "key",
+            "s",
+            "home",
+            &crate::player::Diag::default(),
+            recs,
+            0,
+        );
         assert!(!doc.contains("eyJ.abc"), "{doc}");
         let env: serde_json::Value = serde_json::from_str(doc.split('\n').next().unwrap()).unwrap();
         assert_eq!(env["refused"], 1);
@@ -322,10 +339,24 @@ mod tests {
     #[test]
     fn the_document_is_one_envelope_line_then_one_line_per_record() {
         let recs = vec![
-            Rec { t_ms: 10, msg: "first".into() },
-            Rec { t_ms: 20, msg: "second".into() },
+            Rec {
+                t_ms: 10,
+                msg: "first".into(),
+            },
+            Rec {
+                t_ms: 20,
+                msg: "second".into(),
+            },
         ];
-        let doc = body(3, "key", "a1b2c3d4", "player", &crate::player::Diag::default(), recs, 7);
+        let doc = body(
+            3,
+            "key",
+            "a1b2c3d4",
+            "player",
+            &crate::player::Diag::default(),
+            recs,
+            7,
+        );
         let lines: Vec<&str> = doc.split('\n').collect();
         assert_eq!(lines.len(), 3);
         let env: serde_json::Value = serde_json::from_str(lines[0]).expect("envelope is JSON");
@@ -348,10 +379,25 @@ mod tests {
     /// containing a newline, a quote or a control character must not break the frame.
     #[test]
     fn a_record_with_hostile_characters_stays_one_json_line() {
-        let recs = vec![Rec { t_ms: 1, msg: "a\nb\t\"c\"\\d".into() }];
-        let doc = body(1, "menu", "s", "home", &crate::player::Diag::default(), recs, 0);
+        let recs = vec![Rec {
+            t_ms: 1,
+            msg: "a\nb\t\"c\"\\d".into(),
+        }];
+        let doc = body(
+            1,
+            "menu",
+            "s",
+            "home",
+            &crate::player::Diag::default(),
+            recs,
+            0,
+        );
         let lines: Vec<&str> = doc.split('\n').collect();
-        assert_eq!(lines.len(), 2, "the embedded newline did not split the record");
+        assert_eq!(
+            lines.len(),
+            2,
+            "the embedded newline did not split the record"
+        );
         let rec: serde_json::Value = serde_json::from_str(lines[1]).expect("still JSON");
         assert_eq!(rec["m"], "a\nb\t\"c\"\\d");
     }

@@ -450,7 +450,10 @@ mod tests {
     fn an_unknown_neutral_usage_version_is_not_posted_as_vendor_json() {
         let mut r = rec(Category::Usage, Dest::PostHog);
         r.body = br#"{"version":99,"occurred_at_ms":1,"session_id":"s","name":"app.launch","fields":[]}"#.to_vec();
-        assert!(wire_body(&r).is_empty(), "future internal storage escaped onto the wire");
+        assert!(
+            wire_body(&r).is_empty(),
+            "future internal storage escaped onto the wire"
+        );
     }
 
     fn rec(cat: Category, dest: Dest) -> Record {

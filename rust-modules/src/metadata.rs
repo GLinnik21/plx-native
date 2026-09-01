@@ -406,9 +406,9 @@ crate::dev::latched_flag!(
 // can name the two or three fields its case is about instead of the fifteen it is not.
 #[derive(Clone, Default)]
 pub(crate) struct Stream {
-    pub(crate) id: i64, // Plex stream id (for &audioStreamID / &subtitleStreamID)
-    pub(crate) index: i64, // PMS stream index (container order) — the ordinal mapping sorts by it
-    pub(crate) lang: String,      // display name ("English")
+    pub(crate) id: i64,      // Plex stream id (for &audioStreamID / &subtitleStreamID)
+    pub(crate) index: i64,   // PMS stream index (container order) — the ordinal mapping sorts by it
+    pub(crate) lang: String, // display name ("English")
     pub(crate) lang_code: String, // ISO code ("eng") — the route's language preference matches this
     pub(crate) codec: String,
     pub(crate) channels: i64,
@@ -474,8 +474,8 @@ impl Stream {
 #[derive(Default)]
 pub(crate) struct Episode {
     pub(crate) rk: String,
-    pub(crate) index: i64,   // episode number
-    pub(crate) season: i64,  // parentIndex
+    pub(crate) index: i64,  // episode number
+    pub(crate) season: i64, // parentIndex
     pub(crate) title: String,
     pub(crate) summary: String,
     pub(crate) aired: String, // originallyAvailableAt
@@ -487,7 +487,7 @@ pub(crate) struct Episode {
     /// which of the two a tile shows is a presentation rule at the draw site (see
     /// `ui/detail.rs`'s filmstrip), not a mutual exclusion the data layer can assume.
     pub(crate) watched: bool,
-    pub(crate) part: String,   // Media[0].Part[0].key (to play)
+    pub(crate) part: String, // Media[0].Part[0].key (to play)
     pub(crate) rating: String,
     pub(crate) vcodec: String, // Media[0].videoCodec (for the direct-play/transcode decision)
     pub(crate) acodec: String, // Media[0].audioCodec
@@ -608,12 +608,14 @@ fn convert_markers(markers: &[crate::plex::Marker]) -> Vec<Marker> {
                 "credits" => MarkerKind::Credits,
                 _ => return None,
             };
-            (m.end_time_offset > m.start_time_offset && m.start_time_offset >= 0).then_some(Marker {
-                kind,
-                start_ms: m.start_time_offset,
-                end_ms: m.end_time_offset,
-                final_seg: m.is_final != 0,
-            })
+            (m.end_time_offset > m.start_time_offset && m.start_time_offset >= 0).then_some(
+                Marker {
+                    kind,
+                    start_ms: m.start_time_offset,
+                    end_ms: m.end_time_offset,
+                    final_seg: m.is_final != 0,
+                },
+            )
         })
         .collect()
 }
@@ -675,7 +677,10 @@ pub(crate) fn synthesized_tail_marker(has_next: bool) -> Option<Marker> {
     if !has_next || !crate::player::is_playing() {
         return None;
     }
-    if playing_markers().iter().any(|m| m.kind == MarkerKind::Credits) {
+    if playing_markers()
+        .iter()
+        .any(|m| m.kind == MarkerKind::Credits)
+    {
         return None;
     }
     let dur_ms = crate::player::duration_ns() / 1_000_000;
@@ -689,8 +694,12 @@ pub(crate) fn tail_marker(pos_ms: i64, dur_ms: i64) -> Option<Marker> {
         return None;
     }
     let start_ms = dur_ms - TAIL_WINDOW_MS;
-    (pos_ms >= start_ms)
-        .then_some(Marker { kind: MarkerKind::Credits, start_ms, end_ms: dur_ms, final_seg: true })
+    (pos_ms >= start_ms).then_some(Marker {
+        kind: MarkerKind::Credits,
+        start_ms,
+        end_ms: dur_ms,
+        final_seg: true,
+    })
 }
 
 /// The marker containing `pos_ms`, if any — the ONE "am I inside a skippable segment" rule, shared
@@ -850,7 +859,13 @@ fn convert_ratings(it: &crate::plex::Metadata) -> Vec<Rating> {
             (it.audience_rating_image.as_str(), it.audience_rating, false),
         ]
         .into_iter()
-        .filter_map(|(img, value, critic)| Some(Rating { art: RatingArt::from_image(img)?, value, critic }))
+        .filter_map(|(img, value, critic)| {
+            Some(Rating {
+                art: RatingArt::from_image(img)?,
+                value,
+                critic,
+            })
+        })
         .filter(|r| r.value > 0.0)
         .collect()
     };
@@ -898,11 +913,11 @@ pub(crate) struct Detail {
     /// lookup is possible for this item.
     pub(crate) guid: String,
     pub(crate) is_show: bool,
-    pub(crate) kind: String,       // this item's own type: movie | episode | show | season
+    pub(crate) kind: String, // this item's own type: movie | episode | show | season
     pub(crate) show_title: String, // grandparentTitle — the show name, when this item is an episode
-    pub(crate) show_rk: String,    // grandparentRatingKey — the show's rk (episode → its show)
-    pub(crate) season: i64,        // parentIndex — season number, when an episode
-    pub(crate) index: i64,         // index — episode number, when an episode
+    pub(crate) show_rk: String, // grandparentRatingKey — the show's rk (episode → its show)
+    pub(crate) season: i64,  // parentIndex — season number, when an episode
+    pub(crate) index: i64,   // index — episode number, when an episode
     pub(crate) title: String,
     pub(crate) year: i64,
     pub(crate) rating: String, // contentRating
@@ -1069,7 +1084,9 @@ pub(crate) fn install_for_test(d: Option<Detail>) {
 /// The landed refresh is the truth and silently corrects any of this; see [`crate::viewstate`].
 pub(crate) fn set_watched_local(sid: crate::plex::ServerId, rk: &str, on: bool) -> bool {
     unsafe {
-        let Some(d) = (*addr_of_mut!(CURRENT)).as_mut() else { return false };
+        let Some(d) = (*addr_of_mut!(CURRENT)).as_mut() else {
+            return false;
+        };
         // The RELATED shelf first, and unconditionally — it is the one store here whose rows are
         // OTHER items, so it is neither the loaded item nor one of its episodes and must not be
         // reached through either of their early returns below. A related tile is also the one the
@@ -1103,7 +1120,9 @@ pub(crate) fn set_watched_local(sid: crate::plex::ServerId, rk: &str, on: bool) 
         if d.sid != sid {
             return hit;
         }
-        let Some(i) = d.episodes.iter().position(|e| e.rk == rk) else { return hit };
+        let Some(i) = d.episodes.iter().position(|e| e.rk == rk) else {
+            return hit;
+        };
         let was = d.episodes[i].watched;
         d.episodes[i].watched = on;
         d.episodes[i].resume_ms = 0;
@@ -1145,15 +1164,15 @@ pub(crate) fn set_current_for_test(d: Option<Detail>) {
 /// explicitly by show-page episode play (where `current()` is still the show).
 pub(crate) struct NowPlaying {
     pub(crate) is_episode: bool,
-    pub(crate) title: String,     // big title: show title (episode) or movie title
-    pub(crate) ep_title: String,  // episode name (episode only)
+    pub(crate) title: String, // big title: show title (episode) or movie title
+    pub(crate) ep_title: String, // episode name (episode only)
     pub(crate) season: i64,
     pub(crate) index: i64,
     pub(crate) summary: String,
     pub(crate) year: i64,
     pub(crate) dur_ms: i64,
     pub(crate) rating: String,
-    pub(crate) thumb: String,     // 16:9 still (episode) / landscape art (movie)
+    pub(crate) thumb: String, // 16:9 still (episode) / landscape art (movie)
     pub(crate) detail_rk: String, // "Go to Show"/"Go to Movie" target
 }
 static mut NOW: Option<NowPlaying> = None;
@@ -1190,7 +1209,11 @@ pub(crate) fn sync_now_playing() {
             year: d.year,
             dur_ms: d.dur_ms,
             rating: d.rating.clone(),
-            thumb: if !d.art.is_empty() { d.art.clone() } else { d.thumb.clone() },
+            thumb: if !d.art.is_empty() {
+                d.art.clone()
+            } else {
+                d.thumb.clone()
+            },
             detail_rk: d.rk.clone(),
         }),
         _ => None, // show / season → not a playing leaf
@@ -1227,8 +1250,11 @@ fn fetch_detail(sid: crate::plex::ServerId, rk: &str) -> Option<Detail> {
         // FORCE a state, so an armed one outranks the real answer, and an armed EMPTY file forces
         // the absence of a handle rather than doing nothing. It stamps one handle onto every item
         // this session loads, which is what a fully-borrowed library looks like.
-        source: crate::dev::read("shared")
-            .unwrap_or_else(|| crate::plex::server_facts(sid).map(|f| f.handle.clone()).unwrap_or_default()),
+        source: crate::dev::read("shared").unwrap_or_else(|| {
+            crate::plex::server_facts(sid)
+                .map(|f| f.handle.clone())
+                .unwrap_or_default()
+        }),
         // the portable identity — what "Also available" resolves across the other sources
         guid: it.guid.clone(),
         is_show: it.kind == "show",
@@ -1295,7 +1321,11 @@ fn fetch_detail(sid: crate::plex::ServerId, rk: &str) -> Option<Detail> {
         subs: Vec::new(),
         seasons: Vec::new(),
         episodes: Vec::new(),
-        on_deck: it.on_deck.as_ref().and_then(|h| h.metadata.as_deref()).map(convert_episode),
+        on_deck: it
+            .on_deck
+            .as_ref()
+            .and_then(|h| h.metadata.as_deref())
+            .map(convert_episode),
         cur_season: 0,
         related: Vec::new(),
         chapters: convert_chapters(&it.chapter),
@@ -1413,9 +1443,10 @@ fn convert_streams(streams: &[crate::plex::Stream]) -> Streams {
         match s.stream_type {
             1 => {
                 fps = s.frame_rate; // e.g. 23.976 — for the Load esInfo
-                // PQ (HDR10) or HLG transfer, or Dolby Vision — the dev PMS sends
-                // colorTrc=smpte2084 on its HDR10 items (probed live 2026-08-11)
-                hdr = matches!(s.color_trc.as_str(), "smpte2084" | "arib-std-b67") || s.dovi_present != 0;
+                                    // PQ (HDR10) or HLG transfer, or Dolby Vision — the dev PMS sends
+                                    // colorTrc=smpte2084 on its HDR10 items (probed live 2026-08-11)
+                hdr = matches!(s.color_trc.as_str(), "smpte2084" | "arib-std-b67")
+                    || s.dovi_present != 0;
                 // NB a Profile 5 file sends NO colorTrc at all (verified live 2026-08-21: the
                 // dev server's one P5 item omits the field), so `dovi_present` is the only
                 // thing that makes it read as HDR — and the layering fields below are the only
@@ -1458,7 +1489,14 @@ fn convert_streams(streams: &[crate::plex::Stream]) -> Streams {
             _ => {}
         }
     }
-    Streams { audio, subs, video, fps, hdr, dovi }
+    Streams {
+        audio,
+        subs,
+        video,
+        fps,
+        hdr,
+        dovi,
+    }
 }
 
 /// parse an item's Media[0].Part[0].Stream[] into d.audio / d.subs (the About footer), plus that
@@ -1585,18 +1623,18 @@ pub(crate) fn cached_playing(sid: crate::plex::ServerId, rk: &str) -> Option<Pla
     current()
         .filter(|d| crate::plex::same_item((d.sid, &d.rk), (sid, rk)) && !d.audio.is_empty())
         .map(|d| PlayingItem {
-        sid,
-        rk: rk.to_string(),
-        audio: d.audio.clone(),
-        subs: d.subs.clone(),
-        video_fps: d.video_fps,
-        width: d.width,
-        height: d.height,
-        bitrate: d.bitrate,
-        dovi: d.dovi,
-        markers: d.markers.clone(),
-        chapters: d.chapters.clone(),
-    })
+            sid,
+            rk: rk.to_string(),
+            audio: d.audio.clone(),
+            subs: d.subs.clone(),
+            video_fps: d.video_fps,
+            width: d.width,
+            height: d.height,
+            bitrate: d.bitrate,
+            dovi: d.dovi,
+            markers: d.markers.clone(),
+            chapters: d.chapters.clone(),
+        })
 }
 
 /// `sid` names the server `rk` is a key on. It runs on the resolve worker, so the server must
@@ -1611,8 +1649,14 @@ pub(crate) fn fetch_playing_item(sid: crate::plex::ServerId, rk: &str) -> Option
     // still yields both of those instead of discarding all three. `Client::metadata` already sends
     // `includeChapters=1` (plex/library.rs), so the Chapter[] is on the wire either way: taking it
     // here costs no request, and dropping it is what hid the Chapters tab on the episode path.
-    let markers = it.as_ref().map(|it| convert_markers(&it.marker)).unwrap_or_default();
-    let chapters = it.as_ref().map(|it| convert_chapters(&it.chapter)).unwrap_or_default();
+    let markers = it
+        .as_ref()
+        .map(|it| convert_markers(&it.marker))
+        .unwrap_or_default();
+    let chapters = it
+        .as_ref()
+        .map(|it| convert_chapters(&it.chapter))
+        .unwrap_or_default();
     let st = it
         .as_ref()
         .and_then(|it| it.first_part().map(|p| convert_streams(&p.stream)))
@@ -1675,7 +1719,12 @@ pub(crate) fn install_playing(pt: Option<PlayingItem>) {
     if let Some(pt) = &pt {
         crate::player::log(&format!(
             "playing item: rk={} audio={} subs={} markers={} chapters={}",
-            pt.rk, pt.audio.len(), pt.subs.len(), pt.markers.len(), pt.chapters.len()));
+            pt.rk,
+            pt.audio.len(),
+            pt.subs.len(),
+            pt.markers.len(),
+            pt.chapters.len()
+        ));
     }
     unsafe { *addr_of_mut!(PLAYING) = pt };
 }
@@ -1693,7 +1742,11 @@ pub(crate) fn audio_ordinal(audio: &[Stream], i: usize) -> i32 {
         return i as i32;
     }
     let me = (audio[i].index, i);
-    audio.iter().enumerate().filter(|(j, s)| (s.index, *j) < me).count() as i32
+    audio
+        .iter()
+        .enumerate()
+        .filter(|(j, s)| (s.index, *j) < me)
+        .count() as i32
 }
 
 /// Container ordinal of `subs[i]` among the EMBEDDED subtitle streams (all ff.rs enumerates —
@@ -1791,7 +1844,9 @@ fn fetch_related(sid: crate::plex::ServerId, rk: &str) -> Vec<Related> {
         None => {
             // Same shape as `fetch_seasons` above: the degrade is deliberate, the silence is not —
             // an item with no related hub and a refused GET both reach `fetch_full`'s `related=0`.
-            crate::log(&format!("detail: rk={rk} /related did not answer — the related= below is that refusal"));
+            crate::log(&format!(
+                "detail: rk={rk} /related did not answer — the related= below is that refusal"
+            ));
             return Vec::new();
         }
     };
@@ -1859,7 +1914,9 @@ fn fetch_full(sid: crate::plex::ServerId, rk: &str) -> Option<Detail> {
     // client at all and no request was ever issued. One line for both is right — the page is equally
     // empty either way — but it must not assert a round trip that may not have happened.
     let Some(mut d) = fetch_detail(sid, rk) else {
-        crate::log(&format!("detail: rk={rk} sid={sid:?} — no metadata (server unresolved, or it refused)"));
+        crate::log(&format!(
+            "detail: rk={rk} sid={sid:?} — no metadata (server unresolved, or it refused)"
+        ));
         return None;
     };
     if d.is_show {
@@ -2103,22 +2160,40 @@ fn request_alt_sources(sid: crate::plex::ServerId, rk: &str, guid: &str) {
         // this app's Data Safety declaration answers "Not collected" to. It stays here because it
         // is the only string that says WHICH lookup this was, and `diag::scrub::scrub_viewing`
         // rewrites it to `plex://<guid>` before the line reaches the disk.
-        crate::log(&format!("altsrc: asked {n} source(s) for {guid} -> {} copy(ies)", list.len()));
-        *ALT_SLOT.lock().unwrap_or_else(|e| e.into_inner()) = Some(AltResult { gen, roster_gen, sid, rk, list });
+        crate::log(&format!(
+            "altsrc: asked {n} source(s) for {guid} -> {} copy(ies)",
+            list.len()
+        ));
+        *ALT_SLOT.lock().unwrap_or_else(|e| e.into_inner()) = Some(AltResult {
+            gen,
+            roster_gen,
+            sid,
+            rk,
+            list,
+        });
     });
 }
 
 /// WORKER. One `find_by_guid` per source, projected into rows. Pure of app state apart from the
 /// registry (an atomic read whose clients are never freed), so it is gradeable against a fixture.
-fn resolve_alt_sources(others: &[crate::plex::ServerId], guid: &str) -> Vec<crate::ui::alt_sources::AltCopy> {
+fn resolve_alt_sources(
+    others: &[crate::plex::ServerId],
+    guid: &str,
+) -> Vec<crate::ui::alt_sources::AltCopy> {
     let mut out = Vec::new();
     for &id in others {
-        let Some(c) = crate::plex::client_for(id) else { continue };
+        let Some(c) = crate::plex::client_for(id) else {
+            continue;
+        };
         // `None` here is "did not answer" and `Some(empty)` is "does not have it" — both contribute
         // no row, but only the second is a fact about the library. They are not collapsed at the
         // client (see `find_by_guid`) so a later revision can say "not reachable" in the panel.
-        let Some(mc) = c.find_by_guid(guid) else { continue };
-        let handle = crate::plex::server_facts(id).map(|f| f.handle.clone()).unwrap_or_default();
+        let Some(mc) = c.find_by_guid(guid) else {
+            continue;
+        };
+        let handle = crate::plex::server_facts(id)
+            .map(|f| f.handle.clone())
+            .unwrap_or_default();
         for m in mc.metadata.iter() {
             let media0 = m.media.first();
             out.push(crate::ui::alt_sources::AltCopy {
@@ -2129,7 +2204,9 @@ fn resolve_alt_sources(others: &[crate::plex::ServerId], guid: &str) -> Vec<crat
                 owner: (!handle.is_empty()).then(|| handle.clone()),
                 rk: m.rating_key.clone(),
                 dur_ms: m.duration,
-                res: media0.map(|x| x.video_resolution.clone()).unwrap_or_default(),
+                res: media0
+                    .map(|x| x.video_resolution.clone())
+                    .unwrap_or_default(),
                 width: media0.map(|x| x.width).unwrap_or_default(),
                 height: media0.map(|x| x.height).unwrap_or_default(),
             });
@@ -2180,8 +2257,8 @@ struct SeasonResult {
     /// episode list onto B's page: the generation guard cannot see it (the hop bumped nothing that
     /// distinguishes them) and the rk test passes.
     sid: crate::plex::ServerId,
-    rk: String,  // the show the fetch was for
-    idx: usize,  // the season it was for
+    rk: String,                // the show the fetch was for
+    idx: usize,                // the season it was for
     prev: usize, // the season `cur_season` held before the optimistic flip — restored on failure
     eps: Option<Vec<Episode>>, // None = the fetch failed or panicked — the row keeps its episodes
 }
@@ -2202,7 +2279,14 @@ fn land_season(
 ) {
     let mut slot = SEASON_RESULT.lock().unwrap_or_else(|e| e.into_inner());
     if slot.as_ref().map(|r| r.gen < gen).unwrap_or(true) {
-        *slot = Some(SeasonResult { gen, sid, rk, idx, prev, eps });
+        *slot = Some(SeasonResult {
+            gen,
+            sid,
+            rk,
+            idx,
+            prev,
+            eps,
+        });
     }
 }
 
@@ -2229,9 +2313,11 @@ pub(crate) fn load_season(idx: usize) {
     // the loaded show's own server, read here on the MAIN thread — a season belongs to the item it
     // hangs off, so this is the one honest source for it (never `plex::current_server()`, which the
     // user may have moved since the page was opened)
-    let (sid, rk, season_rk, prev) = match current()
-        .and_then(|d| d.seasons.get(idx).map(|s| (d.sid, d.rk.clone(), s.rk.clone(), d.cur_season)))
-    {
+    let (sid, rk, season_rk, prev) = match current().and_then(|d| {
+        d.seasons
+            .get(idx)
+            .map(|s| (d.sid, d.rk.clone(), s.rk.clone(), d.cur_season))
+    }) {
         Some(t) => t,
         None => return,
     };
@@ -2261,10 +2347,11 @@ pub(crate) fn load_season(idx: usize) {
 /// runs. Invalidates any in-flight async fetch so a stale landing can't overwrite this one.
 pub(crate) fn load_season_now(idx: usize) {
     let _ = catch_unwind(move || {
-        let (sid, season_rk) = match current().and_then(|d| d.seasons.get(idx).map(|s| (d.sid, s.rk.clone()))) {
-            Some(t) => t,
-            None => return,
-        };
+        let (sid, season_rk) =
+            match current().and_then(|d| d.seasons.get(idx).map(|s| (d.sid, s.rk.clone()))) {
+                Some(t) => t,
+                None => return,
+            };
         // `unwrap_or_default`, NOT propagation: this blocking twin still degrades to an empty
         // list on failure. Making it preserve the previous season would silently change what
         // `open_rk_season`'s chained play of `episodes[0]` launches — the WRONG season's first
@@ -2293,7 +2380,10 @@ pub(crate) fn season_loading() -> bool {
 /// changed — the detail page resets its episode focus/scroll on it.
 pub(crate) fn pump_season() -> bool {
     use std::sync::atomic::Ordering;
-    let res = SEASON_RESULT.lock().unwrap_or_else(|e| e.into_inner()).take();
+    let res = SEASON_RESULT
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take();
     let Some(r) = res else { return false };
     if r.gen != SEASON_GEN.load(Ordering::SeqCst) {
         return false; // superseded — the newer fetch will land after this
@@ -2304,7 +2394,9 @@ pub(crate) fn pump_season() -> bool {
     // session.
     SEASON_DONE.store(r.gen, Ordering::SeqCst);
     unsafe {
-        let Some(d) = (*addr_of_mut!(CURRENT)).as_mut() else { return false };
+        let Some(d) = (*addr_of_mut!(CURRENT)).as_mut() else {
+            return false;
+        };
         // OWNERSHIP, as the (server, key) PAIR. The rk alone was enough while one machine was
         // reachable; with a share registered, hopping from A's show to B's show with the same rk
         // while a `/children` is in flight passes an rk-only test and installs A's episodes onto
@@ -2381,11 +2473,24 @@ mod marker_tests {
     #[test]
     fn the_playhead_selects_the_segment_it_is_inside() {
         let m = episode_markers();
-        assert!(marker_at(&m, 0).is_none(), "before the intro starts (it begins at 990ms)");
-        assert_eq!(marker_at(&m, 990).unwrap().kind, MarkerKind::Intro, "inclusive at the start");
+        assert!(
+            marker_at(&m, 0).is_none(),
+            "before the intro starts (it begins at 990ms)"
+        );
+        assert_eq!(
+            marker_at(&m, 990).unwrap().kind,
+            MarkerKind::Intro,
+            "inclusive at the start"
+        );
         assert_eq!(marker_at(&m, 50_000).unwrap().kind, MarkerKind::Intro);
-        assert!(marker_at(&m, 99_625).is_none(), "EXCLUSIVE at the end: skipping to it clears the pill");
-        assert!(marker_at(&m, 2_000_000).is_none(), "the long middle of the episode");
+        assert!(
+            marker_at(&m, 99_625).is_none(),
+            "EXCLUSIVE at the end: skipping to it clears the pill"
+        );
+        assert!(
+            marker_at(&m, 2_000_000).is_none(),
+            "the long middle of the episode"
+        );
         assert_eq!(marker_at(&m, 3_065_648).unwrap().kind, MarkerKind::Credits);
         assert!(marker_at(&[], 1234).is_none());
     }
@@ -2398,13 +2503,25 @@ mod marker_tests {
     fn the_tail_window_stands_in_for_undetected_credits() {
         let dur = 22 * 60 * 1000; // a 22-minute episode
         assert!(tail_marker(0, dur).is_none(), "the open");
-        assert!(tail_marker(dur - TAIL_WINDOW_MS - 1, dur).is_none(), "one ms before the window");
+        assert!(
+            tail_marker(dur - TAIL_WINDOW_MS - 1, dur).is_none(),
+            "one ms before the window"
+        );
         let m = tail_marker(dur - TAIL_WINDOW_MS, dur).expect("inclusive at the window edge");
         assert_eq!((m.kind, m.final_seg), (MarkerKind::Credits, true));
         assert_eq!((m.start_ms, m.end_ms), (dur - TAIL_WINDOW_MS, dur));
-        assert!(tail_marker(dur - 1, dur).is_some(), "the last frame still offers it");
-        assert!(tail_marker(80_000, 89_999).is_none(), "short items never grow a tail");
-        assert!(tail_marker(0, 0).is_none(), "no duration published (a transcode mid-probe)");
+        assert!(
+            tail_marker(dur - 1, dur).is_some(),
+            "the last frame still offers it"
+        );
+        assert!(
+            tail_marker(80_000, 89_999).is_none(),
+            "short items never grow a tail"
+        );
+        assert!(
+            tail_marker(0, 0).is_none(),
+            "no duration published (a transcode mid-probe)"
+        );
     }
 
     #[test]
@@ -2420,7 +2537,10 @@ mod marker_tests {
         // playback past it would keep offering a skip for a segment already behind the playhead.
         let mid = convert_markers(&[wire("credits", 1000, 2000, false)]);
         assert!(marker_at(&mid, 1500).is_some());
-        assert!(marker_at(&mid, 2000).is_none(), "a non-final segment ends where it says it does");
+        assert!(
+            marker_at(&mid, 2000).is_none(),
+            "a non-final segment ends where it says it does"
+        );
     }
 }
 
@@ -2452,22 +2572,38 @@ mod episode_tests {
         let e = convert_episode(&row(""));
         assert!(!e.watched, "an absent viewCount is unwatched");
         assert_eq!(e.resume_ms, 0, "and carries no resume point");
-        assert_eq!((e.rk.as_str(), e.index, e.season), ("1804", 3, 2), "the rest still maps");
+        assert_eq!(
+            (e.rk.as_str(), e.index, e.season),
+            ("1804", 3, 2),
+            "the rest still maps"
+        );
 
         // …and a literal 0 is unwatched too. PMS omits the key rather than sending this, but
         // `de_i64` would deliver a real 0, so the flag must be a THRESHOLD and not a presence test
         // on the JSON — the two only agree while the server keeps omitting.
-        assert!(!convert_episode(&row(r#","viewCount":0"#)).watched, "an explicit 0 is unwatched");
+        assert!(
+            !convert_episode(&row(r#","viewCount":0"#)).watched,
+            "an explicit 0 is unwatched"
+        );
 
-        assert!(convert_episode(&row(r#","viewCount":"1""#)).watched, "watched once");
-        assert!(convert_episode(&row(r#","viewCount":4"#)).watched, "and re-watched, sent numeric");
+        assert!(
+            convert_episode(&row(r#","viewCount":"1""#)).watched,
+            "watched once"
+        );
+        assert!(
+            convert_episode(&row(r#","viewCount":4"#)).watched,
+            "and re-watched, sent numeric"
+        );
 
         // Watched AND resuming is a real server state — finished, then started again. Both must
         // survive the mapping: the mutual exclusion is a rule of the DRAW site (which shows the
         // resume bar over the check), so collapsing it here would silently lose the resume point.
         let both = convert_episode(&row(r#","viewCount":"1","viewOffset":"120000""#));
         assert!(both.watched, "a re-started episode is still watched");
-        assert_eq!(both.resume_ms, 120_000, "and keeps the resume point the player needs");
+        assert_eq!(
+            both.resume_ms, 120_000,
+            "and keeps the resume point the player needs"
+        );
     }
 }
 
@@ -2477,7 +2613,11 @@ mod rating_tests {
 
     /// one `Rating[]` row on the wire
     fn wire(image: &str, value: f64, kind: &str) -> crate::plex::Rating {
-        crate::plex::Rating { image: image.to_string(), value, kind: kind.to_string() }
+        crate::plex::Rating {
+            image: image.to_string(),
+            value,
+            kind: kind.to_string(),
+        }
     }
     fn arts(v: &[Rating]) -> Vec<RatingArt> {
         v.iter().map(|r| r.art).collect()
@@ -2503,8 +2643,14 @@ mod rating_tests {
         }
         // the negative variants are a different MARK, not the same mark recoloured, so nothing may
         // collapse ripe→rotten or upright→spilled
-        assert_ne!(RatingArt::from_image("rottentomatoes://image.rating.ripe"), RatingArt::from_image("rottentomatoes://image.rating.rotten"));
-        assert_ne!(RatingArt::from_image("rottentomatoes://image.rating.upright"), RatingArt::from_image("rottentomatoes://image.rating.spilled"));
+        assert_ne!(
+            RatingArt::from_image("rottentomatoes://image.rating.ripe"),
+            RatingArt::from_image("rottentomatoes://image.rating.rotten")
+        );
+        assert_ne!(
+            RatingArt::from_image("rottentomatoes://image.rating.upright"),
+            RatingArt::from_image("rottentomatoes://image.rating.spilled")
+        );
     }
 
     /// All FIVE Rotten Tomatoes states are distinct art, and `certified` is not an alias for
@@ -2526,7 +2672,10 @@ mod rating_tests {
                 assert_eq!(i == j, a == b, "states {i} and {j} must differ");
             }
         }
-        assert_eq!(RatingArt::TomatoCertified.rank(), RatingArt::TomatoFresh.rank());
+        assert_eq!(
+            RatingArt::TomatoCertified.rank(),
+            RatingArt::TomatoFresh.rank()
+        );
         // …so an item that somehow carried both critic tomatoes still badges exactly one
         let it = crate::plex::Metadata {
             ratings: vec![
@@ -2603,7 +2752,10 @@ mod rating_tests {
         assert_eq!(arts(&got), [Imdb, TomatoFresh, PopcornUpright, Tmdb]);
         assert_eq!(got[0].value, 7.4, "IMDb's score, on its own /10 scale");
         assert!(got[1].critic, "the tomato is the critic score");
-        assert!(!got[0].critic, "IMDb arrives as an audience score, not a critic one");
+        assert!(
+            !got[0].critic,
+            "IMDb arrives as an audience score, not a critic one"
+        );
     }
 
     /// The flat pair is the fallback for the OTHER response shape — a section listing carries it
@@ -2640,7 +2792,10 @@ mod rating_tests {
         assert_eq!(arts(&convert_ratings(&it)), [RatingArt::Imdb]);
 
         // nothing usable at all → an empty row, and the hero simply draws no badges
-        let empty = crate::plex::Metadata { rating: 9.1, ..Default::default() }; // score, no image
+        let empty = crate::plex::Metadata {
+            rating: 9.1,
+            ..Default::default()
+        }; // score, no image
         assert!(convert_ratings(&empty).is_empty());
     }
 
@@ -2659,8 +2814,14 @@ mod rating_tests {
             ..Default::default()
         };
         let got = convert_ratings(&it);
-        assert_eq!(arts(&got), [RatingArt::TomatoRotten, RatingArt::PopcornUpright]);
-        assert_eq!(got[0].value, 4.0, "wire order decides between two equally-ranked critic rows");
+        assert_eq!(
+            arts(&got),
+            [RatingArt::TomatoRotten, RatingArt::PopcornUpright]
+        );
+        assert_eq!(
+            got[0].value, 4.0,
+            "wire order decides between two equally-ranked critic rows"
+        );
     }
 
     /// PMS normalises every provider onto 0–10; the badge puts the number back into the units its
@@ -2711,16 +2872,25 @@ mod tests {
         let p5 = video_stream(Some((5, 0, 0)));
         let cover = video_stream(None);
         let dovi = convert_streams(&[p5, cover]).dovi;
-        assert!(dovi.present, "the P5 record must outlive a second video stream");
+        assert!(
+            dovi.present,
+            "the P5 record must outlive a second video stream"
+        );
         assert_eq!(dovi.profile, 5);
-        assert!(dovi.base_layer_unusable(), "and must still forbid a server-side COPY of it");
+        assert!(
+            dovi.base_layer_unusable(),
+            "and must still forbid a server-side COPY of it"
+        );
         // …and, undeclared, must still refuse direct play — the record surviving is what both of
         // those turn on, so the cover-art stream must not be able to blank it
         assert_eq!(
             dovi.presentation(false),
             crate::metadata::DvPresentation::Refuse("no cross-compatible base layer")
         );
-        assert_eq!(dovi.presentation(true).declared().map(|n| n.profile_id), Some(5));
+        assert_eq!(
+            dovi.presentation(true).declared().map(|n| n.profile_id),
+            Some(5)
+        );
     }
 
     /// The ordinary single-video-stream shapes, so the guard above cannot be read as "any DV
@@ -2738,10 +2908,21 @@ mod tests {
     /// post through the REAL mailbox write, so the monotone guard is under test rather than
     /// bypassed (an unconditional store here would make the "older lands late" case vacuous)
     fn landing(gen: u32, rk: &str) {
-        land_detail(gen, Some(Detail { rk: rk.to_string(), ..Default::default() }));
+        land_detail(
+            gen,
+            Some(Detail {
+                rk: rk.to_string(),
+                ..Default::default()
+            }),
+        );
     }
     fn slot_rk() -> Option<String> {
-        DETAIL_SLOT.lock().unwrap().as_ref().and_then(|r| r.d.as_ref()).map(|d| d.rk.clone())
+        DETAIL_SLOT
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|r| r.d.as_ref())
+            .map(|d| d.rk.clone())
     }
     fn cur_rk() -> Option<String> {
         current().map(|d| d.rk.clone())
@@ -2762,14 +2943,25 @@ mod tests {
             "ratingKey":"5274","type":"movie","title":"another title entirely",
             "guid":"plex://movie/6856893830a4aaafd5c4291d","librarySectionTitle":"Film Club",
             "duration":7020000,"Media":[{"videoResolution":"1080","width":1920,"height":1080}]}]}}"#;
-        let mc = serde_json::from_str::<crate::plex::Envelope>(body).expect("parses").media_container;
+        let mc = serde_json::from_str::<crate::plex::Envelope>(body)
+            .expect("parses")
+            .media_container;
 
         let m = mc.metadata.first().expect("one row");
-        assert_eq!(m.guid, "plex://movie/6856893830a4aaafd5c4291d", "the portable identity is read");
+        assert_eq!(
+            m.guid, "plex://movie/6856893830a4aaafd5c4291d",
+            "the portable identity is read"
+        );
         assert_eq!(m.rating_key, "5274", "…and the key is THEIRS, not ours");
-        assert_eq!(m.library_section_title, "Film Club", "the library names the row, not the machine");
+        assert_eq!(
+            m.library_section_title, "Film Club",
+            "the library names the row, not the machine"
+        );
         assert_eq!(m.duration, 7_020_000);
-        assert_eq!(m.media.first().map(|x| x.video_resolution.as_str()), Some("1080"));
+        assert_eq!(
+            m.media.first().map(|x| x.video_resolution.as_str()),
+            Some("1080")
+        );
     }
 
     /// **The Related shelf's rows carry the watch state that was on the wire all along.**
@@ -2795,30 +2987,48 @@ mod tests {
             {"ratingKey":"13","type":"movie","title":"never started","duration":7020000},
             {"ratingKey":"14","type":"show","title":"three in","leafCount":10,"viewedLeafCount":3}
         ]}]}}"#;
-        let mc = serde_json::from_str::<crate::plex::Envelope>(body).expect("parses").media_container;
+        let mc = serde_json::from_str::<crate::plex::Envelope>(body)
+            .expect("parses")
+            .media_container;
         let rows = related_rows(&mc, SRV_B);
         assert_eq!(rows.len(), 4, "every hub row with a key becomes a tile");
 
         // …and every row is stamped with the server it was FETCHED from. A related item is a key on
         // the page's own server, and both servers number from 1, so this is the field that keeps the
         // art request, the menu's SID and the scrobble off the wrong machine.
-        assert!(rows.iter().all(|m| m.sid == SRV_B), "the row's server is the one that answered");
+        assert!(
+            rows.iter().all(|m| m.sid == SRV_B),
+            "the row's server is the one that answered"
+        );
 
         // finished: the tick, and no bar (`resume_frac` is None with no viewOffset)
         assert!(rows[0].watched && !rows[0].unwatched);
         assert_eq!(rows[0].resume_frac(), None);
-        assert_eq!(rows[0].part, "/library/parts/11/file.mkv", "Play from Start needs the part id");
+        assert_eq!(
+            rows[0].part, "/library/parts/11/file.mkv",
+            "Play from Start needs the part id"
+        );
 
         // halfway: the bar, at the fraction the wire's STRING-encoded numbers give
-        assert!(!rows[1].watched && rows[1].unwatched, "a resume point is not a view count");
-        assert_eq!(rows[1].resume_frac(), Some(0.5), "the amber bar's fraction, off duration + viewOffset");
+        assert!(
+            !rows[1].watched && rows[1].unwatched,
+            "a resume point is not a view count"
+        );
+        assert_eq!(
+            rows[1].resume_frac(),
+            Some(0.5),
+            "the amber bar's fraction, off duration + viewOffset"
+        );
 
         // never started: neither mark — and `viewCount` was absent, not zero
         assert!(!rows[2].watched && rows[2].unwatched);
         assert_eq!(rows[2].resume_frac(), None);
 
         // the part-watched SHOW: NEITHER flag, which is the state the menu turns into both verbs
-        assert_eq!(rows[3].kind, 1, "the item KIND decides the menu's leaf/container rule");
+        assert_eq!(
+            rows[3].kind, 1,
+            "the item KIND decides the menu's leaf/container rule"
+        );
         assert!(!rows[3].watched, "3 of 10 leaves is not done");
         assert!(!rows[3].unwatched, "…and it is not untouched either");
     }
@@ -2845,23 +3055,42 @@ mod tests {
             hub(&[1, 2, 3]),
             hub(&[2, 3, 4])
         );
-        let mc = serde_json::from_str::<crate::plex::Envelope>(&body).expect("parses").media_container;
+        let mc = serde_json::from_str::<crate::plex::Envelope>(&body)
+            .expect("parses")
+            .media_container;
         let rows = related_rows(&mc, SRV_A);
         let keys: Vec<&str> = rows.iter().map(|m| m.rk.as_str()).collect();
-        assert_eq!(keys, ["1", "2", "3", "4"], "one tile per title, in first-seen order");
+        assert_eq!(
+            keys,
+            ["1", "2", "3", "4"],
+            "one tile per title, in first-seen order"
+        );
 
         // a row PMS sent no key for is not a tile — it addresses nothing
-        let body = r#"{"MediaContainer":{"Hub":[{"Metadata":[{"type":"movie","title":"keyless"}]}]}}"#;
-        let mc = serde_json::from_str::<crate::plex::Envelope>(body).expect("parses").media_container;
+        let body =
+            r#"{"MediaContainer":{"Hub":[{"Metadata":[{"type":"movie","title":"keyless"}]}]}}"#;
+        let mc = serde_json::from_str::<crate::plex::Envelope>(body)
+            .expect("parses")
+            .media_container;
         assert!(related_rows(&mc, SRV_A).is_empty(), "no ratingKey, no tile");
 
         // the cap, counted in KEPT rows: 30 distinct keys, each repeated twice
         let many: Vec<i32> = (0..30).collect();
-        let body = format!(r#"{{"MediaContainer":{{"Hub":[{},{}]}}}}"#, hub(&many), hub(&many));
-        let mc = serde_json::from_str::<crate::plex::Envelope>(&body).expect("parses").media_container;
+        let body = format!(
+            r#"{{"MediaContainer":{{"Hub":[{},{}]}}}}"#,
+            hub(&many),
+            hub(&many)
+        );
+        let mc = serde_json::from_str::<crate::plex::Envelope>(&body)
+            .expect("parses")
+            .media_container;
         let rows = related_rows(&mc, SRV_A);
         assert_eq!(rows.len(), RELATED_MAX, "the shelf is capped");
-        assert_eq!(rows.last().map(|m| m.rk.as_str()), Some("19"), "…at the 20th DISTINCT title");
+        assert_eq!(
+            rows.last().map(|m| m.rk.as_str()),
+            Some("19"),
+            "…at the 20th DISTINCT title"
+        );
     }
 
     /// A server that answers "I do not have it" contributes no row — and is not confused with one
@@ -2872,7 +3101,10 @@ mod tests {
         let mc = serde_json::from_str::<crate::plex::Envelope>(r#"{"MediaContainer":{"size":0}}"#)
             .expect("parses")
             .media_container;
-        assert!(mc.metadata.is_empty(), "size=0 is an answer, and it is an empty one");
+        assert!(
+            mc.metadata.is_empty(),
+            "size=0 is an answer, and it is an empty one"
+        );
     }
 
     /// **The cross-source resolve carries its SERVER through the mailbox, and the pump hands both
@@ -2893,8 +3125,16 @@ mod tests {
         // two copies on two sources — enough for `is_available`, which counts distinct SOURCES
         let copies = || {
             vec![
-                AltCopy { sid: SRV_A, rk: "4".into(), ..Default::default() },
-                AltCopy { sid: SRV_B, rk: "318".into(), ..Default::default() },
+                AltCopy {
+                    sid: SRV_A,
+                    rk: "4".into(),
+                    ..Default::default()
+                },
+                AltCopy {
+                    sid: SRV_B,
+                    rk: "318".into(),
+                    ..Default::default()
+                },
             ]
         };
         let land = |gen: u32, sid: crate::plex::ServerId, rk: &str| {
@@ -2915,14 +3155,20 @@ mod tests {
         crate::ui::alt_sources::reset(SRV_B, "4");
         land(gen, SRV_A, "4");
         pump_alt_sources();
-        assert!(!crate::ui::alt_sources::is_available(), "our copies are not news about the share's film");
+        assert!(
+            !crate::ui::alt_sources::is_available(),
+            "our copies are not news about the share's film"
+        );
 
         // the control: the very same landing DOES reach the panel while the page is still ours
         crate::ui::alt_sources::reset(SRV_A, "4");
         let gen = ALT_GEN.fetch_add(1, Ordering::SeqCst) + 1;
         land(gen, SRV_A, "4");
         pump_alt_sources();
-        assert!(crate::ui::alt_sources::is_available(), "the awaited landing installs");
+        assert!(
+            crate::ui::alt_sources::is_available(),
+            "the awaited landing installs"
+        );
 
         // …and a SUPERSEDED landing is still dropped one layer earlier, by the generation
         let stale = ALT_GEN.fetch_add(1, Ordering::SeqCst) + 1;
@@ -2930,7 +3176,10 @@ mod tests {
         crate::ui::alt_sources::reset(SRV_A, "4");
         land(stale, SRV_A, "4");
         pump_alt_sources();
-        assert!(!crate::ui::alt_sources::is_available(), "a landing from a superseded resolve is dropped");
+        assert!(
+            !crate::ui::alt_sources::is_available(),
+            "a landing from a superseded resolve is dropped"
+        );
 
         crate::ui::alt_sources::reset(crate::plex::ServerId::UNSET, "");
     }
@@ -2942,8 +3191,16 @@ mod tests {
         let a = crate::plex::register_for_test("alt-a", "127.0.0.1", 1, "a", "cid");
         let b = crate::plex::register_for_test("alt-b", "127.0.0.1", 2, "b", "cid");
         let copies = vec![
-            crate::ui::alt_sources::AltCopy { sid: a, rk: "4".into(), ..Default::default() },
-            crate::ui::alt_sources::AltCopy { sid: b, rk: "9".into(), ..Default::default() },
+            crate::ui::alt_sources::AltCopy {
+                sid: a,
+                rk: "4".into(),
+                ..Default::default()
+            },
+            crate::ui::alt_sources::AltCopy {
+                sid: b,
+                rk: "9".into(),
+                ..Default::default()
+            },
         ];
         crate::ui::alt_sources::reset(a, "4");
         crate::ui::alt_sources::install(a, "4", copies.clone());
@@ -2952,12 +3209,21 @@ mod tests {
         let old_roster = crate::plex::server_roster_gen();
         ALT_ROSTER_GEN.store(old_roster, Ordering::SeqCst);
         let gen = ALT_GEN.fetch_add(1, Ordering::SeqCst) + 1;
-        *ALT_SLOT.lock().unwrap() = Some(AltResult { gen, roster_gen: old_roster, sid: a, rk: "4".into(), list: copies });
+        *ALT_SLOT.lock().unwrap() = Some(AltResult {
+            gen,
+            roster_gen: old_roster,
+            sid: a,
+            rk: "4".into(),
+            list: copies,
+        });
         crate::plex::revoke_for_profile_switch();
         crate::plex::register_for_test("alt-c", "127.0.0.1", 3, "c", "cid");
 
         pump_alt_sources();
-        assert!(!crate::ui::alt_sources::is_available(), "the removed source neither stays cached nor re-lands");
+        assert!(
+            !crate::ui::alt_sources::is_available(),
+            "the removed source neither stays cached nor re-lands"
+        );
 
         crate::ui::alt_sources::reset(crate::plex::ServerId::UNSET, "");
         crate::plex::reset_servers_for_test();
@@ -2974,7 +3240,10 @@ mod tests {
 
         // a request is in flight until its landing is pumped
         let gen = DETAIL_GEN.fetch_add(1, Ordering::SeqCst) + 1;
-        assert!(detail_loading(), "a bumped generation with DONE behind it reads as in flight");
+        assert!(
+            detail_loading(),
+            "a bumped generation with DONE behind it reads as in flight"
+        );
         landing(gen, "movie-1");
         assert!(pump_detail(), "the awaited landing installs");
         assert_eq!(cur_rk().as_deref(), Some("movie-1"));
@@ -2984,8 +3253,15 @@ mod tests {
         let old = DETAIL_GEN.fetch_add(1, Ordering::SeqCst) + 1;
         let new = DETAIL_GEN.fetch_add(1, Ordering::SeqCst) + 1;
         landing(old, "stale-show");
-        assert!(!pump_detail(), "a landing from a superseded generation is discarded");
-        assert_eq!(cur_rk().as_deref(), Some("movie-1"), "and it must not touch CURRENT");
+        assert!(
+            !pump_detail(),
+            "a landing from a superseded generation is discarded"
+        );
+        assert_eq!(
+            cur_rk().as_deref(),
+            Some("movie-1"),
+            "and it must not touch CURRENT"
+        );
         assert!(detail_loading(), "the NEWER request is still in flight");
 
         // MONOTONE mailbox: with the newer result already sitting unconsumed, the OLDER fetch
@@ -2993,7 +3269,11 @@ mod tests {
         // mailbox before its guard existed: losing the newest result stalled the spinner on.)
         landing(new, "fresh-show");
         landing(old, "stale-show");
-        assert_eq!(slot_rk().as_deref(), Some("fresh-show"), "the late older landing is refused");
+        assert_eq!(
+            slot_rk().as_deref(),
+            Some("fresh-show"),
+            "the late older landing is refused"
+        );
         assert!(pump_detail());
         assert_eq!(cur_rk().as_deref(), Some("fresh-show"));
 
@@ -3001,7 +3281,11 @@ mod tests {
         let g = DETAIL_GEN.fetch_add(1, Ordering::SeqCst) + 1;
         *DETAIL_SLOT.lock().unwrap() = Some(DetailResult { gen: g, d: None });
         assert!(!pump_detail(), "a failed fetch reports no fresh item");
-        assert_eq!(cur_rk().as_deref(), Some("fresh-show"), "and leaves the page as it was");
+        assert_eq!(
+            cur_rk().as_deref(),
+            Some("fresh-show"),
+            "and leaves the page as it was"
+        );
         assert!(!detail_loading(), "but it does settle the spinner");
 
         // CLOSING THE PAGE supersedes: a load requested on the way in must not repopulate
@@ -3034,8 +3318,20 @@ mod tests {
                 rk: rk.to_string(),
                 is_show: true,
                 seasons: vec![
-                    Season { rk: "sk1".to_string(), index: 1, title: "Season 1".to_string(), leaf_count: 0, viewed_leaf_count: 0 },
-                    Season { rk: "sk2".to_string(), index: 2, title: "Season 2".to_string(), leaf_count: 0, viewed_leaf_count: 0 },
+                    Season {
+                        rk: "sk1".to_string(),
+                        index: 1,
+                        title: "Season 1".to_string(),
+                        leaf_count: 0,
+                        viewed_leaf_count: 0,
+                    },
+                    Season {
+                        rk: "sk2".to_string(),
+                        index: 2,
+                        title: "Season 2".to_string(),
+                        leaf_count: 0,
+                        viewed_leaf_count: 0,
+                    },
                 ],
                 episodes: eps.iter().map(|e| episode(e)).collect(),
                 cur_season: cur,
@@ -3044,10 +3340,15 @@ mod tests {
         };
     }
     fn episode(rk: &str) -> Episode {
-        Episode { rk: rk.to_string(), ..Default::default() }
+        Episode {
+            rk: rk.to_string(),
+            ..Default::default()
+        }
     }
     fn listed_eps() -> Vec<String> {
-        current().map(|d| d.episodes.iter().map(|e| e.rk.clone()).collect()).unwrap_or_default()
+        current()
+            .map(|d| d.episodes.iter().map(|e| e.rk.clone()).collect())
+            .unwrap_or_default()
     }
     /// which season tab reads *selected* — the tabs pill `d.cur_season`; the focus ring is a
     /// separate, view-local column
@@ -3083,13 +3384,31 @@ mod tests {
         // A FAILED /children GET. It must not be mistaken for a season with no episodes.
         install_show("show-1", 0, &["s1e1", "s1e2"]);
         let (gen, prev) = begin_switch(1);
-        assert_eq!(selected_tab(), 1, "the tab flips optimistically while the fetch is in flight");
-        assert!(season_loading(), "a bumped generation with DONE behind it reads as in flight");
+        assert_eq!(
+            selected_tab(),
+            1,
+            "the tab flips optimistically while the fetch is in flight"
+        );
+        assert!(
+            season_loading(),
+            "a bumped generation with DONE behind it reads as in flight"
+        );
         land_season(gen, SRV_A, "show-1".to_string(), 1, prev, None);
         assert!(!pump_season(), "a failed fetch is not a new episode list");
-        assert_eq!(listed_eps(), ["s1e1", "s1e2"], "the populated row survives the failure");
-        assert_eq!(selected_tab(), 0, "the failed tab is released, so focusing it again refetches");
-        assert!(!season_loading(), "the episode row must still come out of its loading state");
+        assert_eq!(
+            listed_eps(),
+            ["s1e1", "s1e2"],
+            "the populated row survives the failure"
+        );
+        assert_eq!(
+            selected_tab(),
+            0,
+            "the failed tab is released, so focusing it again refetches"
+        );
+        assert!(
+            !season_loading(),
+            "the episode row must still come out of its loading state"
+        );
 
         // A season that GENUINELY has no episodes is a SUCCESS: the row clears. This is why the
         // discriminant is an Option and not an `is_empty()` check — a "keep the old list whenever
@@ -3097,13 +3416,30 @@ mod tests {
         // previous season's episodes under the new season's tab.
         let (gen, prev) = begin_switch(1);
         land_season(gen, SRV_A, "show-1".to_string(), 1, prev, Some(Vec::new()));
-        assert!(pump_season(), "an empty season is a successful fetch — the row did change");
-        assert!(listed_eps().is_empty(), "and the previous season's episodes are gone");
-        assert_eq!(selected_tab(), 1, "the tab stays on the season that answered");
+        assert!(
+            pump_season(),
+            "an empty season is a successful fetch — the row did change"
+        );
+        assert!(
+            listed_eps().is_empty(),
+            "and the previous season's episodes are gone"
+        );
+        assert_eq!(
+            selected_tab(),
+            1,
+            "the tab stays on the season that answered"
+        );
 
         // the ordinary success path
         let (gen, prev) = begin_switch(0);
-        land_season(gen, SRV_A, "show-1".to_string(), 0, prev, Some(vec![episode("s1e1")]));
+        land_season(
+            gen,
+            SRV_A,
+            "show-1".to_string(),
+            0,
+            prev,
+            Some(vec![episode("s1e1")]),
+        );
         assert!(pump_season());
         assert_eq!(listed_eps(), ["s1e1"]);
         assert_eq!(selected_tab(), 0);
@@ -3112,28 +3448,74 @@ mod tests {
         // generation — the fetch that was in flight for the old tab is dropped, not applied.
         let (old, prev) = begin_switch(1);
         supersede_season();
-        land_season(old, SRV_A, "show-1".to_string(), 1, prev, Some(vec![episode("s2e1")]));
-        assert!(!pump_season(), "a landing from a superseded generation is discarded");
-        assert_eq!(listed_eps(), ["s1e1"], "and it must not touch the episode row");
+        land_season(
+            old,
+            SRV_A,
+            "show-1".to_string(),
+            1,
+            prev,
+            Some(vec![episode("s2e1")]),
+        );
+        assert!(
+            !pump_season(),
+            "a landing from a superseded generation is discarded"
+        );
+        assert_eq!(
+            listed_eps(),
+            ["s1e1"],
+            "and it must not touch the episode row"
+        );
 
         // MONOTONE mailbox: with a newer result sitting unconsumed, an older fetch finally
         // returning must not overwrite it. Losing the newest season that way also lost its
         // SEASON_DONE catch-up, which wedged the loading spinner on.
         let (old, prev) = begin_switch(1);
         let (new, _) = begin_switch(1);
-        land_season(new, SRV_A, "show-1".to_string(), 1, prev, Some(vec![episode("fresh")]));
-        land_season(old, SRV_A, "show-1".to_string(), 1, prev, Some(vec![episode("stale")]));
+        land_season(
+            new,
+            SRV_A,
+            "show-1".to_string(),
+            1,
+            prev,
+            Some(vec![episode("fresh")]),
+        );
+        land_season(
+            old,
+            SRV_A,
+            "show-1".to_string(),
+            1,
+            prev,
+            Some(vec![episode("stale")]),
+        );
         assert!(pump_season(), "the newest season lands");
-        assert_eq!(listed_eps(), ["fresh"], "the late older landing was refused");
+        assert_eq!(
+            listed_eps(),
+            ["fresh"],
+            "the late older landing was refused"
+        );
 
         // A LANDING FOR ANOTHER ITEM: the page can move (Related -> a new detail) while a season
         // fetch is in flight, and those episodes belong to nobody on screen. It must still settle
         // the spinner — nothing else is going to.
         let (gen, prev) = begin_switch(1);
         install_show("show-2", 0, &["other-e1"]);
-        land_season(gen, SRV_A, "show-1".to_string(), 1, prev, Some(vec![episode("s2e1")]));
-        assert!(!pump_season(), "a landing for a different item reports no change");
-        assert_eq!(listed_eps(), ["other-e1"], "and leaves the item now on screen alone");
+        land_season(
+            gen,
+            SRV_A,
+            "show-1".to_string(),
+            1,
+            prev,
+            Some(vec![episode("s2e1")]),
+        );
+        assert!(
+            !pump_season(),
+            "a landing for a different item reports no change"
+        );
+        assert_eq!(
+            listed_eps(),
+            ["other-e1"],
+            "and leaves the item now on screen alone"
+        );
         assert!(!season_loading(), "but it still settles the spinner");
 
         clear();
@@ -3153,16 +3535,40 @@ mod tests {
         let (gen, prev) = begin_switch(1);
         // …and while it is out, the user lands on the SHARE's show 42
         install_show_on(SRV_B, "42", 0, &["theirs-e1"]);
-        land_season(gen, SRV_A, "42".to_string(), 1, prev, Some(vec![episode("ours-s2e1")]));
+        land_season(
+            gen,
+            SRV_A,
+            "42".to_string(),
+            1,
+            prev,
+            Some(vec![episode("ours-s2e1")]),
+        );
 
-        assert!(!pump_season(), "our episodes are not news about the share's show");
-        assert_eq!(listed_eps(), ["theirs-e1"], "the page on screen keeps its own list");
-        assert!(!season_loading(), "…and the spinner still settles, as for any foreign landing");
+        assert!(
+            !pump_season(),
+            "our episodes are not news about the share's show"
+        );
+        assert_eq!(
+            listed_eps(),
+            ["theirs-e1"],
+            "the page on screen keeps its own list"
+        );
+        assert!(
+            !season_loading(),
+            "…and the spinner still settles, as for any foreign landing"
+        );
 
         // the control: the very same landing DOES install when the page is still ours
         install_show_on(SRV_A, "42", 0, &["ours-e1"]);
         let (gen, prev) = begin_switch(1);
-        land_season(gen, SRV_A, "42".to_string(), 1, prev, Some(vec![episode("ours-s2e1")]));
+        land_season(
+            gen,
+            SRV_A,
+            "42".to_string(),
+            1,
+            prev,
+            Some(vec![episode("ours-s2e1")]),
+        );
         assert!(pump_season());
         assert_eq!(listed_eps(), ["ours-s2e1"]);
 
@@ -3182,14 +3588,29 @@ mod tests {
         let _serial = crate::testlock::serial();
 
         // the loaded item itself — the hero's own toggle
-        set_current_for_test(Some(Detail { sid: SRV_A, rk: "42".into(), resume_ms: 900_000, ..Default::default() }));
+        set_current_for_test(Some(Detail {
+            sid: SRV_A,
+            rk: "42".into(),
+            resume_ms: 900_000,
+            ..Default::default()
+        }));
         assert!(set_watched_local(SRV_A, "42", true));
         assert!(current().unwrap().watched);
-        assert_eq!(current().unwrap().resume_ms, 0, "a watched item stops offering to resume");
+        assert_eq!(
+            current().unwrap().resume_ms,
+            0,
+            "a watched item stops offering to resume"
+        );
 
         // …and the SHARE's 42 is a different film, so neither its press nor ours reaches the other
-        assert!(!set_watched_local(SRV_B, "42", false), "another server's key names nothing here");
-        assert!(current().unwrap().watched, "and leaves this page exactly as it was");
+        assert!(
+            !set_watched_local(SRV_B, "42", false),
+            "another server's key names nothing here"
+        );
+        assert!(
+            current().unwrap().watched,
+            "and leaves this page exactly as it was"
+        );
 
         // an EPISODE of the loaded show — the filmstrip's context menu
         set_current_for_test(Some(Detail {
@@ -3198,37 +3619,80 @@ mod tests {
             is_show: true,
             cur_season: 1,
             seasons: vec![
-                Season { rk: "sk1".into(), index: 1, title: "S1".into(), leaf_count: 3, viewed_leaf_count: 3 },
-                Season { rk: "sk2".into(), index: 2, title: "S2".into(), leaf_count: 3, viewed_leaf_count: 1 },
+                Season {
+                    rk: "sk1".into(),
+                    index: 1,
+                    title: "S1".into(),
+                    leaf_count: 3,
+                    viewed_leaf_count: 3,
+                },
+                Season {
+                    rk: "sk2".into(),
+                    index: 2,
+                    title: "S2".into(),
+                    leaf_count: 3,
+                    viewed_leaf_count: 1,
+                },
             ],
             episodes: vec![
-                Episode { rk: "e1".into(), watched: true, ..Default::default() },
-                Episode { rk: "e2".into(), resume_ms: 60_000, ..Default::default() },
+                Episode {
+                    rk: "e1".into(),
+                    watched: true,
+                    ..Default::default()
+                },
+                Episode {
+                    rk: "e2".into(),
+                    resume_ms: 60_000,
+                    ..Default::default()
+                },
             ],
             ..Default::default()
         }));
 
-        assert!(set_watched_local(SRV_A, "e2", true), "an episode of the loaded season");
+        assert!(
+            set_watched_local(SRV_A, "e2", true),
+            "an episode of the loaded season"
+        );
         let d = current().unwrap();
         assert!(d.episodes[1].watched);
-        assert_eq!(d.episodes[1].resume_ms, 0, "…and its still stops drawing a resume bar");
+        assert_eq!(
+            d.episodes[1].resume_ms, 0,
+            "…and its still stops drawing a resume bar"
+        );
         assert!(!d.watched, "marking one episode does not finish the show");
-        assert_eq!(d.seasons[1].viewed_leaf_count, 2, "the BROWSED season's count moves with it");
-        assert_eq!(d.seasons[0].viewed_leaf_count, 3, "and no other season's does");
+        assert_eq!(
+            d.seasons[1].viewed_leaf_count, 2,
+            "the BROWSED season's count moves with it"
+        );
+        assert_eq!(
+            d.seasons[0].viewed_leaf_count, 3,
+            "and no other season's does"
+        );
 
         // idempotent: pressing watched on an already-watched episode must not double-count the
         // season, which would make a part-watched season read as finished
         assert!(set_watched_local(SRV_A, "e2", true));
-        assert_eq!(current().unwrap().seasons[1].viewed_leaf_count, 2, "the count follows the FLIP");
+        assert_eq!(
+            current().unwrap().seasons[1].viewed_leaf_count,
+            2,
+            "the count follows the FLIP"
+        );
 
         // …and the reverse, clamped at zero rather than going negative
         for _ in 0..5 {
             assert!(set_watched_local(SRV_A, "e2", false));
             assert!(set_watched_local(SRV_A, "e1", false));
         }
-        assert_eq!(current().unwrap().seasons[1].viewed_leaf_count, 0, "never a negative remainder");
+        assert_eq!(
+            current().unwrap().seasons[1].viewed_leaf_count,
+            0,
+            "never a negative remainder"
+        );
 
-        assert!(!set_watched_local(SRV_A, "not-here", true), "an rk on neither the item nor its row");
+        assert!(
+            !set_watched_local(SRV_A, "not-here", true),
+            "an rk on neither the item nor its row"
+        );
         clear();
     }
 
@@ -3267,17 +3731,29 @@ mod tests {
             sid: SRV_A,
             rk: "show".into(),
             is_show: true,
-            episodes: vec![Episode { rk: "e1".into(), ..Default::default() }],
+            episodes: vec![Episode {
+                rk: "e1".into(),
+                ..Default::default()
+            }],
             related: vec![rel(SRV_A, "r0"), rel(SRV_A, "r1")],
             ..Default::default()
         }));
 
         // …and the tile is reached even though the page's own rk did not match and the rk is on no
         // episode — the two arms that both return early
-        assert!(set_watched_local(SRV_A, "r1", true), "the Related tile is a hit, not a miss");
+        assert!(
+            set_watched_local(SRV_A, "r1", true),
+            "the Related tile is a hit, not a miss"
+        );
         let d = current().unwrap();
-        assert!(d.related[1].watched && !d.related[1].unwatched, "the tick the menu just promised");
-        assert_eq!(d.related[1].resume_ms, 0, "…and the bar it was wearing, or the tile shows both");
+        assert!(
+            d.related[1].watched && !d.related[1].unwatched,
+            "the tick the menu just promised"
+        );
+        assert_eq!(
+            d.related[1].resume_ms, 0,
+            "…and the bar it was wearing, or the tile shows both"
+        );
         assert!(d.related[0].resume_frac().is_some(), "no other tile moved");
         assert!(!d.watched, "the page's own item is not what was pressed");
         assert!(!d.episodes[0].watched, "…nor is any episode of it");
@@ -3289,8 +3765,14 @@ mod tests {
 
         // A SHARE's `r0` is a different film that happens to carry the same number. The row's own
         // `sid` is what keeps the press off it — a bare-key walk would flip the tile here.
-        assert!(!set_watched_local(SRV_B, "r0", true), "another server's key names nothing on this shelf");
-        assert!(current().unwrap().related[0].resume_frac().is_some(), "…and the tile is untouched");
+        assert!(
+            !set_watched_local(SRV_B, "r0", true),
+            "another server's key names nothing on this shelf"
+        );
+        assert!(
+            current().unwrap().related[0].resume_frac().is_some(),
+            "…and the tile is untouched"
+        );
 
         clear();
     }
@@ -3302,7 +3784,10 @@ mod tests {
     #[test]
     fn the_playing_item_cache_hits_only_for_the_same_item_on_the_same_server() {
         let _serial = crate::testlock::serial();
-        let audio = vec![Stream { id: 7, ..Default::default() }];
+        let audio = vec![Stream {
+            id: 7,
+            ..Default::default()
+        }];
         set_current_for_test(Some(Detail {
             sid: SRV_A,
             rk: "42".into(),
@@ -3313,17 +3798,34 @@ mod tests {
         }));
 
         let hit = cached_playing(SRV_A, "42").expect("the loaded page IS this item");
-        assert_eq!((hit.sid, hit.rk.as_str()), (SRV_A, "42"), "the store records where it came from");
+        assert_eq!(
+            (hit.sid, hit.rk.as_str()),
+            (SRV_A, "42"),
+            "the store records where it came from"
+        );
         assert_eq!(hit.audio.first().map(|s| s.id), Some(7));
 
-        assert!(cached_playing(SRV_B, "42").is_none(), "the SHARE's 42 is a different film");
+        assert!(
+            cached_playing(SRV_B, "42").is_none(),
+            "the SHARE's 42 is a different film"
+        );
         assert!(cached_playing(SRV_A, "43").is_none());
-        assert!(cached_playing(crate::plex::ServerId::UNSET, "42").is_none(), "unscoped names neither");
+        assert!(
+            cached_playing(crate::plex::ServerId::UNSET, "42").is_none(),
+            "unscoped names neither"
+        );
 
         // …and the pre-existing rule is untouched: a page with no streams is not a usable cache
         // entry, whatever its identity says (it would hand playback an empty track list).
-        set_current_for_test(Some(Detail { sid: SRV_A, rk: "42".into(), ..Default::default() }));
-        assert!(cached_playing(SRV_A, "42").is_none(), "no streams loaded yet — go and fetch");
+        set_current_for_test(Some(Detail {
+            sid: SRV_A,
+            rk: "42".into(),
+            ..Default::default()
+        }));
+        assert!(
+            cached_playing(SRV_A, "42").is_none(),
+            "no streams loaded yet — go and fetch"
+        );
         clear();
     }
 
@@ -3375,21 +3877,34 @@ mod tests {
                 { "id": 164, "filter": "writer=164", "tag": "Sam Scribe" }
             ]
         }"#;
-        let it: crate::plex::Metadata = serde_json::from_slice(body).expect("the live crew shape parses");
+        let it: crate::plex::Metadata =
+            serde_json::from_slice(body).expect("the live crew shape parses");
         assert_eq!(it.director.len(), 2, "Director[] is on the DTO");
         assert_eq!(it.writer.len(), 2, "and so is Writer[]");
-        assert!(it.director[0].role.is_empty(), "crew rows carry no role — the JOB is the caption");
+        assert!(
+            it.director[0].role.is_empty(),
+            "crew rows carry no role — the JOB is the caption"
+        );
 
         let crew = crew_credits(&it);
-        let got: Vec<(&str, &str)> = crew.iter().map(|c| (c.tag.as_str(), c.role.as_str())).collect();
+        let got: Vec<(&str, &str)> = crew
+            .iter()
+            .map(|c| (c.tag.as_str(), c.role.as_str()))
+            .collect();
         assert_eq!(
             got,
             [("Jane Doe", "Director, Writer"), ("Sam Scribe", "Writer")],
             "directors first, and the writer-director is ONE tile listing both jobs — not two \
              identical headshots side by side"
         );
-        assert_eq!(crew[0].thumb, "https://metadata-static.plex.tv/c/people/c.jpg", "the headshot rides along");
-        assert!(crew[1].thumb.is_empty(), "a crew member with no headshot is still a credit");
+        assert_eq!(
+            crew[0].thumb, "https://metadata-static.plex.tv/c/people/c.jpg",
+            "the headshot rides along"
+        );
+        assert!(
+            crew[1].thumb.is_empty(),
+            "a crew member with no headshot is still a credit"
+        );
     }
 
     /// The shelf's flat index space: the screen addresses one row of tiles, so `credit(i)` must run
@@ -3409,15 +3924,45 @@ mod tests {
             crew: vec![person("Jane Doe", "Director")],
             ..Default::default()
         };
-        assert_eq!(d.credits_len(), 3, "the shelf is as long as the two lists together");
-        let seen: Vec<(&str, &str)> =
-            (0..d.credits_len()).filter_map(|i| d.credit(i)).map(|c| (c.tag.as_str(), c.role.as_str())).collect();
-        assert_eq!(seen, [("Actor A", "Hero"), ("Actor B", "Villain"), ("Jane Doe", "Director")]);
-        assert!(d.credit(3).is_none(), "one past the end is None, not a panic");
-        assert!(d.credit(usize::MAX).is_none(), "and so is a wildly stale focus column");
+        assert_eq!(
+            d.credits_len(),
+            3,
+            "the shelf is as long as the two lists together"
+        );
+        let seen: Vec<(&str, &str)> = (0..d.credits_len())
+            .filter_map(|i| d.credit(i))
+            .map(|c| (c.tag.as_str(), c.role.as_str()))
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                ("Actor A", "Hero"),
+                ("Actor B", "Villain"),
+                ("Jane Doe", "Director")
+            ]
+        );
+        assert!(
+            d.credit(3).is_none(),
+            "one past the end is None, not a panic"
+        );
+        assert!(
+            d.credit(usize::MAX).is_none(),
+            "and so is a wildly stale focus column"
+        );
 
-        let crew_only = Detail { crew: vec![person("Jane Doe", "Director")], ..Default::default() };
-        assert_eq!(crew_only.credits_len(), 1, "a crew-only item still fills the shelf");
-        assert_eq!(crew_only.credit(0).map(|c| c.tag.as_str()), Some("Jane Doe"), "and its first tile is the crew");
+        let crew_only = Detail {
+            crew: vec![person("Jane Doe", "Director")],
+            ..Default::default()
+        };
+        assert_eq!(
+            crew_only.credits_len(),
+            1,
+            "a crew-only item still fills the shelf"
+        );
+        assert_eq!(
+            crew_only.credit(0).map(|c| c.tag.as_str()),
+            Some("Jane Doe"),
+            "and its first tile is the crew"
+        );
     }
 }

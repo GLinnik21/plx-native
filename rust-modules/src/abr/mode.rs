@@ -37,7 +37,9 @@ impl TransitionHistory {
         let base = policy
             .visible_switch_penalty
             .saturating_mul(i64::from(self.visible_switches));
-        let Some(since) = self.since_last_ms else { return base };
+        let Some(since) = self.since_last_ms else {
+            return base;
+        };
         let halvings = since / policy.visible_switch_decay_ms.max(1);
         base >> halvings.min(16)
     }
@@ -316,7 +318,11 @@ pub(crate) fn original_utility(inputs: &ModeInputs, policy: &AbrPolicy) -> Optio
     let features = scaled(
         policy.generation_loss_bonus
             + if inputs.source_dv { policy.dv_bonus } else { 0 }
-            + if inputs.source_atmos { policy.atmos_bonus } else { 0 },
+            + if inputs.source_atmos {
+                policy.atmos_bonus
+            } else {
+                0
+            },
         scale,
     );
     let transition = transition_cost(inputs.current, ModeKind::Original, inputs.history, policy);
@@ -450,11 +456,18 @@ pub(crate) fn choose_mode(
     let original = original_utility(inputs, policy);
     let hls = hls_utility(best_hls, current_hls, inputs, policy);
     match original {
-        Some(orig) if orig.total > hls.total => {
-            (ModeKind::Original, ModeReason::OriginalWorthIt, orig, Some(hls))
-        }
-        Some(orig) => (ModeKind::Hls, ModeReason::OriginalNotWorthIt, hls, Some(orig)),
+        Some(orig) if orig.total > hls.total => (
+            ModeKind::Original,
+            ModeReason::OriginalWorthIt,
+            orig,
+            Some(hls),
+        ),
+        Some(orig) => (
+            ModeKind::Hls,
+            ModeReason::OriginalNotWorthIt,
+            hls,
+            Some(orig),
+        ),
         None => (ModeKind::Hls, ModeReason::OriginalInfeasible, hls, None),
     }
 }
-

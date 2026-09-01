@@ -62,7 +62,9 @@
 //! user's eyes at the exact moment they asked for a small move. The COLUMN is remembered (and
 //! clamped), which is the half of "lands where you were" that costs nothing.
 
-use crate::ui::consts::{K_SCALE, K_SCROLL, SDLK_BACKSPACE, SDLK_CLEAR, SDLK_DOWN, SDLK_LEFT, SDLK_RIGHT, SDLK_UP};
+use crate::ui::consts::{
+    K_SCALE, K_SCROLL, SDLK_BACKSPACE, SDLK_CLEAR, SDLK_DOWN, SDLK_LEFT, SDLK_RIGHT, SDLK_UP,
+};
 use crate::ui::xfade::Xfade;
 use crate::ui::{Painter, Rect, Spring};
 use std::os::raw::{c_int, c_uint};
@@ -450,7 +452,11 @@ fn clear_query() {
 fn move_caret(sym: c_uint) {
     let q = crate::search::query();
     let c = caret();
-    set_caret(if sym == SDLK_LEFT { prev_boundary(q, c) } else { next_boundary(q, c) });
+    set_caret(if sym == SDLK_LEFT {
+        prev_boundary(q, c)
+    } else {
+        next_boundary(q, c)
+    });
 }
 
 /// Advance the blink and report to the frame gate on the FLIP alone — the whole reason a blinking
@@ -518,7 +524,11 @@ fn below_of(has_query: bool, n_recents: usize, n_shelves: usize) -> Below {
 
 /// What is drawn under the field right now — the ▼ handoff and the draw dispatch, once.
 pub(crate) fn below() -> Below {
-    below_of(has_query(), recents::count(), crate::search::shelves().len())
+    below_of(
+        has_query(),
+        recents::count(),
+        crate::search::shelves().len(),
+    )
 }
 
 /// Is the shelf flow held at zero? The two freezes, and the ONLY thing this module says about the
@@ -816,7 +826,10 @@ fn clamp_focus() {
             Zone::Results => {
                 let mut buf = [0usize; crate::search::KINDS.len()];
                 let lens = shelf_lens(&mut buf);
-                match (below() == Below::Results).then(|| seat(addr_of!(ROW).read(), addr_of!(COL).read(), lens)).flatten() {
+                match (below() == Below::Results)
+                    .then(|| seat(addr_of!(ROW).read(), addr_of!(COL).read(), lens))
+                    .flatten()
+                {
                     Some((r, c)) => {
                         *addr_of_mut!(ROW) = r;
                         *addr_of_mut!(COL) = c;
@@ -853,7 +866,11 @@ fn strip_last() -> usize {
 }
 
 pub(crate) fn draw() {
-    crate::gfx::frame_clear(crate::ui::theme::CLEAR_RGB.0, crate::ui::theme::CLEAR_RGB.1, crate::ui::theme::CLEAR_RGB.2);
+    crate::gfx::frame_clear(
+        crate::ui::theme::CLEAR_RGB.0,
+        crate::ui::theme::CLEAR_RGB.1,
+        crate::ui::theme::CLEAR_RGB.2,
+    );
     let p = Painter::root().alpha(crate::ui::nav::page_alpha());
     let pk = Painter::root().alpha(crate::ui::nav::chrome_alpha());
     let v = view();
@@ -1183,7 +1200,9 @@ pub(crate) fn on_ok() -> Action {
 /// "this collection exists" is the answer a lot of searches are actually after. When browse learns
 /// a collection listing, this arm is where it lands.
 fn open_focused() -> Action {
-    let Some((kind, item)) = focused_item() else { return Action::None };
+    let Some((kind, item)) = focused_item() else {
+        return Action::None;
+    };
     match (kind, item) {
         (_, crate::search::Item::Media(m)) => Action::Open(crate::ui::trail::Node::Detail {
             sid: m.sid,
@@ -1196,7 +1215,11 @@ fn open_focused() -> Action {
             // the LOCAL numeric id addresses `/library/people/{id}/media`, and the `tagKey` guid is
             // the only id plex.tv's biography provider answers to. Either can be missing; passing
             // one for the other 404s, so both ride along.
-            let key = if t.id.is_empty() || t.id == "0" { t.tag_key.clone() } else { t.id.clone() };
+            let key = if t.id.is_empty() || t.id == "0" {
+                t.tag_key.clone()
+            } else {
+                t.id.clone()
+            };
             if key.is_empty() {
                 return Action::None;
             }
@@ -1276,7 +1299,10 @@ fn find_rect(rects: &[(Hit, Rect)], below: Below, mx: f32, my: f32) -> Option<Hi
         .iter()
         .find(|&&(h, r)| {
             r.w > 0.5
-                && matches!((h, below), (Hit::Recent(_), Below::Recents) | (Hit::Tile(..), Below::Results))
+                && matches!(
+                    (h, below),
+                    (Hit::Recent(_), Below::Recents) | (Hit::Tile(..), Below::Results)
+                )
                 && r.contains(mx, my)
         })
         .map(|&(h, _)| h)
@@ -1321,7 +1347,13 @@ fn focus(h: Hit) {
             Hit::Field => {}
             // The Clear control records itself at MAX_RECENTS whatever the list length; the cursor
             // addresses it at `clear_index`.
-            Hit::Recent(i) => *addr_of_mut!(RECENT) = if i >= MAX_RECENTS { clear_index() } else { i.min(clear_index()) },
+            Hit::Recent(i) => {
+                *addr_of_mut!(RECENT) = if i >= MAX_RECENTS {
+                    clear_index()
+                } else {
+                    i.min(clear_index())
+                }
+            }
             Hit::Tile(r, c) => {
                 *addr_of_mut!(ROW) = r;
                 *addr_of_mut!(COL) = c;
@@ -1358,7 +1390,9 @@ pub(crate) fn pointer_focus(mx: f32, my: f32) {
 /// background with the cursor resting on Clear wiped the user's recent searches, and with it on a
 /// result tile opened that page.
 pub(crate) fn click(mx: f32, my: f32) -> Action {
-    let Some(h) = hit(mx, my) else { return Action::None };
+    let Some(h) = hit(mx, my) else {
+        return Action::None;
+    };
     focus(h);
     // A click on the field is the one place the pointer and the remote differ: OK on a focused
     // field toggles editing, but a click IS the request to type, so it only ever raises the panel.
@@ -1426,13 +1460,25 @@ mod tests {
         assert_eq!(below_of(false, 0, 0), Below::Nothing);
         // no query, terms remembered → the recents list
         assert_eq!(below_of(false, 1, 0), Below::Recents);
-        assert_eq!(below_of(false, MAX_RECENTS + 3, 0), Below::Recents, "a longer store still draws a list");
+        assert_eq!(
+            below_of(false, MAX_RECENTS + 3, 0),
+            Below::Recents,
+            "a longer store still draws a list"
+        );
         // a query with shelves → the results
         assert_eq!(below_of(true, 0, 1), Below::Results);
-        assert_eq!(below_of(true, 4, 5), Below::Results, "a live query outranks the remembered terms");
+        assert_eq!(
+            below_of(true, 4, 5),
+            Below::Results,
+            "a live query outranks the remembered terms"
+        );
         // a query whose answer is empty → the no-results STATEMENT, which holds no focus
         assert_eq!(below_of(true, 0, 0), Below::Nothing);
-        assert_eq!(below_of(true, 4, 0), Below::Nothing, "an empty answer does not fall back to the recents list");
+        assert_eq!(
+            below_of(true, 4, 0),
+            Below::Nothing,
+            "an empty answer does not fall back to the recents list"
+        );
     }
 
     /// …and the live wiring of it, in the two cases a host can actually reach (both stores are
@@ -1443,18 +1489,41 @@ mod tests {
         let _s = crate::testlock::serial();
         let _g = ZLOCK.lock().unwrap_or_else(|e| e.into_inner());
         reset();
-        assert_eq!(below(), Below::Nothing, "no query and no terms: the field is the only thing on screen");
+        assert_eq!(
+            below(),
+            Below::Nothing,
+            "no query and no terms: the field is the only thing on screen"
+        );
         move_focus(SDLK_DOWN);
-        assert_eq!(zone(), Zone::Field, "there is nothing drawn below the field, so focus must not leave it");
+        assert_eq!(
+            zone(),
+            Zone::Field,
+            "there is nothing drawn below the field, so focus must not leave it"
+        );
 
         crate::search::set_query("wallace");
-        assert!(crate::search::shelves().is_empty(), "the store lands nothing yet — that is the second case");
-        assert_eq!(below(), Below::Nothing, "a query whose answer is empty draws the statement, not shelves");
+        assert!(
+            crate::search::shelves().is_empty(),
+            "the store lands nothing yet — that is the second case"
+        );
+        assert_eq!(
+            below(),
+            Below::Nothing,
+            "a query whose answer is empty draws the statement, not shelves"
+        );
         move_focus(SDLK_DOWN);
-        assert_eq!(zone(), Zone::Field, "a searched-but-empty screen has nothing focusable under the field either");
+        assert_eq!(
+            zone(),
+            Zone::Field,
+            "a searched-but-empty screen has nothing focusable under the field either"
+        );
 
         crate::search::set_query("   ");
-        assert_eq!(below(), Below::Nothing, "a whitespace-only query is not a query, and there are no terms");
+        assert_eq!(
+            below(),
+            Below::Nothing,
+            "a whitespace-only query is not a query, and there are no terms"
+        );
         crate::search::reset();
     }
 
@@ -1475,16 +1544,35 @@ mod tests {
         reset();
         move_focus(SDLK_UP);
         assert_eq!(zone(), Zone::Strip);
-        assert_eq!(pill(), crate::ui::widgets::search_pill().min(strip_last()) as c_int, "▲ lands under the pill the screen is drawn as selected on");
+        assert_eq!(
+            pill(),
+            crate::ui::widgets::search_pill().min(strip_last()) as c_int,
+            "▲ lands under the pill the screen is drawn as selected on"
+        );
         move_focus(SDLK_LEFT);
-        assert!(pill() <= crate::ui::widgets::search_pill() as c_int, "◀ walks the pills, never past the first");
+        assert!(
+            pill() <= crate::ui::widgets::search_pill() as c_int,
+            "◀ walks the pills, never past the first"
+        );
         for _ in 0..32 {
             move_focus(SDLK_RIGHT);
         }
-        assert_eq!(pill(), strip_last() as c_int, "▶ clamps at the last pill `widgets::tab_count` reports");
+        assert_eq!(
+            pill(),
+            strip_last() as c_int,
+            "▶ clamps at the last pill `widgets::tab_count` reports"
+        );
         move_focus(SDLK_DOWN);
-        assert_eq!(zone(), Zone::Field, "▼ off the strip is the field, whatever pill the cursor was on");
-        assert_eq!(pill(), -1, "focus is not in the strip any more, and the pill read-out must say so");
+        assert_eq!(
+            zone(),
+            Zone::Field,
+            "▼ off the strip is the field, whatever pill the cursor was on"
+        );
+        assert_eq!(
+            pill(),
+            -1,
+            "focus is not in the strip any more, and the pill read-out must say so"
+        );
         crate::search::reset();
     }
 
@@ -1510,21 +1598,41 @@ mod tests {
             move_focus(SDLK_LEFT);
         }
         assert_eq!(zone(), Zone::Chip, "◀ off the first pill reaches the chip");
-        assert_eq!(top_focus(), TopFocus::Chip, "…and the shared bar is told so");
+        assert_eq!(
+            top_focus(),
+            TopFocus::Chip,
+            "…and the shared bar is told so"
+        );
         for _ in 0..4 {
             move_focus(SDLK_LEFT); // there is nothing further left; it must not wrap or underflow
         }
-        assert_eq!(zone(), Zone::Chip, "the chip is the end of the row, not a step before one");
+        assert_eq!(
+            zone(),
+            Zone::Chip,
+            "the chip is the end of the row, not a step before one"
+        );
 
         move_focus(SDLK_RIGHT);
-        assert_eq!(top_focus(), TopFocus::Pill(0), "▶ walks back onto the FIRST pill, the one it left");
+        assert_eq!(
+            top_focus(),
+            TopFocus::Pill(0),
+            "▶ walks back onto the FIRST pill, the one it left"
+        );
 
         // …and ▼ from the chip is the field, exactly as it is from the pills
         move_focus(SDLK_LEFT);
         assert_eq!(zone(), Zone::Chip);
         move_focus(SDLK_DOWN);
-        assert_eq!(zone(), Zone::Field, "▼ off the chip lands where ▼ off the strip lands");
-        assert_eq!(top_focus(), TopFocus::Away, "off the bar entirely — neither chip nor pill");
+        assert_eq!(
+            zone(),
+            Zone::Field,
+            "▼ off the chip lands where ▼ off the strip lands"
+        );
+        assert_eq!(
+            top_focus(),
+            TopFocus::Away,
+            "off the bar entirely — neither chip nor pill"
+        );
         crate::search::reset();
     }
 
@@ -1554,14 +1662,22 @@ mod tests {
         assert_eq!(step_results(SDLK_UP, 0, 3, &lens), None);
         // So does any step in a set that has emptied under the cursor (every keystroke does this).
         for sym in [SDLK_UP, SDLK_DOWN, SDLK_LEFT, SDLK_RIGHT] {
-            assert_eq!(step_results(sym, 3, 9, &[]), None, "no shelves means no zone to be in");
+            assert_eq!(
+                step_results(sym, 3, 9, &[]),
+                None,
+                "no shelves means no zone to be in"
+            );
         }
         // A cursor addressing a shelf that no longer exists is SEATED before the step is applied,
         // never trusted: (9,9) seats to the last shelf's last item (2,4), and ◀ then walks from
         // THERE rather than from an index that was never on screen.
         assert_eq!(seat(9, 9, &lens), Some((2, 4)));
         assert_eq!(step_results(SDLK_LEFT, 9, 9, &lens), Some((2, 3)));
-        assert_eq!(seat(0, 0, &[0]), Some((0, 0)), "an empty shelf still seats at column 0");
+        assert_eq!(
+            seat(0, 0, &[0]),
+            Some((0, 0)),
+            "an empty shelf still seats at column 0"
+        );
         assert_eq!(seat(0, 0, &[]), None);
     }
 
@@ -1579,12 +1695,20 @@ mod tests {
             *addr_of_mut!(COL) = 11;
         }
         clamp_focus();
-        assert_eq!(zone(), Zone::Field, "with no shelves drawn, Results is not a zone focus may sit in");
+        assert_eq!(
+            zone(),
+            Zone::Field,
+            "with no shelves drawn, Results is not a zone focus may sit in"
+        );
         // …and the CURSOR survives, the same answer `move_focus`'s own fall-back gives. Zeroing it
         // here threw the column away on every keystroke, since `set_query` wipes the store
         // synchronously — so the "the column is remembered" promise held for a d-pad ▲ and not for
         // the far more common case of typing one more letter.
-        assert_eq!((view().row, view().col), (3, 11), "the zone goes, the cursor stays");
+        assert_eq!(
+            (view().row, view().col),
+            (3, 11),
+            "the zone goes, the cursor stays"
+        );
 
         // The same rule one zone over: the recents cursor cannot outlive the list.
         unsafe {
@@ -1592,7 +1716,11 @@ mod tests {
             *addr_of_mut!(RECENT) = 3;
         }
         clamp_focus();
-        assert_eq!(zone(), Zone::Field, "an empty recents list draws nothing, so it holds no focus either");
+        assert_eq!(
+            zone(),
+            Zone::Field,
+            "an empty recents list draws nothing, so it holds no focus either"
+        );
         crate::search::reset();
     }
 
@@ -1629,22 +1757,50 @@ mod tests {
     #[test]
     fn a_zero_size_or_stale_region_rect_is_not_hittable() {
         let tile = Rect::new(400.0, 400.0, 250.0, 375.0);
-        let rects = [(Hit::Tile(1, 2), tile), (Hit::Recent(0), Rect::new(90.0, 300.0, 820.0, 84.0))];
+        let rects = [
+            (Hit::Tile(1, 2), tile),
+            (Hit::Recent(0), Rect::new(90.0, 300.0, 820.0, 84.0)),
+        ];
 
-        assert_eq!(find_rect(&rects, Below::Results, 500.0, 500.0), Some(Hit::Tile(1, 2)));
-        assert_eq!(find_rect(&rects, Below::Recents, 500.0, 500.0), None, "a tile is not a target while the recents list is what is drawn");
-        assert_eq!(find_rect(&rects, Below::Recents, 500.0, 340.0), Some(Hit::Recent(0)));
-        assert_eq!(find_rect(&rects, Below::Results, 500.0, 340.0), None, "…and the converse");
-        assert_eq!(find_rect(&rects, Below::Nothing, 500.0, 500.0), None, "nothing drawn, nothing hittable");
+        assert_eq!(
+            find_rect(&rects, Below::Results, 500.0, 500.0),
+            Some(Hit::Tile(1, 2))
+        );
+        assert_eq!(
+            find_rect(&rects, Below::Recents, 500.0, 500.0),
+            None,
+            "a tile is not a target while the recents list is what is drawn"
+        );
+        assert_eq!(
+            find_rect(&rects, Below::Recents, 500.0, 340.0),
+            Some(Hit::Recent(0))
+        );
+        assert_eq!(
+            find_rect(&rects, Below::Results, 500.0, 340.0),
+            None,
+            "…and the converse"
+        );
+        assert_eq!(
+            find_rect(&rects, Below::Nothing, 500.0, 500.0),
+            None,
+            "nothing drawn, nothing hittable"
+        );
 
         // A tile culled to nothing still sits in the list; it must not answer at its own corner.
         let culled = [(Hit::Tile(0, 0), Rect::new(400.0, 400.0, 0.0, 0.0))];
-        assert_eq!(find_rect(&culled, Below::Results, 400.0, 400.0), None, "a zero-size tile is not a target");
+        assert_eq!(
+            find_rect(&culled, Below::Results, 400.0, 400.0),
+            None,
+            "a zero-size tile is not a target"
+        );
 
         // First match wins, which is what keeps the focused tile — drawn LAST, so recorded last —
         // from stealing a click that landed on the neighbour underneath it.
         let stacked = [(Hit::Tile(0, 3), tile), (Hit::Tile(0, 4), tile)];
-        assert_eq!(find_rect(&stacked, Below::Results, 500.0, 500.0), Some(Hit::Tile(0, 3)));
+        assert_eq!(
+            find_rect(&stacked, Below::Results, 500.0, 500.0),
+            Some(Hit::Tile(0, 3))
+        );
     }
 
     /// One typed character is not a search: the store sends nothing below `MIN_QUERY`, so the
@@ -1655,14 +1811,25 @@ mod tests {
         let _g = ZLOCK.lock().unwrap_or_else(|e| e.into_inner());
         reset();
         crate::search::set_query("w");
-        assert!(!has_query(), "one character never reaches the server — `search::MIN_QUERY` is 2");
+        assert!(
+            !has_query(),
+            "one character never reaches the server — `search::MIN_QUERY` is 2"
+        );
         // …and the store agrees, which is the point: it went Idle rather than Searching, so no
         // request exists for an empty-results statement to be about.
         assert!(matches!(crate::search::state(), crate::search::State::Idle));
-        assert_eq!(below_of(has_query(), 3, 0), Below::Recents, "so the remembered terms stay on screen");
+        assert_eq!(
+            below_of(has_query(), 3, 0),
+            Below::Recents,
+            "so the remembered terms stay on screen"
+        );
         crate::search::set_query("wa");
         assert!(has_query());
-        assert_eq!(below_of(has_query(), 3, 0), Below::Nothing, "now it IS a search, and an empty answer says so");
+        assert_eq!(
+            below_of(has_query(), 3, 0),
+            Below::Nothing,
+            "now it IS a search, and an empty answer says so"
+        );
         crate::search::reset();
     }
 
@@ -1691,7 +1858,10 @@ mod tests {
         for _ in 0..10 {
             move_focus(SDLK_DOWN);
         }
-        assert!(view().recent <= clear_index(), "▼ caps at the Clear control, never past it");
+        assert!(
+            view().recent <= clear_index(),
+            "▼ caps at the Clear control, never past it"
+        );
         crate::search::reset();
     }
 
@@ -1702,7 +1872,10 @@ mod tests {
     /// `a_shelf_scrolls_only_as_far_as_its_own_block_needs`.
     #[test]
     fn the_shelf_flow_is_frozen_unless_the_shelves_hold_focus_with_the_keyboard_down() {
-        assert!(!scroll_frozen(Zone::Results, false), "the one case that scrolls at all");
+        assert!(
+            !scroll_frozen(Zone::Results, false),
+            "the one case that scrolls at all"
+        );
         // The keyboard is up: the result set stays still under a user who is still typing.
         assert!(scroll_frozen(Zone::Results, true));
         // …and whenever the shelves do not hold focus, so ▼ off the field lands on shelf 0 without
@@ -1747,13 +1920,24 @@ mod tests {
         settle(10_000);
 
         // A settled screen: the spring is on target, so a frame that only steps it must not ask.
-        assert!(!settle(10_016), "a Search screen with nothing moving must stop repainting");
+        assert!(
+            !settle(10_016),
+            "a Search screen with nothing moving must stop repainting"
+        );
         assert!(!settle(10_032), "…and stays quiet frame after frame");
 
         // …and one in flight: shove the spring off its target and it must ask for as long as it is
         // visibly travelling.
-        unsafe { *addr_of_mut!(SCROLL) = Spring { pos: 400.0, vel: 0.0 } };
-        assert!(settle(10_048), "a scrolling shelf must keep the panel awake");
+        unsafe {
+            *addr_of_mut!(SCROLL) = Spring {
+                pos: 400.0,
+                vel: 0.0,
+            }
+        };
+        assert!(
+            settle(10_048),
+            "a scrolling shelf must keep the panel awake"
+        );
 
         // …and settles on its own rather than ringing forever.
         let mut t = 10_064;
@@ -1763,7 +1947,10 @@ mod tests {
             frames += 1;
         }
         assert!(frames < 600, "the scroll must arrive, not ring forever");
-        assert!(view().shift.abs() < 0.25, "with focus off the shelves the flow rests at zero");
+        assert!(
+            view().shift.abs() < 0.25,
+            "with focus off the shelves the flow rests at zero"
+        );
 
         // Put the gate's clock back where a fresh process has it — see the doc above.
         idle::note_present(0);
@@ -1796,17 +1983,31 @@ mod tests {
         let _g = ZLOCK.lock().unwrap_or_else(|e| e.into_inner());
         reset();
         crate::search::set_query("wallacé");
-        assert!(!key(SDLK_BACKSPACE), "with the panel down the screen has no claim on the key");
-        assert_eq!(crate::search::query(), "wallacé", "…and must not have edited the query anyway");
+        assert!(
+            !key(SDLK_BACKSPACE),
+            "with the panel down the screen has no claim on the key"
+        );
+        assert_eq!(
+            crate::search::query(),
+            "wallacé",
+            "…and must not have edited the query anyway"
+        );
 
         typed("wallacé");
         assert!(key(SDLK_BACKSPACE), "editing, the screen consumes it");
-        assert_eq!(crate::search::query(), "wallac", "a whole codepoint, not one byte of a two-byte char");
+        assert_eq!(
+            crate::search::query(),
+            "wallac",
+            "a whole codepoint, not one byte of a two-byte char"
+        );
         assert!(!key(SDLK_UP), "everything else falls through to app.rs");
 
         crate::search::set_query("");
         set_caret(0);
-        assert!(key(SDLK_BACKSPACE), "an empty query still consumes the key — it is the field's");
+        assert!(
+            key(SDLK_BACKSPACE),
+            "an empty query still consumes the key — it is the field's"
+        );
         assert_eq!(crate::search::query(), "");
         leave();
         crate::search::reset();
@@ -1822,13 +2023,21 @@ mod tests {
         let _g = ZLOCK.lock().unwrap_or_else(|e| e.into_inner());
         reset();
         typed("суббота"); // Cyrillic: two bytes a letter, so a byte step would split a codepoint
-        assert_eq!(caret(), "суббота".len(), "typing leaves the caret after what was typed");
+        assert_eq!(
+            caret(),
+            "суббота".len(),
+            "typing leaves the caret after what was typed"
+        );
 
         // ◀ walks back one CHARACTER at a time, and stops at the front rather than wrapping.
         for _ in 0..3 {
             assert!(key(SDLK_LEFT));
         }
-        assert_eq!(caret(), "суббота".len() - "ота".len(), "three letters back, not three bytes");
+        assert_eq!(
+            caret(),
+            "суббота".len() - "ота".len(),
+            "three letters back, not three bytes"
+        );
         for _ in 0..40 {
             key(SDLK_LEFT);
         }
@@ -1839,7 +2048,11 @@ mod tests {
         // …and a commit lands AT the caret, not at the end of the string.
         insert_text("X");
         assert_eq!(crate::search::query(), "сXуббота");
-        assert_eq!(caret(), "сX".len(), "…leaving the caret after the inserted text");
+        assert_eq!(
+            caret(),
+            "сX".len(),
+            "…leaving the caret after the inserted text"
+        );
         // backspace takes the character BEFORE the caret, which is the one just typed
         assert!(key(SDLK_BACKSPACE));
         assert_eq!(crate::search::query(), "суббота");
@@ -1854,10 +2067,18 @@ mod tests {
         // on — `set_query` is called from four places this screen does not drive.
         crate::search::set_query("ab");
         unsafe { *addr_of_mut!(CARET) = 99 };
-        assert_eq!(caret(), 2, "a stale offset clamps to the end of the live query");
+        assert_eq!(
+            caret(),
+            2,
+            "a stale offset clamps to the end of the live query"
+        );
         crate::search::set_query("é"); // 2 bytes: a clamp to len-1 would land mid-codepoint
         unsafe { *addr_of_mut!(CARET) = 1 };
-        assert_eq!(caret(), 0, "…and rounds DOWN to a char boundary rather than panicking");
+        assert_eq!(
+            caret(),
+            0,
+            "…and rounds DOWN to a char boundary rather than panicking"
+        );
         leave();
         crate::search::reset();
     }
@@ -1884,7 +2105,11 @@ mod tests {
         };
         frame(20_000); // discard the mount's own discrete invalidate
 
-        assert_eq!(view().hot, 1.0, "the screen mounts with the field focused and the fill seated");
+        assert_eq!(
+            view().hot,
+            1.0,
+            "the screen mounts with the field focused and the fill seated"
+        );
         // ▲ to the strip: the field is no longer hot, so the fill has somewhere to travel.
         move_focus(SDLK_UP);
         assert_eq!(zone(), Zone::Strip);
@@ -1898,18 +2123,32 @@ mod tests {
             ran += 1;
             t += 16;
         }
-        assert!(ran > 4, "the fade must keep the panel awake while it travels (ran {ran} frames)");
+        assert!(
+            ran > 4,
+            "the fade must keep the panel awake while it travels (ran {ran} frames)"
+        );
         assert!(ran < 120, "…and settle rather than ring forever");
-        assert!(view().hot < 0.02, "…arriving on the idle face (got {})", view().hot);
+        assert!(
+            view().hot < 0.02,
+            "…arriving on the idle face (got {})",
+            view().hot
+        );
 
         // …and back: ▼ returns to the field and the fill travels the other way.
         move_focus(SDLK_DOWN);
         frame(t);
-        assert!(frame(t + 16), "focus returning to the field must animate too");
+        assert!(
+            frame(t + 16),
+            "focus returning to the field must animate too"
+        );
         for _ in 0..200 {
             update(DT);
         }
-        assert!(view().hot > 0.98, "…and arrive on the focused face (got {})", view().hot);
+        assert!(
+            view().hot > 0.98,
+            "…and arrive on the focused face (got {})",
+            view().hot
+        );
         crate::search::reset();
     }
 
@@ -1931,7 +2170,11 @@ mod tests {
         // replaces it with itself and `aa` is impossible to type.
         assert_eq!(replaces_word_at("a", 1, "a"), None);
         assert_eq!(replaces_word_at("sum", 3, "m"), None);
-        assert_eq!(replaces_word_at("sum", 3, " "), None, "the space bar is a space");
+        assert_eq!(
+            replaces_word_at("sum", 3, " "),
+            None,
+            "the space bar is a space"
+        );
         // A caret the user MOVED is not a word being predicted on: a multi-character insertion
         // there must land where they put it (this is the `txt:` dev token's path, and the ◀/▶ one).
         assert_eq!(replaces_word_at("summer", 4, "XY"), None);
@@ -1943,7 +2186,10 @@ mod tests {
         // or the `replace_range` that follows panics inside the SDL event loop.
         assert_eq!(replaces_word_at("суб", "суб".len(), "суббота "), Some(0));
         let two = "я суб";
-        assert_eq!(replaces_word_at(two, two.len(), "суббота "), Some("я ".len()));
+        assert_eq!(
+            replaces_word_at(two, two.len(), "суббота "),
+            Some("я ".len())
+        );
     }
 
     /// …and the same rule through the live store, since `commit_text` is what actually edits.
@@ -1954,7 +2200,11 @@ mod tests {
         reset();
         typed("sum");
         commit_text("summer ");
-        assert_eq!(crate::search::query(), "summer ", "the partial word is replaced, not doubled");
+        assert_eq!(
+            crate::search::query(),
+            "summer ",
+            "the partial word is replaced, not doubled"
+        );
         assert_eq!(caret(), "summer ".len());
         // a second prediction on the next word appends, because there is no partial word to eat
         commit_text("house ");
@@ -1991,7 +2241,10 @@ mod tests {
             let (on, present) = asked(true);
             if on != was {
                 flips += 1;
-                assert!(present, "frame {f}: the bar changed state and did not ask to be drawn");
+                assert!(
+                    present,
+                    "frame {f}: the bar changed state and did not ask to be drawn"
+                );
                 was = on;
             } else {
                 assert!(!present, "frame {f}: a caret mid-phase asked for a repaint");
@@ -2001,15 +2254,24 @@ mod tests {
 
         // An edit restarts the phase at full ON — you must see where the next glyph lands.
         typed("s");
-        assert!(blink_on(unsafe { addr_of!(BLINK_T).read() }), "a keystroke leaves the bar solid");
+        assert!(
+            blink_on(unsafe { addr_of!(BLINK_T).read() }),
+            "a keystroke leaves the bar solid"
+        );
         // …and with the panel down nothing animates at all: this must not hold a settled screen
         // awake, which is the entire reason the blink reports only on its phase flips.
         leave();
         asked(false); // the edit above raised a DISCRETE invalidate; spend it before grading quiet
         for f in 0..200 {
             let (on, present) = asked(false);
-            assert!(on, "the phase parks ON so the next open does not start invisible");
-            assert!(!present, "frame {f}: the caret asked for a repaint with no keyboard up");
+            assert!(
+                on,
+                "the phase parks ON so the next open does not start invisible"
+            );
+            assert!(
+                !present,
+                "frame {f}: the caret asked for a repaint with no keyboard up"
+            );
         }
         crate::search::reset();
     }
@@ -2030,10 +2292,16 @@ mod tests {
         on_ok();
         assert!(editing());
         move_focus(SDLK_DOWN);
-        assert!(editing(), "a ▼ that moved nothing must not silently dismiss the keyboard");
+        assert!(
+            editing(),
+            "a ▼ that moved nothing must not silently dismiss the keyboard"
+        );
         assert_eq!(zone(), Zone::Field);
         move_focus(SDLK_UP);
-        assert!(!editing(), "▲ leaves the field, so the panel comes down with it");
+        assert!(
+            !editing(),
+            "▲ leaves the field, so the panel comes down with it"
+        );
         assert_eq!(zone(), Zone::Strip);
         crate::search::reset();
     }
@@ -2048,7 +2316,10 @@ mod tests {
         start_editing();
         assert!(back(), "the first BACK takes the keyboard down");
         assert!(!editing());
-        assert!(!back(), "the second leaves the screen — app.rs routes to Home");
+        assert!(
+            !back(),
+            "the second leaves the screen — app.rs routes to Home"
+        );
         crate::search::reset();
     }
 
@@ -2079,30 +2350,58 @@ mod tests {
         }
 
         resume();
-        assert_eq!(crate::search::query(), "wallace", "the pill must not wipe the term still on screen");
+        assert_eq!(
+            crate::search::query(),
+            "wallace",
+            "the pill must not wipe the term still on screen"
+        );
         // The SHELVES cannot be seeded from a host — they are a live server answer — so the proof
         // is the store's own rule: `set_query` is the only thing that clears them, and it
         // SUPERSEDES when it does. An unmoved generation is an unmoved result set.
-        assert_eq!(crate::search::query_gen(), gen, "the store was superseded, so its shelves went with it");
-        assert!(matches!(crate::search::state(), crate::search::State::Searching), "…and the request is still the one in flight");
+        assert_eq!(
+            crate::search::query_gen(),
+            gen,
+            "the store was superseded, so its shelves went with it"
+        );
+        assert!(
+            matches!(crate::search::state(), crate::search::State::Searching),
+            "…and the request is still the one in flight"
+        );
         let v = view();
-        assert_eq!((v.row, v.col, v.recent), (2, 5, 3), "both cursors survive the return");
+        assert_eq!(
+            (v.row, v.col, v.recent),
+            (2, 5, 3),
+            "both cursors survive the return"
+        );
 
         // …and the ENTRY POSTURE is seated, which is not state the user misses: the flow is frozen
         // at 0 whenever the shelves do not hold focus anyway, and the strip cursor comes back
         // under OUR pill rather than the Home one it was left on.
         assert_eq!(zone(), Zone::Field);
-        assert!(!editing(), "a return does not raise the television's keyboard");
+        assert!(
+            !editing(),
+            "a return does not raise the television's keyboard"
+        );
         assert_eq!(v.shift, 0.0);
-        assert_eq!(v.hot, 1.0, "the field mounts focused and SEATED, or it reports motion on arrival");
-        assert_eq!(unsafe { addr_of!(STRIP).read() }, crate::ui::widgets::search_pill());
+        assert_eq!(
+            v.hot, 1.0,
+            "the field mounts focused and SEATED, or it reports motion on arrival"
+        );
+        assert_eq!(
+            unsafe { addr_of!(STRIP).read() },
+            crate::ui::widgets::search_pill()
+        );
 
         // The seeded mount is the contrast, and it is what every pill press used to run: the query
         // is replaced outright and every cursor re-parked. Right for the boot trigger, which is
         // its one caller, and wrong for a navigation.
         enter("");
         assert_eq!(crate::search::query(), "");
-        assert_ne!(crate::search::query_gen(), gen, "a seed supersedes: the shelves go with the term");
+        assert_ne!(
+            crate::search::query_gen(),
+            gen,
+            "a seed supersedes: the shelves go with the term"
+        );
         let v = view();
         assert_eq!((v.row, v.col, v.recent), (0, 0, 0));
         crate::search::reset();
@@ -2118,10 +2417,20 @@ mod tests {
         reset();
         unsafe { *addr_of_mut!(ZONE) = Zone::Results };
         resume();
-        assert_eq!(crate::search::query(), "", "nothing was ever searched, so the field opens empty");
-        assert!(matches!(crate::search::state(), crate::search::State::Idle), "…and nothing was ever asked");
+        assert_eq!(
+            crate::search::query(),
+            "",
+            "nothing was ever searched, so the field opens empty"
+        );
+        assert!(
+            matches!(crate::search::state(), crate::search::State::Idle),
+            "…and nothing was ever asked"
+        );
         let v = view();
-        assert_eq!((zone(), v.row, v.col, v.recent, v.shift), (Zone::Field, 0, 0, 0, 0.0));
+        assert_eq!(
+            (zone(), v.row, v.col, v.recent, v.shift),
+            (Zone::Field, 0, 0, 0, 0.0)
+        );
         assert!(!editing());
         crate::search::reset();
     }
@@ -2147,13 +2456,23 @@ mod tests {
         assert!(editing());
 
         leave();
-        assert!(!editing(), "the panel is gone, so the screen must stop drawing a field being typed into");
-        assert_eq!(recents::count(), before, "a withdrawal records nothing — BACK's rule, not `leave_field`'s");
+        assert!(
+            !editing(),
+            "the panel is gone, so the screen must stop drawing a field being typed into"
+        );
+        assert_eq!(
+            recents::count(),
+            before,
+            "a withdrawal records nothing — BACK's rule, not `leave_field`'s"
+        );
 
         // …and the keyboard comes back, which is the half `textinput`'s own `STARTED` decides:
         // `leave` goes through `stop()`, so the next `start()` is not a silent no-op.
         on_ok();
-        assert!(editing(), "a field that cannot re-open its own keyboard is a dead screen");
+        assert!(
+            editing(),
+            "a field that cannot re-open its own keyboard is a dead screen"
+        );
         leave();
         crate::search::reset();
     }
@@ -2174,8 +2493,15 @@ mod tests {
         reset();
         enter("wal\0lace");
         assert_eq!(crate::search::query(), "wallace");
-        assert!(std::ffi::CString::new(crate::search::query()).is_ok(), "…so every run on this screen can be drawn");
-        assert_eq!(caret(), "wallace".len(), "and the caret is the LIVE string's end, not the seed's");
+        assert!(
+            std::ffi::CString::new(crate::search::query()).is_ok(),
+            "…so every run on this screen can be drawn"
+        );
+        assert_eq!(
+            caret(),
+            "wallace".len(),
+            "and the caret is the LIVE string's end, not the seed's"
+        );
         // a hand-edited file's tab or newline is not a query either
         enter("a\tb\nc");
         assert_eq!(crate::search::query(), "abc");
@@ -2199,8 +2525,15 @@ mod tests {
         }
         enter("wallace");
         assert_eq!(crate::search::query(), "wallace");
-        assert_eq!(zone(), Zone::Field, "a mount opens on the field, whatever the last visit left");
-        assert!(!editing(), "…and does NOT raise the keyboard: a seeded boot has nothing to type");
+        assert_eq!(
+            zone(),
+            Zone::Field,
+            "a mount opens on the field, whatever the last visit left"
+        );
+        assert!(
+            !editing(),
+            "…and does NOT raise the keyboard: a seeded boot has nothing to type"
+        );
         let v = view();
         assert_eq!((v.row, v.col, v.recent, v.shift), (0, 0, 0, 0.0));
         crate::search::reset();
@@ -2215,7 +2548,10 @@ mod tests {
         reset();
         unsafe { *addr_of_mut!(ZONE) = Zone::Results };
         assert!(!focus_is_card());
-        assert!(matches!(on_ok(), Action::None), "…and OK on it opens nothing");
+        assert!(
+            matches!(on_ok(), Action::None),
+            "…and OK on it opens nothing"
+        );
         unsafe { *addr_of_mut!(ZONE) = Zone::Field };
         assert!(!focus_is_card(), "the field is never a card");
         crate::search::reset();

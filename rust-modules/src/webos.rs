@@ -60,7 +60,6 @@ pub(crate) fn info() -> &'static Info {
     INFO.get_or_init(Info::default)
 }
 
-
 /// Pull `"key": "value"` out of a flat JSON object. Returns None rather than erroring: nothing
 /// here is worth failing a boot over.
 fn field<'a>(s: &'a str, key: &str) -> Option<&'a str> {
@@ -77,7 +76,11 @@ fn field<'a>(s: &'a str, key: &str) -> Option<&'a str> {
 fn parse(s: &str) -> Info {
     let get = |k: &str| field(s, k).unwrap_or_default().to_string();
     let release = get("webos_release");
-    let major = release.split('.').next().and_then(|m| m.parse::<u32>().ok()).unwrap_or(0);
+    let major = release
+        .split('.')
+        .next()
+        .and_then(|m| m.parse::<u32>().ok())
+        .unwrap_or(0);
     Info {
         release,
         codename: get("webos_release_codename"),
@@ -92,7 +95,9 @@ pub(crate) fn probe() {
     let info = match std::fs::read_to_string(OS_INFO) {
         Ok(s) => parse(&s),
         Err(e) => {
-            crate::log(&format!("webos: {OS_INFO} unreadable ({e}) — version unknown"));
+            crate::log(&format!(
+                "webos: {OS_INFO} unreadable ({e}) — version unknown"
+            ));
             Info::default()
         }
     };
@@ -145,7 +150,10 @@ pub(crate) fn device() -> &'static Hardware {
 /// each field takes the first spelling that answers rather than betting on one.
 fn parse_hw(s: &str) -> Hardware {
     let first = |keys: &[&str]| -> String {
-        keys.iter().find_map(|k| field(s, k)).unwrap_or_default().to_string()
+        keys.iter()
+            .find_map(|k| field(s, k))
+            .unwrap_or_default()
+            .to_string()
     };
     Hardware {
         model: first(&["modelName", "model_name", "device_name"]),
@@ -159,12 +167,17 @@ fn probe_hw() {
     let hw = match std::fs::read_to_string(DEVICE_INFO) {
         Ok(s) => parse_hw(&s),
         Err(e) => {
-            crate::log(&format!("webos: {DEVICE_INFO} unreadable ({e}) — model/board unknown"));
+            crate::log(&format!(
+                "webos: {DEVICE_INFO} unreadable ({e}) — model/board unknown"
+            ));
             Hardware::default()
         }
     };
     if !hw.model.is_empty() || !hw.board.is_empty() {
-        crate::log(&format!("webos: model={} board={} hw={}", hw.model, hw.board, hw.hw_revision));
+        crate::log(&format!(
+            "webos: model={} board={} hw={}",
+            hw.model, hw.board, hw.hw_revision
+        ));
     }
     let _ = HW.set(hw);
 }
@@ -192,7 +205,10 @@ mod tests {
     #[test]
     fn reads_the_dev_sets_real_os_info() {
         assert_eq!(field(REAL, "webos_release"), Some("4.10.2"));
-        assert_eq!(field(REAL, "webos_release_codename"), Some("goldilocks2-grampians"));
+        assert_eq!(
+            field(REAL, "webos_release_codename"),
+            Some("goldilocks2-grampians")
+        );
         assert_eq!(field(REAL, "webos_api_version"), Some("4.1.0"));
         assert_eq!(field(REAL, "webos_name"), Some("webOS TV"));
     }
@@ -215,7 +231,13 @@ mod tests {
     /// Garbage in must not panic: this runs during boot, before anything is on screen.
     #[test]
     fn malformed_input_is_none_not_a_panic() {
-        for bad in ["", "{", "{\"webos_release\"", "{\"webos_release\":", "not json at all"] {
+        for bad in [
+            "",
+            "{",
+            "{\"webos_release\"",
+            "{\"webos_release\":",
+            "not json at all",
+        ] {
             assert_eq!(field(bad, "webos_release"), None, "input {bad:?}");
         }
     }
@@ -224,7 +246,8 @@ mod tests {
     /// against and nyx has carried both across releases.
     #[test]
     fn the_hardware_record_takes_whichever_spelling_the_firmware_uses() {
-        let snake = r#"{"model_name":"49SM9000PLA","board_type":"HE_DTV_W19H","hardware_revision":"1.0"}"#;
+        let snake =
+            r#"{"model_name":"49SM9000PLA","board_type":"HE_DTV_W19H","hardware_revision":"1.0"}"#;
         let camel = r#"{"modelName":"OLED55C1","boardType":"k8hp","hardwareRevision":"2.0"}"#;
         assert_eq!(parse_hw(snake).model, "49SM9000PLA");
         assert_eq!(parse_hw(snake).board, "HE_DTV_W19H");

@@ -210,8 +210,12 @@ pub fn load_into(
 /// it cost.
 #[macro_export]
 macro_rules! dynlib_sym {
-    ($fname:ident) => { stringify!($fname) };
-    ($fname:ident, $sym:literal) => { $sym };
+    ($fname:ident) => {
+        stringify!($fname)
+    };
+    ($fname:ident, $sym:literal) => {
+        $sym
+    };
 }
 
 /// Declare a runtime-bound library. The body is shaped like the `extern "C"` block it replaces.
@@ -386,12 +390,20 @@ mod tests {
     fn a_partial_load_publishes_nothing() {
         static A: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
         static B: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
-        let v = load_into(None, HOST_LIBC, &[("malloc", &A), ("plxnative_no_such_symbol", &B)]);
-        assert!(matches!(v, Loaded::Incomplete(_, 1)), "expected one missing symbol");
-        assert!(A.load(Ordering::Acquire).is_null(), "malloc must not be published alone");
+        let v = load_into(
+            None,
+            HOST_LIBC,
+            &[("malloc", &A), ("plxnative_no_such_symbol", &B)],
+        );
+        assert!(
+            matches!(v, Loaded::Incomplete(_, 1)),
+            "expected one missing symbol"
+        );
+        assert!(
+            A.load(Ordering::Acquire).is_null(),
+            "malloc must not be published alone"
+        );
     }
-
-
 
     /// The happy path, graded against the host libc so it runs everywhere `cargo test` does.
     #[test]

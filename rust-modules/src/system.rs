@@ -149,8 +149,10 @@ pub(crate) fn sys_grab_wayland(winp: *mut c_void) {
         // the log would say why. SDL_SYSWM_WAYLAND is 6 in SDL2's enum; anything else here means
         // we did not get a surface and the video plane will stay hidden under an opaque UI.
         if surf.is_null() && !cfg!(feature = "hostsim") {
-            log("wm: NO wl_surface — the UI plane cannot be made transparent, so video will \
-                 decode invisibly beneath it. Check the SDL_SysWMinfo version handshake.");
+            log(
+                "wm: NO wl_surface — the UI plane cannot be made transparent, so video will \
+                 decode invisibly beneath it. Check the SDL_SysWMinfo version handshake.",
+            );
         }
         clear_opaque_region();
     }
@@ -227,7 +229,9 @@ struct RegistryListener {
 /// is already mapped; this only avoids naming these particular symbols in `DT_NEEDED`.
 #[cfg(not(feature = "hostsim"))]
 fn wl_sym(name: &str) -> Option<*mut c_void> {
-    crate::dynlib::Handle::self_handle().sym(name).filter(|p| !p.is_null())
+    crate::dynlib::Handle::self_handle()
+        .sym(name)
+        .filter(|p| !p.is_null())
 }
 
 #[cfg(not(feature = "hostsim"))]
@@ -252,27 +256,34 @@ unsafe extern "C" fn on_global(
     // Bind version 1: `create_region` is `WL_COMPOSITOR_CREATE_REGION_SINCE_VERSION 1`, and asking
     // for more than the compositor advertises is a protocol error that kills the connection.
     let want = version.min(1);
-    let (Some(iface), Some(bind)) =
-        (wl_sym("wl_compositor_interface"), wl_sym("wl_proxy_marshal_constructor_versioned"))
-    else {
+    let (Some(iface), Some(bind)) = (
+        wl_sym("wl_compositor_interface"),
+        wl_sym("wl_proxy_marshal_constructor_versioned"),
+    ) else {
         log("opaque: libwayland has no versioned constructor — cannot bind wl_compositor");
         return;
     };
     // `struct wl_interface`'s first member is `const char *name`; `wl_registry_bind` passes it as
     // the third variadic argument. Read it rather than spelling the string twice.
     let iface_name = unsafe { *(iface as *const *const std::ffi::c_char) };
-    let bind: unsafe extern "C" fn(
-        *mut c_void,
-        c_uint,
-        *const c_void,
-        c_uint,
-        ...
-    ) -> *mut c_void = unsafe { std::mem::transmute(bind) };
+    let bind: unsafe extern "C" fn(*mut c_void, c_uint, *const c_void, c_uint, ...) -> *mut c_void =
+        unsafe { std::mem::transmute(bind) };
     let proxy = unsafe {
-        bind(registry, WL_REGISTRY_BIND, iface, want, name, iface_name, want, std::ptr::null_mut::<c_void>())
+        bind(
+            registry,
+            WL_REGISTRY_BIND,
+            iface,
+            want,
+            name,
+            iface_name,
+            want,
+            std::ptr::null_mut::<c_void>(),
+        )
     };
     unsafe { G_WL_COMPOSITOR = proxy };
-    log(&format!("opaque: bound wl_compositor v{want} (advertised v{version}) proxy={proxy:p}"));
+    log(&format!(
+        "opaque: bound wl_compositor v{want} (advertised v{version}) proxy={proxy:p}"
+    ));
 }
 
 /// Build the full-surface opaque region, once, at boot. No-op unless `/tmp/plxnative-opaque` is
@@ -309,17 +320,28 @@ pub(crate) fn opaque_region_init() {
     // would be tidier, but a roundtrip here dispatches exactly the events SDL's own listeners
     // would have taken on the next `SDL_PumpEvents` — which is the same thing SDL does itself
     // while creating the window.
-    static LISTENER: RegistryListener =
-        RegistryListener { global: on_global, global_remove: on_global_remove };
+    static LISTENER: RegistryListener = RegistryListener {
+        global: on_global,
+        global_remove: on_global_remove,
+    };
     let registry = unsafe {
-        ctor(display, WL_DISPLAY_GET_REGISTRY, reg_iface, std::ptr::null_mut::<c_void>())
+        ctor(
+            display,
+            WL_DISPLAY_GET_REGISTRY,
+            reg_iface,
+            std::ptr::null_mut::<c_void>(),
+        )
     };
     if registry.is_null() {
         log("opaque: wl_display.get_registry returned NULL — experiment not armed");
         return;
     }
     unsafe {
-        add_listener(registry, std::ptr::from_ref(&LISTENER).cast::<c_void>(), std::ptr::null_mut());
+        add_listener(
+            registry,
+            std::ptr::from_ref(&LISTENER).cast::<c_void>(),
+            std::ptr::null_mut(),
+        );
         roundtrip(display);
     }
     let compositor = unsafe { G_WL_COMPOSITOR };
@@ -357,7 +379,9 @@ pub(crate) fn opaque_region_init() {
         G_WL_REGION = region;
         G_OPAQUE_ENABLED = true;
     }
-    log(&format!("opaque: ARMED — full-surface opaque region {vw}x{vh} at ({vx},{vy})"));
+    log(&format!(
+        "opaque: ARMED — full-surface opaque region {vw}x{vh} at ({vx},{vy})"
+    ));
 }
 
 #[cfg(feature = "hostsim")]
@@ -384,7 +408,11 @@ pub(crate) fn opaque_route(player: bool) {
         if surface.is_null() {
             return;
         }
-        let region = if want == 1 { G_WL_REGION } else { std::ptr::null_mut() };
+        let region = if want == 1 {
+            G_WL_REGION
+        } else {
+            std::ptr::null_mut()
+        };
         wl_proxy_marshal(surface, WL_SURFACE_SET_OPAQUE_REGION, region);
         G_OPAQUE_SENT = want;
         log(&format!(

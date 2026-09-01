@@ -114,11 +114,9 @@ pub(crate) enum Place {
     /// The browse grid, by TAB PILL index.
     ///
     /// A pill and not a section, for the reason the `plxnative-library=N` boot trigger's comment
-    /// gives from the other side: the strip is one pill per library TYPE, so a pill is "Films" or
-    /// "TV Shows" rather than a position in a table that reshuffles when a share is granted or
-    /// revoked. That makes it the more durable of the two identities across the reboot this is
-    /// persisted for, and a stale one costs the wrong tab rather than anything worse —
-    /// `ui::library::enter` clamps it to the strip that actually exists.
+    /// gives from the other side: the two library pills permanently mean Movies and TV Shows,
+    /// rather than positions in a discovered table that reshuffles when a share changes. That
+    /// makes the identity durable across the reboot this is persisted for.
     Library { tab: u32 },
     /// A detail page, or the item a playback was of.
     ///
@@ -144,7 +142,9 @@ impl Place {
         match (self, r) {
             (Place::Home, PlaceRef::Home) => true,
             (Place::Library { tab: a }, PlaceRef::Library { tab: b }) => *a == b,
-            (Place::Item { machine, rk }, PlaceRef::Item { machine: m, rk: k }) => machine == m && rk == k,
+            (Place::Item { machine, rk }, PlaceRef::Item { machine: m, rk: k }) => {
+                machine == m && rk == k
+            }
             _ => false,
         }
     }
@@ -152,7 +152,10 @@ impl Place {
         match r {
             PlaceRef::Home => Place::Home,
             PlaceRef::Library { tab } => Place::Library { tab },
-            PlaceRef::Item { machine, rk } => Place::Item { machine: machine.to_owned(), rk: rk.to_owned() },
+            PlaceRef::Item { machine, rk } => Place::Item {
+                machine: machine.to_owned(),
+                rk: rk.to_owned(),
+            },
         }
     }
 }
@@ -300,7 +303,10 @@ pub(crate) fn arm() {
     match &rec {
         Some(r) => {
             st.on_disk = Some((r.profile.clone(), place_of_record(r)));
-            crate::log(&format!("coldstart: place on file kind={} at={}", r.kind, r.at));
+            crate::log(&format!(
+                "coldstart: place on file kind={} at={}",
+                r.kind, r.at
+            ));
         }
         None => {
             // No record, or one this build cannot read. Treat the disk as already holding Home for
@@ -334,7 +340,9 @@ pub(crate) fn take_restore() -> Option<Place> {
     if !matches!(st.boot, Boot::Read(_)) {
         return None;
     }
-    let Boot::Read(rec) = std::mem::replace(&mut st.boot, Boot::Done) else { unreachable!() };
+    let Boot::Read(rec) = std::mem::replace(&mut st.boot, Boot::Done) else {
+        unreachable!()
+    };
     let rec = rec?;
     if rec.profile != crate::plex::session::current_profile_key() {
         // Somebody else's page. Not restored, and `on_disk` goes UNKNOWN so this session's first
@@ -355,9 +363,10 @@ fn place_of_record(rec: &Record) -> Place {
         // A record naming an item it cannot address is not an item. Both halves are required: the
         // machine id is the server's identity across boots, and without it `rk` names an item on
         // no machine in particular.
-        "item" if !rec.machine.is_empty() && !rec.rk.is_empty() => {
-            Place::Item { machine: rec.machine.clone(), rk: rec.rk.clone() }
-        }
+        "item" if !rec.machine.is_empty() && !rec.rk.is_empty() => Place::Item {
+            machine: rec.machine.clone(),
+            rk: rec.rk.clone(),
+        },
         _ => Place::Home,
     }
 }
@@ -428,7 +437,9 @@ fn flush(st: &mut State, profile: &str) -> bool {
         },
         at: unix_now(),
     };
-    let Ok(json) = serde_json::to_vec(&rec) else { return false };
+    let Ok(json) = serde_json::to_vec(&rec) else {
+        return false;
+    };
     for path in paths(st) {
         if write_atomic(&path, &json) {
             st.on_disk = Some((rec.profile, st.last.clone()));
@@ -441,7 +452,9 @@ fn flush(st: &mut State, profile: &str) -> bool {
     // the feature not existing, and a line per retry would drown the log it has to be found in.
     if !st.moaned {
         st.moaned = true;
-        crate::log("coldstart: could not persist to ANY candidate path — cold start will not restore");
+        crate::log(
+            "coldstart: could not persist to ANY candidate path — cold start will not restore",
+        );
     }
     false
 }
@@ -486,11 +499,18 @@ fn read_record(cands: &[std::path::PathBuf]) -> Option<Record> {
 fn write_atomic(path: &Path, json: &[u8]) -> bool {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
-    let Some(name) = path.file_name() else { return false };
+    let Some(name) = path.file_name() else {
+        return false;
+    };
     let mut tmp_name = name.to_os_string();
     tmp_name.push(".tmp");
     let tmp = path.with_file_name(tmp_name);
-    let opened = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp);
+    let opened = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&tmp);
     let Ok(mut f) = opened else { return false };
     let written = f.write_all(json).is_ok() && f.sync_all().is_ok();
     drop(f);
@@ -551,9 +571,21 @@ mod tests {
         let (path, _g) = fixture("roundtrip");
         arm();
         take_restore();
-        settle(1_000, PlaceRef::Item { machine: "mach-A", rk: "42" });
+        settle(
+            1_000,
+            PlaceRef::Item {
+                machine: "mach-A",
+                rk: "42",
+            },
+        );
         assert!(path.exists(), "a settled page must have been written down");
-        assert_eq!(boot(&path), Some(Place::Item { machine: "mach-A".into(), rk: "42".into() }));
+        assert_eq!(
+            boot(&path),
+            Some(Place::Item {
+                machine: "mach-A".into(),
+                rk: "42".into()
+            })
+        );
         let _ = std::fs::remove_file(&path);
     }
 
@@ -571,7 +603,11 @@ mod tests {
         // is the page it left FROM.
         settle(9_000, PlaceRef::Library { tab: 3 });
         settle(11_000, PlaceRef::Home);
-        assert_eq!(boot(&path), None, "Home is where an unrestored boot lands anyway");
+        assert_eq!(
+            boot(&path),
+            None,
+            "Home is where an unrestored boot lands anyway"
+        );
         let _ = std::fs::remove_file(&path);
     }
 
@@ -592,7 +628,12 @@ mod tests {
             br#"{"v":1,"kind":"whatever-comes-next"}"#,
         ] {
             std::fs::write(&path, bytes).unwrap();
-            assert_eq!(boot(&path), None, "{:?} must not restore anything", String::from_utf8_lossy(bytes));
+            assert_eq!(
+                boot(&path),
+                None,
+                "{:?} must not restore anything",
+                String::from_utf8_lossy(bytes)
+            );
         }
         let _ = std::fs::remove_file(&path);
     }
@@ -602,7 +643,10 @@ mod tests {
     #[test]
     fn a_half_addressed_item_is_not_restored() {
         let (path, _g) = fixture("halfitem");
-        for bytes in [br#"{"v":1,"kind":"item","rk":"42"}"#.as_slice(), br#"{"v":1,"kind":"item","machine":"mach-A"}"#] {
+        for bytes in [
+            br#"{"v":1,"kind":"item","rk":"42"}"#.as_slice(),
+            br#"{"v":1,"kind":"item","machine":"mach-A"}"#,
+        ] {
             std::fs::write(&path, bytes).unwrap();
             assert_eq!(boot(&path), None);
         }
@@ -615,9 +659,16 @@ mod tests {
     #[test]
     fn another_profiles_place_is_not_restored() {
         let (path, _g) = fixture("profile");
-        std::fs::write(&path, br#"{"v":1,"profile":"somebody-else","kind":"library","tab":2}"#).unwrap();
+        std::fs::write(
+            &path,
+            br#"{"v":1,"profile":"somebody-else","kind":"library","tab":2}"#,
+        )
+        .unwrap();
         assert_eq!(boot(&path), None);
-        assert!(state().on_disk.is_none(), "a foreign record leaves the disk UNKNOWN, so the next settle replaces it");
+        assert!(
+            state().on_disk.is_none(),
+            "a foreign record leaves the disk UNKNOWN, so the next settle replaces it"
+        );
         let _ = std::fs::remove_file(&path);
     }
 
@@ -633,9 +684,16 @@ mod tests {
         arm();
         // The picker is up: the frame loop calls neither `note` nor `take_restore`, so a very long
         // wait on that screen must change nothing at all.
-        assert!(restore_pending(), "the restore waits for the sequence to end");
+        assert!(
+            restore_pending(),
+            "the restore waits for the sequence to end"
+        );
         settle(1_000, PlaceRef::Home); // even if something did note Home…
-        assert_eq!(read_record(&[path.clone()]).map(|r| r.tab), Some(4), "…the record is untouched");
+        assert_eq!(
+            read_record(&[path.clone()]).map(|r| r.tab),
+            Some(4),
+            "…the record is untouched"
+        );
         // …and once a profile is picked the restore resolves against THAT profile.
         assert_eq!(take_restore(), Some(Place::Library { tab: 4 }));
         assert!(!restore_pending());
@@ -648,16 +706,33 @@ mod tests {
     #[test]
     fn a_declined_restore_does_not_erase_the_record() {
         let (path, _g) = fixture("declined");
-        std::fs::write(&path, br#"{"v":1,"kind":"item","machine":"mach-A","rk":"42"}"#).unwrap();
-        assert_eq!(boot(&path), Some(Place::Item { machine: "mach-A".into(), rk: "42".into() }));
+        std::fs::write(
+            &path,
+            br#"{"v":1,"kind":"item","machine":"mach-A","rk":"42"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            boot(&path),
+            Some(Place::Item {
+                machine: "mach-A".into(),
+                rk: "42".into()
+            })
+        );
         // The caller could not apply it. The app is on Home, for a long time.
         settle(1_000, PlaceRef::Home);
         settle(60_000, PlaceRef::Home);
-        assert_eq!(read_record(&[path.clone()]).map(|r| r.rk), Some("42".into()), "still restorable next boot");
+        assert_eq!(
+            read_record(&[path.clone()]).map(|r| r.rk),
+            Some("42".into()),
+            "still restorable next boot"
+        );
         // Going somewhere real, and coming back, IS an answer to "where was I".
         settle(70_000, PlaceRef::Library { tab: 1 });
         settle(80_000, PlaceRef::Home);
-        assert_eq!(read_record(&[path.clone()]).map(|r| r.kind), Some("home".into()));
+        assert_eq!(
+            read_record(&[path.clone()]).map(|r| r.kind),
+            Some("home".into())
+        );
         let _ = std::fs::remove_file(&path);
     }
 
@@ -692,7 +767,11 @@ mod tests {
         assert!(std::fs::metadata(&path).unwrap().len() > 0);
         std::fs::write(&path, b"x").unwrap(); // a marker only a second write would erase
         settle(20_000, PlaceRef::Library { tab: 2 });
-        assert_eq!(std::fs::read(&path).unwrap(), b"x", "the same page must not be written twice");
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"x",
+            "the same page must not be written twice"
+        );
         let _ = std::fs::remove_file(&path);
     }
 
@@ -711,7 +790,10 @@ mod tests {
             !matches!(&state().on_disk, Some((_, Place::Library { tab: 1 }))),
             "a write that failed must not be believed to have landed"
         );
-        assert!(state().since != 0, "the same page is armed to try again, not given up on");
+        assert!(
+            state().since != 0,
+            "the same page is armed to try again, not given up on"
+        );
 
         // The location comes back (a mount landing late, space freed): the SAME page writes without
         // the user having to navigate away and back.

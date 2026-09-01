@@ -201,10 +201,25 @@ pub(crate) fn layout_of(next_w: f32, credits_w: f32) -> Layout {
     use crate::ui::player_hud::{CTRL_H, CTRL_RIGHT, CTRL_Y};
     let next = Rect::new(CTRL_RIGHT - next_w, CTRL_Y, next_w, CTRL_H);
     let credits = Rect::new(next.x - PILL_GAP - credits_w, next.y, credits_w, next.h);
-    let caption = Rect::new(CTRL_RIGHT - CAPTION_W, CTRL_Y - BTN_GAP - CAPTION_H, CAPTION_W, CAPTION_H);
+    let caption = Rect::new(
+        CTRL_RIGHT - CAPTION_W,
+        CTRL_Y - BTN_GAP - CAPTION_H,
+        CAPTION_W,
+        CAPTION_H,
+    );
     let still_h = (next_w * 9.0 / 16.0).round();
-    let still = Rect::new(CTRL_RIGHT - next_w, caption.y - CAP_GAP - still_h, next_w, still_h);
-    Layout { still, caption, credits, next }
+    let still = Rect::new(
+        CTRL_RIGHT - next_w,
+        caption.y - CAP_GAP - still_h,
+        next_w,
+        still_h,
+    );
+    Layout {
+        still,
+        caption,
+        credits,
+        next,
+    }
 }
 
 /// [`layout_of`] over the two measured widths. The primary takes the same control-row slot the
@@ -241,22 +256,42 @@ pub(crate) fn hit(cx: f32, cy: f32) -> Option<c_int> {
 /// on the same band, hence the explicit "Up Next ·" kicker rather than a bare "S2, E4".
 fn caption(u: &UpNext) -> String {
     if u.season > 0 || u.index > 0 {
-        format!("Up Next \u{b7} {}", crate::ui::fmt::episode_kicker(u.season, u.index, &u.ep_title))
+        format!(
+            "Up Next \u{b7} {}",
+            crate::ui::fmt::episode_kicker(u.season, u.index, &u.ep_title)
+        )
     } else {
         format!("Up Next \u{b7} {}", u.ep_title)
     }
 }
 
 pub(crate) fn draw(p: Painter, focused: bool, btn: c_int, now: u32) {
-    let Some(u) = crate::route::up_next() else { return };
+    let Some(u) = crate::route::up_next() else {
+        return;
+    };
     let l = layout();
     // NOT scaled: `CARD_FOCUS_SCALE` is the terminal value of a focus spring the shelves drive, and
     // passing it as a constant drew the still permanently 7% oversized — overhanging the column on
     // both sides. The still is decoration on a focusable row, not a focusable tile itself, so it
     // keeps the card treatment (sheen + resting shadow) at rest scale.
-    draw_card(p, l.still, crate::route::item_sid(crate::route::cur_sid()), &u.thumb, (480, 270), 10.0, false, 1.0);
+    draw_card(
+        p,
+        l.still,
+        crate::route::item_sid(crate::route::cur_sid()),
+        &u.thumb,
+        (480, 270),
+        10.0,
+        false,
+        1.0,
+    );
 
-    if let Ok(cs) = CString::new(crate::text::elide(&caption(u), l.caption.w, theme::size::CAPTION, 1, false)) {
+    if let Ok(cs) = CString::new(crate::text::elide(
+        &caption(u),
+        l.caption.w,
+        theme::size::CAPTION,
+        1,
+        false,
+    )) {
         Label::new(cs.as_ptr(), theme::size::CAPTION, theme::TEXT_PRIMARY)
             .bold()
             .h(HAlign::Right)
@@ -280,7 +315,9 @@ pub(crate) fn draw(p: Painter, focused: bool, btn: c_int, now: u32) {
     // starts. Driven straight off the remaining MILLISECONDS and redrawn every frame, so the sweep
     // is continuous; the label carries no seconds, because the pill's width is derived from its
     // label and a ticking numeral would resize the button and slide its centred text every second.
-    let Ok(label) = CString::new(NEXT_LABEL) else { return };
+    let Ok(label) = CString::new(NEXT_LABEL) else {
+        return;
+    };
     let mut b = Button::new(label.as_ptr(), theme::size::BODY, l.next)
         .focused(focused && btn == BTN_NEXT)
         .ground(ControlGround::Unkeyed)
@@ -360,17 +397,31 @@ mod tests {
         let right = crate::ui::player_hud::CTRL_RIGHT;
         assert_eq!(n.x + n.w, right, "the primary holds the row's right edge");
         assert_eq!(t.x + t.w, right, "…and the still shares it");
-        assert_eq!(cap.x + cap.w, right, "…and the caption's right-aligned run is measured from it");
+        assert_eq!(
+            cap.x + cap.w,
+            right,
+            "…and the caption's right-aligned run is measured from it"
+        );
         assert_eq!(t.w, n.w, "one column, one pair of edges");
-        assert_eq!(t.h, (n.w * 9.0 / 16.0).round(), "16:9 — it is a video frame");
-        assert!(c.x + c.w < n.x, "Watch Credits is drawn LEFT of the primary, so LEFT reaches it");
+        assert_eq!(
+            t.h,
+            (n.w * 9.0 / 16.0).round(),
+            "16:9 — it is a video frame"
+        );
+        assert!(
+            c.x + c.w < n.x,
+            "Watch Credits is drawn LEFT of the primary, so LEFT reaches it"
+        );
         assert_eq!(n.x - (c.x + c.w), PILL_GAP);
         assert_eq!(c.y, n.y, "the pair shares a baseline");
         assert_eq!(c.h, n.h);
         // stacked bottom-up with the unequal gaps that do the grouping
         assert_eq!(cap.y + cap.h + BTN_GAP, n.y);
         assert_eq!(t.y + t.h + CAP_GAP, cap.y);
-        assert!(CAP_GAP < BTN_GAP, "the caption belongs to the still, not to the buttons");
+        assert!(
+            CAP_GAP < BTN_GAP,
+            "the caption belongs to the still, not to the buttons"
+        );
         // The whole tile sits ABOVE the control row's own band and inside the frame — it is the
         // tallest thing the transport ever puts there, and the still is what could run off the top.
         assert!(t.y > 0.0, "the column fits on the panel");
@@ -382,9 +433,21 @@ mod tests {
     /// unaddressed leaf degrades to the bare title instead of drawing "S0, E0".
     #[test]
     fn the_caption_is_the_shared_episode_vocabulary_behind_an_up_next_kicker() {
-        let ep = UpNext { season: 2, index: 4, ep_title: "Laura".into(), ..Default::default() };
+        let ep = UpNext {
+            season: 2,
+            index: 4,
+            ep_title: "Laura".into(),
+            ..Default::default()
+        };
         assert_eq!(caption(&ep), "Up Next \u{b7} S2, E4 \u{b7} Laura");
-        let bare = UpNext { ep_title: "Laura".into(), ..Default::default() };
-        assert_eq!(caption(&bare), "Up Next \u{b7} Laura", "no address, no empty ordinal");
+        let bare = UpNext {
+            ep_title: "Laura".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            caption(&bare),
+            "Up Next \u{b7} Laura",
+            "no address, no empty ordinal"
+        );
     }
 }

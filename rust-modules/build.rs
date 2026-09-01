@@ -65,7 +65,9 @@ fn main() {
 /// one translation unit with two include paths, and the crate's dependency list is deliberately
 /// short — a build-dep would be fetched for the ARM build too, which never runs this function.
 fn compile_svg() {
-    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("rust-modules has a parent");
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("rust-modules has a parent");
     let src = repo.join("src/svg.c");
     let out = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR")).join("svg.o");
     println!("cargo:rerun-if-changed={}", src.display());
@@ -82,8 +84,17 @@ fn compile_svg() {
         .arg(format!("-I{}", repo.join("src").display()))
         .arg(format!("-I{}", repo.join("vendor/nanosvg").display()))
         .status()
-        .unwrap_or_else(|e| panic!("hostsim: could not run {cc:?} to compile {}: {e}", src.display()));
-    assert!(st.success(), "hostsim: compiling {} failed ({st})", src.display());
+        .unwrap_or_else(|e| {
+            panic!(
+                "hostsim: could not run {cc:?} to compile {}: {e}",
+                src.display()
+            )
+        });
+    assert!(
+        st.success(),
+        "hostsim: compiling {} failed ({st})",
+        src.display()
+    );
     // Link the object directly; no intermediate archive, so no `ar` involved.
     println!("cargo:rustc-link-arg-bins={}", out.display());
 }

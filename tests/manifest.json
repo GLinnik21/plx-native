@@ -2,7 +2,7 @@
   "version": 1,
   "_comment": "On-device regression matrix for the webOS Plex player. Each case drives the app headless via plxnative-* triggers inside that install's runtime root (make -s print-rundir FLAVOR=<f>; see README) and asserts on plxnative-events.log there. This file is INSTALLATION-INDEPENDENT: a case names the SHAPE of the item it needs (`item`, a symbolic key) and never a ratingKey. tests/manifest.local.json — gitignored, copy it from manifest.local.json.example — maps those keys to items on YOUR server and carries the pms host, tv address and test_user with them; run.py merges it over this file at load and refuses to run without it, naming any key it cannot resolve. The X-Plex-Token is read from src/config.local.h at runtime — it is NEVER stored in either file. Cases are derived from a survey of one real library; see library_gaps for combos no item in it could cover.",
   "_shared_server_comment": "A case or fps scene that needs the app to hold TWO servers' credentials (a friend's SHARED server beside your own — its own machineIdentifier, its own access token, a 401 for anybody else's) declares `\"needs_shared_server\": true` here. That is installation-INDEPENDENT: WHICH server is named in manifest.local.json's optional `shared_server` block, and its access token is resolved from plex.tv at run time (nothing is stored). run.py then writes plxnative-servers beside plxnative-token in that install's runtime root — the app parses it in dev::servers() and logs `servers: <n> extra server(s) injected, <n> usable`, never a token. An installation with no `shared_server` SKIPS these entries with the reason printed; it never fails them. `./tests/run.py --shared-server` injects the second server into every case of one run, for bringing a screen up by hand.",
-  "_fps_comment": "On-device UI framerate regression scenes (./tests/run.py --fps, or --fps-player to add the player tier). Each sets its plxnative-* triggers, runs profiler-OFF, parses the once/sec `loop=<n> route=<r> fps=<n>` heartbeat for its route(+overlay), skips warmup_s samples, and requires the 2nd-lowest loop= >= loop_floor plus whichever of fps_floor / fps_ceiling the scene declares. loop= counts LOOP ITERATIONS (liveness only — a settled screen reads ~62 while swapping nothing); fps= counts FRAMES ACTUALLY SWAPPED and is the only real frame rate here. RENAMED 2026-08-01 with the old name REUSED: a pre-rename log's FPS= is this loop=, and its pres= is this fps=. `item` keys resolve through manifest.local.json exactly like the cases below; detail-transition needs an in-home-catalog (recently-added/on-deck) movie or it FAILs with 'never entered route=detail'. NOTE (who's-watching): a multi-user Plex Home roster boots to the who's-watching PICKER (route=profiles), so any home/detail scene MUST set at least one non-diagnostic plxnative-* trigger — that marks the boot automated and skips the picker to land on route=home. home-hero uses plxnative-heroidx (pins the rotating hero, stays on the hero, no grid snap); home-grid uses plxnative-grid (snaps into the grid). A scene with empty triggers stalls on the picker and FAILs with 'never entered route=home'.",
+  "_fps_comment": "On-device UI framerate regression scenes (./tests/run.py --fps, or --fps-player to add the player tier). Each sets its plxnative-* triggers, runs profiler-OFF, parses the once/sec `loop=<n> route=<r> fps=<n>` heartbeat for its route(+overlay), skips warmup_s samples, and requires the 2nd-lowest loop= >= loop_floor plus whichever of fps_floor / fps_ceiling the scene declares. loop= counts LOOP ITERATIONS (liveness only — a settled screen reads ~62 while swapping nothing); fps= counts FRAMES ACTUALLY SWAPPED and is the only real frame rate here. RENAMED 2026-08-01 with the old name REUSED: a pre-rename log's FPS= is this loop=, and its pres= is this fps=. `item` keys resolve through manifest.local.json exactly like the cases below; detail-transition needs an in-home-catalog (recently-added/on-deck) movie or it FAILs with 'never entered route=detail'. NOTE (who's-watching): a multi-user Plex Home roster boots to the who's-watching PICKER (route=profiles), so any home/detail scene MUST set at least one non-diagnostic plxnative-* trigger — that marks the boot automated and skips the picker to land on route=home. home-hero continuously pages the carousel with plxnative-heroosc; home-fold alternates Hero and the first shelf with plxnative-homefoldosc; home-grid starts in the grid and sweeps its rows. A scene with empty triggers stalls on the picker and FAILs with 'never entered route=home'.",
   "fps_scenes": [
     {
       "name": "home-hero",
@@ -12,9 +12,24 @@
       "run_secs": 18,
       "warmup_s": 5,
       "triggers": {
-        "plxnative-heroidx": 0
+        "plxnative-heroidx": 0,
+        "plxnative-heroosc": true
       },
-      "_idle_gate_note": "STALE GATE since ui::idle landed (2026-07-31): this scene's screen SETTLES, so for most of the window the app presents ~0 frames and `loop=` — which counts LOOP iterations, not swaps — grades loop liveness rather than this screen's fill rate. The loop_floor still catches a wedged loop, but it can no longer catch a fill-rate regression. Fix by giving the scene continuous motion (as home-grid now does with plxnative-homeosc) or by grading it on `worstframe=` over the frames it DOES present. Do not simply lower the floor."
+      "fps_floor": 50,
+      "comment": "Pages the real rotating Hero every 700ms, faster than the slide can become an idle screen. Both loop= and actual swapped fps= must therefore remain at least 50/s; a frozen carousel cannot pass through the idle keepalive."
+    },
+    {
+      "name": "home-fold",
+      "tier": "ui",
+      "route": "home",
+      "loop_floor": 50,
+      "fps_floor": 50,
+      "run_secs": 18,
+      "warmup_s": 5,
+      "triggers": {
+        "plxnative-homefoldosc": true
+      },
+      "comment": "Alternates the product's real Hero↔first-shelf snap every 700ms. This is the DOWN-to-cards motion the row-sweeping home-grid scene starts after and therefore could never grade."
     },
     {
       "name": "home-grid",
@@ -197,6 +212,123 @@
       "_fps_floor_note": "Graded on the MEDIAN, not the min: navosc reverses every 1400ms of which only the 70+140ms dip is motion, so a 1s heartbeat window can land wholly inside the settled gap and read 0 with a perfectly healthy fade (measured: min=0, median=15). A FROZEN fade reads ~1/s — the keepalive alone — so 8 separates them by a wide margin. This is the scene that proves ui/xfade.rs reports at all: navosc calls nav_open/nav_back DIRECTLY, with no SDL event and no press spring to accidentally cover the ramp."
     },
     {
+      "name": "onboard-sources",
+      "tier": "ui",
+      "route": "onboard",
+      "loop_floor": 50,
+      "fps_floor": 50,
+      "run_secs": 18,
+      "warmup_s": 5,
+      "triggers": {
+        "plxnative-firstrun": true,
+        "plxnative-onboardosc": true
+      },
+      "comment": "The source picker as the first-run route, using every source the test identity can reach. onboardosc moves the real focus between the bottom action and source list and keeps the present gate continuously awake; both loop and presented frames must remain at or above 50/s. A configured second server may be injected with --shared-server for a heavier local run, but the baseline gate must not disappear when that private fixture is absent."
+    },
+    {
+      "name": "consent-crash",
+      "tier": "ui",
+      "route": "home",
+      "overlay": "consent",
+      "loop_floor": 50,
+      "fps_floor": 50,
+      "run_secs": 18,
+      "warmup_s": 5,
+      "triggers": {
+        "plxnative-consent": "crash",
+        "plxnative-consentosc": true
+      },
+      "comment": "The first independent first-run reporting decision. consentosc alternates the real Share / Don’t Share rows and keeps the present gate continuously awake; the trigger changes display state only and records no consent."
+    },
+    {
+      "name": "consent-product",
+      "tier": "ui",
+      "route": "home",
+      "overlay": "consent",
+      "loop_floor": 50,
+      "fps_floor": 50,
+      "run_secs": 18,
+      "warmup_s": 5,
+      "triggers": {
+        "plxnative-consent": "product",
+        "plxnative-consentosc": true
+      },
+      "comment": "The second first-run reporting decision, booted without answering or persisting the first. It has its own strict 50 FPS scene so Product analytics copy and wrapping cannot hide behind the Crash reports measurement."
+    },
+    {
+      "name": "settings-root",
+      "tier": "ui",
+      "route": "home",
+      "overlay": "settings",
+      "loop_floor": 50,
+      "fps_floor": 50,
+      "run_secs": 18,
+      "warmup_s": 5,
+      "triggers": {
+        "plxnative-settings": "root",
+        "plxnative-settingsosc": true
+      },
+      "comment": "The Settings root over its frozen, host-keyed ambient wash. settingsosc alternates the first two real rows and keeps the present gate continuously awake, so fps= measures the modal composition's render throughput rather than the brief duty cycle of one focus spring. Both loop= liveness and actual presented fps= must stay at or above 50/s."
+    },
+    {
+      "name": "settings-privacy",
+      "tier": "ui",
+      "route": "home",
+      "overlay": "privacy",
+      "loop_floor": 50,
+      "fps_floor": 50,
+      "run_secs": 18,
+      "warmup_s": 5,
+      "triggers": {
+        "plxnative-settings": "privacy",
+        "plxnative-settingsosc": true
+      },
+      "comment": "The Privacy editor opened through Settings, with the Settings root still beneath it exactly as in the interactive modal stack. The continuous test oscillator grades the full composition at a strict 50 presented frames/s floor."
+    },
+    {
+      "name": "settings-home",
+      "tier": "ui",
+      "route": "onboard",
+      "loop_floor": 50,
+      "fps_floor": 50,
+      "run_secs": 18,
+      "warmup_s": 5,
+      "triggers": {
+        "plxnative-settings": "home",
+        "plxnative-settingsosc": true
+      },
+      "comment": "The shared Home-source picker opened as a Settings editor. settingsosc moves the real source TableView and grades the clean BACK composition over Settings rather than treating the visually similar first-run route as sufficient coverage; the dirty Done replacement is a pure state contract covered by the onboard unit suite."
+    },
+    {
+      "name": "settings-legal",
+      "tier": "ui",
+      "route": "home",
+      "overlay": "legal",
+      "loop_floor": 50,
+      "fps_floor": 50,
+      "run_secs": 18,
+      "warmup_s": 5,
+      "triggers": {
+        "plxnative-settings": "legal",
+        "plxnative-settingsosc": true
+      },
+      "comment": "The Legal index route opened through Settings. Focus alternates in the real document list while continuous invalidation exposes the cost of the shared route composition and frozen ambient underlay; actual fps=, not merely loop=, is required to remain at least 50/s."
+    },
+    {
+      "name": "settings-idle",
+      "tier": "ui",
+      "route": "home",
+      "overlay": "settings",
+      "loop_floor": 50,
+      "fps_ceiling": 5,
+      "run_secs": 22,
+      "warmup_s": 8,
+      "triggers": {
+        "plxnative-settings": "root"
+      },
+      "comment": "The inverse guard for settings-root. With no oscillator, the modal's appear and focus springs must settle and ui::idle must reduce swaps to the keepalive (allowing one late Home artwork wake), while the event loop remains responsive at 50/s. Together the active and idle scenes prevent passing the 50 fps gate by either freezing the screen or repainting forever."
+    },
+    {
       "name": "info-panel",
       "tier": "player",
       "route": "player",
@@ -228,19 +360,18 @@
       "name": "home-acct-glass",
       "tier": "ui",
       "route": "account",
-      "loop_floor": 35,
+      "loop_floor": 50,
       "run_secs": 18,
       "warmup_s": 5,
       "triggers": {
         "plxnative-acct": true,
-        "plxnative-homeosc": true,
-        "plxnative-heroidx": 0,
-        "plxnative-glasshz": 1
+        "plxnative-acctosc": true,
+        "plxnative-heroidx": 0
       },
-      "_floor_note": "THE BACKDROP BLUR HAD NO SCENE AT ALL until 2026-08-19, which is how the tab track's material shipped ungraded and how three separate whole-frame claims about the blur went unchallenged for a day. The Account popover is the app's only shipping dynamic-backdrop surface (Glass::DYNAMIC_BACKDROP), so this is the scene that exercises the chain: the direct source pass, one reduction, two Kawase taps and the fs_glass composite, on every changed present.\n\n**loop_floor was 45 and never once reproduced — re-baselined to 35 on 2026-08-21 after six independent runs.** Observed robust_min: 42, 43, 43, 43, 43, 42 (median 45-47). The old floor sat ON the median, so this scene failed about as often as it passed.\n\nIt is NOT a regression, and that was established rather than assumed. The same failure reproduces at f132d398 — the commit that introduced this scene AND wrote the note claiming loop median 60 — using that commit's own code and its own manifest. It reproduces identically before and after the 2026-08-21 review fixes, and with or without plxnative-glasshz. Whatever produced 60 was not this scene on this television, so the number was quoted here for a day as a baseline nothing could meet.\n\nWhat the figure actually measures: a glass popover over an oscillating Home costs about 14 loop/s. fps:home-grid — same television, same session, same oscillator, no popover — holds robust_min 60 while this scene holds 42-43. That is the material's real price on a Mali-T820 and it is what this scene exists to keep honest, so the floor sits 17% below the observed minimum: the same margin fps:home-grid (60 -> 50) and fps:library-switch (55 -> 45) take.\n\n**The frame-rate gate is the one that grades the animation, and it passes with margin** — fps_floor 25 against an observed median of 37-43 across those same six runs. loop_floor only proves the app is alive and cannot see a stopped animation at all; a loop floor that fails on a healthy 60-loop television was grading the popover's existence, not its health.\n\nOne run, not three. Widen it rather than tighten it if it ever flaps.",
-      "_trigger_note": "plxnative-homeosc is load-bearing TWICE over. It keeps the grid presenting (ui::idle would otherwise settle the screen), and it keeps the UNDERLAY CHANGING — the dynamic policy only invalidates when the underlay actually moved, so on a still Home the blur chain never runs and this scene would grade a cached texture. plxnative-heroidx pins the billboard so the 8s auto-flip cannot wake the gate mid-window and widen the spread.",
-      "fps_floor": 25,
-      "_fps_floor_note": "MEASURED on the dev set 2026-08-19, both profilers disarmed: median 60 fps (min 15, max 60, n=13), loop median 60. The scene holds the vsync cap with the glass up, the direct source path and a refresh on every changed present — which is the whole claim this scene exists to keep true. 25 is 42% of that median, the same margin fps:library-scroll takes (25 against a 49 median), and it is graded on the MEDIAN, so the min of 15 is expected: the oscillator steps focus every 350ms and the spring settles inside that period, so a 1s window can land mostly in real idle.\n\nIt cannot be passed by freezing: ui::idle's keepalive alone reads ~0.5/s. It also cannot be passed by a DEAD blur chain that still presents — for that, read `snap=` on the heartbeat, which counts snapshots actually taken. THAT FIELD IS WHY plxnative-glasshz IS ARMED: app.rs only appends `load=/snap=/period=` when the load dial or the cadence knob is armed, so without it this note pointed at a field the scene could never emit. It is set to 1, which IS the shipped cadence — the knob pins the default rather than changing it, so the frames being graded are the shipped ones.\n\nOne run, not three. Widen it rather than tighten it if it ever flaps.",
+      "_floor_note": "The Account menu now freezes its host page and takes one cached glass snapshot per open. The old scene deliberately animated Home under a dynamic backdrop and measured 42–43 loop/s; that was the hidden work visible as navigation lag. acctosc moves only the real menu TableView at a human D-pad cadence, so both the event loop and presented animation are held to the same strict 50/s floor as the Settings/onboarding surfaces.",
+      "_trigger_note": "acctosc is load-bearing: the frozen host is supposed to remain still, so the former homeosc trigger would correctly produce no motion and grade only the idle keepalive. heroidx pins the stationary host image so an unrelated hero auto-rotation cannot change the sample.",
+      "fps_floor": 50,
+      "_fps_floor_note": "The oscillator keeps the profile menu's own selection spring moving and the present gate awake. A frozen white plate cannot pass this floor, while the removed repeated backdrop captures are no longer part of the intended composition.",
       "_route_note": "`account`, not `home`: the Account popover is a ROUTE of its own (app.rs names it in the heartbeat), so a scene keyed on home matches zero samples and fails as \"never entered this screen\" — which is exactly what the first run of this scene did."
     }
   ],

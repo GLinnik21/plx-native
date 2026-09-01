@@ -84,10 +84,9 @@ impl ProductionEstimate {
     /// still evidence about the server.
     pub(crate) fn observe(&mut self, ratio_pm: u32, load_pm: u32, cold_start: bool) {
         let weight = if cold_start { 1 } else { 3 };
-        let normalized = u32::try_from(
-            u64::from(ratio_pm).saturating_mul(1_000) / u64::from(load_pm.max(1)),
-        )
-        .unwrap_or(u32::MAX);
+        let normalized =
+            u32::try_from(u64::from(ratio_pm).saturating_mul(1_000) / u64::from(load_pm.max(1)))
+                .unwrap_or(u32::MAX);
         let (ratio, server) = if self.samples == 0 {
             (ratio_pm, normalized)
         } else {
@@ -138,9 +137,7 @@ impl ProductionEstimate {
         let work = u64::from(self.ratio_pm - overhead);
         let scaled = work.saturating_mul(u64::from(candidate.production_load_pm))
             / u64::from(current.production_load_pm.max(1));
-        Some(
-            u32::try_from(u64::from(overhead).saturating_add(scaled)).unwrap_or(u32::MAX),
-        )
+        Some(u32::try_from(u64::from(overhead).saturating_add(scaled)).unwrap_or(u32::MAX))
     }
 }
 
@@ -274,8 +271,7 @@ impl BufferEstimate {
     }
 
     pub(crate) fn starving(&self) -> bool {
-        self.buffered_ms <= 2_000
-            || (self.buffered_ms <= 6_000 && self.draining_samples >= 2)
+        self.buffered_ms <= 2_000 || (self.buffered_ms <= 6_000 && self.draining_samples >= 2)
     }
 }
 
@@ -303,8 +299,11 @@ pub(crate) fn starvation_horizon(
     // with no reader anywhere in the crate — and the name asserted the wrong dimension:
     // `(ms · kbps) / kbps` is MILLISECONDS, which is why the next line divides by 1000 to get
     // seconds. A rate would not need that division. Dead and mislabelled, so both go.
-    let time_to_empty_ms = (i64::from(buffer_ms) * i64::from(requirement_kbps)) / i64::from(deficit);
-    StarvationHorizon { seconds: u32::try_from(time_to_empty_ms / 1_000).ok() }
+    let time_to_empty_ms =
+        (i64::from(buffer_ms) * i64::from(requirement_kbps)) / i64::from(deficit);
+    StarvationHorizon {
+        seconds: u32::try_from(time_to_empty_ms / 1_000).ok(),
+    }
 }
 
 /// **[`starvation_horizon`] run backwards: how long a surplus takes to REFILL a spent reserve.**
@@ -327,7 +326,11 @@ pub(crate) fn starvation_horizon(
 /// — itself the sum of two deadlines that already exist — and `R`/`C` are the rung's rate and the
 /// measured one. This is the whole derivation of `reject_backoff_ms`, which
 /// `docs/adaptive-playback-plan.md` §6.2 records as "TBD from `E_tx`".
-pub(crate) fn refill_time_ms(cost_ms: i64, requirement_kbps: u32, capacity_kbps: u32) -> Option<i64> {
+pub(crate) fn refill_time_ms(
+    cost_ms: i64,
+    requirement_kbps: u32,
+    capacity_kbps: u32,
+) -> Option<i64> {
     if capacity_kbps <= requirement_kbps || cost_ms <= 0 {
         return None;
     }
@@ -370,10 +373,12 @@ pub(crate) fn b_max_est_ms(video_es_kbps: u32, audio_es_kbps: u32) -> i64 {
     // `.max(1)` on both divisors: a rate of zero is reachable (an audio-less stream, or an ES rate
     // that has not been measured yet) and `overflow-checks` is ON under `cargo test` and OFF in
     // release, so a bare division panics on the Mac and traps on the television.
-    let video = video_lead_ms
-        .saturating_add((bits(video_bytes) / u64::from(video_es_kbps.max(1))).min(i64::MAX as u64) as i64);
-    let audio = audio_lead_ms
-        .saturating_add((bits(audio_bytes) / u64::from(audio_es_kbps.max(1))).min(i64::MAX as u64) as i64);
+    let video = video_lead_ms.saturating_add(
+        (bits(video_bytes) / u64::from(video_es_kbps.max(1))).min(i64::MAX as u64) as i64,
+    );
+    let audio = audio_lead_ms.saturating_add(
+        (bits(audio_bytes) / u64::from(audio_es_kbps.max(1))).min(i64::MAX as u64) as i64,
+    );
     video.min(audio)
 }
 
@@ -440,6 +445,7 @@ pub(crate) fn refill_admits(
     let target = buffer_target_at_ms(candidate_video_es_kbps, audio_es_kbps, policy);
     let deficit = (target - buffered_ms).max(0);
     let horizon = policy.buffer_refill_horizon_ms.max(1);
-    let r_max = i64::from(safe_budget_kbps).saturating_mul(horizon) / horizon.saturating_add(deficit);
+    let r_max =
+        i64::from(safe_budget_kbps).saturating_mul(horizon) / horizon.saturating_add(deficit);
     i64::from(candidate_wire_kbps) <= r_max
 }

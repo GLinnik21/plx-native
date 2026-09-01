@@ -124,7 +124,11 @@ impl Origin {
     /// is stored bare regardless, which is the invariant [`Origin::host`] promises. Unbalanced
     /// brackets are left alone rather than half-stripped.
     pub fn new(scheme: Scheme, host: &str, port: i32) -> Origin {
-        Origin { scheme, host: unbracket(host).to_owned(), port }
+        Origin {
+            scheme,
+            host: unbracket(host).to_owned(),
+            port,
+        }
     }
 
     /// The **plaintext** constructor, named so that it is greppable.
@@ -222,7 +226,10 @@ impl Origin {
 /// [`dial_port`]'s reason for existing, one step downstream).
 pub fn split(url: &str) -> (Origin, &str) {
     let p = Parts::of(url);
-    (Origin::new(p.scheme, p.host, p.port.unwrap_or(DEFAULT_PORT)), p.path)
+    (
+        Origin::new(p.scheme, p.host, p.port.unwrap_or(DEFAULT_PORT)),
+        p.path,
+    )
 }
 
 /// The HOST of a URL, **bare** — a borrowed view for a caller that only wants to look at the host
@@ -291,7 +298,9 @@ impl<'a> Parts<'a> {
         // `dial_port`, not a bare `parse::<i32>()`: this is the same narrowing every advertised
         // port in this layer goes through, and it is what stops `4294999696` from wrapping to a
         // plausible-looking 32400.
-        let port = port_txt.and_then(|t| t.parse::<i64>().ok()).and_then(dial_port);
+        let port = port_txt
+            .and_then(|t| t.parse::<i64>().ok())
+            .and_then(dial_port);
         Parts {
             scheme,
             scheme_known,
@@ -305,7 +314,9 @@ impl<'a> Parts<'a> {
 
 /// Strip the brackets a URL authority puts around a v6 literal, if they are there.
 fn unbracket(host: &str) -> &str {
-    host.strip_prefix('[').and_then(|r| r.strip_suffix(']')).unwrap_or(host)
+    host.strip_prefix('[')
+        .and_then(|r| r.strip_suffix(']'))
+        .unwrap_or(host)
 }
 
 /// Is this bare host a v6 literal — i.e. does it need bracketing before it can carry a port?
@@ -327,14 +338,31 @@ mod tests {
     fn a_v6_origin_is_bare_for_the_resolver_and_bracketed_for_a_url() {
         let o = Origin::parse("http://[::1]:32400").expect("a bracketed v6 origin parses");
         assert_eq!(o.host(), "::1", "the getaddrinfo node is NEVER bracketed");
-        assert_eq!(o.authority(), "[::1]:32400", "…and a URL authority always is");
-        assert_eq!(o.base(), "http://[::1]:32400", "so the round trip is byte-identical");
+        assert_eq!(
+            o.authority(),
+            "[::1]:32400",
+            "…and a URL authority always is"
+        );
+        assert_eq!(
+            o.base(),
+            "http://[::1]:32400",
+            "so the round trip is byte-identical"
+        );
         assert_eq!(o.port(), 32400);
 
         // and the same holds for an origin built from parts, whichever spelling the caller has
-        assert_eq!(Origin::http("[2001:db8::1]", 32400), Origin::http("2001:db8::1", 32400));
-        assert_eq!(Origin::http("2001:db8::1", 32400).authority(), "[2001:db8::1]:32400");
-        assert_eq!(Origin::http("2001:db8::1", 32400).base(), "http://[2001:db8::1]:32400");
+        assert_eq!(
+            Origin::http("[2001:db8::1]", 32400),
+            Origin::http("2001:db8::1", 32400)
+        );
+        assert_eq!(
+            Origin::http("2001:db8::1", 32400).authority(),
+            "[2001:db8::1]:32400"
+        );
+        assert_eq!(
+            Origin::http("2001:db8::1", 32400).base(),
+            "http://[2001:db8::1]:32400"
+        );
     }
 
     /// A plaintext v4 origin is the legacy case, and it must serialize to exactly the bytes it
@@ -342,7 +370,10 @@ mod tests {
     #[test]
     fn a_v4_origin_round_trips_unchanged() {
         let o = Origin::parse("http://192.0.2.10:32400").expect("parses");
-        assert_eq!((o.scheme(), o.host(), o.port()), (Scheme::Http, "192.0.2.10", 32400));
+        assert_eq!(
+            (o.scheme(), o.host(), o.port()),
+            (Scheme::Http, "192.0.2.10", 32400)
+        );
         assert_eq!(o.authority(), "192.0.2.10:32400");
         assert_eq!(o.base(), "http://192.0.2.10:32400");
         assert!(!o.is_tls());
@@ -364,15 +395,29 @@ mod tests {
     #[test]
     fn a_missing_scheme_is_http_and_a_missing_port_is_the_pms_default() {
         let o = Origin::parse("192.0.2.10").expect("a bare host is an origin");
-        assert_eq!((o.scheme(), o.host(), o.port()), (Scheme::Http, "192.0.2.10", DEFAULT_PORT));
-        assert_eq!(Origin::parse("https://nas.example.com").unwrap().port(), DEFAULT_PORT);
+        assert_eq!(
+            (o.scheme(), o.host(), o.port()),
+            (Scheme::Http, "192.0.2.10", DEFAULT_PORT)
+        );
+        assert_eq!(
+            Origin::parse("https://nas.example.com").unwrap().port(),
+            DEFAULT_PORT
+        );
     }
 
     /// A path is not part of an origin — `base()` never grows one, whatever came in.
     #[test]
     fn a_path_is_not_part_of_the_origin() {
-        assert_eq!(Origin::parse("http://192.0.2.10:32400/library/sections?x=1").unwrap().base(), "http://192.0.2.10:32400");
-        assert_eq!(Origin::parse("http://192.0.2.10:32400/").unwrap().base(), "http://192.0.2.10:32400");
+        assert_eq!(
+            Origin::parse("http://192.0.2.10:32400/library/sections?x=1")
+                .unwrap()
+                .base(),
+            "http://192.0.2.10:32400"
+        );
+        assert_eq!(
+            Origin::parse("http://192.0.2.10:32400/").unwrap().base(),
+            "http://192.0.2.10:32400"
+        );
     }
 
     /// What [`Origin::parse`] refuses. Each of these has a caller that would otherwise dial
@@ -381,7 +426,11 @@ mod tests {
     fn parse_refuses_what_cannot_be_dialled() {
         assert_eq!(Origin::parse(""), None, "no host at all");
         assert_eq!(Origin::parse("http://"), None);
-        assert_eq!(Origin::parse("ftp://h:21"), None, "a scheme this app does not speak");
+        assert_eq!(
+            Origin::parse("ftp://h:21"),
+            None,
+            "a scheme this app does not speak"
+        );
         // The port narrowing that `dial_port` exists for: plex.tv and the session file both
         // string-encode numbers, so an out-of-range one is a shape that really arrives — and
         // `4_294_999_696 as i32` is 32400, a port nobody advertised.
@@ -393,7 +442,10 @@ mod tests {
         // default. Reading it as 32400 is the same "port nobody wrote down" this list exists for.
         assert_eq!(Origin::parse("http://192.0.2.10:"), None);
         // …while a URL that writes no `:` at all really does mean the default
-        assert_eq!(Origin::parse("http://192.0.2.10").unwrap().port(), DEFAULT_PORT);
+        assert_eq!(
+            Origin::parse("http://192.0.2.10").unwrap().port(),
+            DEFAULT_PORT
+        );
     }
 
     /// [`split`] is the TOTAL sibling — its caller has no failure path — so the same inputs that
@@ -406,11 +458,26 @@ mod tests {
         assert_eq!(p, "/video/:/transcode/universal/start.mkv?a=1");
 
         assert_eq!(split("192.0.2.10").0.base(), "http://192.0.2.10:32400");
-        assert_eq!(split("192.0.2.10").1, "", "no path is an empty path, not a slash");
-        assert_eq!(split("http://192.0.2.10:70000/x").0.port(), DEFAULT_PORT, "undialable → the default");
-        assert_eq!(split("http://192.0.2.10:/x").0.port(), DEFAULT_PORT, "…and so does an empty one, here");
+        assert_eq!(
+            split("192.0.2.10").1,
+            "",
+            "no path is an empty path, not a slash"
+        );
+        assert_eq!(
+            split("http://192.0.2.10:70000/x").0.port(),
+            DEFAULT_PORT,
+            "undialable → the default"
+        );
+        assert_eq!(
+            split("http://192.0.2.10:/x").0.port(),
+            DEFAULT_PORT,
+            "…and so does an empty one, here"
+        );
         assert_eq!(split("http://192.0.2.10:/x").1, "/x");
-        assert_eq!(split("https://[2001:db8::1]:8443/y").0.base(), "https://[2001:db8::1]:8443");
+        assert_eq!(
+            split("https://[2001:db8::1]:8443/y").0.base(),
+            "https://[2001:db8::1]:8443"
+        );
         assert_eq!(split("https://[2001:db8::1]:8443/y").1, "/y");
     }
 
@@ -418,10 +485,22 @@ mod tests {
     /// and legible the moment a scheme is worth saying. Both halves matter — see [`Origin::log_form`].
     #[test]
     fn the_log_form_is_the_bare_authority_for_http_and_the_whole_url_for_anything_else() {
-        assert_eq!(Origin::http("192.0.2.10", 32400).log_form(), "192.0.2.10:32400", "byte-identical to the old line");
-        assert_eq!(Origin::parse("https://nas.hash.plex.direct:32400").unwrap().log_form(), "https://nas.hash.plex.direct:32400");
+        assert_eq!(
+            Origin::http("192.0.2.10", 32400).log_form(),
+            "192.0.2.10:32400",
+            "byte-identical to the old line"
+        );
+        assert_eq!(
+            Origin::parse("https://nas.hash.plex.direct:32400")
+                .unwrap()
+                .log_form(),
+            "https://nas.hash.plex.direct:32400"
+        );
         // a v6 literal is bracketed either way — it is a URL authority, not a resolver node
-        assert_eq!(Origin::http("2001:db8::1", 32400).log_form(), "[2001:db8::1]:32400");
+        assert_eq!(
+            Origin::http("2001:db8::1", 32400).log_form(),
+            "[2001:db8::1]:32400"
+        );
     }
 
     /// [`url_host`] is the borrowed reading `probe`'s ranking uses, and it must give the URL's own
@@ -429,23 +508,43 @@ mod tests {
     #[test]
     fn url_host_reads_the_urls_own_host_without_scheme_or_port() {
         assert_eq!(url_host("http://203.0.113.9:31234"), "203.0.113.9");
-        assert_eq!(url_host("https://media.example.internal:31234"), "media.example.internal");
-        assert_eq!(url_host("http://[2001:db8::1]:32400"), "2001:db8::1", "the port is not a v6 group");
-        assert_eq!(url_host("https://203-0-113-9.hash2.plex.direct:31234"), "203-0-113-9.hash2.plex.direct");
+        assert_eq!(
+            url_host("https://media.example.internal:31234"),
+            "media.example.internal"
+        );
+        assert_eq!(
+            url_host("http://[2001:db8::1]:32400"),
+            "2001:db8::1",
+            "the port is not a v6 group"
+        );
+        assert_eq!(
+            url_host("https://203-0-113-9.hash2.plex.direct:31234"),
+            "203-0-113-9.hash2.plex.direct"
+        );
     }
 
     /// The scheme's wire spelling is what `base()` is built from and what a dev trigger writes,
     /// so it is pinned rather than left to a `Debug` derive.
     #[test]
     fn a_scheme_knows_its_wire_spelling_and_whether_it_needs_tls() {
-        assert_eq!((Scheme::Http.as_str(), Scheme::Https.as_str()), ("http", "https"));
+        assert_eq!(
+            (Scheme::Http.as_str(), Scheme::Https.as_str()),
+            ("http", "https")
+        );
         assert!(!Scheme::Http.is_tls() && Scheme::Https.is_tls());
-        assert_eq!(Scheme::default(), Scheme::Http, "the scheme this app has always spoken");
+        assert_eq!(
+            Scheme::default(),
+            Scheme::Http,
+            "the scheme this app has always spoken"
+        );
         // The ranking and the default are independent, and this is the pair that says so: an
         // origin read out of a file that names no scheme is plaintext, while an origin CHOSEN
         // between is TLS first. Reversing the declarations to make `Ord` agree with `Default`
         // would put the http twin of every candidate ahead of the one a certificate can
         // authenticate.
-        assert!(Scheme::Https < Scheme::Http, "probe RANKS on this order — TLS is the better connection");
+        assert!(
+            Scheme::Https < Scheme::Http,
+            "probe RANKS on this order — TLS is the better connection"
+        );
     }
 }

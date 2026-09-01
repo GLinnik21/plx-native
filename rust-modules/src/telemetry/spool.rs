@@ -75,7 +75,9 @@ fn resolve() -> Option<PathBuf> {
     }
     // Nothing yet: take the first candidate whose directory will accept a write. Probing by writing
     // is the only honest test — `/media/internal` exists on a set where it is not writable by us.
-    cands.into_iter().find(|p| crate::plex::session::write_atomic(p, b""))
+    cands
+        .into_iter()
+        .find(|p| crate::plex::session::write_atomic(p, b""))
 }
 
 /// Every record on disk, oldest first. A missing file is an empty queue — that is what a first boot
@@ -87,7 +89,9 @@ pub(crate) fn read() -> Vec<Record> {
 
 fn read_locked() -> Vec<Record> {
     let Some(p) = path() else { return Vec::new() };
-    let Ok(bytes) = std::fs::read(&p) else { return Vec::new() };
+    let Ok(bytes) = std::fs::read(&p) else {
+        return Vec::new();
+    };
     let d = queue::decode_all(&bytes);
     if d.dropped_bytes > 0 {
         // Expected after a power cut, and worth one line either way: a non-zero count after a CLEAN
@@ -139,7 +143,11 @@ pub(crate) fn append(r: &Record) -> bool {
     // 0600 on create for the reason `write_atomic` does it: `/tmp` on this television is 1777 and
     // shared with every other app on the set. An existing file keeps its own mode, which the
     // compaction path — the only thing that creates this file fresh — has already set.
-    let opened = std::fs::OpenOptions::new().append(true).create(true).mode(0o600).open(&p);
+    let opened = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .mode(0o600)
+        .open(&p);
     let Ok(mut f) = opened else {
         crate::log("telemetry: could not open the spool for append");
         return false;
@@ -170,7 +178,9 @@ fn write_locked(records: &[Record]) -> bool {
     if dropped > 0 {
         // Never silent. A queue that discards without saying so is a queue whose numbers are wrong
         // in a direction nobody can see.
-        crate::log(&format!("telemetry: spool over cap, dropped {dropped} oldest records"));
+        crate::log(&format!(
+            "telemetry: spool over cap, dropped {dropped} oldest records"
+        ));
     }
     let bytes: Vec<u8> = kept.iter().filter_map(queue::encode).flatten().collect();
     let ok = crate::plex::session::write_atomic(&p, &bytes);
@@ -220,7 +230,10 @@ pub(crate) fn purge_withdrawn(c: &super::consent::Consent) {
         all = queue::purge(all, queue::Category::Usage);
     }
     if all.len() != before {
-        crate::log(&format!("telemetry: withdrawal purged {} queued records", before - all.len()));
+        crate::log(&format!(
+            "telemetry: withdrawal purged {} queued records",
+            before - all.len()
+        ));
         write_locked(&all);
     }
 }
@@ -255,7 +268,8 @@ mod tests {
 
     impl Scratch {
         fn new(tag: &str) -> Self {
-            let p = std::env::temp_dir().join(format!("plx-spool-{}-{tag}.bin", std::process::id()));
+            let p =
+                std::env::temp_dir().join(format!("plx-spool-{}-{tag}.bin", std::process::id()));
             let _ = std::fs::remove_file(&p);
             set_test_path(Some(p.clone()));
             // `ON_DISK` is a per-PROCESS count, which is sound in production because `path()` is a
@@ -340,7 +354,12 @@ mod tests {
         got.sort();
         let mut want: Vec<String> = (0..N).map(|i| format!("r{i}")).collect();
         want.sort();
-        assert_eq!(got, want, "{} of {N} producers' records survived", got.len());
+        assert_eq!(
+            got,
+            want,
+            "{} of {N} producers' records survived",
+            got.len()
+        );
     }
 
     /// **A torn tail costs the tail and nothing else.** The framing's whole promise, asserted at
@@ -385,7 +404,10 @@ mod tests {
             queue::MAX_RECORDS
         );
         // Oldest-first, so the newest survive — a fresh report is worth more than a stale one.
-        assert_eq!(got.last().map(|r| r.event_id.clone()), Some(format!("e{}", queue::MAX_RECORDS + 39)));
+        assert_eq!(
+            got.last().map(|r| r.event_id.clone()),
+            Some(format!("e{}", queue::MAX_RECORDS + 39))
+        );
     }
 
     /// **A withdrawal destroys what it withdrew, and only that.** The two switches are independent,
@@ -401,7 +423,10 @@ mod tests {
         let _s = Scratch::new("withdraw");
 
         append(&rec("a-usage"));
-        append(&Record { category: Category::Errors, ..rec("a-crash") });
+        append(&Record {
+            category: Category::Errors,
+            ..rec("a-crash")
+        });
 
         let mut c = crate::telemetry::consent::Consent::default();
         c.errors = true; // still consented

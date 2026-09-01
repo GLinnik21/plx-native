@@ -56,8 +56,7 @@ impl CapacityEstimate {
         let old_fast = self.fast_kbps;
         let weight = observation.weight();
         self.slow_kbps = weighted_mean(old_slow, observation.kbps, weight, 8);
-        self.fast_kbps =
-            weighted_mean(old_fast, observation.kbps, observation.weight().min(2), 4);
+        self.fast_kbps = weighted_mean(old_fast, observation.kbps, observation.weight().min(2), 4);
         if self.samples == 0 {
             self.slow_kbps = observation.kbps;
             self.fast_kbps = observation.kbps;
@@ -156,7 +155,9 @@ impl CapacityEstimate {
         }
         // Each half-life closes half the remaining distance to the maximum discount: one gives
         // 250, two 375, three 437 — and the fourth is the demotion above.
-        let halvings = u32::try_from(elapsed_ms / half_life).unwrap_or(u32::MAX).min(16);
+        let halvings = u32::try_from(elapsed_ms / half_life)
+            .unwrap_or(u32::MAX)
+            .min(16);
         let widened = MAX_UNCERTAINTY_PM - (MAX_UNCERTAINTY_PM >> halvings);
         self.uncertainty_pm = self.uncertainty_pm.max(widened);
     }
@@ -294,7 +295,10 @@ impl CapacityObservation {
             return self;
         }
         let ceiling = wire_kbps.saturating_mul(WEAK_SAMPLE_HEADROOM);
-        Self { kbps: self.kbps.min(ceiling), ..self }
+        Self {
+            kbps: self.kbps.min(ceiling),
+            ..self
+        }
     }
 
     /// A factor-of-four gap from the SLOW estimate in either direction — the test
@@ -409,8 +413,7 @@ impl SegmentSample {
     }
 
     pub(crate) fn network_kbps(self) -> u32 {
-        (kbps_from(self.bytes, self.active_fetch_us))
-            .min(u64::from(u32::MAX)) as u32
+        (kbps_from(self.bytes, self.active_fetch_us)).min(u64::from(u32::MAX)) as u32
     }
 
     pub(crate) fn media_duration_ms(self) -> u32 {
@@ -427,8 +430,8 @@ impl SegmentSample {
     /// their planning rate (`abr.rs`'s catalog note), so the two differ by an unmeasured amount at
     /// exactly the rungs where the ceiling is tightest. Measurement step M4 reads it.
     pub(crate) fn media_kbps(self) -> u32 {
-        (self.bytes.saturating_mul(8) / u64::from(self.media_duration_ms))
-            .min(u64::from(u32::MAX)) as u32
+        (self.bytes.saturating_mul(8) / u64::from(self.media_duration_ms)).min(u64::from(u32::MAX))
+            as u32
     }
 
     /// End-to-end acquisition, microseconds -- what `abr/window.rs` transfers between rungs.
@@ -451,7 +454,7 @@ impl SegmentSample {
     pub(crate) fn production_ratio_pm(self) -> u32 {
         (self.total_fetch_us.saturating_mul(1_000)
             / u64::from(self.media_duration_ms).saturating_mul(1_000))
-            .min(u64::from(u32::MAX)) as u32
+        .min(u64::from(u32::MAX)) as u32
     }
 }
 

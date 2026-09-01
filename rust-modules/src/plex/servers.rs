@@ -159,10 +159,12 @@ pub struct ServerFacts {
 
 /// The table. A null slot is unpopulated; a non-null one is a leaked `Client` that is never
 /// freed (see the module doc), which is what makes the `unsafe` deref in [`client_for`] sound.
-static SLOTS: [AtomicPtr<Client>; MAX_SERVERS] = [const { AtomicPtr::new(std::ptr::null_mut()) }; MAX_SERVERS];
+static SLOTS: [AtomicPtr<Client>; MAX_SERVERS] =
+    [const { AtomicPtr::new(std::ptr::null_mut()) }; MAX_SERVERS];
 /// [`ServerFacts`] per slot, published and leaked exactly as `SLOTS` is. A null slot is a server
 /// nobody has described yet — which is the honest state on a boot that never reached plex.tv.
-static FACTS: [AtomicPtr<ServerFacts>; MAX_SERVERS] = [const { AtomicPtr::new(std::ptr::null_mut()) }; MAX_SERVERS];
+static FACTS: [AtomicPtr<ServerFacts>; MAX_SERVERS] =
+    [const { AtomicPtr::new(std::ptr::null_mut()) }; MAX_SERVERS];
 /// The last aggregate identity-probe result for each live server. Zero means this origin has not
 /// been probed in the current identity/address lifecycle. Unlike [`FACTS`], this is replaced rather
 /// than merged: a fresh successful probe is current evidence, as is a later timeout or 401.
@@ -328,7 +330,9 @@ pub fn probe_result(id: ServerId) -> Option<Outcome> {
 /// A no-op for an inactive/unknown slot, so a late auth worker cannot resurrect a revoked source.
 pub fn publish_probe_result(id: ServerId, outcome: Outcome) {
     let _w = WRITE.lock().unwrap_or_else(|e| e.into_inner());
-    let Some(i) = id.index().filter(|_| client_for(id).is_some()) else { return };
+    let Some(i) = id.index().filter(|_| client_for(id).is_some()) else {
+        return;
+    };
     PROBES[i].store(probe_code(outcome), Ordering::Release);
     // The Sources list follows this atomic from `browse::sync_roster`; wake an idle frame so the
     // new word/tier is visible immediately rather than at the two-second keepalive.
@@ -396,7 +400,11 @@ pub fn commit_if_current<R>(
 
 /// Resolve one exact lifecycle. Caller holds [`WRITE`], so pointer and generation cannot move
 /// between this check and its critical-section commit.
-fn current_lifecycle_index(id: ServerId, expected: &'static Client, token_gen: u32) -> Option<usize> {
+fn current_lifecycle_index(
+    id: ServerId,
+    expected: &'static Client,
+    token_gen: u32,
+) -> Option<usize> {
     let i = id.index()?;
     let current = client_for(id)?;
     (std::ptr::eq(current, expected) && current.token_gen() == token_gen).then_some(i)
@@ -411,7 +419,9 @@ fn current_lifecycle_index(id: ServerId, expected: &'static Client, token_gen: u
 /// the Sources list that cannot be browsed.
 pub fn describe(id: ServerId, name: &str, handle: &str, owned: bool) {
     let _w = WRITE.lock().unwrap_or_else(|e| e.into_inner());
-    let Some(i) = id.index().filter(|_| client_for(id).is_some()) else { return };
+    let Some(i) = id.index().filter(|_| client_for(id).is_some()) else {
+        return;
+    };
     let old = facts(id);
     let merged = ServerFacts {
         name: pick(name, old.map(|f| f.name.as_str())),
@@ -450,7 +460,11 @@ pub fn describe_name(id: ServerId, name: &str) {
 
 /// `new` when it says something, else whatever was already known.
 fn pick(new: &str, old: Option<&str>) -> String {
-    if new.is_empty() { old.unwrap_or_default().to_owned() } else { new.to_owned() }
+    if new.is_empty() {
+        old.unwrap_or_default().to_owned()
+    } else {
+        new.to_owned()
+    }
 }
 
 // ---- writes: registration ----
@@ -537,7 +551,9 @@ pub fn register_origin(machine_id: &str, origin: &Origin, token: &str) -> Server
     // `session::load` can WRITE (it mints + persists the uuid when there is none), and the
     // commonest call here by far is the profile switch, which only swaps a token; the singleton
     // this replaced read the file exactly once, and so does this.
-    let id = register_lazy(machine_id, origin, token, &|| super::session::load().client_id);
+    let id = register_lazy(machine_id, origin, token, &|| {
+        super::session::load().client_id
+    });
     // Every server the app actually talks to arrives through THIS function (the `_with_client_id`
     // seam below is the test one and deliberately does not), so it is the single place that keeps
     // each server's self-description — version + Plex Pass, issue #22's blind spot — fresh
@@ -566,7 +582,13 @@ pub fn register_origin(machine_id: &str, origin: &Origin, token: &str) -> Server
 ///
 /// So: **no test in this crate may call [`register`] or [`register_origin`]**. The two seams here
 /// are the whole test surface, and neither loads a session nor spawns anything.
-pub(crate) fn register_with_client_id(machine_id: &str, host: &str, port: i32, token: &str, client_id: &str) -> ServerId {
+pub(crate) fn register_with_client_id(
+    machine_id: &str,
+    host: &str,
+    port: i32,
+    token: &str,
+    client_id: &str,
+) -> ServerId {
     register_origin_with_client_id(machine_id, &Origin::http(host, port), token, client_id)
 }
 
@@ -581,7 +603,12 @@ pub(crate) fn register_origin_with_client_id(
     register_lazy(machine_id, origin, token, &|| client_id.to_owned())
 }
 
-fn register_lazy(machine_id: &str, origin: &Origin, token: &str, client_id: &dyn Fn() -> String) -> ServerId {
+fn register_lazy(
+    machine_id: &str,
+    origin: &Origin,
+    token: &str,
+    client_id: &dyn Fn() -> String,
+) -> ServerId {
     let _w = WRITE.lock().unwrap_or_else(|e| e.into_inner());
     let n = COUNT.load(Ordering::Acquire);
     let floor = FLOOR.load(Ordering::Acquire).min(n);
@@ -595,7 +622,11 @@ fn register_lazy(machine_id: &str, origin: &Origin, token: &str, client_id: &dyn
     if let Some(id) = found {
         let c = populated(id).expect("the matched slot is populated");
         // Keep an id we already know: a legacy address-keyed call must not blank it.
-        let mid = if machine_id.is_empty() { c.machine_id() } else { machine_id };
+        let mid = if machine_id.is_empty() {
+            c.machine_id()
+        } else {
+            machine_id
+        };
         if c.origin() != origin || c.machine_id() != mid {
             // Re-point. The old `Client` stays alive and merely stale for anyone mid-request
             // with it; the fresh one also gets a fresh token generation, so token-baked caches
@@ -606,7 +637,11 @@ fn register_lazy(machine_id: &str, origin: &Origin, token: &str, client_id: &dyn
             // still comparable with a current one — and the whole URL the moment the scheme is
             // worth saying, which is the only way a headless run armed with `{"scheme":"https"}`
             // can be told from an http one at all. See `Origin::log_form`.
-            crate::log(&format!("plex: server slot {} re-pointed to {}", id.0, origin.log_form()));
+            crate::log(&format!(
+                "plex: server slot {} re-pointed to {}",
+                id.0,
+                origin.log_form()
+            ));
             // The pointer is leaked, so a worker may retain it forever. Defang that old reference
             // before publishing the replacement; later sign-out/profile revocation can only walk
             // the current pointer stored in this slot and cannot discover superseded clients.
@@ -614,10 +649,17 @@ fn register_lazy(machine_id: &str, origin: &Origin, token: &str, client_id: &dyn
             // The old origin's answer says nothing about the replacement. The activation that
             // proved this address writes its result after `register_origin` returns.
             PROBES[id.0 as usize].store(PROBE_UNKNOWN, Ordering::Release);
-            publish(id, Client::new(id, mid, origin.clone(), token, &client_id()));
+            publish(
+                id,
+                Client::new(id, mid, origin.clone(), token, &client_id()),
+            );
             ROSTER_GEN.fetch_add(1, Ordering::AcqRel);
         } else {
             c.set_token(token); // in place — every reference already handed out follows along
+                                // The slot set did not change, but its lifecycle did. Catalog source tables key their
+                                // reconciliation on this generation so they can release an old single-flight and
+                                // re-arm with the new per-profile credential even on a same-origin retoken.
+            ROSTER_GEN.fetch_add(1, Ordering::AcqRel);
         }
         activate(id);
         return id;
@@ -631,13 +673,20 @@ fn register_lazy(machine_id: &str, origin: &Origin, token: &str, client_id: &dyn
     }
     let id = ServerId(n as u16);
     PROBES[n].store(PROBE_UNKNOWN, Ordering::Release);
-    publish(id, Client::new(id, machine_id, origin.clone(), token, &client_id()));
+    publish(
+        id,
+        Client::new(id, machine_id, origin.clone(), token, &client_id()),
+    );
     COUNT.store(n + 1, Ordering::Release); // after the pointer: a visible count implies a live slot
     activate(id);
     // Address only — the machineIdentifier is a permanent household fingerprint (see `ui::stats`)
     // and the event log is what users send us. `log_form` rather than `base`, for the reason the
     // re-point line above gives.
-    crate::log(&format!("plex: server slot {} registered at {}", id.0, origin.log_form()));
+    crate::log(&format!(
+        "plex: server slot {} registered at {}",
+        id.0,
+        origin.log_form()
+    ));
     id
 }
 
@@ -653,7 +702,7 @@ fn register_lazy(machine_id: &str, origin: &Origin, token: &str, client_id: &dyn
 pub fn install(origin: &Origin, token: &str) {
     let id = register_origin("", origin, token);
     set_current(id); // the session path always retargets: this is now the server we are using
-    // (`register` already refreshed this server's self-description — see its doc.)
+                     // (`register` already refreshed this server's self-description — see its doc.)
 }
 
 /// **Profile switch.** Blank every live token and hide every non-current slot before the new
@@ -681,17 +730,17 @@ pub(crate) fn revoke_for_profile_switch() {
             PROBES[i].store(PROBE_UNKNOWN, Ordering::Release);
         }
     }
-    let keep_mask = keep
-        .index()
-        .filter(|_| keep_live)
-        .map_or(0, |i| 1u32 << i);
+    let keep_mask = keep.index().filter(|_| keep_live).map_or(0, |i| 1u32 << i);
     ACTIVE.store(keep_mask, Ordering::Release);
     ROSTER_GEN.fetch_add(1, Ordering::AcqRel);
     if !keep_live {
         CURRENT.store(ServerId::UNSET.0 as u32, Ordering::Release);
     }
     if !live.is_empty() {
-        crate::log(&format!("plex: {} server(s) revoked — profile changed", live.len()));
+        crate::log(&format!(
+            "plex: {} server(s) revoked — profile changed",
+            live.len()
+        ));
     }
     crate::ui::idle::invalidate();
 }
@@ -720,7 +769,9 @@ pub(crate) fn finish_profile_switch(installed: &[ServerId]) {
     }
 
     let old_current = current();
-    let keep_current = old_current.index().is_some_and(|i| exact & (1u32 << i) != 0);
+    let keep_current = old_current
+        .index()
+        .is_some_and(|i| exact & (1u32 << i) != 0);
     let next = if keep_current { old_current } else { first };
 
     // Every installed slot was already activated, so publishing the new CURRENT first cannot
@@ -765,7 +816,10 @@ pub(crate) fn revoke_all() {
     FLOOR.store(n, Ordering::Release);
     ROSTER_GEN.fetch_add(1, Ordering::AcqRel);
     if n > floor {
-        crate::log(&format!("plex: {} server(s) revoked — signed out", n - floor));
+        crate::log(&format!(
+            "plex: {} server(s) revoked — signed out",
+            n - floor
+        ));
     }
     // The Sources list, the Search scope line and every shelf heading are drawn from this table,
     // and `ui::idle` gates the whole present on detected motion — it cannot see a `static` being
@@ -834,7 +888,11 @@ mod tests {
 
     /// The token as the wire would carry it — `with_token` is the only reader of the field.
     fn token_of(c: &Client) -> String {
-        c.with_token("/x").rsplit('=').next().unwrap_or_default().to_owned()
+        c.with_token("/x")
+            .rsplit('=')
+            .next()
+            .unwrap_or_default()
+            .to_owned()
     }
 
     fn reg(machine_id: &str, host: &str, token: &str) -> ServerId {
@@ -849,17 +907,26 @@ mod tests {
         let _g = fresh();
         assert!(client_opt().is_none(), "nothing installed yet");
         assert!(!current().is_set());
-        assert!(client_for(ServerId::UNSET).is_none(), "the reserved value must never resolve");
+        assert!(
+            client_for(ServerId::UNSET).is_none(),
+            "the reserved value must never resolve"
+        );
 
         let id = reg("mach-A", "10.0.0.1", "tok-a");
         let c = client_for(id).expect("round trip");
-        assert_eq!((c.host(), c.port(), c.machine_id()), ("10.0.0.1", 32400, "mach-A"));
+        assert_eq!(
+            (c.host(), c.port(), c.machine_id()),
+            ("10.0.0.1", 32400, "mach-A")
+        );
         assert_eq!(c.id(), id, "the client knows its own slot");
         assert_eq!(count(), 1);
         // the first registration becomes current, so `client()` works exactly as after the first
         // `install` did under the singleton
         assert!(std::ptr::eq(client(), c));
-        assert!(client_for(ServerId::from_raw(7)).is_none(), "an unpopulated slot");
+        assert!(
+            client_for(ServerId::from_raw(7)).is_none(),
+            "an unpopulated slot"
+        );
     }
 
     /// The profile-switch path: same server, new per-user token. It must land IN PLACE — same
@@ -870,13 +937,22 @@ mod tests {
         let _g = fresh();
         let id = reg("mach-A", "10.0.0.1", "tok-a");
         let before: *const Client = client_for(id).unwrap();
+        let roster_before = roster_gen();
 
         let again = reg("mach-A", "10.0.0.1", "tok-b");
         assert_eq!(again, id, "same server, same slot");
         assert_eq!(count(), 1, "no slot appended");
         let c = client_for(id).unwrap();
-        assert!(std::ptr::eq(c, before), "the client was updated, not replaced");
+        assert!(
+            std::ptr::eq(c, before),
+            "the client was updated, not replaced"
+        );
         assert_eq!(token_of(c), "tok-b");
+        assert_ne!(
+            roster_gen(),
+            roster_before,
+            "catalog source tables must observe the new credential lifecycle"
+        );
 
         // and the legacy address-keyed form (`install`, which knows no machine id) matches the
         // same slot on host+port alone
@@ -884,7 +960,11 @@ mod tests {
         assert_eq!(by_addr, id);
         assert_eq!(count(), 1);
         assert_eq!(token_of(client_for(id).unwrap()), "tok-c");
-        assert_eq!(client_for(id).unwrap().machine_id(), "mach-A", "a call with no id must not blank one");
+        assert_eq!(
+            client_for(id).unwrap().machine_id(),
+            "mach-A",
+            "a call with no id must not blank one"
+        );
     }
 
     /// **A scheme change is an ADDRESS change**, so it re-points the slot exactly as a new host or
@@ -903,28 +983,50 @@ mod tests {
     #[test]
     fn moving_a_server_to_https_re_points_its_slot() {
         let _g = fresh();
-        let reg_at = |o: &Origin, tok: &str| register_origin_with_client_id("mach-A", o, tok, "test-client-id");
+        let reg_at = |o: &Origin, tok: &str| {
+            register_origin_with_client_id("mach-A", o, tok, "test-client-id")
+        };
         let plain = Origin::http("10.0.0.1", 32400);
         let id = reg_at(&plain, "tok-a");
         let before: *const Client = client_for(id).unwrap();
         let gen_before = client_for(id).unwrap().token_gen();
-        client_for(id).unwrap().set_link(crate::plex::probe::Location::Local);
+        client_for(id)
+            .unwrap()
+            .set_link(crate::plex::probe::Location::Local);
 
         let tls = Origin::parse("https://10-0-0-1.hash.plex.direct:32400").expect("an origin");
         assert_eq!(reg_at(&tls, "tok-a"), id, "same machine, same slot");
         assert_eq!(count(), 1, "a scheme change is not a second server");
 
         let c = client_for(id).unwrap();
-        assert!(!std::ptr::eq(c, before), "the slot was RE-POINTED, not updated in place");
+        assert!(
+            !std::ptr::eq(c, before),
+            "the slot was RE-POINTED, not updated in place"
+        );
         assert_eq!(c.origin(), &tls);
-        assert_eq!(c.host(), "10-0-0-1.hash.plex.direct", "the name a certificate is issued for");
-        assert_ne!(c.token_gen(), gen_before, "a fresh client means token-baked caches flush");
-        assert_eq!(c.link(), None, "a new address is not evidence about the old tier");
+        assert_eq!(
+            c.host(),
+            "10-0-0-1.hash.plex.direct",
+            "the name a certificate is issued for"
+        );
+        assert_ne!(
+            c.token_gen(),
+            gen_before,
+            "a fresh client means token-baked caches flush"
+        );
+        assert_eq!(
+            c.link(),
+            None,
+            "a new address is not evidence about the old tier"
+        );
 
         // and re-registering the SAME origin lands in place again, as any unchanged address does
         let same: *const Client = c;
         assert_eq!(reg_at(&tls, "tok-b"), id);
-        assert!(std::ptr::eq(client_for(id).unwrap(), same), "unchanged origin, unchanged pointer");
+        assert!(
+            std::ptr::eq(client_for(id).unwrap(), same),
+            "unchanged origin, unchanged pointer"
+        );
     }
 
     /// Probe state belongs to the registry slot, beside the address and tier it describes. It is
@@ -942,12 +1044,20 @@ mod tests {
         assert_eq!(probe_result(id), Some(Outcome::Unauthorized));
 
         assert_eq!(reg("mach-A", "10.0.0.9", "tok-a"), id);
-        assert_eq!(probe_result(id), None, "a replacement origin has not been probed yet");
+        assert_eq!(
+            probe_result(id),
+            None,
+            "a replacement origin has not been probed yet"
+        );
         publish_probe_result(id, Outcome::Unreachable);
         assert_eq!(probe_result(id), Some(Outcome::Unreachable));
 
         revoke_for_profile_switch();
-        assert_eq!(probe_result(id), None, "a different profile's token starts unprobed");
+        assert_eq!(
+            probe_result(id),
+            None,
+            "a different profile's token starts unprobed"
+        );
     }
 
     /// A different server is a NEW slot, never a silent retarget of the old one — the singleton's
@@ -960,16 +1070,32 @@ mod tests {
         let b = reg("mach-B", "10.0.0.2", "tok-b");
         assert_ne!(a, b);
         assert_eq!(count(), 2, "appended, not retargeted");
-        assert_eq!(client_for(a).unwrap().host(), "10.0.0.1", "server A kept its address");
-        assert!(std::ptr::eq(client(), client_for(a).unwrap()), "current stayed on A");
+        assert_eq!(
+            client_for(a).unwrap().host(),
+            "10.0.0.1",
+            "server A kept its address"
+        );
+        assert!(
+            std::ptr::eq(client(), client_for(a).unwrap()),
+            "current stayed on A"
+        );
 
         assert!(set_current(b));
         assert!(std::ptr::eq(client(), client_for(b).unwrap()));
         assert_eq!(client().machine_id(), "mach-B");
-        assert!(client_for(a).is_some(), "A is still registered and reachable by id");
+        assert!(
+            client_for(a).is_some(),
+            "A is still registered and reachable by id"
+        );
 
-        assert!(!set_current(ServerId::from_raw(9)), "an unknown id is refused");
-        assert!(std::ptr::eq(client(), client_for(b).unwrap()), "…and changes nothing");
+        assert!(
+            !set_current(ServerId::from_raw(9)),
+            "an unknown id is refused"
+        );
+        assert!(
+            std::ptr::eq(client(), client_for(b).unwrap()),
+            "…and changes nothing"
+        );
 
         // the legacy address-keyed path, on an address nobody is registered at, also appends
         let c = reg("", "10.0.0.3", "tok-c");
@@ -986,7 +1112,10 @@ mod tests {
         let _g = fresh();
         let a = reg("mach-A", "10.0.0.1", "tok-a");
         let b = reg("mach-B", "10.0.0.2", "tok-b");
-        let (ga, gb) = (client_for(a).unwrap().token_gen(), client_for(b).unwrap().token_gen());
+        let (ga, gb) = (
+            client_for(a).unwrap().token_gen(),
+            client_for(b).unwrap().token_gen(),
+        );
         assert_ne!(ga, gb, "two servers never share a generation");
 
         reg("mach-A", "10.0.0.1", "tok-a2");
@@ -1000,9 +1129,18 @@ mod tests {
     #[test]
     fn one_rating_key_on_two_servers_is_two_different_items() {
         let (a, b) = (ServerId::from_raw(0), ServerId::from_raw(1));
-        assert!(!same_item((a, "1"), (b, "1")), "the same key on two servers is two items");
-        assert!(same_item((a, "1"), (a, "1")), "…and the same key on ONE server is one item");
-        assert!(!same_item((a, "1"), (a, "2")), "a different key is a different item");
+        assert!(
+            !same_item((a, "1"), (b, "1")),
+            "the same key on two servers is two items"
+        );
+        assert!(
+            same_item((a, "1"), (a, "1")),
+            "…and the same key on ONE server is one item"
+        );
+        assert!(
+            !same_item((a, "1"), (a, "2")),
+            "a different key is a different item"
+        );
 
         // UNSET is the pre-registry / host-test state: it matches itself (the single-server app,
         // unchanged) and nothing else — a row whose server is unknown must never answer for a
@@ -1021,25 +1159,41 @@ mod tests {
         let _g = fresh();
         let a = reg("mach-A", "10.0.0.1", "tok-a");
         let b = reg("mach-B", "10.0.0.2", "tok-b");
-        assert_eq!(ids().collect::<Vec<_>>(), vec![a, b], "registration order, the session server first");
-        assert!(facts(a).is_none(), "nothing has described it yet — not an empty-named server");
+        assert_eq!(
+            ids().collect::<Vec<_>>(),
+            vec![a, b],
+            "registration order, the session server first"
+        );
+        assert!(
+            facts(a).is_none(),
+            "nothing has described it yet — not an empty-named server"
+        );
 
         // plex.tv first (owner known, no machine name in this path), then the server itself
         describe(b, "", "friend", false);
         describe(b, "nas-home", "", false);
         let f = facts(b).expect("described");
-        assert_eq!((f.name.as_str(), f.handle.as_str(), f.owned), ("nas-home", "friend", false));
+        assert_eq!(
+            (f.name.as_str(), f.handle.as_str(), f.owned),
+            ("nas-home", "friend", false)
+        );
 
         // and the other order, on the other slot
         describe(a, "mac-mini", "", true);
         describe(a, "", "", true);
         let f = facts(a).expect("described");
-        assert_eq!((f.name.as_str(), f.handle.as_str(), f.owned), ("mac-mini", "", true));
+        assert_eq!(
+            (f.name.as_str(), f.handle.as_str(), f.owned),
+            ("mac-mini", "", true)
+        );
 
         // a slot nothing dials is never described — a Sources row you cannot browse
         describe(ServerId::from_raw(9), "ghost", "nobody", false);
         assert!(facts(ServerId::from_raw(9)).is_none());
-        assert!(facts(ServerId::UNSET).is_none(), "the reserved value must never resolve");
+        assert!(
+            facts(ServerId::UNSET).is_none(),
+            "the reserved value must never resolve"
+        );
     }
 
     /// A slot registered by address only (what `install` can do) is ADOPTED once the machine id
@@ -1056,8 +1210,16 @@ mod tests {
         assert_eq!(same, id, "adopted, not appended");
         assert_eq!(count(), 1);
         assert_eq!(client_for(id).unwrap().machine_id(), "mach-A");
-        assert_eq!(stale.host(), "10.0.0.1", "the replaced client is still readable, not freed");
-        assert_eq!(token_of(stale), "", "a superseded leaked client cannot retain a credential");
+        assert_eq!(
+            stale.host(),
+            "10.0.0.1",
+            "the replaced client is still readable, not freed"
+        );
+        assert_eq!(
+            token_of(stale),
+            "",
+            "a superseded leaked client cannot retain a credential"
+        );
 
         // and once known, the id is what identifies it — the same server at a new address
         // re-points that slot rather than appending
@@ -1066,7 +1228,11 @@ mod tests {
         assert_eq!(moved, id);
         assert_eq!(count(), 1);
         assert_eq!(client_for(id).unwrap().host(), "10.0.0.9");
-        assert_eq!(token_of(adopted), "", "every re-point defangs the pointer it supersedes");
+        assert_eq!(
+            token_of(adopted),
+            "",
+            "every re-point defangs the pointer it supersedes"
+        );
     }
 
     /// **Signing out takes the servers with it.** Nothing here can be freed, so the leak that
@@ -1087,16 +1253,33 @@ mod tests {
         revoke_all();
 
         assert_eq!(count(), 0, "no server is registered any more");
-        assert_eq!(ids().collect::<Vec<_>>(), Vec::new(), "and the roster walk yields nothing");
-        assert!(client_for(a).is_none() && client_for(b).is_none(), "a stored ServerId resolves to nothing");
-        assert!(client_opt().is_none() && !current().is_set(), "and `client()` has nothing to answer with");
+        assert_eq!(
+            ids().collect::<Vec<_>>(),
+            Vec::new(),
+            "and the roster walk yields nothing"
+        );
+        assert!(
+            client_for(a).is_none() && client_for(b).is_none(),
+            "a stored ServerId resolves to nothing"
+        );
+        assert!(
+            client_opt().is_none() && !current().is_set(),
+            "and `client()` has nothing to answer with"
+        );
         // the description goes with the client: a stale id must not still name the friend who
         // shared it, off a slot nothing can dial
-        assert!(facts(b).is_none(), "a slot that cannot be dialled is not described either");
+        assert!(
+            facts(b).is_none(),
+            "a slot that cannot be dialled is not described either"
+        );
         // the in-flight reference is still READABLE — it was never freed, which is the whole
         // reason these are leaked — but it can no longer dial as anybody
         assert_eq!(inflight.host(), "10.0.0.2");
-        assert_eq!(token_of(inflight), "", "a worker mid-request must not carry the old credential");
+        assert_eq!(
+            token_of(inflight),
+            "",
+            "a worker mid-request must not carry the old credential"
+        );
     }
 
     #[test]
@@ -1109,19 +1292,37 @@ mod tests {
 
         revoke_for_profile_switch();
 
-        assert_eq!(count(), 1, "the current slot remains as a lock-free tokenless shell");
+        assert_eq!(
+            count(),
+            1,
+            "the current slot remains as a lock-free tokenless shell"
+        );
         assert_eq!(ids().collect::<Vec<_>>(), vec![ours]);
         assert_eq!(token_of(client_for(ours).unwrap()), "");
         assert!(client_for(share).is_none());
         assert_eq!(token_of(old_ours), "");
-        assert_eq!(token_of(old_share), "", "an omitted share loses the old profile's credential");
+        assert_eq!(
+            token_of(old_share),
+            "",
+            "an omitted share loses the old profile's credential"
+        );
 
         let again = reg("mach-A", "10.0.0.1", "managed-a");
-        assert_eq!(again, ours, "a profile switch preserves the machine's stable slot");
+        assert_eq!(
+            again, ours,
+            "a profile switch preserves the machine's stable slot"
+        );
         assert_eq!(ids().collect::<Vec<_>>(), vec![ours]);
         assert_eq!(token_of(client_for(ours).unwrap()), "managed-a");
-        assert!(client_for(share).is_none(), "the ungranted share stays out of every roster walk");
-        assert_eq!(token_of(old_share), "", "and even a stale reference remains defanged");
+        assert!(
+            client_for(share).is_none(),
+            "the ungranted share stays out of every roster walk"
+        );
+        assert_eq!(
+            token_of(old_share),
+            "",
+            "and even a stale reference remains defanged"
+        );
         assert!(std::ptr::eq(client(), client_for(ours).unwrap()));
     }
 
@@ -1133,15 +1334,26 @@ mod tests {
         let stale_gone: &'static Client = client_for(gone).unwrap();
 
         revoke_for_profile_switch();
-        assert_eq!(ids().collect::<Vec<_>>(), vec![gone], "the old current is only a temporary shell");
+        assert_eq!(
+            ids().collect::<Vec<_>>(),
+            vec![gone],
+            "the old current is only a temporary shell"
+        );
         assert_eq!(reg("mach-B", "10.0.0.2", "fresh-b"), survivor);
         set_current(survivor);
         finish_profile_switch(&[survivor]);
 
         assert_eq!(count(), 1);
         assert_eq!(ids().collect::<Vec<_>>(), vec![survivor]);
-        assert!(client_for(gone).is_none(), "a revoked primary is absent from the authoritative roster");
-        assert_eq!(token_of(stale_gone), "", "its already-issued reference stays defanged");
+        assert!(
+            client_for(gone).is_none(),
+            "a revoked primary is absent from the authoritative roster"
+        );
+        assert_eq!(
+            token_of(stale_gone),
+            "",
+            "its already-issued reference stays defanged"
+        );
         assert!(std::ptr::eq(client(), client_for(survivor).unwrap()));
         assert_eq!(token_of(client()), "fresh-b");
     }
@@ -1160,9 +1372,16 @@ mod tests {
         let after = reg("mach-A", "10.0.0.1", "tok-new");
         assert_ne!(after, before, "the same machine, a new account, a new slot");
         assert_eq!(count(), 1, "…and exactly one server is registered");
-        assert_eq!(ids().collect::<Vec<_>>(), vec![after], "the walk starts above the floor");
+        assert_eq!(
+            ids().collect::<Vec<_>>(),
+            vec![after],
+            "the walk starts above the floor"
+        );
         assert_eq!(token_of(client_for(after).unwrap()), "tok-new");
-        assert!(client_for(before).is_none(), "the retired slot stays retired");
+        assert!(
+            client_for(before).is_none(),
+            "the retired slot stays retired"
+        );
         // the first registration after a sign-out becomes current, exactly as it does at boot
         assert!(std::ptr::eq(client(), client_for(after).unwrap()));
 
@@ -1186,14 +1405,25 @@ mod tests {
         assert_eq!(count(), MAX_SERVERS);
 
         let refused = reg("mach-overflow", "10.0.9.9", "tok-overflow");
-        assert_eq!(refused, ServerId::UNSET, "there was nowhere to put it, and that is what it says");
+        assert_eq!(
+            refused,
+            ServerId::UNSET,
+            "there was nowhere to put it, and that is what it says"
+        );
         assert_eq!(count(), MAX_SERVERS, "nothing was appended");
 
         // the call site's very next line, verbatim — and it must land on nobody
         describe(refused, "nas-home", "friend", false);
         let f = facts(ours).expect("our own server is still described");
-        assert_eq!((f.name.as_str(), f.handle.as_str(), f.owned), ("Mac mini", "", true), "ours was not renamed");
-        assert!(!set_current(refused), "and it cannot become the current server either");
+        assert_eq!(
+            (f.name.as_str(), f.handle.as_str(), f.owned),
+            ("Mac mini", "", true),
+            "ours was not renamed"
+        );
+        assert!(
+            !set_current(refused),
+            "and it cannot become the current server either"
+        );
         assert!(std::ptr::eq(client(), client_for(ours).unwrap()));
     }
 
@@ -1215,12 +1445,22 @@ mod tests {
         describe_name(a, "nas-home");
         describe_name(b, "nas-loft");
 
-        assert_eq!(facts(a).map(|f| (f.name.as_str(), f.owned)), Some(("nas-home", false)), "a handle-less SHARE");
-        assert_eq!(facts(b).map(|f| (f.name.as_str(), f.handle.as_str(), f.owned)), Some(("nas-loft", "friend", false)));
+        assert_eq!(
+            facts(a).map(|f| (f.name.as_str(), f.owned)),
+            Some(("nas-home", false)),
+            "a handle-less SHARE"
+        );
+        assert_eq!(
+            facts(b).map(|f| (f.name.as_str(), f.handle.as_str(), f.owned)),
+            Some(("nas-loft", "friend", false))
+        );
 
         // a slot nothing has described is one `install` put there, i.e. the account's own server
         let c = reg("mach-C", "10.0.0.3", "tok-c");
         describe_name(c, "Mac mini");
-        assert_eq!(facts(c).map(|f| (f.name.as_str(), f.owned)), Some(("Mac mini", true)));
+        assert_eq!(
+            facts(c).map(|f| (f.name.as_str(), f.owned)),
+            Some(("Mac mini", true))
+        );
     }
 }

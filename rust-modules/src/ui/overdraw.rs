@@ -54,8 +54,9 @@ pub(crate) enum Class {
 pub(crate) const NCLASS: usize = 9;
 
 /// The name each class answers to in `/tmp/plxnative-drawmask`, in [`Class`] order.
-pub(crate) const NAMES: [&str; NCLASS] =
-    ["ambient", "grad", "rect", "shadow", "card", "image", "text", "glass", "blur"];
+pub(crate) const NAMES: [&str; NCLASS] = [
+    "ambient", "grad", "rect", "shadow", "card", "image", "text", "glass", "blur",
+];
 
 /// The dev arm: the real ledger and the real mask. Its release twin sits below, same names, same
 /// shape, doing nothing — and the `pub(crate) use` under it re-exports whichever one is compiled.
@@ -98,7 +99,10 @@ mod imp {
     pub(crate) fn set_mask(spec: &str) {
         let mut mask = 0u32;
         let mut bad: Vec<&str> = Vec::new();
-        for word in spec.split(|c: char| !c.is_ascii_alphanumeric()).filter(|w| !w.is_empty()) {
+        for word in spec
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|w| !w.is_empty())
+        {
             if word.eq_ignore_ascii_case("all") {
                 mask = (1 << NCLASS) - 1;
             } else if word.eq_ignore_ascii_case(NAMES[Class::Blur as usize]) {
@@ -117,9 +121,20 @@ mod imp {
             ));
         }
         MASK.with(|f| f.set(mask));
-        let on: Vec<&str> =
-            NAMES.iter().enumerate().filter(|(i, _)| mask & (1 << i) != 0).map(|(_, n)| *n).collect();
-        log(&format!("OVERDRAW drawmask=0x{mask:x} skipping: {}", if on.is_empty() { "(nothing)".to_string() } else { on.join(",") }));
+        let on: Vec<&str> = NAMES
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| mask & (1 << i) != 0)
+            .map(|(_, n)| *n)
+            .collect();
+        log(&format!(
+            "OVERDRAW drawmask=0x{mask:x} skipping: {}",
+            if on.is_empty() {
+                "(nothing)".to_string()
+            } else {
+                on.join(",")
+            }
+        ));
     }
 
     /// Record `Painter::clip`'s live box, so the ledger counts the fragments a scissored quad can
@@ -158,7 +173,12 @@ mod imp {
         // A blur source pass draws the page a second time into a small target; its quads are not
         // on the panel and would double every class in the ledger.
         if ON.with(|f| f.get()) && !crate::gfx::blur_source_pass() {
-            let (mut x0, mut y0, mut x1, mut y1) = (x.max(0.0), y.max(0.0), (x + w).min(SCR_W), (y + h).min(SCR_H));
+            let (mut x0, mut y0, mut x1, mut y1) = (
+                x.max(0.0),
+                y.max(0.0),
+                (x + w).min(SCR_W),
+                (y + h).min(SCR_H),
+            );
             if let Some(cl) = CLIP.with(|f| f.get()) {
                 x0 = x0.max(cl[0]);
                 y0 = y0.max(cl[1]);
@@ -206,10 +226,20 @@ mod imp {
         let screen = (SCR_W * SCR_H) as f64;
         // `blur` writes reduced-resolution targets, so it is NOT part of the panel's overdraw
         // ratio; it is reported beside it rather than inside it.
-        let panel: f64 = (0..NCLASS).filter(|i| *i != Class::Blur as usize).map(|i| px[i]).sum();
+        let panel: f64 = (0..NCLASS)
+            .filter(|i| *i != Class::Blur as usize)
+            .map(|i| px[i])
+            .sum();
         let per = |i: usize| px[i] / frames;
         let parts: Vec<String> = (0..NCLASS)
-            .map(|i| format!("{}={:.0}/{}", NAMES[i], per(i), (draws[i] as f64 / frames + 0.5) as u32))
+            .map(|i| {
+                format!(
+                    "{}={:.0}/{}",
+                    NAMES[i],
+                    per(i),
+                    (draws[i] as f64 / frames + 0.5) as u32
+                )
+            })
             .collect();
         log(&format!(
             "OVERDRAW frames={n} panel={:.0}px x{:.2} | {}",
@@ -266,7 +296,11 @@ mod tests {
         assert_eq!(NAMES.len(), NCLASS);
         for (i, n) in NAMES.iter().enumerate() {
             assert!(!n.is_empty(), "class {i} has no name");
-            assert_eq!(NAMES.iter().filter(|m| *m == n).count(), 1, "duplicate class name {n}");
+            assert_eq!(
+                NAMES.iter().filter(|m| *m == n).count(),
+                1,
+                "duplicate class name {n}"
+            );
         }
         // The enum's discriminants ARE the ledger's indices; a reorder that broke this would
         // silently attribute every card to whatever moved into slot 4.

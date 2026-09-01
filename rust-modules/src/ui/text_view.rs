@@ -56,10 +56,10 @@ pub struct TextView<'a> {
     sz: c_int,
     col: [f32; 4],
     bold: c_int,
-    leading: f32,     // line pitch; 0 = derive from sz
+    leading: f32, // line pitch; 0 = derive from sz
     align: HAlign,
-    max_lines: usize,                       // 0 = unlimited
-    trailing: Option<(&'a str, [f32; 4])>,  // inline run after the last line when truncated (e.g. "MORE")
+    max_lines: usize,                      // 0 = unlimited
+    trailing: Option<(&'a str, [f32; 4])>, // inline run after the last line when truncated (e.g. "MORE")
     /// Inline BOLD run before the first word (e.g. the detail hero's `S2, E3 · Laura:` episode
     /// prefix). The mirror of [`TextView::trailing`], and it has to be part of the view rather than a
     /// separately-drawn label because the wrap has to know about it: line 0's available width is
@@ -72,7 +72,19 @@ pub struct TextView<'a> {
 
 impl<'a> TextView<'a> {
     pub fn new(text: &'a str, sz: c_int, col: [f32; 4]) -> Self {
-        Self { text, sz, col, bold: 0, leading: 0.0, align: HAlign::Left, max_lines: 0, trailing: None, lead: None, lead_bold: true, fade_last: 0.0 }
+        Self {
+            text,
+            sz,
+            col,
+            bold: 0,
+            leading: 0.0,
+            align: HAlign::Left,
+            max_lines: 0,
+            trailing: None,
+            lead: None,
+            lead_bold: true,
+            fade_last: 0.0,
+        }
     }
     pub fn bold(mut self) -> Self {
         self.bold = 1;
@@ -126,7 +138,10 @@ impl<'a> TextView<'a> {
     fn lead_w(&self) -> f32 {
         self.lead
             .and_then(|(r, _)| CString::new(r).ok())
-            .map(|c| crate::text::text_width(c.as_ptr(), self.sz, i32::from(self.lead_bold)) + self.measure(" "))
+            .map(|c| {
+                crate::text::text_width(c.as_ptr(), self.sz, i32::from(self.lead_bold))
+                    + self.measure(" ")
+            })
             .unwrap_or(0.0)
     }
     /// Reserve `px` at the wrap width's right edge for an OUT-OF-FLOW affordance sitting on the last
@@ -163,7 +178,11 @@ impl<'a> TextView<'a> {
     }
 
     fn line_h(&self) -> f32 {
-        if self.leading > 0.0 { self.leading } else { self.sz as f32 * 1.32 }
+        if self.leading > 0.0 {
+            self.leading
+        } else {
+            self.sz as f32 * 1.32
+        }
     }
 
     /// pixel width of an arbitrary `&str` — allocates a scratch CString, so WRAP-TIME ONLY
@@ -199,17 +218,30 @@ impl<'a> TextView<'a> {
         // property, which includes it — so the standard glue character silently did nothing.
         // `detail`'s people column is the case: the atoms of "Starring A B, C D" are the PEOPLE,
         // and a break inside one puts a surname alone on the next line.
-        let words: Vec<&str> =
-            self.text.split(|c: char| c.is_whitespace() && c != '\u{a0}').filter(|w| !w.is_empty()).collect();
+        let words: Vec<&str> = self
+            .text
+            .split(|c: char| c.is_whitespace() && c != '\u{a0}')
+            .filter(|w| !w.is_empty())
+            .collect();
         let mut lines: Vec<String> = Vec::new();
         let mut cur = String::new();
         let mut i = 0;
         // line 0 shares its row with the bold lead run, so it wraps into the column MINUS that run;
         // every later line gets the whole column back
         let lead_w = self.lead_w();
-        let avail = |line: usize| if line == 0 { (width - lead_w).max(0.0) } else { width };
+        let avail = |line: usize| {
+            if line == 0 {
+                (width - lead_w).max(0.0)
+            } else {
+                width
+            }
+        };
         while i < words.len() {
-            let trial = if cur.is_empty() { words[i].to_string() } else { format!("{cur} {}", words[i]) };
+            let trial = if cur.is_empty() {
+                words[i].to_string()
+            } else {
+                format!("{cur} {}", words[i])
+            };
             if !cur.is_empty() && self.measure(&trial) > avail(lines.len()) {
                 lines.push(std::mem::take(&mut cur));
                 if self.max_lines > 0 && lines.len() == self.max_lines {
@@ -229,7 +261,11 @@ impl<'a> TextView<'a> {
         if truncated {
             // more text than fits — ellipsize the last placed line to width
             let li = lines.len().saturating_sub(1);
-            let w = if li == 0 { (width - lead_w).max(0.0) } else { width };
+            let w = if li == 0 {
+                (width - lead_w).max(0.0)
+            } else {
+                width
+            };
             if let Some(last) = lines.last_mut() {
                 *last = crate::text::elide(last, w, self.sz, self.bold, true);
             }
@@ -239,14 +275,21 @@ impl<'a> TextView<'a> {
         // paints past the column (Painter has no clip). Also covers the whole-text-is-one-token case
         // that slips past the truncation gate above.
         for (li, ln) in lines.iter_mut().enumerate() {
-            let w = if li == 0 { (width - lead_w).max(0.0) } else { width };
+            let w = if li == 0 {
+                (width - lead_w).max(0.0)
+            } else {
+                width
+            };
             if self.measure(ln) > w {
                 *ln = crate::text::elide(ln, w, self.sz, self.bold, true);
             }
         }
         // NUL-terminate once, here — every later frame draws these by pointer (interior NULs
         // can't occur in PMS strings; degrade to an empty line rather than panic if one does)
-        let lines = lines.into_iter().map(|s| CString::new(s).unwrap_or_default()).collect();
+        let lines = lines
+            .into_iter()
+            .map(|s| CString::new(s).unwrap_or_default())
+            .collect();
         Wrapped { lines, truncated }
     }
 
@@ -308,7 +351,9 @@ impl<'a> TextView<'a> {
                 } else {
                     frame.x
                 };
-                let mut lab = Label::new(cs.as_ptr(), self.sz, lc).h(HAlign::Left).v(VAlign::CapTop);
+                let mut lab = Label::new(cs.as_ptr(), self.sz, lc)
+                    .h(HAlign::Left)
+                    .v(VAlign::CapTop);
                 if self.lead_bold {
                     lab = lab.bold();
                 }
@@ -321,24 +366,46 @@ impl<'a> TextView<'a> {
             // Clip the last line short of a reserved trailing run — RARE (a trailing affordance
             // on a truncated block, e.g. the About card) and the one owned CString on this path;
             // every ordinary line draws the CACHED CString by pointer, zero alloc.
-            let clipped: Option<CString> = if is_last && reserve > 0.0 && self.measure_c(ln) + reserve > frame.w {
-                let s = ln.to_str().unwrap_or("");
-                CString::new(crate::text::elide(s, (frame.w - reserve).max(0.0), self.sz, self.bold, true)).ok()
-            } else {
-                None
-            };
+            let clipped: Option<CString> =
+                if is_last && reserve > 0.0 && self.measure_c(ln) + reserve > frame.w {
+                    let s = ln.to_str().unwrap_or("");
+                    CString::new(crate::text::elide(
+                        s,
+                        (frame.w - reserve).max(0.0),
+                        self.sz,
+                        self.bold,
+                        true,
+                    ))
+                    .ok()
+                } else {
+                    None
+                };
             let tc: &CString = clipped.as_ref().unwrap_or(ln);
             let row = Rect::new(frame.x + dx, frame.y + i as f32 * lh, frame.w - dx, 0.0);
             // a truncated last line with a fade_last reservation dissolves into the affordance zone
             // instead of colliding with it (only when it actually reaches that far)
-            if is_last && wrapped.truncated && self.fade_last > 0.0 && self.measure_c(tc) > fade_from {
+            if is_last
+                && wrapped.truncated
+                && self.fade_last > 0.0
+                && self.measure_c(tc) > fade_from
+            {
                 let (ct, _) = crate::text::text_cap_band(self.sz, self.bold);
                 // cap band at row.y, like Label's VAlign::CapTop
-                p.text_fade(tc.as_ptr(), row.x, row.y - ct, self.sz, self.col, self.bold,
-                    fade_from, fade_to);
+                p.text_fade(
+                    tc.as_ptr(),
+                    row.x,
+                    row.y - ct,
+                    self.sz,
+                    self.col,
+                    self.bold,
+                    fade_from,
+                    fade_to,
+                );
                 continue;
             }
-            let mut lab = Label::new(tc.as_ptr(), self.sz, self.col).h(self.align).v(VAlign::CapTop);
+            let mut lab = Label::new(tc.as_ptr(), self.sz, self.col)
+                .h(self.align)
+                .v(VAlign::CapTop);
             if self.bold == 1 {
                 lab = lab.bold();
             }
@@ -348,7 +415,11 @@ impl<'a> TextView<'a> {
                 if let Some((r, rc)) = run {
                     if let Ok(cs) = CString::new(r) {
                         let rx = frame.x + self.measure_c(tc) + 8.0;
-                        Label::new(cs.as_ptr(), self.sz, rc).bold().h(HAlign::Left).v(VAlign::CapTop).draw(p, Rect::new(rx, row.y, frame.w, 0.0));
+                        Label::new(cs.as_ptr(), self.sz, rc)
+                            .bold()
+                            .h(HAlign::Left)
+                            .v(VAlign::CapTop)
+                            .draw(p, Rect::new(rx, row.y, frame.w, 0.0));
                     }
                 }
             }
@@ -372,14 +443,20 @@ mod tests {
         let faded = TextView::new("x", theme::size::BODY, theme::TEXT_PRIMARY)
             .trailing("MORE", theme::TEXT_PRIMARY)
             .fade_last(120.0);
-        assert!(faded.trailing.is_none(), "the inline run survived a fade reservation and would be skipped");
+        assert!(
+            faded.trailing.is_none(),
+            "the inline run survived a fade reservation and would be skipped"
+        );
         assert_eq!(faded.fade_last, 120.0);
 
         let inline = TextView::new("x", theme::size::BODY, theme::TEXT_PRIMARY)
             .fade_last(120.0)
             .trailing("MORE", theme::TEXT_PRIMARY);
         assert!(inline.trailing.is_some());
-        assert_eq!(inline.fade_last, 0.0, "the fade reservation survived and would eat the inline run");
+        assert_eq!(
+            inline.fade_last, 0.0,
+            "the fade reservation survived and would eat the inline run"
+        );
     }
 
     /// **A pinned MORE rides the line that faded under it**, whichever way the block set its pitch.
@@ -392,9 +469,9 @@ mod tests {
     #[test]
     fn a_pinned_mark_sits_on_the_cap_band_of_the_line_that_faded() {
         let top = 137.0; // an arbitrary block offset — a measured flow's y is never round
-        // Sub-px, not exact: the derived pitch is irrational in f32 (`28 × 1.32`), so `n·lh − lh`
-        // and `(n−1)·lh` differ in the last mantissa bit. A tenth of a pixel is far tighter than
-        // the half-leading drift this exists to catch, and the draw snaps to whole pixels anyway.
+                         // Sub-px, not exact: the derived pitch is irrational in f32 (`28 × 1.32`), so `n·lh − lh`
+                         // and `(n−1)·lh` differ in the last mantissa bit. A tenth of a pixel is far tighter than
+                         // the half-leading drift this exists to catch, and the draw snaps to whole pixels anyway.
         let close = |a: f32, b: f32| (a - b).abs() < 0.1;
         for lines in 1..=5 {
             let n = lines as f32;
@@ -419,10 +496,16 @@ mod tests {
     #[test]
     fn the_fade_band_is_ink_relative_and_reproduces_the_about_card() {
         let band = |sz| TextView::new("x", sz, theme::TEXT_PRIMARY).fade_band();
-        assert_eq!(band(theme::size::CAPTION), 150.0, "detail's About card must fade exactly as it did");
-        assert!(band(theme::size::BODY) > band(theme::size::CAPTION), "a larger rung must dissolve over more px");
+        assert_eq!(
+            band(theme::size::CAPTION),
+            150.0,
+            "detail's About card must fade exactly as it did"
+        );
+        assert!(
+            band(theme::size::BODY) > band(theme::size::CAPTION),
+            "a larger rung must dissolve over more px"
+        );
         // proportional, not merely monotonic — `DISPLAY` 48 is exactly twice `CAPTION` 24
         assert_eq!(band(theme::size::DISPLAY), 2.0 * band(theme::size::CAPTION));
     }
 }
-

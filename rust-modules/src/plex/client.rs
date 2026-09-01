@@ -189,7 +189,13 @@ impl Client {
     /// a registry that constructs a `Client` per server and re-points slots. The registry does
     /// that read once per registration instead, so this constructor touches no filesystem and no
     /// global but the generation counter.
-    pub(super) fn new(id: ServerId, machine_id: &str, origin: Origin, token: &str, client_id: &str) -> Client {
+    pub(super) fn new(
+        id: ServerId,
+        machine_id: &str,
+        origin: Origin,
+        token: &str,
+        client_id: &str,
+    ) -> Client {
         Client {
             id,
             machine_id: machine_id.to_owned(),
@@ -240,7 +246,10 @@ impl Client {
             .str("X-Plex-Product", &self.product)
             .str("X-Plex-Version", &self.version)
             .str("X-Plex-Platform", &self.platform)
-            .str("X-Plex-Platform-Version", super::identity::platform_version())
+            .str(
+                "X-Plex-Platform-Version",
+                super::identity::platform_version(),
+            )
             .str("X-Plex-Device", DEVICE)
             .str("X-Plex-Device-Name", device_name())
             .str("X-Plex-Model", MODEL)
@@ -344,7 +353,12 @@ impl Client {
     fn send(&self, path_no_token: &str, method: Method, headers: &[&str]) -> Option<http::Reply> {
         let owned = pms_headers(headers);
         let headers: Vec<&str> = owned.iter().map(String::as_str).collect();
-        http::request(&self.origin, &self.with_token(path_no_token), method, &headers)
+        http::request(
+            &self.origin,
+            &self.with_token(path_no_token),
+            method,
+            &headers,
+        )
     }
 
     /// A 2xx response body, or `None` — the fold the raw socket used to apply for every caller,
@@ -362,8 +376,12 @@ impl Client {
     fn body_2xx_bulk(&self, path_no_token: &str, headers: &[&str]) -> Option<Vec<u8>> {
         let owned = pms_headers(headers);
         let headers: Vec<&str> = owned.iter().map(String::as_str).collect();
-        let r =
-            http::request_bulk(&self.origin, &self.with_token(path_no_token), Method::Get, &headers)?;
+        let r = http::request_bulk(
+            &self.origin,
+            &self.with_token(path_no_token),
+            Method::Get,
+            &headers,
+        )?;
         r.ok().then_some(r.body)
     }
 
@@ -454,7 +472,8 @@ impl Client {
     /// returned for a transport failure, and it is kept because a caller reading a status must not
     /// mistake "the server refused" for "nothing was sent".
     pub(super) fn put(&self, path_no_token: &str) -> i32 {
-        self.send(path_no_token, Method::Put, &[]).map_or(-1, |r| r.status)
+        self.send(path_no_token, Method::Put, &[])
+            .map_or(-1, |r| r.status)
     }
 
     /// POST whose body carries nothing to read — /:/timeline (spec verb; params ride the query
@@ -476,7 +495,9 @@ impl Client {
     /// POST → parse the `{ "MediaContainer": … }` envelope — /playQueues (the returned ids).
     pub(super) fn post_json(&self, path_no_token: &str) -> Option<MediaContainer> {
         let body = self.body_2xx(path_no_token, Method::Post, &[ACCEPT_JSON])?;
-        serde_json::from_slice::<Envelope>(&body).ok().map(|e| e.media_container)
+        serde_json::from_slice::<Envelope>(&body)
+            .ok()
+            .map(|e| e.media_container)
     }
 
     /// THE token choke point. Appends `X-Plex-Token=…` with the right separator.
@@ -510,7 +531,10 @@ pub(super) struct QueryBuilder {
 }
 impl QueryBuilder {
     pub(super) fn new(path: impl Into<String>) -> Self {
-        Self { path: path.into(), parts: Vec::new() }
+        Self {
+            path: path.into(),
+            parts: Vec::new(),
+        }
     }
     pub(super) fn str(mut self, k: &str, v: &str) -> Self {
         self.parts.push(format!("{k}={}", enc(v)));
@@ -582,7 +606,14 @@ impl StreamUrl {
     /// instead of wrapping into one nobody wrote down.
     pub fn parse(url: &str) -> StreamUrl {
         let (origin, path) = super::origin::split(url);
-        StreamUrl { origin, path: if path.is_empty() { "/".into() } else { path.into() } }
+        StreamUrl {
+            origin,
+            path: if path.is_empty() {
+                "/".into()
+            } else {
+                path.into()
+            },
+        }
     }
 
     /// The host to DIAL — bare, never bracketed. `crate::stream` takes this; a URL takes
@@ -600,7 +631,13 @@ mod tests {
     use super::*;
 
     fn a_client(machine: &str, token: &str) -> Client {
-        Client::new(ServerId::from_raw(3), machine, Origin::http("10.0.0.1", 32400), token, "cid-42")
+        Client::new(
+            ServerId::from_raw(3),
+            machine,
+            Origin::http("10.0.0.1", 32400),
+            token,
+            "cid-42",
+        )
     }
 
     /// A `Client` is one server's identity plus its token, and every piece of it now arrives
@@ -611,11 +648,18 @@ mod tests {
     fn a_client_carries_the_identity_it_was_built_with() {
         let c = a_client("mach-A", "tok-a");
         assert_eq!((c.host(), c.port()), ("10.0.0.1", 32400));
-        assert_eq!(c.origin().base(), "http://10.0.0.1:32400", "…and those two are one value now");
+        assert_eq!(
+            c.origin().base(),
+            "http://10.0.0.1:32400",
+            "…and those two are one value now"
+        );
         assert_eq!(c.machine_id(), "mach-A");
         assert_eq!(c.id(), ServerId::from_raw(3));
         // the token choke point picks the right separator either way
-        assert_eq!(c.with_token("/library/sections"), "/library/sections?X-Plex-Token=tok-a");
+        assert_eq!(
+            c.with_token("/library/sections"),
+            "/library/sections?X-Plex-Token=tok-a"
+        );
         assert_eq!(c.with_token("/x?a=1"), "/x?a=1&X-Plex-Token=tok-a");
         // the device id that was passed in is the one that goes on the wire
         assert!(c
@@ -623,13 +667,23 @@ mod tests {
             .build()
             .contains("X-Plex-Client-Identifier=cid-42"));
         let headers = pms_headers(&[ACCEPT_JSON]);
-        let sent = headers.iter().find_map(|h| h.strip_prefix("X-Plex-Language: "));
+        let sent = headers
+            .iter()
+            .find_map(|h| h.strip_prefix("X-Plex-Language: "));
         match super::super::identity::language() {
             Some(language) => assert_eq!(sent, Some(language)),
             None => assert_eq!(sent, None),
         }
         // a client built outside the registry says so rather than claiming slot 0
-        assert!(!Client::new(ServerId::UNSET, "", Origin::http("1.2.3.4", 32400), "t", "cid").id().is_set());
+        assert!(!Client::new(
+            ServerId::UNSET,
+            "",
+            Origin::http("1.2.3.4", 32400),
+            "t",
+            "cid"
+        )
+        .id()
+        .is_set());
     }
 
     /// A fresh client knows nothing about how it is reached, and says so rather than guessing a
@@ -641,11 +695,19 @@ mod tests {
     fn a_client_starts_with_no_known_link_and_remembers_the_one_it_is_told() {
         let c = a_client("mach-A", "tok-a");
         assert_eq!(c.link(), None, "nothing has probed anything yet");
-        assert_eq!(c.ip_version(), None, "nor has anything named an address family");
+        assert_eq!(
+            c.ip_version(),
+            None,
+            "nor has anything named an address family"
+        );
 
         for l in [Location::Local, Location::Remote, Location::Relay] {
             c.set_link(l);
-            assert_eq!(c.link(), Some(l), "the tier must round trip through the atomic");
+            assert_eq!(
+                c.link(),
+                Some(l),
+                "the tier must round trip through the atomic"
+            );
         }
         c.set_connection(Location::Remote, Some(IpVersion::V4));
         assert_eq!(c.ip_version(), Some(IpVersion::V4));
@@ -680,12 +742,22 @@ mod tests {
     fn a_clients_host_and_port_are_views_on_its_origin() {
         let tls = Origin::parse("https://nas.hash.plex.direct:32400").expect("parses");
         let c = Client::new(ServerId::UNSET, "m", tls, "t", "cid");
-        assert_eq!(c.host(), "nas.hash.plex.direct", "the NAME a certificate is validated against");
+        assert_eq!(
+            c.host(),
+            "nas.hash.plex.direct",
+            "the NAME a certificate is validated against"
+        );
         assert_eq!(c.port(), 32400);
         assert!(c.origin().is_tls());
 
         // a v6 origin: bare at the resolver, bracketed in a URL. `host()` is the resolver's half.
-        let v6 = Client::new(ServerId::UNSET, "m", Origin::http("2001:db8::1", 32400), "t", "cid");
+        let v6 = Client::new(
+            ServerId::UNSET,
+            "m",
+            Origin::http("2001:db8::1", 32400),
+            "t",
+            "cid",
+        );
         assert_eq!(v6.host(), "2001:db8::1");
         assert_eq!(v6.origin().authority(), "[2001:db8::1]:32400");
     }
@@ -697,8 +769,14 @@ mod tests {
     /// is a change to every playback URL in the app.
     #[test]
     fn a_stream_url_round_trips_through_the_string_route_stores() {
-        let su = StreamUrl { origin: Origin::http("10.0.0.1", 32400), path: "/library/parts/9?X-Plex-Token=t".into() };
-        assert_eq!(su.to_url(), "http://10.0.0.1:32400/library/parts/9?X-Plex-Token=t");
+        let su = StreamUrl {
+            origin: Origin::http("10.0.0.1", 32400),
+            path: "/library/parts/9?X-Plex-Token=t".into(),
+        };
+        assert_eq!(
+            su.to_url(),
+            "http://10.0.0.1:32400/library/parts/9?X-Plex-Token=t"
+        );
 
         let back = StreamUrl::parse(&su.to_url());
         assert_eq!((back.host(), back.port()), ("10.0.0.1", 32400));
@@ -713,12 +791,23 @@ mod tests {
     fn a_stream_url_understands_https_and_a_bracketed_v6_literal() {
         let s = StreamUrl::parse("https://nas.hash.plex.direct:32400/video/x?a=1");
         assert!(s.origin.is_tls());
-        assert_eq!((s.host(), s.port(), s.path.as_str()), ("nas.hash.plex.direct", 32400, "/video/x?a=1"));
+        assert_eq!(
+            (s.host(), s.port(), s.path.as_str()),
+            ("nas.hash.plex.direct", 32400, "/video/x?a=1")
+        );
         assert_eq!(s.to_url(), "https://nas.hash.plex.direct:32400/video/x?a=1");
 
         let v6 = StreamUrl::parse("http://[2001:db8::1]:32400/p");
-        assert_eq!(v6.host(), "2001:db8::1", "the resolver never sees the brackets");
-        assert_eq!(v6.to_url(), "http://[2001:db8::1]:32400/p", "…and the URL always carries them");
+        assert_eq!(
+            v6.host(),
+            "2001:db8::1",
+            "the resolver never sees the brackets"
+        );
+        assert_eq!(
+            v6.to_url(),
+            "http://[2001:db8::1]:32400/p",
+            "…and the URL always carries them"
+        );
     }
 
     /// The defaults `player::engine::parse_stream_url` had and this inherited: no scheme means
@@ -728,8 +817,14 @@ mod tests {
     #[test]
     fn a_stream_url_keeps_the_defaults_the_override_trigger_relies_on() {
         let bare = StreamUrl::parse("192.0.2.10");
-        assert_eq!((bare.host(), bare.port(), bare.path.as_str()), ("192.0.2.10", 32400, "/"));
+        assert_eq!(
+            (bare.host(), bare.port(), bare.path.as_str()),
+            ("192.0.2.10", 32400, "/")
+        );
         assert_eq!(StreamUrl::parse("192.0.2.10/x").port(), 32400);
-        assert_eq!(StreamUrl::parse("http://192.0.2.10:8020/f.mkv").port(), 8020);
+        assert_eq!(
+            StreamUrl::parse("http://192.0.2.10:8020/f.mkv").port(),
+            8020
+        );
     }
 }

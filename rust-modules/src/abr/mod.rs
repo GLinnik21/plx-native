@@ -291,7 +291,10 @@ impl AbrPolicy {
             // that is free once eps is fixed. Raising `k` buys a longer proof horizon at the same
             // eps (n = k/eps - 1) and should be argued from a stated passage length, which this
             // project does not have yet.
-            admission: AdmissionPolicy { epsilon_pm: 50, k: 1 },
+            admission: AdmissionPolicy {
+                epsilon_pm: 50,
+                k: 1,
+            },
             upshift_admission_headroom_pm: 800,
             production_safe_pm: 750,
             production_max_pm: 1_100,

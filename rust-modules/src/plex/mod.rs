@@ -80,11 +80,11 @@ pub use origin::{Origin, Scheme};
 // `register`, `set_current` and `ServerId` are the multi-server additions.
 #[allow(unused_imports)]
 pub use servers::{
-    client, client_for, client_opt, commit_if_current, commit_reachability_if_current, count as server_count,
-    current as current_server, describe as describe_server, describe_name as describe_server_name,
-    facts as server_facts, ids as server_ids, install, probe_result as server_probe_result, publish_probe_result,
-    register, register_origin, roster_gen as server_roster_gen, same_item, set_current, ServerFacts, ServerId,
-    MAX_SERVERS,
+    client, client_for, client_opt, commit_if_current, commit_reachability_if_current,
+    count as server_count, current as current_server, describe as describe_server,
+    describe_name as describe_server_name, facts as server_facts, ids as server_ids, install,
+    probe_result as server_probe_result, publish_probe_result, register, register_origin,
+    roster_gen as server_roster_gen, same_item, set_current, ServerFacts, ServerId, MAX_SERVERS,
 };
 // Sign-out. `pub(crate)` like the function itself: retiring the whole table is `auth::sign_out`'s
 // to call and nothing else's — a caller that merely wants to stop using a server wants
@@ -97,14 +97,15 @@ pub(crate) use servers::{finish_profile_switch, revoke_all, revoke_for_profile_s
 // and `reset_servers_for_test` is what keeps the table a per-test fixture instead of a growing
 // process-global holding clients whose loopback ports closed when their test returned. Both must be
 // called under `crate::testlock::serial`.
-#[cfg(test)]
-pub(crate) use servers::{
-    register_with_client_id as register_for_test, reset_for_test as reset_servers_for_test, write_held_for_test,
-};
 #[allow(unused_imports)]
 pub use models::*;
 #[allow(unused_imports)]
 pub use params::*;
+#[cfg(test)]
+pub(crate) use servers::{
+    register_with_client_id as register_for_test, reset_for_test as reset_servers_for_test,
+    write_held_for_test,
+};
 // The projected play-queue row + the identity rule that locates one: op-file items rather than
 // wire DTOs, so they are re-exported by name (route.rs names the row in `Plan`/`QueueInfo` — the
 // rest of `timeline` is reached through `Client`'s methods and needs none).

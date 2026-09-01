@@ -162,7 +162,12 @@ fn tile_size(kind: Kind) -> (f32, f32, bool) {
 /// shelf's heading. The host test below grades exactly that.
 fn style(kind: Kind) -> RowStyle {
     let (w, h, circular) = tile_size(kind);
-    RowStyle { w, h, circular, ..RowStyle::HOME }
+    RowStyle {
+        w,
+        h,
+        circular,
+        ..RowStyle::HOME
+    }
 }
 
 // ---- geometry (pure: the draw and the reveal rule both read these) ------------------------------
@@ -192,7 +197,11 @@ fn block_h(kind: Kind) -> f32 {
 /// — the only impure thing built on it — is one line on top. (`person.rs`'s `reveal_block` splits
 /// for exactly this reason.)
 fn stack_top(kinds: &[Kind], i: usize) -> f32 {
-    CONTENT_TOP + kinds[..i.min(kinds.len())].iter().map(|&k| block_h(k)).sum::<f32>()
+    CONTENT_TOP
+        + kinds[..i.min(kinds.len())]
+            .iter()
+            .map(|&k| block_h(k))
+            .sum::<f32>()
 }
 
 /// Total flowed height — the last block's bottom plus the bottom air.
@@ -286,7 +295,12 @@ struct Owner {
 
 impl Owner {
     fn new() -> Self {
-        Owner { a: Spring::at(0.0), shown: String::new(), row: 0, shown_c: CString::default() }
+        Owner {
+            a: Spring::at(0.0),
+            shown: String::new(),
+            row: 0,
+            shown_c: CString::default(),
+        }
     }
     /// This shelf's annotation alpha — 0 for every shelf but the one the run is riding.
     fn alpha(&self, row: usize) -> f32 {
@@ -324,12 +338,17 @@ impl Shelves {
             owner: Owner::new(),
             count_c: std::array::from_fn(|_| CString::default()),
             count_key: [None; NSHELF],
-            title_c: std::array::from_fn(|i| CString::new(crate::search::KINDS[i].title()).unwrap_or_default()),
+            title_c: std::array::from_fn(|i| {
+                CString::new(crate::search::KINDS[i].title()).unwrap_or_default()
+            }),
         }
     }
     /// This kind's baked heading run.
     fn title(&self, kind: Kind) -> &CStr {
-        &self.title_c[crate::search::KINDS.iter().position(|&k| k == kind).unwrap_or(0)]
+        &self.title_c[crate::search::KINDS
+            .iter()
+            .position(|&k| k == kind)
+            .unwrap_or(0)]
     }
 }
 
@@ -373,7 +392,11 @@ fn owner_handle(v: &View) -> &'static str {
 ///
 /// **The trigger WINS WHEN ARMED** — see [`dev_source`].
 fn handle_of(it: &Item) -> &'static str {
-    dev_source().unwrap_or_else(|| crate::plex::server_facts(it.sid()).map(|f| f.handle.as_str()).unwrap_or(""))
+    dev_source().unwrap_or_else(|| {
+        crate::plex::server_facts(it.sid())
+            .map(|f| f.handle.as_str())
+            .unwrap_or("")
+    })
 }
 
 /// The stand-in handle, read ONCE — the trigger surface is boot state, and a `stat` per frame
@@ -408,7 +431,9 @@ pub(crate) fn update(dt: f32, v: &View) {
         if st.count_key[i] != key {
             st.count_key[i] = key;
             st.count_c[i] = match key {
-                Some((k, n)) => CString::new(format!("{n} {}", k.count_word(n))).unwrap_or_default(),
+                Some((k, n)) => {
+                    CString::new(format!("{n} {}", k.count_word(n))).unwrap_or_default()
+                }
                 None => CString::default(),
             };
             // A DIFFERENT result set: re-seat the row rather than leave it parked in the scroll
@@ -437,7 +462,15 @@ pub(crate) fn update(dt: f32, v: &View) {
 /// that changes the run's words would otherwise be the one frame the present gate is free to skip.
 fn step_owner(o: &mut Owner, want_row: usize, want: &str, dt: f32) {
     let settled = o.row == want_row && o.shown == want;
-    o.a.step(if settled && !o.shown.is_empty() { 1.0 } else { 0.0 }, K_SCALE, dt);
+    o.a.step(
+        if settled && !o.shown.is_empty() {
+            1.0
+        } else {
+            0.0
+        },
+        K_SCALE,
+        dt,
+    );
     if !settled && o.a.pos < OWNER_FLOOR {
         o.shown.clear();
         o.shown.push_str(want);
@@ -554,7 +587,12 @@ fn draw_shelf(p: Painter, st: &Shelves, s: &Shelf, i: usize, v: &View, top: f32)
         // and over-painted above the field, so a rect taken straight from the layout claims ground
         // the tile does not hold.
         |_, k, x, focused| {
-            let base = Rect::new(x - row.scroll_x(), top + HEAD_TO_ROW - v.shift, sty.w, sty.h);
+            let base = Rect::new(
+                x - row.scroll_x(),
+                top + HEAD_TO_ROW - v.shift,
+                sty.w,
+                sty.h,
+            );
             if focused {
                 // …and the FOCUSED tile's frame is kept whole and UNSCALED, beside the trimmed hit
                 // rect rather than instead of it. The two answer different questions: a hit rect is
@@ -595,7 +633,9 @@ pub(crate) fn focused_tile_rect() -> Option<Rect> {
 /// [`hit_band`] records for the pointer. Set and cleared in one breath, as `Painter::clip`'s global
 /// GL state requires.
 pub(crate) fn redraw_focused_tile() {
-    let Some((i, k, base)) = (unsafe { *addr_of!(FOCUS_TILE) }) else { return };
+    let Some((i, k, base)) = (unsafe { *addr_of!(FOCUS_TILE) }) else {
+        return;
+    };
     let shelves = crate::search::shelves();
     let Some(s) = shelves.get(i) else { return };
     let Some(item) = s.items.get(k) else { return };
@@ -609,8 +649,21 @@ pub(crate) fn redraw_focused_tile() {
         Item::Tag(_) => None,
     };
     let p = Painter::root().alpha(crate::ui::nav::page_alpha());
-    p.clip(Rect::new(0.0, super::CHROME_BOTTOM, SCR_W, SCR_H - super::CHROME_BOTTOM));
-    card_row::draw_focused(p, tile_art(s.kind, item), base.scaled(sc), sc, &sty, resume, &label);
+    p.clip(Rect::new(
+        0.0,
+        super::CHROME_BOTTOM,
+        SCR_W,
+        SCR_H - super::CHROME_BOTTOM,
+    ));
+    card_row::draw_focused(
+        p,
+        tile_art(s.kind, item),
+        base.scaled(sc),
+        sc,
+        &sty,
+        resume,
+        &label,
+    );
     p.clip_clear();
 }
 
@@ -630,7 +683,11 @@ fn draw_heading(p: Painter, st: &Shelves, s: &Shelf, i: usize, y: f32) {
     heading_flow(
         st.title(s.kind),
         &st.count_c[i],
-        if a > OWNER_FLOOR { st.owner.shown_c.as_c_str() } else { c"" },
+        if a > OWNER_FLOOR {
+            st.owner.shown_c.as_c_str()
+        } else {
+            c""
+        },
         |run, dx, sz, bold, ink, faded| {
             // Every run is a run this module already NUL-terminated — the titles for the life of
             // the app, the count and the handle when they last changed. Nothing here allocates:
@@ -641,7 +698,10 @@ fn draw_heading(p: Painter, st: &Shelves, s: &Shelf, i: usize, y: f32) {
             if bold == 1 {
                 lab = lab.bold();
             }
-            lab.draw(if faded { pa } else { p }, Rect::new(MARGIN_X + dx, y, 0.0, cap))
+            lab.draw(
+                if faded { pa } else { p },
+                Rect::new(MARGIN_X + dx, y, 0.0, cap),
+            )
         },
     );
 }
@@ -660,7 +720,14 @@ fn heading_flow(
     source: &CStr,
     mut run: impl FnMut(&CStr, f32, c_int, c_int, [f32; 4], bool) -> f32,
 ) -> f32 {
-    let mut dx = run(title, 0.0, theme::size::HEADLINE, 1, theme::TEXT_HEADING, false);
+    let mut dx = run(
+        title,
+        0.0,
+        theme::size::HEADLINE,
+        1,
+        theme::TEXT_HEADING,
+        false,
+    );
     if !count.is_empty() {
         dx += COUNT_GAP;
         dx += run(count, dx, theme::size::BODY, 0, theme::TEXT_TERTIARY, false);
@@ -669,7 +736,14 @@ fn heading_flow(
         return dx;
     }
     dx += SOURCE_PAD;
-    dx += run(c"\u{b7}", dx, theme::size::BODY, 0, theme::TEXT_SEPARATOR, true);
+    dx += run(
+        c"\u{b7}",
+        dx,
+        theme::size::BODY,
+        0,
+        theme::TEXT_SEPARATOR,
+        true,
+    );
     dx += SOURCE_PAD;
     dx += run(source, dx, theme::size::BODY, 0, theme::TEXT_TERTIARY, true);
     dx
@@ -703,13 +777,28 @@ fn tile_art<'a>(kind: Kind, it: &'a Item) -> Art<'a> {
             // 16:9 still and `still` is empty. Falling straight through to `art` there is the show
             // fanart again — the identical-tiles defect, surviving for exactly the shows the fix
             // did not cover.
-            let key = [&m.still, &m.thumb, &m.art].into_iter().find(|k| !k.is_empty()).unwrap_or(&m.art);
-            Art::Thumb { sid: m.sid, key, res: STILL_RES }
+            let key = [&m.still, &m.thumb, &m.art]
+                .into_iter()
+                .find(|k| !k.is_empty())
+                .unwrap_or(&m.art);
+            Art::Thumb {
+                sid: m.sid,
+                key,
+                res: STILL_RES,
+            }
         }
         (_, Item::Media(m)) => Art::Poster(Some(m)),
-        (Kind::Person, Item::Tag(t)) => Art::Person { sid: t.sid, key: &t.thumb, res: HEAD_RES },
+        (Kind::Person, Item::Tag(t)) => Art::Person {
+            sid: t.sid,
+            key: &t.thumb,
+            res: HEAD_RES,
+        },
         (_, Item::Tag(t)) if t.thumb.is_empty() => Art::Poster(None),
-        (_, Item::Tag(t)) => Art::Thumb { sid: t.sid, key: &t.thumb, res: TAG_POSTER_RES },
+        (_, Item::Tag(t)) => Art::Thumb {
+            sid: t.sid,
+            key: &t.thumb,
+            res: TAG_POSTER_RES,
+        },
     }
 }
 
@@ -734,7 +823,11 @@ fn subtitle(kind: Kind, it: &Item, handle: &str) -> String {
         }
         Item::Media(m) if m.year > 0 => parts.push(m.year.to_string()),
         Item::Tag(t) if kind == Kind::Collection && t.count > 0 => {
-            parts.push(format!("{} item{}", t.count, if t.count == 1 { "" } else { "s" }));
+            parts.push(format!(
+                "{} item{}",
+                t.count,
+                if t.count == 1 { "" } else { "s" }
+            ));
         }
         _ => {}
     }
@@ -769,7 +862,10 @@ mod tests {
     fn the_reserved_caption_band_holds_the_block_the_shared_component_draws() {
         for k in ALL {
             let drawn = TileLabel::height(&style(k), true);
-            assert!(drawn <= LABEL_BLOCK, "{k:?}: the label block draws {drawn}px into a band of {LABEL_BLOCK}");
+            assert!(
+                drawn <= LABEL_BLOCK,
+                "{k:?}: the label block draws {drawn}px into a band of {LABEL_BLOCK}"
+            );
         }
         assert!(
             TileLabel::height(&RowStyle { title_lines: 2, ..style(Kind::Movie) }, true) > LABEL_BLOCK,
@@ -800,10 +896,20 @@ mod tests {
         assert_eq!(block_h(Kind::Person), HEAD_TO_ROW + 250.0 + LABEL_BLOCK);
         // an episode shelf is shorter than a poster shelf by exactly the tile difference, so which
         // types are present must never change any other shelf's own height
-        assert_eq!(block_h(Kind::Movie) - block_h(Kind::Episode), CARD_H - 236.0);
+        assert_eq!(
+            block_h(Kind::Movie) - block_h(Kind::Episode),
+            CARD_H - 236.0
+        );
         // …and the same shelf laid out among a DIFFERENT set keeps its block
-        assert_eq!(stack_top(&[Kind::Episode, Kind::Movie], 1), CONTENT_TOP + block_h(Kind::Episode));
-        assert_eq!(stack_content_h(&[]), 0.0, "no shelves is no content, not one block of air");
+        assert_eq!(
+            stack_top(&[Kind::Episode, Kind::Movie], 1),
+            CONTENT_TOP + block_h(Kind::Episode)
+        );
+        assert_eq!(
+            stack_content_h(&[]),
+            0.0,
+            "no shelves is no content, not one block of air"
+        );
         // an index past the end cannot panic: the store re-lands under a focus that has not been
         // re-clamped yet on exactly one frame
         assert_eq!(stack_top(&ALL, 99), stack_top(&ALL, ALL.len()));
@@ -818,7 +924,10 @@ mod tests {
         let floor = SCR_H - crate::ui::search::KEYBOARD_H;
         for k in ALL {
             let bottom = stack_top(&[k], 0) + HEAD_TO_ROW + tile_size(k).1;
-            assert!(bottom <= floor, "{k:?}: the first row ends at {bottom}, under the keyboard at {floor}");
+            assert!(
+                bottom <= floor,
+                "{k:?}: the first row ends at {bottom}, under the keyboard at {floor}"
+            );
         }
         // The ACTUAL numbers `super`'s layout note quotes, so a doc claim nobody can reproduce
         // cannot come back: a poster shelf ends at 735 against a MEASURED panel edge of 756 — 21px
@@ -835,13 +944,26 @@ mod tests {
     /// no further.
     #[test]
     fn a_shelf_scrolls_only_as_far_as_its_own_block_needs() {
-        assert_eq!(reveal_of(0.0, &ALL, 0), 0.0, "the first shelf is already on screen");
+        assert_eq!(
+            reveal_of(0.0, &ALL, 0),
+            0.0,
+            "the first shelf is already on screen"
+        );
 
         let want = reveal_of(0.0, &ALL, 2);
-        assert!(want > 0.0, "the third shelf is below the fold and must be revealed");
+        assert!(
+            want > 0.0,
+            "the third shelf is below the fold and must be revealed"
+        );
         let top = stack_top(&ALL, 2);
-        assert!(top + block_h(ALL[2]) - want <= SCR_H, "its block bottom is still off screen");
-        assert!(top - want >= CONTENT_TOP, "it scrolled past the minimum — the shelf overshot upward");
+        assert!(
+            top + block_h(ALL[2]) - want <= SCR_H,
+            "its block bottom is still off screen"
+        );
+        assert!(
+            top - want >= CONTENT_TOP,
+            "it scrolled past the minimum — the shelf overshot upward"
+        );
         // already revealed ⇒ no re-seating (the `reveal` contract: no slot pinning)
         assert_eq!(reveal_of(want, &ALL, 2), want);
 
@@ -850,16 +972,33 @@ mod tests {
         // block top to `CONTENT_TOP` demanded 549 — the whole of shelf 0, which stays half on
         // screen instead of leaving.
         let one = reveal_of(0.0, &ALL, 1);
-        assert!(one < stack_top(&ALL, 1) - CONTENT_TOP, "the reveal must undercut the pin, or it IS the pin");
-        assert_eq!(one, stack_top(&ALL, 1) + block_h(ALL[1]) - (SCR_H - BOTTOM_PAD));
+        assert!(
+            one < stack_top(&ALL, 1) - CONTENT_TOP,
+            "the reveal must undercut the pin, or it IS the pin"
+        );
+        assert_eq!(
+            one,
+            stack_top(&ALL, 1) + block_h(ALL[1]) - (SCR_H - BOTTOM_PAD)
+        );
 
         // …and the end of the flow keeps `BOTTOM_PAD` of air, which the pin's own clamp dropped.
         let last = ALL.len() - 1;
         let end = reveal_of(0.0, &ALL, last);
-        assert_eq!(stack_content_h(&ALL) - end, SCR_H, "the last block rests one panel above the flow's end");
-        assert_eq!(stack_top(&ALL, last) + block_h(ALL[last]) - end, SCR_H - BOTTOM_PAD);
+        assert_eq!(
+            stack_content_h(&ALL) - end,
+            SCR_H,
+            "the last block rests one panel above the flow's end"
+        );
+        assert_eq!(
+            stack_top(&ALL, last) + block_h(ALL[last]) - end,
+            SCR_H - BOTTOM_PAD
+        );
 
-        assert_eq!(reveal_of(0.0, &ALL, 99), 0.0, "a shelf that is not there cannot scroll the page");
+        assert_eq!(
+            reveal_of(0.0, &ALL, 99),
+            0.0,
+            "a shelf that is not there cannot scroll the page"
+        );
     }
 
     /// **What is drawn and what can be PRESSED are not the same rect above the field.** The paint
@@ -884,25 +1023,43 @@ mod tests {
         let cross = tile(floor - 100.0);
         let r = hit_band(cross, floor).expect("the part below the chrome is still a target");
         assert_eq!(r.y, floor);
-        assert!((r.h - (CARD_H - 100.0)).abs() < 0.001,
-            "fractional caption leading must not turn a 275px visible band into {}px", r.h);
+        assert!(
+            (r.h - (CARD_H - 100.0)).abs() < 0.001,
+            "fractional caption leading must not turn a 275px visible band into {}px",
+            r.h
+        );
         assert_eq!((r.x, r.w), (cross.x, cross.w));
-        assert!(!r.contains(r.x + 1.0, floor - 1.0), "…and nothing above the line is inside it any more");
+        assert!(
+            !r.contains(r.x + 1.0, floor - 1.0),
+            "…and nothing above the line is inside it any more"
+        );
 
         // Fully above it: no rect at all, so `super::find_rect` never sees one. The exact-touch
         // case is a real target and not a nicety — `Rect::contains` is inclusive, so a rect floored
         // to nothing is clickable along its own edge (`library::STATUS_BTN`'s lesson, which
         // `find_rect`'s `w > 0.5` states for the horizontal).
         assert!(hit_band(tile(floor - CARD_H - 1.0), floor).is_none());
-        assert!(hit_band(tile(floor - CARD_H), floor).is_none(), "a tile ending ON the line is not one");
-        assert!(hit_band(tile(floor - CARD_H + 0.4), floor).is_none(), "nor is a sliver under half a pixel");
+        assert!(
+            hit_band(tile(floor - CARD_H), floor).is_none(),
+            "a tile ending ON the line is not one"
+        );
+        assert!(
+            hit_band(tile(floor - CARD_H + 0.4), floor).is_none(),
+            "nor is a sliver under half a pixel"
+        );
 
         // …and the flow really does reach that state: revealing the last shelf — where a ▼ walk
         // down the shelves ends — puts the first one's whole row above the chrome.
         let deep = reveal_of(0.0, &ALL, ALL.len() - 1);
         let row0 = tile(stack_top(&ALL, 0) + HEAD_TO_ROW - deep);
-        assert!(row0.y + row0.h < floor, "the first row is behind the chrome at {deep}px of scroll");
-        assert!(hit_band(row0, floor).is_none(), "…so nothing in it may answer the pointer");
+        assert!(
+            row0.y + row0.h < floor,
+            "the first row is behind the chrome at {deep}px of scroll"
+        );
+        assert!(
+            hit_band(row0, floor).is_none(),
+            "…so nothing in it may answer the pointer"
+        );
     }
 
     /// The heading flow: title, one 16px gap, the count — and the source annotation ABSENT rather
@@ -926,24 +1083,62 @@ mod tests {
         };
 
         let bare = runs("Movies", "12 results", "");
-        assert_eq!(bare.len(), 2, "the title and its count, and nothing else for one source");
-        assert_eq!((bare[0].2, bare[0].3), (theme::size::HEADLINE, 1), "the title is HEADLINE bold");
-        assert_eq!(bare[0].4, theme::TEXT_HEADING, "…in the shared section-heading ink");
-        assert_eq!((bare[1].2, bare[1].3), (theme::size::BODY, 0), "the count is BODY regular");
+        assert_eq!(
+            bare.len(),
+            2,
+            "the title and its count, and nothing else for one source"
+        );
+        assert_eq!(
+            (bare[0].2, bare[0].3),
+            (theme::size::HEADLINE, 1),
+            "the title is HEADLINE bold"
+        );
+        assert_eq!(
+            bare[0].4,
+            theme::TEXT_HEADING,
+            "…in the shared section-heading ink"
+        );
+        assert_eq!(
+            (bare[1].2, bare[1].3),
+            (theme::size::BODY, 0),
+            "the count is BODY regular"
+        );
         assert_eq!(bare[1].4, theme::TEXT_TERTIARY);
-        assert_eq!(bare[1].1, w("Movies", theme::size::HEADLINE) + COUNT_GAP, "the count is one gap past the title");
+        assert_eq!(
+            bare[1].1,
+            w("Movies", theme::size::HEADLINE) + COUNT_GAP,
+            "the count is one gap past the title"
+        );
 
         let shared = runs("Movies", "12 results", "friend");
         assert_eq!(shared.len(), 4, "title, count, separator, handle");
-        assert_eq!(shared[..2], bare[..2], "the annotation must not disturb the runs ahead of it");
+        assert_eq!(
+            shared[..2],
+            bare[..2],
+            "the annotation must not disturb the runs ahead of it"
+        );
         assert_eq!(shared[2].0, "\u{b7}");
-        assert_eq!(shared[2].4, theme::TEXT_SEPARATOR, "the middot is the tertiary ink at .45");
-        assert_eq!(shared[2].1, bare[1].1 + w("12 results", theme::size::BODY) + SOURCE_PAD);
+        assert_eq!(
+            shared[2].4,
+            theme::TEXT_SEPARATOR,
+            "the middot is the tertiary ink at .45"
+        );
+        assert_eq!(
+            shared[2].1,
+            bare[1].1 + w("12 results", theme::size::BODY) + SOURCE_PAD
+        );
         assert_eq!(shared[3].0, "friend");
         assert_eq!(shared[3].4, theme::TEXT_TERTIARY);
-        assert_eq!((shared[3].2, shared[3].3), (theme::size::BODY, 0), "the handle takes the count's rung");
+        assert_eq!(
+            (shared[3].2, shared[3].3),
+            (theme::size::BODY, 0),
+            "the handle takes the count's rung"
+        );
         assert!(shared[2].5 && shared[3].5, "both annotation runs fade");
-        assert!(!shared[0].5 && !shared[1].5, "…and the title and count never do");
+        assert!(
+            !shared[0].5 && !shared[1].5,
+            "…and the title and count never do"
+        );
 
         // a shelf whose count has not been baked yet is a bare title, with no stray gap
         assert_eq!(runs("Collections", "", "").len(), 1);
@@ -961,14 +1156,22 @@ mod tests {
             step_owner(&mut o, 0, "friend", DT);
         }
         assert_eq!(o.shown, "friend");
-        assert!(o.a.pos > 0.98, "a borrowed item states its source (got {})", o.a.pos);
+        assert!(
+            o.a.pos > 0.98,
+            "a borrowed item states its source (got {})",
+            o.a.pos
+        );
 
         // focus steps to another borrowed source
         let mut swapped = false;
         for f in 0..180 {
             step_owner(&mut o, 1, "otherfriend", DT);
             if o.shown != "friend" {
-                assert!(o.a.pos <= OWNER_FLOOR, "frame {f}: it swapped its words at alpha {}", o.a.pos);
+                assert!(
+                    o.a.pos <= OWNER_FLOOR,
+                    "frame {f}: it swapped its words at alpha {}",
+                    o.a.pos
+                );
                 swapped = true;
                 break;
             }
@@ -984,7 +1187,11 @@ mod tests {
         for _ in 0..240 {
             step_owner(&mut o, 1, "", DT);
         }
-        assert!(o.a.pos < OWNER_FLOOR, "an owned item must state nothing (got {})", o.a.pos);
+        assert!(
+            o.a.pos < OWNER_FLOOR,
+            "an owned item must state nothing (got {})",
+            o.a.pos
+        );
         assert_eq!(o.shown, "");
         assert_eq!(o.alpha(0), 0.0, "and no OTHER shelf ever wears the run");
     }
@@ -1009,14 +1216,20 @@ mod tests {
         crate::ui::idle::note_present(0);
         step_owner(&mut o, 0, "friend", DT);
         assert_eq!(o.shown, "friend");
-        assert!(crate::ui::idle::should_present(0), "the frame that changed the run's words must repaint");
+        assert!(
+            crate::ui::idle::should_present(0),
+            "the frame that changed the run's words must repaint"
+        );
 
         // …and every frame of the rise after it reports as ordinary spring motion
         for f in 0..4 {
             crate::ui::idle::frame_begin(DT);
             crate::ui::idle::note_present(0);
             step_owner(&mut o, 0, "friend", DT);
-            assert!(crate::ui::idle::should_present(0), "frame {f} of the rise must repaint");
+            assert!(
+                crate::ui::idle::should_present(0),
+                "frame {f} of the rise must repaint"
+            );
         }
 
         for _ in 0..600 {
@@ -1026,7 +1239,10 @@ mod tests {
             crate::ui::idle::frame_begin(DT);
             crate::ui::idle::note_present(0);
             step_owner(&mut o, 0, "friend", DT);
-            assert!(!crate::ui::idle::should_present(0), "frame {f}: a settled annotation asked for a repaint");
+            assert!(
+                !crate::ui::idle::should_present(0),
+                "frame {f}: a settled annotation asked for a repaint"
+            );
         }
     }
 
@@ -1037,7 +1253,11 @@ mod tests {
         use crate::pms::PmsMovie;
         use crate::search::TagHit;
 
-        let film = Item::Media(PmsMovie { title: "Wallace & Gromit".into(), year: 2005, ..Default::default() });
+        let film = Item::Media(PmsMovie {
+            title: "Wallace & Gromit".into(),
+            year: 2005,
+            ..Default::default()
+        });
         assert_eq!(subtitle(Kind::Movie, &film, ""), "2005");
         assert_eq!(subtitle(Kind::Movie, &film, "friend"), "2005 \u{b7} friend");
 
@@ -1049,17 +1269,52 @@ mod tests {
             ep_index: 3,
             ..Default::default()
         });
-        assert_eq!(subtitle(Kind::Episode, &ep, ""), "Wallace & Gromit \u{b7} S1, E3", "an episode says where it lives");
+        assert_eq!(
+            subtitle(Kind::Episode, &ep, ""),
+            "Wallace & Gromit \u{b7} S1, E3",
+            "an episode says where it lives"
+        );
 
         // no year, no show, nothing to say — and then a handle stands alone rather than opening the
         // line with a stray dot
-        let bare = Item::Media(PmsMovie { title: "Untitled".into(), ..Default::default() });
+        let bare = Item::Media(PmsMovie {
+            title: "Untitled".into(),
+            ..Default::default()
+        });
         assert_eq!(subtitle(Kind::Movie, &bare, ""), "");
         assert_eq!(subtitle(Kind::Movie, &bare, "friend"), "friend");
 
-        let person = Item::Tag(TagHit { name: "Peter Sallis".into(), count: 9, ..Default::default() });
-        assert_eq!(subtitle(Kind::Person, &person, ""), "", "a person's name is the whole fact");
-        assert_eq!(subtitle(Kind::Collection, &Item::Tag(TagHit { count: 4, ..Default::default() }), ""), "4 items");
-        assert_eq!(subtitle(Kind::Collection, &Item::Tag(TagHit { count: 1, ..Default::default() }), ""), "1 item");
+        let person = Item::Tag(TagHit {
+            name: "Peter Sallis".into(),
+            count: 9,
+            ..Default::default()
+        });
+        assert_eq!(
+            subtitle(Kind::Person, &person, ""),
+            "",
+            "a person's name is the whole fact"
+        );
+        assert_eq!(
+            subtitle(
+                Kind::Collection,
+                &Item::Tag(TagHit {
+                    count: 4,
+                    ..Default::default()
+                }),
+                ""
+            ),
+            "4 items"
+        );
+        assert_eq!(
+            subtitle(
+                Kind::Collection,
+                &Item::Tag(TagHit {
+                    count: 1,
+                    ..Default::default()
+                }),
+                ""
+            ),
+            "1 item"
+        );
     }
 }

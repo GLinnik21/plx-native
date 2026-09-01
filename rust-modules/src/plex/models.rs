@@ -40,25 +40,41 @@ pub struct MediaContainer {
     /// POST /playQueues response ids (0 = absent) — the timeline's playQueueID/playQueueItemID.
     #[serde(rename = "playQueueID", default, deserialize_with = "de_i64")]
     pub play_queue_id: i64,
-    #[serde(rename = "playQueueSelectedItemID", default, deserialize_with = "de_i64")]
+    #[serde(
+        rename = "playQueueSelectedItemID",
+        default,
+        deserialize_with = "de_i64"
+    )]
     pub play_queue_selected_item_id: i64,
     /// How many items the whole queue holds (the returned `Metadata[]` may be a window of it) —
     /// the resolve logs how many remain, derived from this and the offset below.
     #[serde(rename = "playQueueTotalCount", default, deserialize_with = "de_i64")]
     pub play_queue_total_count: i64,
     /// Position of the selected item within the WHOLE queue (not within the returned window).
-    #[serde(rename = "playQueueSelectedItemOffset", default, deserialize_with = "de_i64")]
+    #[serde(
+        rename = "playQueueSelectedItemOffset",
+        default,
+        deserialize_with = "de_i64"
+    )]
     pub play_queue_selected_item_offset: i64,
     /// /transcode/universal/decision verdict codes — Option (not defaulted 0) so the route
     /// log distinguishes "absent" from a real code, matching the old find_num scan.
-    #[serde(rename = "generalDecisionCode", default, deserialize_with = "de_opt_i64")]
+    #[serde(
+        rename = "generalDecisionCode",
+        default,
+        deserialize_with = "de_opt_i64"
+    )]
     pub general_decision_code: Option<i64>,
     #[serde(rename = "mdeDecisionCode", default, deserialize_with = "de_opt_i64")]
     pub mde_decision_code: Option<i64>,
     /// The TRANSCODE lane's own verdict, beside the general one above (`4007` = "cannot convert
     /// this item"). Same `Option` discipline and for the same reason, doubled here: the pre-flight
     /// refusal is graded on a CODE, and a defaulted 0 would be a code this server never sent.
-    #[serde(rename = "transcodeDecisionCode", default, deserialize_with = "de_opt_i64")]
+    #[serde(
+        rename = "transcodeDecisionCode",
+        default,
+        deserialize_with = "de_opt_i64"
+    )]
     pub transcode_decision_code: Option<i64>,
     /// …and the two HUMAN sentences PMS pairs with those codes — "Cannot convert this item.
     /// Implementation for video encoder 'vp9' not found." / "Neither direct play nor conversion is
@@ -78,7 +94,11 @@ pub struct MediaContainer {
     /// freely. `Option`, not a defaulted 0: a server old enough not to say must stay UNKNOWN —
     /// defaulting would read as "no Plex Pass", a confident wrong answer on the field issue #22
     /// (docs/plex-pass-audit.md) exists to get right. Consumed by `serverinfo.rs` only.
-    #[serde(rename = "myPlexSubscription", default, deserialize_with = "de_opt_i64")]
+    #[serde(
+        rename = "myPlexSubscription",
+        default,
+        deserialize_with = "de_opt_i64"
+    )]
     pub my_plex_subscription: Option<i64>,
     /// `GET /` only: the PMS build string ("1.43.3.10861-cd85035e7"). Diagnostics
     /// (`serverinfo.rs`); every other endpoint simply omits it.
@@ -663,7 +683,12 @@ impl UltraBlurColors {
     /// the detail store in `metadata.rs`), so the shape and the guard live here rather than being
     /// written twice.
     pub fn corners(self) -> Option<[[f32; 3]; 4]> {
-        let c = [self.top_left.0, self.top_right.0, self.bottom_right.0, self.bottom_left.0];
+        let c = [
+            self.top_left.0,
+            self.top_right.0,
+            self.bottom_right.0,
+            self.bottom_left.0,
+        ];
         c.iter().any(|x| *x != [0.0, 0.0, 0.0]).then_some(c)
     }
 }
@@ -838,7 +863,9 @@ pub(super) fn de_str<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D
 }
 
 /// Accept `{…}` OR `[{…}]` (D-1) and return the first, or None.
-fn de_ultrablur<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<UltraBlurColors>, D::Error> {
+fn de_ultrablur<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<UltraBlurColors>, D::Error> {
     #[derive(Deserialize)]
     #[serde(untagged)]
     enum OneOrMany {
@@ -872,7 +899,11 @@ mod tests {
             ]}]}}"#;
         let env: Envelope = serde_json::from_slice(json).expect("lenient parse");
         let it = &env.media_container.metadata[0];
-        assert_eq!(it.media.len(), 2, "both versions are kept for a future picker");
+        assert_eq!(
+            it.media.len(),
+            2,
+            "both versions are kept for a future picker"
+        );
 
         let v0 = it.primary_media().expect("Media[0]");
         assert_eq!((v0.bitrate, v0.width, v0.height), (14663, 3840, 2160));
@@ -897,26 +928,48 @@ mod tests {
             "generalDecisionText":"Neither direct play nor conversion is available.",
             "transcodeDecisionCode":4007,
             "transcodeDecisionText":"Cannot convert this item. Implementation for video encoder 'vp9' not found."}}"#;
-        let mc = serde_json::from_slice::<Envelope>(json).expect("lenient parse").media_container;
+        let mc = serde_json::from_slice::<Envelope>(json)
+            .expect("lenient parse")
+            .media_container;
         assert_eq!(mc.general_decision_code, Some(2000));
         assert_eq!(mc.transcode_decision_code, Some(4007));
-        assert_eq!(mc.general_decision_text, "Neither direct play nor conversion is available.");
+        assert_eq!(
+            mc.general_decision_text,
+            "Neither direct play nor conversion is available."
+        );
         assert!(mc.transcode_decision_text.ends_with("'vp9' not found."));
 
         // the same body with every number string-encoded (PMS does this per endpoint, not per field)
-        let json = br#"{"MediaContainer":{"generalDecisionCode":"2000","transcodeDecisionCode":"4007",
+        let json =
+            br#"{"MediaContainer":{"generalDecisionCode":"2000","transcodeDecisionCode":"4007",
             "transcodeDecisionText":"Cannot convert this item."}}"#;
-        let mc = serde_json::from_slice::<Envelope>(json).expect("lenient parse").media_container;
-        assert_eq!((mc.general_decision_code, mc.transcode_decision_code), (Some(2000), Some(4007)));
+        let mc = serde_json::from_slice::<Envelope>(json)
+            .expect("lenient parse")
+            .media_container;
+        assert_eq!(
+            (mc.general_decision_code, mc.transcode_decision_code),
+            (Some(2000), Some(4007))
+        );
         assert_eq!(mc.transcode_decision_text, "Cannot convert this item.");
-        assert_eq!(mc.general_decision_text, "", "a sentence the server never sent is empty, not invented");
+        assert_eq!(
+            mc.general_decision_text, "",
+            "a sentence the server never sent is empty, not invented"
+        );
 
         // a healthy decision names no verdict at all — and absent must stay absent
         let json = br#"{"MediaContainer":{"size":1,"Metadata":[{"ratingKey":"4"}]}}"#;
-        let mc = serde_json::from_slice::<Envelope>(json).expect("parse").media_container;
+        let mc = serde_json::from_slice::<Envelope>(json)
+            .expect("parse")
+            .media_container;
         assert_eq!(mc.general_decision_code, None);
         assert_eq!(mc.transcode_decision_code, None);
-        assert_eq!((mc.general_decision_text.as_str(), mc.transcode_decision_text.as_str()), ("", ""));
+        assert_eq!(
+            (
+                mc.general_decision_text.as_str(),
+                mc.transcode_decision_text.as_str()
+            ),
+            ("", "")
+        );
     }
 
     /// A show container carries no `Media` at all — the accessor must say so rather than panic,
@@ -976,7 +1029,10 @@ mod tests {
 ]}}"#;
 
     fn search_hub<'a>(mc: &'a super::MediaContainer, kind: &str) -> &'a super::Hub {
-        mc.hub.iter().find(|h| h.kind == kind).unwrap_or_else(|| panic!("no {kind} hub"))
+        mc.hub
+            .iter()
+            .find(|h| h.kind == kind)
+            .unwrap_or_else(|| panic!("no {kind} hub"))
     }
 
     /// **The one fact the whole search screen rests on: a hub's items arrive in TWO different
@@ -994,8 +1050,14 @@ mod tests {
     /// `search::Kind::hubs` folds `actor` + `director` into one Cast & Crew shelf).
     #[test]
     fn a_search_response_delivers_its_items_in_two_different_containers() {
-        let mc = serde_json::from_slice::<Envelope>(SEARCH_WALLACE).expect("lenient parse").media_container;
-        assert_eq!(mc.hub.len(), 17, "every hub type the server knows, populated or not");
+        let mc = serde_json::from_slice::<Envelope>(SEARCH_WALLACE)
+            .expect("lenient parse")
+            .media_container;
+        assert_eq!(
+            mc.hub.len(),
+            17,
+            "every hub type the server knows, populated or not"
+        );
 
         for kind in ["movie", "show", "episode"] {
             let h = search_hub(&mc, kind);
@@ -1012,8 +1074,14 @@ mod tests {
         // in the split table on the strength of the `sta` query, which does populate it.
         for kind in ["actor", "collection"] {
             let h = search_hub(&mc, kind);
-            assert!(!h.directory.is_empty(), "{kind} rows are Directory[] — the whole point");
-            assert!(h.metadata.is_empty(), "…and a reader that only looks HERE draws nothing");
+            assert!(
+                !h.directory.is_empty(),
+                "{kind} rows are Directory[] — the whole point"
+            );
+            assert!(
+                h.metadata.is_empty(),
+                "…and a reader that only looks HERE draws nothing"
+            );
             assert_eq!(h.size, h.directory.len() as i64);
         }
 
@@ -1034,7 +1102,9 @@ mod tests {
     /// that keys tags by `tagKey` silently loses every collection.
     #[test]
     fn a_person_hit_carries_a_portable_guid_and_a_collection_hit_carries_no_portable_identity() {
-        let mc = serde_json::from_slice::<Envelope>(SEARCH_WALLACE).expect("lenient parse").media_container;
+        let mc = serde_json::from_slice::<Envelope>(SEARCH_WALLACE)
+            .expect("lenient parse")
+            .media_container;
 
         let p = &search_hub(&mc, "actor").directory[0];
         assert_eq!(p.tag, "Wallace Shawn");
@@ -1043,8 +1113,14 @@ mod tests {
         assert_eq!(p.key, "/library/sections/1/all?actor=921");
         assert_eq!(p.filter, "actor=921");
         assert_eq!(p.library_section_id, 1);
-        assert_eq!((p.reason.as_str(), p.reason_title.as_str()), ("section", "Movies"));
-        assert!(p.thumb.starts_with("https://"), "a person thumb is ABSOLUTE, not a PMS path");
+        assert_eq!(
+            (p.reason.as_str(), p.reason_title.as_str()),
+            ("section", "Movies")
+        );
+        assert!(
+            p.thumb.starts_with("https://"),
+            "a person thumb is ABSOLUTE, not a PMS path"
+        );
         // …and it is the same record `is_person` matches, by either id space
         assert!(p.is_person("921", ""));
         assert!(p.is_person("", "5d776827151a60001f24ab18"));
@@ -1058,12 +1134,21 @@ mod tests {
         assert_eq!(c.thumb, "", "…and no artwork of its own");
         // so it is addressable on THIS server and nowhere else
         assert!(c.is_person("6068", ""), "the server-local id still matches");
-        assert!(!c.is_person("", "5d776827151a60001f24ab18"), "but no guid ever will");
+        assert!(
+            !c.is_person("", "5d776827151a60001f24ab18"),
+            "but no guid ever will"
+        );
 
         // …and a row the server sent no id for must not match a caller's literal "0" — the guard
         // in `is_person` that the collection above cannot exercise, because it HAS an id
-        assert!(!super::Tag::default().is_person("0", ""), "id 0 means absent, not id zero");
-        assert!(!super::Tag::default().is_person("", ""), "nor does an empty guid match an empty one");
+        assert!(
+            !super::Tag::default().is_person("0", ""),
+            "id 0 means absent, not id zero"
+        );
+        assert!(
+            !super::Tag::default().is_person("", ""),
+            "nor does an empty guid match an empty one"
+        );
     }
 
     /// **The same person arrives ONCE PER LIBRARY SECTION**, as separate rows with the same `id`
@@ -1077,15 +1162,31 @@ mod tests {
     /// `tagKey`/`id`, and SUM the counts.
     #[test]
     fn one_person_arrives_once_per_library_section_with_a_per_section_count() {
-        let mc = serde_json::from_slice::<Envelope>(SEARCH_WALLACE).expect("lenient parse").media_container;
+        let mc = serde_json::from_slice::<Envelope>(SEARCH_WALLACE)
+            .expect("lenient parse")
+            .media_container;
         let rows = &search_hub(&mc, "actor").directory;
 
         let shawn: Vec<_> = rows.iter().filter(|t| t.tag == "Wallace Shawn").collect();
-        assert_eq!(shawn.len(), 2, "one row per section, not one row per person");
-        assert_eq!(shawn[0].id, shawn[1].id, "the same person: same server-local id");
-        assert_eq!(shawn[0].tag_key, shawn[1].tag_key, "…and the same portable guid");
+        assert_eq!(
+            shawn.len(),
+            2,
+            "one row per section, not one row per person"
+        );
+        assert_eq!(
+            shawn[0].id, shawn[1].id,
+            "the same person: same server-local id"
+        );
+        assert_eq!(
+            shawn[0].tag_key, shawn[1].tag_key,
+            "…and the same portable guid"
+        );
         assert_ne!(shawn[0].library_section_id, shawn[1].library_section_id);
-        assert_eq!(shawn[0].count + shawn[1].count, 8, "the whole truth is the SUM, not the first row");
+        assert_eq!(
+            shawn[0].count + shawn[1].count,
+            8,
+            "the whole truth is the SUM, not the first row"
+        );
         // `key` is per-section too, so it is not an identity either — it is where that row leads
         assert_ne!(shawn[0].key, shawn[1].key);
     }
@@ -1109,7 +1210,9 @@ mod tests {
             {"ratingKey":"1973","type":"movie","title":"The Wrong Trousers","year":"1993",
              "librarySectionID":"1","score":"0.73092"}]}
         ]}}"#;
-        let mc = serde_json::from_slice::<Envelope>(json).expect("lenient parse").media_container;
+        let mc = serde_json::from_slice::<Envelope>(json)
+            .expect("lenient parse")
+            .media_container;
         assert_eq!(mc.size, 2);
 
         let p = &search_hub(&mc, "actor").directory[0];
@@ -1140,9 +1243,15 @@ mod tests {
             {"tag":"Wallace Shawn","tagKey":"5d776827151a60001f24ab18","id":921,"count":5,
              "key":"/library/sections/1/all?actor=921","reason":"section","reasonTitle":"Movies"}
           ]}]}}"#;
-        let mc = serde_json::from_slice::<Envelope>(json).expect("a null is a field, not a failure").media_container;
+        let mc = serde_json::from_slice::<Envelope>(json)
+            .expect("a null is a field, not a failure")
+            .media_container;
         let rows = &search_hub(&mc, "actor").directory;
-        assert_eq!(rows.len(), 2, "the row with the nulls survives, and so does the one beside it");
+        assert_eq!(
+            rows.len(),
+            2,
+            "the row with the nulls survives, and so does the one beside it"
+        );
 
         let n = &rows[0];
         for (name, got) in [
@@ -1155,13 +1264,19 @@ mod tests {
             ("reason", &n.reason),
             ("reasonTitle", &n.reason_title),
         ] {
-            assert_eq!(got, "", "{name} came back as something other than the empty string");
+            assert_eq!(
+                got, "",
+                "{name} came back as something other than the empty string"
+            );
         }
         // the numbers beside them are untouched — this is a per-field leniency, not a dropped row
         assert_eq!((n.id, n.count), (921, 5));
         // …and the intact row is exactly what it would have been on its own
         assert_eq!(rows[1].tag, "Wallace Shawn");
-        assert_eq!((rows[1].reason.as_str(), rows[1].reason_title.as_str()), ("section", "Movies"));
+        assert_eq!(
+            (rows[1].reason.as_str(), rows[1].reason_title.as_str()),
+            ("section", "Movies")
+        );
 
         // The same leniency the other way: a stringly-typed number is a string, not a failure.
         // `reasonTitle` is a LIBRARY NAME, and a library called "2024" is one PMS is free to send
@@ -1169,7 +1284,9 @@ mod tests {
         let json = br#"{"MediaContainer":{"Hub":[
           {"type":"collection","hubIdentifier":"collection","title":"Collections","size":1,"Directory":[
             {"tag":1998,"key":"/library/sections/3/all?collection=7","reasonTitle":2024,"id":7}]}]}}"#;
-        let mc = serde_json::from_slice::<Envelope>(json).expect("lenient parse").media_container;
+        let mc = serde_json::from_slice::<Envelope>(json)
+            .expect("lenient parse")
+            .media_container;
         let c = &search_hub(&mc, "collection").directory[0];
         assert_eq!((c.tag.as_str(), c.reason_title.as_str()), ("1998", "2024"));
     }
@@ -1191,7 +1308,11 @@ mod tests {
         ]}}"#;
         let mc = serde_json::from_slice::<Envelope>(json).expect("parse");
         let mc = mc.media_container;
-        assert_eq!(mc.hub.len(), 3, "the hubs are there — it is the ITEMS that are absent");
+        assert_eq!(
+            mc.hub.len(),
+            3,
+            "the hubs are there — it is the ITEMS that are absent"
+        );
         for h in &mc.hub {
             assert_eq!(h.size, 0);
             assert!(h.metadata.is_empty() && h.directory.is_empty());

@@ -54,9 +54,10 @@ pub(crate) fn draw() {
     // has to survive being looked at over a bright frame of video.
     p.rect(r, 20.0, theme::PANEL_TOP, theme::PANEL_BOT, 0.0);
     if let Ok(cs) = CString::new(title) {
-        Label::new(cs.as_ptr(), theme::size::BODY, ink)
-            .bold()
-            .draw(p, Rect::new(r.x + PAD, r.y + theme::space::SM, r.w - 2.0 * PAD, 34.0));
+        Label::new(cs.as_ptr(), theme::size::BODY, ink).bold().draw(
+            p,
+            Rect::new(r.x + PAD, r.y + theme::space::SM, r.w - 2.0 * PAD, 34.0),
+        );
     }
     // The second line is the only variable text: a byte count, or why it failed. Never a URL, a
     // host or a session secret — `lab::upload::send` composes it and this draws whatever it says.

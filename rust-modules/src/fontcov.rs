@@ -75,7 +75,11 @@ impl std::fmt::Display for CovErr {
 
 impl Coverage {
     fn new() -> Coverage {
-        Coverage { bmp: Box::new([0u64; 1024]), sup: Vec::new(), count: 0 }
+        Coverage {
+            bmp: Box::new([0u64; 1024]),
+            sup: Vec::new(),
+            count: 0,
+        }
     }
 
     pub(crate) fn contains(&self, cp: u32) -> bool {
@@ -166,9 +170,11 @@ fn read_at<R: Read + Seek>(r: &mut R, off: u64, len: usize) -> Result<Vec<u8>, C
     if len > 32 << 20 {
         return Err(CovErr::Malformed("table length is implausible"));
     }
-    r.seek(SeekFrom::Start(off)).map_err(|e| CovErr::Io(e.to_string()))?;
+    r.seek(SeekFrom::Start(off))
+        .map_err(|e| CovErr::Io(e.to_string()))?;
     let mut v = vec![0u8; len];
-    r.read_exact(&mut v).map_err(|e| CovErr::Io(e.to_string()))?;
+    r.read_exact(&mut v)
+        .map_err(|e| CovErr::Io(e.to_string()))?;
     Ok(v)
 }
 
@@ -195,7 +201,12 @@ fn cmap_bytes<R: Read + Seek>(r: &mut R) -> Result<Vec<u8>, CovErr> {
         return Err(CovErr::Malformed("not an sfnt (bad version tag)"));
     }
     let num = be16(&head, 4).ok_or(CovErr::Malformed("short sfnt header"))? as usize;
-    let dir = read_at(r, base + 12, num.checked_mul(16).ok_or(CovErr::Malformed("absurd table count"))?)?;
+    let dir = read_at(
+        r,
+        base + 12,
+        num.checked_mul(16)
+            .ok_or(CovErr::Malformed("absurd table count"))?,
+    )?;
     for i in 0..num {
         let rec = &dir[i * 16..];
         if &rec[0..4] == b"cmap" {
@@ -313,13 +324,17 @@ fn decode(t: &[u8]) -> Result<Coverage, CovErr> {
     let mut seen = 0usize;
     for i in 0..n {
         let rec = 4 + 8 * i;
-        let (Some(plat), Some(enc), Some(off)) = (be16(&t, rec), be16(&t, rec + 2), be32(&t, rec + 4)) else {
+        let (Some(plat), Some(enc), Some(off)) =
+            (be16(&t, rec), be16(&t, rec + 2), be32(&t, rec + 4))
+        else {
             break;
         };
         if !is_unicode(plat, enc) {
             continue;
         }
-        let Some(sub) = t.get(off as usize..) else { continue };
+        let Some(sub) = t.get(off as usize..) else {
+            continue;
+        };
         let Some(format) = be16(sub, 0) else { continue };
         // Formats 0 (byte), 2 (high-byte CJK legacy) and 14 (variation selectors) are `None`, and
         // that is the point: `seen` counts subtables this decoder ACTUALLY READ, never ones it
@@ -491,7 +506,11 @@ mod tests {
     /// fourteen characters makes a font swap an eight-iteration guessing game, which is how a
     /// re-cut ends up half-checked.
     fn report(font: &str, gaps: Vec<String>) {
-        assert!(gaps.is_empty(), "pkg/{font} does not cover the declared set:\n  {}", gaps.join("\n  "));
+        assert!(
+            gaps.is_empty(),
+            "pkg/{font} does not cover the declared set:\n  {}",
+            gaps.join("\n  ")
+        );
     }
 
     #[test]
@@ -501,7 +520,9 @@ mod tests {
         for &(name, lo, hi) in LINK1_BLOCKS {
             let m = missing(&c, lo, hi);
             if !m.is_empty() {
-                gaps.push(format!("{name} (U+{lo:04X}..U+{hi:04X}) is missing {m:04X?}"));
+                gaps.push(format!(
+                    "{name} (U+{lo:04X}..U+{hi:04X}) is missing {m:04X?}"
+                ));
             }
         }
         for &(name, ch) in LINK1_CHARS {
@@ -517,14 +538,28 @@ mod tests {
     #[test]
     fn bold_face_covers_exactly_what_the_regular_one_does() {
         let (r, b) = (cov("appfont.ttf"), cov("appfont-bold.ttf"));
-        assert_eq!(r.len(), b.len(), "appfont.ttf covers {} codepoints, appfont-bold.ttf {}", r.len(), b.len());
+        assert_eq!(
+            r.len(),
+            b.len(),
+            "appfont.ttf covers {} codepoints, appfont-bold.ttf {}",
+            r.len(),
+            b.len()
+        );
         for &(name, lo, hi) in LINK1_BLOCKS {
             for cp in lo..=hi {
-                assert_eq!(r.contains(cp), b.contains(cp), "regular/bold disagree on U+{cp:04X} ({name})");
+                assert_eq!(
+                    r.contains(cp),
+                    b.contains(cp),
+                    "regular/bold disagree on U+{cp:04X} ({name})"
+                );
             }
         }
         for &(name, ch) in LINK1_CHARS {
-            assert!(b.contains(ch as u32), "pkg/appfont-bold.ttf is missing {name} (U+{:04X})", ch as u32);
+            assert!(
+                b.contains(ch as u32),
+                "pkg/appfont-bold.ttf is missing {name} (U+{:04X})",
+                ch as u32
+            );
         }
     }
 
@@ -535,7 +570,9 @@ mod tests {
         for &(name, lo, hi) in LINK2_BLOCKS {
             let m = missing(&c, lo, hi);
             if !m.is_empty() {
-                gaps.push(format!("{name} (U+{lo:04X}..U+{hi:04X}) is missing {m:04X?}"));
+                gaps.push(format!(
+                    "{name} (U+{lo:04X}..U+{hi:04X}) is missing {m:04X?}"
+                ));
             }
         }
         for &(name, lo, hi, floor) in LINK2_FLOORS {
@@ -569,8 +606,14 @@ mod tests {
     fn the_shipped_chain_can_draw_every_sample_string() {
         let links = [cov("appfont.ttf"), cov("appfont-cjk.ttf")];
         for &(script, s) in SAMPLES {
-            let bad: Vec<char> = s.chars().filter(|&ch| !links.iter().any(|c| c.contains(ch as u32))).collect();
-            assert!(bad.is_empty(), "{script}: the shipped chain cannot draw {bad:?} in {s:?}");
+            let bad: Vec<char> = s
+                .chars()
+                .filter(|&ch| !links.iter().any(|c| c.contains(ch as u32)))
+                .collect();
+            assert!(
+                bad.is_empty(),
+                "{script}: the shipped chain cannot draw {bad:?} in {s:?}"
+            );
         }
     }
 
@@ -655,10 +698,17 @@ mod tests {
     /// the run to a face that draws a box, and never consult the next link.
     #[test]
     fn a_mapping_to_glyph_zero_is_not_coverage() {
-        let f = sfnt(&cmap1(3, 10, &format12(&[(0x41, 0x43, 0), (0x61, 0x62, 7)])));
+        let f = sfnt(&cmap1(
+            3,
+            10,
+            &format12(&[(0x41, 0x43, 0), (0x61, 0x62, 7)]),
+        ));
         let c = of_reader(&mut Cursor::new(f)).expect("decodes");
         assert!(!c.contains(0x41), "U+0041 maps to glyph 0");
-        assert!(c.contains(0x42) && c.contains(0x43), "the rest of the group walks off glyph 1, 2");
+        assert!(
+            c.contains(0x42) && c.contains(0x43),
+            "the rest of the group walks off glyph 1, 2"
+        );
         assert!(c.contains(0x61) && c.contains(0x62));
         assert_eq!(c.len(), 4);
     }
@@ -667,15 +717,25 @@ mod tests {
     /// on both edges of every range, and the whole emoji/CJK-ext-B plane rides on it.
     #[test]
     fn supplementary_plane_ranges_answer_at_both_edges() {
-        let f = sfnt(&cmap1(3, 10, &format12(&[(0x2_0000, 0x2_A6DF, 1), (0x1_F600, 0x1_F64F, 9)])));
+        let f = sfnt(&cmap1(
+            3,
+            10,
+            &format12(&[(0x2_0000, 0x2_A6DF, 1), (0x1_F600, 0x1_F64F, 9)]),
+        ));
         let c = of_reader(&mut Cursor::new(f)).expect("decodes");
         for cp in [0x2_0000, 0x2_A6DF, 0x1_F600, 0x1_F64F, 0x2_5000] {
             assert!(c.contains(cp), "U+{cp:05X} is inside a declared group");
         }
         for cp in [0x1_FFFF, 0x2_A6E0, 0x1_F5FF, 0x1_F650] {
-            assert!(!c.contains(cp), "U+{cp:05X} is outside every declared group");
+            assert!(
+                !c.contains(cp),
+                "U+{cp:05X} is outside every declared group"
+            );
         }
-        assert_eq!(c.len(), (0x2_A6DF - 0x2_0000 + 1) + (0x1_F64F - 0x1_F600 + 1));
+        assert_eq!(
+            c.len(),
+            (0x2_A6DF - 0x2_0000 + 1) + (0x1_F64F - 0x1_F600 + 1)
+        );
     }
 
     /// Format 4's second addressing mode (`idRangeOffset != 0`) indexes a trailing glyph array by
@@ -698,8 +758,8 @@ mod tests {
         sub.extend_from_slice(&0xFFFFu16.to_be_bytes()); // startCode[1]
         sub.extend_from_slice(&0u16.to_be_bytes()); // idDelta[0]
         sub.extend_from_slice(&1u16.to_be_bytes()); // idDelta[1]
-        // idRangeOffset[0] must skip the rest of the array (2 entries * 2 bytes = 4) to reach
-        // glyphIdArray; entry 1 is the terminator and addresses nothing.
+                                                    // idRangeOffset[0] must skip the rest of the array (2 entries * 2 bytes = 4) to reach
+                                                    // glyphIdArray; entry 1 is the terminator and addresses nothing.
         sub.extend_from_slice(&4u16.to_be_bytes());
         sub.extend_from_slice(&0u16.to_be_bytes());
         sub.extend_from_slice(&5u16.to_be_bytes()); // glyphIdArray: U+0041 -> 5
@@ -708,7 +768,10 @@ mod tests {
         let c = of_reader(&mut Cursor::new(sfnt(&cmap1(3, 1, &sub)))).expect("decodes");
         assert!(c.contains(0x41) && c.contains(0x43));
         assert!(!c.contains(0x42), "U+0042 indexes a zero in glyphIdArray");
-        assert!(!c.contains(0xFFFF), "the terminating segment is not coverage");
+        assert!(
+            !c.contains(0xFFFF),
+            "the terminating segment is not coverage"
+        );
         assert_eq!(c.len(), 2);
     }
 
@@ -718,7 +781,9 @@ mod tests {
     #[test]
     fn non_unicode_subtables_are_ignored() {
         let f = sfnt(&cmap1(3, 0, &format12(&[(0xF020, 0xF0FF, 1)])));
-        let err = of_reader(&mut Cursor::new(f)).err().expect("a symbol-only cmap has no Unicode coverage");
+        let err = of_reader(&mut Cursor::new(f))
+            .err()
+            .expect("a symbol-only cmap has no Unicode coverage");
         assert_eq!(err, CovErr::Malformed("no usable Unicode cmap subtable"));
     }
 
@@ -729,7 +794,10 @@ mod tests {
         let full = sfnt(&cmap1(3, 10, &format12(&[(0x41, 0x5A, 1)])));
         for cut in [0, 4, 11, 20, 30, full.len() - 1] {
             let r = of_reader(&mut Cursor::new(full[..cut].to_vec()));
-            assert!(r.is_err(), "a font truncated to {cut} bytes decoded successfully");
+            assert!(
+                r.is_err(),
+                "a font truncated to {cut} bytes decoded successfully"
+            );
         }
         // ...and a group count the table cannot hold must not be trusted either. The last two are
         // the values that WRAP a 32-bit `usize`, which is the width the shipped ARM binary uses:
@@ -742,7 +810,10 @@ mod tests {
             let mut lying = format12(&[(0x41, 0x5A, 1)]);
             lying[12..16].copy_from_slice(&groups.to_be_bytes());
             let r = of_reader(&mut Cursor::new(sfnt(&cmap1(3, 10, &lying))));
-            assert!(r.is_err(), "a format 12 claiming {groups} groups in 28 bytes decoded successfully");
+            assert!(
+                r.is_err(),
+                "a format 12 claiming {groups} groups in 28 bytes decoded successfully"
+            );
         }
     }
 

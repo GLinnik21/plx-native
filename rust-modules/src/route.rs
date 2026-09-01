@@ -2,12 +2,12 @@
 //! session, and HUD strings — all private module state, held as ONE [`Session`] value. The
 //! player engine reads the URL/session through the accessors here; ui::player_hud reads the
 //! HUD strings through title_cptr()/ctxline_cptr().
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
-use std::sync::Mutex;
-use crate::pms::PmsMovie;
 use crate::plex::ServerId;
+use crate::pms::PmsMovie;
 use std::os::raw::c_char;
 use std::ptr::{addr_of, addr_of_mut};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
+use std::sync::Mutex;
 
 // ---- ONE playback session, as ONE value -----------------------------------------------------
 
@@ -582,7 +582,9 @@ impl HlsAbrControl {
         if !self.fixture_base.is_empty() {
             return replace_active_encoder(expected_encoder, candidate);
         }
-        let Some(client) = crate::plex::client_for(self.sid) else { return false };
+        let Some(client) = crate::plex::client_for(self.sid) else {
+            return false;
+        };
         if !replace_active_encoder(expected_encoder, candidate) {
             let _ = client.transcode_stop(candidate);
             return false;
@@ -594,7 +596,9 @@ impl HlsAbrControl {
         if !self.fixture_base.is_empty() {
             return;
         }
-        let Some(client) = crate::plex::client_for(self.sid) else { return };
+        let Some(client) = crate::plex::client_for(self.sid) else {
+            return;
+        };
         let worker_encoder = encoder.clone();
         if crate::task::spawn_small_keeping("abr-stop", move || {
             let ok = client.transcode_stop(&worker_encoder);
@@ -606,7 +610,10 @@ impl HlsAbrControl {
             // server-side resource leak. The control-plane request is bounded; pay it here only on
             // that already-degraded path.
             let ok = client.transcode_stop(&encoder);
-            crate::player::log(&format!("abr: synchronously retired previous encoder ok={}", ok as i32));
+            crate::player::log(&format!(
+                "abr: synchronously retired previous encoder ok={}",
+                ok as i32
+            ));
         }
     }
 
@@ -715,10 +722,15 @@ pub(crate) fn hls_abr_control() -> Option<(HlsAbrControl, String)> {
         return None;
     }
     let seconds_per_segment = match cur_delivery() {
-        crate::plex::TranscodeDelivery::FixedHls { seconds_per_segment } => seconds_per_segment,
+        crate::plex::TranscodeDelivery::FixedHls {
+            seconds_per_segment,
+        } => seconds_per_segment,
         crate::plex::TranscodeDelivery::ProgressiveMkv => return None,
     };
-    let encoder = ACTIVE_ENCODER.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let encoder = ACTIVE_ENCODER
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     if encoder.is_empty() {
         return None;
     }
@@ -763,11 +775,16 @@ pub(crate) fn auto_original_watch() -> Option<AutoOriginalWatch> {
     let s = session();
     if quality() != Quality::Auto
         || !s.cur_auto_original_watched
-        || !matches!(s.cur_delivery, crate::plex::TranscodeDelivery::ProgressiveMkv)
+        || !matches!(
+            s.cur_delivery,
+            crate::plex::TranscodeDelivery::ProgressiveMkv
+        )
     {
         return None;
     }
-    let source_kbps = u32::try_from(s.cur_transport_kbps).ok().filter(|&kbps| kbps > 0)?;
+    let source_kbps = u32::try_from(s.cur_transport_kbps)
+        .ok()
+        .filter(|&kbps| kbps > 0)?;
     Some(AutoOriginalWatch {
         source_kbps,
         catalog: auto_catalog(),
@@ -843,12 +860,17 @@ pub(crate) fn arm_auto_fixture(
     // starvation horizon to fire on a reserve that was visibly FILLING.
     let rung = crate::abr::Rung::P480;
     let base = hls_base.trim_end_matches('/');
-    let url = format!("{base}/{}/master.m3u8?X-Plex-Token=<plex-token>", rung.kbps());
+    let url = format!(
+        "{base}/{}/master.m3u8?X-Plex-Token=<plex-token>",
+        rung.kbps()
+    );
     let encoder = format!("auto-fixture-{}", rung.kbps());
     session_mut(|s| {
         s.cur_auto_original_watched = false;
         s.cur_remux = false;
-        s.cur_delivery = crate::plex::TranscodeDelivery::FixedHls { seconds_per_segment: 2 };
+        s.cur_delivery = crate::plex::TranscodeDelivery::FixedHls {
+            seconds_per_segment: 2,
+        };
         s.cur_ceiling = Some(rung.ceiling());
         s.url = url.clone();
         s.tsession = encoder.clone();
@@ -884,7 +906,9 @@ pub(crate) fn fallback_auto_to_hls(measured_kbps: u32, offset_secs: i64) -> Opti
     session_mut(|s| {
         s.cur_auto_original_watched = false;
         s.cur_remux = false;
-        s.cur_delivery = crate::plex::TranscodeDelivery::FixedHls { seconds_per_segment: 2 };
+        s.cur_delivery = crate::plex::TranscodeDelivery::FixedHls {
+            seconds_per_segment: 2,
+        };
         s.cur_ceiling = Some(rung.ceiling());
     });
     crate::player::log(&format!(
@@ -931,7 +955,10 @@ pub(crate) fn recover_auto_to_original(offset_secs: i64) -> Option<AutoOriginalR
         return None;
     }
     let candidate = session().auto_original.clone()?;
-    let expected_encoder = ACTIVE_ENCODER.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let expected_encoder = ACTIVE_ENCODER
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     if expected_encoder.is_empty() {
         return None;
     }
@@ -1007,7 +1034,10 @@ fn retire_replaced_encoder(encoder: String) {
     let worker = encoder.clone();
     if crate::task::spawn_small_keeping("abr-original-stop", move || {
         let ok = client.transcode_stop(&worker);
-        crate::player::log(&format!("abr: retired HLS encoder for Original ok={}", ok as i32));
+        crate::player::log(&format!(
+            "abr: retired HLS encoder for Original ok={}",
+            ok as i32
+        ));
     })
     .is_none()
     {
@@ -1202,7 +1232,10 @@ fn cur_delivery() -> crate::plex::TranscodeDelivery {
 /// Load boundary: HLS must prime both elementary-stream lanes before starting the audio-master
 /// clock, even on an ordinary play-from-zero where no seek rebase is pending.
 pub(crate) fn is_segmented_hls() -> bool {
-    matches!(cur_delivery(), crate::plex::TranscodeDelivery::FixedHls { .. })
+    matches!(
+        cur_delivery(),
+        crate::plex::TranscodeDelivery::FixedHls { .. }
+    )
 }
 pub(crate) fn source_vcodec() -> String {
     session().src_vcodec.clone()
@@ -1281,7 +1314,11 @@ pub(crate) fn scrobble_stop(
     let (logical_session, pq, pqi) = (sess(), pq_id(), pq_item_id());
     let (aud, sub) = (cur_audio_sid(), cur_sub_sid()); // the selection this playback reported under
     let tsession = take_active_encoder();
-    let session = if tsession.is_empty() { logical_session } else { tsession.clone() };
+    let session = if tsession.is_empty() {
+        logical_session
+    } else {
+        tsession.clone()
+    };
     // The two fields THIS function retires (teardown clears the URL a few lines later, and that is
     // the whole of what a stop resets). A partial write rather than a whole-session reset because
     // the rest is still read after teardown returns — see `reset_session`'s doc for the reader that
@@ -1325,7 +1362,12 @@ pub(crate) fn scrobble_stop(
             // nothing re-reads the position afterwards, so `ok=0` is the only trace a lost one
             // leaves. The line printed unconditionally before, i.e. it asserted a write it had no
             // idea had happened. APPENDED, never reordered: the harness reads these by regex.
-            crate::log(&format!("timeline stopped t={}s/{}s ok={}", t_ms / 1000, d_ms / 1000, ok as i32));
+            crate::log(&format!(
+                "timeline stopped t={}s/{}s ok={}",
+                t_ms / 1000,
+                d_ms / 1000,
+                ok as i32
+            ));
         }
         if !tsession.is_empty() {
             // The other half of the stop, and it had no outcome at all until now: the GET's result
@@ -1342,7 +1384,8 @@ pub(crate) fn scrobble_stop(
 }
 
 /// The final scrobble still in flight, if any.
-static SCROBBLE: std::sync::Mutex<Option<std::thread::JoinHandle<()>>> = std::sync::Mutex::new(None);
+static SCROBBLE: std::sync::Mutex<Option<std::thread::JoinHandle<()>>> =
+    std::sync::Mutex::new(None);
 
 /// Wait for a pending [`scrobble_stop`] to reach the server.
 ///
@@ -1378,12 +1421,25 @@ pub(crate) fn transcode_seek(offset_secs: i64) -> Option<String> {
     // (the pump) instead reloads onto this new start.mkv?&offset= (same session), which tears
     // the old engine down — dropping its connection, and with it the old transcode.
     // /decision is just a query and doesn't cut the streaming connection.
-    let encoder = ACTIVE_ENCODER.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let encoder = ACTIVE_ENCODER
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     if encoder.is_empty() {
         return None;
     }
-    let sp = transcode_spec(&rk, &encoder, &encoder, is_remux(), is_no_video_copy(), offset_secs.max(0),
-                            cur_audio_sid(), cur_sub_sid(), cur_ceiling(), cur_delivery());
+    let sp = transcode_spec(
+        &rk,
+        &encoder,
+        &encoder,
+        is_remux(),
+        is_no_video_copy(),
+        offset_secs.max(0),
+        cur_audio_sid(),
+        cur_sub_sid(),
+        cur_ceiling(),
+        cur_delivery(),
+    );
     // same session, same output codecs — no payload rebuild here, so the body is unused
     let _ = c.transcode_decision(&sp);
     let url = c.transcode_start_url(&sp).to_url();
@@ -1466,7 +1522,11 @@ pub(crate) const fn auto_quality_ready() -> bool {
 }
 
 fn quality_ladder_for(auto_ready: bool) -> &'static [Quality] {
-    if auto_ready { &QUALITY_LADDER } else { &QUALITY_LADDER[1..] }
+    if auto_ready {
+        &QUALITY_LADDER
+    } else {
+        &QUALITY_LADDER[1..]
+    }
 }
 
 /// What the menu may offer in this build. Original and fixed ceilings are established playback
@@ -1476,7 +1536,11 @@ pub(crate) fn available_quality_ladder() -> &'static [Quality] {
 }
 
 fn supported_quality(q: Quality) -> Quality {
-    if q == Quality::Auto && !auto_quality_ready() { Quality::Original } else { q }
+    if q == Quality::Auto && !auto_quality_ready() {
+        Quality::Original
+    } else {
+        q
+    }
 }
 
 impl Quality {
@@ -1491,7 +1555,11 @@ impl Quality {
             Quality::P720Low => (2000, 1280, 720),
             Quality::P480 => (720, 854, 480),
         };
-        Some(crate::plex::Ceiling { max_kbps, max_w, max_h })
+        Some(crate::plex::Ceiling {
+            max_kbps,
+            max_w,
+            max_h,
+        })
     }
 
     /// The picker's row text. ONE string per rung rather than a label plus a trailing value,
@@ -1512,7 +1580,10 @@ impl Quality {
     /// An in-memory index back to a rung — out of range is `Original`, never a neighbouring rung,
     /// for the same reason `more_menu::action_at` refuses one: the ladder can grow or shrink.
     fn from_index(i: u8) -> Quality {
-        QUALITY_LADDER.get(i as usize).copied().unwrap_or(Quality::Original)
+        QUALITY_LADDER
+            .get(i as usize)
+            .copied()
+            .unwrap_or(Quality::Original)
     }
 
     fn index(self) -> u8 {
@@ -1581,10 +1652,7 @@ pub(crate) fn set_quality(q: Quality) {
     // Original pick is an instruction to restore that native declaration now, not merely remove a
     // bitrate cap and start another encoder. Leave the current route intact until the pump owns
     // the same-position codec-changing reload.
-    if q == Quality::Original
-        && is_transcoding()
-        && session().auto_original.is_some()
-    {
+    if q == Quality::Original && is_transcoding() && session().auto_original.is_some() {
         crate::player::log("quality: Original picked — restoring the native source");
         crate::player::request_original_recovery();
         return;
@@ -1608,12 +1676,18 @@ pub(crate) fn set_quality(q: Quality) {
                 && (!is_transcoding() || is_remux())));
     let adaptive = auto_uses_hls(q, auto_original);
     let delivery = if adaptive {
-        crate::plex::TranscodeDelivery::FixedHls { seconds_per_segment: 2 }
+        crate::plex::TranscodeDelivery::FixedHls {
+            seconds_per_segment: 2,
+        }
     } else {
         crate::plex::TranscodeDelivery::ProgressiveMkv
     };
     let ceiling = if adaptive {
-        Some(crate::plex::Ceiling { max_kbps: 720, max_w: 854, max_h: 480 })
+        Some(crate::plex::Ceiling {
+            max_kbps: 720,
+            max_w: 854,
+            max_h: 480,
+        })
     } else {
         q.ceiling()
     };
@@ -1681,7 +1755,10 @@ fn quality_policy(
 ) -> crate::plex::LinkPolicy {
     if q == Quality::Auto {
         return if auto_uses_hls(q, auto_original) {
-            crate::plex::LinkPolicy { direct_play: false, remux: false }
+            crate::plex::LinkPolicy {
+                direct_play: false,
+                remux: false,
+            }
         } else {
             crate::plex::LinkPolicy::UNRESTRICTED
         };
@@ -1689,7 +1766,10 @@ fn quality_policy(
     match q.ceiling() {
         None => crate::plex::LinkPolicy::UNRESTRICTED,
         Some(c) if c.admits(src_kbps, src_w, src_h) => crate::plex::LinkPolicy::UNRESTRICTED,
-        Some(_) => crate::plex::LinkPolicy { direct_play: false, remux: false },
+        Some(_) => crate::plex::LinkPolicy {
+            direct_play: false,
+            remux: false,
+        },
     }
 }
 
@@ -1709,7 +1789,10 @@ const REMOTE_PROBE_BUDGET: std::time::Duration =
 /// burst and a high-rate remux does not add an unbounded startup download.
 fn remote_probe_target_bytes(source_kbps: i64) -> Option<usize> {
     let kbps = usize::try_from(source_kbps).ok().filter(|&v| v > 0)?;
-    Some(kbps.saturating_mul(125).clamp(REMOTE_PROBE_MIN_BYTES, REMOTE_PROBE_MAX_BYTES))
+    Some(
+        kbps.saturating_mul(125)
+            .clamp(REMOTE_PROBE_MIN_BYTES, REMOTE_PROBE_MAX_BYTES),
+    )
 }
 
 /// **One bounded measurement of the actual file, as an observation and nothing more.** It reports
@@ -1720,12 +1803,11 @@ fn remote_probe_target_bytes(source_kbps: i64) -> Option<usize> {
 ///
 /// `None` means there is nothing to reason from (no source bitrate, or the transfer never
 /// returned), which is deliberately distinct from a completed slow probe.
-fn measure_remote_original(
-    url: &str,
-    source_kbps: i64,
-) -> Option<crate::abr::CapacityObservation> {
+fn measure_remote_original(url: &str, source_kbps: i64) -> Option<crate::abr::CapacityObservation> {
     let Some(target) = remote_probe_target_bytes(source_kbps) else {
-        crate::player::log("auto: remote Original unavailable — source bitrate is unknown; using HLS");
+        crate::player::log(
+            "auto: remote Original unavailable — source bitrate is unknown; using HLS",
+        );
         return None;
     };
     let sample = crate::curlio::sample_throughput(url, target, REMOTE_PROBE_BUDGET)?;
@@ -1751,7 +1833,10 @@ fn measure_remote_original(
 /// A named function rather than two `&&`s inline at the decision site, so the composition the
 /// tests grade is literally the composition [`build_stream`] runs — a re-implementation in a test
 /// would agree with itself forever while the shipped path drifted.
-fn flavors_allowed(link: crate::plex::LinkPolicy, quality: crate::plex::LinkPolicy) -> crate::plex::LinkPolicy {
+fn flavors_allowed(
+    link: crate::plex::LinkPolicy,
+    quality: crate::plex::LinkPolicy,
+) -> crate::plex::LinkPolicy {
     crate::plex::LinkPolicy {
         direct_play: link.direct_play && quality.direct_play,
         remux: link.remux && quality.remux,
@@ -1775,7 +1860,12 @@ fn server_decision(c: &crate::plex::Client, rk: &str, session: &str) -> Option<b
         }
     };
     // Part.decision is the authoritative verdict (Media/container carry none)
-    let part = match mc.metadata.first().and_then(|m| m.media.first()).and_then(|md| md.part.first()) {
+    let part = match mc
+        .metadata
+        .first()
+        .and_then(|m| m.media.first())
+        .and_then(|md| md.part.first())
+    {
         Some(p) => p,
         None => {
             crate::player::log(&format!(
@@ -1806,7 +1896,11 @@ fn server_decision(c: &crate::plex::Client, rk: &str, session: &str) -> Option<b
 /// neither. The Load payload must match this, not the source file — a transcode changes the
 /// codec and rate, and describing the source to the decoder gives silent audio.
 fn decision_codecs(mc: &crate::plex::MediaContainer) -> Option<(String, String)> {
-    let streams = mc.metadata.first().and_then(|m| m.media.first()).and_then(|md| md.part.first())
+    let streams = mc
+        .metadata
+        .first()
+        .and_then(|m| m.media.first())
+        .and_then(|md| md.part.first())
         .map(|p| &p.stream)?;
     let (mut vc, mut ac) = (None, None);
     for s in streams {
@@ -1816,7 +1910,10 @@ fn decision_codecs(mc: &crate::plex::MediaContainer) -> Option<(String, String)>
             _ => {}
         }
     }
-    match (vc, ac) { (Some(v), Some(a)) => Some((v, a)), _ => None }
+    match (vc, ac) {
+        (Some(v), Some(a)) => Some((v, a)),
+        _ => None,
+    }
 }
 
 /// `generalDecisionCode` 2000 — "Neither direct play nor conversion is available." The server has
@@ -1859,7 +1956,6 @@ fn apply_decision_codecs(mc: &crate::plex::MediaContainer) {
         set_stream_codecs(&vc, &ac);
         crate::player::log(&format!("decision output: v={vc} a={ac}"));
     }
-
 }
 
 /// Select the audio + subtitle streams server-side for the current part before a
@@ -1886,7 +1982,9 @@ fn put_selection(sid: ServerId, part: i64, aud: i64, sub: i64) {
         audio_stream_id: aud,
         subtitle_stream_id: sub,
     });
-    crate::player::log(&format!("select streams: part={part} audio={aud} sub={sub} -> HTTP {st}"));
+    crate::player::log(&format!(
+        "select streams: part={part} audio={aud} sub={sub} -> HTTP {st}"
+    ));
 }
 
 /// Fresh opaque session id per playback. Reads the kernel UUID (the TV is Linux); falls
@@ -2022,21 +2120,37 @@ fn resolve_playqueue(c: &crate::plex::Client, rk: &str, session: &str, cached: &
             let up_next = q.next.as_ref().and_then(up_next_of);
             crate::player::log(&format!(
                 "playqueue: id={} item={} remaining={} rows={} next={}",
-                q.id, q.selected_item_id, q.remaining, q.items.len(),
-                up_next.as_ref().map(|u| format!("S{}E{} {}", u.season, u.index, u.rk))
+                q.id,
+                q.selected_item_id,
+                q.remaining,
+                q.items.len(),
+                up_next
+                    .as_ref()
+                    .map(|u| format!("S{}E{} {}", u.season, u.index, u.rk))
                     .unwrap_or_else(|| "-".into())
             ));
             QueueInfo {
                 machine_id: mid,
-                id: if q.id > 0 { q.id.to_string() } else { String::new() },
-                item_id: if q.selected_item_id > 0 { q.selected_item_id.to_string() } else { String::new() },
+                id: if q.id > 0 {
+                    q.id.to_string()
+                } else {
+                    String::new()
+                },
+                item_id: if q.selected_item_id > 0 {
+                    q.selected_item_id.to_string()
+                } else {
+                    String::new()
+                },
                 up_next,
                 rows: q.items,
             }
         }
         None => {
             crate::player::log("playqueue: POST failed");
-            QueueInfo { machine_id: mid, ..Default::default() }
+            QueueInfo {
+                machine_id: mid,
+                ..Default::default()
+            }
         }
     }
 }
@@ -2096,12 +2210,18 @@ impl ResolveEnv {
         ResolveEnv {
             sid,
             // the cache only counts when it was learned from the server this play is against
-            machine_id: if s.machine_sid == sid { s.machine_id.clone() } else { String::new() },
+            machine_id: if s.machine_sid == sid {
+                s.machine_id.clone()
+            } else {
+                String::new()
+            },
             audio_sid: cur_audio_sid(),
             sub_sid: cur_sub_sid(),
             cached_item: crate::metadata::cached_playing(sid, rk),
             quality: quality(),
-            src_kbps: crate::metadata::current().filter(|d| detail_describes(d, sid, rk)).map_or(0, source_kbps),
+            src_kbps: crate::metadata::current()
+                .filter(|d| detail_describes(d, sid, rk))
+                .map_or(0, source_kbps),
         }
     }
 }
@@ -2127,7 +2247,9 @@ impl ResolveEnv {
 /// ceiling the wrong file's bitrate.
 fn detail_describes(d: &crate::metadata::Detail, sid: ServerId, rk: &str) -> bool {
     crate::plex::same_item((d.sid, &d.rk), (sid, rk))
-        || d.on_deck.as_ref().is_some_and(|ep| crate::plex::same_item((d.sid, &ep.rk), (sid, rk)))
+        || d.on_deck
+            .as_ref()
+            .is_some_and(|ep| crate::plex::same_item((d.sid, &ep.rk), (sid, rk)))
 }
 
 /// The source rate to judge against a ceiling, in kbps: **the VIDEO stream's own**, falling back
@@ -2168,7 +2290,7 @@ pub(crate) struct Plan {
     pub part_id: i64,
     pub pq_id: String,
     pub pq_item_id: String,
-    pub machine_id: String,   // "" = leave the cached one alone
+    pub machine_id: String, // "" = leave the cached one alone
     pub vcodec: String,
     pub acodec: String,
     /// The SOURCE file's codecs, kept beside the ones above because on a transcode those are the
@@ -2305,7 +2427,10 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveE
     // the playing item's OWN track lists (menu + audio pick + esInfo fps read them) — the
     // loaded detail can be a different item (show page / straight-from-Home play)
     // detail already had this item's streams — no GET
-    plan.playing = env.cached_item.clone().or_else(|| crate::metadata::fetch_playing_item(env.sid, rk));
+    plan.playing = env
+        .cached_item
+        .clone()
+        .or_else(|| crate::metadata::fetch_playing_item(env.sid, rk));
     // Server-adjudicated: the Media Decision Engine decides direct-play vs transcode from our
     // capability profile. Falls back to the local codec test if the server returns no usable
     // decision; the local-sample/demo path (rk empty) skips the decision entirely.
@@ -2328,7 +2453,11 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveE
     // SoC, but a branch that never asks the server never meets the limitation, so a 4K file with
     // any AAC/AC3 track (nearly every file has one) direct-played straight onto the bounded
     // decoder. See `video_direct_plays` for the gate itself.
-    let (src_w, src_h) = plan.playing.as_ref().map(|p| (p.width, p.height)).unwrap_or((0, 0));
+    let (src_w, src_h) = plan
+        .playing
+        .as_ref()
+        .map(|p| (p.width, p.height))
+        .unwrap_or((0, 0));
     // The DV layering rides the same playing-item store as the frame size, for the same reason:
     // it is the PLAYED LEAF's, not the detail page's (a show page's Detail describes whichever
     // episode backfilled it). Absent store → default `Dovi`, which is all-zero and refuses
@@ -2394,8 +2523,16 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveE
     let streamable = part_is_streamable(part);
     // snapshot the track list on the MAIN thread and pass it by reference — the resolve worker
     // (step 7) gets an owned copy instead, and never touches the `&'static` store.
-    let tracks = plan.playing.as_ref().map(|p| p.audio.as_slice()).unwrap_or(&[]);
-    let audio_sel = if rk.is_empty() { None } else { pick_dp_audio(tracks, acodec) };
+    let tracks = plan
+        .playing
+        .as_ref()
+        .map(|p| p.audio.as_slice())
+        .unwrap_or(&[]);
+    let audio_sel = if rk.is_empty() {
+        None
+    } else {
+        pick_dp_audio(tracks, acodec)
+    };
     // What the CONNECTION to this server allows, beside what the pipeline can decode: a Plex
     // relay is a ~2 Mbit/s tunnel, so neither of the two flavors that ship the file's own bytes
     // (direct play, and the uncapped container remux) can be asked for over one. Unrestricted on
@@ -2491,7 +2628,12 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveE
             None
         };
         let subtitle_ordinal = direct
-            .then(|| plan.playing.as_ref().and_then(|p| pick_dp_subtitle(&p.subs)).map(|(_, ord)| ord))
+            .then(|| {
+                plan.playing
+                    .as_ref()
+                    .and_then(|p| pick_dp_subtitle(&p.subs))
+                    .map(|(_, ord)| ord)
+            })
             .flatten();
         plan.auto_original = Some(AutoOriginalCandidate {
             probe_url: client.direct_play_url(part, &session).to_url(),
@@ -2499,7 +2641,11 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveE
             vcodec: vcodec.to_string(),
             acodec: achosen,
             fps,
-            dovi: if direct { dovi } else { crate::metadata::Dovi::NONE },
+            dovi: if direct {
+                dovi
+            } else {
+                crate::metadata::Dovi::NONE
+            },
             immersive,
             audio_sid: asid,
             audio_ordinal,
@@ -2535,7 +2681,11 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveE
             let probe = (link == crate::abr::LinkKind::Remote && original_feasible)
                 .then(|| {
                     measure_remote_original(
-                        &plan.auto_original.as_ref().expect("feasible implies present").probe_url,
+                        &plan
+                            .auto_original
+                            .as_ref()
+                            .expect("feasible implies present")
+                            .probe_url,
                         source_transport_kbps,
                     )
                 })
@@ -2562,7 +2712,9 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveE
             quality_policy(env.quality, false, env.src_kbps, src_w, src_h),
         );
         directplay = false;
-        plan.delivery = crate::plex::TranscodeDelivery::FixedHls { seconds_per_segment: 2 };
+        plan.delivery = crate::plex::TranscodeDelivery::FixedHls {
+            seconds_per_segment: 2,
+        };
         let rung = decision
             .as_ref()
             .map(|d| d.rung)
@@ -2631,7 +2783,11 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveE
             .playing
             .as_ref()
             .and_then(|p| {
-                if aidx >= 0 { p.audio.get(aidx as usize) } else { p.audio.iter().find(|a| a.selected) }
+                if aidx >= 0 {
+                    p.audio.get(aidx as usize)
+                } else {
+                    p.audio.iter().find(|a| a.selected)
+                }
             })
             .is_some_and(|a| a.has_atmos());
         if plan.immersive {
@@ -2645,7 +2801,8 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveE
             // read by the DEMUX THREAD on every reopen. A worker writing it would change the audio
             // track of whatever is currently on screen. apply_plan does it, on the main thread.
             plan.feed_audio_ordinal = Some(
-                plan.playing.as_ref()
+                plan.playing
+                    .as_ref()
                     .map(|p| crate::metadata::audio_ordinal(&p.audio, aidx as usize))
                     .unwrap_or(aidx),
             );
@@ -2653,7 +2810,10 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveE
         // honour a subtitle the server already has selected for this part (chosen on another
         // client, or by this app in an earlier session) — free here, since the direct-play path
         // renders subtitles itself. apply_plan installs it on the main thread.
-        let sub_sel = plan.playing.as_ref().and_then(|p| pick_dp_subtitle(&p.subs));
+        let sub_sel = plan
+            .playing
+            .as_ref()
+            .and_then(|p| pick_dp_subtitle(&p.subs));
         if let Some((ssid, ord)) = sub_sel {
             plan.sub_sid = ssid;
             plan.sub_render_ordinal = Some(ord);
@@ -2689,10 +2849,16 @@ fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveE
     // link cannot carry.
     let remux = video_dp && allowed.remux && !no_video_copy;
     if remux {
-        let achosen = audio_sel.as_ref().map(|(_, c, _)| c.clone()).unwrap_or_else(|| acodec.to_string());
+        let achosen = audio_sel
+            .as_ref()
+            .map(|(_, c, _)| c.clone())
+            .unwrap_or_else(|| acodec.to_string());
         plan.vcodec = vcodec.to_string();
         plan.acodec = achosen;
-    } else if matches!(plan.delivery, crate::plex::TranscodeDelivery::FixedHls { .. }) {
+    } else if matches!(
+        plan.delivery,
+        crate::plex::TranscodeDelivery::FixedHls { .. }
+    ) {
         plan.vcodec = "h264".into();
         plan.acodec = "aac".into();
     } else {
@@ -2804,24 +2970,40 @@ const PREF_AUDIO_LANG: &str = "eng";
 /// playback — a worker replacing the store would drop those out from under the draw path, so the
 /// resolve must never touch it. (b) Being pure makes the selection ladder host-testable, which it
 /// has never been; see the tests at the foot of this file.
-fn pick_dp_audio(tracks: &[crate::metadata::Stream], default_acodec: &str) -> Option<(i32, String, i64)> {
+fn pick_dp_audio(
+    tracks: &[crate::metadata::Stream],
+    default_acodec: &str,
+) -> Option<(i32, String, i64)> {
     let dp = crate::plex::is_dp_audio;
     if tracks.is_empty() {
         // no track info — fall back to the codec-default (or transcode if that isn't DP)
-        return if dp(default_acodec) { Some((-1, default_acodec.to_string(), 0)) } else { None };
+        return if dp(default_acodec) {
+            Some((-1, default_acodec.to_string(), 0))
+        } else {
+            None
+        };
     }
     let pick = |i: usize| (i as i32, tracks[i].codec.to_lowercase(), tracks[i].id);
     // 1. the server's own current selection, when it is a real pick (differs from the file's
     //    default flag — see the doc) and direct-playable: honours a choice made elsewhere
-    if let Some(i) = tracks.iter().position(|s| s.selected && !s.default && dp(&s.codec.to_lowercase())) {
+    if let Some(i) = tracks
+        .iter()
+        .position(|s| s.selected && !s.default && dp(&s.codec.to_lowercase()))
+    {
         return Some(pick(i));
     }
     // 2. preferred-language, direct-playable
-    if let Some(i) = tracks.iter().position(|s| dp(&s.codec.to_lowercase()) && s.lang_code == PREF_AUDIO_LANG) {
+    if let Some(i) = tracks
+        .iter()
+        .position(|s| dp(&s.codec.to_lowercase()) && s.lang_code == PREF_AUDIO_LANG)
+    {
         return Some(pick(i));
     }
     // 3. the file's flagged default track, if direct-playable (explicit index)
-    if let Some(i) = tracks.iter().position(|s| s.default && dp(&s.codec.to_lowercase())) {
+    if let Some(i) = tracks
+        .iter()
+        .position(|s| s.default && dp(&s.codec.to_lowercase()))
+    {
         return Some(pick(i));
     }
     if dp(default_acodec) && !tracks.iter().any(|s| s.default) {
@@ -2829,7 +3011,10 @@ fn pick_dp_audio(tracks: &[crate::metadata::Stream], default_acodec: &str) -> Op
         return Some((-1, default_acodec.to_string(), 0));
     }
     // 4. any direct-playable track (smart direct-play over a non-DP default)
-    tracks.iter().position(|s| dp(&s.codec.to_lowercase())).map(pick)
+    tracks
+        .iter()
+        .position(|s| dp(&s.codec.to_lowercase()))
+        .map(pick)
 }
 
 /// The subtitle to turn ON at the start of a DIRECT-PLAY, from the server's own per-part
@@ -2972,7 +3157,14 @@ pub(crate) fn playback_preview(d: &crate::metadata::Detail) -> Option<Preview> {
         Some(ep) => (ep.part.as_str(), ep.vcodec.as_str()),
         None => (d.part.as_str(), d.vcodec.as_str()),
     };
-    let p = playback_preview_of(part, vcodec, d.width, d.height, d.dovi.presentation_now(), &d.audio)?;
+    let p = playback_preview_of(
+        part,
+        vcodec,
+        d.width,
+        d.height,
+        d.dovi.presentation_now(),
+        &d.audio,
+    )?;
     // The user's quality ceiling is the LAST gate `build_stream` applies, so it is the last one
     // here too — and it can only ever downgrade, never promote. Without this the facts row would
     // promise "Direct Play" for a source the rung is about to send to an encoder, which is the
@@ -3007,7 +3199,9 @@ pub(crate) fn playback_preview_of(
         return None; // nothing playable loaded (a show still resolving its episode)
     }
     let video = video_direct_plays(vcodec, width, height, dv, crate::devcaps::caps());
-    let audio = audio_streams.iter().any(|a| crate::plex::is_dp_audio(&a.codec));
+    let audio = audio_streams
+        .iter()
+        .any(|a| crate::plex::is_dp_audio(&a.codec));
     // Mirrors `build_stream`'s own ladder: the video gate decides whether an ENCODER runs at all,
     // and only once it has passed do the container and the audio decide between pulling the file
     // ourselves and asking the server to repackage it.
@@ -3057,7 +3251,9 @@ static PLAY_BUSY: AtomicBool = AtomicBool::new(false);
 static PLAY_SLOT: Mutex<Option<(u32, Plan, String)>> = Mutex::new(None);
 
 /// True while a resolve is in flight — the HUD renders `PlaybackState::Resolving` from this.
-pub(crate) fn play_pending() -> bool { PLAY_BUSY.load(Ordering::SeqCst) }
+pub(crate) fn play_pending() -> bool {
+    PLAY_BUSY.load(Ordering::SeqCst)
+}
 
 /// The server an item on a browsing surface came from. MAIN THREAD.
 ///
@@ -3077,7 +3273,15 @@ pub(crate) fn surface_sid() -> ServerId {
 /// with more than one source on Home, the item being started and the server currently being browsed
 /// routinely differ, and every id in the playback protocol below (`rk`, the Part, the streams, the
 /// PlayQueue, the resume point) belongs to the former.
-pub(crate) fn request_play(sid: ServerId, rk: &str, part: &str, vcodec: &str, acodec: &str, title: &str, ctx: &str) {
+pub(crate) fn request_play(
+    sid: ServerId,
+    rk: &str,
+    part: &str,
+    vcodec: &str,
+    acodec: &str,
+    title: &str,
+    ctx: &str,
+) {
     if part.is_empty() && rk.is_empty() {
         return;
     }
@@ -3124,7 +3328,12 @@ pub(crate) fn request_play(sid: ServerId, rk: &str, part: &str, vcodec: &str, ac
     let env = ResolveEnv::snapshot(sid, rk);
     let gen = PLAY_GEN.fetch_add(1, Ordering::SeqCst) + 1;
     PLAY_BUSY.store(true, Ordering::SeqCst);
-    let (rk, part, vc, ac) = (rk.to_string(), part.to_string(), vcodec.to_string(), acodec.to_string());
+    let (rk, part, vc, ac) = (
+        rk.to_string(),
+        part.to_string(),
+        vcodec.to_string(),
+        acodec.to_string(),
+    );
     let spawned = crate::task::spawn_small("resolve", move || {
         // catch_unwind OUTSIDE the mailbox write, like load_season: a panicking resolve must still
         // land (as !ok) or PLAY_BUSY latches and the screen wedges on a spinner forever.
@@ -3151,7 +3360,12 @@ pub(crate) fn request_play_movie(m: &PmsMovie) {
         return;
     }
     let rating = if m.rating.is_empty() { "NR" } else { &m.rating };
-    let ctx = format!("{} \u{b7} {} \u{b7} {}", m.year, rating, crate::ui::fmt::dur_short(m.dur_ns / 1_000_000));
+    let ctx = format!(
+        "{} \u{b7} {} \u{b7} {}",
+        m.year,
+        rating,
+        crate::ui::fmt::dur_short(m.dur_ns / 1_000_000)
+    );
     // **The ITEM's server, not the browsed one.** This passed `surface_sid()` — i.e. whichever
     // server happens to be current — while the row has carried its own `sid` since item identity
     // became a `(server, key)` pair. Starting a borrowed film therefore sent that film's
@@ -3162,7 +3376,15 @@ pub(crate) fn request_play_movie(m: &PmsMovie) {
     //
     // `surface_sid()` stays as the fallback for a row with no server on it: rows built by host
     // tests, and any row parsed before a registry existed, carry `UNSET`.
-    request_play(item_sid(m.sid), &m.rk, &m.part, &m.vcodec, &m.acodec, &m.title, &ctx);
+    request_play(
+        item_sid(m.sid),
+        &m.rk,
+        &m.part,
+        &m.vcodec,
+        &m.acodec,
+        &m.title,
+        &ctx,
+    );
 }
 
 /// The server an item's ids belong to: its own when it has one, else the browsed surface.
@@ -3188,11 +3410,19 @@ pub(crate) fn item_sid(sid: ServerId) -> ServerId {
 /// pre-roll doesn't change shape underneath the user when it does.
 pub(crate) fn request_play_up_next(u: UpNext) {
     let ctx = crate::ui::fmt::episode_kicker(u.season, u.index, &u.ep_title);
-    let title = if u.show_title.is_empty() { &u.ep_title } else { &u.show_title };
+    let title = if u.show_title.is_empty() {
+        &u.ep_title
+    } else {
+        &u.show_title
+    };
     // The successor comes out of the PlayQueue of the item now playing, so its server is that
     // item's — [`cur_sid`], not whatever surface is behind the player. Falls back to the browsing
     // surface only if nothing is playing, which the Up Next control cannot actually reach.
-    let sid = if cur_sid().is_set() { cur_sid() } else { surface_sid() };
+    let sid = if cur_sid().is_set() {
+        cur_sid()
+    } else {
+        surface_sid()
+    };
     request_play(sid, &u.rk, &u.part, &u.vcodec, &u.acodec, title, &ctx);
 }
 
@@ -3213,7 +3443,9 @@ pub(crate) fn cancel_play() {
 /// start. A stale landing (superseded) is dropped.
 pub(crate) fn pump_play() -> bool {
     let taken = PLAY_SLOT.lock().unwrap_or_else(|e| e.into_inner()).take();
-    let Some((gen, plan, rk)) = taken else { return false };
+    let Some((gen, plan, rk)) = taken else {
+        return false;
+    };
     if gen != PLAY_GEN.load(Ordering::SeqCst) {
         return false; // superseded while in flight
     }
@@ -3344,7 +3576,10 @@ fn apply_plan(plan: Plan, rk: &str) {
     // AFTER that reset (this lands a frame or more later, on the main thread, before the engine
     // starts — so the demuxer's per-block `desired_sub_idx` gate sees it from the first cue).
     if let Some(ord) = plan.sub_render_ordinal {
-        crate::player::log(&format!("server-selected subtitle: sid={} render_idx={ord}", plan.sub_sid));
+        crate::player::log(&format!(
+            "server-selected subtitle: sid={} render_idx={ord}",
+            plan.sub_sid
+        ));
         crate::player::request_subtitle(ord);
     }
     // A landing is a DISCRETE change to what is on screen, so it owes the present gate a poke —
@@ -3376,7 +3611,10 @@ fn retranscode_as(offset_secs: i64, remux: bool) -> Option<String> {
     // must leave the still-playing HLS session untouched, not strand it behind a remux marker.
     let remux_codecs = if remux {
         let s = session();
-        Some((s.src_vcodec.clone(), s.auto_original.as_ref()?.acodec.clone()))
+        Some((
+            s.src_vcodec.clone(),
+            s.auto_original.as_ref()?.acodec.clone(),
+        ))
     } else {
         None
     };
@@ -3394,27 +3632,32 @@ fn retranscode_as(offset_secs: i64, remux: bool) -> Option<String> {
     // segmented HLS is H264/AAC, while progressive MKV follows the device codec chain + AC3.
     if let Some((vcodec, acodec)) = remux_codecs {
         set_stream_codecs(&vcodec, &acodec);
-    } else if matches!(cur_delivery(), crate::plex::TranscodeDelivery::FixedHls { .. }) {
+    } else if matches!(
+        cur_delivery(),
+        crate::plex::TranscodeDelivery::FixedHls { .. }
+    ) {
         set_stream_codecs("h264", "aac");
     } else {
         set_stream_codecs(crate::devcaps::caps().encode_vcodec(), "ac3");
     }
     put_selection(cur_sid(), cur_part_id(), cur_audio_sid(), cur_sub_sid()); // drives the encode + burn
     let qsess = sess();
-    let expected_encoder = ACTIVE_ENCODER.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    let sp =
-        transcode_spec(
-            &rk,
-            &qsess,
-            &qsess,
-            remux,
-            is_no_video_copy(),
-            offset_secs.max(0),
-            cur_audio_sid(),
-            cur_sub_sid(),
-            cur_ceiling(),
-            cur_delivery(),
-        );
+    let expected_encoder = ACTIVE_ENCODER
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let sp = transcode_spec(
+        &rk,
+        &qsess,
+        &qsess,
+        remux,
+        is_no_video_copy(),
+        offset_secs.max(0),
+        cur_audio_sid(),
+        cur_sub_sid(),
+        cur_ceiling(),
+        cur_delivery(),
+    );
     if let Some(mc) = c.transcode_decision(&sp) {
         apply_decision_codecs(&mc); // reload builds a fresh Load payload — match the real output
     }
@@ -3472,7 +3715,10 @@ pub(crate) fn commit_audio_selection(idx: i32, codec: &str, stream_id: i64) {
     // The recovery declaration captures one exact source/audio pairing. Once the user changes
     // that pairing while HLS is live, do not later resurrect the old track behind their back.
     // A new playback (or selecting Auto again from Original) can establish a fresh candidate.
-    if matches!(cur_delivery(), crate::plex::TranscodeDelivery::FixedHls { .. }) {
+    if matches!(
+        cur_delivery(),
+        crate::plex::TranscodeDelivery::FixedHls { .. }
+    ) {
         session_mut(|s| s.auto_original = None);
     }
     if !is_transcoding() && crate::plex::is_dp_audio(codec) {
@@ -3495,7 +3741,10 @@ pub(crate) fn commit_audio_selection(idx: i32, codec: &str, stream_id: i64) {
 pub(crate) fn commit_subtitle_selection(sub_idx: i32, stream_id: i64) {
     // As with audio, a non-Off subtitle may require server burn-in and is not interchangeable
     // with the direct declaration captured at playback start. Off is always safe to carry back.
-    if matches!(cur_delivery(), crate::plex::TranscodeDelivery::FixedHls { .. }) {
+    if matches!(
+        cur_delivery(),
+        crate::plex::TranscodeDelivery::FixedHls { .. }
+    ) {
         session_mut(|s| {
             if sub_idx < 0 {
                 if let Some(candidate) = s.auto_original.as_mut() {
@@ -3532,12 +3781,21 @@ pub(crate) fn commit_subtitle_selection(sub_idx: i32, stream_id: i64) {
 /// a report that LANDS on the wrong server is a success as far as that outcome can tell, so the
 /// capture below is still the only thing making the right one land.) So the reporter captures the id at its spawn site
 /// (`engine.rs`, beside the `rk` it already captured) and hands it back here.
-pub(crate) fn report_timeline(sid: ServerId, rk: &str, state: crate::plex::TimelineState, t_ms: i64, d_ms: i64) {
+pub(crate) fn report_timeline(
+    sid: ServerId,
+    rk: &str,
+    state: crate::plex::TimelineState,
+    t_ms: i64,
+    d_ms: i64,
+) {
     let c = match crate::plex::client_for(sid) {
         Some(c) => c,
         None => return,
     };
-    let active = ACTIVE_ENCODER.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let active = ACTIVE_ENCODER
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     let session = if active.is_empty() { sess() } else { active };
     let (pq, pqi) = (pq_id(), pq_item_id());
     let ok = c.timeline(&crate::plex::TimelineReport {
@@ -3556,7 +3814,11 @@ pub(crate) fn report_timeline(sid: ServerId, rk: &str, state: crate::plex::Timel
     // one it did — for the whole length of a film, ten seconds at a time. The success half is
     // already on that line and this runs at 0.1 Hz, so only the silence needs a line of its own.
     if !ok {
-        crate::log(&format!("timeline post failed rk={rk} state={} t={}s", state.as_str(), t_ms / 1000));
+        crate::log(&format!(
+            "timeline post failed rk={rk} state={} t={}s",
+            state.as_str(),
+            t_ms / 1000
+        ));
     }
 }
 
@@ -3583,7 +3845,11 @@ mod tests {
     const UNMEASURED: (i64, i64, i64) = (0, 0, 0); // PMS said nothing (a play straight off a shelf)
 
     /// What `build_stream` computes, spelled once.
-    fn allowed(link: Option<crate::plex::probe::Location>, q: Quality, src: (i64, i64, i64)) -> crate::plex::LinkPolicy {
+    fn allowed(
+        link: Option<crate::plex::probe::Location>,
+        q: Quality,
+        src: (i64, i64, i64),
+    ) -> crate::plex::LinkPolicy {
         let auto_original = q == Quality::Auto && link == Some(crate::plex::probe::Location::Local);
         flavors_allowed(
             crate::plex::link_policy(link),
@@ -3605,7 +3871,10 @@ mod tests {
             );
             assert_eq!(
                 quality_policy(Quality::Auto, false, src.0, src.1, src.2),
-                crate::plex::LinkPolicy { direct_play: false, remux: false },
+                crate::plex::LinkPolicy {
+                    direct_play: false,
+                    remux: false
+                },
                 "Auto without a positive Original measurement must use HLS"
             );
             assert_eq!(
@@ -3614,11 +3883,17 @@ mod tests {
                 "Auto's proven Original state must not start an encoder"
             );
             // …and composed, on every link tier, Original is exactly what the link alone said.
-            for link in [None, Some(crate::plex::probe::Location::Local),
-                         Some(crate::plex::probe::Location::Remote),
-                         Some(crate::plex::probe::Location::Relay)] {
-                assert_eq!(allowed(link, Quality::Original, src), crate::plex::link_policy(link),
-                    "Original changed the answer for link {link:?} on {src:?}");
+            for link in [
+                None,
+                Some(crate::plex::probe::Location::Local),
+                Some(crate::plex::probe::Location::Remote),
+                Some(crate::plex::probe::Location::Relay),
+            ] {
+                assert_eq!(
+                    allowed(link, Quality::Original, src),
+                    crate::plex::link_policy(link),
+                    "Original changed the answer for link {link:?} on {src:?}"
+                );
             }
         }
         // Neither mode carries a fixed ceiling. The parameter half of Original's claim remains
@@ -3632,8 +3907,14 @@ mod tests {
         assert_eq!(quality_ladder_for(false).first(), Some(&Quality::Original));
         assert!(!quality_ladder_for(false).contains(&Quality::Auto));
         assert_eq!(quality_ladder_for(true), &QUALITY_LADDER);
-        assert_eq!(quality_ladder_for(true)[..2], [Quality::Auto, Quality::Original]);
-        assert!(auto_quality_ready(), "the integrated HLS prime/swap path owns production Auto");
+        assert_eq!(
+            quality_ladder_for(true)[..2],
+            [Quality::Auto, Quality::Original]
+        );
+        assert!(
+            auto_quality_ready(),
+            "the integrated HLS prime/swap path owns production Auto"
+        );
         assert_eq!(supported_quality(Quality::Auto), Quality::Auto);
     }
 
@@ -3672,13 +3953,21 @@ mod tests {
             .original
         };
         assert!(go(10_000, fast));
-        assert!(!go(10_000, observation(1_000_000, 800, true)), "10 Mbit/s of 12.5 is not headroom");
-        assert!(!go(10_000, observation(1_000_000, 500, false)), "a truncated probe proves a floor");
-        assert!(!go(0, fast), "an unknown source bitrate cannot be reasoned about");
+        assert!(
+            !go(10_000, observation(1_000_000, 800, true)),
+            "10 Mbit/s of 12.5 is not headroom"
+        );
+        assert!(
+            !go(10_000, observation(1_000_000, 500, false)),
+            "a truncated probe proves a floor"
+        );
+        assert!(
+            !go(0, fast),
+            "an unknown source bitrate cannot be reasoned about"
+        );
         // ...and neither of the other two link classes consults a probe at all.
         for link in [crate::abr::LinkKind::Local, crate::abr::LinkKind::Relay] {
-            let decision =
-                crate::abr::bootstrap(link, true, 10_000, None, &catalog, &policy);
+            let decision = crate::abr::bootstrap(link, true, 10_000, None, &catalog, &policy);
             assert_eq!(decision.original, link == crate::abr::LinkKind::Local);
         }
     }
@@ -3688,7 +3977,10 @@ mod tests {
         assert_eq!(remote_probe_target_bytes(0), None);
         assert_eq!(remote_probe_target_bytes(720), Some(REMOTE_PROBE_MIN_BYTES));
         assert_eq!(remote_probe_target_bytes(8_000), Some(1_000_000));
-        assert_eq!(remote_probe_target_bytes(200_000), Some(REMOTE_PROBE_MAX_BYTES));
+        assert_eq!(
+            remote_probe_target_bytes(200_000),
+            Some(REMOTE_PROBE_MAX_BYTES)
+        );
     }
 
     /// **GATE 2 — under-ceiling content keeps the fast paths.** Picking "1080p · 8 Mbps" must not
@@ -3698,11 +3990,23 @@ mod tests {
     #[test]
     fn a_source_measured_under_the_ceiling_stays_direct_play_eligible() {
         let p = allowed(None, Quality::P1080, HD_SMALL);
-        assert!(p.direct_play, "3 Mbps 720p is under 8 Mbps 1080p — nothing to fix");
-        assert!(p.remux, "…and a container remux of it is under the ceiling too");
+        assert!(
+            p.direct_play,
+            "3 Mbps 720p is under 8 Mbps 1080p — nothing to fix"
+        );
+        assert!(
+            p.remux,
+            "…and a container remux of it is under the ceiling too"
+        );
         // true right down the ladder, until the rung actually bites
-        assert!(allowed(None, Quality::P720, HD_SMALL).direct_play, "3 Mbps 720p fits 4 Mbps 720p");
-        assert!(!allowed(None, Quality::P720Low, HD_SMALL).direct_play, "…but not 2 Mbps");
+        assert!(
+            allowed(None, Quality::P720, HD_SMALL).direct_play,
+            "3 Mbps 720p fits 4 Mbps 720p"
+        );
+        assert!(
+            !allowed(None, Quality::P720Low, HD_SMALL).direct_play,
+            "…but not 2 Mbps"
+        );
     }
 
     /// **GATE 3 — over-ceiling loses DIRECT PLAY, and this is the whole point.** A 30 Mbit/s 1080p
@@ -3714,8 +4018,14 @@ mod tests {
     /// and over on FRAME alone (a 4K source against a 1080p rung, at a rate the rung allows).
     #[test]
     fn a_source_over_the_ceiling_is_refused_direct_play() {
-        assert!(!allowed(None, Quality::P1080, HD_BIG).direct_play, "30 Mbps is over the 8 Mbps rung");
-        assert!(!allowed(None, Quality::P1080, (4000, 3840, 2160)).direct_play, "4K is over a 1080p rung");
+        assert!(
+            !allowed(None, Quality::P1080, HD_BIG).direct_play,
+            "30 Mbps is over the 8 Mbps rung"
+        );
+        assert!(
+            !allowed(None, Quality::P1080, (4000, 3840, 2160)).direct_play,
+            "4K is over a 1080p rung"
+        );
         // …and the unmeasured source fails CLOSED, which is the rule that makes a rung mean
         // something on a play from a shelf that never loaded a detail page.
         assert!(!allowed(None, Quality::P1080, UNMEASURED).direct_play,
@@ -3730,8 +4040,17 @@ mod tests {
     #[test]
     fn a_source_over_the_ceiling_is_refused_the_remux_as_well() {
         let p = allowed(None, Quality::P1080, HD_BIG);
-        assert!(!p.remux, "a remux is the same bytes at the same rate, one layer down");
-        assert_eq!(p, crate::plex::LinkPolicy { direct_play: false, remux: false });
+        assert!(
+            !p.remux,
+            "a remux is the same bytes at the same rate, one layer down"
+        );
+        assert_eq!(
+            p,
+            crate::plex::LinkPolicy {
+                direct_play: false,
+                remux: false
+            }
+        );
         // A 4K remux — the flavor that exists to keep 4K/HDR intact — is exactly what a low rung
         // has to refuse, or the rung buys nothing on the biggest files in the library.
         assert!(!allowed(None, Quality::P720, UHD_REMUX).remux);
@@ -3749,15 +4068,25 @@ mod tests {
                 // relay denies both, and NOTHING a user can pick gives either back
                 assert_eq!(
                     allowed(Some(crate::plex::probe::Location::Relay), q, src),
-                    crate::plex::LinkPolicy { direct_play: false, remux: false },
+                    crate::plex::LinkPolicy {
+                        direct_play: false,
+                        remux: false
+                    },
                     "a relay was loosened by rung {q:?} on {src:?}"
                 );
                 // and on an unrestricted link the answer is the user's policy, unchanged
-                for link in [None, Some(crate::plex::probe::Location::Local), Some(crate::plex::probe::Location::Remote)] {
-                    let auto_original = q == Quality::Auto
-                        && link == Some(crate::plex::probe::Location::Local);
-                    assert_eq!(allowed(link, q, src), quality_policy(q, auto_original, src.0, src.1, src.2),
-                        "link {link:?} altered rung {q:?} on {src:?}");
+                for link in [
+                    None,
+                    Some(crate::plex::probe::Location::Local),
+                    Some(crate::plex::probe::Location::Remote),
+                ] {
+                    let auto_original =
+                        q == Quality::Auto && link == Some(crate::plex::probe::Location::Local);
+                    assert_eq!(
+                        allowed(link, q, src),
+                        quality_policy(q, auto_original, src.0, src.1, src.2),
+                        "link {link:?} altered rung {q:?} on {src:?}"
+                    );
                 }
             }
         }
@@ -3779,17 +4108,30 @@ mod tests {
         let show = crate::metadata::Detail {
             sid: a,
             rk: "100".into(),
-            on_deck: Some(crate::metadata::Episode { rk: "205".into(), ..Default::default() }),
+            on_deck: Some(crate::metadata::Episode {
+                rk: "205".into(),
+                ..Default::default()
+            }),
             ..Default::default()
         };
         assert!(detail_describes(&show, a, "100"), "its own key");
-        assert!(detail_describes(&show, a, "205"), "the episode Play would actually start");
-        assert!(!detail_describes(&show, a, "206"), "a different episode is not this one");
+        assert!(
+            detail_describes(&show, a, "205"),
+            "the episode Play would actually start"
+        );
+        assert!(
+            !detail_describes(&show, a, "206"),
+            "a different episode is not this one"
+        );
         // …and neither key may match across servers, or the ceiling judges the wrong file
         assert!(!detail_describes(&show, b, "100"));
         assert!(!detail_describes(&show, b, "205"));
         // a movie has no on-deck episode and must still answer for itself
-        let movie = crate::metadata::Detail { sid: a, rk: "7".into(), ..Default::default() };
+        let movie = crate::metadata::Detail {
+            sid: a,
+            rk: "7".into(),
+            ..Default::default()
+        };
         assert!(detail_describes(&movie, a, "7"));
         assert!(!detail_describes(&movie, a, "100"));
     }
@@ -3803,17 +4145,27 @@ mod tests {
     fn the_source_rate_is_the_video_streams_own_where_the_server_gave_one() {
         let with_video = crate::metadata::Detail {
             bitrate: 8540, // 7900 video + a 640 kbps AC-3 track
-            video: Some(crate::metadata::Stream { bitrate: 7900, ..Default::default() }),
+            video: Some(crate::metadata::Stream {
+                bitrate: 7900,
+                ..Default::default()
+            }),
             ..Default::default()
         };
         assert_eq!(source_kbps(&with_video), 7900);
         // …which is what keeps it under an 8 Mbps rung its VIDEO does in fact fit
-        assert!(quality_policy(Quality::P1080, false, source_kbps(&with_video), 1920, 1080).direct_play);
-        assert!(!quality_policy(Quality::P1080, false, with_video.bitrate, 1920, 1080).direct_play,
-            "the whole-file figure is what made the rung bite early — this is the bug, pinned");
+        assert!(
+            quality_policy(Quality::P1080, false, source_kbps(&with_video), 1920, 1080).direct_play
+        );
+        assert!(
+            !quality_policy(Quality::P1080, false, with_video.bitrate, 1920, 1080).direct_play,
+            "the whole-file figure is what made the rung bite early — this is the bug, pinned"
+        );
 
         // no video record (a show with no episode backfill, an audio-only part) → whole-file
-        let bare = crate::metadata::Detail { bitrate: 8540, ..Default::default() };
+        let bare = crate::metadata::Detail {
+            bitrate: 8540,
+            ..Default::default()
+        };
         assert_eq!(source_kbps(&bare), 8540);
         // a video record PMS gave no bitrate for is not a measurement of 0 — fall back
         let unmeasured_stream = crate::metadata::Detail {
@@ -3858,13 +4210,23 @@ mod tests {
     /// order, which PMS may report out of document order) and on `external` (sidecars are not in
     /// the container at all, so the client renderer cannot count them).
     fn sub(id: i64, index: i64, lang: &str, external: bool) -> crate::metadata::Stream {
-        crate::metadata::Stream { index, external, ..trk(id, "srt", lang, false) }
+        crate::metadata::Stream {
+            index,
+            external,
+            ..trk(id, "srt", lang, false)
+        }
     }
 
     #[test]
     fn an_empty_track_list_falls_back_to_the_codec_default() {
-        assert_eq!(pick_dp_audio(&[], "ac3").map(|(i, c, _)| (i, c)), Some((-1, "ac3".into())));
-        assert!(pick_dp_audio(&[], "truehd").is_none(), "a non-direct-playable default must transcode");
+        assert_eq!(
+            pick_dp_audio(&[], "ac3").map(|(i, c, _)| (i, c)),
+            Some((-1, "ac3".into()))
+        );
+        assert!(
+            pick_dp_audio(&[], "truehd").is_none(),
+            "a non-direct-playable default must transcode"
+        );
     }
 
     #[test]
@@ -3923,7 +4285,10 @@ mod tests {
             server_selected(trk(10975, "eac3", "rus", true)),
             trk(10976, "eac3", "eng", false),
         ];
-        assert_eq!(pick_dp_audio(&tracks, "eac3"), Some((1, "eac3".into(), 10976)));
+        assert_eq!(
+            pick_dp_audio(&tracks, "eac3"),
+            Some((1, "eac3".into(), 10976))
+        );
     }
 
     #[test]
@@ -3943,7 +4308,12 @@ mod tests {
     /// the contract, and every row here is a shape the live server actually serves.
     #[test]
     fn the_audio_ladder_walks_its_rungs_in_order() {
-        let cases: [(&str, Vec<crate::metadata::Stream>, &str, Option<(i32, String, i64)>); 7] = [
+        let cases: [(
+            &str,
+            Vec<crate::metadata::Stream>,
+            &str,
+            Option<(i32, String, i64)>,
+        ); 7] = [
             (
                 "rung 1: a real server pick wins even against English",
                 vec![
@@ -3956,7 +4326,10 @@ mod tests {
             ),
             (
                 "rung 1 needs a real pick: the default echoed back is not one",
-                vec![server_selected(trk(1, "eac3", "rus", true)), trk(2, "eac3", "eng", false)],
+                vec![
+                    server_selected(trk(1, "eac3", "rus", true)),
+                    trk(2, "eac3", "eng", false),
+                ],
                 "eac3",
                 Some((1, "eac3".into(), 2)),
             ),
@@ -3984,13 +4357,19 @@ mod tests {
             ),
             (
                 "rung 4: a selected non-DP track with only a foreign DP sibling — smart-DP",
-                vec![server_selected(trk(1, "truehd", "eng", false)), trk(2, "ac3", "fra", false)],
+                vec![
+                    server_selected(trk(1, "truehd", "eng", false)),
+                    trk(2, "ac3", "fra", false),
+                ],
                 "truehd",
                 Some((1, "ac3".into(), 2)),
             ),
             (
                 "nothing direct-playable, selected or not → transcode",
-                vec![server_selected(trk(1, "truehd", "eng", false)), trk(2, "dts", "rus", true)],
+                vec![
+                    server_selected(trk(1, "truehd", "eng", false)),
+                    trk(2, "dts", "rus", true),
+                ],
                 "truehd",
                 None,
             ),
@@ -4019,7 +4398,10 @@ mod tests {
     fn an_external_selected_subtitle_is_left_off() {
         // A sidecar can only be shown by a server burn; forcing a transcode to obey a stored
         // flag is not a trade the user asked for, so the direct-play path leaves subs off.
-        let subs = [server_selected(sub(10, 3, "eng", true)), sub(11, 4, "rus", false)];
+        let subs = [
+            server_selected(sub(10, 3, "eng", true)),
+            sub(11, 4, "rus", false),
+        ];
         assert_eq!(pick_dp_subtitle(&subs), None);
     }
 
@@ -4027,7 +4409,11 @@ mod tests {
     fn no_selected_subtitle_means_subtitles_stay_off() {
         assert_eq!(pick_dp_subtitle(&[]), None);
         let subs = [sub(10, 3, "eng", false), sub(11, 4, "rus", false)];
-        assert_eq!(pick_dp_subtitle(&subs), None, "the file's own tracks are not an instruction");
+        assert_eq!(
+            pick_dp_subtitle(&subs),
+            None,
+            "the file's own tracks are not an instruction"
+        );
     }
 
     #[test]
@@ -4058,13 +4444,31 @@ mod tests {
     /// 8 movies and 20 episodes — the numbers are not invented, and `p7`'s `bl_compat: 6` in
     /// particular is why an `== 0` test is not enough).
     fn p5() -> Dovi {
-        Dovi { present: true, profile: 5, bl_compat: 0, el_present: false, ..Dovi::NONE }
+        Dovi {
+            present: true,
+            profile: 5,
+            bl_compat: 0,
+            el_present: false,
+            ..Dovi::NONE
+        }
     }
     fn p7() -> Dovi {
-        Dovi { present: true, profile: 7, bl_compat: 6, el_present: true, ..Dovi::NONE }
+        Dovi {
+            present: true,
+            profile: 7,
+            bl_compat: 6,
+            el_present: true,
+            ..Dovi::NONE
+        }
     }
     fn p8() -> Dovi {
-        Dovi { present: true, profile: 8, bl_compat: 1, el_present: false, ..Dovi::NONE }
+        Dovi {
+            present: true,
+            profile: 8,
+            bl_compat: 1,
+            el_present: false,
+            ..Dovi::NONE
+        }
     }
 
     /// **The bug this gate exists for.** Profile 5 is single-layer IPT-PQ with no HDR10 fallback,
@@ -4087,7 +4491,13 @@ mod tests {
         );
         // and it is the DV fields doing it, not the size or the codec: the same file without them
         // direct-plays, which is exactly the behaviour that shipped the wrong colours
-        assert!(video_direct_plays("hevc", 3840, 1602, no_dv().presentation(SILENT), &caps));
+        assert!(video_direct_plays(
+            "hevc",
+            3840,
+            1602,
+            no_dv().presentation(SILENT),
+            &caps
+        ));
     }
 
     /// **The inversion, and the reason the refusal above is now conditional.** Declaring the
@@ -4105,14 +4515,25 @@ mod tests {
             audio: "aac,ac3,eac3".into(),
         };
         let dv = p5().presentation(DECLARED);
-        assert!(video_direct_plays("hevc", 3840, 1602, dv, &caps), "a declared P5 is displayable");
-        let n = dv.declared().expect("the payload must carry the node the gate was opened for");
-        assert_eq!(n.profile_id, 5, "getInt, and the pipeline's -1 sentinel means no profile hint");
+        assert!(
+            video_direct_plays("hevc", 3840, 1602, dv, &caps),
+            "a declared P5 is displayable"
+        );
+        let n = dv
+            .declared()
+            .expect("the payload must carry the node the gate was opened for");
+        assert_eq!(
+            n.profile_id, 5,
+            "getInt, and the pipeline's -1 sentinel means no profile hint"
+        );
         assert_eq!(n.track_type, "single");
         assert_eq!(n.encryption_type, "clear");
         // ...and the size and codec halves of the gate are untouched by any of it
         assert!(!video_direct_plays("av1", 3840, 1602, dv, &caps));
-        let small = crate::devcaps::Caps { hevc_max: (1920, 1088), ..caps.clone() };
+        let small = crate::devcaps::Caps {
+            hevc_max: (1920, 1088),
+            ..caps.clone()
+        };
         assert!(!video_direct_plays("hevc", 3840, 1602, dv, &small));
     }
 
@@ -4121,17 +4542,32 @@ mod tests {
     /// reports `bl_compat = 6`, so a compatibility-id test would wave it straight through.
     #[test]
     fn a_dual_layer_profile_7_source_does_not_direct_play() {
-        let caps =
-            crate::devcaps::Caps { hevc: true, hevc_max: (4096, 2176), vp9: false, audio: "eac3".into() };
+        let caps = crate::devcaps::Caps {
+            hevc: true,
+            hevc_max: (4096, 2176),
+            vp9: false,
+            audio: "eac3".into(),
+        };
         // and it is refused in BOTH worlds: no payload key can hand the pipeline a layer we do
         // not feed it, so arming the trigger must not open this gate the way it opens P5's
         for signal in [SILENT, DECLARED] {
             let dv = p7().presentation(signal);
-            assert!(!video_direct_plays("hevc", 3840, 2160, dv, &caps), "signal={signal}");
+            assert!(
+                !video_direct_plays("hevc", 3840, 2160, dv, &caps),
+                "signal={signal}"
+            );
             assert_eq!(dv.refusal(), Some("dual-layer"));
-            assert_eq!(dv.declared(), None, "a layer we cannot feed must never be declared");
+            assert_eq!(
+                dv.declared(),
+                None,
+                "a layer we cannot feed must never be declared"
+            );
         }
-        assert_ne!(p7().bl_compat, 0, "the fixture must keep the trap it was built to hold");
+        assert_ne!(
+            p7().bl_compat,
+            0,
+            "the fixture must keep the trap it was built to hold"
+        );
     }
 
     /// **Profile 8.1 must be UNAFFECTED**, and so must every file with no DOVI record at all.
@@ -4151,8 +4587,20 @@ mod tests {
                 video_direct_plays("hevc", 3840, 2160, p8().presentation(signal), &caps),
                 "HDR10-compatible base layer (signal={signal})"
             );
-            assert!(video_direct_plays("hevc", 3840, 2160, no_dv().presentation(signal), &caps));
-            assert!(video_direct_plays("h264", 1920, 1080, no_dv().presentation(signal), &caps));
+            assert!(video_direct_plays(
+                "hevc",
+                3840,
+                2160,
+                no_dv().presentation(signal),
+                &caps
+            ));
+            assert!(video_direct_plays(
+                "h264",
+                1920,
+                1080,
+                no_dv().presentation(signal),
+                &caps
+            ));
             assert_eq!(p8().presentation(signal).refusal(), None);
             assert_eq!(no_dv().presentation(signal).refusal(), None);
         }
@@ -4171,7 +4619,11 @@ mod tests {
                 "a cross-compatible base layer declares without the trigger: signal={signal}"
             );
         }
-        assert_eq!(p5().presentation(SILENT).declared(), None, "P5 stays behind the trigger");
+        assert_eq!(
+            p5().presentation(SILENT).declared(),
+            None,
+            "P5 stays behind the trigger"
+        );
     }
 
     /// **Silence must not convict.** Every field of `Dovi` is 0 both when the server omits it and
@@ -4185,23 +4637,51 @@ mod tests {
         // the shape every ordinary SDR file has: no DV at all, so bl_compat 0 means nothing
         assert!(!Dovi::default().base_layer_unusable());
         // `DOVIPresent` and nothing else — an older or quieter server. Not enough to convict.
-        let bare = Dovi { present: true, profile: 0, bl_compat: 0, el_present: false, ..Dovi::NONE };
-        assert!(!bare.base_layer_unusable(), "a compat id of 0 read out of a silent field is not a 0");
+        let bare = Dovi {
+            present: true,
+            profile: 0,
+            bl_compat: 0,
+            el_present: false,
+            ..Dovi::NONE
+        };
+        assert!(
+            !bare.base_layer_unusable(),
+            "a compat id of 0 read out of a silent field is not a 0"
+        );
         // but an explicit enhancement layer is disqualifying even with no profile reported,
         // because that field says what it says regardless of what sits beside it
-        let el_only = Dovi { present: true, profile: 0, bl_compat: 0, el_present: true, ..Dovi::NONE };
+        let el_only = Dovi {
+            present: true,
+            profile: 0,
+            bl_compat: 0,
+            el_present: true,
+            ..Dovi::NONE
+        };
         assert!(el_only.base_layer_unusable());
         // and `present: false` overrides everything — no DV means no DV, whatever noise follows
-        let contradictory = Dovi { present: false, profile: 5, bl_compat: 0, el_present: true, ..Dovi::NONE };
+        let contradictory = Dovi {
+            present: false,
+            profile: 5,
+            bl_compat: 0,
+            el_present: true,
+            ..Dovi::NONE
+        };
         assert!(!contradictory.base_layer_unusable());
         // The rule survives the declaration, in both settings: a bare `present` names no profile,
         // `getInt` has nothing to be given, and a node we cannot fill is not a reason to convict a
         // file that plays. It falls through to `NotDv` — plays as it always has, declares nothing.
         for signal in [SILENT, DECLARED] {
             assert_eq!(Dovi::default().presentation(signal), DvPresentation::NotDv);
-            assert_eq!(bare.presentation(signal), DvPresentation::NotDv, "signal={signal}");
+            assert_eq!(
+                bare.presentation(signal),
+                DvPresentation::NotDv,
+                "signal={signal}"
+            );
             assert_eq!(contradictory.presentation(signal), DvPresentation::NotDv);
-            assert_eq!(el_only.presentation(signal), DvPresentation::Refuse("dual-layer"));
+            assert_eq!(
+                el_only.presentation(signal),
+                DvPresentation::Refuse("dual-layer")
+            );
         }
     }
 
@@ -4219,19 +4699,31 @@ mod tests {
             vp9: false,
             audio: "aac,ac3,eac3".into(),
         };
-        let bare = Dovi { present: true, profile: 0, bl_compat: 0, el_present: false, ..Dovi::NONE };
+        let bare = Dovi {
+            present: true,
+            profile: 0,
+            bl_compat: 0,
+            el_present: false,
+            ..Dovi::NONE
+        };
         for d in [no_dv(), p5(), p7(), p8(), bare] {
             for signal in [SILENT, DECLARED] {
                 let dv = d.presentation(signal);
                 let plays = video_direct_plays("hevc", 3840, 1602, dv, &caps);
                 assert_eq!(plays, dv.refusal().is_none(), "{d:?} signal={signal}");
-                assert!(!(dv.refusal().is_some() && dv.declared().is_some()), "{d:?}");
+                assert!(
+                    !(dv.refusal().is_some() && dv.declared().is_some()),
+                    "{d:?}"
+                );
                 // and a refusal always implies the COPY refusal beside it — `build_stream`'s
                 // `no_video_copy` reads `base_layer_unusable`, and its log line at the refusal
                 // says "(no copy)" in so many words. If a shape could be refused while a copy of
                 // it stayed permitted, the item would come back byte-identical from the server.
                 if dv.refusal().is_some() {
-                    assert!(d.base_layer_unusable(), "a refusal must also withdraw the copy: {d:?}");
+                    assert!(
+                        d.base_layer_unusable(),
+                        "a refusal must also withdraw the copy: {d:?}"
+                    );
                 }
                 // **The one that matters, and it is now unconditional.** A direct-played Dolby
                 // Vision stream is a DECLARED one — in either trigger setting, for every shape.
@@ -4247,7 +4739,10 @@ mod tests {
                     // `trackType:"dual"` with `encryptionType:"all"` is what sets the pipeline's
                     // `dv-dual-svp` secure-video-path flag, which this app cannot satisfy. No
                     // input may produce that pair.
-                    assert!(!(n.track_type == "dual" && n.encryption_type == "all"), "dv-dual-svp");
+                    assert!(
+                        !(n.track_type == "dual" && n.encryption_type == "all"),
+                        "dv-dual-svp"
+                    );
                 }
             }
         }
@@ -4261,10 +4756,22 @@ mod tests {
         assert!(p5().base_layer_unusable());
         assert!(p7().base_layer_unusable());
         assert!(!p8().base_layer_unusable());
-        assert_eq!(p5().presentation(SILENT).refusal(), Some("no cross-compatible base layer"));
+        assert_eq!(
+            p5().presentation(SILENT).refusal(),
+            Some("no cross-compatible base layer")
+        );
         for compat in [1, 2, 4] {
-            let d = Dovi { present: true, profile: 8, bl_compat: compat, el_present: false, ..Dovi::NONE };
-            assert!(!d.base_layer_unusable(), "P8 with a cross-compatible base layer (id {compat})");
+            let d = Dovi {
+                present: true,
+                profile: 8,
+                bl_compat: compat,
+                el_present: false,
+                ..Dovi::NONE
+            };
+            assert!(
+                !d.base_layer_unusable(),
+                "P8 with a cross-compatible base layer (id {compat})"
+            );
         }
     }
 
@@ -4278,7 +4785,10 @@ mod tests {
     /// question, not this one's.
     #[test]
     fn the_preview_calls_a_profile_5_item_a_conversion() {
-        let aac = [crate::metadata::Stream { codec: "aac".into(), ..Default::default() }];
+        let aac = [crate::metadata::Stream {
+            codec: "aac".into(),
+            ..Default::default()
+        }];
         let part = "/library/parts/1/2/movie.mp4";
         assert_eq!(
             playback_preview_of(part, "hevc", 1920, 1080, p5().presentation(SILENT), &aac),
@@ -4318,28 +4828,71 @@ mod tests {
             audio: "aac,ac3,eac3".into(),
         };
         // the codec agrees; the frame size must still refuse — on either codec
-        assert!(!video_direct_plays("h264", 3840, 2160, no_dv().presentation(SILENT), &caps));
-        assert!(!video_direct_plays("hevc", 3840, 2160, no_dv().presentation(SILENT), &caps));
+        assert!(!video_direct_plays(
+            "h264",
+            3840,
+            2160,
+            no_dv().presentation(SILENT),
+            &caps
+        ));
+        assert!(!video_direct_plays(
+            "hevc",
+            3840,
+            2160,
+            no_dv().presentation(SILENT),
+            &caps
+        ));
         // one axis over is over (per-axis bound, not an area heuristic)
-        assert!(!video_direct_plays("h264", 4096, 1080, no_dv().presentation(SILENT), &caps));
+        assert!(!video_direct_plays(
+            "h264",
+            4096,
+            1080,
+            no_dv().presentation(SILENT),
+            &caps
+        ));
         // within the bound plays, exactly at it included (1088 IS the table's number)
-        assert!(video_direct_plays("h264", 1920, 1088, no_dv().presentation(SILENT), &caps));
+        assert!(video_direct_plays(
+            "h264",
+            1920,
+            1088,
+            no_dv().presentation(SILENT),
+            &caps
+        ));
     }
 
     /// Unknown dimensions fail OPEN (0 = PMS never measured the file — not evidence of 4K, and
     /// yesterday's behavior for it), while the codec half keeps gating regardless.
     #[test]
     fn unknown_dimensions_fail_open_and_the_codec_half_still_gates() {
-        let caps =
-            crate::devcaps::Caps { hevc: false, hevc_max: (1920, 1088), vp9: false, audio: "aac".into() };
-        assert!(video_direct_plays("h264", 0, 0, no_dv().presentation(SILENT), &caps));
-        assert!(!video_direct_plays("hevc", 1280, 720, no_dv().presentation(SILENT), &caps), "no decoder row, no direct play");
-        assert!(!video_direct_plays("av1", 1280, 720, no_dv().presentation(SILENT), &caps), "the pipeline cannot feed it at any size");
+        let caps = crate::devcaps::Caps {
+            hevc: false,
+            hevc_max: (1920, 1088),
+            vp9: false,
+            audio: "aac".into(),
+        };
+        assert!(video_direct_plays(
+            "h264",
+            0,
+            0,
+            no_dv().presentation(SILENT),
+            &caps
+        ));
+        assert!(
+            !video_direct_plays("hevc", 1280, 720, no_dv().presentation(SILENT), &caps),
+            "no decoder row, no direct play"
+        );
+        assert!(
+            !video_direct_plays("av1", 1280, 720, no_dv().presentation(SILENT), &caps),
+            "the pipeline cannot feed it at any size"
+        );
     }
 
     #[test]
     fn part_id_is_read_from_the_parts_segment() {
-        assert_eq!(part_id_of("/library/parts/98765/1712345678/file.mkv"), 98765);
+        assert_eq!(
+            part_id_of("/library/parts/98765/1712345678/file.mkv"),
+            98765
+        );
         assert_eq!(part_id_of("/library/parts/1/0/file.mp4"), 1);
         // a query string rides along on the real keys
         assert_eq!(part_id_of("/library/parts/42/17/file.mkv?download=0"), 42);
@@ -4349,7 +4902,11 @@ mod tests {
     fn part_id_is_zero_when_there_is_no_parts_segment() {
         assert_eq!(part_id_of(""), 0);
         assert_eq!(part_id_of("/library/metadata/1234"), 0);
-        assert_eq!(part_id_of("/library/parts"), 0, "trailing `parts` with no id");
+        assert_eq!(
+            part_id_of("/library/parts"),
+            0,
+            "trailing `parts` with no id"
+        );
         assert_eq!(part_id_of("/library/parts/notanumber/file.mkv"), 0);
     }
 
@@ -4360,13 +4917,25 @@ mod tests {
     #[test]
     fn mkv_and_mp4_parts_are_direct_playable() {
         assert!(part_is_streamable("/library/parts/1/2/movie.mkv"));
-        assert!(part_is_streamable("/library/parts/1/2/movie.mkv?x=1"), "the query must not defeat it");
+        assert!(
+            part_is_streamable("/library/parts/1/2/movie.mkv?x=1"),
+            "the query must not defeat it"
+        );
         assert!(part_is_streamable("/library/parts/1/2/movie.mp4"));
         assert!(part_is_streamable("/library/parts/1/2/movie.m4v"));
-        assert!(!part_is_streamable("/library/parts/1/2/movie.mov"), "mov still remuxes");
+        assert!(
+            !part_is_streamable("/library/parts/1/2/movie.mov"),
+            "mov still remuxes"
+        );
         assert!(!part_is_streamable(""));
-        assert!(!part_is_streamable("/library/parts/1/2/mkv.avi"), "the extension, not a substring");
-        assert!(!part_is_streamable("/library/parts/1/2/mp4.avi"), "the extension, not a substring");
+        assert!(
+            !part_is_streamable("/library/parts/1/2/mkv.avi"),
+            "the extension, not a substring"
+        );
+        assert!(
+            !part_is_streamable("/library/parts/1/2/mp4.avi"),
+            "the extension, not a substring"
+        );
     }
 
     /// The preview's THIRD answer, which is the one the UI hangs a Plex Pass claim on.
@@ -4392,22 +4961,40 @@ mod tests {
                 part: part.to_string(),
                 width: 3840,
                 height: 2160,
-                audio: vec![crate::metadata::Stream { codec: acodec.to_string(), ..Default::default() }],
+                audio: vec![crate::metadata::Stream {
+                    codec: acodec.to_string(),
+                    ..Default::default()
+                }],
                 ..Default::default()
             }
         }
         const MKV: &str = "/library/parts/1/2/file.mkv";
         const MOV: &str = "/library/parts/1/2/file.mov";
         // we pull the file ourselves — nothing on the server touches it
-        assert_eq!(playback_preview(&item("h264", MKV, "aac")), Some(Preview::DirectPlay));
+        assert_eq!(
+            playback_preview(&item("h264", MKV, "aac")),
+            Some(Preview::DirectPlay)
+        );
         // the container is one the buffer-feed demuxer cannot stream → the server REPACKAGES it
-        assert_eq!(playback_preview(&item("h264", MOV, "aac")), Some(Preview::Remux));
+        assert_eq!(
+            playback_preview(&item("h264", MOV, "aac")),
+            Some(Preview::Remux)
+        );
         // …and so it does for a streamable container whose only audio track has to be converted
-        assert_eq!(playback_preview(&item("h264", MKV, "truehd")), Some(Preview::Remux));
+        assert_eq!(
+            playback_preview(&item("h264", MKV, "truehd")),
+            Some(Preview::Remux)
+        );
         // a codec the pipeline cannot decode at all is the only real re-encode
-        assert_eq!(playback_preview(&item("vp9", MKV, "aac")), Some(Preview::Converts));
+        assert_eq!(
+            playback_preview(&item("vp9", MKV, "aac")),
+            Some(Preview::Converts)
+        );
         // …including when the container and the audio would otherwise have been fine
-        assert_eq!(playback_preview(&item("vp9", MOV, "truehd")), Some(Preview::Converts));
+        assert_eq!(
+            playback_preview(&item("vp9", MOV, "truehd")),
+            Some(Preview::Converts)
+        );
         // nothing playable loaded (a show still resolving its episode) answers nothing at all
         assert_eq!(playback_preview(&item("h264", "", "aac")), None);
     }
@@ -4425,7 +5012,9 @@ mod tests {
     #[test]
     fn a_2000_decision_is_a_refusal_and_quotes_the_reason_the_server_named() {
         fn mc(json: &[u8]) -> crate::plex::MediaContainer {
-            serde_json::from_slice::<crate::plex::Envelope>(json).expect("parse").media_container
+            serde_json::from_slice::<crate::plex::Envelope>(json)
+                .expect("parse")
+                .media_container
         }
         // the live PMS 1.43.3 answer for a VP9 source
         let refused = mc(br#"{"MediaContainer":{"generalDecisionCode":2000,
@@ -4441,19 +5030,31 @@ mod tests {
         // only the general sentence came back — quote that instead of nothing
         let general_only = mc(br#"{"MediaContainer":{"generalDecisionCode":"2000",
             "generalDecisionText":"Neither direct play nor conversion is available."}}"#);
-        assert_eq!(refusal(&general_only).as_deref(), Some("Neither direct play nor conversion is available."));
+        assert_eq!(
+            refusal(&general_only).as_deref(),
+            Some("Neither direct play nor conversion is available.")
+        );
 
         // refused, and said nothing about why: still a stop, with no line to quote
         let silent = mc(br#"{"MediaContainer":{"generalDecisionCode":2000}}"#);
-        assert_eq!(refusal(&silent).as_deref(), Some(""), "the CODE is the decision, not the text");
+        assert_eq!(
+            refusal(&silent).as_deref(),
+            Some(""),
+            "the CODE is the decision, not the text"
+        );
 
         // "Direct play not available; Conversion OK." — the ordinary transcode, which must proceed
-        let ok = mc(br#"{"MediaContainer":{"generalDecisionCode":1001,"transcodeDecisionCode":1001,
-            "transcodeDecisionText":"Direct play not available; Conversion OK."}}"#);
+        let ok = mc(
+            br#"{"MediaContainer":{"generalDecisionCode":1001,"transcodeDecisionCode":1001,
+            "transcodeDecisionText":"Direct play not available; Conversion OK."}}"#,
+        );
         assert!(refusal(&ok).is_none());
 
         // no verdict block at all (an older server, or a body we could not parse into one)
-        assert!(refusal(&mc(br#"{"MediaContainer":{"size":1}}"#)).is_none(), "absent is not a refusal");
+        assert!(
+            refusal(&mc(br#"{"MediaContainer":{"size":1}}"#)).is_none(),
+            "absent is not a refusal"
+        );
     }
 
     // ---- the playing item's SERVER: captured once, carried by value ---------------------------
@@ -4484,7 +5085,10 @@ mod tests {
     /// `build_stream` takes its no-client exit without opening a socket.
     fn unregistered_sid() -> ServerId {
         let id = ServerId::from_raw((crate::plex::MAX_SERVERS - 1) as u16);
-        assert!(crate::plex::client_for(id).is_none(), "the test needs an EMPTY slot");
+        assert!(
+            crate::plex::client_for(id).is_none(),
+            "the test needs an EMPTY slot"
+        );
         id
     }
 
@@ -4500,12 +5104,24 @@ mod tests {
         let sid = unregistered_sid();
 
         let env = ResolveEnv::snapshot(sid, "rk-7");
-        assert_eq!(env.sid, sid, "the snapshot carries the id the request was made with");
+        assert_eq!(
+            env.sid, sid,
+            "the snapshot carries the id the request was made with"
+        );
 
         let plan = build_stream("rk-7", "/library/parts/5/1/f.mkv", "h264", "ac3", &env);
-        assert_eq!(plan.sid, sid, "a plan that could not resolve still names its server");
-        assert!(plan.url.is_empty(), "no client for that slot, so nothing resolved");
-        assert_eq!(plan.part_id, 5, "…and the rest of the plan is built as usual");
+        assert_eq!(
+            plan.sid, sid,
+            "a plan that could not resolve still names its server"
+        );
+        assert!(
+            plan.url.is_empty(),
+            "no client for that slot, so nothing resolved"
+        );
+        assert_eq!(
+            plan.part_id, 5,
+            "…and the rest of the plan is built as usual"
+        );
 
         apply_plan(plan, "rk-7");
         assert_eq!(cur_sid(), sid, "the installed identity is the captured one");
@@ -4529,13 +5145,19 @@ mod tests {
         let env = ResolveEnv::snapshot(sid, "rk-7");
 
         let plan = build_stream("rk-7", "/library/parts/5/1/f.mkv", "h264", "ac3", &env);
-        assert!(plan.url.is_empty(), "the test needs the exit that precedes the codec gate");
+        assert!(
+            plan.url.is_empty(),
+            "the test needs the exit that precedes the codec gate"
+        );
         assert!(
             plan.source_decodable,
             "nobody looked at this file, so nothing may be said about it",
         );
         apply_plan(plan, "rk-7");
-        assert!(source_decodable(), "and the session carries the same silence");
+        assert!(
+            source_decodable(),
+            "and the session carries the same silence"
+        );
     }
 
     /// The gate's verdict reaches the session, and it is the SOURCE codec that decides it.
@@ -4560,7 +5182,10 @@ mod tests {
 
         let _g = fresh_registry();
         session_mut(|s| s.cur_source_decodable = false);
-        assert!(!source_decodable(), "the menu reads the session, not the gate");
+        assert!(
+            !source_decodable(),
+            "the menu reads the session, not the gate"
+        );
         session_mut(|s| s.cur_source_decodable = true);
         assert!(source_decodable());
     }
@@ -4571,38 +5196,53 @@ mod tests {
     /// when the horizon started requiring an observed drain, and it should have — the reserve was
     /// growing, so nothing was starving. This is the honest replacement.
     /// The raster every pre-2026-08-28 `auto_network` case had hardcoded into the function.
-const HD: (u16, u16) = (1_920, 1_080);
+    const HD: (u16, u16) = (1_920, 1_080);
 
-/// **The declared source raster reaches the catalog, and that is what makes the Uhd rung
-/// reachable at all.**
-///
-/// Differential, and it is the plan's I9 blocker stated as a test: with a 1080p source
-/// `limited_to` deletes the 4K actuator, so every `auto_network` case that ever ran could not
-/// select the one rung whose `production_load_pm` the table calls empirical. Before this the
-/// raster was a literal inside `arm_auto_fixture`, so the 4K leg was unreachable by construction
-/// rather than by policy — `tests/serve_fixtures.py` served no 22000 rung and the literal was
-/// there to keep candidates off a 404.
-#[test]
-fn a_declared_4k_source_makes_the_uhd_actuator_feasible() {
-    let _lock = crate::testlock::serial();
-    let uhd_feasible = |raster: (u16, u16)| {
-        arm_auto_fixture("http://host/clip.mp4", 900_000, "http://host/__abr", true, raster);
-        auto_catalog()
-            .feasible()
-            .any(|candidate| candidate.rung == crate::abr::Rung::Uhd)
-    };
-    assert!(!uhd_feasible(HD), "a 1080p source must not admit the 4K actuator");
-    assert!(uhd_feasible((3_840, 2_160)), "a 4K source must");
-}
+    /// **The declared source raster reaches the catalog, and that is what makes the Uhd rung
+    /// reachable at all.**
+    ///
+    /// Differential, and it is the plan's I9 blocker stated as a test: with a 1080p source
+    /// `limited_to` deletes the 4K actuator, so every `auto_network` case that ever ran could not
+    /// select the one rung whose `production_load_pm` the table calls empirical. Before this the
+    /// raster was a literal inside `arm_auto_fixture`, so the 4K leg was unreachable by construction
+    /// rather than by policy — `tests/serve_fixtures.py` served no 22000 rung and the literal was
+    /// there to keep candidates off a 404.
+    #[test]
+    fn a_declared_4k_source_makes_the_uhd_actuator_feasible() {
+        let _lock = crate::testlock::serial();
+        let uhd_feasible = |raster: (u16, u16)| {
+            arm_auto_fixture(
+                "http://host/clip.mp4",
+                900_000,
+                "http://host/__abr",
+                true,
+                raster,
+            );
+            auto_catalog()
+                .feasible()
+                .any(|candidate| candidate.rung == crate::abr::Rung::Uhd)
+        };
+        assert!(
+            !uhd_feasible(HD),
+            "a 1080p source must not admit the 4K actuator"
+        );
+        assert!(uhd_feasible((3_840, 2_160)), "a 4K source must");
+    }
 
-#[test]
+    #[test]
     fn the_fixture_can_start_in_hls_instead_of_provoking_a_starvation() {
         let _g = fresh_registry();
         restore_quality(Quality::Auto);
 
         // Without the flag the fixture arms an Original and returns nothing to open.
         assert_eq!(
-            arm_auto_fixture("http://host/clip.mp4", 900_000, "http://host/__abr", false, HD),
+            arm_auto_fixture(
+                "http://host/clip.mp4",
+                900_000,
+                "http://host/__abr",
+                false,
+                HD
+            ),
             None,
         );
         assert!(matches!(
@@ -4615,12 +5255,23 @@ fn a_declared_4k_source_makes_the_uhd_actuator_feasible() {
         );
 
         // With it, the post-fallback state is installed directly and the playlist comes back.
-        let url = arm_auto_fixture("http://host/clip.mp4", 900_000, "http://host/__abr/", true, HD)
-            .expect("a fixture that starts in HLS hands back the playlist to open");
-        assert!(url.starts_with("http://host/__abr/720/master.m3u8"), "{url}");
+        let url = arm_auto_fixture(
+            "http://host/clip.mp4",
+            900_000,
+            "http://host/__abr/",
+            true,
+            HD,
+        )
+        .expect("a fixture that starts in HLS hands back the playlist to open");
+        assert!(
+            url.starts_with("http://host/__abr/720/master.m3u8"),
+            "{url}"
+        );
         assert!(matches!(
             cur_delivery(),
-            crate::plex::TranscodeDelivery::FixedHls { seconds_per_segment: 2 }
+            crate::plex::TranscodeDelivery::FixedHls {
+                seconds_per_segment: 2
+            }
         ));
         assert_eq!(cur_ceiling(), Some(crate::abr::Rung::P480.ceiling()));
         assert!(
@@ -4652,7 +5303,10 @@ fn a_declared_4k_source_makes_the_uhd_actuator_feasible() {
         );
         assert_eq!(auto_original_watch().map(|w| w.source_kbps), Some(28_000));
         session_mut(|s| s.cur_auto_original_watched = false);
-        assert!(auto_original_watch().is_none(), "HLS owns its own controller and needs no watchdog");
+        assert!(
+            auto_original_watch().is_none(),
+            "HLS owns its own controller and needs no watchdog"
+        );
         restore_quality(Quality::Original);
         reset_session();
     }
@@ -4688,7 +5342,10 @@ fn a_declared_4k_source_makes_the_uhd_actuator_feasible() {
             "rk-local-original",
         );
         let watch = auto_original_watch().expect("a local Auto Original is still watched");
-        assert_eq!(watch.source_kbps, 10_634, "and it is watched against the MEASURED source");
+        assert_eq!(
+            watch.source_kbps, 10_634,
+            "and it is watched against the MEASURED source"
+        );
         restore_quality(Quality::Original);
         reset_session();
         crate::plex::reset_servers_for_test();
@@ -4701,7 +5358,9 @@ fn a_declared_4k_source_makes_the_uhd_actuator_feasible() {
         apply_plan(
             Plan {
                 tsession: "encoder-1".into(),
-                delivery: crate::plex::TranscodeDelivery::FixedHls { seconds_per_segment: 2 },
+                delivery: crate::plex::TranscodeDelivery::FixedHls {
+                    seconds_per_segment: 2,
+                },
                 ceiling: Some(crate::abr::Rung::P720Low.ceiling()),
                 ..Default::default()
             },
@@ -4735,7 +5394,9 @@ fn a_declared_4k_source_makes_the_uhd_actuator_feasible() {
                 // seeds the live encoder. Before any switch they agree, as they do on the wire.
                 sess: "sess-42".into(),
                 tsession: "sess-42".into(),
-                delivery: crate::plex::TranscodeDelivery::FixedHls { seconds_per_segment: 2 },
+                delivery: crate::plex::TranscodeDelivery::FixedHls {
+                    seconds_per_segment: 2,
+                },
                 ceiling: Some(crate::abr::Rung::P1080M12.ceiling()),
                 ..Default::default()
             },
@@ -4754,14 +5415,23 @@ fn a_declared_4k_source_makes_the_uhd_actuator_feasible() {
             .prime(&first_encoder, proposal, 0)
             .expect("the fixture path primes")
             .encoder_session;
-        assert_ne!(candidate, first_encoder, "a candidate may not be the live encoder");
+        assert_ne!(
+            candidate, first_encoder,
+            "a candidate may not be the live encoder"
+        );
         // The switch commits: the candidate is now what the playback is reading.
-        assert!(control.commit(&first_encoder, &candidate), "the commit swap takes");
+        assert!(
+            control.commit(&first_encoder, &candidate),
+            "the commit swap takes"
+        );
 
         // The seek. `transcode_seek` reuses the session id on purpose, and the reload builds a
         // fresh worker — which is exactly the state that used to reset the counter to zero.
         let (control, live) = hls_abr_control().expect("Auto HLS control survives the reload");
-        assert_eq!(live, candidate, "the seek carries the committed encoder, as it must");
+        assert_eq!(
+            live, candidate,
+            "the seek carries the committed encoder, as it must"
+        );
 
         let after_seek = control
             .prime(&live, proposal, 890)
@@ -4785,7 +5455,9 @@ fn a_declared_4k_source_makes_the_uhd_actuator_feasible() {
             Plan {
                 url: "https://example.invalid/hls/master.m3u8".into(),
                 tsession: "encoder-1".into(),
-                delivery: crate::plex::TranscodeDelivery::FixedHls { seconds_per_segment: 2 },
+                delivery: crate::plex::TranscodeDelivery::FixedHls {
+                    seconds_per_segment: 2,
+                },
                 ceiling: Some(crate::abr::Rung::P1080High.ceiling()),
                 transport_kbps: 28_000,
                 auto_original: Some(AutoOriginalCandidate {
@@ -4804,10 +5476,16 @@ fn a_declared_4k_source_makes_the_uhd_actuator_feasible() {
             },
             "rk-auto",
         );
-        assert_eq!(recover_auto_to_original(120), Some(AutoOriginalReload::Direct));
+        assert_eq!(
+            recover_auto_to_original(120),
+            Some(AutoOriginalReload::Direct)
+        );
         assert_eq!(url(), "https://example.invalid/source.mkv");
         assert!(!is_transcoding());
-        assert_eq!(cur_delivery(), crate::plex::TranscodeDelivery::ProgressiveMkv);
+        assert_eq!(
+            cur_delivery(),
+            crate::plex::TranscodeDelivery::ProgressiveMkv
+        );
         assert_eq!(cur_ceiling(), None);
         assert_eq!(stream_vcodec(), "hevc");
         assert_eq!(stream_acodec(), "eac3");
@@ -4828,7 +5506,9 @@ fn a_declared_4k_source_makes_the_uhd_actuator_feasible() {
             Plan {
                 url: "https://example.invalid/hls/master.m3u8".into(),
                 tsession: "encoder-1".into(),
-                delivery: crate::plex::TranscodeDelivery::FixedHls { seconds_per_segment: 2 },
+                delivery: crate::plex::TranscodeDelivery::FixedHls {
+                    seconds_per_segment: 2,
+                },
                 ceiling: Some(crate::abr::Rung::P1080High.ceiling()),
                 transport_kbps: 28_000,
                 auto_original: Some(AutoOriginalCandidate {
@@ -4851,15 +5531,28 @@ fn a_declared_4k_source_makes_the_uhd_actuator_feasible() {
         set_quality(Quality::Original);
         assert_eq!(quality(), Quality::Original);
         assert!(
-            matches!(cur_delivery(), crate::plex::TranscodeDelivery::FixedHls { .. }),
+            matches!(
+                cur_delivery(),
+                crate::plex::TranscodeDelivery::FixedHls { .. }
+            ),
             "the pump owns the pending codec-changing reload; the menu must not pre-mutate it"
         );
-        assert_eq!(recover_auto_to_original(120), Some(AutoOriginalReload::Direct));
+        assert_eq!(
+            recover_auto_to_original(120),
+            Some(AutoOriginalReload::Direct)
+        );
         assert_eq!(url(), "https://example.invalid/source.mkv");
         assert_eq!(stream_vcodec(), "hevc");
-        assert_eq!(stream_dovi(), p8(), "the native Load must regain its Dolby Vision declaration");
+        assert_eq!(
+            stream_dovi(),
+            p8(),
+            "the native Load must regain its Dolby Vision declaration"
+        );
         assert!(!is_transcoding());
-        assert!(auto_original_watch().is_none(), "manual Original is not adaptive after the jump");
+        assert!(
+            auto_original_watch().is_none(),
+            "manual Original is not adaptive after the jump"
+        );
 
         reset_session();
         install_active_encoder("");
@@ -4955,7 +5648,10 @@ fn a_declared_4k_source_makes_the_uhd_actuator_feasible() {
 
         assert_eq!(quality(), Quality::Auto);
         assert!(
-            matches!(cur_delivery(), crate::plex::TranscodeDelivery::FixedHls { .. }),
+            matches!(
+                cur_delivery(),
+                crate::plex::TranscodeDelivery::FixedHls { .. }
+            ),
             "Auto must rebuild the HLS controller when no native source candidate exists",
         );
         assert_eq!(cur_ceiling(), Some(crate::abr::Rung::P480.ceiling()));
@@ -5005,7 +5701,11 @@ fn a_declared_4k_source_makes_the_uhd_actuator_feasible() {
         assert_eq!(quality(), Quality::P1080High);
         assert_eq!(
             cur_ceiling(),
-            Some(crate::plex::Ceiling { max_kbps: 20_000, max_w: 1920, max_h: 1080 }),
+            Some(crate::plex::Ceiling {
+                max_kbps: 20_000,
+                max_w: 1920,
+                max_h: 1080
+            }),
             "a 3832x2152 source cannot fit the 1080p rung, so this pick legitimately starts a cap"
         );
         assert!(
@@ -5045,7 +5745,10 @@ fn a_declared_4k_source_makes_the_uhd_actuator_feasible() {
             cur_delivery(),
             crate::plex::TranscodeDelivery::ProgressiveMkv
         );
-        assert!(auto_original_watch().is_none(), "manual Original is not adaptive");
+        assert!(
+            auto_original_watch().is_none(),
+            "manual Original is not adaptive"
+        );
 
         reset_session();
         install_active_encoder("");
@@ -5109,7 +5812,11 @@ fn a_declared_4k_source_makes_the_uhd_actuator_feasible() {
         assert_eq!(stream_vcodec(), "hevc");
         assert_eq!(stream_acodec(), "aac");
         assert!(!is_transcoding());
-        assert_eq!(crate::player::desired_sub_idx(), 3, "the subtitle returns to client rendering");
+        assert_eq!(
+            crate::player::desired_sub_idx(),
+            3,
+            "the subtitle returns to client rendering"
+        );
 
         reset_session();
         install_active_encoder("");
@@ -5128,15 +5835,33 @@ fn a_declared_4k_source_makes_the_uhd_actuator_feasible() {
         let b = ServerId::from_raw((crate::plex::MAX_SERVERS - 1) as u16);
         assert!(crate::plex::client_for(a).is_none() && crate::plex::client_for(b).is_none());
 
-        apply_plan(Plan { sid: a, machine_id: "MACHINE-A".into(), ..Default::default() }, "rk-a");
-        assert_eq!(ResolveEnv::snapshot(a, "rk-a").machine_id, "MACHINE-A", "its own server reuses it");
+        apply_plan(
+            Plan {
+                sid: a,
+                machine_id: "MACHINE-A".into(),
+                ..Default::default()
+            },
+            "rk-a",
+        );
         assert_eq!(
-            ResolveEnv::snapshot(b, "rk-b").machine_id, "",
+            ResolveEnv::snapshot(a, "rk-a").machine_id,
+            "MACHINE-A",
+            "its own server reuses it"
+        );
+        assert_eq!(
+            ResolveEnv::snapshot(b, "rk-b").machine_id,
+            "",
             "another server must re-ask rather than inherit A's fingerprint"
         );
 
         // …and an empty `machine_id` means "leave the cache alone", not "the cache is now B's"
-        apply_plan(Plan { sid: b, ..Default::default() }, "rk-b");
+        apply_plan(
+            Plan {
+                sid: b,
+                ..Default::default()
+            },
+            "rk-b",
+        );
         assert_eq!(ResolveEnv::snapshot(a, "rk-a").machine_id, "MACHINE-A");
         assert_eq!(ResolveEnv::snapshot(b, "rk-b").machine_id, "");
     }
@@ -5145,7 +5870,11 @@ fn a_declared_4k_source_makes_the_uhd_actuator_feasible() {
     /// channel, and answers 200 so the client's read terminates. Real sockets, like `stream.rs`'s
     /// own tests — which server a POST actually reached is the only thing the timeline routing can
     /// be graded on without a television.
-    fn stub_pms() -> (i32, std::sync::mpsc::Receiver<String>, std::thread::JoinHandle<()>) {
+    fn stub_pms() -> (
+        i32,
+        std::sync::mpsc::Receiver<String>,
+        std::thread::JoinHandle<()>,
+    ) {
         use std::io::{BufRead, BufReader, Write};
         let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = l.local_addr().unwrap().port() as i32;
@@ -5179,18 +5908,51 @@ fn a_declared_4k_source_makes_the_uhd_actuator_feasible() {
         let (pb, rx_b, hb) = stub_pms();
         // `register_for_test`, not the public `register`: the latter resolves the device id through
         // `session::load`, which mints and PERSISTS a uuid on a host that has no session file.
-        let a = crate::plex::register_for_test("route-test-A", "127.0.0.1", pa, "tok-a", "cid-route-test");
-        let b = crate::plex::register_for_test("route-test-B", "127.0.0.1", pb, "tok-b", "cid-route-test");
+        let a = crate::plex::register_for_test(
+            "route-test-A",
+            "127.0.0.1",
+            pa,
+            "tok-a",
+            "cid-route-test",
+        );
+        let b = crate::plex::register_for_test(
+            "route-test-B",
+            "127.0.0.1",
+            pb,
+            "tok-b",
+            "cid-route-test",
+        );
         assert_ne!(a, b, "two servers, two slots");
 
         // an item from B starts playing, then the user walks back to their OWN server's Home
-        apply_plan(Plan { sid: b, ..Default::default() }, "rk-b");
+        apply_plan(
+            Plan {
+                sid: b,
+                ..Default::default()
+            },
+            "rk-b",
+        );
         assert!(crate::plex::set_current(a));
-        assert_eq!(cur_sid(), b, "what is PLAYING does not move when the browsed server does");
+        assert_eq!(
+            cur_sid(),
+            b,
+            "what is PLAYING does not move when the browsed server does"
+        );
 
-        report_timeline(cur_sid(), "rk-b", crate::plex::TimelineState::Playing, 1_000, 2_000);
-        let got = rx_b.recv_timeout(Duration::from_secs(5)).expect("B never received the report");
-        assert!(got.contains("ratingKey=rk-b"), "B got something else: {got}");
+        report_timeline(
+            cur_sid(),
+            "rk-b",
+            crate::plex::TimelineState::Playing,
+            1_000,
+            2_000,
+        );
+        let got = rx_b
+            .recv_timeout(Duration::from_secs(5))
+            .expect("B never received the report");
+        assert!(
+            got.contains("ratingKey=rk-b"),
+            "B got something else: {got}"
+        );
         assert!(
             rx_a.recv_timeout(Duration::from_millis(300)).is_err(),
             "the current server must not receive another server's progress"
@@ -5198,8 +5960,13 @@ fn a_declared_4k_source_makes_the_uhd_actuator_feasible() {
 
         // control: the same call named at A does reach A, so the assertion above is about routing
         report_timeline(a, "rk-a", crate::plex::TimelineState::Stopped, 0, 2_000);
-        let got = rx_a.recv_timeout(Duration::from_secs(5)).expect("A never received its own report");
-        assert!(got.contains("ratingKey=rk-a"), "A got something else: {got}");
+        let got = rx_a
+            .recv_timeout(Duration::from_secs(5))
+            .expect("A never received its own report");
+        assert!(
+            got.contains("ratingKey=rk-a"),
+            "A got something else: {got}"
+        );
 
         ha.join().unwrap();
         hb.join().unwrap();

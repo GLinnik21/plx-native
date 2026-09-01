@@ -104,7 +104,9 @@ pub(crate) fn request(reason: &str) {
     let seq = SEQ.fetch_add(1, Relaxed) + 1;
     let route = *ROUTE.lock().unwrap_or_else(|e| e.into_inner());
     // Before the snapshot, so the document contains the line that says why it exists.
-    crate::log(&format!("lab: snapshot seq={seq} reason={reason} route={route}"));
+    crate::log(&format!(
+        "lab: snapshot seq={seq} reason={reason} route={route}"
+    ));
     let doc = crate::lab::snapshot::build(seq, reason, &cfg.session, route);
     set_phase(PHASE_SENDING, String::new());
     let url = cfg.url();
@@ -141,18 +143,31 @@ fn send(url: &str, secret: &str, session: &str, pin: &str, seq: u32, doc: String
         "Expect:".to_string(),
     ];
     let sent = body.len();
-    let t = crate::net::Timeouts { connect_s: 8, total_s: 60, low_speed_bps: 0, low_speed_s: 0 };
+    let t = crate::net::Timeouts {
+        connect_s: 8,
+        total_s: 60,
+        low_speed_bps: 0,
+        low_speed_s: 0,
+    };
     match crate::net::post_pinned(url, &headers, &body, pin, t) {
         Some(r) if r.ok() => {
-            crate::log(&format!("lab: uploaded seq={seq} {raw_len}B -> {sent}B ({encoding}) status={}", r.status));
+            crate::log(&format!(
+                "lab: uploaded seq={seq} {raw_len}B -> {sent}B ({encoding}) status={}",
+                r.status
+            ));
             (PHASE_OK, format!("{} KB sent", (sent + 512) / 1024))
         }
         Some(r) => {
-            crate::log(&format!("lab: upload seq={seq} REFUSED status={}", r.status));
+            crate::log(&format!(
+                "lab: upload seq={seq} REFUSED status={}",
+                r.status
+            ));
             (PHASE_FAIL, format!("receiver said {}", r.status))
         }
         None => {
-            crate::log(&format!("lab: upload seq={seq} did not complete (transport)"));
+            crate::log(&format!(
+                "lab: upload seq={seq} did not complete (transport)"
+            ));
             (PHASE_FAIL, "no answer from receiver".into())
         }
     }

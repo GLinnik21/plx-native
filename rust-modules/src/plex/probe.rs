@@ -49,12 +49,12 @@
 //! The racing itself (parallel dial, first good activates, final best may re-point once) lives in
 //! `auth.rs`; it belongs above this file, which stays a function of the resource alone.
 use super::account::{Connection, Resource};
-use super::origin::{url_host, Origin};
-use serde::{Deserialize, Serialize};
 /// `Scheme` lives in [`super::origin`] — it is a property of an ORIGIN, and this module only
 /// RANKS it (see the third sort key in [`candidates`]). Re-exported so `probe::Scheme` keeps
 /// resolving for every caller that reads it as a ranking axis.
 pub use super::origin::Scheme;
+use super::origin::{url_host, Origin};
+use serde::{Deserialize, Serialize};
 
 /// Where an address sits relative to us. The ranking axis every Plex client agrees on, ordered
 /// best-first by declaration so the derived `Ord` *is* the preference.
@@ -295,7 +295,9 @@ fn host_for_url(address: &str) -> String {
 /// **Exactly four octets**, because a name can be all-digits per label: `1.2.3` is not an address
 /// and must not be scored as one.
 fn is_numeric_address(a: &str) -> bool {
-    let a = a.strip_prefix('[').map_or(a, |h| h.strip_suffix(']').unwrap_or(h));
+    let a = a
+        .strip_prefix('[')
+        .map_or(a, |h| h.strip_suffix(']').unwrap_or(h));
     a.contains(':') // a v6 literal — colons cannot appear in a hostname
         || (a.split('.').count() == 4 && a.split('.').all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())))
 }
@@ -347,14 +349,24 @@ pub fn candidates(res: &Resource) -> Vec<Candidate> {
             }
         }
         if !c.relay && !unmatched_shared_lan {
-            push(format!("http://{}:{}", host_for_url(&c.address), c.port), Scheme::Http);
+            push(
+                format!("http://{}:{}", host_for_url(&c.address), c.port),
+                Scheme::Http,
+            );
         }
     }
     // Stable, so plex.tv's own order survives inside a tier — it is the only tiebreak left once
     // location, scheme, resolvability and address family have spoken, and it is not ours to reorder.
     // Resolvability is read off the URL's own host, not `address` — see `origin::url_host`, which
     // is the difference between scoring the `plex.direct` uri and scoring the quad hiding behind it.
-    out.sort_by_key(|c| (c.location, c.scheme, !is_numeric_address(url_host(&c.url)), c.ipv6));
+    out.sort_by_key(|c| {
+        (
+            c.location,
+            c.scheme,
+            !is_numeric_address(url_host(&c.url)),
+            c.ipv6,
+        )
+    });
     out
 }
 
@@ -441,13 +453,19 @@ mod tests {
             !cs.iter().any(|c| c.url == "http://10.9.9.7:32400"),
             "the unsafe plaintext twin from the owner's LAN must not exist: {cs:#?}"
         );
-        assert_eq!(cs.len(), 5, "one guarded LAN TLS candidate plus two remote pairs: {cs:#?}");
+        assert_eq!(
+            cs.len(),
+            5,
+            "one guarded LAN TLS candidate plus two remote pairs: {cs:#?}"
+        );
 
         let mut advertised_plain = shared_server();
         advertised_plain.connections[0].uri = "http://10.9.9.7:32400".into();
         advertised_plain.connections[0].protocol = "http".into();
         assert!(
-            !candidates(&advertised_plain).iter().any(|c| c.address == "10.9.9.7"),
+            !candidates(&advertised_plain)
+                .iter()
+                .any(|c| c.address == "10.9.9.7"),
             "an advertised plaintext URI is no safer than the synthesized twin"
         );
 
@@ -464,7 +482,8 @@ mod tests {
         // The plain twin measured as the one that answers from the TV is still there, ranked as
         // the FALLBACK it now is: a LAN with no route to the internet resolves no plex.direct name.
         assert!(
-            cs.iter().any(|c| c.url == "http://203.0.113.9:31234" && c.scheme == Scheme::Http),
+            cs.iter()
+                .any(|c| c.url == "http://203.0.113.9:31234" && c.scheme == Scheme::Http),
             "the connection measured as reachable in 115 ms must survive: {cs:#?}"
         );
     }
@@ -476,7 +495,11 @@ mod tests {
     #[test]
     fn a_dotted_quad_outranks_a_hostname_that_plex_tv_listed_first() {
         let cs = candidates(&shared_server());
-        let pos = |u: &str| cs.iter().position(|c| c.url == u).unwrap_or_else(|| panic!("{u} absent: {cs:#?}"));
+        let pos = |u: &str| {
+            cs.iter()
+                .position(|c| c.url == u)
+                .unwrap_or_else(|| panic!("{u} absent: {cs:#?}"))
+        };
 
         assert!(
             pos("http://203.0.113.9:31234") < pos("http://media.example.internal:31234"),
@@ -484,13 +507,18 @@ mod tests {
         );
         // The hostname is ranked DOWN, never dropped: the curl control plane does resolve names,
         // so a hostname-only server must still be reachable once TLS lands.
-        assert!(cs.iter().any(|c| c.url == "http://media.example.internal:31234"));
+        assert!(cs
+            .iter()
+            .any(|c| c.url == "http://media.example.internal:31234"));
     }
 
     #[test]
     fn a_host_is_numeric_only_when_it_is_four_digit_octets_or_a_v6_literal() {
         assert!(is_numeric_address("203.0.113.9"));
-        assert!(is_numeric_address("[2001:db8::1]"), "a bracketed v6 literal needs no resolver");
+        assert!(
+            is_numeric_address("[2001:db8::1]"),
+            "a bracketed v6 literal needs no resolver"
+        );
         assert!(!is_numeric_address("media.example.internal"));
         // the shape that makes this worth a function: plex.direct encodes the quad with DASHES,
         // so it CONTAINS an address while still requiring DNS to reach.
@@ -512,22 +540,47 @@ mod tests {
     fn a_candidates_origin_is_parsed_from_its_url_not_rebuilt_from_its_address() {
         let cs = candidates(&shared_server());
 
-        let uri = cs.iter().find(|c| c.scheme == Scheme::Https && c.address == "203.0.113.9").expect("the https uri");
+        let uri = cs
+            .iter()
+            .find(|c| c.scheme == Scheme::Https && c.address == "203.0.113.9")
+            .expect("the https uri");
         let o = uri.origin().expect("an advertised uri is an origin");
-        assert_eq!(o.host(), "203-0-113-9.hash2.plex.direct", "the NAME the certificate is for");
-        assert_ne!(o.host(), uri.address, "…which is not the quad hiding behind it");
+        assert_eq!(
+            o.host(),
+            "203-0-113-9.hash2.plex.direct",
+            "the NAME the certificate is for"
+        );
+        assert_ne!(
+            o.host(),
+            uri.address,
+            "…which is not the quad hiding behind it"
+        );
         assert_eq!(o.base(), "https://203-0-113-9.hash2.plex.direct:31234");
         assert!(o.is_tls());
 
         // and the synthesized plain-http twin is the address, unchanged
-        let twin = cs.iter().find(|c| c.url == "http://203.0.113.9:31234").expect("the http twin");
+        let twin = cs
+            .iter()
+            .find(|c| c.url == "http://203.0.113.9:31234")
+            .expect("the http twin");
         let t = twin.origin().expect("parses");
-        assert_eq!((t.scheme(), t.host(), t.port()), (Scheme::Http, "203.0.113.9", 31234));
-        assert_eq!(t.base(), twin.url, "every candidate's origin round-trips to its own url");
+        assert_eq!(
+            (t.scheme(), t.host(), t.port()),
+            (Scheme::Http, "203.0.113.9", 31234)
+        );
+        assert_eq!(
+            t.base(),
+            twin.url,
+            "every candidate's origin round-trips to its own url"
+        );
 
         // every candidate this policy builds is a parseable origin — a caller's `None` branch is
         // for a hand-made `Candidate`, never for one that came from here
-        assert!(cs.iter().all(|c| c.origin().is_some_and(|o| o.base() == c.url)), "{cs:#?}");
+        assert!(
+            cs.iter()
+                .all(|c| c.origin().is_some_and(|o| o.base() == c.url)),
+            "{cs:#?}"
+        );
     }
 
     /// A v6 candidate's origin is bare for the resolver and bracketed in its URL — the invariant
@@ -535,10 +588,21 @@ mod tests {
     #[test]
     fn a_v6_candidates_origin_is_bare_for_the_resolver() {
         let cs = candidates(&owned_server());
-        let v6 = cs.iter().find(|c| c.url == "http://[2001:db8::1]:32400").expect("the v6 twin");
+        let v6 = cs
+            .iter()
+            .find(|c| c.url == "http://[2001:db8::1]:32400")
+            .expect("the v6 twin");
         let o = v6.origin().expect("parses");
-        assert_eq!(o.host(), "2001:db8::1", "the getaddrinfo node is never bracketed");
-        assert_eq!(o.authority(), "[2001:db8::1]:32400", "…and the URL authority always is");
+        assert_eq!(
+            o.host(),
+            "2001:db8::1",
+            "the getaddrinfo node is never bracketed"
+        );
+        assert_eq!(
+            o.authority(),
+            "[2001:db8::1]:32400",
+            "…and the URL authority always is"
+        );
     }
 
     /// **Within one scheme, a numeric address ranks ahead of a hostname**, and the share is the
@@ -553,16 +617,26 @@ mod tests {
         let cs = candidates(&shared_server());
         let http: Vec<&Candidate> = cs.iter().filter(|c| c.scheme == Scheme::Http).collect();
 
-        assert_eq!(http[0].address, "203.0.113.9", "the numeric address leads its tier: {cs:#?}");
-        assert_eq!(http[1].address, "media.example.internal", "the name is kept, just not first");
+        assert_eq!(
+            http[0].address, "203.0.113.9",
+            "the numeric address leads its tier: {cs:#?}"
+        );
+        assert_eq!(
+            http[1].address, "media.example.internal",
+            "the name is kept, just not first"
+        );
         assert!(
-            cs.iter().any(|c| c.address == "media.example.internal" && c.scheme == Scheme::Https),
+            cs.iter()
+                .any(|c| c.address == "media.example.internal" && c.scheme == Scheme::Https),
             "and its https uri survives for the TLS transport: {cs:#?}"
         );
 
         assert!(is_numeric_address("203.0.113.9") && is_numeric_address("2001:db8::1"));
         assert!(!is_numeric_address("media.example.internal"));
-        assert!(!is_numeric_address("203-0-113-9.hash2.plex.direct"), "a plex.direct name is a NAME");
+        assert!(
+            !is_numeric_address("203-0-113-9.hash2.plex.direct"),
+            "a plex.direct name is a NAME"
+        );
     }
 
     /// A friend on our own LAN (Plex Home, or a share while visiting) is the case rule 1 must not
@@ -573,7 +647,11 @@ mod tests {
         res.public_address_matches = true;
         let cs = candidates(&res);
 
-        assert_eq!(cs[0].location, Location::Local, "the LAN address now leads: {cs:#?}");
+        assert_eq!(
+            cs[0].location,
+            Location::Local,
+            "the LAN address now leads: {cs:#?}"
+        );
         assert!(cs.iter().any(|c| c.url == "http://10.9.9.7:32400"));
         assert_eq!(cs.len(), 6, "three connections, two candidates each");
     }
@@ -585,11 +663,15 @@ mod tests {
     #[test]
     fn our_own_lan_address_survives_a_public_address_that_does_not_match() {
         let res = owned_server();
-        assert!(res.owned && !res.public_address_matches, "the fixture must carry both flags");
+        assert!(
+            res.owned && !res.public_address_matches,
+            "the fixture must carry both flags"
+        );
 
         let cs = candidates(&res);
         assert!(
-            cs.iter().any(|c| c.url == "http://192.168.0.10:32400" && c.location == Location::Local),
+            cs.iter()
+                .any(|c| c.url == "http://192.168.0.10:32400" && c.location == Location::Local),
             "our own LAN address must never be dropped: {cs:#?}"
         );
     }
@@ -616,23 +698,37 @@ mod tests {
         // https first inside the tier, and IPv4 before IPv6 within that — the second key and the
         // fourth, in that order. `2001-db8--1.hash1.plex.direct` is a NAME whose address family is
         // v6, which is exactly why `Candidate::ipv6` is carried rather than re-read off the url.
-        assert_eq!(cs[0].url, "https://192-168-0-10.hash1.plex.direct:32400", "TLS leads its tier: {cs:#?}");
-        assert!(!cs[0].ipv6 && cs[1].ipv6, "the v6 uri is next, not first: {cs:#?}");
         assert_eq!(
-            cs.iter().find(|c| c.scheme == Scheme::Http).map(|c| c.url.as_str()),
+            cs[0].url, "https://192-168-0-10.hash1.plex.direct:32400",
+            "TLS leads its tier: {cs:#?}"
+        );
+        assert!(
+            !cs[0].ipv6 && cs[1].ipv6,
+            "the v6 uri is next, not first: {cs:#?}"
+        );
+        assert_eq!(
+            cs.iter()
+                .find(|c| c.scheme == Scheme::Http)
+                .map(|c| c.url.as_str()),
             Some("http://192.168.0.10:32400"),
             "…and the plaintext fallbacks are ordered the same way: {cs:#?}"
         );
 
         let last = cs.last().expect("a relay candidate");
-        assert_eq!((last.location, last.scheme), (Location::Relay, Scheme::Https));
+        assert_eq!(
+            (last.location, last.scheme),
+            (Location::Relay, Scheme::Https)
+        );
         assert_eq!(
             cs.iter().filter(|c| c.location == Location::Relay).count(),
             1,
             "no plain-http twin is synthesized for a TLS tunnel"
         );
         // a v6 literal must be bracketed before it can carry a port
-        assert!(cs.iter().any(|c| c.url == "http://[2001:db8::1]:32400"), "{cs:#?}");
+        assert!(
+            cs.iter().any(|c| c.url == "http://[2001:db8::1]:32400"),
+            "{cs:#?}"
+        );
     }
 
     /// The owner's *Require secure connections* is their call, and it removes every http candidate,
@@ -663,7 +759,10 @@ mod tests {
                   {"address":"","port":32400,"uri":"https://nowhere:32400","local":true},
                   {"address":"10.0.0.9","port":0,"uri":"","local":true}]}"#,
         );
-        assert!(candidates(&res).is_empty(), "no address and no port are both nothing to dial");
+        assert!(
+            candidates(&res).is_empty(),
+            "no address and no port are both nothing to dial"
+        );
     }
 
     /// A port is an `i64` all the way from plex.tv (`de_i64`, because these fields arrive
@@ -679,7 +778,11 @@ mod tests {
         assert_eq!(dial_port(0), None);
         assert_eq!(dial_port(-1), None);
         assert_eq!(dial_port(65536), None, "one past the top of the range");
-        assert_eq!(dial_port(4_294_999_696), None, "the wrap that read as 32400");
+        assert_eq!(
+            dial_port(4_294_999_696),
+            None,
+            "the wrap that read as 32400"
+        );
 
         // …and it is the CANDIDATE that goes, not the server: its other address survives.
         let res = parse(
@@ -689,8 +792,14 @@ mod tests {
                   {"protocol":"http","address":"10.0.0.9","port":32400,"uri":"","local":true}]}"#,
         );
         let cs = candidates(&res);
-        assert!(!cs.is_empty(), "the good address is still dialable: {cs:#?}");
-        assert!(cs.iter().all(|c| c.port == 32400), "the wrapping one is gone: {cs:#?}");
+        assert!(
+            !cs.is_empty(),
+            "the good address is still dialable: {cs:#?}"
+        );
+        assert!(
+            cs.iter().all(|c| c.port == 32400),
+            "the wrapping one is gone: {cs:#?}"
+        );
     }
 
     /// The plan carries the identity a probe must check and the token it must send — the two things
@@ -698,11 +807,24 @@ mod tests {
     #[test]
     fn the_plan_carries_the_identity_to_verify_and_the_per_server_token() {
         let p = plan(&shared_server());
-        assert_eq!(p.machine_id, "bbbb2222", "what the probe response must equal");
-        assert_eq!(p.token, "tok-share", "the sharing grant, not the account token");
+        assert_eq!(
+            p.machine_id, "bbbb2222",
+            "what the probe response must equal"
+        );
+        assert_eq!(
+            p.token, "tok-share",
+            "the sharing grant, not the account token"
+        );
         assert!(!p.owned);
-        assert_eq!(p.name, "nas-home", "the machine name — settings surfaces only");
-        assert_eq!(p.source_title.as_deref(), Some("friend"), "the handle the rest of the UI says");
+        assert_eq!(
+            p.name, "nas-home",
+            "the machine name — settings surfaces only"
+        );
+        assert_eq!(
+            p.source_title.as_deref(),
+            Some("friend"),
+            "the handle the rest of the UI says"
+        );
         assert_eq!(p.candidates.len(), 5);
     }
 
@@ -710,12 +832,22 @@ mod tests {
     /// Without either fact only the advertised TLS URI survives.
     #[test]
     fn ownership_or_a_public_address_match_restores_the_plain_lan_twin() {
-        let has_plain_lan = |r: &Resource| candidates(r).iter().any(|c| c.url == "http://10.9.9.7:32400");
+        let has_plain_lan = |r: &Resource| {
+            candidates(r)
+                .iter()
+                .any(|c| c.url == "http://10.9.9.7:32400")
+        };
 
         let mut share = shared_server();
-        assert!(!has_plain_lan(&share), "an unmatched share keeps only its authenticated URI");
+        assert!(
+            !has_plain_lan(&share),
+            "an unmatched share keeps only its authenticated URI"
+        );
         share.public_address_matches = true;
-        assert!(has_plain_lan(&share), "behind the same NAT, the private address really is ours");
+        assert!(
+            has_plain_lan(&share),
+            "behind the same NAT, the private address really is ours"
+        );
         share.public_address_matches = false;
         share.owned = true;
         assert!(has_plain_lan(&share), "our own LAN address is always ours");
@@ -725,11 +857,18 @@ mod tests {
     /// later because one connection can yield one safe URI and one unsafe plaintext twin.
     #[test]
     fn a_connection_still_needs_an_address_and_a_dialable_port() {
-        let c = |addr: &str, port: i64| Connection { address: addr.into(), port, ..Default::default() };
+        let c = |addr: &str, port: i64| Connection {
+            address: addr.into(),
+            port,
+            ..Default::default()
+        };
         assert!(is_usable(&c("10.0.0.9", 32400)));
         assert!(is_usable(&c("nas.example.internal", 1)));
         assert!(!is_usable(&c("", 32400)), "nothing to dial");
         assert!(!is_usable(&c("10.0.0.9", 0)), "no port a socket could take");
-        assert!(!is_usable(&c("10.0.0.9", 4_294_999_696)), "the wrap that reads as 32400");
+        assert!(
+            !is_usable(&c("10.0.0.9", 4_294_999_696)),
+            "the wrap that reads as 32400"
+        );
     }
 }

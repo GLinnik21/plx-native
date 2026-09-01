@@ -58,7 +58,10 @@ pub(crate) fn has_chapters() -> bool {
 pub(crate) fn open() {
     // focus the chapter that contains the current playhead
     let pos_ms = crate::player::playpos_ns() / 1_000_000;
-    let sel = chapters().iter().rposition(|c| c.start_ms <= pos_ms).unwrap_or(0) as c_int;
+    let sel = chapters()
+        .iter()
+        .rposition(|c| c.start_ms <= pos_ms)
+        .unwrap_or(0) as c_int;
     unsafe {
         addr_of_mut!(SEL).write(sel);
         addr_of_mut!(SCROLL).write(Spring::at(scroll_target(sel)));
@@ -103,7 +106,10 @@ pub(crate) fn move_focus(sym: c_int) {
 pub(crate) fn on_ok() -> i64 {
     let s = unsafe { addr_of!(SEL).read() };
     close();
-    chapters().get(s.max(0) as usize).map(|c| c.start_ms * 1_000_000).unwrap_or(-1)
+    chapters()
+        .get(s.max(0) as usize)
+        .map(|c| c.start_ms * 1_000_000)
+        .unwrap_or(-1)
 }
 
 pub(crate) fn update(dt: f32) {
@@ -150,16 +156,35 @@ pub(crate) fn draw() {
         }
         let focused = i as c_int == sel;
         let card = Rect::new(x, CH_TOP, CH_W, CH_H);
-        crate::ui::widgets::draw_card(p, card, crate::route::item_sid(crate::route::cur_sid()), &ch.thumb, (480, 270), 10.0, focused, scale);
+        crate::ui::widgets::draw_card(
+            p,
+            card,
+            crate::route::item_sid(crate::route::cur_sid()),
+            &ch.thumb,
+            (480, 270),
+            10.0,
+            focused,
+            scale,
+        );
         // name + timestamp beneath the card
         let ty = CH_TOP + CH_H + 26.0;
-        let titc = if focused { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY };
+        let titc = if focused {
+            theme::TEXT_PRIMARY
+        } else {
+            theme::TEXT_SECONDARY
+        };
         let name = if ch.title.trim().is_empty() {
             format!("Chapter {}", ch.index)
         } else {
             ch.title.clone()
         };
-        if let Ok(tc) = CString::new(crate::text::elide(&name, CH_W, theme::size::LABEL, 1, false)) {
+        if let Ok(tc) = CString::new(crate::text::elide(
+            &name,
+            CH_W,
+            theme::size::LABEL,
+            1,
+            false,
+        )) {
             p.text(tc.as_ptr(), x, ty, theme::size::LABEL, titc, 0, 1);
         }
         if let Ok(sc) = CString::new(crate::ui::fmt::clock(ch.start_ms)) {
@@ -167,4 +192,3 @@ pub(crate) fn draw() {
         }
     }
 }
-

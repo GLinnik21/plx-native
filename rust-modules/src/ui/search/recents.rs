@@ -126,8 +126,7 @@ const TEXT_W: f32 = BLOCK_W - 2.0 * table::CONTENT_X;
 const ROWS_TOP: f32 = super::CONTENT_TOP + table::HDR_H;
 /// The bottom edge of the Clear control at a FULL list — the number the four-term cap exists to
 /// keep under the raised keyboard's top edge. Asserted by a host test, not by the eye.
-const BLOCK_BOTTOM: f32 =
-    ROWS_TOP + super::MAX_RECENTS as f32 * table::ROW_H + CLEAR_GAP + CLEAR_H;
+const BLOCK_BOTTOM: f32 = ROWS_TOP + super::MAX_RECENTS as f32 * table::ROW_H + CLEAR_GAP + CLEAR_H;
 /// The Clear control's own height — one control height, and no longer `FIELD.h`: the field is a
 /// line box now (80px for a 72px run), not a control, so reading its height here would have
 /// measured this block against the wrong object.
@@ -200,7 +199,11 @@ fn cached(g: &mut Option<Store>) -> &mut Store {
         // Home switch, and this is the read that has to answer differently when it does.
         let who = crate::plex::session::current_profile_key();
         let terms = sanitize(crate::plex::session::peek().recents_for(&who).to_vec());
-        *g = Some(Store { gen, terms, runs: None });
+        *g = Some(Store {
+            gen,
+            terms,
+            runs: None,
+        });
     }
     // filled immediately above when it was not already the current generation
     g.as_mut().expect("cache is populated")
@@ -240,8 +243,14 @@ fn bake(terms: &[String]) -> Vec<CString> {
     terms
         .iter()
         .map(|t| {
-            CString::new(crate::text::elide(t, TEXT_W, theme::size::HEADLINE, 1, false))
-                .unwrap_or_default()
+            CString::new(crate::text::elide(
+                t,
+                TEXT_W,
+                theme::size::HEADLINE,
+                1,
+                false,
+            ))
+            .unwrap_or_default()
         })
         .collect()
 }
@@ -391,8 +400,11 @@ struct Pending {
 /// `session::update` refuses the same case one layer up, for every caller rather than this one;
 /// the test stays here because this is where it is *graded*, and because a rule worth having in
 /// two places is one whose cost is a string comparison.
-fn merged(s: &crate::plex::session::Session, who: &str, terms: &[String])
-    -> Option<crate::plex::session::Session> {
+fn merged(
+    s: &crate::plex::session::Session,
+    who: &str,
+    terms: &[String],
+) -> Option<crate::plex::session::Session> {
     if s.client_id.is_empty() || s.recents_for(who) == terms {
         return None;
     }
@@ -515,7 +527,11 @@ fn draw_block(p: Painter, v: &View, rows: &[CString]) {
         // to the d-pad alone — `mod.rs::hit` scans an array `draw` parks every frame and no
         // drawer ever filled, so every click missed.
         super::note_recent_rect(i, Rect::new(BLOCK_X, ry, BLOCK_W, table::ROW_H));
-        let ink = if focused { crate::ui::ACCENT_INK } else { theme::TEXT_PRIMARY };
+        let ink = if focused {
+            crate::ui::ACCENT_INK
+        } else {
+            theme::TEXT_PRIMARY
+        };
         Label::new(run.as_ptr(), theme::size::HEADLINE, ink)
             .bold()
             .draw(p, Rect::new(TEXT_X, ry, 0.0, table::ROW_H));
@@ -547,7 +563,11 @@ mod tests {
     fn remembering_a_term_moves_it_to_the_front_instead_of_duplicating_it() {
         let mut l = list(&["wallace", "laura"]);
         promote(&mut l, "laura");
-        assert_eq!(l, list(&["laura", "wallace"]), "an existing term is moved, not added");
+        assert_eq!(
+            l,
+            list(&["laura", "wallace"]),
+            "an existing term is moved, not added"
+        );
 
         // a different CASE is the same term — the new spelling wins
         promote(&mut l, "WALLACE");
@@ -560,7 +580,11 @@ mod tests {
         // a blank is not a search, and neither is anything undrawable
         for junk in ["", "   ", "\t\n", "wal\0lace"] {
             promote(&mut l, junk);
-            assert_eq!(l, list(&["laura", "WALLACE"]), "{junk:?} must not enter the list");
+            assert_eq!(
+                l,
+                list(&["laura", "WALLACE"]),
+                "{junk:?} must not enter the list"
+            );
         }
     }
 
@@ -584,15 +608,28 @@ mod tests {
 
         // `peek` hands back a DEFAULT session both for "no file yet" and for "the file did not
         // parse" — writing that would truncate a live one, i.e. sign the device out over a search.
-        assert!(merged(&Session::default(), "uu-1", &terms).is_none(), "an unreadable session is never written");
+        assert!(
+            merged(&Session::default(), "uu-1", &terms).is_none(),
+            "an unreadable session is never written"
+        );
 
-        let live = Session { client_id: "cid-1".into(), account_token: "acct".into(), ..Default::default() };
+        let live = Session {
+            client_id: "cid-1".into(),
+            account_token: "acct".into(),
+            ..Default::default()
+        };
         let next = merged(&live, "uu-1", &terms).expect("a real session takes the terms");
         assert_eq!(next.recents_for("uu-1"), terms);
-        assert_eq!(next.account_token, "acct", "everything else in the file is carried over untouched");
+        assert_eq!(
+            next.account_token, "acct",
+            "everything else in the file is carried over untouched"
+        );
 
         // and an unchanged list is not a write: the worker re-reads the file on every flush
-        assert!(merged(&next, "uu-1", &terms).is_none(), "no change, no write");
+        assert!(
+            merged(&next, "uu-1", &terms).is_none(),
+            "no change, no write"
+        );
     }
 
     /// The profile key is an ARGUMENT, not a global read — which is what makes the write safe to do
@@ -602,17 +639,30 @@ mod tests {
     #[test]
     fn terms_are_written_under_the_profile_that_searched_them() {
         use crate::plex::session::Session;
-        let live = Session { client_id: "cid-1".into(), ..Default::default() };
+        let live = Session {
+            client_id: "cid-1".into(),
+            ..Default::default()
+        };
 
         let a = merged(&live, "uu-a", &list(&["wallace"])).expect("a's terms land");
         let b = merged(&a, "uu-b", &list(&["gromit"])).expect("b's terms land beside them");
-        assert_eq!(b.recents_for("uu-a"), list(&["wallace"]), "the other profile's list is untouched");
+        assert_eq!(
+            b.recents_for("uu-a"),
+            list(&["wallace"]),
+            "the other profile's list is untouched"
+        );
         assert_eq!(b.recents_for("uu-b"), list(&["gromit"]));
 
         // the same terms under a DIFFERENT key are still a change — the guard compares this
         // profile's stored list, never the file as a whole
-        assert!(merged(&b, "uu-c", &list(&["gromit"])).is_some(), "a third profile gets its own entry");
-        assert!(merged(&b, "uu-b", &list(&["gromit"])).is_none(), "…but the same profile's is a no-op");
+        assert!(
+            merged(&b, "uu-c", &list(&["gromit"])).is_some(),
+            "a third profile gets its own entry"
+        );
+        assert!(
+            merged(&b, "uu-b", &list(&["gromit"])).is_none(),
+            "…but the same profile's is a no-op"
+        );
     }
 
     /// The cap drops the OLDEST, which is the only end that can be dropped without contradicting
@@ -623,7 +673,11 @@ mod tests {
     /// the number would have failed for a correct change and taught nothing about the rule.
     #[test]
     fn the_cap_drops_the_oldest_term() {
-        assert_eq!(CAP, crate::ui::search::MAX_RECENTS, "the store keeps exactly what the screen shows");
+        assert_eq!(
+            CAP,
+            crate::ui::search::MAX_RECENTS,
+            "the store keeps exactly what the screen shows"
+        );
         // One more term than fits, newest last, so the survivors are the reverse of the tail.
         let typed: Vec<String> = (0..CAP + 1).map(|i| format!("q{i}")).collect();
         let mut l = Vec::new();
@@ -640,16 +694,39 @@ mod tests {
     /// repeats gone, length bounded.
     #[test]
     fn a_hand_edited_list_is_cleaned_up_on_the_way_in() {
-        let raw = list(&["laura", "", "  ", "LAURA", "wallace", "gromit", "feathers", "wendolene", "grue"]);
+        let raw = list(&[
+            "laura",
+            "",
+            "  ",
+            "LAURA",
+            "wallace",
+            "gromit",
+            "feathers",
+            "wendolene",
+            "grue",
+        ]);
         let got = sanitize(raw);
         // The three rules, stated separately from the LENGTH so the cap can move on its own (see
         // `the_cap_drops_the_oldest_term`): order preserved, blanks gone, the repeat collapsed onto
         // its FIRST place, and whatever survives is bounded.
-        let kept = ["laura", "wallace", "gromit", "feathers", "wendolene", "grue"];
-        assert_eq!(got, list(&kept[..CAP.min(kept.len())]),
-            "newest-first order kept, blanks dropped, the repeat collapsed onto its FIRST place");
+        let kept = [
+            "laura",
+            "wallace",
+            "gromit",
+            "feathers",
+            "wendolene",
+            "grue",
+        ];
+        assert_eq!(
+            got,
+            list(&kept[..CAP.min(kept.len())]),
+            "newest-first order kept, blanks dropped, the repeat collapsed onto its FIRST place"
+        );
         assert!(got.len() <= CAP);
-        assert!(!got.iter().any(|t| t.trim().is_empty()), "a blank is not a term");
+        assert!(
+            !got.iter().any(|t| t.trim().is_empty()),
+            "a blank is not a term"
+        );
         assert_eq!(sanitize(Vec::new()), Vec::<String>::new());
     }
 
@@ -678,22 +755,30 @@ mod tests {
     /// cursor at `MAX_RECENTS` — and at every index in between — lands on the Clear control.
     #[test]
     fn the_clear_control_takes_focus_past_the_last_shown_term() {
-        let v =
-            |zone, recent| View {
-                zone,
-                editing: false,
-                row: 0,
-                col: 0,
-                recent,
-                shift: 0.0,
-                caret: 0,
-                caret_on: true,
-                hot: 0.0,
-            };
+        let v = |zone, recent| View {
+            zone,
+            editing: false,
+            row: 0,
+            col: 0,
+            recent,
+            shift: 0.0,
+            caret: 0,
+            caret_on: true,
+            hot: 0.0,
+        };
         for r in 2..=crate::ui::search::MAX_RECENTS {
-            assert!(clear_focused(&v(Zone::Recents, r), 2), "recent={r} with 2 terms shown");
+            assert!(
+                clear_focused(&v(Zone::Recents, r), 2),
+                "recent={r} with 2 terms shown"
+            );
         }
-        assert!(!clear_focused(&v(Zone::Recents, 1), 2), "a term is focused, not the control");
-        assert!(!clear_focused(&v(Zone::Field, 4), 2), "the field owns the remote, so nothing here does");
+        assert!(
+            !clear_focused(&v(Zone::Recents, 1), 2),
+            "a term is focused, not the control"
+        );
+        assert!(
+            !clear_focused(&v(Zone::Field, 4), 2),
+            "the field owns the remote, so nothing here does"
+        );
     }
 }

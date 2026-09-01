@@ -289,7 +289,12 @@ impl Scope<'_> {
         if !self.owned {
             // Blank titles are dropped rather than counted: a section the table holds but has not
             // titled yet would otherwise read as a library this share has.
-            let named: Vec<&str> = self.libs.iter().copied().filter(|t| !t.is_empty()).collect();
+            let named: Vec<&str> = self
+                .libs
+                .iter()
+                .copied()
+                .filter(|t| !t.is_empty())
+                .collect();
             return match (named.len(), self.handle.is_empty()) {
                 // One library IS the share, and is what the viewer recognises.
                 (1, _) => named[0].to_string(),
@@ -367,7 +372,11 @@ fn scope_text(src: &[Scope]) -> Option<String> {
         // the honest line — the empty state below says the rest.
         return Some(format!("{} unreachable", name_set(&down)));
     }
-    Some(format!("{} unreachable · results from {} only", name_set(&down), name_set(&live)))
+    Some(format!(
+        "{} unreachable · results from {} only",
+        name_set(&down),
+        name_set(&live)
+    ))
 }
 
 /// Name a set of sources, collapsing to a COUNT once naming them all stops being a sentence.
@@ -389,7 +398,10 @@ fn name_set(v: &[&Scope]) -> String {
         let all: Vec<String> = v.iter().map(|s| s.label()).collect();
         return join(&all);
     }
-    let libs: usize = shares.iter().map(|s| s.libs.iter().filter(|t| !t.is_empty()).count()).sum();
+    let libs: usize = shares
+        .iter()
+        .map(|s| s.libs.iter().filter(|t| !t.is_empty()).count())
+        .sum();
     let tail = if libs > 0 {
         format!("{libs} shared libraries")
     } else {
@@ -482,14 +494,23 @@ impl Key {
         // owes is that it moves when the roster does. `server_ids` yields at most `MAX_SERVERS`
         // entries, so `i` is always both a bit of `live` and an index of `facts`; `take` says so to
         // the reader rather than leaving it to be re-derived from two other modules.
-        for (i, sid) in crate::plex::server_ids().enumerate().take(crate::plex::MAX_SERVERS) {
+        for (i, sid) in crate::plex::server_ids()
+            .enumerate()
+            .take(crate::plex::MAX_SERVERS)
+        {
             // The same reading [`build`] uses: a source `browse`'s table has never adopted has not
             // failed, so an absent one is live. The two must agree or the line changes without the
             // key moving.
-            if srcs.iter().find(|s| s.sid == sid).map(|s| s.reachable()).unwrap_or(true) {
+            if srcs
+                .iter()
+                .find(|s| s.sid == sid)
+                .map(|s| s.reachable())
+                .unwrap_or(true)
+            {
                 k.live |= 1 << i;
             }
-            k.facts[i] = crate::plex::server_facts(sid).map_or(0, |f| std::ptr::from_ref(f) as usize);
+            k.facts[i] =
+                crate::plex::server_facts(sid).map_or(0, |f| std::ptr::from_ref(f) as usize);
         }
         k
     }
@@ -559,18 +580,37 @@ fn build(key: Key) -> ScopeState {
                 owned: f.map(|f| f.owned).unwrap_or(Some(sid) == first),
                 // `browse`'s is the app's ONE notion of a source that has stopped answering. A
                 // source its table has never adopted has not failed, so it reads as live.
-                live: srcs.iter().find(|s| s.sid == sid).map(|s| s.reachable()).unwrap_or(true),
+                live: srcs
+                    .iter()
+                    .find(|s| s.sid == sid)
+                    .map(|s| s.reachable())
+                    .unwrap_or(true),
             }
         })
         .collect();
-    let line = scope_text(&src)
-        .map(|t| CString::new(crate::text::elide(&t, SCOPE_W, theme::size::CAPTION, 0, false)).unwrap_or_default());
+    let line = scope_text(&src).map(|t| {
+        CString::new(crate::text::elide(
+            &t,
+            SCOPE_W,
+            theme::size::CAPTION,
+            0,
+            false,
+        ))
+        .unwrap_or_default()
+    });
     // A name nothing has supplied yet is DROPPED rather than replaced — `super::empty::scope_hint`
     // then writes the sentence with no scope clause at all, which stays true whatever the roster
     // turns out to be. The fallbacks above ([`UNNAMED_OWN`]) belong to the LINE, which has to stay
     // a sentence with a hole in the middle of it; a hint with a whole clause to drop does not.
-    let name = (src.len() == 1).then(|| src[0].name).filter(|s| !s.is_empty());
-    ScopeState { key, line, n: src.len(), name }
+    let name = (src.len() == 1)
+        .then(|| src[0].name)
+        .filter(|s| !s.is_empty());
+    ScopeState {
+        key,
+        line,
+        n: src.len(),
+        name,
+    }
 }
 
 /// How many sources this screen searches, and — only when there is exactly one — its machine name.
@@ -611,12 +651,24 @@ mod tests {
     /// Every name here is a PLACEHOLDER. This repository is public and a real share's machine name
     /// and account handle are a third party's — see `docs/agent-reference.md`.
     fn own(name: &str) -> Scope<'_> {
-        Scope { name, libs: Vec::new(), handle: "", owned: true, live: true }
+        Scope {
+            name,
+            libs: Vec::new(),
+            handle: "",
+            owned: true,
+            live: true,
+        }
     }
     /// A share is named by its LIBRARY, so that is what the fixture takes — the machine name is
     /// carried only to prove the line never reaches for it.
     fn share<'a>(lib: &'a str, handle: &'a str) -> Scope<'a> {
-        Scope { name: "a-hostname", libs: vec![lib], handle, owned: false, live: true }
+        Scope {
+            name: "a-hostname",
+            libs: vec![lib],
+            handle,
+            owned: false,
+            live: true,
+        }
     }
     fn down(mut s: Scope) -> Scope {
         s.live = false;
@@ -637,8 +689,14 @@ mod tests {
     #[test]
     fn the_caret_is_visible_only_during_the_on_phase_of_an_editing_field() {
         assert!(caret_shown(true, true));
-        assert!(!caret_shown(true, false), "the OFF phase must actually hide the bar");
-        assert!(!caret_shown(false, true), "a parked ON phase must not draw without the keyboard");
+        assert!(
+            !caret_shown(true, false),
+            "the OFF phase must actually hide the bar"
+        );
+        assert!(
+            !caret_shown(false, true),
+            "a parked ON phase must not draw without the keyboard"
+        );
         assert!(!caret_shown(false, false));
     }
 
@@ -702,13 +760,21 @@ mod tests {
         let avail = box_w - CARET_GAP - CARET_W;
         // the caret at the FRONT of a long run: no scroll at all, and the tail is what is cut
         let (run, caret) = run_layout(2000.0, 0.0, box_w, true);
-        assert_eq!((run, caret), (0.0, CARET_GAP), "a caret at the front pins the run to the left edge");
+        assert_eq!(
+            (run, caret),
+            (0.0, CARET_GAP),
+            "a caret at the front pins the run to the left edge"
+        );
         // …stepped just inside the box: still no scroll, the bar simply stands further along
         let (run, caret) = run_layout(2000.0, avail - 10.0, box_w, true);
         assert_eq!((run, caret), (0.0, avail - 10.0 + CARET_GAP));
         // …and past it: the run slides by exactly the overflow, parking the bar on the right edge
         let (run, caret) = run_layout(2000.0, 1000.0, box_w, true);
-        assert_eq!(run, -(1000.0 - avail), "the run slides to bring the caret back inside");
+        assert_eq!(
+            run,
+            -(1000.0 - avail),
+            "the run slides to bring the caret back inside"
+        );
         assert_eq!(caret + CARET_W, box_w);
         // the caret is always drawn INSIDE the box, at every position in a very long query
         for c in [0.0, 1.0, 500.0, 1999.0, 2000.0] {
@@ -745,10 +811,16 @@ mod tests {
             for c in 0..=q.len() + 4 {
                 let (run, head) = run_and_head(q, c);
                 assert_eq!(run, q);
-                assert!(q.starts_with(head), "the head must be a prefix of the run: {head:?}");
+                assert!(
+                    q.starts_with(head),
+                    "the head must be a prefix of the run: {head:?}"
+                );
                 // it lands on the boundary at or below the asked-for offset, never above it
                 assert!(head.len() <= c.min(q.len()));
-                assert!(c.min(q.len()) - head.len() < 4, "…and never backs up past one character");
+                assert!(
+                    c.min(q.len()) - head.len() < 4,
+                    "…and never backs up past one character"
+                );
             }
         }
     }
@@ -758,7 +830,11 @@ mod tests {
     #[test]
     fn a_nul_cuts_the_run_and_the_caret_lands_inside_what_is_left() {
         assert_eq!(run_and_head("wal\0lace", 3), ("wal", "wal"));
-        assert_eq!(run_and_head("wal\0lace", 8), ("wal", "wal"), "a caret past the cut clamps to it");
+        assert_eq!(
+            run_and_head("wal\0lace", 8),
+            ("wal", "wal"),
+            "a caret past the cut clamps to it"
+        );
         assert_eq!(run_and_head("\0wallace", 4), ("", ""));
         // …and the clamp still lands on a character boundary, not merely inside the length.
         assert_eq!(run_and_head("су\0ббота", 99), ("су", "су"));
@@ -780,15 +856,28 @@ mod tests {
     /// missing element. Only "no sources at all" is silent, because there is nothing true to say.
     #[test]
     fn one_source_is_named_and_only_no_source_is_silent() {
-        assert_eq!(scope_text(&[own("nas-home")]).unwrap(), "Searching nas-home");
+        assert_eq!(
+            scope_text(&[own("nas-home")]).unwrap(),
+            "Searching nas-home"
+        );
         // …by its MACHINE name, which is what your own server is recognised by (`Scope::label`).
-        assert_eq!(scope_text(&[own("")]).unwrap(), "Searching your server", "never a blank in a sentence");
+        assert_eq!(
+            scope_text(&[own("")]).unwrap(),
+            "Searching your server",
+            "never a blank in a sentence"
+        );
         // A lone SHARE is named by its library, and carries no handle: there is no second name for
         // the `·` to separate it from, and "Film Club · friend" beside a one-source install states
         // an attribution nothing on the screen contrasts with.
-        assert_eq!(scope_text(&[share("Film Club", "friend")]).unwrap(), "Searching Film Club");
+        assert_eq!(
+            scope_text(&[share("Film Club", "friend")]).unwrap(),
+            "Searching Film Club"
+        );
         // Down, alone: the bare fact, with nothing left to say results are coming from instead.
-        assert_eq!(scope_text(&[down(own("nas-home"))]).unwrap(), "nas-home unreachable");
+        assert_eq!(
+            scope_text(&[down(own("nas-home"))]).unwrap(),
+            "nas-home unreachable"
+        );
         assert_eq!(scope_text(&[]), None);
     }
 
@@ -810,9 +899,15 @@ mod tests {
     fn a_share_is_named_by_its_library_and_never_by_its_hostname() {
         let t = scope_text(&[own("nas-home"), share("Film Club", "friend")]).unwrap();
         assert!(t.contains("Film Club"), "the share is its library: {t}");
-        assert!(!t.contains("a-hostname"), "the share's MACHINE must not reach this line: {t}");
+        assert!(
+            !t.contains("a-hostname"),
+            "the share's MACHINE must not reach this line: {t}"
+        );
         // …while your own side is still the machine you recognise
-        assert!(t.contains("nas-home"), "your own server keeps its name: {t}");
+        assert!(
+            t.contains("nas-home"),
+            "your own server keeps its name: {t}"
+        );
 
         // A share with SEVERAL libraries is called by its PERSON, not by a list of their rooms —
         // `Shared Sources.dc.html`: the Sources list is "the one place a machine name is spoken,
@@ -824,7 +919,11 @@ mod tests {
         assert_eq!(t, "Searching nas-home and friend");
         // …and the attribution is not repeated onto itself: "friend · friend" attributes a thing
         // to the thing it already is.
-        assert_eq!(t.matches("friend").count(), 1, "the handle appears once, not as its own suffix: {t}");
+        assert_eq!(
+            t.matches("friend").count(),
+            1,
+            "the handle appears once, not as its own suffix: {t}"
+        );
     }
 
     /// **Past a couple of shares the line stops naming and starts counting.** The registry holds
@@ -839,18 +938,34 @@ mod tests {
             s.libs = vec![lib];
             s
         };
-        let many = vec![own("nas-home"), mk("A", "ann"), mk("B", "bob"), mk("C", "cat")];
-        assert_eq!(scope_text(&many).unwrap(), "Searching nas-home and 3 shared libraries");
+        let many = vec![
+            own("nas-home"),
+            mk("A", "ann"),
+            mk("B", "bob"),
+            mk("C", "cat"),
+        ];
+        assert_eq!(
+            scope_text(&many).unwrap(),
+            "Searching nas-home and 3 shared libraries"
+        );
 
         // …and with the section tables still landing there are no library names to count, so it
         // counts what it does know rather than inventing one.
-        let mut blank = vec![own("nas-home"), share("", "ann"), share("", "bob"), share("", "cat")];
+        let mut blank = vec![
+            own("nas-home"),
+            share("", "ann"),
+            share("", "bob"),
+            share("", "cat"),
+        ];
         for s in blank.iter_mut() {
             if !s.owned {
                 s.libs = Vec::new();
             }
         }
-        assert_eq!(scope_text(&blank).unwrap(), "Searching nas-home and 3 shared sources");
+        assert_eq!(
+            scope_text(&blank).unwrap(),
+            "Searching nas-home and 3 shared sources"
+        );
     }
 
     #[test]
@@ -890,7 +1005,12 @@ mod tests {
     #[test]
     fn three_sources_list_plainly_and_attribute_none_of_them() {
         assert_eq!(
-            scope_text(&[own("nas-home"), share("Film Club", "friend"), share("Archive", "pal")]).unwrap(),
+            scope_text(&[
+                own("nas-home"),
+                share("Film Club", "friend"),
+                share("Archive", "pal")
+            ])
+            .unwrap(),
             "Searching nas-home, Film Club and Archive"
         );
     }
@@ -914,7 +1034,10 @@ mod tests {
             scope_text(&[own(""), share("Film Club", "friend")]).unwrap(),
             "Searching your server and Film Club · friend"
         );
-        assert_eq!(scope_text(&[own("nas-home"), share("", "")]).unwrap(), "Searching nas-home and a shared server");
+        assert_eq!(
+            scope_text(&[own("nas-home"), share("", "")]).unwrap(),
+            "Searching nas-home and a shared server"
+        );
     }
 
     /// The whole-roster-unnamed boot frame: two sources, no facts for either. It must not call a
@@ -963,7 +1086,8 @@ mod tests {
         // `register_for_test`, not the public `register`: the latter resolves the device id through
         // `session::load`, which mints and PERSISTS a uuid a host test has no business writing, and
         // it spawns a `serverinfo` worker against the fixture address.
-        let own = crate::plex::register_for_test("mach-own", "10.0.0.1", 32400, "tok", "cid-field-test");
+        let own =
+            crate::plex::register_for_test("mach-own", "10.0.0.1", 32400, "tok", "cid-field-test");
         crate::plex::register_for_test("mach-friend", "10.0.0.2", 32400, "tok", "cid-field-test");
 
         crate::browse::seed_sources_for_test(2, true);
@@ -974,7 +1098,11 @@ mod tests {
         // A share going quiet is `browse`'s flag alone. The seed also resets the section table, so
         // the whole key moves for two reasons — the BIT is what this pins.
         crate::browse::seed_sources_for_test(2, false);
-        assert_eq!(Key::read().live, 0, "a source that stopped answering must move the key");
+        assert_eq!(
+            Key::read().live,
+            0,
+            "a source that stopped answering must move the key"
+        );
 
         // …and the roster naming a machine moves it through the facts address on its own: nothing
         // else about the registry or the table changed, and the line goes from "your server" to a
@@ -983,7 +1111,10 @@ mod tests {
         let before = Key::read();
         crate::plex::describe_server(own, "nas-home", "", true);
         let after = Key::read();
-        assert_ne!(before, after, "a description landing must rebuild the line that speaks it");
+        assert_ne!(
+            before, after,
+            "a description landing must rebuild the line that speaks it"
+        );
         assert_eq!(
             (after.servers, after.roster, after.live, after.sections),
             (before.servers, before.roster, before.live, before.sections),
@@ -1003,7 +1134,10 @@ mod tests {
         crate::plex::register_for_test("scope-c", "10.0.0.3", 32400, "c", "cid");
         let after = Key::read();
         assert_eq!((before.servers, after.servers), (2, 2));
-        assert_ne!(before.roster, after.roster, "the active machine set changed at the same count");
+        assert_ne!(
+            before.roster, after.roster,
+            "the active machine set changed at the same count"
+        );
         assert_eq!(crate::plex::server_ids().next(), Some(a));
         assert_ne!(before, after);
     }

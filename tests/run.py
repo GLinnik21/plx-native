@@ -120,14 +120,18 @@ ALL_TRIGGERS = [
     "plxnative-grid", "plxnative-autoplay", "plxnative-h265", "plxnative-playidx", "plxnative-url",
     "plxnative-play", "plxnative-ffprobe", "plxnative-token", "plxnative-servers",
     # UI/FPS scenes (both profiler triggers MUST be cleared; either invalidates production pacing)
-    "plxnative-detailosc", "plxnative-info", "plxnative-chapters", "plxnative-profile",
+    "plxnative-detailosc", "plxnative-homeosc", "plxnative-heroosc", "plxnative-homefoldosc",
+    "plxnative-info", "plxnative-chapters", "plxnative-profile",
     "plxnative-hwcnt", "plxnative-glassboth", "plxnative-glasshz",
     # the track's material and the instruments that override or narrate it. `flattabs` is the one
     # that MUST be cleared: it swaps the shipped material for the flat capsule, so a leftover turns
     # every glass assertion into a measurement of something else.
     "plxnative-tabglassdim", "plxnative-flattabs", "plxnative-groundlog",
-    # boot-flow triggers (heroidx pins the hero + bypasses the who's-watching picker; pickuser forces it)
-    "plxnative-heroidx", "plxnative-pickuser",
+    # boot-flow and full-screen route triggers.  The list is documentary (cleanup is glob-based),
+    # but keeping the real names here makes a new performance scene grep-discoverable.
+    "plxnative-heroidx", "plxnative-pickuser", "plxnative-firstrun",
+    "plxnative-onboardosc", "plxnative-consent", "plxnative-consentosc",
+    "plxnative-settings", "plxnative-settingsosc", "plxnative-acct", "plxnative-acctosc",
     # itemmenu snaps into the grid and opens the press-and-hold card context menu (route=itemmenu)
     "plxnative-itemmenu",
     # playurl is the synthetic tier's entry; replay is how many times a FINISHED one restarts (#46)
@@ -2989,14 +2993,19 @@ def _drain(stream, sink, done):
         done.set()
 
 
-def _run_stream_pids():
+def _run_stream_pids(run_cmd=subprocess.run):
     """PIDs of every local ssh/sshpass process carrying a run-stream tail.
 
     RUN_STREAM_MARK is the tail `make run-stream` ends in, and it is DERIVED (resolve_flavour) from
     `make -s print-eventlog` rather than written out here — the two installs tail two different
     files, and a mark that stops matching the remote command text reaps nothing at all.
     """
-    out = subprocess.run(["ps", "-Ao", "pid,command"], capture_output=True, text=True).stdout
+    # A process argv is an arbitrary byte sequence on POSIX. macOS `ps` normally emits UTF-8, but
+    # one unrelated local process with a legacy byte used to crash the ENTIRE TV teardown after a
+    # passing scene. Decode the process table explicitly and replace only that unprintable byte;
+    # the ASCII event-log marker and PID remain exact.
+    raw = run_cmd(["ps", "-Ao", "pid,command"], capture_output=True).stdout
+    out = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
     pids = set()
     for ln in out.splitlines():
         if RUN_STREAM_MARK in ln and " ps -Ao" not in ln:
@@ -4081,6 +4090,10 @@ def run_fps_scene(scene, cfg, token):
         print("    [FAIL] make run timed out")
         return False, "make run timed out"
     lines = filter_log(proc.stdout + "\n" + proc.stderr)
+    # FPS scenes are the runs most likely to carry profiler summaries.  Preserve them just like
+    # playback cases when --save-logs is requested; otherwise teardown relaunches the app and the
+    # only copy of the HWCNT/phase evidence is lost before it can be compared with the A/B leg.
+    save_case_log(cfg, f"fps-{name}", lines)
     # Same refusal as the playback cases, and it matters at least as much here: a scene graded
     # against the wrong install's log, or against a release build that never read its triggers,
     # fails on the <5-samples guard and reads as "the app never reached this screen".
@@ -4158,12 +4171,14 @@ def run_fps_scene(scene, cfg, token):
     return ok, detail
 
 
-def fps_for_tiers(scenes, include_player):
+def fps_for_tiers(scenes, include_player, name_filter=None):
     """The scenes this run will actually execute. One definition, because main() has to know it too
     — it decides from the SELECTED scenes whether a second server is needed, and resolving one for a
     player-tier scene that `--fps` was never going to run is a plex.tv round-trip for nothing."""
     tiers = {"ui"} | ({"player"} if include_player else set())
-    return [s for s in scenes if s.get("tier", "ui") in tiers]
+    return [s for s in scenes
+            if s.get("tier", "ui") in tiers
+            and (not name_filter or name_filter in s["name"])]
 
 
 def run_fps_suite(scenes, cfg, token, include_player, skipped=()):
@@ -4259,7 +4274,8 @@ def main():
         pass
     ap = argparse.ArgumentParser(description="webOS Plex player on-device regression harness")
     ap.add_argument("--build", action="store_true", help="cargo + make + make deploy before running")
-    ap.add_argument("--filter", default=None, help="run only cases whose name contains this substring")
+    ap.add_argument("--filter", default=None,
+                    help="run only cases or FPS scenes whose name contains this substring")
     ap.add_argument("--suite", default=None, choices=["logic", "codec"],
                     help="run only one suite: 'logic' (seek/resume/audio/subtitle — the engine and "
                          "pump; still covers h264-dp, 4k-hevc-dp and transcode) or 'codec' (the "
@@ -4474,7 +4490,7 @@ def main():
         if args.suite:
             sys.exit("--suite selects playback cases; the FPS scenes use --fps / --fps-player")
         include_player = args.fps_player
-        selected = fps_for_tiers(manifest.get("fps_scenes", []), include_player)
+        selected = fps_for_tiers(manifest.get("fps_scenes", []), include_player, args.filter)
         # Same partition as the playback cases, and for a sharper reason: run_fps_scene's "$rk"
         # substitution reads scene["rk"] directly, and the KeyError landed in the batch's blanket
         # `except` as `[FAIL] ERROR: 'rk'` -- a false FAILURE, indistinguishable from a regression.

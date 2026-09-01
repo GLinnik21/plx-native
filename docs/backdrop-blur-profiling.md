@@ -85,11 +85,11 @@ to the correct cropped-texture UV offset.
 ## Cache and refresh policy
 
 `Glass::CACHED` invalidates on activation and then reuses the blurred `mid` texture until explicit
-page invalidation or a region containment miss. `Glass::DYNAMIC` applies its modal dim to the opaque
-Home source render, keeps drawing the glass material every presented UI frame, and invalidates a
-dirty backdrop at most every third successful present. Skipped idle-loop iterations do not advance
-that clock. The current Account panel is 440 pixels wide and 120..440 pixels tall; its exact height
-depends on the measured row set.
+page invalidation or a region containment miss. `Glass::DYNAMIC` keeps drawing the glass material
+every presented UI frame and invalidates a dirty backdrop on every changed successful present.
+The modal dim is a page-drawn scrim rather than an input transform on the source render. Skipped
+idle-loop iterations do not advance that clock. The Account panel's exact height depends on the
+measured row set.
 
 ## Measurement modes, and what each one can actually measure
 

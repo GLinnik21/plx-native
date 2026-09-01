@@ -61,8 +61,12 @@ pub(crate) use crate::surface::{LOGICAL_H as SCR_H, LOGICAL_W as SCR_W};
 /// clip: a full-bleed hero backdrop, a shelf peeking off the bottom edge, a scrim, the page ground —
 /// all of those are *supposed* to reach the panel edge, and clipping them would be the bug. What
 /// must be inside is what the viewer has to read or press: text, controls, marks, logos.
-pub const SAFE: crate::ui::Rect =
-    crate::ui::Rect::new(MARGIN_X, MARGIN_Y, SCR_W - 2.0 * MARGIN_X, SCR_H - 2.0 * MARGIN_Y);
+pub const SAFE: crate::ui::Rect = crate::ui::Rect::new(
+    MARGIN_X,
+    MARGIN_Y,
+    SCR_W - 2.0 * MARGIN_X,
+    SCR_H - 2.0 * MARGIN_Y,
+);
 
 /// Is `r` wholly inside [`SAFE`]? The one test the audit's table asks, per rect.
 ///
@@ -428,10 +432,19 @@ mod tests {
     fn the_safe_area_is_five_percent_of_each_axis() {
         assert_eq!(MARGIN_X, SCR_W * 0.05);
         assert_eq!(MARGIN_Y, SCR_H * 0.05);
-        assert_eq!((SAFE.x, SAFE.y, SAFE.w, SAFE.h), (96.0, 54.0, 1728.0, 972.0));
+        assert_eq!(
+            (SAFE.x, SAFE.y, SAFE.w, SAFE.h),
+            (96.0, 54.0, 1728.0, 972.0)
+        );
         assert!(inside_safe(SAFE), "the frame contains itself");
-        assert!(!inside_safe(Rect::new(SAFE.x - 1.0, SAFE.y, 10.0, 10.0)), "one px left of it does not");
-        assert!(!inside_safe(Rect::new(SAFE.x, SAFE.y - 1.0, 10.0, 10.0)), "nor one px above");
+        assert!(
+            !inside_safe(Rect::new(SAFE.x - 1.0, SAFE.y, 10.0, 10.0)),
+            "one px left of it does not"
+        );
+        assert!(
+            !inside_safe(Rect::new(SAFE.x, SAFE.y - 1.0, 10.0, 10.0)),
+            "nor one px above"
+        );
         assert!(!inside_safe(Rect::FULL), "nor the whole panel");
     }
 
@@ -481,7 +494,10 @@ mod tests {
         let mut probe = |name: &str, f: &dyn Fn(&mut Vec<(&'static str, Rect)>)| {
             let before = r.len();
             f(&mut r);
-            assert!(r.len() > before, "the {name} probe contributed nothing — it stopped being audited");
+            assert!(
+                r.len() > before,
+                "the {name} probe contributed nothing — it stopped being audited"
+            );
         };
 
         // ---- the shared chrome, and the screens composed on it ------------------------------
@@ -500,29 +516,62 @@ mod tests {
         // ---- the screens whose outermost geometry is already public here --------------------
         // Home: the hero's text column and its action row start at the margin; the grid view's
         // first shelf heading is the highest ink the page draws under the bar.
-        r.push(("home hero text column", Rect::new(MARGIN_X, 380.0, crate::ui::home::HERO_COL_W, 400.0)));
-        r.push(("home first shelf heading (grid view)", Rect::new(MARGIN_X, GRID_TOP_Y - TITLE_DY, 400.0, TITLE_DY)));
-        r.push(("home first shelf card (grid view)", Rect::new(MARGIN_X, GRID_TOP_Y + CARD_DY, CARD_W, CARD_H)));
+        r.push((
+            "home hero text column",
+            Rect::new(MARGIN_X, 380.0, crate::ui::home::HERO_COL_W, 400.0),
+        ));
+        r.push((
+            "home first shelf heading (grid view)",
+            Rect::new(MARGIN_X, GRID_TOP_Y - TITLE_DY, 400.0, TITLE_DY),
+        ));
+        r.push((
+            "home first shelf card (grid view)",
+            Rect::new(MARGIN_X, GRID_TOP_Y + CARD_DY, CARD_W, CARD_H),
+        ));
         // …and the focused card's block at the BOTTOM of its reveal: card + the 96px label band,
         // which is what `home::update`'s and `library`'s reveal rules keep clear of the edge.
-        r.push(("home focused card block, revealed", Rect::new(MARGIN_X, SCR_H - MARGIN_Y - CARD_H - 96.0, CARD_W, CARD_H + 96.0)));
+        r.push((
+            "home focused card block, revealed",
+            Rect::new(
+                MARGIN_X,
+                SCR_H - MARGIN_Y - CARD_H - 96.0,
+                CARD_W,
+                CARD_H + 96.0,
+            ),
+        ));
 
         // Search: the bare query line, and the scope line below it.
         r.push(("search field", crate::ui::search::FIELD));
-        r.push(("search first shelf heading", Rect::new(MARGIN_X, crate::ui::search::CONTENT_TOP, 400.0, 40.0)));
+        r.push((
+            "search first shelf heading",
+            Rect::new(MARGIN_X, crate::ui::search::CONTENT_TOP, 400.0, 40.0),
+        ));
 
         // Person: the portrait at the margin, and the air the reveal keeps under a shelf.
         r.push(("person portrait", Rect::new(MARGIN_X, 96.0, 320.0, 320.0)));
-        r.push(("person shelf block, revealed", Rect::new(MARGIN_X, SCR_H - MARGIN_Y - CARD_H, CARD_W, CARD_H)));
+        r.push((
+            "person shelf block, revealed",
+            Rect::new(MARGIN_X, SCR_H - MARGIN_Y - CARD_H, CARD_W, CARD_H),
+        ));
 
         // Onboarding + login: both centre or hang off the same margin.
-        r.push(("onboard copy column", Rect::new(MARGIN_X, 150.0, crate::ui::home::HERO_COL_W, 500.0)));
+        r.push((
+            "onboard copy column",
+            Rect::new(MARGIN_X, 150.0, crate::ui::home::HERO_COL_W, 500.0),
+        ));
 
         for (name, rect) in r {
             assert!(
                 inside_safe(rect),
                 "{name} at ({}, {}) {}x{} leaves the {}x{} safe area at ({}, {})",
-                rect.x, rect.y, rect.w, rect.h, SAFE.w, SAFE.h, SAFE.x, SAFE.y,
+                rect.x,
+                rect.y,
+                rect.w,
+                rect.h,
+                SAFE.w,
+                SAFE.h,
+                SAFE.x,
+                SAFE.y,
             );
         }
     }
@@ -549,9 +598,20 @@ mod tests {
             (b'4' as c_uint, 33, "the digit 4"),
             (b'5' as c_uint, 34, "the digit 5"),
         ] {
-            assert_eq!(page_dir(sym, wcode), None, "{what} is not the channel rocker");
-            assert_eq!(classify(sym, wcode), Key::Other, "{what} names no Key either");
-            assert!(is_bound(sym, wcode), "{what} IS bound — the who's-watching PIN keypad");
+            assert_eq!(
+                page_dir(sym, wcode),
+                None,
+                "{what} is not the channel rocker"
+            );
+            assert_eq!(
+                classify(sym, wcode),
+                Key::Other,
+                "{what} names no Key either"
+            );
+            assert!(
+                is_bound(sym, wcode),
+                "{what} IS bound — the who's-watching PIN keypad"
+            );
         }
         // …and the bare scancodes, in case a future remote sends one with no sym beside it.
         assert_eq!(page_dir(0, 33), None);
@@ -583,9 +643,18 @@ mod tests {
             assert!(is_bound(sym, wcode), "sym={sym} wcode={wcode} names a Key");
         }
         // the three sets `classify` does NOT name and the ladder still binds
-        assert!(is_bound(SDLK_PAGEDOWN, 0) && is_bound(0, WCODE_CH_UP_KEY), "the pager");
-        assert!(is_bound(SDLK_BACKSPACE, 42) && is_bound(SDLK_CLEAR, 156), "the panel's edit keys");
-        assert!(is_bound(b'0' as c_uint, 39) && is_bound(b'9' as c_uint, 38), "the PIN digits");
+        assert!(
+            is_bound(SDLK_PAGEDOWN, 0) && is_bound(0, WCODE_CH_UP_KEY),
+            "the pager"
+        );
+        assert!(
+            is_bound(SDLK_BACKSPACE, 42) && is_bound(SDLK_CLEAR, 156),
+            "the panel's edit keys"
+        );
+        assert!(
+            is_bound(b'0' as c_uint, 39) && is_bound(b'9' as c_uint, 38),
+            "the PIN digits"
+        );
         // and the ones that must stay unbound. 269 is `SDL_SCANCODE_AC_HOME` (evdev 172
         // `KEY_HOMEPAGE`) and 270 `AC_BACK`; 412/417 are the retired web-namespace codes.
         for (sym, wcode, what) in [
@@ -599,7 +668,11 @@ mod tests {
             // `]` `\` `;` `'` `,` `.` `/` and CapsLock, not digits (the digits are 30-39). Reading
             // ASCII out of `wcode` is the one namespace error this whole change exists to stop.
             (0, 49, "scancode 49, which is backslash and NOT the digit 1"),
-            (0, 55, "scancode 55, which is a full stop and NOT the digit 7"),
+            (
+                0,
+                55,
+                "scancode 55, which is a full stop and NOT the digit 7",
+            ),
         ] {
             assert!(!is_bound(sym, wcode), "{what} must reach no arm");
             assert_eq!(classify(sym, wcode), Key::Other, "{what}");
@@ -636,7 +709,10 @@ mod tests {
     /// `nav4` is the non-player four-way nav dispatch; `lr` is the player's scrub arm (and the
     /// Chapters strip, and the scrub's key-up/auto-repeat companions).
     fn nav4(k: Key) -> bool {
-        matches!(k, Key::Up | Key::Down | Key::Left { alt: false } | Key::Right { alt: false })
+        matches!(
+            k,
+            Key::Up | Key::Down | Key::Left { alt: false } | Key::Right { alt: false }
+        )
     }
     fn lr(k: Key) -> bool {
         matches!(k, Key::Left { .. } | Key::Right { .. })
@@ -696,7 +772,10 @@ mod tests {
             (SDLK_CLEAR, 156),
         ] {
             assert_eq!(classify(sym, wcode), Key::Other, "sym={sym} wcode={wcode}");
-            assert!(is_bound(sym, wcode), "…and every one of them is still BOUND");
+            assert!(
+                is_bound(sym, wcode),
+                "…and every one of them is still BOUND"
+            );
         }
     }
 
@@ -710,7 +789,10 @@ mod tests {
         ] {
             assert!(nav4(plain), "the plain sym is what the nav dispatch takes");
             assert!(lr(plain), "…and the scrub arm takes it too");
-            assert!(!nav4(alt), "the four-way nav dispatch takes the plain syms only");
+            assert!(
+                !nav4(alt),
+                "the four-way nav dispatch takes the plain syms only"
+            );
             assert!(lr(alt), "the scrub arm takes the alternate codes as well");
         }
     }

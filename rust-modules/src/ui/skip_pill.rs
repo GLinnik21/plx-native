@@ -77,7 +77,9 @@ pub(crate) fn rect(pr: Prompt) -> Rect {
 
 /// Draw the button in the control row. Called by `player_hud` INSTEAD of the two discs.
 pub(crate) fn draw(p: Painter, pr: Prompt, focused: bool) {
-    let Ok(label) = CString::new(pr.label()) else { return };
+    let Ok(label) = CString::new(pr.label()) else {
+        return;
+    };
     // No leading icon: the label alone carries it, and a chevron on a control that does not
     // navigate anywhere was reading as "more" rather than "skip".
     // Its slot's only item, so index 0 — the pop is the control ROW's (`player_hud::row_pop`),

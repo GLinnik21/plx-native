@@ -118,7 +118,11 @@ fn rows_for() -> Vec<Action> {
     if crate::lab::menu_row_enabled() {
         v.push(Action::SendDiagnostics);
     }
-    v.extend(crate::route::available_quality_ladder().iter().map(|q| Action::SetQuality(*q)));
+    v.extend(
+        crate::route::available_quality_ladder()
+            .iter()
+            .map(|q| Action::SetQuality(*q)),
+    );
     v
 }
 
@@ -259,7 +263,11 @@ pub fn on_ok() -> Action {
 /// The row list IS the mapping — a selection outside it is `None` rather than whatever action
 /// happens to sit at that index in some other row set.
 fn action_at(rows: &[Action], sel: i32) -> Action {
-    usize::try_from(sel).ok().and_then(|i| rows.get(i)).copied().unwrap_or(Action::None)
+    usize::try_from(sel)
+        .ok()
+        .and_then(|i| rows.get(i))
+        .copied()
+        .unwrap_or(Action::None)
 }
 
 /// The panel at its TALLEST, for the overscan audit ([`crate::ui::consts::SAFE`]).
@@ -267,7 +275,10 @@ fn action_at(rows: &[Action], sel: i32) -> Action {
 pub(crate) fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
     let (pw, ph) = (448.0f32, 320.0f32);
     let bottom = SCR_H - 316.0;
-    out.push(("… overflow menu panel", Rect::new(crate::ui::player_hud::CTRL_RIGHT - pw, bottom - ph, pw, ph)));
+    out.push((
+        "… overflow menu panel",
+        Rect::new(crate::ui::player_hud::CTRL_RIGHT - pw, bottom - ph, pw, ph),
+    ));
 }
 
 /// Bottom-right, above the control row — anchored to the `…` disc that opened it, the way the
@@ -278,19 +289,19 @@ fn panel_rect() -> Rect {
     let pw = 448.0f32;
     let px = crate::ui::player_hud::CTRL_RIGHT - pw;
     let bottom = SCR_H - 316.0; // ~28px above the discs, as track_menu
-    // The ceiling was 320 while this menu held one row, and it was invisible then. With the
-    // Quality ladder beside it `measured_height()` can reach 600 when Auto is enabled — two
-    // headers, seven rows, a divider, AND the table's own top/bottom padding — so a 320 cap put
-    // four of nine rows on screen and
-    // silently scrolled the rest, which is a picker whose options you cannot see.
-    //
-    // The cap is a FRACTION of the room the panel has rather than a subtraction from it: the panel
-    // is anchored at `bottom` and grows upward, so `bottom` IS the space, and 0.86 of it leaves a
-    // clear margin at the top of the frame while comfortably clearing 600. Reaching for a
-    // `bottom - <margin>` literal is what put the first version of this line 4px UNDER the content
-    // — the margin was derived from the 560 of content and forgot the 40 of padding, so the last
-    // rung was clipped until you scrolled: the same symptom, one row deep instead of five. Past
-    // the cap it scrolls, which is what `TableView` is for.
+                                // The ceiling was 320 while this menu held one row, and it was invisible then. With the
+                                // Quality ladder beside it `measured_height()` can reach 600 when Auto is enabled — two
+                                // headers, seven rows, a divider, AND the table's own top/bottom padding — so a 320 cap put
+                                // four of nine rows on screen and
+                                // silently scrolled the rest, which is a picker whose options you cannot see.
+                                //
+                                // The cap is a FRACTION of the room the panel has rather than a subtraction from it: the panel
+                                // is anchored at `bottom` and grows upward, so `bottom` IS the space, and 0.86 of it leaves a
+                                // clear margin at the top of the frame while comfortably clearing 600. Reaching for a
+                                // `bottom - <margin>` literal is what put the first version of this line 4px UNDER the content
+                                // — the margin was derived from the 560 of content and forgot the 40 of padding, so the last
+                                // rung was clipped until you scrolled: the same symptom, one row deep instead of five. Past
+                                // the cap it scrolls, which is what `TableView` is for.
     let ph = table().measured_height().clamp(120.0, bottom * 0.86);
     Rect::new(px, bottom - ph, pw, ph)
 }
@@ -337,9 +348,13 @@ mod tests {
     #[test]
     fn only_the_original_row_says_the_source_cannot_be_preserved() {
         use crate::route::Quality;
-        assert_eq!(quality_detail(Quality::Original, false), "Converts on server");
         assert_eq!(
-            quality_detail(Quality::Original, true), "",
+            quality_detail(Quality::Original, false),
+            "Converts on server"
+        );
+        assert_eq!(
+            quality_detail(Quality::Original, true),
+            "",
             "a source the panel decodes needs no correction — Original means Original",
         );
         for q in crate::route::QUALITY_LADDER {
@@ -347,7 +362,8 @@ mod tests {
                 continue;
             }
             assert_eq!(
-                quality_detail(q, false), "",
+                quality_detail(q, false),
+                "",
                 "{q:?} is not named after the source, so it makes no claim to correct",
             );
         }
@@ -371,7 +387,10 @@ mod tests {
         // The full persisted ladder must keep finished UI copy even if the readiness gate is
         // deliberately closed again for a future protocol regression.
         for q in crate::route::QUALITY_LADDER {
-            assert!(!label(Action::SetQuality(q)).is_empty(), "{q:?} would draw a blank row when enabled");
+            assert!(
+                !label(Action::SetQuality(q)).is_empty(),
+                "{q:?} would draw a blank row when enabled"
+            );
         }
     }
 
@@ -382,7 +401,10 @@ mod tests {
         // …and the Quality section follows the Options one, in the available ladder order.
         // `sel` is ONE flat index over both sections, so this is the join that a section split
         // could quietly break: row 1 must be the ladder's head, not its second rung.
-        assert_eq!(action_at(&rows, 1), Action::SetQuality(crate::route::Quality::Auto));
+        assert_eq!(
+            action_at(&rows, 1),
+            Action::SetQuality(crate::route::Quality::Auto)
+        );
         for (i, q) in crate::route::available_quality_ladder().iter().enumerate() {
             assert_eq!(action_at(&rows, 1 + i as i32), Action::SetQuality(*q));
         }

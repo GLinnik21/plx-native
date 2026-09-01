@@ -68,7 +68,10 @@ impl Xfade {
     /// A fader at rest with its content fully present — the state a screen that has never swapped
     /// anything sits in, and what a `static mut` initializer needs (hence `const`).
     pub(crate) const fn new() -> Self {
-        Xfade { phase: Phase::Idle, t: 1.0 }
+        Xfade {
+            phase: Phase::Idle,
+            t: 1.0,
+        }
     }
 
     /// A content swap has been requested. Fades out **from wherever the alpha already is** — a
@@ -247,7 +250,10 @@ mod tests {
         for _ in 0..8 {
             x.tick(DT, true);
         }
-        assert!(!asked_to_repaint(), "an idle fader must not hold the panel awake");
+        assert!(
+            !asked_to_repaint(),
+            "an idle fader must not hold the panel awake"
+        );
     }
 
     /// `Hold` is a genuine WAIT on data (Library's deferred reload), not motion: the screen is
@@ -262,10 +268,16 @@ mod tests {
         for _ in 0..8 {
             x.tick(DT, false); // not ready — parked
         }
-        assert!(!asked_to_repaint(), "a fader parked waiting for content must not repaint");
+        assert!(
+            !asked_to_repaint(),
+            "a fader parked waiting for content must not repaint"
+        );
         x.tick(DT, true); // Hold -> In
         x.tick(DT, true);
-        assert!(asked_to_repaint(), "the fade-in must repaint once the content arrives");
+        assert!(
+            asked_to_repaint(),
+            "the fade-in must repaint once the content arrives"
+        );
     }
 
     /// Drive `n` frames, returning (commit count, the alpha after each frame).
@@ -296,13 +308,23 @@ mod tests {
             if x.tick(DT, true) {
                 commits += 1;
                 commit_frame = f;
-                assert_eq!(x.alpha(), 0.0, "the commit must happen AT the floor, not near it");
+                assert_eq!(
+                    x.alpha(),
+                    0.0,
+                    "the commit must happen AT the floor, not near it"
+                );
             }
             let a = x.alpha();
             if f <= commit_frame {
-                assert!(a <= prev + 1e-6, "frame {f}: alpha rose during the fade-out ({prev} → {a})");
+                assert!(
+                    a <= prev + 1e-6,
+                    "frame {f}: alpha rose during the fade-out ({prev} → {a})"
+                );
             } else {
-                assert!(a >= prev - 1e-6, "frame {f}: alpha fell during the fade-in ({prev} → {a})");
+                assert!(
+                    a >= prev - 1e-6,
+                    "frame {f}: alpha fell during the fade-in ({prev} → {a})"
+                );
             }
             prev = a;
         }
@@ -344,11 +366,17 @@ mod tests {
             }
             let a = x.alpha();
             if got == usize::MAX {
-                assert!(a <= prev + 1e-6, "frame {f}: the ramp restarted ({prev} → {a})");
+                assert!(
+                    a <= prev + 1e-6,
+                    "frame {f}: the ramp restarted ({prev} → {a})"
+                );
             }
             prev = a;
         }
-        assert_eq!(commits, 1, "two presses inside one fade must commit ONCE, to the last one");
+        assert_eq!(
+            commits, 1,
+            "two presses inside one fade must commit ONCE, to the last one"
+        );
         assert_eq!(got, want, "the second request must not extend the fade-out");
     }
 
@@ -366,7 +394,10 @@ mod tests {
         assert!(alphas.iter().all(|a| *a == 0.0));
 
         x.reload();
-        assert!(x.tick(DT, false), "a reload from the floor commits on the next frame");
+        assert!(
+            x.tick(DT, false),
+            "a reload from the floor commits on the next frame"
+        );
         assert_eq!(x.alpha(), 0.0, "and nothing flickers on the way");
     }
 
@@ -382,11 +413,18 @@ mod tests {
         let (commits, alphas) = run(&mut x, 600, false);
         assert_eq!(commits, 0);
         assert!(alphas.iter().all(|a| *a == 0.0), "parked, not drifting");
-        assert!(x.is_swapping(), "still mid-swap: the screen knows it is waiting");
+        assert!(
+            x.is_swapping(),
+            "still mid-swap: the screen knows it is waiting"
+        );
 
         let (commits, _) = run(&mut x, 12, true);
         assert_eq!(commits, 0, "arrival is not a second commit");
-        assert_eq!(x.alpha(), 1.0, "IN_MS = 140 ms is ≈9 frames; 12 is the whole ramp plus slack");
+        assert_eq!(
+            x.alpha(),
+            1.0,
+            "IN_MS = 140 ms is ≈9 frames; 12 is the whole ramp plus slack"
+        );
         assert!(!x.is_swapping());
     }
 
@@ -415,7 +453,10 @@ mod tests {
         assert_eq!(x.alpha(), 0.0);
         let (commits, alphas) = run(&mut x, 12, true);
         assert_eq!(commits, 0);
-        assert!(alphas.windows(2).all(|w| w[1] >= w[0] - 1e-6), "monotone in");
+        assert!(
+            alphas.windows(2).all(|w| w[1] >= w[0] - 1e-6),
+            "monotone in"
+        );
         assert_eq!(x.alpha(), 1.0);
     }
 
@@ -428,12 +469,21 @@ mod tests {
         let mut x = Xfade::new();
         x.reload();
         let (commits, _) = run(&mut x, 2, true);
-        assert_eq!(commits, 0, "70 ms is ≥ 2 frames at 60 Hz — nothing has committed yet");
+        assert_eq!(
+            commits, 0,
+            "70 ms is ≥ 2 frames at 60 Hz — nothing has committed yet"
+        );
         assert!(x.cancel(), "a fade-out in flight IS withdrawable");
 
         let (commits, alphas) = run(&mut x, 20, true);
-        assert_eq!(commits, 0, "a withdrawn transition must never apply its pending action");
-        assert!(alphas.windows(2).all(|w| w[1] >= w[0] - 1e-6), "monotone back to full: {alphas:?}");
+        assert_eq!(
+            commits, 0,
+            "a withdrawn transition must never apply its pending action"
+        );
+        assert!(
+            alphas.windows(2).all(|w| w[1] >= w[0] - 1e-6),
+            "monotone back to full: {alphas:?}"
+        );
         assert_eq!(x.alpha(), 1.0);
         assert!(!x.is_swapping());
     }
@@ -467,7 +517,10 @@ mod tests {
                 break;
             }
         }
-        assert!(got < want, "the ramp restarted ({got} frames back to full vs {want} for a full IN_MS)");
+        assert!(
+            got < want,
+            "the ramp restarted ({got} frames back to full vs {want} for a full IN_MS)"
+        );
     }
 
     /// "BACK after the commit is an ordinary BACK, not a rewind." Once the swap has happened the
@@ -481,15 +534,25 @@ mod tests {
 
         x.reload();
         while !x.tick(DT, false) {} // drive to the floor; content never arrives, so we park in Hold
-        assert!(!x.cancel(), "the swap is applied — there is nothing left to withdraw");
+        assert!(
+            !x.cancel(),
+            "the swap is applied — there is nothing left to withdraw"
+        );
         let (commits, _) = run(&mut x, 12, true); // content lands: Hold -> In
         assert_eq!(commits, 0);
-        assert_eq!(x.alpha(), 1.0, "it still finishes on its own after the refusal");
+        assert_eq!(
+            x.alpha(),
+            1.0,
+            "it still finishes on its own after the refusal"
+        );
 
         x.reload();
         while !x.tick(DT, true) {}
         x.tick(DT, true); // Hold -> In
-        assert!(!x.cancel(), "mid fade-IN is past the point of no return too");
+        assert!(
+            !x.cancel(),
+            "mid fade-IN is past the point of no return too"
+        );
         let (commits, _) = run(&mut x, 12, true);
         assert_eq!(commits, 0);
         assert_eq!(x.alpha(), 1.0);
@@ -511,7 +574,10 @@ mod tests {
                 commits += 1;
             }
             let a = x.alpha();
-            assert!((0.0..=1.0).contains(&a), "frame {f}: alpha {a} escaped 0..1");
+            assert!(
+                (0.0..=1.0).contains(&a),
+                "frame {f}: alpha {a} escaped 0..1"
+            );
         }
         assert_eq!(commits, 1);
         assert_eq!(x.alpha(), 1.0);

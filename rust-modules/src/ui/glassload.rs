@@ -86,8 +86,8 @@
 //! time, so nothing here can be reached at all.
 
 use crate::ui::consts::{SCR_H, SCR_W};
-use crate::ui::{Painter, Rect};
 use crate::ui::theme;
+use crate::ui::{Painter, Rect};
 
 /// What a step's surfaces ARE. Both take the same count/size/layout; they differ only in which
 /// shader path the composite goes down, which is the whole point of having both on one dial.
@@ -101,8 +101,8 @@ pub(crate) enum Kind {
     /// `draw_tex` at radius 0 — the FLAT textured quad, the cheapest full-coverage path the app
     /// has and the one the hero photograph takes. The control the other two are priced against.
     Image,
-    /// Not a synthetic surface at all: the REAL Account popover, on the real route, drawn by
-    /// `account_menu` through `Glass::DYNAMIC_BACKDROP`. Its geometry and its cadence policy are
+    /// Not a synthetic surface at all: the REAL Account popover, on the real route, with cached
+    /// panel glass and its one-copy host [`crate::gfx::FrameCache`]. Its geometry and lifecycle are
     /// the shipped ones; this module only asks for the route. Size fields are ignored.
     Account,
 }
@@ -126,7 +126,14 @@ pub(crate) struct Step {
 }
 
 impl Step {
-    const OFF: Self = Self { kind: Kind::Glass, spread: false, n: 0, w: 0.0, h: 0.0, cadence: 0 };
+    const OFF: Self = Self {
+        kind: Kind::Glass,
+        spread: false,
+        n: 0,
+        w: 0.0,
+        h: 0.0,
+        cadence: 0,
+    };
 
     /// Total composite area this step submits, in authored px — the x axis of the scaling law.
     /// NOMINAL: a card's quad is additionally inflated by its penumbra, and a glass panel's
@@ -173,7 +180,10 @@ pub(crate) fn parse(spec: &str) -> Option<Sweep> {
             continue;
         }
         if tok.eq_ignore_ascii_case("acct") {
-            steps.push(Step { kind: Kind::Account, ..Step::OFF });
+            steps.push(Step {
+                kind: Kind::Account,
+                ..Step::OFF
+            });
             continue;
         }
         // `s` = spread, before the kind prefix. Stripped first so `sc4x…` reads as spread cards.
@@ -192,7 +202,7 @@ pub(crate) fn parse(spec: &str) -> Option<Sweep> {
         } else {
             (Kind::Glass, tok)
         };
-        let (geom, cad) = tok.split_once('@').unwrap_or((tok, "3"));
+        let (geom, cad) = tok.split_once('@').unwrap_or((tok, "1"));
         let mut parts = geom.split('x');
         let n: u32 = parts.next()?.trim().parse().ok()?;
         let w: f32 = parts.next()?.trim().parse().ok()?;
@@ -233,7 +243,8 @@ pub(crate) fn layout(step: Step) -> Vec<Rect> {
             })
             .collect();
     }
-    let fit = |span: f32, size: f32| ((span + PANEL_GAP) / (size + PANEL_GAP)).floor().max(1.0) as u32;
+    let fit =
+        |span: f32, size: f32| ((span + PANEL_GAP) / (size + PANEL_GAP)).floor().max(1.0) as u32;
     let cols = fit(SCR_W, w).min(step.n);
     let rows_fit = fit(SCR_H, h);
     let rows = step.n.div_ceil(cols).min(rows_fit);
@@ -245,7 +256,12 @@ pub(crate) fn layout(step: Step) -> Vec<Rect> {
     (0..total)
         .map(|i| {
             let (c, r) = (i % cols, i / cols);
-            Rect::new(x0 + c as f32 * (w + PANEL_GAP), y0 + r as f32 * (h + PANEL_GAP), w, h)
+            Rect::new(
+                x0 + c as f32 * (w + PANEL_GAP),
+                y0 + r as f32 * (h + PANEL_GAP),
+                w,
+                h,
+            )
         })
         .collect()
 }
@@ -298,38 +314,55 @@ pub(crate) fn configure(spec: &str) {
                         Kind::Card { focused } => format!(
                             "{i}:card{}{sp} {}x{}x{} drawn={drawn} px={px:.0}",
                             if focused { "-focused" } else { "" },
-                            st.n, st.w, st.h
+                            st.n,
+                            st.w,
+                            st.h
                         ),
                         Kind::Image => {
-                            format!("{i}:image{sp} {}x{}x{} drawn={drawn} px={px:.0}", st.n, st.w, st.h)
+                            format!(
+                                "{i}:image{sp} {}x{}x{} drawn={drawn} px={px:.0}",
+                                st.n, st.w, st.h
+                            )
                         }
                     }
                 })
                 .collect();
-            crate::log(&format!("GLASSLOAD armed hold={}ms steps=[{}]", s.hold_ms, list.join(" ")));
+            crate::log(&format!(
+                "GLASSLOAD armed hold={}ms steps=[{}]",
+                s.hold_ms,
+                list.join(" ")
+            ));
             unsafe {
                 SWEEP = Some(s);
                 STEP = 0;
             }
         }
-        None => crate::log(&format!("GLASSLOAD spec {spec:?} not understood — dial disarmed")),
+        None => crate::log(&format!(
+            "GLASSLOAD spec {spec:?} not understood — dial disarmed"
+        )),
     }
 }
 
 /// Arm the blurred-transition prototype from `/tmp/plxnative-navblur`'s content
 /// (`[<mode>][:<cadence>]`, mode 1 or 2, cadence in presents).
 pub(crate) fn parse_navblur(spec: &str) -> Option<(u32, u32, bool)> {
-    let (head, cad) = spec.trim().split_once(':').unwrap_or((spec.trim(), "3"));
+    let (head, cad) = spec.trim().split_once(':').unwrap_or((spec.trim(), "1"));
     let pin = head.ends_with('p') || head.ends_with('P');
     let head = head.trim_end_matches(['p', 'P']);
-    let mode: u32 = if head.is_empty() { 1 } else { head.parse().ok()? };
+    let mode: u32 = if head.is_empty() {
+        1
+    } else {
+        head.parse().ok()?
+    };
     let cad: u32 = cad.trim().parse().ok()?;
     (1..=2).contains(&mode).then_some((mode, cad, pin))
 }
 
 pub(crate) fn configure_navblur(spec: &str) {
     let Some((mode, cad, pin)) = parse_navblur(spec) else {
-        crate::log(&format!("NAVBLUR spec {spec:?} not understood — prototype off"));
+        crate::log(&format!(
+            "NAVBLUR spec {spec:?} not understood — prototype off"
+        ));
         return;
     };
     unsafe {
@@ -340,7 +373,9 @@ pub(crate) fn configure_navblur(spec: &str) {
     // Pinned, the slab is not a transition at all, so the page must keep its own fade. Only the
     // riding form replaces the dip.
     crate::ui::nav::set_blur_dissolve(!pin);
-    crate::log(&format!("NAVBLUR armed mode={mode} cadence={cad} pinned={pin}"));
+    crate::log(&format!(
+        "NAVBLUR armed mode={mode} cadence={cad} pinned={pin}"
+    ));
 }
 
 /// Does the live step want the REAL Account popover open? Read by `app.rs`, which owns `Route`.
@@ -431,9 +466,23 @@ pub(crate) fn draw() {
     for (i, r) in layout(step).into_iter().enumerate() {
         match step.kind {
             Kind::Glass => {
-                if p.backdrop_blur(r, 0.0, PANEL_RADIUS, [1.0, 1.0, 1.0, 1.0], crate::gfx::GlassRim::Bevelled, crate::gfx::GlassFace::NONE, theme::Material::Regular.deep()) {
+                if p.backdrop_blur(
+                    r,
+                    0.0,
+                    PANEL_RADIUS,
+                    [1.0, 1.0, 1.0, 1.0],
+                    crate::gfx::GlassRim::Bevelled,
+                    crate::gfx::GlassFace::NONE,
+                    theme::Material::Regular.deep(),
+                ) {
                     crate::ui::profile::phase("glass.frost", || {
-                        p.rect(r, PANEL_RADIUS, theme::PANEL_FROST_TOP, theme::PANEL_FROST_BOT, 0.0);
+                        p.rect(
+                            r,
+                            PANEL_RADIUS,
+                            theme::PANEL_FROST_TOP,
+                            theme::PANEL_FROST_BOT,
+                            0.0,
+                        );
                     });
                 } else {
                     p.rect(r, PANEL_RADIUS, theme::PANEL_TOP, theme::PANEL_BOT, 0.0);
@@ -441,7 +490,13 @@ pub(crate) fn draw() {
             }
             Kind::Card { focused } => {
                 let f = if focused { 1.0 } else { 0.0 };
-                p.tex_carded(card_tex(i), r, theme::CARD_RING_RAD, [1.0, 1.0, 1.0, 1.0], f);
+                p.tex_carded(
+                    card_tex(i),
+                    r,
+                    theme::CARD_RING_RAD,
+                    [1.0, 1.0, 1.0, 1.0],
+                    f,
+                );
             }
             Kind::Image => p.tex(card_tex(i), r, 0.0, [1.0, 1.0, 1.0, 1.0]),
             // The real popover is drawn by `account_menu` on its own route; `layout` returns no
@@ -498,14 +553,19 @@ const NAV_BLEED: f32 = 80.0;
 
 /// The tab track's rest geometry, as a stand-in for the real strip.
 ///
-/// The real one is `widgets::draw_tab_row`'s, whose width follows the section table and which is
-/// drawn INSIDE the page — i.e. underneath anything this module composites. A representative
-/// capsule at the true y and height, at a plausible four-pill width, is what makes "the bar's glass
+/// The real one is `widgets::draw_tab_row`'s fixed four-destination strip, drawn INSIDE the page —
+/// i.e. underneath anything this module composites. A representative capsule at its true y and
+/// height is what makes "the bar's glass
 /// on top of the blur" a thing that can be both measured and looked at.
 fn nav_capsule() -> Rect {
     let w = 1140.0;
     let h = crate::ui::widgets::TAB_PILL_H + 2.0 * crate::ui::widgets::TAB_TRACK_PAD;
-    Rect::new((SCR_W - w) * 0.5, crate::ui::widgets::TOP_BAR_Y - crate::ui::widgets::TAB_TRACK_PAD, w, h)
+    Rect::new(
+        (SCR_W - w) * 0.5,
+        crate::ui::widgets::TOP_BAR_Y - crate::ui::widgets::TAB_TRACK_PAD,
+        w,
+        h,
+    )
 }
 
 /// Draw the blurred route transition, if one is in flight. Returns whether it drew.
@@ -513,7 +573,11 @@ pub(crate) fn draw_nav_blur() -> bool {
     if !navblur_on() || crate::gfx::blur_source_pass() {
         return false;
     }
-    let amount = if unsafe { NAVBLUR_PIN } { 1.0 } else { crate::ui::nav::blur_amount() };
+    let amount = if unsafe { NAVBLUR_PIN } {
+        1.0
+    } else {
+        crate::ui::nav::blur_amount()
+    };
     if amount <= 0.002 {
         return false;
     }
@@ -527,8 +591,21 @@ pub(crate) fn draw_nav_blur() -> bool {
         }
     }
     let p = Painter::root();
-    let full = Rect::new(-NAV_BLEED, -NAV_BLEED, SCR_W + 2.0 * NAV_BLEED, SCR_H + 2.0 * NAV_BLEED);
-    let drew = p.backdrop_blur(full, 0.0, 0.0, [1.0, 1.0, 1.0, amount], crate::gfx::GlassRim::Bevelled, crate::gfx::GlassFace::NONE, theme::Material::Regular.deep());
+    let full = Rect::new(
+        -NAV_BLEED,
+        -NAV_BLEED,
+        SCR_W + 2.0 * NAV_BLEED,
+        SCR_H + 2.0 * NAV_BLEED,
+    );
+    let drew = p.backdrop_blur(
+        full,
+        0.0,
+        0.0,
+        [1.0, 1.0, 1.0, amount],
+        crate::gfx::GlassRim::Bevelled,
+        crate::gfx::GlassFace::NONE,
+        theme::Material::Regular.deep(),
+    );
     // Mode 2: a PRIVATE cache for the surface above. There is one snapshot chain in this renderer,
     // so the only way to give the capsule a backdrop that includes the slab beneath it is to take
     // the whole chain again — which is precisely the cost a second cache would have.
@@ -536,8 +613,17 @@ pub(crate) fn draw_nav_blur() -> bool {
         crate::gfx::blur_invalidate();
     }
     let cap = nav_capsule();
-    if p.backdrop_blur(cap, 0.0, cap.h * 0.5, [1.0, 1.0, 1.0, amount], crate::gfx::GlassRim::Standing, crate::gfx::GlassFace::NONE, theme::Material::Regular.deep()) {
-        p.alpha(amount).rect_sheened(cap, cap.h * 0.5, theme::TAB_GLASS_TOP, theme::TAB_GLASS_BOT);
+    if p.backdrop_blur(
+        cap,
+        0.0,
+        cap.h * 0.5,
+        [1.0, 1.0, 1.0, amount],
+        crate::gfx::GlassRim::Standing,
+        crate::gfx::GlassFace::NONE,
+        theme::Material::Regular.deep(),
+    ) {
+        p.alpha(amount)
+            .rect_sheened(cap, cap.h * 0.5, theme::TAB_GLASS_TOP, theme::TAB_GLASS_BOT);
     }
     drew
 }
@@ -556,7 +642,14 @@ mod tests {
         assert_eq!(s.hold_ms, 6000);
         assert_eq!(s.steps.len(), 3);
         assert_eq!(s.steps[0], Step::OFF);
-        let g = |n, w, h, cadence| Step { kind: Kind::Glass, spread: false, n, w, h, cadence };
+        let g = |n, w, h, cadence| Step {
+            kind: Kind::Glass,
+            spread: false,
+            n,
+            w,
+            h,
+            cadence,
+        };
         assert_eq!(s.steps[1], g(1, 608.0, 396.0, 3));
         assert_eq!(s.steps[2], g(2, 400.0, 300.0, 1));
     }
@@ -564,13 +657,27 @@ mod tests {
     #[test]
     fn the_cadence_defaults_to_the_shipped_policy_and_the_hold_to_six_seconds() {
         let s = parse("1x608x396").expect("spec");
-        assert_eq!(s.hold_ms, 6000, "a step shorter than a few heartbeats grades nothing");
-        assert_eq!(s.steps[0].cadence, 3, "the shipped dynamic glass refreshes every third present");
+        assert_eq!(
+            s.hold_ms, 6000,
+            "a step shorter than a few heartbeats grades nothing"
+        );
+        assert_eq!(
+            s.steps[0].cadence, 1,
+            "the shipped dynamic glass refreshes every changed present"
+        );
     }
 
     #[test]
     fn nonsense_disarms_the_dial_rather_than_half_arming_it() {
-        for bad in ["", "1x608", "zx1x1", "1x608x396x2", "0x608x396", "hold=0.1;1x608x396", "hold=6"] {
+        for bad in [
+            "",
+            "1x608",
+            "zx1x1",
+            "1x608x396x2",
+            "0x608x396",
+            "hold=0.1;1x608x396",
+            "hold=6",
+        ] {
             assert!(parse(bad).is_none(), "{bad:?} must not arm a partial sweep");
         }
     }
@@ -588,14 +695,36 @@ mod tests {
     #[test]
     fn panels_tile_inside_the_screen_and_the_count_is_what_actually_fits() {
         // Four 608x396 panels fit two across and two down on a 1920x1080 canvas.
-        let four = layout(Step { kind: Kind::Glass, spread: false, n: 4, w: 608.0, h: 396.0, cadence: 3 });
+        let four = layout(Step {
+            kind: Kind::Glass,
+            spread: false,
+            n: 4,
+            w: 608.0,
+            h: 396.0,
+            cadence: 3,
+        });
         assert_eq!(four.len(), 4);
         assert!(four.iter().all(|r| r.x >= 0.0 && r.y >= 0.0));
-        assert!(four.iter().all(|r| r.x + r.w <= SCR_W + 0.01 && r.y + r.h <= SCR_H + 0.01));
+        assert!(four
+            .iter()
+            .all(|r| r.x + r.w <= SCR_W + 0.01 && r.y + r.h <= SCR_H + 0.01));
         // …and asking for more than fits reports the number DRAWN, never the number requested.
-        let many = layout(Step { kind: Kind::Glass, spread: false, n: 99, w: 608.0, h: 396.0, cadence: 3 });
-        assert!(many.len() < 99 && !many.is_empty(), "packed {} of 99", many.len());
-        assert!(many.iter().all(|r| r.x + r.w <= SCR_W + 0.01 && r.y + r.h <= SCR_H + 0.01));
+        let many = layout(Step {
+            kind: Kind::Glass,
+            spread: false,
+            n: 99,
+            w: 608.0,
+            h: 396.0,
+            cadence: 3,
+        });
+        assert!(
+            many.len() < 99 && !many.is_empty(),
+            "packed {} of 99",
+            many.len()
+        );
+        assert!(many
+            .iter()
+            .all(|r| r.x + r.w <= SCR_W + 0.01 && r.y + r.h <= SCR_H + 0.01));
     }
 
     #[test]
@@ -610,7 +739,10 @@ mod tests {
     fn a_card_step_is_the_same_geometry_down_a_different_shader() {
         let s = parse("hold=6;off,c40x220x330,cf40x220x330,1x608x396@3").expect("spec");
         assert_eq!(s.steps[1].kind, Kind::Card { focused: false });
-        assert_eq!(parse("i1x960x540").expect("spec").steps[0].kind, Kind::Image);
+        assert_eq!(
+            parse("i1x960x540").expect("spec").steps[0].kind,
+            Kind::Image
+        );
         assert_eq!(s.steps[2].kind, Kind::Card { focused: true });
         assert_eq!(s.steps[3].kind, Kind::Glass);
         assert_eq!(s.steps[1].n, 40);
@@ -619,7 +751,10 @@ mod tests {
         // `Rect` is neither `Debug` nor `PartialEq`, so compare the fields the layout decides.
         let (a, b) = (layout(s.steps[1]), layout(s.steps[2]));
         assert_eq!(a.len(), b.len());
-        assert!(a.iter().zip(&b).all(|(p, q)| p.x == q.x && p.y == q.y && p.w == q.w && p.h == q.h));
+        assert!(a
+            .iter()
+            .zip(&b)
+            .all(|(p, q)| p.x == q.x && p.y == q.y && p.w == q.w && p.h == q.h));
     }
 
     /// The step that puts the SHIPPED surface on the same dial as the synthetic ones. It draws
@@ -629,7 +764,10 @@ mod tests {
     fn the_account_step_asks_for_a_route_rather_than_drawing_a_stand_in() {
         let s = parse("hold=6;off,acct,1x440x220@3").expect("spec");
         assert_eq!(s.steps[1].kind, Kind::Account);
-        assert!(layout(s.steps[1]).is_empty(), "the real popover draws itself, on its own route");
+        assert!(
+            layout(s.steps[1]).is_empty(),
+            "the real popover draws itself, on its own route"
+        );
         assert_eq!(s.steps[2].kind, Kind::Glass);
     }
 
@@ -647,26 +785,53 @@ mod tests {
         // …and the same spec without the `s` keeps them together in the middle.
         let t = parse("2x300x300@3").expect("spec");
         let a = layout(t.steps[0]);
-        assert!(a[0].x > 300.0 && a[1].x < SCR_W - 300.0, "adjacent, not cornered");
+        assert!(
+            a[0].x > 300.0 && a[1].x < SCR_W - 300.0,
+            "adjacent, not cornered"
+        );
     }
 
     #[test]
     fn the_transition_spec_names_a_mode_a_cadence_and_whether_it_is_pinned() {
-        assert_eq!(parse_navblur(""), Some((1, 3, false)), "empty is the shipped-cadence default");
-        assert_eq!(parse_navblur("1"), Some((1, 3, false)));
-        assert_eq!(parse_navblur("2:1"), Some((2, 1, false)), "a private second cache, every frame");
-        assert_eq!(parse_navblur("1p"), Some((1, 3, true)), "pinned for a capture");
+        assert_eq!(
+            parse_navblur(""),
+            Some((1, 1, false)),
+            "empty is the shipped-cadence default"
+        );
+        assert_eq!(parse_navblur("1"), Some((1, 1, false)));
+        assert_eq!(
+            parse_navblur("2:1"),
+            Some((2, 1, false)),
+            "a private second cache, every frame"
+        );
+        assert_eq!(
+            parse_navblur("1p"),
+            Some((1, 1, true)),
+            "pinned for a capture"
+        );
         assert_eq!(parse_navblur("2p:6"), Some((2, 6, true)));
         for bad in ["3", "0", "x", "1:x", "9p"] {
-            assert!(parse_navblur(bad).is_none(), "{bad:?} must not arm a mode nobody asked for");
+            assert!(
+                parse_navblur(bad).is_none(),
+                "{bad:?} must not arm a mode nobody asked for"
+            );
         }
     }
 
     #[test]
     fn the_transition_capsule_sits_on_the_real_tab_track_line() {
         let c = nav_capsule();
-        assert_eq!(c.y, crate::ui::widgets::TOP_BAR_Y - crate::ui::widgets::TAB_TRACK_PAD);
-        assert_eq!(c.h, crate::ui::widgets::TAB_PILL_H + 2.0 * crate::ui::widgets::TAB_TRACK_PAD);
-        assert!(c.x > 0.0 && c.x + c.w < SCR_W, "the strip is inset from both edges");
+        assert_eq!(
+            c.y,
+            crate::ui::widgets::TOP_BAR_Y - crate::ui::widgets::TAB_TRACK_PAD
+        );
+        assert_eq!(
+            c.h,
+            crate::ui::widgets::TAB_PILL_H + 2.0 * crate::ui::widgets::TAB_TRACK_PAD
+        );
+        assert!(
+            c.x > 0.0 && c.x + c.w < SCR_W,
+            "the strip is inset from both edges"
+        );
     }
 }

@@ -117,7 +117,6 @@
 //! with the decision. Writing the method here ahead of its one caller would have been an
 //! unexercised branch in the file whose entire purpose is that every branch is proven.
 
-
 /// **Storage bound on the window, not a policy choice.** The window length that decides behaviour
 /// is `n = k/eps - 1` (see [`AdmissionPolicy`]); this is only how many samples the ring can hold,
 /// and it is an implementation limit stated as one.
@@ -241,7 +240,9 @@ impl AdmissionPolicy {
     /// parses as `eps=`.
     pub(crate) fn effective_epsilon_pm(self) -> u32 {
         let n = self.window_len() as u64;
-        (u64::from(self.k.max(1)) * 1_000).div_ceil(n + 1).min(1_000) as u32
+        (u64::from(self.k.max(1)) * 1_000)
+            .div_ceil(n + 1)
+            .min(1_000) as u32
     }
 }
 
@@ -427,7 +428,12 @@ pub(crate) struct AcquisitionWindow {
 
 impl Default for AcquisitionWindow {
     fn default() -> Self {
-        Self { ring: [Acquisition::default(); WINDOW_CAPACITY], len: 0, next: 0, resets: 0 }
+        Self {
+            ring: [Acquisition::default(); WINDOW_CAPACITY],
+            len: 0,
+            next: 0,
+            resets: 0,
+        }
     }
 }
 
@@ -437,7 +443,10 @@ impl AcquisitionWindow {
             // A malformed observation must not enter the window: `bytes` is a divisor.
             return;
         }
-        self.ring[self.next] = Acquisition { bytes, acquisition_us };
+        self.ring[self.next] = Acquisition {
+            bytes,
+            acquisition_us,
+        };
         self.next = (self.next + 1) % WINDOW_CAPACITY;
         self.len = (self.len + 1).min(WINDOW_CAPACITY);
     }
@@ -446,7 +455,10 @@ impl AcquisitionWindow {
         // The counter is the one thing a reset must NOT clear -- it is the record that the reset
         // happened, and `*self = Self::default()` would erase its own evidence.
         let resets = self.resets.saturating_add(1);
-        *self = Self { resets, ..Self::default() };
+        *self = Self {
+            resets,
+            ..Self::default()
+        };
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -588,7 +600,10 @@ mod tests {
     }
 
     fn acq(bytes: u64, acquisition_us: u64) -> Acquisition {
-        Acquisition { bytes, acquisition_us }
+        Acquisition {
+            bytes,
+            acquisition_us,
+        }
     }
 
     // ---- the transfer bound: the two tight ends, and the rounding direction ----
@@ -596,7 +611,10 @@ mod tests {
     #[test]
     fn an_upshift_query_scales_the_bound_by_the_byte_ratio() {
         // tau <= A_i/b_i, attained at O0 = 0: twice the bytes may cost twice the time and no more.
-        assert_eq!(AcquisitionWindow::transferred_us(acq(1_000, 100), 2_000), 200);
+        assert_eq!(
+            AcquisitionWindow::transferred_us(acq(1_000, 100), 2_000),
+            200
+        );
     }
 
     #[test]
@@ -620,9 +638,17 @@ mod tests {
     fn the_transfer_rounds_up_not_down() {
         // Differential against the obvious `a * q / b`: 100 * 3 / 7 = 42 by truncation, 43 by
         // ceiling. A floored safety bound is a bound in the wrong direction, once per segment.
-        assert_eq!(AcquisitionWindow::transferred_us(acq(7, 100), 3), 100, "downshift is flat");
+        assert_eq!(
+            AcquisitionWindow::transferred_us(acq(7, 100), 3),
+            100,
+            "downshift is flat"
+        );
         assert_eq!(AcquisitionWindow::transferred_us(acq(7, 100), 10), 143);
-        assert_eq!(100 * 10 / 7, 142, "the truncating form this test is differential against");
+        assert_eq!(
+            100 * 10 / 7,
+            142,
+            "the truncating form this test is differential against"
+        );
     }
 
     #[test]
@@ -649,7 +675,11 @@ mod tests {
         for i in 1..=(WINDOW_CAPACITY as u64 + 3) {
             w.observe(1_000, i);
         }
-        assert_eq!(w.len(), WINDOW_CAPACITY, "the ring saturates rather than growing");
+        assert_eq!(
+            w.len(),
+            WINDOW_CAPACITY,
+            "the ring saturates rather than growing"
+        );
         let newest: Vec<u64> = w.recent(3).map(|a| a.acquisition_us).collect();
         let n = WINDOW_CAPACITY as u64 + 3;
         assert_eq!(newest, vec![n, n - 1, n - 2]);
@@ -696,8 +726,15 @@ mod tests {
         // it could not have caught the direction error it exists to guard, and it asserted 15,
         // a guarantee stronger than the window delivers. Stated as a value now, from the
         // arithmetic rather than from the code.
-        assert_eq!(p.effective_epsilon_pm(), 16, "1/65 = 15.38pm, and a ceiling rounds UP");
-        assert!(p.effective_epsilon_pm() > 1, "a clamp can only WEAKEN the guarantee");
+        assert_eq!(
+            p.effective_epsilon_pm(),
+            16,
+            "1/65 = 15.38pm, and a ceiling rounds UP"
+        );
+        assert!(
+            p.effective_epsilon_pm() > 1,
+            "a clamp can only WEAKEN the guarantee"
+        );
     }
 
     // ---- the order statistic ----
@@ -707,14 +744,19 @@ mod tests {
         // The defining property of the k-th order statistic, and the whole basis of the eps claim.
         // An off-by-one in the index is invisible to a value assertion on a symmetric window and
         // fatal to the guarantee; this catches it at every k.
-        let acqs: Vec<(u64, u64)> =
-            [90u64, 10, 70, 30, 50, 20, 80, 40, 60, 100, 15].iter().map(|&v| (1_000, v)).collect();
+        let acqs: Vec<(u64, u64)> = [90u64, 10, 70, 30, 50, 20, 80, 40, 60, 100, 15]
+            .iter()
+            .map(|&v| (1_000, v))
+            .collect();
         for k in 1..=3u32 {
             let p = policy(1_000 * k / 11, k);
             let w = window(&acqs);
             let n = p.window_len();
             let bound = w.bound_us(1_000, p).expect("window is full");
-            let over = w.recent(n).filter(|s| s.acquisition_us as i64 > bound).count();
+            let over = w
+                .recent(n)
+                .filter(|s| s.acquisition_us as i64 > bound)
+                .count();
             assert!(over < k as usize, "k={k} n={n} bound={bound} over={over}");
         }
     }
@@ -780,7 +822,10 @@ mod tests {
         let a = w.admits(1_000, 2_000, 2_000, p).unwrap();
         assert!(a.demand_us < a.supply_us, "sustainable on the average");
         assert!(a.sustainable);
-        assert!(!a.survivable, "but one 5 s segment against a 2 s reserve is not survivable");
+        assert!(
+            !a.survivable,
+            "but one 5 s segment against a 2 s reserve is not survivable"
+        );
         assert!(!a.admitted());
     }
 
@@ -798,7 +843,10 @@ mod tests {
             let there = w.admits(q, 2_000, 10_000, p).unwrap();
             assert!(there.demand_us >= here.demand_us, "q={q}");
             assert!(there.excess_us >= here.excess_us, "q={q}");
-            assert!(here.admitted() || !there.admitted(), "q={q}: an upshift cannot become easier");
+            assert!(
+                here.admitted() || !there.admitted(),
+                "q={q}: an upshift cannot become easier"
+            );
         }
     }
 
@@ -853,7 +901,11 @@ mod tests {
     fn the_logged_line_is_the_one_the_harness_regex_was_written_against() {
         let p = policy(250, 1);
         let w = window(&[(1_000, 800_000), (1_000, 800_000), (1_000, 1_000_000)]);
-        assert_eq!(w.readout(1_000, 2_000, 10_000, p).log_line(4_000, 1_000, 2_000), WIRE_ADMIT);
+        assert_eq!(
+            w.readout(1_000, 2_000, 10_000, p)
+                .log_line(4_000, 1_000, 2_000),
+            WIRE_ADMIT
+        );
     }
 
     #[test]
@@ -869,7 +921,10 @@ mod tests {
         w.reset();
         w.reset();
         w.observe(500, 400_000);
-        assert_eq!(w.readout(500, 2_000, 10_000, p).log_line(720, 500, 2_000), WIRE_FILLING);
+        assert_eq!(
+            w.readout(500, 2_000, 10_000, p).log_line(720, 500, 2_000),
+            WIRE_FILLING
+        );
     }
 
     #[test]
@@ -882,7 +937,11 @@ mod tests {
         w.reset();
         w.observe(1_000, 300);
         let r = w.readout(1_000, 2_000, 0, policy(250, 1));
-        assert_eq!((r.resets, r.have), (2, 1), "the history is gone, the record of it is not");
+        assert_eq!(
+            (r.resets, r.have),
+            (2, 1),
+            "the history is gone, the record of it is not"
+        );
     }
 
     #[test]
@@ -890,7 +949,11 @@ mod tests {
         // Guards the reason `readout` exists at all: assembled at a call site from three separate
         // calls, `want`, `bound_us` and `admission` could describe three different lengths.
         let p = policy(250, 3);
-        let w = window(&(1..=20).map(|i| (1_000u64, i * 100_000)).collect::<Vec<_>>());
+        let w = window(
+            &(1..=20)
+                .map(|i| (1_000u64, i * 100_000))
+                .collect::<Vec<_>>(),
+        );
         let r = w.readout(1_000, 2_000, 10_000, p);
         assert_eq!(r.want, 11);
         assert_eq!(r.admission.unwrap().samples, 11);

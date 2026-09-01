@@ -59,8 +59,15 @@ impl Client {
     /// The WHOLE window is kept, as [`QueueRow`]s — the queue this round trip already paid for is
     /// the queue a list can draw and jump around in, and throwing it away meant re-asking the
     /// server for something it had already sent.
-    pub fn create_play_queue(&self, machine_id: &str, rating_key: &str, session: &str) -> Option<PlayQueueResult> {
-        let uri = format!("server://{machine_id}/com.plexapp.plugins.library/library/metadata/{rating_key}");
+    pub fn create_play_queue(
+        &self,
+        machine_id: &str,
+        rating_key: &str,
+        session: &str,
+    ) -> Option<PlayQueueResult> {
+        let uri = format!(
+            "server://{machine_id}/com.plexapp.plugins.library/library/metadata/{rating_key}"
+        );
         let q = QueryBuilder::new("/playQueues")
             .str("type", "video")
             .str("uri", &uri)
@@ -69,7 +76,11 @@ impl Client {
             .int("repeat", 0)
             .str("X-Plex-Session-Identifier", session);
         let q = self.playback_identity(q);
-        Some(PlayQueueResult::of(self.post_json(&q.build())?, self.id(), rating_key))
+        Some(PlayQueueResult::of(
+            self.post_json(&q.build())?,
+            self.id(),
+            rating_key,
+        ))
     }
 }
 
@@ -132,7 +143,11 @@ impl QueueRow {
             Some(md) => (
                 md.video_codec,
                 md.audio_codec,
-                md.part.into_iter().next().map(|p| p.key).unwrap_or_default(),
+                md.part
+                    .into_iter()
+                    .next()
+                    .map(|p| p.key)
+                    .unwrap_or_default(),
             ),
             None => (String::new(), String::new(), String::new()),
         };
@@ -164,9 +179,20 @@ impl QueueRow {
 /// twice, and matching on the rating key would then pick the wrong row. The rating key is only the
 /// fallback for a server that omitted the per-row id — for a queue built FROM this item the two
 /// agree, and losing the row entirely is the worse failure.
-pub fn queue_index_of(items: &[QueueRow], item_id: i64, sid: ServerId, rating_key: &str) -> Option<usize> {
-    let by_id = (item_id != 0).then(|| items.iter().position(|r| r.item_id == item_id)).flatten();
-    by_id.or_else(|| items.iter().position(|r| super::same_item((r.sid, &r.rk), (sid, rating_key))))
+pub fn queue_index_of(
+    items: &[QueueRow],
+    item_id: i64,
+    sid: ServerId,
+    rating_key: &str,
+) -> Option<usize> {
+    let by_id = (item_id != 0)
+        .then(|| items.iter().position(|r| r.item_id == item_id))
+        .flatten();
+    by_id.or_else(|| {
+        items
+            .iter()
+            .position(|r| super::same_item((r.sid, &r.rk), (sid, rating_key)))
+    })
 }
 
 /// The queue row that follows the selected one — None at the end of the queue, and None when the
@@ -192,7 +218,12 @@ mod tests {
 
     /// one queue row: (playQueueItemID, ratingKey) on server [`Q`]
     fn row(item_id: i64, rk: &str) -> QueueRow {
-        QueueRow { item_id, sid: Q, rk: rk.to_string(), ..Default::default() }
+        QueueRow {
+            item_id,
+            sid: Q,
+            rk: rk.to_string(),
+            ..Default::default()
+        }
     }
     fn rks(items: &[QueueRow]) -> Vec<&str> {
         items.iter().map(|r| r.rk.as_str()).collect()
@@ -200,7 +231,9 @@ mod tests {
     /// A response body through the SHIPPED mapping — the same call `create_play_queue` makes once
     /// its POST returns, so these tests cannot pass on a projection the app does not use.
     fn result(body: &str, rating_key: &str) -> PlayQueueResult {
-        let mc = serde_json::from_str::<Envelope>(body).expect("a PMS body parses").media_container;
+        let mc = serde_json::from_str::<Envelope>(body)
+            .expect("a PMS body parses")
+            .media_container;
         PlayQueueResult::of(mc, Q, rating_key)
     }
 
@@ -248,8 +281,15 @@ mod tests {
     fn the_rating_key_fallback_is_scoped_to_the_queues_own_server() {
         let other = ServerId::from_raw(1);
         let q = vec![row(0, "1804"), row(0, "1805")];
-        assert!(next_after(&q, 0, other, "1804").is_none(), "another server's 1804 is not this row");
-        assert_eq!(queue_index_of(&q, 0, Q, "1804"), Some(0), "…and the queue's OWN 1804 still is");
+        assert!(
+            next_after(&q, 0, other, "1804").is_none(),
+            "another server's 1804 is not this row"
+        );
+        assert_eq!(
+            queue_index_of(&q, 0, Q, "1804"),
+            Some(0),
+            "…and the queue's OWN 1804 still is"
+        );
 
         // the primary key is unaffected: a playQueueItemID is minted by the queue itself, so it
         // needs no scoping and must keep working even when the caller names another server
@@ -263,7 +303,10 @@ mod tests {
         // the user was never watching.
         let q = vec![row(1, "a"), row(2, "b")];
         assert!(next_after(&q, 99, Q, "zzz").is_none());
-        assert!(next_after(&[], 1, Q, "a").is_none(), "an empty queue is not a panic");
+        assert!(
+            next_after(&[], 1, Q, "a").is_none(),
+            "an empty queue is not a panic"
+        );
     }
 
     /// A real `continuous=1` response — three episodes, the first selected — through the shipped
@@ -294,8 +337,16 @@ mod tests {
                "Media":[{"videoCodec":"h264","audioCodec":"ac3","Part":[{"key":"/p/3.mkv"}]}]}]}}"#,
             "1804",
         );
-        assert_eq!(rks(&q.items), ["1804", "1805", "1806"], "the WHOLE window is retained, not just the successor");
-        assert_eq!((q.id, q.selected_item_id, q.remaining), (40213, 13083, 2), "the ids and the count still land");
+        assert_eq!(
+            rks(&q.items),
+            ["1804", "1805", "1806"],
+            "the WHOLE window is retained, not just the successor"
+        );
+        assert_eq!(
+            (q.id, q.selected_item_id, q.remaining),
+            (40213, 13083, 2),
+            "the ids and the count still land"
+        );
 
         let first = &q.items[0];
         assert_eq!(first.item_id, 13083);
@@ -304,18 +355,37 @@ mod tests {
         assert_eq!(first.show_title, "Example Show");
         assert_eq!((first.season, first.index), (1, 1));
         assert_eq!(first.thumb, "/library/metadata/1804/thumb/1781586780");
-        assert_eq!((first.dur_ms, first.resume_ms), (3273248, 142000), "string-encoded numbers still land");
-        assert_eq!(first.part, "/library/parts/3130/1781467224/file.mkv", "Media[0].Part[0].key");
-        assert_eq!((first.vcodec.as_str(), first.acodec.as_str()), ("hevc", "eac3"), "Media[0], not the 1080p version");
+        assert_eq!(
+            (first.dur_ms, first.resume_ms),
+            (3273248, 142000),
+            "string-encoded numbers still land"
+        );
+        assert_eq!(
+            first.part, "/library/parts/3130/1781467224/file.mkv",
+            "Media[0].Part[0].key"
+        );
+        assert_eq!(
+            (first.vcodec.as_str(), first.acodec.as_str()),
+            ("hevc", "eac3"),
+            "Media[0], not the 1080p version"
+        );
 
         // the successor is exactly what it was when it was the only thing kept — and it is the
         // retained row after the selected one, not a separately-derived answer
         let next = q.next.as_ref().expect("the selected row has a successor");
         assert_eq!((next.rk.as_str(), next.index), ("1805", 2));
-        assert_eq!(next.part, "/library/parts/3140/1781467999/file.mkv", "the successor is start-able");
+        assert_eq!(
+            next.part, "/library/parts/3140/1781467999/file.mkv",
+            "the successor is start-able"
+        );
         assert_eq!(next.dur_ms, 3120000, "…and a plain JSON number lands too");
-        let at = queue_index_of(&q.items, q.selected_item_id, Q, "1804").expect("the playing row is locatable");
-        assert_eq!((at, q.items[at + 1].rk.as_str()), (0, next.rk.as_str()), "next IS items[selected+1]");
+        let at = queue_index_of(&q.items, q.selected_item_id, Q, "1804")
+            .expect("the playing row is locatable");
+        assert_eq!(
+            (at, q.items[at + 1].rk.as_str()),
+            (0, next.rk.as_str()),
+            "next IS items[selected+1]"
+        );
     }
 
     /// Two rows the LIST must survive that the one-item Up Next control would have refused: a
@@ -331,11 +401,21 @@ mod tests {
             "774",
         );
         let items = &q.items;
-        assert_eq!(items[0].kind, "movie", "the projection is NOT episode-gated");
+        assert_eq!(
+            items[0].kind, "movie",
+            "the projection is NOT episode-gated"
+        );
         assert_eq!(items[0].show_title, "", "a movie has no grandparentTitle");
         assert_eq!(items[0].part, "/p/774.mkv");
         let bare = &items[1];
-        assert_eq!((bare.part.as_str(), bare.vcodec.as_str(), bare.acodec.as_str()), ("", "", ""));
+        assert_eq!(
+            (
+                bare.part.as_str(),
+                bare.vcodec.as_str(),
+                bare.acodec.as_str()
+            ),
+            ("", "", "")
+        );
         assert_eq!(bare.rk, "775", "the rest of the row still projects");
     }
 }
@@ -363,7 +443,11 @@ pub struct PlayQueueResult {
 impl PlayQueueResult {
     /// The WHOLE response→result mapping, kept out of `create_play_queue` so the host tests grade
     /// the code that ships instead of a copy of it (only the request build is left up there).
-    fn of(mc: super::models::MediaContainer, sid: super::ServerId, rating_key: &str) -> PlayQueueResult {
+    fn of(
+        mc: super::models::MediaContainer,
+        sid: super::ServerId,
+        rating_key: &str,
+    ) -> PlayQueueResult {
         // Remaining AFTER the item being played, from the whole-queue counters (the returned
         // `Metadata[]` can be a window). Clamped: a server that omits either counter must read as
         // "nothing after this", not as a negative count the UI would then format.
@@ -372,8 +456,18 @@ impl PlayQueueResult {
         // Project BY VALUE: every `Metadata` row is consumed into a `QueueRow` and its
         // Media/Part/Stream/Role tree dropped right here, on the worker. What the main thread then
         // holds for the length of the playback is a dozen scalars and strings per row.
-        let items: Vec<QueueRow> = mc.metadata.into_iter().map(|m| QueueRow::of(m, sid)).collect();
+        let items: Vec<QueueRow> = mc
+            .metadata
+            .into_iter()
+            .map(|m| QueueRow::of(m, sid))
+            .collect();
         let next = next_after(&items, selected, sid, rating_key).cloned();
-        PlayQueueResult { id: mc.play_queue_id, selected_item_id: selected, remaining, items, next }
+        PlayQueueResult {
+            id: mc.play_queue_id,
+            selected_item_id: selected,
+            remaining,
+            items,
+            next,
+        }
     }
 }

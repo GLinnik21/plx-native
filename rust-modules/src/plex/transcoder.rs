@@ -51,7 +51,10 @@ impl LinkPolicy {
     /// lands with the transport work — so `Client::link()` is `None` on every play today. Reading
     /// `None` as "assume relay" would downgrade every direct play on earth to a server-side
     /// encode, to prevent a stall on a connection this codebase has never once made.
-    pub const UNRESTRICTED: LinkPolicy = LinkPolicy { direct_play: true, remux: true };
+    pub const UNRESTRICTED: LinkPolicy = LinkPolicy {
+        direct_play: true,
+        remux: true,
+    };
 }
 
 /// **The relay policy**, and the only place it is spelled out. `None` = nobody has said how this
@@ -98,7 +101,10 @@ impl LinkPolicy {
 /// apply it, and only if an encoder runs.
 pub fn link_policy(link: Option<Location>) -> LinkPolicy {
     match link {
-        Some(Location::Relay) => LinkPolicy { direct_play: false, remux: false },
+        Some(Location::Relay) => LinkPolicy {
+            direct_play: false,
+            remux: false,
+        },
         // Exhaustive on purpose: a new tier must come here and say what it allows, rather than
         // inheriting "unrestricted" from a wildcard because nobody thought about it.
         Some(Location::Local) | Some(Location::Remote) | None => LinkPolicy::UNRESTRICTED,
@@ -168,8 +174,11 @@ fn profile_for_delivery(caps: &crate::devcaps::Caps, delivery: TranscodeDelivery
     let (w, h) = caps.hevc_max;
     let dp_audio = &caps.audio;
     // ac3 first — the preferred ENCODE target — then the rest of the caps subset as copy lanes.
-    let target_audio =
-        ["ac3", "eac3", "aac"].into_iter().filter(|c| caps.audio_has(c)).collect::<Vec<_>>().join(",");
+    let target_audio = ["ac3", "eac3", "aac"]
+        .into_iter()
+        .filter(|c| caps.audio_has(c))
+        .collect::<Vec<_>>()
+        .join(",");
     let target = match delivery {
         TranscodeDelivery::ProgressiveMkv => format!(
             "add-transcode-target(type=videoProfile&context=streaming&protocol=http\
@@ -178,9 +187,11 @@ fn profile_for_delivery(caps: &crate::devcaps::Caps, delivery: TranscodeDelivery
         // This is the exact narrow target measured against the configured PMS. HLS adaptation is
         // encoder-session replacement, so this target intentionally exposes one H.264/AAC
         // rendition rather than advertising codecs whose in-session switch behaviour is unknown.
-        TranscodeDelivery::FixedHls { .. } =>
+        TranscodeDelivery::FixedHls { .. } => {
             "add-transcode-target(type=videoProfile&context=streaming&protocol=hls\
-             &container=mpegts&videoCodec=h264&audioCodec=aac)".to_string(),
+             &container=mpegts&videoCodec=h264&audioCodec=aac)"
+                .to_string()
+        }
     };
     format!(
         "add-direct-play-profile(type=videoProfile&container=mkv,mp4&videoCodec={dp_video}\
@@ -234,7 +245,10 @@ impl Client {
         // both be true (`build_stream` derives `remux` from a gate this flag has already failed).
         // See [`TranscodeSpec::no_video_copy`] for the measurement.
         let hls = matches!(s.delivery, TranscodeDelivery::FixedHls { .. });
-        debug_assert!(!(hls && s.remux), "fixed HLS is an encoded rendition, never a remux");
+        debug_assert!(
+            !(hls && s.remux),
+            "fixed HLS is an encoded rendition, never a remux"
+        );
         let copy_ok = !hls && !(s.no_video_copy && !s.remux);
         let protocol = if hls { "hls" } else { "http" };
         let mut q = QueryBuilder::new("")
@@ -265,10 +279,14 @@ impl Client {
             q.int("directStreamAudio", 1)
         } else {
             let c = s.ceiling.unwrap_or(Ceiling::NATIVE_4K);
-            let q = q.str("videoResolution", &c.resolution()).int("maxVideoBitrate", c.max_kbps);
+            let q = q
+                .str("videoResolution", &c.resolution())
+                .int("maxVideoBitrate", c.max_kbps);
             match s.delivery {
                 TranscodeDelivery::ProgressiveMkv => q,
-                TranscodeDelivery::FixedHls { seconds_per_segment } => q
+                TranscodeDelivery::FixedHls {
+                    seconds_per_segment,
+                } => q
                     .int("videoBitrate", c.max_kbps)
                     .int("peakBitrate", c.max_kbps)
                     .int("autoAdjustQuality", 0)
@@ -288,7 +306,10 @@ impl Client {
         q = q.opt_int("audioStreamID", s.audio_stream_id);
         if s.subtitle_stream_id > 0 {
             // burned in (Plex's default decision for our profile — no soft-sub support advertised)
-            q = q.int("subtitleStreamID", s.subtitle_stream_id).int("subtitleSize", 100).str("subtitles", "burn");
+            q = q
+                .int("subtitleStreamID", s.subtitle_stream_id)
+                .int("subtitleSize", 100)
+                .str("subtitles", "burn");
         }
         q = q
             .str("session", s.encoder_session)
@@ -323,7 +344,10 @@ impl Client {
         let q = self
             .playback_identity(q)
             .str("X-Plex-Client-Profile-Name", "Generic")
-            .str("X-Plex-Client-Profile-Extra", &profile_extra(TranscodeDelivery::ProgressiveMkv));
+            .str(
+                "X-Plex-Client-Profile-Extra",
+                &profile_extra(TranscodeDelivery::ProgressiveMkv),
+            );
         self.get_json(&q.build())
     }
 
@@ -347,8 +371,14 @@ impl Client {
             TranscodeDelivery::ProgressiveMkv => "start.mkv",
             TranscodeDelivery::FixedHls { .. } => "start.m3u8",
         };
-        let path = format!("/video/:/transcode/universal/{endpoint}?{}", self.transcode_query(spec));
-        StreamUrl { origin: self.origin.clone(), path: self.with_token(&path) }
+        let path = format!(
+            "/video/:/transcode/universal/{endpoint}?{}",
+            self.transcode_query(spec)
+        );
+        StreamUrl {
+            origin: self.origin.clone(),
+            path: self.with_token(&path),
+        }
     }
 
     /// GET /video/:/transcode/universal/stop — free the server-side encoder for `session`.
@@ -371,14 +401,22 @@ impl Client {
 
 #[cfg(test)]
 mod tests {
-    use super::{link_policy, Ceiling, Client, Location, LinkPolicy, TranscodeDelivery, TranscodeSpec};
+    use super::{
+        link_policy, Ceiling, Client, LinkPolicy, Location, TranscodeDelivery, TranscodeSpec,
+    };
     use crate::devcaps::Caps;
     use crate::plex::{Origin, ServerId};
 
     // ---- the universal-transcoder query: who is allowed to COPY ---------------------------
 
     fn a_client() -> Client {
-        Client::new(ServerId::from_raw(1), "mach", Origin::http("10.0.0.1", 32400), "tok", "cid")
+        Client::new(
+            ServerId::from_raw(1),
+            "mach",
+            Origin::http("10.0.0.1", 32400),
+            "tok",
+            "cid",
+        )
     }
 
     fn spec<'a>(remux: bool, no_video_copy: bool) -> TranscodeSpec<'a> {
@@ -421,8 +459,14 @@ mod tests {
     #[test]
     fn a_pixel_refusal_withdraws_the_copy_permission_but_not_the_audio_one() {
         let q = a_client().transcode_query(&spec(false, true));
-        assert!(q.contains("directStream=0"), "the server must not copy the video: {q}");
-        assert!(q.contains("directStreamAudio=1"), "audio may still be copied: {q}");
+        assert!(
+            q.contains("directStream=0"),
+            "the server must not copy the video: {q}"
+        );
+        assert!(
+            q.contains("directStreamAudio=1"),
+            "audio may still be copied: {q}"
+        );
         // the caps still ride along — they bound the encode that now has to run
         assert!(q.contains("videoResolution=3840x2160"), "{q}");
         assert!(q.contains("maxVideoBitrate=60000"), "{q}");
@@ -430,7 +474,11 @@ mod tests {
         // position, and which position wins is not ours to assume — the first shape of this fix
         // appended `directStream=0` after the `directStream=1` the builder had already written.
         // (`directStreamAudio=` does not match this needle; it is checked above on its own.)
-        assert_eq!(q.matches("directStream=").count(), 1, "one directStream, not two: {q}");
+        assert_eq!(
+            q.matches("directStream=").count(),
+            1,
+            "one directStream, not two: {q}"
+        );
     }
 
     /// A REMUX is a copy by definition, so the two can never both be meant — `build_stream`
@@ -442,9 +490,15 @@ mod tests {
     fn a_remux_is_a_copy_and_the_flag_cannot_turn_it_into_something_else() {
         let plain = a_client().transcode_query(&spec(true, false));
         let flagged = a_client().transcode_query(&spec(true, true));
-        assert_eq!(plain, flagged, "the flag is meaningless on the remux flavor");
+        assert_eq!(
+            plain, flagged,
+            "the flag is meaningless on the remux flavor"
+        );
         assert!(plain.contains("directStream=1"), "{plain}");
-        assert!(!plain.contains("videoResolution"), "a remux carries no cap, by design: {plain}");
+        assert!(
+            !plain.contains("videoResolution"),
+            "a remux carries no cap, by design: {plain}"
+        );
     }
 
     // ---- the QUALITY ceiling, on the wire -------------------------------------------------
@@ -470,20 +524,38 @@ mod tests {
         // A rung: 720p at 4 Mbps. Both axes move, and the old values are GONE — a query carrying
         // both would be a contradiction PMS resolves by position, which is not ours to assume.
         let mut s = spec(false, false);
-        s.ceiling = Some(Ceiling { max_kbps: 4000, max_w: 1280, max_h: 720 });
+        s.ceiling = Some(Ceiling {
+            max_kbps: 4000,
+            max_w: 1280,
+            max_h: 720,
+        });
         let capped = a_client().transcode_query(&s);
         assert!(capped.contains("videoResolution=1280x720"), "{capped}");
         assert!(capped.contains("maxVideoBitrate=4000"), "{capped}");
-        assert!(!capped.contains("3840x2160"), "the native-4K default must be replaced, not joined: {capped}");
+        assert!(
+            !capped.contains("3840x2160"),
+            "the native-4K default must be replaced, not joined: {capped}"
+        );
         assert!(!capped.contains("60000"), "{capped}");
-        assert_eq!(capped.matches("maxVideoBitrate=").count(), 1, "one cap, not two: {capped}");
-        assert_eq!(capped.matches("videoResolution=").count(), 1, "one resolution, not two: {capped}");
+        assert_eq!(
+            capped.matches("maxVideoBitrate=").count(),
+            1,
+            "one cap, not two: {capped}"
+        );
+        assert_eq!(
+            capped.matches("videoResolution=").count(),
+            1,
+            "one resolution, not two: {capped}"
+        );
 
         // …and everything else about the query is untouched by the ceiling: the two differ in
         // exactly the two params above.
         assert_eq!(
-            auto.replace("videoResolution=3840x2160", "R").replace("maxVideoBitrate=60000", "B"),
-            capped.replace("videoResolution=1280x720", "R").replace("maxVideoBitrate=4000", "B"),
+            auto.replace("videoResolution=3840x2160", "R")
+                .replace("maxVideoBitrate=60000", "B"),
+            capped
+                .replace("videoResolution=1280x720", "R")
+                .replace("maxVideoBitrate=4000", "B"),
             "the ceiling changed something other than the two params it is allowed to"
         );
 
@@ -492,11 +564,22 @@ mod tests {
         // those bytes are already inside the bound — and a cap here would force the very
         // re-encode the remux exists to avoid.
         let mut r = spec(true, false);
-        r.ceiling = Some(Ceiling { max_kbps: 4000, max_w: 1280, max_h: 720 });
+        r.ceiling = Some(Ceiling {
+            max_kbps: 4000,
+            max_w: 1280,
+            max_h: 720,
+        });
         let remuxed = a_client().transcode_query(&r);
-        assert!(!remuxed.contains("maxVideoBitrate"), "a remux carries no cap, ceiling or not: {remuxed}");
+        assert!(
+            !remuxed.contains("maxVideoBitrate"),
+            "a remux carries no cap, ceiling or not: {remuxed}"
+        );
         assert!(!remuxed.contains("videoResolution"), "{remuxed}");
-        assert_eq!(remuxed, a_client().transcode_query(&spec(true, false)), "the ceiling is inert on a remux");
+        assert_eq!(
+            remuxed,
+            a_client().transcode_query(&spec(true, false)),
+            "the ceiling is inert on a remux"
+        );
     }
 
     /// The four coupled HLS choices are one typed delivery: protocol, fixed-session controls,
@@ -505,8 +588,14 @@ mod tests {
     #[test]
     fn fixed_hls_is_one_coherent_wire_contract() {
         let mut s = spec(false, false);
-        s.delivery = TranscodeDelivery::FixedHls { seconds_per_segment: 2 };
-        s.ceiling = Some(Ceiling { max_kbps: 720, max_w: 854, max_h: 480 });
+        s.delivery = TranscodeDelivery::FixedHls {
+            seconds_per_segment: 2,
+        };
+        s.ceiling = Some(Ceiling {
+            max_kbps: 720,
+            max_w: 854,
+            max_h: 480,
+        });
 
         let c = a_client();
         let q = c.transcode_query(&s);
@@ -527,7 +616,12 @@ mod tests {
         assert!(c.transcode_start_url(&s).to_url().contains("/start.m3u8?"));
 
         let profile = super::profile_for_delivery(
-            &Caps { hevc: true, hevc_max: (4096, 2176), vp9: true, audio: "aac,ac3,eac3".into() },
+            &Caps {
+                hevc: true,
+                hevc_max: (4096, 2176),
+                vp9: true,
+                audio: "aac,ac3,eac3".into(),
+            },
             s.delivery,
         );
         let target = target_of(&profile);
@@ -540,12 +634,17 @@ mod tests {
     #[test]
     fn the_probe_builder_keeps_the_two_session_wires_explicit() {
         let mut s = spec(false, false);
-        s.delivery = TranscodeDelivery::FixedHls { seconds_per_segment: 2 };
+        s.delivery = TranscodeDelivery::FixedHls {
+            seconds_per_segment: 2,
+        };
         s.session = "playback-stable";
         s.encoder_session = "encoder-next";
         let q = a_client().transcode_query(&s);
         assert!(q.contains("session=encoder-next"), "{q}");
-        assert!(q.contains("X-Plex-Session-Identifier=playback-stable"), "{q}");
+        assert!(
+            q.contains("X-Plex-Session-Identifier=playback-stable"),
+            "{q}"
+        );
         assert!(!q.contains("session=playback-stable"), "{q}");
         // Production deliberately couples these values per encoder: the real simultaneous-
         // session spike proved a shared X-Plex id kills the old encoder before prime completes.
@@ -563,7 +662,10 @@ mod tests {
     fn a_relay_link_forbids_both_flavors_that_ship_the_file_at_its_own_rate() {
         let p = link_policy(Some(Location::Relay));
         assert!(!p.direct_play, "a relay cannot carry the source file");
-        assert!(!p.remux, "a remux is the same bytes at the same rate, one layer down");
+        assert!(
+            !p.remux,
+            "a remux is the same bytes at the same rate, one layer down"
+        );
     }
 
     /// Every other tier — and a link nobody has described — must change nothing at all. This is
@@ -573,7 +675,11 @@ mod tests {
     #[test]
     fn every_other_tier_and_an_unknown_link_leave_playback_alone() {
         for l in [Some(Location::Local), Some(Location::Remote), None] {
-            assert_eq!(link_policy(l), LinkPolicy::UNRESTRICTED, "link {l:?} must restrict nothing");
+            assert_eq!(
+                link_policy(l),
+                LinkPolicy::UNRESTRICTED,
+                "link {l:?} must restrict nothing"
+            );
         }
     }
 
@@ -596,7 +702,13 @@ mod tests {
         assert_eq!(cs[0].location, Location::Relay);
 
         let p = link_policy(Some(cs[0].location));
-        assert_eq!(p, LinkPolicy { direct_play: false, remux: false });
+        assert_eq!(
+            p,
+            LinkPolicy {
+                direct_play: false,
+                remux: false
+            }
+        );
     }
 
     // ---- the capability profile ----------------------------------------------------------
@@ -604,11 +716,22 @@ mod tests {
     /// Split a codec list out of the given profile segment ("add-direct-play-profile…" or
     /// "add-transcode-target…") — shared by every derivation test below.
     fn list_of(segment: &str, key: &str) -> Vec<String> {
-        let v = segment.split(key).nth(1).expect(key).split('&').next().unwrap_or("");
-        v.trim_end_matches(')').split(',').map(str::to_string).collect()
+        let v = segment
+            .split(key)
+            .nth(1)
+            .expect(key)
+            .split('&')
+            .next()
+            .unwrap_or("");
+        v.trim_end_matches(')')
+            .split(',')
+            .map(str::to_string)
+            .collect()
     }
     fn target_of(p: &str) -> &str {
-        p.split("add-transcode-target").nth(1).expect("profile declares a transcode target")
+        p.split("add-transcode-target")
+            .nth(1)
+            .expect("profile declares a transcode target")
     }
 
     /// Issue #22: with `videoCodec=hevc` alone, a server without Plex Pass has no legal video
@@ -639,8 +762,12 @@ mod tests {
     /// it) — while h264 stays, and the resolution bound is the device's own, not the dev TV's.
     #[test]
     fn a_soc_without_hevc_gets_an_h264_only_profile_at_its_own_bound() {
-        let caps =
-            Caps { hevc: false, hevc_max: (1920, 1088), vp9: false, audio: "aac,ac3,eac3".into() };
+        let caps = Caps {
+            hevc: false,
+            hevc_max: (1920, 1088),
+            vp9: false,
+            audio: "aac,ac3,eac3".into(),
+        };
         let p = super::profile_for(&caps);
         assert!(!p.contains("hevc"), "hevc must not appear anywhere in {p}");
         let dp = p.split("add-transcode-target").next().unwrap();
@@ -659,11 +786,19 @@ mod tests {
     fn the_target_head_is_the_shared_encode_vcodec_definition() {
         for caps in [
             Caps::assumed(),
-            Caps { hevc: false, hevc_max: (1920, 1088), vp9: false, audio: "aac".into() },
+            Caps {
+                hevc: false,
+                hevc_max: (1920, 1088),
+                vp9: false,
+                audio: "aac".into(),
+            },
         ] {
             let p = super::profile_for(&caps);
             let video = list_of(target_of(&p), "videoCodec=");
-            assert_eq!(video.first().map(String::as_str), Some(caps.encode_vcodec()));
+            assert_eq!(
+                video.first().map(String::as_str),
+                Some(caps.encode_vcodec())
+            );
         }
     }
 
@@ -672,7 +807,12 @@ mod tests {
     /// decode), and the transcode chain keeps its ac3-preferred ORDER for whatever remains.
     #[test]
     fn the_audio_lists_are_the_caps_subset_in_both_profiles() {
-        let caps = Caps { hevc: true, hevc_max: (3840, 2176), vp9: true, audio: "aac".into() };
+        let caps = Caps {
+            hevc: true,
+            hevc_max: (3840, 2176),
+            vp9: true,
+            audio: "aac".into(),
+        };
         let p = super::profile_for(&caps);
         let dp = p.split("add-transcode-target").next().unwrap();
         assert_eq!(list_of(dp, "audioCodec="), ["aac"]);

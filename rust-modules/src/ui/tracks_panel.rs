@@ -51,8 +51,8 @@ use crate::ui::consts::{SCR_H, SCR_W, SDLK_DOWN, SDLK_UP};
 use crate::ui::icons::Icon;
 use crate::ui::label::{HAlign, Label, VAlign};
 use crate::ui::popover::Popover;
-use crate::ui::widgets;
 use crate::ui::theme;
+use crate::ui::widgets;
 use crate::ui::{Painter, Rect, Spring};
 use std::ffi::CString;
 use std::os::raw::c_int;
@@ -125,7 +125,12 @@ const BODY_TAIL: f32 = theme::space::LG;
 
 /// The panel's frame on screen.
 fn panel_rect() -> Rect {
-    Rect::new((SCR_W - PANEL_W) * 0.5, (SCR_H - PANEL_H) * 0.5, PANEL_W, PANEL_H)
+    Rect::new(
+        (SCR_W - PANEL_W) * 0.5,
+        (SCR_H - PANEL_H) * 0.5,
+        PANEL_W,
+        PANEL_H,
+    )
 }
 
 /// The scrolling body's viewport — inside the padding, below the header rule, above the footer
@@ -142,9 +147,18 @@ fn body_rect() -> Rect {
         + GAP_PATH_RULE
         + widgets::HAIRLINE_H
         + GAP_RULE_BODY;
-    let bottom = r.y + PANEL_H - crate::ui::widgets::KeyHint::pad_below() - FOOTER_H
-        - theme::space::MD - widgets::HAIRLINE_H - theme::space::MD;
-    Rect::new(r.x + PAD, top, PANEL_W - 2.0 * PAD - RAIL_W - RAIL_GAP, bottom - top)
+    let bottom = r.y + PANEL_H
+        - crate::ui::widgets::KeyHint::pad_below()
+        - FOOTER_H
+        - theme::space::MD
+        - widgets::HAIRLINE_H
+        - theme::space::MD;
+    Rect::new(
+        r.x + PAD,
+        top,
+        PANEL_W - 2.0 * PAD - RAIL_W - RAIL_GAP,
+        bottom - top,
+    )
 }
 
 // ---- the content model (PURE — this half is what the host suite grades) -------------------------
@@ -181,7 +195,11 @@ pub(crate) fn fmt_size(bytes: i64) -> Option<String> {
     } else {
         (b, "bytes")
     };
-    Some(if unit == "bytes" { format!("{v:.0} bytes") } else { format!("{v:.2} {unit}") })
+    Some(if unit == "bytes" {
+        format!("{v:.0} bytes")
+    } else {
+        format!("{v:.2} {unit}")
+    })
 }
 
 /// A PMS bitrate (which is in **kbps**) as `"28.9 Mbps"`, or `"640 kbps"` below a megabit. The
@@ -203,7 +221,11 @@ pub(crate) fn fmt_codec_profile(codec: &str, profile: &str) -> Option<String> {
         return None;
     }
     let p = title_case(profile);
-    Some(if p.is_empty() { name } else { format!("{name} ({p})") })
+    Some(if p.is_empty() {
+        name
+    } else {
+        format!("{name} ({p})")
+    })
 }
 
 /// `"main 10"` → `"Main 10"`. Per WORD, and only the first character of each — upper-casing the
@@ -307,10 +329,18 @@ pub(crate) fn audio_detail(s: &Stream) -> String {
     let mut head = s.codec.to_uppercase();
     let layout = fmt_layout(&s.layout, s.channels);
     if !layout.is_empty() {
-        head = if head.is_empty() { layout } else { format!("{head} {layout}") };
+        head = if head.is_empty() {
+            layout
+        } else {
+            format!("{head} {layout}")
+        };
     }
     if has_atmos(s) {
-        head = if head.is_empty() { "Atmos".to_string() } else { format!("{head} + Atmos") };
+        head = if head.is_empty() {
+            "Atmos".to_string()
+        } else {
+            format!("{head} + Atmos")
+        };
     }
     let mut parts: Vec<String> = Vec::new();
     if !head.is_empty() {
@@ -335,7 +365,11 @@ pub(crate) fn audio_rows(audio: &[Stream]) -> Vec<TrackRow> {
     audio
         .iter()
         .map(|s| TrackRow {
-            name: if s.lang.trim().is_empty() { "Unknown".to_string() } else { s.lang.clone() },
+            name: if s.lang.trim().is_empty() {
+                "Unknown".to_string()
+            } else {
+                s.lang.clone()
+            },
             detail: audio_detail(s),
         })
         .collect()
@@ -358,11 +392,23 @@ pub(crate) fn subtitle_rows(subs: &[Stream]) -> Vec<TrackRow> {
     // subtitle list is a handful of entries, so the linear scan is not worth a hash.
     let mut out: Vec<(String, String, String, usize)> = Vec::new();
     for s in subs {
-        let name = if s.lang.trim().is_empty() { "Unknown".to_string() } else { s.lang.clone() };
+        let name = if s.lang.trim().is_empty() {
+            "Unknown".to_string()
+        } else {
+            s.lang.clone()
+        };
         let mut head = s.codec.to_uppercase();
-        for (on, tag) in [(s.forced, "Forced"), (s.sdh, "SDH"), (s.external, "External")] {
+        for (on, tag) in [
+            (s.forced, "Forced"),
+            (s.sdh, "SDH"),
+            (s.external, "External"),
+        ] {
             if on {
-                head = if head.is_empty() { tag.to_string() } else { format!("{head} \u{b7} {tag}") };
+                head = if head.is_empty() {
+                    tag.to_string()
+                } else {
+                    format!("{head} \u{b7} {tag}")
+                };
             }
         }
         if !s.title.trim().is_empty() && !s.title.eq_ignore_ascii_case(&name) {
@@ -399,10 +445,16 @@ pub(crate) fn file_rows(d: &Detail) -> Vec<Pair> {
             v.push(Pair { label, value });
         }
     };
-    push("Container", (!d.container.is_empty()).then(|| d.container.to_uppercase()));
+    push(
+        "Container",
+        (!d.container.is_empty()).then(|| d.container.to_uppercase()),
+    );
     push("Size", fmt_size(d.size));
     push("Total bitrate", fmt_bitrate(d.bitrate));
-    push("Duration", (d.dur_ms > 0).then(|| crate::ui::fmt::clock(d.dur_ms)));
+    push(
+        "Duration",
+        (d.dur_ms > 0).then(|| crate::ui::fmt::clock(d.dur_ms)),
+    );
     push("Aspect ratio", fmt_aspect(d.aspect_ratio));
     v
 }
@@ -418,7 +470,10 @@ pub(crate) fn video_rows(d: &Detail) -> Vec<Pair> {
             v.push(Pair { label, value });
         }
     };
-    let codec = vs.map(|s| s.codec.as_str()).filter(|s| !s.is_empty()).unwrap_or(d.vcodec.as_str());
+    let codec = vs
+        .map(|s| s.codec.as_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(d.vcodec.as_str());
     let profile = vs.map(|s| s.profile.as_str()).unwrap_or("");
     push("Codec", fmt_codec_profile(codec, profile));
     push("Resolution", fmt_frame_size(d.width, d.height));
@@ -426,7 +481,10 @@ pub(crate) fn video_rows(d: &Detail) -> Vec<Pair> {
     // the STREAM's bitrate, not the file's — `d.bitrate` is already the FILE column's own row, and
     // repeating it here would state the same number twice under two different labels
     push("Bitrate", vs.and_then(|s| fmt_bitrate(s.bitrate)));
-    push("Bit depth", vs.and_then(|s| fmt_depth_chroma(s.bit_depth, &s.chroma)));
+    push(
+        "Bit depth",
+        vs.and_then(|s| fmt_depth_chroma(s.bit_depth, &s.chroma)),
+    );
     v
 }
 
@@ -506,7 +564,10 @@ pub(crate) fn mask_edges(page: i32, pages: i32) -> (bool, bool) {
 pub(crate) fn rail_fill(page: i32, pages: i32) -> (f32, f32) {
     let pages = pages.max(1) as f32;
     let page = page.max(1) as f32;
-    (((page - 1.0) / pages).clamp(0.0, 1.0), (1.0 / pages).clamp(0.0, 1.0))
+    (
+        ((page - 1.0) / pages).clamp(0.0, 1.0),
+        (1.0 / pages).clamp(0.0, 1.0),
+    )
 }
 
 /// The feather's cascade alpha for a run whose cap band is centred at `y`, given the body band
@@ -577,7 +638,9 @@ pub(crate) fn sel() -> c_int {
 /// answer — it is always the third of four — so a press that arrives early is refused rather than
 /// landing on a control that has moved.
 pub(crate) fn is_available() -> bool {
-    metadata::current().map(|d| !d.part.is_empty()).unwrap_or(false)
+    metadata::current()
+        .map(|d| !d.part.is_empty())
+        .unwrap_or(false)
 }
 
 pub(crate) fn open() {
@@ -672,11 +735,26 @@ impl Flow {
     /// The cascade alpha for a run occupying `[self.y, self.y + h]`, sampled at its cap-band
     /// centre — the ONE place the feather is applied, so no run can escape it.
     fn alpha_at(&self, h: f32) -> f32 {
-        feather_alpha(self.y + h * 0.5, self.band.y, self.band.y + self.band.h, self.edges)
+        feather_alpha(
+            self.y + h * 0.5,
+            self.band.y,
+            self.band.y + self.band.h,
+            self.edges,
+        )
     }
     /// Draw one run at the cursor and advance past it. `w` is the run's own column width, which is
     /// also its elide budget; `align` follows `Label`'s.
-    fn run(&mut self, s: &str, x: f32, w: f32, h: f32, sz: c_int, bold: bool, col: [f32; 4], align: HAlign) {
+    fn run(
+        &mut self,
+        s: &str,
+        x: f32,
+        w: f32,
+        h: f32,
+        sz: c_int,
+        bold: bool,
+        col: [f32; 4],
+        align: HAlign,
+    ) {
         if !self.measure && self.visible(h) {
             let a = self.alpha_at(h);
             if a > 0.002 {
@@ -717,14 +795,41 @@ impl Flow {
 /// the designer and then move all three together; caps + bold at CAPTION is meanwhile the app's
 /// established head face.
 fn head(f: &mut Flow, text: &str, x: f32, w: f32) {
-    f.run(&text.to_uppercase(), x, w, HEAD_H, theme::size::CAPTION, true, theme::TEXT_TERTIARY, HAlign::Left);
+    f.run(
+        &text.to_uppercase(),
+        x,
+        w,
+        HEAD_H,
+        theme::size::CAPTION,
+        true,
+        theme::TEXT_TERTIARY,
+        HAlign::Left,
+    );
 }
 
 /// One label-over-value pair.
 fn pair(f: &mut Flow, pr: &Pair, x: f32, w: f32) {
-    f.run(pr.label, x, w, LABEL_H, theme::size::CAPTION, false, theme::TEXT_TERTIARY, HAlign::Left);
+    f.run(
+        pr.label,
+        x,
+        w,
+        LABEL_H,
+        theme::size::CAPTION,
+        false,
+        theme::TEXT_TERTIARY,
+        HAlign::Left,
+    );
     f.advance(PAIR_GAP);
-    f.run(&pr.value, x, w, VALUE_H, theme::size::LABEL, true, theme::TEXT_HEADING, HAlign::Left);
+    f.run(
+        &pr.value,
+        x,
+        w,
+        VALUE_H,
+        theme::size::LABEL,
+        true,
+        theme::TEXT_HEADING,
+        HAlign::Left,
+    );
 }
 
 /// One track line — the name left, its detail right, on ONE baseline. Drawn as two runs into the
@@ -737,7 +842,13 @@ fn track_line(f: &mut Flow, row: &TrackRow, x: f32, w: f32) {
         if a > 0.002 {
             let pa = f.p.alpha(a);
             let nw = w * NAME_FRAC;
-            if let Ok(cs) = CString::new(crate::text::elide(&row.name, nw, theme::size::LABEL, 1, false)) {
+            if let Ok(cs) = CString::new(crate::text::elide(
+                &row.name,
+                nw,
+                theme::size::LABEL,
+                1,
+                false,
+            )) {
                 Label::new(cs.as_ptr(), theme::size::LABEL, theme::TEXT_HEADING)
                     .bold()
                     .v(VAlign::CapTop)
@@ -748,14 +859,22 @@ fn track_line(f: &mut Flow, row: &TrackRow, x: f32, w: f32) {
                 // the detail sits on the NAME's baseline (`align-items:baseline` in the design),
                 // which at a smaller rung is not the same cap-top — `baseline_y` is the helper
                 // that exists so this is not a hand-tuned offset
-                let dy = crate::text::baseline_y(theme::size::CAPTION, 0, theme::size::LABEL, 1, f.y);
-                if let Ok(cs) =
-                    CString::new(crate::text::elide(&row.detail, dw, theme::size::CAPTION, 0, false))
-                {
+                let dy =
+                    crate::text::baseline_y(theme::size::CAPTION, 0, theme::size::LABEL, 1, f.y);
+                if let Ok(cs) = CString::new(crate::text::elide(
+                    &row.detail,
+                    dw,
+                    theme::size::CAPTION,
+                    0,
+                    false,
+                )) {
                     Label::new(cs.as_ptr(), theme::size::CAPTION, theme::TEXT_TERTIARY)
                         .h(HAlign::Right)
                         .v(VAlign::CapTop)
-                        .draw(pa, Rect::new(x + w - dw, dy, dw, theme::size::CAPTION as f32));
+                        .draw(
+                            pa,
+                            Rect::new(x + w - dw, dy, dw, theme::size::CAPTION as f32),
+                        );
                 }
             }
         }
@@ -781,7 +900,11 @@ struct Content {
 
 fn content_of(d: &Detail) -> Content {
     Content {
-        cols: [("FILE", file_rows(d)), ("VIDEO", video_rows(d)), ("DOLBY VISION", dovi_rows(d))],
+        cols: [
+            ("FILE", file_rows(d)),
+            ("VIDEO", video_rows(d)),
+            ("DOLBY VISION", dovi_rows(d)),
+        ],
         audio: (d.audio.len(), audio_rows(&d.audio)),
         subs: (d.subs.len(), subtitle_rows(&d.subs)),
     }
@@ -790,8 +913,22 @@ fn content_of(d: &Detail) -> Content {
 /// Walk the whole body once — measuring when `measure`, drawing otherwise. ONE function for both
 /// so the height the rail and the page count are computed from is by construction the height the
 /// draw produces.
-fn body_flow(c: &Content, band: Rect, scroll: f32, edges: (bool, bool), p: Painter, measure: bool) -> f32 {
-    let mut f = Flow { p, y: band.y - scroll, band, edges, measure, h: 0.0 };
+fn body_flow(
+    c: &Content,
+    band: Rect,
+    scroll: f32,
+    edges: (bool, bool),
+    p: Painter,
+    measure: bool,
+) -> f32 {
+    let mut f = Flow {
+        p,
+        y: band.y - scroll,
+        band,
+        edges,
+        measure,
+        h: 0.0,
+    };
     let cw = (band.w - 2.0 * COL_GAP) / 3.0;
 
     // ---- the three columns. They are a GRID, so each starts at the band top and the block's
@@ -858,7 +995,13 @@ pub(crate) fn draw() {
         .v(VAlign::CapTop)
         .draw(p, Rect::new(cx, y, cw, theme::alert::EYEBROW_LEAD));
     y += theme::alert::EYEBROW_LEAD + GAP_EYEBROW_TITLE;
-    if let Ok(cs) = CString::new(crate::text::elide(&d.title, cw, theme::size::TITLE, 1, false)) {
+    if let Ok(cs) = CString::new(crate::text::elide(
+        &d.title,
+        cw,
+        theme::size::TITLE,
+        1,
+        false,
+    )) {
         Label::new(cs.as_ptr(), theme::size::TITLE, theme::TEXT_PRIMARY)
             .bold()
             .v(VAlign::CapTop)
@@ -868,7 +1011,13 @@ pub(crate) fn draw() {
     // the server's own path for the part. One line, ellipsised, micro, tertiary — it is the
     // panel's subject, not its content, and it can be arbitrarily long.
     if !d.file.is_empty() {
-        if let Ok(cs) = CString::new(crate::text::elide(&d.file, cw, theme::size::MICRO, 0, false)) {
+        if let Ok(cs) = CString::new(crate::text::elide(
+            &d.file,
+            cw,
+            theme::size::MICRO,
+            0,
+            false,
+        )) {
             Label::new(cs.as_ptr(), theme::size::MICRO, theme::TEXT_TERTIARY)
                 .v(VAlign::CapTop)
                 .draw(p, Rect::new(cx, y, cw, PATH_H));
@@ -902,7 +1051,12 @@ pub(crate) fn draw() {
     let rad = RAIL_W * 0.5; // --radius-pill: half the short side, which is how this SDF spells it
     p.rrect(track, rad, rad, theme::RAIL_TRACK);
     let (ft, fh) = rail_fill(page, pages);
-    p.rrect(Rect::new(rx, band.y + band.h * ft, RAIL_W, band.h * fh), rad, rad, theme::RAIL_FILL);
+    p.rrect(
+        Rect::new(rx, band.y + band.h * ft, RAIL_W, band.h * fh),
+        rad,
+        rad,
+        theme::RAIL_FILL,
+    );
 
     // ---- footer ------------------------------------------------------------------------------
     let fy = r.y + PANEL_H - crate::ui::widgets::KeyHint::pad_below() - FOOTER_H;
@@ -913,7 +1067,12 @@ pub(crate) fn draw() {
     const GLYPH: f32 = 22.0;
     let mut gx = cx;
     for icon in [Icon::ChevronUp, Icon::ChevronDown] {
-        crate::ui::icons::draw(p, icon, Rect::new(gx, cy - GLYPH * 0.5, GLYPH, GLYPH), theme::TEXT_TERTIARY);
+        crate::ui::icons::draw(
+            p,
+            icon,
+            Rect::new(gx, cy - GLYPH * 0.5, GLYPH, GLYPH),
+            theme::TEXT_TERTIARY,
+        );
         gx += GLYPH + theme::space::XS + 4.0;
     }
     // The design's `gap:12` applies between EVERY item in this run, the label included — the loop
@@ -955,7 +1114,11 @@ mod tests {
         }
     }
     fn sub(lang: &str, codec: &str) -> Stream {
-        Stream { lang: lang.into(), codec: codec.into(), ..Default::default() }
+        Stream {
+            lang: lang.into(),
+            codec: codec.into(),
+            ..Default::default()
+        }
     }
 
     /// **The eight audio rows of `/library/metadata/5`, byte for byte against the design's
@@ -997,7 +1160,11 @@ mod tests {
         assert_eq!(rows[0].name, "Русский");
         assert_eq!(rows[7].name, "English");
         // eight tracks stay eight rows — the audio list is deliberately NOT grouped
-        assert_eq!(rows.len(), 8, "grouping audio would destroy what tells the seven rus tracks apart");
+        assert_eq!(
+            rows.len(),
+            8,
+            "grouping audio would destroy what tells the seven rus tracks apart"
+        );
     }
 
     /// Atmos is found in `profile` and NOWHERE else, which is the fact a live probe settled and
@@ -1009,7 +1176,10 @@ mod tests {
         let mut s = audio("English", "eac3", "5.1(side)", 6, 768);
         assert!(!has_atmos(&s), "the layout alone must not imply Atmos");
         s.title = "Atmos".into();
-        assert!(!has_atmos(&s), "a track TITLE is a user string, not the structured answer");
+        assert!(
+            !has_atmos(&s),
+            "a track TITLE is a user string, not the structured answer"
+        );
         s.title = String::new();
         s.profile = "dolby digital plus + dolby atmos".into();
         assert!(has_atmos(&s));
@@ -1027,7 +1197,11 @@ mod tests {
         subs.push(sub("English", "mov_text"));
         subs.push(sub("Українська", "mov_text"));
         let rows = subtitle_rows(&subs);
-        assert_eq!(rows.len(), 3, "nine identical-by-language tracks are three rows");
+        assert_eq!(
+            rows.len(),
+            3,
+            "nine identical-by-language tracks are three rows"
+        );
         assert_eq!(rows[0].name, "Русский");
         assert_eq!(rows[0].detail, "MOV_TEXT \u{b7} 6 tracks");
         assert_eq!(rows[1].detail, "MOV_TEXT \u{b7} 2 tracks");
@@ -1037,13 +1211,20 @@ mod tests {
         // …and the head states the TRUE track total, not the row count. These are DIFFERENT
         // numbers for subtitles and equal for audio, which is exactly why the wrong one shipped:
         // it is invisible on the section that is not grouped.
-        assert_eq!(track_head("SUBTITLES", subs.len()), "SUBTITLES \u{b7} 9 TRACKS");
+        assert_eq!(
+            track_head("SUBTITLES", subs.len()),
+            "SUBTITLES \u{b7} 9 TRACKS"
+        );
         assert_ne!(
             track_head("SUBTITLES", rows.len()),
             track_head("SUBTITLES", subs.len()),
             "the grouped ROW count is not the track count — the head must take the latter"
         );
-        assert_eq!(track_head("AUDIO", 1), "AUDIO \u{b7} 1 TRACK", "singular, not '1 TRACKS'");
+        assert_eq!(
+            track_head("AUDIO", 1),
+            "AUDIO \u{b7} 1 TRACK",
+            "singular, not '1 TRACKS'"
+        );
     }
 
     /// A track that differs in any way a viewer would pick between must NOT be merged away. This
@@ -1055,7 +1236,12 @@ mod tests {
         forced.forced = true;
         let mut sdh = sub("English", "subrip");
         sdh.sdh = true;
-        let rows = subtitle_rows(&[sub("English", "subrip"), forced, sdh, sub("English", "subrip")]);
+        let rows = subtitle_rows(&[
+            sub("English", "subrip"),
+            forced,
+            sdh,
+            sub("English", "subrip"),
+        ]);
         assert_eq!(rows.len(), 3, "plain×2, forced, SDH");
         assert_eq!(rows[0].detail, "SUBRIP \u{b7} 2 tracks");
         assert_eq!(rows[1].detail, "SUBRIP \u{b7} Forced");
@@ -1071,13 +1257,26 @@ mod tests {
         assert_eq!(fmt_size(34_659_545_780).as_deref(), Some("32.28 GB"));
         assert_eq!(fmt_bitrate(28_852).as_deref(), Some("28.9 Mbps"));
         assert_eq!(fmt_bitrate(24_723).as_deref(), Some("24.7 Mbps"));
-        assert_eq!(fmt_bitrate(448).as_deref(), Some("448 kbps"), "below a megabit stays kbps");
+        assert_eq!(
+            fmt_bitrate(448).as_deref(),
+            Some("448 kbps"),
+            "below a megabit stays kbps"
+        );
         assert_eq!(crate::ui::fmt::clock(9_610_336), "2:40:10");
         assert_eq!(fmt_aspect(2.35).as_deref(), Some("2.35"));
-        assert_eq!(fmt_codec_profile("hevc", "main 10").as_deref(), Some("HEVC (Main 10)"));
-        assert_eq!(fmt_frame_size(3840, 1602).as_deref(), Some("3840 \u{d7} 1602"));
+        assert_eq!(
+            fmt_codec_profile("hevc", "main 10").as_deref(),
+            Some("HEVC (Main 10)")
+        );
+        assert_eq!(
+            fmt_frame_size(3840, 1602).as_deref(),
+            Some("3840 \u{d7} 1602")
+        );
         assert_eq!(fmt_fps(23.976).as_deref(), Some("23.976 fps"));
-        assert_eq!(fmt_depth_chroma(10, "4:2:0").as_deref(), Some("10-bit \u{b7} 4:2:0"));
+        assert_eq!(
+            fmt_depth_chroma(10, "4:2:0").as_deref(),
+            Some("10-bit \u{b7} 4:2:0")
+        );
         // …and the shapes that must NOT draw a row rather than drawing an empty or wrong one
         assert_eq!(fmt_size(0), None);
         assert_eq!(fmt_bitrate(0), None);
@@ -1085,7 +1284,11 @@ mod tests {
         assert_eq!(fmt_aspect(0.0), None);
         assert_eq!(fmt_depth_chroma(0, ""), None);
         assert_eq!(fmt_frame_size(3840, 0), None);
-        assert_eq!(fmt_codec_profile("", "main 10"), None, "no codec is no row, profile or not");
+        assert_eq!(
+            fmt_codec_profile("", "main 10"),
+            None,
+            "no codec is no row, profile or not"
+        );
         // a codec with no profile is the bare name, not "HEVC ()"
         assert_eq!(fmt_codec_profile("h264", "").as_deref(), Some("H.264"));
         // 24.000 keeps no decimals; 23.976 keeps all three
@@ -1103,7 +1306,11 @@ mod tests {
         assert_eq!(fmt_layout("mono", 1), "Mono");
         assert_eq!(fmt_layout("", 6), "6 ch");
         assert_eq!(fmt_layout("", 2), "Stereo");
-        assert_eq!(fmt_layout("", 0), "", "nothing said at all is nothing shown");
+        assert_eq!(
+            fmt_layout("", 0),
+            "",
+            "nothing said at all is nothing shown"
+        );
     }
 
     /// The DOLBY VISION column exists only for a file that has DV, and its five rows are exactly
@@ -1112,7 +1319,10 @@ mod tests {
     #[test]
     fn the_dolby_vision_column_is_absent_unless_the_file_carries_dolby_vision() {
         let mut d = Detail::default();
-        assert!(dovi_rows(&d).is_empty(), "an SDR file has no third column at all");
+        assert!(
+            dovi_rows(&d).is_empty(),
+            "an SDR file has no third column at all"
+        );
 
         d.dovi = metadata::Dovi {
             present: true,
@@ -1138,8 +1348,14 @@ mod tests {
         );
 
         // present, but the server said nothing else: the column appears with only what it knows
-        d.dovi = metadata::Dovi { present: true, ..metadata::Dovi::NONE };
-        assert!(dovi_rows(&d).is_empty(), "DV present with no facts draws no rows");
+        d.dovi = metadata::Dovi {
+            present: true,
+            ..metadata::Dovi::NONE
+        };
+        assert!(
+            dovi_rows(&d).is_empty(),
+            "DV present with no facts draws no rows"
+        );
     }
 
     /// `DOVIVersion` arrives as the STRING "1.0" and is stored decomposed so `Dovi` can stay
@@ -1150,13 +1366,28 @@ mod tests {
         use metadata::Dovi;
         assert_eq!(Dovi::parse_version("1.0"), (1, 0));
         assert_eq!(Dovi::parse_version("2.1"), (2, 1));
-        assert_eq!(Dovi::parse_version("1.0.0"), (1, 0), "a three-part version keeps two");
-        assert_eq!(Dovi::parse_version("2"), (2, 0), "a bare major is major-only");
+        assert_eq!(
+            Dovi::parse_version("1.0.0"),
+            (1, 0),
+            "a three-part version keeps two"
+        );
+        assert_eq!(
+            Dovi::parse_version("2"),
+            (2, 0),
+            "a bare major is major-only"
+        );
         assert_eq!(Dovi::parse_version(" 1.0 "), (1, 0));
         for junk in ["", "  ", "abc", "1.x", "-1.0", "1.-2"] {
-            assert_eq!(Dovi::parse_version(junk), (0, 0), "{junk:?} must read as unsaid");
+            assert_eq!(
+                Dovi::parse_version(junk),
+                (0, 0),
+                "{junk:?} must read as unsaid"
+            );
         }
-        let dv = Dovi { version: (1, 0), ..Dovi::NONE };
+        let dv = Dovi {
+            version: (1, 0),
+            ..Dovi::NONE
+        };
         assert_eq!(dv.version_str().as_deref(), Some("1.0"));
         assert_eq!(Dovi::NONE.version_str(), None, "unsaid draws no row");
     }
@@ -1170,7 +1401,11 @@ mod tests {
         assert_eq!(pages_for(400.0, view), 1);
         assert_eq!(pages_for(view, view), 1);
         assert_eq!(scroll_for(1, 400.0, view), 0.0);
-        assert_eq!(scroll_for(9, 400.0, view), 0.0, "a page past the end still shows the top");
+        assert_eq!(
+            scroll_for(9, 400.0, view),
+            0.0,
+            "a page past the end still shows the top"
+        );
 
         // the real item: 1276px of body in a 467px window
         let content = 1276.0;
@@ -1194,11 +1429,27 @@ mod tests {
     /// on a body with nothing behind it would say the list continues when it does not.
     #[test]
     fn each_mask_edge_appears_only_when_there_is_content_behind_it() {
-        assert_eq!(mask_edges(1, 1), (false, false), "one page: no fade at either end");
-        assert_eq!(mask_edges(1, 4), (false, true), "the top page fades only downward");
-        assert_eq!(mask_edges(2, 4), (true, true), "a middle page fades both ways");
+        assert_eq!(
+            mask_edges(1, 1),
+            (false, false),
+            "one page: no fade at either end"
+        );
+        assert_eq!(
+            mask_edges(1, 4),
+            (false, true),
+            "the top page fades only downward"
+        );
+        assert_eq!(
+            mask_edges(2, 4),
+            (true, true),
+            "a middle page fades both ways"
+        );
         assert_eq!(mask_edges(3, 4), (true, true));
-        assert_eq!(mask_edges(4, 4), (true, false), "the last page fades only upward");
+        assert_eq!(
+            mask_edges(4, 4),
+            (true, false),
+            "the last page fades only upward"
+        );
     }
 
     /// The feather's ramp, at the geometry it actually runs at. The properties that matter are
@@ -1209,10 +1460,26 @@ mod tests {
     fn the_feather_ramps_to_zero_at_an_active_edge_and_is_inert_at_an_idle_one() {
         let (top, bottom) = (100.0f32, 600.0f32);
         let both = (true, true);
-        assert_eq!(feather_alpha(top, top, bottom, both), 0.0, "flush with the top edge: gone");
-        assert_eq!(feather_alpha(bottom, top, bottom, both), 0.0, "flush with the bottom: gone");
-        assert_eq!(feather_alpha(top + FEATHER, top, bottom, both), 1.0, "past the band: full");
-        assert_eq!(feather_alpha(350.0, top, bottom, both), 1.0, "the middle is untouched");
+        assert_eq!(
+            feather_alpha(top, top, bottom, both),
+            0.0,
+            "flush with the top edge: gone"
+        );
+        assert_eq!(
+            feather_alpha(bottom, top, bottom, both),
+            0.0,
+            "flush with the bottom: gone"
+        );
+        assert_eq!(
+            feather_alpha(top + FEATHER, top, bottom, both),
+            1.0,
+            "past the band: full"
+        );
+        assert_eq!(
+            feather_alpha(350.0, top, bottom, both),
+            1.0,
+            "the middle is untouched"
+        );
         // monotone rising across the top band
         let mut last = -1.0;
         for i in 0..=8 {
@@ -1226,7 +1493,10 @@ mod tests {
         assert_eq!(feather_alpha(top, top, bottom, (false, false)), 1.0);
         // a body SHORTER than two feathers dissolves from both sides rather than one winning
         let short = feather_alpha(150.0, 100.0, 220.0, both);
-        assert!(short > 0.0 && short < 1.0, "overlapping bands both apply: {short}");
+        assert!(
+            short > 0.0 && short < 1.0,
+            "overlapping bands both apply: {short}"
+        );
     }
 
     /// The rail states the same two facts the mask does, in the design's own arithmetic: how far
@@ -1234,14 +1504,30 @@ mod tests {
     #[test]
     fn the_rail_fill_reports_the_page_and_the_share_of_the_whole() {
         let (t, h) = rail_fill(1, 1);
-        assert_eq!((t, h), (0.0, 1.0), "one page fills the rail — 'this is all of it'");
-        for (page, pages, want_t, want_h) in
-            [(1, 4, 0.0, 0.25), (2, 4, 0.25, 0.25), (4, 4, 0.75, 0.25), (2, 3, 1.0 / 3.0, 1.0 / 3.0)]
-        {
+        assert_eq!(
+            (t, h),
+            (0.0, 1.0),
+            "one page fills the rail — 'this is all of it'"
+        );
+        for (page, pages, want_t, want_h) in [
+            (1, 4, 0.0, 0.25),
+            (2, 4, 0.25, 0.25),
+            (4, 4, 0.75, 0.25),
+            (2, 3, 1.0 / 3.0, 1.0 / 3.0),
+        ] {
             let (t, h) = rail_fill(page, pages);
-            assert!((t - want_t).abs() < 1e-6, "top {t} != {want_t} at {page}/{pages}");
-            assert!((h - want_h).abs() < 1e-6, "height {h} != {want_h} at {page}/{pages}");
-            assert!(t + h <= 1.0 + 1e-6, "the fill must never run past the track");
+            assert!(
+                (t - want_t).abs() < 1e-6,
+                "top {t} != {want_t} at {page}/{pages}"
+            );
+            assert!(
+                (h - want_h).abs() < 1e-6,
+                "height {h} != {want_h} at {page}/{pages}"
+            );
+            assert!(
+                t + h <= 1.0 + 1e-6,
+                "the fill must never run past the track"
+            );
         }
         // a nonsense page or count cannot produce a fill outside the track
         let (t, h) = rail_fill(0, 0);
@@ -1263,13 +1549,29 @@ mod tests {
         assert_eq!((r.w, r.h), (PANEL_W, PANEL_H));
         assert_eq!(r.x, (SCR_W - PANEL_W) * 0.5, "centred horizontally");
         assert_eq!(r.y, (SCR_H - PANEL_H) * 0.5, "…and vertically");
-        assert_eq!(r.x, 340.0, "which for this width is still the design's own x");
-        assert!(r.x >= 68.0 && r.y >= 68.0, "clears --glass-edge-clear on the near sides");
-        assert!(SCR_W - (r.x + r.w) >= 68.0 && SCR_H - (r.y + r.h) >= 68.0, "…and the far ones");
+        assert_eq!(
+            r.x, 340.0,
+            "which for this width is still the design's own x"
+        );
+        assert!(
+            r.x >= 68.0 && r.y >= 68.0,
+            "clears --glass-edge-clear on the near sides"
+        );
+        assert!(
+            SCR_W - (r.x + r.w) >= 68.0 && SCR_H - (r.y + r.h) >= 68.0,
+            "…and the far ones"
+        );
         let b = body_rect();
         assert!(b.y > r.y + PAD, "the body starts below the header");
-        assert!(b.y + b.h < r.y + PANEL_H - PAD, "…and ends above the footer");
-        assert!(b.h > 400.0, "the body is the panel's tallest region: {}", b.h);
+        assert!(
+            b.y + b.h < r.y + PANEL_H - PAD,
+            "…and ends above the footer"
+        );
+        assert!(
+            b.h > 400.0,
+            "the body is the panel's tallest region: {}",
+            b.h
+        );
         // the rail's gutter is reserved OUT of the body, so a long value can never run under it
         assert!((b.x + b.w + RAIL_GAP + RAIL_W) - (r.x + PANEL_W - PAD) < 0.01);
     }
@@ -1283,14 +1585,26 @@ mod tests {
         metadata::install_for_test(None);
         assert!(!is_available(), "nothing loaded yet: no disc");
 
-        let show = Detail { is_show: true, part: String::new(), ..Default::default() };
+        let show = Detail {
+            is_show: true,
+            part: String::new(),
+            ..Default::default()
+        };
         metadata::install_for_test(Some(show));
-        assert!(!is_available(), "a show has no file of its own — its streams are episode 1's");
+        assert!(
+            !is_available(),
+            "a show has no file of its own — its streams are episode 1's"
+        );
 
-        let movie =
-            Detail { part: "/library/parts/751/1745595530/file.mp4".into(), ..Default::default() };
+        let movie = Detail {
+            part: "/library/parts/751/1745595530/file.mp4".into(),
+            ..Default::default()
+        };
         metadata::install_for_test(Some(movie));
-        assert!(is_available(), "a leaf has a part, so there is a file to describe");
+        assert!(
+            is_available(),
+            "a leaf has a part, so there is a file to describe"
+        );
         metadata::install_for_test(None);
     }
 }

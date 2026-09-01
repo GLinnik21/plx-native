@@ -139,14 +139,21 @@ const GET_HWVER: c_ulong = ioctl_request(IOC_READ, HWCNT_READER_TYPE, 0x00, size
 const GET_BUFFER_SIZE: c_ulong = ioctl_request(IOC_READ, HWCNT_READER_TYPE, 0x01, size_of::<u32>());
 const DUMP: c_ulong = ioctl_request(IOC_WRITE, HWCNT_READER_TYPE, 0x10, size_of::<u32>());
 const GET_BUFFER: c_ulong = ioctl_request(IOC_READ, HWCNT_READER_TYPE, 0x20, size_of::<Metadata>());
-const PUT_BUFFER: c_ulong = ioctl_request(IOC_WRITE, HWCNT_READER_TYPE, 0x21, size_of::<Metadata>());
-const GET_API_VERSION: c_ulong = ioctl_request(IOC_WRITE, HWCNT_READER_TYPE, 0xFF, size_of::<u32>());
+const PUT_BUFFER: c_ulong =
+    ioctl_request(IOC_WRITE, HWCNT_READER_TYPE, 0x21, size_of::<Metadata>());
+const GET_API_VERSION: c_ulong =
+    ioctl_request(IOC_WRITE, HWCNT_READER_TYPE, 0xFF, size_of::<u32>());
 
 fn os_error(what: &str) -> String {
     format!("{what}: {}", std::io::Error::last_os_error())
 }
 
-unsafe fn call_ioctl<T>(fd: c_int, request: c_ulong, arg: &mut T, what: &str) -> Result<(), String> {
+unsafe fn call_ioctl<T>(
+    fd: c_int,
+    request: c_ulong,
+    arg: &mut T,
+    what: &str,
+) -> Result<(), String> {
     // EINTR is a signal landing mid-call, not a driver refusal. Retrying is the whole difference
     // between a profiling leg that survives a stray signal and one that disables itself halfway
     // through and reports a truncated sample set as if it were the run.
@@ -164,7 +171,10 @@ unsafe fn call_ioctl<T>(fd: c_int, request: c_ulong, arg: &mut T, what: &str) ->
 impl Reader {
     fn open() -> Result<(Self, Info), String> {
         let mali_fd = unsafe {
-            libc::open(c"/dev/mali0".as_ptr() as *const c_char, libc::O_RDWR | libc::O_CLOEXEC)
+            libc::open(
+                c"/dev/mali0".as_ptr() as *const c_char,
+                libc::O_RDWR | libc::O_CLOEXEC,
+            )
         };
         if mali_fd < 0 {
             return Err(os_error("open /dev/mali0"));
@@ -179,7 +189,12 @@ impl Reader {
         };
         version.header.id = 0;
         unsafe {
-            call_ioctl(mali.0, legacy_request::<VersionArgs>(), &mut version, "UK version check")?
+            call_ioctl(
+                mali.0,
+                legacy_request::<VersionArgs>(),
+                &mut version,
+                "UK version check",
+            )?
         };
         let version_ret = unsafe { version.header.ret };
         if version_ret != 0 || version.major != UK_MAJOR || version.minor != UK_MINOR {
@@ -195,7 +210,14 @@ impl Reader {
             padding: 0,
         };
         flags.header.id = KBASE_FUNC_SET_FLAGS;
-        unsafe { call_ioctl(mali.0, legacy_request::<SetFlagsArgs>(), &mut flags, "SET_FLAGS")? };
+        unsafe {
+            call_ioctl(
+                mali.0,
+                legacy_request::<SetFlagsArgs>(),
+                &mut flags,
+                "SET_FLAGS",
+            )?
+        };
         let flags_ret = unsafe { flags.header.ret };
         if flags_ret != 0 {
             return Err(format!("SET_FLAGS returned {flags_ret}"));
@@ -221,7 +243,10 @@ impl Reader {
         };
         let setup_ret = unsafe { setup.header.ret };
         if setup_ret != 0 || setup.fd < 0 {
-            return Err(format!("HWCNT_READER_SETUP returned ret={setup_ret} fd={}", setup.fd));
+            return Err(format!(
+                "HWCNT_READER_SETUP returned ret={setup_ret} fd={}",
+                setup.fd
+            ));
         }
         let reader = Fd(setup.fd);
 
@@ -265,7 +290,11 @@ impl Reader {
         }
 
         Ok((
-            Self { _mali: mali, reader, mapping: mapping.cast() },
+            Self {
+                _mali: mali,
+                reader,
+                mapping: mapping.cast(),
+            },
             Info {
                 api,
                 hwver,
@@ -281,7 +310,11 @@ impl Reader {
         let mut ignored = 0u32;
         unsafe { call_ioctl(self.reader.0, DUMP, &mut ignored, "HWCNT_READER_DUMP")? };
 
-        let mut pfd = libc::pollfd { fd: self.reader.0, events: libc::POLLIN, revents: 0 };
+        let mut pfd = libc::pollfd {
+            fd: self.reader.0,
+            events: libc::POLLIN,
+            revents: 0,
+        };
         let mut ready = unsafe { libc::poll(&mut pfd, 1, POLL_TIMEOUT_MS) };
         while ready < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
         {
@@ -299,7 +332,14 @@ impl Reader {
         }
 
         let mut meta: Metadata = unsafe { zeroed() };
-        unsafe { call_ioctl(self.reader.0, GET_BUFFER, &mut meta, "HWCNT_READER_GET_BUFFER")? };
+        unsafe {
+            call_ioctl(
+                self.reader.0,
+                GET_BUFFER,
+                &mut meta,
+                "HWCNT_READER_GET_BUFFER",
+            )?
+        };
         if meta.buffer_idx >= BUFFER_COUNT {
             // Do NOT hand this back: PUT_BUFFER validates the index too, so the return would fail
             // as well and leave the reader wedged mid-handshake. An out-of-range index means the
@@ -311,9 +351,20 @@ impl Reader {
         let mut words = [0u32; RAW_WORDS];
         let source = unsafe { self.mapping.add(meta.buffer_idx as usize * DUMP_SIZE) };
         unsafe { ptr::copy_nonoverlapping(source, words.as_mut_ptr().cast::<u8>(), DUMP_SIZE) };
-        unsafe { call_ioctl(self.reader.0, PUT_BUFFER, &mut meta, "HWCNT_READER_PUT_BUFFER")? };
+        unsafe {
+            call_ioctl(
+                self.reader.0,
+                PUT_BUFFER,
+                &mut meta,
+                "HWCNT_READER_PUT_BUFFER",
+            )?
+        };
 
-        Ok(Sample { timestamp_ns: meta.timestamp, event_id: meta.event_id, words })
+        Ok(Sample {
+            timestamp_ns: meta.timestamp,
+            event_id: meta.event_id,
+            words,
+        })
     }
 }
 
@@ -345,7 +396,9 @@ pub(crate) fn block_enables(sample: &Sample) -> [u32; 5] {
 pub(crate) fn sample() -> Result<Sample, String> {
     READER.with(|slot| {
         let mut slot = slot.borrow_mut();
-        slot.as_mut().ok_or_else(|| "HWCNT reader is not initialized".to_string())?.sample()
+        slot.as_mut()
+            .ok_or_else(|| "HWCNT reader is not initialized".to_string())?
+            .sample()
     })
 }
 
@@ -370,18 +423,50 @@ pub(crate) struct CounterSpec {
 }
 
 pub(crate) const COUNTERS: [CounterSpec; 30] = [
-    CounterSpec { name: "GPU_ACTIVE", block: Block::Jm, word: 6 },
-    CounterSpec { name: "JS0_ACTIVE", block: Block::Jm, word: 10 },
-    CounterSpec { name: "JS1_ACTIVE", block: Block::Jm, word: 18 },
+    CounterSpec {
+        name: "GPU_ACTIVE",
+        block: Block::Jm,
+        word: 6,
+    },
+    CounterSpec {
+        name: "JS0_ACTIVE",
+        block: Block::Jm,
+        word: 10,
+    },
+    CounterSpec {
+        name: "JS1_ACTIVE",
+        block: Block::Jm,
+        word: 18,
+    },
     // Verified against Arm's r12p0 T82x table, and STRUCTURALLY ZERO on this television anyway:
     // the tiler block reports `PRFCNT_EN = 0x1f`, so only words 4..19 are enabled in hardware and
     // word 22 can never increment. It is kept, named, and reported so the zero is explicable —
     // `block_enables` is what tells "the tiler was idle" from "this counter is switched off".
-    CounterSpec { name: "TILER_ACTIVE", block: Block::Tiler, word: 22 },
-    CounterSpec { name: "FRAG_ACTIVE", block: Block::ShaderSum, word: 4 },
-    CounterSpec { name: "FRAG_PRIMITIVES", block: Block::ShaderSum, word: 5 },
-    CounterSpec { name: "FRAG_QUADS_RAST", block: Block::ShaderSum, word: 14 },
-    CounterSpec { name: "FRAG_NUM_TILES", block: Block::ShaderSum, word: 20 },
+    CounterSpec {
+        name: "TILER_ACTIVE",
+        block: Block::Tiler,
+        word: 22,
+    },
+    CounterSpec {
+        name: "FRAG_ACTIVE",
+        block: Block::ShaderSum,
+        word: 4,
+    },
+    CounterSpec {
+        name: "FRAG_PRIMITIVES",
+        block: Block::ShaderSum,
+        word: 5,
+    },
+    CounterSpec {
+        name: "FRAG_QUADS_RAST",
+        block: Block::ShaderSum,
+        word: 14,
+    },
+    CounterSpec {
+        name: "FRAG_NUM_TILES",
+        block: Block::ShaderSum,
+        word: 20,
+    },
     // Midgard's TRANSACTION ELIMINATION: the tile writeback unit CRCs each finished tile against
     // what is already in memory and SKIPS the write when they match. Arm names this counter as the
     // way to detect an application redrawing an unchanged screen — which is precisely the question
@@ -390,28 +475,116 @@ pub(crate) const COUNTERS: [CounterSpec; 30] = [
     // `mali_kbase_gator_hwcnt_names.h`, the Khadas/Amlogic vendor tree's copy of it, gator's
     // `hardware_counter_names` for T820, and the modern libmali `gen.h`); all four also agree on
     // words 4/14/20/26/27, which are already in this table, and that agreement is the check.
-    CounterSpec { name: "FRAG_TRANS_ELIM", block: Block::ShaderSum, word: 21 },
-    CounterSpec { name: "TRIPIPE_ACTIVE", block: Block::ShaderSum, word: 26 },
-    CounterSpec { name: "ARITH_WORDS", block: Block::ShaderSum, word: 27 },
-    CounterSpec { name: "LS_WORDS", block: Block::ShaderSum, word: 31 },
-    CounterSpec { name: "LS_ISSUES", block: Block::ShaderSum, word: 32 },
-    CounterSpec { name: "TEX_WORDS", block: Block::ShaderSum, word: 38 },
-    CounterSpec { name: "TEX_ISSUES", block: Block::ShaderSum, word: 42 },
-    CounterSpec { name: "LSC_READ_OP", block: Block::ShaderSum, word: 49 },
-    CounterSpec { name: "LSC_WRITE_OP", block: Block::ShaderSum, word: 51 },
-    CounterSpec { name: "SHADER_AXI_BEATS_READ", block: Block::ShaderSum, word: 62 },
-    CounterSpec { name: "SHADER_AXI_BEATS_WRITTEN", block: Block::ShaderSum, word: 63 },
-    CounterSpec { name: "MMU_REQUESTS", block: Block::L2, word: 9 },
-    CounterSpec { name: "L2_EXT_WRITE_BEATS", block: Block::L2, word: 30 },
-    CounterSpec { name: "L2_EXT_READ_BEATS", block: Block::L2, word: 31 },
-    CounterSpec { name: "L2_ANY_LOOKUP", block: Block::L2, word: 32 },
-    CounterSpec { name: "L2_READ_LOOKUP", block: Block::L2, word: 33 },
-    CounterSpec { name: "L2_READ_HIT", block: Block::L2, word: 37 },
-    CounterSpec { name: "L2_WRITE_LOOKUP", block: Block::L2, word: 39 },
-    CounterSpec { name: "L2_WRITE_HIT", block: Block::L2, word: 43 },
-    CounterSpec { name: "L2_EXT_READ", block: Block::L2, word: 48 },
-    CounterSpec { name: "L2_EXT_WRITE", block: Block::L2, word: 50 },
-    CounterSpec { name: "L2_EXT_W_STALL", block: Block::L2, word: 58 },
+    CounterSpec {
+        name: "FRAG_TRANS_ELIM",
+        block: Block::ShaderSum,
+        word: 21,
+    },
+    CounterSpec {
+        name: "TRIPIPE_ACTIVE",
+        block: Block::ShaderSum,
+        word: 26,
+    },
+    CounterSpec {
+        name: "ARITH_WORDS",
+        block: Block::ShaderSum,
+        word: 27,
+    },
+    CounterSpec {
+        name: "LS_WORDS",
+        block: Block::ShaderSum,
+        word: 31,
+    },
+    CounterSpec {
+        name: "LS_ISSUES",
+        block: Block::ShaderSum,
+        word: 32,
+    },
+    CounterSpec {
+        name: "TEX_WORDS",
+        block: Block::ShaderSum,
+        word: 38,
+    },
+    CounterSpec {
+        name: "TEX_ISSUES",
+        block: Block::ShaderSum,
+        word: 42,
+    },
+    CounterSpec {
+        name: "LSC_READ_OP",
+        block: Block::ShaderSum,
+        word: 49,
+    },
+    CounterSpec {
+        name: "LSC_WRITE_OP",
+        block: Block::ShaderSum,
+        word: 51,
+    },
+    CounterSpec {
+        name: "SHADER_AXI_BEATS_READ",
+        block: Block::ShaderSum,
+        word: 62,
+    },
+    CounterSpec {
+        name: "SHADER_AXI_BEATS_WRITTEN",
+        block: Block::ShaderSum,
+        word: 63,
+    },
+    CounterSpec {
+        name: "MMU_REQUESTS",
+        block: Block::L2,
+        word: 9,
+    },
+    CounterSpec {
+        name: "L2_EXT_WRITE_BEATS",
+        block: Block::L2,
+        word: 30,
+    },
+    CounterSpec {
+        name: "L2_EXT_READ_BEATS",
+        block: Block::L2,
+        word: 31,
+    },
+    CounterSpec {
+        name: "L2_ANY_LOOKUP",
+        block: Block::L2,
+        word: 32,
+    },
+    CounterSpec {
+        name: "L2_READ_LOOKUP",
+        block: Block::L2,
+        word: 33,
+    },
+    CounterSpec {
+        name: "L2_READ_HIT",
+        block: Block::L2,
+        word: 37,
+    },
+    CounterSpec {
+        name: "L2_WRITE_LOOKUP",
+        block: Block::L2,
+        word: 39,
+    },
+    CounterSpec {
+        name: "L2_WRITE_HIT",
+        block: Block::L2,
+        word: 43,
+    },
+    CounterSpec {
+        name: "L2_EXT_READ",
+        block: Block::L2,
+        word: 48,
+    },
+    CounterSpec {
+        name: "L2_EXT_WRITE",
+        block: Block::L2,
+        word: 50,
+    },
+    CounterSpec {
+        name: "L2_EXT_W_STALL",
+        block: Block::L2,
+        word: 58,
+    },
 ];
 
 pub(crate) fn decode(sample: &Sample) -> [u64; COUNTERS.len()] {
@@ -501,11 +674,18 @@ mod tests {
 
     #[test]
     fn shader_counters_sum_both_mp2_blocks() {
-        let mut sample = Sample { timestamp_ns: 0, event_id: 0, words: [0; RAW_WORDS] };
+        let mut sample = Sample {
+            timestamp_ns: 0,
+            event_id: 0,
+            words: [0; RAW_WORDS],
+        };
         sample.words[3 * BLOCK_WORDS + 4] = 11;
         sample.words[4 * BLOCK_WORDS + 4] = 13;
         let decoded = decode(&sample);
-        let at = COUNTERS.iter().position(|c| c.name == "FRAG_ACTIVE").unwrap();
+        let at = COUNTERS
+            .iter()
+            .position(|c| c.name == "FRAG_ACTIVE")
+            .unwrap();
         assert_eq!(decoded[at], 24);
     }
 }

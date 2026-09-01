@@ -242,7 +242,10 @@ impl Wake {
         if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
             return None;
         }
-        let w = Wake { r: fds[0], w: fds[1] }; // owned from here: any early return closes both
+        let w = Wake {
+            r: fds[0],
+            w: fds[1],
+        }; // owned from here: any early return closes both
         for fd in [w.r, w.w] {
             unsafe {
                 let fl = libc::fcntl(fd, libc::F_GETFL, 0);
@@ -298,7 +301,10 @@ pub(crate) struct Abort {
 
 impl Abort {
     fn new() -> Option<Arc<Abort>> {
-        Some(Arc::new(Abort { flag: AtomicBool::new(false), wake: Wake::new()? }))
+        Some(Arc::new(Abort {
+            flag: AtomicBool::new(false),
+            wake: Wake::new()?,
+        }))
     }
 
     /// Set the flag, then wake. **Order matters**: a thread woken by the byte must be able to see
@@ -342,7 +348,9 @@ impl OpenReservation {
     /// remote-original preflight can run while the outgoing player still owns [`ACTIVE`]; putting
     /// this handle there would make teardown wake the probe instead of the movie.
     fn private() -> Option<OpenReservation> {
-        Some(OpenReservation { abort: Some(Abort::new()?) })
+        Some(OpenReservation {
+            abort: Some(Abort::new()?),
+        })
     }
 
     fn into_abort(mut self) -> Arc<Abort> {
@@ -352,7 +360,9 @@ impl OpenReservation {
 
 impl Drop for OpenReservation {
     fn drop(&mut self) {
-        let Some(abort) = self.abort.as_ref() else { return };
+        let Some(abort) = self.abort.as_ref() else {
+            return;
+        };
         let mut act = lock_active();
         if act.as_ref().is_some_and(|a| Arc::ptr_eq(a, abort)) {
             *act = None;
@@ -413,7 +423,9 @@ pub(crate) fn boot() {
 /// thread-safe and net's doc requires it on the main thread at boot; a demux thread calling it
 /// lazily is precisely the bug that doc is warning about.
 fn easy_ready() -> bool {
-    !crate::net::curl::curl_easy_init.load(Ordering::Relaxed).is_null()
+    !crate::net::curl::curl_easy_init
+        .load(Ordering::Relaxed)
+        .is_null()
 }
 
 /// Can this device stream over https at all? Both tables must be live, and a legacy TLS backend
@@ -477,7 +489,15 @@ struct Xfer {
 
 impl Xfer {
     fn new() -> Xfer {
-        Xfer { buf: Vec::new(), pos: 0, status: 0, body_len: -1, range_total: -1, range_start: -1, headers_done: false }
+        Xfer {
+            buf: Vec::new(),
+            pos: 0,
+            status: 0,
+            body_len: -1,
+            range_total: -1,
+            range_start: -1,
+            headers_done: false,
+        }
     }
     fn reset(&mut self) {
         self.buf.clear();
@@ -652,15 +672,31 @@ impl CurlSource {
         // `bytes=N-` open-ended, exactly the header `stream.rs`'s seek path sends. Held in `self`
         // rather than a local: libcurl copies string options (7.17+), but the whole table here is
         // bound at runtime and an owned copy costs nothing to be sure of.
-        self.range = if at > 0 { CString::new(format!("{at}-")).ok() } else { None };
+        self.range = if at > 0 {
+            CString::new(format!("{at}-")).ok()
+        } else {
+            None
+        };
         unsafe {
             let xp = &mut *self.xfer as *mut Xfer as *mut c_void;
             crate::net::curl_easy_setopt_ptr(easy, CURLOPT_URL, self.url.as_ptr() as *const c_void);
-            crate::net::curl_easy_setopt_ptr(easy, CURLOPT_WRITEFUNCTION, write_cb as *const c_void);
+            crate::net::curl_easy_setopt_ptr(
+                easy,
+                CURLOPT_WRITEFUNCTION,
+                write_cb as *const c_void,
+            );
             crate::net::curl_easy_setopt_ptr(easy, CURLOPT_WRITEDATA, xp);
-            crate::net::curl_easy_setopt_ptr(easy, CURLOPT_HEADERFUNCTION, header_cb as *const c_void);
+            crate::net::curl_easy_setopt_ptr(
+                easy,
+                CURLOPT_HEADERFUNCTION,
+                header_cb as *const c_void,
+            );
             crate::net::curl_easy_setopt_ptr(easy, CURLOPT_HEADERDATA, xp);
-            crate::net::curl_easy_setopt_ptr(easy, CURLOPT_USERAGENT, self.ua.as_ptr() as *const c_void);
+            crate::net::curl_easy_setopt_ptr(
+                easy,
+                CURLOPT_USERAGENT,
+                self.ua.as_ptr() as *const c_void,
+            );
             if let Some(r) = &self.range {
                 crate::net::curl_easy_setopt_ptr(easy, CURLOPT_RANGE, r.as_ptr() as *const c_void);
             }
@@ -681,7 +717,11 @@ impl CurlSource {
             // would expose both it and the stream. A plaintext request may upgrade to TLS; a TLS
             // request may remain TLS only.
             let redirect_protocols = allowed_redirect_protocols(self.url.as_bytes());
-            crate::net::curl_easy_setopt_long(easy, CURLOPT_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS);
+            crate::net::curl_easy_setopt_long(
+                easy,
+                CURLOPT_PROTOCOLS,
+                CURLPROTO_HTTP | CURLPROTO_HTTPS,
+            );
             crate::net::curl_easy_setopt_long(easy, CURLOPT_REDIR_PROTOCOLS, redirect_protocols);
             crate::net::curl_easy_setopt_long(easy, CURLOPT_CONNECTTIMEOUT, CONNECT_TIMEOUT_S);
             if let Some(at) = deadline {
@@ -749,7 +789,11 @@ impl CurlSource {
             return Err(OpenErr::Aborted);
         }
         if self.done && self.failed {
-            crate::player::log(&format!("curlio: transport failed rc={} — {}", self.rc, curl_why(self.rc)));
+            crate::player::log(&format!(
+                "curlio: transport failed rc={} — {}",
+                self.rc,
+                curl_why(self.rc)
+            ));
             return Err(OpenErr::Transport(self.rc));
         }
         if self.xfer.status == 0 {
@@ -848,7 +892,9 @@ impl CurlSource {
             unsafe {
                 let rc = curl_multi_remove_handle(self.multi, self.easy);
                 if rc != CURLM_OK {
-                    crate::player::log(&format!("curlio: curl_multi_remove_handle failed mcode={rc}"));
+                    crate::player::log(&format!(
+                        "curlio: curl_multi_remove_handle failed mcode={rc}"
+                    ));
                     self.multi_failed = true;
                     // Neither cleanup is contractually safe while attachment is uncertain.
                     // Forget both values; `start` sees `multi_failed` and builds a fresh owner.
@@ -916,8 +962,7 @@ impl CurlSource {
                 let left_us = at
                     .saturating_duration_since(std::time::Instant::now())
                     .as_micros();
-                ((left_us.saturating_add(999) / 1_000)
-                    .min(WAIT_MS as u128)) as c_int
+                ((left_us.saturating_add(999) / 1_000).min(WAIT_MS as u128)) as c_int
             });
             if wait_ms <= 0 {
                 return READ_DEADLINE;
@@ -1029,7 +1074,8 @@ pub(crate) fn sample_throughput(
     }
     let deadline = std::time::Instant::now().checked_add(budget)?;
     let reservation = OpenReservation::private()?;
-    let mut src = CurlSource::open_with_reservation_until(url, 0, reservation, Some(deadline)).ok()?;
+    let mut src =
+        CurlSource::open_with_reservation_until(url, 0, reservation, Some(deadline)).ok()?;
     let started = std::time::Instant::now();
     let mut bytes = 0usize;
     let mut chunk = [0u8; 64 * 1024];
@@ -1098,7 +1144,11 @@ enum Wait {
 /// `curl_multi_poll` was added to fix, and which we may not use here). Passing the pipe means
 /// there is always at least one, so that path is never taken.
 fn multi_wait(multi: *mut CURLM, abort: &Abort, timeout_ms: c_int) -> Wait {
-    let mut fds = [curl_waitfd { fd: abort.wake.r, events: CURL_WAIT_POLLIN, revents: 0 }];
+    let mut fds = [curl_waitfd {
+        fd: abort.wake.r,
+        events: CURL_WAIT_POLLIN,
+        revents: 0,
+    }];
     let mut numfds: c_int = 0;
     let rc = unsafe { curl_multi_wait(multi, fds.as_mut_ptr(), 1, timeout_ms, &mut numfds) };
     if rc != CURLM_OK {
@@ -1133,7 +1183,8 @@ extern "C" fn write_cb(ptr: *mut c_char, size: usize, nmemb: usize, ud: *mut c_v
         return 0; // returning anything but n ends the transfer, which is right if we cannot store
     }
     let x = unsafe { &mut *(ud as *mut Xfer) };
-    x.buf.extend_from_slice(unsafe { std::slice::from_raw_parts(ptr as *const u8, n) });
+    x.buf
+        .extend_from_slice(unsafe { std::slice::from_raw_parts(ptr as *const u8, n) });
     n
 }
 
@@ -1193,7 +1244,9 @@ fn status_of(line: &[u8]) -> c_int {
     if digits.len() < 3 || !digits.iter().all(|b| b.is_ascii_digit()) {
         return 0;
     }
-    (digits[0] - b'0') as c_int * 100 + (digits[1] - b'0') as c_int * 10 + (digits[2] - b'0') as c_int
+    (digits[0] - b'0') as c_int * 100
+        + (digits[1] - b'0') as c_int * 10
+        + (digits[2] - b'0') as c_int
 }
 
 /// The value of `line` when it is the named header, matched case-insensitively (RFC 9110 §5.1).
@@ -1211,11 +1264,18 @@ fn header_value<'a>(line: &'a [u8], name_colon: &[u8]) -> Option<&'a [u8]> {
 /// spelling the RFC allows.
 fn parse_content_range(v: &[u8]) -> (i64, i64) {
     let v = trim_ascii(v);
-    let rest = if v.len() >= 6 && v[..6].eq_ignore_ascii_case(b"bytes ") { &v[6..] } else { v };
+    let rest = if v.len() >= 6 && v[..6].eq_ignore_ascii_case(b"bytes ") {
+        &v[6..]
+    } else {
+        v
+    };
     let rest = trim_ascii(rest);
     let slash = rest.iter().position(|b| *b == b'/');
     let (span, total) = match slash {
-        Some(i) => (&rest[..i], parse_i64(trim_ascii(&rest[i + 1..])).unwrap_or(-1)),
+        Some(i) => (
+            &rest[..i],
+            parse_i64(trim_ascii(&rest[i + 1..])).unwrap_or(-1),
+        ),
         None => (rest, -1),
     };
     let start = match span.iter().position(|b| *b == b'-') {
@@ -1392,7 +1452,10 @@ mod tests {
                     Ok(0) => return, // peer closed
                     Ok(n) => buf.extend_from_slice(&tmp[..n]),
                     Err(ref e)
-                        if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) =>
+                        if matches!(
+                            e.kind(),
+                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                        ) =>
                     {
                         if stop.load(Ordering::Acquire) {
                             return;
@@ -1413,7 +1476,9 @@ mod tests {
                 }
                 return;
             }
-            if matches!(mode, RangeMode::Honour | RangeMode::FailFirstSeek) && start >= BODY.len() as i64 {
+            if matches!(mode, RangeMode::Honour | RangeMode::FailFirstSeek)
+                && start >= BODY.len() as i64
+            {
                 let hdr = format!(
                     "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */{}\r\nContent-Length: 0\r\n\r\n",
                     BODY.len()
@@ -1425,16 +1490,24 @@ mod tests {
                 continue;
             }
             if mode == RangeMode::FailFirstSeek && start > 0 && request_no == 2 {
-                if w.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n").is_err() {
+                if w.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n")
+                    .is_err()
+                {
                     return;
                 }
                 let _ = w.flush();
                 continue;
             }
             let ranged = start > 0
-                && matches!(mode, RangeMode::Honour | RangeMode::OmitContentRange | RangeMode::FailFirstSeek);
+                && matches!(
+                    mode,
+                    RangeMode::Honour | RangeMode::OmitContentRange | RangeMode::FailFirstSeek
+                );
             let hdr = if ranged && mode == RangeMode::OmitContentRange {
-                format!("HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\n\r\n", BODY.len() - start as usize)
+                format!(
+                    "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\n\r\n",
+                    BODY.len() - start as usize
+                )
             } else if ranged {
                 format!(
                     "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {}-{}/{}\r\nContent-Length: {}\r\n\r\n",
@@ -1446,7 +1519,11 @@ mod tests {
             } else {
                 format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", BODY.len())
             };
-            let payload = if ranged { &BODY[start as usize..] } else { BODY };
+            let payload = if ranged {
+                &BODY[start as usize..]
+            } else {
+                BODY
+            };
             if w.write_all(hdr.as_bytes()).is_err() || w.write_all(payload).is_err() {
                 return;
             }
@@ -1483,11 +1560,23 @@ mod tests {
     fn a_range_answered_206_resumes_at_the_requested_offset() {
         let Some(_gate) = curl_gate() else { return };
         with_server(RangeMode::Honour, |port, accepts, requests| {
-            let mut src = CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0).expect("open");
+            let mut src =
+                CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0).expect("open");
             assert_eq!(read_all(&mut src), BODY, "the whole body at offset 0");
-            assert!(src.seek(4), "a 206-honouring server must let the seek succeed");
-            assert_eq!(read_all(&mut src), b"EFGH", "a seek to 4 must deliver byte 4 onward");
-            assert_eq!(requests.load(Ordering::Acquire), 2, "the open and the seek are two requests");
+            assert!(
+                src.seek(4),
+                "a 206-honouring server must let the seek succeed"
+            );
+            assert_eq!(
+                read_all(&mut src),
+                b"EFGH",
+                "a seek to 4 must deliver byte 4 onward"
+            );
+            assert_eq!(
+                requests.load(Ordering::Acquire),
+                2,
+                "the open and the seek are two requests"
+            );
             assert!(
                 accepts.load(Ordering::Acquire) <= 2,
                 "…on at most two connections — one is the reuse we want, two is a client that \
@@ -1506,14 +1595,25 @@ mod tests {
     fn a_range_answered_200_is_refused_rather_than_restarted_from_zero() {
         let Some(_gate) = curl_gate() else { return };
         with_server(RangeMode::Ignore, |port, _, _| {
-            let mut src = CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0).expect("open");
-            assert!(!src.seek(4), "a 200 answer to a byte Range must FAIL the seek");
+            let mut src =
+                CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0).expect("open");
+            assert!(
+                !src.seek(4),
+                "a 200 answer to a byte Range must FAIL the seek"
+            );
             // …and the source is POISONED, because a refused `avio_seek` does not stop
             // libavformat calling `read_cb` again. Serving the transfer the failed seek left
             // behind would be the same corruption by a different door.
             let mut b = [0u8; 8];
-            assert_eq!(src.read(&mut b), -1, "after a refused seek nothing is at a known offset");
-            assert!(!src.seek(0), "and the source stays refused rather than quietly recovering");
+            assert_eq!(
+                src.read(&mut b),
+                -1,
+                "after a refused seek nothing is at a known offset"
+            );
+            assert!(
+                !src.seek(0),
+                "and the source stays refused rather than quietly recovering"
+            );
             assert_eq!(
                 CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 4).err(),
                 Some(OpenErr::RangeIgnored),
@@ -1528,13 +1628,25 @@ mod tests {
     fn a_416_seek_failure_does_not_poison_a_later_valid_seek() {
         let Some(_gate) = curl_gate() else { return };
         with_server(RangeMode::Honour, |port, _, requests| {
-            let mut src = CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0).expect("open");
-            assert!(!src.seek(BODY.len() as i64), "a seek exactly at EOF receives 416");
+            let mut src =
+                CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0).expect("open");
+            assert!(
+                !src.seek(BODY.len() as i64),
+                "a seek exactly at EOF receives 416"
+            );
             let mut b = [0u8; 8];
-            assert_eq!(src.read(&mut b), -1, "the failed seek must not masquerade as clean EOF");
+            assert_eq!(
+                src.read(&mut b),
+                -1,
+                "the failed seek must not masquerade as clean EOF"
+            );
             assert!(src.seek(4), "a valid seek after 416 must recover");
             assert_eq!(read_all(&mut src), b"EFGH");
-            assert_eq!(requests.load(Ordering::Acquire), 3, "open, rejected EOF seek, recovered seek");
+            assert_eq!(
+                requests.load(Ordering::Acquire),
+                3,
+                "open, rejected EOF seek, recovered seek"
+            );
         });
     }
 
@@ -1542,10 +1654,21 @@ mod tests {
     fn a_206_without_content_range_is_refused_as_an_unverified_offset() {
         let Some(_gate) = curl_gate() else { return };
         with_server(RangeMode::OmitContentRange, |port, _, requests| {
-            let mut src = CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0).expect("open");
-            assert!(!src.seek(4), "206 alone does not prove which bytes the server returned");
-            assert!(src.poisoned, "an unverified successful Range response is unsafe to reuse");
-            assert_eq!(requests.load(Ordering::Acquire), 2, "open plus refused seek");
+            let mut src =
+                CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0).expect("open");
+            assert!(
+                !src.seek(4),
+                "206 alone does not prove which bytes the server returned"
+            );
+            assert!(
+                src.poisoned,
+                "an unverified successful Range response is unsafe to reuse"
+            );
+            assert_eq!(
+                requests.load(Ordering::Acquire),
+                2,
+                "open plus refused seek"
+            );
         });
     }
 
@@ -1553,12 +1676,20 @@ mod tests {
     fn a_transient_seek_status_does_not_poison_a_later_retry() {
         let Some(_gate) = curl_gate() else { return };
         with_server(RangeMode::FailFirstSeek, |port, _, requests| {
-            let mut src = CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0).expect("open");
+            let mut src =
+                CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0).expect("open");
             assert!(!src.seek(4), "the first seek receives a transient 503");
-            assert!(!src.poisoned, "an HTTP failure says nothing about the server's Range support");
+            assert!(
+                !src.poisoned,
+                "an HTTP failure says nothing about the server's Range support"
+            );
             assert!(src.seek(4), "a later seek may recover once the server does");
             assert_eq!(read_all(&mut src), b"EFGH");
-            assert_eq!(requests.load(Ordering::Acquire), 3, "open, failed seek, recovered seek");
+            assert_eq!(
+                requests.load(Ordering::Acquire),
+                3,
+                "open, failed seek, recovered seek"
+            );
         });
     }
 
@@ -1568,10 +1699,19 @@ mod tests {
     fn size_comes_from_content_range_then_content_length() {
         let Some(_gate) = curl_gate() else { return };
         with_server(RangeMode::Honour, |port, _, _| {
-            let mut src = CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0).expect("open");
-            assert_eq!(src.size(), BODY.len() as i64, "Content-Length at offset 0 IS the size");
+            let mut src =
+                CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0).expect("open");
+            assert_eq!(
+                src.size(),
+                BODY.len() as i64,
+                "Content-Length at offset 0 IS the size"
+            );
             assert!(src.seek(4));
-            assert_eq!(src.size(), BODY.len() as i64, "Content-Range's total must not shrink to the tail length");
+            assert_eq!(
+                src.size(),
+                BODY.len() as i64,
+                "Content-Range's total must not shrink to the tail length"
+            );
         });
     }
 
@@ -1584,14 +1724,20 @@ mod tests {
         parse_header_line(&mut x, b"Content-Range: bytes 4-7/8\r\n");
         parse_header_line(&mut x, b"content-length: 4\r\n");
         parse_header_line(&mut x, b"\r\n");
-        assert_eq!((x.status, x.range_start, x.range_total, x.body_len), (206, 4, 8, 4));
+        assert_eq!(
+            (x.status, x.range_start, x.range_total, x.body_len),
+            (206, 4, 8, 4)
+        );
         assert!(x.headers_done);
 
         // A redirect's block must NOT end the open — the status that matters is the next one.
         let mut r = Xfer::new();
         parse_header_line(&mut r, b"HTTP/1.1 302 Found\r\n");
         parse_header_line(&mut r, b"\r\n");
-        assert!(!r.headers_done, "a 3xx is followed, so its header block is not the final one");
+        assert!(
+            !r.headers_done,
+            "a 3xx is followed, so its header block is not the final one"
+        );
         parse_header_line(&mut r, b"HTTP/1.1 200 OK\r\n");
         parse_header_line(&mut r, b"Content-Length: 99\r\n");
         parse_header_line(&mut r, b"\r\n");
@@ -1609,7 +1755,10 @@ mod tests {
 
     #[test]
     fn redirects_never_downgrade_a_tls_media_origin() {
-        assert_eq!(allowed_redirect_protocols(b"https://example.invalid/media"), CURLPROTO_HTTPS);
+        assert_eq!(
+            allowed_redirect_protocols(b"https://example.invalid/media"),
+            CURLPROTO_HTTPS
+        );
         assert_eq!(
             allowed_redirect_protocols(b"http://example.invalid/media"),
             CURLPROTO_HTTP | CURLPROTO_HTTPS,
@@ -1636,7 +1785,11 @@ mod tests {
             });
             opened.wait();
             let r = CurlSource::open("http://192.0.2.1:32400/f.mkv", 0);
-            assert_eq!(r.err(), Some(OpenErr::Aborted), "a teardown during connect must report Aborted");
+            assert_eq!(
+                r.err(),
+                Some(OpenErr::Aborted),
+                "a teardown during connect must report Aborted"
+            );
         });
         let took = started.elapsed();
         assert!(
@@ -1650,7 +1803,8 @@ mod tests {
     fn abort_during_a_stalled_read_unblocks_promptly() {
         let Some(_gate) = curl_gate() else { return };
         with_server(RangeMode::Stall, |port, _, _| {
-            let mut src = CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0).expect("open");
+            let mut src =
+                CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0).expect("open");
             let started = std::time::Instant::now();
             std::thread::scope(|sc| {
                 // Through `abort_active`, i.e. exactly what `engine::teardown` calls from the MAIN
@@ -1660,7 +1814,11 @@ mod tests {
                     abort_active();
                 });
                 let mut b = [0u8; 32];
-                assert_eq!(src.read(&mut b), -1, "an aborted read must report an error, not EOF");
+                assert_eq!(
+                    src.read(&mut b),
+                    -1,
+                    "an aborted read must report an error, not EOF"
+                );
             });
             assert!(
                 started.elapsed() < std::time::Duration::from_secs(5),
@@ -1673,7 +1831,8 @@ mod tests {
     fn an_abr_deadline_ends_a_stalled_curl_read_without_poisoning_the_source_as_eof() {
         let Some(_gate) = curl_gate() else { return };
         with_server(RangeMode::Stall, |port, _, _| {
-            let mut src = CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0).expect("open");
+            let mut src =
+                CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0).expect("open");
             let started = std::time::Instant::now();
             let deadline = started + std::time::Duration::from_millis(120);
             let mut b = [0u8; 32];
@@ -1696,9 +1855,18 @@ mod tests {
     fn repeated_seeks_after_abort_open_no_second_connection() {
         let Some(_gate) = curl_gate() else { return };
         with_server(RangeMode::Honour, |port, accepts, requests| {
-            let mut src = CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0).expect("open");
-            assert_eq!(accepts.load(Ordering::Acquire), 1, "fixture: exactly one connection so far");
-            assert_eq!(requests.load(Ordering::Acquire), 1, "fixture: and exactly one request");
+            let mut src =
+                CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0).expect("open");
+            assert_eq!(
+                accepts.load(Ordering::Acquire),
+                1,
+                "fixture: exactly one connection so far"
+            );
+            assert_eq!(
+                requests.load(Ordering::Acquire),
+                1,
+                "fixture: and exactly one request"
+            );
             src.abort();
             let mut b = [0u8; 8];
             for _ in 0..8 {
@@ -1711,7 +1879,11 @@ mod tests {
                 requests.load(Ordering::Acquire), 1,
                 "an aborted source issued another request — that is the wedge, not merely a slow teardown"
             );
-            assert_eq!(accepts.load(Ordering::Acquire), 1, "and it opened no new connection either");
+            assert_eq!(
+                accepts.load(Ordering::Acquire),
+                1,
+                "and it opened no new connection either"
+            );
         });
     }
 
@@ -1722,8 +1894,16 @@ mod tests {
         let Some(_gate) = curl_gate() else { return };
         with_server(RangeMode::Honour, |port, _, _| {
             let src = CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0).expect("open");
-            assert_eq!(src.status(), 200, "ff::demux stores this in SHARED.dg_http_status");
-            assert_eq!(src.size(), BODY.len() as i64, "…and this in SHARED.file_size");
+            assert_eq!(
+                src.status(),
+                200,
+                "ff::demux stores this in SHARED.dg_http_status"
+            );
+            assert_eq!(
+                src.size(),
+                BODY.len() as i64,
+                "…and this in SHARED.file_size"
+            );
         });
     }
 
@@ -1754,7 +1934,10 @@ mod tests {
         );
         assert!(matches!(v, crate::dynlib::Loaded::NoLibrary));
         if net_ok {
-            assert!(easy_ready(), "a failed curl_multi_* load must not cost the app its sign-in transport");
+            assert!(
+                easy_ready(),
+                "a failed curl_multi_* load must not cost the app its sign-in transport"
+            );
         }
     }
 
@@ -1775,11 +1958,19 @@ mod tests {
         assert!(!multi.is_null());
 
         abort.wake.signal();
-        assert_eq!(multi_wait(multi, &abort, 2000), Wait::Woken, "cycle 1: the byte must wake the wait");
+        assert_eq!(
+            multi_wait(multi, &abort, 2000),
+            Wait::Woken,
+            "cycle 1: the byte must wake the wait"
+        );
 
         let t = std::time::Instant::now();
         let quiet = multi_wait(multi, &abort, 150);
-        assert_ne!(quiet, Wait::Woken, "the pipe was not drained — every later wait returns instantly (a spin)");
+        assert_ne!(
+            quiet,
+            Wait::Woken,
+            "the pipe was not drained — every later wait returns instantly (a spin)"
+        );
         assert!(
             t.elapsed() >= std::time::Duration::from_millis(60),
             "an unsignalled wait must block, not return at once: took {:?}",
@@ -1787,7 +1978,11 @@ mod tests {
         );
 
         abort.wake.signal();
-        assert_eq!(multi_wait(multi, &abort, 2000), Wait::Woken, "cycle 2: a drained pipe must still be signallable");
+        assert_eq!(
+            multi_wait(multi, &abort, 2000),
+            Wait::Woken,
+            "cycle 2: a drained pipe must still be signallable"
+        );
 
         unsafe { curl_multi_cleanup(multi) };
     }
@@ -1806,7 +2001,8 @@ mod tests {
     fn a_multi_perform_error_is_not_reported_as_clean_eof() {
         let Some(_gate) = curl_gate() else { return };
         with_server(RangeMode::Honour, |port, _, _| {
-            let mut src = CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0).expect("open");
+            let mut src =
+                CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0).expect("open");
             src.xfer.buf.clear();
             src.xfer.pos = 0;
 
@@ -1818,10 +2014,20 @@ mod tests {
             src.multi = real_multi;
 
             assert!(matches!(result, Err(OpenErr::Multi(_))));
-            assert!(src.failed && src.done && src.multi_failed, "the failure must persist past its call");
+            assert!(
+                src.failed && src.done && src.multi_failed,
+                "the failure must persist past its call"
+            );
             let mut b = [0u8; 8];
-            assert_eq!(src.read(&mut b), -1, "a later read must not reinterpret the failure as EOF");
-            assert!(src.seek(4), "a retry must rebuild the failed multi handle before reuse");
+            assert_eq!(
+                src.read(&mut b),
+                -1,
+                "a later read must not reinterpret the failure as EOF"
+            );
+            assert!(
+                src.seek(4),
+                "a retry must rebuild the failed multi handle before reuse"
+            );
             assert_eq!(read_all(&mut src), b"EFGH");
             assert!(!src.multi_failed, "the replacement multi handle is healthy");
         });
@@ -1831,7 +2037,8 @@ mod tests {
     fn add_handle_failure_marks_the_multi_for_replacement() {
         let Some(_gate) = curl_gate() else { return };
         with_server(RangeMode::Honour, |port, _, _| {
-            let mut src = CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0).expect("open");
+            let mut src =
+                CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0).expect("open");
             src.stop();
             let real_multi = src.multi;
             src.multi = std::ptr::null_mut();
@@ -1843,7 +2050,10 @@ mod tests {
             // Restore the valid owner only so `start` can retire it safely before constructing the
             // replacement. The easy from the failed add was never attached to it.
             src.multi = real_multi;
-            assert!(src.seek(4), "the next seek must replace the failed multi before adding");
+            assert!(
+                src.seek(4),
+                "the next seek must replace the failed multi before adding"
+            );
             assert_eq!(read_all(&mut src), b"EFGH");
         });
     }
@@ -1852,21 +2062,31 @@ mod tests {
     fn remove_handle_failure_abandons_uncertain_ownership_before_rebuilding() {
         let Some(_gate) = curl_gate() else { return };
         with_server(RangeMode::Honour, |port, _, _| {
-            let mut src = CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0).expect("open");
+            let mut src =
+                CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0).expect("open");
             let real_multi = src.multi;
             let real_easy = src.easy;
-            assert_eq!(unsafe { curl_multi_remove_handle(real_multi, real_easy) }, CURLM_OK);
+            assert_eq!(
+                unsafe { curl_multi_remove_handle(real_multi, real_easy) },
+                CURLM_OK
+            );
             src.multi = std::ptr::null_mut();
 
             src.stop();
 
             assert!(src.easy.is_null());
-            assert!(src.multi_failed, "a failed removal makes the old multi unsafe to reuse");
+            assert!(
+                src.multi_failed,
+                "a failed removal makes the old multi unsafe to reuse"
+            );
             // The injected failure used an easy we KNOW was pre-detached above, so the test can
             // reclaim it. Production cannot know that and deliberately leaks this exceptional pair.
             unsafe { crate::net::curl_easy_cleanup(real_easy) };
             src.multi = real_multi;
-            assert!(src.seek(4), "the next seek must retire and replace that multi");
+            assert!(
+                src.seek(4),
+                "the next seek must retire and replace that multi"
+            );
             assert_eq!(read_all(&mut src), b"EFGH");
         });
     }
@@ -1883,8 +2103,14 @@ mod tests {
     #[test]
     fn libcurl_binds_on_this_host_so_the_tests_above_are_not_vacuous() {
         let _g = crate::testlock::serial();
-        assert!(crate::net::global_init(), "net.rs could not bind any libcurl candidate on this host");
-        assert!(available(), "curl_multi_* did not resolve — every curl-driven test here skipped");
+        assert!(
+            crate::net::global_init(),
+            "net.rs could not bind any libcurl candidate on this host"
+        );
+        assert!(
+            available(),
+            "curl_multi_* did not resolve — every curl-driven test here skipped"
+        );
     }
 
     /// The flag and the wake are one signal: a thread woken by the byte must be able to SEE the
@@ -1894,7 +2120,10 @@ mod tests {
         let abort = Abort::new().expect("pipe");
         assert!(!abort.is_set());
         abort.signal();
-        assert!(abort.is_set(), "signal sets the flag BEFORE it writes the byte");
+        assert!(
+            abort.is_set(),
+            "signal sets the flag BEFORE it writes the byte"
+        );
     }
 
     /// The registry, which is what `player::engine::teardown` reaches through. A source registers
@@ -1903,14 +2132,24 @@ mod tests {
     fn the_registry_holds_one_source_and_retires_it_on_drop() {
         let Some(_gate) = curl_gate() else { return };
         with_server(RangeMode::Honour, |port, _, _| {
-            assert!(lock_active().is_none(), "fixture: nothing registered before the open");
+            assert!(
+                lock_active().is_none(),
+                "fixture: nothing registered before the open"
+            );
             {
-                let src = CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0).expect("open");
-                assert!(lock_active().is_some(), "an open source is what teardown must be able to signal");
+                let src =
+                    CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0).expect("open");
+                assert!(
+                    lock_active().is_some(),
+                    "an open source is what teardown must be able to signal"
+                );
                 abort_active();
                 assert!(src.abort.is_set(), "abort_active must reach THIS source");
             }
-            assert!(lock_active().is_none(), "a dropped source must retire, so a later teardown is a no-op");
+            assert!(
+                lock_active().is_none(),
+                "a dropped source must retire, so a later teardown is a no-op"
+            );
             abort_active(); // must not panic, must not write to a closed fd
         });
     }
@@ -1924,11 +2163,26 @@ mod tests {
         with_server(RangeMode::Honour, |port, accepts, requests| {
             let reservation = CurlSource::reserve_open().expect("reserve");
             abort_active();
-            let result = CurlSource::open_reserved(&format!("http://127.0.0.1:{port}/f.mkv"), 0, reservation);
+            let result = CurlSource::open_reserved(
+                &format!("http://127.0.0.1:{port}/f.mkv"),
+                0,
+                reservation,
+            );
             assert!(matches!(result, Err(OpenErr::Aborted)));
-            assert_eq!(accepts.load(Ordering::Acquire), 0, "no connection may begin after teardown");
-            assert_eq!(requests.load(Ordering::Acquire), 0, "and no request may leave");
-            assert!(lock_active().is_none(), "the failed open retires its reservation");
+            assert_eq!(
+                accepts.load(Ordering::Acquire),
+                0,
+                "no connection may begin after teardown"
+            );
+            assert_eq!(
+                requests.load(Ordering::Acquire),
+                0,
+                "and no request may leave"
+            );
+            assert!(
+                lock_active().is_none(),
+                "the failed open retires its reservation"
+            );
         });
     }
 }

@@ -54,7 +54,11 @@ pub(crate) const PLATFORM: &str = "webOS";
 /// first call in `plex_run`, before SDL exists, so no PMS request can precede the read.
 pub(crate) fn platform_version() -> &'static str {
     let r = &crate::webos::info().release;
-    if r.is_empty() { "4.5" } else { r }
+    if r.is_empty() {
+        "4.5"
+    } else {
+        r
+    }
 }
 
 /// The UI language inherited by this native process, as a safe BCP-47-shaped tag.
@@ -69,7 +73,9 @@ pub(crate) fn language() -> Option<&'static str> {
     LANGUAGE
         .get_or_init(|| {
             for key in ["LC_ALL", "LC_MESSAGES", "LANG"] {
-                let Some(raw) = std::env::var_os(key) else { continue };
+                let Some(raw) = std::env::var_os(key) else {
+                    continue;
+                };
                 if raw.is_empty() {
                     continue;
                 }
@@ -164,10 +170,22 @@ mod tests {
     /// `Plex for <platform>` is Plex's documented pattern for its OWN apps.
     #[test]
     fn identity_never_claims_to_be_plex() {
-        for s in [super::PRODUCT, super::DEVICE, super::device_name(), super::MODEL, &super::user_agent()] {
+        for s in [
+            super::PRODUCT,
+            super::DEVICE,
+            super::device_name(),
+            super::MODEL,
+            &super::user_agent(),
+        ] {
             let low = s.to_ascii_lowercase();
-            assert!(!low.starts_with("plex for"), "{s:?} uses Plex's own first-party naming pattern");
-            assert!(!low.starts_with("plexfor"), "{s:?} uses Plex's own first-party naming pattern");
+            assert!(
+                !low.starts_with("plex for"),
+                "{s:?} uses Plex's own first-party naming pattern"
+            );
+            assert!(
+                !low.starts_with("plexfor"),
+                "{s:?} uses Plex's own first-party naming pattern"
+            );
         }
     }
 
@@ -181,8 +199,16 @@ mod tests {
     /// The developer's own panel must not be reported as every user's hardware.
     #[test]
     fn no_specific_model_is_asserted() {
-        for s in [super::DEVICE, super::MODEL, super::device_name(), super::VENDOR] {
-            assert!(!s.contains("49SM9000"), "{s:?} names the author's television");
+        for s in [
+            super::DEVICE,
+            super::MODEL,
+            super::device_name(),
+            super::VENDOR,
+        ] {
+            assert!(
+                !s.contains("49SM9000"),
+                "{s:?} names the author's television"
+            );
         }
     }
 
@@ -221,11 +247,20 @@ mod tests {
 
     #[test]
     fn a_process_locale_becomes_a_safe_plex_language_tag() {
-        assert_eq!(super::locale_language_tag("en_US.UTF-8"), Some("en-US".into()));
-        assert_eq!(super::locale_language_tag("mn_Cyrl_MN.UTF-8"), Some("mn-Cyrl-MN".into()));
+        assert_eq!(
+            super::locale_language_tag("en_US.UTF-8"),
+            Some("en-US".into())
+        );
+        assert_eq!(
+            super::locale_language_tag("mn_Cyrl_MN.UTF-8"),
+            Some("mn-Cyrl-MN".into())
+        );
         assert_eq!(super::locale_language_tag("pt-BR"), Some("pt-BR".into()));
         assert_eq!(super::locale_language_tag("C.UTF-8"), None);
         assert_eq!(super::locale_language_tag("POSIX"), None);
-        assert_eq!(super::locale_language_tag("en_US\r\nX-Plex-Token: stolen"), None);
+        assert_eq!(
+            super::locale_language_tag("en_US\r\nX-Plex-Token: stolen"),
+            None
+        );
     }
 }

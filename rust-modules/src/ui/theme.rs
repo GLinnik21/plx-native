@@ -58,6 +58,15 @@ const BLACK: [f32; 4] = rgb8(0x00, 0x00, 0x00);
 // Sand — one warm off-white, and it has exactly one job: the ambient wash's resting cast.
 const SAND_100: [f32; 4] = rgb8(0xe9, 0xe6, 0xe0);
 
+// Atmosphere — deliberately dark, warm light for a pre-content route. These are not state colours
+// and never ink a control; together they stand in for an artwork UltraBlur envelope before the
+// catalog has supplied one. The range stays on PlxNative's graphite/amber axis so first-run does
+// not invent a rainbow identity before any actual artwork exists.
+const ATMOS_CHARCOAL: [f32; 4] = rgb8(0x20, 0x20, 0x22);
+const ATMOS_WARM_GREY: [f32; 4] = rgb8(0x3a, 0x37, 0x34);
+const ATMOS_UMBER: [f32; 4] = rgb8(0x4a, 0x31, 0x20);
+const ATMOS_ASH: [f32; 4] = rgb8(0x31, 0x30, 0x32);
+
 // Semantic — amber / red / green: state and verdict, never decoration.
 const AMBER_300: [f32; 4] = rgb8(0xfa, 0xb8, 0x2e);
 const AMBER_400: [f32; 4] = rgb8(0xf0, 0xb4, 0x29);
@@ -470,6 +479,21 @@ impl Material {
 /// are still there, so it reads as glass rather than as paint. The reference agrees — iOS's own
 /// context menu passes almost nothing of the page behind it.
 pub const PANEL_MATERIAL: Material = Material::UltraThick;
+/// Full-screen Settings-family modal ground. A full-HD surface cannot afford the four extra
+/// per-fragment taps used by the thicker compact materials on the target TV, so it samples the
+/// already-blurred cached snapshot once. Density is a separate token: it is what keeps poster
+/// titles and faces from competing with route copy without turning every Settings frame into a
+/// two-million-pixel multi-tap pass.
+pub const MODAL_SAMPLE_MATERIAL: Material = Material::UltraThin;
+pub const MODAL_FROST_ALPHA: f32 = 0.92;
+/// The one-time Kawase kernel used only while freezing the Settings host. Compact glass keeps its
+/// lighter 0.35/0.75 kernel; this wider pair deliberately destroys letter-scale structure so the
+/// host reads as a wallpaper rather than as a second interface behind the modal.
+pub const MODAL_BLUR_TAPS: [f32; 4] = [1.0, 2.0, 3.5, 5.5];
+/// Multiplicative grade for the cached full-screen blur. Keeping the density in the same texture
+/// pass avoids a second two-million-fragment frost quad on the target TV.
+pub const MODAL_BLUR_TINT: [f32; 4] = [0.46, 0.48, 0.54, 1.0];
+pub const MODAL_BLUR_SATURATION: f32 = 1.32;
 
 #[cfg(test)]
 mod material_tests {
@@ -484,15 +508,31 @@ mod material_tests {
     fn the_material_scale_only_ever_thickens() {
         let ladder = [UltraThin, Thin, Regular, Thick, UltraThick];
         for w in ladder.windows(2) {
-            assert!(w[1].frost() > w[0].frost(),
-                "{:?} must be denser than {:?} ({} vs {})", w[1], w[0], w[1].frost(), w[0].frost());
-            assert!(w[1].deep() > w[0].deep(),
-                "{:?} must be softer than {:?} ({} vs {})", w[1], w[0], w[1].deep(), w[0].deep());
+            assert!(
+                w[1].frost() > w[0].frost(),
+                "{:?} must be denser than {:?} ({} vs {})",
+                w[1],
+                w[0],
+                w[1].frost(),
+                w[0].frost()
+            );
+            assert!(
+                w[1].deep() > w[0].deep(),
+                "{:?} must be softer than {:?} ({} vs {})",
+                w[1],
+                w[0],
+                w[1].deep(),
+                w[0].deep()
+            );
         }
         // The bar's end of the scale takes NO extra sample: `fs_glass.frag` skips the four extra
         // fetches entirely at zero, which is what makes "the tab track costs nothing for this"
         // true rather than approximately true.
-        assert_eq!(UltraThin.deep(), 0.0, "the thinnest material must be the single-fetch one");
+        assert_eq!(
+            UltraThin.deep(),
+            0.0,
+            "the thinnest material must be the single-fetch one"
+        );
     }
 
     /// Every name the sweep accepts round-trips, so `plxnative-material` cannot silently fall back
@@ -503,8 +543,26 @@ mod material_tests {
             let name = format!("{m:?}").to_ascii_lowercase();
             assert_eq!(Material::parse(&name), Some(m), "{name}");
         }
-        assert_eq!(Material::parse("  ThIcK  "), Some(Thick), "trimmed and case-folded");
-        assert_eq!(Material::parse("thickish"), None, "a near miss is a refusal, not the default");
+        assert_eq!(
+            Material::parse("  ThIcK  "),
+            Some(Thick),
+            "trimmed and case-folded"
+        );
+        assert_eq!(
+            Material::parse("thickish"),
+            None,
+            "a near miss is a refusal, not the default"
+        );
+    }
+
+    #[test]
+    fn fullscreen_modal_uses_one_cached_sample_and_its_own_dense_frost() {
+        assert_eq!(MODAL_SAMPLE_MATERIAL, UltraThin);
+        assert!(MODAL_FROST_ALPHA > UltraThick.frost());
+        assert!(MODAL_BLUR_TAPS
+            .windows(2)
+            .all(|w| w[0] > 0.0 && w[1] > w[0]));
+        assert!((1.0..=1.5).contains(&MODAL_BLUR_SATURATION));
     }
 }
 pub const PANEL_FROST_TOP: [f32; 4] = with_a(NEUTRAL_650, 0.72);
@@ -556,7 +614,12 @@ pub const fn scrim(a: f32) -> [f32; 4] {
 
 /// Pure-black scrim at alpha `a` — HUD/modal dimming.
 pub const fn scrim_black(a: f32) -> [f32; 4] {
-    [SCRIM_BLACK_INK[0], SCRIM_BLACK_INK[1], SCRIM_BLACK_INK[2], a]
+    [
+        SCRIM_BLACK_INK[0],
+        SCRIM_BLACK_INK[1],
+        SCRIM_BLACK_INK[2],
+        a,
+    ]
 }
 /// Splat a token's rgb with an overridden alpha (e.g. the `env.sp`-baked hub title). Also how a role
 /// spells a stop on the white/black **alpha ramps**: `with_a(WHITE, 0.20)`.
@@ -569,7 +632,12 @@ pub const fn with_a(c: [f32; 4], a: f32) -> [f32; 4] {
 /// so a ROLE can be spelled as a mix of two primitives ([`CONTROL_SPENT_FILL`]) — the design
 /// project's `color-mix(in srgb, …)`.
 pub const fn mix(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
-    [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t, a[3]]
+    [
+        a[0] + (b[0] - a[0]) * t,
+        a[1] + (b[1] - a[1]) * t,
+        a[2] + (b[2] - a[2]) * t,
+        a[3],
+    ]
 }
 /// [`mix`], **alpha included** — for CROSS-FADING one role into another over time, as opposed to
 /// spelling a token that sits between two of them.
@@ -614,6 +682,13 @@ pub const RAIL_FILL: [f32; 4] = with_a(WHITE, 0.95);
 /// [`ACCENT`] used to be: a page GROUND, never a control. Its own role rather than a borrowed one,
 /// so retuning a focus colour can never silently restyle a page background.
 pub const WASH_WARM: [f32; 4] = SAND_100;
+/// Frozen ambient envelope for a route that intentionally appears before Home has fetched any
+/// artwork (Shared Sources).  It is a DESIGN-SYSTEM fallback, not a screen colour: the graphite
+/// and amber stops create the low-frequency wallpaper light of an UltraBlur envelope without
+/// pretending there is a poster behind a pre-Home screen.  Once real artwork exists,
+/// [`crate::ui::route_screen::RouteGround`] uses that instead.
+pub const ROUTE_GROUND_FALLBACK: [[f32; 4]; 4] =
+    [ATMOS_WARM_GREY, ATMOS_CHARCOAL, ATMOS_UMBER, ATMOS_ASH];
 /// Warm amber Continue-Watching progress fill (Plex-specific; no player equivalent). `#fab82e`.
 pub const RESUME_FILL: [f32; 4] = with_a(AMBER_300, 0.95);
 /// Plex's own "Plex Pass" gold, `#e5a00d` — a BRAND REFERENCE, not a palette member

@@ -84,6 +84,16 @@ class _Overlay:
         os.unlink(self.fh.name)
 
 
+class TeardownProcessTable(unittest.TestCase):
+    def test_non_utf8_argv_cannot_hide_or_crash_a_run_stream_pid(self):
+        marker = "/tmp/com.beb.plxnative.debug/plxnative-events.log"
+        raw = b"431 ssh " + marker.encode("ascii") + b" \xdflegacy\n"
+        fake = mock.Mock(return_value=subprocess.CompletedProcess([], 0, stdout=raw))
+        with mock.patch.object(run, "RUN_STREAM_MARK", marker):
+            self.assertEqual(run._run_stream_pids(fake), {431})
+        fake.assert_called_once_with(["ps", "-Ao", "pid,command"], capture_output=True)
+
+
 class ItemResolution(unittest.TestCase):
     def test_placeholder_reads_as_absent(self):
         """The stranger's dominant path is `cp` the example, which ships all twelve keys bracketed.
@@ -121,6 +131,78 @@ class FpsIdentity(unittest.TestCase):
         self.assertFalse(run.fps_scene_needs_token({"route": "login", "tier": "ui"}))
         self.assertTrue(run.fps_scene_needs_token({"route": "login", "tier": "ui"}, True),
                         "a shared-server scene still needs its primary credential")
+
+    def test_settings_overlay_samples_do_not_alias_plain_home(self):
+        """Settings is a modal over Home, but each workload needs its own heartbeat identity."""
+        lines = [
+            "loop=60 route=home fps=7",
+            "loop=60 route=home overlay=settings fps=60",
+            "loop=60 route=home overlay=privacy fps=59",
+            "loop=60 route=home overlay=legal fps=58",
+        ]
+        self.assertEqual(run.parse_fps(lines, "home", "settings"), [60])
+        self.assertEqual(run.parse_fps(lines, "home", "privacy"), [59])
+        self.assertEqual(run.parse_fps(lines, "home", "legal"), [58])
+
+    def test_first_run_routes_have_the_50_fps_contract(self):
+        lines = [
+            "loop=60 route=home fps=7",
+            "loop=60 route=home overlay=consent fps=60",
+        ]
+        self.assertEqual(run.parse_fps(lines, "home", "consent"), [60])
+        scenes = {s["name"]: s for s in _manifest()["fps_scenes"]}
+
+        sources = scenes["onboard-sources"]
+        self.assertEqual(sources["route"], "onboard")
+        self.assertNotIn("needs_shared_server", sources)
+        self.assertGreaterEqual(sources["loop_floor"], 50)
+        self.assertGreaterEqual(sources["fps_floor"], 50)
+        self.assertTrue(sources["triggers"]["plxnative-firstrun"])
+        self.assertTrue(sources["triggers"]["plxnative-onboardosc"])
+
+        for name, stage in (("consent-crash", "crash"), ("consent-product", "product")):
+            with self.subTest(scene=name):
+                scene = scenes[name]
+                self.assertEqual(scene["route"], "home")
+                self.assertEqual(scene["overlay"], "consent")
+                self.assertGreaterEqual(scene["loop_floor"], 50)
+                self.assertGreaterEqual(scene["fps_floor"], 50)
+                self.assertEqual(scene["triggers"]["plxnative-consent"], stage)
+                self.assertTrue(scene["triggers"]["plxnative-consentosc"])
+
+    def test_settings_scenes_carry_the_50_fps_contract_and_idle_inverse(self):
+        scenes = {s["name"]: s for s in _manifest()["fps_scenes"]}
+        for name, overlay in (("settings-root", "settings"),
+                              ("settings-privacy", "privacy"),
+                              ("settings-legal", "legal")):
+            with self.subTest(scene=name):
+                scene = scenes[name]
+                self.assertEqual(scene["route"], "home")
+                self.assertEqual(scene["overlay"], overlay)
+                self.assertGreaterEqual(scene["loop_floor"], 50)
+                self.assertGreaterEqual(scene["fps_floor"], 50)
+                self.assertTrue(scene["triggers"]["plxnative-settingsosc"])
+
+        idle = scenes["settings-idle"]
+        self.assertEqual(idle["overlay"], "settings")
+        self.assertGreaterEqual(idle["loop_floor"], 50)
+        self.assertLessEqual(idle["fps_ceiling"], 5)
+        self.assertNotIn("plxnative-settingsosc", idle["triggers"])
+
+    def test_fps_filter_can_isolate_the_new_screen_without_changing_tiers(self):
+        scenes = [
+            {"name": "home", "tier": "ui"},
+            {"name": "settings-root", "tier": "ui"},
+            {"name": "settings-player", "tier": "player"},
+        ]
+        self.assertEqual(
+            [s["name"] for s in run.fps_for_tiers(scenes, False, "settings")],
+            ["settings-root"],
+        )
+        self.assertEqual(
+            [s["name"] for s in run.fps_for_tiers(scenes, True, "settings")],
+            ["settings-root", "settings-player"],
+        )
 
 
 class LoadManifest(unittest.TestCase):

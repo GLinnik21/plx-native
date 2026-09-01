@@ -131,13 +131,23 @@ enum BodyPolicy {
 ///
 /// `None` is a transport failure. Anything the server actually answered — including a `401` and a
 /// `500` — comes back as `Some`.
-pub(crate) fn request(origin: &Origin, path: &str, method: Method, headers: &[&str]) -> Option<Reply> {
+pub(crate) fn request(
+    origin: &Origin,
+    path: &str,
+    method: Method,
+    headers: &[&str],
+) -> Option<Reply> {
     request_with(origin, path, method, headers, BodyPolicy::Api)
 }
 
 /// A PMS request whose response size is content-dependent. Only the TLS arm differs from
 /// [`request`]: it keeps the connect timeout and disables the 25 s whole-transfer deadline.
-pub(crate) fn request_bulk(origin: &Origin, path: &str, method: Method, headers: &[&str]) -> Option<Reply> {
+pub(crate) fn request_bulk(
+    origin: &Origin,
+    path: &str,
+    method: Method,
+    headers: &[&str],
+) -> Option<Reply> {
     request_with(origin, path, method, headers, BodyPolicy::Bulk)
 }
 
@@ -152,7 +162,16 @@ pub(crate) fn request_probe(
     max_body: usize,
     timeout_s: i32,
 ) -> Option<Reply> {
-    request_with(origin, path, method, headers, BodyPolicy::Probe { max: max_body, timeout_s })
+    request_with(
+        origin,
+        path,
+        method,
+        headers,
+        BodyPolicy::Probe {
+            max: max_body,
+            timeout_s,
+        },
+    )
 }
 
 fn request_with(
@@ -179,7 +198,13 @@ fn request_with(
 /// resolved chain and dials either address family, so a plaintext hostname and a plaintext v6
 /// literal are both ordinary here — which is why `auth::dial_target` has no shape restriction left
 /// in it at all.
-fn plaintext(origin: &Origin, path: &str, method: Method, headers: &[&str], body_policy: BodyPolicy) -> Option<Reply> {
+fn plaintext(
+    origin: &Origin,
+    path: &str,
+    method: Method,
+    headers: &[&str],
+    body_policy: BodyPolicy,
+) -> Option<Reply> {
     // The raw socket takes ONE `extra` blob, CRLF-terminated per line and CRLF-terminated at the
     // end — it is spliced straight into the request head. An empty header list must produce a null
     // pointer, not an empty string, so the head keeps the exact bytes it always had.
@@ -280,7 +305,13 @@ fn plaintext(origin: &Origin, path: &str, method: Method, headers: &[&str], body
 /// plex.tv advertised. Unmatched private-LAN connections on a share are removed earlier by
 /// `probe::candidates`; validation could reject a stranger there, but could not refund its 8 s
 /// sequential connect setting (subject to the synchronous-resolver caveat in the module doc).
-fn tls(origin: &Origin, path: &str, method: Method, headers: &[&str], body_policy: BodyPolicy) -> Option<Reply> {
+fn tls(
+    origin: &Origin,
+    path: &str,
+    method: Method,
+    headers: &[&str],
+    body_policy: BodyPolicy,
+) -> Option<Reply> {
     let url = format!("{}{}", origin.base(), path);
     let owned: Vec<String> = headers.iter().map(|h| (*h).to_string()).collect();
     // A POST carries a body even when that body is empty — the Plex control plane's POSTs put
@@ -302,8 +333,19 @@ fn tls(origin: &Origin, path: &str, method: Method, headers: &[&str], body_polic
     };
     // PMS redirects are responses, never instructions: the path already carries a token. Keeping
     // `FOLLOWLOCATION` off also makes the TLS arm's 3xx semantics match the plaintext arm.
-    let r = crate::net::request(&url, &owned, method.as_str(), body, timeouts, false, max_body)?;
-    Some(Reply { status: r.status as i32, body: r.body })
+    let r = crate::net::request(
+        &url,
+        &owned,
+        method.as_str(),
+        body,
+        timeouts,
+        false,
+        max_body,
+    )?;
+    Some(Reply {
+        status: r.status as i32,
+        body: r.body,
+    })
 }
 
 #[cfg(test)]
@@ -344,10 +386,19 @@ mod tests {
     /// probe, where a 401 is a token problem and not a dead address — can simply read the status.
     #[test]
     fn a_reply_reports_the_status_rather_than_folding_it() {
-        let r = |status| Reply { status, body: Vec::new() };
+        let r = |status| Reply {
+            status,
+            body: Vec::new(),
+        };
         assert!(r(200).ok() && r(204).ok() && r(299).ok());
-        assert!(!r(401).ok(), "the status the whole probe outcome model turns on");
-        assert!(!r(301).ok(), "a redirect is a response, not a successful PMS operation");
+        assert!(
+            !r(401).ok(),
+            "the status the whole probe outcome model turns on"
+        );
+        assert!(
+            !r(301).ok(),
+            "a redirect is a response, not a successful PMS operation"
+        );
         assert!(!r(500).ok());
     }
 
@@ -371,7 +422,9 @@ mod tests {
             let mut request = [0u8; 1024];
             let _ = socket.read(&mut request).expect("request");
             socket
-                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nabcde")
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nabcde",
+                )
                 .expect("response");
         });
 

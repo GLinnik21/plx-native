@@ -258,7 +258,7 @@ asked for is how to read what shipped.
 | 5 | **Persist the registry; boot from the hint.** `session.rs` gains `servers: Vec<ServerRec>` + `current_machine_id`, every field `#[serde(default)]`, legacy `ServerRef` still written for one release. A corrupt `servers` array must not fail the whole `Session` parse — that is a silent sign-out at every boot. No timestamps: this TV's wall clock is ~3 h skewed. | 1 d | Fast boot |
 | 6 **LANDED** | **TLS control plane.** Shipped as `rust-modules/src/http.rs`: `Scheme::Http` keeps the raw `stream.rs` arm, while `Scheme::Https` uses `net.rs`/libcurl. The curl request surface now carries per-call deadlines, a bounded response sink, body-less `CUSTOMREQUEST` PUT, HTTP(S)-only redirect policy for the public QR fetch, and one fresh easy handle per call so no request state can survive into the next. Probe ranking is TLS-first, status remains distinct from reachability, and every PMS/account request conditionally carries the validated inherited locale as `X-Plex-Language`. | 1–1½ d | Any https-only share browses |
 | 7 **LANDED** | **TLS media plane.** Shipped as `rust-modules/src/curlio.rs`: the second `dynlib!` table (seven `curl_multi_*`, device-probed PRESENT and inventory-confirmed on all 14 releases; `curl_multi_poll`/`curl_multi_wakeup` probed ABSENT and therefore banned — they first appear at 7.4.0, so binding them would have emptied the table on four of the nine gated releases), `AvioState`'s source enum, the `read_cb`/`seek_cb` dispatch, the preserved seek abort guard and the two extended abort-guard tests, all as this row asked. **One deviation, deliberate:** teardown is a **wake pipe** handed to `curl_multi_wait` as an application-owned extra fd, NOT `curl_multi` pumped from inside `read_cb`. The row's outcome — teardown collapses to "set the flag, join" — is preserved, and that is the reason: self-polling puts a 10–100 ms floor on every teardown, while a byte on a pipe wakes a blocked wait at once. The one gap the pipe cannot close is a thread already inside `curl_multi_perform` doing SYNCHRONOUS name resolution; the dev set reports `AsynchDNS`, and the designed fallback (our own `getaddrinfo` + `CURLOPT_RESOLVE`, hostname untouched so SNI and certificate identity survive) is written into `curlio`'s module doc and deliberately not built. With step 6 present, ordinary HTTPS browse/play now reaches this source; `plxnative-servers` and `plxnative-playurl` remain the isolation routes for device diagnosis. | 2–4 d | Any share plays |
-| 8 **STARTED** — the shelf heading can name a source (deliverable C), and `HubRow.source` is `""` at both construction sites, so nothing is reachable until this step populates it | **N servers live** — the Sources list as a library-toolbar chip with a two-level panel (§6), `sourceTitle` as the row subtitle, attribution in **text not artwork** (a corner badge fails the one-mark-per-tile rule — see §6). Four structural hazards: `install_pms` fetches hubs and sections **blocking on the main thread**, so fanning out over N servers freezes boot; `pms::fetch_build` is an all-or-nothing `?` chain, so one dead share blanks Home; `ensure_sections` early-returns while non-empty, which is the only thing keeping the page mailbox sound; and `install_pms` must split into *identity change* (wipe all) vs *server activation* (wipe nothing). Continue Watching is the one shelf that should merge (by `lastViewedAt`, which `pms.rs:307` already sorts). | 2–4 d | The product |
+| 8 **LANDED** | **N servers live** — the Sources list is a library-toolbar chip with a two-level panel (§6), `sourceTitle` is the row subtitle, and attribution stays in **text not artwork**. Profile activation only installs prepared identity and queues catalog work; hubs and sections use per-source workers/mailboxes, lifecycle generations reject stale landings after a repoint, and a dead share no longer blocks the SDL loop or blanks another source. Continue Watching is merged by `lastViewedAt`. | 2–4 d | The product |
 | 9 **LANDED, UNVERIFIABLE** | **Relay policy.** The relay clamps no bitrate: `maxVideoBitrate` is a literal on the re-encode branch only. (`TranscodeSpec` gained a `ceiling` field on 2026-08-23 for the USER's ladder — same mechanism, different input; the relay still names no rate.) Respecting relay's 2 Mbps means **forcing a transcode decision** in `build_stream` — a policy change, not a parameter. | ½–1 d | Correctness on relay |
 
 **Shortest path to seeing the share on screen: 0 → 1 → 4**, plus enough of 2/3 to keep the caches
@@ -445,8 +445,7 @@ publish old credentials. Historical test totals below are snapshots; re-derive t
   this work but a bug on the user's OWN server: a failed first page armed the retry cooldown and
   nothing else, so `total` stayed `-1`, `loading_initial()` was `total < 0`, and the grid spun for
   the rest of the session with nothing on screen admitting it. An EMPTY answer is `Ready`, never
-  `Failed`. A failed *sections* list still spins, one layer up in `ensure_sections`, and belongs
-  with deliverable D.
+  `Failed`. Section discovery now has its own Loading/Empty/Failed state and Retry path.
 - **The harness can hand the TV a second server** — `/tmp/plxnative-servers`, a JSON array of
   additional servers beside the unchanged token file, deliberately **not** DIAG-exempt (it must
   suppress the who's-watching picker like the token file, or a headless run grades the wrong
@@ -483,18 +482,17 @@ Step 1's registry now has its first real consumer, and deliverable A of the desi
   Two generations now, each with a crisp job: `SECTIONS_GEN` (shape — bumped by an append, what the
   label caches key on) and `EPOCH` (identity — bumped by `reset` alone, what index-blamed landings
   gate on, so one source's append cannot discard another's answer).
-- **Only the CURRENT server is discovered on the main thread**, which is the §5 step-8 hazard closed:
-  `ensure_sections` runs at boot and on every Library entry, so fanning out there would park the SDL
-  loop for one `connect(2)` per unreachable share. Every other source is discovered by a worker off
-  `pump` — sections, then the server's own `friendlyName`, then a `size=0` count probe per library —
-  with a 10 s per-source backoff. A dead share arrives as `reachable: false` and costs nothing.
+- **Every source is discovered off the main thread.** Home, Library, Search and Onboard drive the
+  same worker/mailbox pump — sections, then the server's own `friendlyName`, then a `size=0` count
+  probe per library — with a 10 s per-source backoff. Entering Library only selects a type and view
+  state; it performs no HTTP. A dead share becomes a recoverable failed source without parking SDL.
 - **Pinning** is the design's one control and governs Home only: your own libraries start pinned, a
   friend's start unpinned, and the last pinned one cannot be turned off. `pinned_libraries()` is its
   read side, waiting for deliverable C.
-- **The tab strip is deliberately unchanged** (deliverable B, "no new drawing"): `browse::tab_*`
-  projects the table to one pill per TYPE — your own sections, plus any type only a friend has — so
-  the strip is a constant width at one friend or at ten, and the selection capsule for a borrowed
-  library rests on its type's pill. With one source it is the identity map.
+- **The tab strip has a permanent vocabulary:** `Home | Movies | TV Shows | Search`. A library pill
+  names a type, never a discovered row, so it survives reset and failed/delayed discovery. The
+  selected type resolves owned-first, then to the first usable shared section; the Source panel
+  selects alternatives.
 - **The Source chip and its two-level panel** are `ui/library.rs`; the row model is pure and
   host-tested. `TableView` gained the two things it was missing for it: a drawn `Section::accessory`
   (declared but never painted before) and `Section::dim`.
@@ -550,8 +548,9 @@ per source, off the SDL thread).
   other press has one looked up from its own `(server, ratingKey)`, which costs one extra GET on a
   thread that is not drawing anything.
 - **Best-effort per source, unconditional, and never fatal.** One asleep share costs one log line and
-  cannot fail or retry the write the user actually pressed. There is no setting — this app has no
-  preferences screen by design. A **one-source install pays nothing**: the source count is checked
+  cannot fail or retry the write the user actually pressed. There is no setting for propagation;
+  Settings only controls which granted libraries contribute to Home. A **one-source install pays
+  nothing**: the source count is checked
   before the guid lookup, so there is no query and no log line.
 - **The other copies flip on screen a round trip later, not on the press frame.** The optimistic edit
   can only reach the `(sid, rk)` in hand, because the other keys are what the resolve *discovers*;
@@ -621,6 +620,11 @@ panel uses, extracted out of `ui/library.rs` for exactly this reason. It differs
 not by a second builder: every library rather than the browsed type's (`browse::all_source_rows` —
 there is no tab bar here to be scoped to), and no *Check for new shares* tail.
 
+Its outer geometry is the shared `ui::route_screen::RouteLayout`: the same measured narrative
+column, section-label anchor, content column and bottom action slot used by Settings, Privacy and
+Legal. The source picker therefore owns rows only; it no longer carries its own route top, list x
+or action coordinates.
+
 **`/tmp/plxnative-firstrun` forces the route.** A screen asked once per profile is otherwise
 unreachable the moment you have answered it, and the two-source roster it needs comes from
 `/tmp/plxnative-servers`, which marks the boot automated — and an automated boot is exempt from the
@@ -642,10 +646,9 @@ answer has to govern Home on a boot where the friend's server is never enumerate
 unpinned* — §6's own bootstrap, and correct, because the pin is a decision about libraries and you
 cannot have decided against one that has never appeared. That was harmless while every granted
 library defaulted On. It stops being harmless the moment a friend's library defaults **Off**,
-because Home is the one screen that never enumerates: boot fetches the CURRENT server's sections and
-no others (`browse::ensure_sections`, deliberately — fanning out over the roster parks the SDL loop
-on one `connect(2)` per sleeping share), and the discovery pump runs from the Library, Search and
-first-run screens. So on the second and every later boot the share sat in the roster with **no row
+because discovery is asynchronous: Home can fetch a source's shelves before that source's section
+worker lands. The discovery pump runs from Home, Library, Search and first-run screens and never
+from Player. During that interval the share sits in the roster with **no row
 in the section table**, "undecided" applied, and a friend's shelves went back on the front door of
 somebody who had turned them off the night before — including the person who simply pressed *Start
 watching* on the defaults.

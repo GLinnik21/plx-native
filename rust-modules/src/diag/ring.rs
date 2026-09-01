@@ -65,7 +65,11 @@ pub(crate) fn start_clock() {
 /// Milliseconds since process start, saturating at `u32::MAX` (49 days — no session is that long,
 /// and a saturating cast is still an honest reading rather than a wrapped one).
 pub(crate) fn t_ms() -> u32 {
-    START.get_or_init(Instant::now).elapsed().as_millis().min(u32::MAX as u128) as u32
+    START
+        .get_or_init(Instant::now)
+        .elapsed()
+        .as_millis()
+        .min(u32::MAX as u128) as u32
 }
 
 /// Append one already-redacted line.
@@ -78,7 +82,10 @@ pub(crate) fn record(line: &str) {
     let mut g = RING.lock().unwrap_or_else(|e| e.into_inner());
     let r = g.get_or_insert_with(Ring::default);
     r.bytes += line.len();
-    r.recs.push_back(Rec { t_ms: t, msg: line.to_string() });
+    r.recs.push_back(Rec {
+        t_ms: t,
+        msg: line.to_string(),
+    });
     while r.recs.len() > MAX_RECORDS || r.bytes > MAX_BYTES {
         match r.recs.pop_front() {
             Some(old) => {
@@ -97,7 +104,9 @@ pub(crate) fn record(line: &str) {
 /// an upload that failed in transit must not have taken the evidence with it.
 pub(crate) fn take() -> (Vec<Rec>, u64) {
     let mut g = RING.lock().unwrap_or_else(|e| e.into_inner());
-    let Some(r) = g.as_mut() else { return (Vec::new(), 0) };
+    let Some(r) = g.as_mut() else {
+        return (Vec::new(), 0);
+    };
     let dropped = std::mem::take(&mut r.dropped);
     (r.recs.iter().cloned().collect(), dropped)
 }
@@ -119,7 +128,10 @@ mod tests {
         record("first");
         record("second");
         let (recs, dropped) = take();
-        assert_eq!(recs.iter().map(|r| r.msg.as_str()).collect::<Vec<_>>(), ["first", "second"]);
+        assert_eq!(
+            recs.iter().map(|r| r.msg.as_str()).collect::<Vec<_>>(),
+            ["first", "second"]
+        );
         assert_eq!(dropped, 0);
         assert!(recs[1].t_ms >= recs[0].t_ms, "the clock is monotonic");
     }
@@ -149,7 +161,10 @@ mod tests {
             record(&fat);
         }
         let (recs, dropped) = take();
-        assert!(recs.len() < MAX_RECORDS, "the byte cap bound first, not the record cap");
+        assert!(
+            recs.len() < MAX_RECORDS,
+            "the byte cap bound first, not the record cap"
+        );
         assert!(recs.len() * fat.len() <= MAX_BYTES);
         assert!(dropped > 0, "and it said so");
     }
@@ -165,6 +180,10 @@ mod tests {
         }
         assert_eq!(take().1, 5);
         assert_eq!(take().1, 0, "already reported");
-        assert_eq!(take().0.len(), MAX_RECORDS, "still there for the next snapshot");
+        assert_eq!(
+            take().0.len(),
+            MAX_RECORDS,
+            "still there for the next snapshot"
+        );
     }
 }

@@ -12,8 +12,7 @@ pub(crate) fn original_fallback_rung(
     policy: &AbrPolicy,
 ) -> Rung {
     let budget = u32::try_from(
-        u64::from(measured_kbps).saturating_mul(1_000)
-            / u64::from(policy.vbr_allowance_pm.max(1)),
+        u64::from(measured_kbps).saturating_mul(1_000) / u64::from(policy.vbr_allowance_pm.max(1)),
     )
     .unwrap_or(u32::MAX);
     catalog
@@ -350,8 +349,7 @@ impl OriginalRecovery {
             .buffered_ms()
             .is_some_and(|ms| ms >= i64::try_from(self.policy.probe_budget_ms).unwrap_or(i64::MAX));
         let refilling = !buffer.draining();
-        let spare_capacity =
-            hls_delivery.conservative_kbps() > current.expected_wire_kbps;
+        let spare_capacity = hls_delivery.conservative_kbps() > current.expected_wire_kbps;
         let elapsed = now_ms.saturating_sub(self.last_now_ms);
         self.last_now_ms = now_ms;
         if !(deep_reserve && refilling && spare_capacity) {
@@ -589,7 +587,13 @@ impl OriginalModeController {
         buffered_ms: Option<i64>,
         remaining_ms: i64,
     ) -> Option<OriginalObservation> {
-        self.observe(bytes, active_us, buffered_ms, remaining_ms, active_us / 1_000)
+        self.observe(
+            bytes,
+            active_us,
+            buffered_ms,
+            remaining_ms,
+            active_us / 1_000,
+        )
     }
 
     fn fallback_target(&self) -> Option<Rung> {
@@ -646,8 +650,7 @@ impl OriginalModeController {
             self.unsafe_deficit_ms = 0;
             return None;
         }
-        let measured_kbps = kbps_from(byte_delta, active_delta)
-            .min(u64::from(u32::MAX)) as u32;
+        let measured_kbps = kbps_from(byte_delta, active_delta).min(u64::from(u32::MAX)) as u32;
         let observation = CapacityObservation {
             kbps: measured_kbps,
             bytes: byte_delta,
@@ -892,4 +895,3 @@ impl OriginalModeController {
         (mode == ModeKind::Hls).then_some(OriginalExit::SustainedDeficit)
     }
 }
-

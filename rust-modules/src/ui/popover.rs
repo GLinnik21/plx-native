@@ -2,8 +2,8 @@
 //! Chapters strip, profile menu): an OPEN flag + a critically-damped 0→1 appear spring driving a
 //! fade + slide-into-place, with an optional full-screen scrim. Each panel used to hand-wire its
 //! own `static OPEN + APPEAR` pair, so any motion change was a four-file edit.
-use crate::ui::{theme, Painter, Rect, Spring};
 use crate::ui::widgets::{Glass, GlassState};
+use crate::ui::{theme, Painter, Rect, Spring};
 
 /// Stiffness of the appear spring — the panels' shared open-motion constant, and the stiffness every
 /// other fade-into-place in the UI matches (the tab capsules' alpha, [`crate::ui::widgets::TabStrip`]).
@@ -59,7 +59,10 @@ fn draw_nothing() {}
 impl Opener {
     /// No element at all: the panel falls back to its own placement and the scrim covers everything,
     /// which is exactly what every popover did before this existed.
-    pub(crate) const NONE: Opener = Opener { rect: None, redraw: draw_nothing };
+    pub(crate) const NONE: Opener = Opener {
+        rect: None,
+        redraw: draw_nothing,
+    };
 
     /// An opener that is only a DRAW — for a panel whose placement is its own. The Library's chip
     /// menus are anchored on the toolbar rather than on the chip's measured rect, so they have a
@@ -99,8 +102,8 @@ impl Popover {
     /// (re)open: restart the fade+slide from 0.
     ///
     /// Also starts this popover's glass lifetime. Cached glass takes one snapshot; dynamic glass
-    /// anchors its every-third-present cadence here. Anything outside that policy which changes the
-    /// underlay still owes `gfx::blur_invalidate` a call of its own.
+    /// anchors its every-changed-present cadence here. Anything outside that policy which changes
+    /// the underlay still owes `gfx::blur_invalidate` a call of its own.
     pub(crate) fn open(&mut self) {
         self.appear = Spring::at(0.0);
         // Both transitions are guarded on the flag actually CHANGING, not on the call: `open` is a
@@ -255,8 +258,8 @@ impl Popover {
     ///
     /// Two consequences worth knowing. The window follows the panel through its entry SLIDE, which
     /// is what real glass does — the snapshot is of the page, not of the panel's final resting
-    /// place. Cached popovers capture the scrim at their first draw; a source-dimmed dynamic policy
-    /// refreshes the moving underlay on its own successful-present cadence.
+    /// place. Cached popovers capture the page-drawn scrim at their first draw; a dynamic policy
+    /// refreshes that same composed underlay on every changed present.
     ///
     /// **Not for the player's panels.** Behind those is punch-through alpha to the hardware video
     /// plane, which GL cannot read; they keep `p.rect(…, PANEL_TOP, PANEL_BOT, …)` on purpose.
@@ -266,6 +269,21 @@ impl Popover {
         // slide itself never forces another capture; a dynamic refresh policy may still do so.
         let slide = self.rise.get() * (1.0 - self.appear());
         self.glass.panel(p, r, slide, rad);
+    }
+
+    /// The large-modal counterpart of [`panel`](Self::panel). It keeps the same cached/dynamic
+    /// lifetime policy and entry motion, but asks [`Glass::sheet`] for the design-system sheet
+    /// material instead of spreading the compact-menu material over a near-full-screen surface.
+    pub(crate) fn sheet(&self, p: Painter, r: Rect, rad: f32) {
+        let slide = self.rise.get() * (1.0 - self.appear());
+        self.glass.sheet(p, r, slide, rad);
+    }
+
+    /// Paint the shared, full-screen Settings-family ground through this popover's glass policy.
+    /// The screen deliberately cannot reach into `glass`: keeping that field private preserves the
+    /// activation/snapshot lifetime owned by `Popover`.
+    pub(crate) fn modal_ground(&self, p: Painter, r: Rect) {
+        self.glass.modal_ground(p, r);
     }
 }
 
@@ -280,7 +298,10 @@ mod tests {
     /// backdrop is re-sourced from the page closure, so its dim has to be IN that closure.
     #[test]
     fn only_a_refreshing_policy_owes_its_scrim_to_the_page() {
-        assert!(!Glass::CACHED.needs_page_scrim(), "a cached grab already contains its own scrim");
+        assert!(
+            !Glass::CACHED.needs_page_scrim(),
+            "a cached grab already contains its own scrim"
+        );
         assert!(
             Glass::DYNAMIC_BACKDROP.needs_page_scrim(),
             "a refreshing backdrop re-renders the page, which must therefore carry the dim"
@@ -327,11 +348,18 @@ mod tests {
 
         b.close();
         b.close(); // the defensive close every dismissal arm makes
-        assert_eq!(count(), 1, "closing an already-closed panel must not decrement");
+        assert_eq!(
+            count(),
+            1,
+            "closing an already-closed panel must not decrement"
+        );
         assert!(any_open(), "the other panel is still up");
 
         a.close();
         assert_eq!(count(), 0);
-        assert!(!any_open(), "back to rest — the tab bar resumes retaking its backdrop");
+        assert!(
+            !any_open(),
+            "back to rest — the tab bar resumes retaking its backdrop"
+        );
     }
 }

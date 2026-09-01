@@ -112,7 +112,7 @@ static FD_MPEG: AtomicI32 = AtomicI32::new(-1); // current mpeg/ts client (-1 = 
 static LISTEN_FD: AtomicI32 = AtomicI32::new(-1);
 static JPEG_960: AtomicBool = AtomicBool::new(false); // the jpeg client's requested size
 static MPEG_RATE: AtomicU32 = AtomicU32::new(2_500_000); // bps, from the PXR2 hello
-static MPEG_960: AtomicBool = AtomicBool::new(true);     // mpeg client's requested size
+static MPEG_960: AtomicBool = AtomicBool::new(true); // mpeg client's requested size
 static MPEG_OFF: AtomicBool = AtomicBool::new(false); // latched on venc bring-up failure
 static SEQ: AtomicU32 = AtomicU32::new(0);
 static LAST_MS: AtomicU32 = AtomicU32::new(0);
@@ -210,7 +210,14 @@ pub(crate) fn tick(now: u32) {
         || (FD_JPEG.load(Ordering::Relaxed) >= 0 && JPEG_960.load(Ordering::Relaxed));
     match crate::gfx::cap_cycle(want_960, &mut buf) {
         Some((w, h, flip)) => {
-            let f = Frame { seq: SEQ.fetch_add(1, Ordering::Relaxed), ticks: now, w, h, flip, rgba: buf };
+            let f = Frame {
+                seq: SEQ.fetch_add(1, Ordering::Relaxed),
+                ticks: now,
+                w,
+                h,
+                flip,
+                rgba: buf,
+            };
             if let Ok(mut slot) = MAILBOX.try_lock() {
                 if let Some(old) = slot.replace(f) {
                     POOL.lock().unwrap().push(old.rgba); // displaced unencoded frame (shouldn't happen)
@@ -235,8 +242,13 @@ fn caplisten(port: u16) {
             return;
         }
         let one: c_int = 1;
-        libc::setsockopt(lfd, libc::SOL_SOCKET, libc::SO_REUSEADDR,
-                         &one as *const c_int as *const c_void, std::mem::size_of::<c_int>() as u32);
+        libc::setsockopt(
+            lfd,
+            libc::SOL_SOCKET,
+            libc::SO_REUSEADDR,
+            &one as *const c_int as *const c_void,
+            std::mem::size_of::<c_int>() as u32,
+        );
         let mut addr: libc::sockaddr_in = std::mem::zeroed();
         addr.sin_family = libc::AF_INET as libc::sa_family_t;
         addr.sin_port = port.to_be();
@@ -245,15 +257,21 @@ fn caplisten(port: u16) {
         // listener alive briefly — SO_REUSEADDR doesn't cover a live LISTEN, so retry.
         let mut bound = false;
         for _ in 0..5 {
-            if libc::bind(lfd, &addr as *const _ as *const libc::sockaddr,
-                          std::mem::size_of::<libc::sockaddr_in>() as u32) == 0 {
+            if libc::bind(
+                lfd,
+                &addr as *const _ as *const libc::sockaddr,
+                std::mem::size_of::<libc::sockaddr_in>() as u32,
+            ) == 0
+            {
                 bound = true;
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(500));
         }
         if !bound || libc::listen(lfd, 1) != 0 {
-            log(&format!("capture: bind/listen :{port} failed — capture off"));
+            log(&format!(
+                "capture: bind/listen :{port} failed — capture off"
+            ));
             libc::close(lfd);
             ENABLED.store(false, Ordering::Release);
             return;
@@ -279,14 +297,35 @@ fn caplisten(port: u16) {
                 std::thread::sleep(std::time::Duration::from_millis(100));
                 continue;
             }
-            libc::setsockopt(fd, libc::IPPROTO_TCP, libc::TCP_NODELAY,
-                             &one as *const c_int as *const c_void, std::mem::size_of::<c_int>() as u32);
-            let tv = libc::timeval { tv_sec: 2, tv_usec: 0 };
-            libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_SNDTIMEO,
-                             &tv as *const _ as *const c_void, std::mem::size_of::<libc::timeval>() as u32);
-            let rtv = libc::timeval { tv_sec: 0, tv_usec: 500_000 };
-            libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_RCVTIMEO,
-                             &rtv as *const _ as *const c_void, std::mem::size_of::<libc::timeval>() as u32);
+            libc::setsockopt(
+                fd,
+                libc::IPPROTO_TCP,
+                libc::TCP_NODELAY,
+                &one as *const c_int as *const c_void,
+                std::mem::size_of::<c_int>() as u32,
+            );
+            let tv = libc::timeval {
+                tv_sec: 2,
+                tv_usec: 0,
+            };
+            libc::setsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_SNDTIMEO,
+                &tv as *const _ as *const c_void,
+                std::mem::size_of::<libc::timeval>() as u32,
+            );
+            let rtv = libc::timeval {
+                tv_sec: 0,
+                tv_usec: 500_000,
+            };
+            libc::setsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_RCVTIMEO,
+                &rtv as *const _ as *const c_void,
+                std::mem::size_of::<libc::timeval>() as u32,
+            );
 
             // hello: "PXRQ" w:u16 h:u16 (8B, legacy jpeg) or "PXR2" w:u16 h:u16
             // kind:u8 rate:u8 pad:u16 (12B; kind 0=jpeg 1=mpegts, rate = video bitrate
@@ -294,7 +333,12 @@ fn caplisten(port: u16) {
             let recv_exact = |fd: c_int, buf: &mut [u8]| -> bool {
                 let mut got = 0usize;
                 while got < buf.len() {
-                    let n = libc::recv(fd, buf[got..].as_mut_ptr() as *mut c_void, buf.len() - got, 0);
+                    let n = libc::recv(
+                        fd,
+                        buf[got..].as_mut_ptr() as *mut c_void,
+                        buf.len() - got,
+                        0,
+                    );
                     if n <= 0 {
                         return false;
                     }
@@ -312,7 +356,11 @@ fn caplisten(port: u16) {
                 if recv_exact(fd, &mut ext) {
                     kind = ext[0];
                     if kind == 1 {
-                        let bps = if ext[1] == 0 { 2_500_000 } else { ext[1] as u32 * 100_000 };
+                        let bps = if ext[1] == 0 {
+                            2_500_000
+                        } else {
+                            ext[1] as u32 * 100_000
+                        };
                         MPEG_RATE.store(bps, Ordering::Relaxed);
                         MPEG_960.store(w == 0 || w >= 720, Ordering::Relaxed);
                     }
@@ -327,12 +375,26 @@ fn caplisten(port: u16) {
                 }
                 // TS chunks ride bursts; give the tunnel more slack than the jpeg slot
                 // before a parked send tears the client down (browser rejoin costs a GOP).
-                let mtv = libc::timeval { tv_sec: 5, tv_usec: 0 };
-                libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_SNDTIMEO,
-                                 &mtv as *const _ as *const c_void, std::mem::size_of::<libc::timeval>() as u32);
-                log(&format!("capture: mpeg client connected (fd={fd}, {} @{}bps)",
-                             if MPEG_960.load(Ordering::Relaxed) { "960x540" } else { "480x270" },
-                             MPEG_RATE.load(Ordering::Relaxed)));
+                let mtv = libc::timeval {
+                    tv_sec: 5,
+                    tv_usec: 0,
+                };
+                libc::setsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    libc::SO_SNDTIMEO,
+                    &mtv as *const _ as *const c_void,
+                    std::mem::size_of::<libc::timeval>() as u32,
+                );
+                log(&format!(
+                    "capture: mpeg client connected (fd={fd}, {} @{}bps)",
+                    if MPEG_960.load(Ordering::Relaxed) {
+                        "960x540"
+                    } else {
+                        "480x270"
+                    },
+                    MPEG_RATE.load(Ordering::Relaxed)
+                ));
                 let old = FD_MPEG.swap(fd, Ordering::AcqRel);
                 if old >= 0 {
                     libc::shutdown(old, libc::SHUT_RDWR); // displace only; capenc closes it
@@ -341,8 +403,10 @@ fn caplisten(port: u16) {
                 // 0 = default; else nearer of the two supported widths
                 let want960 = ok8 && (magic == b"PXRQ" || magic == b"PXR2") && w != 0 && w >= 720;
                 JPEG_960.store(want960, Ordering::Relaxed);
-                log(&format!("capture: client connected (fd={fd}, {})",
-                    if want960 { "960x540" } else { "480x270" }));
+                log(&format!(
+                    "capture: client connected (fd={fd}, {})",
+                    if want960 { "960x540" } else { "480x270" }
+                ));
                 let old = FD_JPEG.swap(fd, Ordering::AcqRel);
                 if old >= 0 {
                     // displace only: capenc observes the slot changed and closes the old fd
@@ -370,8 +434,19 @@ const TJFLAG_FASTDCT: c_int = 2048;
 #[allow(clippy::type_complexity)]
 struct TurboJpeg {
     handle: *mut c_void, // tjInitCompress handle; lives as long as the thread
-    compress2: unsafe extern "C" fn(*mut c_void, *const c_uchar, c_int, c_int, c_int, c_int,
-                                    *mut *mut c_uchar, *mut c_ulong, c_int, c_int, c_int) -> c_int,
+    compress2: unsafe extern "C" fn(
+        *mut c_void,
+        *const c_uchar,
+        c_int,
+        c_int,
+        c_int,
+        c_int,
+        *mut *mut c_uchar,
+        *mut c_ulong,
+        c_int,
+        c_int,
+        c_int,
+    ) -> c_int,
     buf_size: unsafe extern "C" fn(c_int, c_int, c_int) -> c_ulong,
     err_str: Option<unsafe extern "C" fn(*mut c_void) -> *const c_char>,
     out: Vec<u8>, // TJFLAG_NOREALLOC output buffer, tjBufSize-grown per resolution
@@ -380,7 +455,10 @@ struct TurboJpeg {
 fn tj_load() -> Option<TurboJpeg> {
     unsafe {
         let path = std::ffi::CString::new(
-            crate::paths::in_app_dir("libturbojpeg.so.0").into_os_string().into_string().ok()?,
+            crate::paths::in_app_dir("libturbojpeg.so.0")
+                .into_os_string()
+                .into_string()
+                .ok()?,
         )
         .ok()?;
         let h = libc::dlopen(path.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL);
@@ -389,7 +467,11 @@ fn tj_load() -> Option<TurboJpeg> {
             return None;
         }
         let sym = |n: &[u8]| libc::dlsym(h, n.as_ptr() as *const c_char);
-        let (init, comp, bufsz) = (sym(b"tjInitCompress\0"), sym(b"tjCompress2\0"), sym(b"tjBufSize\0"));
+        let (init, comp, bufsz) = (
+            sym(b"tjInitCompress\0"),
+            sym(b"tjCompress2\0"),
+            sym(b"tjBufSize\0"),
+        );
         if init.is_null() || comp.is_null() || bufsz.is_null() {
             log("capture: libturbojpeg.so.0 lacks tj symbols — pure-Rust JPEG fallback");
             return None; // handle intentionally left open; never dlclose a lib with live code
@@ -406,7 +488,11 @@ fn tj_load() -> Option<TurboJpeg> {
             handle,
             compress2: std::mem::transmute(comp),
             buf_size: std::mem::transmute(bufsz),
-            err_str: if err_str.is_null() { None } else { Some(std::mem::transmute(err_str)) },
+            err_str: if err_str.is_null() {
+                None
+            } else {
+                Some(std::mem::transmute(err_str))
+            },
             out: Vec::new(),
         })
     }
@@ -426,14 +512,31 @@ impl TurboJpeg {
             let mut out_len = self.out.len() as c_ulong;
             let flags =
                 TJFLAG_NOREALLOC | TJFLAG_FASTDCT | if f.flip { TJFLAG_BOTTOMUP } else { 0 };
-            let rc = (self.compress2)(self.handle, f.rgba.as_ptr(), f.w, f.w * 4, f.h,
-                                      TJPF_RGBA, &mut out_ptr, &mut out_len, TJSAMP_420, 70, flags);
+            let rc = (self.compress2)(
+                self.handle,
+                f.rgba.as_ptr(),
+                f.w,
+                f.w * 4,
+                f.h,
+                TJPF_RGBA,
+                &mut out_ptr,
+                &mut out_len,
+                TJSAMP_420,
+                70,
+                flags,
+            );
             if rc != 0 {
                 let msg = self
                     .err_str
-                    .map(|e| std::ffi::CStr::from_ptr(e(self.handle)).to_string_lossy().into_owned())
+                    .map(|e| {
+                        std::ffi::CStr::from_ptr(e(self.handle))
+                            .to_string_lossy()
+                            .into_owned()
+                    })
                     .unwrap_or_default();
-                log(&format!("capture: tjCompress2 failed ({msg}) — pure-Rust JPEG fallback"));
+                log(&format!(
+                    "capture: tjCompress2 failed ({msg}) — pure-Rust JPEG fallback"
+                ));
                 return None;
             }
             Some(out_len as usize)
@@ -449,7 +552,12 @@ pub(crate) fn send_all(fd: c_int, data: &[u8]) -> bool {
     let mut off = 0usize;
     while off < data.len() {
         let n = unsafe {
-            libc::send(fd, data[off..].as_ptr() as *const c_void, data.len() - off, libc::MSG_NOSIGNAL)
+            libc::send(
+                fd,
+                data[off..].as_ptr() as *const c_void,
+                data.len() - off,
+                libc::MSG_NOSIGNAL,
+            )
         };
         if n <= 0 {
             return false;
@@ -469,10 +577,10 @@ fn capenc() {
     let mut rgb: Vec<u8> = Vec::new();
     let mut jpg: Vec<u8> = Vec::new(); // fallback-path encode target
     let mut last_pkt: Vec<u8> = Vec::new(); // last sent header+JPEG, for the jpeg keepalive resend
-    // The newest frame's pixels, kept by SWAP with the pool rather than copied, so the idle
-    // keepalive below can re-encode the picture we ALREADY have instead of asking the UI to
-    // render an identical one. Re-rendering a still screen to feed a dev stream would hand back
-    // exactly the cost `ui::idle` exists to remove.
+                                            // The newest frame's pixels, kept by SWAP with the pool rather than copied, so the idle
+                                            // keepalive below can re-encode the picture we ALREADY have instead of asking the UI to
+                                            // render an identical one. Re-rendering a still screen to feed a dev stream would hand back
+                                            // exactly the cost `ui::idle` exists to remove.
     let mut last_rgba: Vec<u8> = Vec::new();
     let mut last_flip = false;
 
@@ -497,7 +605,9 @@ fn capenc() {
                 if let Some(f) = slot.take() {
                     break Some(f);
                 }
-                let (s, t) = CV.wait_timeout(slot, std::time::Duration::from_millis(IDLE_MS)).unwrap();
+                let (s, t) = CV
+                    .wait_timeout(slot, std::time::Duration::from_millis(IDLE_MS))
+                    .unwrap();
                 slot = s;
                 if t.timed_out() {
                     break None;
@@ -551,7 +661,8 @@ fn capenc() {
                                 }
                             }
                             jpg.clear();
-                            let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpg, 70);
+                            let mut enc =
+                                image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpg, 70);
                             enc.encode(&rgb, f.w as u32, f.h as u32, image::ExtendedColorType::Rgb8)
                                 .ok()
                                 .map(|_| jpg.as_slice())
@@ -586,11 +697,17 @@ fn capenc() {
                     // resume after an idle gap (player route), or a resolution change:
                     // rebuild so a sequence header + I-frame lead the new stream.
                     let geom_changed = venc.as_ref().map_or(false, |v| v.w != f.w || v.h != f.h);
-                    if venc.is_some() && (geom_changed || f.ticks.wrapping_sub(last_mpeg_ticks) > 1500) {
+                    if venc.is_some()
+                        && (geom_changed || f.ticks.wrapping_sub(last_mpeg_ticks) > 1500)
+                    {
                         venc = None;
                     }
                     if venc.is_none() {
-                        venc = crate::ff::Venc::open(f.w, f.h, MPEG_RATE.load(Ordering::Relaxed) as i64);
+                        venc = crate::ff::Venc::open(
+                            f.w,
+                            f.h,
+                            MPEG_RATE.load(Ordering::Relaxed) as i64,
+                        );
                         if venc.is_none() {
                             // bring-up failed (encoder/muxer missing): latch off so we
                             // don't retry per frame; refuse future mpeg hellos too.
@@ -618,7 +735,10 @@ fn capenc() {
 
                 let dt = st_t0.elapsed().as_secs_f32();
                 if dt >= 5.0 && st_n > 0 {
-                    let (cyc_us, cyc_n) = (CYC_US.swap(0, Ordering::Relaxed), CYC_N.swap(0, Ordering::Relaxed));
+                    let (cyc_us, cyc_n) = (
+                        CYC_US.swap(0, Ordering::Relaxed),
+                        CYC_N.swap(0, Ordering::Relaxed),
+                    );
                     let (rd_us, rd_n) = (
                         crate::gfx::CAP_READ_US.swap(0, Ordering::Relaxed),
                         crate::gfx::CAP_READ_N.swap(0, Ordering::Relaxed),
@@ -660,8 +780,13 @@ fn capenc() {
                 // threshold that would otherwise rebuild the encoder on every frame once the
                 // present gate has an idle screen down to 0.5 presents/s.
                 if my_mfd >= 0 && !last_rgba.is_empty() {
-                    match venc.as_mut().map(|v| v.encode(&last_rgba, my_mfd, last_flip)) {
-                        Some(true) => last_mpeg_ticks = last_mpeg_ticks.wrapping_add(IDLE_MS as u32),
+                    match venc
+                        .as_mut()
+                        .map(|v| v.encode(&last_rgba, my_mfd, last_flip))
+                    {
+                        Some(true) => {
+                            last_mpeg_ticks = last_mpeg_ticks.wrapping_add(IDLE_MS as u32)
+                        }
                         Some(false) => {
                             venc = None;
                             disconnect_slot(&mut my_mfd, &FD_MPEG, "mpeg");
@@ -680,7 +805,10 @@ fn capenc() {
 fn disconnect_slot(my_fd: &mut c_int, slot: &AtomicI32, label: &str) {
     let fd = *my_fd;
     unsafe { libc::shutdown(fd, libc::SHUT_RDWR) };
-    if slot.compare_exchange(fd, -1, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+    if slot
+        .compare_exchange(fd, -1, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+    {
         unsafe { libc::close(fd) };
         *my_fd = -1;
         log(&format!("capture: {label} client disconnected"));

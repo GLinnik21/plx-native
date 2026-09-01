@@ -5,10 +5,10 @@
 //! row/col/snap_target accessors.
 #![allow(non_upper_case_globals)]
 use crate::pms::PmsMovie;
-use crate::ui::consts::*;
-use crate::ui::icons::Icon;
 use crate::ui::card_row::{self, CardRow, RowStyle};
+use crate::ui::consts::*;
 use crate::ui::hero_logo::{self, HeroLogo, LogoRung};
+use crate::ui::icons::Icon;
 use crate::ui::label::{Label, VAlign};
 use crate::ui::text_view::TextView;
 use crate::ui::theme;
@@ -111,7 +111,8 @@ const HERO_PAGER_PAD: f32 = HERO_CTRL_GAP - HERO_PAGER_BEARING;
 /// [`crate::ui::icons::ink_x`] rather than being transcribed here: it is `chevron.svg`'s, and a
 /// re-drawn asset used to move this number with no compile error and no test. Named because
 /// [`HERO_PAGER_PAD`] subtracts it and the `on_axis` cull adds it back.
-const HERO_PAGER_BEARING: f32 = HERO_PAGER_D * crate::ui::icons::ink_x(crate::ui::icons::Icon::Chevron).0;
+const HERO_PAGER_BEARING: f32 =
+    HERO_PAGER_D * crate::ui::icons::ink_x(crate::ui::icons::Icon::Chevron).0;
 const K_SLIDE: f32 = 130.0; // slide spring — a touch softer than the grid springs, reads cinematic
 /// The slide is over once its remaining travel is **sub-pixel**. Threshold in PIXELS, not in
 /// spring units: the old `pos > 0.995` cut retired the transition while the incoming layer still
@@ -178,7 +179,12 @@ pub(crate) fn snap_target() -> f32 {
 /// on it so a quick DOWN→OK launches the hero item still visible, not the grid's first card. Falls
 /// back to the target before the scene is built.
 pub(crate) fn snap_pos() -> f32 {
-    unsafe { (*addr_of!(SCENE)).as_ref().map(|h| h.snap.pos).unwrap_or_else(|| addr_of!(snapTarget).read()) }
+    unsafe {
+        (*addr_of!(SCENE))
+            .as_ref()
+            .map(|h| h.snap.pos)
+            .unwrap_or_else(|| addr_of!(snapTarget).read())
+    }
 }
 pub(crate) fn set_row(v: c_int) {
     unsafe { addr_of_mut!(fr).write(v) }
@@ -311,6 +317,13 @@ fn hero_flip(dir: c_int) {
     }
 }
 
+/// Device-FPS hook: advance the real hero carousel through the same spring path as a held edge key
+/// or the eight-second automatic rotation.  Kept as a narrow action rather than exposing the
+/// carousel's statics so the headless scene cannot manufacture a state the product never reaches.
+pub(crate) fn dev_flip_hero() {
+    hero_flip(1);
+}
+
 /// The slide transition, or None when idle: (outgoing pool index, outgoing x offset, incoming x
 /// offset). Backdrop and Hero both read it so art and text move as one phase.
 fn hero_slide_state() -> Option<(c_int, f32, f32)> {
@@ -339,7 +352,11 @@ fn hero_item_at(i: c_int) -> Option<&'static PmsMovie> {
 /// billboard is nobody's focused tile, so the shelf heading below it is describing something else
 /// entirely and the run on the meta line is the only thing on the screen that says whose the film is.
 fn hero_source_at(i: c_int) -> &'static str {
-    or_dev_source(if i < 0 { "" } else { crate::pms::hero_pool_source(i as usize) })
+    or_dev_source(if i < 0 {
+        ""
+    } else {
+        crate::pms::hero_pool_source(i as usize)
+    })
 }
 
 /// Whose server the CURRENT hero came from — [`hero_item`]'s twin, and it follows that function's
@@ -387,7 +404,7 @@ fn dev_source() -> Option<&'static str> {
 /// Hero action-row focus: -1 = the profile chip, 0 = Play/Continue pill, 1 = info. (The pager
 /// chevron beside them is an indicator and takes no focus — see [`hero_actions`].)
 /// Below -1 sit the CENTERED tab pills (the top band, left→right: chip, then pill i as `-(i+2)`):
-/// -2 = **Home**, -3 = the first section (Movies), -4 = the second (TV Shows), …
+/// -2 = **Home**, -3 = **Movies**, -4 = **TV Shows**, -5 = **Search**.
 ///
 /// Home is pill 0 and a real focus stop like any other — it used to be packed as `-(i+1)`, which
 /// aliased it onto the chip's -1, so the top band walked chip → Movies and the Home pill could
@@ -408,16 +425,12 @@ pub(crate) fn set_hero_focus(v: c_int) {
     unsafe { addr_of_mut!(hero_fc).write(v.clamp(hero_focus_lo(), HERO_NBTN as c_int - 1)) }
 }
 
-/// The lowest (most negative) hero-focus value: the LAST tab pill. Every discovered library
-/// section has one — the row scrolls to reach the pills past the screen width, so the clamp is
-/// the section count, no longer a hard cap that hid a fifth library from the whole UI.
-/// ([`crate::ui::widgets::tab_count`] is the one source of that count; it is never 0, so the
-/// subtraction can't wrap.)
+/// The lowest (most negative) hero-focus value: the LAST of the four permanent tab pills.
+/// ([`crate::ui::widgets::tab_count`] is the one source of that count; it is never 0.)
 fn hero_focus_lo() -> c_int {
     hero_focus_lo_for(crate::ui::widgets::tab_count())
 }
-/// The pure half of [`hero_focus_lo`] — split out so the "focus reaches the LAST section however
-/// many there are" invariant is host-testable without a live section table.
+/// The pure half of [`hero_focus_lo`] — split out so reaching the last pill is host-testable.
 fn hero_focus_lo_for(npill: usize) -> c_int {
     hero_focus_for_pill(npill.max(1) - 1)
 }
@@ -481,7 +494,10 @@ pub(crate) fn hero_ctl_index() -> Option<usize> {
 /// mark has no entry here: it is not selectable, so it is not clickable either.
 pub(crate) fn hero_button_at(mx: f32, my: f32) -> c_int {
     let btns = unsafe { addr_of!(hero_btns).read() };
-    btns.iter().position(|r| r.contains(mx, my)).map(|i| i as c_int).unwrap_or(-2)
+    btns.iter()
+        .position(|r| r.contains(mx, my))
+        .map(|i| i as c_int)
+        .unwrap_or(-2)
 }
 pub(crate) fn hero_pointer_focus(mx: f32, my: f32) {
     let b = hero_button_at(mx, my);
@@ -566,19 +582,26 @@ impl View for Backdrop {
                 .unwrap_or((0, 0.0, 0.0))
         };
         let live = env.sp < HERO_ART_CULL;
-        self.tex = if live { art_of(hero_item()) } else { (0, 0.0, 0.0) };
-        self.tex_out =
-            if live { art_of(hero_slide_state().and_then(|(prev, _, _)| hero_item_at(prev))) } else { (0, 0.0, 0.0) };
+        self.tex = if live {
+            art_of(hero_item())
+        } else {
+            (0, 0.0, 0.0)
+        };
+        self.tex_out = if live {
+            art_of(hero_slide_state().and_then(|(prev, _, _)| hero_item_at(prev)))
+        } else {
+            (0, 0.0, 0.0)
+        };
 
         let cur = hero_index() as c_int;
         if cur != self.keyed {
             crate::gfx::control_ground_invalidate();
             self.art_out_a.jump(self.art_a.pos); // the leaving layer keeps the reveal it had
-            // prefetch HIT ⇒ no fade at all. Past the dive `tex` is the cull's 0 rather than an
-            // answer about the store, so a re-key down there (only a hub refetch can move the index
-            // while the grid is up — the auto-flip is gated on `snap.pos < 0.05` and a manual flip
-            // needs hero focus) starts the layer at 0 and DISSOLVES it in on the way back up. That
-            // is this component's own "the backdrop was not ready" behaviour, not a new one.
+                                                 // prefetch HIT ⇒ no fade at all. Past the dive `tex` is the cull's 0 rather than an
+                                                 // answer about the store, so a re-key down there (only a hub refetch can move the index
+                                                 // while the grid is up — the auto-flip is gated on `snap.pos < 0.05` and a manual flip
+                                                 // needs hero focus) starts the layer at 0 and DISSOLVES it in on the way back up. That
+                                                 // is this component's own "the backdrop was not ready" behaviour, not a new one.
             self.art_a.jump(if self.tex.0 != 0 { 1.0 } else { 0.0 });
             if self.keyed < 0 {
                 self.wash.jump(wash_corners(hero_item(), env.sp)); // mount: no dissolve from grey
@@ -593,12 +616,16 @@ impl View for Backdrop {
         if self.tex_out.0 != 0 {
             self.art_out_a.step(1.0, AmbientWash::K, env.dt);
         }
-        self.wash.step(wash_corners(hero_item(), env.sp), AmbientWash::K, env.dt);
+        self.wash
+            .step(wash_corners(hero_item(), env.sp), AmbientWash::K, env.dt);
     }
     fn draw(&self, env: &Env, p: Painter) {
         let sp = env.sp;
         let slide = hero_slide_state();
-        let (a_in, a_out) = (reveal(self.tex.0, &self.art_a), reveal(self.tex_out.0, &self.art_out_a));
+        let (a_in, a_out) = (
+            reveal(self.tex.0, &self.art_a),
+            reveal(self.tex_out.0, &self.art_out_a),
+        );
         // The GROUND, standing in for the flat dark-gray base `home_draw`'s frame_clear(CLEAR_RGB)
         // already laid down (CLEAR_RGB == SURFACE_APP #2C2C2E — which is why the redundant
         // full-screen SURFACE_APP rect that used to sit here was deleted for fill-rate). It is drawn
@@ -681,10 +708,20 @@ impl View for Backdrop {
             // expression (`knee`), so the pair is watertight and the paint cannot drift from
             // `base_scrim_a`'s idea of where the stops are.
             let [y0, knee, mid, sa] = base_scrim_ramp(env.hero_a);
-            p.rect(Rect::new(0.0, y0, SCR_W, knee - y0), 0.0,
-                theme::scrim(0.0), theme::scrim(mid), 0.0);
-            p.rect(Rect::new(0.0, knee, SCR_W, SCR_H - knee), 0.0,
-                theme::scrim(mid), theme::scrim(sa), 0.0);
+            p.rect(
+                Rect::new(0.0, y0, SCR_W, knee - y0),
+                0.0,
+                theme::scrim(0.0),
+                theme::scrim(mid),
+                0.0,
+            );
+            p.rect(
+                Rect::new(0.0, knee, SCR_W, SCR_H - knee),
+                0.0,
+                theme::scrim(mid),
+                theme::scrim(sa),
+                0.0,
+            );
             // PART TWO: the corner the text is actually IN, darkened along the axis the ramp has
             // nothing to say about. `right: false` — home's hero is one left-aligned column.
             crate::ui::widgets::hero_scrim(p, env.hero_a, false);
@@ -796,7 +833,12 @@ fn backdrop_art(p: Painter, tex: (u32, f32, f32), sp: f32, dx: f32, a: f32) {
     if t == 0 || a <= 0.01 || !on_axis(dx, SCR_W, SCR_W, 0.0) {
         return;
     }
-    p.tex(t, art_rect(tex, sp, dx), 0.0, theme::with_a(theme::TINT_WHITE, a * (1.0 - sp)));
+    p.tex(
+        t,
+        art_rect(tex, sp, dx),
+        0.0,
+        theme::with_a(theme::TINT_WHITE, a * (1.0 - sp)),
+    );
 }
 
 /// The frame the hero's backdrop photograph is drawn into: the panel, lifted with the snap dive,
@@ -971,14 +1013,32 @@ fn shared_by(source: &str) -> String {
 /// where it starts to [`META_FLOW_W`], which is what makes the line TRUNCATE instead of ever
 /// becoming two: there is no wrap in this flow to reach, only a right bound to elide against.
 /// Returns the whole line's advance, source run included.
-fn meta_source_flow(base_w: f32, source: &str, mut run: impl FnMut(&str, f32, f32, c_int, c_int, [f32; 4]) -> f32) -> f32 {
+fn meta_source_flow(
+    base_w: f32,
+    source: &str,
+    mut run: impl FnMut(&str, f32, f32, c_int, c_int, [f32; 4]) -> f32,
+) -> f32 {
     if source.is_empty() {
         return base_w; // one source: the meta line is the item's facts and nothing else
     }
     let mut dx = base_w + SOURCE_PAD;
-    dx += run("\u{b7}", dx, META_FLOW_W - dx, theme::size::BODY, 0, theme::TEXT_SEPARATOR);
+    dx += run(
+        "\u{b7}",
+        dx,
+        META_FLOW_W - dx,
+        theme::size::BODY,
+        0,
+        theme::TEXT_SEPARATOR,
+    );
     dx += SOURCE_PAD;
-    dx += run(&shared_by(source), dx, META_FLOW_W - dx, theme::size::BODY, 0, theme::TEXT_TERTIARY);
+    dx += run(
+        &shared_by(source),
+        dx,
+        META_FLOW_W - dx,
+        theme::size::BODY,
+        0,
+        theme::TEXT_TERTIARY,
+    );
     dx
 }
 
@@ -1049,13 +1109,26 @@ fn hero_content(hero: &PmsMovie, source: &str, p: Painter, dx: f32) {
     // (out to [`META_FLOW_W`]): culled on the column's width, a slide would take the whole block
     // away while ~400px of that line was still on the panel, and the tail of the meta line would
     // blink out ahead of the item it belongs to.
-    if !on_axis(tx + dx, if source.is_empty() { col_w } else { META_FLOW_W }, SCR_W, 0.0) {
+    if !on_axis(
+        tx + dx,
+        if source.is_empty() {
+            col_w
+        } else {
+            META_FLOW_W
+        },
+        SCR_W,
+        0.0,
+    ) {
         return;
     }
     let d_a = theme::TEXT_SECONDARY;
 
     let is_ep = hero.kind == 3;
-    let title: &str = if is_ep && !hero.show_title.is_empty() { &hero.show_title } else { &hero.title };
+    let title: &str = if is_ep && !hero.show_title.is_empty() {
+        &hero.show_title
+    } else {
+        &hero.title
+    };
     // The title band is a FIXED layout height whatever the logo turns out to be
     // ([`hero_logo::band_h`]): a squarer logo spills upward as paint, so nothing below moves when a
     // texture lands and two pool pages with different logo aspects stay level through a flip.
@@ -1079,7 +1152,12 @@ fn hero_content(hero: &PmsMovie, source: &str, p: Painter, dx: f32) {
     } else {
         let rating = &hero.rating;
         let noun = if hero.kind == 1 { "Show" } else { "Movie" };
-        format!("{} \u{b7} {} \u{b7} {}", noun, hero.year, if rating.is_empty() { "NR" } else { rating })
+        format!(
+            "{} \u{b7} {} \u{b7} {}",
+            noun,
+            hero.year,
+            if rating.is_empty() { "NR" } else { rating }
+        )
     };
     let meta_tv = TextView::new(&meta, theme::size::BODY, d_a).max_lines(1);
     let meta_h = meta_tv.measure_h(col_w);
@@ -1097,11 +1175,15 @@ fn hero_content(hero: &PmsMovie, source: &str, p: Painter, dx: f32) {
     // two layout contracts that quote this block's height read it from `ui::hero_syn_h` now.
     let summary = &hero.summary;
     let syn = (!summary.is_empty()).then(|| crate::ui::hero_synopsis(summary, ""));
-    let syn_h = syn.as_ref().map(|tv| theme::space::SM + tv.measure_h(col_w)).unwrap_or(0.0);
+    let syn_h = syn
+        .as_ref()
+        .map(|tv| theme::space::SM + tv.measure_h(col_w))
+        .unwrap_or(0.0);
 
     // stack the measured blocks up from the anchor, then draw top-down
     let mut y = hero_stack_top(title_h, meta_h, syn_h);
-    HeroLogo::new(hero.sid, hero_logo_rk(hero), title, LogoRung::Hero).draw(p, Rect::new(tx, y, col_w, title_h));
+    HeroLogo::new(hero.sid, hero_logo_rk(hero), title, LogoRung::Hero)
+        .draw(p, Rect::new(tx, y, col_w, title_h));
     y += title_h + theme::space::MD;
     meta_tv.draw(p, Rect::new(tx, y, col_w, 0.0));
     // Guarded, because the ARGUMENT is the expensive part: `meta_drawn_w` builds a `CString` and
@@ -1139,22 +1221,27 @@ fn hero_actions(hero: &PmsMovie, env: &Env, p: Painter, dx: f32, live: bool) {
     let pill_y = HERO_ROW_Y;
     let hf = hero_focus();
     let (cd, cgap) = (HERO_CTRL_D, HERO_CTRL_GAP); // control diameter + inter-control gap
-    // The label asks the function the PRESS applies — `app.rs`'s `play_item_now` starts this item
-    // at `metadata::resume_ns`, which refuses an offset of 10s or less, or one past 95%. Keyed on
-    // a raw `resume_ms > 0`, a four-second offset (or one the server left past the end) labelled
-    // the pill "Continue" for a play that then began at 0. The detail page's own pill takes the
-    // same route for the same reason — the word has to promise what the press delivers.
+                                                   // The label asks the function the PRESS applies — `app.rs`'s `play_item_now` starts this item
+                                                   // at `metadata::resume_ns`, which refuses an offset of 10s or less, or one past 95%. Keyed on
+                                                   // a raw `resume_ms > 0`, a four-second offset (or one the server left past the end) labelled
+                                                   // the pill "Continue" for a play that then began at 0. The detail page's own pill takes the
+                                                   // same route for the same reason — the word has to promise what the press delivers.
     let resumes = crate::metadata::resume_ns(hero.resume_ms, hero.dur_ns / 1_000_000) > 0;
     let plabel = if resumes { c"Continue" } else { c"Play" };
     let pw = Button::pill_w(plabel.as_ptr(), theme::size::BODY, true); // measured from the label it carries
-    // local (painter-relative) frames, and the screen-space rects that mirror them
+                                                                       // local (painter-relative) frames, and the screen-space rects that mirror them
     let pill = Rect::new(tx, pill_y, pw, cd);
     let info = Rect::new(tx + pw + cgap, pill_y, cd, cd);
     // The pager MARK, vertically centred on the control row: whole pixels, because an icon mask is
     // 1:1 texel content and a fractional box would soften the stroke (`icons::draw` snaps the
     // ORIGIN; the size is ours to keep whole).
     let pd = HERO_PAGER_D.round();
-    let mark = Rect::new(info.x + cd + HERO_PAGER_PAD, pill_y + (cd - pd) * 0.5, pd, pd);
+    let mark = Rect::new(
+        info.x + cd + HERO_PAGER_PAD,
+        pill_y + (cd - pd) * 0.5,
+        pd,
+        pd,
+    );
     if live {
         // recorded BEFORE the cull: a live row carried off the panel must take its hit targets
         // with it, or a click would still land on a button that is no longer there.
@@ -1177,7 +1264,13 @@ fn hero_actions(hero: &PmsMovie, env: &Env, p: Painter, dx: f32, live: bool) {
         .unwrap_or_default();
     // The pop belongs to the LIVE row only: mid-flip the outgoing ghost carries the same `hf`, and a
     // ghost that popped would draw a second focused control sliding off the panel.
-    let pop = |i: usize| if live { unsafe { addr_of!(HERO_POP).as_ref().unwrap().scale(i) } } else { 1.0 };
+    let pop = |i: usize| {
+        if live {
+            unsafe { addr_of!(HERO_POP).as_ref().unwrap().scale(i) }
+        } else {
+            1.0
+        }
+    };
     Button::new(plabel.as_ptr(), theme::size::BODY, pill)
         .icon(Icon::Play)
         .focused(hf == 0)
@@ -1275,7 +1368,11 @@ impl View for Grid {
         // bare 24, which settled a focused tile's caption inside the overscan frame
         let lo = top + GRID_TOP_Y + CARD_DY + CARD_H + 96.0 - (SCR_H - MARGIN_Y);
         let hi = top + GRID_TOP_Y - 66.0 - 96.0; // hub title band clear below the chip row
-        self.scroll_y.step(card_row::reveal(self.scroll_y.pos, lo, hi, max_y), K_SCROLL, env.dt);
+        self.scroll_y.step(
+            card_row::reveal(self.scroll_y.pos, lo, hi, max_y),
+            K_SCROLL,
+            env.dt,
+        );
     }
     fn layout(&mut self, _frame: Rect, env: &Env) {
         // full-screen root view: positions absolutely from PEEK_Y/GRID_TOP_Y by env.sp, so the
@@ -1354,7 +1451,7 @@ impl Grid {
         let rect = Rect::new(x, self.shelves[r].base_y + CARD_DY, CARD_W, CARD_H).scaled(s);
         let m = movie_at(r as c_int, c as c_int);
         let cw = crate::pms::hub_is_continue(r); // Continue Watching: amber ▶ + "show · X min left"
-        // keep the CStrings alive through the draw
+                                                 // keep the CStrings alive through the draw
         let label = m
             .map(|mm| {
                 let mut l = if cw {
@@ -1362,7 +1459,11 @@ impl Grid {
                 } else {
                     card_row::TileLabel::title(&mm.title)
                 };
-                l.caption = if cw { cw_caption(mm) } else { focused_caption(mm) };
+                l.caption = if cw {
+                    cw_caption(mm)
+                } else {
+                    focused_caption(mm)
+                };
                 l
             })
             .unwrap_or_default();
@@ -1406,7 +1507,11 @@ const SOURCE_PAD: f32 = theme::space::XS;
 ///
 /// The flow is PURE — it takes no font metric, which is also why the host suite can drive it: the
 /// per-run baseline drop is resolved in [`draw_heading`], from the very `sz`/`bold` handed out here.
-fn heading_flow(title: &str, source: &str, mut run: impl FnMut(&str, f32, c_int, c_int, [f32; 4]) -> f32) -> f32 {
+fn heading_flow(
+    title: &str,
+    source: &str,
+    mut run: impl FnMut(&str, f32, c_int, c_int, [f32; 4]) -> f32,
+) -> f32 {
     let mut dx = run(title, 0.0, theme::size::HEADLINE, 1, theme::TEXT_HEADING);
     if source.is_empty() {
         return dx; // one source: the heading is the title and nothing else
@@ -1432,7 +1537,15 @@ fn draw_heading(p: Painter, title: &str, source: &str, x: f32, y: f32) {
     heading_flow(title, source, |s, dx, sz, bold, ink| {
         // the CString must outlive the draw call, not the closure (`ui/CLAUDE.md`'s first gotcha)
         match CString::new(s) {
-            Ok(cs) => p.text(cs.as_ptr(), x + dx, crate::text::baseline_y(sz, bold, theme::size::HEADLINE, 1, y), sz, ink, 0, bold),
+            Ok(cs) => p.text(
+                cs.as_ptr(),
+                x + dx,
+                crate::text::baseline_y(sz, bold, theme::size::HEADLINE, 1, y),
+                sz,
+                ink,
+                0,
+                bold,
+            ),
             Err(_) => 0.0,
         }
     });
@@ -1506,7 +1619,10 @@ fn col_at(mx: f32, es: f32, count: usize) -> Option<usize> {
 }
 impl Grid {
     fn new() -> Self {
-        Grid { shelves: [CardRow::new(); MAX_HUBS], scroll_y: Spring::at(0.0) }
+        Grid {
+            shelves: [CardRow::new(); MAX_HUBS],
+            scroll_y: Spring::at(0.0),
+        }
     }
     /// Row `r`'s DRAWN horizontal scroll: the shelf spring folded by the hero→grid snap `sp`
     /// (the hero view shows rows unscrolled; the fold is how draw has always applied it).
@@ -1539,8 +1655,9 @@ impl Grid {
         let cur = step_row(g_fr(), 0, n);
         let ncur = step_row(g_fr(), dir, n);
         let cx = card_x(g_fc().max(0) as usize, self.eff_scroll(cur as usize, sp)) + CARD_W * 0.5;
-        let mut nc =
-            ((cx - MARGIN_X - CARD_W * 0.5 + self.eff_scroll(ncur as usize, sp)) / (CARD_W + GAP) + 0.5) as c_int;
+        let mut nc = ((cx - MARGIN_X - CARD_W * 0.5 + self.eff_scroll(ncur as usize, sp))
+            / (CARD_W + GAP)
+            + 0.5) as c_int;
         let ncount = crate::pms::hub_len(ncur as usize) as c_int;
         nc = nc.clamp(0, (ncount - 1).max(0));
         fr = ncur;
@@ -1602,7 +1719,12 @@ struct Home {
 }
 impl Home {
     fn new() -> Self {
-        Home { snap: Spring::at(0.0), bg: Backdrop::new(), hero: Hero::new(), grid: Grid::new() }
+        Home {
+            snap: Spring::at(0.0),
+            bg: Backdrop::new(),
+            hero: Hero::new(),
+            grid: Grid::new(),
+        }
     }
     fn env(&self, dt: f32) -> Env {
         let sp = self.snap.pos;
@@ -1612,7 +1734,14 @@ impl Home {
         let cfr = g_fr().clamp(0, nh - 1);
         let ncols = crate::pms::hub_len(cfr as usize).max(1) as c_int;
         let cfc = g_fc().clamp(0, (ncols - 1).min(MAX_ITEMS as c_int - 1));
-        Env { dt, screen: Rect::FULL, fr: cfr, fc: cfc, sp, hero_a: hero_alpha(sp, 0.55) }
+        Env {
+            dt,
+            screen: Rect::FULL,
+            fr: cfr,
+            fc: cfc,
+            sp,
+            hero_a: hero_alpha(sp, 0.55),
+        }
     }
 }
 impl View for Home {
@@ -1633,7 +1762,11 @@ impl View for Home {
 static mut SCENE: Option<Home> = None;
 #[inline]
 fn scene() -> &'static mut Home {
-    unsafe { (*addr_of_mut!(SCENE)).as_mut().expect("home_init not called") }
+    unsafe {
+        (*addr_of_mut!(SCENE))
+            .as_mut()
+            .expect("home_init not called")
+    }
 }
 
 pub(crate) fn home_init() {
@@ -1648,6 +1781,9 @@ pub(crate) fn home_update(dt: f32) {
         // so nothing spawns a background fetch behind the player, and a Home that came up empty
         // heals itself the moment the server answers again.
         crate::pms::pump(dt);
+        // Library discovery shares the same route policy: Home may schedule/land section jobs,
+        // while Player never drives this pump behind playback.
+        crate::browse::discover_pump();
         // The LIVE half of [`pinned_snap`]: a catalog can empty UNDER a committed snap (a profile
         // switch whose fetch fails does exactly that), and a filter on new writes cannot undo one
         // already made. Re-applied every frame, so every snap reader falls into line for free.
@@ -1660,7 +1796,8 @@ pub(crate) fn home_update(dt: f32) {
         // screen that sits here for days is precisely the failure this read-out is for)
         unsafe {
             let ms = addr_of!(status_ms).read() + dt * 1000.0;
-            addr_of_mut!(status_ms).write(ms % (crate::ui::widgets::Spinner::PERIOD_MS as f32 * 1000.0));
+            addr_of_mut!(status_ms)
+                .write(ms % (crate::ui::widgets::Spinner::PERIOD_MS as f32 * 1000.0));
         };
         unsafe {
             let cd = addr_of!(hero_flip_cd).read();
@@ -1697,9 +1834,8 @@ pub(crate) fn home_update(dt: f32) {
         // question is asked as "is the hero band focused at all, and is it on a control" — both
         // halves, or the row would sit popped behind a focused grid.
         unsafe { (*addr_of_mut!(HERO_POP)).step(hero_ctl_index(), dt) };
-        // the shared top bar's own motion — the strip's horizontal scroll (a server with more
-        // libraries than fit the row reaches the rest by scrolling the focused pill into view),
-        // its travelling capsules, and the profile chip's unfurl. Home is always this screen's
+        // the shared top bar's own motion — its travelling capsules and the profile chip's
+        // unfurl. Home is always this screen's
         // selected tab, so off the band the strip returns to the start.
         crate::ui::widgets::tab_row_update(0, top_focus(), dt);
         let env = h.env(dt);
@@ -1720,12 +1856,12 @@ pub(crate) fn home_draw() {
         let h = scene();
         let env = h.env(0.0);
         h.grid.layout(env.screen, &env); // &mut layout before the &self composite draw
-        // THE page transition, as ONE cascade-alpha push at the root of the tree: the backdrop,
-        // hero, grid and read-out are what a route change REPLACES, so they dip to the app ground
-        // and back (`ui::nav`). Nothing per-element is needed — `Painter::alpha` is multiplicative
-        // and folded into every primitive by `Painter::c`, `Painter::ambient` included since it
-        // learned to mix toward `SURFACE_APP`, which is the same colour `frame_clear` just laid
-        // down. The shared top band below is deliberately NOT on it.
+                                         // THE page transition, as ONE cascade-alpha push at the root of the tree: the backdrop,
+                                         // hero, grid and read-out are what a route change REPLACES, so they dip to the app ground
+                                         // and back (`ui::nav`). Nothing per-element is needed — `Painter::alpha` is multiplicative
+                                         // and folded into every primitive by `Painter::c`, `Painter::ambient` included since it
+                                         // learned to mix toward `SURFACE_APP`, which is the same colour `frame_clear` just laid
+                                         // down. The shared top band below is deliberately NOT on it.
         let pc = Painter::root().alpha(crate::ui::nav::page_alpha());
         h.draw(&env, pc);
         // loading / empty / error, only when there are no shelves. In the CONTENT layer (it stands
@@ -1776,7 +1912,9 @@ pub(crate) fn top_focus() -> crate::ui::widgets::TopFocus {
     }
     match hero_focus() {
         -1 => TopFocus::Chip,
-        f => hero_pill_index(f).map(TopFocus::Pill).unwrap_or(TopFocus::Away),
+        f => hero_pill_index(f)
+            .map(TopFocus::Pill)
+            .unwrap_or(TopFocus::Away),
     }
 }
 
@@ -1798,15 +1936,29 @@ static mut status_ms: f32 = 0.0;
 /// `None` overall = there IS content, so nothing is drawn over it. A background refresh that fails
 /// behind a populated Home stays silent and retries underneath rather than throwing an error over
 /// shelves the user can still use — the same rule `browse.rs` keeps for its paged grid.
-fn status_read() -> Option<(&'static std::ffi::CStr, crate::ui::widgets::StatusKind, Option<&'static std::ffi::CStr>)> {
+fn status_read() -> Option<(
+    &'static std::ffi::CStr,
+    crate::ui::widgets::StatusKind,
+    Option<&'static std::ffi::CStr>,
+)> {
     use crate::ui::widgets::StatusKind;
     if crate::pms::hub_count() > 0 {
         return None;
     }
     Some(match crate::pms::hub_state() {
-        crate::pms::HubState::Loading => (c"Loading your library\u{2026}", StatusKind::Working, None),
-        crate::pms::HubState::Failed => (c"Can't reach your Plex server", StatusKind::Failed, Some(c"Try Again")),
-        crate::pms::HubState::Ready => (c"Nothing on this server yet", StatusKind::Empty, Some(c"Refresh")),
+        crate::pms::HubState::Loading => {
+            (c"Loading your library\u{2026}", StatusKind::Working, None)
+        }
+        crate::pms::HubState::Failed => (
+            c"Can't reach your Plex server",
+            StatusKind::Failed,
+            Some(c"Try Again"),
+        ),
+        crate::pms::HubState::Ready => (
+            c"Nothing on this server yet",
+            StatusKind::Empty,
+            Some(c"Refresh"),
+        ),
     })
 }
 
@@ -1949,7 +2101,12 @@ pub(crate) fn focused_card_rect() -> Option<Rect> {
         return None;
     }
     let sp = h.snap.pos;
-    let base = Rect::new(card_x(c, h.grid.eff_scroll(r, sp)), h.grid.shelves[r].base_y + CARD_DY, CARD_W, CARD_H);
+    let base = Rect::new(
+        card_x(c, h.grid.eff_scroll(r, sp)),
+        h.grid.shelves[r].base_y + CARD_DY,
+        CARD_W,
+        CARD_H,
+    );
     Some(base.scaled(h.grid.shelves[r].scale(c.min(MAX_ITEMS - 1))))
 }
 
@@ -2010,11 +2167,23 @@ mod tests {
         for i in 0..32usize {
             let f = hero_focus_for_pill(i);
             assert_ne!(f, -1, "pill {i} must not alias the profile chip");
-            assert_eq!(hero_pill_index(f), Some(i), "pill {i} must decode back to itself");
+            assert_eq!(
+                hero_pill_index(f),
+                Some(i),
+                "pill {i} must decode back to itself"
+            );
         }
         assert_eq!(hero_pill_index(-1), None, "the profile chip is not a pill");
-        assert_eq!(hero_pill_index(0), None, "the hero Play pill is not a tab pill");
-        assert_eq!(hero_pill_index(c_int::MIN), None, "the grid-card sentinel is not a pill");
+        assert_eq!(
+            hero_pill_index(0),
+            None,
+            "the hero Play pill is not a tab pill"
+        );
+        assert_eq!(
+            hero_pill_index(c_int::MIN),
+            None,
+            "the grid-card sentinel is not a pill"
+        );
     }
 
     /// Regression (unit 10): the top band clamped focus at `MAX_TABS - 1` = 4 sections, so a
@@ -2043,7 +2212,11 @@ mod tests {
             for _ in 0..npill - 1 {
                 f = (f + 1).clamp(lo, HERO_NBTN as c_int - 1);
             }
-            assert_eq!(hero_pill_index(f), Some(0), "LEFT must return to the Home pill");
+            assert_eq!(
+                hero_pill_index(f),
+                Some(0),
+                "LEFT must return to the Home pill"
+            );
             f = (f + 1).clamp(lo, HERO_NBTN as c_int - 1);
             assert_eq!(f, -1, "one more LEFT leaves the pills for the profile chip");
         }
@@ -2061,13 +2234,25 @@ mod tests {
         let _g = FOCUS.lock().unwrap_or_else(|e| e.into_inner());
         let saved = hero_focus();
         crate::browse::reset();
-        assert_eq!(crate::ui::widgets::tab_count(), 2, "no sections discovered: Home and Search");
+        assert_eq!(
+            crate::ui::widgets::tab_count(),
+            4,
+            "Home, Movies, TV Shows and Search are permanent"
+        );
         set_hero_focus(c_int::MIN / 2);
         let last = crate::ui::widgets::search_pill();
-        assert_eq!(hero_focus(), hero_focus_for_pill(last), "past the last pill clamps onto it");
+        assert_eq!(
+            hero_focus(),
+            hero_focus_for_pill(last),
+            "past the last pill clamps onto it"
+        );
         assert_eq!(hero_pill_index(hero_focus()), Some(last));
         set_hero_focus(999);
-        assert_eq!(hero_focus(), HERO_NBTN as c_int - 1, "past the action row clamps to its end");
+        assert_eq!(
+            hero_focus(),
+            HERO_NBTN as c_int - 1,
+            "past the action row clamps to its end"
+        );
         set_hero_focus(saved);
     }
 
@@ -2098,7 +2283,10 @@ mod tests {
         let _g = FOCUS.lock().unwrap_or_else(|e| e.into_inner());
         let saved = hero_focus();
         crate::pms::seed_for_test(3, crate::pms::HubState::Ready);
-        assert!(crate::pms::hero_pool_len() > 1, "a pool with somewhere to page to");
+        assert!(
+            crate::pms::hero_pool_len() > 1,
+            "a pool with somewhere to page to"
+        );
 
         // (0) **the COUNT, as literals.** Everything below is about "the row's last control", which
         // is true of a row of any length — phrased in `HERO_NBTN` the whole test passes unchanged
@@ -2107,8 +2295,15 @@ mod tests {
         // `[Rect; HERO_NBTN]`, so this pins the pointer half as well — there is no third slot for a
         // hit target to be recorded into, whatever a future `hero_actions` tries to write.
         const LAST_CTRL: c_int = 1; // the info disc — the row's right-hand end
-        assert_eq!(HERO_NBTN, 2, "the hero row holds the Play pill and the info disc, and nothing else");
-        assert_eq!(unsafe { addr_of!(hero_btns).read() }.len(), 2, "…and so does the hit-target array");
+        assert_eq!(
+            HERO_NBTN, 2,
+            "the hero row holds the Play pill and the info disc, and nothing else"
+        );
+        assert_eq!(
+            unsafe { addr_of!(hero_btns).read() }.len(),
+            2,
+            "…and so does the hit-target array"
+        );
 
         // (1) the chevron is unreachable: RIGHT walks pill → info and then stops walking
         set_hero_focus(0);
@@ -2129,7 +2324,11 @@ mod tests {
         unsafe { addr_of_mut!(hero_flip_cd).write(0.0) };
         let before = hero_index();
         home_hero_key(SDLK_RIGHT);
-        assert_ne!(hero_index(), before, "RIGHT at the row's end must page the billboard");
+        assert_ne!(
+            hero_index(),
+            before,
+            "RIGHT at the row's end must page the billboard"
+        );
         assert_eq!(hero_focus(), LAST_CTRL, "…and must not move focus doing it");
 
         // (3) the other end, unchanged: LEFT on the pill pages back
@@ -2165,13 +2364,25 @@ mod tests {
         set_hero_focus(-1);
         assert_eq!(top_focus(), TopFocus::Chip, "-1 IS the profile chip");
         set_hero_focus(hero_focus_for_pill(0));
-        assert_eq!(top_focus(), TopFocus::Pill(0), "…and the packed negatives are the pills");
+        assert_eq!(
+            top_focus(),
+            TopFocus::Pill(0),
+            "…and the packed negatives are the pills"
+        );
         // LEFT off the Home pill is the chip: the same walk the Library and Search adopted, and
         // the reason it is the same walk is that it is the only one the geometry admits.
         home_hero_key(SDLK_LEFT);
-        assert_eq!(top_focus(), TopFocus::Chip, "◀ off the first pill reaches the chip");
+        assert_eq!(
+            top_focus(),
+            TopFocus::Chip,
+            "◀ off the first pill reaches the chip"
+        );
         home_hero_key(SDLK_RIGHT);
-        assert_eq!(top_focus(), TopFocus::Pill(0), "▶ walks back onto the pill it left");
+        assert_eq!(
+            top_focus(),
+            TopFocus::Pill(0),
+            "▶ walks back onto the pill it left"
+        );
 
         for f in 0..HERO_NBTN as c_int {
             set_hero_focus(f);
@@ -2198,11 +2409,22 @@ mod tests {
         let saved = hero_focus();
         crate::browse::seed_two_source_table_for_test();
         assert_eq!(crate::browse::section_count(), 4, "four libraries…");
-        assert_eq!(crate::ui::widgets::tab_count(), 4, "…and Home + two pills + Search");
+        assert_eq!(
+            crate::ui::widgets::tab_count(),
+            4,
+            "…and Home + two pills + Search"
+        );
 
         set_hero_focus(c_int::MIN / 2); // walk RIGHT past the end of the row
-        assert_eq!(hero_pill_index(hero_focus()), Some(3), "the last pill is the last PILL, not the last library");
-        assert!(crate::ui::widgets::is_search_pill(3), "…and that pill is Search, not a section");
+        assert_eq!(
+            hero_pill_index(hero_focus()),
+            Some(3),
+            "the last pill is the last PILL, not the last library"
+        );
+        assert!(
+            crate::ui::widgets::is_search_pill(3),
+            "…and that pill is Search, not a section"
+        );
         set_hero_focus(saved);
         crate::browse::reset();
     }
@@ -2212,8 +2434,16 @@ mod tests {
         assert_eq!(step_row(0, 1, 5), 1);
         assert_eq!(step_row(4, 1, 5), 4, "DOWN on the last row stays put");
         assert_eq!(step_row(0, -1, 5), 0, "UP on the first row stays put");
-        assert_eq!(step_row(9, 1, 5), 4, "a stale focus is pulled back into range");
-        assert_eq!(step_row(0, 1, 0), 0, "an empty catalog has no row to move to");
+        assert_eq!(
+            step_row(9, 1, 5),
+            4,
+            "a stale focus is pulled back into range"
+        );
+        assert_eq!(
+            step_row(0, 1, 0),
+            0,
+            "an empty catalog has no row to move to"
+        );
     }
 
     /// Regression: with more hubs than the fixed `shelves: [CardRow; 16]` array, a DOWN press on
@@ -2256,22 +2486,35 @@ mod tests {
         crate::pms::seed_for_test(0, HubState::Loading);
         let (_, kind, action) = status_read().expect("an empty Home must say something");
         assert_eq!(kind, StatusKind::Working);
-        assert!(action.is_none(), "a fetch in flight offers no Retry — it IS the retry");
+        assert!(
+            action.is_none(),
+            "a fetch in flight offers no Retry — it IS the retry"
+        );
 
         crate::pms::seed_for_test(0, HubState::Failed);
         let (_, kind, action) = status_read().unwrap();
         assert_eq!(kind, StatusKind::Failed);
-        assert!(action.is_some(), "an unreachable server must offer a way back");
+        assert!(
+            action.is_some(),
+            "an unreachable server must offer a way back"
+        );
 
         crate::pms::seed_for_test(0, HubState::Ready);
         let (_, kind, action) = status_read().unwrap();
-        assert_eq!(kind, StatusKind::Empty, "an empty library is an answer, not an error");
+        assert_eq!(
+            kind,
+            StatusKind::Empty,
+            "an empty library is an answer, not an error"
+        );
         assert!(action.is_some());
 
         crate::pms::seed_for_test(3, HubState::Ready);
         assert!(status_read().is_none(), "shelves silence the read-out");
         crate::pms::seed_for_test(3, HubState::Failed);
-        assert!(status_read().is_none(), "…including when a background refresh just failed");
+        assert!(
+            status_read().is_none(),
+            "…including when a background refresh just failed"
+        );
         crate::pms::reset();
     }
 
@@ -2286,11 +2529,19 @@ mod tests {
     /// `gfx::clip_clear` — and with it `glDisable` — into a binary that has no GL to link against.
     #[test]
     fn no_shelves_means_no_grid_snap() {
-        assert_eq!(pinned_snap(1.0, 0), 0.0, "an empty catalog has no grid to dive into");
+        assert_eq!(
+            pinned_snap(1.0, 0),
+            0.0,
+            "an empty catalog has no grid to dive into"
+        );
         assert_eq!(pinned_snap(0.0, 0), 0.0, "…and the hero is where it stays");
         assert_eq!(pinned_snap(1.0, 1), 1.0, "one shelf is a grid");
         assert_eq!(pinned_snap(1.0, MAX_HUBS), 1.0);
-        assert_eq!(pinned_snap(0.0, 3), 0.0, "a move back TO the hero is never filtered");
+        assert_eq!(
+            pinned_snap(0.0, 3),
+            0.0,
+            "a move back TO the hero is never filtered"
+        );
     }
 
     /// The escapes from a dead Home must survive it: the profile chip and the library tab pills
@@ -2302,16 +2553,27 @@ mod tests {
 
         crate::pms::seed_for_test(0, HubState::Failed);
         assert!(status_takes(0), "the Retry control takes the press");
-        assert!(status_takes(c_int::MIN), "…and so does an OK that thinks it is on a grid card");
-        assert!(!status_takes(-1), "the profile chip still opens the account menu");
-        // the tab strip is uncapped since unit 10 (it scrolls, so every discovered section is
-        // focusable) — walk a generous range rather than a constant that no longer exists
-        for i in 0..8usize {
-            assert!(!status_takes(hero_focus_for_pill(i)), "tab pill {i} still enters its library");
+        assert!(
+            status_takes(c_int::MIN),
+            "…and so does an OK that thinks it is on a grid card"
+        );
+        assert!(
+            !status_takes(-1),
+            "the profile chip still opens the account menu"
+        );
+        // Every permanent destination bypasses Home's catalog status action.
+        for i in 0..crate::ui::widgets::tab_count() {
+            assert!(
+                !status_takes(hero_focus_for_pill(i)),
+                "tab pill {i} still enters its library"
+            );
         }
 
         crate::pms::seed_for_test(3, HubState::Failed);
-        assert!(!status_takes(0), "with shelves up, OK belongs to the hero row again");
+        assert!(
+            !status_takes(0),
+            "with shelves up, OK belongs to the hero row again"
+        );
         crate::pms::reset();
     }
 
@@ -2354,7 +2616,8 @@ mod tests {
                         let r = base.scaled(focus);
                         // magnification is about the card's CENTRE — the anchor must not slide
                         assert!(
-                            (r.cx() - base.cx()).abs() < 0.001 && (r.cy() - base.cy()).abs() < 0.001,
+                            (r.cx() - base.cx()).abs() < 0.001
+                                && (r.cy() - base.cy()).abs() < 0.001,
                             "card {c} (scroll={scroll}, sp={sp}, focus={focus}) moved its centre"
                         );
                         // …and the rect the panel is placed beside is the one the pointer would hit
@@ -2363,7 +2626,10 @@ mod tests {
                             Some(c),
                             "anchor centre for card {c} (scroll={scroll}, sp={sp}) is not over that card"
                         );
-                        assert!(r.w >= CARD_W && r.h >= CARD_H, "focus must not shrink the card");
+                        assert!(
+                            r.w >= CARD_W && r.h >= CARD_H,
+                            "focus must not shrink the card"
+                        );
                     }
                 }
             }
@@ -2379,7 +2645,11 @@ mod tests {
 
     /// A hero item carrying an UltraBlur envelope, and nothing else the wash looks at.
     fn blurred(blur: [[f32; 3]; 4]) -> PmsMovie {
-        PmsMovie { has_blur: true, blur, ..Default::default() }
+        PmsMovie {
+            has_blur: true,
+            blur,
+            ..Default::default()
+        }
     }
 
     /// The black-frame regression, pinned at both ends of the snap.
@@ -2394,13 +2664,34 @@ mod tests {
     fn the_wash_floors_on_the_app_surface_and_never_dims_toward_black() {
         let flat = [theme::SURFACE_APP; 4];
         // "no artwork" IS the app's own ground, with no special case
-        assert_eq!(wash_corners(None, 0.0), flat, "an empty pool is the app's ground");
-        assert_eq!(wash_corners(Some(&PmsMovie::default()), 0.0), flat, "…and so is an item with no envelope");
+        assert_eq!(
+            wash_corners(None, 0.0),
+            flat,
+            "an empty pool is the app's ground"
+        );
+        assert_eq!(
+            wash_corners(Some(&PmsMovie::default()), 0.0),
+            flat,
+            "…and so is an item with no envelope"
+        );
         // the grid end of the snap lands on exactly the colour `frame_clear` already laid down —
         // where the old `dim` ramp landed on black
-        let bright = blurred([[0.95, 0.93, 0.90], [1.0, 1.0, 1.0], [0.8, 0.75, 0.2], [0.1, 0.1, 0.12]]);
-        assert_eq!(wash_corners(Some(&bright), 1.0), flat, "the dive resolves to the app ground, not to black");
-        assert_eq!(wash_corners(Some(&bright), 1.5), flat, "…and an overshooting snap cannot push past it");
+        let bright = blurred([
+            [0.95, 0.93, 0.90],
+            [1.0, 1.0, 1.0],
+            [0.8, 0.75, 0.2],
+            [0.1, 0.1, 0.12],
+        ]);
+        assert_eq!(
+            wash_corners(Some(&bright), 1.0),
+            flat,
+            "the dive resolves to the app ground, not to black"
+        );
+        assert_eq!(
+            wash_corners(Some(&bright), 1.5),
+            flat,
+            "…and an overshooting snap cannot push past it"
+        );
 
         // The tail of the dive — the exact frames that used to be near-black — for a DARK envelope
         // as much as a bright one. The bound is the one invariant that separates a WEIGHT scale
@@ -2440,8 +2731,14 @@ mod tests {
         // …and the lean does go TOWARD the artwork: a bright envelope lifts the panel off the
         // surface rather than sinking it.
         let lit = wash_corners(Some(&bright), 0.0);
-        assert!(lit[1][0] > theme::SURFACE_APP[0], "a white corner must brighten the ground it keys");
-        assert!(lit[1][0] < 1.0, "…but never all the way: it is a wash, not the photograph");
+        assert!(
+            lit[1][0] > theme::SURFACE_APP[0],
+            "a white corner must brighten the ground it keys"
+        );
+        assert!(
+            lit[1][0] < 1.0,
+            "…but never all the way: it is a wash, not the photograph"
+        );
     }
 
     /// The prefetch's index math: complete coverage of "what can be on screen next", never the page
@@ -2449,19 +2746,46 @@ mod tests {
     #[test]
     fn prefetch_order_wraps_and_never_warms_the_page_on_screen() {
         let mut out = [0 as c_int; 2 * HERO_PREFETCH];
-        assert_eq!(prefetch_order(0, 0, &mut out), 0, "an empty pool has no neighbours");
-        assert_eq!(prefetch_order(0, 1, &mut out), 0, "…and neither does a one-page pool");
-        assert_eq!(prefetch_order(0, 2, &mut out), 1, "in a two-page pool +1 and -1 are the same page");
+        assert_eq!(
+            prefetch_order(0, 0, &mut out),
+            0,
+            "an empty pool has no neighbours"
+        );
+        assert_eq!(
+            prefetch_order(0, 1, &mut out),
+            0,
+            "…and neither does a one-page pool"
+        );
+        assert_eq!(
+            prefetch_order(0, 2, &mut out),
+            1,
+            "in a two-page pool +1 and -1 are the same page"
+        );
         assert_eq!(out[0], 1);
 
         for n in 2..=8 as c_int {
             for cur in 0..n {
                 let k = prefetch_order(cur, n, &mut out);
-                assert!(k <= 2 * HERO_PREFETCH, "wrote {k} entries into a {}-slot buffer", 2 * HERO_PREFETCH);
-                assert_eq!(out[0], (cur + 1).rem_euclid(n), "forward first (n={n}, cur={cur})");
+                assert!(
+                    k <= 2 * HERO_PREFETCH,
+                    "wrote {k} entries into a {}-slot buffer",
+                    2 * HERO_PREFETCH
+                );
+                assert_eq!(
+                    out[0],
+                    (cur + 1).rem_euclid(n),
+                    "forward first (n={n}, cur={cur})"
+                );
                 for i in 0..k {
-                    assert!((0..n).contains(&out[i]), "page {} is outside a {n}-page pool", out[i]);
-                    assert_ne!(out[i], cur, "warmed the page already on screen (n={n}, cur={cur})");
+                    assert!(
+                        (0..n).contains(&out[i]),
+                        "page {} is outside a {n}-page pool",
+                        out[i]
+                    );
+                    assert_ne!(
+                        out[i], cur,
+                        "warmed the page already on screen (n={n}, cur={cur})"
+                    );
                     assert!(!out[..i].contains(&out[i]), "warmed page {} twice", out[i]);
                 }
             }
@@ -2476,9 +2800,15 @@ mod tests {
     #[test]
     fn the_prefetch_is_armed_only_from_a_settled_hero() {
         assert!(prefetch_armed(0.0, false), "billboard up, nothing moving");
-        assert!(!prefetch_armed(0.0, true), "mid-flip, the incoming layer IS the thing being waited on");
+        assert!(
+            !prefetch_armed(0.0, true),
+            "mid-flip, the incoming layer IS the thing being waited on"
+        );
         for &sp in &[0.05f32, 0.2, 1.0] {
-            assert!(!prefetch_armed(sp, false), "at sp={sp} the billboard is on its way out");
+            assert!(
+                !prefetch_armed(sp, false),
+                "at sp={sp} the billboard is on its way out"
+            );
         }
     }
 
@@ -2486,15 +2816,33 @@ mod tests {
     /// either a blank panel or a fill-rate regression on the TV.
     #[test]
     fn the_ground_is_skipped_only_when_opaque_art_covers_it() {
-        assert!(wash_hidden(0.0, 1.0, None), "one fully revealed layer at rest covers the panel");
+        assert!(
+            wash_hidden(0.0, 1.0, None),
+            "one fully revealed layer at rest covers the panel"
+        );
         assert!(wash_hidden(0.0, 1.0, Some(1.0)), "…and so do two, mid-flip");
-        assert!(!wash_hidden(0.0, 0.7, None), "a layer still dissolving in shows the ground through");
-        assert!(!wash_hidden(0.0, 1.0, Some(0.7)), "…and so does the OTHER layer of a flip");
-        assert!(!wash_hidden(0.0, 0.0, None), "no art at all is exactly what the ground is for");
+        assert!(
+            !wash_hidden(0.0, 0.7, None),
+            "a layer still dissolving in shows the ground through"
+        );
+        assert!(
+            !wash_hidden(0.0, 1.0, Some(0.7)),
+            "…and so does the OTHER layer of a flip"
+        );
+        assert!(
+            !wash_hidden(0.0, 0.0, None),
+            "no art at all is exactly what the ground is for"
+        );
         // the snap both fades the art by (1 - sp) and slides it up off the bottom of the panel, so
         // full reveals do not mean coverage once the dive has begun
-        assert!(!wash_hidden(0.2, 1.0, Some(1.0)), "a diving hero uncovers the panel however revealed its art is");
-        assert!(!wash_hidden(1.0, 1.0, None), "the grid shows the ground (which by then is the flat surface)");
+        assert!(
+            !wash_hidden(0.2, 1.0, Some(1.0)),
+            "a diving hero uncovers the panel however revealed its art is"
+        );
+        assert!(
+            !wash_hidden(1.0, 1.0, None),
+            "the grid shows the ground (which by then is the flat surface)"
+        );
     }
 
     /// **The upward spill, bounded.** A hero clearLogo now overflows the TOP of its reserved band as
@@ -2507,9 +2855,9 @@ mod tests {
     #[test]
     fn the_home_hero_logo_never_reaches_the_top_bar() {
         const META_H: f32 = 28.0 * 1.32; // one line of `size::BODY` at TextView's leading
-        // the shared hero blurb at its cap — READ from `ui::hero_syn_h`, never quoted, so a change
-        // to the rung or the leading moves this contract with it instead of silently invalidating
-        // it (it was the literal `3.0 * 29.0` while home's blurb was MICRO/29)
+                                         // the shared hero blurb at its cap — READ from `ui::hero_syn_h`, never quoted, so a change
+                                         // to the rung or the leading moves this contract with it instead of silently invalidating
+                                         // it (it was the literal `3.0 * 29.0` while home's blurb was MICRO/29)
         let syn_h = crate::ui::hero_syn_h(crate::ui::HERO_SYN_MAXLINES);
         let band = hero_logo::band_h(LogoRung::Hero);
         // the worst case is the TALLEST text stack — it puts the band, and so the spill above it,
@@ -2528,12 +2876,38 @@ mod tests {
     /// could drift: an episode's hero headlines the SERIES, so it is the show's logo, not its own.
     #[test]
     fn the_hero_logo_key_is_the_shows_for_an_episode() {
-        let ep = PmsMovie { kind: 3, rk: "42".into(), show_rk: "7".into(), ..Default::default() };
-        assert_eq!(hero_logo_rk(&ep), "7", "an episode's hero wears the show's logotype");
-        let orphan = PmsMovie { kind: 3, rk: "42".into(), ..Default::default() };
-        assert_eq!(hero_logo_rk(&orphan), "42", "…falling back to its own when the server sent no parent");
-        let movie = PmsMovie { kind: 0, rk: "42".into(), show_rk: "7".into(), ..Default::default() };
-        assert_eq!(hero_logo_rk(&movie), "42", "a movie is never keyed to a stray parent");
+        let ep = PmsMovie {
+            kind: 3,
+            rk: "42".into(),
+            show_rk: "7".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            hero_logo_rk(&ep),
+            "7",
+            "an episode's hero wears the show's logotype"
+        );
+        let orphan = PmsMovie {
+            kind: 3,
+            rk: "42".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            hero_logo_rk(&orphan),
+            "42",
+            "…falling back to its own when the server sent no parent"
+        );
+        let movie = PmsMovie {
+            kind: 0,
+            rk: "42".into(),
+            show_rk: "7".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            hero_logo_rk(&movie),
+            "42",
+            "a movie is never keyed to a stray parent"
+        );
     }
 
     /// The caption and the resume bar beside it are ONE claim about an item — `Grid::draw` takes
@@ -2553,7 +2927,11 @@ mod tests {
         };
         // never started, stopped exactly at the end, and a stale offset PAST it
         for m in [ep(0), ep(45 * 60_000), ep(60 * 60_000)] {
-            assert!(m.resume_frac().is_none(), "offset {} is not in progress", m.resume_ms);
+            assert!(
+                m.resume_frac().is_none(),
+                "offset {} is not in progress",
+                m.resume_ms
+            );
             let cap = cw_caption(&m).expect("a Continue Watching episode always captions");
             assert!(
                 !cap.to_str().unwrap().contains("left"),
@@ -2562,8 +2940,14 @@ mod tests {
             );
         }
         let mid = ep(20 * 60_000);
-        assert!(mid.resume_frac().is_some(), "20 minutes into 45 IS in progress");
-        assert_eq!(cw_caption(&mid).unwrap().to_str().unwrap(), "Laura \u{00b7} 25 min left");
+        assert!(
+            mid.resume_frac().is_some(),
+            "20 minutes into 45 IS in progress"
+        );
+        assert_eq!(
+            cw_caption(&mid).unwrap().to_str().unwrap(),
+            "Laura \u{00b7} 25 min left"
+        );
     }
 
     // ---- the shelf heading's source annotation (Shared Sources, deliverable C) ----------------
@@ -2588,7 +2972,13 @@ mod tests {
     fn flow(title: &str, source: &str) -> (f32, Vec<Run>) {
         let mut runs: Vec<Run> = Vec::new();
         let w = heading_flow(title, source, |s, dx, sz, bold, ink| {
-            runs.push(Run { text: s.to_string(), dx, sz, bold, ink });
+            runs.push(Run {
+                text: s.to_string(),
+                dx,
+                sz,
+                bold,
+                ink,
+            });
             width_of(s, sz, bold)
         });
         (w, runs)
@@ -2604,10 +2994,18 @@ mod tests {
     #[test]
     fn a_shelf_with_no_source_draws_exactly_the_title_and_nothing_else() {
         let (w, runs) = flow("Recently Added", "");
-        assert_eq!(runs.len(), 1, "an empty source must produce no further runs at all");
+        assert_eq!(
+            runs.len(),
+            1,
+            "an empty source must produce no further runs at all"
+        );
         assert_eq!(runs[0].text, "Recently Added");
         assert_eq!(runs[0].dx, 0.0, "the title starts at the heading origin");
-        assert_eq!(w, width_of("Recently Added", theme::size::HEADLINE, 1), "the title's own advance, exactly");
+        assert_eq!(
+            w,
+            width_of("Recently Added", theme::size::HEADLINE, 1),
+            "the title's own advance, exactly"
+        );
     }
 
     /// (b) A source annotation can only ADD to the heading — the title in front of it is
@@ -2616,7 +3014,10 @@ mod tests {
     fn a_shared_source_extends_the_heading_past_the_title() {
         let (bare, _) = flow("Recently Added in Film Club", "");
         let (annotated, runs) = flow("Recently Added in Film Club", "friend");
-        assert!(annotated > bare, "the annotation must extend the heading ({annotated} vs {bare})");
+        assert!(
+            annotated > bare,
+            "the annotation must extend the heading ({annotated} vs {bare})"
+        );
         assert_eq!(runs.len(), 3, "title, separator, handle");
         assert_eq!(runs[0].dx, 0.0, "the title still starts at the origin");
         assert_eq!(
@@ -2626,7 +3027,11 @@ mod tests {
                 + width_of("friend", theme::size::BODY, 0),
             "the growth is exactly the dot, the handle and one pad either side of the dot"
         );
-        assert_eq!(runs[1].dx, bare + SOURCE_PAD, "the dot is one pad past the title");
+        assert_eq!(
+            runs[1].dx,
+            bare + SOURCE_PAD,
+            "the dot is one pad past the title"
+        );
         assert_eq!(
             runs[2].dx,
             runs[1].dx + width_of("\u{b7}", theme::size::BODY, 0) + SOURCE_PAD,
@@ -2641,13 +3046,33 @@ mod tests {
     #[test]
     fn each_heading_run_carries_its_own_size_weight_and_ink() {
         let (_, runs) = flow("Recently Added in Film Club", "friend");
-        assert_eq!((runs[0].sz, runs[0].bold), (theme::size::HEADLINE, 1), "the title is HEADLINE bold");
-        assert_eq!(runs[0].ink, theme::TEXT_HEADING, "…in the shared section-heading ink");
+        assert_eq!(
+            (runs[0].sz, runs[0].bold),
+            (theme::size::HEADLINE, 1),
+            "the title is HEADLINE bold"
+        );
+        assert_eq!(
+            runs[0].ink,
+            theme::TEXT_HEADING,
+            "…in the shared section-heading ink"
+        );
         assert_eq!(runs[1].text, "\u{b7}");
-        assert_eq!((runs[1].sz, runs[1].bold), (theme::size::BODY, 0), "the separator is measured at BODY regular");
-        assert_eq!(runs[1].ink, theme::TEXT_SEPARATOR, "…at the separator token's own .45");
+        assert_eq!(
+            (runs[1].sz, runs[1].bold),
+            (theme::size::BODY, 0),
+            "the separator is measured at BODY regular"
+        );
+        assert_eq!(
+            runs[1].ink,
+            theme::TEXT_SEPARATOR,
+            "…at the separator token's own .45"
+        );
         assert_eq!(runs[2].text, "friend");
-        assert_eq!((runs[2].sz, runs[2].bold), (theme::size::BODY, 0), "the handle is BODY regular, not the title's");
+        assert_eq!(
+            (runs[2].sz, runs[2].bold),
+            (theme::size::BODY, 0),
+            "the handle is BODY regular, not the title's"
+        );
         assert_eq!(runs[2].ink, theme::TEXT_TERTIARY);
         assert!(
             (runs[1].sz, runs[1].bold) == (runs[2].sz, runs[2].bold),
@@ -2680,7 +3105,14 @@ mod tests {
     fn meta_flow(base_w: f32, source: &str) -> (f32, Vec<MetaRun>) {
         let mut runs: Vec<MetaRun> = Vec::new();
         let w = meta_source_flow(base_w, source, |s, dx, budget, sz, bold, ink| {
-            runs.push(MetaRun { text: s.to_string(), dx, budget, sz, bold, ink });
+            runs.push(MetaRun {
+                text: s.to_string(),
+                dx,
+                budget,
+                sz,
+                bold,
+                ink,
+            });
             width_of(s, sz, bold).min(budget.max(0.0))
         });
         (w, runs)
@@ -2693,7 +3125,10 @@ mod tests {
     #[test]
     fn a_hero_from_our_own_server_draws_no_source_run_at_all() {
         let (w, runs) = meta_flow(420.0, "");
-        assert!(runs.is_empty(), "an empty source must produce no runs, no pad and no dot");
+        assert!(
+            runs.is_empty(),
+            "an empty source must produce no runs, no pad and no dot"
+        );
         assert_eq!(w, 420.0, "…and must not move the line's own end by a pixel");
     }
 
@@ -2705,8 +3140,15 @@ mod tests {
         let (w, runs) = meta_flow(base, "friend");
         assert_eq!(runs.len(), 2, "the separator and the run, and nothing else");
         assert_eq!(runs[0].text, "\u{b7}");
-        assert_eq!(runs[0].dx, base + SOURCE_PAD, "the dot is one pad past the facts");
-        assert_eq!(runs[1].text, "Shared by friend", "the person, not the machine");
+        assert_eq!(
+            runs[0].dx,
+            base + SOURCE_PAD,
+            "the dot is one pad past the facts"
+        );
+        assert_eq!(
+            runs[1].text, "Shared by friend",
+            "the person, not the machine"
+        );
         assert_eq!(
             runs[1].dx,
             runs[0].dx + width_of("\u{b7}", theme::size::BODY, 0) + SOURCE_PAD,
@@ -2729,11 +3171,28 @@ mod tests {
     fn the_hero_source_run_keeps_the_lines_rung_and_takes_one_step_of_ink() {
         let (_, runs) = meta_flow(420.0, "friend");
         for r in &runs {
-            assert_eq!((r.sz, r.bold), (theme::size::BODY, 0), "'{}' left the meta line's own rung", r.text);
-            assert_ne!(r.sz, theme::size::CAPTION, "the hero line is BODY — it is not E's line and must not shrink to it");
+            assert_eq!(
+                (r.sz, r.bold),
+                (theme::size::BODY, 0),
+                "'{}' left the meta line's own rung",
+                r.text
+            );
+            assert_ne!(
+                r.sz,
+                theme::size::CAPTION,
+                "the hero line is BODY — it is not E's line and must not shrink to it"
+            );
         }
-        assert_eq!(runs[0].ink, theme::TEXT_SEPARATOR, "the middot carries the separator token's own .45");
-        assert_eq!(runs[1].ink, theme::TEXT_TERTIARY, "one step under the line's TEXT_SECONDARY, never level with it");
+        assert_eq!(
+            runs[0].ink,
+            theme::TEXT_SEPARATOR,
+            "the middot carries the separator token's own .45"
+        );
+        assert_eq!(
+            runs[1].ink,
+            theme::TEXT_TERTIARY,
+            "one step under the line's TEXT_SECONDARY, never level with it"
+        );
         assert_ne!(runs[1].ink, theme::TEXT_SECONDARY);
     }
 
@@ -2747,12 +3206,28 @@ mod tests {
         let ridiculous = "a-very-long-plex-account-handle-that-nobody-would-ever-choose";
         for base in [0.0f32, 420.0, HERO_COL_W] {
             let (w, runs) = meta_flow(base, ridiculous);
-            assert_eq!(runs.len(), 2, "base {base}: a long handle is still ONE run — there is no second line to go to");
+            assert_eq!(
+                runs.len(),
+                2,
+                "base {base}: a long handle is still ONE run — there is no second line to go to"
+            );
             for r in &runs {
-                assert!(r.budget > 0.0, "base {base}: '{}' was given no room at all ({})", r.text, r.budget);
-                assert!(r.dx + r.budget <= META_FLOW_W + 1e-3, "base {base}: '{}' may elide past the bound", r.text);
+                assert!(
+                    r.budget > 0.0,
+                    "base {base}: '{}' was given no room at all ({})",
+                    r.text,
+                    r.budget
+                );
+                assert!(
+                    r.dx + r.budget <= META_FLOW_W + 1e-3,
+                    "base {base}: '{}' may elide past the bound",
+                    r.text
+                );
             }
-            assert!(w <= META_FLOW_W + 1e-3, "base {base}: the line ran to {w}, past its {META_FLOW_W} bound");
+            assert!(
+                w <= META_FLOW_W + 1e-3,
+                "base {base}: the line ran to {w}, past its {META_FLOW_W} bound"
+            );
         }
         // …and the room left at that worst case is a real annotation's worth rather than a stub —
         // a QUARTER of the whole line, which is the guard that a future widening of the hero column
@@ -2776,7 +3251,10 @@ mod tests {
     #[test]
     fn the_meta_lines_bound_keeps_the_run_inside_the_hero_wedge() {
         use crate::ui::widgets::hero_scrim_a;
-        assert!(hero_scrim_a(HERO_META_R, 1.0) > 0.0, "the line ends where the wedge has already given up");
+        assert!(
+            hero_scrim_a(HERO_META_R, 1.0) > 0.0,
+            "the line ends where the wedge has already given up"
+        );
         let wedge_end = (0..=SCR_W as i32)
             .map(|x| x as f32)
             .find(|&x| hero_scrim_a(x, 1.0) <= 0.0)
@@ -2785,6 +3263,9 @@ mod tests {
             HERO_META_R <= wedge_end - 0.2 * SCR_W,
             "the bound ({HERO_META_R}) must stay a fifth of the panel short of the wedge's end ({wedge_end})"
         );
-        assert!(HERO_META_R > MARGIN_X + HERO_COL_W, "…and past the text column, or the run has nowhere to go");
+        assert!(
+            HERO_META_R > MARGIN_X + HERO_COL_W,
+            "…and past the text column, or the run has nowhere to go"
+        );
     }
 }

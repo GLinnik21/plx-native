@@ -5,9 +5,9 @@
 //! when they overflow the frame, and everything is drawn through a `Painter` so the owner can
 //! fade/translate the whole thing in (the open animation). It knows nothing about playback or
 //! metadata: the caller builds the sections, drives selection, and reads `sel` back — so the
-//! same widget serves the in-player track menu today and a settings screen later.
+//! same widget serves the in-player track menu and the Settings, Privacy and Legal surfaces.
 #![allow(dead_code)]
-use crate::ui::label::{HAlign, Label};
+use crate::ui::label::{HAlign, Label, VAlign};
 use crate::ui::theme;
 use crate::ui::{Painter, Rect, Spring};
 use std::ffi::CString;
@@ -36,7 +36,7 @@ pub struct Row {
     pub label: String,
     pub detail: String, // optional sub-line ("" = none)
     pub badges: Vec<Badge>,
-    pub checked: bool,  // shows the leading checkmark (the ACTIVE item)
+    pub checked: bool, // shows the leading checkmark (the ACTIVE item)
     /// A **switch** rather than a choice: `Some(on)` states itself as the word `On`/`Off` at the
     /// row's TRAILING edge — never as a mark in the leading column. A mark says where you are, a
     /// word says what is set, and no row is allowed to say both; the on/off PAIR of marks this once
@@ -56,7 +56,7 @@ pub struct Row {
     /// `[icon] [label]` rows). `checked` wins the slot when both are set: a picker's active mark is
     /// state, an action glyph is only decoration.
     pub licon: Option<crate::ui::icons::Icon>,
-    pub dim: bool,      // render dimmer (unavailable / de-emphasised)
+    pub dim: bool, // render dimmer (unavailable / de-emphasised)
     /// A **non-selectable hairline** that groups the rows above it from the rows below (the item
     /// menu's navigation-vs-state divider). It occupies a global row index like any other row, but
     /// [`TableView::move_sel`] steps OVER it, [`TableView::hit_row`] refuses it, and
@@ -67,20 +67,46 @@ pub struct Row {
 }
 impl Row {
     pub fn new(label: impl Into<String>) -> Self {
-        Self { label: label.into(), detail: String::new(), badges: Vec::new(), checked: false,
-               toggle: None, value: None, value_dim: false, ticon: None, licon: None, dim: false, sep: false }
+        Self {
+            label: label.into(),
+            detail: String::new(),
+            badges: Vec::new(),
+            checked: false,
+            toggle: None,
+            value: None,
+            value_dim: false,
+            ticon: None,
+            licon: None,
+            dim: false,
+            sep: false,
+        }
     }
     /// The grouping hairline — a row that draws a rule and cannot be focused.
     pub fn separator() -> Self {
-        Self { sep: true, ..Self::new("") }
+        Self {
+            sep: true,
+            ..Self::new("")
+        }
     }
-    pub fn checked(mut self, v: bool) -> Self { self.checked = v; self }
+    pub fn checked(mut self, v: bool) -> Self {
+        self.checked = v;
+        self
+    }
     /// Mark this row a SWITCH at the given state — see [`Row::toggle`].
-    pub fn toggle(mut self, on: bool) -> Self { self.toggle = Some(on); self }
+    pub fn toggle(mut self, on: bool) -> Self {
+        self.toggle = Some(on);
+        self
+    }
     /// Give this row a trailing read-out — see [`Row::value`].
-    pub fn value(mut self, v: impl Into<String>) -> Self { self.value = Some(v.into()); self }
+    pub fn value(mut self, v: impl Into<String>) -> Self {
+        self.value = Some(v.into());
+        self
+    }
     /// Quieten the read-out a step — see [`Row::value_dim`].
-    pub fn value_dim(mut self, v: bool) -> Self { self.value_dim = v; self }
+    pub fn value_dim(mut self, v: bool) -> Self {
+        self.value_dim = v;
+        self
+    }
     /// The word this row's trailing slot shows, if any: an explicit [`Row::value`], else a switch's
     /// `On`/`Off`. ONE resolver, so the two can never both be drawn.
     fn readout(&self) -> Option<&str> {
@@ -90,23 +116,46 @@ impl Row {
             (None, None) => None,
         }
     }
-    pub fn detail(mut self, d: impl Into<String>) -> Self { self.detail = d.into(); self }
-    pub fn badge(mut self, b: Badge) -> Self { self.badges.push(b); self }
-    /// sugar: the "›" drill-in affordance is just the Chevron icon in the trailing slot
-    pub fn chevron(mut self, v: bool) -> Self {
-        if v { self.ticon = Some(crate::ui::icons::Icon::Chevron); }
+    pub fn detail(mut self, d: impl Into<String>) -> Self {
+        self.detail = d.into();
         self
     }
-    pub fn ticon(mut self, i: crate::ui::icons::Icon) -> Self { self.ticon = Some(i); self }
-    pub fn licon(mut self, i: crate::ui::icons::Icon) -> Self { self.licon = Some(i); self }
-    pub fn dim(mut self, v: bool) -> Self { self.dim = v; self }
+    pub fn badge(mut self, b: Badge) -> Self {
+        self.badges.push(b);
+        self
+    }
+    /// sugar: the "›" drill-in affordance is just the Chevron icon in the trailing slot
+    pub fn chevron(mut self, v: bool) -> Self {
+        if v {
+            self.ticon = Some(crate::ui::icons::Icon::Chevron);
+        }
+        self
+    }
+    pub fn ticon(mut self, i: crate::ui::icons::Icon) -> Self {
+        self.ticon = Some(i);
+        self
+    }
+    pub fn licon(mut self, i: crate::ui::icons::Icon) -> Self {
+        self.licon = Some(i);
+        self
+    }
+    pub fn dim(mut self, v: bool) -> Self {
+        self.dim = v;
+        self
+    }
     fn height(&self) -> f32 {
-        if self.sep { SEP_H } else if self.detail.is_empty() { ROW_H } else { ROW_H_TALL }
+        if self.sep {
+            SEP_H
+        } else if self.detail.is_empty() {
+            ROW_H
+        } else {
+            ROW_H_TALL
+        }
     }
 }
 
 pub struct Section {
-    pub header: String,    // "" = no header row
+    pub header: String, // "" = no header row
     /// Right-aligned accessory on the HEADER line — a second fact about the group, one rung down
     /// and in the header's own dim ink ("Dolby Atmos"; the Sources list's owner handle beside a
     /// machine name). It is the last run on that line and is **elided** to [`ACCESSORY_W`], so a
@@ -125,12 +174,26 @@ pub struct Section {
 }
 impl Section {
     pub fn new(header: impl Into<String>) -> Self {
-        Self { header: header.into(), accessory: String::new(), dim: false, rows: Vec::new() }
+        Self {
+            header: header.into(),
+            accessory: String::new(),
+            dim: false,
+            rows: Vec::new(),
+        }
     }
-    pub fn accessory(mut self, a: impl Into<String>) -> Self { self.accessory = a.into(); self }
+    pub fn accessory(mut self, a: impl Into<String>) -> Self {
+        self.accessory = a.into();
+        self
+    }
     /// Dim the whole group at [`GROUP_DIM_A`] — see [`Section::dim`].
-    pub fn dim(mut self, v: bool) -> Self { self.dim = v; self }
-    pub fn row(mut self, r: Row) -> Self { self.rows.push(r); self }
+    pub fn dim(mut self, v: bool) -> Self {
+        self.dim = v;
+        self
+    }
+    pub fn row(mut self, r: Row) -> Self {
+        self.rows.push(r);
+        self
+    }
 }
 
 /// A [`Row::separator`]'s row height. The hairline sits on its centre line, so this IS the gap
@@ -168,6 +231,13 @@ const DIV_H: f32 = 24.0; // gap + hairline between sections
 /// otherwise the two paddings add and the gap lands between rungs.
 pub const TOP_PAD: f32 = 20.0;
 const BOT_PAD: f32 = 20.0;
+/// Distance from a table frame's top edge to the cap-top of its first section label.
+///
+/// Route screens use this to align that label with the narrative title in the neighbouring
+/// column.  Keeping the relationship here means a future table-padding retune cannot silently
+/// break every two-column screen.
+pub const FIRST_HEADER_CAP_OFFSET: f32 = TOP_PAD + HEADER_CAP_INSET;
+const HEADER_CAP_INSET: f32 = 8.0;
 /// Pill (row) inset from the panel's left/right. `pub` for the [`ROW_H`] caller shape.
 pub const SIDE: f32 = 12.0;
 const CONTENT_PAD: f32 = 20.0; // text/check padding inside the pill (mockup rowBase 13px 20px)
@@ -203,7 +273,7 @@ const VALUE_BOLD: std::os::raw::c_int = 1;
 
 pub struct TableView {
     pub sections: Vec<Section>,
-    pub sel: i32,  // global index across all sections' rows (headers are not selectable)
+    pub sel: i32, // global index across all sections' rows (headers are not selectable)
     /// Does the LIST hold focus? `false` draws no selection pill at all — the "nothing selected"
     /// mode this widget did not have.
     ///
@@ -223,6 +293,9 @@ pub struct TableView {
     /// It no longer affects HEADERS: those are CAPS at CAPTION in both classes, because the caps
     /// are what make a header a label and a size that varied could tie with its own rows.
     pub compact: bool,
+    /// Semantic ink for section labels. Ambient routes can raise this role for contrast without
+    /// replacing the shared table header renderer or changing row/detail hierarchy.
+    pub header_ink: [f32; 4],
     // the highlight pill's top and bottom edges spring INDEPENDENTLY (content coords), so moving
     // to a taller/shorter row morphs the pill smoothly instead of snapping its height.
     hl_top: Spring,
@@ -236,6 +309,7 @@ impl TableView {
             sel: 0,
             list_focused: true,
             compact: false,
+            header_ink: theme::TEXT_TERTIARY,
             hl_top: Spring::at(0.0),
             hl_bot: Spring::at(0.0),
             scroll: Spring::at(0.0),
@@ -272,7 +346,8 @@ impl TableView {
         if !slide {
             let top = self.row_top(self.sel);
             self.hl_top.jump(top + PILL_INSET);
-            self.hl_bot.jump(top + self.row_height(self.sel) - PILL_INSET);
+            self.hl_bot
+                .jump(top + self.row_height(self.sel) - PILL_INSET);
             self.scroll.jump(0.0);
         }
     }
@@ -379,7 +454,7 @@ impl TableView {
     fn content_h(&self) -> f32 {
         let mut h = 0.0;
         self.walk(|y, _, _| h = y); // last item's top
-        // add the last row's height
+                                    // add the last row's height
         h + self.row_height(self.n_rows() - 1)
     }
 
@@ -408,7 +483,13 @@ impl TableView {
 
     pub fn draw(&self, p: Painter, frame: Rect) {
         if self.n_rows() == 0 {
-            Label::new(c"No tracks".as_ptr(), theme::size::BODY, theme::TEXT_TERTIARY).h(HAlign::Center).draw(p, frame);
+            Label::new(
+                c"No tracks".as_ptr(),
+                theme::size::BODY,
+                theme::TEXT_TERTIARY,
+            )
+            .h(HAlign::Center)
+            .draw(p, frame);
             return;
         }
         // Hard-clip everything below to the panel frame: the list overflows, so a partial edge row is
@@ -433,9 +514,19 @@ impl TableView {
         // bright thing in a panel that is telling you the server is unreachable.
         let py0 = top0 + self.hl_top.pos - scroll;
         let py1 = top0 + self.hl_bot.pos - scroll;
-        let pill = Rect::new(frame.x + SIDE, py0, frame.w - 2.0 * SIDE, (py1 - py0).max(1.0));
+        let pill = Rect::new(
+            frame.x + SIDE,
+            py0,
+            frame.w - 2.0 * SIDE,
+            (py1 - py0).max(1.0),
+        );
         if self.list_focused && pill.y + pill.h > vis_top && pill.y < vis_bot {
-            self.group_painter(p, self.section_of_row(self.sel)).rrect(pill, PILL_RAD, PILL_RAD, crate::ui::ACCENT);
+            self.group_painter(p, self.section_of_row(self.sel)).rrect(
+                pill,
+                PILL_RAD,
+                PILL_RAD,
+                crate::ui::ACCENT,
+            );
         }
 
         // ---- headers + rows ----
@@ -449,8 +540,18 @@ impl TableView {
                 if sy + HDR_H > vis_top && sy < vis_bot {
                     let sec = &self.sections[si];
                     if si > 0 {
-                        p.rect(Rect::new(content_x, sy - DIV_H * 0.5, frame.w - 2.0 * (SIDE + CONTENT_PAD), 2.0),
-                            0.0, theme::HAIRLINE, theme::HAIRLINE, 0.0);
+                        p.rect(
+                            Rect::new(
+                                content_x,
+                                sy - DIV_H * 0.5,
+                                frame.w - 2.0 * (SIDE + CONTENT_PAD),
+                                2.0,
+                            ),
+                            0.0,
+                            theme::HAIRLINE,
+                            theme::HAIRLINE,
+                            0.0,
+                        );
                     }
                     // **CAPS at CAPTION, one size in BOTH size classes.** The caps are what make a
                     // header read as a label rather than as a row, which is why the size stops
@@ -462,8 +563,18 @@ impl TableView {
                     // `to_uppercase`, not `to_ascii_uppercase`: a header is a machine name or a
                     // library name and can be any script — the share measured here is Cyrillic.
                     let hsz = theme::size::CAPTION;
+                    let cap_y = sy + HEADER_CAP_INSET;
+                    let (cap_top, baseline) = crate::text::text_cap_band(hsz, 0);
+                    let header_band = Rect::new(
+                        content_x,
+                        cap_y,
+                        (text_right - content_x).max(0.0),
+                        baseline - cap_top,
+                    );
                     if let Ok(cs) = CString::new(sec.header.to_uppercase()) {
-                        p.text(cs.as_ptr(), content_x, sy + 8.0, hsz, dimc, 0, 0);
+                        Label::new(cs.as_ptr(), hsz, self.header_ink)
+                            .v(VAlign::CapTop)
+                            .draw(p, header_band);
                     }
                     // trailing accessory, one rung down and on the header's own baseline. Elided,
                     // because it is the run that gives way (see `Section::accessory`).
@@ -475,8 +586,10 @@ impl TableView {
                         let asz = theme::size::MICRO;
                         let a = crate::text::elide(&sec.accessory, ACCESSORY_W, asz, 0, false);
                         if let Ok(ac) = CString::new(a) {
-                            let ay = crate::text::baseline_y(asz, 0, hsz, 0, sy + 8.0);
-                            p.text(ac.as_ptr(), text_right, ay, asz, dimc, 2, 0);
+                            Label::new(ac.as_ptr(), asz, self.header_ink)
+                                .h(HAlign::Right)
+                                .v(VAlign::Baseline)
+                                .draw(p, header_band);
                         }
                     }
                 }
@@ -490,8 +603,18 @@ impl TableView {
             if row.sep {
                 // grouping hairline, on the row's centre line and inset to the label column so it
                 // reads as a divider between groups rather than a full-bleed panel rule
-                p.rect(Rect::new(content_x, sy + h * 0.5 - 1.0, frame.w - 2.0 * (SIDE + CONTENT_PAD), 2.0),
-                    0.0, theme::HAIRLINE, theme::HAIRLINE, 0.0);
+                p.rect(
+                    Rect::new(
+                        content_x,
+                        sy + h * 0.5 - 1.0,
+                        frame.w - 2.0 * (SIDE + CONTENT_PAD),
+                        2.0,
+                    ),
+                    0.0,
+                    theme::HAIRLINE,
+                    theme::HAIRLINE,
+                    0.0,
+                );
                 return;
             }
             // **`list_focused` gates the INK, not just the pill.** `ink` is near-black and is only
@@ -499,14 +622,24 @@ impl TableView {
             // black-on-panel rows, which is what the owner saw the moment focus moved to the
             // Sources panel's level pills. The two are one decision and are read from one flag.
             let focused = gi == self.sel && self.list_focused;
-            let base = if focused { ink } else if row.dim { dimc } else { white };
+            let base = if focused {
+                ink
+            } else if row.dim {
+                dimc
+            } else {
+                white
+            };
             let row_bg = if focused { crate::ui::ACCENT } else { PANEL_BG };
             let cyc = sy + h * 0.5; // row vertical center
 
             // Leading column (SVG): the PICKER's tick, or an ACTION's glyph — one or the other, and
             // never a switch. A mark here says WHERE YOU ARE; what a row is SET to is a word at the
             // trailing edge (below), and no row is allowed to say both.
-            let lead = if row.checked { Some(crate::ui::icons::Icon::Check) } else { row.licon };
+            let lead = if row.checked {
+                Some(crate::ui::icons::Icon::Check)
+            } else {
+                row.licon
+            };
             if let Some(li) = lead {
                 let cs = 26.0f32;
                 let cr = Rect::new(content_x + (CHECK_W - cs) * 0.5, cyc - cs * 0.5, cs, cs);
@@ -532,7 +665,11 @@ impl TableView {
             // the whole label block, so on a two-line row it sits level with the pair rather than
             // ~16px high, level with the first line.
             if !row.badges.is_empty() {
-                let run: f32 = row.badges.iter().map(|b| crate::ui::widgets::badge_w(b.text(), None)).sum::<f32>()
+                let run: f32 = row
+                    .badges
+                    .iter()
+                    .map(|b| crate::ui::widgets::badge_w(b.text(), None))
+                    .sum::<f32>()
                     + BADGE_GAP * (row.badges.len() - 1) as f32;
                 let mut bx = text_right - trailing - run;
                 for b in row.badges.iter() {
@@ -566,7 +703,15 @@ impl TableView {
                     let vsz = theme::size::LABEL;
                     let vy = crate::text::text_vcenter_y(vsz, VALUE_BOLD, cyc);
                     let vw = crate::text::text_width(vc.as_ptr(), vsz, VALUE_BOLD);
-                    p.text(vc.as_ptr(), text_right - trailing, vy, vsz, ink, 2, VALUE_BOLD);
+                    p.text(
+                        vc.as_ptr(),
+                        text_right - trailing,
+                        vy,
+                        vsz,
+                        ink,
+                        2,
+                        VALUE_BOLD,
+                    );
                     trailing += vw + 14.0;
                 }
             }
@@ -576,7 +721,11 @@ impl TableView {
             // (layout ≠ paint — the old fixed offsets left the two lines cramped after centring).
             let two_line = !row.detail.is_empty();
             // two-line rows follow the table's size class too (compact = BODY regular titles)
-            let (tsz, tbold) = if self.compact { (theme::size::BODY, 0) } else { (theme::size::HEADLINE, 1) };
+            let (tsz, tbold) = if self.compact {
+                (theme::size::BODY, 0)
+            } else {
+                (theme::size::HEADLINE, 1)
+            };
             let (title_y, detail_y) = if two_line {
                 let (t_top, t_base) = crate::text::text_cap_band(tsz, tbold);
                 let (d_top, d_base) = crate::text::text_cap_band(theme::size::CAPTION, 0);
@@ -589,7 +738,11 @@ impl TableView {
             };
             // PLACE 2 — the label over its optional sub-line. Compact tables read their single-line
             // labels at BODY regular.
-            let (lsz, lbold) = if self.compact { (theme::size::BODY, 0) } else { (theme::size::HEADLINE, 1) };
+            let (lsz, lbold) = if self.compact {
+                (theme::size::BODY, 0)
+            } else {
+                (theme::size::HEADLINE, 1)
+            };
             let text_w = text_right - label_x - trailing;
             let lbl = crate::text::elide(&row.label, text_w, lsz, lbold, false);
             if let Ok(cs) = CString::new(lbl) {
@@ -609,10 +762,23 @@ impl TableView {
             // while the badges sat on the title's line: right-aligned and row-centred, a chip now
             // occupies the sub-line's band too, and an unbounded sub-line would run under it.
             if !row.detail.is_empty() {
-                let sub = if focused { theme::scrim_black(0.6) } else { dimc };
-                let detail = crate::text::elide(&row.detail, text_w, theme::size::CAPTION, 0, false);
+                let sub = if focused {
+                    theme::scrim_black(0.6)
+                } else {
+                    dimc
+                };
+                let detail =
+                    crate::text::elide(&row.detail, text_w, theme::size::CAPTION, 0, false);
                 if let Ok(cd) = CString::new(detail) {
-                    p.text(cd.as_ptr(), label_x, detail_y, theme::size::CAPTION, sub, 0, 0);
+                    p.text(
+                        cd.as_ptr(),
+                        label_x,
+                        detail_y,
+                        theme::size::CAPTION,
+                        sub,
+                        0,
+                        0,
+                    );
                 }
             }
         });
@@ -652,7 +818,11 @@ impl TableView {
             }
         }
         // unreachable for a valid gi (draw early-returns when there are no rows)
-        self.sections.iter().flat_map(|s| s.rows.iter()).next().unwrap()
+        self.sections
+            .iter()
+            .flat_map(|s| s.rows.iter())
+            .next()
+            .unwrap()
     }
 }
 
@@ -671,13 +841,38 @@ mod tests {
     /// the copy it grades is the copy the widget actually draws.
     #[test]
     fn a_row_states_exactly_one_trailing_read_out() {
-        assert_eq!(Row::new("Unwatched only").toggle(true).readout(), Some("On"));
-        assert_eq!(Row::new("Unwatched only").toggle(false).readout(), Some("Off"));
+        assert_eq!(
+            Row::new("Unwatched only").toggle(true).readout(),
+            Some("On")
+        );
+        assert_eq!(
+            Row::new("Unwatched only").toggle(false).readout(),
+            Some("Off")
+        );
         assert_eq!(Row::new("Genre").value("All").readout(), Some("All"));
         // both set: the explicit word wins and the switch's is NOT drawn beside it
-        assert_eq!(Row::new("Genre").value("Comedy").toggle(true).readout(), Some("Comedy"));
+        assert_eq!(
+            Row::new("Genre").value("Comedy").toggle(true).readout(),
+            Some("Comedy")
+        );
         // a leading mark is a different column with a different job — it states no value
         assert_eq!(Row::new("English").checked(true).readout(), None);
         assert_eq!(Row::new("Chapters").readout(), None);
+    }
+
+    #[test]
+    fn selection_plate_moves_toward_the_new_row_when_updated() {
+        let mut table = TableView::new();
+        table.set_sections(
+            vec![Section::new("")
+                .row(Row::new("First").detail("one"))
+                .row(Row::new("Second").detail("two"))],
+            0,
+            false,
+        );
+        let before = table.hl_top.pos;
+        table.move_sel(1);
+        table.update(1.0 / 60.0, 600.0);
+        assert!(table.hl_top.pos > before, "the focus plate must follow sel");
     }
 }

@@ -128,7 +128,11 @@ impl Ceiling {
     /// What the re-encode branch asked for before user ceilings existed: the panel's own native 4K
     /// at a rate high enough to be no bound in practice. This is the `None`/Original substitute;
     /// Auto always supplies an explicit bootstrap or controller rung.
-    pub const NATIVE_4K: Ceiling = Ceiling { max_kbps: 60000, max_w: 3840, max_h: 2160 };
+    pub const NATIVE_4K: Ceiling = Ceiling {
+        max_kbps: 60000,
+        max_w: 3840,
+        max_h: 2160,
+    };
 
     /// `videoResolution`'s value for this bound.
     pub fn resolution(&self) -> String {

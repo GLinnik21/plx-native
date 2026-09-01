@@ -23,11 +23,13 @@
 //! would point it at something it is not talking about.
 //!
 //! [`Opener`]: crate::ui::popover::Opener
-use crate::ui::consts::{SDLK_LEFT, SDLK_RIGHT, SCR_H, SCR_W};
-use crate::ui::popover::Popover;
-use crate::ui::widgets::{Button, ControlStyle, StatusOverlay};
-use crate::ui::{theme, Env, Rect, View};
-use crate::ui::label::{HAlign, Label};
+#[cfg(test)]
+use crate::ui::consts::{SCR_H, SCR_W};
+use crate::ui::consts::{SDLK_LEFT, SDLK_RIGHT};
+use crate::ui::decision_alert::{Choice as AlertChoice, DecisionAlert};
+#[cfg(test)]
+use crate::ui::widgets::StatusOverlay;
+use crate::ui::{theme, Rect};
 use std::os::raw::c_int;
 use std::ptr::{addr_of, addr_of_mut};
 
@@ -40,41 +42,6 @@ const QUESTION: &core::ffi::CStr = c"Exit PlxNative?";
 const CANCEL: &core::ffi::CStr = c"Cancel";
 const EXIT: &core::ffi::CStr = c"Exit";
 
-/// Panel width — the design's 660.
-const PANEL_W: f32 = 660.0;
-/// The design's `padding: 48 48 34`: 48 above the question, 48 either side, 34 under the buttons.
-/// The bottom is lighter than the top on purpose — a capsule's own visual mass sits lower than a
-/// line of text's, so equal padding reads bottom-heavy.
-const PAD_TOP: f32 = theme::alert::PAD;
-const PAD_X: f32 = theme::alert::PAD;
-const PAD_BOT: f32 = 34.0;
-/// Air between the question and the answers. Not a design number — the spec states the panel's
-/// padding and the buttons' frames and is silent here — so it comes off the shared gap ladder
-/// ([`theme::space`]) rather than being invented: `LG`, the rung the app already uses between a
-/// statement and the control that answers it (`StatusOverlay`'s copy → action pill).
-const Q_GAP: f32 = theme::space::LG;
-
-/// Each answer's frame width — the design's 260.
-///
-/// **Two equal choices deserve two equal frames**, which is why this is a fixed width and not
-/// [`Button::pill_w`]: measured from their labels, *Cancel* would be half again the width of
-/// *Exit* and the panel would be telling the user which one it prefers. 260 is also what keeps the
-/// pair reading as CONTROLS rather than as bands of the sheet — each is wide enough to carry its
-/// own fully-rounded 30px ends clear of the panel's own corner.
-const BTN_W: f32 = 260.0;
-/// The gap between them — the design's 20. Deliberately tight: the two answers are one control
-/// group and the ring travels between them, so they must read as a pair rather than as two
-/// unrelated pills that happen to share a row.
-const BTN_GAP: f32 = 20.0;
-
-/// How dark Home goes behind the alert.
-///
-/// Heavier than any menu's (`item_menu` .34, `alt_sources` .45, `account_menu` .5) and that is the
-/// point: a menu is a list of things you might do next, drawn beside a page you are still reading,
-/// while this is a question that stops everything until it is answered. The page behind it is
-/// context, not content.
-const SCRIM_A: f32 = 0.55;
-
 /// Which answer the ring is on. Two states rather than an index, so nothing downstream can hold a
 /// number that is not one of the two answers.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -86,25 +53,21 @@ pub enum Choice {
     Exit,
 }
 
-static mut POP: Popover = Popover::new();
-static mut SEL: Choice = Choice::Cancel;
-/// The two answers' FOCUS POP (`widgets::CtlPop`) — the same treatment every control face in the app
-/// wears, and here it is doing a second job: these two capsules are EQUAL by design (one width, one
-/// row, so the sheet does not lead with an answer), which leaves the fill and the pop as the whole of
-/// what says where the ring is.
-static mut CTL_POP: crate::ui::widgets::CtlPop<2> = crate::ui::widgets::CtlPop::new();
-
-fn pop() -> &'static mut Popover {
-    unsafe { &mut *addr_of_mut!(POP) }
+static mut ALERT: DecisionAlert = DecisionAlert::new();
+fn alert() -> &'static mut DecisionAlert {
+    unsafe { &mut *addr_of_mut!(ALERT) }
 }
 
 pub fn is_open() -> bool {
-    unsafe { (*addr_of!(POP)).is_open() }
+    unsafe { (*addr_of!(ALERT)).is_open() }
 }
 
 /// The answer the ring is on — read by the draw, by `app.rs`'s OK arm and by the host tests.
 pub fn focus() -> Choice {
-    unsafe { addr_of!(SEL).read() }
+    match unsafe { (*addr_of!(ALERT)).choice() } {
+        AlertChoice::Cancel => Choice::Cancel,
+        AlertChoice::Destructive => Choice::Exit,
+    }
 }
 
 /// Raise the alert, always on [`Choice::Cancel`].
@@ -113,24 +76,15 @@ pub fn focus() -> Choice {
 /// dismissed with, so a session that cancelled once from *Exit* would re-open sitting on *Exit*,
 /// and the second BACK-then-OK would quit where the first did not.
 pub fn open() {
-    unsafe { addr_of_mut!(SEL).write(Choice::Cancel) };
-    pop().open();
-    crate::ui::idle::invalidate();
+    alert().open();
 }
 
 pub fn close() {
-    pop().close();
-    // A discrete change with no spring behind it: the panel is simply gone next frame, and on a
-    // settled Home nothing else would ask for that frame.
-    crate::ui::idle::invalidate();
+    alert().close();
 }
 
 pub fn update(dt: f32) {
-    if is_open() {
-        pop().update(dt);
-        let sel = matches!(focus(), Choice::Exit) as usize;
-        unsafe { (*addr_of_mut!(CTL_POP)).step(Some(sel), dt) };
-    }
+    alert().update(dt);
 }
 
 /// LEFT/RIGHT between the two answers — pure, so the focus model is host-testable without a window.
@@ -146,7 +100,10 @@ pub(crate) fn step(cur: Choice, sym: c_int) -> Choice {
 }
 
 pub fn move_focus(sym: c_int) {
-    unsafe { addr_of_mut!(SEL).write(step(focus(), sym)) };
+    alert().set_choice(match step(focus(), sym) {
+        Choice::Cancel => AlertChoice::Cancel,
+        Choice::Exit => AlertChoice::Destructive,
+    });
 }
 
 /// Commit the focused answer and take the alert down. The CALLER performs it — this module knows
@@ -177,18 +134,12 @@ pub(crate) struct Layout {
 /// same boundary `StatusOverlay::bands` documents). So the measurement is the caller's and every
 /// placement decision in the panel is gradeable without a window.
 pub(crate) fn layout(q_h: f32) -> Layout {
-    let h = PAD_TOP + q_h + Q_GAP + StatusOverlay::CTRL_H + PAD_BOT;
-    let panel = Rect::new((SCR_W - PANEL_W) * 0.5, (SCR_H - h) * 0.5, PANEL_W, h);
-    // The answers are centred on the sheet rather than pinned to its padding: with two fixed 260s
-    // in a 660 sheet the row is narrower than the content column, and a group of equals is centred.
-    let row_w = BTN_W * 2.0 + BTN_GAP;
-    let bx = panel.cx() - row_w * 0.5;
-    let by = panel.y + panel.h - PAD_BOT - StatusOverlay::CTRL_H;
+    let shared = crate::ui::decision_alert::layout(q_h);
     Layout {
-        panel,
-        question: Rect::new(panel.x + PAD_X, panel.y + PAD_TOP, panel.w - 2.0 * PAD_X, q_h),
-        cancel: Rect::new(bx, by, BTN_W, StatusOverlay::CTRL_H),
-        exit: Rect::new(bx + BTN_W + BTN_GAP, by, BTN_W, StatusOverlay::CTRL_H),
+        panel: shared.panel,
+        question: shared.question,
+        cancel: shared.cancel,
+        exit: shared.destructive,
     }
 }
 
@@ -225,44 +176,16 @@ impl Layout {
 /// A miss parks nothing and reports `false`, which is [`Layout::hit`]'s rule intact: "not either" is
 /// no answer to a yes/no question, so a click on the scrim leaves the alert exactly as it was.
 pub fn press_at(x: f32, y: f32) -> bool {
-    let Some(c) = measured().hit(x, y) else { return false };
-    unsafe { addr_of_mut!(SEL).write(c) };
-    true
+    alert().press_at(x, y)
 }
 
 /// The modal dim, drawn as part of the HOST PAGE — see the module doc and `Popover::scrim`.
 pub fn draw_scrim() {
-    if is_open() {
-        pop().scrim(SCRIM_A);
-    }
+    alert().draw_scrim();
 }
 
 pub fn draw() {
-    if !is_open() {
-        return;
-    }
-    // `content_painter`, NOT `painter`: the scrim is already on the page.
-    let p = pop().content_painter(Popover::RISE);
-    let l = measured();
-    pop().panel(p, l.panel, theme::ALERT_PANEL_RAD);
-
-    let env = Env::inert();
-    Label::new(QUESTION.as_ptr(), theme::size::TITLE, theme::TEXT_PRIMARY)
-        .bold()
-        .h(HAlign::Center)
-        .draw(p, l.question);
-
-    let sel = focus();
-    let pop = unsafe { addr_of!(CTL_POP).as_ref().unwrap() };
-    Button::new(CANCEL.as_ptr(), theme::size::BODY, l.cancel)
-        .focused(sel == Choice::Cancel)
-        .scale(pop.scale(0))
-        .draw(&env, p);
-    Button::new(EXIT.as_ptr(), theme::size::BODY, l.exit)
-        .style(ControlStyle::Danger)
-        .focused(sel == Choice::Exit)
-        .scale(pop.scale(1))
-        .draw(&env, p);
+    alert().draw(QUESTION, CANCEL, EXIT);
 }
 
 crate::dev::latched_flag!(
@@ -293,8 +216,16 @@ mod tests {
     fn left_right_walk_the_pair_and_clamp_at_both_ends() {
         assert_eq!(step(Choice::Cancel, SDLK_RIGHT as c_int), Choice::Exit);
         assert_eq!(step(Choice::Exit, SDLK_LEFT as c_int), Choice::Cancel);
-        assert_eq!(step(Choice::Cancel, SDLK_LEFT as c_int), Choice::Cancel, "no wrap onto Exit");
-        assert_eq!(step(Choice::Exit, SDLK_RIGHT as c_int), Choice::Exit, "no wrap off the end");
+        assert_eq!(
+            step(Choice::Cancel, SDLK_LEFT as c_int),
+            Choice::Cancel,
+            "no wrap onto Exit"
+        );
+        assert_eq!(
+            step(Choice::Exit, SDLK_RIGHT as c_int),
+            Choice::Exit,
+            "no wrap off the end"
+        );
     }
 
     /// Anything that is not LEFT or RIGHT leaves the ring where it is — the alert swallows the
@@ -317,15 +248,25 @@ mod tests {
     fn the_two_answers_are_equal_frames_inside_the_panel() {
         let l = layout(Q_H);
         assert_eq!(l.panel.w, 660.0);
-        assert!((l.panel.cx() - SCR_W * 0.5).abs() < 0.01, "the sheet is centred");
+        assert!(
+            (l.panel.cx() - SCR_W * 0.5).abs() < 0.01,
+            "the sheet is centred"
+        );
         assert!((l.panel.cy() - SCR_H * 0.5).abs() < 0.01);
 
         assert_eq!(l.cancel.w, 260.0);
         assert_eq!(l.exit.w, 260.0, "two equal choices, two equal frames");
-        assert_eq!(l.cancel.h, StatusOverlay::CTRL_H, "the app's one control height");
+        assert_eq!(
+            l.cancel.h,
+            StatusOverlay::CTRL_H,
+            "the app's one control height"
+        );
         assert_eq!(l.exit.h, StatusOverlay::CTRL_H);
         assert_eq!(l.cancel.y, l.exit.y, "one row");
-        assert!((l.exit.x - (l.cancel.x + l.cancel.w) - 20.0).abs() < 0.01, "the design's 20px gap");
+        assert!(
+            (l.exit.x - (l.cancel.x + l.cancel.w) - 20.0).abs() < 0.01,
+            "the design's 20px gap"
+        );
         assert!(
             l.cancel.x >= l.panel.x && l.exit.x + l.exit.w <= l.panel.x + l.panel.w,
             "both answers inside the sheet"
@@ -346,10 +287,19 @@ mod tests {
     fn the_sheet_fits_its_content_at_any_measurement() {
         for q_h in [1.0, Q_H, 64.0, 120.0] {
             let l = layout(q_h);
-            assert!((l.question.y - l.panel.y - 48.0).abs() < 0.01, "48 above the question");
-            assert!((l.question.x - l.panel.x - 48.0).abs() < 0.01, "48 either side");
+            assert!(
+                (l.question.y - l.panel.y - 48.0).abs() < 0.01,
+                "48 above the question"
+            );
+            assert!(
+                (l.question.x - l.panel.x - 48.0).abs() < 0.01,
+                "48 either side"
+            );
             assert!((l.question.w - (l.panel.w - 96.0)).abs() < 0.01);
-            assert!(l.question.y + l.question.h <= l.cancel.y, "the question clears the answers");
+            assert!(
+                l.question.y + l.question.h <= l.cancel.y,
+                "the question clears the answers"
+            );
             assert!(
                 l.cancel.y + l.cancel.h <= l.panel.y + l.panel.h,
                 "…and the answers clear the sheet's own bottom edge (q_h={q_h})"
@@ -365,12 +315,26 @@ mod tests {
         assert_eq!(l.hit(l.cancel.cx(), l.cancel.cy()), Some(Choice::Cancel));
         assert_eq!(l.hit(l.exit.cx(), l.exit.cy()), Some(Choice::Exit));
         // the 20px alley between them belongs to neither
-        assert_eq!(l.hit((l.cancel.x + l.cancel.w + l.exit.x) * 0.5, l.cancel.cy()), None);
-        assert_eq!(l.hit(l.panel.cx(), l.panel.y + 8.0), None, "the question is not a control");
-        assert_eq!(l.hit(10.0, 10.0), None, "a click on the scrim is a miss, not a dismissal");
+        assert_eq!(
+            l.hit((l.cancel.x + l.cancel.w + l.exit.x) * 0.5, l.cancel.cy()),
+            None
+        );
+        assert_eq!(
+            l.hit(l.panel.cx(), l.panel.y + 8.0),
+            None,
+            "the question is not a control"
+        );
+        assert_eq!(
+            l.hit(10.0, 10.0),
+            None,
+            "a click on the scrim is a miss, not a dismissal"
+        );
         // and the edges belong to the pill they are drawn on, both ends
         assert_eq!(l.hit(l.cancel.x, l.cancel.y), Some(Choice::Cancel));
-        assert_eq!(l.hit(l.exit.x + l.exit.w, l.exit.y + l.exit.h), Some(Choice::Exit));
+        assert_eq!(
+            l.hit(l.exit.x + l.exit.w, l.exit.y + l.exit.h),
+            Some(Choice::Exit)
+        );
     }
 
     /// The sheet's corner is the token, and it is the outer shape rather than a fifth capsule: a
@@ -386,7 +350,10 @@ mod tests {
     fn the_sheet_reads_as_a_sheet_and_not_as_a_control() {
         let capsule = StatusOverlay::CTRL_H * 0.5;
         assert_eq!(theme::ALERT_PANEL_RAD, 32.0);
-        assert!(theme::ALERT_PANEL_RAD > capsule, "the sheet is the OUTER shape");
+        assert!(
+            theme::ALERT_PANEL_RAD > capsule,
+            "the sheet is the OUTER shape"
+        );
         assert!(
             theme::ALERT_PANEL_RAD < capsule * 2.0,
             "…but a sheet corner near double its controls' is a button, not a container"

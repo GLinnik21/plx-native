@@ -147,8 +147,8 @@ struct DetailView {
     // through the tabs would fire a blocking PMS `/children` fetch every repeat tick.
     pending_season: c_int, // tab focused but not yet loaded (-1 = none / already loaded)
     season_settle: f32,    // seconds the pending season has been stable
-    related: CardRow,   // the Related row = the SAME animated shelf component the home grid uses
-    cast: CardRow,      // Cast & Crew row — the same component, circular RowStyle::CAST
+    related: CardRow,      // the Related row = the SAME animated shelf component the home grid uses
+    cast: CardRow,         // Cast & Crew row — the same component, circular RowStyle::CAST
     last_resume_ns: i64, // resume position (ns) on_ok just started (0 = from start); app.rs seeks here
     // Which conditional controls the hero row carried the last time its focus was resolved. The
     // row's control SET is derived from the loaded item and from the resolved copy list, both of
@@ -408,7 +408,7 @@ const TAB_GAP: f32 = theme::space::SM;
 /// so a change to the padding can't silently change the gap (which is what 52 vs 18 used to hide).
 const TAB_ADVANCE: f32 = 2.0 * TAB_PAD + TAB_GAP;
 const SEASON_SETTLE: f32 = 0.2; // hold a season tab this long (s) before its episodes are fetched
-// Episodes: landscape stills + under-card metadata
+                                // Episodes: landscape stills + under-card metadata
 const EP_ANIM_MAX: usize = 40; // per-episode pop-spring count (episodes past this don't animate the pop)
 const EP_W: f32 = 420.0;
 const EP_H: f32 = 236.0; // 16:9-ish still
@@ -500,7 +500,7 @@ const REL_H: f32 = CARD_H; // 375
 const REL_GAP: f32 = GAP; // 30
 const REL_LABEL_H: f32 = 46.0; // "Related" heading → poster row
 const REL_UNDER_H: f32 = 54.0; // poster row → tile title → block bottom
-// Cast & Crew row (circular headshots)
+                               // Cast & Crew row (circular headshots)
 const CAST_D: f32 = 190.0; // headshot diameter
 const CAST_SLOT: f32 = 230.0; // per-member horizontal pitch (room for the name)
 const CAST_LABEL_H: f32 = 60.0; // "Cast & Crew" heading → headshot row
@@ -589,7 +589,10 @@ fn disc_verb(ctl: HeroCtl, name_show: bool) -> Option<(usize, &'static std::ffi:
 /// what lets [`hero_col`] carry the focus across a press that flips it.
 fn watch_index(set: HeroSet) -> Option<c_int> {
     let (v, n) = hero_ctls(set);
-    v[..n].iter().position(|&c| is_watch_ctl(c)).map(|i| i as c_int)
+    v[..n]
+        .iter()
+        .position(|&c| is_watch_ctl(c))
+        .map(|i| i as c_int)
 }
 
 /// Is `ctl` the watched toggle, wearing either face?
@@ -623,7 +626,13 @@ fn disc_caps() -> [f32; 2] {
             lw[slot] = crate::text::text_width(label.as_ptr(), theme::size::BODY, 1);
         }
     }
-    disc_caps_at(set, hero_pill_w(), alt_pill_w(), view().disc_unfurl.map(|s| s.pos), lw)
+    disc_caps_at(
+        set,
+        hero_pill_w(),
+        alt_pill_w(),
+        view().disc_unfurl.map(|s| s.pos),
+        lw,
+    )
 }
 
 /// …and the rule itself, PURE (the split every measured thing in this row takes — see
@@ -655,13 +664,20 @@ fn disc_caps() -> [f32; 2] {
 /// together rather than one at a time.
 fn disc_caps_at(set: HeroSet, pill: f32, alt: f32, e: [f32; 2], label_w: [f32; 2]) -> [f32; 2] {
     let (_, n) = hero_ctls(set);
-    let closed = HeroWidths { pill, alt, disc: [CD; 2] };
+    let closed = HeroWidths {
+        pill,
+        alt,
+        disc: [CD; 2],
+    };
     let last = hero_btn_rect_at(set, n as c_int - 1, 0.0, closed);
     let budget = CircleButton::label_budget(CD, FACTS_R - (last.x + last.w));
     if label_w[0].max(label_w[1]) > budget {
         return [CD; 2];
     }
-    [CircleButton::cap_w(CD, e[0], label_w[0]), CircleButton::cap_w(CD, e[1], label_w[1])]
+    [
+        CircleButton::cap_w(CD, e[0], label_w[0]),
+        CircleButton::cap_w(CD, e[1], label_w[1]),
+    ]
 }
 
 /// The hero action-row control rect for index `i` at row top `y`.
@@ -697,7 +713,11 @@ struct HeroWidths {
 /// The live widths. Separated from [`hero_btn_rect_at`] for the reason that function's doc gives:
 /// every one of these reaches SDL_ttf, and the host suite links none.
 fn hero_widths() -> HeroWidths {
-    HeroWidths { pill: hero_pill_w(), alt: alt_pill_w(), disc: disc_caps() }
+    HeroWidths {
+        pill: hero_pill_w(),
+        alt: alt_pill_w(),
+        disc: disc_caps(),
+    }
 }
 /// The accumulation itself, PURE: the drawn frame of control `i` in `set`, given both pills'
 /// measured widths. One walk, so a variable-width control in the MIDDLE of the row (which the alt
@@ -765,7 +785,9 @@ fn strip_at(mx: f32, sx: f32, n: usize, pitch: f32, w: f32) -> Option<usize> {
 /// not reach through `view()` for a second one (minting a second `&'static mut` inside that borrow
 /// is aliasing UB — the same warning `person.rs`'s `update` carries).
 fn row_at(idx: c_int) -> Option<&'static PmsMovie> {
-    (idx >= 0).then(|| crate::pms::movie(idx as usize)).flatten()
+    (idx >= 0)
+        .then(|| crate::pms::movie(idx as usize))
+        .flatten()
 }
 
 /// the selected catalog row (backdrop art/blur), if any
@@ -842,8 +864,12 @@ fn has_starring(d: &metadata::Detail) -> bool {
 /// at a time, exactly as an item with no cast drops its "Starring" line.
 fn hero_credit(d: &metadata::Detail) -> Option<(&'static str, Vec<&str>)> {
     if d.is_show {
-        let names: Vec<&str> =
-            d.crew.iter().filter(|c| c.role.contains("Writer")).map(|c| c.tag.as_str()).collect();
+        let names: Vec<&str> = d
+            .crew
+            .iter()
+            .filter(|c| c.role.contains("Writer"))
+            .map(|c| c.tag.as_str())
+            .collect();
         return (!names.is_empty()).then_some(("Created by", names));
     }
     let names: Vec<&str> = d.directors.iter().map(|s| s.as_str()).collect();
@@ -903,7 +929,11 @@ fn hero_art_path(m: Option<&PmsMovie>) -> String {
     hero_episode()
         .map(|e| e.thumb.clone())
         .filter(|s| !s.is_empty())
-        .or_else(|| d.filter(|d| is_episode(d)).map(|d| d.thumb.clone()).filter(|s| !s.is_empty()))
+        .or_else(|| {
+            d.filter(|d| is_episode(d))
+                .map(|d| d.thumb.clone())
+                .filter(|s| !s.is_empty())
+        })
         .or_else(|| m.filter(|m| !m.art.is_empty()).map(|m| m.art.clone()))
         .or_else(|| d.map(|d| d.art.clone()).filter(|s| !s.is_empty()))
         .unwrap_or_default()
@@ -923,9 +953,13 @@ fn hero_art_sid(m: Option<&PmsMovie>) -> crate::plex::ServerId {
 }
 
 fn hero_resume_ns() -> i64 {
-    let Some(d) = metadata::current() else { return 0 };
+    let Some(d) = metadata::current() else {
+        return 0;
+    };
     if d.is_show {
-        hero_episode().map(|e| metadata::resume_ns(e.resume_ms, e.dur_ms)).unwrap_or(0)
+        hero_episode()
+            .map(|e| metadata::resume_ns(e.resume_ms, e.dur_ms))
+            .unwrap_or(0)
     } else {
         metadata::resume_ns(d.resume_ms, d.dur_ms)
     }
@@ -1001,7 +1035,9 @@ fn hero_watch_state(d: &metadata::Detail, resume: i64) -> PosterMark {
 /// still fetching, which is the state that draws the single "mark as watched" disc, i.e. the row
 /// the page has always shown during that window.
 fn hero_mark() -> PosterMark {
-    metadata::current().map(|d| hero_watch_state(d, hero_resume_ns())).unwrap_or_default()
+    metadata::current()
+        .map(|d| hero_watch_state(d, hero_resume_ns()))
+        .unwrap_or_default()
 }
 
 /// A control in the hero action row, named rather than numbered.
@@ -1097,7 +1133,11 @@ fn hero_ctls(set: HeroSet) -> ([HeroCtl; 6], usize) {
         n += 1;
     }
     // the watched toggle, wearing the face of the write it would perform
-    v[n] = if set.mark == PosterMark::Watched { HeroCtl::MarkUnwatched } else { HeroCtl::MarkWatched };
+    v[n] = if set.mark == PosterMark::Watched {
+        HeroCtl::MarkUnwatched
+    } else {
+        HeroCtl::MarkWatched
+    };
     n += 1;
     (v, n)
 }
@@ -1166,9 +1206,10 @@ fn hero_col() -> c_int {
             // nothing and the focus falls to the clamp. That happens to land right today only
             // because the toggle is last; saying it outright is what keeps it right if anything is
             // ever appended after it.
-            let landed = was
-                .and_then(|c| index_of(now, c))
-                .or_else(|| was.filter(|c| is_watch_ctl(*c)).and_then(|_| watch_index(now)));
+            let landed = was.and_then(|c| index_of(now, c)).or_else(|| {
+                was.filter(|c| is_watch_ctl(*c))
+                    .and_then(|_| watch_index(now))
+            });
             if let Some(i) = landed {
                 v.col = i;
             }
@@ -1308,7 +1349,7 @@ fn ep_meta_layout(title: &str, has_date: bool, summary: &str) -> (f32, f32, f32)
         .measure_h(EP_W);
     let (lt, lb) = crate::text::text_cap_band(theme::size::BODY, 1); // title cap-top/baseline offsets
     let title_base = EP_TITLE_DY + (title_h - EP_TITLE_LEAD) + (lb - lt); // last-line baseline below ty
-    // summary: a TextView anchors its cap band at the draw-y, so the ink gap needs no correction
+                                                                          // summary: a TextView anchors its cap band at the draw-y, so the ink gap needs no correction
     let summary_y = title_base + EP_TITLE_SUMMARY_GAP;
     let (st, sb) = crate::text::text_cap_band(theme::size::CAPTION, 0); // summary line offsets
     let summary_h = if summary.is_empty() {
@@ -1320,7 +1361,11 @@ fn ep_meta_layout(title: &str, has_date: bool, summary: &str) -> (f32, f32, f32)
             .measure_h(EP_W)
     };
     // last ink baseline above the date: the summary's last line, or the title's when there is none
-    let base = if summary.is_empty() { title_base } else { summary_y + (summary_h - EP_SUMMARY_LEAD) + (sb - st) };
+    let base = if summary.is_empty() {
+        title_base
+    } else {
+        summary_y + (summary_h - EP_SUMMARY_LEAD) + (sb - st)
+    };
     let (mt, mb) = crate::text::text_cap_band(theme::size::MICRO, 0); // date offsets
     let date_y = base + EP_SUMMARY_DATE_GAP - mt; // raw Painter::text draw-y for the MICRO date line
     let total = if has_date { date_y + mb } else { base };
@@ -1345,7 +1390,11 @@ fn ep_meta_h() -> f32 {
         d.rk.hash(&mut h);
         d.cur_season.hash(&mut h);
         d.episodes.len().hash(&mut h);
-        d.episodes.first().map(|e| e.rk.as_str()).unwrap_or("").hash(&mut h);
+        d.episodes
+            .first()
+            .map(|e| e.rk.as_str())
+            .unwrap_or("")
+            .hash(&mut h);
         h.finish().max(1) // 0 is the "empty" sentinel
     };
     unsafe {
@@ -1603,7 +1652,11 @@ pub(crate) fn move_focus(sym: c_int) {
         // (Information/Languages/Accessibility = cols 1..=3) move among themselves.
         if sec == 5 {
             if col >= 1 {
-                let nc = if sym == SDLK_LEFT { (col - 1).max(1) } else { (col + 1).min(3) };
+                let nc = if sym == SDLK_LEFT {
+                    (col - 1).max(1)
+                } else {
+                    (col + 1).min(3)
+                };
                 if nc != col {
                     v.col = nc;
                     v.card_scale.jump(1.0);
@@ -1615,12 +1668,16 @@ pub(crate) fn move_focus(sym: c_int) {
         if n <= 0 {
             return;
         }
-        let nc = if sym == SDLK_LEFT { (col - 1).max(0) } else { (col + 1).min(n - 1) };
+        let nc = if sym == SDLK_LEFT {
+            (col - 1).max(0)
+        } else {
+            (col + 1).min(n - 1)
+        };
         if nc != col {
             v.col = nc;
             v.card_scale.jump(1.0); // re-pop the newly-focused card
-            // focusing a season tab queues that season; update() fetches it once focus settles, so a
-            // held LEFT/RIGHT scans the tabs without a blocking fetch on every repeat tick.
+                                    // focusing a season tab queues that season; update() fetches it once focus settles, so a
+                                    // held LEFT/RIGHT scans the tabs without a blocking fetch on every repeat tick.
             if sec == 1 {
                 v.pending_season = nc;
                 v.season_settle = 0.0;
@@ -1656,7 +1713,11 @@ pub(crate) fn move_focus(sym: c_int) {
         // clears `current()` for the whole fetch, and a DOWN in that window must fall straight through
         // to the generic escape rather than consume itself moving between two rows of nothing.
         if sec == 2 && n_items(2) > 0 {
-            let want = if sym == SDLK_DOWN { EpRow::Text } else { EpRow::Still };
+            let want = if sym == SDLK_DOWN {
+                EpRow::Text
+            } else {
+                EpRow::Still
+            };
             if v.ep_row != want {
                 v.ep_row = want;
                 return;
@@ -1665,7 +1726,11 @@ pub(crate) fn move_focus(sym: c_int) {
         let (secs, n) = sections();
         let avail = &secs[..n];
         let pos = avail.iter().position(|&s| s == sec).unwrap_or(0);
-        let np = if sym == SDLK_UP { pos.saturating_sub(1) } else { (pos + 1).min(avail.len().saturating_sub(1)) };
+        let np = if sym == SDLK_UP {
+            pos.saturating_sub(1)
+        } else {
+            (pos + 1).min(avail.len().saturating_sub(1))
+        };
         let ns = avail[np];
         if ns != sec {
             // remember where this row was left — only the horizontally-scrolling strips
@@ -1675,11 +1740,13 @@ pub(crate) fn move_focus(sym: c_int) {
             }
             v.section = ns;
             v.card_scale.jump(1.0); // pop the card in the newly-entered row
-            // land on the active season when entering the tabs; restore the remembered item for
-            // the episode/related/cast rows (their h-scroll held, so the row truly stays put);
-            // else the first item
+                                    // land on the active season when entering the tabs; restore the remembered item for
+                                    // the episode/related/cast rows (their h-scroll held, so the row truly stays put);
+                                    // else the first item
             let start = match ns {
-                1 => metadata::current().map(|d| d.cur_season as c_int).unwrap_or(0),
+                1 => metadata::current()
+                    .map(|d| d.cur_season as c_int)
+                    .unwrap_or(0),
                 2 | 3 | 4 => v.saved_col[ns as usize].clamp(0, (n_items(ns) - 1).max(0)),
                 _ => 0,
             };
@@ -1688,7 +1755,11 @@ pub(crate) fn move_focus(sym: c_int) {
             // tabs lands on the still, coming UP from the shelf below lands on the metadata block that
             // is nearest — the geometric rule, and the other half of the UP/DOWN inverse above.
             if ns == 2 {
-                v.ep_row = if sym == SDLK_UP { EpRow::Text } else { EpRow::Still };
+                v.ep_row = if sym == SDLK_UP {
+                    EpRow::Text
+                } else {
+                    EpRow::Still
+                };
             }
         }
     }
@@ -1749,9 +1820,18 @@ fn tabs_layout(d: &crate::metadata::Detail) -> &'static [TabLay] {
         let mut x = MARGIN_X;
         let mut out = Vec::with_capacity(d.seasons.len());
         for (i, s) in d.seasons.iter().enumerate() {
-            let label = if s.title.is_empty() { format!("Season {}", s.index) } else { s.title.clone() };
+            let label = if s.title.is_empty() {
+                format!("Season {}", s.index)
+            } else {
+                s.title.clone()
+            };
             if let Ok(lc) = CString::new(label) {
-                let mut lay = TabLay { i, x, w: 0.0, label: lc };
+                let mut lay = TabLay {
+                    i,
+                    x,
+                    w: 0.0,
+                    label: lc,
+                };
                 lay.w = crate::text::text_width(lay.label.as_ptr(), theme::size::BODY, 1);
                 x += lay.w + TAB_ADVANCE;
                 out.push(lay);
@@ -1812,7 +1892,14 @@ fn ep_hscroll_target() -> f32 {
         return v.ep_hscroll.pos;
     }
     let n = n_items(2).max(0) as usize;
-    card_row::scroll_into_view(v.ep_hscroll.pos, v.col.max(0) as usize, n, EP_W, EP_GAP, SCR_W - 2.0 * MARGIN_X)
+    card_row::scroll_into_view(
+        v.ep_hscroll.pos,
+        v.col.max(0) as usize,
+        n,
+        EP_W,
+        EP_GAP,
+        SCR_W - 2.0 * MARGIN_X,
+    )
 }
 
 /// The hero-synopsis TextView — now [`crate::ui::hero_synopsis`], the block BOTH heroes build, so
@@ -1857,12 +1944,20 @@ fn hero_blurb(m: Option<&PmsMovie>) -> (String, String) {
                         1,
                     )
                     - crate::text::text_width(c":".as_ptr(), theme::size::LABEL, 1);
-                format!(" \u{b7} {}", crate::text::elide(&ep.title, room.max(0.0), theme::size::LABEL, 1, false))
+                format!(
+                    " \u{b7} {}",
+                    crate::text::elide(&ep.title, room.max(0.0), theme::size::LABEL, 1, false)
+                )
             };
-            return (format!("S{}, E{}{}:", ep.season, ep.index, title), ep.summary.clone());
+            return (
+                format!("S{}, E{}{}:", ep.season, ep.index, title),
+                ep.summary.clone(),
+            );
         }
     }
-    let own = d.map(|d| d.summary.clone()).unwrap_or_else(|| m.map(|m| m.summary.clone()).unwrap_or_default());
+    let own = d
+        .map(|d| d.summary.clone())
+        .unwrap_or_else(|| m.map(|m| m.summary.clone()).unwrap_or_default());
     (String::new(), own)
 }
 
@@ -1870,7 +1965,9 @@ fn hero_blurb(m: Option<&PmsMovie>) -> (String, String) {
 /// reserves the ratings band. Answered from the same place the paint reads, so the flow and the
 /// pixels agree about a band that comes and goes with the metadata.
 fn has_ratings() -> bool {
-    metadata::current().map(|d| !d.ratings.is_empty()).unwrap_or(false)
+    metadata::current()
+        .map(|d| !d.ratings.is_empty())
+        .unwrap_or(false)
 }
 
 /// The hero text column's y-chain, computed ONCE per frame for BOTH the painter ([`draw_hero`]) and
@@ -1899,7 +1996,11 @@ pub(crate) struct HeroChain {
 
 fn hero_layout(m: Option<&PmsMovie>) -> HeroChain {
     let (lead, body) = hero_blurb(m);
-    let syn_h = if body.is_empty() { 0.0 } else { hero_synopsis(&body, &lead).measure_h(HERO_TEXT_W) };
+    let syn_h = if body.is_empty() {
+        0.0
+    } else {
+        hero_synopsis(&body, &lead).measure_h(HERO_TEXT_W)
+    };
     hero_chain(syn_h, has_ratings())
 }
 
@@ -1923,7 +2024,13 @@ pub(crate) fn hero_chain(syn_h: f32, has_ratings: bool) -> HeroChain {
     // of the facts row; `Details Screen.dc.html` now puts it in the right-hand PEOPLE column beside
     // the buttons, where it is BOTTOM-anchored ([`people_bottom`]) and so costs the chain nothing —
     // the button row hangs off the facts line for every item, whatever the credits say.
-    HeroChain { meta_y, ratings_y, syn_y, facts_y, btn_y: facts_y + BTN_DY }
+    HeroChain {
+        meta_y,
+        ratings_y,
+        syn_y,
+        facts_y,
+        btn_y: facts_y + BTN_DY,
+    }
 }
 
 pub(crate) fn update(dt: f32) {
@@ -1961,13 +2068,15 @@ pub(crate) fn update(dt: f32) {
     let hst = ep_hscroll_target();
     let tst = tab_hscroll_target();
     let amb = amb_target(amb_blur()); // reaches view() via `selected` — same rule
-    // The season strip's pill spans, resolved BEFORE `view()` is borrowed (same rule as the targets
-    // above; `tabs_layout` is cached per season set, so this is a pointer, not a layout pass).
+                                      // The season strip's pill spans, resolved BEFORE `view()` is borrowed (same rule as the targets
+                                      // above; `tabs_layout` is cached per season set, so this is a pointer, not a layout pass).
     let tab_lays: &[TabLay] = metadata::current()
         .filter(|d| !d.seasons.is_empty())
         .map(|d| tabs_layout(d))
         .unwrap_or(&[]);
-    let tab_sel = metadata::current().map(|d| d.cur_season as c_int).unwrap_or(-1);
+    let tab_sel = metadata::current()
+        .map(|d| d.cur_season as c_int)
+        .unwrap_or(-1);
     // Which disc the ring is on, resolved BEFORE `view()` is borrowed — same rule as the targets
     // above, since `focus`/`hero_set` both reach `view()` themselves.
     let disc_foc = focused_disc_slot();
@@ -1980,18 +2089,39 @@ pub(crate) fn update(dt: f32) {
     // the page ground dissolves toward the item's colours (the loaded envelope lands mid-visit, so
     // this is the only path that picks it up); `AmbientWash::K` is the one rate every page wash shares
     v.amb.step(amb, AmbientWash::K, dt);
-    crate::ui::anim::probe("detail.scroll", v.column.scroll.pos, v.column.scroll.vel, sct, dt);
-    v.card_scale.step(crate::ui::widgets::CARD_FOCUS_SCALE, 300.0, dt);
-    crate::ui::anim::probe("detail.card", v.card_scale.pos, v.card_scale.vel, crate::ui::widgets::CARD_FOCUS_SCALE, dt);
+    crate::ui::anim::probe(
+        "detail.scroll",
+        v.column.scroll.pos,
+        v.column.scroll.vel,
+        sct,
+        dt,
+    );
+    v.card_scale
+        .step(crate::ui::widgets::CARD_FOCUS_SCALE, 300.0, dt);
+    crate::ui::anim::probe(
+        "detail.card",
+        v.card_scale.pos,
+        v.card_scale.vel,
+        crate::ui::widgets::CARD_FOCUS_SCALE,
+        dt,
+    );
     // per-episode pop springs: focused cell → CARD_FOCUS_SCALE, all others ease back to 1.0 (so a
     // just-deselected episode animates its pop + lifted shadow out instead of snapping). Step every
     // spring each frame (cheap), same discipline as CardRow.
     // …and only while the STILL sub-row holds focus: with focus on the metadata block the panel under
     // it is the focus mark, so the still eases back down rather than wearing a second one.
-    let ecol = if v.section == 2 && v.ep_row == EpRow::Still { v.col.max(0) as usize } else { usize::MAX };
+    let ecol = if v.section == 2 && v.ep_row == EpRow::Still {
+        v.col.max(0) as usize
+    } else {
+        usize::MAX
+    };
     let en = n_items(2).max(0) as usize;
     for (i, sp) in v.ep_scale.iter_mut().enumerate() {
-        let t = if i == ecol && i < en { crate::ui::widgets::CARD_FOCUS_SCALE } else { 1.0 };
+        let t = if i == ecol && i < en {
+            crate::ui::widgets::CARD_FOCUS_SCALE
+        } else {
+            1.0
+        };
         sp.step(t, 300.0, dt);
     }
     // The discs' unfurl: the focused one opens, the other (and both, once the ring leaves the hero
@@ -2010,9 +2140,21 @@ pub(crate) fn update(dt: f32) {
     // focus is on the row, and closed the moment it leaves for the episodes below or the hero above.
     v.season_pop.step((v.section == 1).then_some(0), dt);
     v.ep_hscroll.step(hst, 240.0, dt);
-    crate::ui::anim::probe("detail.epscroll", v.ep_hscroll.pos, v.ep_hscroll.vel, hst, dt);
+    crate::ui::anim::probe(
+        "detail.epscroll",
+        v.ep_hscroll.pos,
+        v.ep_hscroll.vel,
+        hst,
+        dt,
+    );
     v.tab_hscroll.step(tst, 240.0, dt);
-    crate::ui::anim::probe("detail.tabscroll", v.tab_hscroll.pos, v.tab_hscroll.vel, tst, dt);
+    crate::ui::anim::probe(
+        "detail.tabscroll",
+        v.tab_hscroll.pos,
+        v.tab_hscroll.vel,
+        tst,
+        dt,
+    );
     // …and the capsules that ride inside that scroll, on the shared component's own stiffness (also
     // 240 — the strip and the highlight in it must settle as one object). A season strip with no
     // seasons hands both capsules an empty span table, i.e. "nothing to mark", so they fade out in
@@ -2021,14 +2163,22 @@ pub(crate) fn update(dt: f32) {
     // `SelMark::Lands`: the season plate does not slide between pills. Changing season here always
     // happens with the focus capsule already sitting on the destination, so the grey plate's travel
     // is hidden under it except for the edge that crawls out from behind — see `SelMark::Lands`.
-    v.tabs.update(tab_sel, tab_foc, |i| tab_span(tab_lays, i), SelMark::Lands, dt);
+    v.tabs.update(
+        tab_sel,
+        tab_foc,
+        |i| tab_span(tab_lays, i),
+        SelMark::Lands,
+        dt,
+    );
     // Related is the shared home-shelf component now: step its per-card scale springs + scroll spring
     // (focused only when the Related section holds focus, else the scales ease back and scroll freezes).
     let rfoc = (v.section == 3).then_some(v.col.max(0) as usize);
-    v.related.update(n_items(3) as usize, rfoc, &RowStyle::HOME, dt);
+    v.related
+        .update(n_items(3) as usize, rfoc, &RowStyle::HOME, dt);
     // Cast is the same shared shelf component (circular RowStyle::CAST): spring magnification + scroll.
     let cfoc = (v.section == 4).then_some(v.col.max(0) as usize);
-    v.cast.update(n_items(4) as usize, cfoc, &RowStyle::CAST, dt);
+    v.cast
+        .update(n_items(4) as usize, cfoc, &RowStyle::CAST, dt);
     // the "Also available" panel's own appear spring + list scroll (no-op while it is closed), and
     // its headless stand-in, which can only be built once the item has LANDED (a mount deliberately
     // keeps `current()` empty for the whole fetch, so at `reset` time there is nothing to copy)
@@ -2045,7 +2195,9 @@ pub(crate) fn update(dt: f32) {
         if v.season_settle >= SEASON_SETTLE {
             let ps = v.pending_season;
             v.pending_season = -1;
-            let cur = metadata::current().map(|d| d.cur_season as c_int).unwrap_or(-1);
+            let cur = metadata::current()
+                .map(|d| d.cur_season as c_int)
+                .unwrap_or(-1);
             if ps != cur {
                 metadata::load_season(ps.max(0) as usize);
             }
@@ -2054,7 +2206,14 @@ pub(crate) fn update(dt: f32) {
 }
 
 fn env_of(dt: f32) -> Env {
-    Env { dt, screen: Rect::FULL, fr: focus(), fc: 0, sp: 1.0, hero_a: 1.0 }
+    Env {
+        dt,
+        screen: Rect::FULL,
+        fr: focus(),
+        fc: 0,
+        sp: 1.0,
+        hero_a: 1.0,
+    }
 }
 
 pub(crate) fn draw() {
@@ -2159,7 +2318,10 @@ impl Column for DetailView {
             return None; // hero focused → no scrolling child is focused
         }
         let (s, n) = sections();
-        s[..n].iter().position(|&x| x == self.section).map(|p| p - 1)
+        s[..n]
+            .iter()
+            .position(|&x| x == self.section)
+            .map(|p| p - 1)
     }
     fn draw_child(&self, i: usize, env: &Env, p: Painter) {
         use crate::ui::profile::phase;
@@ -2207,7 +2369,10 @@ fn row_blur(m: Option<&PmsMovie>) -> Option<[[f32; 3]; 4]> {
 /// ([`hero_episode`]) because the hero is about that episode, but the GROUND is what the whole page
 /// is about, and it must not change colour when you browse to another season tab.
 fn amb_blur() -> Option<[[f32; 3]; 4]> {
-    metadata::current().filter(|d| d.has_blur).map(|d| d.blur).or_else(|| row_blur(selected()))
+    metadata::current()
+        .filter(|d| d.has_blur)
+        .map(|d| d.blur)
+        .or_else(|| row_blur(selected()))
 }
 
 /// The ground's target corners. Pure — the host suite's hook into this whole feature.
@@ -2241,7 +2406,9 @@ const BASE_SCRIM_FOOT_A: f32 = 0.95;
 /// grades `1 − (1 − base_scrim_a) · (1 − hero_scrim_a)` at this page's real text ys, which it reads
 /// from [`hero_chain`].
 pub(crate) fn base_scrim_a(y: f32, hero_vis: f32) -> f32 {
-    BASE_SCRIM_FOOT_A * hero_vis.clamp(0.0, 1.0) * ((y - HERO_BASE_SCRIM_Y0).max(0.0) / (SCR_H - HERO_BASE_SCRIM_Y0)).min(1.0)
+    BASE_SCRIM_FOOT_A
+        * hero_vis.clamp(0.0, 1.0)
+        * ((y - HERO_BASE_SCRIM_Y0).max(0.0) / (SCR_H - HERO_BASE_SCRIM_Y0)).min(1.0)
 }
 
 fn draw_backdrop(p: Painter, m: Option<&PmsMovie>, scroll: f32, amb: AmbientWash) {
@@ -2263,7 +2430,13 @@ fn draw_backdrop(p: Painter, m: Option<&PmsMovie>, scroll: f32, amb: AmbientWash
     // Which picture (`hero_art_path` owns the ladder and its rationale), and at what DECODED size —
     // the size is what lets the blit COVER the panel instead of stretching to it.
     let (art_tex, art_w, art_h) = if art_a > 0.01 {
-        resolve_tex_wh_on(hero_art_sid(m), &hero_art_path(m), HERO_ART.0, HERO_ART.1, 0)
+        resolve_tex_wh_on(
+            hero_art_sid(m),
+            &hero_art_path(m),
+            HERO_ART.0,
+            HERO_ART.1,
+            0,
+        )
     } else {
         (0, 0.0, 0.0)
     };
@@ -2293,7 +2466,12 @@ fn draw_backdrop(p: Painter, m: Option<&PmsMovie>, scroll: f32, amb: AmbientWash
         // (the pre-decode window). Not snapped: scaled content never is (`docs/agent-reference.md`'s
         // rasterization contract) and the cover rect is fractional by construction.
         let frame = Rect::FULL.cover(art_w, art_h);
-        p.tex(art_tex, frame, 0.0, theme::with_a(theme::dim(theme::TINT_WHITE, d), art_a)); // white dimmed by scroll `d`
+        p.tex(
+            art_tex,
+            frame,
+            0.0,
+            theme::with_a(theme::dim(theme::TINT_WHITE, d), art_a),
+        ); // white dimmed by scroll `d`
     }
     // The hero's TEXT SCRIM, in two parts — tied to the hero's own fade (they serve that text), so
     // both clear once the hero is gone rather than lingering the whole scroll (a wasted
@@ -2319,7 +2497,11 @@ fn draw_backdrop(p: Painter, m: Option<&PmsMovie>, scroll: f32, amb: AmbientWash
         // exactly the condition that column is DRAWN on ([`has_people`]): the mirrored wedge exists
         // for it alone, and an item PMS returned no cast and no crew for was paying a quarter of a
         // million blended fragments a frame to darken an empty corner.
-        crate::ui::widgets::hero_scrim(p, hero_vis, metadata::current().map(has_people).unwrap_or(false));
+        crate::ui::widgets::hero_scrim(
+            p,
+            hero_vis,
+            metadata::current().map(has_people).unwrap_or(false),
+        );
     }
     // (Nothing follows. The shelf gray that used to fade in here — so the below-hero rows sat on the
     // app's base gray whatever the item's artwork was — is the GROUND's job now: the wash above is
@@ -2340,12 +2522,21 @@ fn draw_hero(p: Painter, env: &Env, m: Option<&PmsMovie>) {
     // fine-print line below already wrap to. Borrow from the loaded Detail (the common case) —
     // cloning rk/title/summary every frame was pure churn; the catalog fallback (`m`, pre-load
     // frames only) clones from the catalog row. ----
-    let rk_owned = if d.is_none() { m.map(|m| m.rk.clone()).unwrap_or_default() } else { String::new() };
+    let rk_owned = if d.is_none() {
+        m.map(|m| m.rk.clone()).unwrap_or_default()
+    } else {
+        String::new()
+    };
     let rk: &str = d.map(|d| d.rk.as_str()).unwrap_or(&rk_owned);
-    let title_owned = if d.is_none() { m.map(|m| m.title.clone()).unwrap_or_default() } else { String::new() };
+    let title_owned = if d.is_none() {
+        m.map(|m| m.title.clone()).unwrap_or_default()
+    } else {
+        String::new()
+    };
     let title: &str = d.map(|d| d.title.as_str()).unwrap_or(&title_owned);
     let band = hero_logo::band_h(LogoRung::Hero);
-    HeroLogo::new(hero_art_sid(m), rk, title, LogoRung::Hero).draw(p, Rect::new(tx, TITLE_BOTTOM - band, HERO_TEXT_W, band));
+    HeroLogo::new(hero_art_sid(m), rk, title, LogoRung::Hero)
+        .draw(p, Rect::new(tx, TITLE_BOTTOM - band, HERO_TEXT_W, band));
 
     // ---- meta line: "TV Show · Sci-Fi · Adventure · 18+", or for an EPISODE's own page
     // "<show name> · S1, E1 · TV-MA". ----
@@ -2392,7 +2583,15 @@ fn draw_hero(p: Painter, env: &Env, m: Option<&PmsMovie>) {
     // down. One question per line, so neither line is a list of unrelated facts.
     let mut mx = tx;
     {
-        mx += dotted_run(p, &parts, tx, ch.meta_y, theme::size::BODY, d_a, META_SEP_PAD);
+        mx += dotted_run(
+            p,
+            &parts,
+            tx,
+            ch.meta_y,
+            theme::size::BODY,
+            d_a,
+            META_SEP_PAD,
+        );
     }
     if let Some(d) = d {
         if mx > tx {
@@ -2517,7 +2716,11 @@ struct FactsFit {
 /// cannot win the credit back by dropping the extent. That is deliberate — the item's own facts
 /// outrank the attribution at every rung, not only at the first.
 fn facts_fit(has_credit: bool, budget: f32, mut w: impl FnMut(FactsFit) -> f32) -> FactsFit {
-    let mut fit = FactsFit { extent: true, credit: has_credit, elide: false };
+    let mut fit = FactsFit {
+        extent: true,
+        credit: has_credit,
+        elide: false,
+    };
     if w(fit) <= budget {
         return fit;
     }
@@ -2635,7 +2838,12 @@ fn draw_people(p: Painter, d: &metadata::Detail, btn_y: f32) {
     let mut bottom = people_bottom(btn_y);
     // the cast is the column's LAST line, so it is placed first and everything else stacks above it
     if has_starring(d) {
-        let names: Vec<&str> = d.cast.iter().take(PEOPLE_CAST).map(|c| c.tag.as_str()).collect();
+        let names: Vec<&str> = d
+            .cast
+            .iter()
+            .take(PEOPLE_CAST)
+            .map(|c| c.tag.as_str())
+            .collect();
         bottom -= people_line(p, "Starring", &names, x, bottom);
     }
     if let Some((label, names)) = hero_credit(d) {
@@ -2650,7 +2858,11 @@ fn people_line(p: Painter, label: &str, names: &[&str], x: f32, bottom: f32) -> 
     // Each PERSON is one wrap atom: their name parts are joined with a no-break space, so a line
     // can break between people but never inside one ("Jennifer" stranded above "Aniston" is the
     // defect this exists to stop — owner-reported). `TextView`'s tokeniser honours the glue.
-    let names = names.iter().map(|n| n.replace(' ', "\u{a0}")).collect::<Vec<_>>().join(", ");
+    let names = names
+        .iter()
+        .map(|n| n.replace(' ', "\u{a0}"))
+        .collect::<Vec<_>>()
+        .join(", ");
     let v = TextView::new(&names, theme::size::CAPTION, PEOPLE_INK)
         .leading(PEOPLE_LEAD)
         .max_lines(PEOPLE_MAXLINES)
@@ -2700,7 +2912,10 @@ fn hero_facts(d: &metadata::Detail) -> (String, Option<String>) {
         };
         return (date, Some(extent));
     }
-    (date, (d.dur_ms >= 60_000).then(|| crate::ui::fmt::dur_long(d.dur_ms)))
+    (
+        date,
+        (d.dur_ms >= 60_000).then(|| crate::ui::fmt::dur_long(d.dur_ms)),
+    )
 }
 
 /// The hero's media chips, flowed left→right from `x` and cap-band-centred on the text line drawn
@@ -2721,12 +2936,26 @@ fn draw_media_badges(p: Painter, d: &metadata::Detail, x: f32, text_y: f32, line
     let (cap_top, baseline) = crate::text::text_cap_band(line_sz, 0);
     let cy = text_y + (cap_top + baseline) * 0.5;
     // the FILLED chip: what the picture IS (its resolution class)
-    for text in [crate::ui::fmt::resolution(&d.video_resolution, d.width, d.height)].into_iter().flatten() {
+    for text in [crate::ui::fmt::resolution(
+        &d.video_resolution,
+        d.width,
+        d.height,
+    )]
+    .into_iter()
+    .flatten()
+    {
         // the gap separates chips, so it is never left dangling after the last one
         if bx > x {
             bx += theme::space::XS;
         }
-        bx += crate::ui::widgets::badge(p, bx, cy, &text, None, crate::ui::widgets::BadgeStyle::Filled);
+        bx += crate::ui::widgets::badge(
+            p,
+            bx,
+            cy,
+            &text,
+            None,
+            crate::ui::widgets::BadgeStyle::Filled,
+        );
     }
     // …then the ACCESSIBILITY group, as keyline chips (`Details Screen.dc.html`): what the item
     // OFFERS, which is a different kind of claim from what it is, and the two chip styles are how the
@@ -2885,7 +3114,9 @@ const FACTS_BITS: usize = 8;
 fn play_mode_bits(d: &metadata::Detail, after: bool) -> ([Bit; FACTS_BITS], usize) {
     let mut bits = [Bit::Air(0.0); FACTS_BITS];
     let mut n = 0;
-    let Some(pv) = crate::route::playback_preview(d) else { return (bits, 0) };
+    let Some(pv) = crate::route::playback_preview(d) else {
+        return (bits, 0);
+    };
     let mut push = |b: Bit| {
         bits[n] = b;
         n += 1;
@@ -2938,13 +3169,18 @@ fn play_mode_bits(d: &metadata::Detail, after: bool) -> ([Bit; FACTS_BITS], usiz
 /// hands out rather than assuming one, so the measured row is the flowed row (0 for a run the text
 /// layer cannot measure, which is the same "unmeasurable → 0" contract `text_width` keeps).
 fn run_w(s: &str, sz: c_int) -> f32 {
-    CString::new(s).ok().map(|c| crate::text::text_width(c.as_ptr(), sz, 0)).unwrap_or(0.0)
+    CString::new(s)
+        .ok()
+        .map(|c| crate::text::text_width(c.as_ptr(), sz, 0))
+        .unwrap_or(0.0)
 }
 
 fn bit_w(b: Bit) -> f32 {
     match b {
         Bit::Word(c, _, bold) => crate::text::text_width(c.as_ptr(), theme::size::CAPTION, bold),
-        Bit::Sep(gap) => 2.0 * gap + crate::text::text_width(c"\u{b7}".as_ptr(), theme::size::CAPTION, 0),
+        Bit::Sep(gap) => {
+            2.0 * gap + crate::text::text_width(c"\u{b7}".as_ptr(), theme::size::CAPTION, 0)
+        }
         Bit::Glyph => FACTS_GLYPH_D,
         Bit::Air(g) => g,
         Bit::Capsule => crate::ui::widgets::pass_capsule_w(),
@@ -2971,7 +3207,15 @@ fn draw_play_mode(p: Painter, d: &metadata::Detail, x: f32, text_y: f32, after: 
             Bit::Sep(gap) => {
                 // dimmed against the words either side (`theme::TEXT_SEPARATOR`) — both mocks set
                 // every separator dot to .45, so it punctuates the row instead of joining it
-                p.text(c"\u{b7}".as_ptr(), bx + gap, text_y, theme::size::CAPTION, theme::TEXT_SEPARATOR, 0, 0);
+                p.text(
+                    c"\u{b7}".as_ptr(),
+                    bx + gap,
+                    text_y,
+                    theme::size::CAPTION,
+                    theme::TEXT_SEPARATOR,
+                    0,
+                    0,
+                );
                 bx += bit_w(*b);
             }
             Bit::Glyph => {
@@ -3006,17 +3250,23 @@ fn rating_mark(art: metadata::RatingArt) -> &'static [crate::ui::widgets::MarkLa
     // Each mark's colour layers, BACK TO FRONT — the order is the drawing, since they overlap.
     // `static` so the slices outlive the call.
     /// Ripe: red body, green calyx over it.
-    static FRESH: &[MarkLayer] =
-        &[(Icon::Tomato, theme::RATING_FRESH), (Icon::TomatoCalyx, theme::RATING_LEAF)];
+    static FRESH: &[MarkLayer] = &[
+        (Icon::Tomato, theme::RATING_FRESH),
+        (Icon::TomatoCalyx, theme::RATING_LEAF),
+    ];
     /// Certified: the SAME fruit struck in gold. A rarer bar reads as a richer version of the
     /// thing — and the retired art's alternative, RT's own Certified Fresh seal, was the one shape
     /// in the set that was unmistakably somebody's award rather than a piece of fruit.
-    static CERTIFIED: &[MarkLayer] =
-        &[(Icon::Tomato, theme::RATING_CERTIFIED), (Icon::TomatoCalyx, theme::RATING_LEAF)];
+    static CERTIFIED: &[MarkLayer] = &[
+        (Icon::Tomato, theme::RATING_CERTIFIED),
+        (Icon::TomatoCalyx, theme::RATING_LEAF),
+    ];
     /// Rotten: the same fruit drained to an outline, calyx included. Negation by losing the colour,
     /// not by acquiring a second device.
-    static ROTTEN: &[MarkLayer] =
-        &[(Icon::TomatoHollow, theme::RATING_MUTED), (Icon::TomatoCalyx, theme::RATING_MUTED)];
+    static ROTTEN: &[MarkLayer] = &[
+        (Icon::TomatoHollow, theme::RATING_MUTED),
+        (Icon::TomatoCalyx, theme::RATING_MUTED),
+    ];
     /// A crowd that liked it.
     static CROWD_UP: &[MarkLayer] = &[(Icon::Crowd, theme::RATING_AUDIENCE)];
     /// The same crowd, drained. One layer, so it cannot go hollow the way the fruit does — see
@@ -3192,7 +3442,9 @@ fn draw_buttons(p: Painter, env: &Env, y: f32) {
         (HeroCtl::MarkWatched, crate::ui::icons::Icon::Check),
         (HeroCtl::MarkUnwatched, crate::ui::icons::Icon::Minus),
     ] {
-        let Some(i) = index_of(set, ctl) else { continue }; // one of the two faces, never both
+        let Some(i) = index_of(set, ctl) else {
+            continue;
+        }; // one of the two faces, never both
         draw_disc(p, env, icon, ctl, rect(i), focus == i, pop(i), palette);
     }
 }
@@ -3254,11 +3506,25 @@ pub(crate) fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
     let tall = theme::logo::COMPACT_H_MAX;
     out.push((
         "detail pinned compact title (tallest logo)",
-        Rect::new(MARGIN_X, COMPACT_TITLE_BOT - tall, SCR_W - 2.0 * MARGIN_X, tall),
+        Rect::new(
+            MARGIN_X,
+            COMPACT_TITLE_BOT - tall,
+            SCR_W - 2.0 * MARGIN_X,
+            tall,
+        ),
     ));
-    out.push(("detail hero text column", Rect::new(MARGIN_X, TITLE_BOTTOM - 200.0, HERO_TEXT_W, 200.0)));
-    out.push(("detail people column (right edge)", Rect::new(SCR_W - MARGIN_X - PEOPLE_W, 700.0, PEOPLE_W, 100.0)));
-    out.push(("detail below-hero flow, at rest", Rect::new(MARGIN_X, TOP_MARGIN, SCR_W - 2.0 * MARGIN_X, 100.0)));
+    out.push((
+        "detail hero text column",
+        Rect::new(MARGIN_X, TITLE_BOTTOM - 200.0, HERO_TEXT_W, 200.0),
+    ));
+    out.push((
+        "detail people column (right edge)",
+        Rect::new(SCR_W - MARGIN_X - PEOPLE_W, 700.0, PEOPLE_W, 100.0),
+    ));
+    out.push((
+        "detail below-hero flow, at rest",
+        Rect::new(MARGIN_X, TOP_MARGIN, SCR_W - 2.0 * MARGIN_X, 100.0),
+    ));
 }
 
 /// small centered clearLogo/title shown at the top once the page is scrolled. The band spans the
@@ -3266,14 +3532,30 @@ pub(crate) fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
 /// instead of running off the panel; its centre is still exactly `SCR_W * 0.5`.
 fn draw_compact_title(p: Painter, m: Option<&PmsMovie>) {
     let d = metadata::current();
-    let rk_owned = if d.is_none() { m.map(|m| m.rk.clone()).unwrap_or_default() } else { String::new() };
+    let rk_owned = if d.is_none() {
+        m.map(|m| m.rk.clone()).unwrap_or_default()
+    } else {
+        String::new()
+    };
     let rk: &str = d.map(|d| d.rk.as_str()).unwrap_or(&rk_owned);
-    let title_owned = if d.is_none() { m.map(|m| m.title.clone()).unwrap_or_default() } else { String::new() };
+    let title_owned = if d.is_none() {
+        m.map(|m| m.title.clone()).unwrap_or_default()
+    } else {
+        String::new()
+    };
     let title: &str = d.map(|d| d.title.as_str()).unwrap_or(&title_owned);
     let band = hero_logo::band_h(LogoRung::Compact);
     HeroLogo::new(hero_art_sid(m), rk, title, LogoRung::Compact)
         .align(HAlign::Center)
-        .draw(p, Rect::new(MARGIN_X, COMPACT_TITLE_BOT - band, SCR_W - 2.0 * MARGIN_X, band));
+        .draw(
+            p,
+            Rect::new(
+                MARGIN_X,
+                COMPACT_TITLE_BOT - band,
+                SCR_W - 2.0 * MARGIN_X,
+                band,
+            ),
+        );
 }
 
 /// Season tab row: a plate under every season, a travelling capsule on the ACTIVE one and a brighter
@@ -3287,8 +3569,8 @@ fn draw_tabs(p: Painter) {
         return;
     }
     let tab_y = 0.0; // local origin — the ScrollColumn pre-translates the painter to this section's top
-    // many-season shows (20-odd seasons) overflow the row width, so the whole strip scrolls horizontally to
-    // keep the focused tab visible (spring target in `tab_hscroll_target`); off-screen tabs are culled.
+                     // many-season shows (20-odd seasons) overflow the row width, so the whole strip scrolls horizontally to
+                     // keep the focused tab visible (spring target in `tab_hscroll_target`); off-screen tabs are culled.
     let sx = view().tab_hscroll.pos;
     let pt = p.translate(-sx, 0.0);
     // Segmented control, one motion: the selected season and the focused one are TRAVELLING capsules
@@ -3297,11 +3579,18 @@ fn draw_tabs(p: Painter) {
     // because they are the pills' ground; each pill then paints only its own idle plate and its
     // label, and takes its ink from how covered it is.
     let tabs = view().tabs; // Copy, resolved once — like `amb` in `draw`
-    // The focused pill's POP + press dip, folded into the capsule that IS that pill's face
-    // (`TabGround::Plated`). One `CtlPop<1>` because the strip has one focused pill and its capsule
-    // TRAVELS between them — there is no second control here to keep animating after focus left it,
-    // which is the whole reason the hero row next door needs a spring per control.
-    tabs.draw(pt, tab_y, TAB_ROW_H, TabGround::Plated { pop: view().season_pop.scale(0) });
+                            // The focused pill's POP + press dip, folded into the capsule that IS that pill's face
+                            // (`TabGround::Plated`). One `CtlPop<1>` because the strip has one focused pill and its capsule
+                            // TRAVELS between them — there is no second control here to keep animating after focus left it,
+                            // which is the whole reason the hero row next door needs a spring per control.
+    tabs.draw(
+        pt,
+        tab_y,
+        TAB_ROW_H,
+        TabGround::Plated {
+            pop: view().season_pop.scale(0),
+        },
+    );
     let e = Env::inert();
     for lay in tabs_layout(d) {
         // pill sized to the (bold) label plus its trailing note — content sits at x, pill padded
@@ -3385,7 +3674,11 @@ fn draw_episode_cell(
         .ep_scale
         .get(i)
         .map(|s| s.pos)
-        .unwrap_or(if still_focused { crate::ui::widgets::CARD_FOCUS_SCALE } else { 1.0 });
+        .unwrap_or(if still_focused {
+            crate::ui::widgets::CARD_FOCUS_SCALE
+        } else {
+            1.0
+        });
     let sc = if still_focused { base * press } else { base };
     // the focused cell is always "popped" so a press dip (sc < 1) still scales it (the dip would
     // otherwise be clamped away); a deselecting cell stays popped until its spring settles back.
@@ -3410,7 +3703,11 @@ fn draw_episode_cell(
     // doesn't leave a gap — and the fine-print date closes the block at the bottom. The block
     // height tracks the tallest episode via ep_meta_h.
     let ty = ep_y + EP_H + EP_META_TOP;
-    let titc = if focused { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY };
+    let titc = if focused {
+        theme::TEXT_PRIMARY
+    } else {
+        theme::TEXT_SECONDARY
+    };
     // the blurb steps a rung brighter on the focused tile, as the title does — the mock moves both
     let sumc = if focused { theme::TEXT_SECONDARY } else { dimc };
     let date = pretty_date(&ep.aired, 0); // formatted once — feeds both the layout and the draw
@@ -3485,13 +3782,28 @@ pub(crate) fn redraw_focused_episode() {
         }
         let i = view().col.max(0) as usize;
         let Some(ep) = d.episodes.get(i) else { return };
-        let Some(top) = section_screen_top(2) else { return };
+        let Some(top) = section_screen_top(2) else {
+            return;
+        };
         let sx = view().ep_hscroll.pos;
-        let stale = if metadata::season_loading() { EP_STALE_A } else { 1.0 };
+        let stale = if metadata::season_loading() {
+            EP_STALE_A
+        } else {
+            1.0
+        };
         let pe = Painter::root()
             .alpha(crate::ui::nav::page_alpha() * stale)
             .translate(-sx, top);
-        draw_episode_cell(pe, d, i, ep, i as c_int, view().ep_row, crate::ui::press::scale(), 0.0);
+        draw_episode_cell(
+            pe,
+            d,
+            i,
+            ep,
+            i as c_int,
+            view().ep_row,
+            crate::ui::press::scale(),
+            0.0,
+        );
     });
 }
 
@@ -3553,8 +3865,16 @@ fn ep_state(ep: &metadata::Episode) -> EpState {
         };
     }
     EpState {
-        glyph: if ep.watched { EpGlyph::Watched } else { EpGlyph::Play },
-        label: if has_dur { crate::ui::fmt::dur_long(ep.dur_ms) } else { String::new() },
+        glyph: if ep.watched {
+            EpGlyph::Watched
+        } else {
+            EpGlyph::Play
+        },
+        label: if has_dur {
+            crate::ui::fmt::dur_long(ep.dur_ms)
+        } else {
+            String::new()
+        },
         progress: None,
     }
 }
@@ -3600,7 +3920,12 @@ fn ep_state_line(p: Painter, card: Rect, st: &EpState) {
     };
     let cy = ty + (ct + cb) * 0.5;
     if let Some((icon, tint)) = icon {
-        crate::ui::icons::draw(p, icon, Rect::new(lx, cy - EP_GLYPH_D * 0.5, EP_GLYPH_D, EP_GLYPH_D), tint);
+        crate::ui::icons::draw(
+            p,
+            icon,
+            Rect::new(lx, cy - EP_GLYPH_D * 0.5, EP_GLYPH_D, EP_GLYPH_D),
+            tint,
+        );
         lx += EP_GLYPH_D + EP_LINE_GAP;
     }
     if st.label.is_empty() {
@@ -3608,7 +3933,11 @@ fn ep_state_line(p: Painter, card: Rect, st: &EpState) {
     }
     // a watched episode's runtime steps back a rung: the tick beside it is the statement, and at full
     // primary the two competed
-    let col = if st.glyph == EpGlyph::Watched { theme::TEXT_SECONDARY } else { theme::TEXT_PRIMARY };
+    let col = if st.glyph == EpGlyph::Watched {
+        theme::TEXT_SECONDARY
+    } else {
+        theme::TEXT_PRIMARY
+    };
     if let Ok(lc) = CString::new(st.label.as_str()) {
         p.text(lc.as_ptr(), lx, ty, sz, col, 0, 0);
     }
@@ -3628,7 +3957,15 @@ fn draw_related(p: Painter) {
     let related_y = 0.0; // local origin (ScrollColumn pre-translates to this section's top)
     let focus_col = if view().section == 3 { view().col } else { -1 };
     let lift = view().related.lift();
-    p.text(c"Related".as_ptr(), MARGIN_X, related_y - lift, theme::size::HEADLINE, theme::TEXT_HEADING, 0, 1);
+    p.text(
+        c"Related".as_ptr(),
+        MARGIN_X,
+        related_y - lift,
+        theme::size::HEADLINE,
+        theme::TEXT_HEADING,
+        0,
+        1,
+    );
     card_row::strip(
         p,
         &view().related,
@@ -3677,7 +4014,15 @@ fn draw_cast(p: Painter) {
     let cast_y = 0.0; // local origin (ScrollColumn pre-translates to this section's top)
     let focus_col = if view().section == 4 { view().col } else { -1 };
     let lift = view().cast.lift();
-    p.text(c"Cast & Crew".as_ptr(), MARGIN_X, cast_y - lift, theme::size::HEADLINE, theme::TEXT_HEADING, 0, 1);
+    p.text(
+        c"Cast & Crew".as_ptr(),
+        MARGIN_X,
+        cast_y - lift,
+        theme::size::HEADLINE,
+        theme::TEXT_HEADING,
+        0,
+        1,
+    );
     let row_y = cast_y + CAST_LABEL_H;
     card_row::strip(
         p,
@@ -3693,7 +4038,11 @@ fn draw_cast(p: Painter) {
         // server, and the person glyph says "no photo" where a bare placeholder disc said
         // "broken image". The absolute metadata-static.plex.tv URL rides the SAME server-side
         // /photo/:/transcode fetch the actor headshots already use.
-        |i| Art::Person { sid: d.sid, key: d.credit(i).map_or("", |c| c.thumb.as_str()), res: (300, 300) },
+        |i| Art::Person {
+            sid: d.sid,
+            key: d.credit(i).map_or("", |c| c.thumb.as_str()),
+            res: (300, 300),
+        },
         |_| None, // resume: a person is not an item with a playhead
         // every credit is captioned by `extra`, focused or not — so no TileLabel
         |_| card_row::TileLabel::default(),
@@ -3709,16 +4058,48 @@ fn draw_cast(p: Painter) {
 /// headshot and elided to the per-member slot (long names like "Benedict Cumberbatch" would
 /// otherwise run into the neighbour at couch-legible sizes).
 fn cast_label(p: Painter, name: &str, role: &str, cx: f32, row_y: f32, focused: bool) {
-    let name_c = if focused { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY };
+    let name_c = if focused {
+        theme::TEXT_PRIMARY
+    } else {
+        theme::TEXT_SECONDARY
+    };
     let budget = CAST_SLOT - 12.0;
-    if let Ok(nc) = CString::new(crate::text::elide(name, budget, theme::size::LABEL, 1, false)) {
-        p.text(nc.as_ptr(), cx, row_y + CAST_D + 26.0, theme::size::LABEL, name_c, 1, if focused { 1 } else { 0 });
+    if let Ok(nc) = CString::new(crate::text::elide(
+        name,
+        budget,
+        theme::size::LABEL,
+        1,
+        false,
+    )) {
+        p.text(
+            nc.as_ptr(),
+            cx,
+            row_y + CAST_D + 26.0,
+            theme::size::LABEL,
+            name_c,
+            1,
+            if focused { 1 } else { 0 },
+        );
     }
     if !role.is_empty() {
         // measured at the weight it is DRAWN (regular): measuring bold cut it a word early, which
         // the longer crew captions ("Director, Writer") hit far more often than a character name
-        if let Ok(rc) = CString::new(crate::text::elide(role, budget, theme::size::CAPTION, 0, false)) {
-            p.text(rc.as_ptr(), cx, row_y + CAST_D + 58.0, theme::size::CAPTION, theme::TEXT_TERTIARY, 1, 0);
+        if let Ok(rc) = CString::new(crate::text::elide(
+            role,
+            budget,
+            theme::size::CAPTION,
+            0,
+            false,
+        )) {
+            p.text(
+                rc.as_ptr(),
+                cx,
+                row_y + CAST_D + 58.0,
+                theme::size::CAPTION,
+                theme::TEXT_TERTIARY,
+                1,
+                0,
+            );
         }
     }
 }
@@ -3939,7 +4320,9 @@ pub(crate) fn on_ok() -> bool {
         1 => {
             // only a season that isn't already selected loads — OK on the highlighted tab used to
             // fire a redundant refetch whose pump-apply then reset the retained episode position
-            let cur = metadata::current().map(|d| d.cur_season as c_int).unwrap_or(-1);
+            let cur = metadata::current()
+                .map(|d| d.cur_season as c_int)
+                .unwrap_or(-1);
             if col != cur {
                 metadata::load_season(col.max(0) as usize);
             }
@@ -3961,7 +4344,9 @@ pub(crate) fn on_ok() -> bool {
         },
         3 => {
             // Related: open that item's detail page ON TOP of this one
-            let rk = metadata::current().and_then(|d| d.related.get(col.max(0) as usize)).map(|r| r.rk.clone());
+            let rk = metadata::current()
+                .and_then(|d| d.related.get(col.max(0) as usize))
+                .map(|r| r.rk.clone());
             if let Some(rk) = rk.filter(|r| !r.is_empty()) {
                 request_open(rk);
             }
@@ -4193,10 +4578,13 @@ pub(crate) fn focused_episode_rect() -> Option<Rect> {
     let top = section_screen_top(2)?;
     let x = strip_x(i, EP_W + EP_GAP) - view().ep_hscroll.pos;
     // episodes past the spring cap are drawn at the focus scale without animating — same fallback
-    let sc = view().ep_scale.get(i).map(|s| s.pos).unwrap_or(crate::ui::widgets::CARD_FOCUS_SCALE);
+    let sc = view()
+        .ep_scale
+        .get(i)
+        .map(|s| s.pos)
+        .unwrap_or(crate::ui::widgets::CARD_FOCUS_SCALE);
     Some(Rect::new(x, top, EP_W, EP_H).scaled(sc))
 }
-
 
 // ---- the season strip's context-menu seam ----------------------------------------------------
 // The filmstrip's three functions above, for the tab row. A season is the one level of this show
@@ -4274,8 +4662,14 @@ pub(crate) fn redraw_focused_season() {
         if view().section != 1 || metadata::current().is_none() {
             return;
         }
-        let Some(top) = section_screen_top(1) else { return };
-        draw_tabs(Painter::root().alpha(crate::ui::nav::page_alpha()).translate(0.0, top));
+        let Some(top) = section_screen_top(1) else {
+            return;
+        };
+        draw_tabs(
+            Painter::root()
+                .alpha(crate::ui::nav::page_alpha())
+                .translate(0.0, top),
+        );
     });
 }
 
@@ -4343,7 +4737,11 @@ fn focused_related_col() -> Option<usize> {
 /// with a different `s` (the press dip is in one and not the other) would draw the poster at the
 /// wrong size and drop its title at a y derived from an unscaled height that never existed.
 fn related_tile_rect(i: usize) -> Option<Rect> {
-    Some(related_tile_rect_at(i, section_screen_top(3)?, view().related.scroll_x()))
+    Some(related_tile_rect_at(
+        i,
+        section_screen_top(3)?,
+        view().related.scroll_x(),
+    ))
 }
 
 /// …and its ARITHMETIC, with the two live values passed in — **pure**, so the agreement between
@@ -4356,7 +4754,12 @@ fn related_tile_rect(i: usize) -> Option<Rect> {
 /// structural limit #1). Everything worth grading here is in this function; the wrapper is two
 /// lookups.
 fn related_tile_rect_at(i: usize, top: f32, scroll_x: f32) -> Rect {
-    Rect::new(strip_x(i, REL_W + REL_GAP) - scroll_x, top + REL_LABEL_H, REL_W, REL_H)
+    Rect::new(
+        strip_x(i, REL_W + REL_GAP) - scroll_x,
+        top + REL_LABEL_H,
+        REL_W,
+        REL_H,
+    )
 }
 
 /// Re-draw the focused Related poster ON TOP of the modal scrim — this shelf's half of
@@ -4370,13 +4773,25 @@ fn related_tile_rect_at(i: usize, top: f32, scroll_x: f32) -> Rect {
 pub(crate) fn redraw_focused_related() {
     crate::ui::guard(|| {
         let Some(d) = metadata::current() else { return };
-        let Some(i) = focused_related_col() else { return };
-        let Some(base) = related_tile_rect(i) else { return };
+        let Some(i) = focused_related_col() else {
+            return;
+        };
+        let Some(base) = related_tile_rect(i) else {
+            return;
+        };
         let Some(m) = d.related.get(i) else { return };
         let s = view().related.scale(i) * crate::ui::press::scale();
         let label = card_row::TileLabel::title(&m.title);
         let p = Painter::root().alpha(crate::ui::nav::page_alpha());
-        card_row::draw_focused(p, Art::Poster(Some(m)), base.scaled(s), s, &RowStyle::HOME, m.resume_frac(), &label);
+        card_row::draw_focused(
+            p,
+            Art::Poster(Some(m)),
+            base.scaled(s),
+            s,
+            &RowStyle::HOME,
+            m.resume_frac(),
+            &label,
+        );
     });
 }
 
@@ -4400,13 +4815,19 @@ pub(crate) fn redraw_focused_related() {
 /// `metadata::set_watched_local`) for the whole window, so what the user sees is their press,
 /// corrected a beat later if the server disagrees.
 pub(crate) fn refresh_view_state(keep_ep: &str) {
-    let Some((sid, rk, season)) = metadata::current().map(|d| (d.sid, d.rk.clone(), d.cur_season)) else {
+    let Some((sid, rk, season)) = metadata::current().map(|d| (d.sid, d.rk.clone(), d.cur_season))
+    else {
         return;
     };
     // Armed BEFORE the request, so a landing can never beat the latch into place — the same
     // ordering the blocking version needed for `KEEP_EP`, one level out.
     unsafe {
-        *addr_of_mut!(REFRESH) = Some(Refresh { sid, rk: rk.clone(), season, keep_ep: keep_ep.to_string() })
+        *addr_of_mut!(REFRESH) = Some(Refresh {
+            sid,
+            rk: rk.clone(),
+            season,
+            keep_ep: keep_ep.to_string(),
+        })
     };
     metadata::request_detail(sid, &rk);
 }
@@ -4441,7 +4862,9 @@ fn pump_refresh() {
     if metadata::detail_loading() {
         return; // the re-read is still out
     }
-    let Some(r) = (unsafe { (*addr_of_mut!(REFRESH)).take() }) else { return };
+    let Some(r) = (unsafe { (*addr_of_mut!(REFRESH)).take() }) else {
+        return;
+    };
     let Some(d) = metadata::current() else { return }; // page closed under it
     if !crate::plex::same_item((d.sid, &d.rk), (r.sid, &r.rk)) {
         return; // the user walked to another item — not ours to steer
@@ -4483,7 +4906,10 @@ fn take_kept_episode() -> Option<c_int> {
     if d.cur_season != season {
         return None;
     }
-    d.episodes.iter().position(|e| e.rk == rk).map(|i| i as c_int)
+    d.episodes
+        .iter()
+        .position(|e| e.rk == rk)
+        .map(|i| i as c_int)
 }
 
 /// Play the loaded season's episode `rk` ignoring its resume point — the filmstrip menu's "Play
@@ -4493,7 +4919,8 @@ fn take_kept_episode() -> Option<c_int> {
 /// Resolved by rk rather than by the focus index: the menu captured its target when it opened, and
 /// a pointer hover walking the popover's rows must not be able to retarget the press.
 pub(crate) fn play_episode_rk_from_start(rk: &str) -> bool {
-    let Some(i) = metadata::current().and_then(|d| d.episodes.iter().position(|e| e.rk == rk)) else {
+    let Some(i) = metadata::current().and_then(|d| d.episodes.iter().position(|e| e.rk == rk))
+    else {
         return false;
     };
     let started = play_episode_at(i as c_int);
@@ -4510,7 +4937,9 @@ pub(crate) fn play_episode_rk_from_start(rk: &str) -> bool {
 /// `app.rs`'s `enter_node`, whose "is the page behind me still the one loaded?" test is what keeps a
 /// trail pop free in the common case.
 pub(crate) fn mounted_rk() -> String {
-    metadata::current().map(|d| d.rk.clone()).unwrap_or_else(|| view().mounted_rk.clone())
+    metadata::current()
+        .map(|d| d.rk.clone())
+        .unwrap_or_else(|| view().mounted_rk.clone())
 }
 
 /// The SERVER that rk belongs to — read from exactly the same two places, in the same order, so the
@@ -4518,7 +4947,9 @@ pub(crate) fn mounted_rk() -> String {
 /// (`Node::same_page`, `Trail::ensure_detail`): a bare rk names a page on neither server once a
 /// share is registered.
 pub(crate) fn mounted_sid() -> crate::plex::ServerId {
-    metadata::current().map(|d| d.sid).unwrap_or_else(|| view().mounted_sid)
+    metadata::current()
+        .map(|d| d.sid)
+        .unwrap_or_else(|| view().mounted_sid)
 }
 
 /// Re-resolve the selected catalog row after a hub refetch rebuilt the catalog underneath an open
@@ -4600,7 +5031,11 @@ pub(crate) fn open_rk_now(sid: crate::plex::ServerId, rk: &str) {
 enum Pending {
     /// A show page opened FROM playback, landing on the episode that played
     /// ([`open_show_at_episode`]). Show rk, season NUMBER, episode rk.
-    Episode { show_rk: String, season: i64, ep_rk: String },
+    Episode {
+        show_rk: String,
+        season: i64,
+        ep_rk: String,
+    },
     /// A page BACK returned to, put back exactly as it was left ([`open_rk_at`]).
     Spot { rk: String, spot: Spot },
 }
@@ -4609,11 +5044,19 @@ static mut PENDING: Option<Pending> = None;
 /// Open the SHOW detail page for `show_rk` with the episode `ep_rk` (in the season numbered
 /// `season`) revealed once the data lands — a season entry point routes to the show page, not to a
 /// standalone season page.
-pub(crate) fn open_show_at_episode(sid: crate::plex::ServerId, show_rk: &str, season: i64, ep_rk: &str) {
+pub(crate) fn open_show_at_episode(
+    sid: crate::plex::ServerId,
+    show_rk: &str,
+    season: i64,
+    ep_rk: &str,
+) {
     open_rk(sid, show_rk);
     unsafe {
-        *addr_of_mut!(PENDING) =
-            Some(Pending::Episode { show_rk: show_rk.to_string(), season, ep_rk: ep_rk.to_string() })
+        *addr_of_mut!(PENDING) = Some(Pending::Episode {
+            show_rk: show_rk.to_string(),
+            season,
+            ep_rk: ep_rk.to_string(),
+        })
     }
 }
 
@@ -4622,7 +5065,12 @@ pub(crate) fn open_show_at_episode(sid: crate::plex::ServerId, show_rk: &str, se
 /// what makes a trail pop feel like a return rather than a fresh arrival.
 pub(crate) fn open_rk_at(sid: crate::plex::ServerId, rk: &str, spot: &Spot) {
     open_rk(sid, rk);
-    unsafe { *addr_of_mut!(PENDING) = Some(Pending::Spot { rk: rk.to_string(), spot: spot.clone() }) }
+    unsafe {
+        *addr_of_mut!(PENDING) = Some(Pending::Spot {
+            rk: rk.to_string(),
+            spot: spot.clone(),
+        })
+    }
 }
 
 /// Does a [`Spot`] restore still have to wait on a season? `Some(pos)` = that season is not the one
@@ -4646,11 +5094,18 @@ fn spot_season_gate(d: &metadata::Detail, spot: &Spot) -> Option<usize> {
 fn spot_landing(spot: &Spot) -> (c_int, c_int, EpRow) {
     let (secs, n) = sections();
     let (sec, col) = if secs[..n].contains(&spot.section) {
-        (spot.section, spot.col.clamp(0, (n_items(spot.section) - 1).max(0)))
+        (
+            spot.section,
+            spot.col.clamp(0, (n_items(spot.section) - 1).max(0)),
+        )
     } else {
         (0, 0)
     };
-    let row = if spot.ep_text { EpRow::Text } else { EpRow::Still };
+    let row = if spot.ep_text {
+        EpRow::Text
+    } else {
+        EpRow::Still
+    };
     (sec, col, row)
 }
 
@@ -4664,7 +5119,11 @@ fn pump_pending() {
     };
     let Some(d) = metadata::current() else { return };
     match want {
-        Pending::Episode { show_rk, season, ep_rk } => {
+        Pending::Episode {
+            show_rk,
+            season,
+            ep_rk,
+        } => {
             // Everything is read out of `current()` BEFORE `load_season` is called: that write goes
             // through the same static this borrow came from.
             let (rk, season_pos, no_seasons, cur_season, ep_pos, no_eps) = (
@@ -4737,7 +5196,11 @@ fn pump_pending() {
 pub(crate) fn open_rk_season(sid: crate::plex::ServerId, show_rk: &str, season_num: c_int) {
     open_rk_now(sid, show_rk); // BLOCKING: the season lookup below indexes the loaded item's seasons
     if let Some(d) = metadata::current() {
-        if let Some(pos) = d.seasons.iter().position(|s| s.index as c_int == season_num) {
+        if let Some(pos) = d
+            .seasons
+            .iter()
+            .position(|s| s.index as c_int == season_num)
+        {
             // BLOCKING on purpose: home_activate's season arm plays episodes[0] right after this
             // returns — the async tab-switch path would still hold the previous season's list
             metadata::load_season_now(pos);
@@ -4767,10 +5230,18 @@ fn play_episode_at(i: c_int) -> bool {
 /// season's list (the hero's on-deck one) can still be played.
 fn play_episode(d: &metadata::Detail, ep: &metadata::Episode) -> bool {
     let show = d.title.clone();
-    let hud_title = if ep.title.is_empty() { show.clone() } else { ep.title.clone() };
+    let hud_title = if ep.title.is_empty() {
+        show.clone()
+    } else {
+        ep.title.clone()
+    };
     let hud_ctx = format!("{}  \u{b7}  S{} E{}", show, ep.season, ep.index);
     // describe the playing episode for the in-player Info card (current() stays on the show here)
-    let ep_year = ep.aired.get(0..4).and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
+    let ep_year = ep
+        .aired
+        .get(0..4)
+        .and_then(|s| s.parse::<i64>().ok())
+        .unwrap_or(0);
     metadata::set_now_playing(Some(metadata::NowPlaying {
         is_episode: true,
         title: show.clone(),
@@ -4809,16 +5280,32 @@ fn text_at(p: Painter, x: f32, y: f32, sz: c_int, col: [f32; 4], bold: c_int, s:
 }
 
 /// a dim label over one/two pixel-wrapped value lines; returns the vertical advance
-fn draw_pair(p: Painter, x: f32, y: f32, label: &str, value: &str, lbl: [f32; 4], val: [f32; 4]) -> f32 {
+fn draw_pair(
+    p: Painter,
+    x: f32,
+    y: f32,
+    label: &str,
+    value: &str,
+    lbl: [f32; 4],
+    val: [f32; 4],
+) -> f32 {
     text_at(p, x, y, theme::size::CAPTION, lbl, 0, label);
-    let h = TextView::new(value, theme::size::LABEL, val).bold().leading(30.0).max_lines(2).draw(p, Rect::new(x, y + 34.0, 520.0, 0.0));
+    let h = TextView::new(value, theme::size::LABEL, val)
+        .bold()
+        .leading(30.0)
+        .max_lines(2)
+        .draw(p, Rect::new(x, y + 34.0, 520.0, 0.0));
     34.0 + h.max(30.0) + 22.0
 }
 
 /// the vertical advance [`draw_pair`] will consume for `value` — same formula, measured not painted,
 /// so a column's focus highlight can be sized to wrap its content before the rows are drawn.
 fn pair_h(value: &str) -> f32 {
-    let h = TextView::new(value, theme::size::LABEL, theme::TEXT_HEADING).bold().leading(30.0).max_lines(2).measure_h(520.0);
+    let h = TextView::new(value, theme::size::LABEL, theme::TEXT_HEADING)
+        .bold()
+        .leading(30.0)
+        .max_lines(2)
+        .measure_h(520.0);
     34.0 + h.max(30.0) + 22.0
 }
 
@@ -4842,23 +5329,43 @@ fn about_rows(d: &metadata::Detail) -> &'static AboutRows {
         if !released.is_empty() {
             info.push(("Released", released));
         }
-        let dur = if d.dur_ms > 0 { d.dur_ms } else { d.episodes.first().map(|e| e.dur_ms).unwrap_or(0) };
+        let dur = if d.dur_ms > 0 {
+            d.dur_ms
+        } else {
+            d.episodes.first().map(|e| e.dur_ms).unwrap_or(0)
+        };
         if dur > 0 {
             info.push(("Run Time", crate::ui::fmt::dur_long(dur)));
         }
-        info.push(("Rated", if d.rating.is_empty() { "NR".to_string() } else { d.rating.clone() }));
+        info.push((
+            "Rated",
+            if d.rating.is_empty() {
+                "NR".to_string()
+            } else {
+                d.rating.clone()
+            },
+        ));
         if !d.countries.is_empty() {
             info.push(("Regions of Origin", d.countries.join(", ")));
         }
         // Languages: an "Original Audio" pair + a wrapped "Audio" list
-        let orig_audio =
-            d.audio.first().map(|a| if a.lang.is_empty() { "Unknown".to_string() } else { a.lang.clone() });
+        let orig_audio = d.audio.first().map(|a| {
+            if a.lang.is_empty() {
+                "Unknown".to_string()
+            } else {
+                a.lang.clone()
+            }
+        });
         let audio_list = d
             .audio
             .iter()
             .take(8)
             .map(|a| {
-                let lang = if a.lang.is_empty() { "Unknown".to_string() } else { a.lang.clone() };
+                let lang = if a.lang.is_empty() {
+                    "Unknown".to_string()
+                } else {
+                    a.lang.clone()
+                };
                 format!("{} ({})", lang, a.codec.to_uppercase())
             })
             .collect::<Vec<_>>()
@@ -4872,8 +5379,18 @@ fn about_rows(d: &metadata::Detail) -> &'static AboutRows {
             (sdh, "SDH", "Subtitles for the deaf and hard of hearing (SDH) refer to subtitles in the original language with the addition of relevant non-dialogue information."),
             (ad, "AD", "Audio descriptions (AD) refer to a narration track describing what is happening on screen, to provide context for those who are blind or have low vision."),
         ];
-        let access = acc_all.iter().filter(|(pr, _, _)| *pr).map(|(_, l, ds)| (*l, *ds)).collect();
-        *slot = Some(AboutRows { rk: d.rk.clone(), info, orig_audio, audio_list, access });
+        let access = acc_all
+            .iter()
+            .filter(|(pr, _, _)| *pr)
+            .map(|(_, l, ds)| (*l, *ds))
+            .collect();
+        *slot = Some(AboutRows {
+            rk: d.rk.clone(),
+            info,
+            orig_audio,
+            audio_list,
+            access,
+        });
     }
     slot.as_ref().unwrap()
 }
@@ -4910,14 +5427,18 @@ fn draw_about(p: Painter) {
     // fixed-height panel used to let a long audio list spill past the selection) and the paint
     // below. Cached per item (about_rows); the measures below are wrap-memoised in TextView.
     let rows = about_rows(d);
-    let (info, orig_audio, audio_list, access) = (&rows.info, &rows.orig_audio, &rows.audio_list, &rows.access);
+    let (info, orig_audio, audio_list, access) =
+        (&rows.info, &rows.orig_audio, &rows.audio_list, &rows.access);
 
     // ---- measured content extent (px below col_y) of each column, mirroring the paint advances ----
     let info_off = 68.0 + info.iter().map(|(_, v)| pair_h(v)).sum::<f32>();
     let lang_off = if orig_audio.is_none() {
         30.0
     } else {
-        let list_h = TextView::new(audio_list, theme::size::LABEL, val).leading(32.0).max_lines(6).measure_h(500.0);
+        let list_h = TextView::new(audio_list, theme::size::LABEL, val)
+            .leading(32.0)
+            .max_lines(6)
+            .measure_h(500.0);
         68.0 + orig_audio.as_ref().map(|o| pair_h(o)).unwrap_or(0.0) + 34.0 + list_h
     };
     let access_off = if access.is_empty() {
@@ -4925,7 +5446,13 @@ fn draw_about(p: Painter) {
     } else {
         64.0 + access
             .iter()
-            .map(|(_, ds)| 52.0 + TextView::new(ds, theme::size::CAPTION, val).leading(30.0).max_lines(4).measure_h(500.0) + 26.0)
+            .map(|(_, ds)| {
+                52.0 + TextView::new(ds, theme::size::CAPTION, val)
+                    .leading(30.0)
+                    .max_lines(4)
+                    .measure_h(500.0)
+                    + 26.0
+            })
             .sum::<f32>()
     };
 
@@ -4935,13 +5462,23 @@ fn draw_about(p: Painter) {
     if view().section == 5 {
         const HL_TOP: f32 = 36.0; // pad above the column heading
         const HL_BOT: f32 = 24.0; // pad below the last content line
-        // the Information/Accessibility extents end in a per-row trailing gap (22 / 26px) that is
-        // flow spacing, not content — trim it so the highlight hugs the last line's ink evenly.
+                                  // the Information/Accessibility extents end in a per-row trailing gap (22 / 26px) that is
+                                  // flow spacing, not content — trim it so the highlight hugs the last line's ink evenly.
         let hl = match view().col {
             0 => Rect::new(tx, cy, cw, ch),
-            1 => Rect::new(tx - 26.0, col_y - HL_TOP, 600.0, info_off - 22.0 + HL_TOP + HL_BOT),
+            1 => Rect::new(
+                tx - 26.0,
+                col_y - HL_TOP,
+                600.0,
+                info_off - 22.0 + HL_TOP + HL_BOT,
+            ),
             2 => Rect::new(lx - 26.0, col_y - HL_TOP, 560.0, lang_off + HL_TOP + HL_BOT),
-            _ => Rect::new(ax - 26.0, col_y - HL_TOP, 560.0, access_off - 26.0 + HL_TOP + HL_BOT),
+            _ => Rect::new(
+                ax - 26.0,
+                col_y - HL_TOP,
+                560.0,
+                access_off - 26.0 + HL_TOP + HL_BOT,
+            ),
         };
         crate::ui::widgets::text_block_highlight(p, hl);
     }
@@ -4949,11 +5486,25 @@ fn draw_about(p: Painter) {
     // ---- card: title, genres, summary — every run hard-bounded to the card's inner width (a
     // long title or genre list used to paint past the card frame) ----
     let ix = tx + pad;
-    text_at(p, ix, cy + pad, theme::size::HEADLINE, hd, 1,
-        &crate::text::elide(&d.title, syn_w0, theme::size::HEADLINE, 1, false));
+    text_at(
+        p,
+        ix,
+        cy + pad,
+        theme::size::HEADLINE,
+        hd,
+        1,
+        &crate::text::elide(&d.title, syn_w0, theme::size::HEADLINE, 1, false),
+    );
     if !d.genres.is_empty() {
-        text_at(p, ix, cy + pad + 44.0, theme::size::CAPTION, dim, 0,
-            &crate::text::elide(&d.genres.join(", "), syn_w0, theme::size::CAPTION, 0, false));
+        text_at(
+            p,
+            ix,
+            cy + pad + 44.0,
+            theme::size::CAPTION,
+            dim,
+            0,
+            &crate::text::elide(&d.genres.join(", "), syn_w0, theme::size::CAPTION, 0, false),
+        );
     }
     let sy = cy + pad + 100.0;
     let syn_w = cw - 2.0 * pad;
@@ -4962,8 +5513,10 @@ fn draw_about(p: Painter) {
     // compact columns — match it to the Accessibility descriptions below (same CAPTION rung). When
     // the blurb is cut off, the last line dissolves (fade_last) into the MORE zone instead of
     // colliding with the label.
-    let syn =
-        TextView::new(&d.summary, theme::size::CAPTION, val).leading(30.0).max_lines(5).fade_last(mw + 36.0);
+    let syn = TextView::new(&d.summary, theme::size::CAPTION, val)
+        .leading(30.0)
+        .max_lines(5)
+        .fade_last(mw + 36.0);
     let syn_hh = syn.draw(p, Rect::new(ix, sy, syn_w, 0.0));
     // "MORE" — quiet grey, pinned to the card's right padding edge ON the last synopsis line's cap
     // band (it used to sit bright in the bottom padding, visually detached from the text block).
@@ -4972,8 +5525,15 @@ fn draw_about(p: Painter) {
     // prose when someone retunes the block. Same call the person page's bio makes.
     if syn.truncates(syn_w) {
         let (mt, _) = crate::text::text_cap_band(theme::size::CAPTION, 1);
-        p.text(c"MORE".as_ptr(), tx + cw - pad, syn.last_line_cap_y(sy, syn_hh) - mt,
-            theme::size::CAPTION, theme::TEXT_TERTIARY, 2, 1);
+        p.text(
+            c"MORE".as_ptr(),
+            tx + cw - pad,
+            syn.last_line_cap_y(sy, syn_hh) - mt,
+            theme::size::CAPTION,
+            theme::TEXT_TERTIARY,
+            2,
+            1,
+        );
     }
 
     // ---- Information ----
@@ -4991,20 +5551,41 @@ fn draw_about(p: Painter) {
     }
     if !audio_list.is_empty() {
         text_at(p, lx, ly, theme::size::CAPTION, lbl, 0, "Audio");
-        TextView::new(audio_list, theme::size::LABEL, val).leading(32.0).max_lines(6).draw(p, Rect::new(lx, ly + 34.0, 500.0, 0.0));
+        TextView::new(audio_list, theme::size::LABEL, val)
+            .leading(32.0)
+            .max_lines(6)
+            .draw(p, Rect::new(lx, ly + 34.0, 500.0, 0.0));
     }
 
     // ---- Accessibility ----
     text_at(p, ax, col_y, theme::size::HEADLINE, hd, 1, "Accessibility");
     if access.is_empty() {
-        text_at(p, ax, col_y + 68.0, theme::size::CAPTION, dim, 0, "\u{2014}");
+        text_at(
+            p,
+            ax,
+            col_y + 68.0,
+            theme::size::CAPTION,
+            dim,
+            0,
+            "\u{2014}",
+        );
     } else {
         let mut ay = col_y + 64.0;
         for (label, desc) in access {
             // the shared chip leaf (filled style) — cy = chip top + half its height
             let cy = ay + crate::ui::widgets::BADGE_H * 0.5;
-            crate::ui::widgets::badge(p, ax, cy, label, None, crate::ui::widgets::BadgeStyle::Filled);
-            let h = TextView::new(desc, theme::size::CAPTION, val).leading(30.0).max_lines(4).draw(p, Rect::new(ax, ay + 52.0, 500.0, 0.0));
+            crate::ui::widgets::badge(
+                p,
+                ax,
+                cy,
+                label,
+                None,
+                crate::ui::widgets::BadgeStyle::Filled,
+            );
+            let h = TextView::new(desc, theme::size::CAPTION, val)
+                .leading(30.0)
+                .max_lines(4)
+                .draw(p, Rect::new(ax, ay + 52.0, 500.0, 0.0));
             ay += 52.0 + h + 26.0;
         }
     }
@@ -5055,7 +5636,11 @@ mod tests {
             (Pv::DirectPlay, true, Sub::Unknown, Quiet),
             (Pv::DirectPlay, false, Sub::Unknown, Quiet),
         ] {
-            assert_eq!(super::play_note(pv, hdr, sub), want, "{pv:?} hdr={hdr} {sub:?}");
+            assert_eq!(
+                super::play_note(pv, hdr, sub),
+                want,
+                "{pv:?} hdr={hdr} {sub:?}"
+            );
         }
     }
 
@@ -5084,7 +5669,8 @@ mod tests {
         }
         let _g = Fresh(crate::testlock::serial());
         crate::plex::reset_servers_for_test();
-        let reg = |m: &str, host: &str| crate::plex::register_for_test(m, host, 32400, "tok", "cid");
+        let reg =
+            |m: &str, host: &str| crate::plex::register_for_test(m, host, 32400, "tok", "cid");
         let (ours, theirs) = (reg("mach-A", "10.0.0.1"), reg("mach-B", "10.0.0.2"));
         // the slot arrays outlive `reset_servers_for_test` — start from the boot state explicitly
         store_for_test(ours, Sub::Unknown, "");
@@ -5094,17 +5680,38 @@ mod tests {
         // browsing the share does NOT re-point `current`, which is what made this look right
         assert!(crate::plex::set_current(ours));
 
-        let on = |sid| Detail { sid, rk: "m1".into(), hdr: true, ..Default::default() };
-        assert_eq!(super::item_subscription(&on(theirs)), Sub::No, "a borrowed film asks the share");
-        assert_eq!(super::item_subscription(&on(ours)), Sub::Yes, "…and ours asks ours");
+        let on = |sid| Detail {
+            sid,
+            rk: "m1".into(),
+            hdr: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            super::item_subscription(&on(theirs)),
+            Sub::No,
+            "a borrowed film asks the share"
+        );
+        assert_eq!(
+            super::item_subscription(&on(ours)),
+            Sub::Yes,
+            "…and ours asks ours"
+        );
         // which is the whole point: the same conversion, the same source, two different notes
         assert_eq!(
-            super::play_note(crate::route::Preview::Converts, true, super::item_subscription(&on(theirs))),
+            super::play_note(
+                crate::route::Preview::Converts,
+                true,
+                super::item_subscription(&on(theirs))
+            ),
             super::PlayNote::Warn,
             "the free share's HDR re-encode is the warning the design asks for"
         );
         assert_eq!(
-            super::play_note(crate::route::Preview::Converts, true, super::item_subscription(&on(ours))),
+            super::play_note(
+                crate::route::Preview::Converts,
+                true,
+                super::item_subscription(&on(ours))
+            ),
             super::PlayNote::Quiet,
             "and our Pass'd server's identical conversion says nothing"
         );
@@ -5162,18 +5769,31 @@ mod tests {
     /// event lists being prefix-equal says.
     #[test]
     fn an_item_on_your_own_server_gets_no_source_run_at_all() {
-        assert_eq!(super::shared_by(""), "", "no owner to credit → no words, so no run");
+        assert_eq!(
+            super::shared_by(""),
+            "",
+            "no owner to credit → no words, so no run"
+        );
 
         let (own_w, own) = flow(&[DATE, EXT], "", 90.0);
-        assert_eq!(own.len(), 4, "date, separator, extent, fragment — and nothing else");
+        assert_eq!(
+            own.len(),
+            4,
+            "date, separator, extent, fragment — and nothing else"
+        );
         assert!(
-            !own.iter().any(|e| matches!(e, Ev::Run(s, ..) if s.is_empty())),
+            !own.iter()
+                .any(|e| matches!(e, Ev::Run(s, ..) if s.is_empty())),
             "absence is no run, never an empty one"
         );
 
         let credit = super::shared_by(HANDLE);
         let (shared_w, shared) = flow(&[DATE, EXT], &credit, 90.0);
-        assert_eq!(&shared[..4], &own[..], "the credit may only ADD — every run before it is untouched");
+        assert_eq!(
+            &shared[..4],
+            &own[..],
+            "the credit may only ADD — every run before it is untouched"
+        );
         assert_eq!(
             shared_w - own_w,
             2.0 * super::FACTS_SEP_PAD + CW + CW * credit.chars().count() as f32,
@@ -5190,10 +5810,15 @@ mod tests {
         assert_eq!(credit, "Shared by friend", "the person, never the machine");
 
         let (_, evs) = flow(&[DATE, EXT], &credit, 90.0);
-        let Some(Ev::Mode(mode_dx, after)) = evs.iter().find(|e| matches!(e, Ev::Mode(..))).cloned() else {
+        let Some(Ev::Mode(mode_dx, after)) =
+            evs.iter().find(|e| matches!(e, Ev::Mode(..))).cloned()
+        else {
             panic!("the fragment must be flowed");
         };
-        assert!(after, "the fragment is introduced by a separator when facts precede it");
+        assert!(
+            after,
+            "the fragment is introduced by a separator when facts precede it"
+        );
         assert_eq!(evs.len(), 6, "date, ·, extent, fragment, ·, credit");
 
         // the separator that introduces the credit, and then the credit itself
@@ -5203,16 +5828,42 @@ mod tests {
             panic!("the credit is a separator and a run, in that order");
         };
         assert_eq!(dot, "\u{b7}");
-        assert_eq!(dot_ink, theme::TEXT_SEPARATOR, "a dot in the words' own ink joins them instead of punctuating");
-        assert_eq!(dot_dx, mode_dx + 90.0 + super::FACTS_SEP_PAD, "one pad past the fragment");
+        assert_eq!(
+            dot_ink,
+            theme::TEXT_SEPARATOR,
+            "a dot in the words' own ink joins them instead of punctuating"
+        );
+        assert_eq!(
+            dot_dx,
+            mode_dx + 90.0 + super::FACTS_SEP_PAD,
+            "one pad past the fragment"
+        );
         assert_eq!(words, credit);
-        assert_eq!(words_dx, dot_dx + CW + super::FACTS_SEP_PAD, "one pad past the dot");
+        assert_eq!(
+            words_dx,
+            dot_dx + CW + super::FACTS_SEP_PAD,
+            "one pad past the dot"
+        );
 
         // …and it joins the line rather than sitting on a rung of its own
-        let Ev::Run(_, _, date_sz, date_ink) = evs[0].clone() else { panic!("the date leads the row") };
-        assert_eq!((words_sz, words_ink), (date_sz, date_ink), "same rung, same ink as the facts it follows");
-        assert_eq!((dot_sz, words_sz), (theme::size::CAPTION, theme::size::CAPTION), "the line's own rung");
-        assert_eq!(words_ink, theme::TEXT_TERTIARY, "the lowest rung of ink — the line is dim, so the run is");
+        let Ev::Run(_, _, date_sz, date_ink) = evs[0].clone() else {
+            panic!("the date leads the row")
+        };
+        assert_eq!(
+            (words_sz, words_ink),
+            (date_sz, date_ink),
+            "same rung, same ink as the facts it follows"
+        );
+        assert_eq!(
+            (dot_sz, words_sz),
+            (theme::size::CAPTION, theme::size::CAPTION),
+            "the line's own rung"
+        );
+        assert_eq!(
+            words_ink,
+            theme::TEXT_TERTIARY,
+            "the lowest rung of ink — the line is dim, so the run is"
+        );
     }
 
     /// A separator introduces the credit only when something is actually in front of it. An item
@@ -5223,13 +5874,26 @@ mod tests {
         let credit = super::shared_by(HANDLE);
 
         let (_, alone) = flow(&["", ""], &credit, 0.0);
-        assert_eq!(alone.len(), 2, "the fragment reported nothing, so the credit is the only text");
-        assert!(matches!(&alone[1], Ev::Run(s, dx, ..) if s == &credit && *dx == 0.0), "no dot, and flush left");
-        assert!(matches!(alone[0], Ev::Mode(0.0, false)), "nothing precedes the fragment either");
+        assert_eq!(
+            alone.len(),
+            2,
+            "the fragment reported nothing, so the credit is the only text"
+        );
+        assert!(
+            matches!(&alone[1], Ev::Run(s, dx, ..) if s == &credit && *dx == 0.0),
+            "no dot, and flush left"
+        );
+        assert!(
+            matches!(alone[0], Ev::Mode(0.0, false)),
+            "nothing precedes the fragment either"
+        );
 
         let (_, after_mode) = flow(&["", ""], &credit, 90.0);
         assert_eq!(after_mode.len(), 3, "fragment, ·, credit");
-        assert!(matches!(&after_mode[1], Ev::Run(s, ..) if s == "\u{b7}"), "a fragment that drew IS something in front");
+        assert!(
+            matches!(&after_mode[1], Ev::Run(s, ..) if s == "\u{b7}"),
+            "a fragment that drew IS something in front"
+        );
     }
 
     /// The yield ladder, in the order the row gives things up: **the trailing credit first** (it is
@@ -5247,30 +5911,61 @@ mod tests {
         // the same shape `facts_flow` measures: members joined by the row's separator, the
         // fragment always present between the clause and the credit
         let w = |f: FactsFit| {
-            DATE_W + if f.extent { SEP + EXT_W } else { 0.0 } + MODE_W + if f.credit { SEP + CREDIT_W } else { 0.0 }
+            DATE_W
+                + if f.extent { SEP + EXT_W } else { 0.0 }
+                + MODE_W
+                + if f.credit { SEP + CREDIT_W } else { 0.0 }
         };
-        let full = w(FactsFit { extent: true, credit: true, elide: false });
-        let no_credit = w(FactsFit { extent: true, credit: false, elide: false });
-        let bare = w(FactsFit { extent: false, credit: false, elide: false });
+        let full = w(FactsFit {
+            extent: true,
+            credit: true,
+            elide: false,
+        });
+        let no_credit = w(FactsFit {
+            extent: true,
+            credit: false,
+            elide: false,
+        });
+        let bare = w(FactsFit {
+            extent: false,
+            credit: false,
+            elide: false,
+        });
 
         assert_eq!(
             super::facts_fit(true, full, w),
-            FactsFit { extent: true, credit: true, elide: false },
+            FactsFit {
+                extent: true,
+                credit: true,
+                elide: false
+            },
             "a row that fits keeps everything"
         );
         assert_eq!(
             super::facts_fit(true, full - 1.0, w),
-            FactsFit { extent: true, credit: false, elide: false },
+            FactsFit {
+                extent: true,
+                credit: false,
+                elide: false
+            },
             "one pixel short: the credit goes, and the item's own facts stay whole"
         );
         assert_eq!(
             super::facts_fit(true, no_credit - 1.0, w),
-            FactsFit { extent: false, credit: false, elide: false },
+            FactsFit {
+                extent: false,
+                credit: false,
+                elide: false
+            },
             "then the extent goes entirely — a member goes whole before it goes garbled"
         );
         assert_eq!(
             super::facts_fit(true, bare - 1.0, w),
-            FactsFit { extent: false, credit: false, elide: true },
+            FactsFit {
+                extent: false,
+                credit: false,
+                elide: true
+            },
             "and only a date that cannot fit alone is ellipsised"
         );
 
@@ -5278,7 +5973,10 @@ mod tests {
         for i in 0..=((full as i32) + 40) {
             let b = i as f32;
             let fit = super::facts_fit(true, b, w);
-            assert!(!(fit.credit && !fit.extent), "the credit can never outlive the extent (budget {b})");
+            assert!(
+                !(fit.credit && !fit.extent),
+                "the credit can never outlive the extent (budget {b})"
+            );
             // …and an item on our OWN server decides exactly as it does today: the credit term is
             // absent from the row entirely, so only the extent and the elide are ever in question.
             let own = super::facts_fit(false, b, w);
@@ -5307,15 +6005,27 @@ mod tests {
 
         let mut show = item(&["Pilot Director"]);
         show.is_show = true;
-        show.crew = vec![credit("Pilot Director", "Director"), credit("Kerry Ehrin", "Writer")];
-        assert_eq!(super::hero_credit(&show), Some(("Created by", vec!["Kerry Ehrin"])));
+        show.crew = vec![
+            credit("Pilot Director", "Director"),
+            credit("Kerry Ehrin", "Writer"),
+        ];
+        assert_eq!(
+            super::hero_credit(&show),
+            Some(("Created by", vec!["Kerry Ehrin"]))
+        );
 
         // …and a show whose agent sent no writer has no creator to name
         show.crew = vec![credit("Pilot Director", "Director")];
         assert_eq!(super::hero_credit(&show), None);
-        assert!(!super::has_people(&show), "no credit and no cast → no right-hand column at all");
+        assert!(
+            !super::has_people(&show),
+            "no credit and no cast → no right-hand column at all"
+        );
         show.cast = vec![credit("Anne Actor", "Herself")];
-        assert!(super::has_people(&show), "a cast alone still earns the column (and its wedge)");
+        assert!(
+            super::has_people(&show),
+            "a cast alone still earns the column (and its wedge)"
+        );
     }
 
     /// The facts row and the people column are LEVEL, so the thing that keeps them apart is a
@@ -5363,7 +6073,10 @@ mod tests {
         // BTN_CONTENT_GAP), so however tall the column grows it can never push the sections down —
         // which is the whole reason it hangs off the buttons rather than off a top.
         assert!(bottom <= btn_y + super::CD + super::BTN_CONTENT_GAP);
-        assert!(four < bottom, "the block is measured upward from its bottom edge");
+        assert!(
+            four < bottom,
+            "the block is measured upward from its bottom edge"
+        );
     }
 
     use super::*;
@@ -5403,7 +6116,11 @@ mod tests {
     #[test]
     fn an_item_with_no_ultrablur_keeps_the_flat_app_ground() {
         let _serial = crate::testlock::serial();
-        assert_eq!(amb_target(None), [theme::SURFACE_APP; 4], "no envelope is the app's own ground");
+        assert_eq!(
+            amb_target(None),
+            [theme::SURFACE_APP; 4],
+            "no envelope is the app's own ground"
+        );
     }
 
     /// The ground is the item's OWN corner arrangement, at ONE weight on all four corners — unlike
@@ -5417,7 +6134,12 @@ mod tests {
     #[test]
     fn the_page_ground_is_the_items_own_corner_arrangement() {
         let _serial = crate::testlock::serial();
-        let b = [[0.30, 0.05, 0.05], [0.05, 0.30, 0.05], [0.05, 0.05, 0.30], [0.25, 0.25, 0.05]];
+        let b = [
+            [0.30, 0.05, 0.05],
+            [0.05, 0.30, 0.05],
+            [0.05, 0.05, 0.30],
+            [0.25, 0.25, 0.05],
+        ];
         let g = amb_target(Some(b));
         for (i, corner) in g.iter().enumerate() {
             for ch in 0..3 {
@@ -5429,12 +6151,18 @@ mod tests {
                     corner[ch]
                 );
             }
-            assert_eq!(corner[3], 1.0, "the ground is opaque — it stands in for the clear");
+            assert_eq!(
+                corner[3], 1.0,
+                "the ground is opaque — it stands in for the clear"
+            );
         }
         // four distinguishable sources stay four distinguishable corners, in the order they came in
         for i in 0..4 {
             for j in (i + 1)..4 {
-                assert_ne!(g[i], g[j], "corners {i} and {j} collapsed — the ring order is lost");
+                assert_ne!(
+                    g[i], g[j],
+                    "corners {i} and {j} collapsed — the ring order is lost"
+                );
             }
         }
     }
@@ -5503,23 +6231,51 @@ mod tests {
             vec![ep(1, 1, 0), ep(1, 2, 0)],
         )));
         let shown = hero_episode().expect("a started show is about its on-deck episode");
-        assert_eq!(shown.season, 2, "the on-deck season, NOT the tab being browsed");
+        assert_eq!(
+            shown.season, 2,
+            "the on-deck season, NOT the tab being browsed"
+        );
         assert_eq!(shown.index, 2);
-        assert_eq!(shown.thumb, "/thumb/s2e2", "…which is also the backdrop the hero draws");
-        assert_eq!(hero_resume_ns(), metadata::resume_ns(10 * 60_000, 60 * 60_000), "and Resume reads ITS offset");
+        assert_eq!(
+            shown.thumb, "/thumb/s2e2",
+            "…which is also the backdrop the hero draws"
+        );
+        assert_eq!(
+            hero_resume_ns(),
+            metadata::resume_ns(10 * 60_000, 60 * 60_000),
+            "and Resume reads ITS offset"
+        );
 
         // FINISHED: the server sends no OnDeck, so the hero presents the series for free
         metadata::install_for_test(Some(show(vec![season(10)], None, vec![ep(1, 1, 0)])));
         assert!(hero_episode().is_none(), "a finished show presents itself");
-        assert_eq!(hero_resume_ns(), 0, "…and its Play starts from 0, so no restart disc");
+        assert_eq!(
+            hero_resume_ns(),
+            0,
+            "…and its Play starts from 0, so no restart disc"
+        );
 
         // UNPLAYED: the server DOES offer S1E1, and `show_started` is what rejects it
-        metadata::install_for_test(Some(show(vec![season(0)], Some(ep(1, 1, 0)), vec![ep(1, 1, 0)])));
-        assert!(hero_episode().is_none(), "an unplayed show presents itself, on-deck offer notwithstanding");
+        metadata::install_for_test(Some(show(
+            vec![season(0)],
+            Some(ep(1, 1, 0)),
+            vec![ep(1, 1, 0)],
+        )));
+        assert!(
+            hero_episode().is_none(),
+            "an unplayed show presents itself, on-deck offer notwithstanding"
+        );
 
         // …and a live offset alone makes it underway, with no watched leaf anywhere
-        metadata::install_for_test(Some(show(vec![season(0)], Some(ep(1, 1, 90_000)), vec![ep(1, 1, 90_000)])));
-        assert!(hero_episode().is_some(), "a part-watched episode means the show is started");
+        metadata::install_for_test(Some(show(
+            vec![season(0)],
+            Some(ep(1, 1, 90_000)),
+            vec![ep(1, 1, 90_000)],
+        )));
+        assert!(
+            hero_episode().is_some(),
+            "a part-watched episode means the show is started"
+        );
 
         metadata::install_for_test(None);
     }
@@ -5535,7 +6291,10 @@ mod tests {
             let none = hero_chain(syn_h, false);
             let some = hero_chain(syn_h, true);
 
-            assert_eq!(some.meta_y, none.meta_y, "the meta line is above the band; it cannot move");
+            assert_eq!(
+                some.meta_y, none.meta_y,
+                "the meta line is above the band; it cannot move"
+            );
             assert_eq!(
                 none.syn_y,
                 none.meta_y + SYN_DY,
@@ -5548,8 +6307,15 @@ mod tests {
             );
             // the whole lower block travels together, by exactly the band's height
             let shift = some.syn_y - none.syn_y;
-            assert_eq!(shift, RATINGS_DY, "the band is worth one RATINGS_DY and nothing else");
-            assert_eq!(some.facts_y - none.facts_y, shift, "the facts line travels with it");
+            assert_eq!(
+                shift, RATINGS_DY,
+                "the band is worth one RATINGS_DY and nothing else"
+            );
+            assert_eq!(
+                some.facts_y - none.facts_y,
+                shift,
+                "the facts line travels with it"
+            );
             assert_eq!(some.btn_y - none.btn_y, shift, "so does the action row");
         }
     }
@@ -5564,7 +6330,10 @@ mod tests {
         assert_eq!(ch.meta_y, 596.0, "meta line");
         assert_eq!(ch.ratings_y, 646.0, "review scores");
         assert_eq!(ch.syn_y, 700.0, "synopsis");
-        assert_eq!(ch.facts_y, 796.0, "date/counts line (the mock's 800, on our measured blurb)");
+        assert_eq!(
+            ch.facts_y, 796.0,
+            "date/counts line (the mock's 800, on our measured blurb)"
+        );
         assert_eq!(ch.btn_y, 846.0, "action row (the mock's 850)");
     }
 
@@ -5579,11 +6348,17 @@ mod tests {
         metadata::install_for_test(Some(d));
 
         let (secs, n) = sections();
-        assert!(secs[..n].contains(&4), "section 4 is present for a crew-only item");
+        assert!(
+            secs[..n].contains(&4),
+            "section 4 is present for a crew-only item"
+        );
         assert_eq!(n_items(4), 1, "and it holds the one credit");
 
         metadata::install_for_test(None);
-        assert!(!sections().0[..sections().1].contains(&4), "with nothing loaded there is no shelf");
+        assert!(
+            !sections().0[..sections().1].contains(&4),
+            "with nothing loaded there is no shelf"
+        );
     }
 
     /// OK on the credits shelf must resolve through the COMBINED index space, not `cast[i]`.
@@ -5598,7 +6373,10 @@ mod tests {
     fn ok_on_a_crew_tile_opens_that_crew_members_page_not_an_actor_at_the_same_index() {
         let _serial = crate::testlock::serial();
         let mut d = item(&[]);
-        d.cast = vec![credit_id("Anne Actor", "Herself", 11), credit_id("Ben Actor", "Himself", 12)];
+        d.cast = vec![
+            credit_id("Anne Actor", "Herself", 11),
+            credit_id("Ben Actor", "Himself", 12),
+        ];
         d.crew = vec![credit_id("Dana Director", "Director", 99)];
         mount(Some(d), 0);
 
@@ -5608,7 +6386,10 @@ mod tests {
         v.col = 2;
         assert!(!on_ok(), "a credit tile never starts playback");
         let p = crate::person::current().expect("the person store opened");
-        assert_eq!(p.key, "99", "the crew tile opened the actor at cast[2] (or nothing) instead");
+        assert_eq!(
+            p.key, "99",
+            "the crew tile opened the actor at cast[2] (or nothing) instead"
+        );
         assert_eq!(p.name, "Dana Director");
 
         // and an ordinary actor index still resolves to that actor
@@ -5639,26 +6420,36 @@ mod tests {
         v.col = col;
         v.ep_row = EpRow::Still; // the filmstrip sub-row is retained state; no test may inherit one
         v.tabs = TabStrip::new(); // …and so are the season strip's capsules
-        // …and so is the per-section column memory, which is the one that got away. `move_focus`
-        // seeds `col` from `saved_col[ns]` when it ENTERS the episode/related/cast row, so a test
-        // that walked one of those strips left the next test's first DOWN landing on ITS column
-        // rather than on the one this mount just asked for. Order-dependent, therefore invisible
-        // until the set of tests changes: it surfaced when route.rs gained a case that holds
-        // `testlock` across real socket I/O, which re-ordered who runs beside whom.
-        // `reset_view_state` — the production reset this helper stands in for — has always cleared
-        // it; the fixture simply did not.
+                                  // …and so is the per-section column memory, which is the one that got away. `move_focus`
+                                  // seeds `col` from `saved_col[ns]` when it ENTERS the episode/related/cast row, so a test
+                                  // that walked one of those strips left the next test's first DOWN landing on ITS column
+                                  // rather than on the one this mount just asked for. Order-dependent, therefore invisible
+                                  // until the set of tests changes: it surfaced when route.rs gained a case that holds
+                                  // `testlock` across real socket I/O, which re-ordered who runs beside whom.
+                                  // `reset_view_state` — the production reset this helper stands in for — has always cleared
+                                  // it; the fixture simply did not.
         v.saved_col = [0; 6];
         v.last_resume_ns = 0;
         v.hero_set = set;
     }
     fn movie(resume_ms: i64, dur_ms: i64) -> Detail {
-        Detail { rk: "m1".into(), dur_ms, resume_ms, ..Default::default() }
+        Detail {
+            rk: "m1".into(),
+            dur_ms,
+            resume_ms,
+            ..Default::default()
+        }
     }
     /// A show whose ON-DECK episode carries `ep_resume_ms`. The hero's resume comes from the server's
     /// on-deck hub, not from the loaded season's first episode (see `hero_episode`), so a fixture that
     /// only fills `episodes` describes a show the hero would present as a SERIES.
     fn show(ep_resume_ms: i64, dur_ms: i64) -> Detail {
-        let ep = || Episode { rk: "e1".into(), dur_ms, resume_ms: ep_resume_ms, ..Default::default() };
+        let ep = || Episode {
+            rk: "e1".into(),
+            dur_ms,
+            resume_ms: ep_resume_ms,
+            ..Default::default()
+        };
         Detail {
             rk: "s1".into(),
             is_show: true,
@@ -5694,26 +6485,46 @@ mod tests {
 
         mount(None, 0);
         assert_eq!(restart(), None, "no item loaded: nothing to restart");
-        assert_eq!(hero_index(HeroCtl::MarkWatched), Some(1), "…and the row is Play + one disc");
+        assert_eq!(
+            hero_index(HeroCtl::MarkWatched),
+            Some(1),
+            "…and the row is Play + one disc"
+        );
 
         mount(Some(movie(0, 7_200_000)), 0);
         assert_eq!(restart(), None, "unwatched movie: Play already starts at 0");
 
         mount(Some(movie(1_800_000, 7_200_000)), 0);
-        assert_eq!(restart(), Some(BTN_RESTART), "part-watched movie: Play resumes, so ↺ is reachable");
+        assert_eq!(
+            restart(),
+            Some(BTN_RESTART),
+            "part-watched movie: Play resumes, so ↺ is reachable"
+        );
 
         // the two rule edges: a few seconds in is not a resume point, and neither is the 95% tail
         // (both resume_ns to 0, where "Resume" would be a lie and ↺ a second Play)
         mount(Some(movie(4_000, 7_200_000)), 0);
         assert_eq!(restart(), None, "a 4s offset is below Plex's resume floor");
         mount(Some(movie(7_100_000, 7_200_000)), 0);
-        assert_eq!(restart(), None, "past the 95% mark the item plays from the start");
+        assert_eq!(
+            restart(),
+            None,
+            "past the 95% mark the item plays from the start"
+        );
 
         // a show page's Play starts its ON-DECK episode, so the row reads THAT leaf
         mount(Some(show(0, 2_700_000)), 0);
-        assert_eq!(restart(), None, "show whose on-deck episode has not been started");
+        assert_eq!(
+            restart(),
+            None,
+            "show whose on-deck episode has not been started"
+        );
         mount(Some(show(600_000, 2_700_000)), 0);
-        assert_eq!(restart(), Some(BTN_RESTART), "show whose on-deck episode is part-watched");
+        assert_eq!(
+            restart(),
+            Some(BTN_RESTART),
+            "show whose on-deck episode is part-watched"
+        );
         view().section = 1;
         assert_eq!(focus(), -1, "focus() still reports -1 off the hero section");
 
@@ -5735,9 +6546,19 @@ mod tests {
         assert_eq!(hero_action(1), HeroAction::MarkWatched);
 
         // watched, with no resume point: still two controls, but the tail disc is the other one
-        mount(Some(Detail { watched: true, ..movie(0, 7_200_000) }), 0);
+        mount(
+            Some(Detail {
+                watched: true,
+                ..movie(0, 7_200_000)
+            }),
+            0,
+        );
         assert_eq!(hero_btns(), 2, "Play + −");
-        assert_eq!(hero_action(1), HeroAction::MarkUnwatched, "a finished item offers only the way back");
+        assert_eq!(
+            hero_action(1),
+            HeroAction::MarkUnwatched,
+            "a finished item offers only the way back"
+        );
 
         // part-watched: ↺ for the resume point, and the toggle still reads ✓ because the item is
         // NOT watched. The two facts, each with its own control — the widest ordinary row.
@@ -5775,15 +6596,29 @@ mod tests {
         // LEAF: the press frame IS the settled frame
         mount(Some(movie(1_800_000, 7_200_000)), 0);
         assert_eq!(hero_btns(), 3, "Play + ↺ + ✓");
-        assert!(metadata::set_watched_local(ServerId::UNSET, "m1", true), "the flip found the item");
-        assert_eq!(hero_btns(), 2, "the resume point goes, and the toggle flips, at once");
+        assert!(
+            metadata::set_watched_local(ServerId::UNSET, "m1", true),
+            "the flip found the item"
+        );
+        assert_eq!(
+            hero_btns(),
+            2,
+            "the resume point goes, and the toggle flips, at once"
+        );
         assert_eq!(hero_action(1), HeroAction::MarkUnwatched);
 
         // CONTAINER: the same call, and the row does not move
         mount(Some(show(600_000, 2_700_000)), 0);
         assert_eq!(hero_btns(), 3, "Play + ↺ + ✓");
-        assert!(metadata::set_watched_local(ServerId::UNSET, "s1", true), "the flip found the show");
-        assert_eq!(hero_btns(), 3, "the evidence the row reads is the server's, and it has not moved");
+        assert!(
+            metadata::set_watched_local(ServerId::UNSET, "s1", true),
+            "the flip found the show"
+        );
+        assert_eq!(
+            hero_btns(),
+            3,
+            "the evidence the row reads is the server's, and it has not moved"
+        );
 
         // …and the re-read is what settles it: no on-deck episode, no viewed leaves, watched
         metadata::set_current_for_test(Some(Detail {
@@ -5807,24 +6642,62 @@ mod tests {
     fn the_watch_state_resolver_answers_leaf_and_container_by_their_own_rules() {
         // ---- LEAVES: the resume the Play pill would apply, then the flag
         let mark = |d: &Detail, resume| hero_watch_state(d, resume);
-        assert_eq!(mark(&movie(0, 7_200_000), 0), PosterMark::None, "never started");
-        assert_eq!(mark(&movie(1_800_000, 7_200_000), 1_800_000_000_000), PosterMark::InProgress);
-        assert_eq!(mark(&Detail { watched: true, ..movie(0, 7_200_000) }, 0), PosterMark::Watched);
+        assert_eq!(
+            mark(&movie(0, 7_200_000), 0),
+            PosterMark::None,
+            "never started"
+        );
+        assert_eq!(
+            mark(&movie(1_800_000, 7_200_000), 1_800_000_000_000),
+            PosterMark::InProgress
+        );
+        assert_eq!(
+            mark(
+                &Detail {
+                    watched: true,
+                    ..movie(0, 7_200_000)
+                },
+                0
+            ),
+            PosterMark::Watched
+        );
         // …and the precedence, on the one item PMS reports as BOTH: a finished film someone has
         // started again is in the middle of that re-watch, which is what the viewer is doing
         assert_eq!(
-            mark(&Detail { watched: true, ..movie(1_800_000, 7_200_000) }, 1_800_000_000_000),
+            mark(
+                &Detail {
+                    watched: true,
+                    ..movie(1_800_000, 7_200_000)
+                },
+                1_800_000_000_000
+            ),
             PosterMark::InProgress,
             "a re-watch in flight outranks the watched flag"
         );
         // the RULE's edges, which is why `resume` is `hero_resume_ns`'s answer and not a raw
         // viewOffset: neither of these puts a "Resume" on the pill, so neither is in the middle
-        assert_eq!(mark(&movie(4_000, 7_200_000), 0), PosterMark::None, "4s in is not started");
-        assert_eq!(mark(&movie(7_100_000, 7_200_000), 0), PosterMark::None, "past 95% is finished");
+        assert_eq!(
+            mark(&movie(4_000, 7_200_000), 0),
+            PosterMark::None,
+            "4s in is not started"
+        );
+        assert_eq!(
+            mark(&movie(7_100_000, 7_200_000), 0),
+            PosterMark::None,
+            "past 95% is finished"
+        );
 
         // ---- CONTAINERS: no resume of their own, so `show_started` minus the watched end
-        let untouched = Detail { seasons: Vec::new(), on_deck: None, ..show(0, 2_700_000) };
-        assert_eq!(mark(&untouched, 0), PosterMark::None, "a show nobody has opened");
+        let untouched = Detail {
+            seasons: Vec::new(),
+            on_deck: None,
+            ..show(0, 2_700_000)
+        };
+        assert_eq!(
+            mark(&untouched, 0),
+            PosterMark::None,
+            "a show nobody has opened"
+        );
         assert_eq!(
             mark(&show(0, 2_700_000), 0),
             PosterMark::InProgress,
@@ -5833,12 +6706,24 @@ mod tests {
         // `show_started` is TRUE for a FINISHED show too — it asks "touched at all" — so the
         // watched flag is what has to reject it, or a finished series would never offer − alone
         assert_eq!(
-            mark(&Detail { watched: true, ..show(0, 2_700_000) }, 0),
+            mark(
+                &Detail {
+                    watched: true,
+                    ..show(0, 2_700_000)
+                },
+                0
+            ),
             PosterMark::Watched,
             "every leaf seen: finished, not mid-run"
         );
         assert_eq!(
-            mark(&Detail { watched: true, ..show(600_000, 2_700_000) }, 600_000_000_000),
+            mark(
+                &Detail {
+                    watched: true,
+                    ..show(600_000, 2_700_000)
+                },
+                600_000_000_000
+            ),
             PosterMark::InProgress,
             "…until an episode of it is started again"
         );
@@ -5855,8 +6740,16 @@ mod tests {
         use crate::viewstate::Write;
 
         assert_eq!(HeroAction::MarkWatched.watch_write(), Some(Write::Watched));
-        assert_eq!(HeroAction::MarkUnwatched.watch_write(), Some(Write::Unwatched));
-        for a in [HeroAction::Play, HeroAction::Restart, HeroAction::Alt, HeroAction::None] {
+        assert_eq!(
+            HeroAction::MarkUnwatched.watch_write(),
+            Some(Write::Unwatched)
+        );
+        for a in [
+            HeroAction::Play,
+            HeroAction::Restart,
+            HeroAction::Alt,
+            HeroAction::None,
+        ] {
             assert_eq!(a.watch_write(), None, "{a:?} is not a view-state write");
         }
 
@@ -5866,12 +6759,30 @@ mod tests {
         let verb = |ctl| hero_index(ctl).map(|i| hero_action(i).watch_write());
         mount(Some(movie(1_800_000, 7_200_000)), 0);
         assert_eq!(verb(HeroCtl::MarkWatched), Some(Some(Write::Watched)));
-        assert_eq!(verb(HeroCtl::MarkUnwatched), None, "part-watched is NOT watched: no − face");
+        assert_eq!(
+            verb(HeroCtl::MarkUnwatched),
+            None,
+            "part-watched is NOT watched: no − face"
+        );
         mount(Some(movie(0, 7_200_000)), 0);
         assert_eq!(verb(HeroCtl::MarkWatched), Some(Some(Write::Watched)));
-        assert_eq!(verb(HeroCtl::MarkUnwatched), None, "an unstarted item has nothing to un-watch");
-        mount(Some(Detail { watched: true, ..movie(0, 7_200_000) }), 0);
-        assert_eq!(verb(HeroCtl::MarkWatched), None, "a finished item is already there");
+        assert_eq!(
+            verb(HeroCtl::MarkUnwatched),
+            None,
+            "an unstarted item has nothing to un-watch"
+        );
+        mount(
+            Some(Detail {
+                watched: true,
+                ..movie(0, 7_200_000)
+            }),
+            0,
+        );
+        assert_eq!(
+            verb(HeroCtl::MarkWatched),
+            None,
+            "a finished item is already there"
+        );
         assert_eq!(verb(HeroCtl::MarkUnwatched), Some(Some(Write::Unwatched)));
 
         mount(None, 0);
@@ -5886,13 +6797,21 @@ mod tests {
 
         mount(Some(movie(0, 7_200_000)), 0);
         assert_eq!(hero_action(0), HeroAction::Play);
-        assert_eq!(hero_action(1), HeroAction::MarkWatched, "no restart disc: index 1 is the ✓ disc");
+        assert_eq!(
+            hero_action(1),
+            HeroAction::MarkWatched,
+            "no restart disc: index 1 is the ✓ disc"
+        );
         assert_eq!(hero_action(2), HeroAction::None, "and there is no index 2");
 
         mount(Some(movie(1_800_000, 7_200_000)), 0);
         assert_eq!(hero_action(0), HeroAction::Play);
         assert_eq!(hero_action(1), HeroAction::Restart);
-        assert_eq!(hero_action(2), HeroAction::MarkWatched, "the toggle moved, and OK must follow it");
+        assert_eq!(
+            hero_action(2),
+            HeroAction::MarkWatched,
+            "the toggle moved, and OK must follow it"
+        );
         assert_eq!(hero_action(3), HeroAction::None, "and there is no index 3");
 
         mount(None, 0);
@@ -5910,14 +6829,25 @@ mod tests {
         let _serial = crate::testlock::serial();
 
         mount(Some(movie(1_800_000, 7_200_000)), 2);
-        assert_eq!(focus(), 2, "3-button row: focus sits on the toggle, wearing ✓");
+        assert_eq!(
+            focus(),
+            2,
+            "3-button row: focus sits on the toggle, wearing ✓"
+        );
         assert_eq!(hero_action(focus()), HeroAction::MarkWatched);
 
         // the scrobble landed: watched, and no resume point any more — so the ↺ disc is gone and
         // the toggle has flipped to −, one index to the left of where the focus was parked
-        metadata::set_current_for_test(Some(Detail { watched: true, ..movie(0, 7_200_000) }));
+        metadata::set_current_for_test(Some(Detail {
+            watched: true,
+            ..movie(0, 7_200_000)
+        }));
         assert_eq!(hero_btns(), 2);
-        assert_eq!(focus(), 1, "focus follows the toggle, and does not sit past the end");
+        assert_eq!(
+            focus(),
+            1,
+            "focus follows the toggle, and does not sit past the end"
+        );
         assert_eq!(view().col, 1, "and it is written back — it IS the state");
         assert_eq!(
             hero_action(view().col),
@@ -5939,7 +6869,11 @@ mod tests {
         mount(Some(movie(1_800_000, 7_200_000)), 0);
         set_resume(1_800_000, 7_200_000);
         commit_resume(false);
-        assert_eq!(last_resume_ns(), 1_800_000_000_000, "Play keeps the resume: 30 minutes in");
+        assert_eq!(
+            last_resume_ns(),
+            1_800_000_000_000,
+            "Play keeps the resume: 30 minutes in"
+        );
         commit_resume(true);
         assert_eq!(last_resume_ns(), 0, "Restart drops it: 00:00");
 
@@ -5947,8 +6881,16 @@ mod tests {
         mount(Some(show(600_000, 2_700_000)), BTN_RESTART);
         set_resume(600_000, 2_700_000);
         commit_resume(false);
-        assert_eq!(last_resume_ns(), 600_000_000_000, "the episode Play resumes 10 minutes in");
-        assert_eq!(hero_action(hero_col()), HeroAction::Restart, "and the disc is what index 1 means here");
+        assert_eq!(
+            last_resume_ns(),
+            600_000_000_000,
+            "the episode Play resumes 10 minutes in"
+        );
+        assert_eq!(
+            hero_action(hero_col()),
+            HeroAction::Restart,
+            "and the disc is what index 1 means here"
+        );
         commit_resume(true);
         assert_eq!(last_resume_ns(), 0);
 
@@ -5967,12 +6909,24 @@ mod tests {
         mount(None, 0);
         assert_eq!(focus(), 0);
         view().col = 1;
-        assert_eq!(hero_action(focus()), HeroAction::MarkWatched, "index 1 is the ✓ disc while the row is short");
+        assert_eq!(
+            hero_action(focus()),
+            HeroAction::MarkWatched,
+            "index 1 is the ✓ disc while the row is short"
+        );
 
         // the fetch lands, part-watched: the row grows a restart disc AT index 1 and a − disc after
         metadata::set_current_for_test(Some(movie(1_800_000, 7_200_000)));
-        assert_eq!(focus(), 2, "the focus moved with the disc rather than staying on the index");
-        assert_eq!(hero_action(focus()), HeroAction::MarkWatched, "so OK still means what the user aimed at");
+        assert_eq!(
+            focus(),
+            2,
+            "the focus moved with the disc rather than staying on the index"
+        );
+        assert_eq!(
+            hero_action(focus()),
+            HeroAction::MarkWatched,
+            "so OK still means what the user aimed at"
+        );
 
         // Play never shifts — it is before the insertion point
         view().col = 0;
@@ -6041,14 +6995,26 @@ mod tests {
         let _serial = crate::testlock::serial();
 
         mount(Some(movie(0, 7_200_000)), 0);
-        assert_eq!(hero_btns(), 2, "one source: Play + the ✓ disc, exactly as before");
+        assert_eq!(
+            hero_btns(),
+            2,
+            "one source: Play + the ✓ disc, exactly as before"
+        );
         assert_eq!(hero_action(1), HeroAction::MarkWatched);
 
         alt_arm("m1");
         assert_eq!(hero_btns(), 3, "a second source is one more control");
         assert_eq!(hero_action(0), HeroAction::Play);
-        assert_eq!(hero_action(1), HeroAction::Alt, "…and it sits with the play group, not after the discs");
-        assert_eq!(hero_action(2), HeroAction::MarkWatched, "the watch disc still ends the row");
+        assert_eq!(
+            hero_action(1),
+            HeroAction::Alt,
+            "…and it sits with the play group, not after the discs"
+        );
+        assert_eq!(
+            hero_action(2),
+            HeroAction::MarkWatched,
+            "the watch disc still ends the row"
+        );
         assert_eq!(hero_index(HeroCtl::MarkWatched), Some(2));
 
         // EVERY conditional control at once, which is the widest the row ever gets: the resume
@@ -6062,7 +7028,11 @@ mod tests {
         assert_eq!(hero_action(4), HeroAction::None, "and there is no index 4");
 
         alt_clear();
-        assert_eq!(hero_btns(), 3, "the control leaves with the copies that justified it");
+        assert_eq!(
+            hero_btns(),
+            3,
+            "the control leaves with the copies that justified it"
+        );
 
         // …and the NEGATIVE the gate is really about: a copy list that names only the source you
         // are already on adds nothing. That is also how "not pinned" reads from here — the store
@@ -6076,11 +7046,25 @@ mod tests {
             here,
             "m1",
             vec![
-                AltCopy { sid: here, library: "Movies".into(), rk: "m1".into(), ..Default::default() },
-                AltCopy { sid: here, library: "4K Movies".into(), rk: "9".into(), ..Default::default() },
+                AltCopy {
+                    sid: here,
+                    library: "Movies".into(),
+                    rk: "m1".into(),
+                    ..Default::default()
+                },
+                AltCopy {
+                    sid: here,
+                    library: "4K Movies".into(),
+                    rk: "9".into(),
+                    ..Default::default()
+                },
             ],
         );
-        assert_eq!(hero_btns(), 2, "two copies on ONE source are not 'also available elsewhere'");
+        assert_eq!(
+            hero_btns(),
+            2,
+            "two copies on ONE source are not 'also available elsewhere'"
+        );
 
         alt_clear();
         mount(None, 0);
@@ -6108,28 +7092,48 @@ mod tests {
         view().col = alt;
         assert_eq!(hero_action(focus()), HeroAction::Alt);
         assert!(!on_ok(), "opening a list never starts playback");
-        assert!(take_alt_request(), "the press asked app.rs to present the panel");
+        assert!(
+            take_alt_request(),
+            "the press asked app.rs to present the panel"
+        );
         assert!(take_alt_open().is_none(), "…and chose no copy yet");
 
         // app.rs presents it beside the control's drawn rect (any rect here — the host measures no
         // pills, which is why `alt_sources::open` takes the anchor rather than finding it)
         crate::ui::alt_sources::open(Rect::new(300.0, 812.0, 300.0, 60.0));
         assert!(crate::ui::alt_sources::is_open());
-        assert!(!focus_is_card(), "nothing behind an open panel is pressable");
+        assert!(
+            !focus_is_card(),
+            "nothing behind an open panel is pressable"
+        );
 
         // it opens on the copy you are ON, so one DOWN reaches the other one
         crate::ui::alt_sources::move_focus(SDLK_DOWN as c_int);
         assert!(!on_ok(), "committing a row never starts playback either");
-        assert!(!crate::ui::alt_sources::is_open(), "…and the panel closed behind it");
+        assert!(
+            !crate::ui::alt_sources::is_open(),
+            "…and the panel closed behind it"
+        );
 
         let (sid, rk) = take_alt_open().expect("the press chose the other copy");
-        assert_ne!(sid, crate::plex::current_server(), "the destination is the OTHER server");
+        assert_ne!(
+            sid,
+            crate::plex::current_server(),
+            "the destination is the OTHER server"
+        );
         assert_eq!(rk, "318", "…addressed by ITS ratingKey, not this server's");
 
         // and the page you are standing on is untouched: the copy was not swapped under you, and
         // no ordinary open request was raised alongside (which would be a second navigation)
-        assert!(take_open_request().is_none(), "the copy must not be switched in place");
-        assert_eq!(mounted_rk(), "m1", "this page stays this page until app.rs navigates");
+        assert!(
+            take_open_request().is_none(),
+            "the copy must not be switched in place"
+        );
+        assert_eq!(
+            mounted_rk(),
+            "m1",
+            "this page stays this page until app.rs navigates"
+        );
         assert_eq!(hero_btns(), 3, "…control set and all");
 
         alt_clear();
@@ -6147,15 +7151,24 @@ mod tests {
         alt_arm("m1");
         crate::ui::alt_sources::open(Rect::new(300.0, 812.0, 300.0, 60.0));
         assert!(!on_ok());
-        assert!(take_alt_open().is_none(), "the row you are on is not a destination");
+        assert!(
+            take_alt_open().is_none(),
+            "the row you are on is not a destination"
+        );
         assert!(take_open_request().is_none());
-        assert!(!crate::ui::alt_sources::is_open(), "…but the press is still spent on dismissing");
+        assert!(
+            !crate::ui::alt_sources::is_open(),
+            "…but the press is still spent on dismissing"
+        );
 
         // BACK dismisses it too, and is reported as SPENT so app.rs does not also pop the trail
         crate::ui::alt_sources::open(Rect::new(300.0, 812.0, 300.0, 60.0));
         assert!(back(), "a panel the page has open takes the BACK press");
         assert!(!crate::ui::alt_sources::is_open());
-        assert!(!back(), "…and with nothing open the page hands BACK back to app.rs");
+        assert!(
+            !back(),
+            "…and with nothing open the page hands BACK back to app.rs"
+        );
 
         alt_clear();
         mount(None, 0);
@@ -6175,8 +7188,16 @@ mod tests {
 
         // the copy list lands: the alt pill is inserted at index 1, under the focus
         alt_arm("m1");
-        assert_eq!(focus(), 2, "the focus followed the disc rather than staying on index 1");
-        assert_eq!(hero_action(focus()), HeroAction::MarkWatched, "so OK still means what it did a frame ago");
+        assert_eq!(
+            focus(),
+            2,
+            "the focus followed the disc rather than staying on index 1"
+        );
+        assert_eq!(
+            hero_action(focus()),
+            HeroAction::MarkWatched,
+            "so OK still means what it did a frame ago"
+        );
 
         // …and it survives the list going away again
         alt_clear();
@@ -6193,7 +7214,11 @@ mod tests {
         assert_eq!(hero_action(focus()), HeroAction::Alt);
         alt_clear();
         assert_eq!(focus(), 1);
-        assert_eq!(hero_action(focus()), HeroAction::MarkWatched, "never an index the row does not have");
+        assert_eq!(
+            hero_action(focus()),
+            HeroAction::MarkWatched,
+            "never an index the row does not have"
+        );
 
         mount(None, 0);
     }
@@ -6207,7 +7232,11 @@ mod tests {
     /// had one: this is a movie with a file, a resume point and a second copy.
     #[test]
     fn the_hero_row_carries_no_track_information_disc() {
-        let full = HeroSet { restart: true, alt: true, mark: PosterMark::InProgress };
+        let full = HeroSet {
+            restart: true,
+            alt: true,
+            mark: PosterMark::InProgress,
+        };
         let (v, n) = hero_ctls(full);
         assert_eq!(
             &v[..n],
@@ -6219,7 +7248,11 @@ mod tests {
             ]
         );
         // …and the ordinary set: one server, nothing started. Play, then the one watch disc.
-        let plain = HeroSet { restart: false, alt: false, mark: PosterMark::None };
+        let plain = HeroSet {
+            restart: false,
+            alt: false,
+            mark: PosterMark::None,
+        };
         let (v, n) = hero_ctls(plain);
         assert_eq!(&v[..n], &[HeroCtl::Play, HeroCtl::MarkWatched]);
     }
@@ -6236,9 +7269,13 @@ mod tests {
     fn every_hero_set() -> impl Iterator<Item = HeroSet> {
         [false, true].into_iter().flat_map(|restart| {
             [false, true].into_iter().flat_map(move |alt| {
-                [PosterMark::None, PosterMark::InProgress, PosterMark::Watched]
-                    .into_iter()
-                    .map(move |mark| HeroSet { restart, alt, mark })
+                [
+                    PosterMark::None,
+                    PosterMark::InProgress,
+                    PosterMark::Watched,
+                ]
+                .into_iter()
+                .map(move |mark| HeroSet { restart, alt, mark })
             })
         })
     }
@@ -6246,7 +7283,11 @@ mod tests {
     /// The row's widths with the watched toggle CLOSED — what every geometry assertion that is not
     /// about the unfurl wants, and what the row looked like before the unfurl existed.
     fn closed_widths(pw: f32, alt_w: f32) -> HeroWidths {
-        HeroWidths { pill: pw, alt: alt_w, disc: [CD; 2] }
+        HeroWidths {
+            pill: pw,
+            alt: alt_w,
+            disc: [CD; 2],
+        }
     }
 
     #[test]
@@ -6259,15 +7300,26 @@ mod tests {
             let cw = HeroWidths {
                 pill: pw,
                 alt: alt_w,
-                disc: [CircleButton::cap_w(CD, e, 120.0), CircleButton::cap_w(CD, e, 160.0)],
+                disc: [
+                    CircleButton::cap_w(CD, e, 120.0),
+                    CircleButton::cap_w(CD, e, 160.0),
+                ],
             };
             for set in every_hero_set() {
                 let (_, n) = hero_ctls(set);
                 let mut prev = hero_btn_rect_at(set, 0, y, cw);
-                assert_eq!((prev.x, prev.w), (MARGIN_X, pw), "the play pill starts the row at its own width");
+                assert_eq!(
+                    (prev.x, prev.w),
+                    (MARGIN_X, pw),
+                    "the play pill starts the row at its own width"
+                );
                 for i in 1..n as c_int {
                     let r = hero_btn_rect_at(set, i, y, cw);
-                    assert_eq!(r.x, prev.x + prev.w + CGAP, "control {i} accumulates past its neighbour");
+                    assert_eq!(
+                        r.x,
+                        prev.x + prev.w + CGAP,
+                        "control {i} accumulates past its neighbour"
+                    );
                     assert_eq!(r.h, CD, "every control in the row stands the same height");
                     assert!(!prev.contains(r.cx(), r.cy()) && !r.contains(prev.cx(), prev.cy()));
                     prev = r;
@@ -6284,13 +7336,20 @@ mod tests {
                     "the toggle at e={e} on {set:?}"
                 );
                 if let Some(i) = index_of(set, HeroCtl::Restart) {
-                    assert_eq!(hero_btn_rect_at(set, i, y, cw).w, cw.disc[0], "the ▶| disc at e={e}");
+                    assert_eq!(
+                        hero_btn_rect_at(set, i, y, cw).w,
+                        cw.disc[0],
+                        "the ▶| disc at e={e}"
+                    );
                 }
                 // …and a watch-state disc still ends the row, whichever tail this set has
                 assert_eq!(hero_btn_rect_at(set, n as c_int - 1, y, cw).x, prev.x);
                 let last = ctl_at(set, n as c_int - 1);
                 assert!(
-                    matches!(last, Some(HeroCtl::MarkWatched) | Some(HeroCtl::MarkUnwatched)),
+                    matches!(
+                        last,
+                        Some(HeroCtl::MarkWatched) | Some(HeroCtl::MarkUnwatched)
+                    ),
                     "the row ends on a watch disc, not on {last:?}"
                 );
             }
@@ -6317,10 +7376,20 @@ mod tests {
         for set in every_hero_set() {
             let (_, n) = hero_ctls(set);
             // trivially short, the real verbs paired as the row really pairs them, and two absurd
-            for lw in [[10.0f32, 12.0], [201.0, 316.0], [201.0, 233.0], [400.0, 400.0], [900.0, 40.0]] {
+            for lw in [
+                [10.0f32, 12.0],
+                [201.0, 316.0],
+                [201.0, 233.0],
+                [400.0, 400.0],
+                [900.0, 40.0],
+            ] {
                 for e in every_unfurl_phase() {
                     let disc = disc_caps_at(set, pw, alt_w, e, lw);
-                    let cw = HeroWidths { pill: pw, alt: alt_w, disc };
+                    let cw = HeroWidths {
+                        pill: pw,
+                        alt: alt_w,
+                        disc,
+                    };
                     let last = hero_btn_rect_at(set, n as c_int - 1, 0.0, cw);
                     assert!(
                         last.x + last.w <= FACTS_R,
@@ -6334,7 +7403,10 @@ mod tests {
                 }
             }
         }
-        assert!(ever_opened, "the sweep must actually exercise an OPEN capsule, not only refusals");
+        assert!(
+            ever_opened,
+            "the sweep must actually exercise an OPEN capsule, not only refusals"
+        );
     }
 
     /// The unfurl phases the PAIR can actually be in — see [`disc_caps_at`]'s complementary-spring
@@ -6367,7 +7439,10 @@ mod tests {
                 // paired with the widest verb the OTHER slot can carry, since the budget is shared
                 let widest = VERBS.iter().map(|v| v.1).fold(0.0f32, f32::max);
                 let got = disc_caps_at(set, pw, alt_w, [1.0, 0.0], [lw, widest]);
-                assert!(got[0] > CD, "{verb:?} ({lw}px) must open on {set:?}, not be refused");
+                assert!(
+                    got[0] > CD,
+                    "{verb:?} ({lw}px) must open on {set:?}, not be refused"
+                );
             }
         }
     }
@@ -6378,17 +7453,35 @@ mod tests {
     #[test]
     fn a_verb_that_does_not_fit_is_dropped_whole() {
         let (pw, alt_w) = (PW + 62.0, 340.0f32);
-        let widest = HeroSet { restart: true, alt: true, mark: PosterMark::InProgress };
+        let widest = HeroSet {
+            restart: true,
+            alt: true,
+            mark: PosterMark::InProgress,
+        };
         let (_, n) = hero_ctls(widest);
         let closed = hero_btn_rect_at(widest, n as c_int - 1, 0.0, closed_widths(pw, alt_w));
         let budget = CircleButton::label_budget(CD, FACTS_R - (closed.x + closed.w));
-        assert!(budget > 0.0, "the closed widest row must leave SOME room, else the rule is untestable");
+        assert!(
+            budget > 0.0,
+            "the closed widest row must leave SOME room, else the rule is untestable"
+        );
 
         let open = disc_caps_at(widest, pw, alt_w, [0.0, 1.0], [budget; 2]);
         assert!(open[1] > CD, "a verb that exactly spends the budget opens");
-        let last =
-            hero_btn_rect_at(widest, n as c_int - 1, 0.0, HeroWidths { pill: pw, alt: alt_w, disc: open });
-        assert!(last.x + last.w <= FACTS_R, "…and spending the whole budget still clears the column");
+        let last = hero_btn_rect_at(
+            widest,
+            n as c_int - 1,
+            0.0,
+            HeroWidths {
+                pill: pw,
+                alt: alt_w,
+                disc: open,
+            },
+        );
+        assert!(
+            last.x + last.w <= FACTS_R,
+            "…and spending the whole budget still clears the column"
+        );
 
         assert_eq!(
             disc_caps_at(widest, pw, alt_w, [0.0, 1.0], [budget + 3.0; 2]),
@@ -6407,15 +7500,28 @@ mod tests {
     fn the_unfurled_verbs_are_the_menus_own() {
         // The C strings the painter needs cannot BE the shared `&str` (a `CString` per frame is an
         // allocation on the draw path), so the agreement is asserted instead of shared.
-        assert_eq!(MARK_WATCHED_LABEL.to_str().unwrap(), crate::ui::widgets::MARK_WATCHED_VERB);
-        assert_eq!(MARK_UNWATCHED_LABEL.to_str().unwrap(), crate::ui::widgets::MARK_UNWATCHED_VERB);
-        assert_eq!(PLAY_FROM_START_LABEL.to_str().unwrap(), crate::ui::widgets::PLAY_FROM_START_VERB);
+        assert_eq!(
+            MARK_WATCHED_LABEL.to_str().unwrap(),
+            crate::ui::widgets::MARK_WATCHED_VERB
+        );
+        assert_eq!(
+            MARK_UNWATCHED_LABEL.to_str().unwrap(),
+            crate::ui::widgets::MARK_UNWATCHED_VERB
+        );
+        assert_eq!(
+            PLAY_FROM_START_LABEL.to_str().unwrap(),
+            crate::ui::widgets::PLAY_FROM_START_VERB
+        );
         for (plain, named) in [
             (MARK_WATCHED_LABEL, MARK_SHOW_WATCHED_LABEL),
             (MARK_UNWATCHED_LABEL, MARK_SHOW_UNWATCHED_LABEL),
         ] {
             let (p, w) = (plain.to_str().unwrap(), named.to_str().unwrap());
-            assert_eq!(w, p.replacen("Mark ", "Mark Show ", 1), "{w:?} is {p:?} naming its subject");
+            assert_eq!(
+                w,
+                p.replacen("Mark ", "Mark Show ", 1),
+                "{w:?} is {p:?} naming its subject"
+            );
         }
     }
 
@@ -6427,16 +7533,38 @@ mod tests {
     /// every set the page can build.
     #[test]
     fn the_row_offers_exactly_one_watched_toggle() {
-        assert_eq!(disc_verb(HeroCtl::Restart, false), Some((0, PLAY_FROM_START_LABEL)));
-        assert_eq!(disc_verb(HeroCtl::Restart, true), Some((0, PLAY_FROM_START_LABEL)),
-            "the restart disc acts on the subject the blurb just named, so it never takes a noun");
-        assert_eq!(disc_verb(HeroCtl::MarkWatched, false), Some((1, MARK_WATCHED_LABEL)));
-        assert_eq!(disc_verb(HeroCtl::MarkUnwatched, false), Some((1, MARK_UNWATCHED_LABEL)));
-        assert_eq!(disc_verb(HeroCtl::MarkWatched, true), Some((1, MARK_SHOW_WATCHED_LABEL)));
-        assert_eq!(disc_verb(HeroCtl::MarkUnwatched, true), Some((1, MARK_SHOW_UNWATCHED_LABEL)));
+        assert_eq!(
+            disc_verb(HeroCtl::Restart, false),
+            Some((0, PLAY_FROM_START_LABEL))
+        );
+        assert_eq!(
+            disc_verb(HeroCtl::Restart, true),
+            Some((0, PLAY_FROM_START_LABEL)),
+            "the restart disc acts on the subject the blurb just named, so it never takes a noun"
+        );
+        assert_eq!(
+            disc_verb(HeroCtl::MarkWatched, false),
+            Some((1, MARK_WATCHED_LABEL))
+        );
+        assert_eq!(
+            disc_verb(HeroCtl::MarkUnwatched, false),
+            Some((1, MARK_UNWATCHED_LABEL))
+        );
+        assert_eq!(
+            disc_verb(HeroCtl::MarkWatched, true),
+            Some((1, MARK_SHOW_WATCHED_LABEL))
+        );
+        assert_eq!(
+            disc_verb(HeroCtl::MarkUnwatched, true),
+            Some((1, MARK_SHOW_UNWATCHED_LABEL))
+        );
         for c in [HeroCtl::Play, HeroCtl::Alt] {
             for named in [false, true] {
-                assert_eq!(disc_verb(c, named), None, "{c:?} is a pill — it says its word at rest");
+                assert_eq!(
+                    disc_verb(c, named),
+                    None,
+                    "{c:?} is a pill — it says its word at rest"
+                );
             }
         }
         // no two controls of one set may share a spring slot
@@ -6445,16 +7573,30 @@ mod tests {
             let mut seen = [false; 2];
             for &c in &v[..n] {
                 if let Some((slot, _)) = disc_verb(c, false) {
-                    assert!(!seen[slot], "{set:?}: two controls claim unfurl slot {slot}");
+                    assert!(
+                        !seen[slot],
+                        "{set:?}: two controls claim unfurl slot {slot}"
+                    );
                     seen[slot] = true;
                 }
             }
             let verbs = v[..n].iter().filter(|c| is_watch_ctl(**c)).count();
-            assert_eq!(verbs, 1, "{set:?} must offer exactly one watched toggle, not {verbs}");
-            assert_eq!(watch_index(set), Some(n as c_int - 1), "{set:?}: and it is the row's last");
+            assert_eq!(
+                verbs, 1,
+                "{set:?} must offer exactly one watched toggle, not {verbs}"
+            );
+            assert_eq!(
+                watch_index(set),
+                Some(n as c_int - 1),
+                "{set:?}: and it is the row's last"
+            );
             // …wearing the face of the write it would perform. A PART-WATCHED item is not watched,
             // so it reads ✓ — the case the row used to answer with both faces at once.
-            let want = if set.mark == PosterMark::Watched { HeroCtl::MarkUnwatched } else { HeroCtl::MarkWatched };
+            let want = if set.mark == PosterMark::Watched {
+                HeroCtl::MarkUnwatched
+            } else {
+                HeroCtl::MarkWatched
+            };
             assert_eq!(ctl_at(set, n as c_int - 1), Some(want), "{set:?}");
         }
     }
@@ -6478,7 +7620,11 @@ mod tests {
     #[test]
     fn the_widest_action_row_clears_the_people_column() {
         let (y, pw, alt_w) = (812.0f32, PW + 62.0, 340.0f32);
-        let widest = HeroSet { restart: true, alt: true, mark: PosterMark::InProgress };
+        let widest = HeroSet {
+            restart: true,
+            alt: true,
+            mark: PosterMark::InProgress,
+        };
         let (_, n) = hero_ctls(widest);
         assert_eq!(n, 4, "every conditional control at once");
 
@@ -6501,7 +7647,10 @@ mod tests {
     #[test]
     fn strip_x_matches_the_shared_shelf_formula() {
         for sty in [&RowStyle::HOME, &RowStyle::CAST] {
-            assert_eq!(sty.margin_x, MARGIN_X, "a RowStyle margin drifted from detail's strip_x");
+            assert_eq!(
+                sty.margin_x, MARGIN_X,
+                "a RowStyle margin drifted from detail's strip_x"
+            );
         }
     }
 
@@ -6529,19 +7678,35 @@ mod tests {
                     let r = related_tile_rect_at(i, top, sx);
                     // the same left edge `card_row::strip` advances by (`strip_x_matches_the_shared
                     // _shelf_formula` above pins `strip_x` to the component's own formula)
-                    assert!((r.x - (strip_x(i, REL_W + REL_GAP) - sx)).abs() < 0.01, "the anchor's x is the drawn x");
-                    assert!((r.y - (top + REL_LABEL_H)).abs() < 0.01, "…in the band below the heading");
-                    assert_eq!((r.w, r.h), (REL_W, REL_H), "…at the poster's own size, UNSCALED");
+                    assert!(
+                        (r.x - (strip_x(i, REL_W + REL_GAP) - sx)).abs() < 0.01,
+                        "the anchor's x is the drawn x"
+                    );
+                    assert!(
+                        (r.y - (top + REL_LABEL_H)).abs() < 0.01,
+                        "…in the band below the heading"
+                    );
+                    assert_eq!(
+                        (r.w, r.h),
+                        (REL_W, REL_H),
+                        "…at the poster's own size, UNSCALED"
+                    );
                     // …and the pointer's inverse agrees that a click in the middle of it is tile `i`,
                     // so the menu, the focus and the click can never mean three different posters
-                    assert_eq!(strip_at(r.x + REL_W * 0.5, sx, 6, REL_W + REL_GAP, REL_W), Some(i));
+                    assert_eq!(
+                        strip_at(r.x + REL_W * 0.5, sx, 6, REL_W + REL_GAP, REL_W),
+                        Some(i)
+                    );
                 }
             }
         }
 
         // ---- and the two refusals, which decide whether a menu opens on a poster at all ----
         let _serial = crate::testlock::serial();
-        let rel = |rk: &str| crate::metadata::Related { rk: rk.into(), ..Default::default() };
+        let rel = |rk: &str| crate::metadata::Related {
+            rk: rk.into(),
+            ..Default::default()
+        };
         mount(
             Some(Detail {
                 rk: "m1".into(),
@@ -6555,12 +7720,18 @@ mod tests {
         // filmstrip's own menu answers for section 2, and both must not answer at once
         view().section = 2;
         view().col = 1;
-        assert!(focused_related().is_none(), "the filmstrip's focus is not the Related shelf's");
+        assert!(
+            focused_related().is_none(),
+            "the filmstrip's focus is not the Related shelf's"
+        );
 
         view().section = 3;
         for i in 0..3usize {
             view().col = i as c_int;
-            assert_eq!(focused_related().map(|m| m.rk.as_str()), Some(["r0", "r1", "r2"][i]));
+            assert_eq!(
+                focused_related().map(|m| m.rk.as_str()),
+                Some(["r0", "r1", "r2"][i])
+            );
         }
 
         // A column past the loaded shelf opens nothing rather than anchoring off its end. Reachable
@@ -6577,8 +7748,15 @@ mod tests {
     #[test]
     fn pointer_hit_index_matches_the_drawn_tile_in_every_strip() {
         // (pitch, tile width) for the episode filmstrip, the Related shelf and the Cast shelf
-        for &(pitch, w) in &[(EP_W + EP_GAP, EP_W), (REL_W + REL_GAP, REL_W), (CAST_SLOT, CAST_D)] {
-            assert!(pitch > w + 1.0, "a strip's pitch must leave a real gutter ({pitch} vs {w})");
+        for &(pitch, w) in &[
+            (EP_W + EP_GAP, EP_W),
+            (REL_W + REL_GAP, REL_W),
+            (CAST_SLOT, CAST_D),
+        ] {
+            assert!(
+                pitch > w + 1.0,
+                "a strip's pitch must leave a real gutter ({pitch} vs {w})"
+            );
             for &sx in &[0.0f32, 137.0, 1024.0] {
                 for i in 0..12usize {
                     let x = strip_x(i, pitch) - sx; // the DRAWN left edge at this scroll
@@ -6591,7 +7769,10 @@ mod tests {
                     }
                 }
                 // the gutter between two tiles is a miss, not the neighbour
-                assert_eq!(strip_at(strip_x(1, pitch) - sx - 1.0, sx, 12, pitch, w), None);
+                assert_eq!(
+                    strip_at(strip_x(1, pitch) - sx - 1.0, sx, 12, pitch, w),
+                    None
+                );
             }
         }
     }
@@ -6607,24 +7788,55 @@ mod tests {
     fn a_pointer_lands_on_the_capsule_the_unfurl_drew() {
         let (y, pw) = (812.0f32, PW + 62.0);
         // a part-watched item, so the ↺ disc stands immediately BEFORE the toggle that opens
-        let set = HeroSet { restart: true, alt: false, mark: PosterMark::InProgress };
+        let set = HeroSet {
+            restart: true,
+            alt: false,
+            mark: PosterMark::InProgress,
+        };
         let i = watch_index(set).expect("every set has a toggle");
-        assert_eq!(ctl_at(set, i - 1), Some(HeroCtl::Restart), "the neighbour this test is about");
+        assert_eq!(
+            ctl_at(set, i - 1),
+            Some(HeroCtl::Restart),
+            "the neighbour this test is about"
+        );
         for e in [0.2f32, 0.6, 1.0] {
             // the toggle opening while the ▶| disc beside it is shut — the phase a pointer meets
             let disc = disc_caps_at(set, pw, 0.0, [0.0, e], [201.0, 267.0]);
-            let cw = HeroWidths { pill: pw, alt: 0.0, disc };
-            let (prev, cap) = (hero_btn_rect_at(set, i - 1, y, cw), hero_btn_rect_at(set, i, y, cw));
+            let cw = HeroWidths {
+                pill: pw,
+                alt: 0.0,
+                disc,
+            };
+            let (prev, cap) = (
+                hero_btn_rect_at(set, i - 1, y, cw),
+                hero_btn_rect_at(set, i, y, cw),
+            );
             let cy = y + CD * 0.5;
 
             assert!(cap.w > CD, "e={e}: the toggle really is a capsule");
-            assert!(cap.contains(cap.x + cap.w - 1.0, cy), "e={e}: its far edge answers for itself");
-            assert!(cap.contains(cap.x + 1.0, cy), "e={e}: …and so does the disc it grew out of");
-            assert!(!prev.contains(cap.x + 1.0, cy), "e={e}: the ↺ disc does not answer for it");
-            assert_eq!(cap.x, prev.x + prev.w + CGAP, "e={e}: it opens rightward off a fixed edge");
+            assert!(
+                cap.contains(cap.x + cap.w - 1.0, cy),
+                "e={e}: its far edge answers for itself"
+            );
+            assert!(
+                cap.contains(cap.x + 1.0, cy),
+                "e={e}: …and so does the disc it grew out of"
+            );
+            assert!(
+                !prev.contains(cap.x + 1.0, cy),
+                "e={e}: the ↺ disc does not answer for it"
+            );
+            assert_eq!(
+                cap.x,
+                prev.x + prev.w + CGAP,
+                "e={e}: it opens rightward off a fixed edge"
+            );
             // the gutter between them belongs to neither control
             let gutter = prev.x + prev.w + CGAP * 0.5;
-            assert!(!prev.contains(gutter, cy) && !cap.contains(gutter, cy), "e={e}");
+            assert!(
+                !prev.contains(gutter, cy) && !cap.contains(gutter, cy),
+                "e={e}"
+            );
         }
     }
 
@@ -6651,24 +7863,42 @@ mod tests {
         // OTHER glyph — same walk, two different lengths.
         for (d, want, pw) in [
             (movie(0, 7_200_000), 2, PW),
-            (Detail { watched: true, ..movie(0, 7_200_000) }, 2, PW),
+            (
+                Detail {
+                    watched: true,
+                    ..movie(0, 7_200_000)
+                },
+                2,
+                PW,
+            ),
             (movie(1_800_000, 7_200_000), 3, PW + 62.0),
         ] {
             mount(Some(d), 0);
-            assert_eq!(hero_btns(), want, "the control set this case means to exercise");
+            assert_eq!(
+                hero_btns(),
+                want,
+                "the control set this case means to exercise"
+            );
             let set = hero_set();
             let rect = |i: c_int| hero_btn_rect_at(set, i, y, closed_widths(pw, 0.0));
 
             let pill = rect(BTN_PLAY);
             assert_eq!(pill.x, MARGIN_X, "the pill starts at the margin");
             assert_eq!((pill.w, pill.h), (pw, CD), "the pill IS the measured frame");
-            assert!(!pill.contains(MARGIN_X - 1.0, y + CD * 0.5), "the left margin is not the pill");
+            assert!(
+                !pill.contains(MARGIN_X - 1.0, y + CD * 0.5),
+                "the left margin is not the pill"
+            );
 
             let mut prev = pill;
             for i in (BTN_PLAY + 1)..hero_btns() {
                 let r = rect(i);
                 assert_eq!((r.w, r.h), (CD, CD), "control {i} is a CD disc");
-                assert_eq!(r.x, prev.x + prev.w + CGAP, "control {i} accumulates past its neighbour");
+                assert_eq!(
+                    r.x,
+                    prev.x + prev.w + CGAP,
+                    "control {i} accumulates past its neighbour"
+                );
                 assert!(
                     !prev.contains(r.cx(), r.cy()) && !r.contains(prev.cx(), prev.cy()),
                     "controls {} and {i} must each answer only for themselves",
@@ -6704,25 +7934,47 @@ mod tests {
             is_show: true,
             cur_season,
             episodes: vec![
-                Episode { rk: "e1".into(), ..Default::default() },
-                Episode { rk: "e2".into(), ..Default::default() },
-                Episode { rk: "e3".into(), ..Default::default() },
+                Episode {
+                    rk: "e1".into(),
+                    ..Default::default()
+                },
+                Episode {
+                    rk: "e2".into(),
+                    ..Default::default()
+                },
+                Episode {
+                    rk: "e3".into(),
+                    ..Default::default()
+                },
             ],
             ..Default::default()
         };
-        let arm = |rk: &str, season| unsafe { *addr_of_mut!(KEEP_EP) = Some((rk.to_string(), season)) };
+        let arm =
+            |rk: &str, season| unsafe { *addr_of_mut!(KEEP_EP) = Some((rk.to_string(), season)) };
 
         // the ordinary case: the same season lands back, and the row holds the episode it acted on
         metadata::set_current_for_test(Some(season2(2)));
         arm("e3", 2);
-        assert_eq!(take_kept_episode(), Some(2), "the row must land back on the tile that changed");
+        assert_eq!(
+            take_kept_episode(),
+            Some(2),
+            "the row must land back on the tile that changed"
+        );
         assert_eq!(take_kept_episode(), None, "…and the latch is one-shot");
 
         // a tab switch overtook the refresh: a DIFFERENT season landed, so it starts over
         metadata::set_current_for_test(Some(season2(3)));
         arm("e3", 2);
-        assert_eq!(take_kept_episode(), None, "a latch never applies to a season it wasn't armed for");
-        assert_eq!(unsafe { (*addr_of!(KEEP_EP)).is_none() }, true, "and is consumed all the same");
+        assert_eq!(
+            take_kept_episode(),
+            None,
+            "a latch never applies to a season it wasn't armed for"
+        );
+        assert_eq!(
+            unsafe { (*addr_of!(KEEP_EP)).is_none() },
+            true,
+            "and is consumed all the same"
+        );
 
         // the episode left the list (an unwatched-only filter, a server-side edit): start over
         metadata::set_current_for_test(Some(season2(2)));
@@ -6732,7 +7984,11 @@ mod tests {
         // opening another page drops a latch the previous item armed
         arm("e3", 2);
         reset_view_state(view());
-        assert_eq!(take_kept_episode(), None, "a new page must not inherit the old page's latch");
+        assert_eq!(
+            take_kept_episode(),
+            None,
+            "a new page must not inherit the old page's latch"
+        );
 
         mount(None, 0);
     }
@@ -6754,10 +8010,25 @@ mod tests {
             is_show: true,
             cur_season,
             seasons: vec![
-                Season { rk: "sk1".into(), index: 1, title: "S1".into(), leaf_count: 0, viewed_leaf_count: 0 },
-                Season { rk: "sk2".into(), index: 2, title: "S2".into(), leaf_count: 0, viewed_leaf_count: 0 },
+                Season {
+                    rk: "sk1".into(),
+                    index: 1,
+                    title: "S1".into(),
+                    leaf_count: 0,
+                    viewed_leaf_count: 0,
+                },
+                Season {
+                    rk: "sk2".into(),
+                    index: 2,
+                    title: "S2".into(),
+                    leaf_count: 0,
+                    viewed_leaf_count: 0,
+                },
             ],
-            episodes: vec![Episode { rk: "e1".into(), ..Default::default() }],
+            episodes: vec![Episode {
+                rk: "e1".into(),
+                ..Default::default()
+            }],
             ..Default::default()
         };
         let arm = |rk: &str, season, keep: &str| unsafe {
@@ -6775,9 +8046,19 @@ mod tests {
         mount(Some(show(0)), 0);
         arm("s1", 1, "e1");
         pump_refresh();
-        assert_eq!(metadata::current().unwrap().cur_season, 1, "back on the season the user was browsing");
-        assert_eq!(unsafe { (*addr_of!(KEEP_EP)).clone() }, Some(("e1".to_string(), 1)));
-        assert!(unsafe { (*addr_of!(REFRESH)).is_none() }, "…and the latch is one-shot");
+        assert_eq!(
+            metadata::current().unwrap().cur_season,
+            1,
+            "back on the season the user was browsing"
+        );
+        assert_eq!(
+            unsafe { (*addr_of!(KEEP_EP)).clone() },
+            Some(("e1".to_string(), 1))
+        );
+        assert!(
+            unsafe { (*addr_of!(REFRESH)).is_none() },
+            "…and the latch is one-shot"
+        );
 
         // a FAILED re-read keeps the item AND its season, so there is nothing to put back and no
         // second `/children` to spend on saying so
@@ -6787,15 +8068,25 @@ mod tests {
         arm("s1", 1, "e1");
         pump_refresh();
         assert_eq!(metadata::current().unwrap().cur_season, 1);
-        assert!(unsafe { (*addr_of!(KEEP_EP)).is_none() }, "no keep-focus latch is armed for a fetch nobody made");
+        assert!(
+            unsafe { (*addr_of!(KEEP_EP)).is_none() },
+            "no keep-focus latch is armed for a fetch nobody made"
+        );
 
         // the user walked to ANOTHER item while the write was out: the latch is consumed and steers
         // nothing — its season index would otherwise name a season of a show it knows nothing about
         mount(Some(show(0)), 0);
         arm("other-show", 1, "e1");
         pump_refresh();
-        assert_eq!(metadata::current().unwrap().cur_season, 0, "the page on screen is left alone");
-        assert!(unsafe { (*addr_of!(REFRESH)).is_none() }, "and the latch is consumed all the same");
+        assert_eq!(
+            metadata::current().unwrap().cur_season,
+            0,
+            "the page on screen is left alone"
+        );
+        assert!(
+            unsafe { (*addr_of!(REFRESH)).is_none() },
+            "and the latch is consumed all the same"
+        );
 
         // …and a page that closed under the refresh is not a page to steer either
         mount(None, 0);
@@ -6814,7 +8105,11 @@ mod tests {
     /// an episode the server sent no duration for must not say "0 min".
     #[test]
     fn an_episode_still_resolves_its_three_states_into_one_mark() {
-        let ep = |dur_ms, resume_ms| Episode { dur_ms, resume_ms, ..Default::default() };
+        let ep = |dur_ms, resume_ms| Episode {
+            dur_ms,
+            resume_ms,
+            ..Default::default()
+        };
 
         // never started: the play glyph, the whole runtime, no bar
         let st = ep_state(&ep(48 * 60_000, 0));
@@ -6824,7 +8119,11 @@ mod tests {
 
         // in progress: NO glyph (the bar says it), what is LEFT rather than the runtime, and the bar
         let st = ep_state(&ep(60 * 60_000, 15 * 60_000));
-        assert_eq!(st.glyph, EpGlyph::None, "the bar is the mark; a glyph would repeat it");
+        assert_eq!(
+            st.glyph,
+            EpGlyph::None,
+            "the bar is the mark; a glyph would repeat it"
+        );
         assert_eq!(st.label, "45 min left", "the remainder, not the runtime");
         assert_eq!(st.progress, Some(0.25), "a quarter in");
 
@@ -6837,7 +8136,11 @@ mod tests {
         let mut done = ep(48 * 60_000, 0);
         done.watched = true;
         let st = ep_state(&done);
-        assert_eq!(st.glyph, EpGlyph::Watched, "a finished episode leads with the check disc");
+        assert_eq!(
+            st.glyph,
+            EpGlyph::Watched,
+            "a finished episode leads with the check disc"
+        );
         assert_eq!(st.label, "48 min", "and still states how long it runs");
         assert!(st.progress.is_none());
 
@@ -6847,21 +8150,32 @@ mod tests {
         let mut rewatch = ep(60 * 60_000, 6 * 60_000);
         rewatch.watched = true;
         let st = ep_state(&rewatch);
-        assert_eq!(st.glyph, EpGlyph::None, "a re-started watched episode reads as in progress");
+        assert_eq!(
+            st.glyph,
+            EpGlyph::None,
+            "a re-started watched episode reads as in progress"
+        );
         assert_eq!(st.progress, Some(0.1));
 
         // …but an offset AT or PAST the runtime is a finished episode whose viewOffset was never
         // cleared, not a 100%-complete in-progress one (which drew a full bar that looked like a bug)
         let mut stale = ep(60 * 60_000, 60 * 60_000);
         stale.watched = true;
-        assert_eq!(ep_state(&stale).glyph, EpGlyph::Watched, "resume == duration is finished");
+        assert_eq!(
+            ep_state(&stale).glyph,
+            EpGlyph::Watched,
+            "resume == duration is finished"
+        );
         assert!(ep_state(&stale).progress.is_none(), "and draws no bar");
 
         // no runtime on the wire: the glyph still states the state, the label says nothing
         let st = ep_state(&ep(0, 0));
         assert_eq!(st.glyph, EpGlyph::Play);
         assert!(st.label.is_empty(), "no runtime, no claim about one");
-        assert!(st.progress.is_none(), "and no bar to divide by a zero duration");
+        assert!(
+            st.progress.is_none(),
+            "and no bar to divide by a zero duration"
+        );
     }
 
     /// …and the same episode asked as the CONTEXT MENU's question. `ep_watch_state` is the only
@@ -6876,15 +8190,27 @@ mod tests {
     /// opened on that still cannot describe one episode two ways.
     #[test]
     fn an_episode_resolves_the_same_three_states_for_the_menu_opened_on_it() {
-        let ep = |dur_ms, resume_ms| Episode { dur_ms, resume_ms, ..Default::default() };
+        let ep = |dur_ms, resume_ms| Episode {
+            dur_ms,
+            resume_ms,
+            ..Default::default()
+        };
         let watched = |mut e: Episode| {
             e.watched = true;
             e
         };
 
         // the three ordinary states, each the state the still's own glyph/bar already says
-        assert_eq!(ep_watch_state(&ep(48 * 60_000, 0)), PosterMark::None, "▶ = one row, the way forward");
-        assert_eq!(ep_watch_state(&watched(ep(48 * 60_000, 0))), PosterMark::Watched, "✓ = one row, the way back");
+        assert_eq!(
+            ep_watch_state(&ep(48 * 60_000, 0)),
+            PosterMark::None,
+            "▶ = one row, the way forward"
+        );
+        assert_eq!(
+            ep_watch_state(&watched(ep(48 * 60_000, 0))),
+            PosterMark::Watched,
+            "✓ = one row, the way back"
+        );
         assert_eq!(
             ep_watch_state(&ep(60 * 60_000, 15 * 60_000)),
             PosterMark::InProgress,
@@ -6894,12 +8220,22 @@ mod tests {
         // PRECEDENCE, the same one the glyph keeps: PMS reports watched AND a live offset on a
         // re-watch, and being part-way through it is what the viewer is doing — so it is the pair,
         // not the single "Mark as Unwatched" the old `ep.watched` bool would have given.
-        assert_eq!(ep_watch_state(&watched(ep(60 * 60_000, 6 * 60_000))), PosterMark::InProgress);
+        assert_eq!(
+            ep_watch_state(&watched(ep(60 * 60_000, 6 * 60_000))),
+            PosterMark::InProgress
+        );
 
         // …but an offset AT or PAST the runtime is a finished episode, not one in the middle — the
         // resume-point edge this page keeps once, inherited rather than restated
-        assert_eq!(ep_watch_state(&watched(ep(60 * 60_000, 60 * 60_000))), PosterMark::Watched);
-        assert_eq!(ep_watch_state(&ep(0, 30 * 60_000)), PosterMark::None, "no runtime, no middle");
+        assert_eq!(
+            ep_watch_state(&watched(ep(60 * 60_000, 60 * 60_000))),
+            PosterMark::Watched
+        );
+        assert_eq!(
+            ep_watch_state(&ep(0, 30 * 60_000)),
+            PosterMark::None,
+            "no runtime, no middle"
+        );
 
         // and every answer is the projection of the line the tile is drawing, on every one of them
         for e in [
@@ -6918,7 +8254,11 @@ mod tests {
             } else {
                 PosterMark::None
             };
-            assert_eq!(ep_watch_state(&e), want, "the menu must not answer a second time");
+            assert_eq!(
+                ep_watch_state(&e),
+                want,
+                "the menu must not answer a second time"
+            );
         }
     }
 
@@ -6938,13 +8278,21 @@ mod tests {
             let bar = Rect::new(cr.x, cr.y + cr.h - EP_BAR_H, cr.w, EP_BAR_H);
             assert_eq!(bar.x, cr.x, "full-bleed: no side inset");
             assert_eq!(bar.w, cr.w, "full-bleed: the whole card width");
-            assert!(bar.y + bar.h <= cr.y + cr.h + 0.01, "and it sits ON the bottom edge");
+            assert!(
+                bar.y + bar.h <= cr.y + cr.h + 0.01,
+                "and it sits ON the bottom edge"
+            );
             // the scrim the line reads over covers the line's band and stays inside the still
-            assert!(EP_SCRIM_H < cr.h, "the scrim must not swallow the whole still");
-            assert!(EP_SCRIM_H > EP_LINE_BOT + EP_GLYPH_D, "…but must cover the line it exists for");
+            assert!(
+                EP_SCRIM_H < cr.h,
+                "the scrim must not swallow the whole still"
+            );
+            assert!(
+                EP_SCRIM_H > EP_LINE_BOT + EP_GLYPH_D,
+                "…but must cover the line it exists for"
+            );
         }
     }
-
 
     /// A season tab's pill covers its whole CONTENT — the label plus the trailing tick a finished
     /// season wears — and never overlaps its neighbour at the layout's own advance. `TabLay::w`
@@ -6965,11 +8313,20 @@ mod tests {
                 label: CString::default(),
             };
             let r = tab_pill_rect(&lay, top);
-            assert!(r.contains(x, mid), "the pill must cover its label's left edge");
-            assert!(r.contains(x + lw + nw, mid), "…and the far edge of its trailing note");
+            assert!(
+                r.contains(x, mid),
+                "the pill must cover its label's left edge"
+            );
+            assert!(
+                r.contains(x + lw + nw, mid),
+                "…and the far edge of its trailing note"
+            );
             assert_eq!(r.h, TAB_ROW_H, "the pill stands one control tall");
             if let Some(p) = prev {
-                assert!(r.x > p.x + p.w, "neighbouring season pills must not overlap");
+                assert!(
+                    r.x > p.x + p.w,
+                    "neighbouring season pills must not overlap"
+                );
             }
             prev = Some(r);
             x += lay.w + TAB_ADVANCE; // tabs_layout's advance
@@ -7013,12 +8370,19 @@ mod tests {
             thumb: "/row/show-poster".into(),
             ..Default::default()
         };
-        assert_eq!(hero_art_path(Some(&row)), "/library/metadata/1859/thumb/178");
+        assert_eq!(
+            hero_art_path(Some(&row)),
+            "/library/metadata/1859/thumb/178"
+        );
 
         // …but before the leaf's own metadata lands there is no still to prefer, and the row's ART is
         // the honest stand-in — never its portrait poster.
         mount(None, 0);
-        assert_eq!(hero_art_path(Some(&row)), "/row/show-art", "the row's ART, never its show poster");
+        assert_eq!(
+            hero_art_path(Some(&row)),
+            "/row/show-art",
+            "the row's ART, never its show poster"
+        );
 
         // an episode whose agent supplied no still falls back the same way rather than drawing nothing
         let mut no_still = episode_page();
@@ -7030,11 +8394,21 @@ mod tests {
         let mut film = episode_page();
         film.kind = "movie".into();
         mount(Some(film), 0);
-        assert_eq!(hero_art_path(None), "/library/metadata/1801/art/177", "a movie leads with its art");
+        assert_eq!(
+            hero_art_path(None),
+            "/library/metadata/1801/art/177",
+            "a movie leads with its art"
+        );
 
         // and nothing at all is the EMPTY key, so `draw_backdrop` skips the layer instead of building
         // a transcode request for ""
-        mount(Some(Detail { rk: "x".into(), ..Default::default() }), 0);
+        mount(
+            Some(Detail {
+                rk: "x".into(),
+                ..Default::default()
+            }),
+            0,
+        );
         assert!(hero_art_path(None).is_empty());
 
         mount(None, 0);
@@ -7048,9 +8422,18 @@ mod tests {
         let mut d = show(600_000, 2_700_000); // started: its on-deck episode is part-watched
         d.art = "/show/art".into();
         d.thumb = "/show/poster".into();
-        d.on_deck = Some(Episode { rk: "e1".into(), thumb: "/ep/still".into(), resume_ms: 600_000, ..Default::default() });
+        d.on_deck = Some(Episode {
+            rk: "e1".into(),
+            thumb: "/ep/still".into(),
+            resume_ms: 600_000,
+            ..Default::default()
+        });
         mount(Some(d), 0);
-        assert_eq!(hero_art_path(None), "/ep/still", "the show hero draws the episode it is about");
+        assert_eq!(
+            hero_art_path(None),
+            "/ep/still",
+            "the show hero draws the episode it is about"
+        );
         mount(None, 0);
     }
 
@@ -7064,35 +8447,69 @@ mod tests {
     #[test]
     fn the_filmstrips_still_and_its_text_pair_up_and_down() {
         let _serial = crate::testlock::serial();
-        let ep = |n: i64| Episode { rk: format!("e{n}"), index: n, ..Default::default() };
+        let ep = |n: i64| Episode {
+            rk: format!("e{n}"),
+            index: n,
+            ..Default::default()
+        };
         let mut d = Detail {
             rk: "s1".into(),
             is_show: true,
             episodes: vec![ep(1), ep(2), ep(3)],
             ..Default::default()
         };
-        d.seasons = vec![metadata::Season { rk: String::new(), index: 1, title: String::new(), leaf_count: 3, viewed_leaf_count: 0 }];
+        d.seasons = vec![metadata::Season {
+            rk: String::new(),
+            index: 1,
+            title: String::new(),
+            leaf_count: 3,
+            viewed_leaf_count: 0,
+        }];
         mount(Some(d), 0);
         // the block below the filmstrip that DOWN must eventually reach (About is always present)
         let (s, n) = sections();
-        assert_eq!(&s[..n], &[0, 1, 2, 5], "the fixture this test means to walk");
+        assert_eq!(
+            &s[..n],
+            &[0, 1, 2, 5],
+            "the fixture this test means to walk"
+        );
 
         let at = || (view().section, view().col, view().ep_row);
         view().section = 1; // the season tabs, one press above the strip
 
         crate::ui::detail::move_focus(SDLK_DOWN as c_int);
-        assert_eq!(at(), (2, 0, EpRow::Still), "DOWN from the tabs lands on the still");
+        assert_eq!(
+            at(),
+            (2, 0, EpRow::Still),
+            "DOWN from the tabs lands on the still"
+        );
         crate::ui::detail::move_focus(SDLK_DOWN as c_int);
-        assert_eq!(at(), (2, 0, EpRow::Text), "…and DOWN again on ITS text, not on the next section");
+        assert_eq!(
+            at(),
+            (2, 0, EpRow::Text),
+            "…and DOWN again on ITS text, not on the next section"
+        );
         crate::ui::detail::move_focus(SDLK_DOWN as c_int);
-        assert_eq!(view().section, 5, "only DOWN from the text leaves the strip");
+        assert_eq!(
+            view().section,
+            5,
+            "only DOWN from the text leaves the strip"
+        );
 
         crate::ui::detail::move_focus(SDLK_UP as c_int);
-        assert_eq!(at(), (2, 0, EpRow::Text), "coming back UP lands on the block nearest — the text");
+        assert_eq!(
+            at(),
+            (2, 0, EpRow::Text),
+            "coming back UP lands on the block nearest — the text"
+        );
         crate::ui::detail::move_focus(SDLK_UP as c_int);
         assert_eq!(at(), (2, 0, EpRow::Still), "…then its still");
         crate::ui::detail::move_focus(SDLK_UP as c_int);
-        assert_eq!(view().section, 1, "…then out to the tabs, which is where we came in");
+        assert_eq!(
+            view().section,
+            1,
+            "…then out to the tabs, which is where we came in"
+        );
 
         // LEFT/RIGHT keep the sub-row and stay inside the array, from EITHER row
         for row in [EpRow::Still, EpRow::Text] {
@@ -7103,7 +8520,11 @@ mod tests {
             for _ in 0..6 {
                 crate::ui::detail::move_focus(SDLK_RIGHT as c_int);
             }
-            assert_eq!(at(), (2, 2, row), "RIGHT stops at the last episode and holds the row it is on");
+            assert_eq!(
+                at(),
+                (2, 2, row),
+                "RIGHT stops at the last episode and holds the row it is on"
+            );
             for _ in 0..6 {
                 crate::ui::detail::move_focus(SDLK_LEFT as c_int);
             }
@@ -7121,7 +8542,11 @@ mod tests {
     #[test]
     fn the_filmstrips_text_row_opens_that_episodes_own_page() {
         let _serial = crate::testlock::serial();
-        let ep = |n: i64| Episode { rk: format!("e{n}"), index: n, ..Default::default() };
+        let ep = |n: i64| Episode {
+            rk: format!("e{n}"),
+            index: n,
+            ..Default::default()
+        };
         mount(
             Some(Detail {
                 rk: "s1".into(),
@@ -7137,13 +8562,30 @@ mod tests {
         v.col = 2;
         v.ep_row = EpRow::Still;
         assert_eq!(ep_page_rk(), None, "the still plays; it does not navigate");
-        assert!(focus_is_card(), "…and it is a card: press-dip, commit on release, hold for the menu");
-        assert!(focused_episode().is_some(), "which is exactly the row the context menu belongs to");
+        assert!(
+            focus_is_card(),
+            "…and it is a card: press-dip, commit on release, hold for the menu"
+        );
+        assert!(
+            focused_episode().is_some(),
+            "which is exactly the row the context menu belongs to"
+        );
 
         view().ep_row = EpRow::Text;
-        assert_eq!(ep_page_rk().as_deref(), Some("e3"), "the text row opens the FOCUSED episode's page");
-        assert!(!focus_is_card(), "…as a link: it commits at once, like a season tab or an About row");
-        assert_eq!(focused_episode(), None, "and a hold on it must not open the still's context menu");
+        assert_eq!(
+            ep_page_rk().as_deref(),
+            Some("e3"),
+            "the text row opens the FOCUSED episode's page"
+        );
+        assert!(
+            !focus_is_card(),
+            "…as a link: it commits at once, like a season tab or an About row"
+        );
+        assert_eq!(
+            focused_episode(),
+            None,
+            "and a hold on it must not open the still's context menu"
+        );
 
         // …and OK on it REPORTS rather than navigating. That is the fix for the owner's bug: the arm
         // used to call `open_rk` itself, so `app.rs` never learned a page had been entered and BACK
@@ -7191,10 +8633,16 @@ mod tests {
     #[test]
     fn the_related_shelf_raises_the_same_open_request() {
         let _serial = crate::testlock::serial();
-        let rel =
-            |rk: &str| crate::metadata::Related { rk: rk.into(), ..Default::default() };
+        let rel = |rk: &str| crate::metadata::Related {
+            rk: rk.into(),
+            ..Default::default()
+        };
         mount(
-            Some(Detail { rk: "m1".into(), related: vec![rel("r0"), rel("r1")], ..Default::default() }),
+            Some(Detail {
+                rk: "m1".into(),
+                related: vec![rel("r0"), rel("r1")],
+                ..Default::default()
+            }),
             0,
         );
         let v = view();
@@ -7218,7 +8666,10 @@ mod tests {
         }));
         view().col = 0;
         assert!(!on_ok());
-        assert!(take_open_request().is_none(), "an empty rk would fetch nothing and draw a blank page");
+        assert!(
+            take_open_request().is_none(),
+            "an empty rk would fetch nothing and draw a blank page"
+        );
 
         mount(None, 0);
     }
@@ -7229,16 +8680,28 @@ mod tests {
     #[test]
     fn an_open_request_does_not_outlive_its_page() {
         let _serial = crate::testlock::serial();
-        let rel =
-            |rk: &str| crate::metadata::Related { rk: rk.into(), ..Default::default() };
-        mount(Some(Detail { rk: "m1".into(), related: vec![rel("r0")], ..Default::default() }), 0);
+        let rel = |rk: &str| crate::metadata::Related {
+            rk: rk.into(),
+            ..Default::default()
+        };
+        mount(
+            Some(Detail {
+                rk: "m1".into(),
+                related: vec![rel("r0")],
+                ..Default::default()
+            }),
+            0,
+        );
 
         let v = view();
         v.section = 3;
         v.col = 0;
         assert!(!on_ok());
         close();
-        assert!(take_open_request().is_none(), "leaving the page must drop its un-consumed request");
+        assert!(
+            take_open_request().is_none(),
+            "leaving the page must drop its un-consumed request"
+        );
 
         // …and so must mounting a different one (`open_rk`'s reset), which is the path an ACCEPTED
         // request itself takes a beat later
@@ -7252,7 +8715,10 @@ mod tests {
         v.col = 0;
         assert!(!on_ok());
         reset_view_state(view());
-        assert!(take_open_request().is_none(), "a new page must not inherit the old one's request");
+        assert!(
+            take_open_request().is_none(),
+            "a new page must not inherit the old one's request"
+        );
 
         mount(None, 0);
     }
@@ -7264,9 +8730,15 @@ mod tests {
     #[test]
     fn a_spot_round_trips_through_the_page_it_describes() {
         let _serial = crate::testlock::serial();
-        let ep = |n: i64| Episode { rk: format!("e{n}"), index: n, ..Default::default() };
-        let rel =
-            |rk: &str| crate::metadata::Related { rk: rk.into(), ..Default::default() };
+        let ep = |n: i64| Episode {
+            rk: format!("e{n}"),
+            index: n,
+            ..Default::default()
+        };
+        let rel = |rk: &str| crate::metadata::Related {
+            rk: rk.into(),
+            ..Default::default()
+        };
         let season = |i: i64| crate::metadata::Season {
             rk: format!("s{i}"),
             index: i,
@@ -7293,7 +8765,11 @@ mod tests {
                 v.ep_row = if ep_text { EpRow::Text } else { EpRow::Still };
                 v.saved_col = [0, 1, col, 1, 0, 2];
                 let s = spot();
-                assert_eq!(s.season, Some(2), "the season NUMBER, not `cur_season`'s position");
+                assert_eq!(
+                    s.season,
+                    Some(2),
+                    "the season NUMBER, not `cur_season`'s position"
+                );
                 // The snapshot IS the page as it stands — the fact `app.rs`'s `leaving_spot` reads
                 // on the PRESS frame to fill a navigation's `NavReq::spot`. It used to be asserted
                 // from the filmstrip's and Related's own OK tests, which read a second copy the
@@ -7317,9 +8793,21 @@ mod tests {
                 v.section = lsec;
                 v.col = lcol;
                 v.ep_row = lrow;
-                assert_eq!((v.section, v.col), (sec, col), "section {sec} col {col} must come back");
-                assert_eq!(v.ep_row == EpRow::Text, ep_text, "…and so must the filmstrip's sub-row");
-                assert_eq!(v.saved_col, [0, 1, col, 1, 0, 2], "…and the per-section focus memory");
+                assert_eq!(
+                    (v.section, v.col),
+                    (sec, col),
+                    "section {sec} col {col} must come back"
+                );
+                assert_eq!(
+                    v.ep_row == EpRow::Text,
+                    ep_text,
+                    "…and so must the filmstrip's sub-row"
+                );
+                assert_eq!(
+                    v.saved_col,
+                    [0, 1, col, 1, 0, 2],
+                    "…and the per-section focus memory"
+                );
             }
         }
         mount(None, 0);
@@ -7331,18 +8819,31 @@ mod tests {
     #[test]
     fn a_restored_spot_clamps_onto_an_item_whose_lists_shrank() {
         let _serial = crate::testlock::serial();
-        let rel =
-            |rk: &str| crate::metadata::Related { rk: rk.into(), ..Default::default() };
-        let s = Spot { section: 3, col: 5, ..Default::default() };
+        let rel = |rk: &str| crate::metadata::Related {
+            rk: rk.into(),
+            ..Default::default()
+        };
+        let s = Spot {
+            section: 3,
+            col: 5,
+            ..Default::default()
+        };
 
         metadata::set_current_for_test(Some(Detail {
             rk: "m1".into(),
             related: vec![rel("r0"), rel("r1")],
             ..Default::default()
         }));
-        assert_eq!(spot_landing(&s), (3, 1, EpRow::Still), "col clamps to the last item present");
+        assert_eq!(
+            spot_landing(&s),
+            (3, 1, EpRow::Still),
+            "col clamps to the last item present"
+        );
 
-        metadata::set_current_for_test(Some(Detail { rk: "m1".into(), ..Default::default() }));
+        metadata::set_current_for_test(Some(Detail {
+            rk: "m1".into(),
+            ..Default::default()
+        }));
         assert_eq!(
             spot_landing(&s),
             (0, 0, EpRow::Still),
@@ -7352,9 +8853,16 @@ mod tests {
         // and the degenerate case: nothing loaded at all, so the flow is the bare hero. The landing
         // must still be a focus the page can hold — never negative, never past the row.
         metadata::set_current_for_test(None);
-        let (sec, col, _) = spot_landing(&Spot { section: 0, col: 4, ..Default::default() });
+        let (sec, col, _) = spot_landing(&Spot {
+            section: 0,
+            col: 4,
+            ..Default::default()
+        });
         assert_eq!(sec, 0);
-        assert!((0..n_items(0).max(1)).contains(&col), "a landing must be a focus the page can hold");
+        assert!(
+            (0..n_items(0).max(1)).contains(&col),
+            "a landing must be a focus the page can hold"
+        );
         mount(None, 0);
     }
 
@@ -7372,9 +8880,19 @@ mod tests {
             leaf_count: 0,
             viewed_leaf_count: 0,
         };
-        let movie = Detail { rk: "m1".into(), ..Default::default() };
+        let movie = Detail {
+            rk: "m1".into(),
+            ..Default::default()
+        };
         assert_eq!(
-            spot_season_gate(&movie, &Spot { section: 3, col: 0, ..Default::default() }),
+            spot_season_gate(
+                &movie,
+                &Spot {
+                    section: 3,
+                    col: 0,
+                    ..Default::default()
+                }
+            ),
             None,
             "a movie's restore must never wait on a season list"
         );
@@ -7386,14 +8904,36 @@ mod tests {
             cur_season: 2,
             ..Default::default()
         };
-        assert_eq!(spot_season_gate(&show, &Spot { season: Some(3), ..Default::default() }), None, "already loaded");
         assert_eq!(
-            spot_season_gate(&show, &Spot { season: Some(1), ..Default::default() }),
+            spot_season_gate(
+                &show,
+                &Spot {
+                    season: Some(3),
+                    ..Default::default()
+                }
+            ),
+            None,
+            "already loaded"
+        );
+        assert_eq!(
+            spot_season_gate(
+                &show,
+                &Spot {
+                    season: Some(1),
+                    ..Default::default()
+                }
+            ),
             Some(0),
             "a different season is asked for by POSITION, resolved from the number the user saw"
         );
         assert_eq!(
-            spot_season_gate(&show, &Spot { season: Some(9), ..Default::default() }),
+            spot_season_gate(
+                &show,
+                &Spot {
+                    season: Some(9),
+                    ..Default::default()
+                }
+            ),
             None,
             "a season the item no longer has must place, not spin"
         );
@@ -7416,24 +8956,42 @@ mod tests {
             let block_h = EP_H + EP_META_TOP + maxh + EP_META_BOT_PAD; // == block_h(2)
             for &total in &[40.0f32, maxh * 0.5, maxh] {
                 let hl = ep_text_hl(300.0, ep_y, total);
-                assert!(hl.y > ep_y + EP_H, "the panel must start clear of the still ({} vs {EP_H})", hl.y);
+                assert!(
+                    hl.y > ep_y + EP_H,
+                    "the panel must start clear of the still ({} vs {EP_H})",
+                    hl.y
+                );
                 assert!(
                     hl.y + hl.h <= ep_y + block_h + 0.01,
                     "the panel ({}) must fit the block the flow reserves ({block_h}) — nothing below may move",
                     hl.y + hl.h
                 );
                 // the still at full focus pop is still above it (it grows about its centre)
-                let popped = Rect::new(300.0, ep_y, EP_W, EP_H).scaled(crate::ui::widgets::CARD_FOCUS_SCALE);
-                assert!(popped.y + popped.h < hl.y, "a popped still must not reach into the panel");
+                let popped =
+                    Rect::new(300.0, ep_y, EP_W, EP_H).scaled(crate::ui::widgets::CARD_FOCUS_SCALE);
+                assert!(
+                    popped.y + popped.h < hl.y,
+                    "a popped still must not reach into the panel"
+                );
                 // and the panel wraps THIS episode's ink, not the row's tallest
-                assert_eq!(hl.h, total + 2.0 * EP_TEXT_HL_PAD_Y, "it hugs the content it is lit for");
+                assert_eq!(
+                    hl.h,
+                    total + 2.0 * EP_TEXT_HL_PAD_Y,
+                    "it hugs the content it is lit for"
+                );
             }
             // neighbouring cells: one pitch apart, panels must not meet (the pad is SHARED between
             // them, so the gutter buys `EP_GAP - 2 * pad` and anything from 14 up would collide)
             let a = ep_text_hl(strip_x(0, EP_W + EP_GAP), ep_y, maxh);
             let b = ep_text_hl(strip_x(1, EP_W + EP_GAP), ep_y, maxh);
-            assert!(a.x + a.w < b.x, "two lit panels would overlap at this horizontal pad");
-            assert!(a.x < strip_x(0, EP_W + EP_GAP), "…and the panel does wrap its text, not abut it");
+            assert!(
+                a.x + a.w < b.x,
+                "two lit panels would overlap at this horizontal pad"
+            );
+            assert!(
+                a.x < strip_x(0, EP_W + EP_GAP),
+                "…and the panel does wrap its text, not abut it"
+            );
         }
     }
 
@@ -7443,13 +9001,21 @@ mod tests {
     fn the_pointer_lands_on_the_filmstrip_row_that_is_drawn_at_that_y() {
         // everything on the still, including its very bottom edge, is the still
         for dy in [0.0f32, 1.0, EP_H * 0.5, EP_H] {
-            assert_eq!(ep_row_at(dy), EpRow::Still, "y={dy} is drawn inside the still");
+            assert_eq!(
+                ep_row_at(dy),
+                EpRow::Still,
+                "y={dy} is drawn inside the still"
+            );
         }
         // …and every y inside the panel the text row lights is the text row, at every content height
         for &total in &[40.0f32, 402.0] {
             let hl = ep_text_hl(0.0, 0.0, total);
             for dy in [hl.y, hl.y + hl.h * 0.5, hl.y + hl.h] {
-                assert_eq!(ep_row_at(dy), EpRow::Text, "y={dy} is drawn inside the text panel");
+                assert_eq!(
+                    ep_row_at(dy),
+                    EpRow::Text,
+                    "y={dy} is drawn inside the text panel"
+                );
             }
         }
         // the dead air between them belongs to the still above it — no band answers for neither row
@@ -7508,10 +9074,10 @@ fn hit_at(mx: f32, my: f32) -> Option<(c_int, c_int, EpRow)> {
         }
     }
     let d = metadata::current()?; // nothing below the hero is drawn until the item lands
-    // season tabs: the strip scrolls horizontally, so the pill is placed at its DRAWN label x. The
-    // row band is tested FIRST because `tabs_layout` measures every season's label through an
-    // unmemoised TTF call — this runs on every motion event, so it must not pay that per pixel of
-    // pointer travel across the rest of the page.
+                                  // season tabs: the strip scrolls horizontally, so the pill is placed at its DRAWN label x. The
+                                  // row band is tested FIRST because `tabs_layout` measures every season's label through an
+                                  // unmemoised TTF call — this runs on every motion event, so it must not pay that per pixel of
+                                  // pointer travel across the rest of the page.
     if let Some(top) = section_screen_top(1).filter(|t| my >= *t && my <= t + TAB_ROW_H) {
         let sx = view().tab_hscroll.pos;
         for lay in tabs_layout(d) {

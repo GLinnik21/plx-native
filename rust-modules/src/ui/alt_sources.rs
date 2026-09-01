@@ -117,7 +117,10 @@ pub(crate) struct AltCopy {
 pub(crate) enum Action {
     None,
     /// Open `rk` on server `sid` — that copy's own page. Never a swap of the copy in place.
-    Open { sid: ServerId, rk: String },
+    Open {
+        sid: ServerId,
+        rk: String,
+    },
 }
 
 /// The panel's width — the design's `altPanelW`. Wide because the row fills all four of the cell's
@@ -229,7 +232,9 @@ pub(crate) fn reset(item_sid: ServerId, item_rk: &str) {
 /// both servers number their items from 1 (see [`FOR_SID`]). Repaints, so it invalidates the frame
 /// gate — a landing that grows the actions row must be visible without waiting for a keypress.
 pub(crate) fn install(item_sid: ServerId, item_rk: &str, list: Vec<AltCopy>) {
-    let here = (unsafe { addr_of!(FOR_SID).read() }, unsafe { (*addr_of!(FOR_RK)).as_str() });
+    let here = (unsafe { addr_of!(FOR_SID).read() }, unsafe {
+        (*addr_of!(FOR_RK)).as_str()
+    });
     if !crate::plex::same_item((item_sid, item_rk), here) {
         return;
     }
@@ -335,13 +340,25 @@ pub(crate) fn rows(list: &[AltCopy], here_sid: ServerId, here_rk: &str) -> Vec<A
     // `same_item`, not a hand-rolled `&&`: it is the one place the pair rule lives, and its own doc
     // promises every stored-item lookup routes through it. These two sites were the last that did
     // not — and they are the ones that decide which row wears the tick and which press does nothing.
-    let here = list.iter().position(|c| crate::plex::same_item((c.sid, &c.rk), (here_sid, here_rk)));
+    let here = list
+        .iter()
+        .position(|c| crate::plex::same_item((c.sid, &c.rk), (here_sid, here_rk)));
     let mut idx: Vec<usize> = (0..list.len()).collect();
     idx.sort_by(|&a, &b| {
         let (ca, cb) = (&list[a], &list[b]);
         // `false` sorts before `true`, so each key is written as "the one that loses"
-        (here != Some(a), std::cmp::Reverse(scan_lines(ca)), ca.owner.is_some(), &ca.library)
-            .cmp(&(here != Some(b), std::cmp::Reverse(scan_lines(cb)), cb.owner.is_some(), &cb.library))
+        (
+            here != Some(a),
+            std::cmp::Reverse(scan_lines(ca)),
+            ca.owner.is_some(),
+            &ca.library,
+        )
+            .cmp(&(
+                here != Some(b),
+                std::cmp::Reverse(scan_lines(cb)),
+                cb.owner.is_some(),
+                &cb.library,
+            ))
     });
     idx.into_iter()
         .map(|i| {
@@ -371,7 +388,9 @@ pub(crate) fn rows(list: &[AltCopy], here_sid: ServerId, here_rk: &str) -> Vec<A
 /// `current` on our own server, no copy matched the pair, and the panel drew **no tick at all** —
 /// owner-reported. The tick answers "which of these am I looking at", and only the page knows.
 fn live_rows() -> Vec<AltRow> {
-    rows(copies(), here_sid(), unsafe { (*addr_of!(FOR_RK)).as_str() })
+    rows(copies(), here_sid(), unsafe {
+        (*addr_of!(FOR_RK)).as_str()
+    })
 }
 
 /// The server the open PAGE is on — the app-wide answer, asked in ONE place.
@@ -414,7 +433,9 @@ pub(crate) fn open(anchor: Rect) {
         // and the badge WHAT YOU GET. The runtime used to be a dotted second half of the sub-line,
         // which left the read-out slot empty and made the one fact that lines up down the panel the
         // one buried mid-string.
-        let mut row = Row::new(r.label.clone()).detail(r.detail.clone()).checked(r.checked);
+        let mut row = Row::new(r.label.clone())
+            .detail(r.detail.clone())
+            .checked(r.checked);
         if let Some(v) = &r.value {
             row = row.value(v.clone());
         }
@@ -452,7 +473,9 @@ pub(crate) fn move_focus(sym: c_int) {
 pub(crate) fn on_ok() -> Action {
     let sel = table().sel;
     close();
-    action_at(dests(), sel, here_sid(), unsafe { (*addr_of!(FOR_RK)).as_str() })
+    action_at(dests(), sel, here_sid(), unsafe {
+        (*addr_of!(FOR_RK)).as_str()
+    })
 }
 
 /// The index→destination mapping, pure so the "the row you are on is not a destination" rule is
@@ -465,7 +488,10 @@ fn action_at(list: &[(ServerId, String)], sel: i32, here_sid: ServerId, here_rk:
     if crate::plex::same_item((*sid, rk), (here_sid, here_rk)) || rk.is_empty() {
         return Action::None;
     }
-    Action::Open { sid: *sid, rk: rk.clone() }
+    Action::Open {
+        sid: *sid,
+        rk: rk.clone(),
+    }
 }
 
 /// Pointer hover: focus follows the cursor over the rows.
@@ -500,13 +526,20 @@ pub(crate) fn click(mx: f32, my: f32) -> Action {
 fn panel_at(a: Rect, content_h: f32) -> Rect {
     let h = content_h.clamp(120.0, SCR_H - 2.0 * EDGE);
     let below = a.y + a.h + BTN_GAP;
-    let y = if below + h <= SCR_H - EDGE { below } else { (a.y - BTN_GAP - h).max(EDGE) };
+    let y = if below + h <= SCR_H - EDGE {
+        below
+    } else {
+        (a.y - BTN_GAP - h).max(EDGE)
+    };
     let x = a.x.clamp(EDGE_X, (SCR_W - EDGE_X - PANEL_W).max(EDGE_X));
     Rect::new(x, y, PANEL_W, h)
 }
 
 fn panel_rect() -> Rect {
-    panel_at(unsafe { addr_of!(ANCHOR).read() }, table().measured_height())
+    panel_at(
+        unsafe { addr_of!(ANCHOR).read() },
+        table().measured_height(),
+    )
 }
 
 pub(crate) fn update(dt: f32) {
@@ -552,7 +585,10 @@ pub(crate) fn pump() {
     // Wait for the item, and do NOT mark the attempt until it is here: a mount keeps
     // `metadata::current()` empty for the whole fetch, and spending the one chance during that
     // window would mean no stand-in at all on the page it was armed for.
-    if crate::metadata::current().filter(|d| d.rk == for_rk).is_none() {
+    if crate::metadata::current()
+        .filter(|d| d.rk == for_rk)
+        .is_none()
+    {
         return;
     }
     // Marked whatever the outcome, so the ordinary build — where the trigger is not armed at all —
@@ -600,8 +636,19 @@ fn dev_stand_in(item_rk: &str) -> Option<Vec<AltCopy>> {
     let library = crate::browse::section_title(crate::browse::cur()).to_string();
     let here = crate::plex::current_server();
     let theirs = stand_in_slot()?;
-    let v = stand_in(&handle, &library, item_rk, &d.video_resolution, d.dur_ms, here, theirs);
-    crate::log(&format!("altsources: stand-in for rk={item_rk} on slot {} (dev)", theirs.raw()));
+    let v = stand_in(
+        &handle,
+        &library,
+        item_rk,
+        &d.video_resolution,
+        d.dur_ms,
+        here,
+        theirs,
+    );
+    crate::log(&format!(
+        "altsources: stand-in for rk={item_rk} on slot {} (dev)",
+        theirs.raw()
+    ));
     Some(v)
 }
 #[cfg(test)]
@@ -626,7 +673,8 @@ fn stand_in_slot() -> Option<ServerId> {
     let here = crate::plex::current_server();
     // `server_ids`, never `0..server_count()`: slot numbers are permanent and a sign-out retires
     // the ones below the registry's floor, so the live roster is a window and not a prefix.
-    let other = crate::plex::server_ids().find(|&id| id != here && crate::plex::client_for(id).is_some());
+    let other =
+        crate::plex::server_ids().find(|&id| id != here && crate::plex::client_for(id).is_some());
     if let Some(id) = other {
         return Some(id); // a real second server is already registered — use it
     }
@@ -634,7 +682,13 @@ fn stand_in_slot() -> Option<ServerId> {
     let token = crate::dev::read("token").filter(|t| !t.is_empty())?;
     // …and a registry with no room left answers `UNSET`, which is no stand-in at all rather than
     // one that resolves to whatever happens to be current.
-    Some(crate::plex::register(&format!("standin-{}", c.machine_id()), c.host(), c.port(), &token)).filter(|id| id.is_set())
+    Some(crate::plex::register(
+        &format!("standin-{}", c.machine_id()),
+        c.host(),
+        c.port(),
+        &token,
+    ))
+    .filter(|id| id.is_set())
 }
 
 /// [`dev_stand_in`]'s pure half — the two copies it describes, so the shape of what a device
@@ -714,14 +768,24 @@ mod tests {
     #[test]
     fn the_button_appears_only_when_a_second_source_holds_the_item() {
         assert_eq!(source_count(&[]), 0, "nothing resolved yet");
-        assert_eq!(source_count(&[copy(0, "Movies", "", "4", "1080")]), 1, "one source is the 90% install");
         assert_eq!(
-            source_count(&[copy(0, "Movies", "", "4", "1080"), copy(0, "4K Movies", "", "9", "4k")]),
+            source_count(&[copy(0, "Movies", "", "4", "1080")]),
+            1,
+            "one source is the 90% install"
+        );
+        assert_eq!(
+            source_count(&[
+                copy(0, "Movies", "", "4", "1080"),
+                copy(0, "4K Movies", "", "9", "4k")
+            ]),
             1,
             "two copies on ONE server are still one source"
         );
         assert_eq!(
-            source_count(&[copy(0, "Movies", "", "4", "1080"), copy(1, "Film Club", "friend", "318", "4k")]),
+            source_count(&[
+                copy(0, "Movies", "", "4", "1080"),
+                copy(1, "Film Club", "friend", "318", "4k")
+            ]),
             2
         );
         // and a third source counts once however many copies it contributes
@@ -741,9 +805,16 @@ mod tests {
     /// the canvas draws.
     #[test]
     fn the_copy_that_plays_comes_first_and_the_rest_rank_by_preference() {
-        let list = [copy(1, "Film Club", "friend", "318", "4k"), copy(0, "Movies", "", "4", "1080")];
+        let list = [
+            copy(1, "Film Club", "friend", "318", "4k"),
+            copy(0, "Movies", "", "4", "1080"),
+        ];
         let rs = rows(&list, sid(0), "4");
-        assert_eq!(labels(&rs), ["Movies", "Film Club"], "the copy that plays leads, whatever its class");
+        assert_eq!(
+            labels(&rs),
+            ["Movies", "Film Club"],
+            "the copy that plays leads, whatever its class"
+        );
         // the sub-line answers WHOSE and only that; the runtime is the trailing read-out, so it
         // lines up down the panel instead of sitting mid-string at a different x on every row
         assert_eq!(rs[0].detail, "This account");
@@ -751,7 +822,11 @@ mod tests {
         assert_eq!(rs[0].value.as_deref(), Some("1 hr 57 min"));
         assert_eq!(rs[1].value.as_deref(), Some("1 hr 57 min"));
         assert_eq!(rs[0].badge.as_deref(), Some("1080p"));
-        assert_eq!(rs[1].badge.as_deref(), Some("4K"), "the badge is the hero's own resolution vocabulary");
+        assert_eq!(
+            rs[1].badge.as_deref(),
+            Some("4K"),
+            "the badge is the hero's own resolution vocabulary"
+        );
 
         // …and standing on the OTHER copy inverts only the first key, not the rest
         assert_eq!(labels(&rows(&list, sid(1), "318")), ["Film Club", "Movies"]);
@@ -767,7 +842,16 @@ mod tests {
         let theirs_4k = copy(1, "Film Club", "friend", "318", "4k");
         let theirs_hd = copy(2, "Kino", "carol", "77", "1080");
 
-        let rs = rows(&[here.clone(), mine.clone(), theirs_4k.clone(), theirs_hd.clone()], sid(9), "1");
+        let rs = rows(
+            &[
+                here.clone(),
+                mine.clone(),
+                theirs_4k.clone(),
+                theirs_hd.clone(),
+            ],
+            sid(9),
+            "1",
+        );
         assert_eq!(
             labels(&rs),
             ["On now", "Film Club", "Movies", "Kino"],
@@ -785,20 +869,36 @@ mod tests {
     /// 720p while its badge said 1080p.)
     #[test]
     fn the_sort_key_agrees_with_the_badge_it_is_drawn_beside() {
-        let with = |res: &str, w: i64, h: i64| AltCopy { res: res.into(), width: w, height: h, ..Default::default() };
+        let with = |res: &str, w: i64, h: i64| AltCopy {
+            res: res.into(),
+            width: w,
+            height: h,
+            ..Default::default()
+        };
         let ladder = ["8k", "4k", "1080", "720", "576", "sd"];
         for pair in ladder.windows(2) {
             let (a, b) = (with(pair[0], 0, 0), with(pair[1], 0, 0));
-            assert!(scan_lines(&a) > scan_lines(&b), "{} must outrank {}", pair[0], pair[1]);
+            assert!(
+                scan_lines(&a) > scan_lines(&b),
+                "{} must outrank {}",
+                pair[0],
+                pair[1]
+            );
         }
         // the class beats the frame size, exactly as `fmt::resolution` badges it
         let scope = with("1080", 1918, 802);
         assert_eq!(scan_lines(&scope), 1080);
-        assert_eq!(crate::ui::fmt::resolution(&scope.res, scope.width, scope.height).as_deref(), Some("1080p"));
+        assert_eq!(
+            crate::ui::fmt::resolution(&scope.res, scope.width, scope.height).as_deref(),
+            Some("1080p")
+        );
         // …and with no class at all both fall back to the frame, and still agree
         let noclass = with("", 3840, 2160);
         assert!(scan_lines(&noclass) > scan_lines(&with("", 1920, 1080)));
-        assert_eq!(crate::ui::fmt::resolution(&noclass.res, noclass.width, noclass.height).as_deref(), Some("4K"));
+        assert_eq!(
+            crate::ui::fmt::resolution(&noclass.res, noclass.width, noclass.height).as_deref(),
+            Some("4K")
+        );
         // a garbage height must not overflow into a top-of-list key
         assert!(scan_lines(&with("", i64::MAX, i64::MAX)) > 0);
     }
@@ -810,19 +910,47 @@ mod tests {
     fn exactly_one_row_is_ever_ticked() {
         let ticked = |rs: &[AltRow]| rs.iter().filter(|r| r.checked).count();
 
-        let list = [copy(0, "Movies", "", "4", "1080"), copy(1, "Film Club", "friend", "318", "4k")];
+        let list = [
+            copy(0, "Movies", "", "4", "1080"),
+            copy(1, "Film Club", "friend", "318", "4k"),
+        ];
         let rs = rows(&list, sid(0), "4");
         assert_eq!(ticked(&rs), 1);
-        assert!(rs[0].checked, "the tick is on the copy the page is standing on");
+        assert!(
+            rs[0].checked,
+            "the tick is on the copy the page is standing on"
+        );
 
         // a duplicated copy: one identity, one tick
-        let dup = [copy(0, "Movies", "", "4", "1080"), copy(0, "Movies", "", "4", "1080"), copy(1, "LDN", "b", "318", "4k")];
-        assert_eq!(ticked(&rows(&dup, sid(0), "4")), 1, "one identity cannot be two 'you are here's");
+        let dup = [
+            copy(0, "Movies", "", "4", "1080"),
+            copy(0, "Movies", "", "4", "1080"),
+            copy(1, "LDN", "b", "318", "4k"),
+        ];
+        assert_eq!(
+            ticked(&rows(&dup, sid(0), "4")),
+            1,
+            "one identity cannot be two 'you are here's"
+        );
 
         // the same ratingKey on the OTHER server is a different copy — rk alone must not tick it
-        assert_eq!(ticked(&rows(&[copy(0, "Movies", "", "4", "1080"), copy(1, "LDN", "b", "4", "4k")], sid(0), "4")), 1);
+        assert_eq!(
+            ticked(&rows(
+                &[
+                    copy(0, "Movies", "", "4", "1080"),
+                    copy(1, "LDN", "b", "4", "4k")
+                ],
+                sid(0),
+                "4"
+            )),
+            1
+        );
         // …and nothing is ticked when the page's copy is not in the list yet
-        assert_eq!(ticked(&rows(&list, sid(7), "4")), 0, "no guess, no second tick");
+        assert_eq!(
+            ticked(&rows(&list, sid(7), "4")),
+            0,
+            "no guess, no second tick"
+        );
     }
 
     /// A copy the server sent no runtime for leaves the read-out slot EMPTY and still says whose it
@@ -845,10 +973,28 @@ mod tests {
     /// selection is `None` too, never a neighbouring row's server.
     #[test]
     fn ok_navigates_to_another_copy_and_never_to_the_one_you_are_on() {
-        let list = [(sid(0), "4".to_string()), (sid(1), "318".to_string()), (sid(2), String::new())];
-        assert_eq!(action_at(&list, 0, sid(0), "4"), Action::None, "the copy you are on goes nowhere");
-        assert_eq!(action_at(&list, 1, sid(0), "4"), Action::Open { sid: sid(1), rk: "318".into() });
-        assert_eq!(action_at(&list, 2, sid(0), "4"), Action::None, "a copy with no ratingKey is not a destination");
+        let list = [
+            (sid(0), "4".to_string()),
+            (sid(1), "318".to_string()),
+            (sid(2), String::new()),
+        ];
+        assert_eq!(
+            action_at(&list, 0, sid(0), "4"),
+            Action::None,
+            "the copy you are on goes nowhere"
+        );
+        assert_eq!(
+            action_at(&list, 1, sid(0), "4"),
+            Action::Open {
+                sid: sid(1),
+                rk: "318".into()
+            }
+        );
+        assert_eq!(
+            action_at(&list, 2, sid(0), "4"),
+            Action::None,
+            "a copy with no ratingKey is not a destination"
+        );
         assert_eq!(action_at(&list, 3, sid(0), "4"), Action::None);
         assert_eq!(action_at(&list, -1, sid(0), "4"), Action::None);
         assert_eq!(action_at(&[], 0, sid(0), "4"), Action::None);
@@ -861,8 +1007,15 @@ mod tests {
     #[test]
     fn the_headless_stand_in_shows_the_case_the_ordering_rule_turns_on() {
         let v = stand_in("friend", "Movies", "4", "1080", 7_020_000, sid(0), sid(1));
-        assert_eq!(source_count(&v), 2, "…or the gate would refuse the very panel it exists to show");
-        assert_eq!(v[0].owner, None, "your copy is the real one, on the current server");
+        assert_eq!(
+            source_count(&v),
+            2,
+            "…or the gate would refuse the very panel it exists to show"
+        );
+        assert_eq!(
+            v[0].owner, None,
+            "your copy is the real one, on the current server"
+        );
         assert_eq!((v[0].rk.as_str(), v[0].dur_ms), ("4", 7_020_000));
         assert_eq!(v[1].owner.as_deref(), Some("friend"));
         assert_eq!(v[1].rk, v[0].rk, "the same film — the slot is what differs");
@@ -870,7 +1023,11 @@ mod tests {
         let rs = rows(&v, sid(0), "4");
         assert!(rs[0].checked, "the tick is on yours…");
         assert_eq!(rs[0].badge.as_deref(), Some("1080p"));
-        assert_eq!(rs[1].badge.as_deref(), Some("4K"), "…and the better copy is the one BELOW it");
+        assert_eq!(
+            rs[1].badge.as_deref(),
+            Some("4K"),
+            "…and the better copy is the one BELOW it"
+        );
 
         // the one invention is bounded: the top of the ladder is not promoted past itself, and an
         // unrecognised class is left exactly as the server spelled it
@@ -903,8 +1060,12 @@ mod tests {
             }
         }
         let _g = Fresh(crate::testlock::serial());
-        let two_sources =
-            || vec![copy(0, "Movies", "", "4", "1080"), copy(1, "Film Club", "friend", "318", "4k")];
+        let two_sources = || {
+            vec![
+                copy(0, "Movies", "", "4", "1080"),
+                copy(1, "Film Club", "friend", "318", "4k"),
+            ]
+        };
 
         // OUR film 4 is the page, and its resolve is out
         reset(sid(0), "4");
@@ -912,7 +1073,10 @@ mod tests {
         // …and while it is out the user opens the SHARE's film 4 — the same key, another machine
         reset(sid(1), "4");
         install(sid(0), "4", two_sources());
-        assert!(!is_available(), "our copies are not news about the share's film");
+        assert!(
+            !is_available(),
+            "our copies are not news about the share's film"
+        );
 
         // the control: the very same landing DOES install when the page is still the one that
         // asked, so the refusal above is about the SERVER and not about the mechanism
@@ -923,7 +1087,10 @@ mod tests {
         // and the pre-existing rule is untouched: the same server, a different item
         reset(sid(0), "4");
         install(sid(0), "318", two_sources());
-        assert!(!is_available(), "a landing for another item on this server is still refused");
+        assert!(
+            !is_available(),
+            "a landing for another item on this server is still refused"
+        );
 
         // a closed page (UNSET, empty rk) is a mailbox nothing can reach
         reset(ServerId::UNSET, "");
@@ -937,19 +1104,29 @@ mod tests {
         let btn = Rect::new(crate::ui::consts::MARGIN_X, 300.0, 300.0, 60.0);
         let r = panel_at(btn, 224.0);
         assert_eq!(r.w, PANEL_W);
-        assert_eq!(r.y, btn.y + btn.h + BTN_GAP, "under the button when there is room");
+        assert_eq!(
+            r.y,
+            btn.y + btn.h + BTN_GAP,
+            "under the button when there is room"
+        );
         assert_eq!(r.x, btn.x, "and aligned to its left edge");
 
         // a button low on the page flips the panel ABOVE it rather than off the bottom
         let low = Rect::new(crate::ui::consts::MARGIN_X, 900.0, 300.0, 60.0);
         let r = panel_at(low, 224.0);
-        assert!(r.y + r.h <= low.y - BTN_GAP + 0.01, "flipped above the button");
+        assert!(
+            r.y + r.h <= low.y - BTN_GAP + 0.01,
+            "flipped above the button"
+        );
         assert!(r.y >= EDGE);
 
         // a button near the right edge pulls the panel back inside the keep-out
         let right = Rect::new(SCR_W - 200.0, 300.0, 180.0, 60.0);
         let r = panel_at(right, 224.0);
-        assert!(r.x + r.w <= SCR_W - EDGE_X + 0.01, "a panel must not run off the panel");
+        assert!(
+            r.x + r.w <= SCR_W - EDGE_X + 0.01,
+            "a panel must not run off the panel"
+        );
         // …and a list taller than the screen is clamped rather than drawn past both edges
         let tall = panel_at(btn, 4000.0);
         assert!(tall.y >= EDGE && tall.y + tall.h <= SCR_H - EDGE + 0.01);
@@ -958,8 +1135,19 @@ mod tests {
         // precisely so that the horizontal clamp is `MARGIN_X` and not the `space::XL` the vertical
         // one uses. `ui::consts::SAFE` is the frame; this is that predicate on this panel's own
         // extremes, since a panel placed against an ANCHOR has no fixed rect a table could carry.
-        for (what, p) in [("under", r), ("tall", tall), ("right-edge", panel_at(right, 224.0))] {
-            assert!(crate::ui::consts::inside_safe(p), "the {what} panel leaves the safe area: ({}, {}) {}x{}", p.x, p.y, p.w, p.h);
+        for (what, p) in [
+            ("under", r),
+            ("tall", tall),
+            ("right-edge", panel_at(right, 224.0)),
+        ] {
+            assert!(
+                crate::ui::consts::inside_safe(p),
+                "the {what} panel leaves the safe area: ({}, {}) {}x{}",
+                p.x,
+                p.y,
+                p.w,
+                p.h
+            );
         }
     }
 }

@@ -48,9 +48,9 @@
 //!
 //! This header used to say no sender existed at all. It does: [`super::sender`].
 
-use crate::diag::schema::{DiagEvent, UsageContext, UsageEnvelope, UsageValue};
 #[cfg(test)]
 use crate::diag::schema::{self, Value};
+use crate::diag::schema::{DiagEvent, UsageContext, UsageEnvelope, UsageValue};
 
 /// The flag that keeps an event anonymous. Spelled once, here, so a typo is one test away rather
 /// than one silent person profile per install.

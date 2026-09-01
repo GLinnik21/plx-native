@@ -60,7 +60,10 @@ pub(crate) fn resolve(libs: &[LibRef<'_>], rec: Option<&HomePins>) -> Vec<bool> 
     let any_owned = libs.iter().any(|l| l.owned);
     let mut out: Vec<bool> = libs
         .iter()
-        .map(|&l| rec.and_then(|r| r.answer(l.machine_id, l.key)).unwrap_or_else(|| default_on(l, any_owned)))
+        .map(|&l| {
+            rec.and_then(|r| r.answer(l.machine_id, l.key))
+                .unwrap_or_else(|| default_on(l, any_owned))
+        })
         .collect();
     if out.iter().any(|&on| on) {
         return out;
@@ -109,12 +112,20 @@ pub(crate) fn asks(sources: usize, rec: Option<&HomePins>) -> bool {
 /// write a row that can only ever match the *other* nameless ones. It keeps its resolved value for
 /// this run and is asked about again next boot.
 pub(crate) fn record(user: &str, asked: bool, libs: &[LibRef<'_>], on: &[bool]) -> HomePins {
-    let mut out = HomePins { user: user.to_string(), asked, on: Vec::new(), off: Vec::new() };
+    let mut out = HomePins {
+        user: user.to_string(),
+        asked,
+        on: Vec::new(),
+        off: Vec::new(),
+    };
     for (i, l) in libs.iter().enumerate() {
         if l.machine_id.is_empty() {
             continue;
         }
-        let lib = PinnedLib { machine_id: l.machine_id.to_string(), key: l.key };
+        let lib = PinnedLib {
+            machine_id: l.machine_id.to_string(),
+            key: l.key,
+        };
         if on.get(i).copied().unwrap_or(false) {
             out.on.push(lib);
         } else {
@@ -136,7 +147,11 @@ pub(crate) fn record(user: &str, asked: bool, libs: &[LibRef<'_>], on: &[bool]) 
 /// **The grain is the MACHINE, not the library.** A server whose libraries the table holds has
 /// just been answered about in full — including one it has since lost, which is correctly dropped.
 /// A server it does not hold has not been answered about at all, and silence is not an answer.
-pub(crate) fn carry_forward(mut rec: HomePins, prev: Option<&HomePins>, libs: &[LibRef<'_>]) -> HomePins {
+pub(crate) fn carry_forward(
+    mut rec: HomePins,
+    prev: Option<&HomePins>,
+    libs: &[LibRef<'_>],
+) -> HomePins {
     let Some(prev) = prev else { return rec };
     let absent = |p: &&PinnedLib| {
         // an entry with no machine can never be WRITTEN (see [`record`]), so it can never be
@@ -153,11 +168,19 @@ mod tests {
     use super::*;
 
     fn lib(mid: &str, key: i64, owned: bool) -> LibRef<'_> {
-        LibRef { machine_id: mid, key, owned }
+        LibRef {
+            machine_id: mid,
+            key,
+            owned,
+        }
     }
     /// The measured pair: your own two libraries and a friend's one, in registration order.
     fn roster<'a>() -> Vec<LibRef<'a>> {
-        vec![lib("mine", 1, true), lib("mine", 2, true), lib("theirs", 1, false)]
+        vec![
+            lib("mine", 1, true),
+            lib("mine", 2, true),
+            lib("theirs", 1, false),
+        ]
     }
 
     /// **The defaults rule, which is the whole first frame of the screen.**
@@ -202,7 +225,11 @@ mod tests {
         let rec = record("u-7", true, &roster(), &[false, false, true]);
         // the share is gone; both of the remaining libraries are recorded Off
         let left = vec![lib("mine", 1, true), lib("mine", 2, true)];
-        assert_eq!(resolve(&left, Some(&rec)), vec![true, true], "Home is never empty");
+        assert_eq!(
+            resolve(&left, Some(&rec)),
+            vec![true, true],
+            "Home is never empty"
+        );
 
         // and the floor is the FIRST SOURCE's libraries, not every library there is
         let two_srcs = vec![lib("mine", 1, true), lib("theirs", 1, false)];
@@ -221,14 +248,31 @@ mod tests {
     /// **The gate.** One source is not a question, and the same profile is never asked twice.
     #[test]
     fn the_route_appears_only_for_a_roster_with_more_than_one_source_and_only_once() {
-        let answered = HomePins { user: "u-7".into(), asked: true, ..Default::default() };
-        assert!(!asks(1, None), "a single-server install goes straight to Home");
-        assert!(!asks(0, None), "…and so does one that has not discovered anything");
+        let answered = HomePins {
+            user: "u-7".into(),
+            asked: true,
+            ..Default::default()
+        };
+        assert!(
+            !asks(1, None),
+            "a single-server install goes straight to Home"
+        );
+        assert!(
+            !asks(0, None),
+            "…and so does one that has not discovered anything"
+        );
         assert!(asks(2, None), "two sources and nobody has been asked");
         assert!(!asks(2, Some(&answered)), "asked once, never again");
-        assert!(asks(3, None), "a third source is still the same one question");
+        assert!(
+            asks(3, None),
+            "a third source is still the same one question"
+        );
         // An entry that exists but records no answer is still an entry — only `asked` decides.
-        let touched = HomePins { user: "u-7".into(), asked: false, ..Default::default() };
+        let touched = HomePins {
+            user: "u-7".into(),
+            asked: false,
+            ..Default::default()
+        };
         assert!(asks(2, Some(&touched)));
     }
 
@@ -237,11 +281,28 @@ mod tests {
     #[test]
     fn a_library_on_an_unnamed_machine_is_not_written_down() {
         // one library on a machine nobody has named, beside two on machines we can name
-        let libs = vec![lib("", 1, false), lib("mine", 1, true), lib("theirs", 1, false)];
+        let libs = vec![
+            lib("", 1, false),
+            lib("mine", 1, true),
+            lib("theirs", 1, false),
+        ];
         let rec = record("u-7", true, &libs, &[false, true, true]);
-        assert_eq!(rec.on.iter().map(|p| p.machine_id.as_str()).collect::<Vec<_>>(), ["mine", "theirs"]);
-        assert!(rec.off.is_empty(), "the nameless one is absent from BOTH lists, not recorded Off");
-        assert_eq!(rec.answer("", 1), None, "and it can never be looked up either");
+        assert_eq!(
+            rec.on
+                .iter()
+                .map(|p| p.machine_id.as_str())
+                .collect::<Vec<_>>(),
+            ["mine", "theirs"]
+        );
+        assert!(
+            rec.off.is_empty(),
+            "the nameless one is absent from BOTH lists, not recorded Off"
+        );
+        assert_eq!(
+            rec.answer("", 1),
+            None,
+            "and it can never be looked up either"
+        );
         // …so next boot it takes its own default (a share: Off) rather than a neighbour's answer
         assert_eq!(resolve(&libs, Some(&rec)), vec![false, true, true]);
     }
@@ -271,9 +332,21 @@ mod tests {
 
         // the next boot sees only our own libraries; the share has not answered
         let awake = vec![lib("mine", 1, true), lib("mine", 2, true)];
-        let written = carry_forward(record("u-7", true, &awake, &[true, true]), Some(&full), &awake);
-        assert_eq!(written.answer("theirs", 1), Some(true), "the absent server's answer is kept");
-        assert_eq!(written.answer("mine", 2), Some(true), "…and the present one's is the NEW answer");
+        let written = carry_forward(
+            record("u-7", true, &awake, &[true, true]),
+            Some(&full),
+            &awake,
+        );
+        assert_eq!(
+            written.answer("theirs", 1),
+            Some(true),
+            "the absent server's answer is kept"
+        );
+        assert_eq!(
+            written.answer("mine", 2),
+            Some(true),
+            "…and the present one's is the NEW answer"
+        );
 
         // a library the present server has since LOST is dropped rather than carried: that server
         // was answered about in full, and this is not a machine we are keeping silence for

@@ -8,6 +8,7 @@
 use crate::auth::{self, Phase};
 use crate::ui::card_row::{self, CardRow, RowStyle};
 use crate::ui::consts::*;
+use crate::ui::route_screen::RouteGround;
 use crate::ui::widgets::{Art, Spinner};
 use crate::ui::{theme, Env, Painter, Rect, View};
 use std::ffi::CString;
@@ -67,7 +68,15 @@ struct Pad {
 }
 impl Pad {
     const fn new() -> Self {
-        Pad { open: false, target: 0, entry: String::new(), fr: 0, fc: 0, submitting: false, error_ms: 0.0 }
+        Pad {
+            open: false,
+            target: 0,
+            entry: String::new(),
+            fr: 0,
+            fc: 0,
+            submitting: false,
+            error_ms: 0.0,
+        }
     }
 }
 
@@ -77,17 +86,29 @@ struct Scene {
     spin_ms: f32,
     pad: Pad,
     footer: bool, // focus is on the "Sign out" pill under the roster
+    ground: RouteGround,
 }
 
 static mut SCENE: Option<Scene> = None;
 
 fn scene() -> &'static mut Scene {
-    unsafe { (*addr_of_mut!(SCENE)).as_mut().expect("profiles::init not called") }
+    unsafe {
+        (*addr_of_mut!(SCENE))
+            .as_mut()
+            .expect("profiles::init not called")
+    }
 }
 
 pub fn init() {
     unsafe {
-        *addr_of_mut!(SCENE) = Some(Scene { row: CardRow::new(), fc: 0, spin_ms: 0.0, pad: Pad::new(), footer: false });
+        *addr_of_mut!(SCENE) = Some(Scene {
+            row: CardRow::new(),
+            fc: 0,
+            spin_ms: 0.0,
+            pad: Pad::new(),
+            footer: false,
+            ground: RouteGround::new(),
+        });
     }
 }
 
@@ -97,6 +118,8 @@ pub fn enter() {
     s.fc = 0;
     s.pad = Pad::new();
     s.footer = false;
+    s.ground.reset();
+    crate::ui::idle::invalidate();
 }
 
 /// The footer control's FOCUS POP ([`crate::ui::widgets::CtlPop`]) — one control, and it still gets
@@ -109,7 +132,9 @@ pub fn update(dt: f32) {
     let s = scene();
     s.spin_ms += dt * 1000.0;
     // …closed while the PIN pad is up, which is also when the control is not drawn at all.
-    unsafe { (*std::ptr::addr_of_mut!(FOOTER_POP)).step((s.footer && !s.pad.open).then_some(0), dt) };
+    unsafe {
+        (*std::ptr::addr_of_mut!(FOOTER_POP)).step((s.footer && !s.pad.open).then_some(0), dt)
+    };
     if s.pad.open {
         if s.pad.error_ms > 0.0 {
             s.pad.error_ms = (s.pad.error_ms - dt).max(0.0);
@@ -136,7 +161,11 @@ pub fn update(dt: f32) {
     }
     // freeze the row focus (springs settle to unfocused) while the keypad is up or while the
     // Sign out footer holds focus — focus is exclusive, never on two controls at once
-    let focus = if s.pad.open || s.footer { None } else { Some(s.fc as usize) };
+    let focus = if s.pad.open || s.footer {
+        None
+    } else {
+        Some(s.fc as usize)
+    };
     s.row.update(n, focus, &RowStyle::PROFILES, dt);
 }
 
@@ -150,20 +179,38 @@ fn row_geom(n: usize) -> (f32, f32) {
 }
 
 pub fn draw() {
-    // The clear IS the app surface — `theme::CLEAR_RGB` and `theme::SURFACE_APP` are the same
-    // #2C2C2E (44,44,46), and SURFACE_APP is opaque — so the full-screen SURFACE_APP rect that
-    // used to sit here painted 1920x1080 = 2.07M provably identical blended fragments over an
-    // already-correct framebuffer, every frame of the picker. If a screen ever needs a base that
-    // is NOT the clear color, paint that token, not this one.
     crate::gfx::frame_clear(theme::CLEAR_RGB.0, theme::CLEAR_RGB.1, theme::CLEAR_RGB.2);
     let p = Painter::root();
     let s = scene();
+    s.ground.draw_default(p);
     let users = auth::users();
-    let env = Env { dt: 0.0, screen: Rect::FULL, fr: 0, fc: s.fc, sp: 0.0, hero_a: 0.0 };
+    let env = Env {
+        dt: 0.0,
+        screen: Rect::FULL,
+        fr: 0,
+        fc: s.fc,
+        sp: 0.0,
+        hero_a: 0.0,
+    };
 
-    // title
+    // The picker and its PIN pad keep their established centred composition. They only share the
+    // pre-content ambient ground with the route screens; becoming two columns would make the
+    // familiar profile interaction less direct without adding any useful information hierarchy.
+    if s.pad.open {
+        draw_pad(p, &env, s, &users);
+        return;
+    }
+
     if let Ok(t) = CString::new("Who's watching?") {
-        p.text(t.as_ptr(), SCR_W as f32 * 0.5, 168.0, theme::size::HERO, theme::TEXT_PRIMARY, 1, 1);
+        p.text(
+            t.as_ptr(),
+            SCR_W as f32 * 0.5,
+            168.0,
+            theme::size::HERO,
+            theme::TEXT_PRIMARY,
+            1,
+            1,
+        );
     }
 
     let sty = RowStyle::PROFILES;
@@ -176,12 +223,23 @@ pub fn draw() {
         let cx = start_x + i as f32 * slot + sty.w * 0.5 - scroll;
         let base = Rect::new(cx - sty.w * 0.5, ROW_Y, sty.w, sty.h);
         let sc = s.row.scale(i);
-        let is_foc = i as c_int == s.fc && !s.pad.open && !s.footer;
+        let is_foc = i as c_int == s.fc && !s.footer;
         if is_foc {
             focused = Some(i);
             continue; // draw the focused tile last (ring over neighbours)
         }
-        card_row::draw_tile(p, Art::Thumb { sid: crate::plex::current_server(), key: &u.thumb, res: (300, 300) }, base.scaled(sc), sc, &sty, None);
+        card_row::draw_tile(
+            p,
+            Art::Thumb {
+                sid: crate::plex::current_server(),
+                key: &u.thumb,
+                res: (300, 300),
+            },
+            base.scaled(sc),
+            sc,
+            &sty,
+            None,
+        );
         draw_name(p, u, cx, false);
     }
     if let Some(i) = focused {
@@ -191,18 +249,29 @@ pub fn draw() {
         // fold the ui::press click dip into the focused avatar's pop (1.0 when idle)
         let sc = s.row.scale(i) * crate::ui::press::scale();
         // the roster draws its own names below the avatars, so the tile carries no label block
-                    card_row::draw_focused(p, Art::Thumb { sid: crate::plex::current_server(), key: &u.thumb, res: (300, 300) }, base.scaled(sc), sc, &sty, None, &card_row::TileLabel::default());
+        card_row::draw_focused(
+            p,
+            Art::Thumb {
+                sid: crate::plex::current_server(),
+                key: &u.thumb,
+                res: (300, 300),
+            },
+            base.scaled(sc),
+            sc,
+            &sty,
+            None,
+            &card_row::TileLabel::default(),
+        );
         draw_name(p, u, cx, true);
     }
 
     // "Sign out" — the picker is the only surface a user who doesn't recognise these profiles
     // ever sees, so it must offer a way out of the account.
-    if !s.pad.open {
-        crate::ui::widgets::Button::new(c"Sign out".as_ptr(), theme::size::BODY, footer_rect())
-            .focused(s.footer)
-            .scale(unsafe { std::ptr::addr_of!(FOOTER_POP).as_ref().unwrap().scale(0) })
-            .draw(&env, p);
-    }
+    crate::ui::widgets::Button::new(c"Sign out".as_ptr(), theme::size::BODY, footer_rect())
+        .focused(s.footer)
+        .scale(unsafe { std::ptr::addr_of!(FOOTER_POP).as_ref().unwrap().scale(0) })
+        .palette(s.ground.palette())
+        .draw(&env, p);
 
     // roster not here yet (persisted seed empty, refresh in flight) — a spinner, not a blank page
     if users.is_empty() {
@@ -218,42 +287,75 @@ pub fn draw() {
     if !err.is_empty() && !s.pad.open && auth::phase() == Phase::Profiles {
         if let Ok(e) = CString::new(err) {
             let ey = crate::text::text_vcenter_y(theme::size::BODY, 0, ROW_Y + sty.h + 96.0);
-            p.text(e.as_ptr(), SCR_W as f32 * 0.5, ey, theme::size::BODY, theme::TEXT_SECONDARY, 1, 0);
+            p.text(
+                e.as_ptr(),
+                SCR_W as f32 * 0.5,
+                ey,
+                theme::size::BODY,
+                theme::TEXT_SECONDARY,
+                1,
+                0,
+            );
         }
     }
 
-    // switching spinner / keypad overlay — a near-opaque scrim (0.88): the roster behind is
-    // context noise at this point, and a translucent wash read as a rendering glitch.
-    match auth::phase() {
-        Phase::Switching if !s.pad.open => {
-            p.rect(Rect::FULL, 0.0, theme::scrim_black(0.88), theme::scrim_black(0.88), 0.0);
-            Spinner::new(SCR_W as f32 * 0.5, 500.0, 26.0)
-                .phase(s.spin_ms as u32)
-                .tint(theme::TEXT_PRIMARY)
-                .draw(&env, p);
-        }
-        _ => {}
-    }
-    if s.pad.open {
-        draw_pad(p, &env, s, &users);
+    if auth::phase() == Phase::Switching {
+        p.rect(
+            Rect::FULL,
+            0.0,
+            theme::scrim_black(0.88),
+            theme::scrim_black(0.88),
+            0.0,
+        );
+        Spinner::new(SCR_W as f32 * 0.5, 500.0, 26.0)
+            .phase(s.spin_ms as u32)
+            .tint(theme::TEXT_PRIMARY)
+            .draw(&env, p);
     }
 }
 
 fn draw_name(p: Painter, u: &auth::UserTile, cx: f32, focused: bool) {
-    let col = if focused { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY };
-    let name = crate::text::elide(&u.title, RowStyle::PROFILES.w + RowStyle::PROFILES.gap - 12.0, theme::size::LABEL, if focused { 1 } else { 0 }, false);
+    let col = if focused {
+        theme::TEXT_PRIMARY
+    } else {
+        theme::TEXT_SECONDARY
+    };
+    let name = crate::text::elide(
+        &u.title,
+        RowStyle::PROFILES.w + RowStyle::PROFILES.gap - 12.0,
+        theme::size::LABEL,
+        if focused { 1 } else { 0 },
+        false,
+    );
     if let Ok(nc) = CString::new(name) {
-        p.text(nc.as_ptr(), cx, ROW_Y + NAME_DY, theme::size::LABEL, col, 1, if focused { 1 } else { 0 });
+        p.text(
+            nc.as_ptr(),
+            cx,
+            ROW_Y + NAME_DY,
+            theme::size::LABEL,
+            col,
+            1,
+            if focused { 1 } else { 0 },
+        );
     }
 }
 
 fn draw_pad(p: Painter, env: &Env, s: &Scene, users: &[auth::UserTile]) {
-    // near-opaque scrim (0.9): PIN entry is its own screen, not a peek-through overlay
-    p.rect(Rect::FULL, 0.0, theme::scrim_black(0.9), theme::scrim_black(0.9), 0.0);
     let (title_y, dots_y, _) = pad_geom();
-    let name = users.get(s.pad.target).map(|u| u.title.as_str()).unwrap_or("");
+    let name = users
+        .get(s.pad.target)
+        .map(|u| u.title.as_str())
+        .unwrap_or("");
     if let Ok(t) = CString::new(format!("Enter {name}'s PIN")) {
-        p.text(t.as_ptr(), SCR_W as f32 * 0.5, title_y, theme::size::TITLE, theme::TEXT_PRIMARY, 1, 1);
+        p.text(
+            t.as_ptr(),
+            SCR_W as f32 * 0.5,
+            title_y,
+            theme::size::TITLE,
+            theme::TEXT_PRIMARY,
+            1,
+            1,
+        );
     }
     // 4 entry dots — replaced by a spinner while the PIN verifies; a rejected PIN pulses the
     // (all-filled) dots DANGER red for PIN_ERR_S, then the entry restarts on the same pad
@@ -275,7 +377,13 @@ fn draw_pad(p: Painter, env: &Env, s: &Scene, users: &[auth::UserTile]) {
             } else {
                 theme::with_a(theme::TEXT_PRIMARY, if filled { 1.0 } else { 0.28 })
             };
-            p.rect(Rect::new(dx, dots_y, PAD_DOT, PAD_DOT), PAD_DOT * 0.5, col, col, 0.0);
+            p.rect(
+                Rect::new(dx, dots_y, PAD_DOT, PAD_DOT),
+                PAD_DOT * 0.5,
+                col,
+                col,
+                0.0,
+            );
             dx += PAD_DOT + dgap;
         }
     }
@@ -297,12 +405,25 @@ fn draw_pad(p: Painter, env: &Env, s: &Scene, users: &[auth::UserTile]) {
                 crate::ui::icons::draw(
                     p,
                     crate::ui::icons::Icon::Backspace,
-                    Rect::new(rect.x + (rect.w - d) * 0.5, rect.y + (rect.h - d) * 0.5, d, d),
+                    Rect::new(
+                        rect.x + (rect.w - d) * 0.5,
+                        rect.y + (rect.h - d) * 0.5,
+                        d,
+                        d,
+                    ),
                     ink,
                 );
             } else if let Ok(lc) = CString::new((*k as char).to_string()) {
                 let ty = crate::text::text_vcenter_y(theme::size::TITLE, 1, rect.y + rect.h * 0.5);
-                p.text(lc.as_ptr(), rect.x + rect.w * 0.5, ty, theme::size::TITLE, ink, 1, 1);
+                p.text(
+                    lc.as_ptr(),
+                    rect.x + rect.w * 0.5,
+                    ty,
+                    theme::size::TITLE,
+                    ink,
+                    1,
+                    1,
+                );
             }
         }
     }
@@ -313,7 +434,12 @@ fn draw_pad(p: Painter, env: &Env, s: &Scene, users: &[auth::UserTile]) {
 fn pad_key_rect(r: usize, c: usize) -> Rect {
     let (_, _, grid_y) = pad_geom();
     let gx = SCR_W as f32 * 0.5 - (3.0 * PAD_KEY + 2.0 * PAD_KGAP) * 0.5;
-    Rect::new(gx + c as f32 * (PAD_KEY + PAD_KGAP), grid_y + r as f32 * (PAD_KEY + PAD_KGAP), PAD_KEY, PAD_KEY)
+    Rect::new(
+        gx + c as f32 * (PAD_KEY + PAD_KGAP),
+        grid_y + r as f32 * (PAD_KEY + PAD_KGAP),
+        PAD_KEY,
+        PAD_KEY,
+    )
 }
 
 /// The centered "Sign out" pill under the roster — shared by draw + pointer hit-tests.
@@ -461,7 +587,11 @@ pub fn activate_focused() {
 /// Commit a roster tile (OK or pointer click): protected → PIN pad, else switch.
 fn select(s: &mut Scene, idx: usize) {
     if auth::users().get(idx).map(|u| u.protected).unwrap_or(false) {
-        s.pad = Pad { open: true, target: idx, ..Pad::new() };
+        s.pad = Pad {
+            open: true,
+            target: idx,
+            ..Pad::new()
+        };
     } else {
         auth::select_profile(idx);
     }
@@ -568,7 +698,10 @@ pub fn key(sym: c_uint, wcode: c_uint) {
 /// Remote number key → keypad digit: SDL gives printable keys their ASCII sym and the webOS
 /// remote's number buttons carry the same 48–57 ('0'–'9') range in `wcode`.
 fn digit_of(sym: c_uint, wcode: c_uint) -> Option<u8> {
-    [sym, wcode].into_iter().find(|v| (48..=57).contains(v)).map(|v| v as u8)
+    [sym, wcode]
+        .into_iter()
+        .find(|v| (48..=57).contains(v))
+        .map(|v| v as u8)
 }
 
 fn pad_key(s: &mut Scene, sym: c_uint, wcode: c_uint) {
@@ -687,12 +820,18 @@ mod tests {
         let _s = crate::testlock::serial();
         let _g = SCENELOCK.lock().unwrap_or_else(|e| e.into_inner());
         boot();
-        assert!(!scene().footer, "a picker opens with the roster focused, not the footer");
+        assert!(
+            !scene().footer,
+            "a picker opens with the roster focused, not the footer"
+        );
 
         key(SDLK_DOWN, 0);
         assert!(scene().footer, "▼ off the roster is the Sign out pill");
         key(SDLK_DOWN, 0);
-        assert!(scene().footer, "the pill is the last focus stop — ▼ again holds it");
+        assert!(
+            scene().footer,
+            "the pill is the last focus stop — ▼ again holds it"
+        );
 
         key(SDLK_UP, 0);
         assert!(!scene().footer, "▲ brings focus back to the roster");
@@ -709,11 +848,20 @@ mod tests {
         let _s = crate::testlock::serial();
         let _g = SCENELOCK.lock().unwrap_or_else(|e| e.into_inner());
         boot();
-        assert!(auth::users().is_empty(), "an unseeded roster is the case under test");
+        assert!(
+            auth::users().is_empty(),
+            "an unseeded roster is the case under test"
+        );
 
         key(SDLK_DOWN, 0);
-        assert!(scene().footer, "the pill is focusable with nothing above it to leave");
-        assert!(!focus_is_avatar(), "and there is no avatar for the deferred OK activation to commit");
+        assert!(
+            scene().footer,
+            "the pill is focusable with nothing above it to leave"
+        );
+        assert!(
+            !focus_is_avatar(),
+            "and there is no avatar for the deferred OK activation to commit"
+        );
 
         key(SDLK_RIGHT, 0);
         assert_eq!(scene().fc, 0, "there is no tile to walk to");
@@ -740,7 +888,11 @@ mod tests {
         // …and OK, in every code `is_ok` accepts, means one thing on each side
         for ok in [SDLK_RETURN, SDLK_KP_ENTER, SDLK_SELECT] {
             assert_eq!(act(ok, true, N), Act::SignOut, "OK on the pill signs out");
-            assert_eq!(act(ok, false, N), Act::Select, "OK on the roster commits the focused tile");
+            assert_eq!(
+                act(ok, false, N),
+                Act::Select,
+                "OK on the roster commits the focused tile"
+            );
         }
 
         // ▼/▲ are the same statement whichever control holds focus, and with or without a roster
@@ -753,8 +905,16 @@ mod tests {
 
         // with no roster the bottom arm has nothing to offer — but the pill above it still acts
         assert_eq!(act(SDLK_LEFT, false, 0), Act::Ignore);
-        assert_eq!(act(SDLK_RETURN, false, 0), Act::Ignore, "OK on an empty roster commits nothing");
-        assert_eq!(act(SDLK_RETURN, true, 0), Act::SignOut, "the pill signs out while the roster loads");
+        assert_eq!(
+            act(SDLK_RETURN, false, 0),
+            Act::Ignore,
+            "OK on an empty roster commits nothing"
+        );
+        assert_eq!(
+            act(SDLK_RETURN, true, 0),
+            Act::SignOut,
+            "the pill signs out while the roster loads"
+        );
     }
 
     /// ◀/▶ clamp at both ends of the roster.
@@ -764,7 +924,11 @@ mod tests {
         assert_eq!(step_fc(0, -1, 3), 0, "◀ on the first tile holds it");
         assert_eq!(step_fc(1, 1, 3), 2);
         assert_eq!(step_fc(2, 1, 3), 2, "▶ on the last tile holds it");
-        assert_eq!(step_fc(0, 1, 1), 0, "a one-profile roster has nowhere to walk");
+        assert_eq!(
+            step_fc(0, 1, 1),
+            0,
+            "a one-profile roster has nowhere to walk"
+        );
     }
 
     /// With the keypad up, [`key`] never reaches the picker's own ladder: the pad takes the key
@@ -775,11 +939,18 @@ mod tests {
         let _s = crate::testlock::serial();
         let _g = SCENELOCK.lock().unwrap_or_else(|e| e.into_inner());
         boot();
-        scene().pad = Pad { open: true, target: 0, ..Pad::new() };
+        scene().pad = Pad {
+            open: true,
+            target: 0,
+            ..Pad::new()
+        };
 
         key(SDLK_DOWN, 0);
         assert_eq!(scene().pad.fr, 1, "▼ stepped the keypad row");
-        assert!(!scene().footer, "and did not focus the Sign out pill behind the scrim");
+        assert!(
+            !scene().footer,
+            "and did not focus the Sign out pill behind the scrim"
+        );
 
         boot(); // the pad is scene state — leave the singleton where `enter` leaves it
     }
@@ -789,13 +960,24 @@ mod tests {
     /// than on the gap directly under it.
     #[test]
     fn the_keypad_walks_around_its_empty_cell() {
-        assert_eq!(KEYS[3][0], None, "the cell both walkers below have to step over");
-        assert_eq!(step_focus(3, 1, -1), 1, "◀ from 0 finds nothing to its left and holds");
+        assert_eq!(
+            KEYS[3][0], None,
+            "the cell both walkers below have to step over"
+        );
+        assert_eq!(
+            step_focus(3, 1, -1),
+            1,
+            "◀ from 0 finds nothing to its left and holds"
+        );
         assert_eq!(step_focus(3, 1, 1), 2, "▶ from 0 reaches delete");
         assert_eq!(step_focus(0, 0, -1), 0, "a row edge clamps");
         assert_eq!(step_focus(0, 2, 1), 2);
         assert_eq!(nearest_col(3, 0), 1, "▼ off 7 lands on 0");
-        assert_eq!(nearest_col(3, 2), 2, "▼ off 9 lands on delete, which is under it");
+        assert_eq!(
+            nearest_col(3, 2),
+            2,
+            "▼ off 9 lands on delete, which is under it"
+        );
         assert_eq!(nearest_col(1, 1), 1, "an occupied column is kept as it is");
     }
 
@@ -803,10 +985,22 @@ mod tests {
     /// sym, and the remote's number buttons carry the same 48–57 range in `wcode`.
     #[test]
     fn a_pin_digit_is_read_from_either_field() {
-        assert_eq!(digit_of('7' as c_uint, 0), Some(b'7'), "a dev keyboard's sym");
-        assert_eq!(digit_of(0, 55), Some(b'7'), "the remote's wcode, same digit");
+        assert_eq!(
+            digit_of('7' as c_uint, 0),
+            Some(b'7'),
+            "a dev keyboard's sym"
+        );
+        assert_eq!(
+            digit_of(0, 55),
+            Some(b'7'),
+            "the remote's wcode, same digit"
+        );
         assert_eq!(digit_of('0' as c_uint, 0), Some(b'0'));
         assert_eq!(digit_of(SDLK_LEFT, 0), None, "a D-pad key is not a digit");
-        assert_eq!(digit_of(SDLK_RETURN, 0), None, "nor is OK — 13 is below the digit range");
+        assert_eq!(
+            digit_of(SDLK_RETURN, 0),
+            None,
+            "nor is OK — 13 is below the digit range"
+        );
     }
 }

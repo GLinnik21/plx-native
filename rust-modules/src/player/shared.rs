@@ -3,10 +3,12 @@
 //! long-lived `static SHARED` in mod.rs: it outlives every start/stop cycle and is
 //! *reset*, never freed — so a late library callback after teardown writes to a
 //! live object, exactly as the C static globals behaved.
-use std::ffi::CString;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicPtr, AtomicU32, AtomicU8, Ordering};
-use std::sync::Mutex;
 use crate::stream::HttpStream;
+use std::ffi::CString;
+use std::sync::atomic::{
+    AtomicBool, AtomicI32, AtomicI64, AtomicPtr, AtomicU32, AtomicU8, Ordering,
+};
+use std::sync::Mutex;
 
 /// **The names the CONTAINER gives its audio and subtitle tracks**, each list in file order.
 ///
@@ -25,17 +27,28 @@ pub(crate) struct TrackNames {
 impl TrackNames {
     /// `Default`, but callable from `Shared::new`, which is a `const fn`.
     pub const fn new() -> Self {
-        Self { audio: Vec::new(), subs: Vec::new() }
+        Self {
+            audio: Vec::new(),
+            subs: Vec::new(),
+        }
     }
     /// The name of the `i`-th subtitle stream in file order, or `""` — `i` is what
     /// `metadata::sub_render_ordinal` answers, and its `-1` (an external sidecar, which is not in
     /// the container at all) can be passed straight in.
     pub fn sub(&self, i: i32) -> &str {
-        usize::try_from(i).ok().and_then(|i| self.subs.get(i)).map(String::as_str).unwrap_or("")
+        usize::try_from(i)
+            .ok()
+            .and_then(|i| self.subs.get(i))
+            .map(String::as_str)
+            .unwrap_or("")
     }
     /// The same for audio — `metadata::audio_ordinal`'s answer.
     pub fn audio(&self, i: i32) -> &str {
-        usize::try_from(i).ok().and_then(|i| self.audio.get(i)).map(String::as_str).unwrap_or("")
+        usize::try_from(i)
+            .ok()
+            .and_then(|i| self.audio.get(i))
+            .map(String::as_str)
+            .unwrap_or("")
     }
 }
 
@@ -152,12 +165,12 @@ impl PlaybackState {
 
 pub(crate) struct Shared {
     // library callback thread (K) -> main (M)
-    pub playpos_ns: AtomicI64,               // g_playpos_ns
+    pub playpos_ns: AtomicI64, // g_playpos_ns
     // the presented frame's fed PTS (0-based, raw `num` from the type=0 callback). The feed
     // loop throttles on max_fed_pts - pres_fed so it stays ~MAX_FEED_AHEAD ahead of the
     // decoder (feeding further overfills the 4K HEVC DPB/CPB and stalls the sink).
     pub pres_fed: AtomicI64,
-    pub frames: AtomicI32,                    // bf_frames
+    pub frames: AtomicI32, // bf_frames
     /// **Has this SESSION ever put a picture on the panel?** Set by the frame-presented callback
     /// beside `frames`, cleared ONLY by [`Shared::reset_session`] — so it survives a seek, which
     /// `frames` deliberately does not: `pump` zeroes `frames` as *part of applying* a seek, which
@@ -166,12 +179,12 @@ pub(crate) struct Shared {
     /// see `ui::player_hud::busy_surface`. Monotone within a session (false→true only), which is
     /// what lets two readers in one frame sample it independently without disagreeing.
     pub seen_frame: AtomicBool,
-    pub load_completed: AtomicBool,           // bf_loaded signal
-    pub media_id: Mutex<Option<CString>>,     // bf_mediaId (captured once)
-    pub source_info: Mutex<Option<Vec<u8>>>,  // sourceInfoRaw, VERBATIM incl NUL
+    pub load_completed: AtomicBool,          // bf_loaded signal
+    pub media_id: Mutex<Option<CString>>,    // bf_mediaId (captured once)
+    pub source_info: Mutex<Option<Vec<u8>>>, // sourceInfoRaw, VERBATIM incl NUL
 
     // main/pump (M) -> library callback thread (K)
-    pub pts_shift: AtomicI64,                 // g_pts_shift
+    pub pts_shift: AtomicI64, // g_pts_shift
     // content-time offset added to the displayed position: a transcode SEEK restarts the
     // stream 0-based (its PTS loses the seek offset), so playpos = fed - pts_shift + this.
     // 0 for direct-play (file PTS already IS content time) and for the initial transcode.
@@ -259,7 +272,7 @@ pub(crate) struct Shared {
     pub sub_bitmaps: Mutex<Vec<SubBitmap>>, // image-sub cues (selected track only)
 
     // demux (D) -> main (M)
-    pub file_size: AtomicI64,                 // g_file_size
+    pub file_size: AtomicI64, // g_file_size
     /// The DECODED FRAME SIZE, published by the demuxer once the video stream is known.
     ///
     /// Exists for the webOS 5+ exported window, whose `SDL_webOSSetExportedWindow(id, src, dst)`
@@ -271,7 +284,7 @@ pub(crate) struct Shared {
     /// 0 until the demuxer has opened the stream; readers must treat 0 as "not known yet".
     pub video_w: AtomicI32,
     pub video_h: AtomicI32,
-    pub duration_ns: AtomicI64,               // was g_mkv.duration_ns (published)
+    pub duration_ns: AtomicI64, // was g_mkv.duration_ns (published)
     /// Latest normalized timestamps successfully enqueued for each elementary stream. HLS writes
     /// its segment-normalized zero-based timeline; progressive Original writes absolute movie
     /// PTS. Their consumers apply the matching display-base rule. These are content-time facts
@@ -591,7 +604,8 @@ impl Shared {
         // NB: desired_audio_idx is NOT reset here — it persists across seeks/reloads so a
         // native audio-track choice survives seeking. It is reset on a new item (route).
         self.pending_retranscode.store(false, Ordering::Relaxed);
-        self.pb_state.store(PlaybackState::Idle as u8, Ordering::Relaxed);
+        self.pb_state
+            .store(PlaybackState::Idle as u8, Ordering::Relaxed);
         self.demux_failed.store(false, Ordering::Relaxed);
         self.demux_io_failed.store(false, Ordering::Relaxed);
         self.auto_fallback_kbps.store(0, Ordering::Relaxed);
@@ -704,7 +718,11 @@ mod tests {
             .filter_map(|l| l.trim().strip_prefix("pub dg_"))
             .filter_map(|l| l.split(':').next())
             .collect();
-        assert!(declared.len() >= 10, "found only {} dg_ fields — the parse broke", declared.len());
+        assert!(
+            declared.len() >= 10,
+            "found only {} dg_ fields — the parse broke",
+            declared.len()
+        );
 
         for f in declared {
             let written = WRITERS.iter().any(|src| {
@@ -732,14 +750,16 @@ mod tests {
 
         s.reset_session();
         assert_eq!(
-            s.abr_seed_samples.load(Ordering::Relaxed), 19,
+            s.abr_seed_samples.load(Ordering::Relaxed),
+            19,
             "a reload tears the engine down and keeps the link; this is the seek path",
         );
         assert_eq!(s.abr_seed_slow_kbps.load(Ordering::Relaxed), 40_000);
 
         s.clear_abr_seed();
         assert_eq!(
-            s.abr_seed_samples.load(Ordering::Relaxed), -1,
+            s.abr_seed_samples.load(Ordering::Relaxed),
+            -1,
             "a real stop ends the playback, and the next one measures its own link",
         );
         assert_eq!(s.abr_seed_slow_kbps.load(Ordering::Relaxed), 0);
@@ -754,7 +774,10 @@ mod tests {
     #[test]
     fn reset_session_forgets_this_sessions_picture() {
         let s = Shared::new();
-        assert!(!s.seen_frame.load(Ordering::Relaxed), "a fresh session has shown nothing");
+        assert!(
+            !s.seen_frame.load(Ordering::Relaxed),
+            "a fresh session has shown nothing"
+        );
         s.seen_frame.store(true, Ordering::Relaxed);
         s.frames.store(9, Ordering::Relaxed);
         s.demux_io_failed.store(true, Ordering::Relaxed);
@@ -769,11 +792,29 @@ mod tests {
         s.dg_abr_target_kbps.store(4_000, Ordering::Relaxed);
         s.dg_abr_unsafe_deficit_ms.store(1_500, Ordering::Relaxed);
         s.reset_session();
-        assert!(!s.seen_frame.load(Ordering::Relaxed), "a reload/stop blanks the plane — say so");
-        assert_eq!(s.frames.load(Ordering::Relaxed), 0, "and the two must be reset together");
-        assert!(!s.demux_io_failed.load(Ordering::Relaxed), "a new session must not inherit an I/O failure");
-        assert_eq!(s.auto_fallback_kbps.load(Ordering::Relaxed), 0, "a new session must not inherit an Auto fallback");
-        assert_eq!(s.auto_recover_kbps.load(Ordering::Relaxed), 0, "a new session must not inherit an Auto recovery");
+        assert!(
+            !s.seen_frame.load(Ordering::Relaxed),
+            "a reload/stop blanks the plane — say so"
+        );
+        assert_eq!(
+            s.frames.load(Ordering::Relaxed),
+            0,
+            "and the two must be reset together"
+        );
+        assert!(
+            !s.demux_io_failed.load(Ordering::Relaxed),
+            "a new session must not inherit an I/O failure"
+        );
+        assert_eq!(
+            s.auto_fallback_kbps.load(Ordering::Relaxed),
+            0,
+            "a new session must not inherit an Auto fallback"
+        );
+        assert_eq!(
+            s.auto_recover_kbps.load(Ordering::Relaxed),
+            0,
+            "a new session must not inherit an Auto recovery"
+        );
         assert_eq!(s.dg_abr_mode.load(Ordering::Relaxed), 0);
         assert_eq!(s.dg_abr_kbps.load(Ordering::Relaxed), 0);
         assert_eq!(s.dg_abr_net_kbps.load(Ordering::Relaxed), -1);

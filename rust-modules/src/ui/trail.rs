@@ -95,7 +95,11 @@ pub(crate) enum Node {
     Search,
     /// `spot` is where the page stood when the user navigated deeper — `Spot::default()` for a page
     /// that has been entered and not yet left (see [`Trail::set_top_spot`]).
-    Detail { sid: ServerId, rk: String, spot: Spot },
+    Detail {
+        sid: ServerId,
+        rk: String,
+        spot: Spot,
+    },
 }
 
 impl Node {
@@ -110,13 +114,25 @@ impl Node {
     /// pair, which is the server-scoped half.
     pub(crate) fn same_page(&self, other: &Node) -> bool {
         match (self, other) {
-            (Node::Home, Node::Home) | (Node::Library, Node::Library) | (Node::Search, Node::Search) => true,
+            (Node::Home, Node::Home)
+            | (Node::Library, Node::Library)
+            | (Node::Search, Node::Search) => true,
             (Node::Detail { sid: a, rk: x, .. }, Node::Detail { sid: b, rk: y, .. }) => {
                 crate::plex::same_item((*a, x), (*b, y))
             }
             (
-                Node::Person { sid: a, key: x, guid: ga, .. },
-                Node::Person { sid: b, key: y, guid: gb, .. },
+                Node::Person {
+                    sid: a,
+                    key: x,
+                    guid: ga,
+                    ..
+                },
+                Node::Person {
+                    sid: b,
+                    key: y,
+                    guid: gb,
+                    ..
+                },
             ) => same_person((*a, x, ga), (*b, y, gb)),
             _ => false,
         }
@@ -152,7 +168,9 @@ impl Trail {
     pub(crate) const CAP: usize = 16;
 
     pub(crate) fn new() -> Self {
-        Self { stack: vec![Node::Home] }
+        Self {
+            stack: vec![Node::Home],
+        }
     }
 
     /// Enter a page. At [`CAP`](Self::CAP) the OLDEST non-root node is dropped rather than the push
@@ -192,7 +210,10 @@ impl Trail {
     /// press needs, and keeping it a peek is what makes a second BACK inside the fade window
     /// withdraw the first rather than pop a node whose page is still on screen.
     pub(crate) fn under(&self) -> Option<&Node> {
-        self.stack.len().checked_sub(2).and_then(|i| self.stack.get(i))
+        self.stack
+            .len()
+            .checked_sub(2)
+            .and_then(|i| self.stack.get(i))
     }
 
     /// The user acted on Home (or landed there): the history behind them is spent. Truncates to the
@@ -258,13 +279,29 @@ mod tests {
         det_on(A, rk)
     }
     fn det_on(sid: ServerId, rk: &str) -> Node {
-        Node::Detail { sid, rk: rk.to_string(), spot: Spot::default() }
+        Node::Detail {
+            sid,
+            rk: rk.to_string(),
+            spot: Spot::default(),
+        }
     }
     fn person(key: &str) -> Node {
-        Node::Person { sid: A, key: key.into(), guid: String::new(), name: String::new(), thumb: String::new() }
+        Node::Person {
+            sid: A,
+            key: key.into(),
+            guid: String::new(),
+            name: String::new(),
+            thumb: String::new(),
+        }
     }
     fn person_guid(sid: ServerId, key: &str, guid: &str) -> Node {
-        Node::Person { sid, key: key.into(), guid: guid.into(), name: String::new(), thumb: String::new() }
+        Node::Person {
+            sid,
+            key: key.into(),
+            guid: guid.into(),
+            name: String::new(),
+            thumb: String::new(),
+        }
     }
 
     /// The executable form of "BACK at the Home root REACHES THE DOOR": the trail declines, and the
@@ -276,7 +313,11 @@ mod tests {
         let mut t = Trail::new();
         assert_eq!(t.stack, vec![Node::Home]);
         assert_eq!(t.back(), None);
-        assert_eq!(t.stack, vec![Node::Home], "a declined pop must not consume the root either");
+        assert_eq!(
+            t.stack,
+            vec![Node::Home],
+            "a declined pop must not consume the root either"
+        );
     }
 
     /// The reported bug, as a value: a detail page opened on top of another detail page (the
@@ -302,8 +343,16 @@ mod tests {
         let mut t = Trail::new();
         t.push(Node::Search);
         t.push(det("a"));
-        assert_eq!(t.back(), Some(Node::Search), "BACK returns to the results, not to Home");
-        assert_eq!(t.back(), Some(Node::Home), "…and BACK again is Home, as a peer of it should be");
+        assert_eq!(
+            t.back(),
+            Some(Node::Search),
+            "BACK returns to the results, not to Home"
+        );
+        assert_eq!(
+            t.back(),
+            Some(Node::Home),
+            "…and BACK again is Home, as a peer of it should be"
+        );
 
         // A person reached from a Cast & Crew hit stacks the same way, and so does a detail page
         // opened from THAT — the two-deep case that is the whole reason this is a stack.
@@ -373,8 +422,15 @@ mod tests {
             t.push(det(&format!("d{i}")));
         }
         assert_eq!(t.stack.len(), Trail::CAP);
-        assert_eq!(t.stack[0], Node::Home, "the root is what makes BACK terminate");
-        assert_eq!(t.stack[1], det(&format!("d{}", Trail::CAP + 4 - (Trail::CAP - 1))));
+        assert_eq!(
+            t.stack[0],
+            Node::Home,
+            "the root is what makes BACK terminate"
+        );
+        assert_eq!(
+            t.stack[1],
+            det(&format!("d{}", Trail::CAP + 4 - (Trail::CAP - 1)))
+        );
 
         let mut steps = 0;
         while t.back().is_some() {
@@ -388,17 +444,32 @@ mod tests {
     /// nothing ever reads.
     #[test]
     fn a_spot_is_recorded_only_on_a_detail_top() {
-        let s = Spot { section: 2, col: 5, ..Default::default() };
+        let s = Spot {
+            section: 2,
+            col: 5,
+            ..Default::default()
+        };
         for top in [Node::Home, Node::Library, person("p1")] {
             let mut t = Trail::new();
             t.push(top.clone());
             t.set_top_spot(s.clone());
-            assert_eq!(t.stack.last(), Some(&top), "{top:?} has no place to restore");
+            assert_eq!(
+                t.stack.last(),
+                Some(&top),
+                "{top:?} has no place to restore"
+            );
         }
         let mut t = Trail::new();
         t.push(det("a"));
         t.set_top_spot(s.clone());
-        assert_eq!(t.stack.last(), Some(&Node::Detail { sid: A, rk: "a".into(), spot: s }));
+        assert_eq!(
+            t.stack.last(),
+            Some(&Node::Detail {
+                sid: A,
+                rk: "a".into(),
+                spot: s
+            })
+        );
     }
 
     /// The player exit and the Info card's jump both LAND on a page without navigating to it.
@@ -410,7 +481,11 @@ mod tests {
         t.push(det("a"));
         t.ensure(&det_on(A, "a"));
         t.ensure(&det_on(A, "a"));
-        assert_eq!(t.stack.len(), 2, "the page playback started from is already the top");
+        assert_eq!(
+            t.stack.len(),
+            2,
+            "the page playback started from is already the top"
+        );
 
         t.ensure(&det_on(A, "b"));
         assert_eq!(t.stack.len(), 3);
@@ -432,8 +507,16 @@ mod tests {
             let mut t = Trail::new();
             t.push(top);
             t.ensure(&want);
-            assert_eq!(t.stack.len(), 2, "the page is already the top — nothing to push");
-            assert_eq!(t.back(), Some(Node::Home), "…and one BACK off it is Home, as before");
+            assert_eq!(
+                t.stack.len(),
+                2,
+                "the page is already the top — nothing to push"
+            );
+            assert_eq!(
+                t.back(),
+                Some(Node::Home),
+                "…and one BACK off it is Home, as before"
+            );
         }
         // A boot trigger that mounts the Library without navigating: the trail is bare, so the
         // return has to build the step it never took, or BACK would leave the app from the grid.
@@ -464,7 +547,11 @@ mod tests {
         t.push(Node::Library);
         t.push(det("a"));
         t.ensure(&Node::Home);
-        assert_eq!(t.stack, vec![Node::Home], "the history behind them is spent");
+        assert_eq!(
+            t.stack,
+            vec![Node::Home],
+            "the history behind them is spent"
+        );
         assert_eq!(t.back(), None, "…and BACK there is the door, not a pop");
 
         // Idempotent, so an exit onto Home from Home cannot deepen it either.
@@ -481,7 +568,10 @@ mod tests {
     #[test]
     fn one_rating_key_on_two_servers_is_two_pages_in_the_history() {
         let (ours, theirs) = (det_on(A, "42"), det_on(B, "42"));
-        assert!(!ours.same_page(&theirs), "the same key on two servers is not the same page");
+        assert!(
+            !ours.same_page(&theirs),
+            "the same key on two servers is not the same page"
+        );
         assert!(ours.same_page(&det_on(A, "42")));
         assert!(!ours.same_page(&det_on(A, "43")));
 
@@ -489,7 +579,11 @@ mod tests {
         t.push(ours.clone());
         t.push(theirs.clone());
         assert_eq!(t.stack.len(), 3, "two pages, not one");
-        assert_eq!(t.back(), Some(ours), "BACK returns to OUR 42, the page it was opened from");
+        assert_eq!(
+            t.back(),
+            Some(ours),
+            "BACK returns to OUR 42, the page it was opened from"
+        );
 
         // …and the same rule through `ensure`: landing on the share's 42 while ours is the
         // top must PUSH, not read as "already here" and leave the trail describing the wrong page.
@@ -529,15 +623,29 @@ mod tests {
         let scrolled = Node::Detail {
             sid: A,
             rk: "a".into(),
-            spot: Spot { section: 3, col: 2, ..Default::default() },
+            spot: Spot {
+                section: 3,
+                col: 2,
+                ..Default::default()
+            },
         };
-        assert!(det("a").same_page(&scrolled), "a spot is where you were, not which page it is");
-        assert_ne!(det("a"), scrolled, "…and `==` still separates them, which is why both exist");
+        assert!(
+            det("a").same_page(&scrolled),
+            "a spot is where you were, not which page it is"
+        );
+        assert_ne!(
+            det("a"),
+            scrolled,
+            "…and `==` still separates them, which is why both exist"
+        );
 
         assert!(Node::Home.same_page(&Node::Home));
         assert!(Node::Library.same_page(&Node::Library));
         for other in [Node::Home, Node::Library, person("a")] {
-            assert!(!det("a").same_page(&other), "a detail page is not {other:?}");
+            assert!(
+                !det("a").same_page(&other),
+                "a detail page is not {other:?}"
+            );
         }
     }
 
@@ -553,9 +661,17 @@ mod tests {
         t.push(person("p1"));
         for _ in 0..4 {
             let peeked = t.under().cloned();
-            assert_eq!(peeked, t.back(), "the peek and the pop must name the same page");
+            assert_eq!(
+                peeked,
+                t.back(),
+                "the peek and the pop must name the same page"
+            );
         }
-        assert_eq!(t.under(), None, "…at the root there is nothing under, and BACK declines");
+        assert_eq!(
+            t.under(),
+            None,
+            "…at the root there is nothing under, and BACK declines"
+        );
     }
 
     /// A peek is not a pop, which is what makes a BACK that never commits FREE. Two ways a press
@@ -571,8 +687,16 @@ mod tests {
         for _ in 0..5 {
             assert_eq!(t.under(), Some(&det("a")));
         }
-        assert_eq!(t.stack, vec![Node::Home, det("a"), det("b")], "five presses, no history spent");
-        assert_eq!(t.back(), Some(det("a")), "…and the one that DOES commit still pops once");
+        assert_eq!(
+            t.stack,
+            vec![Node::Home, det("a"), det("b")],
+            "five presses, no history spent"
+        );
+        assert_eq!(
+            t.back(),
+            Some(det("a")),
+            "…and the one that DOES commit still pops once"
+        );
     }
 
     /// A spot recorded on the page being left must SURVIVE the page pushed over it, or a restore
@@ -580,11 +704,24 @@ mod tests {
     /// one.
     #[test]
     fn a_spot_survives_the_page_pushed_over_it() {
-        let s = Spot { section: 2, col: 3, ep_text: true, saved_col: [0, 0, 3, 0, 0, 0], season: Some(2) };
+        let s = Spot {
+            section: 2,
+            col: 3,
+            ep_text: true,
+            saved_col: [0, 0, 3, 0, 0, 0],
+            season: Some(2),
+        };
         let mut t = Trail::new();
         t.push(det("show"));
         t.set_top_spot(s.clone());
         t.push(det("episode"));
-        assert_eq!(t.back(), Some(Node::Detail { sid: A, rk: "show".into(), spot: s }));
+        assert_eq!(
+            t.back(),
+            Some(Node::Detail {
+                sid: A,
+                rk: "show".into(),
+                spot: s
+            })
+        );
     }
 }

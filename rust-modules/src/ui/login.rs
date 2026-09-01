@@ -6,6 +6,7 @@
 use crate::auth::{self, Phase};
 use crate::ui::consts::*;
 use crate::ui::label::HAlign;
+use crate::ui::route_screen::{RouteGround, RouteLayout};
 use crate::ui::text_view::TextView;
 use crate::ui::widgets::Spinner;
 use crate::ui::{theme, Env, Painter, Rect, View};
@@ -16,18 +17,34 @@ use std::ptr::addr_of_mut;
 struct Scene {
     spin_ms: f32,
     qr_tex: u32, // GL texture of Plex's QR PNG (0 until decoded+uploaded)
+    ground: RouteGround,
 }
 
 static mut SCENE: Option<Scene> = None;
 
 fn scene() -> &'static mut Scene {
-    unsafe { (*addr_of_mut!(SCENE)).as_mut().expect("login::init not called") }
+    unsafe {
+        (*addr_of_mut!(SCENE))
+            .as_mut()
+            .expect("login::init not called")
+    }
 }
 
 pub fn init() {
     unsafe {
-        *addr_of_mut!(SCENE) = Some(Scene { spin_ms: 0.0, qr_tex: 0 });
+        *addr_of_mut!(SCENE) = Some(Scene {
+            spin_ms: 0.0,
+            qr_tex: 0,
+            ground: RouteGround::new(),
+        });
     }
+}
+
+/// Mount the auth route without replacing the cached QR texture. A fresh auth flow invalidates the
+/// texture from [`update`] when it reaches `Creating`; this only resets the visit's visual ground.
+pub fn enter() {
+    scene().ground.reset();
+    crate::ui::idle::invalidate();
 }
 
 pub fn update(dt: f32) {
@@ -65,14 +82,12 @@ fn ensure_qr_tex(s: &mut Scene) {
 }
 
 pub fn draw() {
-    // The clear IS the app surface — `theme::CLEAR_RGB` and `theme::SURFACE_APP` are the same
-    // #2C2C2E (44,44,46), and SURFACE_APP is opaque — so the full-screen SURFACE_APP rect that
-    // used to sit here painted 1920x1080 = 2.07M provably identical blended fragments over an
-    // already-correct framebuffer, every frame of the sign-in screen. If a screen ever needs a
-    // base that is NOT the clear color, paint that token, not this one.
     crate::gfx::frame_clear(theme::CLEAR_RGB.0, theme::CLEAR_RGB.1, theme::CLEAR_RGB.2);
     let p = Painter::root();
     let s = scene();
+    // The QR screen is the first thing a new user sees, before Home has any artwork to lend it.
+    // Use the shared pre-content route ground rather than a local grey clear.
+    s.ground.draw_default(p);
     let env = Env::inert();
 
     match auth::phase() {
@@ -84,13 +99,32 @@ pub fn draw() {
 }
 
 fn draw_waiting(p: Painter, env: &Env, s: &mut Scene) {
+    let layout = RouteLayout::screen();
+    layout.draw_narrative(
+        p,
+        "Sign in to Plex",
+        "Use your phone camera to scan the code, or link this television manually with the address and code shown here.",
+        theme::size::LABEL,
+    );
+    let right = qr_layout(layout);
+
+    TextView::new("plex.tv/link", theme::size::TITLE, theme::TEXT_HEADING)
+        .bold()
+        .h(HAlign::Center)
+        .draw(p, right.url);
+
     // QR on a bright card (the white border is the scan quiet-zone). Plex's own PNG → we just show it.
-    let card = Rect::new(360.0, 330.0, 400.0, 400.0);
+    let card = right.card;
     p.rrect(card, 24.0, 24.0, theme::SURFACE_QR_PLATE);
     ensure_qr_tex(s);
     if s.qr_tex != 0 {
         let pad = 30.0;
-        let inner = Rect::new(card.x + pad, card.y + pad, card.w - 2.0 * pad, card.h - 2.0 * pad);
+        let inner = Rect::new(
+            card.x + pad,
+            card.y + pad,
+            card.w - 2.0 * pad,
+            card.h - 2.0 * pad,
+        );
         // Plex's PNG is WHITE modules on a transparent ground; tint black so the modules render dark
         // on the white card (the transparent ground shows the card) → a scannable black-on-white QR.
         p.tex(s.qr_tex, inner, 0.0, theme::scrim_black(1.0));
@@ -101,54 +135,121 @@ fn draw_waiting(p: Painter, env: &Env, s: &mut Scene) {
             .draw(env, p);
     }
 
-    // right column — vertically bounded BY THE CARD: the heading's cap band tops out flush with
-    // the card's top edge and the waiting row's spinner sits flush with its bottom edge, so the
-    // text column and the QR read as one aligned block (the row used to overhang the card by 33px).
-    let col_x = 860.0;
-    let col_w = 660.0;
-    TextView::new("Sign in to Plex", theme::size::HERO, theme::TEXT_PRIMARY)
-        .bold()
-        .max_lines(1)
-        .draw(p, Rect::new(col_x, card.y, col_w, 90.0));
-    TextView::new(
-        "Scan the code with your phone camera, or go to plex.tv/link and enter this code:",
-        theme::size::BODY,
-        theme::TEXT_SECONDARY,
-    )
-    .leading(38.0)
-    .max_lines(3)
-    .draw(p, Rect::new(col_x, card.y + 122.0, col_w, 130.0));
-
-    // the short code, large (high enough that its ink clears the waiting spinner below)
-    if let Ok(code) = CString::new(auth::pin_code().to_uppercase()) {
-        p.text(code.as_ptr(), col_x, card.y + 280.0, theme::size::HERO, theme::TEXT_PRIMARY, 0, 1);
+    // The manual code and waiting state remain in the same right-column stack as the URL and QR.
+    // Both use couch-readable type rungs; this is an alternative sign-in path, not fine print.
+    let pin = auth::pin_code().to_uppercase();
+    if let Ok(code) = CString::new(pin) {
+        p.text(
+            code.as_ptr(),
+            right.code.cx(),
+            right.code.y,
+            theme::size::DISPLAY,
+            theme::TEXT_PRIMARY,
+            1,
+            1,
+        );
     }
 
-    // waiting status — bottom-aligned with the QR card (spinner circle tangent to the card bottom)
     let wr = 15.0;
-    let wy = card.y + card.h - wr;
-    Spinner::new(col_x + 16.0, wy, wr).phase(s.spin_ms as u32).tint(theme::TEXT_TERTIARY).draw(env, p);
+    let wy = right.status.cy();
+    let status_w = crate::text::text_width(
+        c"Waiting for you to sign in…".as_ptr(),
+        theme::size::BODY,
+        0,
+    );
+    let sx = right.status.cx() - (wr * 2.0 + theme::space::SM + status_w) * 0.5;
+    Spinner::new(sx + wr, wy, wr)
+        .phase(s.spin_ms as u32)
+        .tint(theme::TEXT_SECONDARY)
+        .draw(env, p);
     if let Ok(w) = CString::new("Waiting for you to sign in\u{2026}") {
-        let ty = crate::text::text_vcenter_y(theme::size::CAPTION, 0, wy);
-        p.text(w.as_ptr(), col_x + 44.0, ty, theme::size::CAPTION, theme::TEXT_TERTIARY, 0, 0);
+        let ty = crate::text::text_vcenter_y(theme::size::BODY, 0, wy);
+        p.text(
+            w.as_ptr(),
+            sx + wr * 2.0 + theme::space::SM,
+            ty,
+            theme::size::BODY,
+            theme::TEXT_SECONDARY,
+            0,
+            0,
+        );
     }
 }
 
 fn draw_status(p: Painter, env: &Env, s: &Scene, msg: &str, error: bool) {
-    let cx = SCR_W as f32 * 0.5;
+    let layout = RouteLayout::screen();
+    layout.draw_narrative(
+        p,
+        if error {
+            "Couldn’t sign in"
+        } else {
+            "Sign in to Plex"
+        },
+        msg,
+        theme::size::LABEL,
+    );
+    let cx = layout.content.cx();
+    let cy = layout.content.cy();
     if error {
-        TextView::new(msg, theme::size::TITLE, theme::TEXT_SECONDARY)
-            .h(HAlign::Center)
-            .max_lines(2)
-            .draw(p, Rect::new(cx - 500.0, 452.0, 1000.0, 120.0));
-        TextView::new("Press OK to try again", theme::size::BODY, theme::TEXT_TERTIARY)
-            .h(HAlign::Center)
-            .draw(p, Rect::new(cx - 400.0, 600.0, 800.0, 50.0));
+        TextView::new(
+            "Press OK to try again",
+            theme::size::BODY,
+            theme::TEXT_TERTIARY,
+        )
+        .h(HAlign::Center)
+        .draw(p, Rect::new(layout.content.x, cy, layout.content.w, 50.0));
     } else {
-        Spinner::new(cx, 470.0, 26.0).phase(s.spin_ms as u32).tint(theme::TEXT_PRIMARY).draw(env, p);
-        TextView::new(msg, theme::size::TITLE, theme::TEXT_SECONDARY)
-            .h(HAlign::Center)
-            .draw(p, Rect::new(cx - 500.0, 552.0, 1000.0, 60.0));
+        Spinner::new(cx, cy - theme::space::LG, 26.0)
+            .phase(s.spin_ms as u32)
+            .tint(theme::TEXT_PRIMARY)
+            .draw(env, p);
+    }
+}
+
+/// The complete manual-link stack in the content column.
+///
+/// The QR itself is centred on the television's Y axis as requested, while the URL, manual code
+/// and waiting state flow from its edges. That makes the scan target visually central without
+/// separating the fallback credentials into unrelated screen coordinates.
+#[derive(Clone, Copy)]
+struct QrLayout {
+    url: Rect,
+    card: Rect,
+    code: Rect,
+    status: Rect,
+}
+
+fn qr_layout(layout: RouteLayout) -> QrLayout {
+    const SIDE: f32 = 420.0;
+    let card = Rect::new(
+        layout.content.cx() - SIDE * 0.5,
+        Rect::FULL.cy() - SIDE * 0.5,
+        SIDE,
+        SIDE,
+    );
+    let url_h = theme::size::TITLE as f32 + theme::space::XS;
+    let code_h = theme::size::DISPLAY as f32 + theme::space::XS;
+    let status_h = theme::size::BODY as f32 + theme::space::SM;
+    QrLayout {
+        url: Rect::new(
+            layout.content.x,
+            card.y - theme::space::LG - url_h,
+            layout.content.w,
+            url_h,
+        ),
+        card,
+        code: Rect::new(
+            layout.content.x,
+            card.y + card.h + theme::space::LG,
+            layout.content.w,
+            code_h,
+        ),
+        status: Rect::new(
+            layout.content.x,
+            card.y + card.h + theme::space::LG + code_h + theme::space::MD,
+            layout.content.w,
+            status_h,
+        ),
     }
 }
 
@@ -167,4 +268,22 @@ pub fn key(sym: c_uint, wcode: c_uint) {
         auth::cancel();
     }
     // otherwise the login screen just waits — the pin poll drives the phase from a worker thread.
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::consts::inside_safe;
+
+    #[test]
+    fn qr_is_vertically_centred_and_the_whole_link_stack_stays_in_the_right_column() {
+        let route = RouteLayout::screen();
+        let q = qr_layout(route);
+        assert_eq!(q.card.cy(), Rect::FULL.cy());
+        for r in [q.url, q.card, q.code, q.status] {
+            assert!(r.x >= route.content.x);
+            assert!(r.x + r.w <= route.content.x + route.content.w);
+            assert!(inside_safe(r));
+        }
+    }
 }

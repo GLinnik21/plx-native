@@ -92,7 +92,8 @@ type FnGetCurrentContext = unsafe extern "C" fn() -> *mut c_void;
 type FnQueryContext = unsafe extern "C" fn(*mut c_void, *mut c_void, c_int, *mut c_int) -> c_uint;
 type FnChooseConfig =
     unsafe extern "C" fn(*mut c_void, *const c_int, *mut *mut c_void, c_int, *mut c_int) -> c_uint;
-type FnGetConfigAttrib = unsafe extern "C" fn(*mut c_void, *mut c_void, c_int, *mut c_int) -> c_uint;
+type FnGetConfigAttrib =
+    unsafe extern "C" fn(*mut c_void, *mut c_void, c_int, *mut c_int) -> c_uint;
 type FnSurfaceAttrib = unsafe extern "C" fn(*mut c_void, *mut c_void, c_int, c_int) -> c_uint;
 
 /// The SONAMEs an EGL might carry on a webOS television, in the order worth trying. Only used when
@@ -167,7 +168,10 @@ pub(crate) fn probe() {
         }
         // The line this whole module exists to produce. Unsplit: a grep for one extension name
         // has to be able to find it, and the event log has no line-length limit.
-        crate::log(&format!("egl extensions: {}", cstr(unsafe { f(dpy, EGL_EXTENSIONS) })));
+        crate::log(&format!(
+            "egl extensions: {}",
+            cstr(unsafe { f(dpy, EGL_EXTENSIONS) })
+        ));
     }
 
     // An advertised extension whose entry point does not resolve is worse than an absent one:
@@ -286,9 +290,10 @@ fn probe_config(dpy: *mut c_void, lib: &mut Option<Handle>) {
 /// would silently change every later frame's tile handling, which is precisely the confound this
 /// probe exists to avoid introducing.
 fn try_preserve(dpy: *mut c_void, surface: *mut c_void, lib: &mut Option<Handle>) {
-    let (Some(set), Some(query)) =
-        (resolve("eglSurfaceAttrib", lib), resolve("eglQuerySurface", lib))
-    else {
+    let (Some(set), Some(query)) = (
+        resolve("eglSurfaceAttrib", lib),
+        resolve("eglQuerySurface", lib),
+    ) else {
         return;
     };
     let set: FnSurfaceAttrib = unsafe { std::mem::transmute(set) };
@@ -404,8 +409,9 @@ fn try_damage(dpy: *mut c_void, surface: *mut c_void, lib: &mut Option<Handle>) 
 // inside the rect, and then a wrong picture would prove nothing. Drawing everything makes the
 // driver's behaviour the only variable.
 static mut DMG_QUERY: Option<FnQuerySurface> = None;
-static mut DMG_SET: Option<unsafe extern "C" fn(*mut c_void, *mut c_void, *const c_int, c_int) -> c_uint> =
-    None;
+static mut DMG_SET: Option<
+    unsafe extern "C" fn(*mut c_void, *mut c_void, *const c_int, c_int) -> c_uint,
+> = None;
 static mut DMG_RECT: [c_int; 4] = [0, 0, 0, 0];
 static mut DMG_FULL: [c_int; 4] = [0, 0, 0, 0];
 static mut DMG_WARMUP: u32 = 0;
@@ -426,9 +432,10 @@ fn damage_init(dpy: *mut c_void, surface: *mut c_void, lib: &mut Option<Handle>)
         .split_once('x')
         .and_then(|(a, b)| Some((a.trim().parse().ok()?, b.trim().parse().ok()?)))
         .unwrap_or((480, 270));
-    let (Some(gpa), Some(query)) =
-        (resolve("eglGetProcAddress", lib), resolve("eglQuerySurface", lib))
-    else {
+    let (Some(gpa), Some(query)) = (
+        resolve("eglGetProcAddress", lib),
+        resolve("eglQuerySurface", lib),
+    ) else {
         return;
     };
     let gpa: FnGetProcAddress = unsafe { std::mem::transmute(gpa) };
@@ -437,7 +444,10 @@ fn damage_init(dpy: *mut c_void, surface: *mut c_void, lib: &mut Option<Handle>)
         crate::log("egldamage: eglSetDamageRegionKHR did not resolve — experiment not armed");
         return;
     }
-    let (fw, fh) = (crate::surface::LOGICAL_W as c_int, crate::surface::LOGICAL_H as c_int);
+    let (fw, fh) = (
+        crate::surface::LOGICAL_W as c_int,
+        crate::surface::LOGICAL_H as c_int,
+    );
     unsafe {
         DMG_QUERY = Some(std::mem::transmute(query));
         DMG_SET = Some(std::mem::transmute(set));
@@ -500,9 +510,10 @@ pub(crate) fn late_probe() {
             return;
         }
         let mut lib: Option<Handle> = None;
-        let (Some(query), Some(err)) =
-            (resolve("eglQuerySurface", &mut lib), resolve("eglGetError", &mut lib))
-        else {
+        let (Some(query), Some(err)) = (
+            resolve("eglQuerySurface", &mut lib),
+            resolve("eglGetError", &mut lib),
+        ) else {
             return;
         };
         let query: FnQuerySurface = std::mem::transmute(query);

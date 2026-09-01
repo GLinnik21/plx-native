@@ -252,7 +252,12 @@ fn push_fields(s: &mut String, screen: Screen, hud: Hud, ctrl: ControlSlot) {
             // and a harness diffing two presses across it read the wrong screen's cursor.
             let _ = write!(s, " over={}", over.word());
             push_fields(s, over.screen(), hud, ctrl);
-            let _ = write!(s, " acct={} asel={}", b(crate::ui::account_menu::is_open()), crate::ui::account_menu::sel());
+            let _ = write!(
+                s,
+                " acct={} asel={}",
+                b(crate::ui::account_menu::is_open()),
+                crate::ui::account_menu::sel()
+            );
         }
         Screen::ItemMenu { over } => {
             // The HOST is named on the line, because `route=itemmenu` is one word for FIVE different
@@ -262,11 +267,18 @@ fn push_fields(s: &mut String, screen: Screen, hud: Hud, ctrl: ControlSlot) {
             // `over=` as well as `route=`.
             let _ = write!(s, " over={}", over.word());
             push_fields(s, over.screen(), hud, ctrl);
-            let _ = write!(s, " imenu={} isel={} imsid=", b(crate::ui::item_menu::is_open()), crate::ui::item_menu::sel());
+            let _ = write!(
+                s,
+                " imenu={} isel={} imsid=",
+                b(crate::ui::item_menu::is_open()),
+                crate::ui::item_menu::sel()
+            );
             push_sid(s, crate::ui::item_menu::item_sid());
         }
         Screen::Library => {
-            let pill = crate::ui::library::focused_pill().map(|p| p as i64).unwrap_or(-1);
+            let pill = crate::ui::library::focused_pill()
+                .map(|p| p as i64)
+                .unwrap_or(-1);
             let _ = write!(
                 s,
                 " pill={} card={} menu={}",
@@ -340,14 +352,24 @@ fn push_home(s: &mut String) {
     // …and the item a press would act on, which is the hero's or the grid cell's by the TARGET.
     // NB the hero rotates on an 8 s timer of its own, so on the hero view this field can change
     // with no key involved. That is not noise — what Play would launch really did change.
-    let item = if target_is_grid { crate::ui::home::movie_at(row, col) } else { crate::ui::home::hero_item() };
+    let item = if target_is_grid {
+        crate::ui::home::movie_at(row, col)
+    } else {
+        crate::ui::home::hero_item()
+    };
     push_item(s, item);
 }
 
 /// The detail page: its whole [`crate::ui::detail::Spot`], plus the panel that can be over it.
 fn push_detail(s: &mut String) {
     let sp = crate::ui::detail::spot();
-    let _ = write!(s, " sec={} col={} eptext={}", sp.section, sp.col, b(sp.ep_text));
+    let _ = write!(
+        s,
+        " sec={} col={} eptext={}",
+        sp.section,
+        sp.col,
+        b(sp.ep_text)
+    );
     match sp.season {
         Some(n) => {
             let _ = write!(s, " season={n}");
@@ -518,7 +540,12 @@ mod tests {
     use super::*;
 
     fn hud() -> Hud {
-        Hud { focus: 0, btn: 0, tab: 0, visible: false }
+        Hud {
+            focus: 0,
+            btn: 0,
+            tab: 0,
+            visible: false,
+        }
     }
 
     /// The one screen precondition a host test does not get for free.
@@ -543,13 +570,23 @@ mod tests {
             ("home", Screen::Home),
             // one per bar-wearing HOST, for the `itemmenu` rows' reason below
             ("account", Screen::Account { over: Host::Home }),
-            ("account", Screen::Account { over: Host::Library }),
+            (
+                "account",
+                Screen::Account {
+                    over: Host::Library,
+                },
+            ),
             ("account", Screen::Account { over: Host::Search }),
             // one per HOST — the popover's field set is its host's, so five hosts are five
             // different `route=itemmenu` lines and the grammar assertions have to see all of them
             ("itemmenu", Screen::ItemMenu { over: Host::Home }),
             ("itemmenu", Screen::ItemMenu { over: Host::Detail }),
-            ("itemmenu", Screen::ItemMenu { over: Host::Library }),
+            (
+                "itemmenu",
+                Screen::ItemMenu {
+                    over: Host::Library,
+                },
+            ),
             ("itemmenu", Screen::ItemMenu { over: Host::Search }),
             ("itemmenu", Screen::ItemMenu { over: Host::Person }),
             ("library", Screen::Library),
@@ -587,14 +624,23 @@ mod tests {
         mount_profiles();
         for (rn, sc) in every_screen() {
             let line = fingerprint(rn, sc, hud(), ControlSlot::Discs);
-            assert!(!line.contains('\n'), "{rn}: a fingerprint is ONE line: {line}");
+            assert!(
+                !line.contains('\n'),
+                "{rn}: a fingerprint is ONE line: {line}"
+            );
             let mut fields = line.split(' ');
             assert_eq!(fields.next(), Some("focus"), "{line}");
             for f in fields {
-                let (k, v) = f.split_once('=').unwrap_or_else(|| panic!("{rn}: {f:?} is not key=value in {line}"));
-                assert!(!k.is_empty() && k.chars().all(|c| c.is_ascii_lowercase()), "{rn}: odd key {k:?}");
+                let (k, v) = f
+                    .split_once('=')
+                    .unwrap_or_else(|| panic!("{rn}: {f:?} is not key=value in {line}"));
                 assert!(
-                    v.chars().all(|c| !c.is_whitespace() && c != '/' && c != '?' && c != '&'),
+                    !k.is_empty() && k.chars().all(|c| c.is_ascii_lowercase()),
+                    "{rn}: odd key {k:?}"
+                );
+                assert!(
+                    v.chars()
+                        .all(|c| !c.is_whitespace() && c != '/' && c != '?' && c != '&'),
                     "{rn}: value {v:?} could carry a path, query or title: {line}"
                 );
             }
@@ -621,18 +667,37 @@ mod tests {
             end_ms: 2000,
             final_seg: false,
         };
-        let discs = keys("player", Screen::Player { overlay: "none" }, ControlSlot::Discs);
-        let up = keys("player", Screen::Player { overlay: "none" }, ControlSlot::UpNext(credits));
-        assert_eq!(discs, up, "the control row's occupant changed the SCHEMA, not just a value");
+        let discs = keys(
+            "player",
+            Screen::Player { overlay: "none" },
+            ControlSlot::Discs,
+        );
+        let up = keys(
+            "player",
+            Screen::Player { overlay: "none" },
+            ControlSlot::UpNext(credits),
+        );
+        assert_eq!(
+            discs, up,
+            "the control row's occupant changed the SCHEMA, not just a value"
+        );
         // …and a HUD cursor move is a value change, never a key change
         let moved = fingerprint(
             "player",
             Screen::Player { overlay: "none" },
-            Hud { focus: 2, btn: 1, tab: 1, visible: true },
+            Hud {
+                focus: 2,
+                btn: 1,
+                tab: 1,
+                visible: true,
+            },
             ControlSlot::Discs,
         );
-        let moved_keys: Vec<String> =
-            moved.split(' ').skip(1).filter_map(|f| f.split_once('=').map(|(k, _)| k.to_string())).collect();
+        let moved_keys: Vec<String> = moved
+            .split(' ')
+            .skip(1)
+            .filter_map(|f| f.split_once('=').map(|(k, _)| k.to_string()))
+            .collect();
         assert_eq!(discs, moved_keys);
     }
 
@@ -645,16 +710,43 @@ mod tests {
             fingerprint(
                 "player",
                 Screen::Player { overlay: "none" },
-                Hud { focus: f, btn, tab, visible: true },
+                Hud {
+                    focus: f,
+                    btn,
+                    tab,
+                    visible: true,
+                },
                 ControlSlot::Discs,
             )
         };
-        assert_ne!(at(0, 0, 0), at(1, 0, 0), "the HUD focus row is not observable");
-        assert_ne!(at(1, 0, 0), at(1, 1, 0), "the control-row cursor is not observable");
-        assert_ne!(at(2, 0, 0), at(2, 0, 1), "the tab-row cursor is not observable");
         assert_ne!(
             at(0, 0, 0),
-            fingerprint("player", Screen::Player { overlay: "info" }, Hud { focus: 0, btn: 0, tab: 0, visible: true }, ControlSlot::Discs),
+            at(1, 0, 0),
+            "the HUD focus row is not observable"
+        );
+        assert_ne!(
+            at(1, 0, 0),
+            at(1, 1, 0),
+            "the control-row cursor is not observable"
+        );
+        assert_ne!(
+            at(2, 0, 0),
+            at(2, 0, 1),
+            "the tab-row cursor is not observable"
+        );
+        assert_ne!(
+            at(0, 0, 0),
+            fingerprint(
+                "player",
+                Screen::Player { overlay: "info" },
+                Hud {
+                    focus: 0,
+                    btn: 0,
+                    tab: 0,
+                    visible: true
+                },
+                ControlSlot::Discs
+            ),
             "the overlay tag is not observable"
         );
     }
@@ -669,12 +761,18 @@ mod tests {
 
         let mut s = String::new();
         push_rk(&mut s, "/library/metadata/1804?X-Plex-Token=SECRETVALUE");
-        assert!(!s.contains('/') && !s.contains('?') && !s.contains('='), "a URL survived as {s:?}");
+        assert!(
+            !s.contains('/') && !s.contains('?') && !s.contains('='),
+            "a URL survived as {s:?}"
+        );
         assert!(!s.contains("SECRET"), "a token survived as {s:?}");
 
         let mut s = String::new();
         push_rk(&mut s, "The Curse of the Were-Rabbit");
-        assert!(!s.contains(' ') && !s.contains('-'), "a title survived as {s:?}");
+        assert!(
+            !s.contains(' ') && !s.contains('-'),
+            "a title survived as {s:?}"
+        );
 
         // empty is `-`, never an empty field that would collapse two columns into one
         let mut s = String::new();

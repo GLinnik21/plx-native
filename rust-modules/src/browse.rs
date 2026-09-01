@@ -1,7 +1,7 @@
 //! browse — the Library screen's per-section paged catalog.
 //!
 //! Sibling of `pms.rs`'s hub catalog, which stays hub-only (256-cap, rebuilt wholesale by
-//! `pms_fetch_hubs`); this store pages arbitrarily large sections without ever blocking the
+//! `pms`'s worker-driven hub catalog); this store pages arbitrarily large sections without blocking the
 //! main loop. Data model: one sparse `Vec<Option<PmsMovie>>` per section, sized to the
 //! listing's `totalSize`, filled page-by-page (`PAGE` items) by ONE background fetch at a
 //! time using the season-switch idiom from `metadata.rs` — [`crate::task::spawn_small`] + a
@@ -28,12 +28,14 @@
 //! **It grows by APPEND and never by rebuild**, which is what keeps the page mailbox sound. A page
 //! landing is blamed on a section INDEX (`PageResult.sec`), so an index that moved under an
 //! in-flight fetch would splice one library's items into another's store. The old
-//! `ensure_sections` early-return was the only thing preventing that; appending is the property
+//! the old synchronous discovery's early-return was the only thing preventing that; appending is the property
 //! that replaces it, and it holds for every source that lands later rather than only for the
 //! second call.
 use crate::plex::{SectionQuery, ServerId};
 use crate::pms::{parse_item, PmsMovie};
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::catch_unwind;
+#[cfg(test)]
+use std::panic::AssertUnwindSafe;
 use std::ptr::{addr_of, addr_of_mut};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Mutex;
@@ -87,6 +89,10 @@ pub(crate) enum SourceState {
 pub(crate) struct BrowseSource {
     /// The registry slot every fetch for this source's sections is issued through.
     pub(crate) sid: ServerId,
+    /// Exact client lifecycle behind `sid`; slot ids survive repoint and therefore are not enough
+    /// to decide whether completed discovery still belongs here.
+    client_addr: usize,
+    token_gen: u32,
     /// The server's `machineIdentifier` — the ONLY key a Home selection can be PERSISTED under
     /// (`plex::pins`), because a roster position reshuffles and an address moves. `""` until the
     /// registry has learned it, which is a source whose pins live for this run only.
@@ -164,9 +170,9 @@ fn source_state(outcome: Option<crate::plex::probe::Outcome>) -> SourceState {
         None => SourceState::NotProbed,
         Some(crate::plex::probe::Outcome::Reachable) => SourceState::Reachable,
         Some(crate::plex::probe::Outcome::Unauthorized) => SourceState::Unauthorized,
-        Some(crate::plex::probe::Outcome::WrongServer | crate::plex::probe::Outcome::Unreachable) => {
-            SourceState::Unreachable
-        }
+        Some(
+            crate::plex::probe::Outcome::WrongServer | crate::plex::probe::Outcome::Unreachable,
+        ) => SourceState::Unreachable,
     }
 }
 
@@ -388,9 +394,8 @@ static LETTER_RESULT: Mutex<Option<DirectoryResult<(String, i64)>>> = Mutex::new
 /// What a source-discovery worker brings back, per SOURCE — named by its index, which appending
 /// can never move.
 ///
-/// `name` rides EVERY landing rather than only the section one, because the current server's
-/// sections are discovered on the main thread ([`ensure_sections`]) and so never reach a worker at
-/// that phase; without this its group header would be the one blank line in the panel.
+/// `name` rides EVERY landing because either worker phase may be the first response that teaches
+/// us the server's own display name.
 struct SrcLanding {
     /// Exact registry lifecycle the worker dialled. Slot id alone survives both re-point and
     /// profile changes; pointer identity catches the former and token_gen catches in-place retoken.
@@ -457,13 +462,6 @@ pub(crate) fn reset() {
         // on the switch. Carrying it would let the previous person's answer govern the next
         // person's Home for the frames before their own record is read (see [`RECORDED`]).
         *addr_of_mut!(RECORDED) = None;
-        // TABS is deliberately NOT cleared here, only invalidated. It is a memo, and the ONE thing
-        // that decides whether the strip re-measures is [`tabs`] comparing the old row against the
-        // new one — so emptying it in advance makes that comparison `[] != []`, which is false, and
-        // the label cache keeps the PREVIOUS ACCOUNT's pills: `draw_tab_row` iterates the cache, so
-        // after a profile switch the strip would go on drawing and hit-testing libraries the new
-        // user cannot open, until some later landing happened to change the row.
-        TABS_GEN = u32::MAX;
         CUR = 0;
         RETRY_CD = 0;
     }
@@ -491,7 +489,9 @@ static SRC_FACTS_GEN: AtomicU32 = AtomicU32::new(0);
 /// A SUM of two monotone counters, so it is itself strictly monotone: any bump to either moves it
 /// by one, and there is no pair of states that can alias.
 pub(crate) fn source_list_gen() -> u32 {
-    SECTIONS_GEN.load(Ordering::SeqCst).wrapping_add(SRC_FACTS_GEN.load(Ordering::SeqCst))
+    SECTIONS_GEN
+        .load(Ordering::SeqCst)
+        .wrapping_add(SRC_FACTS_GEN.load(Ordering::SeqCst))
 }
 
 /// The QUERY generation — the content epoch. [`bump_gen`] moves it from exactly three places
@@ -530,6 +530,20 @@ fn sync_roster() {
             // already have a name for is deliberately not followed: a machine name changing under
             // an open panel is churn, not news.
             Some(s) => {
+                let now = crate::plex::client_for(sid);
+                let client_addr = now.map_or(0, |c| c as *const _ as usize);
+                let token_gen = now.map_or(0, |c| c.token_gen());
+                if s.client_addr != client_addr || s.token_gen != token_gen {
+                    // Keep learned rows visible, but make the replacement lifecycle enumerate
+                    // sections again. Its eventual append reconciles by source/key.
+                    s.client_addr = client_addr;
+                    s.token_gen = token_gen;
+                    s.sections_done = false;
+                    s.counts_done = false;
+                    s.retry_cd = 0;
+                    SRC_FACTS_GEN.fetch_add(1, Ordering::SeqCst);
+                    crate::ui::idle::invalidate();
+                }
                 if let Some((state, tier)) = source_snapshot(sid) {
                     if s.state != state || s.tier != tier {
                         s.state = state;
@@ -568,10 +582,16 @@ fn sync_roster() {
                 // else's, and defaulting it to a share would take your own libraries off Home for
                 // the frames between registration and the roster landing.
                 let owned = f.map(|f| f.owned).unwrap_or(true);
-                let (name, handle) = f.map(|f| (f.name.clone(), f.handle.clone())).unwrap_or_default();
-                let Some((state, tier)) = source_snapshot(sid) else { continue };
+                let (name, handle) = f
+                    .map(|f| (f.name.clone(), f.handle.clone()))
+                    .unwrap_or_default();
+                let Some((state, tier)) = source_snapshot(sid) else {
+                    continue;
+                };
                 (*addr_of_mut!(SOURCES)).push(BrowseSource {
                     sid,
+                    client_addr: crate::plex::client_for(sid).map_or(0, |c| c as *const _ as usize),
+                    token_gen: crate::plex::client_for(sid).map_or(0, |c| c.token_gen()),
                     machine_id: machine_of(sid),
                     owned,
                     name,
@@ -594,20 +614,9 @@ fn sync_roster() {
     }
 }
 
-/// Discover the CURRENT server's movie/show sections (once; blocking — one small GET, the same
-/// boot-fetch budget as `pms_fetch_hubs`). Safe to call every Library entry; later calls are free.
-/// Returns the table's size.
-///
-/// **Only the current server is fetched here, and that is the point.** This runs on the main
-/// thread at boot and on every Library entry, so fanning out over the roster would park the SDL
-/// loop for one `connect(2)` timeout per unreachable share — seconds of frozen boot for a friend
-/// who switched their server off. Every OTHER source is discovered by [`pump`] on a worker
-/// ([`maybe_discover`]), which costs the main thread nothing and lets a dead share simply arrive
-/// as `reachable: false`.
-pub(crate) fn ensure_sections() -> usize {
-    ensure_sections_with(|client| client.sections().map(|mc| project_sections(&mc)))
-}
-
+/// Legacy synchronous harness retained only for lifecycle regression fixtures. Production section
+/// discovery is uniformly `kick → worker → mailbox → commit` via [`discover_pump`].
+#[cfg(test)]
 fn ensure_sections_with(
     fetch: impl FnOnce(&crate::plex::Client) -> Option<Vec<(i64, String, SecKind)>>,
 ) -> usize {
@@ -619,22 +628,31 @@ fn ensure_sections_with(
     if sources()[si].sections_done {
         return sections().len();
     }
-    let Some(client) = crate::plex::client_for(cur_sid) else { return sections().len() };
+    let Some(client) = crate::plex::client_for(cur_sid) else {
+        return sections().len();
+    };
     let token_gen = client.token_gen();
     let found = catch_unwind(AssertUnwindSafe(|| fetch(client))).unwrap_or(None);
     let ok = found.is_some();
-    let committed = crate::plex::commit_reachability_if_current(cur_sid, client, token_gen, ok, None, |outcome| {
-        if sources().get(si).map(|s| s.sid) != Some(client.id()) {
-            return false;
-        }
-        append_sections(si, found.unwrap_or_default());
-        if let Some(s) = source_mut(si) {
-            s.sections_done = ok;
-            s.set_probe_outcome(outcome);
-            s.retry_cd = if ok { 0 } else { SRC_RETRY_CD };
-        }
-        true
-    });
+    let committed = crate::plex::commit_reachability_if_current(
+        cur_sid,
+        client,
+        token_gen,
+        ok,
+        None,
+        |outcome| {
+            if sources().get(si).map(|s| s.sid) != Some(client.id()) {
+                return false;
+            }
+            append_sections(si, found.unwrap_or_default());
+            if let Some(s) = source_mut(si) {
+                s.sections_done = ok;
+                s.set_probe_outcome(outcome);
+                s.retry_cd = if ok { 0 } else { SRC_RETRY_CD };
+            }
+            true
+        },
+    );
     if committed != Some(true) {
         return sections().len();
     }
@@ -658,7 +676,10 @@ fn project_sections(mc: &crate::plex::MediaContainer) -> Vec<(i64, String, SecKi
         .iter()
         .filter_map(|d| {
             let kind = SecKind::from_wire(&d.kind)?; // a type this product has no level for at all
-            d.key.parse::<i64>().ok().map(|k| (k, d.title.clone(), kind))
+            d.key
+                .parse::<i64>()
+                .ok()
+                .map(|k| (k, d.title.clone(), kind))
         })
         .collect()
 }
@@ -742,7 +763,14 @@ fn append_sections(src: usize, list: Vec<(i64, String, SecKind)>) {
         let secs = &mut *addr_of_mut!(SECTIONS);
         let states = &mut *addr_of_mut!(STATES);
         for (key, title, kind) in fresh {
-            secs.push(BrowseSection { src, key, title, kind, count: -1, pinned: false });
+            secs.push(BrowseSection {
+                src,
+                key,
+                title,
+                kind,
+                count: -1,
+                pinned: false,
+            });
             states.push(SecState::default());
         }
     }
@@ -793,7 +821,11 @@ pub(crate) fn cur() -> usize {
 /// its name comes from the queued section (`view_section`) and a handle resolved from the committed
 /// one would pop in 70 ms later, changing the chip's measured width mid-fade.
 pub(crate) fn handle_of(i: usize) -> &'static str {
-    sections().get(i).and_then(|s| sources().get(s.src)).map(|s| s.handle.as_str()).unwrap_or("")
+    sections()
+        .get(i)
+        .and_then(|s| sources().get(s.src))
+        .map(|s| s.handle.as_str())
+        .unwrap_or("")
 }
 /// Switch section tab. Keeps the target section's remembered query/view; only re-fetches
 /// when its store is empty.
@@ -852,7 +884,9 @@ fn apply_source_outcome(
     if sources().get(src).map(|s| s.sid) != Some(client.id()) {
         return false;
     }
-    let Some(s) = source_mut(src).filter(|s| s.sid == client.id()) else { return false };
+    let Some(s) = source_mut(src).filter(|s| s.sid == client.id()) else {
+        return false;
+    };
     let next = source_state(Some(outcome));
     if s.state == next {
         return true;
@@ -869,106 +903,69 @@ fn apply_source_outcome(
 
 // ---- the TAB projection: which sections get a pill in the shared top strip -------------------
 //
-// **A pill is a TYPE, never a person** (the design's deliverable B). Source lives in the toolbar
-// chip one line below, so the strip names your own libraries and nothing else — with one exception
-// that costs nothing: a friend sharing a type you do not own (they have shows, you don't) DOES add
-// a pill, because otherwise that content is unreachable from the strip at all.
+// **A pill is a TYPE, never a person.** Movies and TV Shows are permanent destinations; discovery
+// resolves each to an owned library first, then the first shared library of that type.
 //
 // The consequence is the property B was written for: the strip is a constant width at one friend
 // or at ten. Put source in the strip instead and three friends measure 2133px against a 1540 track.
 //
-// With one source this is the identity map, so a single-server install draws exactly the strip it
-// always did.
+// Source lives in the toolbar chip one line below, so adding people never reshapes this strip.
 
-/// tab index → section index, rebuilt when the table's shape moves.
-static mut TABS: Vec<usize> = Vec::new();
-static mut TABS_GEN: u32 = u32::MAX;
-/// …and how many times the projection above actually CHANGED, which is a different question from
-/// how many times it was re-derived. See [`tabs_gen`].
-static mut TABS_SHAPE_GEN: u32 = 0;
+const TAB_KINDS: [SecKind; 2] = [SecKind::Movie, SecKind::Show];
 
-fn tabs() -> &'static Vec<usize> {
-    let g = sections_gen();
-    if unsafe { addr_of!(TABS_GEN).read() } != g {
-        // compared by real TYPE, not by `is_show`: with a boolean, "does an owned library have this
-        // kind" answers YES for a friend's MUSIC library on the strength of your films, so it would
-        // get no pill and nothing in it could be reached from the strip at all
-        let owned_kinds: Vec<SecKind> = sections()
-            .iter()
-            .filter(|s| sources().get(s.src).map(|x| x.handle.is_empty()).unwrap_or(true))
-            .map(|s| s.kind)
-            .collect();
-        // A missing type earns ONE pill, not one per borrowed library of it. Two friends who both
-        // share Music are two libraries of a type you do not own, and admitting both puts two
-        // identically-titled *Music* pills in the row with nothing to tell them apart — which is
-        // the strip growing by PEOPLE, the one property this projection exists to prevent. The
-        // first one carries the type; the rest are reachable through the toolbar's Source chip,
-        // exactly as a borrowed library of a type you DO own already is.
-        let mut borrowed_kinds: Vec<SecKind> = Vec::new();
-        let v: Vec<usize> = sections()
-            .iter()
-            .enumerate()
-            .filter(|(_, s)| {
-                let owned = sources().get(s.src).map(|x| x.handle.is_empty()).unwrap_or(true);
-                if owned {
-                    return true;
-                }
-                if owned_kinds.contains(&s.kind) || borrowed_kinds.contains(&s.kind) {
-                    return false;
-                }
-                borrowed_kinds.push(s.kind);
-                true
-            })
-            .map(|(i, _)| i)
-            .collect();
-        // The strip's own generation, bumped only when the projected PILL LIST changes. The section
-        // table's generation moves for things the strip cannot see — a source's counts landing, a
-        // second friend's libraries arriving that all fold onto pills already drawn — and the label
-        // cache downstream re-measures every pill in the row when it does. That is Home's hot path,
-        // and with sources landing one at a time it now happens several times a boot.
-        // BORROW, never `.read()`: that copies the `Vec` bitwise, and dropping the copy frees the
-        // buffer the static still points at — a double free that aborts the process, not a warning.
-        let changed = unsafe { (*addr_of!(TABS)).as_slice() != v.as_slice() };
-        unsafe {
-            *addr_of_mut!(TABS) = v;
-            TABS_GEN = g;
-            if changed {
-                TABS_SHAPE_GEN += 1;
-            }
-        }
-    }
-    unsafe { &*addr_of!(TABS) }
-}
-
-/// The generation of the strip's own SHAPE — moves only when the projected pill list actually
-/// changes, which is what the tab row's label + width cache keys on
-/// ([`widgets::with_tab_metrics`](crate::ui::widgets)).
+/// The generation of the invariant strip shape, used by the label + width cache.
 pub(crate) fn tabs_gen() -> u32 {
-    tabs(); // re-project first: a stale answer would name the generation of a row nobody has
-    unsafe { addr_of!(TABS_SHAPE_GEN).read() }
+    1 // the strip shape is deliberately invariant for the lifetime of the process
 }
 
 /// Pills in the strip (excluding Home, which the strip prepends itself).
 pub(crate) fn tab_count() -> usize {
-    tabs().len()
+    TAB_KINDS.len()
 }
 pub(crate) fn tab_title(t: usize) -> &'static str {
-    tabs().get(t).map(|&i| section_title(i)).unwrap_or("")
+    match TAB_KINDS.get(t) {
+        Some(SecKind::Movie) => "Movies",
+        Some(SecKind::Show) => "TV Shows",
+        None => "",
+    }
 }
-/// The section a pill opens.
-pub(crate) fn tab_section(t: usize) -> usize {
-    tabs().get(t).copied().unwrap_or(0)
+pub(crate) fn tab_kind(t: usize) -> Option<SecKind> {
+    TAB_KINDS.get(t).copied()
+}
+/// Resolve a type pill to an owned library first, then the first granted shared library.
+pub(crate) fn tab_section(t: usize) -> Option<usize> {
+    let kind = tab_kind(t)?;
+    sections()
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.kind == kind)
+        .min_by_key(|(_, s)| !sources().get(s.src).map(|x| x.owned).unwrap_or(false))
+        .map(|(i, _)| i)
 }
 /// The pill that represents section `s`: its own when it has one, else the pill of the same TYPE —
 /// so browsing a friend's film library keeps the *Movies* pill lit, which is what "a pill is a
 /// type" means for the selection capsule. Falls back to 0, never out of range.
 pub(crate) fn tab_of_section(s: usize) -> usize {
-    let t = tabs();
-    if let Some(p) = t.iter().position(|&i| i == s) {
-        return p;
+    section_kind(s)
+        .and_then(|kind| TAB_KINDS.iter().position(|&k| k == kind))
+        .unwrap_or(0)
+}
+
+/// Discovery state for a type that may not have produced a concrete section yet.
+pub(crate) fn kind_state(kind: SecKind) -> SecFetch {
+    if let Some(i) = sections().iter().position(|s| s.kind == kind) {
+        return states()
+            .get(i)
+            .map(|s| s.fetch)
+            .unwrap_or(SecFetch::Loading);
     }
-    let Some(kind) = section_kind(s) else { return 0 };
-    t.iter().position(|&i| section_kind(i) == Some(kind)).unwrap_or(0)
+    if sources().iter().any(|s| s.reachable() && !s.sections_done) || sources().is_empty() {
+        SecFetch::Loading
+    } else if sources().iter().any(|s| !s.sections_done) {
+        SecFetch::Failed
+    } else {
+        SecFetch::Ready
+    }
 }
 
 // ---- pinning: the ONE control, it governs Home only, and it is PER PROFILE -------------------
@@ -987,11 +984,9 @@ pub(crate) fn tab_of_section(s: usize) -> usize {
 /// **The current profile's persisted answer, as last read from disk** — the half of the selection
 /// the section table cannot express.
 ///
-/// The table only ever holds the sources that have ANSWERED, and Home is the one screen whose boot
-/// enumerates a single server: `ensure_sections` fetches the CURRENT server's sections and no
-/// others. So on every boot after the first, a share sits in the roster with no row here at
-/// all — and `pms::feeds_home`'s "a library nobody has discovered is undecided, not unpinned" rule
-/// then puts a friend's shelves on the front door of somebody who turned them off last night.
+/// The table only ever holds sources that have answered, while Home/Library/Search/Onboard
+/// enumerate the granted roster asynchronously. During that window a share can have no row here;
+/// `pms::feeds_home` must still recover its recorded answer by machine identity.
 /// Their answer is on disk keyed by machine, which is exactly the join that settles it.
 ///
 /// `None` means "nothing has been read yet", never "nothing was recorded" — the same distinction
@@ -1001,7 +996,9 @@ static mut RECORDED: Option<crate::plex::session::HomePins> = None;
 
 /// One source's `machineIdentifier` as the registry knows it, `""` while nobody has learned it.
 fn machine_of(sid: ServerId) -> String {
-    crate::plex::client_for(sid).map(|c| c.machine_id().to_string()).unwrap_or_default()
+    crate::plex::client_for(sid)
+        .map(|c| c.machine_id().to_string())
+        .unwrap_or_default()
 }
 
 /// The section table as the pin rules see it, in table order.
@@ -1010,9 +1007,15 @@ fn lib_refs() -> Vec<crate::plex::pins::LibRef<'static>> {
     sections()
         .iter()
         .map(|s| {
-            let (machine_id, owned) =
-                srcs.get(s.src).map(|c| (c.machine_id.as_str(), c.owned)).unwrap_or(("", true));
-            crate::plex::pins::LibRef { machine_id, key: s.key, owned }
+            let (machine_id, owned) = srcs
+                .get(s.src)
+                .map(|c| (c.machine_id.as_str(), c.owned))
+                .unwrap_or(("", true));
+            crate::plex::pins::LibRef {
+                machine_id,
+                key: s.key,
+                owned,
+            }
         })
         .collect()
 }
@@ -1087,7 +1090,32 @@ pub(crate) fn record_pins(asked: bool) {
 /// answered from the granted roster and this profile's record. See `plex::pins::asks`.
 pub(crate) fn first_run_asks() -> bool {
     let sess = crate::plex::session::peek();
-    crate::plex::pins::asks(sources().len(), sess.pins_for(&crate::plex::session::current_profile_key()))
+    let granted = crate::plex::server_ids().count();
+    #[cfg(test)]
+    let granted = granted.max(sources().len());
+    crate::plex::pins::asks(
+        granted,
+        sess.pins_for(&crate::plex::session::current_profile_key()),
+    )
+}
+
+pub(crate) fn retry_discovery() {
+    for s in unsafe { &mut *addr_of_mut!(SOURCES) } {
+        if !s.sections_done {
+            s.retry_cd = 0;
+        }
+    }
+    crate::ui::idle::invalidate();
+}
+
+pub(crate) fn discovery_state() -> SecFetch {
+    if !sections().is_empty() || sources().iter().all(|s| s.sections_done) {
+        SecFetch::Ready
+    } else if sources().iter().any(|s| s.reachable() && !s.sections_done) || sources().is_empty() {
+        SecFetch::Loading
+    } else {
+        SecFetch::Failed
+    }
 }
 
 pub(crate) fn pinned(i: usize) -> bool {
@@ -1107,7 +1135,9 @@ pub(crate) fn toggle_pin(i: usize) -> bool {
     if is_last_pinned(i) {
         return false;
     }
-    let Some(s) = (unsafe { (&mut *addr_of_mut!(SECTIONS)).get_mut(i) }) else { return false };
+    let Some(s) = (unsafe { (&mut *addr_of_mut!(SECTIONS)).get_mut(i) }) else {
+        return false;
+    };
     s.pinned = !s.pinned;
     // …and it OUTLIVES the run. Every flip was in-memory until 2026-08-21, so a selection made on
     // the Sources panel was gone by the next boot and the ownership default came back — which
@@ -1145,15 +1175,25 @@ pub(crate) fn toggle_pin(i: usize) -> bool {
 /// library on it, pinned or not. Without the key the finest gate available is "does this server
 /// feed Home at all", which is why unpinning one library of a two-library server changed nothing.
 pub(crate) fn library_pins() -> Vec<(usize, i64, bool)> {
-    let mut out: Vec<(usize, i64, bool)> = sections().iter().map(|s| (s.src, s.key, s.pinned)).collect();
-    let Some(rec) = (unsafe { (*addr_of!(RECORDED)).as_ref() }) else { return out };
+    let mut out: Vec<(usize, i64, bool)> = sections()
+        .iter()
+        .map(|s| (s.src, s.key, s.pinned))
+        .collect();
+    let Some(rec) = (unsafe { (*addr_of!(RECORDED)).as_ref() }) else {
+        return out;
+    };
     for (si, src) in sources().iter().enumerate() {
         // A source with rows here has been enumerated and the table is the truth for it — including
         // a library it has since lost. A nameless machine cannot be joined against a record at all.
         if src.machine_id.is_empty() || sections().iter().any(|s| s.src == si) {
             continue;
         }
-        for (lib, on) in rec.on.iter().map(|l| (l, true)).chain(rec.off.iter().map(|l| (l, false))) {
+        for (lib, on) in rec
+            .on
+            .iter()
+            .map(|l| (l, true))
+            .chain(rec.off.iter().map(|l| (l, false)))
+        {
             if lib.machine_id == src.machine_id {
                 out.push((si, lib.key, on));
             }
@@ -1217,7 +1257,12 @@ pub(crate) struct SrcRow {
 pub(crate) fn source_groups() -> Vec<SrcGroup> {
     sources()
         .iter()
-        .map(|s| SrcGroup { name: s.name.clone(), handle: s.handle.clone(), state: s.state, tier: s.tier })
+        .map(|s| SrcGroup {
+            name: s.name.clone(),
+            handle: s.handle.clone(),
+            state: s.state,
+            tier: s.tier,
+        })
         .collect()
 }
 
@@ -1246,7 +1291,9 @@ fn cur_kind() -> Option<SecKind> {
 /// and `pinned`/`last_pinned` stay whole-roster facts so the "Home needs one library" refusal still
 /// counts every pin, not just the visible ones.
 pub(crate) fn source_rows() -> Vec<SrcRow> {
-    let Some(kind) = cur_kind() else { return Vec::new() };
+    let Some(kind) = cur_kind() else {
+        return Vec::new();
+    };
     rows_where(|s| s.kind == kind)
 }
 
@@ -1329,7 +1376,9 @@ pub(crate) fn total() -> i64 {
 /// valid until the next [`pump`]/re-query (main-thread only, same lifetime rule as
 /// `pms::movie`).
 pub(crate) fn item(i: usize) -> Option<&'static PmsMovie> {
-    cur_state().and_then(|s| s.items.get(i)).and_then(|o| o.as_ref())
+    cur_state()
+        .and_then(|s| s.items.get(i))
+        .and_then(|o| o.as_ref())
 }
 /// Flip `(sid, rk)`'s watched state in every section's item store — the optimistic half of a
 /// view-state write, for the browse grid.
@@ -1400,7 +1449,9 @@ pub(crate) fn loading_initial() -> bool {
 /// table has no section to ask about — which is exactly the case the read-out one layer up exists
 /// for, a server that could not be reached to discover anything.
 pub(crate) fn cur_source_state() -> SecFetch {
-    let Some(s) = cur_source_idx().and_then(|i| sources().get(i)) else { return SecFetch::Loading };
+    let Some(s) = cur_source_idx().and_then(|i| sources().get(i)) else {
+        return SecFetch::Loading;
+    };
     if !s.reachable() {
         SecFetch::Failed
     } else if s.sections_done {
@@ -1425,12 +1476,30 @@ pub(crate) fn seed_sources_for_test(n: usize, reachable: bool) {
     let cur = crate::plex::current_server();
     let v: Vec<BrowseSource> = (0..n)
         .map(|k| BrowseSource {
-            sid: if k == 0 { cur } else { ServerId::from_raw(k as u16) },
+            sid: if k == 0 {
+                cur
+            } else {
+                ServerId::from_raw(k as u16)
+            },
+            client_addr: 0,
+            token_gen: 0,
             machine_id: format!("mach-{k}"),
             owned: k == 0,
-            name: if k == 0 { "nas-home".into() } else { "film-club".into() },
-            handle: if k == 0 { String::new() } else { "friend".into() },
-            state: if reachable { SourceState::Reachable } else { SourceState::Unreachable },
+            name: if k == 0 {
+                "nas-home".into()
+            } else {
+                "film-club".into()
+            },
+            handle: if k == 0 {
+                String::new()
+            } else {
+                "friend".into()
+            },
+            state: if reachable {
+                SourceState::Reachable
+            } else {
+                SourceState::Unreachable
+            },
             tier: None,
             sections_done: reachable,
             counts_done: true,
@@ -1512,7 +1581,10 @@ pub(crate) fn sort_label() -> &'static str {
         Some(s) => s,
         None => return "",
     };
-    st.sorts.get(st.sort_idx).map(|s| s.title.as_str()).unwrap_or("Title")
+    st.sorts
+        .get(st.sort_idx)
+        .map(|s| s.title.as_str())
+        .unwrap_or("Title")
 }
 /// Apply a sort-menu pick: a NEW entry switches to it at its default direction; re-picking
 /// the ACTIVE entry toggles direction. Re-queries the listing either way.
@@ -1579,7 +1651,9 @@ fn kick_directory<T: Send + 'static>(
     // the SERVER this section lives on, captured on the main thread (`browse.rs`'s standing rule:
     // never resolve the current server inside a worker)
     let Some(sid) = section_sid(c) else { return };
-    let Some(client) = crate::plex::client_for(sid) else { return };
+    let Some(client) = crate::plex::client_for(sid) else {
+        return;
+    };
     let token_gen = client.token_gen();
     if flag.swap(true, Ordering::SeqCst) {
         return;
@@ -1596,8 +1670,13 @@ fn kick_directory<T: Send + 'static>(
         })
         .unwrap_or_default();
         // mailbox filled outside the guard so a panicking fetch still lands (empty)
-        *mail.lock().unwrap_or_else(|e| e.into_inner()) =
-            Some(DirectoryResult { epoch: sgen, sec: c, client, token_gen, list });
+        *mail.lock().unwrap_or_else(|e| e.into_inner()) = Some(DirectoryResult {
+            epoch: sgen,
+            sec: c,
+            client,
+            token_gen,
+            list,
+        });
     });
     if !spawned {
         // `land_directory` clears the single-flight when it takes the mailbox, and nothing is
@@ -1622,7 +1701,13 @@ fn land_directory<T>(
         if result.epoch != EPOCH.load(Ordering::SeqCst) {
             return;
         }
-        let DirectoryResult { sec, client, token_gen, list, .. } = result;
+        let DirectoryResult {
+            sec,
+            client,
+            token_gen,
+            list,
+            ..
+        } = result;
         let _ = crate::plex::commit_if_current(client.id(), client, token_gen, || {
             if section_sid(sec) == Some(client.id()) {
                 if let Some(st) = state_mut(sec) {
@@ -1638,8 +1723,10 @@ fn land_directory<T>(
 pub(crate) fn kick_genres() {
     let done = cur_state().map(|s| s.genres_done).unwrap_or(true);
     kick_directory(done, &GENRE_FETCHING, &GENRE_RESULT, "genre", |d| {
-        (!d.key.is_empty() && !d.title.is_empty())
-            .then(|| GenreEntry { id: d.key.clone(), title: d.title.clone() })
+        (!d.key.is_empty() && !d.title.is_empty()).then(|| GenreEntry {
+            id: d.key.clone(),
+            title: d.title.clone(),
+        })
     });
 }
 
@@ -1669,9 +1756,13 @@ pub(crate) fn rail_available() -> bool {
 /// [`pump`]). Letter counts are query-independent (always the unfiltered title listing).
 pub(crate) fn kick_letters() {
     let done = cur_state().map(|s| s.letters_done).unwrap_or(true);
-    kick_directory(done, &LETTERS_FETCHING, &LETTER_RESULT, "firstCharacter", |d| {
-        (!d.key.is_empty() && d.size > 0).then(|| (d.title.clone(), d.size))
-    });
+    kick_directory(
+        done,
+        &LETTERS_FETCHING,
+        &LETTER_RESULT,
+        "firstCharacter",
+        |d| (!d.key.is_empty() && d.size > 0).then(|| (d.title.clone(), d.size)),
+    );
 }
 
 // ---- remembered view ------------------------------------------------------------------------
@@ -1727,7 +1818,11 @@ fn maybe_discover() {
             if !ready(i) || sources()[i].counts_done {
                 continue;
             }
-            let keys: Vec<i64> = sections().iter().filter(|x| x.src == i).map(|x| x.key).collect();
+            let keys: Vec<i64> = sections()
+                .iter()
+                .filter(|x| x.src == i)
+                .map(|x| x.key)
+                .collect();
             if keys.is_empty() {
                 // a source with nothing browsable (music/photo only) has no counts to fetch, and
                 // must not be picked again for the rest of the session
@@ -1740,9 +1835,13 @@ fn maybe_discover() {
             break;
         }
     }
-    let Some((si, sid, job, want_name)) = pick else { return };
+    let Some((si, sid, job, want_name)) = pick else {
+        return;
+    };
 
-    let Some(client) = crate::plex::client_for(sid) else { return };
+    let Some(client) = crate::plex::client_for(sid) else {
+        return;
+    };
     let token_gen = client.token_gen();
     let epoch = EPOCH.load(Ordering::SeqCst);
     let is_sections = matches!(job, SrcJob::Sections);
@@ -1760,7 +1859,9 @@ fn maybe_discover() {
                 String::new()
             };
             let what = match job {
-                SrcJob::Sections => SrcWhat::Sections(client.sections().map(|mc| project_sections(&mc))),
+                SrcJob::Sections => {
+                    SrcWhat::Sections(client.sections().map(|mc| project_sections(&mc)))
+                }
                 SrcJob::Counts(keys) => {
                     let mut out = Vec::new();
                     for k in keys {
@@ -1781,14 +1882,28 @@ fn maybe_discover() {
                     SrcWhat::Counts(out)
                 }
             };
-            SrcLanding { client, token_gen, name, what }
+            SrcLanding {
+                client,
+                token_gen,
+                name,
+                what,
+            }
         })
         .unwrap_or_else(|_| {
             // a panicking fetch is a FAILURE of the job it was doing, never a success of another:
             // reporting a panicked count probe as a failed section list would drop the source's
             // whole library list on the floor.
-            let what = if is_sections { SrcWhat::Sections(None) } else { SrcWhat::Counts(Vec::new()) };
-            SrcLanding { client, token_gen, name: String::new(), what }
+            let what = if is_sections {
+                SrcWhat::Sections(None)
+            } else {
+                SrcWhat::Counts(Vec::new())
+            };
+            SrcLanding {
+                client,
+                token_gen,
+                name: String::new(),
+                what,
+            }
         });
         *SRC_RESULT.lock().unwrap_or_else(|e| e.into_inner()) = Some((epoch, si, landing));
     });
@@ -1826,13 +1941,21 @@ fn discovery_spawn_refused(si: usize) {
 /// Apply a discovery landing. Gated on the table EPOCH, not on its shape generation: an append
 /// from one source must not throw away another's answer.
 fn land_discovery() {
-    let Some((epoch, si, landing)) = SRC_RESULT.lock().unwrap_or_else(|e| e.into_inner()).take() else { return };
+    let Some((epoch, si, landing)) = SRC_RESULT.lock().unwrap_or_else(|e| e.into_inner()).take()
+    else {
+        return;
+    };
     SRC_FETCHING.store(false, Ordering::SeqCst);
     crate::ui::idle::invalidate(); // a Sources row, a tab pill or a count appears
     if epoch != EPOCH.load(Ordering::SeqCst) {
         return; // the account changed under it — every index means something else now
     }
-    let SrcLanding { client, token_gen, name, what } = landing;
+    let SrcLanding {
+        client,
+        token_gen,
+        name,
+        what,
+    } = landing;
     let ok = match &what {
         SrcWhat::Sections(list) => list.is_some(),
         SrcWhat::Counts(counts) => !counts.is_empty(),
@@ -1854,10 +1977,10 @@ fn land_discovery() {
                     s.name = name.clone();
                 }
                 SRC_FACTS_GEN.fetch_add(1, Ordering::SeqCst); // the group's header exists now
-                // The registry fact was committed beside the probe while WRITE is still held, so
-                // a re-point cannot file this old lifecycle's name under a replacement client.
-                // Ownership is carried through unchanged by the registry: this answer learned a
-                // machine name, not a sharing grant.
+                                                              // The registry fact was committed beside the probe while WRITE is still held, so
+                                                              // a re-point cannot file this old lifecycle's name under a replacement client.
+                                                              // Ownership is carried through unchanged by the registry: this answer learned a
+                                                              // machine name, not a sharing grant.
             }
             if prior_state != sources().get(si).map(|s| s.state) {
                 SRC_FACTS_GEN.fetch_add(1, Ordering::SeqCst); // the group dims, or comes back
@@ -1872,7 +1995,10 @@ fn land_discovery() {
                     }
                     if !ok {
                         // The machine name, never a token or an address — this line is what a user sends us.
-                        let who = sources().get(si).map(|s| s.name.clone()).unwrap_or_default();
+                        let who = sources()
+                            .get(si)
+                            .map(|s| s.name.clone())
+                            .unwrap_or_default();
                         crate::log(&format!(
                             "browse: source {si} ({who}) did not answer — its group reads unreachable"
                         ));
@@ -1899,7 +2025,7 @@ fn land_discovery() {
                 }
             }
             true
-        }
+        },
     );
     if committed != Some(true) {
         return; // same slot, different origin/token/profile: every byte belongs to the old lifecycle
@@ -1981,7 +2107,7 @@ pub(crate) fn pump() -> bool {
                         // the fetch FAILED (network/parse) — leave the store exactly as it was and
                         // back off before retrying; one wifi hiccup must not blank a populated grid
                         unsafe { RETRY_CD = 120 }; // ~2s at 60fps
-                        // A failure is blamed only on the query it actually fetched.
+                                                   // A failure is blamed only on the query it actually fetched.
                         if r.gen == GEN.load(Ordering::SeqCst) {
                             if let Some(st) = state_mut(r.sec) {
                                 st.fetch = SecFetch::Failed;
@@ -2010,7 +2136,7 @@ pub(crate) fn pump() -> bool {
                         }
                     }
                     true
-                }
+                },
             );
         }
     }
@@ -2076,12 +2202,14 @@ fn maybe_spawn() {
     let gen = GEN.load(Ordering::SeqCst);
     let key = sec.key;
     let sec_idx = c; // captured on the main thread; the worker must not read the statics
-    // …and so is the SERVER — the section's OWN one, not whatever is current. `key` alone is
-    // ambiguous across sources (both servers have a section `1`), `client()` inside the worker
-    // would answer with whatever is current by then, and the sid is stamped onto every row this
-    // parses, so a row is only ever addressable as `(sid, rk)` — see `pms::PmsMovie::sid`.
+                     // …and so is the SERVER — the section's OWN one, not whatever is current. `key` alone is
+                     // ambiguous across sources (both servers have a section `1`), `client()` inside the worker
+                     // would answer with whatever is current by then, and the sid is stamped onto every row this
+                     // parses, so a row is only ever addressable as `(sid, rk)` — see `pms::PmsMovie::sid`.
     let Some(sid) = section_sid(c) else { return };
-    let Some(client) = crate::plex::client_for(sid) else { return };
+    let Some(client) = crate::plex::client_for(sid) else {
+        return;
+    };
     let token_gen = client.token_gen();
     FETCHING.store(true, Ordering::SeqCst);
     let spawned = crate::task::spawn_small("page", move || {
@@ -2101,25 +2229,37 @@ fn maybe_spawn() {
             let items: Vec<PmsMovie> = mc.metadata.iter().map(|m| parse_item(m, sid)).collect();
             // keep the item count authoritative even when PMS omits totalSize on an
             // unpaged-shaped response (paged queries carry it; belt and braces)
-            let total = if mc.total_size > 0 { mc.total_size } else { start as i64 + items.len() as i64 };
+            let total = if mc.total_size > 0 {
+                mc.total_size
+            } else {
+                start as i64 + items.len() as i64
+            };
             let sorts = mc.meta.as_ref().and_then(|m| {
-                m.types.iter().find(|t| t.active != 0).or_else(|| m.types.first()).map(|t| {
-                    t.sort
-                        .iter()
-                        .filter(|s| !s.key.is_empty())
-                        .map(|s| SortEntry {
-                            key: s.key.clone(),
-                            title: if s.title.is_empty() { s.key.clone() } else { s.title.clone() },
-                            default_desc: s.default_direction == "desc",
-                        })
-                        .collect::<Vec<_>>()
-                })
+                m.types
+                    .iter()
+                    .find(|t| t.active != 0)
+                    .or_else(|| m.types.first())
+                    .map(|t| {
+                        t.sort
+                            .iter()
+                            .filter(|s| !s.key.is_empty())
+                            .map(|s| SortEntry {
+                                key: s.key.clone(),
+                                title: if s.title.is_empty() {
+                                    s.key.clone()
+                                } else {
+                                    s.title.clone()
+                                },
+                                default_desc: s.default_direction == "desc",
+                            })
+                            .collect::<Vec<_>>()
+                    })
             });
             (items, total, sorts)
         })
         .unwrap_or((Vec::new(), -1, None)); // a panicking fetch is a failure, not an empty library
-        // mailbox filled outside the guard so a panicking fetch still lands; single-flight
-        // (FETCHING) means no monotone race — pump clears the flag when it takes this
+                                            // mailbox filled outside the guard so a panicking fetch still lands; single-flight
+                                            // (FETCHING) means no monotone race — pump clears the flag when it takes this
         let (items, total, sorts) = result;
         *PAGE_RESULT.lock().unwrap_or_else(|e| e.into_inner()) = Some(PageResult {
             client,
@@ -2141,37 +2281,46 @@ fn maybe_spawn() {
 }
 
 // ---------------------------------------------------------------------------------------
-    /// A two-source table for tests OUTSIDE this module (`ui::home`'s focus walk): your Movies and
-    /// TV Shows, a friend's films and shows that fold onto them, and a friend's music that does not
-    /// — five libraries projecting to three pills. Writes crate globals, so the caller holds
-    /// [`crate::testlock::serial`] and `reset()`s afterwards.
-    #[cfg(test)]
-    pub(crate) fn seed_two_source_table_for_test() {
-        tests::seed_sources(vec![
-            tests::a_source("mac-mini", "", true),
-            tests::a_source("nas-home", "friend", true),
-        ]);
-        // Our own server has BOTH types; the share has one library of each. The third row here
-        // used to be a Music library, standing in for "a type only a friend has" — that type is
-        // gone (see `SecKind`), so the growth case is expressed by the OWNED side instead, in the
-        // tests that need it: an owner with only Movies, a friend who also has Shows.
-        append_sections(0, vec![(1, "Movies".into(), SecKind::Movie), (2, "TV Shows".into(), SecKind::Show)]);
-        append_sections(
-            1,
-            vec![(1, "Film Club".into(), SecKind::Movie), (2, "Film Club".into(), SecKind::Show)],
-        );
-    }
+/// A two-source table for tests OUTSIDE this module (`ui::home`'s focus walk): your Movies and
+/// TV Shows, a friend's films and shows that fold onto them, and a friend's music that does not
+/// — five libraries projecting to three pills. Writes crate globals, so the caller holds
+/// [`crate::testlock::serial`] and `reset()`s afterwards.
+#[cfg(test)]
+pub(crate) fn seed_two_source_table_for_test() {
+    tests::seed_sources(vec![
+        tests::a_source("mac-mini", "", true),
+        tests::a_source("nas-home", "friend", true),
+    ]);
+    // Our own server has BOTH types; the share has one library of each. The third row here
+    // used to be a Music library, standing in for "a type only a friend has" — that type is
+    // gone (see `SecKind`), so the growth case is expressed by the OWNED side instead, in the
+    // tests that need it: an owner with only Movies, a friend who also has Shows.
+    append_sections(
+        0,
+        vec![
+            (1, "Movies".into(), SecKind::Movie),
+            (2, "TV Shows".into(), SecKind::Show),
+        ],
+    );
+    append_sections(
+        1,
+        vec![
+            (1, "Film Club".into(), SecKind::Movie),
+            (2, "Film Club".into(), SecKind::Show),
+        ],
+    );
+}
 
-    /// One more library landing on source `src`, for tests OUTSIDE this module — the discovery
-    /// worker's answer arriving late, which the Library screen's open Sources panel has to rebuild
-    /// for. Goes through the real [`append_sections`], so it moves [`sections_gen`] exactly as the
-    /// landing does; a test that wrote `SECTIONS` directly would prove nothing about that bump.
-    /// Same contract as [`seed_two_source_table_for_test`]: crate globals, so hold
-    /// [`crate::testlock::serial`] and `reset()` afterwards.
-    #[cfg(test)]
-    pub(crate) fn append_section_for_test(src: usize, key: i64, title: &str, kind: SecKind) {
-        append_sections(src, vec![(key, title.into(), kind)]);
-    }
+/// One more library landing on source `src`, for tests OUTSIDE this module — the discovery
+/// worker's answer arriving late, which the Library screen's open Sources panel has to rebuild
+/// for. Goes through the real [`append_sections`], so it moves [`sections_gen`] exactly as the
+/// landing does; a test that wrote `SECTIONS` directly would prove nothing about that bump.
+/// Same contract as [`seed_two_source_table_for_test`]: crate globals, so hold
+/// [`crate::testlock::serial`] and `reset()` afterwards.
+#[cfg(test)]
+pub(crate) fn append_section_for_test(src: usize, key: i64, title: &str, kind: SecKind) {
+    append_sections(src, vec![(key, title.into(), kind)]);
+}
 
 #[cfg(test)]
 mod tests {
@@ -2194,7 +2343,11 @@ mod tests {
         source.sid = sid;
         source.sections_done = false;
         seed_sources(vec![source]);
-        (RegisteredCleanup, sid, crate::plex::client_for(sid).unwrap())
+        (
+            RegisteredCleanup,
+            sid,
+            crate::plex::client_for(sid).unwrap(),
+        )
     }
 
     fn registered_page_source() -> (RegisteredCleanup, ServerId, &'static crate::plex::Client) {
@@ -2207,7 +2360,8 @@ mod tests {
         (cleanup, sid, client)
     }
 
-    fn registered_resident_page_source() -> (RegisteredCleanup, ServerId, &'static crate::plex::Client) {
+    fn registered_resident_page_source(
+    ) -> (RegisteredCleanup, ServerId, &'static crate::plex::Client) {
         let (cleanup, sid, client) = registered_page_source();
         let state = state_mut(0).unwrap();
         state.fetch = SecFetch::Ready;
@@ -2216,10 +2370,14 @@ mod tests {
         (cleanup, sid, client)
     }
 
-    fn registered_directory_source() -> (RegisteredCleanup, ServerId, &'static crate::plex::Client) {
+    fn registered_directory_source() -> (RegisteredCleanup, ServerId, &'static crate::plex::Client)
+    {
         let (cleanup, sid, client) = registered_page_source();
         let state = state_mut(0).unwrap();
-        state.genres = vec![GenreEntry { id: "new".into(), title: "New Genre".into() }];
+        state.genres = vec![GenreEntry {
+            id: "new".into(),
+            title: "New Genre".into(),
+        }];
         state.letters = vec![("N".into(), 7)];
         state.genres_done = false;
         state.letters_done = false;
@@ -2260,7 +2418,10 @@ mod tests {
             sec: 0,
             client,
             token_gen,
-            list: vec![GenreEntry { id: "stale".into(), title: "Stale Genre".into() }],
+            list: vec![GenreEntry {
+                id: "stale".into(),
+                title: "Stale Genre".into(),
+            }],
         });
         *LETTER_RESULT.lock().unwrap_or_else(|e| e.into_inner()) = Some(DirectoryResult {
             epoch,
@@ -2303,7 +2464,11 @@ mod tests {
 
         crate::plex::revoke_for_profile_switch();
         let c = crate::plex::register_for_test("browse-c", "127.0.0.1", 3, "c", "cid");
-        assert_eq!(crate::plex::server_count(), 2, "the replacement deliberately preserves count");
+        assert_eq!(
+            crate::plex::server_count(),
+            2,
+            "the replacement deliberately preserves count"
+        );
         sync_roster();
         assert_eq!(sources().iter().map(|s| s.sid).collect::<Vec<_>>(), [a, c]);
 
@@ -2316,13 +2481,46 @@ mod tests {
         let _g = crate::testlock::serial();
         let (_cleanup, sid, old) = registered_source();
         let old_gen = old.token_gen();
-        assert_eq!(crate::plex::register_for_test("browse-life", "10.0.0.2", 32400, "new", "cid"), sid);
+        assert_eq!(
+            crate::plex::register_for_test("browse-life", "10.0.0.2", 32400, "new", "cid"),
+            sid
+        );
         crate::plex::publish_probe_result(sid, crate::plex::probe::Outcome::Unauthorized);
 
         queue_success_from(old, old_gen);
-        assert_eq!(crate::plex::server_probe_result(sid), Some(crate::plex::probe::Outcome::Unauthorized));
+        assert_eq!(
+            crate::plex::server_probe_result(sid),
+            Some(crate::plex::probe::Outcome::Unauthorized)
+        );
         assert_eq!(sources()[0].name, "original");
-        assert!(sections().is_empty(), "old-origin rows must not enter the new lifecycle");
+        assert!(
+            sections().is_empty(),
+            "old-origin rows must not enter the new lifecycle"
+        );
+    }
+
+    #[test]
+    fn a_same_slot_repoint_rearms_section_discovery_without_erasing_known_rows() {
+        let _g = crate::testlock::serial();
+        let (_cleanup, sid, _) = registered_page_source();
+        assert!(sources()[0].sections_done);
+        assert_eq!(section_count(), 1);
+        assert_eq!(
+            crate::plex::register_for_test("browse-life", "10.0.0.2", 32400, "new", "cid"),
+            sid
+        );
+
+        sync_roster();
+
+        assert!(
+            !sources()[0].sections_done,
+            "the new lifecycle must enumerate again"
+        );
+        assert_eq!(
+            section_count(),
+            1,
+            "known rows stay visible until a fresh answer lands"
+        );
     }
 
     #[test]
@@ -2330,12 +2528,21 @@ mod tests {
         let _g = crate::testlock::serial();
         let (_cleanup, sid, old) = registered_source();
         let old_gen = old.token_gen();
-        assert_eq!(crate::plex::register_for_test("browse-life", "10.0.0.1", 32400, "new", "cid"), sid);
-        assert!(std::ptr::eq(old, crate::plex::client_for(sid).unwrap()), "retoken stays in place");
+        assert_eq!(
+            crate::plex::register_for_test("browse-life", "10.0.0.1", 32400, "new", "cid"),
+            sid
+        );
+        assert!(
+            std::ptr::eq(old, crate::plex::client_for(sid).unwrap()),
+            "retoken stays in place"
+        );
         crate::plex::publish_probe_result(sid, crate::plex::probe::Outcome::Unauthorized);
 
         queue_success_from(old, old_gen);
-        assert_eq!(crate::plex::server_probe_result(sid), Some(crate::plex::probe::Outcome::Unauthorized));
+        assert_eq!(
+            crate::plex::server_probe_result(sid),
+            Some(crate::plex::probe::Outcome::Unauthorized)
+        );
         assert_eq!(sources()[0].name, "original");
         assert!(sections().is_empty());
     }
@@ -2346,12 +2553,18 @@ mod tests {
         let (_cleanup, sid, old) = registered_source();
         let old_gen = old.token_gen();
         crate::plex::revoke_for_profile_switch();
-        assert_eq!(crate::plex::register_for_test("browse-life", "10.0.0.1", 32400, "profile", "cid"), sid);
+        assert_eq!(
+            crate::plex::register_for_test("browse-life", "10.0.0.1", 32400, "profile", "cid"),
+            sid
+        );
         crate::plex::finish_profile_switch(&[sid]);
         crate::plex::publish_probe_result(sid, crate::plex::probe::Outcome::Unreachable);
 
         queue_success_from(old, old_gen);
-        assert_eq!(crate::plex::server_probe_result(sid), Some(crate::plex::probe::Outcome::Unreachable));
+        assert_eq!(
+            crate::plex::server_probe_result(sid),
+            Some(crate::plex::probe::Outcome::Unreachable)
+        );
         assert_eq!(sources()[0].name, "original");
         assert!(sections().is_empty());
     }
@@ -2361,13 +2574,23 @@ mod tests {
         let _g = crate::testlock::serial();
         let (_cleanup, sid, old) = registered_resident_page_source();
         let old_gen = old.token_gen();
-        assert_eq!(crate::plex::register_for_test("browse-life", "10.0.0.2", 32400, "new", "cid"), sid);
+        assert_eq!(
+            crate::plex::register_for_test("browse-life", "10.0.0.2", 32400, "new", "cid"),
+            sid
+        );
         crate::plex::publish_probe_result(sid, crate::plex::probe::Outcome::Unauthorized);
 
         queue_page_from(old, old_gen);
-        assert_eq!(crate::plex::server_probe_result(sid), Some(crate::plex::probe::Outcome::Unauthorized));
+        assert_eq!(
+            crate::plex::server_probe_result(sid),
+            Some(crate::plex::probe::Outcome::Unauthorized)
+        );
         assert_eq!(sources()[0].state, SourceState::Unauthorized);
-        assert_eq!(states()[0].total, 1, "old-origin page must not replace the new lifecycle's rows");
+        assert_eq!(
+            states()[0].total,
+            1,
+            "old-origin page must not replace the new lifecycle's rows"
+        );
         assert_eq!(states()[0].items.len(), 1);
     }
 
@@ -2376,12 +2599,18 @@ mod tests {
         let _g = crate::testlock::serial();
         let (_cleanup, sid, old) = registered_resident_page_source();
         let old_gen = old.token_gen();
-        assert_eq!(crate::plex::register_for_test("browse-life", "10.0.0.1", 32400, "new", "cid"), sid);
+        assert_eq!(
+            crate::plex::register_for_test("browse-life", "10.0.0.1", 32400, "new", "cid"),
+            sid
+        );
         assert!(std::ptr::eq(old, crate::plex::client_for(sid).unwrap()));
         crate::plex::publish_probe_result(sid, crate::plex::probe::Outcome::Unauthorized);
 
         queue_page_from(old, old_gen);
-        assert_eq!(crate::plex::server_probe_result(sid), Some(crate::plex::probe::Outcome::Unauthorized));
+        assert_eq!(
+            crate::plex::server_probe_result(sid),
+            Some(crate::plex::probe::Outcome::Unauthorized)
+        );
         assert_eq!(sources()[0].state, SourceState::Unauthorized);
         assert_eq!(states()[0].total, 1);
         assert_eq!(states()[0].items.len(), 1);
@@ -2393,12 +2622,18 @@ mod tests {
         let (_cleanup, sid, old) = registered_resident_page_source();
         let old_gen = old.token_gen();
         crate::plex::revoke_for_profile_switch();
-        assert_eq!(crate::plex::register_for_test("browse-life", "10.0.0.1", 32400, "profile", "cid"), sid);
+        assert_eq!(
+            crate::plex::register_for_test("browse-life", "10.0.0.1", 32400, "profile", "cid"),
+            sid
+        );
         crate::plex::finish_profile_switch(&[sid]);
         crate::plex::publish_probe_result(sid, crate::plex::probe::Outcome::Unreachable);
 
         queue_page_from(old, old_gen);
-        assert_eq!(crate::plex::server_probe_result(sid), Some(crate::plex::probe::Outcome::Unreachable));
+        assert_eq!(
+            crate::plex::server_probe_result(sid),
+            Some(crate::plex::probe::Outcome::Unreachable)
+        );
         assert_eq!(sources()[0].state, SourceState::Unreachable);
         assert_eq!(states()[0].total, 1);
         assert_eq!(states()[0].items.len(), 1);
@@ -2416,8 +2651,14 @@ mod tests {
         let repoint = std::thread::spawn(move || {
             start_rx.recv().unwrap();
             attempt_tx.send(()).unwrap();
-            assert_eq!(crate::plex::register_for_test("browse-life", "10.0.0.2", 32400, "new", "cid"), sid);
-            assert!(seen.load(Ordering::SeqCst), "repoint returned before the browse commit released WRITE");
+            assert_eq!(
+                crate::plex::register_for_test("browse-life", "10.0.0.2", 32400, "new", "cid"),
+                sid
+            );
+            assert!(
+                seen.load(Ordering::SeqCst),
+                "repoint returned before the browse commit released WRITE"
+            );
         });
 
         let applied = crate::plex::commit_reachability_if_current(
@@ -2427,7 +2668,10 @@ mod tests {
             true,
             None,
             |outcome| {
-                assert!(crate::plex::write_held_for_test(), "local page mutation must execute under WRITE");
+                assert!(
+                    crate::plex::write_held_for_test(),
+                    "local page mutation must execute under WRITE"
+                );
                 start_tx.send(()).unwrap();
                 attempt_rx.recv().unwrap(); // the other thread is now about to take WRITE
                 assert!(apply_source_outcome(0, client, outcome));
@@ -2447,7 +2691,10 @@ mod tests {
         let _g = crate::testlock::serial();
         let (_cleanup, sid, old) = registered_directory_source();
         let old_gen = old.token_gen();
-        assert_eq!(crate::plex::register_for_test("browse-life", "10.0.0.2", 32400, "new", "cid"), sid);
+        assert_eq!(
+            crate::plex::register_for_test("browse-life", "10.0.0.2", 32400, "new", "cid"),
+            sid
+        );
         queue_directories_from(old, old_gen);
         assert_new_directories_survive();
     }
@@ -2457,7 +2704,10 @@ mod tests {
         let _g = crate::testlock::serial();
         let (_cleanup, sid, old) = registered_directory_source();
         let old_gen = old.token_gen();
-        assert_eq!(crate::plex::register_for_test("browse-life", "10.0.0.1", 32400, "new", "cid"), sid);
+        assert_eq!(
+            crate::plex::register_for_test("browse-life", "10.0.0.1", 32400, "new", "cid"),
+            sid
+        );
         queue_directories_from(old, old_gen);
         assert_new_directories_survive();
     }
@@ -2468,7 +2718,10 @@ mod tests {
         let (_cleanup, sid, old) = registered_directory_source();
         let old_gen = old.token_gen();
         crate::plex::revoke_for_profile_switch();
-        assert_eq!(crate::plex::register_for_test("browse-life", "10.0.0.1", 32400, "profile", "cid"), sid);
+        assert_eq!(
+            crate::plex::register_for_test("browse-life", "10.0.0.1", 32400, "profile", "cid"),
+            sid
+        );
         crate::plex::finish_profile_switch(&[sid]);
         queue_directories_from(old, old_gen);
         assert_new_directories_survive();
@@ -2492,13 +2745,23 @@ mod tests {
         let (_cleanup, sid, old) = registered_source();
         let count = ensure_sections_with(|client| {
             assert!(std::ptr::eq(client, old));
-            assert_eq!(crate::plex::register_for_test("browse-life", "10.0.0.2", 32400, "new", "cid"), sid);
+            assert_eq!(
+                crate::plex::register_for_test("browse-life", "10.0.0.2", 32400, "new", "cid"),
+                sid
+            );
             Some(vec![(1, "Stale Movies".into(), SecKind::Movie)])
         });
 
         assert_eq!(count, 0);
-        assert!(sections().is_empty(), "the old origin's section table must not land");
-        assert_eq!(crate::plex::server_probe_result(sid), None, "the replacement lifecycle stays unprobed");
+        assert!(
+            sections().is_empty(),
+            "the old origin's section table must not land"
+        );
+        assert_eq!(
+            crate::plex::server_probe_result(sid),
+            None,
+            "the replacement lifecycle stays unprobed"
+        );
     }
 
     #[test]
@@ -2509,14 +2772,20 @@ mod tests {
         let old_gen = old.token_gen();
         let count = ensure_sections_with(|client| {
             assert!(std::ptr::eq(client, old));
-            assert_eq!(crate::plex::register_for_test("browse-life", "10.0.0.1", 32400, "new", "cid"), sid);
+            assert_eq!(
+                crate::plex::register_for_test("browse-life", "10.0.0.1", 32400, "new", "cid"),
+                sid
+            );
             Some(vec![(1, "Stale Movies".into(), SecKind::Movie)])
         });
 
         assert_ne!(old.token_gen(), old_gen);
         assert_eq!(count, 0);
         assert!(sections().is_empty());
-        assert_eq!(crate::plex::server_probe_result(sid), Some(crate::plex::probe::Outcome::Unauthorized));
+        assert_eq!(
+            crate::plex::server_probe_result(sid),
+            Some(crate::plex::probe::Outcome::Unauthorized)
+        );
     }
 
     #[test]
@@ -2529,8 +2798,15 @@ mod tests {
         });
 
         assert_eq!(count, 0);
-        assert_eq!(crate::plex::server_probe_result(sid), Some(crate::plex::probe::Outcome::Unauthorized));
-        assert_eq!(sources()[0].state, SourceState::Unauthorized, "browse mirrors the canonical merged answer");
+        assert_eq!(
+            crate::plex::server_probe_result(sid),
+            Some(crate::plex::probe::Outcome::Unauthorized)
+        );
+        assert_eq!(
+            sources()[0].state,
+            SourceState::Unauthorized,
+            "browse mirrors the canonical merged answer"
+        );
     }
 
     /// Regression: `reset()` dropped the three result mailboxes but left the single-flight
@@ -2549,9 +2825,18 @@ mod tests {
 
         reset();
 
-        assert!(!FETCHING.load(Ordering::SeqCst), "page fetch stayed latched — Library wedges");
-        assert!(!GENRE_FETCHING.load(Ordering::SeqCst), "genre fetch stayed latched");
-        assert!(!LETTERS_FETCHING.load(Ordering::SeqCst), "letters fetch stayed latched");
+        assert!(
+            !FETCHING.load(Ordering::SeqCst),
+            "page fetch stayed latched — Library wedges"
+        );
+        assert!(
+            !GENRE_FETCHING.load(Ordering::SeqCst),
+            "genre fetch stayed latched"
+        );
+        assert!(
+            !LETTERS_FETCHING.load(Ordering::SeqCst),
+            "letters fetch stayed latched"
+        );
     }
 
     /// `reset()` must also drop the retry backoff, or a profile switch inherits the previous
@@ -2608,8 +2893,15 @@ mod tests {
         let _cleanup = registered_page_source().0;
         land_page(-1, 0);
         assert_eq!(fetch_state(), SecFetch::Failed);
-        assert!(!loading_initial(), "the grid must stop spinning on a failure");
-        assert_eq!(total(), -1, "…with nothing to show, which is what makes it the SCREEN's failure too");
+        assert!(
+            !loading_initial(),
+            "the grid must stop spinning on a failure"
+        );
+        assert_eq!(
+            total(),
+            -1,
+            "…with nothing to show, which is what makes it the SCREEN's failure too"
+        );
         reset();
     }
 
@@ -2673,11 +2965,17 @@ mod tests {
         // is registered here. It makes `cur_source_idx`'s empty-table fallback resolve to this row.
         seed_sources(vec![BrowseSource {
             sid: crate::plex::current_server(),
+            client_addr: 0,
+            token_gen: 0,
             machine_id: "mach-0".into(),
             owned: true,
             name: "nas-home".into(),
             handle: "friend".into(),
-            state: if reachable { SourceState::Reachable } else { SourceState::Unreachable },
+            state: if reachable {
+                SourceState::Reachable
+            } else {
+                SourceState::Unreachable
+            },
             tier: None,
             sections_done,
             counts_done: true,
@@ -2694,9 +2992,17 @@ mod tests {
     fn a_source_that_did_not_answer_is_observable_rather_than_an_eternal_spinner() {
         let _g = crate::testlock::serial();
         seed_one_source(true, false);
-        assert_eq!(cur_source_state(), SecFetch::Loading, "nobody has asked it anything yet");
+        assert_eq!(
+            cur_source_state(),
+            SecFetch::Loading,
+            "nobody has asked it anything yet"
+        );
         source_mut(0).unwrap().set_reachable(false);
-        assert_eq!(cur_source_state(), SecFetch::Failed, "the screen must be able to see this");
+        assert_eq!(
+            cur_source_state(),
+            SecFetch::Failed,
+            "the screen must be able to see this"
+        );
         reset();
     }
 
@@ -2707,7 +3013,11 @@ mod tests {
     fn a_source_with_no_browsable_library_answered_and_did_not_fail() {
         let _g = crate::testlock::serial();
         seed_one_source(true, true);
-        assert_eq!(cur_source_state(), SecFetch::Ready, "an empty answer is an answer");
+        assert_eq!(
+            cur_source_state(),
+            SecFetch::Ready,
+            "an empty answer is an answer"
+        );
         assert_eq!(section_count(), 0);
         reset();
     }
@@ -2724,7 +3034,13 @@ mod tests {
             s.set_reachable(true);
             s.sections_done = true;
         }
-        append_sections(0, vec![(1, "Movies".into(), SecKind::Movie), (2, "Film Club".into(), SecKind::Movie)]);
+        append_sections(
+            0,
+            vec![
+                (1, "Movies".into(), SecKind::Movie),
+                (2, "Film Club".into(), SecKind::Movie),
+            ],
+        );
         assert_eq!(cur_source_state(), SecFetch::Ready);
         assert_eq!(section_count(), 2);
         assert!(loading_initial(), "a fresh section has not answered yet");
@@ -2740,6 +3056,8 @@ mod tests {
     pub(super) fn a_source(name: &str, handle: &str, reachable: bool) -> BrowseSource {
         BrowseSource {
             sid: ServerId::UNSET,
+            client_addr: 0,
+            token_gen: 0,
             // the machine id doubles as the fixture's identity, and OWNERSHIP follows the handle
             // here (a fixture, not the product rule — `sync_roster` takes `owned` from the roster,
             // because a share whose `sourceTitle` plex.tv did not send is still a share)
@@ -2747,7 +3065,11 @@ mod tests {
             owned: handle.is_empty(),
             name: name.into(),
             handle: handle.into(),
-            state: if reachable { SourceState::Reachable } else { SourceState::Unreachable },
+            state: if reachable {
+                SourceState::Reachable
+            } else {
+                SourceState::Unreachable
+            },
             tier: None,
             sections_done: true,
             counts_done: true,
@@ -2765,16 +3087,32 @@ mod tests {
     #[test]
     fn two_servers_both_have_a_section_one_and_the_table_tells_them_apart() {
         let _g = crate::testlock::serial();
-        seed_sources(vec![a_source("mac-mini", "", true), a_source("nas-home", "friend", true)]);
-        append_sections(0, vec![(1, "Movies".into(), SecKind::Movie), (2, "TV Shows".into(), SecKind::Show)]);
+        seed_sources(vec![
+            a_source("mac-mini", "", true),
+            a_source("nas-home", "friend", true),
+        ]);
+        append_sections(
+            0,
+            vec![
+                (1, "Movies".into(), SecKind::Movie),
+                (2, "TV Shows".into(), SecKind::Show),
+            ],
+        );
         append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie)]);
 
         assert_eq!(section_count(), 3);
         let ours = &sections()[0];
         let theirs = &sections()[2];
         assert_eq!((ours.key, ours.src), (1, 0), "our section 1, on source 0");
-        assert_eq!((theirs.key, theirs.src), (1, 1), "THEIR section 1 — same key, different source");
-        assert_eq!((section_title(0), section_title(2)), ("Movies", "Film Club"));
+        assert_eq!(
+            (theirs.key, theirs.src),
+            (1, 1),
+            "THEIR section 1 — same key, different source"
+        );
+        assert_eq!(
+            (section_title(0), section_title(2)),
+            ("Movies", "Film Club")
+        );
         // and the chip's annotation follows the section being browsed, not the account
         assert_eq!(handle_of(2), "friend");
         assert_eq!(handle_of(0), "", "your own libraries carry no owner at all");
@@ -2788,15 +3126,32 @@ mod tests {
     #[test]
     fn a_source_arriving_late_appends_and_moves_no_existing_index() {
         let _g = crate::testlock::serial();
-        seed_sources(vec![a_source("mac-mini", "", true), a_source("nas-home", "friend", true)]);
-        append_sections(0, vec![(1, "Movies".into(), SecKind::Movie), (2, "TV Shows".into(), SecKind::Show)]);
+        seed_sources(vec![
+            a_source("mac-mini", "", true),
+            a_source("nas-home", "friend", true),
+        ]);
+        append_sections(
+            0,
+            vec![
+                (1, "Movies".into(), SecKind::Movie),
+                (2, "TV Shows".into(), SecKind::Show),
+            ],
+        );
         set_cur(1);
         let before = (cur(), section_title(1).to_string(), states().len());
 
         append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie)]);
-        assert_eq!(cur(), before.0, "the library being browsed is still the one at that index");
+        assert_eq!(
+            cur(),
+            before.0,
+            "the library being browsed is still the one at that index"
+        );
         assert_eq!(section_title(1), before.1);
-        assert_eq!(states().len(), section_count(), "states stay in lockstep with the table");
+        assert_eq!(
+            states().len(),
+            section_count(),
+            "states stay in lockstep with the table"
+        );
         assert_eq!(states().len(), before.2 + 1);
 
         // A RE-discovery ("Check for new shares", or a server that came back) re-offers the same
@@ -2806,10 +3161,20 @@ mod tests {
         assert_eq!(cur(), before.0);
         // …while a library the owner has CREATED since is appended, at the end, where it cannot
         // disturb an index anything is already holding.
-        append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie), (4, "Club Shows".into(), SecKind::Show)]);
+        append_sections(
+            1,
+            vec![
+                (1, "Film Club".into(), SecKind::Movie),
+                (4, "Club Shows".into(), SecKind::Show),
+            ],
+        );
         assert_eq!(section_count(), 4);
         assert_eq!(section_title(3), "Club Shows");
-        assert_eq!(section_title(1), before.1, "and the row we were browsing is untouched");
+        assert_eq!(
+            section_title(1),
+            before.1,
+            "and the row we were browsing is untouched"
+        );
         reset();
     }
 
@@ -2828,7 +3193,8 @@ mod tests {
     }
     impl TempPins {
         fn new(tag: &str) -> TempPins {
-            let dir = std::env::temp_dir().join(format!("plxnative-pins-{}-{tag}", std::process::id()));
+            let dir =
+                std::env::temp_dir().join(format!("plxnative-pins-{}-{tag}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).expect("a writable temp dir");
             crate::plex::session::redirect_for_test(Some(dir.join("auth.json")));
@@ -2857,8 +3223,17 @@ mod tests {
 
     /// One account, two servers — seeded and discovered exactly as a boot does it.
     fn seed_two_servers() {
-        seed_sources(vec![a_source("mac-mini", "", true), a_source("nas-home", "friend", true)]);
-        append_sections(0, vec![(1, "Movies".into(), SecKind::Movie), (2, "TV Shows".into(), SecKind::Show)]);
+        seed_sources(vec![
+            a_source("mac-mini", "", true),
+            a_source("nas-home", "friend", true),
+        ]);
+        append_sections(
+            0,
+            vec![
+                (1, "Movies".into(), SecKind::Movie),
+                (2, "TV Shows".into(), SecKind::Show),
+            ],
+        );
         append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie)]);
     }
 
@@ -2875,12 +3250,22 @@ mod tests {
         let t = TempPins::new("defaults");
         t.watching("u-owner");
         seed_two_servers();
-        assert_eq!((pinned(0), pinned(1), pinned(2)), (true, true, false), "yours On, a friend's Off");
+        assert_eq!(
+            (pinned(0), pinned(1), pinned(2)),
+            (true, true, false),
+            "yours On, a friend's Off"
+        );
         assert_eq!(pinned_count(), 2);
 
-        assert!(toggle_pin(2), "…and a friend's can be turned on, which is what makes it a decision");
+        assert!(
+            toggle_pin(2),
+            "…and a friend's can be turned on, which is what makes it a decision"
+        );
         assert_eq!(pinned_count(), 3);
-        assert!(toggle_pin(0) && toggle_pin(1), "your own can be unpinned — a preference, not a mistake");
+        assert!(
+            toggle_pin(0) && toggle_pin(1),
+            "your own can be unpinned — a preference, not a mistake"
+        );
         assert_eq!(pinned_count(), 1);
 
         assert!(is_last_pinned(2));
@@ -2905,7 +3290,11 @@ mod tests {
         // …and now the table is wiped and re-discovered, which is what a profile switch, a
         // sign-in and a `reset` all do
         seed_two_servers();
-        assert_eq!((pinned(0), pinned(1), pinned(2)), (true, false, true), "the answer came back");
+        assert_eq!(
+            (pinned(0), pinned(1), pinned(2)),
+            (true, false, true),
+            "the answer came back"
+        );
         reset();
     }
 
@@ -2927,17 +3316,34 @@ mod tests {
 
         // the next boot: the roster is restored, our own sections are fetched, the share's are not
         let boot = || {
-            seed_sources(vec![a_source("mac-mini", "", true), a_source("nas-home", "friend", true)]);
-            append_sections(0, vec![(1, "Movies".into(), SecKind::Movie), (2, "TV Shows".into(), SecKind::Show)]);
+            seed_sources(vec![
+                a_source("mac-mini", "", true),
+                a_source("nas-home", "friend", true),
+            ]);
+            append_sections(
+                0,
+                vec![
+                    (1, "Movies".into(), SecKind::Movie),
+                    (2, "TV Shows".into(), SecKind::Show),
+                ],
+            );
         };
         boot();
-        assert_eq!(sections().len(), 2, "the share has not answered — it contributes no rows");
+        assert_eq!(
+            sections().len(),
+            2,
+            "the share has not answered — it contributes no rows"
+        );
         let pins = library_pins();
         assert!(
             pins.contains(&(1, 1, false)),
             "the friend's recorded Off is reported anyway, or Home reads it as undecided: {pins:?}"
         );
-        assert_eq!(pins.len(), 3, "…and nothing else is invented: two enumerated rows plus the one record");
+        assert_eq!(
+            pins.len(),
+            3,
+            "…and nothing else is invented: two enumerated rows plus the one record"
+        );
 
         // the other direction, so this is a JOIN and not a blanket "a share is off"
         t.watching("u-owner");
@@ -2945,7 +3351,10 @@ mod tests {
         assert!(toggle_pin(2));
         record_pins(true);
         boot();
-        assert!(library_pins().contains(&(1, 1, true)), "a recorded On reaches Home the same way");
+        assert!(
+            library_pins().contains(&(1, 1, true)),
+            "a recorded On reaches Home the same way"
+        );
 
         // and a source the record cannot NAME is left undecided rather than joined by accident
         seed_sources(vec![a_source("mac-mini", "", true), {
@@ -2954,7 +3363,10 @@ mod tests {
             s
         }]);
         append_sections(0, vec![(1, "Movies".into(), SecKind::Movie)]);
-        assert!(library_pins().iter().all(|&(si, _, _)| si == 0), "a nameless machine joins nothing");
+        assert!(
+            library_pins().iter().all(|&(si, _, _)| si == 0),
+            "a nameless machine joins nothing"
+        );
         reset();
     }
 
@@ -2974,10 +3386,22 @@ mod tests {
         assert_eq!((pinned(0), pinned(1), pinned(2)), (true, true, true));
 
         // a boot the share missed entirely, on which one of our own is turned off
-        seed_sources(vec![a_source("mac-mini", "", true), a_source("nas-home", "friend", true)]);
-        append_sections(0, vec![(1, "Movies".into(), SecKind::Movie), (2, "TV Shows".into(), SecKind::Show)]);
+        seed_sources(vec![
+            a_source("mac-mini", "", true),
+            a_source("nas-home", "friend", true),
+        ]);
+        append_sections(
+            0,
+            vec![
+                (1, "Movies".into(), SecKind::Movie),
+                (2, "TV Shows".into(), SecKind::Show),
+            ],
+        );
         assert!(toggle_pin(1));
-        assert!(library_pins().contains(&(1, 1, true)), "the absent share is still recorded On");
+        assert!(
+            library_pins().contains(&(1, 1, true)),
+            "the absent share is still recorded On"
+        );
 
         // …and the next boot on which it DOES answer finds both answers intact
         seed_two_servers();
@@ -3002,14 +3426,22 @@ mod tests {
         // The kid switches in. Never asked, so the defaults — NOT dad's answer.
         t.watching("u-kid");
         seed_two_servers();
-        assert_eq!((pinned(0), pinned(1), pinned(2)), (true, true, false), "a switch switches the shelves");
+        assert_eq!(
+            (pinned(0), pinned(1), pinned(2)),
+            (true, true, false),
+            "a switch switches the shelves"
+        );
         assert!(toggle_pin(0), "…and the kid answers for themselves");
         assert_eq!((pinned(0), pinned(1), pinned(2)), (false, true, false));
 
         // …and back, with dad's answer intact rather than overwritten by the kid's.
         t.watching("u-dad");
         seed_two_servers();
-        assert_eq!((pinned(0), pinned(1), pinned(2)), (true, false, true), "one file, two answers");
+        assert_eq!(
+            (pinned(0), pinned(1), pinned(2)),
+            (true, false, true),
+            "one file, two answers"
+        );
         reset();
     }
 
@@ -3021,12 +3453,18 @@ mod tests {
         let t = TempPins::new("gate");
         t.watching("u-dad");
         seed_two_servers();
-        assert!(first_run_asks(), "two sources, and nobody has asked this profile");
+        assert!(
+            first_run_asks(),
+            "two sources, and nobody has asked this profile"
+        );
 
         record_pins(true); // what `Start watching` — and BACK, which commits the same thing — does
         assert!(!first_run_asks(), "asked once, never again");
         t.watching("u-kid");
-        assert!(first_run_asks(), "…and the answer belongs to the person who gave it");
+        assert!(
+            first_run_asks(),
+            "…and the answer belongs to the person who gave it"
+        );
 
         // A single-server install is not a question at all, whoever is watching.
         seed_sources(vec![a_source("mac-mini", "", true)]);
@@ -3042,14 +3480,31 @@ mod tests {
     #[test]
     fn the_tab_strip_grows_by_types_and_never_by_people() {
         let _g = crate::testlock::serial();
-        seed_sources(vec![a_source("mac-mini", "", true), a_source("nas-home", "friend", true)]);
+        seed_sources(vec![
+            a_source("mac-mini", "", true),
+            a_source("nas-home", "friend", true),
+        ]);
         append_sections(0, vec![(1, "Movies".into(), SecKind::Movie)]);
-        append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie), (2, "Their Shows".into(), SecKind::Show)]);
+        append_sections(
+            1,
+            vec![
+                (1, "Film Club".into(), SecKind::Movie),
+                (2, "Their Shows".into(), SecKind::Show),
+            ],
+        );
 
-        assert_eq!(tab_count(), 2, "your Movies, plus the shows nobody of yours provides");
-        assert_eq!((tab_title(0), tab_title(1)), ("Movies", "Their Shows"));
-        assert_eq!(tab_section(1), 2);
-        assert_eq!(tab_of_section(1), 0, "their films ride YOUR Movies pill — same type, one level");
+        assert_eq!(
+            tab_count(),
+            2,
+            "your Movies, plus the shows nobody of yours provides"
+        );
+        assert_eq!((tab_title(0), tab_title(1)), ("Movies", "TV Shows"));
+        assert_eq!(tab_section(1), Some(2));
+        assert_eq!(
+            tab_of_section(1),
+            0,
+            "their films ride YOUR Movies pill — same type, one level"
+        );
         assert_eq!(tab_of_section(2), 1, "their shows have a pill of their own");
         reset();
     }
@@ -3065,21 +3520,46 @@ mod tests {
     #[test]
     fn a_friends_library_of_a_type_you_do_not_own_gets_its_own_pill() {
         let _g = crate::testlock::serial();
-        seed_sources(vec![a_source("mac-mini", "", true), a_source("nas-home", "friend", true)]);
+        seed_sources(vec![
+            a_source("mac-mini", "", true),
+            a_source("nas-home", "friend", true),
+        ]);
         append_sections(0, vec![(1, "Movies".into(), SecKind::Movie)]); // we own films and nothing else
-        append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie), (2, "Their Shows".into(), SecKind::Show)]);
+        append_sections(
+            1,
+            vec![
+                (1, "Film Club".into(), SecKind::Movie),
+                (2, "Their Shows".into(), SecKind::Show),
+            ],
+        );
 
-        assert_eq!(tab_count(), 2, "your films, plus the shows nobody of yours provides");
-        assert_eq!(tab_title(1), "Their Shows");
-        assert_eq!(tab_of_section(2), 1, "their shows are their own pill, NOT your Movies one");
+        assert_eq!(
+            tab_count(),
+            2,
+            "your films, plus the shows nobody of yours provides"
+        );
+        assert_eq!(tab_title(1), "TV Shows");
+        assert_eq!(
+            tab_of_section(2),
+            1,
+            "their shows are their own pill, NOT your Movies one"
+        );
         assert_eq!(tab_of_section(1), 0, "…while their films still ride yours");
         // the wire types this product has a level for — and the ones it deliberately does not, which
         // is what keeps an unplayable library out of the strip, the Sources panel and the grid at once
         assert_eq!(SecKind::from_wire("movie"), Some(SecKind::Movie));
         assert_eq!(SecKind::from_wire("show"), Some(SecKind::Show));
-        assert_eq!(SecKind::from_wire("artist"), None, "music has no level below the grid: no pill");
+        assert_eq!(
+            SecKind::from_wire("artist"),
+            None,
+            "music has no level below the grid: no pill"
+        );
         assert_eq!(SecKind::from_wire("photo"), None);
-        assert_eq!(SecKind::from_wire("mixed"), None, "a type with no level is still refused");
+        assert_eq!(
+            SecKind::from_wire("mixed"),
+            None,
+            "a type with no level is still refused"
+        );
         reset();
     }
 
@@ -3104,23 +3584,34 @@ mod tests {
         // as borrows and compared after the next source lands is reading freed memory. Every
         // caller in the app consumes these inside one frame with no append in between, which is
         // what makes the signature sound in the product and unsound in a test that spans landings.
-        let row = || (0..tab_count()).map(|t| tab_title(t).to_string()).collect::<Vec<_>>();
+        let row = || {
+            (0..tab_count())
+                .map(|t| tab_title(t).to_string())
+                .collect::<Vec<_>>()
+        };
         // We own FILMS and nothing else. The owner used to hold both types here, which made the
         // second half of this test need a third type (music) to have anything left over; with the
         // product's list down to two, the un-owned type has to be one of them.
         append_sections(0, vec![(1, "Movies".into(), SecKind::Movie)]);
         let alone = row();
-        assert_eq!(alone, vec!["Movies"], "your own library, and nothing else");
+        assert_eq!(alone, vec!["Movies", "TV Shows"]);
 
         for src in 1..=3 {
             append_sections(
                 src,
-                vec![(1, "Film Club".into(), SecKind::Movie), (3, "Film Club".into(), SecKind::Movie)],
+                vec![
+                    (1, "Film Club".into(), SecKind::Movie),
+                    (3, "Film Club".into(), SecKind::Movie),
+                ],
             );
-            assert_eq!(row(), alone, "source {src} added a pill — the strip must not grow by people");
+            assert_eq!(
+                row(),
+                alone,
+                "source {src} added a pill — the strip must not grow by people"
+            );
         }
         assert_eq!(section_count(), 7, "seven libraries…");
-        assert_eq!(tab_count(), 1, "…and the one pill it started with");
+        assert_eq!(tab_count(), 2, "…and the two permanent type pills");
 
         // …and a type NOBODY owns grows the row by exactly one however many people share it. Every
         // fixture above is a type we own, which is why this half needs saying separately: it is the
@@ -3128,7 +3619,11 @@ mod tests {
         for src in 1..=3 {
             append_sections(src, vec![(9, "Their Shows".into(), SecKind::Show)]);
         }
-        assert_eq!(tab_count(), 2, "three friends sharing shows are ONE TV Shows pill");
+        assert_eq!(
+            tab_count(),
+            2,
+            "three friends sharing shows are ONE TV Shows pill"
+        );
         assert_eq!(row().len(), 2);
         reset();
     }
@@ -3143,13 +3638,18 @@ mod tests {
     fn a_profile_switch_re_measures_the_strip_instead_of_keeping_the_last_accounts_pills() {
         let _g = crate::testlock::serial();
         seed_sources(vec![a_source("mac-mini", "", true)]);
-        append_sections(0, vec![(1, "Movies".into(), SecKind::Movie), (2, "TV Shows".into(), SecKind::Show)]);
-        let g0 = tabs_gen();
+        append_sections(
+            0,
+            vec![
+                (1, "Movies".into(), SecKind::Movie),
+                (2, "TV Shows".into(), SecKind::Show),
+            ],
+        );
         assert_eq!(tab_count(), 2);
 
         reset(); // install_pms: a different account signs in
-        assert_eq!(tab_count(), 0, "the row is empty…");
-        assert_ne!(tabs_gen(), g0, "…and the strip MUST re-measure rather than keep the old pills");
+        assert_eq!(tab_count(), 2, "the two type pills survive reset");
+        assert_eq!((tab_title(0), tab_title(1)), ("Movies", "TV Shows"));
     }
 
     /// The strip's own generation moves when the ROW changes and not when the TABLE does — which,
@@ -3171,13 +3671,20 @@ mod tests {
         // two friends' film libraries land: both fold onto your Movies pill
         append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie)]);
         append_sections(2, vec![(1, "Film Club".into(), SecKind::Movie)]);
-        assert_ne!(sections_gen(), table0, "the TABLE's generation moved, twice");
-        assert_eq!(tabs_gen(), g0, "…and the row did not, so it must not re-measure");
+        assert_ne!(
+            sections_gen(),
+            table0,
+            "the TABLE's generation moved, twice"
+        );
+        assert_eq!(
+            tabs_gen(),
+            g0,
+            "…and the row did not, so it must not re-measure"
+        );
 
-        // …while a MISSING type is exactly what must invalidate it (we own films only, so their
-        // shows are the type nobody of ours provides)
+        // A newly discovered type fills a permanent destination; it does not reshape the row.
         append_sections(2, vec![(9, "Their Shows".into(), SecKind::Show)]);
-        assert_ne!(tabs_gen(), g0, "a gained pill MUST re-measure the row");
+        assert_eq!(tabs_gen(), g0, "the permanent row never changes shape");
         reset();
     }
 
@@ -3194,24 +3701,51 @@ mod tests {
     fn the_sources_panel_offers_only_libraries_of_the_tab_being_browsed() {
         let _g = crate::testlock::serial();
         reset();
-        seed_sources(vec![a_source("mac-mini", "", true), a_source("nas-home", "friend", true)]);
-        append_sections(0, vec![(1, "Movies".into(), SecKind::Movie), (2, "TV Shows".into(), SecKind::Show)]);
-        append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie), (2, "Their Shows".into(), SecKind::Show)]);
+        seed_sources(vec![
+            a_source("mac-mini", "", true),
+            a_source("nas-home", "friend", true),
+        ]);
+        append_sections(
+            0,
+            vec![
+                (1, "Movies".into(), SecKind::Movie),
+                (2, "TV Shows".into(), SecKind::Show),
+            ],
+        );
+        append_sections(
+            1,
+            vec![
+                (1, "Film Club".into(), SecKind::Movie),
+                (2, "Their Shows".into(), SecKind::Show),
+            ],
+        );
 
         // browsing a FILM library: both servers' film libraries, and no show library from either
         set_cur(0);
         let films: Vec<String> = source_rows().iter().map(|r| r.title.clone()).collect();
-        assert_eq!(films, vec!["Movies", "Film Club"], "both servers' films, nothing else: {films:?}");
+        assert_eq!(
+            films,
+            vec!["Movies", "Film Club"],
+            "both servers' films, nothing else: {films:?}"
+        );
 
         // …and the same panel on the shows tab is the other list entirely
         set_cur(1);
         let shows: Vec<String> = source_rows().iter().map(|r| r.title.clone()).collect();
-        assert_eq!(shows, vec!["TV Shows", "Their Shows"], "both servers' shows: {shows:?}");
+        assert_eq!(
+            shows,
+            vec!["TV Shows", "Their Shows"],
+            "both servers' shows: {shows:?}"
+        );
 
         // the decisive property: every row the panel can activate keeps the browsed TYPE, so the
         // tab derived from it cannot move. Stated over the section each row opens, not its title.
         for r in source_rows() {
-            assert_eq!(sections()[r.section].kind, SecKind::Show, "a row of another type is reachable");
+            assert_eq!(
+                sections()[r.section].kind,
+                SecKind::Show,
+                "a row of another type is reachable"
+            );
         }
         reset();
     }
@@ -3224,22 +3758,39 @@ mod tests {
     #[test]
     fn a_page_fetch_is_what_keeps_reachability_honest_after_discovery() {
         let _g = crate::testlock::serial();
-        seed_sources(vec![a_source("mac-mini", "", true), a_source("nas-home", "friend", true)]);
+        seed_sources(vec![
+            a_source("mac-mini", "", true),
+            a_source("nas-home", "friend", true),
+        ]);
         append_sections(0, vec![(1, "Movies".into(), SecKind::Movie)]);
         append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie)]);
-        assert!(sources()[1].sections_done, "discovery is done — it will never re-ask by itself");
+        assert!(
+            sources()[1].sections_done,
+            "discovery is done — it will never re-ask by itself"
+        );
 
         source_mut(1).unwrap().set_reachable(false); // a page for THEIR library did not come back
         assert!(!sources()[1].reachable(), "their group dims");
-        assert!(sources()[0].reachable(), "…and ours is untouched — it answered");
+        assert!(
+            sources()[0].reachable(),
+            "…and ours is untouched — it answered"
+        );
 
         source_mut(1).unwrap().set_reachable(true); // …and it comes back
         assert!(sources()[1].reachable());
-        assert_eq!(sources()[1].retry_cd, 0, "a server that answered is worth re-asking at once");
+        assert_eq!(
+            sources()[1].retry_cd,
+            0,
+            "a server that answered is worth re-asking at once"
+        );
 
         source_mut(1).unwrap().state = SourceState::Unauthorized;
         source_mut(1).unwrap().set_reachable(true);
-        assert_eq!(sources()[1].state, SourceState::Reachable, "a successful page clears a known 401");
+        assert_eq!(
+            sources()[1].state,
+            SourceState::Reachable,
+            "a successful page clears a known 401"
+        );
         reset();
     }
 
@@ -3257,7 +3808,10 @@ mod tests {
         let mut s = a_source("nas-home", "friend", true);
 
         s.state = SourceState::NotProbed;
-        assert!(s.reachable(), "nobody has dialled it — the group must not open dimmed");
+        assert!(
+            s.reachable(),
+            "nobody has dialled it — the group must not open dimmed"
+        );
         assert_eq!(s.tier, None, "and nothing has told us which tier won");
 
         s.set_reachable(true);
@@ -3273,8 +3827,15 @@ mod tests {
         // and dims/disables the group because there is nothing browsable behind that credential.
         s.state = SourceState::Unauthorized;
         s.set_reachable(false);
-        assert_eq!(s.state, SourceState::Unauthorized, "a status-folded request cannot erase a known 401");
-        assert!(s.reachable(), "it answered; this old bool projection is only the network question");
+        assert_eq!(
+            s.state,
+            SourceState::Unauthorized,
+            "a status-folded request cannot erase a known 401"
+        );
+        assert!(
+            s.reachable(),
+            "it answered; this old bool projection is only the network question"
+        );
         reset();
     }
 
@@ -3293,17 +3854,32 @@ mod tests {
         let _cleanup = Cleanup;
 
         let sid = crate::plex::register_for_test("mach-A", "10.0.0.1", 32400, "tok", "cid");
-        crate::plex::client_for(sid).unwrap().set_link(crate::plex::probe::Location::Remote);
+        crate::plex::client_for(sid)
+            .unwrap()
+            .set_link(crate::plex::probe::Location::Remote);
         sync_roster();
-        assert_eq!(sources()[0].state, SourceState::NotProbed, "a restored tier is not a current probe answer");
-        assert_eq!(sources()[0].tier, Some(crate::plex::probe::Location::Remote));
+        assert_eq!(
+            sources()[0].state,
+            SourceState::NotProbed,
+            "a restored tier is not a current probe answer"
+        );
+        assert_eq!(
+            sources()[0].tier,
+            Some(crate::plex::probe::Location::Remote)
+        );
 
         crate::plex::publish_probe_result(sid, crate::plex::probe::Outcome::Unauthorized);
         sync_roster();
         assert_eq!(sources()[0].state, SourceState::Unauthorized);
-        assert_eq!(sources()[0].tier, Some(crate::plex::probe::Location::Remote), "cached route metadata is retained");
+        assert_eq!(
+            sources()[0].tier,
+            Some(crate::plex::probe::Location::Remote),
+            "cached route metadata is retained"
+        );
 
-        crate::plex::client_for(sid).unwrap().set_link(crate::plex::probe::Location::Relay);
+        crate::plex::client_for(sid)
+            .unwrap()
+            .set_link(crate::plex::probe::Location::Relay);
         crate::plex::publish_probe_result(sid, crate::plex::probe::Outcome::Reachable);
         sync_roster();
         assert_eq!(sources()[0].state, SourceState::Reachable);
@@ -3312,7 +3888,11 @@ mod tests {
         crate::plex::publish_probe_result(sid, crate::plex::probe::Outcome::Unreachable);
         sync_roster();
         assert_eq!(sources()[0].state, SourceState::Unreachable);
-        assert_eq!(sources()[0].tier, Some(crate::plex::probe::Location::Relay), "offline does not erase the last route");
+        assert_eq!(
+            sources()[0].tier,
+            Some(crate::plex::probe::Location::Relay),
+            "offline does not erase the last route"
+        );
     }
 
     /// The same mapping on the projection the renderer actually sees, because `SrcGroup` carries
@@ -3320,7 +3900,10 @@ mod tests {
     #[test]
     fn the_source_group_projection_answers_reachability_the_same_way() {
         let _g = crate::testlock::serial();
-        seed_sources(vec![a_source("mac-mini", "", true), a_source("nas-home", "friend", true)]);
+        seed_sources(vec![
+            a_source("mac-mini", "", true),
+            a_source("nas-home", "friend", true),
+        ]);
         // Set the SOURCE directly. `mark_source_reachable` takes a *section* index and resolves the
         // source through it (`sections()[i].src`), so with no sections seeded it early-returns —
         // which cost this test one failing run before the name gave it away.
@@ -3352,7 +3935,10 @@ mod tests {
     #[test]
     fn a_refused_discovery_spawn_backs_off_instead_of_flooding_the_log() {
         let _g = crate::testlock::serial();
-        seed_sources(vec![a_source("mac-mini", "", true), a_source("nas-home", "friend", true)]);
+        seed_sources(vec![
+            a_source("mac-mini", "", true),
+            a_source("nas-home", "friend", true),
+        ]);
         for i in 0..2 {
             let s = source_mut(i).unwrap();
             s.sections_done = false; // both still want discovery
@@ -3362,10 +3948,23 @@ mod tests {
 
         discovery_spawn_refused(1);
 
-        assert!(!SRC_FETCHING.load(Ordering::SeqCst), "the single flight must be released");
-        assert_eq!(sources()[1].retry_cd, SRC_RETRY_CD, "…and the next attempt is ~10s out, not 1 frame");
-        assert!(sources()[1].reachable(), "a refused THREAD says nothing about their server");
-        assert!(!sources()[1].sections_done, "…and it is still a source waiting to be discovered");
+        assert!(
+            !SRC_FETCHING.load(Ordering::SeqCst),
+            "the single flight must be released"
+        );
+        assert_eq!(
+            sources()[1].retry_cd,
+            SRC_RETRY_CD,
+            "…and the next attempt is ~10s out, not 1 frame"
+        );
+        assert!(
+            sources()[1].reachable(),
+            "a refused THREAD says nothing about their server"
+        );
+        assert!(
+            !sources()[1].sections_done,
+            "…and it is still a source waiting to be discovered"
+        );
         assert_eq!(sources()[0].retry_cd, 0, "the other source is untouched");
 
         // one second of frames: the picker must not come back to it
@@ -3373,8 +3972,14 @@ mod tests {
         for _ in 0..60 {
             maybe_discover();
         }
-        assert!(!SRC_FETCHING.load(Ordering::SeqCst), "no attempt was made in a whole second");
-        assert!(sources()[1].retry_cd > 0, "…and the backoff still has most of its cooldown left");
+        assert!(
+            !SRC_FETCHING.load(Ordering::SeqCst),
+            "no attempt was made in a whole second"
+        );
+        assert!(
+            sources()[1].retry_cd > 0,
+            "…and the backoff still has most of its cooldown left"
+        );
         reset();
     }
 
@@ -3405,7 +4010,10 @@ mod tests {
             },
         ));
         land_discovery();
-        assert!(!sources()[0].counts_done, "an empty answer must leave the probe armed");
+        assert!(
+            !sources()[0].counts_done,
+            "an empty answer must leave the probe armed"
+        );
         assert_eq!(sections()[0].count, -1);
 
         // …and the real one does land, and does latch
@@ -3421,7 +4029,11 @@ mod tests {
         ));
         land_discovery();
         assert!(sources()[0].counts_done);
-        assert_eq!(sections()[0].count, 185, "the row can say \"185 films\" now");
+        assert_eq!(
+            sections()[0].count,
+            185,
+            "the row can say \"185 films\" now"
+        );
     }
 
     /// With one source the projection is the identity map, which is what makes a single-server
@@ -3430,14 +4042,24 @@ mod tests {
     fn one_source_leaves_the_strip_exactly_as_it_was() {
         let _g = crate::testlock::serial();
         seed_sources(vec![a_source("mac-mini", "", true)]);
-        append_sections(0, vec![(1, "Movies".into(), SecKind::Movie), (2, "TV Shows".into(), SecKind::Show)]);
+        append_sections(
+            0,
+            vec![
+                (1, "Movies".into(), SecKind::Movie),
+                (2, "TV Shows".into(), SecKind::Show),
+            ],
+        );
         assert_eq!(tab_count(), section_count());
         for i in 0..section_count() {
-            assert_eq!(tab_section(i), i);
+            assert_eq!(tab_section(i), Some(i));
             assert_eq!(tab_of_section(i), i);
             assert_eq!(tab_title(i), section_title(i));
         }
-        assert_eq!(sources().len(), 1, "…and the Source chip's own condition is false");
+        assert_eq!(
+            sources().len(),
+            1,
+            "…and the Source chip's own condition is false"
+        );
         reset();
     }
 
@@ -3462,7 +4084,11 @@ mod tests {
         };
         *PAGE_RESULT.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
         pump();
-        assert_eq!(fetch_state(), SecFetch::Loading, "the current query has not answered yet — it has not failed");
+        assert_eq!(
+            fetch_state(),
+            SecFetch::Loading,
+            "the current query has not answered yet — it has not failed"
+        );
         reset();
     }
 
@@ -3497,18 +4123,40 @@ mod tests {
             st[1].items = vec![row(sid, "7", 0), row(sid, "9", 0)];
         }
 
-        assert!(set_watched_local(sid, "7", true), "the item is in the store, so the edit lands");
+        assert!(
+            set_watched_local(sid, "7", true),
+            "the item is in the store, so the edit lands"
+        );
         let watched = |sec: usize, i: usize| {
             let st = unsafe { &*addr_of!(STATES) };
             let m = st[sec].items[i].as_ref().unwrap();
             (m.watched, m.unwatched, m.resume_ms)
         };
-        assert_eq!(watched(0, 0), (true, false, 0), "…tick on, and the resume bar retires with it");
-        assert_eq!(watched(1, 0), (true, false, 0), "…in a section that is not the one being browsed");
-        assert_eq!(watched(0, 1), (false, true, 0), "…and never on the friend's item with the same key");
-        assert_eq!(watched(1, 1), (false, true, 0), "…nor on an item that was not asked about");
+        assert_eq!(
+            watched(0, 0),
+            (true, false, 0),
+            "…tick on, and the resume bar retires with it"
+        );
+        assert_eq!(
+            watched(1, 0),
+            (true, false, 0),
+            "…in a section that is not the one being browsed"
+        );
+        assert_eq!(
+            watched(0, 1),
+            (false, true, 0),
+            "…and never on the friend's item with the same key"
+        );
+        assert_eq!(
+            watched(1, 1),
+            (false, true, 0),
+            "…nor on an item that was not asked about"
+        );
 
-        assert!(!set_watched_local(sid, "404", true), "an item in no section reports a miss");
+        assert!(
+            !set_watched_local(sid, "404", true),
+            "an item in no section reports a miss"
+        );
         reset();
     }
 }

@@ -121,7 +121,11 @@ pub(crate) fn bootstrap(
 
 /// Startup keeps a fifth of the measurement in reserve rather than spending all of it: there is no
 /// buffer yet, so the opening seconds are the least forgiving moment of the whole playback.
-pub(crate) fn startup_rung(measured_kbps: u32, catalog: &HlsActuatorCatalog, fallback: Rung) -> Rung {
+pub(crate) fn startup_rung(
+    measured_kbps: u32,
+    catalog: &HlsActuatorCatalog,
+    fallback: Rung,
+) -> Rung {
     catalog
         .best_for_budget(measured_kbps.saturating_mul(4) / 5)
         .map(|candidate| candidate.rung)
@@ -133,4 +137,3 @@ pub(crate) fn startup_rung(measured_kbps: u32, catalog: &HlsActuatorCatalog, fal
 pub(crate) fn policy_startup_floor_kbps(_policy: &AbrPolicy) -> u32 {
     Rung::P480.kbps()
 }
-
