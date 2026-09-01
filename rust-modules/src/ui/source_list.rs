@@ -138,9 +138,19 @@ fn usable(g: &SrcGroup) -> bool {
 /// worst misleading: "Not reachable · Relay · friend" reads as three problems where there is one,
 /// and the tier that failed is not a fact about the server the user is being asked to look at.
 fn accessory(g: &SrcGroup) -> String {
-    let tier = (g.state == SourceState::Reachable).then(|| g.tier.and_then(tier_word)).flatten();
-    let runs = [state_word(g.state), tier, (!g.handle.is_empty()).then_some(g.handle.as_str())];
-    runs.iter().flatten().copied().collect::<Vec<_>>().join(" \u{b7} ")
+    let tier = (g.state == SourceState::Reachable)
+        .then(|| g.tier.and_then(tier_word))
+        .flatten();
+    let runs = [
+        state_word(g.state),
+        tier,
+        (!g.handle.is_empty()).then_some(g.handle.as_str()),
+    ];
+    runs.iter()
+        .flatten()
+        .copied()
+        .collect::<Vec<_>>()
+        .join(" \u{b7} ")
 }
 
 /// Build the list.
@@ -172,7 +182,9 @@ pub(crate) fn sections(
         // is named, and the reason every other surface can say only the handle. A group that is not
         // working also SAYS so there, and says it FIRST — see [`accessory`]. It is a state in the
         // same register as the rows' own `On`/`Off`.
-        let mut sec = Section::new(g.name.clone()).accessory(accessory(g)).dim(!usable(g));
+        let mut sec = Section::new(g.name.clone())
+            .accessory(accessory(g))
+            .dim(!usable(g));
         for r in mine {
             let mut row = Row::new(r.title.clone());
             row = match level {
@@ -214,7 +226,12 @@ pub(crate) fn sections(
 /// swap, a pin flip, a source's libraries landing — it HOLDS, because the two levels list the same
 /// rows in the same order and the design's whole claim about the swap is that nothing moves.
 pub(crate) fn sel(rows: &[crate::browse::SrcRow], keep: Option<i32>) -> i32 {
-    keep.unwrap_or_else(|| rows.iter().position(|r| r.current).map(|i| i as i32).unwrap_or(0))
+    keep.unwrap_or_else(|| {
+        rows.iter()
+            .position(|r| r.current)
+            .map(|i| i as i32)
+            .unwrap_or(0)
+    })
 }
 
 #[cfg(test)]
@@ -223,7 +240,12 @@ mod tests {
     use crate::browse::{SourceState, SrcGroup};
 
     fn group(state: SourceState, tier: Option<Location>, handle: &str) -> SrcGroup {
-        SrcGroup { name: "nas-home".into(), handle: handle.into(), state, tier }
+        SrcGroup {
+            name: "nas-home".into(),
+            handle: handle.into(),
+            state,
+            tier,
+        }
     }
 
     /// **The four states, as four different sentences.** The two that say nothing say nothing for
@@ -241,18 +263,27 @@ mod tests {
         .iter()
         .map(|s| accessory(&group(*s, None, "friend")))
         .collect();
-        assert_eq!(words[0], "friend", "nobody has dialled: nothing is wrong, so nothing is said");
+        assert_eq!(
+            words[0], "friend",
+            "nobody has dialled: nothing is wrong, so nothing is said"
+        );
         assert_eq!(words[1], "friend", "a working source states only its owner");
         assert_eq!(words[2], "Not authorized \u{b7} friend");
         assert_eq!(words[3], "Not reachable \u{b7} friend");
-        assert_ne!(words[2], words[3], "the two faults are told apart, or the remedy is a guess");
+        assert_ne!(
+            words[2], words[3],
+            "the two faults are told apart, or the remedy is a guess"
+        );
     }
 
     /// The state LEADS, so the run that gives way under the accessory's elision is the handle — and
     /// a source with no handle (your own server) says the state alone rather than a stray middot.
     #[test]
     fn the_state_leads_and_an_absent_handle_leaves_no_separator() {
-        assert_eq!(accessory(&group(SourceState::Unreachable, None, "")), "Not reachable");
+        assert_eq!(
+            accessory(&group(SourceState::Unreachable, None, "")),
+            "Not reachable"
+        );
         assert_eq!(accessory(&group(SourceState::Reachable, None, "")), "");
     }
 
@@ -272,7 +303,11 @@ mod tests {
     #[test]
     fn a_broken_source_states_its_fault_and_not_its_last_known_tier() {
         assert_eq!(
-            accessory(&group(SourceState::Unreachable, Some(Location::Relay), "friend")),
+            accessory(&group(
+                SourceState::Unreachable,
+                Some(Location::Relay),
+                "friend"
+            )),
             "Not reachable \u{b7} friend"
         );
     }
@@ -283,9 +318,15 @@ mod tests {
     #[test]
     fn only_the_states_with_something_behind_them_stay_lit() {
         let u = |s| usable(&group(s, None, "friend"));
-        assert!(u(SourceState::NotProbed), "a group nobody has dialled must not open dimmed");
+        assert!(
+            u(SourceState::NotProbed),
+            "a group nobody has dialled must not open dimmed"
+        );
         assert!(u(SourceState::Reachable));
-        assert!(!u(SourceState::Unauthorized), "there is nothing browsable behind a 401");
+        assert!(
+            !u(SourceState::Unauthorized),
+            "there is nothing browsable behind a 401"
+        );
         assert!(!u(SourceState::Unreachable));
         assert!(
             group(SourceState::Unauthorized, None, "friend").reachable(),

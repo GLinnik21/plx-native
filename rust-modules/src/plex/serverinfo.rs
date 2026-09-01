@@ -95,7 +95,9 @@ pub(crate) fn subscription_of(id: ServerId) -> Subscription {
     if super::client_for(id).is_none() {
         return Subscription::Unknown;
     }
-    slot(id).map(|i| Subscription::from_u8(SUBSCRIPTION[i].load(Relaxed))).unwrap_or(Subscription::Unknown)
+    slot(id)
+        .map(|i| Subscription::from_u8(SUBSCRIPTION[i].load(Relaxed)))
+        .unwrap_or(Subscription::Unknown)
 }
 
 /// [`version`] for a NAMED server; "" while unknown.
@@ -103,7 +105,9 @@ pub(crate) fn version_of(id: ServerId) -> String {
     if super::client_for(id).is_none() {
         return String::new();
     }
-    let Some(i) = slot(id) else { return String::new() };
+    let Some(i) = slot(id) else {
+        return String::new();
+    };
     VERSION.lock().map(|g| g[i].clone()).unwrap_or_default()
 }
 
@@ -146,7 +150,9 @@ pub(crate) fn version() -> String {
 /// that server used to be, never a dangling reference.
 pub(super) fn refresh(id: ServerId) {
     let Some(i) = slot(id) else { return };
-    let Some(c) = super::client_for(id) else { return }; // nothing registered there to ask
+    let Some(c) = super::client_for(id) else {
+        return;
+    }; // nothing registered there to ask
     if INFLIGHT[i].swap(true, Relaxed) {
         return; // a fetch for THIS server is already in flight; it answers for this one too
     }
@@ -170,7 +176,9 @@ pub(super) fn refresh(id: ServerId) {
 fn fetch_once(id: ServerId, c: &Client) {
     let Some(i) = slot(id) else { return };
     let Some(mc) = c.server_root() else {
-        crate::log(&format!("pms: server {i} info unavailable (GET / failed) — subscription stays unknown"));
+        crate::log(&format!(
+            "pms: server {i} info unavailable (GET / failed) — subscription stays unknown"
+        ));
         return;
     };
     let mut sub = Subscription::from_wire(mc.my_plex_subscription);
@@ -192,7 +200,11 @@ fn fetch_once(id: ServerId, c: &Client) {
     // owner's. The token never appears: the URL is built and consumed inside `get_json`.
     crate::log(&format!(
         "pms: server {i} version={} plexPass={}",
-        if mc.version.is_empty() { "unknown" } else { &mc.version },
+        if mc.version.is_empty() {
+            "unknown"
+        } else {
+            &mc.version
+        },
         match sub {
             Subscription::Yes => "true",
             Subscription::No => "false",
@@ -277,19 +289,33 @@ mod tests {
             "myPlexSubscription":true}}"#;
         let e: Envelope = serde_json::from_slice(as_bool).expect("bool form");
         assert_eq!(e.media_container.version, "1.43.3.10861-cd85035e7");
-        assert_eq!(Subscription::from_wire(e.media_container.my_plex_subscription), Subscription::Yes);
+        assert_eq!(
+            Subscription::from_wire(e.media_container.my_plex_subscription),
+            Subscription::Yes
+        );
 
-        let as_string = br#"{"MediaContainer":{"myPlexSubscription":"1","version":"1.42.0.9999-abc"}}"#;
+        let as_string =
+            br#"{"MediaContainer":{"myPlexSubscription":"1","version":"1.42.0.9999-abc"}}"#;
         let e: Envelope = serde_json::from_slice(as_string).expect("string form");
-        assert_eq!(Subscription::from_wire(e.media_container.my_plex_subscription), Subscription::Yes);
+        assert_eq!(
+            Subscription::from_wire(e.media_container.my_plex_subscription),
+            Subscription::Yes
+        );
 
-        let as_false = br#"{"MediaContainer":{"myPlexSubscription":false,"version":"1.43.3.10861-x"}}"#;
+        let as_false =
+            br#"{"MediaContainer":{"myPlexSubscription":false,"version":"1.43.3.10861-x"}}"#;
         let e: Envelope = serde_json::from_slice(as_false).expect("false form");
-        assert_eq!(Subscription::from_wire(e.media_container.my_plex_subscription), Subscription::No);
+        assert_eq!(
+            Subscription::from_wire(e.media_container.my_plex_subscription),
+            Subscription::No
+        );
 
         let absent = br#"{"MediaContainer":{"size":30,"version":"0.9.9"}}"#;
         let e: Envelope = serde_json::from_slice(absent).expect("absent form");
-        assert_eq!(Subscription::from_wire(e.media_container.my_plex_subscription), Subscription::Unknown);
+        assert_eq!(
+            Subscription::from_wire(e.media_container.my_plex_subscription),
+            Subscription::Unknown
+        );
     }
 
     /// **The reason this module stopped being one global.** A Plex Pass claim is about ONE
@@ -317,7 +343,8 @@ mod tests {
         }
         let _g = Fresh(crate::testlock::serial());
         servers::reset_for_test();
-        let reg = |m: &str, host: &str| servers::register_with_client_id(m, host, 32400, "tok", "cid");
+        let reg =
+            |m: &str, host: &str| servers::register_with_client_id(m, host, 32400, "tok", "cid");
         let (a, b) = (reg("mach-A", "10.0.0.1"), reg("mach-B", "10.0.0.2"));
         // the slot arrays outlive `reset_for_test` (they are keyed on the slot, not the client),
         // so start from the boot state explicitly rather than from what an earlier test left
@@ -327,11 +354,19 @@ mod tests {
         store(a, Subscription::Yes, "1.43.3.10861-cd85035e7");
         assert_eq!(subscription_of(a), Subscription::Yes);
         assert_eq!(version_of(a), "1.43.3.10861-cd85035e7");
-        assert_eq!(subscription_of(b), Subscription::Unknown, "B has not answered — not 'free'");
+        assert_eq!(
+            subscription_of(b),
+            Subscription::Unknown,
+            "B has not answered — not 'free'"
+        );
         assert_eq!(version_of(b), "", "and it has no build string either");
 
         store(b, Subscription::No, "1.32.0.6918-free");
-        assert_eq!(subscription_of(a), Subscription::Yes, "B's answer left A's alone");
+        assert_eq!(
+            subscription_of(a),
+            Subscription::Yes,
+            "B's answer left A's alone"
+        );
         assert_eq!(version_of(a), "1.43.3.10861-cd85035e7");
 
         // the bare accessors mean "the current server", which is what every reader that has not
@@ -340,7 +375,11 @@ mod tests {
         assert_eq!(subscription(), Subscription::Yes);
         assert_eq!(version(), "1.43.3.10861-cd85035e7");
         assert!(servers::set_current(b));
-        assert_eq!(subscription(), Subscription::No, "switching servers switches the claim");
+        assert_eq!(
+            subscription(),
+            Subscription::No,
+            "switching servers switches the claim"
+        );
         assert_eq!(version(), "1.32.0.6918-free");
 
         // an id that names no server is "nothing known" — never slot 0's answer, never a panic,
@@ -352,12 +391,24 @@ mod tests {
         store(ServerId::UNSET, Subscription::Yes, "nowhere");
         store(past_end, Subscription::Yes, "nowhere");
         assert_eq!(subscription_of(a), Subscription::Yes);
-        assert_eq!(subscription_of(b), Subscription::No, "no write landed in a real slot");
+        assert_eq!(
+            subscription_of(b),
+            Subscription::No,
+            "no write landed in a real slot"
+        );
 
         assert!(servers::set_current(a));
         servers::revoke_for_profile_switch();
-        assert_eq!(subscription_of(a), Subscription::Yes, "the current shell still names this server");
-        assert_eq!(subscription_of(b), Subscription::Unknown, "an inactive sparse slot exposes no old subscription");
+        assert_eq!(
+            subscription_of(a),
+            Subscription::Yes,
+            "the current shell still names this server"
+        );
+        assert_eq!(
+            subscription_of(b),
+            Subscription::Unknown,
+            "an inactive sparse slot exposes no old subscription"
+        );
         assert_eq!(version_of(b), "", "nor its old build string");
     }
 
@@ -387,11 +438,17 @@ mod tests {
             crate::ui::idle::should_present(0)
         };
         asked(); // drain whatever the previous test left on the shared flag
-        assert!(!asked(), "the gate is quiet before the landing — or this proves nothing");
+        assert!(
+            !asked(),
+            "the gate is quiet before the landing — or this proves nothing"
+        );
 
         let id = ServerId::from_raw(0);
         store(id, Subscription::No, "1.32.0.6918-free");
-        assert!(asked(), "a subscription that just landed must reach the screen stating it");
+        assert!(
+            asked(),
+            "a subscription that just landed must reach the screen stating it"
+        );
 
         store(id, Subscription::Unknown, "");
         assert!(asked(), "…and so must the boot state being put back");

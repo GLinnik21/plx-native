@@ -21,12 +21,19 @@ struct Scene {
 static mut SCENE: Option<Scene> = None;
 
 fn scene() -> &'static mut Scene {
-    unsafe { (*addr_of_mut!(SCENE)).as_mut().expect("login::init not called") }
+    unsafe {
+        (*addr_of_mut!(SCENE))
+            .as_mut()
+            .expect("login::init not called")
+    }
 }
 
 pub fn init() {
     unsafe {
-        *addr_of_mut!(SCENE) = Some(Scene { spin_ms: 0.0, qr_tex: 0 });
+        *addr_of_mut!(SCENE) = Some(Scene {
+            spin_ms: 0.0,
+            qr_tex: 0,
+        });
     }
 }
 
@@ -77,9 +84,24 @@ pub fn draw() {
 
     match auth::phase() {
         Phase::Waiting => draw_waiting(p, &env, s),
-        Phase::Error => draw_status(p, &env, s, &auth::error(), true),
-        Phase::Discovering => draw_status(p, &env, s, "Finding your server\u{2026}", false),
-        _ => draw_status(p, &env, s, "Connecting to Plex\u{2026}", false),
+        Phase::Error => draw_status(
+            p,
+            &env,
+            s,
+            &auth::error(),
+            Some("Press OK to try again"),
+        ),
+        Phase::Deleted => draw_status(
+            p,
+            &env,
+            s,
+            "Local data deleted",
+            Some("Press OK to sign in"),
+        ),
+        Phase::Discovering => {
+            draw_status(p, &env, s, "Finding your server\u{2026}", None)
+        }
+        _ => draw_status(p, &env, s, "Connecting to Plex\u{2026}", None),
     }
 }
 
@@ -90,7 +112,12 @@ fn draw_waiting(p: Painter, env: &Env, s: &mut Scene) {
     ensure_qr_tex(s);
     if s.qr_tex != 0 {
         let pad = 30.0;
-        let inner = Rect::new(card.x + pad, card.y + pad, card.w - 2.0 * pad, card.h - 2.0 * pad);
+        let inner = Rect::new(
+            card.x + pad,
+            card.y + pad,
+            card.w - 2.0 * pad,
+            card.h - 2.0 * pad,
+        );
         // Plex's PNG is WHITE modules on a transparent ground; tint black so the modules render dark
         // on the white card (the transparent ground shows the card) → a scannable black-on-white QR.
         p.tex(s.qr_tex, inner, 0.0, theme::scrim_black(1.0));
@@ -121,31 +148,53 @@ fn draw_waiting(p: Painter, env: &Env, s: &mut Scene) {
 
     // the short code, large (high enough that its ink clears the waiting spinner below)
     if let Ok(code) = CString::new(auth::pin_code().to_uppercase()) {
-        p.text(code.as_ptr(), col_x, card.y + 280.0, theme::size::HERO, theme::TEXT_PRIMARY, 0, 1);
+        p.text(
+            code.as_ptr(),
+            col_x,
+            card.y + 280.0,
+            theme::size::HERO,
+            theme::TEXT_PRIMARY,
+            0,
+            1,
+        );
     }
 
     // waiting status — bottom-aligned with the QR card (spinner circle tangent to the card bottom)
     let wr = 15.0;
     let wy = card.y + card.h - wr;
-    Spinner::new(col_x + 16.0, wy, wr).phase(s.spin_ms as u32).tint(theme::TEXT_TERTIARY).draw(env, p);
+    Spinner::new(col_x + 16.0, wy, wr)
+        .phase(s.spin_ms as u32)
+        .tint(theme::TEXT_TERTIARY)
+        .draw(env, p);
     if let Ok(w) = CString::new("Waiting for you to sign in\u{2026}") {
         let ty = crate::text::text_vcenter_y(theme::size::CAPTION, 0, wy);
-        p.text(w.as_ptr(), col_x + 44.0, ty, theme::size::CAPTION, theme::TEXT_TERTIARY, 0, 0);
+        p.text(
+            w.as_ptr(),
+            col_x + 44.0,
+            ty,
+            theme::size::CAPTION,
+            theme::TEXT_TERTIARY,
+            0,
+            0,
+        );
     }
 }
 
-fn draw_status(p: Painter, env: &Env, s: &Scene, msg: &str, error: bool) {
+fn draw_status(p: Painter, env: &Env, s: &Scene, msg: &str, action: Option<&str>) {
     let cx = SCR_W as f32 * 0.5;
-    if error {
+    if let Some(action) = action {
         TextView::new(msg, theme::size::TITLE, theme::TEXT_SECONDARY)
             .h(HAlign::Center)
             .max_lines(2)
             .draw(p, Rect::new(cx - 500.0, 452.0, 1000.0, 120.0));
-        TextView::new("Press OK to try again", theme::size::BODY, theme::TEXT_TERTIARY)
-            .h(HAlign::Center)
-            .draw(p, Rect::new(cx - 400.0, 600.0, 800.0, 50.0));
+        TextView::new(action, theme::size::BODY, theme::TEXT_TERTIARY)
+        .h(HAlign::Center)
+        .draw(p, Rect::new(cx - 400.0, 600.0, 800.0, 50.0));
     } else {
-        Spinner::new(cx, 470.0, 26.0).phase(s.spin_ms as u32).tint(theme::TEXT_PRIMARY).draw(env, p);
+        Spinner::new(cx, 470.0, 26.0)
+            .phase(s.spin_ms as u32)
+            .tint(theme::TEXT_PRIMARY)
+            .draw(env, p);
         TextView::new(msg, theme::size::TITLE, theme::TEXT_SECONDARY)
             .h(HAlign::Center)
             .draw(p, Rect::new(cx - 500.0, 552.0, 1000.0, 60.0));
@@ -153,6 +202,10 @@ fn draw_status(p: Painter, env: &Env, s: &Scene, msg: &str, error: bool) {
 }
 
 pub fn key(sym: c_uint, wcode: c_uint) {
+    if auth::phase() == Phase::Deleted && is_ok(sym) {
+        auth::start_login();
+        return;
+    }
     if auth::phase() == Phase::Error && is_ok(sym) {
         auth::retry();
         return;

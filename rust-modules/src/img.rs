@@ -61,9 +61,15 @@ fn decode_limits() -> image::Limits {
     l
 }
 
-pub(crate) fn img_decode_rgba(buf: *const c_uchar, len: c_int,
-                                  w: *mut c_int, h: *mut c_int) -> *mut c_uchar {
-    if buf.is_null() || len <= 0 { return ptr::null_mut(); }
+pub(crate) fn img_decode_rgba(
+    buf: *const c_uchar,
+    len: c_int,
+    w: *mut c_int,
+    h: *mut c_int,
+) -> *mut c_uchar {
+    if buf.is_null() || len <= 0 {
+        return ptr::null_mut();
+    }
     let data = unsafe { std::slice::from_raw_parts(buf, len as usize) };
     let magic: String = data.iter().take(6).map(|b| format!("{b:02x}")).collect();
     // decode inside catch_unwind so a decoder panic can't unwind into C. `ImageReader` rather than
@@ -74,19 +80,27 @@ pub(crate) fn img_decode_rgba(buf: *const c_uchar, len: c_int,
     // "no image came back" covers both a corrupt file and one this device refuses to decode, and
     // those want opposite responses (ignore it vs. re-open the numbers in `decode_limits`). Same
     // `img: decode-none` prefix, so anything grepping the event log for it still matches.
-    let decoded = catch_unwind(AssertUnwindSafe(|| -> Result<(c_int, c_int, Vec<u8>), String> {
-        let mut rdr = image::ImageReader::new(std::io::Cursor::new(data))
-            .with_guessed_format()
-            .map_err(|e| format!("unreadable: {e}"))?;
-        rdr.limits(decode_limits());
-        let img = rdr.decode().map_err(|e| e.to_string())?;
-        let r = img.to_rgba8();
-        Ok((r.width() as c_int, r.height() as c_int, r.into_raw()))
-    }));
+    let decoded = catch_unwind(AssertUnwindSafe(
+        || -> Result<(c_int, c_int, Vec<u8>), String> {
+            let mut rdr = image::ImageReader::new(std::io::Cursor::new(data))
+                .with_guessed_format()
+                .map_err(|e| format!("unreadable: {e}"))?;
+            rdr.limits(decode_limits());
+            let img = rdr.decode().map_err(|e| e.to_string())?;
+            let r = img.to_rgba8();
+            Ok((r.width() as c_int, r.height() as c_int, r.into_raw()))
+        },
+    ));
     let (iw, ih, raw) = match decoded {
         Ok(Ok(t)) => t,
-        Ok(Err(why)) => { log(&format!("img: decode-none len={len} magic={magic} — {why}")); return ptr::null_mut(); }
-        Err(_)       => { log(&format!("img: PANIC len={len} magic={magic}")); return ptr::null_mut(); }
+        Ok(Err(why)) => {
+            log(&format!("img: decode-none len={len} magic={magic} — {why}"));
+            return ptr::null_mut();
+        }
+        Err(_) => {
+            log(&format!("img: PANIC len={len} magic={magic}"));
+            return ptr::null_mut();
+        }
     };
     let n = raw.len();
     let px = unsafe { malloc(n) } as *mut c_uchar;
@@ -107,19 +121,27 @@ pub(crate) fn img_decode_rgba(buf: *const c_uchar, len: c_int,
         // process down in place of the diagnosis it was added to give. Ordered this way, the marker
         // survives either outcome, and a marker with no detail after it IS the second diagnosis.
         log("img: malloc-none");
-        log(&format!("img: malloc-none {n} bytes for {iw}x{ih} len={len} magic={magic}"));
+        log(&format!(
+            "img: malloc-none {n} bytes for {iw}x{ih} len={len} magic={magic}"
+        ));
         return ptr::null_mut();
     }
     unsafe {
         ptr::copy_nonoverlapping(raw.as_ptr(), px, n);
-        if !w.is_null() { *w = iw; }
-        if !h.is_null() { *h = ih; }
+        if !w.is_null() {
+            *w = iw;
+        }
+        if !h.is_null() {
+            *h = ih;
+        }
     }
     px
 }
 
 pub(crate) fn img_free(px: *mut c_uchar) {
-    if !px.is_null() { unsafe { free(px as *mut c_void) } }
+    if !px.is_null() {
+        unsafe { free(px as *mut c_void) }
+    }
 }
 
 /// Upload decoded RGBA pixels into a fresh GL texture (gfx owns the GL bindings). Main thread.

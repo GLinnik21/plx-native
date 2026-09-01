@@ -58,7 +58,7 @@ jobs:
     outputs:
       tag: ${{ steps.bump.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: main
           # a shallow clone cannot push
@@ -119,7 +119,7 @@ jobs:
           tag='${{ needs.prepare.outputs.tag || inputs.rebuild_tag || github.ref_name }}'
           [ -n "$tag" ] || { echo "::error::no tag resolved"; exit 1; }
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ steps.ref.outputs.tag }}
       - name: The tag must match pkg/appinfo.json
@@ -151,7 +151,7 @@ jobs:
     # comments say it supports: a fresh bump, an explicit rebuild, or a hand-pushed tag.
     if: always() && needs.guard.result == 'success'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ needs.guard.outputs.tag }}
       - name: LICENSE and third-party notices must exist
@@ -208,7 +208,7 @@ jobs:
     outputs:
       ipk: ${{ steps.name.outputs.ipk }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ needs.guard.outputs.tag }}
 
@@ -220,7 +220,7 @@ jobs:
           rustup toolchain install "$RUST_NIGHTLY" --profile minimal --component rust-src
           rustup run "$RUST_NIGHTLY" rustc --version
         env:
-          RUST_NIGHTLY: ${{ vars.RUST_NIGHTLY || 'nightly' }}
+          RUST_NIGHTLY: ${{ vars.RUST_NIGHTLY || 'nightly-2026-07-02' }}
 
       - id: ndk
         uses: ./.github/actions/webos-ndk
@@ -231,7 +231,7 @@ jobs:
         # one by construction rather than by discipline — check-elf.sh asserts it below.
         env:
           WEBOS_SDK: ${{ steps.ndk.outputs.sdk-dir }}
-          RUST_NIGHTLY: ${{ vars.RUST_NIGHTLY || 'nightly' }}
+          RUST_NIGHTLY: ${{ vars.RUST_NIGHTLY || 'nightly-2026-07-02' }}
           # Drops the `devtools` cargo feature — no on-screen counter in a public build.
           RELEASE: "1"
           # WHICH INSTALL. `FLAVOR ?= debug` in the Makefile — deliberately, so a developer's
@@ -367,8 +367,8 @@ jobs:
           # `debug-files check` first: it is the step that says whether Symbolicator can use this
           # object at all, and its answer (`Arch: arm`, `Usable: yes`) is the one thing no vendor
           # documentation states about armv7.
-          npx --yes @sentry/cli@latest debug-files check pkg/plxnative.debug
-          npx --yes @sentry/cli@latest debug-files upload \
+          npx --yes @sentry/cli@3.7.0 debug-files check pkg/plxnative.debug
+          npx --yes @sentry/cli@3.7.0 debug-files upload \
               --include-sources pkg/plxnative.debug pkg/plxnative
 
       - name: ELF + packaging assertions
@@ -392,8 +392,15 @@ jobs:
         run: |
           set -euo pipefail
           TAG=v20260731-e1bb0c0
+          declare -A SHA256=(
+            [fw-symbols]=639721a0c2248b13e5984930b53729cc201f022725954086aca35e2ccae515b5
+            [ipk-verify]=2868b4b2efc097939ab11117c9266d796f0326ee48c90f80070766814fb174d9
+            [gen-manifest]=46a023cdec6f5aa07316ef4a0548c30897b349c4843596c41c70a23f8d2792e9
+          )
           for p in fw-symbols ipk-verify gen-manifest; do
-            curl -fsSLO "https://github.com/webosbrew/dev-toolbox-cli/releases/download/${TAG}/webosbrew-toolbox-${p}_0.4.0-1_arm64.deb"
+            file="webosbrew-toolbox-${p}_0.4.0-1_arm64.deb"
+            curl -fsSLo "$file" "https://github.com/webosbrew/dev-toolbox-cli/releases/download/${TAG}/$file"
+            echo "${SHA256[$p]}  $file" | sha256sum -c -
           done
           sudo apt-get install -y ./webosbrew-toolbox-*.deb
 
@@ -455,7 +462,7 @@ jobs:
           echo "LGPL source: $(basename "$tarball") + build-ffmpeg.sh" >> "$GITHUB_STEP_SUMMARY"
           echo "| LGPL corresponding source attached ($(basename "$tarball") + build-ffmpeg.sh) | pass |" >> pkg/gates.md
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-assets
           path: |
@@ -483,13 +490,13 @@ jobs:
       # default and would delete `dist/`. This job had no checkout at all until now, which made its
       # last step — `ci/verify-published.sh` — a file that does not exist; it has never run, because
       # v0.2.1 was hand-published and nothing has been published through this job since.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ needs.guard.outputs.tag }}
           # A shallow clone cannot push, and this job now pushes: the completed release audit goes
           # to `main` in its last step. Same reason `prepare` fetches everything.
           fetch-depth: 0
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: release-assets
           path: dist
@@ -575,7 +582,7 @@ jobs:
 
       - name: Create the release
         id: publish
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ needs.guard.outputs.tag }}
           # the committed note, with GitHub's compare-link tail appended after it

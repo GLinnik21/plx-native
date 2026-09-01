@@ -213,7 +213,10 @@ unsafe extern "C" fn legacy_crypto_lock(mode: c_int, n: c_int, _file: *const c_c
     if n < 0 {
         return;
     }
-    let Some(lock) = LEGACY_CRYPTO_LOCKS.get().and_then(|locks| locks.get(n as usize)) else {
+    let Some(lock) = LEGACY_CRYPTO_LOCKS
+        .get()
+        .and_then(|locks| locks.get(n as usize))
+    else {
         return;
     };
     apply_legacy_crypto_lock(lock.as_mut_ptr(), mode);
@@ -226,7 +229,9 @@ fn needs_legacy_crypto_locks(version: &str) -> bool {
 }
 
 fn needs_legacy_thread_id(version: &str) -> bool {
-    version.split_ascii_whitespace().any(|part| part.starts_with("OpenSSL/0."))
+    version
+        .split_ascii_whitespace()
+        .any(|part| part.starts_with("OpenSSL/0."))
 }
 
 fn threaded_tls_policy(version: &str, locks: LegacyCrypto) -> bool {
@@ -259,8 +264,12 @@ fn setup_legacy_crypto_locks(soname: &'static str) -> LegacyCrypto {
         };
         let (Some(num), Some(get), Some(set)) = (
             scope.sym("CRYPTO_num_locks").filter(|p| !p.is_null()),
-            scope.sym("CRYPTO_get_locking_callback").filter(|p| !p.is_null()),
-            scope.sym("CRYPTO_set_locking_callback").filter(|p| !p.is_null()),
+            scope
+                .sym("CRYPTO_get_locking_callback")
+                .filter(|p| !p.is_null()),
+            scope
+                .sym("CRYPTO_set_locking_callback")
+                .filter(|p| !p.is_null()),
         ) else {
             return LegacyCrypto::Missing;
         };
@@ -339,10 +348,16 @@ pub fn global_init() -> bool {
             let v = if v.is_null() {
                 String::new()
             } else {
-                unsafe { std::ffi::CStr::from_ptr(v) }.to_string_lossy().into_owned()
+                unsafe { std::ffi::CStr::from_ptr(v) }
+                    .to_string_lossy()
+                    .into_owned()
             };
             let legacy = needs_legacy_crypto_locks(&v);
-            let locks = if legacy { setup_legacy_crypto_locks(soname) } else { LegacyCrypto::NotNeeded };
+            let locks = if legacy {
+                setup_legacy_crypto_locks(soname)
+            } else {
+                LegacyCrypto::NotNeeded
+            };
             let threaded = threaded_tls_policy(&v, locks);
             CURL_THREADED_TLS_OK.store(threaded, Ordering::Release);
             // `curl_version()`'s prose happened to name c-ares on the development television,
@@ -394,12 +409,19 @@ struct BodySink {
 
 impl BodySink {
     fn new(max: Option<usize>) -> BodySink {
-        BodySink { body: Vec::new(), max, overflowed: false }
+        BodySink {
+            body: Vec::new(),
+            max,
+            overflowed: false,
+        }
     }
 
     /// Append one curl callback chunk without ever allocating past the caller's ceiling.
     fn push(&mut self, bytes: &[u8]) -> bool {
-        if self.max.is_some_and(|max| bytes.len() > max.saturating_sub(self.body.len())) {
+        if self
+            .max
+            .is_some_and(|max| bytes.len() > max.saturating_sub(self.body.len()))
+        {
             self.overflowed = true;
             return false;
         }
@@ -409,18 +431,30 @@ impl BodySink {
 }
 
 /// libcurl `CURLOPT_WRITEFUNCTION`: append received bytes to the caller's bounded sink.
-extern "C" fn write_cb(ptr: *mut c_char, size: usize, nmemb: usize, userdata: *mut c_void) -> usize {
+extern "C" fn write_cb(
+    ptr: *mut c_char,
+    size: usize,
+    nmemb: usize,
+    userdata: *mut c_void,
+) -> usize {
     let n = size.saturating_mul(nmemb);
     if userdata.is_null() || ptr.is_null() {
         return 0;
     }
     let sink = unsafe { &mut *(userdata as *mut BodySink) };
-    if sink.max.is_some_and(|max| n > max.saturating_sub(sink.body.len())) {
+    if sink
+        .max
+        .is_some_and(|max| n > max.saturating_sub(sink.body.len()))
+    {
         sink.overflowed = true;
         return 0;
     }
     let slice = unsafe { std::slice::from_raw_parts(ptr as *const u8, n) };
-    if sink.push(slice) { n } else { 0 }
+    if sink.push(slice) {
+        n
+    } else {
+        0
+    }
 }
 
 struct Easy(*mut CURL);
@@ -480,19 +514,31 @@ pub struct Timeouts {
 /// The deadlines for an **API call** — a request whose answer is small and whose caller is a user
 /// waiting behind a spinner. The values every call in this app used before they were a parameter,
 /// unchanged, so nothing about plex.tv sign-in moves.
-pub const API: Timeouts = Timeouts { connect_s: 8, total_s: 25, low_speed_bps: 0, low_speed_s: 0 };
+pub const API: Timeouts = Timeouts {
+    connect_s: 8,
+    total_s: 25,
+    low_speed_bps: 0,
+    low_speed_s: 0,
+};
 
 /// The deadlines for a PMS body whose size is content-dependent (library JSON, artwork, sidecar
 /// subtitles). A connect normally costs at most 8 s and fewer than one byte per second for 30 s
 /// ends a stalled transfer, but a healthy transfer has no wall-clock guillotine:
 /// `CURLOPT_TIMEOUT=0` is libcurl's documented disabled value.
-pub const BULK: Timeouts =
-    Timeouts { connect_s: 8, total_s: 0, low_speed_bps: 1, low_speed_s: 30 };
+pub const BULK: Timeouts = Timeouts {
+    connect_s: 8,
+    total_s: 0,
+    low_speed_bps: 1,
+    low_speed_s: 30,
+};
 
 /// Protocol floor for a public redirect. A TLS request may remain TLS only; a plaintext request
 /// may stay plaintext or upgrade. Pure so the no-downgrade rule is host-testable.
 fn allowed_redirect_protocols(url: &[u8]) -> c_long {
-    if url.get(..8).is_some_and(|scheme| scheme.eq_ignore_ascii_case(b"https://")) {
+    if url
+        .get(..8)
+        .is_some_and(|scheme| scheme.eq_ignore_ascii_case(b"https://"))
+    {
         CURLPROTO_HTTPS
     } else {
         CURLPROTO_HTTP | CURLPROTO_HTTPS
@@ -523,7 +569,16 @@ pub(crate) fn request(
     follow_redirects: bool,
     max_body: Option<usize>,
 ) -> Option<Resp> {
-    request_tls(url, headers, verb, body, t, follow_redirects, max_body, Tls::Ca)
+    request_tls(
+        url,
+        headers,
+        verb,
+        body,
+        t,
+        follow_redirects,
+        max_body,
+        Tls::Ca,
+    )
 }
 
 /// **How the peer is verified.** Three modes, and they are an enum rather than an
@@ -599,9 +654,25 @@ pub(crate) fn request_tls(
     let _fallback_serial = if threaded_tls_ready() {
         None
     } else {
-        Some(CURL_FALLBACK_SERIAL.lock().unwrap_or_else(|e| e.into_inner()))
+        Some(
+            CURL_FALLBACK_SERIAL
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
+        )
     };
     unsafe {
+        macro_rules! require_setopt {
+            ($call:expr, $name:literal) => {{
+                let rc = $call;
+                if rc != 0 {
+                    crate::log(&format!(
+                        "net: libcurl refused security option {} (rc={rc}); request cancelled",
+                        $name
+                    ));
+                    return None;
+                }
+            }};
+        }
         let h = curl_easy_init();
         if h.is_null() {
             return None;
@@ -610,25 +681,49 @@ pub(crate) fn request_tls(
         curl_easy_setopt_ptr(easy.0, CURLOPT_URL, url_c.as_ptr() as *const c_void);
         curl_easy_setopt_ptr(easy.0, CURLOPT_WRITEFUNCTION, write_cb as *const c_void);
         let mut sink = BodySink::new(max_body);
-        curl_easy_setopt_ptr(easy.0, CURLOPT_WRITEDATA, (&mut sink as *mut BodySink) as *mut c_void);
+        curl_easy_setopt_ptr(
+            easy.0,
+            CURLOPT_WRITEDATA,
+            (&mut sink as *mut BodySink) as *mut c_void,
+        );
         // No curl call in this module may escape HTTP(S). The public QR fetch is the only one that
         // follows redirects; it is capped, and an HTTPS start may never downgrade to plaintext.
-        curl_easy_setopt_long(easy.0, CURLOPT_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS);
-        curl_easy_setopt_long(easy.0, CURLOPT_FOLLOWLOCATION, follow_redirects as c_long);
+        require_setopt!(
+            curl_easy_setopt_long(easy.0, CURLOPT_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS),
+            "CURLOPT_PROTOCOLS"
+        );
+        require_setopt!(
+            curl_easy_setopt_long(easy.0, CURLOPT_FOLLOWLOCATION, follow_redirects as c_long),
+            "CURLOPT_FOLLOWLOCATION"
+        );
         if follow_redirects {
-            curl_easy_setopt_long(easy.0, CURLOPT_MAXREDIRS, PUBLIC_MAX_REDIRECTS);
-            curl_easy_setopt_long(easy.0, CURLOPT_REDIR_PROTOCOLS, allowed_redirect_protocols(url.as_bytes()));
+            require_setopt!(
+                curl_easy_setopt_long(easy.0, CURLOPT_MAXREDIRS, PUBLIC_MAX_REDIRECTS),
+                "CURLOPT_MAXREDIRS"
+            );
+            require_setopt!(
+                curl_easy_setopt_long(
+                    easy.0,
+                    CURLOPT_REDIR_PROTOCOLS,
+                    allowed_redirect_protocols(url.as_bytes()),
+                ),
+                "CURLOPT_REDIR_PROTOCOLS"
+            );
         }
-        curl_easy_setopt_long(easy.0, CURLOPT_SSL_VERIFYPEER, 1 as c_long);
-        curl_easy_setopt_long(easy.0, CURLOPT_SSL_VERIFYHOST, 2 as c_long);
+        require_setopt!(
+            curl_easy_setopt_long(easy.0, CURLOPT_SSL_VERIFYPEER, 1 as c_long),
+            "CURLOPT_SSL_VERIFYPEER"
+        );
+        require_setopt!(
+            curl_easy_setopt_long(easy.0, CURLOPT_SSL_VERIFYHOST, 2 as c_long),
+            "CURLOPT_SSL_VERIFYHOST"
+        );
         // A pinned request replaces CA verification with key pinning — see
         // [`CURLOPT_PINNEDPUBLICKEY`]. Written AFTER the two defaults above so the ordinary path is
         // still one unconditional pair of lines that cannot be reached with the wrong value.
         //
-        // **THE RETURN CODE IS CHECKED HERE AND NOWHERE ELSE IN THIS FUNCTION, AND THAT ASYMMETRY
-        // IS THE POINT.** Every other `setopt` above fails safe: a libcurl that refuses
-        // `CURLOPT_TIMEOUT` gives a request without a deadline, which is worse but not unsafe. This
-        // one fails OPEN. If the option is rejected — an older libcurl, or a TLS backend whose
+        // Every security-relevant option above is fail-closed. Pinning is additionally important:
+        // if the option is rejected — an older libcurl, or a TLS backend whose
         // pinning support post-dates it, which is neither a symbol nor a library and so is
         // invisible to `tools/fwcompat.py` — then the two lines under it would still run and the
         // request would go out with **no pinning and no CA verification at all**, accepting any
@@ -655,13 +750,23 @@ pub(crate) fn request_tls(
                 }
             }
             TlsCfg::Pinned(p) => {
-                let rc = curl_easy_setopt_ptr(easy.0, CURLOPT_PINNEDPUBLICKEY, p.as_ptr() as *const c_void);
+                let rc = curl_easy_setopt_ptr(
+                    easy.0,
+                    CURLOPT_PINNEDPUBLICKEY,
+                    p.as_ptr() as *const c_void,
+                );
                 if rc != 0 {
                     crate::log(&format!("net: this libcurl refuses CURLOPT_PINNEDPUBLICKEY (rc={rc}) — refusing to send unpinned"));
                     return None;
                 }
-                curl_easy_setopt_long(easy.0, CURLOPT_SSL_VERIFYPEER, 0 as c_long);
-                curl_easy_setopt_long(easy.0, CURLOPT_SSL_VERIFYHOST, 0 as c_long);
+                require_setopt!(
+                    curl_easy_setopt_long(easy.0, CURLOPT_SSL_VERIFYPEER, 0 as c_long),
+                    "CURLOPT_SSL_VERIFYPEER"
+                );
+                require_setopt!(
+                    curl_easy_setopt_long(easy.0, CURLOPT_SSL_VERIFYHOST, 0 as c_long),
+                    "CURLOPT_SSL_VERIFYHOST"
+                );
             }
         }
         curl_easy_setopt_long(easy.0, CURLOPT_NOSIGNAL, 1 as c_long);
@@ -696,10 +801,18 @@ pub(crate) fn request_tls(
             // curl references (doesn't copy) the buffer during perform; `body` outlives the call.
             curl_easy_setopt_ptr(easy.0, CURLOPT_POSTFIELDS, body.as_ptr() as *const c_void);
             if verb != "POST" {
-                curl_easy_setopt_ptr(easy.0, CURLOPT_CUSTOMREQUEST, verb_c.as_ptr() as *const c_void);
+                curl_easy_setopt_ptr(
+                    easy.0,
+                    CURLOPT_CUSTOMREQUEST,
+                    verb_c.as_ptr() as *const c_void,
+                );
             }
         } else if verb != "GET" {
-            curl_easy_setopt_ptr(easy.0, CURLOPT_CUSTOMREQUEST, verb_c.as_ptr() as *const c_void);
+            curl_easy_setopt_ptr(
+                easy.0,
+                CURLOPT_CUSTOMREQUEST,
+                verb_c.as_ptr() as *const c_void,
+            );
         }
 
         let rc = curl_easy_perform(easy.0);
@@ -707,7 +820,10 @@ pub(crate) fn request_tls(
         curl_easy_getinfo_long(easy.0, CURLINFO_RESPONSE_CODE, &mut code as *mut c_long);
 
         if sink.overflowed {
-            crate::log(&format!("net: response exceeded {} byte body limit", max_body.unwrap_or(0)));
+            crate::log(&format!(
+                "net: response exceeded {} byte body limit",
+                max_body.unwrap_or(0)
+            ));
             return None;
         }
         if rc != 0 {
@@ -729,7 +845,10 @@ pub(crate) fn request_tls(
             crate::log(&format!("net: curl rc={rc} — {why}"));
             return None;
         }
-        Some(Resp { status: code as u16, body: sink.body })
+        Some(Resp {
+            status: code as u16,
+            body: sink.body,
+        })
     }
 }
 
@@ -755,7 +874,16 @@ pub(crate) fn post_pinned(
     pin: &str,
     t: Timeouts,
 ) -> Option<Resp> {
-    request_tls(url, headers, "POST", Some(body), t, false, Some(4096), Tls::Pinned(pin))
+    request_tls(
+        url,
+        headers,
+        "POST",
+        Some(body),
+        t,
+        false,
+        Some(4096),
+        Tls::Pinned(pin),
+    )
 }
 
 /// Blocking **CA-verified, unpinned** HTTPS POST to a third-party endpoint — the telemetry sinks.
@@ -798,7 +926,16 @@ pub(crate) fn post_ca(url: &str, headers: &[String], body: &[u8], t: Timeouts) -
         Some(p) => Tls::CaBundle(p),
         None => Tls::Ca,
     };
-    request_tls(url, headers, "POST", Some(body), t, false, Some(TELEMETRY_MAX_REPLY), tls)
+    request_tls(
+        url,
+        headers,
+        "POST",
+        Some(body),
+        t,
+        false,
+        Some(TELEMETRY_MAX_REPLY),
+        tls,
+    )
 }
 
 /// The shipped PEM bundle beside the binary, if there is one.
@@ -837,7 +974,10 @@ mod request_tests {
         let mut sink = BodySink::new(Some(4));
         assert!(sink.push(b"abc"));
         assert!(!sink.push(b"de"));
-        assert_eq!(sink.body, b"abc", "the overflowing callback chunk is never appended");
+        assert_eq!(
+            sink.body, b"abc",
+            "the overflowing callback chunk is never appended"
+        );
         assert!(sink.overflowed);
     }
 
@@ -845,18 +985,34 @@ mod request_tests {
     fn bulk_reads_keep_the_connect_deadline_and_drop_the_transfer_deadline() {
         assert_eq!(
             API,
-            Timeouts { connect_s: 8, total_s: 25, low_speed_bps: 0, low_speed_s: 0 }
+            Timeouts {
+                connect_s: 8,
+                total_s: 25,
+                low_speed_bps: 0,
+                low_speed_s: 0
+            }
         );
         assert_eq!(
             BULK,
-            Timeouts { connect_s: 8, total_s: 0, low_speed_bps: 1, low_speed_s: 30 }
+            Timeouts {
+                connect_s: 8,
+                total_s: 0,
+                low_speed_bps: 1,
+                low_speed_s: 30
+            }
         );
     }
 
     #[test]
     fn public_redirects_are_http_only_and_never_downgrade_tls() {
-        assert_eq!(allowed_redirect_protocols(b"https://example.invalid/qr"), CURLPROTO_HTTPS);
-        assert_eq!(allowed_redirect_protocols(b"HTTPS://example.invalid/qr"), CURLPROTO_HTTPS);
+        assert_eq!(
+            allowed_redirect_protocols(b"https://example.invalid/qr"),
+            CURLPROTO_HTTPS
+        );
+        assert_eq!(
+            allowed_redirect_protocols(b"HTTPS://example.invalid/qr"),
+            CURLPROTO_HTTPS
+        );
         assert_eq!(
             allowed_redirect_protocols(b"http://example.invalid/qr"),
             CURLPROTO_HTTP | CURLPROTO_HTTPS,
@@ -872,7 +1028,9 @@ mod legacy_tests {
 
     #[test]
     fn only_pre_1_1_openssl_requires_application_locks() {
-        assert!(needs_legacy_crypto_locks("libcurl/7.53.1 OpenSSL/1.0.2p zlib/1.2.11"));
+        assert!(needs_legacy_crypto_locks(
+            "libcurl/7.53.1 OpenSSL/1.0.2p zlib/1.2.11"
+        ));
         assert!(needs_legacy_crypto_locks("libcurl/7.20 OpenSSL/0.9.8"));
         assert!(!needs_legacy_crypto_locks("libcurl/8.7 OpenSSL/1.1.1w"));
         assert!(!needs_legacy_crypto_locks("libcurl/8.7 OpenSSL/3.2.1"));
@@ -889,17 +1047,31 @@ mod legacy_tests {
             "libcurl/7.20 OpenSSL/0.9.8",
             LegacyCrypto::Installed
         ));
-        assert!(threaded_tls_policy("libcurl/8.7 SecureTransport", LegacyCrypto::NotNeeded));
+        assert!(threaded_tls_policy(
+            "libcurl/8.7 SecureTransport",
+            LegacyCrypto::NotNeeded
+        ));
     }
 
     #[test]
     fn legacy_lock_helper_obeys_the_lock_bit() {
         let mut lock: libc::pthread_mutex_t = unsafe { std::mem::zeroed() };
-        assert_eq!(unsafe { libc::pthread_mutex_init(&mut lock, ptr::null()) }, 0);
+        assert_eq!(
+            unsafe { libc::pthread_mutex_init(&mut lock, ptr::null()) },
+            0
+        );
         unsafe { apply_legacy_crypto_lock(&mut lock, 1) };
-        assert_ne!(unsafe { libc::pthread_mutex_trylock(&mut lock) }, 0, "CRYPTO_LOCK must hold it");
+        assert_ne!(
+            unsafe { libc::pthread_mutex_trylock(&mut lock) },
+            0,
+            "CRYPTO_LOCK must hold it"
+        );
         unsafe { apply_legacy_crypto_lock(&mut lock, 2) };
-        assert_eq!(unsafe { libc::pthread_mutex_trylock(&mut lock) }, 0, "unlock mode must release it");
+        assert_eq!(
+            unsafe { libc::pthread_mutex_trylock(&mut lock) },
+            0,
+            "unlock mode must release it"
+        );
         unsafe {
             libc::pthread_mutex_unlock(&mut lock);
             libc::pthread_mutex_destroy(&mut lock);
@@ -936,7 +1108,10 @@ mod tls_mode_tests {
         std::fs::write(dir.join("roots.pem"), b"-----BEGIN CERTIFICATE-----\n").expect("write");
         let got = shipped_ca_bundle(&dir).expect("the bundle beside the binary is found");
         assert!(got.ends_with("roots.pem"));
-        assert!(std::path::Path::new(&got).is_absolute(), "curl is given an absolute path");
+        assert!(
+            std::path::Path::new(&got).is_absolute(),
+            "curl is given an absolute path"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

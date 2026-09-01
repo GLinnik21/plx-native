@@ -44,11 +44,8 @@ extern void plx_crash_write_image_marker(int fd); /* identify this binary in the
  * buffer — the literal below keeps the behaviour every release so far has had, which is the right
  * fallback because the app users get is exactly the one whose root IS `/tmp`.
  *
- * Two static buffers, alternated per call. No CURRENT call site holds two results at once — the
- * stderr pair completes its `open_log_0600(...); fclose(...)` before the `freopen` beside it is
- * evaluated — so this is cheap insurance for a future one that does, not a hazard being averted.
- * Said plainly because the first version of this comment claimed the collision was live, which is
- * the kind of invented justification that makes a reader distrust the rest of the file. */
+ * Two static buffers are alternated per call. No current call site holds two results at once, so
+ * this is cheap insurance for a future one rather than a live hazard. */
 extern int plx_runtime_path(const char *name, char *out, size_t cap);
 
 static const char *runtime_path(const char *name) {
@@ -60,6 +57,8 @@ static const char *runtime_path(const char *name) {
     snprintf(b, sizeof buf[0], "/tmp/%s", name);
     return b;
 }
+
+static int open_fd_0600(const char *path, int flags);
 
 /* Open the event log TRUNCATED (fresh each launch, as `make run` and tests/run.py both assume)
  * but in APPEND mode, so every write lands at end-of-file.
@@ -75,7 +74,7 @@ static const char *runtime_path(const char *name) {
  * Mode 0600 because this file records the server name, the LAN address, Plex Home profile names
  * and episode titles, and /tmp is world-readable. */
 static FILE *open_event_log(void) {
-    int fd = open(runtime_path("plxnative-events.log"), O_WRONLY | O_CREAT | O_TRUNC | O_APPEND, 0600);
+    int fd = open_fd_0600(runtime_path("plxnative-events.log"), O_TRUNC | O_APPEND);
     return fd >= 0 ? fdopen(fd, "a") : NULL;
 }
 
@@ -87,19 +86,23 @@ static FILE *open_event_log(void) {
  * whatever aborts print — but "what this file happens to contain" is the wrong thing to depend on,
  * and it is the exact shape of this project's earlier token-in-a-world-readable-log incident.
  *
- * `open` + `fdopen` rather than `fopen` + `chmod`: a chmod after the fact leaves a window in which
- * the file exists at 0644, and on a relaunch the crash log ALREADY exists, where O_CREAT's mode is
- * ignored — hence the explicit `fchmod` on the existing file. */
+ * The fixed path lives in shared `/tmp`, so opening is also a security boundary: `O_NOFOLLOW`
+ * rejects symlinks; `fstat` requires a regular file owned by this app uid; only after that check
+ * may `fchmod` or a requested truncate touch the inode. */
 static int open_fd_0600(const char *path, int flags) {
-    int fd = open(path, flags | O_WRONLY | O_CREAT, 0600);
+    const int truncate = flags & O_TRUNC;
+    int fd = open(path, (flags & ~O_TRUNC) | O_WRONLY | O_CREAT | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK, 0600);
     if (fd < 0) return -1;
-    fchmod(fd, 0600); /* an append target that survived a previous run keeps its old mode */
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_uid != geteuid()) {
+        close(fd);
+        return -1;
+    }
+    if (fchmod(fd, 0600) != 0 || (truncate && ftruncate(fd, 0) != 0)) {
+        close(fd);
+        return -1;
+    }
     return fd;
-}
-
-static FILE *open_log_0600(const char *path, int flags) {
-    int fd = open_fd_0600(path, flags);
-    return fd >= 0 ? fdopen(fd, (flags & O_APPEND) ? "a" : "w") : NULL;
 }
 
 int main(int argc, char **argv) {
@@ -125,12 +128,14 @@ int main(int argc, char **argv) {
     /* Written while allocation and ELF parsing are safe. The signal path then needs only numbers,
      * while the next launch can still pair a record with THIS executable after a deploy. */
     plx_crash_write_image_marker(crash_fd);
-    /* stderr is REPLACED, so it must go through freopen — but create the file at 0600 first, and
-     * freopen's "a" then reuses that inode rather than making a fresh 0644 one. Two calls to
-     * runtime_path(), which alternates buffers, so they cannot alias even though the first result
-     * is dead by the time the second is taken. */
-    { FILE *s = open_log_0600(runtime_path("plxnative-stderr.log"), O_TRUNC); if (s) fclose(s); }
-    freopen(runtime_path("plxnative-stderr.log"), "a", stderr); /* capture abort/assert text */
+    /* stderr is redirected from the SAME verified descriptor. Re-opening by path with `freopen`
+     * would reintroduce the symlink race that `open_fd_0600` just closed. */
+    int stderr_fd = open_fd_0600(runtime_path("plxnative-stderr.log"), O_TRUNC | O_APPEND);
+    if (stderr_fd >= 0) {
+        if (dup2(stderr_fd, STDERR_FILENO) >= 0)
+            fcntl(STDERR_FILENO, F_SETFD, FD_CLOEXEC);
+        if (stderr_fd != STDERR_FILENO) close(stderr_fd);
+    }
     plx_crash_install(event_fd, crash_fd);
     /* request BACK key delivery from the webOS access policy (before SDL init) */
     setenv("SDL_WEBOS_ACCESS_POLICY_KEYS_BACK", "true", 1);

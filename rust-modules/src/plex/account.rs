@@ -39,7 +39,10 @@ pub struct AccountClient {
 
 impl AccountClient {
     pub fn new(client_id: &str, token: Option<&str>) -> AccountClient {
-        AccountClient { client_id: client_id.to_owned(), token: token.map(|t| t.to_owned()) }
+        AccountClient {
+            client_id: client_id.to_owned(),
+            token: token.map(|t| t.to_owned()),
+        }
     }
 
     /// The `X-Plex-*` identity headers every plex.tv request carries (+ the token when present).
@@ -131,7 +134,9 @@ impl AccountClient {
     /// the v6 connections, which are *ranked last* rather than used first (`probe.rs`) — we ask for
     /// them so the ranking is choosing between a known set instead of a set plex.tv edited for us.
     pub fn resources(&self) -> Option<Vec<Resource>> {
-        self.get(&format!("{PLEX_TV}/api/v2/resources?includeHttps=1&includeRelay=1&includeIPv6=1"))
+        self.get(&format!(
+            "{PLEX_TV}/api/v2/resources?includeHttps=1&includeRelay=1&includeIPv6=1"
+        ))
     }
 
     // ---- Plex Home managed users ----
@@ -185,7 +190,11 @@ fn decode<T: DeserializeOwned>(verb: &str, url: &str, resp: crate::net::Resp) ->
         // Tagged for the CLIENT (`account:`) and not for the host, because the host is already in
         // the shape and the two services share this door — `discover.provider.plex.tv` lines would
         // otherwise read as coming from plex.tv proper.
-        crate::log(&format!("account: {verb} {} -> HTTP {}{hint}", endpoint_shape(url), resp.status));
+        crate::log(&format!(
+            "account: {verb} {} -> HTTP {}{hint}",
+            endpoint_shape(url),
+            resp.status
+        ));
         return None;
     }
     match serde_json::from_slice::<T>(&resp.body) {
@@ -408,7 +417,9 @@ mod tests {
     #[test]
     fn account_headers_use_the_same_honest_language_source_as_pms() {
         let headers = AccountClient::new("cid", None).headers();
-        let sent = headers.iter().find_map(|h| h.strip_prefix("X-Plex-Language: "));
+        let sent = headers
+            .iter()
+            .find_map(|h| h.strip_prefix("X-Plex-Language: "));
         assert_eq!(sent, super::super::identity::language());
     }
 
@@ -419,12 +430,20 @@ mod tests {
     #[test]
     fn an_endpoint_shape_keeps_the_route_and_drops_every_identifier() {
         // create_pin / resources / home_users: the query is dropped, the route is untouched.
-        assert_eq!(endpoint_shape("https://plex.tv/api/v2/pins?strong=false"), "plex.tv/api/v2/pins");
         assert_eq!(
-            endpoint_shape("https://plex.tv/api/v2/resources?includeHttps=1&includeRelay=1&includeIPv6=1"),
+            endpoint_shape("https://plex.tv/api/v2/pins?strong=false"),
+            "plex.tv/api/v2/pins"
+        );
+        assert_eq!(
+            endpoint_shape(
+                "https://plex.tv/api/v2/resources?includeHttps=1&includeRelay=1&includeIPv6=1"
+            ),
             "plex.tv/api/v2/resources"
         );
-        assert_eq!(endpoint_shape("https://plex.tv/api/v2/home/users"), "plex.tv/api/v2/home/users");
+        assert_eq!(
+            endpoint_shape("https://plex.tv/api/v2/home/users"),
+            "plex.tv/api/v2/home/users"
+        );
 
         // poll_pin: a decimal id folds — `auth.rs` refuses to log this number for a reason.
         let shape = endpoint_shape("https://plex.tv/api/v2/pins/1234567");
@@ -440,7 +459,9 @@ mod tests {
         // discover.rs: the OTHER host is kept — it is which service answered — and the tagKey guid
         // folds like any other id.
         assert_eq!(
-            endpoint_shape("https://discover.provider.plex.tv/library/people/5d77682aeb5d26001f1de4b0"),
+            endpoint_shape(
+                "https://discover.provider.plex.tv/library/people/5d77682aeb5d26001f1de4b0"
+            ),
             "discover.provider.plex.tv/library/people/{id}"
         );
     }
@@ -457,9 +478,19 @@ mod tests {
             Ok(_) => panic!("a string where an i64 is expected must not parse"),
             Err(e) => e,
         };
-        assert!(e.to_string().contains("a-value-from-the-body"), "serde quotes the value: {e}");
-        assert_eq!(format!("{:?}", e.classify()), "Data", "the category names the KIND of failure only");
-        assert!(e.line() > 0 || e.column() > 0, "position is the other half that is safe to log");
+        assert!(
+            e.to_string().contains("a-value-from-the-body"),
+            "serde quotes the value: {e}"
+        );
+        assert_eq!(
+            format!("{:?}", e.classify()),
+            "Data",
+            "the category names the KIND of failure only"
+        );
+        assert!(
+            e.line() > 0 || e.column() > 0,
+            "position is the other half that is safe to log"
+        );
     }
 
     /// The real `/api/v2/resources` shape, both kinds of server in one array: ours (`owned`, with
@@ -490,12 +521,20 @@ mod tests {
              {"protocol":"https","address":"203.0.113.9","port":31234,
               "uri":"https://203-0-113-9.hash2.plex.direct:31234","local":false,"relay":false,"IPv6":false}]}
         ]"#;
-        let rs: Vec<Resource> = serde_json::from_slice(json).expect("explicit nulls must not fail the array");
-        assert_eq!(rs.len(), 2, "both servers survive — the null did not take the container with it");
+        let rs: Vec<Resource> =
+            serde_json::from_slice(json).expect("explicit nulls must not fail the array");
+        assert_eq!(
+            rs.len(),
+            2,
+            "both servers survive — the null did not take the container with it"
+        );
 
         let own = &rs[0];
         assert!(own.owned && own.is_server());
-        assert_eq!(own.source_title, None, "an owned server has no owner to name");
+        assert_eq!(
+            own.source_title, None,
+            "an owned server has no owner to name"
+        );
         assert_eq!(own.owner_id, 0);
         assert!(own.home && own.presence && own.public_address_matches && !own.https_required);
         assert!(own.connections[1].ipv6, "IPv6 is capital on the wire");
@@ -506,8 +545,14 @@ mod tests {
         // (`name`) stays in the sources list.
         assert_eq!(share.source_title.as_deref(), Some("friend"));
         assert_eq!(share.owner_id, 987_654);
-        assert!(!share.public_address_matches, "their 172.20 LAN is not ours — the load-bearing flag");
-        assert_eq!(share.access_token, "tok-share", "per-(user,server) grant, never the account token");
+        assert!(
+            !share.public_address_matches,
+            "their 172.20 LAN is not ours — the load-bearing flag"
+        );
+        assert_eq!(
+            share.access_token, "tok-share",
+            "per-(user,server) grant, never the account token"
+        );
         assert_eq!(share.connections.len(), 2);
     }
 
@@ -528,9 +573,15 @@ mod tests {
         assert!(rs[0].owned, "1 is true");
         assert!(rs[0].https_required, "\"1\" is true");
         assert!(!rs[0].public_address_matches, "0 is false");
-        assert_eq!(rs[0].connections[0].port, 32400, "a string-encoded port is still a port");
+        assert_eq!(
+            rs[0].connections[0].port, 32400,
+            "a string-encoded port is still a port"
+        );
         assert!(rs[0].connections[0].local);
-        assert!(!rs[0].connections[0].ipv6, "an explicit null flag is false, not a parse failure");
+        assert!(
+            !rs[0].connections[0].ipv6,
+            "an explicit null flag is false, not a parse failure"
+        );
         // everything absent on the second resource degrades to the zero value, and it still counts
         // as a server — which is what keeps ONE odd row from emptying the roster.
         assert!(rs[1].is_server() && !rs[1].owned && rs[1].connections.is_empty());
@@ -551,19 +602,26 @@ mod tests {
           {"name":"survivor","clientIdentifier":"eeee5555","provides":"server","owned":true,
            "connections":[{"protocol":null,"address":null,"uri":null,"port":32400}]}
         ]"#;
-        let rs: Vec<Resource> = serde_json::from_slice(json).expect("a null must not fail the array");
+        let rs: Vec<Resource> =
+            serde_json::from_slice(json).expect("a null must not fail the array");
         assert_eq!(rs.len(), 2, "the good server must survive the bad row");
 
         // the all-null row degrades field by field, and stops being a server rather than exploding
         assert!(rs[0].name.is_empty() && rs[0].access_token.is_empty());
         assert!(!rs[0].is_server(), "a null `provides` names no capability");
-        assert!(rs[0].connections.is_empty(), "a null connection list is an empty one");
+        assert!(
+            rs[0].connections.is_empty(),
+            "a null connection list is an empty one"
+        );
 
         // and the row that matters is untouched
         assert!(rs[1].is_server() && rs[1].owned);
         assert_eq!(rs[1].name, "survivor");
         assert_eq!(rs[1].connections.len(), 1);
-        assert!(rs[1].connections[0].address.is_empty(), "null address degrades to empty");
+        assert!(
+            rs[1].connections[0].address.is_empty(),
+            "null address degrades to empty"
+        );
         assert_eq!(rs[1].connections[0].port, 32400);
     }
 }

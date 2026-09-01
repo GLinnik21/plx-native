@@ -150,16 +150,21 @@ mod tests {
     fn a_good_file_parses_and_builds_the_one_url() {
         let c = parse(GOOD).expect("parses");
         assert_eq!(c.url(), "https://lab.plxnative.com:39443/v1/diag");
-        assert_eq!(c.control_url(), "https://lab.plxnative.com:39443/v1/control/poll");
+        assert_eq!(
+            c.control_url(),
+            "https://lab.plxnative.com:39443/v1/control/poll"
+        );
         assert_eq!(c.session, "a1b2c3d4");
         assert!(!c.control, "an old config is upload-only by default");
     }
 
     #[test]
     fn control_is_an_explicit_package_capability() {
-        let c = parse(r#"{"endpoint":"h:1","secret":"s","control":true,
-            "pin":"sha256//aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#)
-            .expect("parses");
+        let c = parse(
+            r#"{"endpoint":"h:1","secret":"s","control":true,
+            "pin":"sha256//aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#,
+        )
+        .expect("parses");
         assert!(c.control);
     }
 
@@ -179,10 +184,19 @@ mod tests {
     fn every_missing_field_names_itself() {
         for (bad, want) in [
             (r#"{}"#, "no endpoint"),
-            (r#"{"endpoint":"https://x/y","secret":"s","pin":"sha256//aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#, "endpoint must be host:port"),
+            (
+                r#"{"endpoint":"https://x/y","secret":"s","pin":"sha256//aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#,
+                "endpoint must be host:port",
+            ),
             (r#"{"endpoint":"h:1"}"#, "no secret"),
-            (r#"{"endpoint":"h:1","secret":"s"}"#, "pin must be sha256//<base64>"),
-            (r#"{"endpoint":"h:1","secret":"s","pin":"sha256//short"}"#, "pin must be sha256//<base64>"),
+            (
+                r#"{"endpoint":"h:1","secret":"s"}"#,
+                "pin must be sha256//<base64>",
+            ),
+            (
+                r#"{"endpoint":"h:1","secret":"s","pin":"sha256//short"}"#,
+                "pin must be sha256//<base64>",
+            ),
             ("not json at all", "lab.json is not valid JSON"),
         ] {
             assert_eq!(parse(bad).err(), Some(want), "{bad}");
@@ -193,9 +207,11 @@ mod tests {
     /// predictable from the code (`docs/remote-keys.md` §1).
     #[test]
     fn either_field_can_carry_the_trigger() {
-        let c = parse(r#"{"endpoint":"h:1","secret":"s",
-            "pin":"sha256//aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","trigger_syms":[504]}"#)
-            .expect("parses");
+        let c = parse(
+            r#"{"endpoint":"h:1","secret":"s",
+            "pin":"sha256//aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","trigger_syms":[504]}"#,
+        )
+        .expect("parses");
         assert!(c.is_trigger(504, 0));
         assert!(!c.is_trigger(0, 504), "syms are not wcodes");
     }

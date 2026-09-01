@@ -9,8 +9,8 @@
 //!
 //! All of it used to run INLINE on the frame loop, straight off the key handler: the scrobble, then
 //! `detail::refresh_view_state` (a blocking 2-5 round-trip re-read), then
-//! `pms::refetch_hubs_reconcile` (a blocking `/hubs` + `/hubs/continueWatching` pair for the owned
-//! server). The justifying comment priced it at "~100 ms LAN and deliberately so", which was true of
+//! a blocking `/hubs` + `/hubs/continueWatching` pair for the owned server. The justifying comment
+//! priced it at "~100 ms LAN and deliberately so", which was true of
 //! the one-LAN-server world it was written in. With a share registered, the item's server is
 //! routinely a WAN address or a machine that is simply asleep, and every one of those calls is
 //! bounded by `stream::CONNECT_TIMEOUT_MS` (2 s) plus a 15 s `SO_RCVTIMEO` — so ONE Mark as Watched
@@ -230,7 +230,13 @@ pub(crate) fn is_busy() -> bool {
 /// than a degraded one: the worker looks it up. It is what a watched write FANS OUT on, so that a
 /// title held by more than one source ends up watched on all of them (module doc). It is ignored
 /// for [`Write::RemoveFromDeck`], which stays on the server it was pressed on.
-pub(crate) fn request(sid: ServerId, rk: &str, w: Write, detail: Option<String>, guid: &str) -> bool {
+pub(crate) fn request(
+    sid: ServerId,
+    rk: &str,
+    w: Write,
+    detail: Option<String>,
+    guid: &str,
+) -> bool {
     // `client_for`, never `client()`: the item may live on a share, and a scrobble sent to the wrong
     // machine marks a DIFFERENT film watched there (both servers number their items from 1). None is
     // a slot that is not registered, where `client()` panics — a view-state write is exactly the
@@ -248,7 +254,13 @@ pub(crate) fn request(sid: ServerId, rk: &str, w: Write, detail: Option<String>,
     // them, which is what [`pump`] finishes the job with.
     edit_local(sid, rk, w);
     coalesce(sid, rk, w);
-    queue().push(Req { sid, rk: rk.to_string(), w, detail, guid: guid.to_string() });
+    queue().push(Req {
+        sid,
+        rk: rk.to_string(),
+        w,
+        detail,
+        guid: guid.to_string(),
+    });
     kick();
     true
 }
@@ -347,7 +359,11 @@ fn kick() {
                 // order, and a second thread doing the other sources would put those copies outside
                 // that ordering — a watched/unwatched pair could then settle differently per server,
                 // which is the one thing this whole feature exists to stop.
-                let also = if w.propagates() { fan_out(c, sid, &rk, &guid, w) } else { Vec::new() };
+                let also = if w.propagates() {
+                    fan_out(c, sid, &rk, &guid, w)
+                } else {
+                    Vec::new()
+                };
                 Done { ok, also }
             })
             .unwrap_or_default();
@@ -412,7 +428,10 @@ pub(crate) fn pump() {
         return; // a burst still has writes to send — one refresh at the end of it, not per write
     }
     let (hubs, detail) = unsafe {
-        (std::mem::take(&mut *addr_of_mut!(WANT_HUBS)), (*addr_of_mut!(WANT_DETAIL)).take())
+        (
+            std::mem::take(&mut *addr_of_mut!(WANT_HUBS)),
+            (*addr_of_mut!(WANT_DETAIL)).take(),
+        )
     };
     if let Some(keep) = detail {
         // BEFORE the hubs: this re-reads the item the page is mounted on, and the hub refetch's own
@@ -463,7 +482,10 @@ fn fan_out(
         // Never a silent no-op. With two sources registered, a title that cannot be identified
         // portably is one whose watch state WILL disagree between them, and this line is the only
         // place that says so.
-        crate::log(&format!("viewstate: fanout SKIPPED — rk={rk} on server {} has no guid", sid.raw()));
+        crate::log(&format!(
+            "viewstate: fanout SKIPPED — rk={rk} on server {} has no guid",
+            sid.raw()
+        ));
         return Vec::new();
     };
     let answers = ask_sources(&sources, &guid);
@@ -472,7 +494,9 @@ fn fan_out(
         // `dst`, not a second `c`: shadowing the item's own client inside the one loop that writes
         // to OTHER machines is how a key ends up posted to the wrong server, which is the exact
         // failure this whole function is arranged around.
-        let Some(dst) = crate::plex::client_for(id) else { continue };
+        let Some(dst) = crate::plex::client_for(id) else {
+            continue;
+        };
         let ok = w.perform(dst, &key);
         crate::log(&format!(
             "viewstate: fanout {guid} {} → server {} rk={key} ok={}",
@@ -515,13 +539,21 @@ fn ask_sources(sources: &[ServerId], guid: &str) -> Vec<Answer> {
         .map(|&id| {
             let keys = crate::plex::client_for(id)
                 .and_then(|c| c.find_by_guid(guid))
-                .map(|mc| mc.metadata.iter().map(|m| m.rating_key.clone()).collect::<Vec<_>>());
+                .map(|mc| {
+                    mc.metadata
+                        .iter()
+                        .map(|m| m.rating_key.clone())
+                        .collect::<Vec<_>>()
+                });
             let outcome = match &keys {
                 None => "no answer".to_string(),
                 Some(k) if k.is_empty() => "not held".to_string(),
                 Some(k) => format!("holds {}", k.len()),
             };
-            crate::log(&format!("viewstate: fanout {guid} server {}: {outcome}", id.raw()));
+            crate::log(&format!(
+                "viewstate: fanout {guid} server {}: {outcome}",
+                id.raw()
+            ));
             (id, keys)
         })
         .collect()
@@ -540,7 +572,9 @@ fn fanout_targets(origin: (ServerId, &str), answers: &[Answer]) -> Vec<(ServerId
     for (id, keys) in answers {
         for k in keys.iter().flatten() {
             let pair = (*id, k.as_str());
-            let listed = out.iter().any(|(s, e)| crate::plex::same_item((*s, e), pair));
+            let listed = out
+                .iter()
+                .any(|(s, e)| crate::plex::same_item((*s, e), pair));
             if listed || crate::plex::same_item(pair, origin) {
                 continue;
             }
@@ -646,7 +680,10 @@ mod tests {
 
         assert_eq!(
             queued(),
-            vec![("7".into(), Write::RemoveFromDeck), ("7".into(), Write::Watched)],
+            vec![
+                ("7".into(), Write::RemoveFromDeck),
+                ("7".into(), Write::Watched)
+            ],
             "two families, two writes, in the order pressed"
         );
         reset();
@@ -662,8 +699,15 @@ mod tests {
 
         enqueue("7", Write::Unwatched, None);
 
-        assert!(unsafe { (*addr_of!(SENT)).is_some() }, "the one on the wire stays out");
-        assert_eq!(queued(), vec![("7".into(), Write::Unwatched)], "and its successor is queued behind it");
+        assert!(
+            unsafe { (*addr_of!(SENT)).is_some() },
+            "the one on the wire stays out"
+        );
+        assert_eq!(
+            queued(),
+            vec![("7".into(), Write::Unwatched)],
+            "and its successor is queued behind it"
+        );
         reset();
     }
 
@@ -685,7 +729,10 @@ mod tests {
             *addr_of_mut!(WANT_HUBS) = true;
             *addr_of_mut!(WANT_DETAIL) = landed.detail;
         }
-        assert!(is_busy(), "write 2 is still queued — the refresh is not owed yet");
+        assert!(
+            is_busy(),
+            "write 2 is still queued — the refresh is not owed yet"
+        );
 
         // …and write 2 answers, superseding which episode the filmstrip lands back on
         let two = queue().remove(0);
@@ -695,10 +742,17 @@ mod tests {
         }
         assert!(!is_busy());
         let (hubs, detail) = unsafe {
-            (std::mem::take(&mut *addr_of_mut!(WANT_HUBS)), (*addr_of_mut!(WANT_DETAIL)).take())
+            (
+                std::mem::take(&mut *addr_of_mut!(WANT_HUBS)),
+                (*addr_of_mut!(WANT_DETAIL)).take(),
+            )
         };
         assert!(hubs, "exactly one hub refetch is owed for the burst");
-        assert_eq!(detail.as_deref(), Some("2"), "…and the LAST write's episode is the one kept");
+        assert_eq!(
+            detail.as_deref(),
+            Some("2"),
+            "…and the LAST write's episode is the one kept"
+        );
         reset();
     }
 
@@ -716,15 +770,28 @@ mod tests {
         queue().insert(0, head);
         unsafe { *addr_of_mut!(RETRY_CD) = RETRY_FRAMES };
 
-        assert_eq!(queued(), vec![("5".into(), Write::Watched)], "the press survives the refusal");
-        assert!(unsafe { (*addr_of!(SENT)).is_none() }, "and nothing is recorded as in flight");
+        assert_eq!(
+            queued(),
+            vec![("5".into(), Write::Watched)],
+            "the press survives the refusal"
+        );
+        assert!(
+            unsafe { (*addr_of!(SENT)).is_none() },
+            "and nothing is recorded as in flight"
+        );
 
         for i in 1..RETRY_FRAMES {
             assert!(!retry_tick(), "frame {i} of the wait is not the due one");
         }
-        assert!(retry_tick(), "the ladder is spent after RETRY_FRAMES frames");
+        assert!(
+            retry_tick(),
+            "the ladder is spent after RETRY_FRAMES frames"
+        );
         assert_eq!(unsafe { *addr_of!(RETRY_CD) }, 0);
-        assert!(retry_tick(), "…and stays due until a fresh refusal re-arms it");
+        assert!(
+            retry_tick(),
+            "…and stays due until a fresh refusal re-arms it"
+        );
         reset();
     }
 
@@ -764,7 +831,11 @@ mod tests {
     /// under its own key.
     #[test]
     fn a_watched_write_fans_out_to_every_other_sources_copy_of_the_title() {
-        let answers = [held(SRV_A, &["4"]), held(SRV_B, &["4"]), held(SRV_C, &["5274"])];
+        let answers = [
+            held(SRV_A, &["4"]),
+            held(SRV_B, &["4"]),
+            held(SRV_C, &["5274"]),
+        ];
         assert_eq!(
             fanout_targets((SRV_A, "4"), &answers),
             vec![(SRV_B, "4".into()), (SRV_C, "5274".into())],
@@ -779,8 +850,16 @@ mod tests {
         let answers = [held(SRV_A, &["4"]), held(SRV_B, &["4"])];
         let from_a = fanout_targets((SRV_A, "4"), &answers);
         let from_b = fanout_targets((SRV_B, "4"), &answers);
-        assert_eq!(from_a, vec![(SRV_B, "4".into())], "pressed on A, so only B is written");
-        assert_eq!(from_b, vec![(SRV_A, "4".into())], "…and pressed on B, only A");
+        assert_eq!(
+            from_a,
+            vec![(SRV_B, "4".into())],
+            "pressed on A, so only B is written"
+        );
+        assert_eq!(
+            from_b,
+            vec![(SRV_A, "4".into())],
+            "…and pressed on B, only A"
+        );
     }
 
     /// The ordinary case, and it must cost nothing: only one source holds the title, so there is
@@ -813,9 +892,18 @@ mod tests {
     /// reach into a friend's server to hide a row from a shelf that is not the one you pressed.
     #[test]
     fn a_deck_removal_stays_on_the_server_it_was_pressed_on() {
-        assert!(Write::Watched.propagates(), "watched is a claim about the title");
-        assert!(Write::Unwatched.propagates(), "…and so is taking that claim back");
-        assert!(!Write::RemoveFromDeck.propagates(), "the deck is one server's own surface");
+        assert!(
+            Write::Watched.propagates(),
+            "watched is a claim about the title"
+        );
+        assert!(
+            Write::Unwatched.propagates(),
+            "…and so is taking that claim back"
+        );
+        assert!(
+            !Write::RemoveFromDeck.propagates(),
+            "the deck is one server's own surface"
+        );
     }
 
     /// The EDIT the landing applies to a fanned-out copy: the same local flip the press made for
@@ -836,11 +924,18 @@ mod tests {
         }));
 
         edit_local(SRV_A, "4", Write::Watched); // our copy: same key, different film, no effect here
-        assert!(!crate::metadata::current().unwrap().watched, "A's 4 is not B's 4");
+        assert!(
+            !crate::metadata::current().unwrap().watched,
+            "A's 4 is not B's 4"
+        );
 
         edit_local(SRV_B, "4", Write::Watched); // …and the fan-out's report, which is
         assert!(crate::metadata::current().unwrap().watched);
-        assert_eq!(crate::metadata::current().unwrap().resume_ms, 0, "watched stops offering to resume");
+        assert_eq!(
+            crate::metadata::current().unwrap().resume_ms,
+            0,
+            "watched stops offering to resume"
+        );
 
         crate::metadata::install_for_test(None);
         reset();
@@ -872,8 +967,10 @@ mod tests {
                 guid: "plex://movie/6856893830a4aaafd5c4291d".into(),
             })
         };
-        *MAIL.lock().unwrap_or_else(|e| e.into_inner()) =
-            Some(Done { ok: true, also: vec![(SRV_B, "4".into())] });
+        *MAIL.lock().unwrap_or_else(|e| e.into_inner()) = Some(Done {
+            ok: true,
+            also: vec![(SRV_B, "4".into())],
+        });
 
         pump();
 
@@ -881,8 +978,14 @@ mod tests {
             crate::metadata::current().unwrap().watched,
             "the page mounted on the share's copy is flipped by the landing, not by the press"
         );
-        assert!(!is_busy(), "…and the write that reported is no longer in flight");
-        assert!(MAIL.lock().unwrap_or_else(|e| e.into_inner()).is_none(), "the mailbox is drained");
+        assert!(
+            !is_busy(),
+            "…and the write that reported is no longer in flight"
+        );
+        assert!(
+            MAIL.lock().unwrap_or_else(|e| e.into_inner()).is_none(),
+            "the mailbox is drained"
+        );
 
         crate::metadata::install_for_test(None);
         reset();

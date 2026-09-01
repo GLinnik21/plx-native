@@ -32,14 +32,12 @@
 //! tests compare their object keys with the sanitizer allowlist, so an added field cannot bypass
 //! this screen.
 //!
-//! # BACK commits what is on screen, and does not re-ask
+//! # First-run BACK commits; Settings BACK discards
 //!
-//! Both are deliberate. Dismissing with both switches off IS the answer "no", and recording it as
-//! an answer is what stops the question coming back every boot — someone who declines has decided,
-//! and re-asking a decided question is the nagging pattern this design exists to avoid. Someone who
-//! toggles a switch on and then presses BACK has also said what they wanted; treating that as a
-//! cancellation would be second-guessing them. The screen says the decision is reversible in
-//! Settings → Privacy, and it is.
+//! On first run, dismissing with both switches off IS the answer "no", and recording it is what
+//! stops the question coming back every boot. From Settings, the same rows are an editor: BACK
+//! discards its draft, and Done appears only after a value differs from the stored answer. That
+//! distinction keeps a modal dismissal separate from an explicit commit.
 //!
 //! # It never appears on an automated boot
 //!
@@ -74,7 +72,8 @@ const INDENT_PX: f32 = 9.0;
 /// The heading. A question rather than a notice: it is a request for a favour, which is what it
 /// actually is, and the honest framing also happens to be the one that does not read as a dark
 /// pattern.
-const TITLE: &str = "Want to help me fix bugs?";
+const CRASH_TITLE: &str = "Share crash reports?";
+const PRODUCT_TITLE: &str = "Share product analytics?";
 
 /// Three paragraphs, in this order for a reason: who is asking, what they get, what they do not.
 ///
@@ -88,23 +87,17 @@ const TITLE: &str = "Want to help me fix bugs?";
 /// carry runtime strings and native envelopes must pass a fixed allowlist that rejects content and
 /// identity scopes. Usage action fields remain fixed typed values; the only runtime strings are
 /// the separately allowlisted and bounded compatibility/network dimensions shown in the preview.
-const BODY: &str = "\
-Hi — I'm Gleb. I build PlxNative on my own, for free, and I own exactly one LG television. When the \
-app breaks on someone else's, I usually never find out.
+const CRASH_BODY: &str = "If PlxNative crashes, it can send technical details that help find and fix the problem. Reports may include the signal, code addresses, thread information and device compatibility details. They never include titles, Plex accounts, searches, server names or addresses, tokens, subtitle text, or the product analytics identifier.";
+const PRODUCT_BODY: &str = "PlxNative can share which screens and features are used and broad sign-in and playback outcomes. Reports use a random installation identifier and can include the app version, webOS version, television model and SoC, and whether a selected server is local, remote or relayed. They never include titles, Plex accounts, searches, server names or addresses, tokens, subtitle text, or exact viewing history.";
 
-If you switch these on, the app can tell me when it crashes; which screens and features get used; \
-whether sign-in and playback succeed; broad video/audio classes; and which app, webOS, model/SoC \
-and coarse server-connection class saw it. That's the whole thing.
-
-Titles, libraries, accounts and server addresses are not included in what's sent. Either way \
-PlxNative works exactly the same, and you can change your mind any time in Settings → Privacy.";
-
-const ROW_ERRORS: &str = "Tell me when it crashes";
-const ROW_ERRORS_SUB: &str = "Crash and error reports.";
-const ROW_USAGE: &str = "Tell me which features get used";
-const ROW_USAGE_SUB: &str = "Features, outcomes and compatibility/network classes — never what you watch.";
-const ROW_PREVIEW: &str = "See exactly what's sent";
-const ROW_CONTINUE: &str = "Continue";
+const ROW_ERRORS: &str = "Crash reports";
+const ROW_ERRORS_SUB: &str = "Technical crash details sent to Sentry in Germany.";
+const ROW_USAGE: &str = "Product analytics";
+const ROW_USAGE_SUB: &str = "Feature and playback outcome classes sent to PostHog in Germany.";
+const ROW_PREVIEW: &str = "See exactly what's shared";
+const ROW_POLICY: &str = "Privacy policy";
+const ROW_DELETE: &str = "Delete all local data";
+const ROW_DONE: &str = "Done";
 
 /// Row order, and the single source of it. An arm without a row, or a row without an arm, cannot
 /// happen — the same shape `legal::Page::ALL` uses, and for the same reason `account_menu`'s comment
@@ -115,11 +108,36 @@ enum RowId {
     Errors,
     Usage,
     Preview,
-    Continue,
+    Policy,
+    Delete,
+    Share,
+    Decline,
+    Done,
+    CancelDelete,
+    ConfirmDelete,
 }
 
-impl RowId {
-    const ALL: [RowId; 4] = [RowId::Errors, RowId::Usage, RowId::Preview, RowId::Continue];
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    FirstRun,
+    Settings,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Stage { Crash, Product }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PreviewKind { Payload, Policy }
+
+fn row_ids() -> Vec<RowId> {
+    if unsafe { *addr_of!(DELETE_CONFIRM) } {
+        return vec![RowId::CancelDelete, RowId::ConfirmDelete];
+    }
+    if mode() == Mode::FirstRun {
+        return vec![RowId::Share, RowId::Decline, RowId::Preview, RowId::Policy];
+    }
+    let mut rows = vec![RowId::Errors, RowId::Usage, RowId::Preview, RowId::Policy, RowId::Delete];
+    if draft() != base() { rows.push(RowId::Done); }
+    rows
 }
 
 // ---- state -----------------------------------------------------------------------------------
@@ -131,6 +149,12 @@ static mut TABLE: TableView = TableView::new(); // main-thread only
 /// way out — never written straight to `consent::CURRENT`, so a half-made choice cannot start
 /// letting events through while the screen is still up.
 static mut DRAFT: (bool, bool) = (false, false);
+static mut BASE: (bool, bool) = (false, false);
+static mut MODE: Mode = Mode::FirstRun;
+static mut STAGE: Stage = Stage::Crash;
+static mut PREVIEW_KIND: PreviewKind = PreviewKind::Payload;
+static mut DELETE_CONFIRM: bool = false;
+static mut DELETE_REQUESTED: bool = false;
 /// Preview scroll, in pixels. Not a spring, for `legal.rs`'s reason: a document that glides after
 /// the key is released overshoots the line you stopped on.
 static mut PREVIEW_SCROLL: f32 = 0.0;
@@ -165,6 +189,17 @@ fn draft() -> (bool, bool) {
     unsafe { *addr_of!(DRAFT) }
 }
 
+fn base() -> (bool, bool) {
+    unsafe { *addr_of!(BASE) }
+}
+
+fn mode() -> Mode {
+    unsafe { *addr_of!(MODE) }
+}
+fn stage() -> Stage { unsafe { *addr_of!(STAGE) } }
+fn title() -> &'static str { if stage() == Stage::Crash { CRASH_TITLE } else { PRODUCT_TITLE } }
+fn body() -> &'static str { if stage() == Stage::Crash { CRASH_BODY } else { PRODUCT_BODY } }
+
 /// Should this boot put the question on screen?
 ///
 /// Pure, and takes both inputs, so the harness rule is a host test rather than a hope — see the
@@ -177,7 +212,26 @@ pub(crate) fn should_show(c: &Consent, automated: bool) -> bool {
 /// policy bump re-asks somebody who already said yes, and presenting their previous answer as "no"
 /// would be quietly asking them to opt in again.
 pub(crate) fn open(prev: &Consent) {
-    unsafe { addr_of_mut!(DRAFT).write((prev.errors, prev.usage)) };
+    unsafe {
+        addr_of_mut!(MODE).write(Mode::FirstRun);
+        addr_of_mut!(STAGE).write(Stage::Crash);
+        addr_of_mut!(BASE).write((prev.errors, prev.usage));
+        addr_of_mut!(DRAFT).write((false, false));
+    }
+    rebuild(0);
+    pop().open();
+    crate::ui::idle::invalidate();
+}
+
+/// Open the same choices from Settings. BACK discards the draft; Done appears only after a value
+/// differs from the stored answer and is the sole commit action.
+pub(crate) fn open_settings(prev: &Consent) {
+    unsafe {
+        addr_of_mut!(MODE).write(Mode::Settings);
+        addr_of_mut!(BASE).write((prev.errors, prev.usage));
+        addr_of_mut!(DRAFT).write((prev.errors, prev.usage));
+        addr_of_mut!(DELETE_CONFIRM).write(false);
+    }
     rebuild(0);
     pop().open();
     crate::ui::idle::invalidate();
@@ -187,22 +241,36 @@ pub(crate) fn open(prev: &Consent) {
 /// its rows by value — the checkmark is state in the row, not a live read.
 fn rebuild(sel: i32) {
     let (errors, usage) = draft();
-    // `toggle`, not `checked`. The component was already right and the first draft picked the
-    // wrong builder: `checked` is the PICKER mark — "this is the one you are on" — and an
-    // unchecked row then looks exactly like an action row, which is how the capture came back with
-    // "Tell me when it crashes" indistinguishable from "Continue". `toggle` states `On`/`Off` at
-    // the trailing edge, which is `table.rs`'s own rule: a mark says where you are, a word says
-    // what is set.
-    let choices = Section::new("")
-        .row(Row::new(ROW_ERRORS).detail(ROW_ERRORS_SUB).toggle(errors))
-        .row(Row::new(ROW_USAGE).detail(ROW_USAGE_SUB).toggle(usage));
-    let actions = Section::new("")
-        .row(Row::new(ROW_PREVIEW).chevron(true))
-        .row(Row::new(ROW_CONTINUE));
-    // `slide: false` — a rebuild is the same list with one mark changed, and animating it as an
-    // arrival would make every toggle look like a navigation.
-    table().set_sections(vec![choices, actions], sel, false);
-    debug_assert_eq!(RowId::ALL.len() as i32, table().n_rows());
+    if unsafe { *addr_of!(DELETE_CONFIRM) } {
+        table().set_sections(vec![Section::new("")
+            .row(Row::new("Cancel"))
+            .row(Row::new("Delete all local data"))], sel, false);
+        return;
+    }
+    if mode() == Mode::FirstRun {
+        let (share, decline) = if stage() == Stage::Crash {
+            ("Share Crash Reports", "Don’t Share")
+        } else {
+            ("Share Product Analytics", "Don’t Share")
+        };
+        table().set_sections(vec![Section::new("")
+            .row(Row::new(share))
+            .row(Row::new(decline))
+            .row(Row::new(if stage() == Stage::Crash { "See an example report" } else { ROW_PREVIEW }).chevron(true))
+            .row(Row::new(ROW_POLICY).chevron(true))], sel, false);
+    } else {
+        let reporting = Section::new("Reporting")
+            .row(Row::new(ROW_ERRORS).detail(ROW_ERRORS_SUB).toggle(errors))
+            .row(Row::new(ROW_USAGE).detail(ROW_USAGE_SUB).toggle(usage));
+        let info = Section::new("Information")
+            .row(Row::new(ROW_PREVIEW).detail("Field-by-field previews for both report types.").chevron(true))
+            .row(Row::new(ROW_POLICY).detail("The complete PlxNative privacy policy for this build.").chevron(true));
+        let mut local = Section::new("On this TV").row(Row::new(ROW_DELETE)
+            .detail("Sign out and remove PlxNative data from this TV.").chevron(true));
+        if draft() != base() { local = local.row(Row::new(ROW_DONE)); }
+        table().set_sections(vec![reporting, info, local], sel, false);
+    }
+    debug_assert_eq!(row_ids().len() as i32, table().n_rows());
 }
 
 /// Commit the draft and close. The one exit, used by both `Continue` and BACK — see the module doc
@@ -244,7 +312,8 @@ pub(crate) fn close() {
     crate::ui::idle::invalidate();
 }
 
-/// BACK: the preview returns to the question; the question COMMITS and closes.
+/// BACK: the preview returns to the question. First-run commits the refusal/choice; Settings
+/// discards its draft, because only the explicit Done row commits changed state.
 pub(crate) fn on_back() -> bool {
     if preview_open() {
         preview_pop().close();
@@ -252,10 +321,35 @@ pub(crate) fn on_back() -> bool {
         return true;
     }
     if menu_open() {
-        commit();
+        if unsafe { *addr_of!(DELETE_CONFIRM) } {
+            unsafe { addr_of_mut!(DELETE_CONFIRM).write(false) };
+            rebuild(0);
+            crate::ui::idle::invalidate();
+            return true;
+        }
+        if mode() == Mode::Settings {
+            close();
+        } else {
+            choose(false);
+        }
         return true;
     }
     false
+}
+
+fn choose(share: bool) {
+    let (e, u) = draft();
+    if stage() == Stage::Crash {
+        unsafe {
+            addr_of_mut!(DRAFT).write((share, u));
+            addr_of_mut!(STAGE).write(Stage::Product);
+        }
+        rebuild(0);
+        crate::ui::idle::invalidate();
+    } else {
+        unsafe { addr_of_mut!(DRAFT).write((e, share)) };
+        commit();
+    }
 }
 
 /// OK: toggle a switch, open the preview, or commit.
@@ -268,8 +362,9 @@ pub(crate) fn on_ok() -> bool {
     if !menu_open() {
         return false;
     }
-    let sel = table().sel.clamp(0, RowId::ALL.len() as i32 - 1);
-    match RowId::ALL[sel as usize] {
+    let rows = row_ids();
+    let sel = table().sel.clamp(0, rows.len() as i32 - 1);
+    match rows[sel as usize] {
         RowId::Errors => {
             let (e, u) = draft();
             unsafe { addr_of_mut!(DRAFT).write((!e, u)) };
@@ -283,13 +378,43 @@ pub(crate) fn on_ok() -> bool {
             crate::ui::idle::invalidate();
         }
         RowId::Preview => {
-            unsafe { addr_of_mut!(PREVIEW_SCROLL).write(0.0) };
+            unsafe { addr_of_mut!(PREVIEW_SCROLL).write(0.0); addr_of_mut!(PREVIEW_KIND).write(PreviewKind::Payload) };
             preview_pop().open();
             crate::ui::idle::invalidate();
         }
-        RowId::Continue => commit(),
+        RowId::Policy => {
+            unsafe { addr_of_mut!(PREVIEW_SCROLL).write(0.0); addr_of_mut!(PREVIEW_KIND).write(PreviewKind::Policy) };
+            preview_pop().open();
+            crate::ui::idle::invalidate();
+        }
+        RowId::Delete => {
+            unsafe { addr_of_mut!(DELETE_CONFIRM).write(true) };
+            rebuild(0);
+            crate::ui::idle::invalidate();
+        }
+        RowId::Share => choose(true),
+        RowId::Decline => choose(false),
+        RowId::Done => commit(),
+        RowId::CancelDelete => {
+            unsafe { addr_of_mut!(DELETE_CONFIRM).write(false) };
+            rebuild(4);
+            crate::ui::idle::invalidate();
+        }
+        RowId::ConfirmDelete => {
+            unsafe { addr_of_mut!(DELETE_REQUESTED).write(true) };
+            close();
+        }
     }
     true
+}
+
+pub(crate) fn take_delete_request() -> bool {
+    unsafe {
+        let p = addr_of_mut!(DELETE_REQUESTED);
+        let requested = p.read();
+        p.write(false);
+        requested
+    }
 }
 
 pub(crate) fn on_updown(delta: i32) -> bool {
@@ -321,6 +446,14 @@ pub(crate) fn on_updown(delta: i32) -> bool {
 pub(crate) fn update(dt: f32) {
     pop().update(dt);
     preview_pop().update(dt);
+    // `sel` changes immediately so the focused row's ink can change in the same frame; the white
+    // plate is a pair of springs and only advances here. Omitting this made Privacy the lone
+    // Settings child whose text moved while its plate stayed where the screen opened.
+    const LIST_TOP: f32 = 150.0;
+    table().update(
+        dt,
+        SCR_H as f32 - LIST_TOP - crate::ui::consts::MARGIN_X,
+    );
 }
 
 // ---- the payload preview ---------------------------------------------------------------------
@@ -438,6 +571,10 @@ pub(crate) fn preview() -> String {
     out
 }
 
+fn privacy_policy() -> &'static str {
+    "RESPONSIBLE FOR PLXNATIVE DATA\n\nGleb Linnik is responsible only for data PlxNative stores locally and for optional reports you choose to share.\n\nPLEX SERVICES\n\nPlxNative is an independent client for Plex. To sign you in, discover servers and provide Plex account features, the app communicates directly with Plex services. Plex processes information received by those services under Plex’s own Privacy Policy. PlxNative’s developer does not receive that information.\n\nPlex Privacy Policy: https://www.plex.tv/about/privacy-legal/\n\nPLEX MEDIA SERVERS\n\nTo browse and play media, update watch progress and use server features, PlxNative communicates directly with the Plex Media Servers you select. Those requests are handled by the selected server and its operator. PlxNative’s developer does not receive them.\n\nOPTIONAL REPORTING\n\nCrash reports and product analytics are independent, optional and reversible in Settings. Crash reports go to Sentry in Germany. Product analytics go to PostHog in Germany and use a random installation identifier.\n\nNEVER INCLUDED\n\nTitles, Plex accounts, searches, server names or addresses, tokens, subtitle text and exact viewing history are not included.\n\nCONTACT\n\nglinnik21@gmail.com"
+}
+
 // ---- draw ------------------------------------------------------------------------------------
 
 pub(crate) fn draw_scrim() {
@@ -463,72 +600,29 @@ pub(crate) fn draw() {
 /// single wall of text. `legal.rs` carries a comment recording that it made the same mistake and
 /// fixed it; this made it again anyway, four files away, which is the argument for looking at the
 /// picture rather than at the test result.
-fn paragraphs() -> Vec<TextView<'static>> {
-    BODY.split("\n\n")
-        .map(str::trim)
-        .filter(|b| !b.is_empty())
-        .map(|b| TextView::new(b, theme::size::BODY, theme::TEXT_SECONDARY).leading(LEAD))
-        .collect()
-}
-
 fn draw_question() {
     let p0 = pop();
-    let title = TextView::new(TITLE, theme::size::HEADLINE, theme::TEXT_PRIMARY).bold();
-    let title_h = title.measure_h(CONTENT_W);
-    let paras = paragraphs();
-    let para_hs: Vec<f32> = paras.iter().map(|t| t.measure_h(CONTENT_W)).collect();
-    let prose_h: f32 =
-        para_hs.iter().sum::<f32>() + theme::space::MD * (para_hs.len().saturating_sub(1)) as f32;
-    let rows_h = table().measured_height();
-    let h = (PAD + title_h + theme::space::MD + prose_h + theme::space::LG + rows_h + PAD)
-        .min(SCR_H as f32 - 2.0 * EDGE_CLEAR);
-    let r = Rect {
-        x: (SCR_W as f32 - PANEL_W) * 0.5,
-        y: (SCR_H as f32 - h) * 0.5,
-        w: PANEL_W,
-        h,
-    };
-
-    let p = p0.content_painter(p0.appear());
-    p0.panel(p, r, theme::ALERT_PANEL_RAD);
-
-    // The question is a HEADING at the top of its own panel, not a section header inside the table.
-    // The first version made it the choices section's header, and the capture showed why that was
-    // wrong: the panel opened with a paragraph and no title, and the question turned up halfway
-    // down as a caps label, reading as a group name rather than as what is being asked.
-    let mut y = r.y + PAD;
-    title.draw(
-        p,
-        Rect {
-            x: r.x + PAD,
-            y,
-            w: CONTENT_W,
-            h: title_h,
-        },
-    );
-    y += title_h + theme::space::MD;
-    for (tv, ph) in paras.iter().zip(&para_hs) {
-        tv.draw(
-            p,
-            Rect {
-                x: r.x + PAD,
-                y,
-                w: CONTENT_W,
-                h: *ph,
-            },
-        );
-        y += ph + theme::space::MD;
+    let a = p0.appear();
+    let ground = p0.content_painter(0.0);
+    if mode() == Mode::FirstRun { p0.sheet(ground, Rect::FULL, 0.0); }
+    let p = ground.alpha(a).translate(SCR_W as f32 * (1.0 - a), 0.0);
+    let top = 150.0;
+    let copy_w = crate::ui::home::HERO_COL_W;
+    let deleting = unsafe { *addr_of!(DELETE_CONFIRM) };
+    TextView::new(if deleting { "Delete all local data?" } else if mode() == Mode::Settings { "Privacy & data" } else { title() }, theme::size::HERO, theme::TEXT_HEADING)
+        .bold().max_lines(2).draw(p, Rect::new(crate::ui::consts::MARGIN_X, top, copy_w, 210.0));
+    let copy = if deleting {
+        "This signs you out and removes the PlxNative session, profile choices, Home settings, playback position, search history, optional reporting choices and queued reports from this television. This cannot be undone."
+    } else if mode() == Mode::Settings {
+        "Control optional reporting, review exactly what may be shared, and manage data stored by PlxNative on this television."
+    } else { body() };
+    TextView::new(copy, theme::size::BODY, theme::TEXT_READING).leading(LEAD).max_lines(12)
+        .draw(p, Rect::new(crate::ui::consts::MARGIN_X, top + 150.0, copy_w, 500.0));
+    let list = Rect::new(930.0, top, SCR_W as f32 - crate::ui::consts::MARGIN_X - 930.0, SCR_H as f32 - top - crate::ui::consts::MARGIN_X);
+    table().draw(p, list);
+    if mode() == Mode::Settings && draft() == base() {
+        KeyHint::new(c"Press", c"BACK", c"to return").draw(p, crate::ui::consts::MARGIN_X, SCR_H as f32 - 90.0);
     }
-    y += theme::space::LG - theme::space::MD; // the last paragraph already paid a gap
-    table().draw(
-        p,
-        Rect {
-            x: r.x + PAD,
-            y,
-            w: CONTENT_W,
-            h: rows_h,
-        },
-    );
 }
 
 fn draw_preview() {
@@ -541,9 +635,10 @@ fn draw_preview() {
         h,
     };
     let p = p0.content_painter(p0.appear());
-    p0.panel(p, r, theme::ALERT_PANEL_RAD);
+    p0.sheet(p, r, theme::ALERT_PANEL_RAD);
 
-    let title = TextView::new(ROW_PREVIEW, theme::size::HEADLINE, theme::TEXT_PRIMARY).bold();
+    let policy = unsafe { *addr_of!(PREVIEW_KIND) == PreviewKind::Policy };
+    let title = TextView::new(if policy { ROW_POLICY } else { ROW_PREVIEW }, theme::size::HEADLINE, theme::TEXT_PRIMARY).bold();
     let title_h = title.measure_h(CONTENT_W);
     title.draw(
         p,
@@ -566,7 +661,7 @@ fn draw_preview() {
     // One `TextView` PER LINE. Handing the whole string to one is what the first version did, and
     // `TextView` collapses newlines — so the pretty-printing above would have been thrown away and
     // the payload would have come back as the same unbreakable run that elided.
-    let text = preview();
+    let text = if policy { privacy_policy().to_string() } else { preview() };
     let views: Vec<(f32, f32, TextView, f32)> = {
         let mut v = Vec::new();
         let mut y = 0.0f32;
@@ -758,9 +853,29 @@ mod tests {
         // one — `[[test-suite-global-pollution]]`'s rule, and the reason the whole `auth` block
         // once aborted under load.
         let _g = crate::testlock::serial();
-        unsafe { addr_of_mut!(DRAFT).write((false, false)) };
+        unsafe {
+            addr_of_mut!(MODE).write(Mode::FirstRun);
+            addr_of_mut!(BASE).write((false, false));
+            addr_of_mut!(DRAFT).write((false, false));
+        }
         rebuild(0);
-        assert_eq!(table().n_rows(), RowId::ALL.len() as i32);
+        assert_eq!(table().n_rows(), row_ids().len() as i32);
+    }
+
+    #[test]
+    fn settings_only_offers_done_after_a_change() {
+        let _g = crate::testlock::serial();
+        let stored = Consent {
+            errors: false,
+            usage: false,
+            ..Default::default()
+        };
+        open_settings(&stored);
+        assert!(!row_ids().contains(&RowId::Done));
+        unsafe { addr_of_mut!(DRAFT).write((true, false)) };
+        rebuild(0);
+        assert!(row_ids().contains(&RowId::Done));
+        close();
     }
 
     /// The two labels say which switch is which without either sounding like the safe one. Pinned
@@ -769,22 +884,19 @@ mod tests {
     #[test]
     fn the_two_switches_name_two_different_purposes() {
         assert_ne!(ROW_ERRORS, ROW_USAGE);
-        assert!(ROW_ERRORS_SUB.contains("Crash"));
-        assert!(ROW_USAGE_SUB.contains("never what you watch"));
+        assert!(ROW_ERRORS_SUB.contains("Sentry"));
+        assert!(ROW_USAGE_SUB.contains("PostHog"));
     }
 
     /// The prose carries the four things WP260's first layer needs — who, why, that it is optional,
     /// and where the rest is — plus the checkable payload claim. Asserted rather than eyeballed
     /// because a later edit for length is exactly how one of them goes missing.
     #[test]
-    fn the_first_layer_says_who_why_optional_and_where() {
-        assert!(BODY.contains("I'm Gleb"), "who");
-        assert!(BODY.contains("when it crashes"), "why");
-        assert!(BODY.contains("works exactly the same"), "optional");
-        assert!(BODY.contains("Settings → Privacy"), "where to change it");
-        assert!(
-            BODY.contains("are not included in what's sent"),
-            "the checkable payload claim"
-        );
+    fn first_run_separates_crash_and_product_consent() {
+        assert!(CRASH_BODY.contains("signal"));
+        assert!(CRASH_BODY.contains("product analytics identifier"));
+        assert!(PRODUCT_BODY.contains("random installation identifier"));
+        assert!(PRODUCT_BODY.contains("exact viewing history"));
+        assert_ne!(CRASH_TITLE, PRODUCT_TITLE);
     }
 }

@@ -83,15 +83,15 @@ enum Phase {
 struct State {
     sp: Spring,
     phase: Phase,
-    down_at: u32,    // tick at press-down (long-press timing)
-    alive: u32,      // last liveness tick (press-down + OK auto-repeats) — the dropped-key-up net
-    got_beat: bool,  // an auto-repeat heartbeat has arrived → `alive` is meaningful for LOST detection
+    down_at: u32,      // tick at press-down (long-press timing)
+    alive: u32,        // last liveness tick (press-down + OK auto-repeats) — the dropped-key-up net
+    got_beat: bool, // an auto-repeat heartbeat has arrived → `alive` is meaningful for LOST detection
     release_at: u32, // tick of the real key-up (0 = still held)
-    commit_at: u32,  // tick at which the activation may fire (0 = none scheduled)
+    commit_at: u32, // tick at which the activation may fire (0 = none scheduled)
     want_commit: bool, // false after a cancel or the long-press latch — spring back, do NOT activate
-    long: bool,      // the hold crossed LONG_MS → a press-and-hold, not a tap (see `was_long`)
-    took: bool,      // the caller already consumed the commit
-    holdable: bool,  // a HOLD is a distinct gesture here (a card) — see `begin` vs `begin_ctl`
+    long: bool,        // the hold crossed LONG_MS → a press-and-hold, not a tap (see `was_long`)
+    took: bool,        // the caller already consumed the commit
+    holdable: bool,    // a HOLD is a distinct gesture here (a card) — see `begin` vs `begin_ctl`
 }
 
 static mut S: State = State {
@@ -227,12 +227,12 @@ pub fn tick(now: u32, dt: f32) {
         Phase::Idle => {}
         Phase::Down => {
             s.sp.step(DIP, K_DOWN, dt); // fast, non-bouncy dip
-            // Long-press latch: once held past LONG_MS this is a press-and-hold, NOT a tap — cancel
-            // the normal activation so it can never launch (the hard cap below would otherwise fire
-            // it). The press then just holds the dip and springs back; whether anything HAPPENS is
-            // the caller's business, read off `is_long` (Home and the detail page's episode
-            // filmstrip open the item context menu there; every other screen leaves a hold as a
-            // deliberate no-op).
+                                        // Long-press latch: once held past LONG_MS this is a press-and-hold, NOT a tap — cancel
+                                        // the normal activation so it can never launch (the hard cap below would otherwise fire
+                                        // it). The press then just holds the dip and springs back; whether anything HAPPENS is
+                                        // the caller's business, read off `is_long` (Home and the detail page's episode
+                                        // filmstrip open the item context menu there; every other screen leaves a hold as a
+                                        // deliberate no-op).
             if s.holdable && s.want_commit && now.wrapping_sub(s.down_at) >= LONG_MS {
                 s.want_commit = false;
                 s.long = true;
@@ -303,7 +303,10 @@ mod tests {
     fn rest(now: &mut u32) {
         cancel();
         run(now, 2000);
-        assert!(!is_active(), "the spring must settle, or the next test starts mid-dip");
+        assert!(
+            !is_active(),
+            "the spring must settle, or the next test starts mid-dip"
+        );
     }
 
     /// **The one the design system asks for**: a control face dips inward on the press, and the dip
@@ -315,8 +318,14 @@ mod tests {
         begin_ctl(now);
         run(&mut now, 100);
         let dipped = scale();
-        assert!(dipped < 0.99, "the press must be visible as a dip, got {dipped}");
-        assert!(dipped >= DIP - 0.001, "…and must not go past the dip it is aiming at, got {dipped}");
+        assert!(
+            dipped < 0.99,
+            "the press must be visible as a dip, got {dipped}"
+        );
+        assert!(
+            dipped >= DIP - 0.001,
+            "…and must not go past the dip it is aiming at, got {dipped}"
+        );
         release(now);
         // the RING: the release is underdamped, so somewhere in the spring-back the face is larger
         // than it rests at. This is the half `--ease-bounce` names and the only bounce in the app.
@@ -327,7 +336,10 @@ mod tests {
             let _ = take_commit(now);
             over |= scale() > REST + 0.005;
         }
-        assert!(over, "the release must overshoot — a critically damped one would not ring");
+        assert!(
+            over,
+            "the release must overshoot — a critically damped one would not ring"
+        );
         rest(&mut now);
     }
 
@@ -341,10 +353,16 @@ mod tests {
         let mut now = 1000;
 
         begin_ctl(now);
-        assert!(!run(&mut now, LONG_MS + 100), "nothing commits while the key is still down");
+        assert!(
+            !run(&mut now, LONG_MS + 100),
+            "nothing commits while the key is still down"
+        );
         assert!(!is_long(now), "a control press is never a long press");
         release(now);
-        assert!(run(&mut now, 400), "a control held past LONG_MS must still activate on release");
+        assert!(
+            run(&mut now, 400),
+            "a control held past LONG_MS must still activate on release"
+        );
         rest(&mut now);
 
         begin(now);
@@ -364,12 +382,21 @@ mod tests {
         let _g = crate::testlock::serial();
         let mut now = 1000;
         begin_ctl(now);
-        assert!(!run(&mut now, MAX_HOLD_MS - 100), "…but not before the ceiling");
-        assert!(run(&mut now, 400), "the ceiling must resolve a control press as an activation");
+        assert!(
+            !run(&mut now, MAX_HOLD_MS - 100),
+            "…but not before the ceiling"
+        );
+        assert!(
+            run(&mut now, 400),
+            "the ceiling must resolve a control press as an activation"
+        );
         rest(&mut now);
 
         begin(now);
-        assert!(!run(&mut now, MAX_HOLD_MS + 400), "the same on a card is a hold, and commits nothing");
+        assert!(
+            !run(&mut now, MAX_HOLD_MS + 400),
+            "the same on a card is a hold, and commits nothing"
+        );
         rest(&mut now);
     }
 
@@ -398,8 +425,14 @@ mod tests {
         run(&mut now, 16);
         release(now); // released almost immediately — well inside MIN_DIP_MS
         run(&mut now, MIN_DIP_MS - 32);
-        assert!(scale() < REST - 0.01, "the dip must still be on screen at the floor");
-        assert!(run(&mut now, 500), "…and the activation still commits after it");
+        assert!(
+            scale() < REST - 0.01,
+            "the dip must still be on screen at the floor"
+        );
+        assert!(
+            run(&mut now, 500),
+            "…and the activation still commits after it"
+        );
         rest(&mut now);
     }
 }

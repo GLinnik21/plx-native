@@ -81,7 +81,10 @@ struct PollResponse {
 
 fn parse_response(body: &[u8]) -> Result<Option<ControlCommand>, ()> {
     let r: PollResponse = serde_json::from_slice(body).map_err(|_| ())?;
-    Ok(r.command.map(|c| ControlCommand { id: c.id, token: c.token }))
+    Ok(r.command.map(|c| ControlCommand {
+        id: c.id,
+        token: c.token,
+    }))
 }
 
 fn wait_ms(token: &str) -> Option<u64> {
@@ -215,14 +218,21 @@ fn dispatch_and_wait(command: ControlCommand) -> Ack {
         .unwrap_or_else(|e| e.into_inner());
     state = waited.0;
     if let Some(i) = state.completed.iter().position(|a| a.id == id) {
-        return state.completed.remove(i).expect("position came from this deque");
+        return state
+            .completed
+            .remove(i)
+            .expect("position came from this deque");
     }
 
     // If the main loop never took it, retire the command so it cannot execute after the receiver
     // has already been told it failed. If it was taken and then wedged in dispatch, finishing it
     // later leaves one harmless stale completion which the next call ignores by id.
     state.pending.retain(|c| c.id != id);
-    Ack { id, ok: false, detail: "main loop did not dispatch within 10s".into() }
+    Ack {
+        id,
+        ok: false,
+        detail: "main loop did not dispatch within 10s".into(),
+    }
 }
 
 /// Main-thread half: take every command waiting to enter the SDL event queue.
@@ -239,7 +249,11 @@ pub(crate) fn finish(id: u32, ok: bool) {
     state.completed.push_back(Ack {
         id,
         ok,
-        detail: if ok { "dispatched".into() } else { "unsupported command".into() },
+        detail: if ok {
+            "dispatched".into()
+        } else {
+            "unsupported command".into()
+        },
     });
     while state.completed.len() > 8 {
         state.completed.pop_front();
@@ -256,7 +270,10 @@ mod tests {
         assert_eq!(parse_response(br#"{"ok":true,"command":null}"#), Ok(None));
         assert_eq!(
             parse_response(br#"{"ok":true,"command":{"id":7,"token":"down"}}"#),
-            Ok(Some(ControlCommand { id: 7, token: "down".into() }))
+            Ok(Some(ControlCommand {
+                id: 7,
+                token: "down".into()
+            }))
         );
         assert!(parse_response(b"not json").is_err());
     }
@@ -277,15 +294,28 @@ mod tests {
         let mut state = mb.state.lock().unwrap_or_else(|e| e.into_inner());
         state.pending.clear();
         state.completed.clear();
-        state.pending.push_back(ControlCommand { id: 9, token: "ok".into() });
+        state.pending.push_back(ControlCommand {
+            id: 9,
+            token: "ok".into(),
+        });
         drop(state);
 
-        assert_eq!(take(), vec![ControlCommand { id: 9, token: "ok".into() }]);
+        assert_eq!(
+            take(),
+            vec![ControlCommand {
+                id: 9,
+                token: "ok".into()
+            }]
+        );
         finish(9, true);
         let mut state = mb.state.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(
             state.completed.pop_front(),
-            Some(Ack { id: 9, ok: true, detail: "dispatched".into() })
+            Some(Ack {
+                id: 9,
+                ok: true,
+                detail: "dispatched".into()
+            })
         );
     }
 }

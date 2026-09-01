@@ -172,7 +172,9 @@ pub(crate) fn app_dir() -> &'static Path {
         }
         // Not expected on device — worth a line in the log if it ever happens, because everything
         // below this point is a guess.
-        crate::log(&format!("appdir: current_exe unreadable, falling back to {LEGACY_APP_DIR}"));
+        crate::log(&format!(
+            "appdir: current_exe unreadable, falling back to {LEGACY_APP_DIR}"
+        ));
         PathBuf::from(LEGACY_APP_DIR)
     })
 }
@@ -274,7 +276,11 @@ fn macos_app_support() -> Option<PathBuf> {
 pub(crate) fn runtime_dir() -> &'static Path {
     static DIR: OnceLock<PathBuf> = OnceLock::new();
     DIR.get_or_init(|| {
-        let d = resolve_runtime_dir(std::env::var_os("PLXNATIVE_RUNTIME_DIR"), macos_app_support(), app_id());
+        let d = resolve_runtime_dir(
+            std::env::var_os("PLXNATIVE_RUNTIME_DIR"),
+            macos_app_support(),
+            app_id(),
+        );
         ensure_runtime_dir(&d);
         d
     })
@@ -400,7 +406,9 @@ pub unsafe extern "C" fn plx_runtime_path(
     if name.is_null() || out.is_null() || cap == 0 {
         return 0;
     }
-    let name = std::ffi::CStr::from_ptr(name).to_string_lossy().into_owned();
+    let name = std::ffi::CStr::from_ptr(name)
+        .to_string_lossy()
+        .into_owned();
     let p = in_runtime_dir(&name);
     let bytes = p.as_os_str().as_encoded_bytes();
     if bytes.len() + 1 > cap {
@@ -496,10 +504,15 @@ pub(crate) fn session_candidates() -> Vec<PathBuf> {
 pub(crate) fn telemetry_spool_candidates() -> Vec<PathBuf> {
     telemetry_candidates()
         .into_iter()
-        .map(|p| p.with_file_name(p.file_name().map_or_else(
-            || "telemetry-spool.bin".into(),
-            |n| n.to_string_lossy().replace("telemetry.json", "telemetry-spool.bin"),
-        )))
+        .map(|p| {
+            p.with_file_name(p.file_name().map_or_else(
+                || "telemetry-spool.bin".into(),
+                |n| {
+                    n.to_string_lossy()
+                        .replace("telemetry.json", "telemetry-spool.bin")
+                },
+            ))
+        })
         .collect()
 }
 
@@ -519,10 +532,15 @@ pub(crate) fn telemetry_spool_candidates() -> Vec<PathBuf> {
 pub(crate) fn telemetry_crashmark_candidates() -> Vec<PathBuf> {
     telemetry_candidates()
         .into_iter()
-        .map(|p| p.with_file_name(p.file_name().map_or_else(
-            || "telemetry-crashmark.json".into(),
-            |n| n.to_string_lossy().replace("telemetry.json", "telemetry-crashmark.json"),
-        )))
+        .map(|p| {
+            p.with_file_name(p.file_name().map_or_else(
+                || "telemetry-crashmark.json".into(),
+                |n| {
+                    n.to_string_lossy()
+                        .replace("telemetry.json", "telemetry-crashmark.json")
+                },
+            ))
+        })
         .collect()
 }
 
@@ -599,7 +617,11 @@ mod tests {
     #[test]
     fn app_dir_is_absolute_and_infallible() {
         let d = super::app_dir();
-        assert!(d.is_absolute(), "app dir must be absolute, got {}", d.display());
+        assert!(
+            d.is_absolute(),
+            "app dir must be absolute, got {}",
+            d.display()
+        );
         assert!(!d.as_os_str().is_empty());
     }
 
@@ -614,14 +636,26 @@ mod tests {
         use std::path::Path;
         let dev = "/media/developer/apps/usr/palm/applications/com.beb.plxnative.debug/plxnative";
         let hbc = "/media/cryptofs/apps/usr/palm/applications/com.beb.plxnative/plxnative";
-        assert_eq!(super::installed_app_id(Path::new(dev)).as_deref(), Some("com.beb.plxnative.debug"));
-        assert_eq!(super::installed_app_id(Path::new(hbc)).as_deref(), Some("com.beb.plxnative"));
+        assert_eq!(
+            super::installed_app_id(Path::new(dev)).as_deref(),
+            Some("com.beb.plxnative.debug")
+        );
+        assert_eq!(
+            super::installed_app_id(Path::new(hbc)).as_deref(),
+            Some("com.beb.plxnative")
+        );
         // A host build: the parent is `debug`, whose parent is `target-sim` — not `applications`.
         // Without this arm the simulator would mint an app called `debug`, take `/tmp/debug` as its
         // runtime root and look for a session file named after it.
-        assert!(super::installed_app_id(Path::new("/repo/rust-modules/target-sim/debug/plxnative-sim")).is_none());
+        assert!(super::installed_app_id(Path::new(
+            "/repo/rust-modules/target-sim/debug/plxnative-sim"
+        ))
+        .is_none());
         // The macOS bundle layout, for the same reason.
-        assert!(super::installed_app_id(Path::new("/A/PlxNative.app/Contents/MacOS/plxnative-sim")).is_none());
+        assert!(super::installed_app_id(Path::new(
+            "/A/PlxNative.app/Contents/MacOS/plxnative-sim"
+        ))
+        .is_none());
         // …and the real process resolves to SOMETHING, on either platform, without panicking.
         assert!(!super::app_id().is_empty());
     }
@@ -632,13 +666,23 @@ mod tests {
     /// flavoured runtime root and a renamed session file on the next boot.
     #[test]
     fn only_a_dotted_suffix_is_a_flavour() {
-        assert_eq!(super::STABLE_APP_ID.strip_prefix(super::STABLE_APP_ID).and_then(|r| r.strip_prefix('.')), None);
         assert_eq!(
-            "com.beb.plxnative.debug".strip_prefix(super::STABLE_APP_ID).and_then(|r| r.strip_prefix('.')),
+            super::STABLE_APP_ID
+                .strip_prefix(super::STABLE_APP_ID)
+                .and_then(|r| r.strip_prefix('.')),
+            None
+        );
+        assert_eq!(
+            "com.beb.plxnative.debug"
+                .strip_prefix(super::STABLE_APP_ID)
+                .and_then(|r| r.strip_prefix('.')),
             Some("debug")
         );
         // The real one must agree with the real id, whatever this binary turned out to be.
-        assert_eq!(super::flavour().is_some(), super::app_id() != super::STABLE_APP_ID);
+        assert_eq!(
+            super::flavour().is_some(),
+            super::app_id() != super::STABLE_APP_ID
+        );
     }
 
     /// Two installs must not share a runtime namespace, and the app users get must keep `/tmp`
@@ -657,9 +701,15 @@ mod tests {
         let debug = super::resolve_runtime_dir(None, None, "com.beb.plxnative.debug");
         assert_eq!(stable, std::path::Path::new("/tmp"));
         assert_eq!(debug, std::path::Path::new("/tmp/com.beb.plxnative.debug"));
-        assert_ne!(stable.join("plxnative-events.log"), debug.join("plxnative-events.log"));
+        assert_ne!(
+            stable.join("plxnative-events.log"),
+            debug.join("plxnative-events.log")
+        );
         let name = debug.file_name().unwrap().to_string_lossy().into_owned();
-        assert!(!name.starts_with("plxnative-"), "{name} would read as an armed trigger to the other install");
+        assert!(
+            !name.starts_with("plxnative-"),
+            "{name} would read as an armed trigger to the other install"
+        );
     }
 
     /// An absent or empty `PLXNATIVE_RUNTIME_DIR` must resolve to the television's `/tmp`. Empty
@@ -668,8 +718,14 @@ mod tests {
     /// silently follow the process's working directory.
     #[test]
     fn absent_or_empty_runtime_root_is_the_television() {
-        assert_eq!(super::resolve_runtime_dir(None, None, super::STABLE_APP_ID), std::path::Path::new("/tmp"));
-        assert_eq!(super::resolve_runtime_dir(Some("".into()), None, super::STABLE_APP_ID), std::path::Path::new("/tmp"));
+        assert_eq!(
+            super::resolve_runtime_dir(None, None, super::STABLE_APP_ID),
+            std::path::Path::new("/tmp")
+        );
+        assert_eq!(
+            super::resolve_runtime_dir(Some("".into()), None, super::STABLE_APP_ID),
+            std::path::Path::new("/tmp")
+        );
     }
 
     /// A macOS app bundle writes under `~/Library/Application Support`, and an explicit instance
@@ -682,8 +738,14 @@ mod tests {
             return; // a television build has neither concept
         }
         let sup = std::path::PathBuf::from("/Users/x/Library/Application Support/PlxNative");
-        assert_eq!(super::resolve_runtime_dir(None, Some(sup.clone()), super::STABLE_APP_ID), sup);
-        assert_eq!(super::resolve_runtime_dir(Some("".into()), Some(sup.clone()), super::STABLE_APP_ID), sup);
+        assert_eq!(
+            super::resolve_runtime_dir(None, Some(sup.clone()), super::STABLE_APP_ID),
+            sup
+        );
+        assert_eq!(
+            super::resolve_runtime_dir(Some("".into()), Some(sup.clone()), super::STABLE_APP_ID),
+            sup
+        );
         assert_eq!(
             super::resolve_runtime_dir(Some("/run/sim-a".into()), Some(sup), super::STABLE_APP_ID),
             std::path::Path::new("/run/sim-a")
@@ -703,7 +765,10 @@ mod tests {
         // the point of the probe is finding the payload, not recognising a layout.
         assert!(super::macos_bundle_resources(Path::new("/x/Contents/MacOS/plxnative")).is_none());
         // The dev-loop binary must keep resolving to its own directory.
-        assert!(super::macos_bundle_resources(Path::new("/repo/target-sim/debug/plxnative-sim")).is_none());
+        assert!(
+            super::macos_bundle_resources(Path::new("/repo/target-sim/debug/plxnative-sim"))
+                .is_none()
+        );
     }
 
     /// Two instances given different roots must not share a namespace — the whole point of the
@@ -714,8 +779,10 @@ mod tests {
         if !super::ENV_STEERABLE {
             return; // a television build cannot be redirected, by design
         }
-        let a = super::resolve_runtime_dir(Some("/run/sim-a".into()), None, super::STABLE_APP_ID).join("plxnative-library");
-        let b = super::resolve_runtime_dir(Some("/run/sim-b".into()), None, super::STABLE_APP_ID).join("plxnative-library");
+        let a = super::resolve_runtime_dir(Some("/run/sim-a".into()), None, super::STABLE_APP_ID)
+            .join("plxnative-library");
+        let b = super::resolve_runtime_dir(Some("/run/sim-b".into()), None, super::STABLE_APP_ID)
+            .join("plxnative-library");
         assert_ne!(a, b);
         assert!(a.is_absolute() && b.is_absolute());
     }
@@ -730,7 +797,11 @@ mod tests {
             return;
         }
         assert_eq!(
-            super::resolve_runtime_dir(Some("/anywhere".into()), Some("/also/anywhere".into()), super::STABLE_APP_ID),
+            super::resolve_runtime_dir(
+                Some("/anywhere".into()),
+                Some("/also/anywhere".into()),
+                super::STABLE_APP_ID
+            ),
             std::path::Path::new("/tmp")
         );
     }
@@ -752,11 +823,15 @@ mod tests {
         };
         let a = named(super::STABLE_APP_ID);
         let b = named("com.beb.plxnative.debug");
-        assert!(a.iter().all(|p| !b.contains(p)), "{a:?} and {b:?} share a session file");
+        assert!(
+            a.iter().all(|p| !b.contains(p)),
+            "{a:?} and {b:?} share a session file"
+        );
         // …and the real list really is built that way, whichever install this binary is.
         let real = super::session_candidates();
         assert!(
-            real.iter().any(|p| p.to_string_lossy().contains(super::app_id())),
+            real.iter()
+                .any(|p| p.to_string_lossy().contains(super::app_id())),
             "no candidate names this install ({}): {real:?}",
             super::app_id()
         );
@@ -781,7 +856,10 @@ mod tests {
     #[test]
     fn preferred_session_path_survives_a_reinstall() {
         let c = super::session_candidates();
-        assert!(c.len() >= 2, "a single hardcoded path is the bug this list exists to fix");
+        assert!(
+            c.len() >= 2,
+            "a single hardcoded path is the bug this list exists to fix"
+        );
         // Holds for both arms: the television's first candidate is `/media/developer/…`, and a
         // steerable build's is the instance root — neither is inside the app dir.
         assert!(

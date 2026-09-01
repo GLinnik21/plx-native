@@ -1,7 +1,8 @@
 //! Login + boot orchestration for the plex.tv account flow. Owns the flow state machine the Login
 //! and Profiles screens render, drives the background network threads (pin create/poll → server
 //! discovery → home-users → user switch), and hands the resolved credentials to the main loop via
-//! [`take_ready`], which installs them on the main thread (never the worker) and enters Home.
+//! [`take_ready`]. Profile workers atomically publish a fully prepared identity/roster under the
+//! activation gate; the main loop consumes `Ready`, persists it, and enters Home.
 //!
 //! Offline-first: this flow only runs when there's no usable stored session — [`crate::plex::session`]
 //! + the boot gate in `app.rs` short-circuit straight to the LAN server when we already have creds.
@@ -10,8 +11,8 @@
 #![allow(dead_code)]
 use crate::plex::account::{AccountClient, HomeUser, Resource};
 use crate::plex::probe::{self, Candidate, Outcome, ProbePlan};
-use crate::plex::{Origin, ServerId};
 use crate::plex::session::{self, ServerRef, Session, SourceRef, UserRef};
+use crate::plex::{Origin, ServerId};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -36,6 +37,8 @@ pub enum Phase {
     Ready,
     /// A step failed; show the message and allow a retry.
     Error,
+    /// All local state was erased. No worker runs until the user explicitly starts sign-in.
+    Deleted,
 }
 
 /// Does an error retry need a new account sign-in, or only another server-discovery pass?
@@ -82,9 +85,8 @@ pub enum Picker {
     /// Home's *Change profile*: already signed in as a profile, with Home behind the picker.
     ChangeProfile,
     /// The picker the QR sign-in raises when the account turns out to have a Plex Home roster —
-    /// `login_thread`, not [`start_switch`]. Permissive for a stronger reason than *Change
-    /// profile*: whoever is standing there completed a plex.tv sign-in seconds ago. That it is
-    /// permissive AT ALL is the one open judgement here — see [`may_resume`].
+    /// `login_thread`, not [`start_switch`]. BACK must not turn the account credential into an
+    /// implicit owner-profile selection; a profile (and its PIN, where configured) is explicit.
     SignedIn,
 }
 
@@ -191,6 +193,15 @@ fn cancel_network_work() {
     AUTH_EPOCH.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
 }
 
+/// Start a network flow as one linearization point: the previous owner is invalidated and the
+/// state the new owner will use is captured while no landing can pass its epoch check.
+fn begin_flow<R>(capture: impl FnOnce(&mut Ctl) -> R) -> (u64, R) {
+    let _gate = ACTIVATION_GATE.lock().unwrap_or_else(|e| e.into_inner());
+    let epoch = AUTH_EPOCH.fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1;
+    let snapshot = with_ctl(capture);
+    (epoch, snapshot)
+}
+
 /// Invalidate the preceding network flow and read the session it finally left behind as one
 /// activation-gate operation. Loading before the epoch bump admits a refresh landing in between,
 /// after which a picker seeds CTL with the stale pre-refresh snapshot and later saves it back.
@@ -233,10 +244,8 @@ pub fn users() -> Vec<UserTile> {
 
 /// Begin the QR login: reset state, load the persisted `client_id`, and kick off the pin thread.
 pub fn start_login() {
-    cancel_network_work();
-    let epoch = network_epoch();
     crate::diag::event(crate::diag::schema::DiagEvent::SignInStarted);
-    with_ctl(|c| {
+    let (epoch, ()) = begin_flow(|c| {
         *c = Ctl {
             phase: Phase::Creating,
             session: session::load(),
@@ -261,15 +270,15 @@ pub fn retry() {
     let Some((cid, token)) = creds else {
         return start_login();
     };
-    cancel_network_work();
-    let epoch = network_epoch();
     crate::diag::event(crate::diag::schema::DiagEvent::SignInStarted);
-    with_ctl(|c| {
+    let (epoch, ()) = begin_flow(|c| {
         c.error.clear();
         c.phase = Phase::Discovering;
         c.signin_active = true;
     });
-    if !crate::task::spawn_small("rediscover", move || retry_discovery_thread(cid, token, epoch)) {
+    if !crate::task::spawn_small("rediscover", move || {
+        retry_discovery_thread(cid, token, epoch)
+    }) {
         set_error_if_live(epoch, "Couldn't restart server discovery. Try again.");
     }
 }
@@ -334,14 +343,9 @@ fn may_resume(from: Picker, stored_is_protected: bool) -> bool {
         // Home is behind this picker and its user is already signed in as that profile: BACK hands
         // back exactly what they were holding when they opened it, PIN or no PIN.
         Picker::ChangeProfile => true,
-        // The sign-in ceremony's own picker: the ACCOUNT credential was presented seconds ago and
-        // the profile PIN hangs off it, so BACK still resumes. This arm is a JUDGEMENT rather than
-        // a deduction, and it is the one thing here left exactly as it was found — at that moment
-        // the stored session names no profile at all, so what BACK resumes on is the OWNER's server
-        // token, and "the person who signed in is still the person holding the remote" is an
-        // assumption about a room. Flipping it to `!stored_is_protected` would cost that flow one
-        // profile pick and nothing else (the picker is fully usable, *Sign out* included).
-        Picker::SignedIn => true,
+        // The account was authorized, but nobody selected a household profile. Resuming here uses
+        // the owner's server token and bypasses the profile PIN boundary entirely.
+        Picker::SignedIn => false,
         // Nobody has identified themselves yet, so resuming a protected profile IS the bypass.
         Picker::Boot => !stored_is_protected,
     }
@@ -368,7 +372,15 @@ fn resume_stored(sess: Session) -> bool {
     log("auth: flow cancelled — resuming the stored session");
     // `from` rides through the reset: this is still the same flow being backed out of, and letting
     // it silently fall to the permissive default is the shape of the bug being fixed.
-    with_ctl(|c| *c = Ctl { phase: Phase::Ready, session: sess, apply_pending: true, from, ..Ctl::default() });
+    with_ctl(|c| {
+        *c = Ctl {
+            phase: Phase::Ready,
+            session: sess,
+            apply_pending: true,
+            from,
+            ..Ctl::default()
+        }
+    });
     true
 }
 
@@ -464,7 +476,8 @@ pub fn start_switch(from: Picker) {
             Some(us) if !us.is_empty() => {
                 let users: Vec<UserTile> = us.iter().map(UserTile::of).collect();
                 log(&format!("auth: roster refreshed n={}", users.len()));
-                let roster: Vec<session::HomeUserRef> = users.iter().map(UserTile::to_ref).collect();
+                let roster: Vec<session::HomeUserRef> =
+                    users.iter().map(UserTile::to_ref).collect();
                 let applied = with_live_epoch(epoch, || {
                     let live = with_ctl(|c| {
                         if c.session.client_id != cid
@@ -477,11 +490,13 @@ pub fn start_switch(from: Picker) {
                         c.users = users;
                         true
                     });
-                    live
-                        && session::update(|s| {
-                            (s.client_id == cid && s.account_token == tok && s.user.uuid == profile)
-                                .then(|| Session { home_users: roster, ..s.clone() })
-                        })
+                    live && session::update(|s| {
+                        (s.client_id == cid && s.account_token == tok && s.user.uuid == profile)
+                            .then(|| Session {
+                                home_users: roster,
+                                ..s.clone()
+                            })
+                    })
                 });
                 // Only the field this worker owns, and through the one door. A whole-session save
                 // from the CTL snapshot would put the stale `sources` back over the SERVER roster
@@ -528,6 +543,26 @@ pub fn sign_out() {
     start_login();
 }
 
+/// Forget credentials and every live server token without immediately minting a new client id or
+/// starting the Plex PIN flow. Settings' "Delete all local data" parks on [`Phase::Deleted`]; the
+/// login screen starts a fresh flow only after an explicit OK press.
+pub fn erase_local_state() {
+    let _gate = ACTIVATION_GATE.lock().unwrap_or_else(|e| e.into_inner());
+    AUTH_EPOCH.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    session::clear();
+    crate::plex::revoke_all();
+    drop(_gate);
+    session::set_current(None);
+    with_ctl(|c| *c = deleted_ctl());
+}
+
+fn deleted_ctl() -> Ctl {
+    Ctl {
+        phase: Phase::Deleted,
+        ..Ctl::default()
+    }
+}
+
 // ---- worker threads ----
 
 fn login_thread(epoch: u64) {
@@ -550,7 +585,10 @@ fn login_thread(epoch: u64) {
     } else {
         pin.qr.clone()
     };
-    let qr_png = crate::net::https_get_public(&qr_url).filter(|r| r.ok()).map(|r| r.body).unwrap_or_default();
+    let qr_png = crate::net::https_get_public(&qr_url)
+        .filter(|r| r.ok())
+        .map(|r| r.body)
+        .unwrap_or_default();
     log(&format!("auth: qr png {} bytes", qr_png.len()));
     if with_live_epoch(epoch, || {
         with_ctl(|c| {
@@ -602,14 +640,21 @@ fn login_thread(epoch: u64) {
     match discover_and_store(&ac, epoch) {
         Discovery::Ok => {}
         Discovery::Cancelled => return,
-        Discovery::NoServers => return set_error_if_live(epoch, "This Plex account has no server yet."),
+        Discovery::NoServers => {
+            return set_error_if_live(epoch, "This Plex account has no server yet.")
+        }
         Discovery::Refused => {
             return set_error_if_live(
                 epoch,
                 "Your Plex server refused the connection — check its network access settings.",
             )
         }
-        Discovery::Silent => return set_error_if_live(epoch, "Couldn't reach any Plex server — check the connection."),
+        Discovery::Silent => {
+            return set_error_if_live(
+                epoch,
+                "Couldn't reach any Plex server — check the connection.",
+            )
+        }
     }
     finish_sign_in(&ac, epoch);
 }
@@ -627,7 +672,12 @@ fn finish_sign_in(ac: &AccountClient, epoch: u64) {
     // 4) Plex Home roster → who's-watching, or straight in if there's a single user. The roster is
     // kept on the session so it persists with the creds — the boot picker and every later
     // "Change profile" render from it instantly, online or not.
-    let users: Vec<UserTile> = ac.home_users().unwrap_or_default().iter().map(UserTile::of).collect();
+    let users: Vec<UserTile> = ac
+        .home_users()
+        .unwrap_or_default()
+        .iter()
+        .map(UserTile::of)
+        .collect();
     log(&format!("auth: home users n={}", users.len()));
     let applied = with_live_epoch(epoch, || {
         with_ctl(|c| c.session.home_users = users.iter().map(UserTile::to_ref).collect());
@@ -674,7 +724,10 @@ fn retry_discovery_thread(cid: String, token: String, epoch: u64) {
             epoch,
             "Your Plex server refused the connection — check its network access settings.",
         ),
-        Discovery::Silent => set_error_if_live(epoch, "Couldn't reach any Plex server — check the connection."),
+        Discovery::Silent => set_error_if_live(
+            epoch,
+            "Couldn't reach any Plex server — check the connection.",
+        ),
     }
 }
 
@@ -817,7 +870,9 @@ fn machine_id_in(body: &[u8]) -> Option<String> {
     const NAME: &[u8] = b"machineIdentifier";
     let after = body.windows(NAME.len()).position(|w| w == NAME)? + NAME.len();
     let rest = &body[after..];
-    let start = rest.iter().position(|b| !matches!(b, b'"' | b':' | b'=' | b' ' | b'\t' | b'\r' | b'\n'))?;
+    let start = rest
+        .iter()
+        .position(|b| !matches!(b, b'"' | b':' | b'=' | b' ' | b'\t' | b'\r' | b'\n'))?;
     let rest = &rest[start..];
     let end = rest
         .iter()
@@ -934,23 +989,45 @@ struct BatchResult {
 }
 
 fn probe_deadline(c: &Candidate, policy: ProbeDeadlines) -> Duration {
-    if c.location == probe::Location::Local { policy.local } else { policy.remote }
+    if c.location == probe::Location::Local {
+        policy.local
+    } else {
+        policy.remote
+    }
 }
 
 fn loopback_host(host: &str) -> bool {
-    let host = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')).unwrap_or(host);
+    let host = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
     host.eq_ignore_ascii_case("localhost")
-        || host.parse::<std::net::IpAddr>().is_ok_and(|a| a.is_loopback())
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|a| a.is_loopback())
 }
 
 /// The official client's additive candidate score. `+6 reachable` is included here even though
 /// this function is called only for a reachable answer, so the code remains a literal rendering
 /// of the contract rather than a relative shorthand that can drift when another term is added.
 fn candidate_score(c: &Candidate, origin: &Origin) -> i32 {
-    6 + if loopback_host(&c.address) || loopback_host(origin.host()) { 3 } else { 0 }
-        + if c.location == probe::Location::Local { 2 } else { 0 }
-        + if c.scheme == probe::Scheme::Https { 1 } else { 0 }
-        - if c.location == probe::Location::Relay { 1 } else { 0 }
+    6 + if loopback_host(&c.address) || loopback_host(origin.host()) {
+        3
+    } else {
+        0
+    } + if c.location == probe::Location::Local {
+        2
+    } else {
+        0
+    } + if c.scheme == probe::Scheme::Https {
+        1
+    } else {
+        0
+    } - if c.location == probe::Location::Relay {
+        1
+    } else {
+        0
+    }
 }
 
 fn better(a: &Winner, b: &Winner) -> bool {
@@ -1023,7 +1100,9 @@ fn race_batch(
 
     for &index in indices {
         let c = &plan.candidates[index];
-        let Some(origin) = dial_target(c) else { continue };
+        let Some(origin) = dial_target(c) else {
+            continue;
+        };
         let started = Instant::now();
         let deadline = started + probe_deadline(c, policy);
         let state = Arc::new(AtomicU8::new(PROBE_PENDING));
@@ -1041,10 +1120,19 @@ fn race_batch(
             // the coordinator sees COMPLETED and waits for the already-decided result rather than
             // erasing it on its own later wall-clock sample.
             if worker_state
-                .compare_exchange(PROBE_PENDING, PROBE_COMPLETED, Ordering::AcqRel, Ordering::Acquire)
+                .compare_exchange(
+                    PROBE_PENDING,
+                    PROBE_COMPLETED,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
                 .is_ok()
             {
-                let _ = tx.send(ProbeMessage { index, on_time, outcome });
+                let _ = tx.send(ProbeMessage {
+                    index,
+                    on_time,
+                    outcome,
+                });
             }
         });
         if spawn(index, job) {
@@ -1089,14 +1177,22 @@ fn race_batch(
             let expired = pending[index].as_ref().is_some_and(|p| {
                 p.deadline <= now
                     && p.state
-                        .compare_exchange(PROBE_PENDING, PROBE_EXPIRED, Ordering::AcqRel, Ordering::Acquire)
+                        .compare_exchange(
+                            PROBE_PENDING,
+                            PROBE_EXPIRED,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        )
                         .is_ok()
             });
             if expired {
                 pending[index] = None;
                 live -= 1;
                 let c = &plan.candidates[index];
-                log(&format!("auth: '{}' probe timed out at {}:{}", plan.name, c.address, c.port));
+                log(&format!(
+                    "auth: '{}' probe timed out at {}:{}",
+                    plan.name, c.address, c.port
+                ));
             }
         }
         if live == 0 {
@@ -1115,9 +1211,14 @@ fn race_batch(
             None => rx.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected),
         };
         match received {
-            Ok(message) => {
-                settle_probe_message(plan, message, &mut pending, &mut live, &mut result, activate)
-            }
+            Ok(message) => settle_probe_message(
+                plan,
+                message,
+                &mut pending,
+                &mut live,
+                &mut result,
+                activate,
+            ),
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 // Every sender is gone, so no pending candidate can ever report. This includes a
@@ -1166,9 +1267,16 @@ fn probe_server_racing(
     }
 
     let Some(best) = batch.best else {
-        return if batch.refused { Reach::Refused } else { Reach::No };
+        return if batch.refused {
+            Reach::Refused
+        } else {
+            Reach::No
+        };
     };
-    let first = batch.first.as_ref().expect("a best winner is also a first winner");
+    let first = batch
+        .first
+        .as_ref()
+        .expect("a best winner is also a first winner");
     if first.index != best.index {
         activate(plan, &best.candidate, &best.origin);
     }
@@ -1182,13 +1290,22 @@ fn activate_candidate(plan: &ProbePlan, c: &Candidate, origin: &Origin) {
     if let Some(client) = crate::plex::client_for(id) {
         client.set_connection(
             c.location,
-            Some(if c.ipv6 { crate::plex::IpVersion::V6 } else { crate::plex::IpVersion::V4 }),
+            Some(if c.ipv6 {
+                crate::plex::IpVersion::V6
+            } else {
+                crate::plex::IpVersion::V4
+            }),
         );
         // First activation is already usable while the rest of the race settles. Publish the same
         // fact now; the per-server settlement below repeats it with the final winning tier.
         crate::plex::publish_probe_result(id, Outcome::Reachable);
     }
-    crate::plex::describe_server(id, &plan.name, plan.source_title.as_deref().unwrap_or_default(), plan.owned);
+    crate::plex::describe_server(
+        id,
+        &plan.name,
+        plan.source_title.as_deref().unwrap_or_default(),
+        plan.owned,
+    );
 }
 
 /// Publish a completed server race onto the already-registered slot for that machine. A newly
@@ -1202,8 +1319,16 @@ struct SettledProbe {
     tier: Option<probe::Location>,
 }
 
-fn settled_probe(plan: &ProbePlan, outcome: Outcome, tier: Option<probe::Location>) -> SettledProbe {
-    SettledProbe { machine_id: plan.machine_id.clone(), outcome, tier }
+fn settled_probe(
+    plan: &ProbePlan,
+    outcome: Outcome,
+    tier: Option<probe::Location>,
+) -> SettledProbe {
+    SettledProbe {
+        machine_id: plan.machine_id.clone(),
+        outcome,
+        tier,
+    }
 }
 
 fn publish_settled_probe(probe: &SettledProbe) {
@@ -1236,7 +1361,9 @@ fn publish_server_probe(plan: &ProbePlan, outcome: Outcome, tier: Option<probe::
 fn probe_server(plan: &ProbePlan, dial: &dyn Fn(&Origin) -> (i32, Vec<u8>)) -> Reach {
     let mut tried = 0;
     for c in plan.candidates.iter() {
-        let Some(origin) = dial_target(c) else { continue };
+        let Some(origin) = dial_target(c) else {
+            continue;
+        };
         tried += 1;
         // The ORIGIN, whole — the same value handed back in `Reach::At`, so what answered and what
         // the roster records cannot be two different things. It is passed rather than split into
@@ -1246,19 +1373,28 @@ fn probe_server(plan: &ProbePlan, dial: &dyn Fn(&Origin) -> (i32, Vec<u8>)) -> R
         match classify(status, &body, &plan.machine_id) {
             Outcome::Reachable => return Reach::At(c.clone(), origin),
             Outcome::Unauthorized => {
-                log(&format!("auth: '{}' answered 401 at {} — a token problem, not the network", plan.name, c.address));
+                log(&format!(
+                    "auth: '{}' answered 401 at {} — a token problem, not the network",
+                    plan.name, c.address
+                ));
                 return Reach::Refused;
             }
             Outcome::WrongServer => {
                 // Rule 1, live: something answered and it is not this server. Discarded, never
                 // retried — and never registered, which is the point of verifying at all.
-                log(&format!("auth: '{}' — {}:{} answered as a DIFFERENT machine", plan.name, c.address, c.port));
+                log(&format!(
+                    "auth: '{}' — {}:{} answered as a DIFFERENT machine",
+                    plan.name, c.address, c.port
+                ));
             }
             Outcome::Unreachable => {}
         }
     }
     let skipped = plan.candidates.len() - tried;
-    log(&format!("auth: '{}' did not answer ({tried} address(es) tried, {skipped} not dialable)", plan.name));
+    log(&format!(
+        "auth: '{}' did not answer ({tried} address(es) tried, {skipped} not dialable)",
+        plan.name
+    ));
     Reach::No
 }
 
@@ -1350,7 +1486,11 @@ fn resolve_roster_using(
                 // one thing the change was made to do. `log_form` is byte-identical to the old
                 // half for a plaintext origin (the bare authority), so an archived log stays
                 // comparable, and says the whole URL the moment it is anything else.
-                log(&format!("auth: reached {} via {}", s.describe(), origin.log_form()));
+                log(&format!(
+                    "auth: reached {} via {}",
+                    s.describe(),
+                    origin.log_form()
+                ));
                 found.push(s);
             }
             Reach::Refused => refused = true,
@@ -1380,13 +1520,7 @@ fn resolve_roster_live(
     let dial: ProbeDial = Arc::new(get_identity);
     let spawn = |_index: usize, job: ProbeJob| crate::task::spawn_small("probe", job);
     let mut probe_one = |plan: &ProbePlan| {
-        probe_server_racing(
-            plan,
-            Arc::clone(&dial),
-            &spawn,
-            PROBE_DEADLINES,
-            activate,
-        )
+        probe_server_racing(plan, Arc::clone(&dial), &spawn, PROBE_DEADLINES, activate)
     };
     resolve_roster_using(
         resources,
@@ -1394,6 +1528,42 @@ fn resolve_roster_live(
         &mut || std::thread::sleep(SERVER_GAP),
         observe,
     )
+}
+
+/// Project one verified probe winner into the persisted roster shape. A profile switch uses this
+/// without registering anything: credentials and endpoints become visible only at its atomic
+/// activation commit, never candidate-by-candidate while the previous profile is still live.
+fn source_from_reach(plan: &ProbePlan, reach: &Reach) -> Option<SourceRef> {
+    let Reach::At(c, origin) = reach else {
+        return None;
+    };
+    Some(SourceRef {
+        machine_id: plan.machine_id.clone(),
+        name: plan.name.clone(),
+        shared_by: plan.source_title.clone().unwrap_or_default(),
+        owned: plan.owned,
+        origin_url: origin.base(),
+        address: c.address.clone(),
+        port: c.port,
+        token: plan.token.clone(),
+        tier: Some(c.location),
+    })
+}
+
+/// Probe exactly one resource, with no live-registry side effect. This is the bounded critical
+/// path of a profile choice; whole-roster discovery deliberately remains a different operation.
+fn probe_profile_resource_live(resource: &Resource) -> (Option<SourceRef>, SettledProbe) {
+    let plan = probe::plan(resource);
+    let dial: ProbeDial = Arc::new(get_identity);
+    let spawn = |_index: usize, job: ProbeJob| crate::task::spawn_small("probe", job);
+    let reach = probe_server_racing(&plan, dial, &spawn, PROBE_DEADLINES, &mut |_, _, _| {});
+    let (outcome, tier) = match &reach {
+        Reach::At(c, _) => (Outcome::Reachable, Some(c.location)),
+        Reach::Refused => (Outcome::Unauthorized, None),
+        Reach::No => (Outcome::Unreachable, None),
+    };
+    let source = source_from_reach(&plan, &reach);
+    (source, settled_probe(&plan, outcome, tier))
 }
 
 /// Discover **every** server this identity can use — ours and each share — and store the roster.
@@ -1450,7 +1620,11 @@ fn discover_and_store(ac: &AccountClient, epoch: u64) -> Discovery {
         origin_url: p.origin_url.clone(),
     };
     let applied = with_live_epoch(epoch, || {
-        log(&format!("auth: {} server(s) reached, primary '{}'", found.len(), found[primary].name));
+        log(&format!(
+            "auth: {} server(s) reached, primary '{}'",
+            found.len(),
+            found[primary].name
+        ));
         // Final winner only. The first winner was made usable by the coordinator; this is the one
         // allowed re-point after settlement and the one that becomes current/persisted.
         install_roster(&found, Some(primary));
@@ -1502,7 +1676,11 @@ fn discover_and_store(ac: &AccountClient, epoch: u64) -> Discovery {
 /// obtains for one request and does not persist. So the honest answer is to skip, and the cost is
 /// named: a share granted while a managed profile is signed in appears when someone next switches
 /// profile (the switch re-keys the whole roster from its own response) or signs in again.
-fn refreshed_sources(stored: &[SourceRef], reached: &[SourceRef], resources: &[Resource]) -> Vec<SourceRef> {
+fn refreshed_sources(
+    stored: &[SourceRef],
+    reached: &[SourceRef],
+    resources: &[Resource],
+) -> Vec<SourceRef> {
     let mut grants: Vec<&Resource> = resources
         .iter()
         .filter(|r| r.is_server() && !r.client_identifier.is_empty() && !r.access_token.is_empty())
@@ -1511,14 +1689,21 @@ fn refreshed_sources(stored: &[SourceRef], reached: &[SourceRef], resources: &[R
 
     let mut out = Vec::new();
     for r in grants {
-        if out.iter().any(|s: &SourceRef| s.machine_id == r.client_identifier) {
+        if out
+            .iter()
+            .any(|s: &SourceRef| s.machine_id == r.client_identifier)
+        {
             continue;
         }
         if let Some(s) = reached.iter().find(|s| s.machine_id == r.client_identifier) {
             out.push(s.clone());
             continue;
         }
-        let Some(mut cached) = stored.iter().find(|s| s.machine_id == r.client_identifier).cloned() else {
+        let Some(mut cached) = stored
+            .iter()
+            .find(|s| s.machine_id == r.client_identifier)
+            .cloned()
+        else {
             // A newly granted but unreachable server has no verified address to preserve yet.
             continue;
         };
@@ -1558,7 +1743,12 @@ fn same_session_identity(a: &Session, b: &Session) -> bool {
     a.client_id == b.client_id && a.account_token == b.account_token && a.user.uuid == b.user.uuid
 }
 
-fn reconcile_ctl_roster(c: &mut Ctl, expected: &Session, server: &ServerRef, sources: &[SourceRef]) -> bool {
+fn reconcile_ctl_roster(
+    c: &mut Ctl,
+    expected: &Session,
+    server: &ServerRef,
+    sources: &[SourceRef],
+) -> bool {
     if !same_session_identity(&c.session, expected) {
         return false;
     }
@@ -1596,7 +1786,10 @@ fn reconcile_refresh_primary(server: &mut ServerRef, sources: &[SourceRef]) -> b
         return reconcile_primary(server, sources);
     }
     let next = &sources[primary_index(sources)];
-    log(&format!("auth: primary grant removed — using {:?} at {}:{}", next.name, next.address, next.port));
+    log(&format!(
+        "auth: primary grant removed — using {:?} at {}:{}",
+        next.name, next.address, next.port
+    ));
     *server = server_ref(next);
     true
 }
@@ -1638,20 +1831,21 @@ pub fn refresh_roster() {
             let _ = with_live_epoch(epoch, || activate_candidate(plan, c, origin));
         };
         let mut settled = Vec::new();
-        let found = match resolve_roster_live(&resources, &mut activate, &mut |plan, outcome, tier| {
-            let probe = settled_probe(plan, outcome, tier);
-            settled.push(probe.clone());
-            let _ = with_live_epoch(epoch, || publish_settled_probe(&probe));
-        }) {
-            Resolved::Reached(f) => f,
-            // "no server answered" is not evidence that the grant is gone: the friend's box may
-            // simply be off. Dropping the roster here would make an offline share un-browsable
-            // for good rather than until it comes back.
-            _ => {
-                log("auth: roster refresh — nothing answered, keeping the stored roster");
-                return;
-            }
-        };
+        let found =
+            match resolve_roster_live(&resources, &mut activate, &mut |plan, outcome, tier| {
+                let probe = settled_probe(plan, outcome, tier);
+                settled.push(probe.clone());
+                let _ = with_live_epoch(epoch, || publish_settled_probe(&probe));
+            }) {
+                Resolved::Reached(f) => f,
+                // "no server answered" is not evidence that the grant is gone: the friend's box may
+                // simply be off. Dropping the roster here would make an offline share un-browsable
+                // for good rather than until it comes back.
+                _ => {
+                    log("auth: roster refresh — nothing answered, keeping the stored roster");
+                    return;
+                }
+            };
         // The comparison, primary reconcile, CTL merge, registry replacement and write are one
         // auth-generation step. The resources response is the grant list; `found` is only the
         // subset that happened to answer. Preserve a cached address for a still-granted offline
@@ -1666,7 +1860,11 @@ pub fn refresh_roster() {
                 // An unauthenticated `/identity` can answer even when plex.tv supplied no usable
                 // grant token. That is not evidence to erase the last offline-capable roster.
                 let usable_refresh = !refreshed.is_empty();
-                let sources = if usable_refresh { refreshed } else { s.sources.clone() };
+                let sources = if usable_refresh {
+                    refreshed
+                } else {
+                    s.sources.clone()
+                };
                 let roster_changed = !same_sources(&sources, &s.sources);
                 let mut next = s.clone();
                 let moved = usable_refresh && reconcile_refresh_session(&mut next, &sources);
@@ -1694,7 +1892,9 @@ pub fn refresh_roster() {
                 // Replacement, not additive registration: a server removed from the account grant
                 // must disappear from every live registry walk and lose its old token.
                 crate::plex::revoke_for_profile_switch();
-                let primary = sources.iter().position(|s| s.machine_id == server.machine_id);
+                let primary = sources
+                    .iter()
+                    .position(|s| s.machine_id == server.machine_id);
                 let installed = install_roster(&sources, primary);
                 crate::plex::finish_profile_switch(&installed);
                 // `revoke_for_profile_switch` deliberately resets every old profile's probe fact.
@@ -1708,9 +1908,14 @@ pub fn refresh_roster() {
             return log("auth: roster refresh dropped — session identity changed while probing");
         };
         if !usable_refresh {
-            return log("auth: roster refresh — no usable granted token, keeping the stored roster");
+            return log(
+                "auth: roster refresh — no usable granted token, keeping the stored roster",
+            );
         }
-        log(&format!("auth: roster refresh — {n} server(s){}", if persisted { ", persisted" } else { "" }));
+        log(&format!(
+            "auth: roster refresh — {n} server(s){}",
+            if persisted { ", persisted" } else { "" }
+        ));
     });
 }
 
@@ -1739,7 +1944,12 @@ fn reconcile_primary(server: &mut ServerRef, found: &[SourceRef]) -> bool {
     if server.machine_id.is_empty() {
         return false;
     }
-    let Some(s) = found.iter().find(|s| s.machine_id == server.machine_id && s.usable()) else { return false };
+    let Some(s) = found
+        .iter()
+        .find(|s| s.machine_id == server.machine_id && s.usable())
+    else {
+        return false;
+    };
     if server.address == s.address
         && server.port == s.port
         && server.token == s.token
@@ -1755,11 +1965,16 @@ fn reconcile_primary(server: &mut ServerRef, found: &[SourceRef]) -> bool {
     // evidence surface, on every existing install, exactly once, which is the worst kind of false
     // positive: unreproducible afterwards.
     let learned_origin = server.origin_url.is_empty() && !s.origin_url.is_empty();
-    let moved = server.address != s.address || server.port != s.port || (server.origin_url != s.origin_url && !learned_origin);
+    let moved = server.address != s.address
+        || server.port != s.port
+        || (server.origin_url != s.origin_url && !learned_origin);
     if moved {
         // The machine name and the address, never the token and never the machine id — the same
         // line `SourceRef::describe` draws.
-        log(&format!("auth: primary {:?} now answers at {}:{}", server.name, s.address, s.port));
+        log(&format!(
+            "auth: primary {:?} now answers at {}:{}",
+            server.name, s.address, s.port
+        ));
     }
     server.address = s.address.clone();
     server.port = s.port;
@@ -1831,7 +2046,9 @@ fn install_roster(sources: &[SourceRef], primary: Option<usize>) -> Vec<ServerId
 /// Home would be built from their library. Stable, so plex.tv's own order survives inside each
 /// group.
 fn registration_order(sources: &[SourceRef]) -> Vec<usize> {
-    let mut order: Vec<usize> = (0..sources.len()).filter(|&i| sources[i].usable()).collect();
+    let mut order: Vec<usize> = (0..sources.len())
+        .filter(|&i| sources[i].usable())
+        .collect();
     order.sort_by_key(|&i| !sources[i].owned);
     order
 }
@@ -1891,13 +2108,107 @@ fn retoken(sources: &[SourceRef], resources: &[Resource]) -> Vec<SourceRef> {
         .collect()
 }
 
+/// Reconcile a profile switch's grants with endpoints verified using that profile's transient
+/// account token. Kept separate from [`retoken`] while the switch flow is migrated so the
+/// regression test can pin the missing half: changing credentials must not throw away a fresher
+/// verified origin.
+fn profile_sources(
+    stored: &[SourceRef],
+    reached: &[SourceRef],
+    resources: &[Resource],
+) -> Vec<SourceRef> {
+    refreshed_sources(stored, reached, resources)
+}
+
+fn ordered_profile_grants(resources: &[Resource]) -> Vec<usize> {
+    let mut grants: Vec<usize> = resources
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| {
+            r.is_server() && !r.client_identifier.is_empty() && !r.access_token.is_empty()
+        })
+        .map(|(i, _)| i)
+        .collect();
+    grants.sort_by_key(|&i| (!resources[i].owned, !resources[i].public_address_matches));
+    let mut seen = Vec::<String>::new();
+    grants.retain(|&i| {
+        let mid = &resources[i].client_identifier;
+        if seen.contains(mid) {
+            false
+        } else {
+            seen.push(mid.clone());
+            true
+        }
+    });
+    grants
+}
+
+/// Land the non-critical probes from a profile activation without racing `take_ready`'s first
+/// whole-session save. Before that save the CTL snapshot owns persistence; afterwards this landing
+/// updates CTL and disk while holding the same activation gate.
+fn merge_profile_roster(
+    epoch: u64,
+    expected: &Session,
+    resources: &[Resource],
+    reached: &[SourceRef],
+    probes: &[SettledProbe],
+) {
+    let _gate = ACTIVATION_GATE.lock().unwrap_or_else(|e| e.into_inner());
+    if network_epoch() != epoch {
+        return;
+    }
+    let landed = with_ctl(|c| {
+        if !same_session_identity(&c.session, expected) {
+            return None;
+        }
+        let sources = profile_sources(&c.session.sources, reached, resources);
+        let Some(primary) = sources
+            .iter()
+            .find(|s| s.machine_id == c.session.server.machine_id)
+            .or_else(|| sources.get(primary_index(&sources)))
+            .cloned()
+        else {
+            return None;
+        };
+        c.session.sources = sources;
+        c.session.server = server_ref(&primary);
+        c.session.user.token = primary.token.clone();
+        Some((c.session.clone(), c.apply_pending))
+    });
+    let Some((next, apply_pending)) = landed else {
+        return;
+    };
+    crate::plex::revoke_for_profile_switch();
+    let primary = next
+        .sources
+        .iter()
+        .position(|s| s.machine_id == next.server.machine_id);
+    let installed = install_roster(&next.sources, primary);
+    crate::plex::finish_profile_switch(&installed);
+    publish_settled_probes(probes);
+    if !apply_pending {
+        let expected = expected.clone();
+        let next = next.clone();
+        let _ =
+            session::update(|disk| same_session_identity(disk, &expected).then(|| next.clone()));
+    }
+}
+
 fn switch_thread(index: usize, pin: Option<String>) {
-    // Invalidate an owner refresh before capturing the Ctl roster it may update. Capturing first
-    // admits refresh→cancel, leaving this worker to re-key and save the stale pre-refresh vector.
-    cancel_network_work();
-    let epoch = network_epoch();
-    let (cid, account_token, tile) = with_ctl(|c| {
-        (c.session.client_id.clone(), c.session.account_token.clone(), c.users.get(index).cloned())
+    let (epoch, (stored, tile, same_user)) = begin_flow(|c| {
+        let tile = c.users.get(index).cloned();
+        let same_user = tile.as_ref().is_some_and(|tile| {
+            pin.is_none()
+                && !tile.protected
+                && !c.session.user.uuid.is_empty()
+                && tile.uuid == c.session.user.uuid
+                && !c.session.pms_token().is_empty()
+        });
+        if !same_user {
+            c.phase = Phase::Switching;
+            c.pin_denied = false;
+        }
+        (c.session.clone(), tile, same_user)
     });
     let tile = match tile {
         Some(t) => t,
@@ -1908,21 +2219,19 @@ fn switch_thread(index: usize, pin: Option<String>) {
     // Picking the already-active, PIN-free profile needs no network — the stored per-user creds
     // still apply. This is what lets the boot picker proceed offline for the signed-in profile.
     // (A protected tile always goes through switch_user so the PIN is actually validated.)
-    let same_user = pin.is_none()
-        && !tile.protected
-        && with_ctl(|c| !c.session.user.uuid.is_empty() && tile.uuid == c.session.user.uuid && !c.session.pms_token().is_empty());
     if same_user {
-        log(&format!("auth: '{}' already active — no switch needed", tile.title));
+        log(&format!(
+            "auth: '{}' already active — no switch needed",
+            tile.title
+        ));
         return with_ctl(|c| {
             c.error.clear();
             c.phase = Phase::Ready;
             c.apply_pending = true;
         });
     }
-    with_ctl(|c| {
-        c.phase = Phase::Switching;
-        c.pin_denied = false;
-    });
+    let cid = stored.client_id.clone();
+    let account_token = stored.account_token.clone();
     let spawned = crate::task::spawn_small("switch", move || {
         let ac = AccountClient::new(&cid, Some(&account_token));
         let u = match ac.switch_user(&tile.uuid, pin.as_deref()) {
@@ -1949,45 +2258,82 @@ fn switch_thread(index: usize, pin: Option<String>) {
         // managed users (the admin's happens to double as one). Re-discover with the switched user's
         // token to get THIS user's per-user server access token (the /resources `accessToken` the PMS
         // accepts), scoped to what that profile is allowed to see.
-        let (mid, roster) = with_ctl(|c| (c.session.server.machine_id.clone(), c.session.sources.clone()));
-        let resources = AccountClient::new(&cid, Some(&u.auth_token)).resources().unwrap_or_default();
-        let stok = resources
+        let Some(resources) = AccountClient::new(&cid, Some(&u.auth_token)).resources() else {
+            log("auth: profile resources request failed");
+            let _ = with_live_epoch(epoch, || {
+                with_ctl(|c| {
+                    c.error = "Couldn't switch profile — check the connection.".into();
+                    c.phase = Phase::Profiles;
+                })
+            });
+            return;
+        };
+        let grants = ordered_profile_grants(&resources);
+        if grants.is_empty() {
+            let _ = with_live_epoch(epoch, || {
+                with_ctl(|c| {
+                    c.error = format!("{} has no server access", tile.title);
+                    c.phase = Phase::Profiles;
+                })
+            });
+            return;
+        }
+
+        let mut order = grants.clone();
+        if let Some(pos) = order
             .iter()
-            .find(|r| r.is_server() && (mid.is_empty() || r.client_identifier == mid))
-            .map(|r| r.access_token.clone())
-            .filter(|t| !t.is_empty());
-        // The per-(user, server) token is per server, so EVERY entry of the roster has just gone
-        // stale, not only the primary's — a share left on the previous profile's token answers 401
-        // to everything. This response is the one already being fetched, so re-keying costs nothing.
-        //
-        // COMPUTED here, APPLIED only on the success branch below. `retoken` blanks what the new
-        // profile was not granted, and a switch that then fails leaves the user on the picker with
-        // their old profile still signed in — persisting a roster re-keyed for a profile we did not
-        // switch to would delete their shares from disk the next time anything saved the session.
-        // Guarded on the response naming at least one server, so a failed fetch cannot read as
-        // "this profile has been un-shared everything" either.
-        let rekeyed = resources.iter().any(|r| r.is_server()).then(|| retoken(&roster, &resources));
-        match stok {
-            Some(token) => {
-                log(&format!("auth: switch '{}' -> ok (per-user server token)", tile.title));
+            .position(|&i| resources[i].client_identifier == stored.server.machine_id)
+        {
+            order.swap(0, pos);
+        }
+        let mut reached = Vec::new();
+        let mut probes = Vec::new();
+        let mut probed = vec![false; resources.len()];
+        let mut selected_mid = None;
+        for &i in &order {
+            let (winner, settled) = probe_profile_resource_live(&resources[i]);
+            probed[i] = true;
+            probes.push(settled);
+            if let Some(winner) = winner {
+                reached.push(winner);
+            }
+            let roster = profile_sources(&stored.sources, &reached, &resources);
+            if roster
+                .iter()
+                .any(|s| s.machine_id == resources[i].client_identifier && s.usable())
+            {
+                selected_mid = Some(resources[i].client_identifier.clone());
+                break;
+            }
+        }
+        let initial = profile_sources(&stored.sources, &reached, &resources);
+        match selected_mid.and_then(|mid| initial.iter().find(|s| s.machine_id == mid).cloned()) {
+            Some(primary) => {
+                log(&format!(
+                    "auth: switch '{}' -> ok (per-user server token)",
+                    tile.title
+                ));
+                let mut next = stored.clone();
+                next.server = server_ref(&primary);
+                next.sources = initial;
+                next.user = UserRef {
+                    id: u.id,
+                    uuid: u.uuid.clone(),
+                    title: u.title.clone(),
+                    thumb: tile.thumb.clone(),
+                    token: primary.token.clone(),
+                };
                 let applied = with_live_epoch(epoch, || {
-                    if let Some(next) = rekeyed {
-                        // Remove every old-profile credential before publishing any new-profile
-                        // grant. The registry reuses stable slots for machines that remain, while
-                        // an omitted share becomes invisible and its leaked Client stays tokenless.
-                        crate::plex::revoke_for_profile_switch();
-                        with_ctl(|c| c.session.sources = next.clone());
-                        let installed = install_roster(&next, None);
-                        crate::plex::finish_profile_switch(&installed);
-                    }
+                    crate::plex::revoke_for_profile_switch();
+                    let primary_pos = next
+                        .sources
+                        .iter()
+                        .position(|s| s.machine_id == next.server.machine_id);
+                    let installed = install_roster(&next.sources, primary_pos);
+                    crate::plex::finish_profile_switch(&installed);
+                    publish_settled_probes(&probes);
                     with_ctl(|c| {
-                        c.session.user = UserRef {
-                            id: u.id,
-                            uuid: u.uuid.clone(),
-                            title: u.title.clone(),
-                            thumb: tile.thumb.clone(),
-                            token,
-                        };
+                        c.session = next.clone();
                         c.error.clear();
                         c.phase = Phase::Ready;
                         c.apply_pending = true;
@@ -1995,10 +2341,29 @@ fn switch_thread(index: usize, pin: Option<String>) {
                 });
                 if applied.is_none() {
                     log("auth: profile-switch result dropped — a newer flow owns the session");
+                    return;
                 }
+
+                // Ready is visible now. Resolve the remaining grants on this worker and merge only
+                // if this exact account/profile activation still owns the epoch.
+                for &i in &grants {
+                    if probed[i] {
+                        continue;
+                    }
+                    std::thread::sleep(SERVER_GAP);
+                    let (winner, settled) = probe_profile_resource_live(&resources[i]);
+                    probes.push(settled);
+                    if let Some(winner) = winner {
+                        reached.push(winner);
+                    }
+                }
+                merge_profile_roster(epoch, &next, &resources, &reached, &probes);
             }
             None => {
-                log(&format!("auth: switch '{}' -> no server access", tile.title));
+                log(&format!(
+                    "auth: switch '{}' -> no server access",
+                    tile.title
+                ));
                 let _ = with_live_epoch(epoch, || {
                     with_ctl(|c| {
                         c.error = format!("{} has no access to this server", tile.title);
@@ -2073,7 +2438,10 @@ mod tests {
         let mut qr_attempt = true;
         assert!(settle_signin(&mut qr_attempt));
         assert!(!qr_attempt);
-        assert!(!settle_signin(&mut qr_attempt), "a retry or duplicate completion is not activation");
+        assert!(
+            !settle_signin(&mut qr_attempt),
+            "a retry or duplicate completion is not activation"
+        );
 
         let mut stored_session_discovery = false;
         assert!(!settle_signin(&mut stored_session_discovery));
@@ -2106,7 +2474,10 @@ mod tests {
 
     /// A JSON `/identity` body naming `mid` — what a PMS answers a probe with.
     fn identity_json(mid: &str) -> Vec<u8> {
-        format!(r#"{{"MediaContainer":{{"size":0,"machineIdentifier":"{mid}","version":"1.43.3"}}}}"#).into_bytes()
+        format!(
+            r#"{{"MediaContainer":{{"size":0,"machineIdentifier":"{mid}","version":"1.43.3"}}}}"#
+        )
+        .into_bytes()
     }
 
     /// A recording dial. Returns whatever the script says for an address, and remembers the order
@@ -2117,7 +2488,10 @@ mod tests {
     }
     impl Dialled {
         fn new(answers: Vec<(&'static str, i32, Vec<u8>)>) -> Dialled {
-            Dialled { seen: RefCell::new(Vec::new()), answers }
+            Dialled {
+                seen: RefCell::new(Vec::new()),
+                answers,
+            }
         }
         /// Answers are keyed on the origin's HOST, which is the field that tells the two candidates
         /// of one connection apart: `203-0-113-9.h.plex.direct` is the advertised uri and
@@ -2145,7 +2519,11 @@ mod tests {
     fn race_plan() -> ProbePlan {
         let candidate = |url: &str, address: &str, location: probe::Location| Candidate {
             url: url.into(),
-            scheme: if url.starts_with("https://") { Scheme::Https } else { Scheme::Http },
+            scheme: if url.starts_with("https://") {
+                Scheme::Https
+            } else {
+                Scheme::Http
+            },
             location,
             address: address.into(),
             port: 32400,
@@ -2158,14 +2536,25 @@ mod tests {
             name: "race-server".into(),
             source_title: None,
             candidates: vec![
-                candidate("https://192-0-2-10.h.plex.direct:32400", "192.0.2.10", probe::Location::Local),
-                candidate("https://203-0-113-9.h.plex.direct:32400", "203.0.113.9", probe::Location::Remote),
+                candidate(
+                    "https://192-0-2-10.h.plex.direct:32400",
+                    "192.0.2.10",
+                    probe::Location::Local,
+                ),
+                candidate(
+                    "https://203-0-113-9.h.plex.direct:32400",
+                    "203.0.113.9",
+                    probe::Location::Remote,
+                ),
             ],
         }
     }
 
     fn test_policy() -> ProbeDeadlines {
-        ProbeDeadlines { local: Duration::from_secs(1), remote: Duration::from_secs(1) }
+        ProbeDeadlines {
+            local: Duration::from_secs(1),
+            remote: Duration::from_secs(1),
+        }
     }
 
     fn threaded_spawn(_: usize, job: ProbeJob) -> bool {
@@ -2177,13 +2566,25 @@ mod tests {
     fn retry_reuses_an_authorized_account_only_for_discovery_errors() {
         let old = Ctl {
             phase: Phase::Error,
-            session: Session { account_token: "persisted-but-not-authorized-now".into(), ..Session::default() },
+            session: Session {
+                account_token: "persisted-but-not-authorized-now".into(),
+                ..Session::default()
+            },
             ..Ctl::default()
         };
-        assert_eq!(retry_kind(old.phase, old.authorized_in_flow), RetryKind::Login);
+        assert_eq!(
+            retry_kind(old.phase, old.authorized_in_flow),
+            RetryKind::Login
+        );
 
-        let current = Ctl { authorized_in_flow: true, ..old };
-        assert_eq!(retry_kind(current.phase, current.authorized_in_flow), RetryKind::Discovery);
+        let current = Ctl {
+            authorized_in_flow: true,
+            ..old
+        };
+        assert_eq!(
+            retry_kind(current.phase, current.authorized_in_flow),
+            RetryKind::Discovery
+        );
         assert_eq!(retry_kind(Phase::Waiting, true), RetryKind::Login);
     }
 
@@ -2207,9 +2608,15 @@ mod tests {
             &mut |_, _, origin| activated.push(origin.base()),
         );
 
-        let Reach::At(candidate, _) = reach else { panic!("the local candidate must win") };
+        let Reach::At(candidate, _) = reach else {
+            panic!("the local candidate must win")
+        };
         assert_eq!(candidate.location, probe::Location::Local);
-        assert_eq!(activated.len(), 1, "the worse last result must not cause a re-point");
+        assert_eq!(
+            activated.len(),
+            1,
+            "the worse last result must not cause a re-point"
+        );
         assert!(activated[0].contains("192-0-2-10"));
     }
 
@@ -2254,13 +2661,9 @@ mod tests {
             }
         };
         let mut activated = Vec::new();
-        let reach = probe_server_racing(
-            &plan,
-            dial,
-            &spawn,
-            test_policy(),
-            &mut |_, c, _| activated.push(c.location),
-        );
+        let reach = probe_server_racing(&plan, dial, &spawn, test_policy(), &mut |_, c, _| {
+            activated.push(c.location)
+        });
         assert!(matches!(reach, Reach::At(..)));
         assert_eq!(activated, vec![probe::Location::Remote]);
     }
@@ -2270,13 +2673,10 @@ mod tests {
         let plan = race_plan();
         let dial: ProbeDial = Arc::new(|_, _| panic!("a refused job must never run"));
         let mut activations = 0;
-        let reach = probe_server_racing(
-            &plan,
-            dial,
-            &|_, _| false,
-            test_policy(),
-            &mut |_, _, _| activations += 1,
-        );
+        let reach =
+            probe_server_racing(&plan, dial, &|_, _| false, test_policy(), &mut |_, _, _| {
+                activations += 1
+            });
         assert!(matches!(reach, Reach::No));
         assert_eq!(activations, 0);
     }
@@ -2313,7 +2713,10 @@ mod tests {
             &mut |_, _, _| {},
         );
         assert!(matches!(reach, Reach::At(ref c, _) if c.location == probe::Location::Relay));
-        assert_eq!(seen.lock().unwrap().as_slice(), ["192-0-2-10.h.plex.direct", "relay.example.test"]);
+        assert_eq!(
+            seen.lock().unwrap().as_slice(),
+            ["192-0-2-10.h.plex.direct", "relay.example.test"]
+        );
     }
 
     #[test]
@@ -2410,13 +2813,9 @@ mod tests {
             remote: Duration::from_millis(100),
         };
         let mut activated = Vec::new();
-        let reach = probe_server_racing(
-            &plan,
-            dial,
-            &threaded_spawn,
-            policy,
-            &mut |_, c, _| activated.push(c.location),
-        );
+        let reach = probe_server_racing(&plan, dial, &threaded_spawn, policy, &mut |_, c, _| {
+            activated.push(c.location)
+        });
         assert!(matches!(reach, Reach::At(ref c, _) if c.location == probe::Location::Remote));
         assert_eq!(activated, [probe::Location::Remote]);
     }
@@ -2446,12 +2845,18 @@ mod tests {
     #[test]
     fn servers_are_serial_owned_then_public_match_with_one_gap_between_each() {
         let resources = vec![
-            resource(r#"{"name":"unmatched","clientIdentifier":"shared-u","provides":"server",
-                         "owned":false,"publicAddressMatches":false}"#),
-            resource(r#"{"name":"owned","clientIdentifier":"owned","provides":"server",
-                         "owned":true,"publicAddressMatches":false}"#),
-            resource(r#"{"name":"matched","clientIdentifier":"shared-m","provides":"server",
-                         "owned":false,"publicAddressMatches":true}"#),
+            resource(
+                r#"{"name":"unmatched","clientIdentifier":"shared-u","provides":"server",
+                         "owned":false,"publicAddressMatches":false}"#,
+            ),
+            resource(
+                r#"{"name":"owned","clientIdentifier":"owned","provides":"server",
+                         "owned":true,"publicAddressMatches":false}"#,
+            ),
+            resource(
+                r#"{"name":"matched","clientIdentifier":"shared-m","provides":"server",
+                         "owned":false,"publicAddressMatches":true}"#,
+            ),
         ];
         let mut order = Vec::new();
         let mut gaps = 0;
@@ -2466,15 +2871,22 @@ mod tests {
         );
         assert!(matches!(resolved, Resolved::None { refused: false }));
         assert_eq!(order, ["owned", "shared-m", "shared-u"]);
-        assert_eq!(gaps, 2, "three serial servers have exactly two inter-server gaps");
+        assert_eq!(
+            gaps, 2,
+            "three serial servers have exactly two inter-server gaps"
+        );
     }
 
     #[test]
     fn every_server_settlement_publishes_its_specific_state_and_winning_tier() {
         let resources = vec![
             resource(r#"{"name":"yes","clientIdentifier":"yes","provides":"server","owned":true}"#),
-            resource(r#"{"name":"denied","clientIdentifier":"denied","provides":"server","owned":false}"#),
-            resource(r#"{"name":"off","clientIdentifier":"off","provides":"server","owned":false}"#),
+            resource(
+                r#"{"name":"denied","clientIdentifier":"denied","provides":"server","owned":false}"#,
+            ),
+            resource(
+                r#"{"name":"off","clientIdentifier":"off","provides":"server","owned":false}"#,
+            ),
         ];
         let winner = Candidate {
             url: "https://remote.example.test:32400".into(),
@@ -2501,7 +2913,11 @@ mod tests {
         assert_eq!(
             observed,
             vec![
-                ("yes".into(), Outcome::Reachable, Some(probe::Location::Remote)),
+                (
+                    "yes".into(),
+                    Outcome::Reachable,
+                    Some(probe::Location::Remote)
+                ),
                 ("denied".into(), Outcome::Unauthorized, None),
                 ("off".into(), Outcome::Unreachable, None),
             ]
@@ -2529,11 +2945,19 @@ mod tests {
             crate::plex::register_for_test("denied", "10.0.0.2", 32400, "new", "cid"),
             crate::plex::register_for_test("off", "10.0.0.3", 32400, "new", "cid"),
         ];
-        crate::plex::client_for(installed[0]).unwrap().set_link(probe::Location::Remote);
-        crate::plex::client_for(installed[1]).unwrap().set_link(probe::Location::Local);
-        crate::plex::client_for(installed[2]).unwrap().set_link(probe::Location::Relay);
+        crate::plex::client_for(installed[0])
+            .unwrap()
+            .set_link(probe::Location::Remote);
+        crate::plex::client_for(installed[1])
+            .unwrap()
+            .set_link(probe::Location::Local);
+        crate::plex::client_for(installed[2])
+            .unwrap()
+            .set_link(probe::Location::Relay);
         crate::plex::finish_profile_switch(&installed);
-        assert!(installed.iter().all(|&id| crate::plex::server_probe_result(id).is_none()));
+        assert!(installed
+            .iter()
+            .all(|&id| crate::plex::server_probe_result(id).is_none()));
 
         publish_settled_probes(&[
             SettledProbe {
@@ -2541,16 +2965,42 @@ mod tests {
                 outcome: Outcome::Reachable,
                 tier: Some(probe::Location::Remote),
             },
-            SettledProbe { machine_id: "denied".into(), outcome: Outcome::Unauthorized, tier: None },
-            SettledProbe { machine_id: "off".into(), outcome: Outcome::Unreachable, tier: None },
+            SettledProbe {
+                machine_id: "denied".into(),
+                outcome: Outcome::Unauthorized,
+                tier: None,
+            },
+            SettledProbe {
+                machine_id: "off".into(),
+                outcome: Outcome::Unreachable,
+                tier: None,
+            },
         ]);
 
-        assert_eq!(crate::plex::server_probe_result(installed[0]), Some(Outcome::Reachable));
-        assert_eq!(crate::plex::server_probe_result(installed[1]), Some(Outcome::Unauthorized));
-        assert_eq!(crate::plex::server_probe_result(installed[2]), Some(Outcome::Unreachable));
-        assert_eq!(crate::plex::client_for(installed[0]).unwrap().link(), Some(probe::Location::Remote));
-        assert_eq!(crate::plex::client_for(installed[1]).unwrap().link(), Some(probe::Location::Local));
-        assert_eq!(crate::plex::client_for(installed[2]).unwrap().link(), Some(probe::Location::Relay));
+        assert_eq!(
+            crate::plex::server_probe_result(installed[0]),
+            Some(Outcome::Reachable)
+        );
+        assert_eq!(
+            crate::plex::server_probe_result(installed[1]),
+            Some(Outcome::Unauthorized)
+        );
+        assert_eq!(
+            crate::plex::server_probe_result(installed[2]),
+            Some(Outcome::Unreachable)
+        );
+        assert_eq!(
+            crate::plex::client_for(installed[0]).unwrap().link(),
+            Some(probe::Location::Remote)
+        );
+        assert_eq!(
+            crate::plex::client_for(installed[1]).unwrap().link(),
+            Some(probe::Location::Local)
+        );
+        assert_eq!(
+            crate::plex::client_for(installed[2]).unwrap().link(),
+            Some(probe::Location::Relay)
+        );
         crate::plex::reset_servers_for_test();
     }
 
@@ -2584,7 +3034,7 @@ mod tests {
         let plan = probe::plan(&a_share());
         let d = Dialled::new(vec![
             ("198-51-100-7.h.plex.direct", 200, identity_json("zzzz9999")), // someone else entirely
-            ("203-0-113-9.h.plex.direct", 200, identity_json("bbbb2222")),  // the server we asked for
+            ("203-0-113-9.h.plex.direct", 200, identity_json("bbbb2222")), // the server we asked for
         ]);
 
         match probe_server(&plan, &|o| d.dial(o)) {
@@ -2596,7 +3046,10 @@ mod tests {
                 // https origin no certificate matches.
                 assert_eq!(o.base(), "https://203-0-113-9.h.plex.direct:31234");
             }
-            _ => panic!("the second address answers as the right machine: {:?}", d.seen()),
+            _ => panic!(
+                "the second address answers as the right machine: {:?}",
+                d.seen()
+            ),
         }
         // Every https candidate is tried before any plaintext one. Rule 1 keeps the guarded TLS
         // URI from the owner's LAN, but never its plaintext twin.
@@ -2611,12 +3064,24 @@ mod tests {
         );
 
         // …and the same body from the wrong machine is never enough on its own
-        assert_eq!(classify(200, &identity_json("zzzz9999"), "bbbb2222"), Outcome::WrongServer);
-        assert_eq!(classify(200, &identity_json("bbbb2222"), "bbbb2222"), Outcome::Reachable);
+        assert_eq!(
+            classify(200, &identity_json("zzzz9999"), "bbbb2222"),
+            Outcome::WrongServer
+        );
+        assert_eq!(
+            classify(200, &identity_json("bbbb2222"), "bbbb2222"),
+            Outcome::Reachable
+        );
         // a 200 that says nothing we can check is not an acceptance either
-        assert_eq!(classify(200, b"<html>router login</html>", "bbbb2222"), Outcome::WrongServer);
+        assert_eq!(
+            classify(200, b"<html>router login</html>", "bbbb2222"),
+            Outcome::WrongServer
+        );
         // nor is a resource plex.tv sent without an identity to verify against
-        assert_eq!(classify(200, &identity_json("bbbb2222"), ""), Outcome::WrongServer);
+        assert_eq!(
+            classify(200, &identity_json("bbbb2222"), ""),
+            Outcome::WrongServer
+        );
     }
 
     /// The legacy synchronous seam stops at 401. Production races every direct candidate and lets
@@ -2628,7 +3093,11 @@ mod tests {
         // and it is the ONLY status that means this: a refusal of the endpoint, a dead gateway and
         // no answer at all are all just "try the next address"
         for s in [403, 404, 500, 502, 0] {
-            assert_eq!(classify(s, b"", "bbbb2222"), Outcome::Unreachable, "status {s}");
+            assert_eq!(
+                classify(s, b"", "bbbb2222"),
+                Outcome::Unreachable,
+                "status {s}"
+            );
         }
 
         let plan = probe::plan(&a_share());
@@ -2636,7 +3105,10 @@ mod tests {
             ("198-51-100-7.h.plex.direct", 401, Vec::new()),
             ("203.0.113.9", 200, identity_json("bbbb2222")),
         ]);
-        assert!(matches!(probe_server(&plan, &|o| d.dial(o)), Reach::Refused));
+        assert!(matches!(
+            probe_server(&plan, &|o| d.dial(o)),
+            Reach::Refused
+        ));
         assert_eq!(
             d.seen(),
             vec![
@@ -2660,17 +3132,30 @@ mod tests {
     #[test]
     fn every_advertised_address_is_dialable_and_only_an_impossible_port_is_not() {
         let plan = probe::plan(&a_share());
-        assert_eq!(plan.candidates.len(), 7, "guarded LAN TLS plus three remote uri/twin pairs");
-        assert!(plan.candidates.iter().all(dialable), "not one of them is refused any more: {plan:#?}",
-                plan = plan.candidates);
+        assert_eq!(
+            plan.candidates.len(),
+            7,
+            "guarded LAN TLS plus three remote uri/twin pairs"
+        );
+        assert!(
+            plan.candidates.iter().all(dialable),
+            "not one of them is refused any more: {plan:#?}",
+            plan = plan.candidates
+        );
 
         let d = Dialled::new(vec![("203.0.113.9", 200, identity_json("bbbb2222"))]);
         assert!(matches!(probe_server(&plan, &|o| d.dial(o)), Reach::At(..)));
         // The owner's `172.20.x.x` connection keeps only the advertised TLS URI. Identity and the
         // certificate can reject a stranger there; the unsafe plaintext twin is never emitted.
         let seen = d.seen();
-        assert!(seen.iter().any(|s| s.contains("172-20-4-7")), "the guarded TLS URI survives: {seen:?}");
-        assert!(!seen.iter().any(|s| s == "10.9.9.7:32400"), "the plaintext twin is absent: {seen:?}");
+        assert!(
+            seen.iter().any(|s| s.contains("172-20-4-7")),
+            "the guarded TLS URI survives: {seen:?}"
+        );
+        assert!(
+            !seen.iter().any(|s| s == "10.9.9.7:32400"),
+            "the plaintext twin is absent: {seen:?}"
+        );
 
         // The rule itself, stated on the candidates. The fixture builds `url` the way
         // `probe::candidates` does — from the SAME address and port — because that consistency is
@@ -2680,7 +3165,11 @@ mod tests {
             url: format!(
                 "{}://{}:{port}",
                 scheme.as_str(),
-                if host.contains(':') { format!("[{host}]") } else { host.to_string() }
+                if host.contains(':') {
+                    format!("[{host}]")
+                } else {
+                    host.to_string()
+                }
             ),
             scheme,
             location: probe::Location::Remote,
@@ -2690,9 +3179,18 @@ mod tests {
         };
         let at = |host: &str| cand(Scheme::Http, host, 32400);
         assert!(dialable(&at("203.0.113.9")));
-        assert!(dialable(&cand(Scheme::Https, "203-0-113-9.h.plex.direct", 31234)), "libcurl speaks TLS");
-        assert!(dialable(&at("media.example.internal")), "stream.rs resolves names now");
-        assert!(dialable(&at("2001:db8::1")), "…and dials either address family");
+        assert!(
+            dialable(&cand(Scheme::Https, "203-0-113-9.h.plex.direct", 31234)),
+            "libcurl speaks TLS"
+        );
+        assert!(
+            dialable(&at("media.example.internal")),
+            "stream.rs resolves names now"
+        );
+        assert!(
+            dialable(&at("2001:db8::1")),
+            "…and dials either address family"
+        );
 
         // …and the PORT is the one narrowing left. `4_294_999_696 as i32` is 32400, so without the
         // range check `probe::dial_port` applies — inside `Origin::parse` now, one layer down from
@@ -2706,7 +3204,10 @@ mod tests {
         // `resolve_roster` records.** One value, so the address that answered and the address
         // written down cannot be two different things — and for an https candidate the two really
         // do differ, which is why this is a value rather than a bool.
-        assert_eq!(dial_target(&at("203.0.113.9")), Some(crate::plex::Origin::http("203.0.113.9", 32400)));
+        assert_eq!(
+            dial_target(&at("203.0.113.9")),
+            Some(crate::plex::Origin::http("203.0.113.9", 32400))
+        );
         assert_eq!(
             dial_target(&cand(Scheme::Https, "203-0-113-9.h.plex.direct", 31234)).map(|o| o.base()),
             Some("https://203-0-113-9.h.plex.direct:31234".to_string())
@@ -2731,11 +3232,18 @@ mod tests {
         // ahead of it, the same server at another address, advertised on a port that wraps
         plan.candidates.insert(
             0,
-            Candidate { address: "192.0.2.55".into(), port: 4_294_999_696, ..good.clone() },
+            Candidate {
+                address: "192.0.2.55".into(),
+                port: 4_294_999_696,
+                ..good.clone()
+            },
         );
 
         let d = Dialled::new(vec![("203.0.113.9", 200, identity_json("bbbb2222"))]);
-        assert!(matches!(probe_server(&plan, &|o| d.dial(o)), Reach::At(..)), "the good one still answers");
+        assert!(
+            matches!(probe_server(&plan, &|o| d.dial(o)), Reach::At(..)),
+            "the good one still answers"
+        );
         assert!(
             !d.seen().iter().any(|s| s.starts_with("192.0.2.55")),
             "the wrapping candidate was never dialled: {:?}",
@@ -2780,8 +3288,15 @@ mod tests {
 
         match probe_server(&plan, &|o| d.dial(o)) {
             Reach::At(c, o) => {
-                assert_eq!(c.address, "192.168.0.10", "IPv4 leads the plaintext fallbacks");
-                assert_eq!(o.base(), "http://192.168.0.10:32400", "…and the origin recorded is what was dialled");
+                assert_eq!(
+                    c.address, "192.168.0.10",
+                    "IPv4 leads the plaintext fallbacks"
+                );
+                assert_eq!(
+                    o.base(),
+                    "http://192.168.0.10:32400",
+                    "…and the origin recorded is what was dialled"
+                );
             }
             _ => panic!("the LAN IPv4 answers: {:?}", d.seen()),
         }
@@ -2795,7 +3310,13 @@ mod tests {
             "TLS is tried first and costs two probes here; the twin is the fallback that answers"
         );
         // …and the v6 addresses are never reached, because a candidate that answers ends the walk
-        assert!(!d.seen().iter().any(|s| s.contains("fd00") || s.contains("2001:db8")), "{:?}", d.seen());
+        assert!(
+            !d.seen()
+                .iter()
+                .any(|s| s.contains("fd00") || s.contains("2001:db8")),
+            "{:?}",
+            d.seen()
+        );
     }
 
     /// The one field that decides whether we trust a connection is scanned for, not deserialized:
@@ -2803,12 +3324,21 @@ mod tests {
     /// most likely to meet a proxy that rewrites headers.
     #[test]
     fn the_machine_identifier_is_read_from_json_and_from_xml_alike() {
-        assert_eq!(machine_id_in(&identity_json("abc123")).as_deref(), Some("abc123"));
         assert_eq!(
-            machine_id_in(br#"<MediaContainer size="0" machineIdentifier="abc123" version="1.43.3"/>"#).as_deref(),
+            machine_id_in(&identity_json("abc123")).as_deref(),
             Some("abc123")
         );
-        assert_eq!(machine_id_in(br#"{"MediaContainer":{"machineIdentifier" : "abc123"}}"#).as_deref(), Some("abc123"));
+        assert_eq!(
+            machine_id_in(
+                br#"<MediaContainer size="0" machineIdentifier="abc123" version="1.43.3"/>"#
+            )
+            .as_deref(),
+            Some("abc123")
+        );
+        assert_eq!(
+            machine_id_in(br#"{"MediaContainer":{"machineIdentifier" : "abc123"}}"#).as_deref(),
+            Some("abc123")
+        );
         // an empty value is no value — it must not read as "the next field"
         assert_eq!(machine_id_in(br#"{"machineIdentifier":"","size":0}"#), None);
         assert_eq!(machine_id_in(b"nothing here"), None);
@@ -2862,18 +3392,30 @@ mod tests {
             ("192.168.0.10", 200, identity_json("aaaa1111")),
             ("203.0.113.9", 200, identity_json("bbbb2222")),
         ]);
-        let Resolved::Reached(roster) = resolve_roster(&a_two_server_account(), &|o| d.dial(o)) else {
+        let Resolved::Reached(roster) = resolve_roster(&a_two_server_account(), &|o| d.dial(o))
+        else {
             panic!("both servers answer: {:?}", d.seen())
         };
 
         assert_eq!(roster.len(), 2, "a player resource is not a server");
-        assert_eq!(primary_index(&roster), 0, "ours is the primary and becomes `current`");
+        assert_eq!(
+            primary_index(&roster),
+            0,
+            "ours is the primary and becomes `current`"
+        );
 
         let own = &roster[0];
         assert!(own.owned && own.machine_id == "aaaa1111");
-        assert_eq!((own.address.as_str(), own.port), ("192.168.0.10", 32400), "the LAN v4, not the v6");
+        assert_eq!(
+            (own.address.as_str(), own.port),
+            ("192.168.0.10", 32400),
+            "the LAN v4, not the v6"
+        );
         assert_eq!(own.token, "tok-own");
-        assert!(own.shared_by.is_empty(), "an owned server has no owner to name");
+        assert!(
+            own.shared_by.is_empty(),
+            "an owned server has no owner to name"
+        );
 
         let share = &roster[1];
         assert!(!share.owned && share.machine_id == "bbbb2222");
@@ -2882,9 +3424,15 @@ mod tests {
             ("203.0.113.9", 31234),
             "the owner's 172.20 LAN is not ours to dial, and their hostname does not resolve"
         );
-        assert_eq!(share.token, "tok-share", "a share is a separate authority: OUR token gets a 401");
+        assert_eq!(
+            share.token, "tok-share",
+            "a share is a separate authority: OUR token gets a 401"
+        );
         assert_eq!(share.shared_by, "friend");
-        assert!(roster.iter().all(|s| s.usable()), "every entry is dialable, so every one registers");
+        assert!(
+            roster.iter().all(|s| s.usable()),
+            "every entry is dialable, so every one registers"
+        );
 
         // OURS is probed first, though plex.tv listed the share first — that ordering is what
         // decides which library Home is built from. Within each server, TLS leads and the plaintext
@@ -2902,7 +3450,10 @@ mod tests {
                 "203.0.113.9:31234",
             ]
         );
-        assert!(!d.seen().iter().any(|s| s.contains("plex-relay")), "a 2 Mbit/s tunnel is a last resort");
+        assert!(
+            !d.seen().iter().any(|s| s.contains("plex-relay")),
+            "a 2 Mbit/s tunnel is a last resort"
+        );
     }
 
     /// **The case this whole unit exists for: an account signed in from OUTSIDE the servers' LAN.**
@@ -2922,28 +3473,44 @@ mod tests {
             ("plex-relay.example.net", 200, identity_json("aaaa1111")),
             ("203-0-113-9.h.plex.direct", 200, identity_json("bbbb2222")),
         ]);
-        let Resolved::Reached(roster) = resolve_roster(&a_two_server_account(), &|o| d.dial(o)) else {
+        let Resolved::Reached(roster) = resolve_roster(&a_two_server_account(), &|o| d.dial(o))
+        else {
             panic!("both servers answer over TLS: {:?}", d.seen())
         };
 
         assert_eq!(roster.len(), 2);
-        assert_eq!(roster[0].origin_url, "https://plex-relay.example.net:8443", "ours, over the relay");
-        assert_eq!(roster[1].origin_url, "https://203-0-113-9.h.plex.direct:31234", "the share, direct");
+        assert_eq!(
+            roster[0].origin_url, "https://plex-relay.example.net:8443",
+            "ours, over the relay"
+        );
+        assert_eq!(
+            roster[1].origin_url, "https://203-0-113-9.h.plex.direct:31234",
+            "the share, direct"
+        );
         for s in &roster {
             let o = s.origin().expect("a reached entry is dialable");
-            assert!(o.is_tls(), "the connection that answered was TLS, so the stored origin must be");
+            assert!(
+                o.is_tls(),
+                "the connection that answered was TLS, so the stored origin must be"
+            );
             assert_eq!(o.base(), s.origin_url, "the stored string round-trips");
         }
         // The share's stored origin is the NAME and its `address` is the quad behind it. That
         // inequality is the whole reason an origin is parsed from a URL rather than rebuilt from an
         // address: rebuild it and the certificate stops matching.
         assert_eq!(roster[1].address, "203.0.113.9");
-        assert_ne!(roster[1].origin().expect("dialable").host(), roster[1].address);
+        assert_ne!(
+            roster[1].origin().expect("dialable").host(),
+            roster[1].address
+        );
 
         // The relay is genuinely LAST: every LAN candidate of our own server was tried first, and
         // the share's walk stopped the moment its public name answered.
         let seen = d.seen();
-        assert_eq!(seen.last().map(String::as_str), Some("https://203-0-113-9.h.plex.direct:31234"));
+        assert_eq!(
+            seen.last().map(String::as_str),
+            Some("https://203-0-113-9.h.plex.direct:31234")
+        );
         assert!(
             seen.iter().position(|x| x.contains("plex-relay")).unwrap() == 4,
             "four LAN candidates of ours precede the relay: {seen:?}"
@@ -2961,7 +3528,8 @@ mod tests {
             ("192.168.0.10", 200, identity_json("aaaa1111")),
             ("203.0.113.9", 200, identity_json("bbbb2222")),
         ]);
-        let Resolved::Reached(roster) = resolve_roster(&a_two_server_account(), &|o| d.dial(o)) else {
+        let Resolved::Reached(roster) = resolve_roster(&a_two_server_account(), &|o| d.dial(o))
+        else {
             panic!("both servers answer")
         };
 
@@ -2971,7 +3539,10 @@ mod tests {
         for s in &roster {
             let o = s.origin().expect("a reached entry is dialable");
             assert_eq!(o.base(), s.origin_url, "the stored string round-trips");
-            assert!(!o.is_tls(), "these are the plaintext twins, and they answered");
+            assert!(
+                !o.is_tls(),
+                "these are the plaintext twins, and they answered"
+            );
             // On a plaintext twin the URL's host IS the address, which is what makes this leg the
             // control for the https one above: there the two differ, and only the URL is right.
             assert_eq!((o.host(), o.port() as i64), (s.address.as_str(), s.port));
@@ -2987,7 +3558,10 @@ mod tests {
             r#"[{"name":"iPad","clientIdentifier":"cccc3333","provides":"player","connections":[]}]"#,
         )
         .unwrap();
-        assert!(matches!(resolve_roster(&players, &|_| (0, Vec::new())), Resolved::NoServers));
+        assert!(matches!(
+            resolve_roster(&players, &|_| (0, Vec::new())),
+            Resolved::NoServers
+        ));
 
         // servers that simply do not answer
         let silent = Dialled::new(vec![]);
@@ -2998,7 +3572,10 @@ mod tests {
 
         // …and one that answers 401: something in front of it refuses unauthenticated requests,
         // which is not a network fault and must not be worded as one
-        let refused = Dialled::new(vec![("192.168.0.10", 401, Vec::new()), ("203.0.113.9", 401, Vec::new())]);
+        let refused = Dialled::new(vec![
+            ("192.168.0.10", 401, Vec::new()),
+            ("203.0.113.9", 401, Vec::new()),
+        ]);
         assert!(matches!(
             resolve_roster(&a_two_server_account(), &|o| refused.dial(o)),
             Resolved::None { refused: true }
@@ -3007,12 +3584,16 @@ mod tests {
         // a share that answers while OUR server is off still signs in — a friend's library beats
         // "no server found" — and it becomes the primary because it is the only thing there is
         let one = Dialled::new(vec![("203.0.113.9", 200, identity_json("bbbb2222"))]);
-        let Resolved::Reached(roster) = resolve_roster(&a_two_server_account(), &|o| one.dial(o)) else {
+        let Resolved::Reached(roster) = resolve_roster(&a_two_server_account(), &|o| one.dial(o))
+        else {
             panic!("the share answered")
         };
         assert_eq!(roster.len(), 1);
         assert_eq!(primary_index(&roster), 0);
-        assert!(!roster[0].owned, "the primary is a share here, and that is the point");
+        assert!(
+            !roster[0].owned,
+            "the primary is a share here, and that is the point"
+        );
     }
 
     /// A roster entry in the **LEGACY shape** — no stored `origin`, which is what every session
@@ -3023,7 +3604,11 @@ mod tests {
         SourceRef {
             machine_id: machine_id.into(),
             name: machine_id.into(),
-            shared_by: if owned { String::new() } else { "friend".into() },
+            shared_by: if owned {
+                String::new()
+            } else {
+                "friend".into()
+            },
             owned,
             address: "10.0.0.1".into(),
             port: 32400,
@@ -3038,8 +3623,16 @@ mod tests {
     /// their library.
     #[test]
     fn our_own_server_leads_the_roster_however_plex_tv_ordered_it() {
-        let roster = vec![source("share-1", false, "t1"), source("ours", true, "t2"), source("share-2", false, "t3")];
-        assert_eq!(registration_order(&roster), vec![1, 0, 2], "ours first, then plex.tv's own order");
+        let roster = vec![
+            source("share-1", false, "t1"),
+            source("ours", true, "t2"),
+            source("share-2", false, "t3"),
+        ];
+        assert_eq!(
+            registration_order(&roster),
+            vec![1, 0, 2],
+            "ours first, then plex.tv's own order"
+        );
         assert_eq!(primary_index(&roster), 1);
 
         // an entry with no credential (or no address) cannot be dialled, so it is not registered —
@@ -3051,7 +3644,10 @@ mod tests {
 
         // a shares-only roster (our own box is off) still yields a primary rather than nothing:
         // a friend's library is a better app than "no server found"
-        let shares = vec![source("share-1", false, "t1"), source("share-2", false, "t3")];
+        let shares = vec![
+            source("share-1", false, "t1"),
+            source("share-2", false, "t3"),
+        ];
         assert_eq!(primary_index(&shares), 0);
         assert_eq!(registration_order(&shares), vec![0, 1]);
     }
@@ -3062,39 +3658,138 @@ mod tests {
     /// than lingering with a credential that works or losing the verified address forever.
     #[test]
     fn switching_profile_re_keys_every_source_and_drops_the_ones_not_granted() {
-        let roster =
-            vec![source("ours", true, "old-own"), source("share-1", false, "old-share"), source("gone", false, "old-gone")];
+        let roster = vec![
+            source("ours", true, "old-own"),
+            source("share-1", false, "old-share"),
+            source("gone", false, "old-gone"),
+        ];
         let rs = vec![
-            resource(r#"{"clientIdentifier":"ours","provides":"server","owned":true,"accessToken":"new-own"}"#),
-            resource(r#"{"clientIdentifier":"share-1","provides":"server","owned":false,"accessToken":"new-share"}"#),
+            resource(
+                r#"{"clientIdentifier":"ours","provides":"server","owned":true,"accessToken":"new-own"}"#,
+            ),
+            resource(
+                r#"{"clientIdentifier":"share-1","provides":"server","owned":false,"accessToken":"new-share"}"#,
+            ),
         ];
 
         let next = retoken(&roster, &rs);
-        assert_eq!(next.len(), 3, "the un-granted server remains only as address metadata");
+        assert_eq!(
+            next.len(),
+            3,
+            "the un-granted server remains only as address metadata"
+        );
         assert_eq!(next[0].token, "new-own");
-        assert_eq!((next[1].machine_id.as_str(), next[1].token.as_str()), ("share-1", "new-share"));
-        assert_eq!(next[1].shared_by, "friend", "everything but the token is carried over");
-        assert_eq!(next[1].address, "10.0.0.1", "including the address discovery probed");
+        assert_eq!(
+            (next[1].machine_id.as_str(), next[1].token.as_str()),
+            ("share-1", "new-share")
+        );
+        assert_eq!(
+            next[1].shared_by, "friend",
+            "everything but the token is carried over"
+        );
+        assert_eq!(
+            next[1].address, "10.0.0.1",
+            "including the address discovery probed"
+        );
 
         assert_eq!(next[2].machine_id, "gone");
-        assert!(next[2].token.is_empty() && !next[2].usable(), "the old profile credential is gone");
+        assert!(
+            next[2].token.is_empty() && !next[2].usable(),
+            "the old profile credential is gone"
+        );
 
         // Switching back can restore that cached machine without rediscovering its address.
         let restored = retoken(
             &next,
-            &[resource(r#"{"clientIdentifier":"gone","provides":"server","accessToken":"back"}"#)],
+            &[resource(
+                r#"{"clientIdentifier":"gone","provides":"server","accessToken":"back"}"#,
+            )],
         );
         assert_eq!(restored[2].token, "back");
         assert!(restored[2].usable());
 
         // a resource that came back WITHOUT a token for this profile remains inert
-        let empty = vec![resource(r#"{"clientIdentifier":"ours","provides":"server","accessToken":""}"#)];
+        let empty = vec![resource(
+            r#"{"clientIdentifier":"ours","provides":"server","accessToken":""}"#,
+        )];
         let without = retoken(&roster, &empty);
         assert_eq!(without.len(), 3);
         assert!(without.iter().all(|s| s.token.is_empty()));
         // and an entry with no identity cannot be re-keyed, and must never match by emptiness
         let anon = vec![source("", false, "old")];
-        assert!(retoken(&anon, &[resource(r#"{"provides":"server","accessToken":"x"}"#)]).is_empty());
+        assert!(retoken(
+            &anon,
+            &[resource(r#"{"provides":"server","accessToken":"x"}"#)]
+        )
+        .is_empty());
+    }
+
+    /// The incident this change fixes: an owner refresh found the public HTTPS route while the
+    /// protected-profile switch was in flight, then the switch re-keyed the old LAN snapshot and
+    /// discarded that winner. The selected profile owns both halves of the answer — its grant
+    /// token and the endpoint verified with that token — so they must land together.
+    #[test]
+    fn profile_activation_keeps_a_fresh_wan_winner_instead_of_the_cached_lan_origin() {
+        let mut cached = source("ours", true, "owner-token");
+        cached.address = "192.0.2.10".into();
+        cached.origin_url = "http://192.0.2.10:32400".into();
+
+        let mut wan = source("ours", true, "profile-token");
+        wan.address = "203.0.113.9".into();
+        wan.origin_url = "https://203-0-113-9.example.test:32400".into();
+        wan.tier = Some(probe::Location::Remote);
+
+        let resources = vec![resource(
+            r#"{"name":"ours","clientIdentifier":"ours","provides":"server","owned":true,
+                "accessToken":"profile-token"}"#,
+        )];
+        let next = profile_sources(&[cached], &[wan], &resources);
+
+        assert_eq!(next.len(), 1);
+        assert_eq!(next[0].token, "profile-token");
+        assert_eq!(next[0].address, "203.0.113.9");
+        assert_eq!(next[0].origin_url, "https://203-0-113-9.example.test:32400");
+        assert_eq!(next[0].tier, Some(probe::Location::Remote));
+    }
+
+    #[test]
+    fn profile_activation_promotes_a_surviving_share_when_primary_is_revoked() {
+        let stored = vec![
+            source("revoked-primary", true, "old-owner"),
+            source("surviving-share", false, "old-share"),
+        ];
+        let resources = vec![resource(
+            r#"{"name":"club","clientIdentifier":"surviving-share","provides":"server",
+                "owned":false,"sourceTitle":"friend","accessToken":"profile-share"}"#,
+        )];
+
+        let next = profile_sources(&stored, &[], &resources);
+
+        assert_eq!(next.len(), 1);
+        assert_eq!(next[0].machine_id, "surviving-share");
+        assert_eq!(next[0].token, "profile-share");
+        assert_eq!(primary_index(&next), 0);
+    }
+
+    #[test]
+    fn beginning_a_new_flow_invalidates_the_old_epoch_at_the_same_capture_boundary() {
+        let _g = crate::testlock::serial();
+        let (old, old_phase) = begin_flow(|c| {
+            c.phase = Phase::Switching;
+            c.phase
+        });
+        let (new, captured) = begin_flow(|c| {
+            let seen = c.phase;
+            c.phase = Phase::Profiles;
+            seen
+        });
+
+        assert_eq!(old_phase, Phase::Switching);
+        assert_eq!(captured, Phase::Switching);
+        assert!(new > old);
+        assert!(with_live_epoch(old, || ()).is_none());
+        assert!(with_live_epoch(new, || ()).is_some());
+        with_ctl(|c| *c = Ctl::default());
     }
 
     #[test]
@@ -3123,12 +3818,32 @@ mod tests {
         ];
 
         let next = refreshed_sources(&stored, &reached, &resources);
-        assert_eq!(next.iter().map(|s| s.machine_id.as_str()).collect::<Vec<_>>(), ["ours", "offline-share"]);
-        assert_eq!(next[0].address, "10.0.0.42", "a reached server takes its freshly verified origin");
-        assert_eq!(next[1].address, "10.0.0.1", "an offline but still-granted share keeps its verified address");
-        assert_eq!(next[1].token, "new-share", "but follows the current grant's credential");
-        assert!(!next.iter().any(|s| s.machine_id == "revoked"), "absence from resources is authoritative");
-        assert!(!next.iter().any(|s| s.machine_id == "new-share"), "no address is invented for an unseen server");
+        assert_eq!(
+            next.iter()
+                .map(|s| s.machine_id.as_str())
+                .collect::<Vec<_>>(),
+            ["ours", "offline-share"]
+        );
+        assert_eq!(
+            next[0].address, "10.0.0.42",
+            "a reached server takes its freshly verified origin"
+        );
+        assert_eq!(
+            next[1].address, "10.0.0.1",
+            "an offline but still-granted share keeps its verified address"
+        );
+        assert_eq!(
+            next[1].token, "new-share",
+            "but follows the current grant's credential"
+        );
+        assert!(
+            !next.iter().any(|s| s.machine_id == "revoked"),
+            "absence from resources is authoritative"
+        );
+        assert!(
+            !next.iter().any(|s| s.machine_id == "new-share"),
+            "no address is invented for an unseen server"
+        );
     }
 
     #[test]
@@ -3136,23 +3851,50 @@ mod tests {
         let expected = Session {
             client_id: "cid".into(),
             account_token: "account".into(),
-            user: UserRef { uuid: "profile".into(), token: "old-primary-token".into(), ..UserRef::default() },
+            user: UserRef {
+                uuid: "profile".into(),
+                token: "old-primary-token".into(),
+                ..UserRef::default()
+            },
             server: primary("ours", "10.0.0.1", 32400, "old"),
             sources: vec![source("ours", true, "old")],
             ..Session::default()
         };
-        let mut ctl = Ctl { phase: Phase::Profiles, session: expected.clone(), ..Ctl::default() };
+        let mut ctl = Ctl {
+            phase: Phase::Profiles,
+            session: expected.clone(),
+            ..Ctl::default()
+        };
         let server = primary("ours", "10.0.0.42", 32400, "new");
-        let sources = vec![source("ours", true, "new"), source("share", false, "share-token")];
+        let sources = vec![
+            source("ours", true, "new"),
+            source("share", false, "share-token"),
+        ];
 
         assert!(reconcile_ctl_roster(&mut ctl, &expected, &server, &sources));
         assert_eq!(ctl.session.server.address, "10.0.0.42");
-        assert_eq!(ctl.session.pms_token(), "new", "the picker snapshot follows the refreshed primary credential");
+        assert_eq!(
+            ctl.session.pms_token(),
+            "new",
+            "the picker snapshot follows the refreshed primary credential"
+        );
         assert_eq!(ctl.session.sources.len(), 2);
 
-        let wrong = Session { account_token: "newer-flow".into(), ..expected };
-        assert!(!reconcile_ctl_roster(&mut ctl, &wrong, &ServerRef::default(), &[]));
-        assert_eq!(ctl.session.sources.len(), 2, "a stale worker cannot empty a newer flow's picker snapshot");
+        let wrong = Session {
+            account_token: "newer-flow".into(),
+            ..expected
+        };
+        assert!(!reconcile_ctl_roster(
+            &mut ctl,
+            &wrong,
+            &ServerRef::default(),
+            &[]
+        ));
+        assert_eq!(
+            ctl.session.sources.len(),
+            2,
+            "a stale worker cannot empty a newer flow's picker snapshot"
+        );
     }
 
     /// The primary in the **LEGACY shape** — see [`source`] above.
@@ -3181,10 +3923,19 @@ mod tests {
         moved.port = 32400;
         let share = source("bbbb2222", false, "tok-share");
 
-        assert!(reconcile_primary(&mut s, &[share.clone(), moved.clone()]), "the save is owed");
+        assert!(
+            reconcile_primary(&mut s, &[share.clone(), moved.clone()]),
+            "the save is owed"
+        );
         assert_eq!((s.address.as_str(), s.port), ("192.168.0.42", 32400));
-        assert_eq!(s.token, "tok-own2", "the grant came from the same answer as the address");
-        assert_eq!(s.machine_id, "aaaa1111", "the identity is the KEY here, never something to rewrite");
+        assert_eq!(
+            s.token, "tok-own2",
+            "the grant came from the same answer as the address"
+        );
+        assert_eq!(
+            s.machine_id, "aaaa1111",
+            "the identity is the KEY here, never something to rewrite"
+        );
 
         // idempotent — a refresh that learns nothing new must not force a flash write every boot
         assert!(!reconcile_primary(&mut s, &[share.clone(), moved.clone()]));
@@ -3212,7 +3963,8 @@ mod tests {
     }
 
     #[test]
-    fn a_removed_primary_promotes_the_preferred_surviving_grant_but_an_empty_answer_erases_nothing() {
+    fn a_removed_primary_promotes_the_preferred_surviving_grant_but_an_empty_answer_erases_nothing()
+    {
         let mut old = primary("gone", "10.0.0.1", 32400, "old");
         let share = source("share", false, "share-token");
         assert!(reconcile_refresh_primary(&mut old, &[share.clone()]));
@@ -3230,19 +3982,31 @@ mod tests {
     fn a_refresh_moves_the_active_home_users_token_with_same_or_replaced_primary() {
         let mut sess = Session {
             server: primary("ours", "10.0.0.1", 32400, "old-server"),
-            user: UserRef { uuid: "owner".into(), token: "old-user".into(), ..UserRef::default() },
+            user: UserRef {
+                uuid: "owner".into(),
+                token: "old-user".into(),
+                ..UserRef::default()
+            },
             ..Session::default()
         };
 
         let fresh_ours = source("ours", true, "fresh-own");
         assert!(reconcile_refresh_session(&mut sess, &[fresh_ours]));
         assert_eq!(sess.server.token, "fresh-own");
-        assert_eq!(sess.pms_token(), "fresh-own", "a same-primary token rotation reaches the next boot");
+        assert_eq!(
+            sess.pms_token(),
+            "fresh-own",
+            "a same-primary token rotation reaches the next boot"
+        );
 
         let survivor = source("share", false, "fresh-share");
         assert!(reconcile_refresh_session(&mut sess, &[survivor]));
         assert_eq!(sess.server.machine_id, "share");
-        assert_eq!(sess.pms_token(), "fresh-share", "a promoted primary never inherits the removed PMS's token");
+        assert_eq!(
+            sess.pms_token(),
+            "fresh-share",
+            "a promoted primary never inherits the removed PMS's token"
+        );
     }
 
     /// A signed-in device in the ordinary Plex Home arrangement: the adult profile carries the PIN,
@@ -3259,7 +4023,12 @@ mod tests {
                 token: "tok-own".into(),
                 ..Default::default()
             },
-            user: UserRef { uuid: uuid.into(), title: "stored".into(), token: "tok-user".into(), ..Default::default() },
+            user: UserRef {
+                uuid: uuid.into(),
+                title: "stored".into(),
+                token: "tok-user".into(),
+                ..Default::default()
+            },
             home_users: vec![
                 session::HomeUserRef {
                     uuid: "u-adult".into(),
@@ -3268,7 +4037,11 @@ mod tests {
                     admin: true,
                     ..Default::default()
                 },
-                session::HomeUserRef { uuid: "u-kid".into(), title: "Kid".into(), ..Default::default() },
+                session::HomeUserRef {
+                    uuid: "u-kid".into(),
+                    title: "Kid".into(),
+                    ..Default::default()
+                },
             ],
             ..Default::default()
         }
@@ -3282,10 +4055,9 @@ mod tests {
     /// escape hatch, which reasons about "carry on as the profile I'm already signed in as" and is
     /// only true of the picker Home opens.
     ///
-    /// So every row of the rule is graded here, and most of them are the ones that must NOT change:
-    /// a boot picker over an unprotected profile still resumes (nothing is being bypassed), and
-    /// *Change profile* and the sign-in picker still resume whatever they are over (you are already
-    /// that profile / you just proved you hold the account).
+    /// So every row of the rule is graded here: a boot picker over an unprotected profile still
+    /// resumes (nothing is being bypassed), *Change profile* resumes what was already active, and
+    /// the just-signed-in picker requires an explicit profile choice.
     ///
     /// The last section is the SECOND road to the same escalation, and it survived the first fix: a
     /// sign-in abandoned at the picker persists a session that names no profile, whose token is the
@@ -3300,8 +4072,8 @@ mod tests {
         assert!(may_resume(Picker::Boot, false));
         assert!(may_resume(Picker::ChangeProfile, true));
         assert!(may_resume(Picker::ChangeProfile, false));
-        assert!(may_resume(Picker::SignedIn, true), "the account credential was just presented");
-        assert!(may_resume(Picker::SignedIn, false));
+        assert!(!may_resume(Picker::SignedIn, true));
+        assert!(!may_resume(Picker::SignedIn, false));
         // and the DEFAULT is the strict one: it is read only where no picker named itself, and
         // "we cannot say who is asking" must not answer with the credentials.
         assert_eq!(Picker::default(), Picker::Boot);
@@ -3310,21 +4082,43 @@ mod tests {
         // being graded is a whole flow resolving to `Ready` with credentials armed for `take_ready`
         // — the phase alone is not the escalation, `apply_pending` is what installs them.
         let picker = |from: Picker| {
-            with_ctl(|c| *c = Ctl { phase: Phase::Profiles, from, ..Ctl::default() });
+            with_ctl(|c| {
+                *c = Ctl {
+                    phase: Phase::Profiles,
+                    from,
+                    ..Ctl::default()
+                }
+            });
         };
 
         picker(Picker::Boot);
-        assert!(!resume_stored(signed_in_as("u-adult")), "BACK must not resume behind the PIN");
-        assert_eq!(phase(), Phase::Profiles, "the picker stays up, and the key is swallowed");
-        assert!(with_ctl(|c| !c.apply_pending), "no credentials are handed to the main loop");
+        assert!(
+            !resume_stored(signed_in_as("u-adult")),
+            "BACK must not resume behind the PIN"
+        );
+        assert_eq!(
+            phase(),
+            Phase::Profiles,
+            "the picker stays up, and the key is swallowed"
+        );
+        assert!(
+            with_ctl(|c| !c.apply_pending),
+            "no credentials are handed to the main loop"
+        );
 
         picker(Picker::Boot);
-        assert!(resume_stored(signed_in_as("u-kid")), "an unprotected profile is not an escalation");
+        assert!(
+            resume_stored(signed_in_as("u-kid")),
+            "an unprotected profile is not an escalation"
+        );
         assert_eq!(phase(), Phase::Ready);
         assert!(with_ctl(|c| c.apply_pending));
 
         picker(Picker::ChangeProfile);
-        assert!(resume_stored(signed_in_as("u-adult")), "Home's picker backs out to the profile it was opened by");
+        assert!(
+            resume_stored(signed_in_as("u-adult")),
+            "Home's picker backs out to the profile it was opened by"
+        );
         assert_eq!(phase(), Phase::Ready);
         assert!(with_ctl(|c| c.apply_pending));
 
@@ -3338,22 +4132,42 @@ mod tests {
         // profile chosen (`login_thread` saves the moment they exist, so walking away does not cost
         // the sign-in). `pms_token()` on that file is the OWNER's server token and the roster is >1,
         // so the next boot raises a picker over it — where BACK was handing the owner's credentials
-        // to whoever pressed it. The sign-in picker itself keeps resuming, because the account
-        // credential was presented seconds ago.
+        // to whoever pressed it. The sign-in picker refuses the same shortcut: possession of the
+        // account credential is not proof of a household profile's PIN.
         let mut unchosen = signed_in_as("u-adult");
         unchosen.user = UserRef::default();
-        assert!(!unchosen.pms_token().is_empty(), "…and what it would have resumed on is the owner's");
+        assert!(
+            !unchosen.pms_token().is_empty(),
+            "…and what it would have resumed on is the owner's"
+        );
 
         picker(Picker::Boot);
-        assert!(!resume_stored(unchosen.clone()), "no profile chosen is not 'nothing to bypass'");
+        assert!(
+            !resume_stored(unchosen.clone()),
+            "no profile chosen is not 'nothing to bypass'"
+        );
         assert_eq!(phase(), Phase::Profiles);
         assert!(with_ctl(|c| !c.apply_pending));
 
         picker(Picker::SignedIn);
-        assert!(resume_stored(unchosen), "the sign-in's own picker is unchanged");
-        assert_eq!(phase(), Phase::Ready);
-        assert!(with_ctl(|c| c.apply_pending));
+        assert!(
+            !resume_stored(unchosen),
+            "the sign-in picker must require an explicit profile selection"
+        );
+        assert_eq!(phase(), Phase::Profiles);
+        assert!(with_ctl(|c| !c.apply_pending));
 
         with_ctl(|c| *c = Ctl::default());
+    }
+
+    #[test]
+    fn local_erasure_parks_without_credentials_or_an_automatic_sign_in() {
+        let c = deleted_ctl();
+        assert_eq!(c.phase, Phase::Deleted);
+        assert!(c.session.client_id.is_empty());
+        assert!(c.session.account_token.is_empty());
+        assert!(!c.signin_active);
+        assert!(!c.apply_pending);
+        assert!(c.pin_code.is_empty());
     }
 }

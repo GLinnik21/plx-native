@@ -5,8 +5,8 @@
 //! assembled before they reach the demuxer (encryption, byte ranges, fMP4 maps and
 //! discontinuities). URI resolution is also part of the parser: every child stays on the source
 //! PMS origin, so a playlist cannot turn the media worker into an arbitrary URL fetcher.
-use crate::plex::{origin, Origin};
 use crate::abr::MediaTimeMs;
+use crate::plex::{origin, Origin};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::time::Duration;
@@ -28,7 +28,8 @@ pub(crate) struct InheritedAuth {
 }
 
 fn is_token_pair(pair: &str) -> bool {
-    pair.split_once('=').is_some_and(|(name, _)| name.eq_ignore_ascii_case("X-Plex-Token"))
+    pair.split_once('=')
+        .is_some_and(|(name, _)| name.eq_ignore_ascii_case("X-Plex-Token"))
 }
 
 impl fmt::Debug for InheritedAuth {
@@ -39,14 +40,22 @@ impl fmt::Debug for InheritedAuth {
 
 impl InheritedAuth {
     pub(crate) fn capture(master: &Resource) -> Result<Self, Error> {
-        let query = master.path.split_once('?').map(|(_, query)| query).ok_or(Error::MissingCredential)?;
+        let query = master
+            .path
+            .split_once('?')
+            .map(|(_, query)| query)
+            .ok_or(Error::MissingCredential)?;
         let mut found = query.split('&').filter(|pair| is_token_pair(pair));
-        let token_pair = found.next().filter(|pair| pair.len() > "X-Plex-Token=".len())
+        let token_pair = found
+            .next()
+            .filter(|pair| pair.len() > "X-Plex-Token=".len())
             .ok_or(Error::MissingCredential)?;
         if found.next().is_some() {
             return Err(Error::MultipleCredentials);
         }
-        Ok(Self { token_pair: token_pair.to_owned() })
+        Ok(Self {
+            token_pair: token_pair.to_owned(),
+        })
     }
 
     /// A request path for the same-origin transport. A playlist may repeat the route credential,
@@ -64,7 +73,11 @@ impl InheritedAuth {
                 return Ok(resource.path.clone());
             }
         }
-        let separator = if resource.path.contains('?') { '&' } else { '?' };
+        let separator = if resource.path.contains('?') {
+            '&'
+        } else {
+            '?'
+        };
         Ok(format!("{}{separator}{}", resource.path, self.token_pair))
     }
 }
@@ -79,8 +92,12 @@ pub(crate) struct SegmentTimeline {
 
 impl SegmentTimeline {
     pub(crate) fn begin(self, duration: Duration) -> Result<SegmentClock, Error> {
-        let duration_ns = i64::try_from(duration.as_nanos()).map_err(|_| Error::DurationOverflow)?;
-        let next_start_ns = self.next_start_ns.checked_add(duration_ns).ok_or(Error::DurationOverflow)?;
+        let duration_ns =
+            i64::try_from(duration.as_nanos()).map_err(|_| Error::DurationOverflow)?;
+        let next_start_ns = self
+            .next_start_ns
+            .checked_add(duration_ns)
+            .ok_or(Error::DurationOverflow)?;
         Ok(SegmentClock {
             base_ns: self.next_start_ns,
             next_start_ns,
@@ -139,7 +156,10 @@ impl fmt::Debug for Resource {
             Some((path, _)) => format!("{path}?<query>"),
             None => self.path.clone(),
         };
-        f.debug_struct("Resource").field("origin", &self.origin).field("path", &path).finish()
+        f.debug_struct("Resource")
+            .field("origin", &self.origin)
+            .field("path", &path)
+            .finish()
     }
 }
 
@@ -164,7 +184,8 @@ impl Resource {
             if !(reference.starts_with("http://") || reference.starts_with("https://")) {
                 return Err(Error::InvalidUri("unsupported URI scheme"));
             }
-            let child_origin = Origin::parse(reference).ok_or(Error::InvalidUri("malformed absolute URI"))?;
+            let child_origin =
+                Origin::parse(reference).ok_or(Error::InvalidUri("malformed absolute URI"))?;
             if child_origin != self.origin {
                 return Err(Error::CrossOrigin);
             }
@@ -176,9 +197,17 @@ impl Resource {
             return Resource::new(self.origin.clone(), reference);
         }
 
-        let base_path = self.path.split_once('?').map_or(self.path.as_str(), |(path, _)| path);
-        let slash = base_path.rfind('/').ok_or(Error::InvalidUri("base URI has no directory"))?;
-        Resource::new(self.origin.clone(), format!("{}{}", &base_path[..=slash], reference))
+        let base_path = self
+            .path
+            .split_once('?')
+            .map_or(self.path.as_str(), |(path, _)| path);
+        let slash = base_path
+            .rfind('/')
+            .ok_or(Error::InvalidUri("base URI has no directory"))?;
+        Resource::new(
+            self.origin.clone(),
+            format!("{}{}", &base_path[..=slash], reference),
+        )
     }
 }
 
@@ -218,9 +247,13 @@ pub(crate) struct MediaPlaylist {
 
 impl MediaPlaylist {
     pub(crate) fn total_duration(&self) -> Result<Duration, Error> {
-        self.segments.iter().try_fold(Duration::ZERO, |total, segment| {
-            total.checked_add(segment.duration).ok_or(Error::DurationOverflow)
-        })
+        self.segments
+            .iter()
+            .try_fold(Duration::ZERO, |total, segment| {
+                total
+                    .checked_add(segment.duration)
+                    .ok_or(Error::DurationOverflow)
+            })
     }
 
     /// Segment containing EXT-X-START's preferred content time. PMS emits the whole VOD list but
@@ -228,7 +261,9 @@ impl MediaPlaylist {
     /// from such a session returns 404 forever. Positive offsets count from the head, negative
     /// offsets from the tail, per the HLS tag's wire semantics.
     pub(crate) fn preferred_start_index(&self) -> Result<usize, Error> {
-        let Some(offset_micros) = self.start_offset_micros else { return Ok(0) };
+        let Some(offset_micros) = self.start_offset_micros else {
+            return Ok(0);
+        };
         let total_ns = self.total_duration()?.as_nanos();
         let magnitude_ns = u128::from(offset_micros.unsigned_abs()).saturating_mul(1_000);
         let target_ns = if offset_micros < 0 {
@@ -274,13 +309,20 @@ pub(crate) struct MediaTracker {
 
 impl MediaTracker {
     pub(crate) fn apply(&mut self, playlist: &MediaPlaylist) -> Result<Refresh, Error> {
-        if self.source.as_ref().is_some_and(|source| source != &playlist.source) {
+        if self
+            .source
+            .as_ref()
+            .is_some_and(|source| source != &playlist.source)
+        {
             return Err(Error::RefreshSourceChanged);
         }
 
         let mut expected = self.next_sequence.unwrap_or(playlist.media_sequence);
         if playlist.media_sequence > expected {
-            return Err(Error::SequenceGap { expected, found: playlist.media_sequence });
+            return Err(Error::SequenceGap {
+                expected,
+                found: playlist.media_sequence,
+            });
         }
 
         // Validate against local state first. No failing response is allowed to partially advance
@@ -295,7 +337,10 @@ impl MediaTracker {
                 }
             }
             if segment.sequence > expected {
-                return Err(Error::SequenceGap { expected, found: segment.sequence });
+                return Err(Error::SequenceGap {
+                    expected,
+                    found: segment.sequence,
+                });
             }
             if self.ended {
                 return Err(Error::SegmentAfterEndList(segment.sequence));
@@ -318,7 +363,10 @@ impl MediaTracker {
         self.source.get_or_insert_with(|| playlist.source.clone());
         self.next_sequence = Some(expected);
         self.ended |= playlist.end_list;
-        Ok(Refresh { new_segments: additions, end_list: self.ended })
+        Ok(Refresh {
+            new_segments: additions,
+            end_list: self.ended,
+        })
     }
 }
 
@@ -353,7 +401,9 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::MissingHeader => f.write_str("playlist does not start with #EXTM3U"),
-            Self::Malformed { line, reason } => write!(f, "malformed playlist at line {line}: {reason}"),
+            Self::Malformed { line, reason } => {
+                write!(f, "malformed playlist at line {line}: {reason}")
+            }
             Self::InvalidUri(reason) => write!(f, "invalid playlist URI: {reason}"),
             Self::CrossOrigin => f.write_str("playlist URI changes origin"),
             Self::UnsupportedTag(tag) => write!(f, "unsupported HLS tag {tag}"),
@@ -369,7 +419,9 @@ impl fmt::Display for Error {
             Self::SequenceGap { expected, found } => {
                 write!(f, "media sequence gap: expected {expected}, found {found}")
             }
-            Self::SegmentChanged(sequence) => write!(f, "segment {sequence} changed across refreshes"),
+            Self::SegmentChanged(sequence) => {
+                write!(f, "segment {sequence} changed across refreshes")
+            }
             Self::UnknownOldSegment(sequence) => {
                 write!(f, "refresh introduced unseen old segment {sequence}")
             }
@@ -378,7 +430,9 @@ impl fmt::Display for Error {
             }
             Self::StaleEndList => f.write_str("ENDLIST came from a playlist older than the cursor"),
             Self::MissingCredential => f.write_str("HLS master URL has no Plex credential"),
-            Self::MultipleCredentials => f.write_str("HLS master URL has multiple Plex credentials"),
+            Self::MultipleCredentials => {
+                f.write_str("HLS master URL has multiple Plex credentials")
+            }
             Self::CredentialChanged => f.write_str("playlist URI replaces the route credential"),
             Self::DurationOverflow => f.write_str("HLS timeline duration overflows"),
         }
@@ -397,14 +451,20 @@ pub(crate) fn parse_master(source: &Resource, text: &str) -> Result<MasterPlayli
     for (line_no, line) in lines.into_iter().skip(1) {
         if line.is_empty() {
             if pending_bandwidth.is_some() {
-                return malformed(line_no, "variant URI must immediately follow EXT-X-STREAM-INF");
+                return malformed(
+                    line_no,
+                    "variant URI must immediately follow EXT-X-STREAM-INF",
+                );
             }
             continue;
         }
 
         if line.starts_with('#') {
             if pending_bandwidth.is_some() {
-                return malformed(line_no, "variant URI must immediately follow EXT-X-STREAM-INF");
+                return malformed(
+                    line_no,
+                    "variant URI must immediately follow EXT-X-STREAM-INF",
+                );
             }
             if let Some(value) = line.strip_prefix("#EXT-X-STREAM-INF:") {
                 if variant.is_some() {
@@ -412,7 +472,12 @@ pub(crate) fn parse_master(source: &Resource, text: &str) -> Result<MasterPlayli
                 }
                 pending_bandwidth = Some(parse_variant_bandwidth(value, line_no)?);
             } else if let Some(value) = line.strip_prefix("#EXT-X-VERSION:") {
-                set_once(&mut version, parse_positive_u32(value, line_no)?, line_no, "duplicate version")?;
+                set_once(
+                    &mut version,
+                    parse_positive_u32(value, line_no)?,
+                    line_no,
+                    "duplicate version",
+                )?;
             } else if line == "#EXT-X-INDEPENDENT-SEGMENTS" {
                 if std::mem::replace(&mut independent_segments, true) {
                     return malformed(line_no, "duplicate independent-segments tag");
@@ -431,9 +496,10 @@ pub(crate) fn parse_master(source: &Resource, text: &str) -> Result<MasterPlayli
             continue;
         }
 
-        let bandwidth = pending_bandwidth
-            .take()
-            .ok_or(Error::Malformed { line: line_no, reason: "URI has no EXT-X-STREAM-INF" })?;
+        let bandwidth = pending_bandwidth.take().ok_or(Error::Malformed {
+            line: line_no,
+            reason: "URI has no EXT-X-STREAM-INF",
+        })?;
         if variant.is_some() {
             return Err(Error::MultipleVariants);
         }
@@ -441,11 +507,17 @@ pub(crate) fn parse_master(source: &Resource, text: &str) -> Result<MasterPlayli
         if !path_without_query(&resource.path).ends_with(".m3u8") {
             return Err(Error::ChildIsNotPlaylist);
         }
-        variant = Some(Variant { resource, bandwidth });
+        variant = Some(Variant {
+            resource,
+            bandwidth,
+        });
     }
 
     if pending_bandwidth.is_some() {
-        return Err(Error::Malformed { line: 0, reason: "EXT-X-STREAM-INF has no URI" });
+        return Err(Error::Malformed {
+            line: 0,
+            reason: "EXT-X-STREAM-INF has no URI",
+        });
     }
     Ok(MasterPlaylist {
         source: source.clone(),
@@ -487,7 +559,12 @@ pub(crate) fn parse_media(source: &Resource, text: &str) -> Result<MediaPlaylist
                 return malformed(line_no, "segment URI must immediately follow EXTINF");
             }
             if let Some(value) = line.strip_prefix("#EXT-X-VERSION:") {
-                set_once(&mut version, parse_positive_u32(value, line_no)?, line_no, "duplicate version")?;
+                set_once(
+                    &mut version,
+                    parse_positive_u32(value, line_no)?,
+                    line_no,
+                    "duplicate version",
+                )?;
             } else if let Some(value) = line.strip_prefix("#EXT-X-TARGETDURATION:") {
                 set_once(
                     &mut target_duration,
@@ -496,9 +573,10 @@ pub(crate) fn parse_media(source: &Resource, text: &str) -> Result<MediaPlaylist
                     "duplicate target duration",
                 )?;
             } else if let Some(value) = line.strip_prefix("#EXT-X-START:") {
-                let value = value
-                    .strip_prefix("TIME-OFFSET=")
-                    .ok_or(Error::Malformed { line: line_no, reason: "invalid start attributes" })?;
+                let value = value.strip_prefix("TIME-OFFSET=").ok_or(Error::Malformed {
+                    line: line_no,
+                    reason: "invalid start attributes",
+                })?;
                 set_once(
                     &mut start_offset_micros,
                     parse_signed_decimal_micros(value, line_no)?,
@@ -518,9 +596,18 @@ pub(crate) fn parse_media(source: &Resource, text: &str) -> Result<MediaPlaylist
                     "VOD" => PlaylistType::Vod,
                     _ => return malformed(line_no, "invalid playlist type"),
                 };
-                set_once(&mut playlist_type, value, line_no, "duplicate playlist type")?;
+                set_once(
+                    &mut playlist_type,
+                    value,
+                    line_no,
+                    "duplicate playlist type",
+                )?;
             } else if let Some(value) = line.strip_prefix("#EXT-X-PROGRAM-DATE-TIME:") {
-                if value.is_empty() || value.bytes().any(|b| b.is_ascii_whitespace() || b.is_ascii_control()) {
+                if value.is_empty()
+                    || value
+                        .bytes()
+                        .any(|b| b.is_ascii_whitespace() || b.is_ascii_control())
+                {
                     return malformed(line_no, "invalid program date-time");
                 }
                 if std::mem::replace(&mut pending_program_time, true) {
@@ -528,7 +615,10 @@ pub(crate) fn parse_media(source: &Resource, text: &str) -> Result<MediaPlaylist
                 }
             } else if let Some(value) = line.strip_prefix("#EXTINF:") {
                 if target_duration.is_none() || media_sequence.is_none() {
-                    return malformed(line_no, "target duration and media sequence must precede segments");
+                    return malformed(
+                        line_no,
+                        "target duration and media sequence must precede segments",
+                    );
                 }
                 pending_duration = Some(parse_extinf(value, line_no)?);
             } else if line == "#EXT-X-INDEPENDENT-SEGMENTS" {
@@ -554,26 +644,40 @@ pub(crate) fn parse_media(source: &Resource, text: &str) -> Result<MediaPlaylist
             continue;
         }
 
-        let duration = pending_duration
-            .take()
-            .ok_or(Error::Malformed { line: line_no, reason: "segment URI has no EXTINF" })?;
+        let duration = pending_duration.take().ok_or(Error::Malformed {
+            line: line_no,
+            reason: "segment URI has no EXTINF",
+        })?;
         let sequence = media_sequence
             .expect("EXTINF gate established the media sequence")
             .checked_add(segments.len() as u64)
             .ok_or(Error::SequenceOverflow)?;
         let resource = source.resolve(line)?;
-        if !path_without_query(&resource.path).to_ascii_lowercase().ends_with(".ts") {
+        if !path_without_query(&resource.path)
+            .to_ascii_lowercase()
+            .ends_with(".ts")
+        {
             return Err(Error::SegmentIsNotMpegTs);
         }
-        segments.push(Segment { sequence, duration, resource });
+        segments.push(Segment {
+            sequence,
+            duration,
+            resource,
+        });
         pending_program_time = false;
     }
 
     if pending_duration.is_some() {
-        return Err(Error::Malformed { line: 0, reason: "EXTINF has no segment URI" });
+        return Err(Error::Malformed {
+            line: 0,
+            reason: "EXTINF has no segment URI",
+        });
     }
     if pending_program_time {
-        return Err(Error::Malformed { line: 0, reason: "program date-time has no segment" });
+        return Err(Error::Malformed {
+            line: 0,
+            reason: "program date-time has no segment",
+        });
     }
     let target_duration_secs = target_duration.ok_or(Error::MissingTargetDuration)?;
     let media_sequence = media_sequence.ok_or(Error::MissingMediaSequence)?;
@@ -637,11 +741,14 @@ fn parse_variant_bandwidth(value: &str, line: usize) -> Result<u64, Error> {
     let mut keys = Vec::new();
     let mut bandwidth = None;
     for item in items {
-        let (key, raw_value) = item
-            .split_once('=')
-            .ok_or(Error::Malformed { line, reason: "variant attribute has no value" })?;
+        let (key, raw_value) = item.split_once('=').ok_or(Error::Malformed {
+            line,
+            reason: "variant attribute has no value",
+        })?;
         if key.is_empty()
-            || !key.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'-')
+            || !key
+                .bytes()
+                .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'-')
             || raw_value.is_empty()
             || keys.contains(&key)
         {
@@ -666,13 +773,17 @@ fn parse_variant_bandwidth(value: &str, line: usize) -> Result<u64, Error> {
             bandwidth = Some(parse_positive_u64(raw_value, line, "invalid bandwidth")?);
         }
     }
-    bandwidth.ok_or(Error::Malformed { line, reason: "variant has no bandwidth" })
+    bandwidth.ok_or(Error::Malformed {
+        line,
+        reason: "variant has no bandwidth",
+    })
 }
 
 fn parse_extinf(value: &str, line: usize) -> Result<Duration, Error> {
-    let (number, _) = value
-        .split_once(',')
-        .ok_or(Error::Malformed { line, reason: "EXTINF has no comma" })?;
+    let (number, _) = value.split_once(',').ok_or(Error::Malformed {
+        line,
+        reason: "EXTINF has no comma",
+    })?;
     let (seconds, fraction) = match number.split_once('.') {
         Some((seconds, fraction)) => (seconds, Some(fraction)),
         None => (number, None),
@@ -680,17 +791,23 @@ fn parse_extinf(value: &str, line: usize) -> Result<Duration, Error> {
     if seconds.is_empty() || !seconds.bytes().all(|b| b.is_ascii_digit()) {
         return malformed(line, "invalid EXTINF duration");
     }
-    let seconds = seconds
-        .parse::<u64>()
-        .map_err(|_| Error::Malformed { line, reason: "EXTINF duration overflows" })?;
+    let seconds = seconds.parse::<u64>().map_err(|_| Error::Malformed {
+        line,
+        reason: "EXTINF duration overflows",
+    })?;
     let nanos = if let Some(fraction) = fraction {
-        if fraction.is_empty() || fraction.len() > 9 || !fraction.bytes().all(|b| b.is_ascii_digit()) {
+        if fraction.is_empty()
+            || fraction.len() > 9
+            || !fraction.bytes().all(|b| b.is_ascii_digit())
+        {
             return malformed(line, "invalid EXTINF fraction");
         }
-        let fraction = fraction
-            .parse::<u32>()
-            .map_err(|_| Error::Malformed { line, reason: "invalid EXTINF fraction" })?;
-        fraction * 10_u32.pow(9 - number.split_once('.').expect("fraction is present").1.len() as u32)
+        let fraction = fraction.parse::<u32>().map_err(|_| Error::Malformed {
+            line,
+            reason: "invalid EXTINF fraction",
+        })?;
+        fraction
+            * 10_u32.pow(9 - number.split_once('.').expect("fraction is present").1.len() as u32)
     } else {
         0
     };
@@ -712,12 +829,14 @@ fn parse_signed_decimal_micros(value: &str, line: usize) -> Result<i64, Error> {
     if seconds.is_empty() || !seconds.bytes().all(|byte| byte.is_ascii_digit()) {
         return malformed(line, "invalid start time offset");
     }
-    let seconds = seconds
-        .parse::<i64>()
-        .map_err(|_| Error::Malformed { line, reason: "start time offset overflows" })?;
-    let mut micros = seconds
-        .checked_mul(1_000_000)
-        .ok_or(Error::Malformed { line, reason: "start time offset overflows" })?;
+    let seconds = seconds.parse::<i64>().map_err(|_| Error::Malformed {
+        line,
+        reason: "start time offset overflows",
+    })?;
+    let mut micros = seconds.checked_mul(1_000_000).ok_or(Error::Malformed {
+        line,
+        reason: "start time offset overflows",
+    })?;
     if let Some(fraction) = fraction {
         if fraction.is_empty()
             || fraction.len() > 6
@@ -725,24 +844,37 @@ fn parse_signed_decimal_micros(value: &str, line: usize) -> Result<i64, Error> {
         {
             return malformed(line, "invalid start time offset");
         }
-        let fraction = fraction
-            .parse::<i64>()
-            .map_err(|_| Error::Malformed { line, reason: "invalid start time offset" })?;
+        let fraction = fraction.parse::<i64>().map_err(|_| Error::Malformed {
+            line,
+            reason: "invalid start time offset",
+        })?;
         micros = micros
-            .checked_add(fraction * 10_i64.pow(6 - value.split_once('.').expect("fraction is present").1.len() as u32))
-            .ok_or(Error::Malformed { line, reason: "start time offset overflows" })?;
+            .checked_add(
+                fraction
+                    * 10_i64.pow(
+                        6 - value.split_once('.').expect("fraction is present").1.len() as u32,
+                    ),
+            )
+            .ok_or(Error::Malformed {
+                line,
+                reason: "start time offset overflows",
+            })?;
     }
     if negative {
-        micros.checked_neg().ok_or(Error::Malformed { line, reason: "start time offset overflows" })
+        micros.checked_neg().ok_or(Error::Malformed {
+            line,
+            reason: "start time offset overflows",
+        })
     } else {
         Ok(micros)
     }
 }
 
 fn parse_positive_u32(value: &str, line: usize) -> Result<u32, Error> {
-    let value = value
-        .parse::<u32>()
-        .map_err(|_| Error::Malformed { line, reason: "invalid version" })?;
+    let value = value.parse::<u32>().map_err(|_| Error::Malformed {
+        line,
+        reason: "invalid version",
+    })?;
     if value == 0 {
         return malformed(line, "version must be positive");
     }
@@ -753,7 +885,9 @@ fn parse_u64(value: &str, line: usize, reason: &'static str) -> Result<u64, Erro
     if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
         return malformed(line, reason);
     }
-    value.parse::<u64>().map_err(|_| Error::Malformed { line, reason })
+    value
+        .parse::<u64>()
+        .map_err(|_| Error::Malformed { line, reason })
 }
 
 fn parse_positive_u64(value: &str, line: usize, reason: &'static str) -> Result<u64, Error> {
@@ -764,7 +898,12 @@ fn parse_positive_u64(value: &str, line: usize, reason: &'static str) -> Result<
     Ok(value)
 }
 
-fn set_once<T>(slot: &mut Option<T>, value: T, line: usize, reason: &'static str) -> Result<(), Error> {
+fn set_once<T>(
+    slot: &mut Option<T>,
+    value: T,
+    line: usize,
+    reason: &'static str,
+) -> Result<(), Error> {
     if slot.is_some() {
         return malformed(line, reason);
     }
@@ -791,7 +930,9 @@ fn malformed<T>(line: usize, reason: &'static str) -> Result<T, Error> {
 }
 
 fn has_scheme(uri: &str) -> bool {
-    let Some(colon) = uri.find(':') else { return false };
+    let Some(colon) = uri.find(':') else {
+        return false;
+    };
     let first_delimiter = uri.find(['/', '?']).unwrap_or(uri.len());
     if colon > first_delimiter || colon == 0 {
         return false;
@@ -808,7 +949,9 @@ fn normalize_absolute_path(path: &str) -> Result<String, Error> {
     if !path.starts_with('/') || path.starts_with("//") {
         return Err(Error::InvalidUri("path is not origin-relative"));
     }
-    let (raw_path, query) = path.split_once('?').map_or((path, None), |(path, query)| (path, Some(query)));
+    let (raw_path, query) = path
+        .split_once('?')
+        .map_or((path, None), |(path, query)| (path, Some(query)));
     if raw_path.is_empty() {
         return Err(Error::InvalidUri("URI has no path"));
     }
@@ -827,7 +970,11 @@ fn normalize_absolute_path(path: &str) -> Result<String, Error> {
             _ => components.push(component),
         }
     }
-    let mut normalized = if components.is_empty() { "/".to_owned() } else { format!("/{}", components.join("/")) };
+    let mut normalized = if components.is_empty() {
+        "/".to_owned()
+    } else {
+        format!("/{}", components.join("/"))
+    };
     if let Some(query) = query {
         if query.is_empty() {
             return Err(Error::InvalidUri("empty query"));
@@ -846,7 +993,10 @@ fn validate_uri_text(uri: &str) -> Result<(), Error> {
         return Err(Error::InvalidUri("backslash in URI"));
     }
     let bytes = uri.as_bytes();
-    if bytes.iter().any(|b| !b.is_ascii() || b.is_ascii_control() || b.is_ascii_whitespace()) {
+    if bytes
+        .iter()
+        .any(|b| !b.is_ascii() || b.is_ascii_control() || b.is_ascii_whitespace())
+    {
         return Err(Error::InvalidUri("non-ASCII or whitespace byte"));
     }
     let mut index = 0;
@@ -925,9 +1075,15 @@ mod tests {
         assert_eq!(parsed.playlist_type, Some(PlaylistType::Event));
         assert_eq!(parsed.segments[0].sequence, 41);
         assert_eq!(parsed.segments[0].duration, Duration::new(0, 551_044_000));
-        assert_eq!(parsed.segments[0].resource.path, "/session/example/segments/00041.ts");
+        assert_eq!(
+            parsed.segments[0].resource.path,
+            "/session/example/segments/00041.ts"
+        );
         assert_eq!(parsed.segments[1].sequence, 42);
-        assert_eq!(parsed.segments[1].resource.path, "/absolute/00042.ts?part=2");
+        assert_eq!(
+            parsed.segments[1].resource.path,
+            "/absolute/00042.ts?part=2"
+        );
         assert!(parsed.end_list);
     }
 
@@ -946,7 +1102,10 @@ mod tests {
             "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\nhttps://cdn.example/session/index.m3u8\n",
         );
         assert_eq!(cross, Err(Error::CrossOrigin));
-        assert_eq!(master.resolve("//cdn.example/00000.ts"), Err(Error::CrossOrigin));
+        assert_eq!(
+            master.resolve("//cdn.example/00000.ts"),
+            Err(Error::CrossOrigin)
+        );
     }
 
     #[test]
@@ -978,7 +1137,11 @@ mod tests {
         );
         let refresh = tracker.apply(&second).unwrap();
         assert_eq!(
-            refresh.new_segments.iter().map(|segment| segment.sequence).collect::<Vec<_>>(),
+            refresh
+                .new_segments
+                .iter()
+                .map(|segment| segment.sequence)
+                .collect::<Vec<_>>(),
             vec![9, 10]
         );
         assert!(refresh.end_list);
@@ -989,15 +1152,31 @@ mod tests {
     #[test]
     fn failed_refresh_does_not_advance_the_dedupe_cursor() {
         let first = media("/session/index.m3u8", 4, &["00004.ts"], false);
-        let mut gap = media("/session/index.m3u8", 5, &["00005.ts", "00006.ts", "00008.ts"], false);
+        let mut gap = media(
+            "/session/index.m3u8",
+            5,
+            &["00005.ts", "00006.ts", "00008.ts"],
+            false,
+        );
         // The parser itself assigns consecutive numbers. Corrupt the pure input here to prove
         // the tracker's transaction boundary independently of parser validation.
         gap.segments[2].sequence = 8;
-        let valid = media("/session/index.m3u8", 5, &["00005.ts", "00006.ts", "00007.ts"], false);
+        let valid = media(
+            "/session/index.m3u8",
+            5,
+            &["00005.ts", "00006.ts", "00007.ts"],
+            false,
+        );
         let mut tracker = MediaTracker::default();
         tracker.apply(&first).unwrap();
 
-        assert_eq!(tracker.apply(&gap), Err(Error::SequenceGap { expected: 7, found: 8 }));
+        assert_eq!(
+            tracker.apply(&gap),
+            Err(Error::SequenceGap {
+                expected: 7,
+                found: 8
+            })
+        );
         assert_eq!(
             tracker
                 .apply(&valid)
@@ -1013,7 +1192,12 @@ mod tests {
     #[test]
     fn changed_overlap_gap_new_source_and_post_end_growth_are_rejected() {
         let first = media("/session/index.m3u8", 10, &["00010.ts", "00011.ts"], false);
-        let changed = media("/session/index.m3u8", 11, &["changed.ts", "00012.ts"], false);
+        let changed = media(
+            "/session/index.m3u8",
+            11,
+            &["changed.ts", "00012.ts"],
+            false,
+        );
         let gap = media("/session/index.m3u8", 13, &["00013.ts"], false);
         let other = media("/other/index.m3u8", 12, &["00012.ts"], false);
         let ending = media("/session/index.m3u8", 11, &["00011.ts", "00012.ts"], true);
@@ -1022,7 +1206,13 @@ mod tests {
         tracker.apply(&first).unwrap();
 
         assert_eq!(tracker.apply(&changed), Err(Error::SegmentChanged(11)));
-        assert_eq!(tracker.apply(&gap), Err(Error::SequenceGap { expected: 12, found: 13 }));
+        assert_eq!(
+            tracker.apply(&gap),
+            Err(Error::SequenceGap {
+                expected: 12,
+                found: 13
+            })
+        );
         assert_eq!(tracker.apply(&other), Err(Error::RefreshSourceChanged));
         tracker.apply(&ending).unwrap();
         assert_eq!(tracker.apply(&growth), Err(Error::SegmentAfterEndList(13)));
@@ -1040,7 +1230,10 @@ mod tests {
     #[test]
     fn byte_assembly_features_are_rejected_explicitly() {
         let cases = [
-            ("#EXT-X-KEY:METHOD=AES-128,URI=\"key.bin\"", "encrypted segments"),
+            (
+                "#EXT-X-KEY:METHOD=AES-128,URI=\"key.bin\"",
+                "encrypted segments",
+            ),
             ("#EXT-X-BYTERANGE:1000@0", "byte-range segments"),
             ("#EXT-X-MAP:URI=\"init.mp4\"", "fMP4 initialization map"),
             ("#EXT-X-DISCONTINUITY", "discontinuities"),
@@ -1093,11 +1286,26 @@ mod tests {
     #[test]
     fn path_resolution_normalizes_dot_segments_and_rejects_ambiguous_uris() {
         let base = source("/a/b/index.m3u8?token=x");
-        assert_eq!(base.resolve("../c/./00001.ts").unwrap().path, "/a/c/00001.ts");
-        assert!(matches!(base.resolve("../../../escape.ts"), Err(Error::InvalidUri(_))));
-        assert!(matches!(base.resolve("bad%2.ts"), Err(Error::InvalidUri(_))));
-        assert!(matches!(base.resolve("data:text/plain,x"), Err(Error::InvalidUri(_))));
-        assert!(matches!(base.resolve("space here.ts"), Err(Error::InvalidUri(_))));
+        assert_eq!(
+            base.resolve("../c/./00001.ts").unwrap().path,
+            "/a/c/00001.ts"
+        );
+        assert!(matches!(
+            base.resolve("../../../escape.ts"),
+            Err(Error::InvalidUri(_))
+        ));
+        assert!(matches!(
+            base.resolve("bad%2.ts"),
+            Err(Error::InvalidUri(_))
+        ));
+        assert!(matches!(
+            base.resolve("data:text/plain,x"),
+            Err(Error::InvalidUri(_))
+        ));
+        assert!(matches!(
+            base.resolve("space here.ts"),
+            Err(Error::InvalidUri(_))
+        ));
     }
 
     #[test]
@@ -1147,13 +1355,25 @@ mod tests {
             "#EXT-X-START:TIME-OFFSET=1,PRECISE=YES",
             "#EXT-X-START:PRECISE=YES,TIME-OFFSET=1",
         ] {
-            assert!(matches!(parse_media(&base, &playlist(tag)), Err(Error::Malformed { .. })), "{tag}");
+            assert!(
+                matches!(
+                    parse_media(&base, &playlist(tag)),
+                    Err(Error::Malformed { .. })
+                ),
+                "{tag}"
+            );
         }
-        let duplicate = playlist("#EXT-X-START:TIME-OFFSET=1")
-            .replacen("#EXT-X-MEDIA-SEQUENCE", "#EXT-X-START:TIME-OFFSET=2\n#EXT-X-MEDIA-SEQUENCE", 1);
+        let duplicate = playlist("#EXT-X-START:TIME-OFFSET=1").replacen(
+            "#EXT-X-MEDIA-SEQUENCE",
+            "#EXT-X-START:TIME-OFFSET=2\n#EXT-X-MEDIA-SEQUENCE",
+            1,
+        );
         assert_eq!(
             parse_media(&base, &duplicate),
-            Err(Error::Malformed { line: 4, reason: "duplicate start tag" })
+            Err(Error::Malformed {
+                line: 4,
+                reason: "duplicate start tag"
+            })
         );
     }
 

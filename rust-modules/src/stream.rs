@@ -70,7 +70,8 @@ fn find_ci(hay: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.is_empty() || hay.len() < needle.len() {
         return None;
     }
-    hay.windows(needle.len()).position(|w| w.eq_ignore_ascii_case(needle))
+    hay.windows(needle.len())
+        .position(|w| w.eq_ignore_ascii_case(needle))
 }
 
 impl HttpStream {
@@ -159,8 +160,14 @@ fn log_endpoint(path: &str) -> &str {
 /// the length is ignored, which is what the read path already does). A close-delimited body — no
 /// length, not chunked — has no completeness test at all, so there only a recv error can say the
 /// transfer ended early, and `want` says plainly that nothing knows how much was owed.
-fn short_body_line(method: &str, path: &str, consumed: i64, content_length: i64,
-                   chunked: bool, recv_err: bool) -> Option<String> {
+fn short_body_line(
+    method: &str,
+    path: &str,
+    consumed: i64,
+    content_length: i64,
+    chunked: bool,
+    recv_err: bool,
+) -> Option<String> {
     let sized = !chunked && content_length >= 0;
     if sized && consumed >= content_length {
         return None; // whole, by the only measure the response gave us
@@ -168,10 +175,16 @@ fn short_body_line(method: &str, path: &str, consumed: i64, content_length: i64,
     if !sized && !recv_err {
         return None; // nothing to fall short of, and the socket ended cleanly
     }
-    let want = if sized { content_length.to_string() } else { "?".to_string() };
+    let want = if sized {
+        content_length.to_string()
+    } else {
+        "?".to_string()
+    };
     let why = if recv_err { "recv error" } else { "EOF" };
-    Some(format!("stream: {method} {} SHORT BODY got={consumed} want={want} ({why})",
-                 log_endpoint(path)))
+    Some(format!(
+        "stream: {method} {} SHORT BODY got={consumed} want={want} ({why})",
+        log_endpoint(path)
+    ))
 }
 
 /// [`short_body_line`] applied to a finished stream — call it after the read loop, before or after
@@ -185,17 +198,27 @@ fn short_body_line(method: &str, path: &str, consumed: i64, content_length: i64,
 /// and the reason it did not go with them. The three fields it reads are private, so the notice
 /// could not have been reproduced from outside.
 pub(crate) fn note_short_body(method: &str, path: &str, hs: &HttpStream, recv_err: bool) {
-    if let Some(line) = short_body_line(method, path, hs.consumed, hs.content_length,
-                                        hs.chunked != 0, recv_err) {
+    if let Some(line) = short_body_line(
+        method,
+        path,
+        hs.consumed,
+        hs.content_length,
+        hs.chunked != 0,
+        recv_err,
+    ) {
         crate::log(&line);
     }
 }
 
 /// crate-internal accessors (fields are private) — the player engine reads these.
 #[inline]
-pub(crate) fn hs_content_length(hs: *const HttpStream) -> i64 { unsafe { (*hs).content_length } }
+pub(crate) fn hs_content_length(hs: *const HttpStream) -> i64 {
+    unsafe { (*hs).content_length }
+}
 #[inline]
-pub(crate) fn hs_status(hs: *const HttpStream) -> c_int { unsafe { (*hs).status } }
+pub(crate) fn hs_status(hs: *const HttpStream) -> c_int {
+    unsafe { (*hs).status }
+}
 
 /// one raw body byte (buffered first, then socket) — for chunk framing
 /// Internal read result reserved for a caller-owned wall-clock deadline. Ordinary callers never
@@ -207,12 +230,7 @@ pub(crate) const HTTP_READ_DEADLINE: c_int = -2;
 /// can no longer meet its segment-production budget could still monopolize the demux thread
 /// forever. Polling against the original deadline makes progress consume the budget rather than
 /// renew it.
-unsafe fn recv_until(
-    fd: c_int,
-    dst: *mut c_void,
-    n: usize,
-    deadline: Option<Instant>,
-) -> isize {
+unsafe fn recv_until(fd: c_int, dst: *mut c_void, n: usize, deadline: Option<Instant>) -> isize {
     let Some(deadline) = deadline else {
         return libc::recv(fd, dst, n, 0);
     };
@@ -222,9 +240,12 @@ unsafe fn recv_until(
             return HTTP_READ_DEADLINE as isize;
         }
         let left_us = deadline.saturating_duration_since(now).as_micros();
-        let timeout_ms = ((left_us.saturating_add(999) / 1_000)
-            .min(c_int::MAX as u128)) as c_int;
-        let mut pfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+        let timeout_ms = ((left_us.saturating_add(999) / 1_000).min(c_int::MAX as u128)) as c_int;
+        let mut pfd = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
         let ready = libc::poll(&mut pfd, 1, timeout_ms.max(1));
         if ready == 0 {
             return HTTP_READ_DEADLINE as isize;
@@ -264,7 +285,11 @@ unsafe fn hs_getb(hs: &mut HttpStream, deadline: Option<Instant>) -> Result<Opti
         if r == 0 {
             close_owned(hs);
         }
-        if r < 0 { Err(r as c_int) } else { Ok(None) }
+        if r < 0 {
+            Err(r as c_int)
+        } else {
+            Ok(None)
+        }
     }
 }
 
@@ -275,7 +300,9 @@ unsafe fn hs_next_chunk(
 ) -> Result<Option<i64>, c_int> {
     let mut b;
     loop {
-        let Some(next) = hs_getb(hs, deadline)? else { return Ok(None) };
+        let Some(next) = hs_getb(hs, deadline)? else {
+            return Ok(None);
+        };
         b = next;
         if b != b'\r' && b != b'\n' {
             break;
@@ -311,7 +338,11 @@ unsafe fn hs_next_chunk(
 fn trim_ows(v: &[u8]) -> &[u8] {
     let a = v.iter().take_while(|b| **b == b' ' || **b == b'\t').count();
     let v = &v[a..];
-    let b = v.iter().rev().take_while(|b| **b == b' ' || **b == b'\t').count();
+    let b = v
+        .iter()
+        .rev()
+        .take_while(|b| **b == b' ' || **b == b'\t')
+        .count();
     &v[..v.len() - b]
 }
 
@@ -343,8 +374,14 @@ fn header_is_chunked(hdr: &[u8]) -> bool {
         let vs = at + p + NEEDLE.len();
         // The value runs to the end of the line; a header block always carries its final CRLF, so
         // the fallback to `hdr.len()` is only reachable on a truncated one.
-        let end = hdr[vs..].iter().position(|&b| b == b'\r' || b == b'\n').map_or(hdr.len(), |i| vs + i);
-        if hdr[vs..end].split(|&b| b == b',').any(|t| trim_ows(t).eq_ignore_ascii_case(b"chunked")) {
+        let end = hdr[vs..]
+            .iter()
+            .position(|&b| b == b'\r' || b == b'\n')
+            .map_or(hdr.len(), |i| vs + i);
+        if hdr[vs..end]
+            .split(|&b| b == b',')
+            .any(|t| trim_ows(t).eq_ignore_ascii_case(b"chunked"))
+        {
             return true;
         }
         at = end; // strictly greater than `at` (the needle is non-empty), so this terminates
@@ -401,8 +438,12 @@ const CONNECT_TIMEOUT_MS: c_int = 8000;
 /// having to know or test the family. A non-positive `timeout_ms` (the chain budget already spent)
 /// is clamped to 0 rather than passed on — `poll` reads a NEGATIVE timeout as "block forever",
 /// which would turn an exhausted budget into the unbounded wait this whole function removes.
-unsafe fn connect_timeout(fd: c_int, sa: *const libc::sockaddr, salen: libc::socklen_t,
-                          timeout_ms: c_int) -> c_int {
+unsafe fn connect_timeout(
+    fd: c_int,
+    sa: *const libc::sockaddr,
+    salen: libc::socklen_t,
+    timeout_ms: c_int,
+) -> c_int {
     let flags = libc::fcntl(fd, libc::F_GETFL, 0);
     if flags < 0 {
         return -1;
@@ -420,7 +461,11 @@ unsafe fn connect_timeout(fd: c_int, sa: *const libc::sockaddr, salen: libc::soc
     if errno() != libc::EINPROGRESS {
         return restore(-1);
     }
-    let mut pfd = libc::pollfd { fd, events: libc::POLLOUT, revents: 0 };
+    let mut pfd = libc::pollfd {
+        fd,
+        events: libc::POLLOUT,
+        revents: 0,
+    };
     // EINTR must not be treated as a timeout: retry with the remaining budget.
     let mut left = timeout_ms.max(0); // never negative — that is `poll`'s "wait forever"
 
@@ -440,8 +485,15 @@ unsafe fn connect_timeout(fd: c_int, sa: *const libc::sockaddr, salen: libc::soc
     // Writable does not imply connected — SO_ERROR carries the verdict.
     let mut err: c_int = 0;
     let mut elen = std::mem::size_of::<c_int>() as libc::socklen_t;
-    if libc::getsockopt(fd, libc::SOL_SOCKET, libc::SO_ERROR,
-                        &mut err as *mut _ as *mut c_void, &mut elen) < 0 || err != 0 {
+    if libc::getsockopt(
+        fd,
+        libc::SOL_SOCKET,
+        libc::SO_ERROR,
+        &mut err as *mut _ as *mut c_void,
+        &mut elen,
+    ) < 0
+        || err != 0
+    {
         return restore(-1);
     }
     restore(0)
@@ -563,7 +615,11 @@ unsafe fn resolve(host: &str, port: c_int) -> Option<AddrList> {
     hints.ai_family = libc::AF_UNSPEC;
     hints.ai_socktype = libc::SOCK_STREAM;
     hints.ai_flags = libc::AI_NUMERICSERV
-        | if is_numeric_host(host) { libc::AI_NUMERICHOST } else { libc::AI_ADDRCONFIG };
+        | if is_numeric_host(host) {
+            libc::AI_NUMERICHOST
+        } else {
+            libc::AI_ADDRCONFIG
+        };
     let mut res: *mut libc::addrinfo = std::ptr::null_mut();
     if libc::getaddrinfo(node.as_ptr(), service.as_ptr(), &hints, &mut res) != 0 || res.is_null() {
         return None;
@@ -602,9 +658,9 @@ unsafe fn connect_any(hs: &HttpStream, head: *const libc::addrinfo, budget_ms: c
             continue; // a family the kernel will not give us (no IPv6 in this build) — try the next
         }
         hs.set_fd(fd); // PUBLISHED before connect, per attempt — see the doc above
-        // Clamped to the budget before the subtraction, so what `connect_timeout` is handed is in
-        // [0, budget] whatever the clock did — a `u128` cast of a negative budget would otherwise
-        // come back enormous and hand the LAST attempt an unbounded-looking wait.
+                       // Clamped to the budget before the subtraction, so what `connect_timeout` is handed is in
+                       // [0, budget] whatever the clock did — a `u128` cast of a negative budget would otherwise
+                       // come back enormous and hand the LAST attempt an unbounded-looking wait.
         let spent = started.elapsed().as_millis().min(budget_ms.max(0) as u128) as c_int;
         if connect_timeout(fd, a.ai_addr, a.ai_addrlen, budget_ms.max(0) - spent) == 0 {
             return fd;
@@ -617,9 +673,25 @@ unsafe fn connect_any(hs: &HttpStream, head: *const libc::addrinfo, budget_ms: c
     -1
 }
 
-pub(crate) fn http_open(hs: *mut HttpStream, host: *const c_char, port: c_int,
-                       path: *const c_char, extra: *const c_char, method: &str) -> c_int {
-    http_open_with_timeouts(hs, host, port, path, extra, method, CONNECT_TIMEOUT_MS, 15_000, 10_000)
+pub(crate) fn http_open(
+    hs: *mut HttpStream,
+    host: *const c_char,
+    port: c_int,
+    path: *const c_char,
+    extra: *const c_char,
+    method: &str,
+) -> c_int {
+    http_open_with_timeouts(
+        hs,
+        host,
+        port,
+        path,
+        extra,
+        method,
+        CONNECT_TIMEOUT_MS,
+        15_000,
+        10_000,
+    )
 }
 
 /// [`http_open`] with the whole-chain connect and stalled-I/O ceiling selected by the caller.
@@ -634,7 +706,9 @@ pub(crate) fn http_open_probe(
     method: &str,
     timeout_ms: c_int,
 ) -> c_int {
-    http_open_with_timeouts(hs, host, port, path, extra, method, timeout_ms, timeout_ms, timeout_ms)
+    http_open_with_timeouts(
+        hs, host, port, path, extra, method, timeout_ms, timeout_ms, timeout_ms,
+    )
 }
 
 fn http_open_with_timeouts(
@@ -670,8 +744,10 @@ fn http_open_with_timeouts(
                 // The host is on the line because "which name failed to resolve" is the only
                 // question this failure raises, and it is not a secret the way a query string is
                 // (`log_endpoint`) — `player::engine` and `plex::servers` already log `host=…:port`.
-                crate::log(&format!("stream: {method} {} DNS FAILED host={host_s}",
-                                    log_endpoint(&path_s)));
+                crate::log(&format!(
+                    "stream: {method} {} DNS FAILED host={host_s}",
+                    log_endpoint(&path_s)
+                ));
                 return -1;
             }
         };
@@ -716,8 +792,13 @@ fn http_open_with_timeouts(
             return -1;
         }
         let one: c_int = 1;
-        libc::setsockopt(fd, libc::IPPROTO_TCP, libc::TCP_NODELAY,
-                         &one as *const _ as *const c_void, 4);
+        libc::setsockopt(
+            fd,
+            libc::IPPROTO_TCP,
+            libc::TCP_NODELAY,
+            &one as *const _ as *const c_void,
+            4,
+        );
         // Candidate probes carry their tier budget through this same seam. This is an inactivity
         // ceiling rather than a perfect wall clock (the coordinator owns that), but it prevents a
         // late worker from sitting in a stalled read long after its result was expired.
@@ -725,18 +806,26 @@ fn http_open_with_timeouts(
             tv_sec: (recv_timeout_ms.max(1) / 1000) as libc::time_t,
             tv_usec: ((recv_timeout_ms.max(1) % 1000) * 1000) as libc::suseconds_t,
         };
-        libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_RCVTIMEO,
-                         &tv as *const _ as *const c_void,
-                         std::mem::size_of::<libc::timeval>() as libc::socklen_t);
+        libc::setsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_RCVTIMEO,
+            &tv as *const _ as *const c_void,
+            std::mem::size_of::<libc::timeval>() as libc::socklen_t,
+        );
         // …and the send side, which had no bound at all: a peer that stops reading blocks the
         // request write for as long as its window stays shut.
         let stv = libc::timeval {
             tv_sec: (send_timeout_ms.max(1) / 1000) as libc::time_t,
             tv_usec: ((send_timeout_ms.max(1) % 1000) * 1000) as libc::suseconds_t,
         };
-        libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_SNDTIMEO,
-                         &stv as *const _ as *const c_void,
-                         std::mem::size_of::<libc::timeval>() as libc::socklen_t);
+        libc::setsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_SNDTIMEO,
+            &stv as *const _ as *const c_void,
+            std::mem::size_of::<libc::timeval>() as libc::socklen_t,
+        );
 
         // build + send the request (default Accept only if caller set none)
         let extra_s: String = if extra.is_null() {
@@ -744,7 +833,11 @@ fn http_open_with_timeouts(
         } else {
             CStr::from_ptr(extra).to_string_lossy().into_owned()
         };
-        let accept = if extra_s.to_ascii_lowercase().contains("accept:") { "" } else { "Accept: */*\r\n" };
+        let accept = if extra_s.to_ascii_lowercase().contains("accept:") {
+            ""
+        } else {
+            "Accept: */*\r\n"
+        };
         // `Host:` is the ORIGIN, never the address `connect_any` reached — see `host_header`.
         let host_hdr = host_header(&host_s, port);
         let req = format!(
@@ -753,7 +846,12 @@ fn http_open_with_timeouts(
         let bytes = req.as_bytes();
         let mut off = 0usize;
         while off < bytes.len() {
-            let w = libc::send(fd, bytes[off..].as_ptr() as *const c_void, bytes.len() - off, 0);
+            let w = libc::send(
+                fd,
+                bytes[off..].as_ptr() as *const c_void,
+                bytes.len() - off,
+                0,
+            );
             if w <= 0 {
                 close_owned(hs);
                 return -1;
@@ -766,8 +864,12 @@ fn http_open_with_timeouts(
         let mut hdr_end: Option<usize> = None;
         hs.blen = 0;
         while hdr_end.is_none() && (hs.blen as usize) < cap - 1 {
-            let r = libc::recv(fd, hs.buf.as_mut_ptr().add(hs.blen as usize) as *mut c_void,
-                               cap - hs.blen as usize, 0);
+            let r = libc::recv(
+                fd,
+                hs.buf.as_mut_ptr().add(hs.blen as usize) as *mut c_void,
+                cap - hs.blen as usize,
+                0,
+            );
             // r == 0 is also how an interrupted open surfaces: `http_shutdown` wakes this
             // recv with EOF, so a teardown mid-header costs one syscall, not 15 s of SO_RCVTIMEO.
             if r <= 0 {
@@ -778,8 +880,11 @@ fn http_open_with_timeouts(
             let blen = hs.blen as usize;
             let mut i = 3;
             while i < blen {
-                if hs.buf[i - 3] == b'\r' && hs.buf[i - 2] == b'\n'
-                    && hs.buf[i - 1] == b'\r' && hs.buf[i] == b'\n' {
+                if hs.buf[i - 3] == b'\r'
+                    && hs.buf[i - 2] == b'\n'
+                    && hs.buf[i - 1] == b'\r'
+                    && hs.buf[i] == b'\n'
+                {
                     hdr_end = Some(i + 1);
                     break;
                 }
@@ -815,7 +920,9 @@ fn http_open_with_timeouts(
             // `parse().unwrap_or(0)` produced for a malformed line too, and 0 fails the check
             // below exactly as before.
             hs.status = if ndig == 3 {
-                rest[..3].iter().fold(0 as c_int, |acc, &b| acc * 10 + (b - b'0') as c_int)
+                rest[..3]
+                    .iter()
+                    .fold(0 as c_int, |acc, &b| acc * 10 + (b - b'0') as c_int)
             } else {
                 0
             };
@@ -827,8 +934,10 @@ fn http_open_with_timeouts(
             // header line's value. Identical on well-formed input, where there is one space.
             let v = &v[v.iter().take_while(|b| **b == b' ' || **b == b'\t').count()..];
             let ndig = v.iter().take_while(|b| b.is_ascii_digit()).count();
-            hs.content_length = std::str::from_utf8(&v[..ndig]).ok()
-                .and_then(|s| s.parse::<i64>().ok()).unwrap_or(-1);
+            hs.content_length = std::str::from_utf8(&v[..ndig])
+                .ok()
+                .and_then(|s| s.parse::<i64>().ok())
+                .unwrap_or(-1);
         }
         if header_is_chunked(hdr) {
             hs.chunked = 1;
@@ -845,7 +954,11 @@ fn http_open_with_timeouts(
             //
             // `status=0` is not a code any server sent: it is what the parse above leaves when the
             // status line was not `HTTP/1.x` followed by exactly three digits.
-            crate::log(&format!("stream: {method} {} status={}", log_endpoint(&path_s), hs.status));
+            crate::log(&format!(
+                "stream: {method} {} status={}",
+                log_endpoint(&path_s),
+                hs.status
+            ));
             close_owned(hs);
             return -1;
         }
@@ -892,24 +1005,28 @@ pub(crate) fn http_read_until(
                 if (hs.bpos as usize) < (hs.blen as usize) {
                     let avail = hs.blen as usize - hs.bpos as usize;
                     let take = std::cmp::min(want - got, avail);
-                    std::ptr::copy_nonoverlapping(hs.buf.as_ptr().add(hs.bpos as usize), dst.add(got), take);
+                    std::ptr::copy_nonoverlapping(
+                        hs.buf.as_ptr().add(hs.bpos as usize),
+                        dst.add(got),
+                        take,
+                    );
                     hs.bpos += take as c_int;
                     got += take;
                 } else if hs.fd() >= 0 {
-                    let r = recv_until(
-                        hs.fd(),
-                        dst.add(got) as *mut c_void,
-                        want - got,
-                        deadline,
-                    );
+                    let r = recv_until(hs.fd(), dst.add(got) as *mut c_void, want - got, deadline);
                     if r < 0 {
-                        if errno() == libc::EINTR { continue; }
+                        if errno() == libc::EINTR {
+                            continue;
+                        }
                         if got == 0 {
                             return r as c_int;
                         }
                         break;
                     }
-                    if r == 0 { close_owned(hs); break; }
+                    if r == 0 {
+                        close_owned(hs);
+                        break;
+                    }
                     got += r as usize;
                 } else {
                     break;
@@ -917,7 +1034,13 @@ pub(crate) fn http_read_until(
             }
             hs.chunk_left -= got as i64;
             hs.consumed += got as i64;
-            return if got > 0 { got as c_int } else if hs.fd() < 0 { 0 } else { -1 };
+            return if got > 0 {
+                got as c_int
+            } else if hs.fd() < 0 {
+                0
+            } else {
+                -1
+            };
         }
         if hs.fd() < 0 && (hs.bpos as usize) >= (hs.blen as usize) {
             return 0;
@@ -940,10 +1063,15 @@ pub(crate) fn http_read_until(
         loop {
             let r = recv_until(hs.fd(), dst as *mut c_void, n, deadline);
             if r < 0 {
-                if errno() == libc::EINTR { continue; }
+                if errno() == libc::EINTR {
+                    continue;
+                }
                 return r as c_int;
             }
-            if r == 0 { close_owned(hs); return 0; }
+            if r == 0 {
+                close_owned(hs);
+                return 0;
+            }
             hs.consumed += r as i64;
             return r as c_int;
         }
@@ -1091,7 +1219,6 @@ mod tests {
         std::fs::read_dir("/dev/fd").map(|d| d.count()).unwrap_or(0)
     }
 
-
     fn sockaddr(ip: [u8; 4], port: u16) -> libc::sockaddr_in {
         let mut sa: libc::sockaddr_in = unsafe { std::mem::zeroed() };
         sa.sin_family = libc::AF_INET as libc::sa_family_t;
@@ -1104,7 +1231,9 @@ mod tests {
         let mut sa: libc::sockaddr_in6 = unsafe { std::mem::zeroed() };
         sa.sin6_family = libc::AF_INET6 as libc::sa_family_t;
         sa.sin6_port = port.to_be();
-        sa.sin6_addr = libc::in6_addr { s6_addr: ip.octets() };
+        sa.sin6_addr = libc::in6_addr {
+            s6_addr: ip.octets(),
+        };
         sa
     }
 
@@ -1112,21 +1241,33 @@ mod tests {
     /// socklen_t)` pair straight out of an `addrinfo`, because the address may now be either
     /// family; the tests below predate that and say what they mean with a `sockaddr_in`.
     unsafe fn connect_v4(fd: c_int, sa: &libc::sockaddr_in, timeout_ms: c_int) -> c_int {
-        connect_timeout(fd, sa as *const _ as *const libc::sockaddr,
-                        std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t, timeout_ms)
+        connect_timeout(
+            fd,
+            sa as *const _ as *const libc::sockaddr,
+            std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
+            timeout_ms,
+        )
     }
 
     unsafe fn connect_v6(fd: c_int, sa: &libc::sockaddr_in6, timeout_ms: c_int) -> c_int {
-        connect_timeout(fd, sa as *const _ as *const libc::sockaddr,
-                        std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t, timeout_ms)
+        connect_timeout(
+            fd,
+            sa as *const _ as *const libc::sockaddr,
+            std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t,
+            timeout_ms,
+        )
     }
 
     /// One `addrinfo` node pointing at a caller-owned `sockaddr`, for testing [`connect_any`]'s
     /// walk without a resolver in the loop. The chain a real DNS answer produces is not something a
     /// test can arrange on demand — which address a name yields, and in what order, is the
     /// machine's business — so the walk is graded on a list built by hand instead.
-    fn ainfo(family: c_int, sa: *mut libc::sockaddr, len: libc::socklen_t,
-             next: *mut libc::addrinfo) -> libc::addrinfo {
+    fn ainfo(
+        family: c_int,
+        sa: *mut libc::sockaddr,
+        len: libc::socklen_t,
+        next: *mut libc::addrinfo,
+    ) -> libc::addrinfo {
         let mut ai: libc::addrinfo = unsafe { std::mem::zeroed() };
         ai.ai_family = family;
         ai.ai_socktype = libc::SOCK_STREAM;
@@ -1150,7 +1291,10 @@ mod tests {
         let waited = t0.elapsed();
         unsafe { libc::close(fd) };
         assert_eq!(r, -1, "an unroutable host must fail, not connect");
-        assert!(waited.as_millis() < 3_000, "took {waited:?} — the deadline is not being honoured");
+        assert!(
+            waited.as_millis() < 3_000,
+            "took {waited:?} — the deadline is not being honoured"
+        );
     }
 
     /// A refused connection must be reported immediately, not waited out: port 1 on loopback
@@ -1164,8 +1308,14 @@ mod tests {
         let r = unsafe { connect_v4(fd, &sa, 5_000) };
         let waited = t0.elapsed();
         unsafe { libc::close(fd) };
-        assert_eq!(r, -1, "SO_ERROR must be consulted — a writable socket is not a connected one");
-        assert!(waited.as_millis() < 2_000, "a refusal should be immediate, waited {waited:?}");
+        assert_eq!(
+            r, -1,
+            "SO_ERROR must be consulted — a writable socket is not a connected one"
+        );
+        assert!(
+            waited.as_millis() < 2_000,
+            "a refusal should be immediate, waited {waited:?}"
+        );
     }
 
     /// A failed `http_open` must leave the stream CLOSED (fd = -1) and leak no descriptor,
@@ -1189,9 +1339,20 @@ mod tests {
             ("refused connection", &ip_refused, 1),
         ] {
             let mut hs = http_stream_boxed();
-            let rv = http_open(&mut *hs, ip.as_ptr(), port, path.as_ptr(), std::ptr::null(), "GET");
+            let rv = http_open(
+                &mut *hs,
+                ip.as_ptr(),
+                port,
+                path.as_ptr(),
+                std::ptr::null(),
+                "GET",
+            );
             assert_eq!(rv, -1, "{label}: open must fail");
-            assert_eq!(hs.fd(), -1, "{label}: the fd must be retired, not left published");
+            assert_eq!(
+                hs.fd(),
+                -1,
+                "{label}: the fd must be retired, not left published"
+            );
         }
 
         // …and the descriptor is genuinely closed, not merely un-published.
@@ -1206,10 +1367,20 @@ mod tests {
         let before = open_fd_count();
         for _ in 0..32 {
             let mut hs = http_stream_boxed();
-            let _ = http_open(&mut *hs, ip_refused.as_ptr(), 1, path.as_ptr(), std::ptr::null(), "GET");
+            let _ = http_open(
+                &mut *hs,
+                ip_refused.as_ptr(),
+                1,
+                path.as_ptr(),
+                std::ptr::null(),
+                "GET",
+            );
         }
         let after = open_fd_count();
-        assert!(after <= before + 8, "failed opens leaked descriptors: {before} -> {after}");
+        assert!(
+            after <= before + 8,
+            "failed opens leaked descriptors: {before} -> {after}"
+        );
     }
 
     /// The claim the whole single-closer protocol rests on: `shutdown(2)` wakes a peer that is
@@ -1261,8 +1432,14 @@ mod tests {
         let t0 = Instant::now();
         let (rv, waited) = std::thread::scope(|sc| {
             let opener = sc.spawn(move || {
-                let rv = http_open(addr as *mut HttpStream, ip.as_ptr(), port as c_int,
-                                   path.as_ptr(), std::ptr::null(), "GET");
+                let rv = http_open(
+                    addr as *mut HttpStream,
+                    ip.as_ptr(),
+                    port as c_int,
+                    path.as_ptr(),
+                    std::ptr::null(),
+                    "GET",
+                );
                 (rv, t0.elapsed())
             });
             let _peer = srv.accept().expect("accept"); // held open, never written to
@@ -1272,10 +1449,16 @@ mod tests {
         });
 
         assert_eq!(rv, -1, "an interrupted open must report failure");
-        assert!(waited.as_secs() < 3,
-                "took {waited:?} — the open sat out SO_RCVTIMEO, so it was NOT interrupted");
-        assert_eq!(hs.fd(), -1, "the interrupted open left its fd published — that is the stale \
-                                 descriptor a later http_shutdown would shoot");
+        assert!(
+            waited.as_secs() < 3,
+            "took {waited:?} — the open sat out SO_RCVTIMEO, so it was NOT interrupted"
+        );
+        assert_eq!(
+            hs.fd(),
+            -1,
+            "the interrupted open left its fd published — that is the stale \
+                                 descriptor a later http_shutdown would shoot"
+        );
     }
 
     /// `take_fd` is the single-closer gate: concurrent claimers must produce exactly one
@@ -1287,10 +1470,15 @@ mod tests {
         hs.set_fd(4242);
         let winners: i32 = std::thread::scope(|sc| {
             let hs = &hs;
-            let hs2 = (0..8).map(|_| sc.spawn(move || i32::from(hs.take_fd() >= 0))).collect::<Vec<_>>();
+            let hs2 = (0..8)
+                .map(|_| sc.spawn(move || i32::from(hs.take_fd() >= 0)))
+                .collect::<Vec<_>>();
             hs2.into_iter().map(|h| h.join().unwrap()).sum()
         });
-        assert_eq!(winners, 1, "the fd was claimed {winners} times — that is a double close");
+        assert_eq!(
+            winners, 1,
+            "the fd was claimed {winners} times — that is a double close"
+        );
         assert!(hs.fd() < 0, "the slot must be left closed");
     }
 
@@ -1306,7 +1494,11 @@ mod tests {
         let r = unsafe { connect_v4(fd, &sa, 2_000) };
         assert_eq!(r, 0, "a listening socket must connect");
         let fl = unsafe { libc::fcntl(fd, libc::F_GETFL, 0) };
-        assert_eq!(fl & libc::O_NONBLOCK, 0, "O_NONBLOCK leaked out of the handshake");
+        assert_eq!(
+            fl & libc::O_NONBLOCK,
+            0,
+            "O_NONBLOCK leaked out of the handshake"
+        );
         unsafe { libc::close(fd) };
     }
 
@@ -1340,14 +1532,23 @@ mod tests {
         let h = std::ffi::CString::new(host).unwrap();
         let path = std::ffi::CString::new("/x").unwrap();
         let mut hs = http_stream_boxed();
-        let rv = http_open(&mut *hs, h.as_ptr(), port as c_int, path.as_ptr(), std::ptr::null(), "GET");
+        let rv = http_open(
+            &mut *hs,
+            h.as_ptr(),
+            port as c_int,
+            path.as_ptr(),
+            std::ptr::null(),
+            "GET",
+        );
         (hs, rv)
     }
 
     /// A one-shot server that hands the REQUEST back to the test as well as answering it — the
     /// only way to grade a header we emit rather than one we parse.
-    fn one_shot_echo(bind: &str, resp: Vec<u8>)
-        -> std::io::Result<(u16, std::thread::JoinHandle<Vec<u8>>)> {
+    fn one_shot_echo(
+        bind: &str,
+        resp: Vec<u8>,
+    ) -> std::io::Result<(u16, std::thread::JoinHandle<Vec<u8>>)> {
         use std::io::{Read, Write};
         let srv = std::net::TcpListener::bind(bind)?;
         let port = srv.local_addr().unwrap().port();
@@ -1403,9 +1604,18 @@ mod tests {
         let (port, h) = one_shot_server(resp);
 
         let (mut hs, rv) = open_against(port);
-        assert_eq!(rv, 0, "a 200 must open, whatever bytes the other headers carry");
-        assert_eq!(hs.status, 200, "the status line is ASCII and was never in doubt");
-        assert_eq!(hs.content_length, 5, "…and Content-Length must survive the same way");
+        assert_eq!(
+            rv, 0,
+            "a 200 must open, whatever bytes the other headers carry"
+        );
+        assert_eq!(
+            hs.status, 200,
+            "the status line is ASCII and was never in doubt"
+        );
+        assert_eq!(
+            hs.content_length, 5,
+            "…and Content-Length must survive the same way"
+        );
 
         let mut body = Vec::new();
         let mut chunk = [0u8; 16];
@@ -1416,7 +1626,11 @@ mod tests {
             }
             body.extend_from_slice(&chunk[..r as usize]);
         }
-        assert_eq!(body.as_slice(), b"hello", "the body must be delivered intact");
+        assert_eq!(
+            body.as_slice(),
+            b"hello",
+            "the body must be delivered intact"
+        );
         http_close(&mut *hs);
         h.join().unwrap();
     }
@@ -1433,7 +1647,11 @@ mod tests {
         let (mut hs, rv) = open_against(port);
         assert_eq!(rv, -1, "an unparseable status line must fail the open");
         assert_eq!(hs.status, 0, "…with no status invented for it");
-        assert_eq!(hs.fd(), -1, "a failed open retires its fd (see the leak test above)");
+        assert_eq!(
+            hs.fd(),
+            -1,
+            "a failed open retires its fd (see the leak test above)"
+        );
         http_close(&mut *hs); // already closed by the failure path; keeps the intent explicit
         h.join().unwrap();
     }
@@ -1448,10 +1666,20 @@ mod tests {
     fn header_names_are_found_whatever_their_casing() {
         let hdr = b"HTTP/1.1 200 OK\r\nCONTENT-Length: 42\r\nTransfer-Encoding: chunked\r\n\r\n";
         let p = find_ci(hdr, b"\r\ncontent-length:").expect("a shouted header name must be found");
-        assert_eq!(&hdr[p + 17..p + 20], b" 42", "the offset must index the ORIGINAL bytes");
+        assert_eq!(
+            &hdr[p + 17..p + 20],
+            b" 42",
+            "the offset must index the ORIGINAL bytes"
+        );
         assert!(find_ci(hdr, b"\r\ntransfer-encoding: chunked").is_some());
-        assert!(find_ci(hdr, b"\r\ncontent-range:").is_none(), "no false positives");
-        assert!(find_ci(b"HT", b"\r\ncontent-length:").is_none(), "a needle longer than the hay");
+        assert!(
+            find_ci(hdr, b"\r\ncontent-range:").is_none(),
+            "no false positives"
+        );
+        assert!(
+            find_ci(b"HT", b"\r\ncontent-length:").is_none(),
+            "a needle longer than the hay"
+        );
     }
 
     /// The redaction rule these log lines rest on: what reaches the event log is the endpoint, and
@@ -1463,13 +1691,24 @@ mod tests {
     fn a_logged_endpoint_drops_the_query_and_with_it_the_token() {
         let p = "/library/metadata/4/children?includeChildren=1&X-Plex-Token=aBcD1234xyzQ";
         assert_eq!(log_endpoint(p), "/library/metadata/4/children");
-        assert!(!log_endpoint(p).contains("X-Plex-Token"), "the token reached the log line");
+        assert!(
+            !log_endpoint(p).contains("X-Plex-Token"),
+            "the token reached the log line"
+        );
         assert!(!log_endpoint(p).contains("aBcD1234xyzQ"));
         // A poster path arrives with the token already in it (`Client::fetch_built`).
         let poster = "/photo/:/transcode?width=300&url=%2Flibrary%2F1&X-Plex-Token=aBcD1234xyzQ";
         assert_eq!(log_endpoint(poster), "/photo/:/transcode");
-        assert_eq!(log_endpoint("/identity"), "/identity", "a path with no query is itself");
-        assert_eq!(log_endpoint("?X-Plex-Token=t"), "", "a path that is nothing but a query");
+        assert_eq!(
+            log_endpoint("/identity"),
+            "/identity",
+            "a path with no query is itself"
+        );
+        assert_eq!(
+            log_endpoint("?X-Plex-Token=t"),
+            "",
+            "a path that is nothing but a query"
+        );
     }
 
     /// The completeness test itself. A body that reached its `Content-Length` reports nothing; one
@@ -1478,20 +1717,45 @@ mod tests {
     /// which is why the read loops keep -1 and 0 apart rather than folding them into `r <= 0`.
     #[test]
     fn a_short_body_is_reported_and_a_complete_one_is_not() {
-        assert_eq!(short_body_line("GET", "/hubs?X-Plex-Token=t", 5000, 5000, false, false), None,
-                   "a body that reached its length is whole");
-        assert_eq!(short_body_line("GET", "/hubs", 5001, 5000, false, false), None,
-                   "…and one past it is not short either");
+        assert_eq!(
+            short_body_line("GET", "/hubs?X-Plex-Token=t", 5000, 5000, false, false),
+            None,
+            "a body that reached its length is whole"
+        );
+        assert_eq!(
+            short_body_line("GET", "/hubs", 5001, 5000, false, false),
+            None,
+            "…and one past it is not short either"
+        );
 
-        let l = short_body_line("GET", "/hubs?X-Plex-Token=aBcD1234xyzQ", 900, 5000, false, false)
-            .expect("a body 900 bytes into a 5000-byte response must be reported");
+        let l = short_body_line(
+            "GET",
+            "/hubs?X-Plex-Token=aBcD1234xyzQ",
+            900,
+            5000,
+            false,
+            false,
+        )
+        .expect("a body 900 bytes into a 5000-byte response must be reported");
         assert!(l.contains("SHORT BODY got=900 want=5000"), "{l}");
-        assert!(l.contains("/hubs") && !l.contains("aBcD1234xyzQ"), "the line leaked the query: {l}");
-        assert!(l.contains("EOF"), "a clean end must not read as an error: {l}");
+        assert!(
+            l.contains("/hubs") && !l.contains("aBcD1234xyzQ"),
+            "the line leaked the query: {l}"
+        );
+        assert!(
+            l.contains("EOF"),
+            "a clean end must not read as an error: {l}"
+        );
 
         let e = short_body_line("POST", "/playQueues", 900, 5000, false, true).expect("reported");
-        assert!(e.contains("recv error"), "a recv error must be named as one: {e}");
-        assert!(e.starts_with("stream: POST "), "the verb belongs on the line: {e}");
+        assert!(
+            e.contains("recv error"),
+            "a recv error must be named as one: {e}"
+        );
+        assert!(
+            e.starts_with("stream: POST "),
+            "the verb belongs on the line: {e}"
+        );
 
         // No length at all — a close-delimited body. A clean end is the ONLY end it has, so
         // silence; an error is still an error, with nothing to state as `want`.
@@ -1506,14 +1770,22 @@ mod tests {
     /// are not the same quantity. Only a recv error can call a chunked transfer incomplete.
     #[test]
     fn a_chunked_response_cannot_report_a_short_body_on_length() {
-        assert_eq!(short_body_line("GET", "/x", 900, -1, true, false), None,
-                   "the ordinary chunked case: no length, clean end");
-        assert_eq!(short_body_line("GET", "/x", 900, 5000, true, false), None,
-                   "both headers present — the chunked framing wins, the length means nothing");
+        assert_eq!(
+            short_body_line("GET", "/x", 900, -1, true, false),
+            None,
+            "the ordinary chunked case: no length, clean end"
+        );
+        assert_eq!(
+            short_body_line("GET", "/x", 900, 5000, true, false),
+            None,
+            "both headers present — the chunked framing wins, the length means nothing"
+        );
         let e = short_body_line("GET", "/x", 900, 5000, true, true).expect("reported");
-        assert!(e.contains("want=?"), "a chunked transfer owes no stated length: {e}");
+        assert!(
+            e.contains("want=?"),
+            "a chunked transfer owes no stated length: {e}"
+        );
     }
-
 
     /// The v6 sibling of the two connect tests above, on a real AF_INET6 socket: a live `::1`
     /// listener connects and is handed back BLOCKING (every read path below depends on that, and
@@ -1523,15 +1795,28 @@ mod tests {
     /// up, and it shows up as a `connect` that fails for a reason nothing logs.
     #[test]
     fn a_v6_listener_connects_blocking_and_a_v6_refusal_is_immediate() {
-        let Some(srv) = v6_loopback_or_skip("the AF_INET6 connect pair") else { return };
+        let Some(srv) = v6_loopback_or_skip("the AF_INET6 connect pair") else {
+            return;
+        };
         let port = srv.local_addr().unwrap().port();
 
         let sa = sockaddr6(std::net::Ipv6Addr::LOCALHOST, port);
         let fd = unsafe { libc::socket(libc::AF_INET6, libc::SOCK_STREAM, 0) };
-        assert!(fd >= 0, "AF_INET6 sockets must be creatable — the loopback bound above");
-        assert_eq!(unsafe { connect_v6(fd, &sa, 2_000) }, 0, "a listening ::1 socket must connect");
+        assert!(
+            fd >= 0,
+            "AF_INET6 sockets must be creatable — the loopback bound above"
+        );
+        assert_eq!(
+            unsafe { connect_v6(fd, &sa, 2_000) },
+            0,
+            "a listening ::1 socket must connect"
+        );
         let fl = unsafe { libc::fcntl(fd, libc::F_GETFL, 0) };
-        assert_eq!(fl & libc::O_NONBLOCK, 0, "O_NONBLOCK leaked out of the v6 handshake");
+        assert_eq!(
+            fl & libc::O_NONBLOCK,
+            0,
+            "O_NONBLOCK leaked out of the v6 handshake"
+        );
         unsafe { libc::close(fd) };
 
         let sa = sockaddr6(std::net::Ipv6Addr::LOCALHOST, 1); // nothing listens on ::1:1
@@ -1540,8 +1825,14 @@ mod tests {
         let r = unsafe { connect_v6(fd, &sa, 5_000) };
         let waited = t0.elapsed();
         unsafe { libc::close(fd) };
-        assert_eq!(r, -1, "SO_ERROR must be consulted on v6 too — a writable socket is not connected");
-        assert!(waited.as_millis() < 2_000, "a refusal should be immediate, waited {waited:?}");
+        assert_eq!(
+            r, -1,
+            "SO_ERROR must be consulted on v6 too — a writable socket is not connected"
+        );
+        assert!(
+            waited.as_millis() < 2_000,
+            "a refusal should be immediate, waited {waited:?}"
+        );
     }
 
     /// The bracket asymmetry, which is the single easiest thing to get backwards here: the URI
@@ -1551,14 +1842,24 @@ mod tests {
     #[test]
     fn a_v6_literal_is_bracketed_for_the_host_header_and_bare_for_the_resolver() {
         assert_eq!(resolver_node("[2001:db8::1]"), "2001:db8::1");
-        assert_eq!(resolver_node("2001:db8::1"), "2001:db8::1", "already bare: unchanged");
+        assert_eq!(
+            resolver_node("2001:db8::1"),
+            "2001:db8::1",
+            "already bare: unchanged"
+        );
         assert_eq!(resolver_node("nas.local"), "nas.local");
         assert_eq!(resolver_node("192.0.2.10"), "192.0.2.10");
 
-        assert_eq!(host_header("2001:db8::1", 32400), "[2001:db8::1]:32400",
-                   "a bare v6 literal must be bracketed for the authority");
-        assert_eq!(host_header("[2001:db8::1]", 32400), "[2001:db8::1]:32400",
-                   "…and one that arrived bracketed must not be double-bracketed");
+        assert_eq!(
+            host_header("2001:db8::1", 32400),
+            "[2001:db8::1]:32400",
+            "a bare v6 literal must be bracketed for the authority"
+        );
+        assert_eq!(
+            host_header("[2001:db8::1]", 32400),
+            "[2001:db8::1]:32400",
+            "…and one that arrived bracketed must not be double-bracketed"
+        );
         assert_eq!(host_header("nas.local", 32400), "nas.local:32400");
         assert_eq!(host_header("192.0.2.10", 32400), "192.0.2.10:32400");
         assert_eq!(host_header("::1", 80), "[::1]:80");
@@ -1569,10 +1870,23 @@ mod tests {
     /// at all), while a name misfiled as a literal fails outright under `AI_NUMERICHOST`.
     #[test]
     fn an_address_literal_is_told_apart_from_a_name() {
-        for a in ["127.0.0.1", "192.0.2.10", "::1", "2001:db8::1", "fe80::1%en0"] {
+        for a in [
+            "127.0.0.1",
+            "192.0.2.10",
+            "::1",
+            "2001:db8::1",
+            "fe80::1%en0",
+        ] {
             assert!(is_numeric_host(a), "{a} is an address literal");
         }
-        for n in ["nas.local", "plex.example.org", "localhost", "999.1.2.3", "1.2.3", "1.2.3.4.5"] {
+        for n in [
+            "nas.local",
+            "plex.example.org",
+            "localhost",
+            "999.1.2.3",
+            "1.2.3",
+            "1.2.3.4.5",
+        ] {
             assert!(!is_numeric_host(n), "{n} is not an address literal");
         }
     }
@@ -1584,10 +1898,18 @@ mod tests {
     /// Both of these are purely local: `AI_NUMERICHOST` sends no packet and loads no NSS module.
     #[test]
     fn an_address_literal_resolves_without_a_resolver() {
-        assert!(unsafe { resolve("127.0.0.1", 80) }.is_some(), "a v4 literal must resolve");
-        assert!(unsafe { resolve("::1", 80) }.is_some(),
-                "a v6 literal must resolve — if this fails, AI_ADDRCONFIG leaked onto a literal");
-        assert!(unsafe { resolve("2001:db8::1", 80) }.is_some(), "a non-loopback v6 literal too");
+        assert!(
+            unsafe { resolve("127.0.0.1", 80) }.is_some(),
+            "a v4 literal must resolve"
+        );
+        assert!(
+            unsafe { resolve("::1", 80) }.is_some(),
+            "a v6 literal must resolve — if this fails, AI_ADDRCONFIG leaked onto a literal"
+        );
+        assert!(
+            unsafe { resolve("2001:db8::1", 80) }.is_some(),
+            "a non-loopback v6 literal too"
+        );
 
         // An out-of-range port FAILS instead of wrapping into a plausible one — 70000 used to dial
         // 4464. Note what this is asserting: `resolve`'s OWN range check, not `AI_NUMERICSERV`'s.
@@ -1595,11 +1917,22 @@ mod tests {
         // resolver the assertion would have passed here and the app would still have truncated on
         // the television. It is the shape this file's own notes warn about — a green host run about
         // a platform difference — and it was caught in review, not by the suite.
-        assert!(unsafe { resolve("127.0.0.1", 70_000) }.is_none(),
-                "an out-of-range port must fail, not truncate into a dialable one");
-        assert!(unsafe { resolve("127.0.0.1", 65_536) }.is_none(), "…one past the top");
-        assert!(unsafe { resolve("127.0.0.1", -1) }.is_none(), "…nor a negative one");
-        assert!(unsafe { resolve("127.0.0.1", 65_535) }.is_some(), "…and the top itself is fine");
+        assert!(
+            unsafe { resolve("127.0.0.1", 70_000) }.is_none(),
+            "an out-of-range port must fail, not truncate into a dialable one"
+        );
+        assert!(
+            unsafe { resolve("127.0.0.1", 65_536) }.is_none(),
+            "…one past the top"
+        );
+        assert!(
+            unsafe { resolve("127.0.0.1", -1) }.is_none(),
+            "…nor a negative one"
+        );
+        assert!(
+            unsafe { resolve("127.0.0.1", 65_535) }.is_some(),
+            "…and the top itself is fine"
+        );
     }
 
     /// IPv6 end to end, which is checklist #43 CASE2: a listener on `::1`, an AF_INET6 socket
@@ -1608,24 +1941,36 @@ mod tests {
     /// since `plex::probe::host_of` hands back the bracketed one.
     #[test]
     fn a_v6_literal_connects_and_sends_a_bracketed_host_header() {
-        let Some(listener) = v6_loopback_or_skip("the IPv6 end-to-end open") else { return };
+        let Some(listener) = v6_loopback_or_skip("the IPv6 end-to-end open") else {
+            return;
+        };
         drop(listener); // proven bindable; `one_shot_echo` needs the address for itself
 
         for host in ["::1", "[::1]"] {
-            let (port, h) = one_shot_echo("[::1]:0", b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi".to_vec())
-                .expect("bind ::1");
+            let (port, h) = one_shot_echo(
+                "[::1]:0",
+                b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi".to_vec(),
+            )
+            .expect("bind ::1");
             let (mut hs, rv) = open_host_against(host, port);
             assert_eq!(rv, 0, "{host}: an IPv6 server must open");
             assert_eq!(hs.status, 200, "{host}");
 
             let mut buf = [0u8; 8];
             let n = http_read(&mut *hs, buf.as_mut_ptr(), buf.len() as c_int);
-            assert_eq!(&buf[..n.max(0) as usize], b"hi", "{host}: the body must come back intact");
+            assert_eq!(
+                &buf[..n.max(0) as usize],
+                b"hi",
+                "{host}: the body must come back intact"
+            );
             http_close(&mut *hs);
 
             let req = h.join().unwrap();
-            assert_eq!(host_line(&req), format!("Host: [::1]:{port}"),
-                       "{host}: the authority form is bracketed whichever spelling was handed in");
+            assert_eq!(
+                host_line(&req),
+                format!("Host: [::1]:{port}"),
+                "{host}: the authority form is bracketed whichever spelling was handed in"
+            );
         }
     }
 
@@ -1639,28 +1984,43 @@ mod tests {
     /// identical either way.
     #[test]
     fn a_hostname_resolves_and_the_host_header_carries_the_name_not_the_address() {
-        let (port, h) = one_shot_echo("127.0.0.1:0", b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec())
-            .expect("bind 127.0.0.1");
+        let (port, h) = one_shot_echo(
+            "127.0.0.1:0",
+            b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec(),
+        )
+        .expect("bind 127.0.0.1");
         let (mut hs, rv) = open_host_against("localhost", port);
-        assert_eq!(rv, 0, "a name the system resolves must open — this is the whole DNS gap");
+        assert_eq!(
+            rv, 0,
+            "a name the system resolves must open — this is the whole DNS gap"
+        );
         assert_eq!(hs.status, 200);
         http_close(&mut *hs);
 
         let req = h.join().unwrap();
-        assert_eq!(host_line(&req), format!("Host: localhost:{port}"),
-                   "the Host header is the ORIGIN; a resolved address here breaks vhosting");
+        assert_eq!(
+            host_line(&req),
+            format!("Host: localhost:{port}"),
+            "the Host header is the ORIGIN; a resolved address here breaks vhosting"
+        );
     }
 
     /// The v4 literal path still says what it always said — the regression guard for every existing
     /// caller, all of which hand `http_open` a dotted quad.
     #[test]
     fn a_v4_literal_still_sends_its_own_address_as_the_host_header() {
-        let (port, h) = one_shot_echo("127.0.0.1:0", b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec())
-            .expect("bind");
+        let (port, h) = one_shot_echo(
+            "127.0.0.1:0",
+            b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec(),
+        )
+        .expect("bind");
         let (mut hs, rv) = open_against(port);
         assert_eq!(rv, 0);
         http_close(&mut *hs);
-        assert_eq!(host_line(&h.join().unwrap()), format!("Host: 127.0.0.1:{port}"));
+        assert_eq!(
+            host_line(&h.join().unwrap()),
+            format!("Host: 127.0.0.1:{port}")
+        );
     }
 
     /// Resolving to several addresses and dialling only the first is the old single-address limit
@@ -1677,18 +2037,33 @@ mod tests {
 
         let mut dead = sockaddr6(std::net::Ipv6Addr::LOCALHOST, 1); // nothing listens on ::1:1
         let mut live = sockaddr([127, 0, 0, 1], port);
-        let mut second = ainfo(libc::AF_INET, &mut live as *mut _ as *mut libc::sockaddr,
-                               std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
-                               std::ptr::null_mut());
-        let first = ainfo(libc::AF_INET6, &mut dead as *mut _ as *mut libc::sockaddr,
-                          std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t,
-                          &mut second);
+        let mut second = ainfo(
+            libc::AF_INET,
+            &mut live as *mut _ as *mut libc::sockaddr,
+            std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
+            std::ptr::null_mut(),
+        );
+        let first = ainfo(
+            libc::AF_INET6,
+            &mut dead as *mut _ as *mut libc::sockaddr,
+            std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t,
+            &mut second,
+        );
 
         let hs = http_stream_boxed();
         let fd = unsafe { connect_any(&hs, &first, 2_000) };
-        assert!(fd >= 0, "the walk stopped at the first dead address instead of trying the second");
-        assert_eq!(hs.fd(), fd, "the connected fd must be left PUBLISHED for http_shutdown to reach");
-        let _peer = srv.accept().expect("the live address must actually have been dialled");
+        assert!(
+            fd >= 0,
+            "the walk stopped at the first dead address instead of trying the second"
+        );
+        assert_eq!(
+            hs.fd(),
+            fd,
+            "the connected fd must be left PUBLISHED for http_shutdown to reach"
+        );
+        let _peer = srv
+            .accept()
+            .expect("the live address must actually have been dialled");
         unsafe { close_owned(&hs) };
     }
 
@@ -1700,15 +2075,29 @@ mod tests {
         for _ in 0..64 {
             let mut a = sockaddr([127, 0, 0, 1], 1);
             let mut b = sockaddr([127, 0, 0, 1], 1);
-            let mut second = ainfo(libc::AF_INET, &mut b as *mut _ as *mut libc::sockaddr,
-                                   std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
-                                   std::ptr::null_mut());
-            let first = ainfo(libc::AF_INET, &mut a as *mut _ as *mut libc::sockaddr,
-                              std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
-                              &mut second);
+            let mut second = ainfo(
+                libc::AF_INET,
+                &mut b as *mut _ as *mut libc::sockaddr,
+                std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
+                std::ptr::null_mut(),
+            );
+            let first = ainfo(
+                libc::AF_INET,
+                &mut a as *mut _ as *mut libc::sockaddr,
+                std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
+                &mut second,
+            );
             let hs = http_stream_boxed();
-            assert_eq!(unsafe { connect_any(&hs, &first, 2_000) }, -1, "nothing here can connect");
-            assert_eq!(hs.fd(), -1, "a spent walk must leave the stream CLOSED, not published");
+            assert_eq!(
+                unsafe { connect_any(&hs, &first, 2_000) },
+                -1,
+                "nothing here can connect"
+            );
+            assert_eq!(
+                hs.fd(),
+                -1,
+                "a spent walk must leave the stream CLOSED, not published"
+            );
         }
         // Same slack, and the same reason, as `every_failed_open_retires_its_fd_and_leaks_nothing`:
         // `open_fd_count` is PROCESS-wide and this suite runs in parallel, so the sibling socket
@@ -1718,7 +2107,10 @@ mod tests {
         // of a two-address walk leak 128 descriptors if a single `close_owned` is missed, which is
         // most of an order of magnitude clear of the noise.
         let after = open_fd_count();
-        assert!(after <= before + 24, "the walk leaked descriptors: {before} -> {after}");
+        assert!(
+            after <= before + 24,
+            "the walk leaked descriptors: {before} -> {after}"
+        );
     }
 
     /// A teardown mid-open must not be ANSWERED by dialling the next address — that would consume
@@ -1739,21 +2131,36 @@ mod tests {
 
         let mut dead = sockaddr([127, 0, 0, 1], 1);
         let mut live = sockaddr([127, 0, 0, 1], port);
-        let mut second = ainfo(libc::AF_INET, &mut live as *mut _ as *mut libc::sockaddr,
-                               std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
-                               std::ptr::null_mut());
-        let first = ainfo(libc::AF_INET, &mut dead as *mut _ as *mut libc::sockaddr,
-                          std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
-                          &mut second);
+        let mut second = ainfo(
+            libc::AF_INET,
+            &mut live as *mut _ as *mut libc::sockaddr,
+            std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
+            std::ptr::null_mut(),
+        );
+        let first = ainfo(
+            libc::AF_INET,
+            &mut dead as *mut _ as *mut libc::sockaddr,
+            std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
+            &mut second,
+        );
 
         let mut hs = http_stream_boxed();
         http_shutdown(&mut *hs); // a teardown with no descriptor to shoot: the latch is the point
-        assert!(hs.interrupted(), "http_shutdown must latch even when the fd is already -1");
+        assert!(
+            hs.interrupted(),
+            "http_shutdown must latch even when the fd is already -1"
+        );
 
-        assert_eq!(unsafe { connect_any(&hs, &first, 2_000) }, -1, "an interrupted walk fails");
+        assert_eq!(
+            unsafe { connect_any(&hs, &first, 2_000) },
+            -1,
+            "an interrupted walk fails"
+        );
         assert_eq!(hs.fd(), -1);
-        assert!(matches!(srv.accept(), Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock),
-                "the second address was dialled anyway — the teardown was answered with a connection");
+        assert!(
+            matches!(srv.accept(), Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock),
+            "the second address was dialled anyway — the teardown was answered with a connection"
+        );
     }
 
     /// …and the latch is per-request state: the next `http_open` on the same stream must not
@@ -1768,7 +2175,14 @@ mod tests {
 
         let ip = std::ffi::CString::new("127.0.0.1").unwrap();
         let path = std::ffi::CString::new("/x").unwrap();
-        let rv = http_open(&mut *hs, ip.as_ptr(), port as c_int, path.as_ptr(), std::ptr::null(), "GET");
+        let rv = http_open(
+            &mut *hs,
+            ip.as_ptr(),
+            port as c_int,
+            path.as_ptr(),
+            std::ptr::null(),
+            "GET",
+        );
         assert_eq!(rv, 0, "a stale interrupt must not fail the next open");
         assert!(!hs.interrupted(), "the latch belongs to one request");
         http_close(&mut *hs);
@@ -1789,25 +2203,29 @@ mod tests {
             "Transfer-Encoding: chunked ",  // trailing OWS is not part of the value
             "Transfer-Encoding: Chunked",   // the VALUE is case-insensitive too (§10.1.4)
             "transfer-encoding: CHUNKED",
-            "Transfer-Encoding: gzip, chunked",   // the legal list form: chunked applied LAST
-            "Transfer-Encoding: chunked, gzip",   // malformed per §6.1, but the framing IS chunked
+            "Transfer-Encoding: gzip, chunked", // the legal list form: chunked applied LAST
+            "Transfer-Encoding: chunked, gzip", // malformed per §6.1, but the framing IS chunked
             "Transfer-Encoding: gzip\r\nTransfer-Encoding: chunked", // a list split across lines
         ] {
             assert!(header_is_chunked(&hdr(te)), "missed: {te}");
         }
         for te in [
             "Transfer-Encoding: gzip",
-            "Transfer-Encoding: chunkedy",   // a token that merely starts the same way
+            "Transfer-Encoding: chunkedy", // a token that merely starts the same way
             "Transfer-Encoding: xchunked",
             "Content-Length: 5",
-            "X-Chunked: chunked",            // not the field this decides on
+            "X-Chunked: chunked", // not the field this decides on
         ] {
             assert!(!header_is_chunked(&hdr(te)), "false positive: {te}");
         }
         // Termination, not just correctness: a block whose last line has no CRLF must still end the
         // scan rather than spin on the same offset.
-        assert!(!header_is_chunked(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip"));
-        assert!(header_is_chunked(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked"));
+        assert!(!header_is_chunked(
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip"
+        ));
+        assert!(header_is_chunked(
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked"
+        ));
         assert!(!header_is_chunked(b""));
     }
 
@@ -1819,7 +2237,11 @@ mod tests {
         let (port, h) = one_shot_server(
             b"HTTP/1.1 200 OK\r\nTransfer-Encoding:chunked\r\n\r\n4\r\nabcd\r\n3\r\nefg\r\n0\r\n\r\n".to_vec());
         let r = loopback_get(port).expect("a 200 must open");
-        assert_eq!((r.status, r.body.as_slice()), (200, &b"abcdefg"[..]), "the chunk framing was left in the body");
+        assert_eq!(
+            (r.status, r.body.as_slice()),
+            (200, &b"abcdefg"[..]),
+            "the chunk framing was left in the body"
+        );
         h.join().unwrap();
     }
 
@@ -1829,10 +2251,19 @@ mod tests {
     /// decided exactly where it was — the event log is the only thing that gained a fact.
     #[test]
     fn a_truncated_body_is_still_returned_to_the_caller() {
-        let (port, h) = one_shot_server(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nabcd".to_vec());
-        let r = loopback_get(port).expect("a truncated body is still a body — this must not become None");
-        assert_eq!(r.body.as_slice(), b"abcd", "the bytes that did arrive must be handed over intact");
-        assert_eq!(r.status, 200, "…and the server's own verdict travels beside them");
+        let (port, h) =
+            one_shot_server(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nabcd".to_vec());
+        let r = loopback_get(port)
+            .expect("a truncated body is still a body — this must not become None");
+        assert_eq!(
+            r.body.as_slice(),
+            b"abcd",
+            "the bytes that did arrive must be handed over intact"
+        );
+        assert_eq!(
+            r.status, 200,
+            "…and the server's own verdict travels beside them"
+        );
         h.join().unwrap();
     }
 
@@ -1844,7 +2275,8 @@ mod tests {
     /// and leaves the code on the struct, and only reading `hs_status` afterwards recovers it.
     #[test]
     fn a_401_reaches_the_caller_as_a_status_and_not_as_a_transport_failure() {
-        let (port, h) = one_shot_server(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n".to_vec());
+        let (port, h) =
+            one_shot_server(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n".to_vec());
         let r = loopback_get(port).expect("the server ANSWERED — that is not a transport failure");
         assert_eq!(r.status, 401);
         assert!(!r.ok(), "…and it is still not a success");

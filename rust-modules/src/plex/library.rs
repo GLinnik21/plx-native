@@ -20,7 +20,9 @@ impl Client {
     /// this is a per-server string a roster row needs once. Sharing the state would mean the last
     /// server discovered renamed the one you are signed in to.
     pub fn friendly_name(&self) -> Option<String> {
-        self.get_json("/").map(|mc| mc.friendly_name).filter(|s| !s.is_empty())
+        self.get_json("/")
+            .map(|mc| mc.friendly_name)
+            .filter(|s| !s.is_empty())
     }
 
     /// GET /library/all?guid=… — **does THIS server hold this film, and under which key?**
@@ -67,7 +69,12 @@ impl Client {
     }
 
     /// Paged variant (X-Plex-Container-Start/Size) for large libraries.
-    pub fn section_items_paged(&self, section_key: i64, start: i64, size: i64) -> Option<MediaContainer> {
+    pub fn section_items_paged(
+        &self,
+        section_key: i64,
+        start: i64,
+        size: i64,
+    ) -> Option<MediaContainer> {
         let path = QueryBuilder::new(format!("/library/sections/{section_key}/all"))
             .int("X-Plex-Container-Start", start)
             .int("X-Plex-Container-Size", size)
@@ -188,13 +195,17 @@ impl Client {
     /// for. It does NOT distinguish a 200 from a 404 — `get_ok` is `http_get`'s own success — which
     /// is the honest limit of a GET whose body carries nothing.
     pub fn scrobble(&self, rating_key: &str) -> bool {
-        self.get_ok(&format!("/:/scrobble?key={rating_key}&identifier=com.plexapp.plugins.library"))
+        self.get_ok(&format!(
+            "/:/scrobble?key={rating_key}&identifier=com.plexapp.plugins.library"
+        ))
     }
 
     /// GET /:/unscrobble — mark unwatched (clears viewCount + viewOffset). Reports like
     /// [`Client::scrobble`].
     pub fn unscrobble(&self, rating_key: &str) -> bool {
-        self.get_ok(&format!("/:/unscrobble?key={rating_key}&identifier=com.plexapp.plugins.library"))
+        self.get_ok(&format!(
+            "/:/unscrobble?key={rating_key}&identifier=com.plexapp.plugins.library"
+        ))
     }
 
     /// PUT /library/parts/{id} — select the part's audio/subtitle streams SERVER-side (the
@@ -216,7 +227,10 @@ impl Client {
     pub fn direct_play_url(&self, part_key: &str, session: &str) -> StreamUrl {
         let q = QueryBuilder::new(part_key).str("X-Plex-Session-Identifier", session);
         let path = self.playback_identity(q).build();
-        StreamUrl { origin: self.origin.clone(), path: self.with_token(&path) }
+        StreamUrl {
+            origin: self.origin.clone(),
+            path: self.with_token(&path),
+        }
     }
 }
 
@@ -252,7 +266,10 @@ mod tests {
         assert_eq!(guid_type("plex://episode/abc"), Some(4));
         // an agent guid from before the plex:// scheme, and a kind with no level here: no type
         // rather than a guess
-        assert_eq!(guid_type("com.plexapp.agents.imdb://tt0083658?lang=en"), None);
+        assert_eq!(
+            guid_type("com.plexapp.agents.imdb://tt0083658?lang=en"),
+            None
+        );
         assert_eq!(guid_type("plex://artist/abc"), None);
         assert_eq!(guid_type(""), None);
     }

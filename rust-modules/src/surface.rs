@@ -63,7 +63,10 @@ static SCALE_BITS: AtomicU32 = AtomicU32::new(1.0f32.to_bits());
 /// [`viewport`], [`scale`] and the two pointer transforms.
 #[inline]
 fn drawable() -> (i32, i32) {
-    (DRAWABLE_W.load(Ordering::Relaxed), DRAWABLE_H.load(Ordering::Relaxed))
+    (
+        DRAWABLE_W.load(Ordering::Relaxed),
+        DRAWABLE_H.load(Ordering::Relaxed),
+    )
 }
 
 /// **Uniform** logical -> physical scale: `min(dw/1920, dh/1080)`.
@@ -111,7 +114,10 @@ pub(crate) fn viewport() -> (i32, i32, i32, i32) {
 fn recompute() {
     let (dw, dh) = drawable();
     let s = (dw as f32 / LOGICAL_W).min(dh as f32 / LOGICAL_H);
-    let (w, h) = ((LOGICAL_W * s).round() as i32, (LOGICAL_H * s).round() as i32);
+    let (w, h) = (
+        (LOGICAL_W * s).round() as i32,
+        (LOGICAL_H * s).round() as i32,
+    );
     SCALE_BITS.store(s.to_bits(), Ordering::Relaxed);
     VW.store(w, Ordering::Relaxed);
     VH.store(h, Ordering::Relaxed);
@@ -174,7 +180,9 @@ pub(crate) fn probe(win: *mut c_void) {
         let p = panel.map_or("unknown".to_string(), |(w, h)| format!("{w}x{h}"));
         log(&format!(
             "surface: window={ww}x{wh} drawable={dw}x{dh} panel={p} logical={}x{} scale={:.3}",
-            LOGICAL_W as i32, LOGICAL_H as i32, scale()
+            LOGICAL_W as i32,
+            LOGICAL_H as i32,
+            scale()
         ));
         if (dw, dh) != (LOGICAL_W as i32, LOGICAL_H as i32) {
             // The plea for a bug report belongs to the TELEVISION alone: there, a drawable that is
@@ -191,7 +199,9 @@ pub(crate) fn probe(win: *mut c_void) {
             log(&format!(
                 "surface: drawable is NOT the {}x{} the UI is authored at — scaling the whole \
                  interface by {:.3}. Text will be softer than on a 1:1 surface. {tail}",
-                LOGICAL_W as i32, LOGICAL_H as i32, scale()
+                LOGICAL_W as i32,
+                LOGICAL_H as i32,
+                scale()
             ));
         }
     }
@@ -235,7 +245,11 @@ mod tests {
     /// by an integer, which is also the best case for the glyph raster.
     #[test]
     fn sixteen_by_nine_scales_uniformly_with_no_bars() {
-        for (w, h, s) in [(3840, 2160, 2.0), (7680, 4320, 4.0), (2560, 1440, 4.0 / 3.0)] {
+        for (w, h, s) in [
+            (3840, 2160, 2.0),
+            (7680, 4320, 4.0),
+            (2560, 1440, 4.0 / 3.0),
+        ] {
             with_drawable(w, h, || {
                 assert_eq!(scale(), s, "scale at {w}x{h}");
                 assert_eq!(viewport(), (0, 0, w, h), "viewport at {w}x{h}");
@@ -267,12 +281,21 @@ mod tests {
     /// otherwise the interface draws correctly and every click lands somewhere else.
     #[test]
     fn pointer_transforms_round_trip() {
-        for (w, h) in [(1920, 1080), (3840, 2160), (7680, 4320), (2560, 1080), (1440, 1080)] {
+        for (w, h) in [
+            (1920, 1080),
+            (3840, 2160),
+            (7680, 4320),
+            (2560, 1080),
+            (1440, 1080),
+        ] {
             with_drawable(w, h, || {
                 for (lx, ly) in [(0.0, 0.0), (960.0, 540.0), (1919.0, 1079.0), (137.0, 42.0)] {
                     let (px, py) = to_physical(lx, ly);
                     let (bx, by) = to_logical(px, py);
-                    assert!((bx - lx).abs() < 0.01 && (by - ly).abs() < 0.01, "{lx},{ly} at {w}x{h}");
+                    assert!(
+                        (bx - lx).abs() < 0.01 && (by - ly).abs() < 0.01,
+                        "{lx},{ly} at {w}x{h}"
+                    );
                 }
             });
         }
@@ -286,8 +309,16 @@ mod tests {
             let (vx, vy, vw, vh) = viewport();
             for (lx, ly) in [(0.0, 0.0), (1920.0, 1080.0)] {
                 let (px, py) = to_physical(lx, ly);
-                assert!(px >= vx as f32 && px <= (vx + vw) as f32, "x {px} outside {vx}..{}", vx + vw);
-                assert!(py >= vy as f32 && py <= (vy + vh) as f32, "y {py} outside {vy}..{}", vy + vh);
+                assert!(
+                    px >= vx as f32 && px <= (vx + vw) as f32,
+                    "x {px} outside {vx}..{}",
+                    vx + vw
+                );
+                assert!(
+                    py >= vy as f32 && py <= (vy + vh) as f32,
+                    "y {py} outside {vy}..{}",
+                    vy + vh
+                );
             }
         });
     }

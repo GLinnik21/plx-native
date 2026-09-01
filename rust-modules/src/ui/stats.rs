@@ -216,7 +216,11 @@ pub(crate) fn update(now: u32) {
         // would let the panel measure one list and paint another on the frame the first Load lands.
         let idle = never_played(&d, crate::player::state());
         addr_of_mut!(IDLE).write(idle);
-        drop(addr_of_mut!(ROWS).replace(if idle { device_rows() } else { rows(&d, prev, now) }));
+        drop(addr_of_mut!(ROWS).replace(if idle {
+            device_rows()
+        } else {
+            rows(&d, prev, now)
+        }));
         addr_of_mut!(PREV_FED).write((d.fed_v, d.fed_a, now));
         // the same two rates the Fed row prints, kept as a ring so the chart can show their shape
         let (rv, ra) = fed_rates(&d, prev, now).unwrap_or((0, 0));
@@ -253,7 +257,11 @@ fn header(d: &crate::player::Diag, now: u32) -> [String; 2] {
             "{} {} · {} · {os} · surface {vw}x{vh}",
             crate::plex::identity::PRODUCT,
             crate::plex::identity::VERSION,
-            if cfg!(feature = "devtriggers") { "dev" } else { "release" }
+            if cfg!(feature = "devtriggers") {
+                "dev"
+            } else {
+                "release"
+            }
         ),
         playback_line(d, now),
     ]
@@ -331,13 +339,24 @@ fn device_rows() -> Vec<Field> {
     // WHICH SET. The question every report from hardware nobody here owns opens with, and the one
     // no log a stranger can reach has ever answered. Empty when nyx did not answer — never a
     // plausible default, which is `webos::Hardware`'s own rule for the same reason.
-    let set: Vec<&str> = [hw.model.as_str(), hw.board.as_str(), hw.hw_revision.as_str()]
-        .into_iter()
-        .filter(|s| !s.is_empty())
-        .collect();
+    let set: Vec<&str> = [
+        hw.model.as_str(),
+        hw.board.as_str(),
+        hw.hw_revision.as_str(),
+    ]
+    .into_iter()
+    .filter(|s| !s.is_empty())
+    .collect();
     v.push(
-        Field::new("Set", if set.is_empty() { "unknown — nyx did not answer".to_string() } else { set.join(" · ") })
-            .fault(set.is_empty()),
+        Field::new(
+            "Set",
+            if set.is_empty() {
+                "unknown — nyx did not answer".to_string()
+            } else {
+                set.join(" · ")
+            },
+        )
+        .fault(set.is_empty()),
     );
 
     // The firmware CODENAME, which is the half the header line drops for width and the key
@@ -366,7 +385,11 @@ fn device_rows() -> Vec<Field> {
             "Decoder",
             format!(
                 "{} · {} · {}",
-                if c.hevc { format!("HEVC {}x{}", c.hevc_max.0, c.hevc_max.1) } else { "no HEVC".to_string() },
+                if c.hevc {
+                    format!("HEVC {}x{}", c.hevc_max.0, c.hevc_max.1)
+                } else {
+                    "no HEVC".to_string()
+                },
                 if c.vp9 { "VP9" } else { "no VP9" },
                 if measured { "device table" } else { "ASSUMED" },
             ),
@@ -379,7 +402,10 @@ fn device_rows() -> Vec<Field> {
     // meaning yet: it answers "did the server ever reply", which IS the failure when nothing plays.
     v.push(Field::new(
         "Server",
-        server_line(&crate::plex::serverinfo::version(), crate::plex::serverinfo::subscription()),
+        server_line(
+            &crate::plex::serverinfo::version(),
+            crate::plex::serverinfo::subscription(),
+        ),
     ));
     v
 }
@@ -409,7 +435,10 @@ fn rows(d: &crate::player::Diag, prev: (i64, i64, u32), now: u32) -> Vec<Field> 
                 (true, true) => "remux (copy)",
                 (true, false) => "transcode (re-encode)",
             },
-            server_line(&crate::plex::serverinfo::version(), crate::plex::serverinfo::subscription()),
+            server_line(
+                &crate::plex::serverinfo::version(),
+                crate::plex::serverinfo::subscription()
+            ),
         ),
     ));
     // SOURCE codec → what the Load payload actually declared. The arrow is the point: this repo's
@@ -417,13 +446,24 @@ fn rows(d: &crate::player::Diag, prev: (i64, i64, u32), now: u32) -> Vec<Field> 
     // /decision OUTPUT, and it is invisible in either half on its own.
     v.push(Field::new(
         "Video",
-        chain(crate::route::source_vcodec(), crate::route::stream_vcodec(), d.load_v_str()),
+        chain(
+            crate::route::source_vcodec(),
+            crate::route::stream_vcodec(),
+            d.load_v_str(),
+        ),
     ));
     // …and the same for audio, where `needAudio:false` is a COMPLETE explanation for silence:
     // the pipeline was never asked for any.
     v.push(
-        Field::new("Audio", chain(crate::route::source_acodec(), crate::route::stream_acodec(), d.load_a_str()))
-            .fault(d.load_a == 0 && d.load_v != 0),
+        Field::new(
+            "Audio",
+            chain(
+                crate::route::source_acodec(),
+                crate::route::stream_acodec(),
+                d.load_a_str(),
+            ),
+        )
+        .fault(d.load_a == 0 && d.load_v != 0),
     );
     // Raster, position and the two lanes' fed-PTS difference on one line — three facts about the
     // same stream. A skew that keeps growing is the audio lane starving behind the video one; a
@@ -438,7 +478,11 @@ fn rows(d: &crate::player::Diag, prev: (i64, i64, u32), now: u32) -> Vec<Field> 
                     (w, h) => format!("{w}x{h}"),
                 },
                 crate::ui::fmt::clock(d.pos_ns / 1_000_000),
-                if d.dur_ns > 0 { crate::ui::fmt::clock(d.dur_ns / 1_000_000) } else { "?".into() },
+                if d.dur_ns > 0 {
+                    crate::ui::fmt::clock(d.dur_ns / 1_000_000)
+                } else {
+                    "?".into()
+                },
                 skew(d),
             ),
         )
@@ -502,7 +546,11 @@ fn rows(d: &crate::player::Diag, prev: (i64, i64, u32), now: u32) -> Vec<Field> 
             "Feed",
             format!(
                 "{} · queue {:.1}/{:.1} · {:.2}/{:.1} MB",
-                if d.pushed_any { fed_rate(d, prev, now) } else { "NOTHING demuxed".to_string() },
+                if d.pushed_any {
+                    fed_rate(d, prev, now)
+                } else {
+                    "NOTHING demuxed".to_string()
+                },
                 mb_f(d.aq_video),
                 mb_f(cv),
                 mb_f(d.aq_audio),
@@ -515,8 +563,11 @@ fn rows(d: &crate::player::Diag, prev: (i64, i64, u32), now: u32) -> Vec<Field> 
     // two seconds and damning at four minutes, and only this row can tell them apart. The feed
     // state rides along because it is the sentence that says WHY the count is not moving.
     v.push(
-        Field::new("Frames", format!("{} · {}", frames_str(d, now), d.feed_state_str()))
-            .fault(!d.seen_frame && d.load_completed && since(d.load_at, now) > STALL_MS),
+        Field::new(
+            "Frames",
+            format!("{} · {}", frames_str(d, now), d.feed_state_str()),
+        )
+        .fault(!d.seen_frame && d.load_completed && since(d.load_at, now) > STALL_MS),
     );
     v
 }
@@ -534,7 +585,11 @@ fn plane_line(d: &crate::player::Diag) -> (String, bool) {
     };
     match d.vp_mode {
         crate::player::VP_EXPORTED => {
-            let win = if d.window_id.is_empty() { "NO WINDOW".to_string() } else { d.window_id.clone() };
+            let win = if d.window_id.is_empty() {
+                "NO WINDOW".to_string()
+            } else {
+                d.window_id.clone()
+            };
             // `rv == 0` is "the seam had no window or no symbol", NOT "SDL refused" — worded so a
             // reader is not sent looking for a rejection that never happened.
             let placed = match d.place_rv {
@@ -548,12 +603,15 @@ fn plane_line(d: &crate::player::Diag) -> (String, bool) {
             )
         }
         crate::player::VP_ACB => (
-            format!("{mode} · {}", match (d.acb_ok, d.stage) {
-                (false, _) => "NOT AVAILABLE",
-                (true, 0) => "init'd · NOT bound",
-                (true, 1) => "bind sent",
-                _ => "streaming",
-            }),
+            format!(
+                "{mode} · {}",
+                match (d.acb_ok, d.stage) {
+                    (false, _) => "NOT AVAILABLE",
+                    (true, 0) => "init'd · NOT bound",
+                    (true, 1) => "bind sent",
+                    _ => "streaming",
+                }
+            ),
             !d.acb_ok,
         ),
         // `VP_NONE` and anything unrecognised: there is no video path at all, which is always a
@@ -646,7 +704,11 @@ fn abr_link(d: &crate::player::Diag) -> String {
         return "waiting for first measurement".to_string();
     }
     let mut s = if d.abr_safe_kbps >= 0 {
-        format!("safe {} · measured {}", abr_rate(d.abr_safe_kbps), abr_rate(d.abr_net_kbps))
+        format!(
+            "safe {} · measured {}",
+            abr_rate(d.abr_safe_kbps),
+            abr_rate(d.abr_net_kbps)
+        )
     } else {
         format!("measured {}", abr_rate(d.abr_net_kbps))
     };
@@ -693,7 +755,10 @@ fn abr_server_load(d: &crate::player::Diag) -> String {
     }
     let mut s = format!("{:.2}x measured", d.abr_ratio_pm as f64 / 1_000.0);
     if d.abr_pred_pm >= 0 {
-        s.push_str(&format!(" · {:.2}x predicted", d.abr_pred_pm as f64 / 1_000.0));
+        s.push_str(&format!(
+            " · {:.2}x predicted",
+            d.abr_pred_pm as f64 / 1_000.0
+        ));
     }
     s
 }
@@ -706,7 +771,9 @@ fn abr_server_load(d: &crate::player::Diag) -> String {
 /// printed `unknown raster` on the one surface whose whole purpose is being photographed by someone
 /// diagnosing a television nobody here owns.
 fn abr_raster(kbps: i64) -> &'static str {
-    let Ok(kbps) = u32::try_from(kbps) else { return "unknown raster" };
+    let Ok(kbps) = u32::try_from(kbps) else {
+        return "unknown raster";
+    };
     let Some(rung) = crate::abr::LADDER.iter().find(|r| r.kbps() == kbps) else {
         return "unknown raster";
     };
@@ -791,8 +858,7 @@ fn abr_decision(d: &crate::player::Diag) -> String {
         // three out of what? The score's maximum is a property of the composition
         // (`abr::RISK_SCORE_MAX`, 40 + 20 + 30) and is read from there rather than written as 90
         // here, so the panel cannot go on dividing by a number a coefficient has moved past.
-        let pct = d.abr_risk.saturating_mul(100)
-            / i64::from(crate::abr::RISK_SCORE_MAX).max(1);
+        let pct = d.abr_risk.saturating_mul(100) / i64::from(crate::abr::RISK_SCORE_MAX).max(1);
         s.push_str(&format!(" · risk {pct}%"));
     }
     if let Some(why) = abr_why_text(d.abr_why) {
@@ -889,8 +955,16 @@ fn skew_bad(d: &crate::player::Diag) -> bool {
 /// collapsed when it equals the source, so a direct play reads `h264 → H264` and only a real
 /// server-side transform costs the extra arrow.
 fn chain(src: String, sent: String, payload: &str) -> String {
-    let src = if src.is_empty() { "—".to_string() } else { src };
-    let sent = if sent.is_empty() { "—".to_string() } else { sent };
+    let src = if src.is_empty() {
+        "—".to_string()
+    } else {
+        src
+    };
+    let sent = if sent.is_empty() {
+        "—".to_string()
+    } else {
+        sent
+    };
     if src == sent {
         format!("{src} → {payload}")
     } else {
@@ -1035,7 +1109,11 @@ pub(crate) fn draw() {
     }
     // the verdict — the one line that says what the pipeline thinks it is doing
     if let Ok(cs) = CString::new(head[1].as_str()) {
-        let ink = if head[1].starts_with("Playback error") { theme::DANGER } else { theme::TEXT_PRIMARY };
+        let ink = if head[1].starts_with("Playback error") {
+            theme::DANGER
+        } else {
+            theme::TEXT_PRIMARY
+        };
         Label::new(cs.as_ptr(), theme::size::BODY, ink)
             .bold()
             .draw(p, Rect::new(inner, frame.y + 80.0, iw, 30.0));
@@ -1043,7 +1121,11 @@ pub(crate) fn draw() {
 
     let top = frame.y + HEAD_H;
     let rows = unsafe { &*addr_of_mut!(ROWS) };
-    FieldList::new(rows, Rect::new(inner, top, FIELD_COL_W, frame.h - HEAD_H - PAD)).draw(&e, p);
+    FieldList::new(
+        rows,
+        Rect::new(inner, top, FIELD_COL_W, frame.h - HEAD_H - PAD),
+    )
+    .draw(&e, p);
 
     // The chart sits in the band `panel_rect` reserved for it, under the rows. Its top is measured
     // from the SAME line count the list drew with, so a wrapped row pushes it down instead of
@@ -1053,7 +1135,15 @@ pub(crate) fn draw() {
         return;
     }
     let cy = top + FieldList::height(FieldList::wrapped_line_count(rows, FIELD_COL_W));
-    draw_chart(p, Rect::new(inner, cy, FIELD_COL_W, (frame.y + frame.h - PAD - cy).max(0.0)));
+    draw_chart(
+        p,
+        Rect::new(
+            inner,
+            cy,
+            FIELD_COL_W,
+            (frame.y + frame.h - PAD - cy).max(0.0),
+        ),
+    );
 }
 
 /// The fed-rate chart: one bar per sample, video over audio, sharing a y scale so the two lanes are
@@ -1067,22 +1157,45 @@ fn draw_chart(p: Painter, r: Rect) {
     if r.h < 40.0 {
         return;
     }
-    let (hv, ha, head) =
-        unsafe { (*addr_of_mut!(HIST_V), *addr_of_mut!(HIST_A), addr_of_mut!(HIST_HEAD).read()) };
+    let (hv, ha, head) = unsafe {
+        (
+            *addr_of_mut!(HIST_V),
+            *addr_of_mut!(HIST_A),
+            addr_of_mut!(HIST_HEAD).read(),
+        )
+    };
     // ONE scale for both lanes, or a dead audio lane would be rescaled back up to look busy.
-    let peak = hv.iter().chain(ha.iter()).copied().max().unwrap_or(0).max(1) as f32;
+    let peak = hv
+        .iter()
+        .chain(ha.iter())
+        .copied()
+        .max()
+        .unwrap_or(0)
+        .max(1) as f32;
 
     let lab_h = 22.0;
-    if let Ok(cs) = CString::new(format!("FEED RATE — LAST {}s", HIST_N * SAMPLE_MS as usize / 1000)) {
+    if let Ok(cs) = CString::new(format!(
+        "FEED RATE — LAST {}s",
+        HIST_N * SAMPLE_MS as usize / 1000
+    )) {
         Label::new(cs.as_ptr(), theme::size::CAPTION, theme::TEXT_TERTIARY)
             .bold()
             .draw(p, Rect::new(r.x, r.y, r.w, lab_h));
     }
     let band = ((r.h - lab_h) * 0.5 - 4.0).max(8.0);
-    for (i, (hist, tint)) in [(&hv, theme::TEXT_PRIMARY), (&ha, theme::RESUME_FILL)].into_iter().enumerate() {
+    for (i, (hist, tint)) in [(&hv, theme::TEXT_PRIMARY), (&ha, theme::RESUME_FILL)]
+        .into_iter()
+        .enumerate()
+    {
         let by = r.y + lab_h + i as f32 * (band + 4.0);
         // the ground, so a run of zeroes reads as a gap in a bar row rather than as blank panel
-        p.rect(Rect::new(r.x, by + band - 1.0, r.w, 1.0), 0.0, theme::TEXT_TERTIARY, theme::TEXT_TERTIARY, 0.0);
+        p.rect(
+            Rect::new(r.x, by + band - 1.0, r.w, 1.0),
+            0.0,
+            theme::TEXT_TERTIARY,
+            theme::TEXT_TERTIARY,
+            0.0,
+        );
         let bw = r.w / HIST_N as f32;
         for k in 0..HIST_N {
             // oldest first: `head` is where the NEXT sample lands, so it is also the oldest slot
@@ -1091,7 +1204,13 @@ fn draw_chart(p: Painter, r: Rect) {
             if bh < 1.0 {
                 continue;
             }
-            p.rect(Rect::new(r.x + k as f32 * bw, by + band - bh, (bw - 1.0).max(1.0), bh), 0.0, tint, tint, 0.0);
+            p.rect(
+                Rect::new(r.x + k as f32 * bw, by + band - bh, (bw - 1.0).max(1.0), bh),
+                0.0,
+                tint,
+                tint,
+                0.0,
+            );
         }
     }
 }
@@ -1108,11 +1227,27 @@ mod tests {
         // Every video-plane shape and every Auto shape: the exported path states more about the
         // plane than ACB does, and Auto trades the FFmpeg row for its five model rows — neither
         // may change the budget.
-        for vp in [crate::player::VP_ACB, crate::player::VP_EXPORTED, crate::player::VP_NONE] {
-            for abr_mode in [0, crate::player::ABR_MODE_ORIGINAL, crate::player::ABR_MODE_HLS] {
-                let d = crate::player::Diag { vp_mode: vp, abr_mode, ..Default::default() };
+        for vp in [
+            crate::player::VP_ACB,
+            crate::player::VP_EXPORTED,
+            crate::player::VP_NONE,
+        ] {
+            for abr_mode in [
+                0,
+                crate::player::ABR_MODE_ORIGINAL,
+                crate::player::ABR_MODE_HLS,
+            ] {
+                let d = crate::player::Diag {
+                    vp_mode: vp,
+                    abr_mode,
+                    ..Default::default()
+                };
                 let v = rows(&d, (0, 0, 0), 1_000);
-                assert!(v.len() <= PANEL_ROWS, "vp={vp} abr={abr_mode}: {} rows", v.len());
+                assert!(
+                    v.len() <= PANEL_ROWS,
+                    "vp={vp} abr={abr_mode}: {} rows",
+                    v.len()
+                );
             }
         }
     }
@@ -1163,9 +1298,17 @@ mod tests {
             ..Default::default()
         };
         for f in rows(&d, (4_400, 4_000, 500), 1_000) {
-            let Some(val) = f.val.as_deref() else { continue };
+            let Some(val) = f.val.as_deref() else {
+                continue;
+            };
             let lines = crate::ui::widgets::value_lines(val, FIELD_COL_W);
-            assert_eq!(lines.len(), 1, "`{}` wraps to {} lines: {val}", f.key, lines.len());
+            assert_eq!(
+                lines.len(),
+                1,
+                "`{}` wraps to {} lines: {val}",
+                f.key,
+                lines.len()
+            );
         }
     }
 
@@ -1180,12 +1323,25 @@ mod tests {
         // Every non-idle state keeps the pipeline block, including the two that precede a Load and
         // so still have `load_at == 0` — those are where "Load waiting · no connection" is the
         // answer, not a decoy.
-        for st in [S::Resolving, S::Connecting, S::Buffering, S::Seeking, S::Playing, S::Error] {
+        for st in [
+            S::Resolving,
+            S::Connecting,
+            S::Buffering,
+            S::Seeking,
+            S::Playing,
+            S::Error,
+        ] {
             assert!(!never_played(&fresh, st), "{st:?} is a playback attempt");
         }
         // …and back at Idle after something HAS played, the post-mortem is the point.
-        let played = crate::player::Diag { load_at: 4_200, ..Default::default() };
-        assert!(!never_played(&played, S::Idle), "a finished session keeps its pipeline rows");
+        let played = crate::player::Diag {
+            load_at: 4_200,
+            ..Default::default()
+        };
+        assert!(
+            !never_played(&played, S::Idle),
+            "a finished session keeps its pipeline rows"
+        );
     }
 
     /// The device block obeys the same one-line rule as the pipeline block, and says what it does
@@ -1197,21 +1353,41 @@ mod tests {
         let v = device_rows();
         assert!(v.len() <= PANEL_ROWS, "{} rows", v.len());
         for f in &v {
-            let Some(val) = f.val.as_deref() else { continue };
+            let Some(val) = f.val.as_deref() else {
+                continue;
+            };
             let lines = crate::ui::widgets::value_lines(val, FIELD_COL_W);
-            assert_eq!(lines.len(), 1, "`{}` wraps to {} lines: {val}", f.key, lines.len());
+            assert_eq!(
+                lines.len(),
+                1,
+                "`{}` wraps to {} lines: {val}",
+                f.key,
+                lines.len()
+            );
         }
-        let val = |key: &str| v.iter().find(|f| f.key == key).and_then(|f| f.val.clone()).unwrap_or_default();
+        let val = |key: &str| {
+            v.iter()
+                .find(|f| f.key == key)
+                .and_then(|f| f.val.clone())
+                .unwrap_or_default()
+        };
         // Unprobed is UNKNOWN, not a plausible default — and it is a fault, because a report whose
         // set cannot be named is a report that cannot be acted on.
         assert!(val("Set").starts_with("unknown"), "Set = {}", val("Set"));
         assert!(
-            v.iter().find(|f| f.key == "Set").map(|f| f.tone == crate::ui::widgets::Tone::Fault).unwrap_or(false),
+            v.iter()
+                .find(|f| f.key == "Set")
+                .map(|f| f.tone == crate::ui::widgets::Tone::Fault)
+                .unwrap_or(false),
             "an unnamed set is a fault"
         );
         // THE POINT of `devcaps::measured`: with no table read, the row must not print this
         // project's dev-set profile as though it had measured the reporter's television.
-        assert!(val("Decoder").contains("ASSUMED"), "Decoder = {}", val("Decoder"));
+        assert!(
+            val("Decoder").contains("ASSUMED"),
+            "Decoder = {}",
+            val("Decoder")
+        );
     }
 
     /// The device card is SHORTER and has no chart. Both come off one sampled flag, so the measure
@@ -1232,7 +1408,10 @@ mod tests {
             drop(addr_of_mut!(ROWS).replace(saved_rows));
             addr_of_mut!(IDLE).write(saved_idle);
 
-            assert!(device_h < pipeline_h, "device {device_h} not shorter than pipeline {pipeline_h}");
+            assert!(
+                device_h < pipeline_h,
+                "device {device_h} not shorter than pipeline {pipeline_h}"
+            );
             // Exactly the chart band plus the rows the floor would have reserved but the content
             // does not fill — no fudge factor, which is what makes this an assertion about the
             // layout rule rather than about a number somebody measured once.
@@ -1249,7 +1428,11 @@ mod tests {
     fn a_dead_session_marks_its_faults() {
         // `load_at` a full stall-window in the past: a Load that completed SECONDS ago with no
         // frame is the fault. The same session one tick after Load is NOT — see the test below.
-        let d = crate::player::Diag { load_completed: true, load_at: 1_000, ..Default::default() };
+        let d = crate::player::Diag {
+            load_completed: true,
+            load_at: 1_000,
+            ..Default::default()
+        };
         let v = rows(&d, (0, 0, 0), 1_000 + STALL_MS + 1);
         let faults: Vec<_> = v
             .iter()
@@ -1259,7 +1442,10 @@ mod tests {
         // One row per thing that did not happen: no video path, a Load with no callbacks, nothing
         // demuxed or fed, and no frame long after the Load completed.
         for expect in ["Plane", "Pipeline", "Feed", "Frames"] {
-            assert!(faults.contains(&expect), "{expect} should read as a fault; got {faults:?}");
+            assert!(
+                faults.contains(&expect),
+                "{expect} should read as a fault; got {faults:?}"
+            );
         }
     }
 
@@ -1278,8 +1464,15 @@ mod tests {
         // (the overscan side margin) while its y is `MARGIN`, and a copy here would have kept
         // spelling 60 for both.
         let p = panel_rect();
-        assert!(p.x + p.w < SCR_W, "panel is wider than the screen: {}", p.x + p.w);
-        assert!(crate::ui::consts::inside_safe(p), "the read-out is photographed — it must clear the overscan frame");
+        assert!(
+            p.x + p.w < SCR_W,
+            "panel is wider than the screen: {}",
+            p.x + p.w
+        );
+        assert!(
+            crate::ui::consts::inside_safe(p),
+            "the read-out is photographed — it must clear the overscan frame"
+        );
     }
 
     /// **The chart used to be deletable by a green suite.** `draw_chart` returns silently below
@@ -1288,9 +1481,21 @@ mod tests {
     /// `panel_rect` now; this grades that the reservation actually survives to the draw.
     #[test]
     fn the_chart_keeps_its_band_whatever_the_rows_do() {
-        for vp in [crate::player::VP_ACB, crate::player::VP_EXPORTED, crate::player::VP_NONE] {
-            for abr_mode in [0, crate::player::ABR_MODE_ORIGINAL, crate::player::ABR_MODE_HLS] {
-                let d = crate::player::Diag { vp_mode: vp, abr_mode, ..Default::default() };
+        for vp in [
+            crate::player::VP_ACB,
+            crate::player::VP_EXPORTED,
+            crate::player::VP_NONE,
+        ] {
+            for abr_mode in [
+                0,
+                crate::player::ABR_MODE_ORIGINAL,
+                crate::player::ABR_MODE_HLS,
+            ] {
+                let d = crate::player::Diag {
+                    vp_mode: vp,
+                    abr_mode,
+                    ..Default::default()
+                };
                 let v = rows(&d, (0, 0, 0), 1_000);
                 // Exactly `panel_rect`'s arithmetic and `draw`'s, so the assertion is about the
                 // band the chart actually gets rather than about a restatement that could agree
@@ -1298,7 +1503,10 @@ mod tests {
                 let lines = FieldList::wrapped_line_count(&v, FIELD_COL_W);
                 let h = HEAD_H + FieldList::height(lines.max(PANEL_ROWS)) + CHART_H + PAD;
                 let band = h - PAD - HEAD_H - FieldList::height(lines);
-                assert!(band >= 40.0, "vp={vp} abr={abr_mode}: chart band is {band}px, it would not draw");
+                assert!(
+                    band >= 40.0,
+                    "vp={vp} abr={abr_mode}: chart band is {band}px, it would not draw"
+                );
             }
         }
     }
@@ -1311,7 +1519,11 @@ mod tests {
     #[test]
     fn the_model_block_states_every_input_it_decides_on() {
         let val = |v: &[Field], key: &str| {
-            v.iter().find(|f| f.key == key).and_then(|f| f.val.as_deref()).unwrap_or("missing").to_string()
+            v.iter()
+                .find(|f| f.key == key)
+                .and_then(|f| f.val.as_deref())
+                .unwrap_or("missing")
+                .to_string()
         };
         let build = |d: &crate::player::Diag| {
             let mut v = Vec::new();
@@ -1334,7 +1546,10 @@ mod tests {
         };
         let v = build(&original);
         assert_eq!(val(&v, "Quality"), "Original · source 11.4 Mbps");
-        assert_eq!(val(&v, "Link"), "safe 3.8 Mbps · measured 4.0 Mbps ±18% · n=5");
+        assert_eq!(
+            val(&v, "Link"),
+            "safe 3.8 Mbps · measured 4.0 Mbps ±18% · n=5"
+        );
         // Level, direction and horizon: the buffer is DYNAMICS, and the fallback rule is written
         // in the third of those three numbers.
         assert_eq!(val(&v, "Buffer"), "2.8 s · -0.9 s/s · starves in 3 s");
@@ -1388,11 +1603,20 @@ mod tests {
         };
         let v = build(&hls);
         // Current AND what the model would pick — the pair is the point.
-        assert_eq!(val(&v, "Quality"), "HLS 4.0 Mbps · 720p → best 10.0 Mbps · 1080p");
-        assert_eq!(val(&v, "Link"), "safe 11.0 Mbps · measured 12.4 Mbps ±20% · n=7");
+        assert_eq!(
+            val(&v, "Quality"),
+            "HLS 4.0 Mbps · 720p → best 10.0 Mbps · 1080p"
+        );
+        assert_eq!(
+            val(&v, "Link"),
+            "safe 11.0 Mbps · measured 12.4 Mbps ±20% · n=7"
+        );
         assert_eq!(val(&v, "Buffer"), "6.2 s · +0.1 s/s · no deficit");
         assert_eq!(val(&v, "Server load"), "0.42x measured · 0.90x predicted");
-        assert_eq!(val(&v, "Decision"), "changed up to 4.0 Mbps · risk 0% · link has room");
+        assert_eq!(
+            val(&v, "Decision"),
+            "changed up to 4.0 Mbps · risk 0% · link has room"
+        );
 
         // Every actuator on the ladder names its raster, including the ones added after this panel
         // was written — the failure mode is a photograph reading `unknown raster`.
@@ -1403,7 +1627,10 @@ mod tests {
                 abr_optimal_kbps: -1,
                 ..Default::default()
             };
-            assert!(!val(&build(&probe), "Quality").contains("unknown"), "{rung:?} has no raster name");
+            assert!(
+                !val(&build(&probe), "Quality").contains("unknown"),
+                "{rung:?} has no raster name"
+            );
         }
 
         let probing = crate::player::Diag {
@@ -1419,14 +1646,20 @@ mod tests {
             abr_action: crate::player::ABR_ACTION_RECOVER_ORIGINAL,
             ..Default::default()
         };
-        assert_eq!(val(&build(&recovering), "Decision"), "switching back to Original");
+        assert_eq!(
+            val(&build(&recovering), "Decision"),
+            "switching back to Original"
+        );
 
         // A fixed rung has no model at all — the block collapses to the one fact worth a row.
         let fixed = build(&crate::player::Diag::default());
         assert_eq!(fixed.len(), 1);
         assert_eq!(fixed[0].key, "FFmpeg");
         for absent in ["Quality", "Link", "Buffer", "Server load", "Decision"] {
-            assert!(!fixed.iter().any(|f| f.key == absent), "{absent} must not draw without Auto");
+            assert!(
+                !fixed.iter().any(|f| f.key == absent),
+                "{absent} must not draw without Auto"
+            );
         }
     }
 
@@ -1438,8 +1671,8 @@ mod tests {
     /// again, shrink the type instead.
     #[test]
     fn it_leaves_most_of_the_picture_visible() {
-        let a = (FIELD_COL_W + 2.0 * PAD)
-            * (HEAD_H + FieldList::height(PANEL_ROWS) + CHART_H + PAD);
+        let a =
+            (FIELD_COL_W + 2.0 * PAD) * (HEAD_H + FieldList::height(PANEL_ROWS) + CHART_H + PAD);
         let pct = 100.0 * a / (SCR_W * SCR_H);
         // One column at 30px rows costs about 27% where two at 36px cost 34%. The ceiling stays
         // where it was rather than being tightened onto today's number: a row added tomorrow
@@ -1456,7 +1689,7 @@ mod tests {
             load_completed: true,
             pushed_any: true,
             fed_v: 5_000,
-            fed_a: 4_000,          // large, and unmoved since the previous sample
+            fed_a: 4_000, // large, and unmoved since the previous sample
             fed_v_pts: 60_000_000_000,
             fed_a_pts: 30_000_000_000, // 30 s behind
             ..Default::default()
@@ -1464,14 +1697,21 @@ mod tests {
         let v = rows(&d, (4_400, 4_000, 500), 1_000);
         let feed = v.iter().find(|f| f.key == "Feed").expect("Feed row");
         let val = feed.val.as_deref().unwrap_or_default();
-        assert!(val.contains("1200 fps · 0/s"), "the rate must show the dead lane: {val}");
+        assert!(
+            val.contains("1200 fps · 0/s"),
+            "the rate must show the dead lane: {val}"
+        );
 
         // The skew rides the Frame row — same stream, and it is read beside the raster and the
         // position rather than as a number on its own.
         let frame = v.iter().find(|f| f.key == "Frame").expect("Frame row");
         let fv = frame.val.as_deref().unwrap_or_default();
         assert!(fv.contains("A/V +30.0 s"), "{fv}");
-        assert_eq!(frame.tone, crate::ui::widgets::Tone::Fault, "30 s of skew is a fault");
+        assert_eq!(
+            frame.tone,
+            crate::ui::widgets::Tone::Fault,
+            "30 s of skew is a fault"
+        );
     }
 
     /// The clock is what makes "no frames" mean something. One tick after `loadCompleted` a
@@ -1483,15 +1723,27 @@ mod tests {
         // test below toggles under this same lock — without it, this test can observe the paused
         // branch ("none yet") where it asserts the running clock ("none in 0 s") and flake.
         let _g = crate::testlock::serial();
-        let d = crate::player::Diag { load_completed: true, load_at: 1_000, ..Default::default() };
+        let d = crate::player::Diag {
+            load_completed: true,
+            load_at: 1_000,
+            ..Default::default()
+        };
         let fresh = rows(&d, (0, 0, 0), 1_100);
         let f = fresh.iter().find(|f| f.key == "Frames").unwrap();
-        assert_ne!(f.tone, crate::ui::widgets::Tone::Fault, "0.1 s after Load is not a stall");
+        assert_ne!(
+            f.tone,
+            crate::ui::widgets::Tone::Fault,
+            "0.1 s after Load is not a stall"
+        );
         assert!(f.val.as_deref().unwrap().starts_with("none in 0 s"));
 
         let stalled = rows(&d, (0, 0, 0), 1_000 + STALL_MS + 4_000);
         let f = stalled.iter().find(|f| f.key == "Frames").unwrap();
-        assert_eq!(f.tone, crate::ui::widgets::Tone::Fault, "12 s after Load with no frame IS");
+        assert_eq!(
+            f.tone,
+            crate::ui::widgets::Tone::Fault,
+            "12 s after Load with no frame IS"
+        );
         assert!(f.val.as_deref().unwrap().starts_with("none in 12 s"));
     }
 
@@ -1502,7 +1754,11 @@ mod tests {
     fn a_paused_stream_does_not_report_its_frames_as_frozen() {
         let _g = crate::testlock::serial();
         let d = crate::player::Diag {
-            load_completed: true, seen_frame: true, frames: 190, frame_at: 1_000, ..Default::default()
+            load_completed: true,
+            seen_frame: true,
+            frames: 190,
+            frame_at: 1_000,
+            ..Default::default()
         };
         let long_after = 1_000 + STALL_MS + 8_000;
 
@@ -1511,9 +1767,24 @@ mod tests {
         crate::player::TX.paused.store(false, Ordering::Relaxed);
         let playing = rows(&d, (0, 0, 0), long_after);
 
-        let f = |v: &Vec<Field>| v.iter().find(|f| f.key == "Frames").unwrap().val.clone().unwrap();
-        assert!(f(&paused).starts_with("190 · "), "paused: just the count, {}", f(&paused));
-        assert!(f(&playing).contains("frozen"), "playing and not advancing IS frozen: {}", f(&playing));
+        let f = |v: &Vec<Field>| {
+            v.iter()
+                .find(|f| f.key == "Frames")
+                .unwrap()
+                .val
+                .clone()
+                .unwrap()
+        };
+        assert!(
+            f(&paused).starts_with("190 · "),
+            "paused: just the count, {}",
+            f(&paused)
+        );
+        assert!(
+            f(&playing).contains("frozen"),
+            "playing and not advancing IS frozen: {}",
+            f(&playing)
+        );
     }
 
     /// The transport row splits a class the panel could not previously see at all: no connection,
@@ -1521,12 +1792,18 @@ mod tests {
     #[test]
     fn the_http_row_splits_the_open_failures() {
         let row = |d: &crate::player::Diag| {
-            rows(d, (0, 0, 0), 1_000).into_iter().find(|f| f.key == "Pipeline").unwrap()
+            rows(d, (0, 0, 0), 1_000)
+                .into_iter()
+                .find(|f| f.key == "Pipeline")
+                .unwrap()
         };
         let none = row(&crate::player::Diag::default());
         assert!(none.val.as_deref().unwrap().ends_with("no connection"));
 
-        let refused = row(&crate::player::Diag { http_status: 401, ..Default::default() });
+        let refused = row(&crate::player::Diag {
+            http_status: 401,
+            ..Default::default()
+        });
         assert!(refused.val.as_deref().unwrap().contains("HTTP 401 · 0 B"));
         assert_eq!(refused.tone, crate::ui::widgets::Tone::Fault);
 
@@ -1546,11 +1823,17 @@ mod tests {
     /// tint — both are ordinary moments in a healthy stream; only an outright refusal is.
     #[test]
     fn the_feed_row_splits_a_dead_producer_from_a_dead_sink() {
-        let f = |st: u8| crate::player::Diag { feed_state: st, ..Default::default() };
+        let f = |st: u8| crate::player::Diag {
+            feed_state: st,
+            ..Default::default()
+        };
         assert_eq!(f(5).feed_state_str(), "queue empty (no data)");
         assert_eq!(f(2).feed_state_str(), "BufferFull (sink is full)");
         assert!(!f(5).feed_is_fault() && !f(2).feed_is_fault() && !f(4).feed_is_fault());
-        assert!(f(3).feed_is_fault(), "an outright refusal is the only fault");
+        assert!(
+            f(3).feed_is_fault(),
+            "an outright refusal is the only fault"
+        );
     }
 
     /// A latched pipeline error must survive later healthy callbacks — it is the one event that
@@ -1558,8 +1841,17 @@ mod tests {
     /// "died after a long healthy run" are different readings.
     #[test]
     fn a_latched_pipeline_error_outranks_a_healthy_callback_count() {
-        let d = crate::player::Diag { cb_count: 812, cb_err: 18, cb_err_at: 4, load_completed: true, ..Default::default() };
-        let row = rows(&d, (0, 0, 0), 1_000).into_iter().find(|f| f.key == "Pipeline").unwrap();
+        let d = crate::player::Diag {
+            cb_count: 812,
+            cb_err: 18,
+            cb_err_at: 4,
+            load_completed: true,
+            ..Default::default()
+        };
+        let row = rows(&d, (0, 0, 0), 1_000)
+            .into_iter()
+            .find(|f| f.key == "Pipeline")
+            .unwrap();
         assert!(row.val.as_deref().unwrap().contains("812 cb · ERR 18 @ 4"));
         assert_eq!(row.tone, crate::ui::widgets::Tone::Fault);
     }
@@ -1589,9 +1881,17 @@ mod tests {
     /// rather than a negative one that would read as a fault.
     #[test]
     fn a_rate_needs_two_samples_and_a_forward_clock() {
-        let d = crate::player::Diag { fed_v: 10, fed_a: 10, ..Default::default() };
+        let d = crate::player::Diag {
+            fed_v: 10,
+            fed_a: 10,
+            ..Default::default()
+        };
         assert_eq!(fed_rate(&d, (0, 0, 0), 1_000), "—", "no previous sample");
-        assert_eq!(fed_rate(&d, (0, 0, 2_000), 1_000), "—", "clock went backwards");
+        assert_eq!(
+            fed_rate(&d, (0, 0, 2_000), 1_000),
+            "—",
+            "clock went backwards"
+        );
     }
 
     /// The codec chain: a direct play collapses the middle stage, a real server transform shows
@@ -1600,9 +1900,15 @@ mod tests {
     #[test]
     fn the_codec_chain_shows_the_server_transform_only_when_there_is_one() {
         assert_eq!(chain("h264".into(), "h264".into(), "H264"), "h264 → H264");
-        assert_eq!(chain("hevc".into(), "h264".into(), "H264"), "hevc → h264 → H264");
+        assert_eq!(
+            chain("hevc".into(), "h264".into(), "H264"),
+            "hevc → h264 → H264"
+        );
         // the bug shape: the server re-encoded to h264 and we told the decoder H265
-        assert_eq!(chain("hevc".into(), "h264".into(), "H265"), "hevc → h264 → H265");
+        assert_eq!(
+            chain("hevc".into(), "h264".into(), "H265"),
+            "hevc → h264 → H265"
+        );
         // and nothing known yet must not render as blank gaps around arrows
         assert_eq!(chain(String::new(), String::new(), "—"), "— → —");
     }
@@ -1613,8 +1919,14 @@ mod tests {
     #[test]
     fn the_server_row_states_the_pass_tristate_without_guessing() {
         use crate::plex::serverinfo::Subscription as S;
-        assert_eq!(server_line("1.43.3.10861-cd85035e7", S::Yes), "1.43.3 · Plex Pass");
-        assert_eq!(server_line("1.43.3.10861-cd85035e7", S::No), "1.43.3 · no Plex Pass");
+        assert_eq!(
+            server_line("1.43.3.10861-cd85035e7", S::Yes),
+            "1.43.3 · Plex Pass"
+        );
+        assert_eq!(
+            server_line("1.43.3.10861-cd85035e7", S::No),
+            "1.43.3 · no Plex Pass"
+        );
         // fetch never landed: version and subscription are stored together, so empty = unqueried
         assert_eq!(server_line("", S::Unknown), "not yet queried");
         // answered, but a PMS old enough not to carry the field: the release alone, no claim
@@ -1640,7 +1952,10 @@ mod tests {
         // It shares the Source row now — the delivery kind and the server that produced it are one
         // sentence — so the assertion is that THAT row never carries the tint.
         let d = crate::player::Diag::default();
-        let row = rows(&d, (0, 0, 0), 1_000).into_iter().find(|f| f.key == "Source").expect("Source row");
+        let row = rows(&d, (0, 0, 0), 1_000)
+            .into_iter()
+            .find(|f| f.key == "Source")
+            .expect("Source row");
         assert_ne!(row.tone, crate::ui::widgets::Tone::Fault);
     }
 
@@ -1667,10 +1982,17 @@ mod tests {
         } else {
             assert!(line.contains("webOS "), "{line}");
         }
-        assert!(line.contains("surface "), "the identity line carries the drawable: {line}");
+        assert!(
+            line.contains("surface "),
+            "the identity line carries the drawable: {line}"
+        );
         // The verdict is a PLAYBACK state, never a firmware string — the regression this pins is
         // the firmware line being drawn where the failure reason belongs.
-        assert!(!head[1].contains("webOS"), "the verdict slot must not carry the firmware: {}", head[1]);
+        assert!(
+            !head[1].contains("webOS"),
+            "the verdict slot must not carry the firmware: {}",
+            head[1]
+        );
         assert_eq!(head[1], "Idle", "a default Diag with no session is Idle");
     }
 }

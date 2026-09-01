@@ -60,8 +60,8 @@ use crate::ui::consts::{SCR_H, SCR_W};
 use crate::ui::popover::Popover;
 use crate::ui::text_view::TextView;
 use crate::ui::theme;
-use crate::ui::widgets::KeyHint;
 use crate::ui::widgets;
+use crate::ui::widgets::KeyHint;
 use crate::ui::{Painter, Rect};
 use std::ptr::{addr_of, addr_of_mut};
 
@@ -110,7 +110,6 @@ const G_SYNOPSIS: f32 = 24.0;
 const G_TAGLINE: f32 = 20.0;
 const G_RULE: f32 = 32.0;
 const G_FOOTER: f32 = 24.0;
-
 
 // ---- the pure layout -------------------------------------------------------------------------
 
@@ -204,7 +203,11 @@ pub(crate) const fn max_panel_h() -> f32 {
 /// a gap that the drawn panel is going to spend. The floor falls out of the same expression: the
 /// first line is already in `one`, so a negative remainder still leaves it.
 pub(crate) fn syn_lines(b: Blocks) -> usize {
-    let one = stack(Blocks { synopsis: SYN_LEAD, ..b }).h;
+    let one = stack(Blocks {
+        synopsis: SYN_LEAD,
+        ..b
+    })
+    .h;
     let extra = ((max_panel_h() - one) / SYN_LEAD).floor();
     if extra.is_finite() && extra > 0.0 {
         1 + extra as usize
@@ -222,7 +225,12 @@ pub(crate) fn syn_lines(b: Blocks) -> usize {
 /// checks the pair against a 520 sheet, because 400/280 is the arithmetic, not the artefact.)
 pub(crate) fn panel_rect(content_h: f32) -> Rect {
     let h = content_h.min(max_panel_h());
-    Rect::new((SCR_W - PANEL_W) * 0.5, ((SCR_H - h) * 0.5).max(EDGE_CLEAR), PANEL_W, h)
+    Rect::new(
+        (SCR_W - PANEL_W) * 0.5,
+        ((SCR_H - h) * 0.5).max(EDGE_CLEAR),
+        PANEL_W,
+        h,
+    )
 }
 
 // ---- state -----------------------------------------------------------------------------------
@@ -305,7 +313,11 @@ pub(crate) fn draw() {
     let syn = TextView::new(&d.summary, theme::size::BODY, theme::TEXT_READING)
         .leading(SYN_LEAD)
         .max_lines(syn_lines(b));
-    b.synopsis = if d.summary.is_empty() { 0.0 } else { syn.measure_h(CONTENT_W) };
+    b.synopsis = if d.summary.is_empty() {
+        0.0
+    } else {
+        syn.measure_h(CONTENT_W)
+    };
     let s = stack(b);
     let r = panel_rect(s.h);
 
@@ -323,12 +335,26 @@ pub(crate) fn draw() {
         v.draw(p, Rect::new(cx, r.y + y, CONTENT_W, 0.0));
     };
 
-    run("ABOUT", s.eyebrow, theme::size::CAPTION, EYEBROW_LEAD, theme::TEXT_TERTIARY, true);
+    run(
+        "ABOUT",
+        s.eyebrow,
+        theme::size::CAPTION,
+        EYEBROW_LEAD,
+        theme::TEXT_TERTIARY,
+        true,
+    );
     if s.synopsis > 0.0 {
         syn.draw(p, Rect::new(cx, r.y + s.synopsis, CONTENT_W, 0.0));
     }
     if s.tagline > 0.0 {
-        run(&d.tagline, s.tagline, theme::size::CAPTION, FINE_LEAD, theme::TEXT_TERTIARY, false);
+        run(
+            &d.tagline,
+            s.tagline,
+            theme::size::CAPTION,
+            FINE_LEAD,
+            theme::TEXT_TERTIARY,
+            false,
+        );
     }
     rule(p, r, s.rule);
 
@@ -339,7 +365,11 @@ pub(crate) fn draw() {
     // answer was to keep it right, so the family has ONE footer alignment and this panel is not the
     // exception to it. Do not re-derive the centred form — `KeyHint`'s own doc offers the
     // arithmetic, and no caller wants it.
-    hint.draw(p, r.x + r.w - PAD - hint.width(), r.y + s.footer + KeyHint::height() * 0.5);
+    hint.draw(
+        p,
+        r.x + r.w - PAD - hint.width(),
+        r.y + s.footer + KeyHint::height() * 0.5,
+    );
 }
 
 /// One full-width hairline across the content column.
@@ -363,7 +393,10 @@ mod tests {
     /// above it by exactly its gap, and the panel's height closes with the bottom padding.
     #[test]
     fn the_stack_lays_the_mocks_ladder_out_in_order() {
-        let b = Blocks { synopsis: 3.0 * SYN_LEAD, tagline: FINE_LEAD };
+        let b = Blocks {
+            synopsis: 3.0 * SYN_LEAD,
+            tagline: FINE_LEAD,
+        };
         let s = stack(b);
         assert_eq!(s.eyebrow, PAD, "the first block starts at the padding");
         assert_eq!(s.synopsis, s.eyebrow + EYEBROW_LEAD + G_SYNOPSIS);
@@ -381,7 +414,12 @@ mod tests {
             "which is the same air the rule opens above it — the hint is centred in that band"
         );
         // the whole point of the mock's shape: it fits, with room to spare
-        assert!(s.h < max_panel_h(), "the reference item's panel is {} against a {} ceiling", s.h, max_panel_h());
+        assert!(
+            s.h < max_panel_h(),
+            "the reference item's panel is {} against a {} ceiling",
+            s.h,
+            max_panel_h()
+        );
     }
 
     /// **Nothing the page is already showing behind the panel is in it.** The panel is the prose,
@@ -394,7 +432,10 @@ mod tests {
     /// five steps add up to. A block spliced back in would have to move one of the two.
     #[test]
     fn the_panel_holds_the_prose_and_nothing_the_page_already_prints() {
-        let b = Blocks { synopsis: 3.0 * SYN_LEAD, tagline: FINE_LEAD };
+        let b = Blocks {
+            synopsis: 3.0 * SYN_LEAD,
+            tagline: FINE_LEAD,
+        };
         let s = stack(b);
         assert_eq!(
             s.synopsis - s.eyebrow,
@@ -403,8 +444,16 @@ mod tests {
         );
         assert_eq!(
             s.h,
-            PAD + EYEBROW_LEAD + G_SYNOPSIS + b.synopsis + G_TAGLINE + b.tagline + G_RULE + widgets::HAIRLINE_H
-                + G_FOOTER + KeyHint::height() + KeyHint::pad_below(),
+            PAD + EYEBROW_LEAD
+                + G_SYNOPSIS
+                + b.synopsis
+                + G_TAGLINE
+                + b.tagline
+                + G_RULE
+                + widgets::HAIRLINE_H
+                + G_FOOTER
+                + KeyHint::height()
+                + KeyHint::pad_below(),
             "the panel is exactly eyebrow · prose · tagline · rule · footer"
         );
     }
@@ -414,22 +463,36 @@ mod tests {
     /// reason each gap belongs to the block below it.
     #[test]
     fn an_absent_block_takes_its_gap_with_it() {
-        let full = Blocks { synopsis: SYN_LEAD, tagline: FINE_LEAD };
+        let full = Blocks {
+            synopsis: SYN_LEAD,
+            tagline: FINE_LEAD,
+        };
 
-        let no_tag = stack(Blocks { tagline: 0.0, ..full });
+        let no_tag = stack(Blocks {
+            tagline: 0.0,
+            ..full
+        });
         assert_eq!(no_tag.tagline, 0.0, "an absent block is not placed");
         assert_eq!(
             stack(full).h - no_tag.h,
             FINE_LEAD + G_TAGLINE,
             "dropping the tagline drops its own height AND its gap"
         );
-        assert_eq!(no_tag.rule, no_tag.synopsis + SYN_LEAD + G_RULE, "the rule keeps its own gap");
+        assert_eq!(
+            no_tag.rule,
+            no_tag.synopsis + SYN_LEAD + G_RULE,
+            "the rule keeps its own gap"
+        );
 
         // …and the degenerate item — no summary AND no tagline — still closes with a rule over its
         // footer rather than a keycap hanging under the eyebrow.
         let bare = stack(Blocks::default());
         assert_eq!((bare.synopsis, bare.tagline), (0.0, 0.0));
-        assert_eq!(bare.rule, PAD + EYEBROW_LEAD + G_RULE, "the footer's rule is unconditional");
+        assert_eq!(
+            bare.rule,
+            PAD + EYEBROW_LEAD + G_RULE,
+            "the footer's rule is unconditional"
+        );
         assert!(bare.footer > bare.rule);
     }
 
@@ -441,19 +504,49 @@ mod tests {
     /// cannot show none of it.
     #[test]
     fn the_synopsis_is_given_whatever_room_is_left_and_never_none() {
-        let base = Blocks { synopsis: 0.0, tagline: FINE_LEAD };
+        let base = Blocks {
+            synopsis: 0.0,
+            tagline: FINE_LEAD,
+        };
         let n = syn_lines(base);
-        assert!(n >= 3, "the reference item's ladder leaves room for a real paragraph, got {n}");
+        assert!(
+            n >= 3,
+            "the reference item's ladder leaves room for a real paragraph, got {n}"
+        );
         // the budget is exactly what fits
-        assert!(stack(Blocks { synopsis: n as f32 * SYN_LEAD, ..base }).h <= max_panel_h());
-        assert!(stack(Blocks { synopsis: (n + 1) as f32 * SYN_LEAD, ..base }).h > max_panel_h());
+        assert!(
+            stack(Blocks {
+                synopsis: n as f32 * SYN_LEAD,
+                ..base
+            })
+            .h <= max_panel_h()
+        );
+        assert!(
+            stack(Blocks {
+                synopsis: (n + 1) as f32 * SYN_LEAD,
+                ..base
+            })
+            .h > max_panel_h()
+        );
 
         // a taller neighbouring block buys the synopsis fewer lines, monotonically
-        let taller = syn_lines(Blocks { tagline: FINE_LEAD + 4.0 * SYN_LEAD, ..base });
-        assert!(taller < n, "growing another block must cost the synopsis lines: {taller} vs {n}");
+        let taller = syn_lines(Blocks {
+            tagline: FINE_LEAD + 4.0 * SYN_LEAD,
+            ..base
+        });
+        assert!(
+            taller < n,
+            "growing another block must cost the synopsis lines: {taller} vs {n}"
+        );
 
         // and the floor holds even when the arithmetic says there is no room at all
-        assert_eq!(syn_lines(Blocks { tagline: 10_000.0, ..base }), 1);
+        assert_eq!(
+            syn_lines(Blocks {
+                tagline: 10_000.0,
+                ..base
+            }),
+            1
+        );
     }
 
     /// **What the panel costs the blur chain, pinned — because dropping the repeated blocks was
@@ -478,7 +571,10 @@ mod tests {
     #[test]
     fn the_prose_only_panel_costs_the_blur_chain_a_third_less_region() {
         // the reference item: a 3-line synopsis and a tagline
-        let b = Blocks { synopsis: 3.0 * SYN_LEAD, tagline: FINE_LEAD };
+        let b = Blocks {
+            synopsis: 3.0 * SYN_LEAD,
+            tagline: FINE_LEAD,
+        };
         let r = panel_rect(stack(b).h);
         let reg = crate::gfx::blur_region(r.x, r.y, r.w, r.h);
         let area = reg[2] * reg[3];
@@ -505,14 +601,28 @@ mod tests {
         let r = panel_rect(520.0);
         assert_eq!(r.w, PANEL_W);
         assert_eq!(r.h, 520.0);
-        assert!((r.x - 400.0).abs() < 0.001, "the mock's own left:400 falls out of centring, got {}", r.x);
-        assert!((r.y - 280.0).abs() < 0.001, "…and a 520 sheet's own top, got {}", r.y);
+        assert!(
+            (r.x - 400.0).abs() < 0.001,
+            "the mock's own left:400 falls out of centring, got {}",
+            r.x
+        );
+        assert!(
+            (r.y - 280.0).abs() < 0.001,
+            "…and a 520 sheet's own top, got {}",
+            r.y
+        );
 
         // a tall panel is clamped rather than allowed to run off the frame
         let tall = panel_rect(5_000.0);
         assert_eq!(tall.h, max_panel_h());
         assert!(tall.y >= EDGE_CLEAR - 0.001, "top edge clear: {}", tall.y);
-        assert!(tall.y + tall.h <= SCR_H - EDGE_CLEAR + 0.001, "bottom edge clear");
-        assert!(tall.x >= EDGE_CLEAR && tall.x + tall.w <= SCR_W - EDGE_CLEAR, "side edge clear");
+        assert!(
+            tall.y + tall.h <= SCR_H - EDGE_CLEAR + 0.001,
+            "bottom edge clear"
+        );
+        assert!(
+            tall.x >= EDGE_CLEAR && tall.x + tall.w <= SCR_W - EDGE_CLEAR,
+            "side edge clear"
+        );
     }
 }

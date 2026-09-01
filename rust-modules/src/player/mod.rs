@@ -19,10 +19,10 @@ mod shared;
 pub(crate) mod threads;
 
 use crate::task::MainThread;
-use shared::{Shared, SubBitmap, SubCue, Transport};
 /// one rect of an image-subtitle display set — the demuxer builds them, the HUD draws them
 pub(crate) use shared::SubRect;
 pub(crate) use shared::TrackNames;
+use shared::{Shared, SubBitmap, SubCue, Transport};
 
 /// `/tmp/plxnative-tracknames[=<audio>;<subs>]` — **stand in for the container's own track names**,
 /// which nothing off-device can read.
@@ -48,14 +48,20 @@ pub(crate) use shared::TrackNames;
 /// a compile-time `None`), so a shipped binary cannot be made to show a name that is not the
 /// file's.
 pub(crate) fn seed_dev_track_names() {
-    let Some(spec) = crate::dev::read("tracknames") else { return };
+    let Some(spec) = crate::dev::read("tracknames") else {
+        return;
+    };
     // The real subtitle names of a nine-track MP4 whose PMS record carries none — the file this
     // whole path was written against. Audio is left empty on purpose: one list is enough to
     // demonstrate, and seeding audio too would hide the `audio_descriptor` fallback the real menu
     // still uses for a track the container does not name.
     const SAMPLE: &str = ";Форс. iTunes|Форс. Jaskier песни|Форс. Red Head Sound песни|Полные iTunes|Полные Jaskier|Полные stirloo|Full|Full SDH|Повнi iTunes";
     let spec = spec.trim().to_string();
-    let spec = if spec.is_empty() { SAMPLE } else { spec.as_str() };
+    let spec = if spec.is_empty() {
+        SAMPLE
+    } else {
+        spec.as_str()
+    };
     let list = |s: &str| -> Vec<String> {
         if s.is_empty() {
             Vec::new()
@@ -158,15 +164,21 @@ pub(crate) static INPLACE_SEEK_OK: AtomicBool = AtomicBool::new(true);
 static PTYPE: AtomicI32 = AtomicI32::new(10); // g_ptype (PLAYER_TYPE_MSE)
 
 // ---- API app.rs calls (were extern "C" fns in playback.h) ----
-pub(crate) use engine::{acb_init, resume_at, start_bufferfeed, stop_bufferfeed, suspend_bufferfeed};
+pub(crate) use engine::{
+    acb_init, resume_at, start_bufferfeed, stop_bufferfeed, suspend_bufferfeed,
+};
 pub(crate) use pump::pump;
 pub(crate) use shared::PlaybackState;
 pub(crate) fn pause(mt: &MainThread) {
-    unsafe { ffi::sf_pause(mt); }
+    unsafe {
+        ffi::sf_pause(mt);
+    }
     acb_mirror_playstate(mt, false);
 } // playback_pause
 pub(crate) fn resume(mt: &MainThread) {
-    unsafe { ffi::sf_play(mt); }
+    unsafe {
+        ffi::sf_play(mt);
+    }
     acb_mirror_playstate(mt, true);
 } // playback_resume
 
@@ -190,19 +202,33 @@ fn acb_mirror_playstate(mt: &MainThread, playing: bool) {
 }
 
 // ---- transport accessors app.rs / player_hud.rs call ----
-pub(crate) fn is_started() -> bool { TX.started.load(Relaxed) }
-pub(crate) fn playpos_ns() -> i64 { SHARED.playpos_ns.load(Relaxed) }
-pub(crate) fn frames() -> i32 { SHARED.frames.load(Relaxed) }
+pub(crate) fn is_started() -> bool {
+    TX.started.load(Relaxed)
+}
+pub(crate) fn playpos_ns() -> i64 {
+    SHARED.playpos_ns.load(Relaxed)
+}
+pub(crate) fn frames() -> i32 {
+    SHARED.frames.load(Relaxed)
+}
 /// True once this SESSION has presented at least one frame. Deliberately NOT `frames() > 0`: the
 /// pump zeroes `frames` as part of applying a seek (`pump.rs`), so that expression reads "no
 /// picture" for the whole of every seek. Cleared only by `reset_session` — i.e. by a real stop or
 /// a reload, both of which do blank the video plane. See [`shared::Shared::seen_frame`].
-pub(crate) fn seen_frame() -> bool { SHARED.seen_frame.load(Relaxed) }
-pub(crate) fn duration_ns() -> i64 { SHARED.duration_ns.load(Relaxed) }
-pub(crate) fn seek_pending() -> i64 { TX.seek_to_ns.load(Relaxed) }
+pub(crate) fn seen_frame() -> bool {
+    SHARED.seen_frame.load(Relaxed)
+}
+pub(crate) fn duration_ns() -> i64 {
+    SHARED.duration_ns.load(Relaxed)
+}
+pub(crate) fn seek_pending() -> i64 {
+    TX.seek_to_ns.load(Relaxed)
+}
 /// true once the pipeline has drained to true end-of-stream (see pump's EOS check). app.rs polls
 /// this to tear the player down at the credits.
-pub(crate) fn ended() -> bool { SHARED.ended.load(Relaxed) }
+pub(crate) fn ended() -> bool {
+    SHARED.ended.load(Relaxed)
+}
 pub(crate) fn request_seek(ns: i64) {
     SHARED.ended.store(false, Relaxed); // seeking back from the end un-ends the stream
     SHARED.seeking.store(true, Relaxed); // HUD: spinner + freeze the playhead until it lands
@@ -237,14 +263,18 @@ pub(crate) fn abandon_seek() {
 }
 /// true while a seek is resolving (request → reopen/reload → prime → Play): the HUD shows a
 /// spinner and freezes the playhead at `seek_display_ns` instead of wobbling through the reopen.
-pub(crate) fn loading() -> bool { state().is_busy() }
+pub(crate) fn loading() -> bool {
+    state().is_busy()
+}
 /// true only while the pipeline is actually presenting frames — not resolving, connecting,
 /// buffering or seeking. app.rs gates the heartbeat's `pos=` field on this: on a **direct-play**
 /// resume `resume_at` only arms the seek (it does not seed `playpos_ns`, unlike the transcode
 /// branch), so the position reads 0 until the first decoded frame lands at the resume offset.
 /// Logging that pre-roll 0 would show the harness a 0→600 step and read as 600s of "climb"
 /// inside one second — a false PASS on `min_timeline_climb_s`.
-pub(crate) fn is_playing() -> bool { matches!(state(), shared::PlaybackState::Playing) }
+pub(crate) fn is_playing() -> bool {
+    matches!(state(), shared::PlaybackState::Playing)
+}
 /// The derived playback state — the ONE thing the HUD renders from. See `PlaybackState`.
 pub(crate) fn state() -> shared::PlaybackState {
     // Resolving is DERIVED here rather than stored: the pump owns `pb_state` but only runs once
@@ -464,7 +494,8 @@ pub(crate) fn error_now() -> ErrorShape {
 /// A sample PMS refusal, for the `verdict` variant of the dev trigger below. Real wording: this is
 /// the sentence a server emits when the only encoder our profile asked for is one it does not have,
 /// which is issue #22's failure with the pre-#22 single-entry target chain.
-const FAILTEST_VERDICT: &str = "Cannot convert this item. Implementation for video encoder 'hevc' not found.";
+const FAILTEST_VERDICT: &str =
+    "Cannot convert this item. Implementation for video encoder 'hevc' not found.";
 
 /// dev: `/tmp/plxnative-failtest=<arm>` — force one variant of the failure read-out.
 ///
@@ -718,7 +749,9 @@ pub(crate) fn diag() -> Diag {
     }
 }
 
-pub(crate) fn seek_display_ns() -> i64 { SHARED.seek_display_ns.load(Relaxed) }
+pub(crate) fn seek_display_ns() -> i64 {
+    SHARED.seek_display_ns.load(Relaxed)
+}
 /// The playhead the user INTENDS, which is not always the one being published: while a seek is
 /// still resolving (request → reopen → prime → Play) `playpos_ns` keeps reporting the PRE-seek
 /// spot, so anything snapshotting "where are we?" inside that window snapshots the position the
@@ -735,7 +768,11 @@ pub(crate) fn seek_display_ns() -> i64 { SHARED.seek_display_ns.load(Relaxed) }
 /// live scrub preview between them, so its expression is a superset rather than a caller.
 pub(crate) fn intended_pos_ns() -> i64 {
     let t = seek_display_ns();
-    if loading() && t >= 0 { t } else { playpos_ns() }
+    if loading() && t >= 0 {
+        t
+    } else {
+        playpos_ns()
+    }
 }
 /// request an audio-track switch (Plex audioStreamID); the pump forces a fresh
 /// transcode with that source audio at the current position next tick.
@@ -788,14 +825,18 @@ pub(crate) fn pending_transcode_refresh() -> bool {
 /// Request the main-thread HLS→Original pipeline replacement. Used by an explicit Original pick;
 /// the adaptive worker publishes through the same atomic after its source probes pass.
 pub(crate) fn request_original_recovery() {
-    SHARED.auto_recover_kbps.store(1, std::sync::atomic::Ordering::Release);
+    SHARED
+        .auto_recover_kbps
+        .store(1, std::sync::atomic::Ordering::Release);
     SHARED.pending_retranscode.store(false, Relaxed);
     SHARED.sub_cues.lock().unwrap().clear();
 }
 
 // ---- client-rendered subtitles (direct-play only; a transcode carries no subs) ----
 /// selected subtitle track index (-1 = off); the demuxer reads this per block.
-pub(crate) fn desired_sub_idx() -> i32 { SHARED.desired_sub_idx.load(Relaxed) }
+pub(crate) fn desired_sub_idx() -> i32 {
+    SHARED.desired_sub_idx.load(Relaxed)
+}
 /// select a subtitle track by index (-1 = off). Does NOT clear the cue store: the demuxer
 /// pushes cues for EVERY text track regardless of selection, so the buffered region's cues for
 /// the newly-selected track are already present and the switch shows immediately. Clearing here
@@ -824,11 +865,22 @@ pub(crate) fn push_subtitle_text(track: i32, start_ns: i64, end_ns: i64, text: S
     if cues.len() >= 512 {
         cues.remove(0);
     }
-    cues.push(SubCue { track, start_ns, end_ns, text });
+    cues.push(SubCue {
+        track,
+        start_ns,
+        end_ns,
+        text,
+    });
 }
 /// demux (D-thread) pushes a subtitle cue (content-time ns) for track `track`. Called for
 /// EVERY text track so a mid-play switch is instant; only the selected track's cues are logged.
-pub(crate) fn push_subtitle_cue(track: i32, start_ns: i64, end_ns: i64, payload: &[u8], is_ass: bool) {
+pub(crate) fn push_subtitle_cue(
+    track: i32,
+    start_ns: i64,
+    end_ns: i64,
+    payload: &[u8],
+    is_ass: bool,
+) {
     let text = sub_text(payload, is_ass);
     if text.is_empty() {
         return;
@@ -839,8 +891,12 @@ pub(crate) fn push_subtitle_cue(track: i32, start_ns: i64, end_ns: i64, payload:
         // photographed into public issue threads. `len=` answers every question the text answered
         // for triage (did a cue arrive, at what time, was it empty, is the track the right one)
         // without being viewing content.
-        log(&format!("sub cue [{}..{}ms] len={}", start_ns / 1_000_000, end_ns / 1_000_000,
-            text.chars().count()));
+        log(&format!(
+            "sub cue [{}..{}ms] len={}",
+            start_ns / 1_000_000,
+            end_ns / 1_000_000,
+            text.chars().count()
+        ));
     }
     push_subtitle_text(track, start_ns, end_ns, text);
 }
@@ -865,7 +921,13 @@ pub(crate) fn active_subtitle(now_ns: i64) -> Option<String> {
 /// `cw`/`ch` are the stream's authoring canvas (0 = the decoder never declared one) and every
 /// rect's coords are relative to it — the renderer scales the whole set into the video rect, so
 /// a 720×480 VobSub and a 1920×1080 PGS land the same size on screen.
-pub(crate) fn push_subtitle_bitmap(track: i32, start_ns: i64, cw: i32, ch: i32, rects: Vec<SubRect>) {
+pub(crate) fn push_subtitle_bitmap(
+    track: i32,
+    start_ns: i64,
+    cw: i32,
+    ch: i32,
+    rects: Vec<SubRect>,
+) {
     if rects.is_empty() {
         return;
     }
@@ -877,7 +939,14 @@ pub(crate) fn push_subtitle_bitmap(track: i32, start_ns: i64, cw: i32, ch: i32, 
     }
     let floor = SHARED.playpos_ns.load(Relaxed) - 2_000_000_000;
     v.retain(|c| c.end_ns >= floor);
-    v.push(SubBitmap { track, start_ns, end_ns: i64::MAX, cw, ch, rects });
+    v.push(SubBitmap {
+        track,
+        start_ns,
+        end_ns: i64::MAX,
+        cw,
+        ch,
+        rects,
+    });
     // Hard RAM ceiling: decoding ALL image tracks means several are buffered at once, so bound
     // the store by total RGBA bytes (not count). ~24 MB is comfortable headroom on the direct-play
     // path. A multi-rect display set counts as the sum of its rects, which is why the budget is
@@ -894,7 +963,10 @@ pub(crate) fn push_subtitle_bitmap(track: i32, start_ns: i64, cw: i32, ch: i32, 
     let mut total: usize = v.iter().map(|c| c.bytes()).sum();
     let now = SHARED.playpos_ns.load(Relaxed);
     while total > BUDGET && v.len() > 1 {
-        let i = v.iter().position(|c| c.end_ns <= now).unwrap_or(v.len() - 1);
+        let i = v
+            .iter()
+            .position(|c| c.end_ns <= now)
+            .unwrap_or(v.len() - 1);
         total -= v[i].bytes();
         v.remove(i);
     }
@@ -945,11 +1017,29 @@ fn sub_text(payload: &[u8], is_ass: bool) -> String {
     let mut ch = s.chars().peekable();
     while let Some(c) = ch.next() {
         match c {
-            '<' => while let Some(x) = ch.next() { if x == '>' { break; } },   // <i></i>
-            '{' => while let Some(x) = ch.next() { if x == '}' { break; } },   // {\an8}
+            '<' => {
+                while let Some(x) = ch.next() {
+                    if x == '>' {
+                        break;
+                    }
+                }
+            } // <i></i>
+            '{' => {
+                while let Some(x) = ch.next() {
+                    if x == '}' {
+                        break;
+                    }
+                }
+            } // {\an8}
             '\\' => match ch.peek() {
-                Some('N') | Some('n') => { ch.next(); out.push('\n'); }
-                Some('h') => { ch.next(); out.push(' '); }
+                Some('N') | Some('n') => {
+                    ch.next();
+                    out.push('\n');
+                }
+                Some('h') => {
+                    ch.next();
+                    out.push(' ');
+                }
                 _ => out.push('\\'),
             },
             '\r' => {}
@@ -994,7 +1084,10 @@ fn vclock_ms() -> u32 {
 /// viewer says is stuttering is a real and useful finding: it rules the fault OUT of everything
 /// this process can see, and sends the search to the display side.
 pub(crate) fn vplane_take() -> (u32, u32) {
-    (SHARED.dg_vpres_ct.swap(0, Relaxed), SHARED.dg_vpres_gap.swap(0, Relaxed))
+    (
+        SHARED.dg_vpres_ct.swap(0, Relaxed),
+        SHARED.dg_vpres_gap.swap(0, Relaxed),
+    )
 }
 
 /// pipeline event on the LIBRARY thread. type 0 = `PF_EVENT_TYPE_FRAMEREADY` (num = fed pts).
@@ -1035,8 +1128,14 @@ fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char) {
             SHARED.dg_cb_err.store(ty, Relaxed);
             SHARED.dg_cb_err_at.store(n, Relaxed);
         }
-        let preview = if s.is_null() { String::new() } else {
-            unsafe { CStr::from_ptr(s) }.to_string_lossy().chars().take(1400).collect()
+        let preview = if s.is_null() {
+            String::new()
+        } else {
+            unsafe { CStr::from_ptr(s) }
+                .to_string_lossy()
+                .chars()
+                .take(1400)
+                .collect()
         };
         log(&format!("smp_cb type={ty} num={num} str={preview}"));
     }
@@ -1068,8 +1167,10 @@ fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char) {
         SHARED.frames.fetch_add(1, Relaxed);
         SHARED.seen_frame.store(true, Relaxed); // session-scoped: unlike `frames`, a seek won't clear it
         SHARED.pres_fed.store(num, Relaxed); // raw fed pts, for the feed-ahead throttle
-        SHARED.playpos_ns
-            .store(num - SHARED.pts_shift.load(Relaxed) + SHARED.disp_base.load(Relaxed), Relaxed);
+        SHARED.playpos_ns.store(
+            num - SHARED.pts_shift.load(Relaxed) + SHARED.disp_base.load(Relaxed),
+            Relaxed,
+        );
     }
     if s.is_null() {
         return;
@@ -1079,16 +1180,22 @@ fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char) {
     {
         let mut mid = SHARED.media_id.lock().unwrap();
         if mid.is_none() {
-            if let Some(id) = between(b, b"\"context\":\"", b'"').or_else(|| between(b, b"\"mediaId\":\"", b'"')) {
+            if let Some(id) =
+                between(b, b"\"context\":\"", b'"').or_else(|| between(b, b"\"mediaId\":\"", b'"'))
+            {
                 if let Ok(c) = std::ffi::CString::new(id.clone()) {
-                    log(&format!("SMP context/mediaId={}", String::from_utf8_lossy(&id)));
+                    log(&format!(
+                        "SMP context/mediaId={}",
+                        String::from_utf8_lossy(&id)
+                    ));
                     *mid = Some(c);
                 }
             }
         }
     }
 
-    if !SHARED.load_completed.load(Relaxed) && (find(b, b"loadCompleted") || find(b, b"\"loaded\"")) {
+    if !SHARED.load_completed.load(Relaxed) && (find(b, b"loadCompleted") || find(b, b"\"loaded\""))
+    {
         SHARED.load_completed.store(true, Relaxed);
         log("SMP loadCompleted");
     }
@@ -1109,8 +1216,12 @@ fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char) {
 #[no_mangle]
 pub extern "C" fn acb_on_event(ev: c_long, reply: *const c_char) {
     let _ = catch_unwind(AssertUnwindSafe(|| {
-        let r = if reply.is_null() { String::new() } else {
-            unsafe { CStr::from_ptr(reply) }.to_string_lossy().into_owned()
+        let r = if reply.is_null() {
+            String::new()
+        } else {
+            unsafe { CStr::from_ptr(reply) }
+                .to_string_lossy()
+                .into_owned()
         };
         log(&format!("acb_cb ev={ev} reply={r}"));
     }));
@@ -1141,12 +1252,23 @@ mod tests {
         let was_display = SHARED.seek_display_ns.load(Relaxed);
 
         request_seek(40_000_000_000);
-        assert!(SHARED.seeking.load(Relaxed), "the requester arms the spinner");
-        assert_eq!(seek_display_ns(), 40_000_000_000, "and freezes the playhead at the target");
+        assert!(
+            SHARED.seeking.load(Relaxed),
+            "the requester arms the spinner"
+        );
+        assert_eq!(
+            seek_display_ns(),
+            40_000_000_000,
+            "and freezes the playhead at the target"
+        );
 
         abandon_seek();
         assert!(!SHARED.seeking.load(Relaxed), "giving up must disarm it");
-        assert_eq!(seek_display_ns(), -1, "a stale target would keep the playhead frozen");
+        assert_eq!(
+            seek_display_ns(),
+            -1,
+            "a stale target would keep the playhead frozen"
+        );
 
         SHARED.seeking.store(was_seeking, Relaxed);
         SHARED.seek_display_ns.store(was_display, Relaxed);
@@ -1168,31 +1290,81 @@ mod tests {
         // transcode on a known-free server: the Pass appears as a parenthetical fact on the
         // panel, as the capsule flag for the read-out…
         let e = error_shape(true, true, Sub::No, None);
-        assert!(e.caption.to_str().unwrap().contains("server sent audio only"), "{:?}", e.caption);
-        assert!(e.panel.contains("no usable video transcode target"), "{}", e.panel);
+        assert!(
+            e.caption
+                .to_str()
+                .unwrap()
+                .contains("server sent audio only"),
+            "{:?}",
+            e.caption
+        );
+        assert!(
+            e.panel.contains("no usable video transcode target"),
+            "{}",
+            e.panel
+        );
         assert!(e.panel.contains("server has no Plex Pass"), "{}", e.panel);
         assert!(e.no_pass, "the read-out draws the capsule from this flag");
         // …and never as a cause — h264 encoding is free everywhere (audit row 1). The read-out
         // reason carries no Pass words at all: the capsule line states the fact separately.
-        assert!(!e.panel.contains("cannot encode"), "causation may not be asserted: {}", e.panel);
-        assert!(!e.readout.contains("Plex Pass"), "the capsule, not prose, names the Pass: {}", e.readout);
-        assert!(e.detail.is_empty(), "only the server's own verdict fills the detail line");
+        assert!(
+            !e.panel.contains("cannot encode"),
+            "causation may not be asserted: {}",
+            e.panel
+        );
+        assert!(
+            !e.readout.contains("Plex Pass"),
+            "the capsule, not prose, names the Pass: {}",
+            e.readout
+        );
+        assert!(
+            e.detail.is_empty(),
+            "only the server's own verdict fills the detail line"
+        );
         // known-Pass'd or never-heard-from: today's wording, and no Pass blame anywhere in it
         for sub in [Sub::Yes, Sub::Unknown] {
             let e = error_shape(true, true, sub, None);
-            assert!(e.caption.to_str().unwrap().contains("server sent audio only"), "{:?}", e.caption);
-            assert!(e.panel.contains("no usable video transcode target"), "{} ({sub:?})", e.panel);
-            assert!(!e.panel.contains("Plex Pass"), "an unproven subscription must not be blamed ({sub:?})");
-            assert!(!e.no_pass, "the capsule may not appear on an unproven subscription ({sub:?})");
+            assert!(
+                e.caption
+                    .to_str()
+                    .unwrap()
+                    .contains("server sent audio only"),
+                "{:?}",
+                e.caption
+            );
+            assert!(
+                e.panel.contains("no usable video transcode target"),
+                "{} ({sub:?})",
+                e.panel
+            );
+            assert!(
+                !e.panel.contains("Plex Pass"),
+                "an unproven subscription must not be blamed ({sub:?})"
+            );
+            assert!(
+                !e.no_pass,
+                "the capsule may not appear on an unproven subscription ({sub:?})"
+            );
         }
         for sub in [Sub::Unknown, Sub::No, Sub::Yes] {
             let e = error_shape(true, false, sub, None);
-            assert!(e.caption.to_str().unwrap().contains("no video in the file"), "{:?}", e.caption);
-            assert!(e.panel.contains("no video track"), "direct play blames the file, not the server");
+            assert!(
+                e.caption.to_str().unwrap().contains("no video in the file"),
+                "{:?}",
+                e.caption
+            );
+            assert!(
+                e.panel.contains("no video track"),
+                "direct play blames the file, not the server"
+            );
             assert!(!e.no_pass, "an audio-only FILE is not a subscription story");
             for transcoding in [false, true] {
                 let e = error_shape(false, transcoding, sub, None);
-                assert_eq!(e.caption.to_str().unwrap(), "Playback failed", "no reason may be invented");
+                assert_eq!(
+                    e.caption.to_str().unwrap(),
+                    "Playback failed",
+                    "no reason may be invented"
+                );
                 assert_eq!(e.panel, "");
                 assert_eq!(e.readout, "");
                 assert!(e.detail.is_empty());
@@ -1213,23 +1385,48 @@ mod tests {
     #[test]
     fn a_refused_decision_quotes_the_server_and_never_names_a_subscription() {
         use crate::plex::serverinfo::Subscription as Sub;
-        const VP9: &str = "Cannot convert this item. Implementation for video encoder 'vp9' not found.";
+        const VP9: &str =
+            "Cannot convert this item. Implementation for video encoder 'vp9' not found.";
         for sub in [Sub::Unknown, Sub::No, Sub::Yes] {
             // graded with `no_video`/`transcoding` BOTH set — the arm that would otherwise win
             let e = error_shape(true, true, sub, Some(VP9));
-            assert_eq!(e.readout, "The server cannot play or convert this file", "({sub:?})");
-            assert_eq!(e.detail, VP9, "the server's sentence is reproduced unedited ({sub:?})");
-            assert!(!e.no_pass, "no capsule on this arm, ever — the server named the cause ({sub:?})");
-            assert!(!e.readout.contains("Plex Pass") && !e.panel.contains("Plex Pass"), "({sub:?})");
-            assert!(e.caption.to_str().unwrap().starts_with("Playback failed"), "{:?}", e.caption);
+            assert_eq!(
+                e.readout, "The server cannot play or convert this file",
+                "({sub:?})"
+            );
+            assert_eq!(
+                e.detail, VP9,
+                "the server's sentence is reproduced unedited ({sub:?})"
+            );
+            assert!(
+                !e.no_pass,
+                "no capsule on this arm, ever — the server named the cause ({sub:?})"
+            );
+            assert!(
+                !e.readout.contains("Plex Pass") && !e.panel.contains("Plex Pass"),
+                "({sub:?})"
+            );
+            assert!(
+                e.caption.to_str().unwrap().starts_with("Playback failed"),
+                "{:?}",
+                e.caption
+            );
         }
         // an HEVC verdict on a server PROVEN to have no Pass is the temptation, and still no capsule
-        let e = error_shape(false, true, Sub::No, Some("Implementation for video encoder 'hevc' not found."));
+        let e = error_shape(
+            false,
+            true,
+            Sub::No,
+            Some("Implementation for video encoder 'hevc' not found."),
+        );
         assert!(!e.no_pass);
         // a server that refused without saying why: the reason still lands, the quote line does not
         let e = error_shape(false, true, Sub::No, Some(""));
         assert_eq!(e.readout, "The server cannot play or convert this file");
-        assert!(e.detail.is_empty(), "an empty verdict draws no quote line at all");
+        assert!(
+            e.detail.is_empty(),
+            "an empty verdict draws no quote line at all"
+        );
     }
 
     /// **The subscription the read-out states is the FAILING ITEM's server's, not the current
@@ -1263,9 +1460,13 @@ mod tests {
         }
         let g = crate::testlock::serial();
         crate::plex::reset_servers_for_test();
-        let _fresh = Fresh { _g: g, sid: crate::route::swap_cur_sid_for_test(crate::plex::ServerId::UNSET) };
+        let _fresh = Fresh {
+            _g: g,
+            sid: crate::route::swap_cur_sid_for_test(crate::plex::ServerId::UNSET),
+        };
 
-        let reg = |m: &str, host: &str| crate::plex::register_for_test(m, host, 32400, "tok", "cid");
+        let reg =
+            |m: &str, host: &str| crate::plex::register_for_test(m, host, 32400, "tok", "cid");
         let (ours, theirs) = (reg("mach-A", "10.0.0.1"), reg("mach-B", "10.0.0.2"));
         // the slot arrays outlive `reset_servers_for_test` — start from the boot state explicitly
         store_for_test(ours, Sub::Unknown, "");
@@ -1277,16 +1478,31 @@ mod tests {
         assert!(crate::plex::set_current(ours));
 
         crate::route::swap_cur_sid_for_test(theirs);
-        assert_eq!(playing_subscription(), Sub::No, "the borrowed film's own server is the one that failed");
+        assert_eq!(
+            playing_subscription(),
+            Sub::No,
+            "the borrowed film's own server is the one that failed"
+        );
         let e = error_shape(true, true, playing_subscription(), None);
         assert!(e.no_pass, "so the read-out draws the capsule…");
-        assert!(e.panel.contains("server has no Plex Pass"), "…and the panel states the fact: {}", e.panel);
+        assert!(
+            e.panel.contains("server has no Plex Pass"),
+            "…and the panel states the fact: {}",
+            e.panel
+        );
 
         // the inverse polarity: playing from OUR Pass'd server while `current` sits on the share
         assert!(crate::plex::set_current(theirs));
         crate::route::swap_cur_sid_for_test(ours);
-        assert_eq!(playing_subscription(), Sub::Yes, "the current server's answer is not this item's");
-        assert!(!error_shape(true, true, playing_subscription(), None).no_pass, "no capsule may be invented");
+        assert_eq!(
+            playing_subscription(),
+            Sub::Yes,
+            "the current server's answer is not this item's"
+        );
+        assert!(
+            !error_shape(true, true, playing_subscription(), None).no_pass,
+            "no capsule may be invented"
+        );
 
         // before the first play there is no playing server, and "we have not heard" is the honest
         // answer — never slot 0's, and never a blamed subscription
@@ -1296,7 +1512,13 @@ mod tests {
     }
 
     fn rect(x: i32, y: i32, w: i32, h: i32) -> SubRect {
-        SubRect { x, y, w, h, rgba: vec![0u8; (w * h * 4) as usize] }
+        SubRect {
+            x,
+            y,
+            w,
+            h,
+            rgba: vec![0u8; (w * h * 4) as usize],
+        }
     }
 
     /// The image-subtitle store, exercised as a display SET rather than a single bitmap. Three
@@ -1314,18 +1536,40 @@ mod tests {
         SHARED.desired_sub_idx.store(0, Relaxed);
 
         // a two-rect set (dialogue plus a sign), authored on a DVD canvas
-        push_subtitle_bitmap(0, 1_000, 720, 480, vec![rect(60, 400, 600, 60), rect(100, 20, 200, 40)]);
+        push_subtitle_bitmap(
+            0,
+            1_000,
+            720,
+            480,
+            vec![rect(60, 400, 600, 60), rect(100, 20, 200, 40)],
+        );
         let key = active_bitmap_key(1_500).expect("the set should be active at its start");
         let (cw, ch, rects) = bitmap_by_key(key).expect("the active key must resolve");
-        assert_eq!((cw, ch), (720, 480), "the authoring canvas travels with the set");
-        assert_eq!(rects.len(), 2, "BOTH rects must survive — rect 0 only was the bug");
+        assert_eq!(
+            (cw, ch),
+            (720, 480),
+            "the authoring canvas travels with the set"
+        );
+        assert_eq!(
+            rects.len(),
+            2,
+            "BOTH rects must survive — rect 0 only was the bug"
+        );
         assert_eq!((rects[1].x, rects[1].y), (100, 20));
 
         // the next set closes the open one AT ITS OWN START — a display set stays up until the
         // one that replaces it begins, so the handover is seamless and never double-shows
         push_subtitle_bitmap(0, 5_000, 720, 480, vec![rect(60, 400, 600, 60)]);
-        assert_eq!(active_bitmap_key(4_999), Some(1_000), "the first set holds right up to the handover");
-        assert_eq!(active_bitmap_key(5_000), Some(5_000), "and the second takes over on that exact ns");
+        assert_eq!(
+            active_bitmap_key(4_999),
+            Some(1_000),
+            "the first set holds right up to the handover"
+        );
+        assert_eq!(
+            active_bitmap_key(5_000),
+            Some(5_000),
+            "and the second takes over on that exact ns"
+        );
 
         // an empty set is not a cue: it must not land and must not close what is showing
         push_subtitle_bitmap(0, 6_000, 720, 480, Vec::new());
@@ -1337,14 +1581,30 @@ mod tests {
         // arriving from the demuxer's read-ahead; what goes is the far end of that read-ahead.
         SHARED.playpos_ns.store(5_500, Relaxed);
         for i in 0..4 {
-            push_subtitle_bitmap(0, 10_000 + i, 720, 480, vec![rect(0, 0, 1024, 1024), rect(0, 0, 1024, 1024)]);
+            push_subtitle_bitmap(
+                0,
+                10_000 + i,
+                720,
+                480,
+                vec![rect(0, 0, 1024, 1024), rect(0, 0, 1024, 1024)],
+            );
         }
         let v = SHARED.sub_bitmaps.lock().unwrap();
         let total: usize = v.iter().map(|c| c.bytes()).sum();
-        assert!(total <= 24 * 1024 * 1024, "the store stayed inside its ceiling ({total} bytes)");
-        assert!(v.iter().any(|c| c.start_ns == 5_000), "the cue under the playhead was not evicted");
+        assert!(
+            total <= 24 * 1024 * 1024,
+            "the store stayed inside its ceiling ({total} bytes)"
+        );
+        assert!(
+            v.iter().any(|c| c.start_ns == 5_000),
+            "the cue under the playhead was not evicted"
+        );
         drop(v);
-        assert_eq!(active_bitmap_key(5_500), Some(5_000), "and it is still the one on screen");
+        assert_eq!(
+            active_bitmap_key(5_500),
+            Some(5_000),
+            "and it is still the one on screen"
+        );
 
         // leave the globals as they were found — `desired_sub_idx` deliberately survives a reset
         // (shared.rs), so a test that leaves it selected changes what the NEXT one sees

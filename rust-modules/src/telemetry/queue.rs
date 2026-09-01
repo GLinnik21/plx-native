@@ -236,7 +236,10 @@ pub(crate) fn decode_all(buf: &[u8]) -> Decoded {
         records.push(r);
         at = end;
     }
-    Decoded { records, dropped_bytes: buf.len() - at }
+    Decoded {
+        records,
+        dropped_bytes: buf.len() - at,
+    }
 }
 
 /// Enforce both caps and say how many went.
@@ -273,7 +276,10 @@ pub(crate) fn trim(mut records: Vec<Record>) -> (Vec<Record>, usize) {
 /// Per-category rather than wholesale, because the two switches are independent: turning off usage
 /// must not discard crash reports somebody is still consenting to send.
 pub(crate) fn purge(records: Vec<Record>, category: Category) -> Vec<Record> {
-    records.into_iter().filter(|r| r.category != category).collect()
+    records
+        .into_iter()
+        .filter(|r| r.category != category)
+        .collect()
 }
 
 /// Drop the records a send has had ACKNOWLEDGED, keeping the rest in order.
@@ -282,7 +288,10 @@ pub(crate) fn purge(records: Vec<Record>, category: Category) -> Vec<Record> {
 /// sends three and gets two accepted must not advance a cursor by three, and cannot express "the
 /// middle one failed" as a number at all.
 pub(crate) fn ack(records: Vec<Record>, accepted: &[String]) -> Vec<Record> {
-    records.into_iter().filter(|r| !accepted.contains(&r.event_id)).collect()
+    records
+        .into_iter()
+        .filter(|r| !accepted.contains(&r.event_id))
+        .collect()
 }
 
 #[cfg(test)]
@@ -299,7 +308,9 @@ mod tests {
     }
 
     fn spool(rs: &[Record]) -> Vec<u8> {
-        rs.iter().flat_map(|r| encode(r).expect("encodes")).collect()
+        rs.iter()
+            .flat_map(|r| encode(r).expect("encodes"))
+            .collect()
     }
 
     #[test]
@@ -314,7 +325,13 @@ mod tests {
     /// corruption would make every fresh install log a scary line.
     #[test]
     fn an_empty_spool_is_an_empty_queue() {
-        assert_eq!(decode_all(&[]), Decoded { records: vec![], dropped_bytes: 0 });
+        assert_eq!(
+            decode_all(&[]),
+            Decoded {
+                records: vec![],
+                dropped_bytes: 0
+            }
+        );
     }
 
     /// **THE ONE THIS FILE EXISTS FOR.** A write cut off by a power loss leaves a partial record;
@@ -336,8 +353,14 @@ mod tests {
             let mut buf = full.clone();
             buf.extend_from_slice(&third[..cut]);
             let d = decode_all(&buf);
-            assert_eq!(d.records, good, "a tail torn at {cut} bytes lost a complete record");
-            assert_eq!(d.dropped_bytes, cut, "the torn bytes were not reported at cut {cut}");
+            assert_eq!(
+                d.records, good,
+                "a tail torn at {cut} bytes lost a complete record"
+            );
+            assert_eq!(
+                d.dropped_bytes, cut,
+                "the torn bytes were not reported at cut {cut}"
+            );
         }
     }
 
@@ -362,12 +385,19 @@ mod tests {
     /// DIFFERENT body and reports success, which is the failure worth having a checksum for.
     #[test]
     fn a_flipped_bit_is_caught_by_the_crc() {
-        let rs = vec![rec("one", Category::Errors, b"first"), rec("two", Category::Usage, b"second")];
+        let rs = vec![
+            rec("one", Category::Errors, b"first"),
+            rec("two", Category::Usage, b"second"),
+        ];
         let mut buf = spool(&rs);
         let second_at = encode(&rs[0]).unwrap().len() + HEADER;
         corrupt_body_in_place(&mut buf, second_at);
         let d = decode_all(&buf);
-        assert_eq!(d.records, rs[..1].to_vec(), "the intact first record survives");
+        assert_eq!(
+            d.records,
+            rs[..1].to_vec(),
+            "the intact first record survives"
+        );
         assert!(d.dropped_bytes > 0, "the corrupt record was accepted");
     }
 
@@ -387,7 +417,10 @@ mod tests {
     fn an_oversized_frame_is_refused_even_when_everything_else_about_it_is_valid() {
         let r = rec("big", Category::Errors, &vec![b'x'; MAX_RECORD]);
         let payload = serde_json::to_vec(&r).expect("serialises");
-        assert!(payload.len() > MAX_RECORD, "the fixture must actually exceed the ceiling");
+        assert!(
+            payload.len() > MAX_RECORD,
+            "the fixture must actually exceed the ceiling"
+        );
         let mut buf = Vec::new();
         buf.extend_from_slice(&(payload.len() as u32).to_le_bytes());
         buf.extend_from_slice(&crc32(&payload).to_le_bytes()); // a CORRECT checksum
@@ -421,46 +454,68 @@ mod tests {
         let mut buf = spool(&[rec("one", Category::Errors, b"first")]);
         corrupt_body_in_place(&mut buf, HEADER);
         buf.extend_from_slice(&spool(&[rec("two", Category::Usage, b"perfectly fine")]));
-        assert!(decode_all(&buf).records.is_empty(), "a valid record after a bad one was resynced to");
+        assert!(
+            decode_all(&buf).records.is_empty(),
+            "a valid record after a bad one was resynced to"
+        );
     }
 
     /// The byte cap binds, drops oldest-first, and reports the count.
     #[test]
     fn the_byte_cap_drops_the_oldest_and_says_how_many() {
         let big = vec![b'x'; 32 * 1024];
-        let rs: Vec<Record> =
-            (0..40).map(|i| rec(&format!("id{i}"), Category::Errors, &big)).collect();
+        let rs: Vec<Record> = (0..40)
+            .map(|i| rec(&format!("id{i}"), Category::Errors, &big))
+            .collect();
         let (kept, dropped) = trim(rs);
         assert!(dropped > 0, "40 x 32 KiB must exceed the 512 KiB cap");
         assert_eq!(kept.len() + dropped, 40);
         let total: usize = kept.iter().map(|r| encode(r).unwrap().len()).sum();
-        assert!(total <= MAX_BYTES, "kept {total} bytes against a {MAX_BYTES} cap");
-        assert_eq!(kept.last().unwrap().event_id, "id39", "the newest record survived");
-        assert_ne!(kept.first().unwrap().event_id, "id0", "the oldest was dropped first");
+        assert!(
+            total <= MAX_BYTES,
+            "kept {total} bytes against a {MAX_BYTES} cap"
+        );
+        assert_eq!(
+            kept.last().unwrap().event_id,
+            "id39",
+            "the newest record survived"
+        );
+        assert_ne!(
+            kept.first().unwrap().event_id,
+            "id0",
+            "the oldest was dropped first"
+        );
     }
 
     #[test]
     fn usage_volume_never_evicts_an_error_record() {
         let crash = rec("crash", Category::Errors, b"fault");
         let mut rs = vec![crash.clone()];
-        rs.extend((0..MAX_RECORDS + 20).map(|i| {
-            rec(&format!("usage-{i}"), Category::Usage, b"route")
-        }));
+        rs.extend(
+            (0..MAX_RECORDS + 20).map(|i| rec(&format!("usage-{i}"), Category::Usage, b"route")),
+        );
         let (kept, dropped) = trim(rs);
         assert!(dropped > 0);
-        assert!(kept.contains(&crash), "usage records evicted the crash report");
+        assert!(
+            kept.contains(&crash),
+            "usage records evicted the crash report"
+        );
         assert!(kept.len() <= MAX_RECORDS);
     }
 
     /// The record cap binds independently — many tiny records, well under the byte cap.
     #[test]
     fn the_record_cap_binds_on_small_records() {
-        let rs: Vec<Record> =
-            (0..MAX_RECORDS + 25).map(|i| rec(&format!("id{i}"), Category::Usage, b"t")).collect();
+        let rs: Vec<Record> = (0..MAX_RECORDS + 25)
+            .map(|i| rec(&format!("id{i}"), Category::Usage, b"t"))
+            .collect();
         let (kept, dropped) = trim(rs);
         assert_eq!(kept.len(), MAX_RECORDS);
         assert_eq!(dropped, 25);
-        assert_eq!(kept.last().unwrap().event_id, format!("id{}", MAX_RECORDS + 24));
+        assert_eq!(
+            kept.last().unwrap().event_id,
+            format!("id{}", MAX_RECORDS + 24)
+        );
     }
 
     /// **Withdrawal purges one category, not the queue.** The two consent switches are independent,
@@ -473,7 +528,10 @@ mod tests {
             rec("e2", Category::Errors, b"c"),
         ];
         let left = purge(rs, Category::Usage);
-        assert_eq!(left.iter().map(|r| r.event_id.as_str()).collect::<Vec<_>>(), ["e1", "e2"]);
+        assert_eq!(
+            left.iter().map(|r| r.event_id.as_str()).collect::<Vec<_>>(),
+            ["e1", "e2"]
+        );
     }
 
     /// **Acknowledgement is by id, not by count.** A flush that sends three and gets the FIRST and
@@ -494,7 +552,10 @@ mod tests {
     /// Acknowledging nothing keeps everything — an entirely failed flush must not advance anything.
     #[test]
     fn a_failed_flush_acknowledges_nothing() {
-        let rs = vec![rec("a", Category::Errors, b"1"), rec("b", Category::Usage, b"2")];
+        let rs = vec![
+            rec("a", Category::Errors, b"1"),
+            rec("b", Category::Usage, b"2"),
+        ];
         assert_eq!(ack(rs.clone(), &[]), rs);
     }
 

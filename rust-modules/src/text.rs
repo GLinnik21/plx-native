@@ -83,9 +83,17 @@ fn app_font(bold: bool) -> &'static CStr {
     static BOLD: std::sync::OnceLock<CString> = std::sync::OnceLock::new();
     let slot = if bold { &BOLD } else { &REG };
     slot.get_or_init(|| {
-        let name = if bold { "appfont-bold.ttf" } else { "appfont.ttf" };
-        CString::new(crate::paths::in_app_dir(name).into_os_string().into_encoded_bytes())
-            .unwrap_or_else(|_| CString::new("/nonexistent").expect("literal has no NUL"))
+        let name = if bold {
+            "appfont-bold.ttf"
+        } else {
+            "appfont.ttf"
+        };
+        CString::new(
+            crate::paths::in_app_dir(name)
+                .into_os_string()
+                .into_encoded_bytes(),
+        )
+        .unwrap_or_else(|_| CString::new("/nonexistent").expect("literal has no NUL"))
     })
 }
 
@@ -123,12 +131,17 @@ struct SdlColor {
 extern "C" {
     fn TTF_Init() -> c_int;
     fn TTF_OpenFont(file: *const c_char, ptsize: c_int) -> *mut TtfFont;
-    fn TTF_RenderUTF8_Blended(font: *mut TtfFont, text: *const c_char, fg: SdlColor) -> *mut SdlSurface;
+    fn TTF_RenderUTF8_Blended(
+        font: *mut TtfFont,
+        text: *const c_char,
+        fg: SdlColor,
+    ) -> *mut SdlSurface;
     /// Metrics-only sizing — the same numbers `TTF_RenderUTF8_Blended` would produce, with no
     /// rasterization and no surface. Present in the TV's own `libSDL2_ttf-2.0.so.0.14.0` (verified
     /// on device 2026-07-29 by dumping its dynamic symbols), and in the NDK sysroot copy we link
     /// against, so this resolves for real at link time like every other TTF symbol here.
-    fn TTF_SizeUTF8(font: *mut TtfFont, text: *const c_char, w: *mut c_int, h: *mut c_int) -> c_int;
+    fn TTF_SizeUTF8(font: *mut TtfFont, text: *const c_char, w: *mut c_int, h: *mut c_int)
+        -> c_int;
     /// Rows from the top of a `TTF_RenderUTF8_Blended` surface to the BASELINE — the anchor the
     /// run compositor aligns every face on. `TTF_FontHeight` is that surface's height. Both are
     /// plain metric readers with no allocation.
@@ -209,8 +222,19 @@ struct TCacheEntry {
     use_: c_uint,
 }
 impl TCacheEntry {
-    const ZERO: TCacheEntry =
-        TCacheEntry { s: [0; 96], hash: 0, klen: 0, sz: 0, bold: 0, tex: 0, w: 0, h: 0, ink_t: 0, ink_b: 0, use_: 0 };
+    const ZERO: TCacheEntry = TCacheEntry {
+        s: [0; 96],
+        hash: 0,
+        klen: 0,
+        sz: 0,
+        bold: 0,
+        tex: 0,
+        w: 0,
+        h: 0,
+        ink_t: 0,
+        ink_b: 0,
+        use_: 0,
+    };
 }
 
 /// the cache key hash: string bytes + size + bold. The per-frame lookup is a linear scan of all
@@ -250,7 +274,11 @@ fn log_font_fallback_once() {
 
 unsafe fn font_at(sz: c_int, bold: c_int) -> *mut TtfFont {
     let sz = sz.clamp(8, 79) as usize;
-    let arr = if bold != 0 { &mut *addr_of_mut!(FONTS_B) } else { &mut *addr_of_mut!(FONTS) };
+    let arr = if bold != 0 {
+        &mut *addr_of_mut!(FONTS_B)
+    } else {
+        &mut *addr_of_mut!(FONTS)
+    };
     if arr[sz].is_null() {
         arr[sz] = TTF_OpenFont(app_font(bold != 0).as_ptr(), sz as c_int);
         if arr[sz].is_null() {
@@ -351,14 +379,21 @@ unsafe fn link_covers(link: Link, cp: u32) -> bool {
         let cov = &mut *addr_of_mut!(COV);
         match crate::fontcov::of_file(&path) {
             Ok(c) => {
-                log(&format!("font chain: {link:?} {} codepoints={}", path.display(), c.len()));
+                log(&format!(
+                    "font chain: {link:?} {} codepoints={}",
+                    path.display(),
+                    c.len()
+                ));
                 cov[i] = Some(c);
             }
             // Not a failure for Cjk/Sys — a television without DroidSansFallback, or a host
             // simulator with no bundled face, simply has a shorter chain. Logged once either way,
             // WITH the path, because "why is this still tofu" is otherwise unanswerable from a log
             // and the answer is usually that the file is not where the install put it.
-            Err(e) => log(&format!("font chain: {link:?} unavailable — {}: {e}", path.display())),
+            Err(e) => log(&format!(
+                "font chain: {link:?} unavailable — {}: {e}",
+                path.display()
+            )),
         }
     }
     match &(*addr_of!(COV))[i] {
@@ -427,7 +462,10 @@ fn split_runs_with(s: &str, covers: impl Fn(Link, u32) -> bool) -> Option<Runs> 
     if s.is_ascii() {
         return None;
     }
-    let mut runs = Runs { n: 0, at: [(Link::Base, 0, 0); MAX_RUNS] };
+    let mut runs = Runs {
+        n: 0,
+        at: [(Link::Base, 0, 0); MAX_RUNS],
+    };
     let mut mixed = false;
     for (off, ch) in s.char_indices() {
         let cp = ch as u32;
@@ -438,7 +476,11 @@ fn split_runs_with(s: &str, covers: impl Fn(Link, u32) -> bool) -> Option<Runs> 
         // A codepoint NO link covers resolves to Base, which draws its .notdef box. That is the
         // right answer: it is the honest tofu, it keeps the runs contiguous, and it is what the
         // renderer did before the chain existed.
-        let link = CHAIN.iter().copied().find(|&l| covers(l, cp)).unwrap_or(Link::Base);
+        let link = CHAIN
+            .iter()
+            .copied()
+            .find(|&l| covers(l, cp))
+            .unwrap_or(Link::Base);
         if link != Link::Base {
             mixed = true;
         }
@@ -489,13 +531,23 @@ fn buf_ink_v(px: &[u8], w: c_int, h: c_int) -> (c_int, c_int) {
 /// baseline lands there. The box only ever grows DOWNWARD (a run that descends further than the
 /// base face), because growing it upward would move every glyph relative to the caller's `y` and
 /// silently mis-align a mixed-script label against its pure-Latin neighbours.
-unsafe fn render_runs(s: &str, runs: &Runs, sz: c_int, bold: c_int) -> Option<(Vec<u8>, c_int, c_int)> {
+unsafe fn render_runs(
+    s: &str,
+    runs: &Runs,
+    sz: c_int,
+    bold: c_int,
+) -> Option<(Vec<u8>, c_int, c_int)> {
     let base = font_at(sz, bold);
     if base.is_null() {
         return None;
     }
     let base_asc = TTF_FontAscent(base);
-    let white = SdlColor { r: 255, g: 255, b: 255, a: 255 };
+    let white = SdlColor {
+        r: 255,
+        g: 255,
+        b: 255,
+        a: 255,
+    };
     // (surface, x, ascent) per run. Surfaces are freed on every exit path below.
     let mut parts: Vec<(*mut SdlSurface, c_int, c_int)> = Vec::with_capacity(runs.n);
     let free_all = |parts: &Vec<(*mut SdlSurface, c_int, c_int)>| {
@@ -576,10 +628,12 @@ pub(crate) fn init_text() {
         TL_TEX = glGetUniformLocation(TPROG, c"u_tex".as_ptr());
         // the fade program shares VS_TEXT; a link failure leaves TPROGF=0 and draw_text_fade
         // falls back to the plain path (the fade is a nicety, not load-bearing)
-        TPROGF = crate::gfx::link_program(VS_TEXT.as_ptr(), FS_TEXT_FADE.as_ptr()).unwrap_or_else(|| {
-            log("text fade prog link failed");
-            0
-        });
+        TPROGF = crate::gfx::link_program(VS_TEXT.as_ptr(), FS_TEXT_FADE.as_ptr()).unwrap_or_else(
+            || {
+                log("text fade prog link failed");
+                0
+            },
+        );
         if TPROGF != 0 {
             TLF_RECT = glGetUniformLocation(TPROGF, c"u_trect".as_ptr());
             TLF_SCREEN = glGetUniformLocation(TPROGF, c"u_tscreen".as_ptr());
@@ -647,15 +701,24 @@ unsafe fn surface_ink_v(surf: *const SdlSurface) -> (c_int, c_int) {
 }
 
 /// returns (GL texture id (0 on failure), w, h, ink_top, ink_bottom)
-unsafe fn text_tex(s_bytes: &[u8], s_c: *const c_char, sz: c_int, bold: c_int) -> (c_uint, c_int, c_int, c_int, c_int) {
+unsafe fn text_tex(
+    s_bytes: &[u8],
+    s_c: *const c_char,
+    sz: c_int,
+    bold: c_int,
+) -> (c_uint, c_int, c_int, c_int, c_int) {
     let hash = key_hash(s_bytes, sz, bold);
     {
         let cache = &mut *addr_of_mut!(TCACHE_A);
         for e in cache.iter_mut() {
             // klen + prefix, not full equality: the stored key is truncated to 95 bytes (see
             // TCacheEntry::klen) — starts_with degrades to equality for every short string.
-            if e.hash == hash && e.tex != 0 && e.sz == sz && e.bold == bold
-                && e.klen as usize == s_bytes.len() && s_bytes.starts_with(entry_key(e))
+            if e.hash == hash
+                && e.tex != 0
+                && e.sz == sz
+                && e.bold == bold
+                && e.klen as usize == s_bytes.len()
+                && s_bytes.starts_with(entry_key(e))
             {
                 TCLOCK = TCLOCK.wrapping_add(1);
                 e.use_ = TCLOCK;
@@ -682,7 +745,12 @@ unsafe fn text_tex(s_bytes: &[u8], s_c: *const c_char, sz: c_int, bold: c_int) -
     if f.is_null() {
         return (0, 0, 0, 0, 0);
     }
-    let white = SdlColor { r: 255, g: 255, b: 255, a: 255 };
+    let white = SdlColor {
+        r: 255,
+        g: 255,
+        b: 255,
+        a: 255,
+    };
     let surf = TTF_RenderUTF8_Blended(f, s_c, white);
     if surf.is_null() {
         return (0, 0, 0, 0, 0);
@@ -724,8 +792,15 @@ unsafe fn text_tex(s_bytes: &[u8], s_c: *const c_char, sz: c_int, bold: c_int) -
 /// `TTF_RenderUTF8_Blended`, or a composite of several — and exactly one cache to put it in.
 #[allow(clippy::too_many_arguments)]
 unsafe fn cache_store(
-    s_bytes: &[u8], hash: u64, sz: c_int, bold: c_int, tex: c_uint, sw: c_int, sh: c_int,
-    ink_t: c_int, ink_b: c_int,
+    s_bytes: &[u8],
+    hash: u64,
+    sz: c_int,
+    bold: c_int,
+    tex: c_uint,
+    sw: c_int,
+    sh: c_int,
+    ink_t: c_int,
+    ink_b: c_int,
 ) -> (c_uint, c_int, c_int, c_int, c_int) {
     let cache = &mut *addr_of_mut!(TCACHE_A);
     let mut slot = 0usize;
@@ -751,7 +826,10 @@ unsafe fn cache_store(
         static mut LONG_KEY_LOGGED: bool = false;
         if !LONG_KEY_LOGGED {
             LONG_KEY_LOGGED = true;
-            log(&format!("text cache: key len {} exceeds the 95-byte prefix (fine, klen-keyed)", s_bytes.len()));
+            log(&format!(
+                "text cache: key len {} exceeds the 95-byte prefix (fine, klen-keyed)",
+                s_bytes.len()
+            ));
         }
     }
     cache[slot].sz = sz;
@@ -798,14 +876,17 @@ pub(crate) fn text_width(s: *const c_char, sz: c_int, bold: c_int) -> f32 {
             return 0.0;
         }
         let bytes = CStr::from_ptr(s).to_bytes();
-        if let Some((st, runs)) =
-            std::str::from_utf8(bytes).ok().and_then(|st| Some((st, split_runs(st)?)))
+        if let Some((st, runs)) = std::str::from_utf8(bytes)
+            .ok()
+            .and_then(|st| Some((st, split_runs(st)?)))
         {
             let mut total = 0.0f32;
             for &(link, from, to) in &runs.at[..runs.n] {
                 let f = link_font(link, sz, bold);
                 let f = if f.is_null() { font_at(sz, bold) } else { f };
-                let Ok(c) = CString::new(&st[from..to]) else { continue };
+                let Ok(c) = CString::new(&st[from..to]) else {
+                    continue;
+                };
                 let (mut w, mut h): (c_int, c_int) = (0, 0);
                 if !f.is_null() && TTF_SizeUTF8(f, c.as_ptr(), &mut w, &mut h) == 0 {
                     total += w as f32;
@@ -858,8 +939,17 @@ pub(crate) fn elide(s: &str, budget: f32, sz: c_int, bold: c_int, cont: bool) ->
 }
 
 fn elide_compute(s: &str, budget: f32, sz: c_int, bold: c_int, cont: bool) -> String {
-    let measure = |t: &str| CString::new(t).ok().map(|c| text_width(c.as_ptr(), sz, bold)).unwrap_or(0.0);
-    let target = if cont { format!("{s}\u{2026}") } else { s.to_string() };
+    let measure = |t: &str| {
+        CString::new(t)
+            .ok()
+            .map(|c| text_width(c.as_ptr(), sz, bold))
+            .unwrap_or(0.0)
+    };
+    let target = if cont {
+        format!("{s}\u{2026}")
+    } else {
+        s.to_string()
+    };
     if budget <= 0.0 || measure(&target) <= budget {
         return target;
     }
@@ -868,14 +958,24 @@ fn elide_compute(s: &str, budget: f32, sz: c_int, bold: c_int, cont: bool) -> St
     let (mut lo, mut hi) = (0usize, chars.len());
     while lo < hi {
         let mid = (lo + hi).div_ceil(2);
-        let cand = chars[..mid].iter().collect::<String>().trim_end().to_string() + "\u{2026}";
+        let cand = chars[..mid]
+            .iter()
+            .collect::<String>()
+            .trim_end()
+            .to_string()
+            + "\u{2026}";
         if measure(&cand) <= budget {
             lo = mid;
         } else {
             hi = mid - 1;
         }
     }
-    chars[..lo].iter().collect::<String>().trim_end().to_string() + "\u{2026}"
+    chars[..lo]
+        .iter()
+        .collect::<String>()
+        .trim_end()
+        .to_string()
+        + "\u{2026}"
 }
 
 /// rendered height in px of a line of text at `sz`/`bold` — the font's line height, independent of
@@ -952,7 +1052,15 @@ pub(crate) fn baseline_y(sz: c_int, bold: c_int, on_sz: c_int, on_bold: c_int, o
 }
 
 /// align: 0 left, 1 center, 2 right (x is the anchor edge). returns text width.
-pub(crate) fn draw_text(s: *const c_char, x: f32, y: f32, sz: c_int, col: *const f32, align: c_int, bold: c_int) -> f32 {
+pub(crate) fn draw_text(
+    s: *const c_char,
+    x: f32,
+    y: f32,
+    sz: c_int,
+    col: *const f32,
+    align: c_int,
+    bold: c_int,
+) -> f32 {
     unsafe {
         if TEXT_OK == 0 || s.is_null() {
             return 0.0;
@@ -975,10 +1083,18 @@ pub(crate) fn draw_text(s: *const c_char, x: f32, y: f32, sz: c_int, col: *const
         glUniform4fv(TL_COL, 1, col);
         glBindTexture(GL_TEXTURE_2D, tex);
         // glyphs are 1:1 texel:pixel — snap the origin (see gfx::snap for the contract)
-        glUniform4f(TL_RECT, crate::gfx::snap(dx), crate::gfx::snap(y), w as f32, h as f32);
+        glUniform4f(
+            TL_RECT,
+            crate::gfx::snap(dx),
+            crate::gfx::snap(y),
+            w as f32,
+            h as f32,
+        );
         // The width is still returned — callers lay out from it — but a run outside a blur source
         // pass's region contributes no fragment to the backdrop, so the quad is not submitted.
-        if !crate::gfx::culled(dx, y, w as f32, h as f32) && !gate(Class::Text, dx, y, w as f32, h as f32) {
+        if !crate::gfx::culled(dx, y, w as f32, h as f32)
+            && !gate(Class::Text, dx, y, w as f32, h as f32)
+        {
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         }
         w as f32
@@ -992,8 +1108,15 @@ pub(crate) fn draw_text(s: *const c_char, x: f32, y: f32, sz: c_int, col: *const
 /// failed to link.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_text_fade(
-    s: *const c_char, x: f32, y: f32, sz: c_int, col: *const f32, align: c_int, bold: c_int,
-    fade_from: f32, fade_to: f32,
+    s: *const c_char,
+    x: f32,
+    y: f32,
+    sz: c_int,
+    col: *const f32,
+    align: c_int,
+    bold: c_int,
+    fade_from: f32,
+    fade_to: f32,
 ) -> f32 {
     unsafe {
         if TPROGF == 0 {
@@ -1022,8 +1145,16 @@ pub(crate) fn draw_text_fade(
         let wf = w as f32;
         glUniform2f(TLF_FADE, fade_from / wf, fade_to / wf);
         glBindTexture(GL_TEXTURE_2D, tex);
-        glUniform4f(TLF_RECT, crate::gfx::snap(dx), crate::gfx::snap(y), w as f32, h as f32);
-        if !crate::gfx::culled(dx, y, w as f32, h as f32) && !gate(Class::Text, dx, y, w as f32, h as f32) {
+        glUniform4f(
+            TLF_RECT,
+            crate::gfx::snap(dx),
+            crate::gfx::snap(y),
+            w as f32,
+            h as f32,
+        );
+        if !crate::gfx::culled(dx, y, w as f32, h as f32)
+            && !gate(Class::Text, dx, y, w as f32, h as f32)
+        {
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         }
         w as f32
@@ -1061,7 +1192,9 @@ mod tests {
 
     fn split(s: &str) -> Option<Runs> {
         let cov = chain();
-        split_runs_with(s, |link, cp| cov[link as usize].is_some_and(|c| c.contains(cp)))
+        split_runs_with(s, |link, cp| {
+            cov[link as usize].is_some_and(|c| c.contains(cp))
+        })
     }
 
     /// Every run, as (face, the text it draws).
@@ -1079,11 +1212,19 @@ mod tests {
         let Some(r) = split(s) else { return };
         let mut at = 0usize;
         for &(_, from, to) in &r.at[..r.n] {
-            assert_eq!(from, at, "run starts at {from}, previous ended at {at}, in {s:?}");
+            assert_eq!(
+                from, at,
+                "run starts at {from}, previous ended at {at}, in {s:?}"
+            );
             assert!(to > from, "empty run in {s:?}");
             at = to;
         }
-        assert_eq!(at, s.len(), "runs stop at byte {at} of {} in {s:?}", s.len());
+        assert_eq!(
+            at,
+            s.len(),
+            "runs stop at byte {at} of {} in {s:?}",
+            s.len()
+        );
         let joined: String = r.at[..r.n].iter().map(|&(_, a, b)| &s[a..b]).collect();
         assert_eq!(joined, s, "the runs do not reassemble the string");
     }
@@ -1101,7 +1242,10 @@ mod tests {
             "\u{266A} It seems today \u{266B}", // the ♪ regression: Inter carries U+2669..U+266C
             "S1 · E1 — 47 min",                 // the punctuation the UI composes by hand
         ] {
-            assert!(split(s).is_none(), "{s:?} should not need the fallback chain");
+            assert!(
+                split(s).is_none(),
+                "{s:?} should not need the fallback chain"
+            );
         }
     }
 
@@ -1109,7 +1253,12 @@ mod tests {
     fn a_korean_title_splits_onto_the_bundled_face() {
         assert_eq!(
             runs_of("오징어 게임 (2021)"),
-            vec![(Link::Cjk, "오징어"), (Link::Base, " "), (Link::Cjk, "게임"), (Link::Base, " (2021)")],
+            vec![
+                (Link::Cjk, "오징어"),
+                (Link::Base, " "),
+                (Link::Cjk, "게임"),
+                (Link::Base, " (2021)")
+            ],
         );
     }
 
@@ -1122,7 +1271,10 @@ mod tests {
         assert_eq!(runs_of("臥虎藏龍"), vec![(Link::Cjk, "臥虎藏龍")]);
         assert_eq!(
             runs_of("流浪地球 The Wandering Earth"),
-            vec![(Link::Cjk, "流浪地球"), (Link::Base, " The Wandering Earth")],
+            vec![
+                (Link::Cjk, "流浪地球"),
+                (Link::Base, " The Wandering Earth")
+            ],
         );
     }
 
@@ -1132,8 +1284,14 @@ mod tests {
     /// subtle enough wrong to survive review.
     #[test]
     fn latin_after_a_cjk_run_returns_to_the_app_typeface() {
-        assert_eq!(runs_of("東京物語 1953"), vec![(Link::Cjk, "東京物語"), (Link::Base, " 1953")]);
-        assert_eq!(runs_of("A한B"), vec![(Link::Base, "A"), (Link::Cjk, "한"), (Link::Base, "B")]);
+        assert_eq!(
+            runs_of("東京物語 1953"),
+            vec![(Link::Cjk, "東京物語"), (Link::Base, " 1953")]
+        );
+        assert_eq!(
+            runs_of("A한B"),
+            vec![(Link::Base, "A"), (Link::Cjk, "한"), (Link::Base, "B")]
+        );
     }
 
     /// A codepoint no link covers stays on the base face and stays INSIDE the run structure, so it
@@ -1152,18 +1310,32 @@ mod tests {
     /// string that alternates on every character is the worst case by construction.
     #[test]
     fn overflowing_the_run_array_still_partitions_the_string() {
-        let pathological: String = (0..MAX_RUNS * 3).map(|i| if i % 2 == 0 { 'A' } else { '한' }).collect();
+        let pathological: String = (0..MAX_RUNS * 3)
+            .map(|i| if i % 2 == 0 { 'A' } else { '한' })
+            .collect();
         assert_partitions(&pathological);
         let r = split(&pathological).expect("a mixed string splits");
         assert_eq!(r.n, MAX_RUNS, "the array is full");
-        assert_eq!(r.at[MAX_RUNS - 1].2, pathological.len(), "the tail was absorbed, not dropped");
+        assert_eq!(
+            r.at[MAX_RUNS - 1].2,
+            pathological.len(),
+            "the tail was absorbed, not dropped"
+        );
     }
 
     /// Byte-indexed boundary arithmetic on multi-byte characters at the very edges of the string,
     /// where an off-by-one would slice mid-codepoint and panic inside `&s[a..b]`.
     #[test]
     fn multibyte_characters_at_both_edges_are_sliced_on_char_boundaries() {
-        for s in ["한", "한A", "A한", "한A한", "\u{1F600}한", "君の名は。 2016", "ラーメン大好き小泉さん"] {
+        for s in [
+            "한",
+            "한A",
+            "A한",
+            "한A한",
+            "\u{1F600}한",
+            "君の名は。 2016",
+            "ラーメン大好き小泉さん",
+        ] {
             assert_partitions(s);
         }
     }

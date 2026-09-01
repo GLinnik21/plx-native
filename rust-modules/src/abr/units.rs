@@ -6,4 +6,3 @@ impl MediaTimeMs {
         self.0.saturating_sub(earlier.0).max(0)
     }
 }
-

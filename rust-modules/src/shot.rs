@@ -31,7 +31,15 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::OnceLock;
 
 extern "C" {
-    fn glReadPixels(x: c_int, y: c_int, w: c_int, h: c_int, format: c_uint, ty: c_uint, pixels: *mut c_void);
+    fn glReadPixels(
+        x: c_int,
+        y: c_int,
+        w: c_int,
+        h: c_int,
+        format: c_uint,
+        ty: c_uint,
+        pixels: *mut c_void,
+    );
 }
 const GL_RGBA: c_uint = 0x1908;
 const GL_UNSIGNED_BYTE: c_uint = 0x1401;
@@ -55,7 +63,9 @@ fn cfg() -> &'static Cfg {
         path: std::env::var_os("PLXNATIVE_SHOT")
             .map(PathBuf::from)
             .unwrap_or_else(|| crate::paths::in_runtime_dir("shot.png")),
-        frame: std::env::var("PLXNATIVE_SHOT_FRAME").ok().and_then(|s| s.parse().ok()),
+        frame: std::env::var("PLXNATIVE_SHOT_FRAME")
+            .ok()
+            .and_then(|s| s.parse().ok()),
         exit: std::env::var_os("PLXNATIVE_SHOT_EXIT").is_some(),
     })
 }
@@ -86,8 +96,14 @@ pub(crate) fn request() {
 fn numbered(base: &std::path::Path) -> std::path::PathBuf {
     static NTH: AtomicU32 = AtomicU32::new(0);
     let n = NTH.fetch_add(1, Ordering::Relaxed) + 1;
-    let stem = base.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "shot".into());
-    let ext = base.extension().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "png".into());
+    let stem = base
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "shot".into());
+    let ext = base
+        .extension()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "png".into());
     base.with_file_name(format!("{stem}-{n}.{ext}"))
 }
 
@@ -113,7 +129,17 @@ pub(crate) fn maybe_capture(vx: c_int, vy: c_int, vw: c_int, vh: c_int) {
     // image harder to compare against a device capture.
     let (w, h) = (vw as usize, vh as usize);
     let mut buf = vec![0u8; w * h * 4];
-    unsafe { glReadPixels(vx, vy, vw, vh, GL_RGBA, GL_UNSIGNED_BYTE, buf.as_mut_ptr() as *mut c_void) };
+    unsafe {
+        glReadPixels(
+            vx,
+            vy,
+            vw,
+            vh,
+            GL_RGBA,
+            GL_UNSIGNED_BYTE,
+            buf.as_mut_ptr() as *mut c_void,
+        )
+    };
 
     // Flip and drop alpha in one pass.
     //
@@ -143,7 +169,11 @@ pub(crate) fn maybe_capture(vx: c_int, vy: c_int, vw: c_int, vh: c_int) {
         }
     }
 
-    let out = if on_demand { numbered(&cfg.path) } else { cfg.path.clone() };
+    let out = if on_demand {
+        numbered(&cfg.path)
+    } else {
+        cfg.path.clone()
+    };
     match image::save_buffer(&out, &rgb, w as u32, h as u32, image::ColorType::Rgb8) {
         Ok(()) => crate::log(&format!("shot: wrote {}x{} to {}", w, h, out.display())),
         Err(e) => crate::log(&format!("shot: could not write {}: {e}", out.display())),

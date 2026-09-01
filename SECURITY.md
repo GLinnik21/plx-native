@@ -31,21 +31,27 @@ looking at:
   `diag::scrub::scrub_local` before the write. A line that reaches it carrying a credential, a Plex
   token, a `plex.direct` hostname, a household name or anything about what is being watched is a
   valid report — see [PRIVACY.md](PRIVACY.md) for the contract that is meant to hold.
-- **TLS.** Certificate verification is on for every request (`net.rs`). Anything that disables,
-  downgrades or bypasses it is in scope; so is any path where a failure to *set* a TLS option
-  results in a request going out anyway.
+- **TLS.** Certificate verification is on for every HTTPS request (`net.rs`). Stable builds refuse
+  any PMS control or media URL that would carry a Plex token over plaintext HTTP; only an explicit
+  developer-trigger build can allow that lab path, and it logs the exception without the URL.
+  Anything that disables, downgrades or bypasses these rules is in scope; so is any path where a
+  failure to *set* a security option results in a request going out anyway.
 - **The session file.** `<id>-auth.json` holds one access token per server your account can reach.
-  It is created 0600 through `open(2)`'s own mode argument. Any way to read it from another process,
-  or to make the app write it somewhere world-readable, is in scope.
+  It is encrypted with the firmware's authenticated Key Manager where
+  `com.webos.service.keymanager3` is available and permitted, with a 0600 plaintext compatibility
+  fallback otherwise. The legacy `com.palm.keymanager` AES-CFB interface is not used because it
+  provides no authenticated-encryption operation. The file is always created 0600 through
+  `open(2)`'s own mode argument. A downgrade of an existing encrypted file, a way to read it from
+  another process, or a way to make the app write it somewhere world-readable is in scope.
 - **The bundled FFmpeg.** Built from unmodified FFmpeg 9.0 with demuxers, parsers and subtitle
   decoders only — it is fed untrusted bytes from the network, so parser bugs reachable through
   `ff.rs` are in scope. Report FFmpeg's own bugs upstream as well.
 
 ## What is not in scope
 
-- Anything requiring root on the television. This app is installed by people who have **already**
-  rooted their set; a report that begins "as root" describes the starting conditions, not a
-  vulnerability.
+- Post-compromise access by an attacker who already has root on the television. Root is not an app
+  prerequisite; a report whose only precondition is an already-rooted OS describes a platform
+  compromise rather than an app sandbox escape.
 - The webosbrew Homebrew Channel, webOS itself, LG's own libraries, or Plex Media Server. Report
   those to their maintainers.
 - Missing hardening that costs nothing to an attacker who is already executing code in the app's

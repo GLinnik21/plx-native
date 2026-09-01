@@ -219,7 +219,10 @@ impl Rung {
     /// route. Auto owns only these canonical values; an arbitrary/manual ceiling is not an ABR
     /// state and therefore has no answer here.
     pub(crate) fn from_ceiling(ceiling: crate::plex::Ceiling) -> Option<Self> {
-        LADDER.iter().copied().find(|rung| rung.ceiling() == ceiling)
+        LADDER
+            .iter()
+            .copied()
+            .find(|rung| rung.ceiling() == ceiling)
     }
 }
 
@@ -328,7 +331,11 @@ pub(crate) struct HlsActuatorCatalog {
 
 impl HlsActuatorCatalog {
     pub(crate) const fn measured() -> Self {
-        const fn point(rung: Rung, expected_wire_kbps: u32, production_load_pm: u32) -> HlsCandidate {
+        const fn point(
+            rung: Rung,
+            expected_wire_kbps: u32,
+            production_load_pm: u32,
+        ) -> HlsCandidate {
             HlsCandidate {
                 rung,
                 request_kbps: rung.kbps(),
@@ -396,7 +403,11 @@ impl HlsActuatorCatalog {
     /// forbid a device capability nobody has contradicted.)
     pub(crate) fn limited_to(mut self, device: (u16, u16), source: (u16, u16)) -> Self {
         fn axis(value: u16) -> u16 {
-            if value == 0 { u16::MAX } else { value }
+            if value == 0 {
+                u16::MAX
+            } else {
+                value
+            }
         }
         self.raster_limit = (axis(device.0), axis(device.1));
         self.source = source;
@@ -450,7 +461,10 @@ impl HlsActuatorCatalog {
     /// NOT filtered by [`Self::candidate`] — a state already running has to remain describable
     /// even when a later feasibility bound would exclude it.
     pub(crate) fn feasible(&self) -> impl Iterator<Item = HlsCandidate> + '_ {
-        self.candidates.iter().copied().filter(move |c| self.admits(*c))
+        self.candidates
+            .iter()
+            .copied()
+            .filter(move |c| self.admits(*c))
     }
 
     pub(crate) fn candidate(self, rung: Rung) -> HlsCandidate {
@@ -524,4 +538,3 @@ impl HlsActuatorCatalog {
             .max_by_key(|candidate| candidate.expected_wire_kbps)
     }
 }
-

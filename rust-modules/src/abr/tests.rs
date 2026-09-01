@@ -227,7 +227,11 @@ fn the_ladder_floor_is_a_stated_terminal_case_and_not_a_silent_stay() {
         .map(|_| c.observe_next(sample(64, 900, 500)))
         .last()
         .expect("four samples");
-    assert_eq!(decision, Decision::Stay, "there is no lower rung to propose");
+    assert_eq!(
+        decision,
+        Decision::Stay,
+        "there is no lower rung to propose"
+    );
     assert_eq!(
         c.telemetry().reason,
         Some(DecisionReason::Hls(HlsReason::LadderFloor)),
@@ -296,7 +300,10 @@ fn a_silent_audio_lane_does_not_fire_a_downshift_on_a_full_reserve() {
         Decision::Stay,
         "a reserve that cannot be READ is not a reserve that is EMPTY"
     );
-    assert!(c.pending().is_none(), "nothing may be proposed on an unknowable reserve");
+    assert!(
+        c.pending().is_none(),
+        "nothing may be proposed on an unknowable reserve"
+    );
 }
 
 /// The other half: the reserve genuinely being short still fires. Without this the test above is
@@ -335,15 +342,24 @@ fn the_first_bootstrap_segment_cannot_false_downshift() {
 #[test]
 fn the_first_segment_after_resume_cannot_false_downshift() {
     let mut controller = bootstrap_controller();
-    assert_eq!(controller.observe_next(sample(40_000, 200, 12_000)), Decision::Stay);
+    assert_eq!(
+        controller.observe_next(sample(40_000, 200, 12_000)),
+        Decision::Stay
+    );
     controller.on_resume(30_000);
 
-    assert_eq!(controller.observe_next(sample(40_000, 200, 1_958)), Decision::Stay);
+    assert_eq!(
+        controller.observe_next(sample(40_000, 200, 1_958)),
+        Decision::Stay
+    );
     assert!(controller.pending().is_none());
     assert!(
         matches!(
             controller.observe_next(sample(40_000, 200, 1_958)),
-            Decision::Prime(Proposal { direction: Direction::Down, .. })
+            Decision::Prime(Proposal {
+                direction: Direction::Down,
+                ..
+            })
         ),
         "the same short reserve on the second sample must reach the emergency path",
     );
@@ -361,10 +377,22 @@ fn an_unknown_reserve_advances_no_estimate_and_no_counter() {
     buffer.update(Some(11_000), 2_000);
     let after_two = buffer;
     buffer.update(None, 2_000);
-    assert_eq!(buffer.buffered_ms, after_two.buffered_ms, "the level must not move");
-    assert_eq!(buffer.slope_ms_per_s, after_two.slope_ms_per_s, "the slope must not move");
-    assert_eq!(buffer.last_delta_ms, after_two.last_delta_ms, "no fabricated cliff");
-    assert_eq!(buffer.samples, after_two.samples, "an absence is not a sample");
+    assert_eq!(
+        buffer.buffered_ms, after_two.buffered_ms,
+        "the level must not move"
+    );
+    assert_eq!(
+        buffer.slope_ms_per_s, after_two.slope_ms_per_s,
+        "the slope must not move"
+    );
+    assert_eq!(
+        buffer.last_delta_ms, after_two.last_delta_ms,
+        "no fabricated cliff"
+    );
+    assert_eq!(
+        buffer.samples, after_two.samples,
+        "an absence is not a sample"
+    );
     assert_eq!(buffer.draining_samples, after_two.draining_samples);
 }
 
@@ -373,13 +401,26 @@ fn an_unknown_reserve_advances_no_estimate_and_no_counter() {
 fn original_windows_shorter_than_the_measurement_window_are_not_evidence() {
     let mut mode = original(28_000);
     assert!(mode
-        .observe_saturated(window_bytes(4_000), ORIGINAL_WINDOW_US - 1, Some(3_000), HOUR_MS)
+        .observe_saturated(
+            window_bytes(4_000),
+            ORIGINAL_WINDOW_US - 1,
+            Some(3_000),
+            HOUR_MS
+        )
         .is_none());
     let first = mode
-        .observe_saturated(window_bytes(4_000), ORIGINAL_WINDOW_US, Some(3_000), HOUR_MS)
+        .observe_saturated(
+            window_bytes(4_000),
+            ORIGINAL_WINDOW_US,
+            Some(3_000),
+            HOUR_MS,
+        )
         .unwrap();
     assert_eq!(first.measured_kbps, 4_000);
-    assert_eq!(first.requirement_kbps, 37_800, "28 Mbit/s average + VBR headroom");
+    assert_eq!(
+        first.requirement_kbps, 37_800,
+        "28 Mbit/s average + VBR headroom"
+    );
 }
 
 /// **The 2026-08-25 rewrite, in one assertion.** 4 Mbit/s against a 28 Mbit/s file used to be
@@ -421,14 +462,31 @@ fn a_deficit_with_a_deep_reserve_is_arithmetic_not_an_emergency() {
 fn a_collapse_leaves_original_for_the_best_sustainable_state() {
     let mut mode = original(28_000);
     let cold = mode
-        .observe_saturated(window_bytes(4_000), ORIGINAL_WINDOW_US, Some(8_000), HOUR_MS)
+        .observe_saturated(
+            window_bytes(4_000),
+            ORIGINAL_WINDOW_US,
+            Some(8_000),
+            HOUR_MS,
+        )
         .unwrap();
-    assert_eq!(cold.fallback, None, "the first window refines the estimators and decides nothing");
+    assert_eq!(
+        cold.fallback, None,
+        "the first window refines the estimators and decides nothing"
+    );
     let observation = mode
-        .observe_saturated(window_bytes(4_000) * 2, ORIGINAL_WINDOW_US * 2, Some(5_000), HOUR_MS)
+        .observe_saturated(
+            window_bytes(4_000) * 2,
+            ORIGINAL_WINDOW_US * 2,
+            Some(5_000),
+            HOUR_MS,
+        )
         .unwrap();
     assert_eq!(observation.fallback, Some(OriginalExit::ImminentStarvation));
-    assert_eq!(observation.target, Some(Rung::P720Low), "3.2 Mbit/s of proven capacity");
+    assert_eq!(
+        observation.target,
+        Some(Rung::P720Low),
+        "3.2 Mbit/s of proven capacity"
+    );
 }
 
 /// **The device finding, as an assertion** (`docs/measurements/orig-first-window-fallback.md`).
@@ -455,15 +513,29 @@ fn the_prime_remnant_is_not_a_starving_reserve() {
         first.requirement_kbps,
         first.conservative_kbps,
     );
-    assert_eq!(first.fallback, None, "window 1 may not abandon 4K direct play");
-    assert_eq!(first.unsafe_deficit_ms, 0, "nor may it count toward the sustained-deficit tally");
+    assert_eq!(
+        first.fallback, None,
+        "window 1 may not abandon 4K direct play"
+    );
+    assert_eq!(
+        first.unsafe_deficit_ms, 0,
+        "nor may it count toward the sustained-deficit tally"
+    );
 
     // …and the reserve then GROWS, exactly as the film's log showed (+113 ms/s). Nothing about
     // the next window is a deficit either.
     let second = mode
-        .observe_saturated(window_bytes(42_365) * 2, ORIGINAL_WINDOW_US * 2, Some(1_200), HOUR_MS)
+        .observe_saturated(
+            window_bytes(42_365) * 2,
+            ORIGINAL_WINDOW_US * 2,
+            Some(1_200),
+            HOUR_MS,
+        )
         .unwrap();
-    assert_eq!(second.fallback, None, "a filling reserve on a link that covers the file");
+    assert_eq!(
+        second.fallback, None,
+        "a filling reserve on a link that covers the file"
+    );
 }
 
 /// **The same film, eight windows in — where `the_prime_remnant_is_not_a_starving_reserve` stops
@@ -578,7 +650,12 @@ fn the_eviction_horizon_is_measured_not_discounted() {
         .unwrap();
     }
     let settled = mode
-        .observe_saturated(window_bytes(31_037) * 5, ORIGINAL_WINDOW_US * 5, Some(4_814), HOUR_MS)
+        .observe_saturated(
+            window_bytes(31_037) * 5,
+            ORIGINAL_WINDOW_US * 5,
+            Some(4_814),
+            HOUR_MS,
+        )
         .unwrap();
 
     // The published `safe=` is still the discounted number, because it still chooses the fallback
@@ -597,7 +674,9 @@ fn the_eviction_horizon_is_measured_not_discounted() {
          allowance alone rescues",
     );
     assert!(
-        settled.horizon_secs.is_none_or(|s| s > AbrPolicy::measured().starvation_fallback_secs),
+        settled
+            .horizon_secs
+            .is_none_or(|s| s > AbrPolicy::measured().starvation_fallback_secs),
         "a link delivering 1.23x the source may not read as imminent starvation — got {:?}s",
         settled.horizon_secs,
     );
@@ -607,10 +686,20 @@ fn the_eviction_horizon_is_measured_not_discounted() {
     // quarter of the source.
     let mut collapsed = original(source);
     collapsed
-        .observe_saturated(window_bytes(6_000), ORIGINAL_WINDOW_US, Some(6_000), HOUR_MS)
+        .observe_saturated(
+            window_bytes(6_000),
+            ORIGINAL_WINDOW_US,
+            Some(6_000),
+            HOUR_MS,
+        )
         .unwrap();
     let falling = collapsed
-        .observe_saturated(window_bytes(6_000) * 2, ORIGINAL_WINDOW_US * 2, Some(3_000), HOUR_MS)
+        .observe_saturated(
+            window_bytes(6_000) * 2,
+            ORIGINAL_WINDOW_US * 2,
+            Some(3_000),
+            HOUR_MS,
+        )
         .unwrap();
     assert_eq!(
         falling.fallback,
@@ -654,7 +743,12 @@ fn a_reserve_refilling_after_a_join_is_not_an_emergency() {
     // One negative raw sample, still deep inside `emergency_buffer_ms`. This is the exact shape
     // the guard fired on.
     let dip = mode
-        .observe_saturated(window_bytes(25_911) * 3, ORIGINAL_WINDOW_US * 3, Some(1_181), HOUR_MS)
+        .observe_saturated(
+            window_bytes(25_911) * 3,
+            ORIGINAL_WINDOW_US * 3,
+            Some(1_181),
+            HOUR_MS,
+        )
         .unwrap();
     assert!(
         dip.buffered_ms <= AbrPolicy::measured().emergency_buffer_ms,
@@ -690,8 +784,14 @@ fn the_reserve_slope_is_measured_on_the_wall_clock_not_on_read_time() {
     let mut mode = original(25_264);
     // One window of active read that took twice as long in wall time: the reader spent half of it
     // parked on a full queue, which is the healthy case.
-    mode.observe(window_bytes(31_037), ORIGINAL_WINDOW_US, Some(1_000), HOUR_MS, 1_500)
-        .unwrap();
+    mode.observe(
+        window_bytes(31_037),
+        ORIGINAL_WINDOW_US,
+        Some(1_000),
+        HOUR_MS,
+        1_500,
+    )
+    .unwrap();
     let second = mode
         .observe(
             window_bytes(31_037) * 2,
@@ -805,7 +905,10 @@ fn the_emergency_guard_fires_when_the_reserve_is_gone_anyway() {
             HOUR_MS,
         )
         .unwrap();
-    assert_eq!(collapsed.horizon_secs, None, "the delivery estimate still says it is fine");
+    assert_eq!(
+        collapsed.horizon_secs, None,
+        "the delivery estimate still says it is fine"
+    );
     assert_eq!(collapsed.fallback, Some(OriginalExit::EmergencyLowBuffer));
 }
 
@@ -815,10 +918,21 @@ fn the_emergency_guard_fires_when_the_reserve_is_gone_anyway() {
 fn a_reserve_that_covers_the_rest_of_the_film_never_falls_back() {
     let mut mode = original(28_000);
     let observation = mode
-        .observe_saturated(window_bytes(1_000), ORIGINAL_WINDOW_US, Some(20_000), 15_000)
+        .observe_saturated(
+            window_bytes(1_000),
+            ORIGINAL_WINDOW_US,
+            Some(20_000),
+            15_000,
+        )
         .unwrap();
-    assert!(observation.horizon_secs.unwrap_or(u32::MAX) < 60, "a real deficit");
-    assert!(observation.fallback.is_none(), "20 s buffered, 15 s left to play");
+    assert!(
+        observation.horizon_secs.unwrap_or(u32::MAX) < 60,
+        "a real deficit"
+    );
+    assert!(
+        observation.fallback.is_none(),
+        "20 s buffered, 15 s left to play"
+    );
 }
 
 /// A seek keeps the link estimate and drops everything positional. The link did not change
@@ -836,13 +950,21 @@ fn a_seek_keeps_the_link_estimate_and_drops_the_position() {
     }
     let before = mode.delivery;
     mode.on_seek(0, 0);
-    assert_eq!(mode.delivery, before, "a seek is not news about the network");
+    assert_eq!(
+        mode.delivery, before,
+        "a seek is not news about the network"
+    );
     assert_eq!(mode.buffer, BufferEstimate::default());
     assert_eq!(mode.unsafe_deficit_ms, 0);
     // ...and the counters really did rewind, so the next window measures from zero rather than
     // reading a negative delta as a collapse.
     assert!(mode
-        .observe_saturated(window_bytes(50_000), ORIGINAL_WINDOW_US, Some(1_000), HOUR_MS)
+        .observe_saturated(
+            window_bytes(50_000),
+            ORIGINAL_WINDOW_US,
+            Some(1_000),
+            HOUR_MS
+        )
         .is_some());
 }
 
@@ -862,7 +984,10 @@ fn a_long_pause_turns_the_estimate_into_a_weak_prior() {
     mode.on_resume(10 * 60 * 1_000);
     let stale = mode.delivery.conservative_kbps();
     assert!(stale < confident, "{stale} vs {confident}");
-    assert_eq!(mode.delivery.slow_kbps, 50_000, "the VALUE survives; the confidence does not");
+    assert_eq!(
+        mode.delivery.slow_kbps, 50_000,
+        "the VALUE survives; the confidence does not"
+    );
     assert_eq!(mode.delivery.samples, 1);
 }
 
@@ -873,20 +998,30 @@ fn measured_runtime_fallback_avoids_an_unnecessarily_low_bootstrap() {
     assert_eq!(rung(512), Rung::P240);
     assert_eq!(rung(4_000), Rung::P720Low);
     assert_eq!(rung(7_000), Rung::P720);
-    assert_eq!(rung(30_000), Rung::P1080High, "a fast link is not a reason to hold back");
+    assert_eq!(
+        rung(30_000),
+        Rung::P1080High,
+        "a fast link is not a reason to hold back"
+    );
     assert_eq!(
         rung(1),
         Rung::P240,
         "below every candidate, take the floor rather than refusing to move",
     );
-    assert_eq!(Rung::from_ceiling(Rung::P720Low.ceiling()), Some(Rung::P720Low));
+    assert_eq!(
+        Rung::from_ceiling(Rung::P720Low.ceiling()),
+        Some(Rung::P720Low)
+    );
 }
 
 #[test]
 fn realtime_jit_blocks_upshift_without_forcing_a_downshift() {
     let mut controller = bootstrap_controller();
     for _ in 0..10 {
-        assert_eq!(controller.observe_next(sample(20_000, 1_000, 10_000)), Decision::Stay);
+        assert_eq!(
+            controller.observe_next(sample(20_000, 1_000, 10_000)),
+            Decision::Stay
+        );
     }
     assert_eq!(controller.current(), Rung::P480);
 }
@@ -932,7 +1067,10 @@ fn startup_does_not_issue_back_to_back_encoder_swaps() {
     let proposal = prime_up(&mut controller);
     controller.commit(proposal, controller.clock_ms());
     for _ in 0..3 {
-        assert_eq!(controller.observe_next(sample(20_000, 200, 12_000)), Decision::Stay);
+        assert_eq!(
+            controller.observe_next(sample(20_000, 200, 12_000)),
+            Decision::Stay
+        );
     }
 }
 
@@ -947,11 +1085,17 @@ fn startup_does_not_issue_back_to_back_encoder_swaps() {
 fn a_single_slow_network_sample_jumps_to_the_measured_sustainable_rung() {
     let mut controller = bootstrap_controller();
     controller.current = Rung::P720;
-    assert_eq!(controller.observe_next(sample(20_000, 400, 8_000)), Decision::Stay);
+    assert_eq!(
+        controller.observe_next(sample(20_000, 400, 8_000)),
+        Decision::Stay
+    );
     let decision = controller.observe_next(sample(1_000, 400, 8_000));
     assert_eq!(
         decision,
-        Decision::Prime(Proposal { rung: Rung::P240, direction: Direction::Down })
+        Decision::Prime(Proposal {
+            rung: Rung::P240,
+            direction: Direction::Down
+        })
     );
     assert_eq!(controller.current(), Rung::P720);
 }
@@ -1007,10 +1151,16 @@ fn a_failed_downshift_does_not_arm_the_guard_that_refuses_climbing() {
 fn a_runtime_collapse_from_the_top_does_not_prime_oversized_intermediate_rungs() {
     let mut controller = bootstrap_controller();
     controller.current = Rung::P1080High;
-    assert_eq!(controller.observe_next(sample(40_000, 400, 8_000)), Decision::Stay);
+    assert_eq!(
+        controller.observe_next(sample(40_000, 400, 8_000)),
+        Decision::Stay
+    );
     assert_eq!(
         controller.observe_next(sample(512, 1_000, 8_000)),
-        Decision::Prime(Proposal { rung: Rung::P240, direction: Direction::Down })
+        Decision::Prime(Proposal {
+            rung: Rung::P240,
+            direction: Direction::Down
+        })
     );
 }
 
@@ -1035,10 +1185,16 @@ fn draining_jit_session_downshifts_but_stable_jit_does_not() {
     // The drain, reacted to on the first sample that can see it. Sample one records the level and
     // no slope — a slope needs two observations — so sample two carries the first real delta.
     let mut draining = bootstrap_controller();
-    assert_eq!(draining.observe_next(sample(20_000, 1_200, 8_000)), Decision::Stay);
+    assert_eq!(
+        draining.observe_next(sample(20_000, 1_200, 8_000)),
+        Decision::Stay
+    );
     assert_eq!(
         draining.observe_next(sample(20_000, 1_200, 6_000)),
-        Decision::Prime(Proposal { rung: Rung::P240, direction: Direction::Down }),
+        Decision::Prime(Proposal {
+            rung: Rung::P240,
+            direction: Direction::Down
+        }),
         "one real delta is enough here because TWO independent conditions agree on it",
     );
     assert_eq!(
@@ -1105,16 +1261,27 @@ fn idle_server() -> ProductionEstimate {
 /// reading at twice what that rung needs. Nothing here is chosen — the factor is the cap, and the
 /// rate is the candidate.
 fn healthy_hls() -> CapacityEstimate {
-    let top = HlsActuatorCatalog::measured().candidate(Rung::P1080High).expected_wire_kbps;
+    let top = HlsActuatorCatalog::measured()
+        .candidate(Rung::P1080High)
+        .expected_wire_kbps;
     CapacityEstimate::from_prior(top.saturating_mul(4))
 }
 
 fn healthy_buffer() -> BufferEstimate {
-    BufferEstimate { buffered_ms: 12_000, slope_ms_per_s: 0, ..Default::default() }
+    BufferEstimate {
+        buffered_ms: 12_000,
+        slope_ms_per_s: 0,
+        ..Default::default()
+    }
 }
 
 fn probe(kbps: u32, completed: bool) -> CapacityObservation {
-    CapacityObservation { kbps, bytes: 2_000_000, active_us: 400_000, completed }
+    CapacityObservation {
+        kbps,
+        bytes: 2_000_000,
+        active_us: 400_000,
+        completed,
+    }
 }
 
 /// **A mid-ladder rung with spare capacity may probe, once the spacing has ELAPSED.**
@@ -1147,10 +1314,18 @@ fn original_recovery_probes_from_any_rung_once_the_spacing_has_elapsed() {
     let mut fired_at = None;
     for _ in 0..8 {
         now += 2_000;
-        if gate.probe_due(
-            current, &idle_server(), sample(20_000, 500, 10_000), healthy_buffer(), &spare,
-            HOUR_MS, now,
-        ).is_ok() {
+        if gate
+            .probe_due(
+                current,
+                &idle_server(),
+                sample(20_000, 500, 10_000),
+                healthy_buffer(),
+                &spare,
+                HOUR_MS,
+                now,
+            )
+            .is_ok()
+        {
             fired_at = Some(now);
             break;
         }
@@ -1176,10 +1351,18 @@ fn the_probe_spacing_is_a_duration_and_not_a_number_of_segments() {
         let mut now = 0u64;
         for n in 1..40 {
             now += step_ms;
-            if gate.probe_due(
-                current, &idle_server(), sample(20_000, 500, 10_000), healthy_buffer(), &spare,
-                HOUR_MS, now,
-            ).is_ok() {
+            if gate
+                .probe_due(
+                    current,
+                    &idle_server(),
+                    sample(20_000, 500, 10_000),
+                    healthy_buffer(),
+                    &spare,
+                    HOUR_MS,
+                    now,
+                )
+                .is_ok()
+            {
                 return n;
             }
         }
@@ -1208,39 +1391,49 @@ fn original_recovery_refuses_to_probe_without_room_to_do_it_safely() {
     let elapsed = AbrPolicy::measured().probe_spacing_ms * 4;
     for _ in 0..6 {
         assert!(
-            recovery(28_000).probe_due(
-                current,
-                &idle_server(),
-                sample(60_000, 500, 10_000),
-                healthy_buffer(),
-                &no_headroom,
-                HOUR_MS,
-                elapsed,
-            ).is_err(),
+            recovery(28_000)
+                .probe_due(
+                    current,
+                    &idle_server(),
+                    sample(60_000, 500, 10_000),
+                    healthy_buffer(),
+                    &no_headroom,
+                    HOUR_MS,
+                    elapsed,
+                )
+                .is_err(),
             "segments prove a LOWER bound; at the wire rate there is no evidence of more",
         );
         assert!(
-            recovery(28_000).probe_due(
-                current,
-                &idle_server(),
-                sample(60_000, 500, 2_000),
-                healthy_buffer(),
-                &spare,
-                HOUR_MS,
-                elapsed,
-            ).is_err(),
+            recovery(28_000)
+                .probe_due(
+                    current,
+                    &idle_server(),
+                    sample(60_000, 500, 2_000),
+                    healthy_buffer(),
+                    &spare,
+                    HOUR_MS,
+                    elapsed,
+                )
+                .is_err(),
             "one segment of reserve is not room to spend on a measurement",
         );
         assert!(
-            recovery(28_000).probe_due(
-                current,
-                &idle_server(),
-                sample(60_000, 500, 10_000),
-                BufferEstimate { buffered_ms: 12_000, slope_ms_per_s: -400, ..Default::default() },
-                &spare,
-                HOUR_MS,
-                elapsed,
-            ).is_err(),
+            recovery(28_000)
+                .probe_due(
+                    current,
+                    &idle_server(),
+                    sample(60_000, 500, 10_000),
+                    BufferEstimate {
+                        buffered_ms: 12_000,
+                        slope_ms_per_s: -400,
+                        ..Default::default()
+                    },
+                    &spare,
+                    HOUR_MS,
+                    elapsed,
+                )
+                .is_err(),
             "a draining reserve is not the moment to add a second transfer",
         );
     }
@@ -1254,14 +1447,30 @@ fn original_recovery_refuses_to_probe_without_room_to_do_it_safely() {
 fn original_recovery_is_decided_by_confidence_rather_than_probe_count() {
     let mut decisive = recovery(28_000);
     assert_eq!(
-        decisive.observe_probe(probe(80_000, true), top_candidate(), &idle_server(), healthy_buffer(), &healthy_hls(), HOUR_MS),
+        decisive.observe_probe(
+            probe(80_000, true),
+            top_candidate(),
+            &idle_server(),
+            healthy_buffer(),
+            &healthy_hls(),
+            HOUR_MS
+        ),
         RecoveryVerdict::Recover,
         "80 Mbit/s leaves nothing for a second probe to add",
     );
 
     let mut marginal = recovery(28_000);
     let verdicts: Vec<RecoveryVerdict> = (0..3)
-        .map(|_| marginal.observe_probe(probe(50_000, true), top_candidate(), &idle_server(), healthy_buffer(), &healthy_hls(), HOUR_MS))
+        .map(|_| {
+            marginal.observe_probe(
+                probe(50_000, true),
+                top_candidate(),
+                &idle_server(),
+                healthy_buffer(),
+                &healthy_hls(),
+                HOUR_MS,
+            )
+        })
         .collect();
     assert_eq!(
         verdicts,
@@ -1280,11 +1489,25 @@ fn original_recovery_is_decided_by_confidence_rather_than_probe_count() {
 fn a_truncated_probe_is_absence_of_evidence() {
     let mut gate = recovery(28_000);
     assert_eq!(
-        gate.observe_probe(probe(2_000, false), top_candidate(), &idle_server(), healthy_buffer(), &healthy_hls(), HOUR_MS),
+        gate.observe_probe(
+            probe(2_000, false),
+            top_candidate(),
+            &idle_server(),
+            healthy_buffer(),
+            &healthy_hls(),
+            HOUR_MS
+        ),
         RecoveryVerdict::Insufficient,
     );
     assert_eq!(
-        gate.observe_probe(probe(80_000, true), top_candidate(), &idle_server(), healthy_buffer(), &healthy_hls(), HOUR_MS),
+        gate.observe_probe(
+            probe(80_000, true),
+            top_candidate(),
+            &idle_server(),
+            healthy_buffer(),
+            &healthy_hls(),
+            HOUR_MS
+        ),
         RecoveryVerdict::Recover,
         "the aborted attempt left no trace to drag the estimate down",
     );
@@ -1295,22 +1518,31 @@ fn a_truncated_probe_is_absence_of_evidence() {
 fn recovery_does_not_pay_for_a_reload_at_the_end_of_a_film() {
     let mut gate = recovery(28_000);
     assert_eq!(
-        gate.observe_probe(probe(80_000, true), top_candidate(), &idle_server(), healthy_buffer(), &healthy_hls(), 8_000),
+        gate.observe_probe(
+            probe(80_000, true),
+            top_candidate(),
+            &idle_server(),
+            healthy_buffer(),
+            &healthy_hls(),
+            8_000
+        ),
         RecoveryVerdict::NotWorthIt,
     );
     let current = hd_catalog().candidate(Rung::P720);
     let spare = CapacityEstimate::from_prior(80_000);
     for _ in 0..ORIGINAL_PROBE_SPACING * 2 {
         assert!(
-            recovery(28_000).probe_due(
-                current,
-                &idle_server(),
-                sample(20_000, 500, 10_000),
-                healthy_buffer(),
-                &spare,
-                8_000,
-                AbrPolicy::measured().probe_spacing_ms * 4,
-            ).is_err(),
+            recovery(28_000)
+                .probe_due(
+                    current,
+                    &idle_server(),
+                    sample(20_000, 500, 10_000),
+                    healthy_buffer(),
+                    &spare,
+                    8_000,
+                    AbrPolicy::measured().probe_spacing_ms * 4,
+                )
+                .is_err(),
             "and it does not spend a probe finding that out",
         );
     }
@@ -1336,7 +1568,10 @@ fn a_downshift_recovers_on_the_sample_the_window_admits_and_not_two_later() {
     let mut controller = controller_at(Rung::P1080High);
     // Establish that the encoder is no longer on its cold sample. The collapse below remains the
     // first SLOW sample, which is the decision this test grades.
-    assert_eq!(controller.observe_next(sample(40_000, 400, 8_000)), Decision::Stay);
+    assert_eq!(
+        controller.observe_next(sample(40_000, 400, 8_000)),
+        Decision::Stay
+    );
     let Decision::Prime(down) = controller.observe_next(sample(12_000, 500, 8_000)) else {
         panic!("the collapsed link must propose a downshift")
     };
@@ -1367,7 +1602,10 @@ fn a_downshift_recovers_on_the_sample_the_window_admits_and_not_two_later() {
     let (proposal, window_at_proposal, at) = recovered.expect("the recovery must happen at all");
     assert_eq!(
         proposal,
-        Proposal { rung: Rung::P1080High, direction: Direction::Up },
+        Proposal {
+            rung: Rung::P1080High,
+            direction: Direction::Up
+        },
         "and it must recover all the way, not one rung at a time",
     );
     assert_eq!(
@@ -1418,7 +1656,10 @@ fn the_dwell_between_two_climbs_is_wall_clock_and_not_a_segment_count() {
         let mut c = controller_at(Rung::P720);
         let up = prime_up(&mut c);
         assert!(c.commit(up, c.clock_ms()));
-        assert!(c.telemetry().gates.dwell_ms > 0, "a commit must arm the dwell");
+        assert!(
+            c.telemetry().gates.dwell_ms > 0,
+            "a commit must arm the dwell"
+        );
         // CONTINUE the controller's clock. Starting a second origin here is the defect the doc
         // above describes, and it is silent: the guard simply reads as never having aged.
         let mut clock = c.clock_ms();
@@ -1542,7 +1783,10 @@ fn a_transaction_that_takes_time_does_not_spend_the_dwell_it_arms() {
         &AbrPolicy::measured(),
     )
     .as_millis() as u64;
-    assert!(full_dwell > 0, "E_tx must be a real interval or this test grades nothing");
+    assert!(
+        full_dwell > 0,
+        "E_tx must be a real interval or this test grades nothing"
+    );
 
     // A transaction that really took most of its own budget: a control-plane round trip plus two
     // fetches. Anything strictly inside `E_tx` and strictly positive makes the point.
@@ -1601,7 +1845,10 @@ fn a_failed_prime_is_paid_for_before_another_is_attempted() {
             Decision::Stay,
             "another attempt costs another E_tx and nothing has repaid the last one",
         );
-        assert!(c.telemetry().gates.blocked_kbps > 0, "the guard must still be holding");
+        assert!(
+            c.telemetry().gates.blocked_kbps > 0,
+            "the guard must still be holding"
+        );
     }
 
     // And it is not a latch. Wall clock alone releases it — this link has surplus, so the reserve
@@ -1616,7 +1863,10 @@ fn a_failed_prime_is_paid_for_before_another_is_attempted() {
             break;
         }
     }
-    assert!(released.is_some(), "a link with surplus must repay one attempt in bounded time");
+    assert!(
+        released.is_some(),
+        "a link with surplus must repay one attempt in bounded time"
+    );
 }
 
 /// **N21: the production arm is a magnitude predicate, not a persistence count.**
@@ -1637,7 +1887,9 @@ fn a_failed_prime_is_paid_for_before_another_is_attempted() {
 fn a_server_falling_behind_moves_the_rung_without_eight_samples_of_agreement() {
     let policy = AbrPolicy::measured();
     let mut c = controller_at(Rung::P1080);
-    let rung_kbps = HlsActuatorCatalog::measured().candidate(Rung::P1080).expected_wire_kbps;
+    let rung_kbps = HlsActuatorCatalog::measured()
+        .candidate(Rung::P1080)
+        .expected_wire_kbps;
     // Past `production_max_pm` from the first sample, so the ONLY thing this test waits for is the
     // reserve, which is the predicate under change.
     let over = policy.production_max_pm * 2;
@@ -1660,7 +1912,10 @@ fn a_server_falling_behind_moves_the_rung_without_eight_samples_of_agreement() {
             "a filling reserve is not a reason to move, however loaded the server is",
         );
     }
-    assert!(!c.buffer().draining(), "the setup must reach a non-draining deep reserve");
+    assert!(
+        !c.buffer().draining(),
+        "the setup must reach a non-draining deep reserve"
+    );
 
     let mut fired = None;
     for i in 0..8 {
@@ -1702,7 +1957,12 @@ fn the_auto_ladder_matches_fixed_quality_wire_values() {
     // The ladder must stay sorted and unique on the request axis: `below()` walks it by index
     // and `from_ceiling` recovers a rung from a stored ceiling by exact match.
     for pair in LADDER.windows(2) {
-        assert!(pair[0].kbps() < pair[1].kbps(), "{:?} then {:?}", pair[0], pair[1]);
+        assert!(
+            pair[0].kbps() < pair[1].kbps(),
+            "{:?} then {:?}",
+            pair[0],
+            pair[1]
+        );
     }
     for rung in LADDER {
         assert_eq!(Rung::from_ceiling(rung.ceiling()), Some(rung));
@@ -1722,7 +1982,10 @@ fn the_uhd_actuator_separates_its_request_from_its_measured_output() {
     assert_eq!(high.expected_wire_kbps, 20_011);
     // 4% more wire, 110% more server. The whole reason production is a separate constraint.
     assert!(candidate.expected_wire_kbps < high.expected_wire_kbps * 11 / 10);
-    assert_eq!(candidate.production_load_pm, high.production_load_pm * 21 / 10);
+    assert_eq!(
+        candidate.production_load_pm,
+        high.production_load_pm * 21 / 10
+    );
 }
 
 /// Feasibility is a FILTER, applied before anything is scored — and it removes 4K for two
@@ -1747,7 +2010,10 @@ fn an_infeasible_raster_is_removed_before_any_scoring() {
     );
     // A zero on either axis is "nobody said", not a forbidden zero-pixel picture.
     let unmeasured = HlsActuatorCatalog::measured().limited_to((3840, 2176), (0, 0));
-    assert_eq!(unmeasured.best_for_budget(huge_budget).map(|c| c.rung), Some(Rung::Uhd));
+    assert_eq!(
+        unmeasured.best_for_budget(huge_budget).map(|c| c.rung),
+        Some(Rung::Uhd)
+    );
     assert!(HlsActuatorCatalog::measured()
         .limited_to((0, 0), (0, 0))
         .best_for_budget(320)
@@ -1770,7 +2036,10 @@ fn a_scope_source_keeps_every_rung_that_would_not_scale_it() {
         !rungs.contains(&Rung::Uhd),
         "but a 4K box buys the same picture, priced with a 4K server load: {rungs:?}",
     );
-    assert!(rungs.contains(&Rung::P720), "and the real downscale steps all survive");
+    assert!(
+        rungs.contains(&Rung::P720),
+        "and the real downscale steps all survive"
+    );
     assert_eq!(
         scope.best_for_budget(60_000).map(|c| c.rung),
         Some(Rung::P1080High),
@@ -1782,7 +2051,10 @@ fn a_scope_source_keeps_every_rung_that_would_not_scale_it() {
     assert_eq!(uhd.best_for_budget(60_000).map(|c| c.rung), Some(Rung::Uhd));
     // ...and on a scope 4K master, where the box matches on width alone.
     let uhd_scope = HlsActuatorCatalog::measured().limited_to((3840, 2176), (3840, 1600));
-    assert_eq!(uhd_scope.best_for_budget(60_000).map(|c| c.rung), Some(Rung::Uhd));
+    assert_eq!(
+        uhd_scope.best_for_budget(60_000).map(|c| c.rung),
+        Some(Rung::Uhd)
+    );
 }
 
 /// A 2 s segment at the 320 kbps floor is 80 KB; a LAN delivers it in under a millisecond, and
@@ -1799,7 +2071,11 @@ fn a_transfer_too_short_to_time_cannot_claim_a_gigabit_link() {
     };
     assert_eq!(tiny.quality(), ObservationQuality::Weak);
     let clamped = tiny.clamped_to_evidence(floor.expected_wire_kbps);
-    assert_eq!(clamped.kbps, floor.expected_wire_kbps * 8, "a bounded claim, not a fantasy");
+    assert_eq!(
+        clamped.kbps,
+        floor.expected_wire_kbps * 8,
+        "a bounded claim, not a fantasy"
+    );
     assert!(
         clamped.kbps > hd_catalog().candidate(Rung::P720Low).expected_wire_kbps,
         "and still enough to climb out of the floor promptly",
@@ -1821,7 +2097,11 @@ fn a_transfer_too_short_to_time_cannot_claim_a_gigabit_link() {
     for _ in 0..40 {
         let segment = sample_bytes(80_000, 700, 250, 12_000);
         if let Decision::Prime(proposal) = controller.observe_next(segment) {
-            if controller.candidate_ready(proposal, sample(20_000, 400, 12_000), declared_bps(proposal.rung)) {
+            if controller.candidate_ready(
+                proposal,
+                sample(20_000, 400, 12_000),
+                declared_bps(proposal.rung),
+            ) {
                 controller.commit(proposal, controller.clock_ms());
                 reached = controller.current();
             } else {
@@ -1829,7 +2109,10 @@ fn a_transfer_too_short_to_time_cannot_claim_a_gigabit_link() {
             }
         }
     }
-    assert!(reached > Rung::P240, "a LAN must not leave Auto on the emergency floor");
+    assert!(
+        reached > Rung::P240,
+        "a LAN must not leave Auto on the emergency floor"
+    );
 }
 
 /// **[LIMITATION, pinned deliberately] At the emergency floor the transfer bound licenses a climb
@@ -1872,7 +2155,10 @@ fn at_the_emergency_floor_a_slow_producing_server_holds_the_rule_below_a_climb()
         }
         controller.current()
     }
-    assert!(reached_from_floor(300) > Rung::P240, "below the crossover the floor is escapable");
+    assert!(
+        reached_from_floor(300) > Rung::P240,
+        "below the crossover the floor is escapable"
+    );
     assert_eq!(
         reached_from_floor(400),
         Rung::P240,
@@ -1889,7 +2175,10 @@ fn a_fast_link_in_front_of_a_loaded_server_does_not_choose_4k() {
     let current = catalog.candidate(Rung::P1080High);
     let fast = CapacityEstimate::from_prior(80_000);
     let policy = AbrPolicy::measured();
-    let buffer = BufferEstimate { buffered_ms: 20_000, ..Default::default() };
+    let buffer = BufferEstimate {
+        buffered_ms: 20_000,
+        ..Default::default()
+    };
 
     let mut quick_server = ProductionEstimate::default();
     for _ in 0..4 {
@@ -1949,7 +2238,10 @@ fn a_budget_jump_skips_the_intermediate_encoders() {
     }
     assert_eq!(
         proposal,
-        Some(Proposal { rung: Rung::P1080M14, direction: Direction::Up }),
+        Some(Proposal {
+            rung: Rung::P1080M14,
+            direction: Direction::Up
+        }),
         "8 Mbps now, a ~14 Mbit/s safe budget: one prime, not three",
     );
 }
@@ -1958,8 +2250,14 @@ fn a_budget_jump_skips_the_intermediate_encoders() {
 fn only_upshift_primes_receive_the_exact_acceptance_budget() {
     let media = std::time::Duration::from_millis(2_002);
     let policy = AbrPolicy::measured();
-    let up = Proposal { rung: Rung::P720Low, direction: Direction::Up };
-    let down = Proposal { rung: Rung::P240, direction: Direction::Down };
+    let up = Proposal {
+        rung: Rung::P720Low,
+        direction: Direction::Up,
+    };
+    let down = Proposal {
+        rung: Rung::P240,
+        direction: Direction::Down,
+    };
     // A reserve far above either acceptance budget, so this test grades the ACCEPTANCE half alone.
     let ample = reserve_as_budget(60_000);
     assert_eq!(
@@ -1987,7 +2285,10 @@ fn only_upshift_primes_receive_the_exact_acceptance_budget() {
 #[test]
 fn a_downshift_transfer_is_bounded_by_the_reserve_it_spends() {
     let media = std::time::Duration::from_millis(2_000);
-    let down = Proposal { rung: Rung::P240, direction: Direction::Down };
+    let down = Proposal {
+        rung: Rung::P240,
+        direction: Direction::Down,
+    };
     for reserve_ms in [0i64, 250, 5_000, 36_000] {
         let reserve = reserve_as_budget(reserve_ms);
         assert_eq!(
@@ -2007,7 +2308,10 @@ fn a_downshift_transfer_is_bounded_by_the_reserve_it_spends() {
 fn a_thin_reserve_bounds_an_upshift_too_and_an_ample_one_does_not() {
     let media = std::time::Duration::from_millis(2_000);
     let policy = AbrPolicy::measured();
-    let up = Proposal { rung: Rung::P1080, direction: Direction::Up };
+    let up = Proposal {
+        rung: Rung::P1080,
+        direction: Direction::Up,
+    };
 
     let healthy = reserve_as_budget(3 * 2_000);
     assert_eq!(
@@ -2031,7 +2335,11 @@ fn a_thin_reserve_bounds_an_upshift_too_and_an_ample_one_does_not() {
 #[test]
 fn a_reserve_at_or_below_zero_is_a_zero_budget_and_never_a_wrapped_one() {
     for ms in [0i64, -1, -20_000, i64::MIN] {
-        assert_eq!(reserve_as_budget(ms), std::time::Duration::ZERO, "at {ms}ms");
+        assert_eq!(
+            reserve_as_budget(ms),
+            std::time::Duration::ZERO,
+            "at {ms}ms"
+        );
     }
     assert_eq!(reserve_as_budget(1), std::time::Duration::from_millis(1));
 }
@@ -2079,7 +2387,10 @@ fn resume_clears_the_state_a_pause_invalidates_and_leaves_the_clock_alone() {
         now += 2_000;
         let _ = c.observe(sample(40_000, 200, 20_000), now);
     }
-    assert!(c.telemetry().gates.on_rung > 0, "the setup must establish rung residency");
+    assert!(
+        c.telemetry().gates.on_rung > 0,
+        "the setup must establish rung residency"
+    );
     c.on_resume(30_000);
     assert_eq!(c.telemetry().gates.on_rung, 0);
 
@@ -2113,11 +2424,15 @@ fn resume_clears_the_state_a_pause_invalidates_and_leaves_the_clock_alone() {
         assert!(now < 60_000, "the setup must reach an upshift proposal");
     };
     assert!(dwelling.commit(up, dwelling.clock_ms()));
-    assert!(dwelling.telemetry().gates.dwell_ms > 0, "a commit arms the dwell");
+    assert!(
+        dwelling.telemetry().gates.dwell_ms > 0,
+        "a commit arms the dwell"
+    );
     now += 30_000;
     let _ = dwelling.observe(sample(40_000, 200, 20_000), now);
     assert_eq!(
-        dwelling.telemetry().gates.dwell_ms, 0,
+        dwelling.telemetry().gates.dwell_ms,
+        0,
         "thirty seconds of wall clock is thirty seconds, whether they were paused or played",
     );
 }
@@ -2143,7 +2458,10 @@ fn an_absurdly_fast_reading_neither_panics_nor_reads_as_a_collapse() {
             estimate.slow_kbps, slow_before,
             "{measured}kbps is faster than the prior, so nothing collapsed",
         );
-        assert_eq!(estimate.fast_kbps, measured, "the fast estimate still takes the reading");
+        assert_eq!(
+            estimate.fast_kbps, measured,
+            "the fast estimate still takes the reading"
+        );
     }
 }
 
@@ -2152,7 +2470,10 @@ fn an_absurdly_fast_reading_neither_panics_nor_reads_as_a_collapse() {
 fn a_reading_a_quarter_of_the_prior_still_collapses() {
     let mut estimate = CapacityEstimate::from_prior(40_000);
     estimate.collapse(1_000);
-    assert!(estimate.slow_kbps < 40_000, "a 40x drop is a collapse and must lower the slow prior");
+    assert!(
+        estimate.slow_kbps < 40_000,
+        "a 40x drop is a collapse and must lower the slow prior"
+    );
     assert_eq!(estimate.uncertainty_pm, 400);
 }
 
@@ -2260,24 +2581,50 @@ fn starvation_horizon_distinguishes_harmless_deficit_from_emergency() {
     let severe = starvation_horizon(10_000, 60_000, 5_000);
     assert_eq!(severe.seconds, Some(10));
     let current = HlsActuatorCatalog::measured().candidate(Rung::P1080High);
-    assert!(candidate_risk(
-        current,
-        current,
-        &CapacityEstimate { slow_kbps: 59_000, fast_kbps: 59_000, uncertainty_pm: 0, samples: 8 },
-        &ProductionEstimate::default(),
-        &BufferEstimate { buffered_ms: 60_000, slope_ms_per_s: 0, samples: 8, ..Default::default() },
-        &AbrPolicy::measured(),
-    )
-    .score < 5);
+    assert!(
+        candidate_risk(
+            current,
+            current,
+            &CapacityEstimate {
+                slow_kbps: 59_000,
+                fast_kbps: 59_000,
+                uncertainty_pm: 0,
+                samples: 8
+            },
+            &ProductionEstimate::default(),
+            &BufferEstimate {
+                buffered_ms: 60_000,
+                slope_ms_per_s: 0,
+                samples: 8,
+                ..Default::default()
+            },
+            &AbrPolicy::measured(),
+        )
+        .score
+            < 5
+    );
 }
 
 #[test]
 fn a_safe_budget_selects_the_best_actuator_directly() {
     let catalog = hd_catalog();
-    assert_eq!(catalog.best_for_budget(15_000).map(|c| c.rung), Some(Rung::P1080M14));
-    assert_eq!(catalog.best_for_budget(3_000).map(|c| c.rung), Some(Rung::P720Low));
-    assert_eq!(catalog.candidate(Rung::P1080High).expected_wire_kbps, 20_011);
-    assert_eq!(catalog.best_for_budget(100).map(|c| c.rung), None, "nothing fits, and it says so");
+    assert_eq!(
+        catalog.best_for_budget(15_000).map(|c| c.rung),
+        Some(Rung::P1080M14)
+    );
+    assert_eq!(
+        catalog.best_for_budget(3_000).map(|c| c.rung),
+        Some(Rung::P720Low)
+    );
+    assert_eq!(
+        catalog.candidate(Rung::P1080High).expected_wire_kbps,
+        20_011
+    );
+    assert_eq!(
+        catalog.best_for_budget(100).map(|c| c.rung),
+        None,
+        "nothing fits, and it says so"
+    );
 }
 
 /// Throughput is a RATE, so the size and duration of the transfer decide how much it proves —
@@ -2292,19 +2639,44 @@ fn a_safe_budget_selects_the_best_actuator_directly() {
 /// propose any upshift at all (`CapacityObservation::quality`'s doc has the reading).
 #[test]
 fn observation_quality_weights_a_tiny_read_below_a_sustained_one() {
-    let tiny = CapacityObservation { kbps: 100_000, bytes: 40_000, active_us: 3_000, completed: true };
-    let normal = CapacityObservation { kbps: 20_000, bytes: 400_000, active_us: 300_000, completed: true };
-    let sustained = CapacityObservation { kbps: 20_000, bytes: 4_000_000, active_us: 1_600_000, completed: true };
-    let truncated = CapacityObservation { completed: false, ..sustained };
+    let tiny = CapacityObservation {
+        kbps: 100_000,
+        bytes: 40_000,
+        active_us: 3_000,
+        completed: true,
+    };
+    let normal = CapacityObservation {
+        kbps: 20_000,
+        bytes: 400_000,
+        active_us: 300_000,
+        completed: true,
+    };
+    let sustained = CapacityObservation {
+        kbps: 20_000,
+        bytes: 4_000_000,
+        active_us: 1_600_000,
+        completed: true,
+    };
+    let truncated = CapacityObservation {
+        completed: false,
+        ..sustained
+    };
     // Large enough to pass every SIZE test and far too brief to be a rate at all: the shape that
     // escaped both the interval test and the clamp.
     let big_and_brief = CapacityObservation {
-        kbps: 24_000_000, bytes: 600_000, active_us: 200, completed: true,
+        kbps: 24_000_000,
+        bytes: 600_000,
+        active_us: 200,
+        completed: true,
     };
     assert_eq!(tiny.quality(), ObservationQuality::Weak);
     assert_eq!(normal.quality(), ObservationQuality::Normal);
     assert_eq!(sustained.quality(), ObservationQuality::Strong);
-    assert_eq!(truncated.quality(), ObservationQuality::Weak, "a truncated read proves a floor");
+    assert_eq!(
+        truncated.quality(),
+        ObservationQuality::Weak,
+        "a truncated read proves a floor"
+    );
     assert_eq!(
         big_and_brief.quality(),
         ObservationQuality::Weak,
@@ -2326,10 +2698,16 @@ fn observation_quality_weights_a_tiny_read_below_a_sustained_one() {
         for _ in 0..6 {
             estimate.update(first);
         }
-        estimate.update(CapacityObservation { kbps: 8_000, ..first });
+        estimate.update(CapacityObservation {
+            kbps: 8_000,
+            ..first
+        });
         estimate.slow_kbps
     };
-    assert!(settle(sustained) < settle(normal), "a strong sample pulls harder");
+    assert!(
+        settle(sustained) < settle(normal),
+        "a strong sample pulls harder"
+    );
 }
 
 /// **The 2026-08-25 device finding.** A shaped leg ending is not an outlier to average in: the
@@ -2346,10 +2724,19 @@ fn a_measurement_a_factor_of_four_away_restarts_the_estimate() {
     };
     let mut estimate = CapacityEstimate::default();
     estimate.update(obs(3_952));
-    assert!(obs(28_116).is_regime_change(&estimate), "seven times is not jitter");
+    assert!(
+        obs(28_116).is_regime_change(&estimate),
+        "seven times is not jitter"
+    );
     estimate.update(obs(28_116));
-    assert_eq!(estimate.slow_kbps, 28_116, "the new regime is the estimate, not a blend of two");
-    assert_eq!(estimate.samples, 1, "with one sample's worth of confidence, no more");
+    assert_eq!(
+        estimate.slow_kbps, 28_116,
+        "the new regime is the estimate, not a blend of two"
+    );
+    assert_eq!(
+        estimate.samples, 1,
+        "with one sample's worth of confidence, no more"
+    );
     assert!(
         estimate.conservative_kbps() >= source_requirement_kbps(8_000, &AbrPolicy::measured()),
         "which is what makes the second probe decisive, as the device run needed",
@@ -2360,7 +2747,10 @@ fn a_measurement_a_factor_of_four_away_restarts_the_estimate() {
     for _ in 0..4 {
         falling.update(obs(40_000));
     }
-    assert!(!obs(30_000).is_regime_change(&falling), "a 25% dip is the link breathing");
+    assert!(
+        !obs(30_000).is_regime_change(&falling),
+        "a 25% dip is the link breathing"
+    );
     assert!(obs(2_000).is_regime_change(&falling));
     falling.update(obs(2_000));
     assert_eq!(falling.slow_kbps, 2_000);
@@ -2373,12 +2763,22 @@ fn a_measurement_a_factor_of_four_away_restarts_the_estimate() {
 /// `!draining`, which is how Auto sat on 10 Mbps with a 25 Mbit/s budget and a full buffer.
 #[test]
 fn a_flat_reserve_is_not_draining() {
-    let flat = |slope| BufferEstimate { buffered_ms: 12_000, slope_ms_per_s: slope, ..Default::default() };
+    let flat = |slope| BufferEstimate {
+        buffered_ms: 12_000,
+        slope_ms_per_s: slope,
+        ..Default::default()
+    };
     for slope in [0, -4, -16, -49, 100] {
-        assert!(!flat(slope).draining(), "slope {slope} is noise around flat");
+        assert!(
+            !flat(slope).draining(),
+            "slope {slope} is noise around flat"
+        );
     }
     for slope in [-51, -400, -2_000] {
-        assert!(flat(slope).draining(), "slope {slope} is a reserve actually going away");
+        assert!(
+            flat(slope).draining(),
+            "slope {slope} is a reserve actually going away"
+        );
     }
     // And the counter behind `starving` follows the same test, so the two cannot disagree.
     let mut buffer = BufferEstimate::default();
@@ -2408,7 +2808,11 @@ fn a_demoted_prior_keeps_its_value_and_gives_up_its_confidence() {
     assert_eq!(estimate.samples, 1);
     assert_eq!(estimate.uncertainty_pm, MAX_UNCERTAINTY_PM);
     assert!(estimate.conservative_kbps() < confident);
-    assert_eq!(estimate.conservative_kbps(), 20_000, "at most half of an unconfirmed number");
+    assert_eq!(
+        estimate.conservative_kbps(),
+        20_000,
+        "at most half of an unconfirmed number"
+    );
     // An empty estimate has nothing to demote and must not invent a prior.
     let mut empty = CapacityEstimate::default();
     empty.demote_to_prior();
@@ -2436,7 +2840,11 @@ fn staleness_widens_uncertainty_before_it_gives_up_entirely() {
     };
     let mut brief = fresh();
     brief.age_ms(u64::from(policy.stale_half_life_ms) / 2, &policy);
-    assert_eq!(brief, fresh(), "a gap shorter than a half-life is not staleness");
+    assert_eq!(
+        brief,
+        fresh(),
+        "a gap shorter than a half-life is not staleness"
+    );
 
     let mut aged = fresh();
     aged.age_ms(u64::from(policy.stale_half_life_ms) * 2, &policy);
@@ -2445,7 +2853,10 @@ fn staleness_widens_uncertainty_before_it_gives_up_entirely() {
 
     let mut ancient = fresh();
     ancient.age_ms(u64::from(policy.stale_half_life_ms) * 10, &policy);
-    assert_eq!(ancient.samples, 1, "past four half-lives it is a memory, not a measurement");
+    assert_eq!(
+        ancient.samples, 1,
+        "past four half-lives it is a memory, not a measurement"
+    );
 }
 
 /// **The bootstrap table.** One row per link class, plus the three ways a Remote probe can end.
@@ -2453,20 +2864,30 @@ fn staleness_widens_uncertainty_before_it_gives_up_entirely() {
 fn bootstrap_decides_from_the_link_class_and_one_bounded_probe() {
     let policy = AbrPolicy::measured();
     let catalog = hd_catalog();
-    let go = |link, feasible, source, probe| {
-        bootstrap(link, feasible, source, probe, &catalog, &policy)
-    };
+    let go =
+        |link, feasible, source, probe| bootstrap(link, feasible, source, probe, &catalog, &policy);
     let complete = |kbps| {
-        Some(CapacityObservation { kbps, bytes: 2_000_000, active_us: 400_000, completed: true })
+        Some(CapacityObservation {
+            kbps,
+            bytes: 2_000_000,
+            active_us: 400_000,
+            completed: true,
+        })
     };
 
     // A verified LAN carrying a playable file needs no measurement to prove it.
     let local = go(LinkKind::Local, true, 28_000, None);
     assert!(local.original && local.reason == BootstrapReason::LocalDirect);
-    assert!(local.prior.is_none(), "nothing was measured, so nothing is claimed");
+    assert!(
+        local.prior.is_none(),
+        "nothing was measured, so nothing is claimed"
+    );
 
     // Relay is bandwidth-limited by design; measuring it would be theatre.
-    assert_eq!(go(LinkKind::Relay, true, 28_000, None).reason, BootstrapReason::RelayLimited);
+    assert_eq!(
+        go(LinkKind::Relay, true, 28_000, None).reason,
+        BootstrapReason::RelayLimited
+    );
     assert!(!go(LinkKind::Relay, true, 28_000, None).original);
 
     // Original impossible for this item (codec, burn-in, no source URL) — link is irrelevant.
@@ -2479,7 +2900,10 @@ fn bootstrap_decides_from_the_link_class_and_one_bounded_probe() {
     let fast = go(LinkKind::Remote, true, 28_000, complete(80_000));
     assert!(fast.original && fast.reason == BootstrapReason::ProbeSustainable);
     let prior = fast.prior.expect("a completed probe is evidence");
-    assert_eq!(prior.samples, 1, "weak on purpose: a different request to a different server");
+    assert_eq!(
+        prior.samples, 1,
+        "weak on purpose: a different request to a different server"
+    );
     assert_eq!(prior.uncertainty_pm, MAX_UNCERTAINTY_PM);
 
     // Borderline: above the average but inside the cold-start margin. HLS, and the measurement
@@ -2487,20 +2911,39 @@ fn bootstrap_decides_from_the_link_class_and_one_bounded_probe() {
     let borderline = go(LinkKind::Remote, true, 28_000, complete(30_000));
     assert!(!borderline.original);
     assert_eq!(borderline.reason, BootstrapReason::ProbeBelowRequirement);
-    assert_eq!(borderline.rung, Rung::P1080High, "24 Mbit/s of budget, spent");
+    assert_eq!(
+        borderline.rung,
+        Rung::P1080High,
+        "24 Mbit/s of budget, spent"
+    );
 
     // A slow Remote opens where the measurement says, NOT at an emergency floor it would then
     // spend a minute climbing out of.
     let slow = go(LinkKind::Remote, true, 60_000, complete(17_000));
     assert!(!slow.original);
-    assert_eq!(slow.rung, Rung::P1080M12, "13.6 Mbit/s of budget → the 12 Mbps point");
+    assert_eq!(
+        slow.rung,
+        Rung::P1080M12,
+        "13.6 Mbit/s of budget → the 12 Mbps point"
+    );
 
     // Nothing to reason from: playback still starts, conservatively.
-    for inconclusive in [None, Some(CapacityObservation { kbps: 9_000, bytes: 100_000, active_us: 90_000, completed: false })] {
+    for inconclusive in [
+        None,
+        Some(CapacityObservation {
+            kbps: 9_000,
+            bytes: 100_000,
+            active_us: 90_000,
+            completed: false,
+        }),
+    ] {
         let decision = go(LinkKind::Remote, true, 60_000, inconclusive);
         assert!(!decision.original);
         assert_eq!(decision.reason, BootstrapReason::ProbeInconclusive);
-        assert!(decision.rung.kbps() <= Rung::P1080.kbps(), "conservative, not paralysed");
+        assert!(
+            decision.rung.kbps() <= Rung::P1080.kbps(),
+            "conservative, not paralysed"
+        );
     }
     // An unknown source bitrate cannot be reasoned about either, and says so.
     assert_eq!(
@@ -2526,7 +2969,11 @@ fn the_bootstrap_prior_seeds_the_steady_state_estimator() {
     // into irrelevance.
     let mut seeded = seeded;
     seeded.observe_next(sample(4_000, 400, 10_000));
-    assert!(seeded.delivery().slow_kbps < 25_000, "{}", seeded.delivery().slow_kbps);
+    assert!(
+        seeded.delivery().slow_kbps < 25_000,
+        "{}",
+        seeded.delivery().slow_kbps
+    );
 }
 
 /// **Transitions are asymmetric and their cost decays.** An HLS rung change is free here (the
@@ -2536,23 +2983,35 @@ fn the_bootstrap_prior_seeds_the_steady_state_estimator() {
 fn transition_cost_is_asymmetric_and_decays_with_time() {
     let policy = AbrPolicy::measured();
     let none = TransitionHistory::default();
-    assert_eq!(transition_cost(ModeKind::Hls, ModeKind::Hls, none, &policy), 0);
+    assert_eq!(
+        transition_cost(ModeKind::Hls, ModeKind::Hls, none, &policy),
+        0
+    );
     let first = transition_cost(ModeKind::Original, ModeKind::Hls, none, &policy);
     assert_eq!(first, policy.visible_switch_cost);
 
-    let just_switched = TransitionHistory { visible_switches: 2, since_last_ms: Some(1_000) };
+    let just_switched = TransitionHistory {
+        visible_switches: 2,
+        since_last_ms: Some(1_000),
+    };
     let long_ago = TransitionHistory {
         visible_switches: 2,
         since_last_ms: Some(policy.visible_switch_decay_ms * 4),
     };
     let recent = transition_cost(ModeKind::Hls, ModeKind::Original, just_switched, &policy);
     let old = transition_cost(ModeKind::Hls, ModeKind::Original, long_ago, &policy);
-    assert!(recent > old && old >= first, "recent={recent} old={old} first={first}");
+    assert!(
+        recent > old && old >= first,
+        "recent={recent} old={old} first={first}"
+    );
     assert!(
         transition_cost(
             ModeKind::Hls,
             ModeKind::Original,
-            TransitionHistory { visible_switches: 6, since_last_ms: Some(1_000) },
+            TransitionHistory {
+                visible_switches: 6,
+                since_last_ms: Some(1_000)
+            },
             &policy,
         ) > recent,
         "the sixth switch in two minutes has to buy a lot",
@@ -2575,7 +3034,10 @@ fn repeated_visible_switches_stop_paying_for_themselves() {
         28_000,
         AbrPolicy::measured(),
         SourceFeatures::default(),
-        TransitionHistory { visible_switches: 5, since_last_ms: Some(2_000) },
+        TransitionHistory {
+            visible_switches: 5,
+            since_last_ms: Some(2_000),
+        },
         hd_catalog(),
     )
     .unwrap();
@@ -2583,11 +3045,25 @@ fn repeated_visible_switches_stop_paying_for_themselves() {
     let mut calm = calm;
     let mut flapping = flapping;
     assert_eq!(
-        calm.observe_probe(good, top_candidate(), &idle_server(), healthy_buffer(), &healthy_hls(), 600_000),
+        calm.observe_probe(
+            good,
+            top_candidate(),
+            &idle_server(),
+            healthy_buffer(),
+            &healthy_hls(),
+            600_000
+        ),
         RecoveryVerdict::Recover,
     );
     assert_eq!(
-        flapping.observe_probe(good, top_candidate(), &idle_server(), healthy_buffer(), &healthy_hls(), 600_000),
+        flapping.observe_probe(
+            good,
+            top_candidate(),
+            &idle_server(),
+            healthy_buffer(),
+            &healthy_hls(),
+            600_000
+        ),
         RecoveryVerdict::NotWorthIt,
         "same link, same film, fifth visible switch",
     );
@@ -2607,7 +3083,11 @@ fn repeated_visible_switches_stop_paying_for_themselves() {
 #[test]
 fn a_pinned_controller_still_publishes_its_safe_budget() {
     let mut pinned = controller_at(Rung::P1080High).pinned_to(Some(Rung::P1080High));
-    assert_eq!(pinned.telemetry().safe_budget_kbps, 0, "nothing observed yet");
+    assert_eq!(
+        pinned.telemetry().safe_budget_kbps,
+        0,
+        "nothing observed yet"
+    );
     for _ in 0..4 {
         assert!(matches!(pinned.observe_next(sample(40_000, 300, 30_000)), Decision::Stay),
                 "already at the pin, so there is nothing to propose\u{2014}but a sample was still taken");
@@ -2629,22 +3109,53 @@ fn a_pinned_controller_still_publishes_its_safe_budget() {
 #[test]
 fn the_visible_switch_penalty_decays_on_the_worker_clock() {
     let policy = AbrPolicy::measured();
-    let flapping = TransitionHistory { visible_switches: 5, since_last_ms: Some(2_000) };
+    let flapping = TransitionHistory {
+        visible_switches: 5,
+        since_last_ms: Some(2_000),
+    };
     let good = probe(90_000, true);
 
-    let mut at_once = OriginalRecovery::new(28_000, policy, SourceFeatures::default(), flapping, hd_catalog()).unwrap();
+    let mut at_once = OriginalRecovery::new(
+        28_000,
+        policy,
+        SourceFeatures::default(),
+        flapping,
+        hd_catalog(),
+    )
+    .unwrap();
     assert_eq!(
-        at_once.observe_probe(good, top_candidate(), &idle_server(), healthy_buffer(), &healthy_hls(), 600_000),
+        at_once.observe_probe(
+            good,
+            top_candidate(),
+            &idle_server(),
+            healthy_buffer(),
+            &healthy_hls(),
+            600_000
+        ),
         RecoveryVerdict::NotWorthIt,
         "the fifth switch two seconds ago is still expensive",
     );
 
-    let mut later = OriginalRecovery::new(28_000, policy, SourceFeatures::default(), flapping, hd_catalog()).unwrap();
+    let mut later = OriginalRecovery::new(
+        28_000,
+        policy,
+        SourceFeatures::default(),
+        flapping,
+        hd_catalog(),
+    )
+    .unwrap();
     // Six half-lives, so the penalty is under 2% of its opening value. The RATE is policy and is
     // not under test here; that the clock advances at all is.
     later.advance_to(policy.visible_switch_decay_ms.saturating_mul(6));
     assert_eq!(
-        later.observe_probe(good, top_candidate(), &idle_server(), healthy_buffer(), &healthy_hls(), 600_000),
+        later.observe_probe(
+            good,
+            top_candidate(),
+            &idle_server(),
+            healthy_buffer(),
+            &healthy_hls(),
+            600_000
+        ),
         RecoveryVerdict::Recover,
         "the same evidence, once the penalty has decayed, is worth acting on",
     );
@@ -2656,20 +3167,51 @@ fn the_visible_switch_penalty_decays_on_the_worker_clock() {
 #[test]
 fn advancing_the_switch_clock_is_idempotent_in_the_value_not_the_call_count() {
     let policy = AbrPolicy::measured();
-    let flapping = TransitionHistory { visible_switches: 5, since_last_ms: Some(2_000) };
+    let flapping = TransitionHistory {
+        visible_switches: 5,
+        since_last_ms: Some(2_000),
+    };
     let good = probe(90_000, true);
     let target = policy.visible_switch_decay_ms.saturating_mul(6);
 
-    let mut once = OriginalRecovery::new(28_000, policy, SourceFeatures::default(), flapping, hd_catalog()).unwrap();
+    let mut once = OriginalRecovery::new(
+        28_000,
+        policy,
+        SourceFeatures::default(),
+        flapping,
+        hd_catalog(),
+    )
+    .unwrap();
     once.advance_to(target);
 
-    let mut many = OriginalRecovery::new(28_000, policy, SourceFeatures::default(), flapping, hd_catalog()).unwrap();
+    let mut many = OriginalRecovery::new(
+        28_000,
+        policy,
+        SourceFeatures::default(),
+        flapping,
+        hd_catalog(),
+    )
+    .unwrap();
     for _ in 0..40 {
         many.advance_to(target);
     }
     assert_eq!(
-        once.observe_probe(good, top_candidate(), &idle_server(), healthy_buffer(), &healthy_hls(), 600_000),
-        many.observe_probe(good, top_candidate(), &idle_server(), healthy_buffer(), &healthy_hls(), 600_000),
+        once.observe_probe(
+            good,
+            top_candidate(),
+            &idle_server(),
+            healthy_buffer(),
+            &healthy_hls(),
+            600_000
+        ),
+        many.observe_probe(
+            good,
+            top_candidate(),
+            &idle_server(),
+            healthy_buffer(),
+            &healthy_hls(),
+            600_000
+        ),
         "forty ticks to the same instant is one tick to that instant",
     );
 }
@@ -2690,27 +3232,58 @@ fn the_network_risk_term_is_continuous_between_the_two_horizons_that_already_exi
     let net = |secs: Option<u32>| risk_score(secs, None, false, &policy);
 
     assert_eq!(net(None), 0, "no deficit at all is not a risk");
-    assert_eq!(net(Some(safe)), 0, "the ladder charged 1 for a horizon it calls SAFE");
-    assert_eq!(net(Some(safe + 600)), 0, "and charges nothing more for being safer still");
-    assert_eq!(net(Some(fallback)), 40, "the ladder charged 4 one second above its own floor");
-    assert_eq!(net(Some(0)), 40, "below the floor it is an emergency, decided by a hard guard");
+    assert_eq!(
+        net(Some(safe)),
+        0,
+        "the ladder charged 1 for a horizon it calls SAFE"
+    );
+    assert_eq!(
+        net(Some(safe + 600)),
+        0,
+        "and charges nothing more for being safer still"
+    );
+    assert_eq!(
+        net(Some(fallback)),
+        40,
+        "the ladder charged 4 one second above its own floor"
+    );
+    assert_eq!(
+        net(Some(0)),
+        40,
+        "below the floor it is an emergency, decided by a hard guard"
+    );
 
     // Strictly decreasing in T across the whole band, which is the property a step ladder cannot
     // have: a 59 s horizon and a 21 s horizon scored the same 4.
     let mut previous = 41;
     for secs in fallback..=safe {
         let score = net(Some(secs));
-        assert!(score < previous, "risk must fall as the horizon grows: {secs}s scored {score}");
-        assert!(score <= 40, "{secs}s scored {score}, past the term's own ceiling");
+        assert!(
+            score < previous,
+            "risk must fall as the horizon grows: {secs}s scored {score}"
+        );
+        assert!(
+            score <= 40,
+            "{secs}s scored {score}, past the term's own ceiling"
+        );
         previous = score;
     }
 
     // The other two terms are unchanged at their endpoints, so every ratio to
     // `visible_switch_cost` that the mode comparison rests on still holds where it was calibrated.
-    assert_eq!(risk_score(None, Some(policy.production_safe_pm), false, &policy), 0);
-    assert_eq!(risk_score(None, Some(policy.production_max_pm), false, &policy), 20);
+    assert_eq!(
+        risk_score(None, Some(policy.production_safe_pm), false, &policy),
+        0
+    );
+    assert_eq!(
+        risk_score(None, Some(policy.production_max_pm), false, &policy),
+        20
+    );
     assert_eq!(risk_score(None, None, true, &policy), 30);
-    assert_eq!(risk_score(Some(0), Some(policy.production_max_pm), true, &policy), RISK_SCORE_MAX);
+    assert_eq!(
+        risk_score(Some(0), Some(policy.production_max_pm), true, &policy),
+        RISK_SCORE_MAX
+    );
 }
 
 /// A whole-file average is a LOWER BOUND on demand. The requirement carries VBR headroom, so a
@@ -2724,10 +3297,21 @@ fn vbr_headroom_makes_the_whole_file_average_a_lower_bound() {
     // which is the whole point: the file contains scenes above its own average.
     let mut mode = original(40_000);
     let observation = mode
-        .observe_saturated(window_bytes(41_000), ORIGINAL_WINDOW_US, Some(30_000), HOUR_MS)
+        .observe_saturated(
+            window_bytes(41_000),
+            ORIGINAL_WINDOW_US,
+            Some(30_000),
+            HOUR_MS,
+        )
         .unwrap();
-    assert!(observation.horizon_secs.is_some(), "a bare average is not headroom");
-    assert!(observation.fallback.is_none(), "but 30 s of reserve is not an emergency either");
+    assert!(
+        observation.horizon_secs.is_some(),
+        "a bare average is not headroom"
+    );
+    assert!(
+        observation.fallback.is_none(),
+        "but 30 s of reserve is not an emergency either"
+    );
 }
 
 /// A healthy HLS session against a 28 Mbit/s 1080p source, an hour of film left and no switch
@@ -2745,7 +3329,10 @@ fn mode_inputs() -> ModeInputs {
         source_delivery: CapacityEstimate::from_prior(200_000),
         hls_delivery: CapacityEstimate::from_prior(200_000),
         production: ProductionEstimate::default(),
-        buffer: BufferEstimate { buffered_ms: 8_000, ..Default::default() },
+        buffer: BufferEstimate {
+            buffered_ms: 8_000,
+            ..Default::default()
+        },
         remaining_ms: HOUR_MS,
         history: TransitionHistory::default(),
         original_feasible: true,
@@ -2775,7 +3362,10 @@ fn originals_quality_is_scored_from_the_source_and_not_from_a_fabricated_rung() 
         source_delivery: CapacityEstimate::from_prior(200_000),
         hls_delivery: CapacityEstimate::from_prior(200_000),
         production: ProductionEstimate::default(),
-        buffer: BufferEstimate { buffered_ms: 8_000, ..Default::default() },
+        buffer: BufferEstimate {
+            buffered_ms: 8_000,
+            ..Default::default()
+        },
         remaining_ms: HOUR_MS,
         history: TransitionHistory::default(),
         original_feasible: true,
@@ -2785,7 +3375,11 @@ fn originals_quality_is_scored_from_the_source_and_not_from_a_fabricated_rung() 
     };
     let quality_of = |kbps: u32, raster: (u16, u16)| {
         original_utility(
-            &ModeInputs { source_kbps: kbps, source_raster: raster, ..base },
+            &ModeInputs {
+                source_kbps: kbps,
+                source_raster: raster,
+                ..base
+            },
             &policy,
         )
         .expect("feasible")
@@ -2852,7 +3446,10 @@ fn originals_risk_shrinks_with_the_playback_it_is_a_risk_to() {
         source_delivery: CapacityEstimate::from_prior(9_000),
         hls_delivery: CapacityEstimate::from_prior(40_000),
         production: ProductionEstimate::default(),
-        buffer: BufferEstimate { buffered_ms: 4_000, ..Default::default() },
+        buffer: BufferEstimate {
+            buffered_ms: 4_000,
+            ..Default::default()
+        },
         remaining_ms: HOUR_MS,
         history: TransitionHistory::default(),
         original_feasible: true,
@@ -2861,9 +3458,18 @@ fn originals_risk_shrinks_with_the_playback_it_is_a_risk_to() {
         unsafe_deficit_ms: 0,
     };
     let whole_film = original_utility(&base, &policy).expect("feasible");
-    let last_ten_seconds =
-        original_utility(&ModeInputs { remaining_ms: 10_000, ..base }, &policy).expect("feasible");
-    assert!(whole_film.risk > 0, "the fixture must produce a risk to scale");
+    let last_ten_seconds = original_utility(
+        &ModeInputs {
+            remaining_ms: 10_000,
+            ..base
+        },
+        &policy,
+    )
+    .expect("feasible");
+    assert!(
+        whole_film.risk > 0,
+        "the fixture must produce a risk to scale"
+    );
     assert!(
         last_ten_seconds.risk < whole_film.risk,
         "risk is a property of the playback that REMAINS: {} with ten seconds left against {} with \
@@ -2897,25 +3503,50 @@ fn the_recovery_comparison_can_see_a_loaded_server() {
     let current = top_candidate();
     let mut loaded = ProductionEstimate::default();
     for _ in 0..6 {
-        loaded.observe(policy.production_max_pm * 2, current.production_load_pm, false);
+        loaded.observe(
+            policy.production_max_pm * 2,
+            current.production_load_pm,
+            false,
+        );
     }
-    assert!(loaded.ratio_pm > policy.production_max_pm, "the setup must load the server");
+    assert!(
+        loaded.ratio_pm > policy.production_max_pm,
+        "the setup must load the server"
+    );
 
-    let spent = TransitionHistory { visible_switches: 3, since_last_ms: Some(0) };
+    let spent = TransitionHistory {
+        visible_switches: 3,
+        since_last_ms: Some(0),
+    };
     let gate = || {
-        OriginalRecovery::new(28_000, policy, SourceFeatures::default(), spent, hd_catalog()).expect("feasible")
+        OriginalRecovery::new(
+            28_000,
+            policy,
+            SourceFeatures::default(),
+            spent,
+            hd_catalog(),
+        )
+        .expect("feasible")
     };
     let (mut idle_gate, mut loaded_gate) = (gate(), gate());
     let verdicts: Vec<(RecoveryVerdict, RecoveryVerdict)> = (0..3)
         .map(|_| {
             (
                 idle_gate.observe_probe(
-                    probe(50_000, true), current, &idle_server(), healthy_buffer(),
-                    &healthy_hls(), HOUR_MS,
+                    probe(50_000, true),
+                    current,
+                    &idle_server(),
+                    healthy_buffer(),
+                    &healthy_hls(),
+                    HOUR_MS,
                 ),
                 loaded_gate.observe_probe(
-                    probe(50_000, true), current, &loaded, healthy_buffer(),
-                    &healthy_hls(), HOUR_MS,
+                    probe(50_000, true),
+                    current,
+                    &loaded,
+                    healthy_buffer(),
+                    &healthy_hls(),
+                    HOUR_MS,
                 ),
             )
         })
@@ -2942,22 +3573,46 @@ fn the_recovery_comparison_can_see_a_loaded_server() {
 fn the_probe_gate_weighs_the_rung_the_link_supports_and_not_the_one_it_is_on() {
     let policy = AbrPolicy::measured();
     // Spent switches, so the comparison is close enough that the ALTERNATIVE decides it.
-    let spent = TransitionHistory { visible_switches: 3, since_last_ms: Some(0) };
+    let spent = TransitionHistory {
+        visible_switches: 3,
+        since_last_ms: Some(0),
+    };
     let gate = || {
-        OriginalRecovery::new(28_000, policy, SourceFeatures::default(), spent, hd_catalog()).expect("feasible")
+        OriginalRecovery::new(
+            28_000,
+            policy,
+            SourceFeatures::default(),
+            spent,
+            hd_catalog(),
+        )
+        .expect("feasible")
     };
     let floor = hd_catalog().candidate(Rung::P480);
     // A link with room for the top rung. Sitting at the FLOOR, the honest alternative to Original
     // is the top rung this link supports — not the 720 kbps that happens to be playing.
     let roomy = healthy_hls();
-    let due_at_floor = gate().probe_due(
-        floor, &idle_server(), sample(40_000, 200, 20_000), healthy_buffer(), &roomy, HOUR_MS,
-        AbrPolicy::measured().probe_spacing_ms * 4,
-    ).is_ok();
-    let due_at_top = gate().probe_due(
-        top_candidate(), &idle_server(), sample(40_000, 200, 20_000), healthy_buffer(), &roomy,
-        HOUR_MS, AbrPolicy::measured().probe_spacing_ms * 4,
-    ).is_ok();
+    let due_at_floor = gate()
+        .probe_due(
+            floor,
+            &idle_server(),
+            sample(40_000, 200, 20_000),
+            healthy_buffer(),
+            &roomy,
+            HOUR_MS,
+            AbrPolicy::measured().probe_spacing_ms * 4,
+        )
+        .is_ok();
+    let due_at_top = gate()
+        .probe_due(
+            top_candidate(),
+            &idle_server(),
+            sample(40_000, 200, 20_000),
+            healthy_buffer(),
+            &roomy,
+            HOUR_MS,
+            AbrPolicy::measured().probe_spacing_ms * 4,
+        )
+        .is_ok();
     assert_eq!(
         due_at_floor, due_at_top,
         "the alternative is the best rung the link supports either way, so which rung happens to \
@@ -3001,7 +3656,10 @@ fn every_recurring_term_scales_with_the_horizon_and_the_reload_does_not() {
         source_delivery: CapacityEstimate::from_prior(30_000),
         hls_delivery: CapacityEstimate::from_prior(9_000),
         production: ProductionEstimate::default(),
-        buffer: BufferEstimate { buffered_ms: 4_000, ..Default::default() },
+        buffer: BufferEstimate {
+            buffered_ms: 4_000,
+            ..Default::default()
+        },
         remaining_ms: HOUR_MS,
         history: TransitionHistory::default(),
         original_feasible: true,
@@ -3013,11 +3671,17 @@ fn every_recurring_term_scales_with_the_horizon_and_the_reload_does_not() {
     let short = hls_utility(
         candidate,
         current,
-        &ModeInputs { remaining_ms: 8_000, ..inputs },
+        &ModeInputs {
+            remaining_ms: 8_000,
+            ..inputs
+        },
         &policy,
     );
 
-    assert!(long.risk > 0, "the fixture must carry a real risk cost or this grades nothing");
+    assert!(
+        long.risk > 0,
+        "the fixture must carry a real risk cost or this grades nothing"
+    );
     assert!(long.server > 0, "and a real server cost");
     assert!(
         short.risk < long.risk,
@@ -3040,8 +3704,14 @@ fn every_recurring_term_scales_with_the_horizon_and_the_reload_does_not() {
 
     // The same partition on the Original side, so the two are demonstrably one rule.
     let orig_long = original_utility(&inputs, &policy).expect("feasible");
-    let orig_short =
-        original_utility(&ModeInputs { remaining_ms: 8_000, ..inputs }, &policy).expect("feasible");
+    let orig_short = original_utility(
+        &ModeInputs {
+            remaining_ms: 8_000,
+            ..inputs
+        },
+        &policy,
+    )
+    .expect("feasible");
     assert!(orig_short.quality < orig_long.quality);
     assert!(orig_short.features < orig_long.features);
     assert_eq!(orig_short.transition, orig_long.transition);
@@ -3065,7 +3735,12 @@ fn a_recovery_decision_publishes_the_comparison_it_was_made_on() {
     let current = hd_catalog().candidate(Rung::P720);
     assert_eq!(
         gate.observe_probe(
-            probe(2_000, false), current, &idle_server(), healthy_buffer(), &healthy_hls(), HOUR_MS,
+            probe(2_000, false),
+            current,
+            &idle_server(),
+            healthy_buffer(),
+            &healthy_hls(),
+            HOUR_MS,
         ),
         RecoveryVerdict::Insufficient,
     );
@@ -3077,14 +3752,24 @@ fn a_recovery_decision_publishes_the_comparison_it_was_made_on() {
 
     assert_eq!(
         gate.observe_probe(
-            probe(80_000, true), current, &idle_server(), healthy_buffer(), &healthy_hls(), HOUR_MS,
+            probe(80_000, true),
+            current,
+            &idle_server(),
+            healthy_buffer(),
+            &healthy_hls(),
+            HOUR_MS,
         ),
         RecoveryVerdict::Recover,
     );
-    let cmp = gate.comparison().expect("a real decision publishes its basis");
+    let cmp = gate
+        .comparison()
+        .expect("a real decision publishes its basis");
     assert_eq!(cmp.chosen, ModeKind::Original);
     assert_eq!(cmp.reason, ModeReason::OriginalWorthIt);
-    assert!(cmp.loser.is_some(), "the alternative was scored, so it must be readable");
+    assert!(
+        cmp.loser.is_some(),
+        "the alternative was scored, so it must be readable"
+    );
     assert_ne!(
         cmp.hls_rung,
         Rung::P720,
@@ -3098,7 +3783,12 @@ fn a_recovery_decision_publishes_the_comparison_it_was_made_on() {
     // stale — and `RE_ABR_MODE` parsed it as a decision that had just been taken.
     assert_eq!(
         gate.observe_probe(
-            probe(2_000, false), current, &idle_server(), healthy_buffer(), &healthy_hls(), HOUR_MS,
+            probe(2_000, false),
+            current,
+            &idle_server(),
+            healthy_buffer(),
+            &healthy_hls(),
+            HOUR_MS,
         ),
         RecoveryVerdict::Insufficient,
     );
@@ -3107,7 +3797,10 @@ fn a_recovery_decision_publishes_the_comparison_it_was_made_on() {
         "a truncated probe must RETIRE the previous comparison, not leave it standing beside a \
          verdict it had no part in",
     );
-    assert_eq!(cmp.scale_pm, 1_000, "an hour of film is the full benefit scale");
+    assert_eq!(
+        cmp.scale_pm, 1_000,
+        "an hour of film is the full benefit scale"
+    );
     let w = cmp.winner;
     assert_eq!(
         w.quality + w.features - w.risk - w.server - w.transition,
@@ -3148,7 +3841,10 @@ fn a_deficit_measured_in_active_read_time_is_not_a_duration() {
     let mut fired_saturated = None;
     for n in 1..=10u64 {
         let obs = saturated.observe(
-            starved(n), ORIGINAL_WINDOW_US * n, Some(fell(n)), HOUR_MS,
+            starved(n),
+            ORIGINAL_WINDOW_US * n,
+            Some(fell(n)),
+            HOUR_MS,
             ORIGINAL_WINDOW_US * n / 1_000,
         );
         if let Some(o) = obs {
@@ -3172,7 +3868,10 @@ fn a_deficit_measured_in_active_read_time_is_not_a_duration() {
     let mut fired_throttled = false;
     for n in 1..=10u64 {
         let obs = throttled.observe(
-            starved(n), ORIGINAL_WINDOW_US * n, Some(fell(n)), HOUR_MS,
+            starved(n),
+            ORIGINAL_WINDOW_US * n,
+            Some(fell(n)),
+            HOUR_MS,
             ORIGINAL_WINDOW_US * n / 8_000,
         );
         fired_throttled |= obs.is_some_and(|o| o.fallback == Some(OriginalExit::SustainedDeficit));
@@ -3220,7 +3919,10 @@ fn the_feature_bonus_is_ordered_and_its_magnitudes_are_not_the_claim() {
         source_delivery: CapacityEstimate::from_prior(200_000),
         hls_delivery: CapacityEstimate::from_prior(200_000),
         production: ProductionEstimate::default(),
-        buffer: BufferEstimate { buffered_ms: 8_000, ..Default::default() },
+        buffer: BufferEstimate {
+            buffered_ms: 8_000,
+            ..Default::default()
+        },
         remaining_ms: HOUR_MS,
         history: TransitionHistory::default(),
         original_feasible: true,
@@ -3229,9 +3931,16 @@ fn the_feature_bonus_is_ordered_and_its_magnitudes_are_not_the_claim() {
         unsafe_deficit_ms: 0,
     };
     let features = |dv: bool, atmos: bool| {
-        original_utility(&ModeInputs { source_dv: dv, source_atmos: atmos, ..base }, &policy)
-            .expect("feasible")
-            .features
+        original_utility(
+            &ModeInputs {
+                source_dv: dv,
+                source_atmos: atmos,
+                ..base
+            },
+            &policy,
+        )
+        .expect("feasible")
+        .features
     };
     let plain = features(false, false);
     assert!(
@@ -3239,8 +3948,14 @@ fn the_feature_bonus_is_ordered_and_its_magnitudes_are_not_the_claim() {
         "no re-encode at all is a real benefit of EVERY Original, and pricing it at zero for a \
          plain file while pricing DV and Atmos together at 25 is the conflation N16 names",
     );
-    assert!(features(true, false) > features(false, true), "DV outranks Atmos");
-    assert!(features(false, true) > plain, "and Atmos is still worth something");
+    assert!(
+        features(true, false) > features(false, true),
+        "DV outranks Atmos"
+    );
+    assert!(
+        features(false, true) > plain,
+        "and Atmos is still worth something"
+    );
     assert_eq!(
         features(true, true),
         plain + policy.dv_bonus + policy.atmos_bonus,
@@ -3283,12 +3998,20 @@ fn a_carried_estimate_says_more_than_a_prior_of_the_same_rate() {
 
     // Absence is absence, not a zero-rate estimate: an unwritten snapshot must not seed anything.
     assert!(CapacityEstimate::from_snapshot(0, 0, 0, 0).is_none());
-    assert!(CapacityEstimate::from_snapshot(40_000, 40_000, 200, 0).is_none(), "no samples");
-    assert!(CapacityEstimate::from_snapshot(0, 40_000, 200, 9).is_none(), "no rate");
+    assert!(
+        CapacityEstimate::from_snapshot(40_000, 40_000, 200, 0).is_none(),
+        "no samples"
+    );
+    assert!(
+        CapacityEstimate::from_snapshot(0, 40_000, 200, 9).is_none(),
+        "no rate"
+    );
     // The cap is a cap on the way in too — a snapshot cannot claim more confidence than the
     // estimator's own floor allows.
     assert_eq!(
-        CapacityEstimate::from_snapshot(40_000, 40_000, 900, 9).unwrap().uncertainty_pm,
+        CapacityEstimate::from_snapshot(40_000, 40_000, 900, 9)
+            .unwrap()
+            .uncertainty_pm,
         MAX_UNCERTAINTY_PM,
     );
 }
@@ -3306,11 +4029,20 @@ fn a_seeded_controller_carries_the_link_and_nothing_positional() {
     let c = Controller::starting_at(Rung::P1080, Some(carried), hd_catalog());
     let t = c.telemetry();
     assert_eq!(t.delivery, carried, "the link estimate crosses whole");
-    assert_eq!(t.buffer.buffered_ms, 0, "the reserve at the old position is not a reserve here");
+    assert_eq!(
+        t.buffer.buffered_ms, 0,
+        "the reserve at the old position is not a reserve here"
+    );
     assert_eq!(t.buffer.samples, 0, "nor is its history");
     assert_eq!(t.gates.draining, 0);
-    assert_eq!(t.pending, None, "a transaction proposed for the old position must not survive");
-    assert_eq!(t.gates.dwell_ms, 0, "and no encoder has been started on this side of the seek");
+    assert_eq!(
+        t.pending, None,
+        "a transaction proposed for the old position must not survive"
+    );
+    assert_eq!(
+        t.gates.dwell_ms, 0,
+        "and no encoder has been started on this side of the seek"
+    );
     assert_eq!(t.gates.blocked_kbps, 0);
 }
 
@@ -3327,7 +4059,10 @@ fn original_beats_the_top_rung_on_utility_at_equal_risk() {
         source_delivery: CapacityEstimate::from_prior(80_000),
         hls_delivery: CapacityEstimate::from_prior(80_000),
         production: ProductionEstimate::default(),
-        buffer: BufferEstimate { buffered_ms: 30_000, ..Default::default() },
+        buffer: BufferEstimate {
+            buffered_ms: 30_000,
+            ..Default::default()
+        },
         remaining_ms: HOUR_MS,
         history: TransitionHistory::default(),
         original_feasible: true,
@@ -3336,20 +4071,31 @@ fn original_beats_the_top_rung_on_utility_at_equal_risk() {
         unsafe_deficit_ms: 0,
     };
     let current = hd_catalog().candidate(Rung::P1080High);
-    let (mode, reason, chosen, other) =
-        choose_mode(&inputs, current, current, &policy);
-    assert_eq!((mode, reason), (ModeKind::Original, ModeReason::OriginalWorthIt));
-    assert_eq!(chosen.server, 0, "no server video encoding is the term HLS cannot match");
+    let (mode, reason, chosen, other) = choose_mode(&inputs, current, current, &policy);
+    assert_eq!(
+        (mode, reason),
+        (ModeKind::Original, ModeReason::OriginalWorthIt)
+    );
+    assert_eq!(
+        chosen.server, 0,
+        "no server video encoding is the term HLS cannot match"
+    );
     assert!(chosen.total > other.expect("both were feasible").total);
 
     // Infeasible is not a low score — it is not a candidate.
     let (mode, reason, _, other) = choose_mode(
-        &ModeInputs { original_feasible: false, ..inputs },
+        &ModeInputs {
+            original_feasible: false,
+            ..inputs
+        },
         current,
         current,
         &policy,
     );
-    assert_eq!((mode, reason), (ModeKind::Hls, ModeReason::OriginalInfeasible));
+    assert_eq!(
+        (mode, reason),
+        (ModeKind::Hls, ModeReason::OriginalInfeasible)
+    );
     assert!(other.is_none());
 }
 
@@ -3381,7 +4127,11 @@ fn a_downshift_pin_lands_from_the_top_of_the_ladder() {
 
     match decision {
         Some(Decision::Prime(proposal)) => {
-            assert_eq!(proposal.rung, Rung::P240, "the pin is the target, not one rung down");
+            assert_eq!(
+                proposal.rung,
+                Rung::P240,
+                "the pin is the target, not one rung down"
+            );
             assert_eq!(proposal.direction, Direction::Down);
         }
         other => panic!(
@@ -3401,7 +4151,10 @@ fn an_upshift_pin_still_waits_for_the_full_reserve() {
 
     for _ in 0..6 {
         assert!(
-            matches!(pinned.observe_next(sample(40_000, 300, reserve_ms)), Decision::Stay),
+            matches!(
+                pinned.observe_next(sample(40_000, 300, reserve_ms)),
+                Decision::Stay
+            ),
             "an upshift pin transacted on a reserve smaller than the transaction costs, which is \
              the livelock PIN_MIN_RESERVE_SEGMENTS exists to prevent",
         );
@@ -3496,7 +4249,11 @@ fn a_link_delivering_exactly_the_rungs_rate_is_not_an_emergency_at_cold_start() 
     // conservative" is satisfiable by any predicate that happens not to fire.
     let measured = controller.telemetry().delivery.fast_kbps;
     let conservative = controller.telemetry().delivery.conservative_kbps();
-    assert_eq!(conservative, measured / 2, "the first sample of a rung is a 500pm discount");
+    assert_eq!(
+        conservative,
+        measured / 2,
+        "the first sample of a rung is a 500pm discount"
+    );
     let counterfactual = starvation_horizon(1_958, 14_000, conservative).seconds;
     assert!(
         counterfactual.is_some_and(|s| s <= AbrPolicy::measured().starvation_fallback_secs),
@@ -3504,7 +4261,8 @@ fn a_link_delivering_exactly_the_rungs_rate_is_not_an_emergency_at_cold_start() 
     );
     let measured_horizon = controller.telemetry().emergency_horizon_secs;
     assert!(
-        measured_horizon.map_or(true, |s| s > AbrPolicy::measured().starvation_fallback_secs * 100),
+        measured_horizon.map_or(true, |s| s > AbrPolicy::measured().starvation_fallback_secs
+            * 100),
         "on the measured rate the horizon is unreachable rather than imminent; got \
          {measured_horizon:?}",
     );
@@ -3522,17 +4280,29 @@ fn the_cold_start_floor_fires_at_a_tenth_of_the_rate_and_not_at_a_twentieth() {
     // a second under; the claim is the bracket, not the digit.)
     let mut fires = controller_at(Rung::P1080M14);
     assert!(
-        matches!(fires.observe_next(sample(12_600, 250, 2_000)), Decision::Prime(_)),
+        matches!(
+            fires.observe_next(sample(12_600, 250, 2_000)),
+            Decision::Prime(_)
+        ),
         "a tenth short with one segment left is the 20 s deadline",
     );
-    assert!(fires.telemetry().emergency_horizon_secs.is_some_and(|s| s <= window));
+    assert!(fires
+        .telemetry()
+        .emergency_horizon_secs
+        .is_some_and(|s| s <= window));
 
     // 5% short: T = 2000 * 14000 / 700 = 40 s. Twice the window, so nothing fires — and the
     // cold-start gate then covers the `buffered < segment` disjunct as it always did.
     let mut holds = controller_at(Rung::P1080M14);
-    assert_eq!(holds.observe_next(sample(13_300, 250, 2_000)), Decision::Stay);
+    assert_eq!(
+        holds.observe_next(sample(13_300, 250, 2_000)),
+        Decision::Stay
+    );
     assert!(
-        holds.telemetry().emergency_horizon_secs.is_some_and(|s| s > window),
+        holds
+            .telemetry()
+            .emergency_horizon_secs
+            .is_some_and(|s| s > window),
         "twice the window is not a deadline; got {:?}",
         holds.telemetry().emergency_horizon_secs,
     );
@@ -3594,7 +4364,9 @@ fn a_rate_deficit_evicts_a_rung_only_when_the_deadline_says_so() {
         );
     }
     assert!(
-        deep.telemetry().emergency_horizon_secs.is_some_and(|s| s > policy.starvation_fallback_secs),
+        deep.telemetry()
+            .emergency_horizon_secs
+            .is_some_and(|s| s > policy.starvation_fallback_secs),
         "and the deadline has to be the thing that says so: {:?}",
         deep.telemetry().emergency_horizon_secs,
     );
@@ -3637,7 +4409,10 @@ fn the_affordability_guard_is_subsumed_by_the_starvation_arm() {
     // The implication, exercised rather than argued: a reserve just under E_tx_down is starving.
     let mut buffer = BufferEstimate::default();
     buffer.update(Some(E_TX_DOWN_MS - 1), 2_000);
-    assert!(buffer.starving(), "the starvation arm covers the whole unaffordable region");
+    assert!(
+        buffer.starving(),
+        "the starvation arm covers the whole unaffordable region"
+    );
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -3663,7 +4438,9 @@ fn the_refill_filter_admits_a_prefix_of_the_ladder() {
             let admitted: Vec<bool> = LADDER
                 .iter()
                 .map(|rung| {
-                    let wire = HlsActuatorCatalog::measured().candidate(*rung).expected_wire_kbps;
+                    let wire = HlsActuatorCatalog::measured()
+                        .candidate(*rung)
+                        .expected_wire_kbps;
                     plant::refill_admits(
                         wire,
                         wire.saturating_sub(policy.assumed_audio_kbps),
@@ -3724,14 +4501,19 @@ fn the_refill_filter_binds_at_a_low_reserve_and_is_shadowed_at_the_gate() {
     );
     let cut = i64::from(20_000u32) * policy.buffer_refill_horizon_ms
         / (policy.buffer_refill_horizon_ms + policy.buffer_target_ms);
-    assert_eq!(cut, 16_000, "H/(H+B*) of 20 000 kbps is 0.8 — derived, not chosen");
+    assert_eq!(
+        cut, 16_000,
+        "H/(H+B*) of 20 000 kbps is 0.8 — derived, not chosen"
+    );
     assert!(i64::from(empty.expected_wire_kbps) <= cut);
 
     // ...and the shadow: the reserve gate is above `buffer_target_ms` at every rung, so any
     // reserve that clears the gate also zeroes the deficit.
     let segment = 2_000i64;
     for rung in LADDER {
-        let wire = HlsActuatorCatalog::measured().candidate(rung).expected_wire_kbps;
+        let wire = HlsActuatorCatalog::measured()
+            .candidate(rung)
+            .expected_wire_kbps;
         let reachable = plant::b_max_est_ms(
             wire.saturating_sub(policy.assumed_audio_kbps),
             policy.assumed_audio_kbps,
@@ -3761,12 +4543,15 @@ fn no_reserve_gate_asks_for_more_than_the_queues_can_hold() {
     let policy = AbrPolicy::measured();
     let segment = 2_000i64;
     for rung in LADDER {
-        let wire = HlsActuatorCatalog::measured().candidate(rung).expected_wire_kbps;
+        let wire = HlsActuatorCatalog::measured()
+            .candidate(rung)
+            .expected_wire_kbps;
         let ceiling = plant::b_max_est_ms(
             wire.saturating_sub(policy.assumed_audio_kbps),
             policy.assumed_audio_kbps,
         );
-        let gate = (segment * 3).min(ceiling * i64::from(policy.buffer_reserve_fraction_pm) / 1_000);
+        let gate =
+            (segment * 3).min(ceiling * i64::from(policy.buffer_reserve_fraction_pm) / 1_000);
         assert!(
             gate < ceiling,
             "at {}kbps the gate wants {gate}ms of a reserve that tops out at {ceiling}ms",
@@ -3782,16 +4567,19 @@ fn no_reserve_gate_asks_for_more_than_the_queues_can_hold() {
     }
     // The loosening is confined to the top, which is what `min` is for: at the bottom of the
     // ladder the ceiling term is tens of seconds and the constant still binds, unchanged.
-    let bottom = HlsActuatorCatalog::measured().candidate(Rung::P240).expected_wire_kbps;
+    let bottom = HlsActuatorCatalog::measured()
+        .candidate(Rung::P240)
+        .expected_wire_kbps;
     let bottom_ceiling = plant::b_max_est_ms(
         bottom.saturating_sub(policy.assumed_audio_kbps),
         policy.assumed_audio_kbps,
     ) * i64::from(policy.buffer_reserve_fraction_pm)
         / 1_000;
-    assert!(bottom_ceiling > segment * 3, "the constant must still bind at the floor rung");
+    assert!(
+        bottom_ceiling > segment * 3,
+        "the constant must still bind at the floor rung"
+    );
 }
-
-
 
 /// **A published comparison must be readable as a decision: the winner out-totals the loser.**
 ///
@@ -3813,10 +4601,16 @@ fn a_published_comparison_is_readable_as_the_decision_it_records() {
     for remaining_ms in [HOUR_MS, 600_000i64, 60_000, 20_000] {
         let mut gate = recovery(28_000);
         let _ = gate.observe_probe(
-            probe(80_000, true), current, &idle_server(), healthy_buffer(), &healthy_hls(),
+            probe(80_000, true),
+            current,
+            &idle_server(),
+            healthy_buffer(),
+            &healthy_hls(),
             remaining_ms,
         );
-        let Some(cmp) = gate.comparison() else { continue };
+        let Some(cmp) = gate.comparison() else {
+            continue;
+        };
         any += 1;
         let loser = cmp.loser.unwrap_or_default();
         assert!(
@@ -3826,15 +4620,25 @@ fn a_published_comparison_is_readable_as_the_decision_it_records() {
             cmp.winner.total,
             loser.total,
         );
-        let hls_side = if cmp.chosen == ModeKind::Hls { cmp.winner } else { loser };
-        assert_eq!(hls_side.features, 0, "the HLS side carries no features term");
+        let hls_side = if cmp.chosen == ModeKind::Hls {
+            cmp.winner
+        } else {
+            loser
+        };
+        assert_eq!(
+            hls_side.features, 0,
+            "the HLS side carries no features term"
+        );
         assert_eq!(
             cmp.hls_rung.kbps(),
             20_000,
             "`vs_hls=` is the rung's nominal rate, not its expected wire rate",
         );
     }
-    assert!(any >= 3, "the fixture must reach a real comparison at most horizons, got {any}");
+    assert!(
+        any >= 3,
+        "the fixture must reach a real comparison at most horizons, got {any}"
+    );
 }
 
 /// **The absorbing state: a downshift issued with an exhausted reserve can never complete, so the
@@ -3851,8 +4655,14 @@ fn a_published_comparison_is_readable_as_the_decision_it_records() {
 fn a_downshift_gets_at_least_the_time_its_transfer_physically_needs() {
     let media = std::time::Duration::from_millis(2_000);
     let collapsed = reserve_as_budget(168);
-    let down = Proposal { rung: Rung::P720Low, direction: Direction::Down };
-    let up = Proposal { rung: Rung::P720Low, direction: Direction::Up };
+    let down = Proposal {
+        rung: Rung::P720Low,
+        direction: Direction::Down,
+    };
+    let up = Proposal {
+        rung: Rung::P720Low,
+        direction: Direction::Up,
+    };
 
     // 2000 kbps of output over 2 s of media, on a link measured at 6 000 kbps: 666 ms.
     let need = predicted_transfer(2_000, media, 6_000, 0);
@@ -3884,7 +4694,10 @@ fn a_downshift_gets_at_least_the_time_its_transfer_physically_needs() {
 #[test]
 fn the_floor_is_below_the_reserve_on_the_runaway_it_was_written_for() {
     let media = std::time::Duration::from_millis(2_000);
-    let down = Proposal { rung: Rung::P1080, direction: Direction::Down };
+    let down = Proposal {
+        rung: Rung::P1080,
+        direction: Direction::Down,
+    };
     let need = predicted_transfer(8_000, media, 9_593, 0);
     assert_eq!(need, std::time::Duration::from_millis(1_667));
     for reserve_ms in [2_000i64, 5_000, 36_000] {
@@ -3904,11 +4717,22 @@ fn the_floor_is_below_the_reserve_on_the_runaway_it_was_written_for() {
 #[test]
 fn an_unmeasured_link_predicts_nothing_and_the_reserve_still_bounds() {
     let media = std::time::Duration::from_millis(2_000);
-    assert_eq!(predicted_transfer(8_000, media, 0, 500), std::time::Duration::ZERO);
-    let down = Proposal { rung: Rung::P480, direction: Direction::Down };
+    assert_eq!(
+        predicted_transfer(8_000, media, 0, 500),
+        std::time::Duration::ZERO
+    );
+    let down = Proposal {
+        rung: Rung::P480,
+        direction: Direction::Down,
+    };
     let reserve = reserve_as_budget(900);
     assert_eq!(
-        candidate_warmup_budget(down, media, reserve, predicted_transfer(8_000, media, 0, 500)),
+        candidate_warmup_budget(
+            down,
+            media,
+            reserve,
+            predicted_transfer(8_000, media, 0, 500)
+        ),
         reserve,
     );
 }
@@ -3930,7 +4754,11 @@ fn the_floor_carries_the_estimates_own_error_not_just_its_centre() {
     let media = std::time::Duration::from_millis(2_000);
     // The device's numbers: a 16000 kbps target on a link the estimator read at 24 353 kbps.
     let centre = predicted_transfer(16_000, media, 24_353, 0);
-    assert_eq!(centre, std::time::Duration::from_millis(1_314), "the deadline that missed by 13ms");
+    assert_eq!(
+        centre,
+        std::time::Duration::from_millis(1_314),
+        "the deadline that missed by 13ms"
+    );
 
     // `unc=500pm` is what the same log line published on those transactions.
     let widened = predicted_transfer(16_000, media, 24_353, 500);
@@ -3942,7 +4770,10 @@ fn the_floor_carries_the_estimates_own_error_not_just_its_centre() {
 
     // A settled estimate buys almost nothing, which is what makes this the estimator's opinion
     // rather than a margin: the widening vanishes as `unc` does.
-    assert_eq!(predicted_transfer(16_000, media, 24_353, 20), std::time::Duration::from_millis(1_340));
+    assert_eq!(
+        predicted_transfer(16_000, media, 24_353, 20),
+        std::time::Duration::from_millis(1_340)
+    );
 }
 
 /// The widening is monotone in the estimator's stated error and in nothing else — the property
@@ -3958,7 +4789,10 @@ fn the_floors_widening_is_monotone_in_uncertainty_alone() {
     }
     // ...and it never widens a prediction that does not exist.
     for unc in [0u32, 500, 1_000] {
-        assert_eq!(predicted_transfer(8_000, media, 0, unc), std::time::Duration::ZERO);
+        assert_eq!(
+            predicted_transfer(8_000, media, 0, unc),
+            std::time::Duration::ZERO
+        );
     }
 }
 
@@ -3990,7 +4824,11 @@ fn an_abandoned_prefix_lowers_the_budget_instead_of_raising_it() {
         for i in 0..24 {
             let prefix = sample_bytes(1_448, 274, 400, 168);
             c.observe(
-                if mark_abandoned { prefix.abandoned() } else { prefix },
+                if mark_abandoned {
+                    prefix.abandoned()
+                } else {
+                    prefix
+                },
                 1_000 + i * 100,
             );
         }
@@ -3999,7 +4837,10 @@ fn an_abandoned_prefix_lowers_the_budget_instead_of_raising_it() {
 
     let (before_complete, after_complete) = settle(false);
     let (before_abandoned, after_abandoned) = settle(true);
-    assert_eq!(before_complete, before_abandoned, "the two legs must start identical");
+    assert_eq!(
+        before_complete, before_abandoned,
+        "the two legs must start identical"
+    );
     assert!(
         after_abandoned < after_complete,
         "an abandoned prefix must not buy the budget a completed one would: \
@@ -4039,20 +4880,35 @@ fn an_abandoned_prefix_cannot_restart_the_estimate_upward() {
     let mut c = CapacityEstimate::default();
     for _ in 0..6 {
         c.update(CapacityObservation {
-            kbps: 5_600, bytes: 1_400_000, active_us: 2_000_000, completed: true,
+            kbps: 5_600,
+            bytes: 1_400_000,
+            active_us: 2_000_000,
+            completed: true,
         });
     }
     let settled = c.slow_kbps;
-    assert!((5_000..=6_200).contains(&settled), "fixture must settle near the shaped rate: {settled}");
+    assert!(
+        (5_000..=6_200).contains(&settled),
+        "fixture must settle near the shaped rate: {settled}"
+    );
 
     // Three aborts, each timing far above the history — the receive buffer, not the link.
     for kbps in [26_691u32, 35_533, 101_078] {
         c.update(CapacityObservation {
-            kbps, bytes: 1_448, active_us: 274, completed: false,
+            kbps,
+            bytes: 1_448,
+            active_us: 274,
+            completed: false,
         });
     }
-    assert_eq!(c.slow_kbps, settled, "an abandoned prefix may not move the estimate up at all");
-    assert_eq!(c.uncertainty_pm, MAX_UNCERTAINTY_PM, "but it must say the estimate is now unsure");
+    assert_eq!(
+        c.slow_kbps, settled,
+        "an abandoned prefix may not move the estimate up at all"
+    );
+    assert_eq!(
+        c.uncertainty_pm, MAX_UNCERTAINTY_PM,
+        "but it must say the estimate is now unsure"
+    );
 }
 
 /// ...and it may still move it DOWN, because a slow prefix is the abort's actual message and the
@@ -4063,14 +4919,23 @@ fn an_abandoned_prefix_may_still_lower_the_estimate() {
     let mut c = CapacityEstimate::default();
     for _ in 0..6 {
         c.update(CapacityObservation {
-            kbps: 20_000, bytes: 5_000_000, active_us: 2_000_000, completed: true,
+            kbps: 20_000,
+            bytes: 5_000_000,
+            active_us: 2_000_000,
+            completed: true,
         });
     }
     let settled = c.slow_kbps;
     c.update(CapacityObservation {
-        kbps: 500, bytes: 125_000, active_us: 2_000_000, completed: false,
+        kbps: 500,
+        bytes: 125_000,
+        active_us: 2_000_000,
+        completed: false,
     });
-    assert!(c.slow_kbps < settled, "a slow abandoned prefix is real evidence of a slow link");
+    assert!(
+        c.slow_kbps < settled,
+        "a slow abandoned prefix is real evidence of a slow link"
+    );
 }
 
 /// **A `Stay` must say why, and until now the whole UP path did not.**
@@ -4118,7 +4983,10 @@ fn a_stay_always_names_its_reason_unless_the_dwell_is_holding() {
             }
         }
     }
-    assert!(checked > 200, "the sweep must actually reach Stay decisions, got {checked}");
+    assert!(
+        checked > 200,
+        "the sweep must actually reach Stay decisions, got {checked}"
+    );
 }
 
 /// **Only a downshift warm-up carries the abort rule, and not at the ladder floor.**
@@ -4145,7 +5013,11 @@ fn only_a_downshift_off_the_floor_guards_its_warmup() {
 
     // R12's terminal case, and the one place the rule must NOT arm: `below()` of the floor is the
     // floor, so an abort here re-fetches the same bytes forever.
-    assert_eq!(Rung::P240.below(), Rung::P240, "P240 is expected to be the ladder floor");
+    assert_eq!(
+        Rung::P240.below(),
+        Rung::P240,
+        "P240 is expected to be the ladder floor"
+    );
     assert!(!candidate_warmup_is_guarded(Proposal {
         rung: Rung::P240,
         direction: Direction::Down,
@@ -4155,12 +5027,18 @@ fn only_a_downshift_off_the_floor_guards_its_warmup() {
     // sampled rung, so adding a rung cannot silently leave a hole.
     for rung in LADDER {
         assert_eq!(
-            candidate_warmup_is_guarded(Proposal { rung, direction: Direction::Down }),
+            candidate_warmup_is_guarded(Proposal {
+                rung,
+                direction: Direction::Down
+            }),
             !rung.at_floor(),
             "downshift guard at {rung:?} must follow the floor test alone",
         );
         assert!(
-            !candidate_warmup_is_guarded(Proposal { rung, direction: Direction::Up }),
+            !candidate_warmup_is_guarded(Proposal {
+                rung,
+                direction: Direction::Up
+            }),
             "an upshift warm-up never guards: {rung:?}",
         );
     }
@@ -4181,8 +5059,14 @@ fn a_commit_does_not_enter_the_ceiling_drop_as_a_drain() {
     for ms in [21_418, 23_210, 25_043, 27_000, 29_000, 31_043] {
         buffer.update(Some(ms), 2_000);
     }
-    assert!(!buffer.draining(), "a filling reserve must not read as draining");
-    assert!(buffer.slope_ms_per_s > 0, "the setup itself must be a fill: {buffer:?}");
+    assert!(
+        !buffer.draining(),
+        "a filling reserve must not read as draining"
+    );
+    assert!(
+        buffer.slope_ms_per_s > 0,
+        "the setup itself must be a fill: {buffer:?}"
+    );
 
     // The commit. `B_max` shrinks with the rung, so the SAME queue now measures 13376 ms.
     buffer.rebase();
@@ -4203,7 +5087,10 @@ fn a_commit_does_not_enter_the_ceiling_drop_as_a_drain() {
     for ms in [11_000, 8_500, 6_000, 3_500] {
         buffer.update(Some(ms), 2_000);
     }
-    assert!(buffer.draining(), "a genuine post-commit drain must still fire: {buffer:?}");
+    assert!(
+        buffer.draining(),
+        "a genuine post-commit drain must still fire: {buffer:?}"
+    );
 }
 
 /// **The WIRING, not the mechanism** — `Controller::commit` is what must rebase.
@@ -4226,8 +5113,7 @@ fn the_controller_rebases_its_reserve_when_it_commits() {
     // function of the very decision being graded.
     for step in 0..40i64 {
         let buf_ms = 8_000 + step * 800;
-        let Decision::Prime(proposal) =
-            controller.observe_next(sample(LINK_KBPS, 400, buf_ms))
+        let Decision::Prime(proposal) = controller.observe_next(sample(LINK_KBPS, 400, buf_ms))
         else {
             continue;
         };
@@ -4249,10 +5135,15 @@ fn the_controller_rebases_its_reserve_when_it_commits() {
              change is UNKNOWN — `Controller::commit` owes `BufferEstimate::rebase`: {:?}",
             controller.buffer(),
         );
-        assert!(!controller.buffer().draining(), "and a rebased reserve is not draining");
+        assert!(
+            !controller.buffer().draining(),
+            "and a rebased reserve is not draining"
+        );
         return;
     }
-    panic!("no rung transaction was proposed and accepted — the fixture no longer exercises a commit");
+    panic!(
+        "no rung transaction was proposed and accepted — the fixture no longer exercises a commit"
+    );
 }
 
 /// **A transcode may not out-score the master it was made from** (R5, §7.B).
@@ -4273,8 +5164,16 @@ fn a_rendition_cannot_score_above_the_master_it_encodes() {
     let source_kbps = 8_000;
 
     // The curve itself is unchanged and still says what it always said about a bare rate.
-    assert_eq!(quality_score_at_kbps(rich.expected_wire_kbps), 76, "the ladder's band for 18000");
-    assert_eq!(quality_score_at_kbps(source_kbps), 58, "the band an 8000 kbps master falls in");
+    assert_eq!(
+        quality_score_at_kbps(rich.expected_wire_kbps),
+        76,
+        "the ladder's band for 18000"
+    );
+    assert_eq!(
+        quality_score_at_kbps(source_kbps),
+        58,
+        "the band an 8000 kbps master falls in"
+    );
 
     // **Asked through the PRODUCTION path.** `hls_utility` is what `choose_mode` argmaxes over, so
     // that is what has to be interrogated. This test used to re-implement the cap in its own body
@@ -4285,7 +5184,16 @@ fn a_rendition_cannot_score_above_the_master_it_encodes() {
     // different quality. Under unmodified code the source was not an input on this side at all, so
     // both calls returned the 18000 band and the inequality cannot hold.
     let quality_against = |src: u32| {
-        hls_utility(rich, rich, &ModeInputs { source_kbps: src, ..mode_inputs() }, &policy).quality
+        hls_utility(
+            rich,
+            rich,
+            &ModeInputs {
+                source_kbps: src,
+                ..mode_inputs()
+            },
+            &policy,
+        )
+        .quality
     };
     assert!(
         quality_against(source_kbps) < quality_against(0),
@@ -4297,9 +5205,15 @@ fn a_rendition_cannot_score_above_the_master_it_encodes() {
     assert_eq!(
         quality_against(source_kbps),
         hls_utility(
-            HlsCandidate { expected_wire_kbps: source_kbps, ..rich },
+            HlsCandidate {
+                expected_wire_kbps: source_kbps,
+                ..rich
+            },
             rich,
-            &ModeInputs { source_kbps, ..mode_inputs() },
+            &ModeInputs {
+                source_kbps,
+                ..mode_inputs()
+            },
             &policy,
         )
         .quality,
@@ -4309,7 +5223,10 @@ fn a_rendition_cannot_score_above_the_master_it_encodes() {
     // The cap must NOT bite when the rung is genuinely under the source -- the ordinary case, where
     // capping would flatten the whole ladder into one band.
     let modest = catalog.candidate(Rung::P720Low);
-    assert!(modest.expected_wire_kbps < source_kbps, "fixture assumption");
+    assert!(
+        modest.expected_wire_kbps < source_kbps,
+        "fixture assumption"
+    );
     assert_eq!(
         hls_scoring_kbps(modest, source_kbps),
         modest.expected_wire_kbps,
@@ -4349,7 +5266,10 @@ fn a_probe_needs_a_reserve_that_outlasts_the_probe() {
         );
         // ...and the two forms genuinely disagree, in both directions, which is why this matters.
         if segment_ms == 2_000 {
-            assert!(old_form > new_form, "at 2 s the old form was over-strict by 1.5x");
+            assert!(
+                old_form > new_form,
+                "at 2 s the old form was over-strict by 1.5x"
+            );
         }
         if segment_ms == 1_000 {
             assert!(

@@ -44,9 +44,12 @@ impl LogoRung {
     /// One match so the four numbers of a rung can never be read from four different places.
     fn bounds(self) -> (f32, f32, f32, c_int) {
         match self {
-            LogoRung::Hero => {
-                (theme::logo::HERO_AREA, theme::logo::HERO_H_MIN, theme::logo::HERO_H_MAX, theme::size::HERO)
-            }
+            LogoRung::Hero => (
+                theme::logo::HERO_AREA,
+                theme::logo::HERO_H_MIN,
+                theme::logo::HERO_H_MAX,
+                theme::size::HERO,
+            ),
             LogoRung::Compact => (
                 theme::logo::COMPACT_AREA,
                 theme::logo::COMPACT_H_MIN,
@@ -121,7 +124,13 @@ impl<'a> HeroLogo<'a> {
     /// (episodes have no clearLogo asset; keying to the episode 404s straight into a text fallback
     /// of the wrong title). `title` is the run drawn when there is no logo.
     pub fn new(sid: crate::plex::ServerId, rk: &'a str, title: &'a str, rung: LogoRung) -> Self {
-        Self { rk, sid, title, rung, align: HAlign::Left }
+        Self {
+            rk,
+            sid,
+            title,
+            rung,
+            align: HAlign::Left,
+        }
     }
     /// Horizontal placement inside the band — the logo art and the text fallback share it, so the
     /// two cannot land on different edges.
@@ -148,8 +157,14 @@ impl<'a> HeroLogo<'a> {
         let (_, _, _, sz) = self.rung.bounds();
         let line = crate::text::elide(self.title, band.w, sz, 1, false);
         // `cs` must outlive the draw — `Label` holds a non-owning pointer (ui/CLAUDE.md's first gotcha)
-        let Ok(cs) = std::ffi::CString::new(line) else { return };
-        Label::new(cs.as_ptr(), sz, theme::TEXT_PRIMARY).bold().h(self.align).v(VAlign::Baseline).draw(p, band);
+        let Ok(cs) = std::ffi::CString::new(line) else {
+            return;
+        };
+        Label::new(cs.as_ptr(), sz, theme::TEXT_PRIMARY)
+            .bold()
+            .h(self.align)
+            .v(VAlign::Baseline)
+            .draw(p, band);
     }
 }
 
@@ -170,11 +185,20 @@ mod tests {
     #[test]
     fn a_wide_wordmark_is_the_anchor_and_does_not_move() {
         let (w, h) = fit(Hero, 1500.0, 300.0, 900.0); // detail's column
-        assert!((w - 600.0).abs() < 1e-3 && (h - 120.0).abs() < 1e-3, "detail hero wordmark: {w}×{h}");
+        assert!(
+            (w - 600.0).abs() < 1e-3 && (h - 120.0).abs() < 1e-3,
+            "detail hero wordmark: {w}×{h}"
+        );
         let (w, h) = fit(Hero, 1500.0, 300.0, 660.0); // home's, narrower — and still not binding
-        assert!((w - 600.0).abs() < 1e-3 && (h - 120.0).abs() < 1e-3, "home hero wordmark: {w}×{h}");
+        assert!(
+            (w - 600.0).abs() < 1e-3 && (h - 120.0).abs() < 1e-3,
+            "home hero wordmark: {w}×{h}"
+        );
         let (w, h) = fit(Compact, 1500.0, 300.0, 1740.0);
-        assert!((w - 270.0).abs() < 1e-3 && (h - 54.0).abs() < 1e-3, "compact wordmark: {w}×{h}");
+        assert!(
+            (w - 270.0).abs() < 1e-3 && (h - 54.0).abs() < 1e-3,
+            "compact wordmark: {w}×{h}"
+        );
     }
 
     /// The nit itself, pinned: a square emblem and a wordmark are the same amount of brand.
@@ -182,12 +206,21 @@ mod tests {
     fn a_square_logo_carries_the_same_ink_as_a_wordmark() {
         let (w1, h1) = fit(Hero, 800.0, 800.0, 900.0);
         let (w5, h5) = fit(Hero, 1500.0, 300.0, 900.0);
-        assert!(h1 > h5, "a square must grow TALL to earn its area ({h1} vs {h5})");
+        assert!(
+            h1 > h5,
+            "a square must grow TALL to earn its area ({h1} vs {h5})"
+        );
         let (a1, a5) = (w1 * h1, w5 * h5);
-        assert!((a1 - a5).abs() / a5 < 0.02, "the two carry different ink: {a1} vs {a5} px²");
+        assert!(
+            (a1 - a5).abs() / a5 < 0.02,
+            "the two carry different ink: {a1} vs {a5} px²"
+        );
         // …and the regression guard against the height clamp coming back: the detail hero used to
         // draw a 1:1 emblem at 120×120.
-        assert!(a1 > 3.0 * 120.0 * 120.0, "a square is back to a height-clamped size ({a1} px²)");
+        assert!(
+            a1 > 3.0 * 120.0 * 120.0,
+            "a square is back to a height-clamped size ({a1} px²)"
+        );
     }
 
     /// The ORDER of the three clamps — the one part of `fit` that is easy to get wrong, and whose
@@ -196,10 +229,16 @@ mod tests {
     fn the_floor_holds_until_the_column_binds() {
         // 6:1: the area rule wants h=109.5, the floor raises it to 120 and the column has room
         let (w, h) = fit(Hero, 600.0, 100.0, 900.0);
-        assert!((w - 720.0).abs() < 1e-3 && (h - 120.0).abs() < 1e-3, "{w}×{h}");
+        assert!(
+            (w - 720.0).abs() < 1e-3 && (h - 120.0).abs() < 1e-3,
+            "{w}×{h}"
+        );
         // the same source in home's narrower column: the column is allowed to break the floor
         let (w, h) = fit(Hero, 600.0, 100.0, 660.0);
-        assert!((w - 660.0).abs() < 1e-3 && (h - 110.0).abs() < 1e-3, "{w}×{h}");
+        assert!(
+            (w - 660.0).abs() < 1e-3 && (h - 110.0).abs() < 1e-3,
+            "{w}×{h}"
+        );
     }
 
     /// The property sweep: whatever the source, the fit stays inside its bounds and never distorts
@@ -208,13 +247,28 @@ mod tests {
     fn nothing_overflows_its_column_or_its_ceiling_and_aspect_is_preserved() {
         for rung in [Hero, Compact] {
             let (_, _, h_max, _) = rung.bounds();
-            for a in [0.5f32, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0, 12.0] {
+            for a in [
+                0.5f32, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0, 12.0,
+            ] {
                 for col_w in [660.0f32, 900.0, 1740.0] {
                     let (w, h) = fit(rung, a * 300.0, 300.0, col_w);
-                    assert!(w <= col_w + 1e-3, "{rung:?} a={a} overflowed its {col_w} column at {w}");
-                    assert!(h <= h_max + 1e-3, "{rung:?} a={a} broke its {h_max} ceiling at {h}");
-                    assert!(h > 0.0 && h.is_finite() && w.is_finite(), "{rung:?} a={a} → {w}×{h}");
-                    assert!((w / h - a).abs() < 1e-3, "{rung:?} a={a} was distorted to {}", w / h);
+                    assert!(
+                        w <= col_w + 1e-3,
+                        "{rung:?} a={a} overflowed its {col_w} column at {w}"
+                    );
+                    assert!(
+                        h <= h_max + 1e-3,
+                        "{rung:?} a={a} broke its {h_max} ceiling at {h}"
+                    );
+                    assert!(
+                        h > 0.0 && h.is_finite() && w.is_finite(),
+                        "{rung:?} a={a} → {w}×{h}"
+                    );
+                    assert!(
+                        (w / h - a).abs() < 1e-3,
+                        "{rung:?} a={a} was distorted to {}",
+                        w / h
+                    );
                 }
             }
         }
@@ -230,18 +284,35 @@ mod tests {
         );
         let hero_h = fit(Hero, 1500.0, 300.0, 900.0).1;
         let compact_h = fit(Compact, 1500.0, 300.0, 1740.0).1;
-        assert!((compact_h / hero_h - k).abs() < 1e-3, "a 5:1 mark must land on the floor at BOTH rungs");
+        assert!(
+            (compact_h / hero_h - k).abs() < 1e-3,
+            "a 5:1 mark must land on the floor at BOTH rungs"
+        );
     }
 
     /// `fit` is public and a NaN would propagate into a `Rect` and blank the band without crashing —
     /// invisible on device, so it is pinned here instead.
     #[test]
     fn a_degenerate_source_is_a_size_not_a_panic() {
-        for (sw, sh, col) in [(0.0f32, 0.0f32, 900.0f32), (10.0, 0.0, 900.0), (-5.0, 20.0, 900.0), (1500.0, 300.0, 0.0)] {
+        for (sw, sh, col) in [
+            (0.0f32, 0.0f32, 900.0f32),
+            (10.0, 0.0, 900.0),
+            (-5.0, 20.0, 900.0),
+            (1500.0, 300.0, 0.0),
+        ] {
             let (w, h) = fit(Hero, sw, sh, col);
-            assert!(w.is_finite() && h.is_finite(), "{sw}×{sh} in {col} → {w}×{h}");
-            assert!(w >= 0.0 && h >= 0.0, "{sw}×{sh} in {col} → negative {w}×{h}");
-            assert!(h <= theme::logo::HERO_H_MAX + 1e-3, "{sw}×{sh} in {col} broke the ceiling at {h}");
+            assert!(
+                w.is_finite() && h.is_finite(),
+                "{sw}×{sh} in {col} → {w}×{h}"
+            );
+            assert!(
+                w >= 0.0 && h >= 0.0,
+                "{sw}×{sh} in {col} → negative {w}×{h}"
+            );
+            assert!(
+                h <= theme::logo::HERO_H_MAX + 1e-3,
+                "{sw}×{sh} in {col} broke the ceiling at {h}"
+            );
         }
     }
 
@@ -252,10 +323,24 @@ mod tests {
         let band = Rect::new(90.0, 408.0, 660.0, band_h(Hero)); // home's worst-case stack
         let floor = place(band, 600.0, 120.0, HAlign::Left);
         let tall = place(band, 268.0, 268.0, HAlign::Left);
-        assert_eq!(floor.y + floor.h, band.y + band.h, "the floor-height logo left the anchor line");
-        assert_eq!(tall.y + tall.h, band.y + band.h, "the tall logo left the anchor line");
-        assert_eq!(tall.y, 260.0, "the overflow must go UP out of the band, not down");
-        assert_eq!(floor.x, tall.x, "…and the left edge does not move with the height");
+        assert_eq!(
+            floor.y + floor.h,
+            band.y + band.h,
+            "the floor-height logo left the anchor line"
+        );
+        assert_eq!(
+            tall.y + tall.h,
+            band.y + band.h,
+            "the tall logo left the anchor line"
+        );
+        assert_eq!(
+            tall.y, 260.0,
+            "the overflow must go UP out of the band, not down"
+        );
+        assert_eq!(
+            floor.x, tall.x,
+            "…and the left edge does not move with the height"
+        );
     }
 
     /// The compact title is centred on the panel — identical to the `SCR_W * 0.5` anchor the old
@@ -274,6 +359,9 @@ mod tests {
     fn band_h_is_the_floor_not_the_drawn_height() {
         assert_eq!(band_h(Hero), theme::logo::HERO_H_MIN);
         assert_eq!(band_h(Compact), theme::logo::COMPACT_H_MIN);
-        assert!(band_h(Hero) < fit(Hero, 800.0, 800.0, 900.0).1, "a square draws taller than its band");
+        assert!(
+            band_h(Hero) < fit(Hero, 800.0, 800.0, 900.0).1,
+            "a square draws taller than its band"
+        );
     }
 }

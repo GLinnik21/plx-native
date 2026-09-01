@@ -39,9 +39,9 @@
 //! directions are initiated by the television as pinned, authenticated HTTPS POSTs.
 
 #[cfg(feature = "lab-diagnostics")]
-pub(crate) mod control;
-#[cfg(feature = "lab-diagnostics")]
 pub(crate) mod config;
+#[cfg(feature = "lab-diagnostics")]
+pub(crate) mod control;
 #[cfg(feature = "lab-diagnostics")]
 pub(crate) mod snapshot;
 #[cfg(feature = "lab-diagnostics")]

@@ -23,11 +23,11 @@
 //! would point it at something it is not talking about.
 //!
 //! [`Opener`]: crate::ui::popover::Opener
-use crate::ui::consts::{SDLK_LEFT, SDLK_RIGHT, SCR_H, SCR_W};
+use crate::ui::consts::{SCR_H, SCR_W, SDLK_LEFT, SDLK_RIGHT};
+use crate::ui::label::{HAlign, Label};
 use crate::ui::popover::Popover;
 use crate::ui::widgets::{Button, ControlStyle, StatusOverlay};
 use crate::ui::{theme, Env, Rect, View};
-use crate::ui::label::{HAlign, Label};
 use std::os::raw::c_int;
 use std::ptr::{addr_of, addr_of_mut};
 
@@ -186,7 +186,12 @@ pub(crate) fn layout(q_h: f32) -> Layout {
     let by = panel.y + panel.h - PAD_BOT - StatusOverlay::CTRL_H;
     Layout {
         panel,
-        question: Rect::new(panel.x + PAD_X, panel.y + PAD_TOP, panel.w - 2.0 * PAD_X, q_h),
+        question: Rect::new(
+            panel.x + PAD_X,
+            panel.y + PAD_TOP,
+            panel.w - 2.0 * PAD_X,
+            q_h,
+        ),
         cancel: Rect::new(bx, by, BTN_W, StatusOverlay::CTRL_H),
         exit: Rect::new(bx + BTN_W + BTN_GAP, by, BTN_W, StatusOverlay::CTRL_H),
     }
@@ -225,7 +230,9 @@ impl Layout {
 /// A miss parks nothing and reports `false`, which is [`Layout::hit`]'s rule intact: "not either" is
 /// no answer to a yes/no question, so a click on the scrim leaves the alert exactly as it was.
 pub fn press_at(x: f32, y: f32) -> bool {
-    let Some(c) = measured().hit(x, y) else { return false };
+    let Some(c) = measured().hit(x, y) else {
+        return false;
+    };
     unsafe { addr_of_mut!(SEL).write(c) };
     true
 }
@@ -293,8 +300,16 @@ mod tests {
     fn left_right_walk_the_pair_and_clamp_at_both_ends() {
         assert_eq!(step(Choice::Cancel, SDLK_RIGHT as c_int), Choice::Exit);
         assert_eq!(step(Choice::Exit, SDLK_LEFT as c_int), Choice::Cancel);
-        assert_eq!(step(Choice::Cancel, SDLK_LEFT as c_int), Choice::Cancel, "no wrap onto Exit");
-        assert_eq!(step(Choice::Exit, SDLK_RIGHT as c_int), Choice::Exit, "no wrap off the end");
+        assert_eq!(
+            step(Choice::Cancel, SDLK_LEFT as c_int),
+            Choice::Cancel,
+            "no wrap onto Exit"
+        );
+        assert_eq!(
+            step(Choice::Exit, SDLK_RIGHT as c_int),
+            Choice::Exit,
+            "no wrap off the end"
+        );
     }
 
     /// Anything that is not LEFT or RIGHT leaves the ring where it is — the alert swallows the
@@ -317,15 +332,25 @@ mod tests {
     fn the_two_answers_are_equal_frames_inside_the_panel() {
         let l = layout(Q_H);
         assert_eq!(l.panel.w, 660.0);
-        assert!((l.panel.cx() - SCR_W * 0.5).abs() < 0.01, "the sheet is centred");
+        assert!(
+            (l.panel.cx() - SCR_W * 0.5).abs() < 0.01,
+            "the sheet is centred"
+        );
         assert!((l.panel.cy() - SCR_H * 0.5).abs() < 0.01);
 
         assert_eq!(l.cancel.w, 260.0);
         assert_eq!(l.exit.w, 260.0, "two equal choices, two equal frames");
-        assert_eq!(l.cancel.h, StatusOverlay::CTRL_H, "the app's one control height");
+        assert_eq!(
+            l.cancel.h,
+            StatusOverlay::CTRL_H,
+            "the app's one control height"
+        );
         assert_eq!(l.exit.h, StatusOverlay::CTRL_H);
         assert_eq!(l.cancel.y, l.exit.y, "one row");
-        assert!((l.exit.x - (l.cancel.x + l.cancel.w) - 20.0).abs() < 0.01, "the design's 20px gap");
+        assert!(
+            (l.exit.x - (l.cancel.x + l.cancel.w) - 20.0).abs() < 0.01,
+            "the design's 20px gap"
+        );
         assert!(
             l.cancel.x >= l.panel.x && l.exit.x + l.exit.w <= l.panel.x + l.panel.w,
             "both answers inside the sheet"
@@ -346,10 +371,19 @@ mod tests {
     fn the_sheet_fits_its_content_at_any_measurement() {
         for q_h in [1.0, Q_H, 64.0, 120.0] {
             let l = layout(q_h);
-            assert!((l.question.y - l.panel.y - 48.0).abs() < 0.01, "48 above the question");
-            assert!((l.question.x - l.panel.x - 48.0).abs() < 0.01, "48 either side");
+            assert!(
+                (l.question.y - l.panel.y - 48.0).abs() < 0.01,
+                "48 above the question"
+            );
+            assert!(
+                (l.question.x - l.panel.x - 48.0).abs() < 0.01,
+                "48 either side"
+            );
             assert!((l.question.w - (l.panel.w - 96.0)).abs() < 0.01);
-            assert!(l.question.y + l.question.h <= l.cancel.y, "the question clears the answers");
+            assert!(
+                l.question.y + l.question.h <= l.cancel.y,
+                "the question clears the answers"
+            );
             assert!(
                 l.cancel.y + l.cancel.h <= l.panel.y + l.panel.h,
                 "…and the answers clear the sheet's own bottom edge (q_h={q_h})"
@@ -365,12 +399,26 @@ mod tests {
         assert_eq!(l.hit(l.cancel.cx(), l.cancel.cy()), Some(Choice::Cancel));
         assert_eq!(l.hit(l.exit.cx(), l.exit.cy()), Some(Choice::Exit));
         // the 20px alley between them belongs to neither
-        assert_eq!(l.hit((l.cancel.x + l.cancel.w + l.exit.x) * 0.5, l.cancel.cy()), None);
-        assert_eq!(l.hit(l.panel.cx(), l.panel.y + 8.0), None, "the question is not a control");
-        assert_eq!(l.hit(10.0, 10.0), None, "a click on the scrim is a miss, not a dismissal");
+        assert_eq!(
+            l.hit((l.cancel.x + l.cancel.w + l.exit.x) * 0.5, l.cancel.cy()),
+            None
+        );
+        assert_eq!(
+            l.hit(l.panel.cx(), l.panel.y + 8.0),
+            None,
+            "the question is not a control"
+        );
+        assert_eq!(
+            l.hit(10.0, 10.0),
+            None,
+            "a click on the scrim is a miss, not a dismissal"
+        );
         // and the edges belong to the pill they are drawn on, both ends
         assert_eq!(l.hit(l.cancel.x, l.cancel.y), Some(Choice::Cancel));
-        assert_eq!(l.hit(l.exit.x + l.exit.w, l.exit.y + l.exit.h), Some(Choice::Exit));
+        assert_eq!(
+            l.hit(l.exit.x + l.exit.w, l.exit.y + l.exit.h),
+            Some(Choice::Exit)
+        );
     }
 
     /// The sheet's corner is the token, and it is the outer shape rather than a fifth capsule: a
@@ -386,7 +434,10 @@ mod tests {
     fn the_sheet_reads_as_a_sheet_and_not_as_a_control() {
         let capsule = StatusOverlay::CTRL_H * 0.5;
         assert_eq!(theme::ALERT_PANEL_RAD, 32.0);
-        assert!(theme::ALERT_PANEL_RAD > capsule, "the sheet is the OUTER shape");
+        assert!(
+            theme::ALERT_PANEL_RAD > capsule,
+            "the sheet is the OUTER shape"
+        );
         assert!(
             theme::ALERT_PANEL_RAD < capsule * 2.0,
             "…but a sheet corner near double its controls' is a button, not a container"

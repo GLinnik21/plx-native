@@ -56,7 +56,10 @@ pub(crate) fn active_sub() -> c_int {
 /// Plex stream id of the chosen audio track (for &audioStreamID), or 0
 pub(crate) fn audio_stream_id() -> i64 {
     let i = active_audio();
-    tracks().and_then(|t| t.audio.get(i.max(0) as usize)).map(|s| s.id).unwrap_or(0)
+    tracks()
+        .and_then(|t| t.audio.get(i.max(0) as usize))
+        .map(|s| s.id)
+        .unwrap_or(0)
 }
 /// Plex stream id of the chosen subtitle track (for &subtitleStreamID), or 0 if Off
 pub(crate) fn sub_stream_id() -> i64 {
@@ -64,7 +67,10 @@ pub(crate) fn sub_stream_id() -> i64 {
     if i < 0 {
         return 0;
     }
-    tracks().and_then(|t| t.subs.get(i as usize)).map(|s| s.id).unwrap_or(0)
+    tracks()
+        .and_then(|t| t.subs.get(i as usize))
+        .map(|s| s.id)
+        .unwrap_or(0)
 }
 
 fn n_audio() -> c_int {
@@ -214,7 +220,9 @@ pub(crate) fn on_ok() {
         let new_sub: c_int = if sel <= 0 {
             -1
         } else {
-            vis.get((sel - 1) as usize).map(|&i| i as c_int).unwrap_or(-1)
+            vis.get((sel - 1) as usize)
+                .map(|&i| i as c_int)
+                .unwrap_or(-1)
         };
         let changed = unsafe { addr_of!(ACTIVE_SUB).read() } != new_sub;
         unsafe { addr_of_mut!(ACTIVE_SUB).write(new_sub) }
@@ -242,7 +250,13 @@ use crate::metadata::friendly_codec; // the ONE codec→display-name map (shared
 pub(crate) fn is_image_sub_codec(codec: &str) -> bool {
     matches!(
         codec.to_ascii_lowercase().as_str(),
-        "pgs" | "hdmv_pgs_subtitle" | "vobsub" | "dvd_subtitle" | "dvdsub" | "dvb_subtitle" | "dvbsub"
+        "pgs"
+            | "hdmv_pgs_subtitle"
+            | "vobsub"
+            | "dvd_subtitle"
+            | "dvdsub"
+            | "dvb_subtitle"
+            | "dvbsub"
     )
 }
 
@@ -283,8 +297,16 @@ fn build_audio() -> Section {
     };
     let names = crate::player::SHARED.track_names.lock().unwrap();
     for (i, s) in d.audio.iter().enumerate() {
-        let lang = if s.lang.is_empty() { "Unknown" } else { s.lang.as_str() };
-        let label = if s.default { format!("Original: {lang}") } else { lang.to_string() };
+        let lang = if s.lang.is_empty() {
+            "Unknown"
+        } else {
+            s.lang.as_str()
+        };
+        let label = if s.default {
+            format!("Original: {lang}")
+        } else {
+            lang.to_string()
+        };
         let mut row = Row::new(label).checked(i as c_int == active_audio());
         // a per-track descriptor so sibling tracks in the same language are distinguishable
         // (e.g. two Russian tracks: "Дубляж" vs "AC-3 5.1"). Prefer the stream title, else the
@@ -294,7 +316,11 @@ fn build_audio() -> Section {
             names.audio(crate::metadata::audio_ordinal(&d.audio, i)),
             lang,
         );
-        let sub = if name.is_empty() { audio_descriptor(s) } else { name };
+        let sub = if name.is_empty() {
+            audio_descriptor(s)
+        } else {
+            name
+        };
         if !sub.is_empty() {
             row = row.detail(sub);
         }
@@ -348,9 +374,17 @@ fn build_subs() -> Section {
                 Some(s) => s,
                 None => continue,
             };
-            let lang = if s.lang.is_empty() { "Unknown" } else { s.lang.as_str() };
+            let lang = if s.lang.is_empty() {
+                "Unknown"
+            } else {
+                s.lang.as_str()
+            };
             let mut row = Row::new(lang.to_string()).checked(i as c_int == active_sub());
-            let name = track_name(&s.title, names.sub(crate::metadata::sub_render_ordinal(&t.subs, i)), lang);
+            let name = track_name(
+                &s.title,
+                names.sub(crate::metadata::sub_render_ordinal(&t.subs, i)),
+                lang,
+            );
             if !name.is_empty() {
                 row = row.detail(name);
             }
@@ -370,7 +404,11 @@ fn build_subs() -> Section {
 }
 
 fn rebuild(tab: c_int, slide: bool) {
-    let sec = if tab == 0 { build_audio() } else { build_subs() };
+    let sec = if tab == 0 {
+        build_audio()
+    } else {
+        build_subs()
+    };
     table().set_sections(vec![sec], sel_for_tab(tab), slide);
 }
 
@@ -383,7 +421,12 @@ pub(crate) fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
     let (bottom, top_min) = (SCR_H - 316.0, 60.0);
     out.push((
         "track menu panel",
-        Rect::new(crate::ui::player_hud::CTRL_RIGHT - pw, top_min, pw, bottom - top_min),
+        Rect::new(
+            crate::ui::player_hud::CTRL_RIGHT - pw,
+            top_min,
+            pw,
+            bottom - top_min,
+        ),
     ));
 }
 
@@ -391,7 +434,7 @@ pub(crate) fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
 fn panel_rect() -> Rect {
     let tab = unsafe { addr_of!(TAB).read() };
     let pw = if tab == 0 { 560.0f32 } else { 448.0f32 }; // audio / subtitles (mockup panel widths)
-    // the transport control row's own right edge — one number for the discs and both panels
+                                                         // the transport control row's own right edge — one number for the discs and both panels
     let px = crate::ui::player_hud::CTRL_RIGHT - pw;
     // Bottom-anchored just above the control-button row (buttons top at SCR_H-288) with a clear gap.
     // The panel grows UPWARD from this fixed bottom edge, and its height is capped so the top never
@@ -458,10 +501,17 @@ mod tests {
             "Полные Jaskier",
             "Полные stirloo",
         ];
-        let rows: Vec<String> = container.iter().map(|c| track_name(pms_title, c, lang)).collect();
+        let rows: Vec<String> = container
+            .iter()
+            .map(|c| track_name(pms_title, c, lang))
+            .collect();
         assert_eq!(rows, container, "each row shows its own track's name");
         let distinct: std::collections::HashSet<&String> = rows.iter().collect();
-        assert_eq!(distinct.len(), rows.len(), "no two rows of one language may read the same");
+        assert_eq!(
+            distinct.len(),
+            rows.len(),
+            "no two rows of one language may read the same"
+        );
     }
 
     /// The MKV control case, from the same server: PMS DOES parse Matroska's `title`, so the
@@ -469,7 +519,10 @@ mod tests {
     /// before playback has opened a file, and through a transcode, where there is no file to read.
     #[test]
     fn the_servers_own_title_wins_when_it_has_one() {
-        assert_eq!(track_name("HDRezka Studio", "", "Русский"), "HDRezka Studio");
+        assert_eq!(
+            track_name("HDRezka Studio", "", "Русский"),
+            "HDRezka Studio"
+        );
         // …and it still wins when the demuxer also has one: the same tag, one source of truth
         assert_eq!(track_name("Forced", "Forced", "Русский"), "Forced");
     }
@@ -481,14 +534,22 @@ mod tests {
     #[test]
     fn a_name_that_only_repeats_the_language_is_not_shown() {
         assert_eq!(track_name("English", "", "English"), "");
-        assert_eq!(track_name("english", "", "English"), "", "the guard is case-insensitive");
+        assert_eq!(
+            track_name("english", "", "English"),
+            "",
+            "the guard is case-insensitive"
+        );
         assert_eq!(track_name("", "", "English"), "");
         assert_eq!(
             track_name("English", "Full SDH", "English"),
             "Full SDH",
             "a useless PMS title falls through to the container's"
         );
-        assert_eq!(track_name("  ", " Full ", "English"), "Full", "both sides are trimmed");
+        assert_eq!(
+            track_name("  ", " Full ", "English"),
+            "Full",
+            "both sides are trimmed"
+        );
     }
 
     /// **Position is the join, so an unnamed track must occupy a slot rather than be skipped.**
@@ -503,9 +564,17 @@ mod tests {
         };
         assert_eq!(n.audio(0), "Дубляж");
         assert_eq!(n.audio(1), "", "an untagged track holds its slot");
-        assert_eq!(n.audio(2), "Original", "…so the one after it is still its own");
+        assert_eq!(
+            n.audio(2),
+            "Original",
+            "…so the one after it is still its own"
+        );
         assert_eq!(n.sub(1), "Full");
-        assert_eq!(n.sub(-1), "", "an external sidecar is not in the container at all");
+        assert_eq!(
+            n.sub(-1),
+            "",
+            "an external sidecar is not in the container at all"
+        );
         assert_eq!(n.sub(9), "", "past the end is empty, not a panic");
         // the empty store — every read before a demuxer has opened, and every read on the host
         assert_eq!(TrackNames::new().sub(0), "");

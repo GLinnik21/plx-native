@@ -268,23 +268,23 @@ impl UsageContext {
     pub(crate) fn for_server(server: Option<crate::plex::ServerId>) -> Self {
         let os = crate::webos::info();
         let hw = crate::webos::device();
-        let (server_connection, ip_version) = server.and_then(crate::plex::client_for).map_or(
-            ("unknown", "unknown"),
-            |client| {
-                let connection = match client.link() {
-                    Some(crate::plex::probe::Location::Local) => "local",
-                    Some(crate::plex::probe::Location::Remote) => "remote",
-                    Some(crate::plex::probe::Location::Relay) => "relay",
-                    None => "unknown",
-                };
-                let ip = match client.ip_version() {
-                    Some(crate::plex::IpVersion::V4) => "v4",
-                    Some(crate::plex::IpVersion::V6) => "v6",
-                    None => "unknown",
-                };
-                (connection, ip)
-            },
-        );
+        let (server_connection, ip_version) =
+            server
+                .and_then(crate::plex::client_for)
+                .map_or(("unknown", "unknown"), |client| {
+                    let connection = match client.link() {
+                        Some(crate::plex::probe::Location::Local) => "local",
+                        Some(crate::plex::probe::Location::Remote) => "remote",
+                        Some(crate::plex::probe::Location::Relay) => "relay",
+                        None => "unknown",
+                    };
+                    let ip = match client.ip_version() {
+                        Some(crate::plex::IpVersion::V4) => "v4",
+                        Some(crate::plex::IpVersion::V6) => "v6",
+                        None => "unknown",
+                    };
+                    (connection, ip)
+                });
         Self {
             app_version: dimension(env!("CARGO_PKG_VERSION")),
             webos_release: dimension(&os.release),
@@ -600,15 +600,42 @@ pub(crate) const EVENT_SPECS: &[EventSpec] = &[
 /// [`EVENT_SPECS`] because these classify the app/device/network context, not the action itself.
 #[cfg(test)]
 pub(crate) const CONTEXT_SPECS: &[F] = &[
-    F { key: "app_version", domain: "the PlxNative package version" },
-    F { key: "webos_release", domain: "the webOS release reported by nyx" },
-    F { key: "webos_api", domain: "the webOS API version reported by nyx" },
-    F { key: "webos_codename", domain: "the webOS firmware family reported by nyx" },
-    F { key: "device_model", domain: "the LG model/platform class reported by nyx" },
-    F { key: "soc", domain: "the SoC/board class reported by nyx" },
-    F { key: "hardware_revision", domain: "the hardware revision class reported by nyx" },
-    F { key: "server_connection", domain: "`local` / `remote` / `relay` / `unknown`" },
-    F { key: "ip_version", domain: "`v4` / `v6` / `unknown`" },
+    F {
+        key: "app_version",
+        domain: "the PlxNative package version",
+    },
+    F {
+        key: "webos_release",
+        domain: "the webOS release reported by nyx",
+    },
+    F {
+        key: "webos_api",
+        domain: "the webOS API version reported by nyx",
+    },
+    F {
+        key: "webos_codename",
+        domain: "the webOS firmware family reported by nyx",
+    },
+    F {
+        key: "device_model",
+        domain: "the LG model/platform class reported by nyx",
+    },
+    F {
+        key: "soc",
+        domain: "the SoC/board class reported by nyx",
+    },
+    F {
+        key: "hardware_revision",
+        domain: "the hardware revision class reported by nyx",
+    },
+    F {
+        key: "server_connection",
+        domain: "`local` / `remote` / `relay` / `unknown`",
+    },
+    F {
+        key: "ip_version",
+        domain: "`v4` / `v6` / `unknown`",
+    },
 ];
 
 #[cfg(test)]

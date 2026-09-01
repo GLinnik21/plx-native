@@ -125,7 +125,6 @@ unsafe fn fmt_duration(fmt: *const AVFormatContext) -> i64 {
     *((fmt as *const u8).add(OFF_FMT_DURATION) as *const i64)
 }
 
-
 // ---- structs (exact n3.3 field order; 32-bit ARM/AAPCS sizes) ----
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -152,9 +151,9 @@ pub struct AVPacket {
     // FF_API_CONVERGENCE_DURATION, and these three arrived. sizeof 72 -> 80. The app never
     // allocates an AVPacket (av_packet_alloc does), so only the offsets above matter — but the
     // size is asserted anyway, because a short model here would be a silent overread.
-    pub opaque: *mut c_void,              // +64
-    pub opaque_ref: *mut AVBufferRef,     // +68
-    pub time_base: AVRational,            // +72
+    pub opaque: *mut c_void,          // +64
+    pub opaque_ref: *mut AVBufferRef, // +68
+    pub time_base: AVRational,        // +72
 }
 
 /// `AVPacketSideData` — one entry of `AVCodecParameters::coded_side_data`. It was an opaque
@@ -166,9 +165,9 @@ pub struct AVPacket {
 /// — the one place in this table where the Rust type carries the ABI instead of a comment.
 #[repr(C)]
 pub struct AVPacketSideData {
-    pub data: *mut u8,  // +0
-    pub size: usize,    // +4
-    pub type_: c_int,   // +8  (enum AVPacketSideDataType)
+    pub data: *mut u8, // +0
+    pub size: usize,   // +4
+    pub type_: c_int,  // +8  (enum AVPacketSideDataType)
 }
 
 /// `AVDOVIDecoderConfigurationRecord` (libavutil/dovi_meta.h), the payload of an
@@ -200,54 +199,53 @@ pub struct AVDOVIDecoderConfigurationRecord {
 // sizeof = 136
 #[repr(C)]
 pub struct AVCodecParameters {
-    pub codec_type: c_int,            // +0
-    pub codec_id: c_int,              // +4
-    pub codec_tag: u32,               // +8
-    pub extradata: *mut u8,           // +12
-    pub extradata_size: c_int,        // +16
+    pub codec_type: c_int,                      // +0
+    pub codec_id: c_int,                        // +4
+    pub codec_tag: u32,                         // +8
+    pub extradata: *mut u8,                     // +12
+    pub extradata_size: c_int,                  // +16
     pub coded_side_data: *mut AVPacketSideData, // +20
-    pub nb_coded_side_data: c_int,    // +24
-    pub format: c_int,                // +28
-    pub bit_rate: i64,                // +32
-    pub bits_per_coded_sample: c_int, // +40
-    pub bits_per_raw_sample: c_int,   // +44
-    pub profile: c_int,               // +48
-    pub level: c_int,                 // +52
-    pub width: c_int,                 // +56
-    pub height: c_int,                // +60
-    pub sample_aspect_ratio: AVRational, // +64
-    pub framerate: AVRational,        // +72
-    pub field_order: c_int,           // +80
-    pub color_range: c_int,           // +84
-    pub color_primaries: c_int,       // +88
-    pub color_trc: c_int,             // +92
-    pub color_space: c_int,           // +96
-    pub chroma_location: c_int,       // +100
-    pub video_delay: c_int,           // +104
+    pub nb_coded_side_data: c_int,              // +24
+    pub format: c_int,                          // +28
+    pub bit_rate: i64,                          // +32
+    pub bits_per_coded_sample: c_int,           // +40
+    pub bits_per_raw_sample: c_int,             // +44
+    pub profile: c_int,                         // +48
+    pub level: c_int,                           // +52
+    pub width: c_int,                           // +56
+    pub height: c_int,                          // +60
+    pub sample_aspect_ratio: AVRational,        // +64
+    pub framerate: AVRational,                  // +72
+    pub field_order: c_int,                     // +80
+    pub color_range: c_int,                     // +84
+    pub color_primaries: c_int,                 // +88
+    pub color_trc: c_int,                       // +92
+    pub color_space: c_int,                     // +96
+    pub chroma_location: c_int,                 // +100
+    pub video_delay: c_int,                     // +104
     // FFmpeg 7 DELETED the deprecated `channel_layout`/`channels` pair that lived here and left
     // only this struct. `nb_channels` is the replacement for the `channels` int, and reading the
     // old field is not a compile error on a hand-written model — it is a silent read of whatever
     // now occupies +104. Which is the argument for shipping a known FFmpeg in one sentence.
-    pub ch_layout: AVChannelLayout,   // +112
-    pub sample_rate: c_int,           // +136
-    pub block_align: c_int,           // +140
-    pub frame_size: c_int,            // +144
-    pub initial_padding: c_int,       // +148
-    pub trailing_padding: c_int,      // +152
-    pub seek_preroll: c_int,          // +156
-    pub alpha_mode: c_int,            // +160
+    pub ch_layout: AVChannelLayout, // +112
+    pub sample_rate: c_int,         // +136
+    pub block_align: c_int,         // +140
+    pub frame_size: c_int,          // +144
+    pub initial_padding: c_int,     // +148
+    pub trailing_padding: c_int,    // +152
+    pub seek_preroll: c_int,        // +156
+    pub alpha_mode: c_int,          // +160
 }
 
 /// `AVChannelLayout`, modelled only as far as `nb_channels` — the one field this app reads.
 /// The union that follows is 8-aligned, so a 4-byte pad sits after `nb_channels` on ARM.
 #[repr(C)]
 pub struct AVChannelLayout {
-    pub order: c_int,       // +0
-    pub nb_channels: c_int, // +4
-    pub u_mask: u64,        // +8  (union { mask, map })
+    pub order: c_int,        // +0
+    pub nb_channels: c_int,  // +4
+    pub u_mask: u64,         // +8  (union { mask, map })
     pub opaque: *mut c_void, // +16
 }
-
 
 // AVFormatContext truncated after `filename` — we only ever hold a library-returned pointer and
 // read leading fields. NEVER stack-allocate this.
@@ -259,40 +257,37 @@ pub struct AVChannelLayout {
 // declaring it here at an offset that is right on exactly one of the two.
 #[repr(C)]
 pub struct AVFormatContext {
-    pub av_class: *const AVClass,      // +0
-    pub iformat: *mut AVInputFormat,   // +4
-    pub oformat: *mut c_void,          // +8
-    pub priv_data: *mut c_void,        // +12
-    pub pb: *mut AVIOContext,          // +16
-    pub ctx_flags: c_int,              // +20
-    pub nb_streams: c_uint,            // +24
-    pub streams: *mut *mut AVStream,   // +28
-    // STOPS HERE. Everything past `streams` shifts between majors — `duration` is at +48 on
-    // FFmpeg 6, +64 on 9, and +1064 on the n3.3 the televisions ship, because 5.0 deleted
-    // `filename[1024]` and later releases kept rearranging what replaced it. It is the only field
-    // beyond this point the app reads, so it is read at OFF_FMT_DURATION rather than declared at
-    // a position that would be quietly wrong after a version bump.
+    pub av_class: *const AVClass,    // +0
+    pub iformat: *mut AVInputFormat, // +4
+    pub oformat: *mut c_void,        // +8
+    pub priv_data: *mut c_void,      // +12
+    pub pb: *mut AVIOContext,        // +16
+    pub ctx_flags: c_int,            // +20
+    pub nb_streams: c_uint,          // +24
+    pub streams: *mut *mut AVStream, // +28
+                                     // STOPS HERE. Everything past `streams` shifts between majors — `duration` is at +48 on
+                                     // FFmpeg 6, +64 on 9, and +1064 on the n3.3 the televisions ship, because 5.0 deleted
+                                     // `filename[1024]` and later releases kept rearranging what replaced it. It is the only field
+                                     // beyond this point the app reads, so it is read at OFF_FMT_DURATION rather than declared at
+                                     // a position that would be quietly wrong after a version bump.
 }
-
-
 
 // AVBSFContext is NOT modelled. The app does its own AVCC->Annex-B conversion in Rust, so the
 // bitstream-filter API is never driven — only `av_bsf_get_by_name` survives, and only to log
 // whether the filters exist. Keeping a #[repr(C)] mirror of a struct nothing reads meant
 // re-deriving its offsets at every FFmpeg bump to prove a fact that did not matter.
 
-
 // AVSubtitle (avcodec.h) — one decoded subtitle "display set". sizeof 32 on 32-bit ARM
 // (u16 format @0; u32 start/end_display_time @4/@8, ms relative to `pts`; num_rects @12;
 // rects ptr @16; i64 pts @24 in AV_TIME_BASE µs). repr(C) inserts the +20 pad before pts.
 #[repr(C)]
 pub struct AVSubtitle {
-    pub format: u16,                       // +0  (0 = graphics/bitmap)
-    pub start_display_time: u32,           // +4
-    pub end_display_time: u32,             // +8
-    pub num_rects: c_uint,                 // +12
-    pub rects: *mut *mut AVSubtitleRect,   // +16
-    pub pts: i64,                          // +24
+    pub format: u16,                     // +0  (0 = graphics/bitmap)
+    pub start_display_time: u32,         // +4
+    pub end_display_time: u32,           // +8
+    pub num_rects: c_uint,               // +12
+    pub rects: *mut *mut AVSubtitleRect, // +16
+    pub pts: i64,                        // +24
 }
 
 // AVSubtitleRect (avcodec.h, libavcodec 57 / FFmpeg 3.x). CRUCIAL ABI detail: with
@@ -302,11 +297,11 @@ pub struct AVSubtitle {
 // slots to confirm which the decoder populates before Pass B reads pixels. sizeof = 132.
 #[repr(C)]
 pub struct AVSubtitleRect {
-    pub x: c_int,           // +0
-    pub y: c_int,           // +4
-    pub w: c_int,           // +8
-    pub h: c_int,           // +12
-    pub nb_colors: c_int,   // +16
+    pub x: c_int,         // +0
+    pub y: c_int,         // +4
+    pub w: c_int,         // +8
+    pub h: c_int,         // +12
+    pub nb_colors: c_int, // +16
     // +20 — was +84 on the TV's FFmpeg 3.3, because an entire deprecated AVPicture sat ahead of
     // it under FF_API_AVPICTURE. FFmpeg 5.0 deleted that, taking sizeof from 132 to 68.
     pub data: [*mut u8; 4], // +20  data[0]=PAL8 indices, data[1]=palette (256×BGRA)
@@ -319,12 +314,11 @@ pub struct AVSubtitleRect {
     // the end. Found by porting the table to the simulator's pointer width, which is a second
     // independent reading of the same header and is exactly what caught it. `ci/ffabi-assert.c`
     // now pins all four on both widths.
-    pub flags: c_int,       // +52 arm / +72 host
-    pub type_: c_int,       // +56 / +76 (enum AVSubtitleType: 0=NONE, 1=BITMAP, 2=TEXT, 3=ASS)
-    pub text: *mut c_char,  // +60 / +80
-    pub ass: *mut c_char,   // +64 / +88
+    pub flags: c_int,      // +52 arm / +72 host
+    pub type_: c_int,      // +56 / +76 (enum AVSubtitleType: 0=NONE, 1=BITMAP, 2=TEXT, 3=ASS)
+    pub text: *mut c_char, // +60 / +80
+    pub ass: *mut c_char,  // +64 / +88
 }
-
 
 // ---- externs, bound at RUNTIME by SONAME candidate list (see `dynlib`) ----
 //
@@ -518,7 +512,10 @@ pub const AVERROR_EAGAIN: c_int = -11;
 pub const AVERROR_IO: c_int = -5;
 pub const AV_NOPTS_VALUE: i64 = i64::MIN;
 pub const AV_TIME_BASE: i64 = 1_000_000;
-pub const NS_TB: AVRational = AVRational { num: 1, den: 1_000_000_000 };
+pub const NS_TB: AVRational = AVRational {
+    num: 1,
+    den: 1_000_000_000,
+};
 /// `AV_PKT_DATA_DOVI_CONF` — the side-data type tag whose payload is an
 /// [`AVDOVIDecoderConfigurationRecord`]. 29 in FFmpeg 9.0; asserted in `ci/ffabi-assert.c`
 /// because `AVPacketSideDataType` is an ordinary sequential enum and every value in it shifts
@@ -607,7 +604,10 @@ unsafe fn stream_name(s: *mut AVStream) -> String {
         }
         // `to_string_lossy` rather than a strict decode: these are user-authored tags off a
         // stranger's file, and a mis-encoded byte must cost that character, not the whole name.
-        let v = std::ffi::CStr::from_ptr((*e).value).to_string_lossy().trim().to_string();
+        let v = std::ffi::CStr::from_ptr((*e).value)
+            .to_string_lossy()
+            .trim()
+            .to_string();
         if !v.is_empty() {
             return v;
         }
@@ -840,7 +840,10 @@ impl Venc {
                 st: std::ptr::null_mut(),
                 avio: std::ptr::null_mut(),
                 pkt: std::ptr::null_mut(),
-                sink: Box::new(VencSink { fd: -1, failed: false }),
+                sink: Box::new(VencSink {
+                    fd: -1,
+                    failed: false,
+                }),
                 st_tb: AVRational { num: 1, den: 90000 },
                 pts: 0,
                 w,
@@ -857,7 +860,12 @@ impl Venc {
             // the ~1MB/s tunnel. dct=fastint: the forward DCT is scalar C on ARM (no asm).
             let set = |name: &[u8], val: String| {
                 let c = std::ffi::CString::new(val).unwrap();
-                av_opt_set(ctx as *mut c_void, name.as_ptr() as *const c_char, c.as_ptr(), 0)
+                av_opt_set(
+                    ctx as *mut c_void,
+                    name.as_ptr() as *const c_char,
+                    c.as_ptr(),
+                    0,
+                )
             };
             // width/height/pix_fmt BY NAME, not by poking OFF_CTX_*. `video_size` is an
             // IMAGE_SIZE option that writes width and height together, and both it and
@@ -895,11 +903,18 @@ impl Venc {
                 return None;
             }
             let ok = avcodec_parameters_from_context(par, ctx) >= 0
-                && (*par).width == w && (*par).height == h && (*par).format == fmt_yuv;
+                && (*par).width == w
+                && (*par).height == h
+                && (*par).format == fmt_yuv;
             if !ok {
                 crate::log(&format!(
                     "venc: ABI self-check FAILED (par {}x{} fmt {} vs {}x{} fmt {}) — mpeg off",
-                    (*par).width, (*par).height, (*par).format, w, h, fmt_yuv
+                    (*par).width,
+                    (*par).height,
+                    (*par).format,
+                    w,
+                    h,
+                    fmt_yuv
                 ));
                 avcodec_parameters_free(&mut { par });
                 return None;
@@ -920,17 +935,30 @@ impl Venc {
                 crate::log("venc: frame buffer alloc failed");
                 return None;
             }
-            v.sws = sws_getContext(w, h, fmt_rgba, w, h, fmt_nv12, SWS_BILINEAR,
-                                   std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null());
+            v.sws = sws_getContext(
+                w,
+                h,
+                fmt_rgba,
+                w,
+                h,
+                fmt_nv12,
+                SWS_BILINEAR,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null(),
+            );
             if v.sws.is_null() {
                 crate::log("venc: sws_getContext failed");
                 return None;
             }
             // ---- muxer over custom AVIO ----
             let mut oc: *mut AVFormatContext = std::ptr::null_mut();
-            let r = avformat_alloc_output_context2(&mut oc, std::ptr::null_mut(),
-                                                   b"mpegts\0".as_ptr() as *const c_char,
-                                                   std::ptr::null());
+            let r = avformat_alloc_output_context2(
+                &mut oc,
+                std::ptr::null_mut(),
+                b"mpegts\0".as_ptr() as *const c_char,
+                std::ptr::null(),
+            );
             if r < 0 || oc.is_null() {
                 crate::log(&format!("venc: no mpegts muxer in this build ({r})"));
                 return None;
@@ -940,9 +968,15 @@ impl Venc {
             if iobuf.is_null() {
                 return None;
             }
-            let avio = avio_alloc_context(iobuf, 32768, 1,
-                                          v.sink.as_mut() as *mut VencSink as *mut c_void,
-                                          None, Some(venc_write_cb), None);
+            let avio = avio_alloc_context(
+                iobuf,
+                32768,
+                1,
+                v.sink.as_mut() as *mut VencSink as *mut c_void,
+                None,
+                Some(venc_write_cb),
+                None,
+            );
             if avio.is_null() {
                 free_ptr(iobuf as *mut c_void);
                 return None;
@@ -972,8 +1006,10 @@ impl Venc {
             if v.pkt.is_null() {
                 return None;
             }
-            crate::log(&format!("venc: mpeg1/ts up {}x{} @{}bps (st_tb {}/{})",
-                                w, h, bitrate_bps, v.st_tb.num, v.st_tb.den));
+            crate::log(&format!(
+                "venc: mpeg1/ts up {}x{} @{}bps (st_tb {}/{})",
+                w, h, bitrate_bps, v.st_tb.num, v.st_tb.den
+            ));
             Some(v)
         }
     }
@@ -1006,9 +1042,22 @@ impl Venc {
             // NV12 out: Y straight into the frame's Y plane, interleaved UV into scratch
             let fdata = (self.frame as *mut u8).add(OFF_FRAME_DATA) as *mut *mut u8;
             let fls = (self.frame as *mut u8).add(OFF_FRAME_LINESIZE) as *mut c_int;
-            let dst: [*mut u8; 4] = [*fdata, self.nv12_uv.as_mut_ptr(), std::ptr::null_mut(), std::ptr::null_mut()];
+            let dst: [*mut u8; 4] = [
+                *fdata,
+                self.nv12_uv.as_mut_ptr(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            ];
             let dst_stride: [c_int; 4] = [*fls, self.w, 0, 0];
-            sws_scale(self.sws, src.as_ptr(), src_stride.as_ptr(), 0, self.h, dst.as_ptr(), dst_stride.as_ptr());
+            sws_scale(
+                self.sws,
+                src.as_ptr(),
+                src_stride.as_ptr(),
+                0,
+                self.h,
+                dst.as_ptr(),
+                dst_stride.as_ptr(),
+            );
             // deinterleave UVUV... -> planar U + V (chroma is w/2 x h/2)
             let (cw, chh) = ((self.w / 2) as usize, (self.h / 2) as usize);
             let (u_base, v_base) = (*fdata.add(1), *fdata.add(2));
@@ -1053,10 +1102,12 @@ impl Venc {
             self.t_enc_us += t1.elapsed().as_micros() as u64;
             self.t_n += 1;
             if self.t_last_log.elapsed().as_secs_f32() >= 5.0 && self.t_n > 0 {
-                crate::log(&format!("venc: {} frm, sws {:.1}ms enc {:.1}ms avg",
-                                    self.t_n,
-                                    self.t_sws_us as f32 / self.t_n as f32 / 1000.0,
-                                    self.t_enc_us as f32 / self.t_n as f32 / 1000.0));
+                crate::log(&format!(
+                    "venc: {} frm, sws {:.1}ms enc {:.1}ms avg",
+                    self.t_n,
+                    self.t_sws_us as f32 / self.t_n as f32 / 1000.0,
+                    self.t_enc_us as f32 / self.t_n as f32 / 1000.0
+                ));
                 self.t_sws_us = 0;
                 self.t_enc_us = 0;
                 self.t_n = 0;
@@ -1125,14 +1176,19 @@ unsafe fn sub_kind(codec_id: c_int) -> SubKind {
 unsafe fn open_sub_decoder(cp: *const AVCodecParameters) -> *mut AVCodecContext {
     let codec = avcodec_find_decoder((*cp).codec_id);
     if codec.is_null() {
-        crate::player::log(&format!("ff: no image-sub decoder for codec_id={}", (*cp).codec_id));
+        crate::player::log(&format!(
+            "ff: no image-sub decoder for codec_id={}",
+            (*cp).codec_id
+        ));
         return std::ptr::null_mut();
     }
     let ctx = avcodec_alloc_context3(codec);
     if ctx.is_null() {
         return std::ptr::null_mut();
     }
-    if avcodec_parameters_to_context(ctx, cp) < 0 || avcodec_open2(ctx, codec, std::ptr::null_mut()) < 0 {
+    if avcodec_parameters_to_context(ctx, cp) < 0
+        || avcodec_open2(ctx, codec, std::ptr::null_mut()) < 0
+    {
         let mut c = ctx;
         avcodec_free_context(&mut c);
         return std::ptr::null_mut();
@@ -1203,7 +1259,14 @@ unsafe fn rect_to_rgba(r: *const AVSubtitleRect) -> Option<crate::player::SubRec
     // no real subtitle bitmap approaches 8192 on a side — the largest authoring canvas in the
     // wild is 4K, and a rect cannot usefully exceed its own canvas
     const MAX_SIDE: c_int = 8192;
-    if idx.is_null() || pal.is_null() || w <= 0 || h <= 0 || stride < w || w > MAX_SIDE || h > MAX_SIDE {
+    if idx.is_null()
+        || pal.is_null()
+        || w <= 0
+        || h <= 0
+        || stride < w
+        || w > MAX_SIDE
+        || h > MAX_SIDE
+    {
         return None;
     }
     let (wu, hu, su) = (w as usize, h as usize, stride as usize);
@@ -1232,7 +1295,12 @@ unsafe fn rect_to_rgba(r: *const AVSubtitleRect) -> Option<crate::player::SubRec
 /// set later by the next CLEAR or superseding set). Two-line dialogue and sign-plus-dialogue are
 /// authored as separate rects of the SAME display set, so dropping all but rect 0 (what this did
 /// before) silently lost half the line. The set's canvas comes from `sub_canvas`.
-unsafe fn decode_bitmap_cue(dec: *mut AVCodecContext, pkt: *mut AVPacket, track: c_int, st: *mut AVStream) {
+unsafe fn decode_bitmap_cue(
+    dec: *mut AVCodecContext,
+    pkt: *mut AVPacket,
+    track: c_int,
+    st: *mut AVStream,
+) {
     let mut sub: AVSubtitle = std::mem::zeroed();
     let mut got: c_int = 0;
     if avcodec_decode_subtitle2(dec, &mut sub, &mut got, pkt) < 0 || got == 0 {
@@ -1317,7 +1385,9 @@ fn load_libraries() -> bool {
         ("avformat", avformat::load(dir)),
     ] {
         match verdict {
-            crate::dynlib::Loaded::Ok(soname) => crate::log(&format!("ff: bound {what} -> {soname}")),
+            crate::dynlib::Loaded::Ok(soname) => {
+                crate::log(&format!("ff: bound {what} -> {soname}"))
+            }
             crate::dynlib::Loaded::NoLibrary => {
                 ok = false;
                 crate::log(&format!(
@@ -1327,7 +1397,9 @@ fn load_libraries() -> bool {
             }
             crate::dynlib::Loaded::Incomplete(soname, n) => {
                 ok = false;
-                crate::log(&format!("ff: {soname} is missing {n} symbol(s) we need — named above"));
+                crate::log(&format!(
+                    "ff: {soname} is missing {n} symbol(s) we need — named above"
+                ));
             }
         }
     }
@@ -1341,7 +1413,9 @@ fn load_libraries() -> bool {
             SWS_OK.store(true, Ordering::Relaxed);
             crate::log(&format!("ff: bound swscale -> {soname}"));
         }
-        _ => crate::log("ff: no swscale (expected in a RELEASE build) — dev capture JPEG/MPEG1 off"),
+        _ => {
+            crate::log("ff: no swscale (expected in a RELEASE build) — dev capture JPEG/MPEG1 off")
+        }
     }
     ok
 }
@@ -1366,7 +1440,13 @@ pub(crate) fn majors() -> (u32, u32, u32) {
     if !abi_ok() {
         return (0, 0, 0);
     }
-    unsafe { (avformat_version() >> 16, avcodec_version() >> 16, avutil_version() >> 16) }
+    unsafe {
+        (
+            avformat_version() >> 16,
+            avcodec_version() >> 16,
+            avutil_version() >> 16,
+        )
+    }
 }
 
 /// Boot smoke test + optional ABI probe. Called once at startup.
@@ -1432,7 +1512,12 @@ fn probe(url: &str) {
             Err(_) => return,
         };
         let mut fmt: *mut AVFormatContext = std::ptr::null_mut();
-        let r = avformat_open_input(&mut fmt, cu.as_ptr(), std::ptr::null_mut(), std::ptr::null_mut());
+        let r = avformat_open_input(
+            &mut fmt,
+            cu.as_ptr(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        );
         if r < 0 || fmt.is_null() {
             crate::player::log(&format!("ffprobe: avformat_open_input failed r={r}"));
             return;
@@ -1797,10 +1882,23 @@ extern "C" fn seek_cb(op: *mut c_void, offset: i64, whence: c_int) -> i64 {
             return -1;
         }
         let ok = match &mut s.src {
-            Src::Socket { hs, host, port, path } => {
+            Src::Socket {
+                hs,
+                host,
+                port,
+                path,
+            } => {
                 crate::stream::http_close(*hs);
-                let range = CString::new(format!("Range: bytes={}-\r\n", target)).unwrap_or_default();
-                crate::stream::http_open(*hs, host.as_ptr(), *port, path.as_ptr(), range.as_ptr(), "GET") == 0
+                let range =
+                    CString::new(format!("Range: bytes={}-\r\n", target)).unwrap_or_default();
+                crate::stream::http_open(
+                    *hs,
+                    host.as_ptr(),
+                    *port,
+                    path.as_ptr(),
+                    range.as_ptr(),
+                    "GET",
+                ) == 0
             }
             // `curlio` REFUSES a Range the server answered with a 200, where `stream.rs` accepts
             // any 2xx. That is the one behavioural difference between these two arms, and it is
@@ -1826,7 +1924,9 @@ fn frame_read_failed(state: &mut AvioState, result: c_int) -> bool {
         return false;
     }
     if state.io_failed {
-        crate::player::log(&format!("ff: media transport failed during av_read_frame r={result}"));
+        crate::player::log(&format!(
+            "ff: media transport failed during av_read_frame r={result}"
+        ));
         SHARED.demux_io_failed.store(true, Ordering::Release);
     }
     true
@@ -1834,7 +1934,11 @@ fn frame_read_failed(state: &mut AvioState, result: c_int) -> bool {
 
 #[inline]
 unsafe fn pts_ns(pkt: *const AVPacket, st: *mut AVStream) -> i64 {
-    let t = if (*pkt).pts != AV_NOPTS_VALUE { (*pkt).pts } else { (*pkt).dts };
+    let t = if (*pkt).pts != AV_NOPTS_VALUE {
+        (*pkt).pts
+    } else {
+        (*pkt).dts
+    };
     if t == AV_NOPTS_VALUE {
         return 0;
     }
@@ -1843,7 +1947,11 @@ unsafe fn pts_ns(pkt: *const AVPacket, st: *mut AVStream) -> i64 {
 
 #[inline]
 unsafe fn pts_ns_opt(pkt: *const AVPacket, st: *mut AVStream) -> Option<i64> {
-    let t = if (*pkt).pts != AV_NOPTS_VALUE { (*pkt).pts } else { (*pkt).dts };
+    let t = if (*pkt).pts != AV_NOPTS_VALUE {
+        (*pkt).pts
+    } else {
+        (*pkt).dts
+    };
     (t != AV_NOPTS_VALUE).then(|| av_rescale_q(t, stream_time_base(st), NS_TB))
 }
 
@@ -2083,8 +2191,19 @@ static DIAG_FIRST: AtomicBool = AtomicBool::new(true);
 /// ADTS sampling_frequency_index (4 bits) for a sample rate; None if not a standard AAC rate.
 fn adts_freq_index(rate: c_int) -> Option<u8> {
     Some(match rate {
-        96000 => 0, 88200 => 1, 64000 => 2, 48000 => 3, 44100 => 4, 32000 => 5,
-        24000 => 6, 22050 => 7, 16000 => 8, 12000 => 9, 11025 => 10, 8000 => 11, 7350 => 12,
+        96000 => 0,
+        88200 => 1,
+        64000 => 2,
+        48000 => 3,
+        44100 => 4,
+        32000 => 5,
+        24000 => 6,
+        22050 => 7,
+        16000 => 8,
+        12000 => 9,
+        11025 => 10,
+        8000 => 11,
+        7350 => 12,
         _ => return None,
     })
 }
@@ -2099,7 +2218,11 @@ fn adts_freq_index(rate: c_int) -> Option<u8> {
 unsafe fn adts_params(acp: *const AVCodecParameters) -> Option<(u8, u8)> {
     let chan_fallback = {
         let ch = (*acp).ch_layout.nb_channels;
-        if (1..=7).contains(&ch) { ch as u8 } else { 2 }
+        if (1..=7).contains(&ch) {
+            ch as u8
+        } else {
+            2
+        }
     };
     // AudioSpecificConfig: aot(5) freqIdx(4) [+24-bit rate if idx==15] chanCfg(4) …
     let (ed, n) = ((*acp).extradata, (*acp).extradata_size);
@@ -2109,7 +2232,11 @@ unsafe fn adts_params(acp: *const AVCodecParameters) -> Option<(u8, u8)> {
         let freq_idx = (((b0 & 0x07) << 1) | (b1 >> 7)) as u8;
         if aot != 31 && freq_idx <= 12 {
             let chan = ((b1 >> 3) & 0x0F) as u8;
-            let ch = if (1..=7).contains(&chan) { chan } else { chan_fallback };
+            let ch = if (1..=7).contains(&chan) {
+                chan
+            } else {
+                chan_fallback
+            };
             return Some((freq_idx, ch));
         }
         // escape-coded AOT / explicit 24-bit rate — exotic; fall through to codecpar
@@ -2129,7 +2256,7 @@ fn adts_header(freq_idx: u8, chan_cfg: u8, payload_len: usize) -> [u8; 7] {
         ((chan_cfg & 3) << 6) | ((frame_len >> 11) as u8 & 0x03),
         ((frame_len >> 3) & 0xFF) as u8,
         (((frame_len & 0x07) as u8) << 5) | 0x1F, // frame_len lo 3 | fullness hi 5 (11111)
-        0xFC, // fullness lo 6 (111111) | num_blocks(00)
+        0xFC,                                     // fullness lo 6 (111111) | num_blocks(00)
     ]
 }
 
@@ -2156,9 +2283,15 @@ fn annexb_start(data: &[u8], from: usize) -> Option<(usize, usize)> {
 /// Validate an MPEG-TS H.264 packet as Annex-B, retain its in-band SPS/PPS and prepend whichever
 /// set is missing on an IDR. The progressive demuxer cannot be reused here: it interprets the
 /// first `00 00 00 01` as an AVCC length of one and corrupts the access unit.
-fn ts_h264_access_unit(data: &[u8], params: &mut H264ParamSets, out: &mut Vec<u8>) -> Result<bool, &'static str> {
+fn ts_h264_access_unit(
+    data: &[u8],
+    params: &mut H264ParamSets,
+    out: &mut Vec<u8>,
+) -> Result<bool, &'static str> {
     out.clear();
-    let Some((first, _)) = annexb_start(data, 0) else { return Err("H.264 packet is not Annex-B") };
+    let Some((first, _)) = annexb_start(data, 0) else {
+        return Err("H.264 packet is not Annex-B");
+    };
     if first != 0 {
         return Err("bytes precede the first Annex-B start code");
     }
@@ -2223,12 +2356,17 @@ fn adts_duration_ns(data: &[u8]) -> Option<i64> {
         return None;
     }
     const RATES: [i64; 13] = [
-        96_000, 88_200, 64_000, 48_000, 44_100, 32_000, 24_000, 22_050, 16_000, 12_000,
-        11_025, 8_000, 7_350,
+        96_000, 88_200, 64_000, 48_000, 44_100, 32_000, 24_000, 22_050, 16_000, 12_000, 11_025,
+        8_000, 7_350,
     ];
     let rate = *RATES.get(((data[2] >> 2) & 0x0f) as usize)?;
     let blocks = i64::from((data[6] & 0x03) + 1);
-    Some(1_024_i64.saturating_mul(blocks).saturating_mul(1_000_000_000) / rate)
+    Some(
+        1_024_i64
+            .saturating_mul(blocks)
+            .saturating_mul(1_000_000_000)
+            / rate,
+    )
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -2261,7 +2399,11 @@ fn hls_open_source(
     let origin = &resource.origin;
     if origin.is_tls() {
         let reservation = crate::curlio::CurlSource::reserve_open().map_err(|e| {
-            if e == crate::curlio::OpenErr::Aborted { HlsExit::Aborted } else { HlsExit::Failed("HTTPS reservation failed") }
+            if e == crate::curlio::OpenErr::Aborted {
+                HlsExit::Aborted
+            } else {
+                HlsExit::Failed("HTTPS reservation failed")
+            }
         })?;
         if unsafe { crate::aq::aq_is_aborted(aq) } {
             return Err(HlsExit::Aborted);
@@ -2274,7 +2416,11 @@ fn hls_open_source(
                     return HlsExit::NotReady;
                 }
             }
-            if e == crate::curlio::OpenErr::Aborted { HlsExit::Aborted } else { HlsExit::Failed("HTTPS request failed") }
+            if e == crate::curlio::OpenErr::Aborted {
+                HlsExit::Aborted
+            } else {
+                HlsExit::Failed("HTTPS request failed")
+            }
         })?;
         let (status, size) = (cs.status(), cs.size());
         SHARED.dg_http_status.store(status, Ordering::Relaxed);
@@ -2282,7 +2428,8 @@ fn hls_open_source(
         Ok((Src::Curl(cs), size))
     } else {
         let host = CString::new(origin.host()).map_err(|_| HlsExit::Failed("invalid PMS host"))?;
-        let path = CString::new(request_path).map_err(|_| HlsExit::Failed("invalid HLS request path"))?;
+        let path =
+            CString::new(request_path).map_err(|_| HlsExit::Failed("invalid HLS request path"))?;
         unsafe {
             crate::stream::http_close(hs);
             if crate::stream::http_open(
@@ -2294,7 +2441,9 @@ fn hls_open_source(
                 "GET",
             ) != 0
             {
-                SHARED.dg_http_status.store(crate::stream::hs_status(hs), Ordering::Relaxed);
+                SHARED
+                    .dg_http_status
+                    .store(crate::stream::hs_status(hs), Ordering::Relaxed);
                 return if crate::aq::aq_is_aborted(aq) {
                     Err(HlsExit::Aborted)
                 } else if crate::stream::hs_status(hs) == 404 {
@@ -2307,7 +2456,15 @@ fn hls_open_source(
             let size = crate::stream::hs_content_length(hs);
             SHARED.dg_http_status.store(status, Ordering::Relaxed);
             SHARED.file_size.store(size, Ordering::Release);
-            Ok((Src::Socket { hs, host, port: origin.port() as c_int, path }, size))
+            Ok((
+                Src::Socket {
+                    hs,
+                    host,
+                    port: origin.port() as c_int,
+                    path,
+                },
+                size,
+            ))
         }
     }
 }
@@ -2320,7 +2477,9 @@ fn hls_source_read(src: &mut Src, aq: *mut AuQueue, dst: &mut [u8]) -> Result<us
         return Err(HlsExit::Aborted);
     }
     let read = match src {
-        Src::Socket { hs, .. } => crate::stream::http_read(*hs, dst.as_mut_ptr(), dst.len() as c_int),
+        Src::Socket { hs, .. } => {
+            crate::stream::http_read(*hs, dst.as_mut_ptr(), dst.len() as c_int)
+        }
         Src::Curl(cs) => cs.read(dst),
     };
     if read < 0 {
@@ -2337,7 +2496,9 @@ fn hls_fetch_text(
     hs: *mut HttpStream,
 ) -> Result<(String, u128), HlsExit> {
     const MAX_PLAYLIST_BYTES: usize = 1024 * 1024;
-    let request_path = auth.request_path(resource).map_err(|_| HlsExit::Failed("playlist credential rejected"))?;
+    let request_path = auth
+        .request_path(resource)
+        .map_err(|_| HlsExit::Failed("playlist credential rejected"))?;
     let started = std::time::Instant::now();
     let (mut src, size) = hls_open_source(resource, &request_path, aq, hs)?;
     if size > MAX_PLAYLIST_BYTES as i64 {
@@ -2425,9 +2586,8 @@ unsafe fn log_hls_video_change(fmt: *mut AVFormatContext) {
         let (id, w, h) = ((*cp).codec_id, (*cp).width, (*cp).height);
         // Pack (codec_id, width, height) into one word so the compare-and-store is a single
         // atomic and two threads cannot interleave a half-updated triple.
-        let key = ((id as u64 & 0xffff) << 48)
-            | ((w as u64 & 0xffff_ffff) << 16)
-            | (h as u64 & 0xffff);
+        let key =
+            ((id as u64 & 0xffff) << 48) | ((w as u64 & 0xffff_ffff) << 16) | (h as u64 & 0xffff);
         if HLS_LAST_VIDEO.swap(key, Ordering::Relaxed) == key {
             return;
         }
@@ -2624,7 +2784,10 @@ unsafe fn hls_demux_segment(
         .duration
         .saturating_mul(3)
         .saturating_add(std::time::Duration::from_secs(2))
-        .clamp(std::time::Duration::from_secs(3), std::time::Duration::from_secs(15));
+        .clamp(
+            std::time::Duration::from_secs(3),
+            std::time::Duration::from_secs(15),
+        );
     let mut not_ready_retries = 0u32;
     // The SUCCESSFUL attempt only. A `NotReady` retry is the server saying the segment does not
     // exist yet, which is production latency of a different kind and is already counted by
@@ -2660,7 +2823,9 @@ unsafe fn hls_demux_segment(
                 }
                 hls_wait(aq, wait)?;
             }
-            Err(HlsExit::NotReady) => return Err(HlsExit::Failed("HLS segment was not produced in time")),
+            Err(HlsExit::NotReady) => {
+                return Err(HlsExit::Failed("HLS segment was not produced in time"))
+            }
             Err(error) => return Err(error),
         }
     };
@@ -2777,15 +2942,18 @@ unsafe fn hls_demux_segment(
                 .filter(|duration| *duration > 0);
             let aac_duration = aac_adts.and_then(|(freq_idx, _)| {
                 const RATES: [i64; 13] = [
-                    96_000, 88_200, 64_000, 48_000, 44_100, 32_000, 24_000, 22_050, 16_000,
-                    12_000, 11_025, 8_000, 7_350,
+                    96_000, 88_200, 64_000, 48_000, 44_100, 32_000, 24_000, 22_050, 16_000, 12_000,
+                    11_025, 8_000, 7_350,
                 ];
                 RATES
                     .get(freq_idx as usize)
                     .map(|rate| 1_024_i64.saturating_mul(1_000_000_000) / rate)
             });
-            let raw = std::slice::from_raw_parts((*input.pkt).data, (*input.pkt).size.max(0) as usize);
-            let duration_ns = packet_duration.or_else(|| adts_duration_ns(raw)).or(aac_duration);
+            let raw =
+                std::slice::from_raw_parts((*input.pkt).data, (*input.pkt).size.max(0) as usize);
+            let duration_ns = packet_duration
+                .or_else(|| adts_duration_ns(raw))
+                .or(aac_duration);
             let data = if packet_has_adts(raw) {
                 raw.to_vec()
             } else if let Some((freq_idx, chan_cfg)) = aac_adts {
@@ -2798,7 +2966,12 @@ unsafe fn hls_demux_segment(
                 return Err(HlsExit::Failed("AAC packet is neither ADTS nor reframable"));
             };
             let au = aus.len();
-            aus.push(HlsAu { data, pts_ns: 0, key: 1, es: 2 });
+            aus.push(HlsAu {
+                data,
+                pts_ns: 0,
+                key: 1,
+                es: 2,
+            });
             audio_stamps.push(AudioStamp {
                 au,
                 raw_ns: raw_pts,
@@ -2818,7 +2991,9 @@ unsafe fn hls_demux_segment(
     }
 
     if video_packets == 0 {
-        return Err(HlsExit::Failed("HLS segment produced no video access units"));
+        return Err(HlsExit::Failed(
+            "HLS segment produced no video access units",
+        ));
     }
     let synthesized_audio = resolve_audio_stamps(&mut audio_stamps).map_err(HlsExit::Failed)?;
     for stamp in &audio_stamps {
@@ -2913,10 +3088,7 @@ fn hls_feed_segment(
 
 fn hls_raster_within(width: i32, height: i32, rung: crate::abr::Rung) -> bool {
     let (max_width, max_height) = rung.raster();
-    width > 0
-        && height > 0
-        && width <= i32::from(max_width)
-        && height <= i32::from(max_height)
+    width > 0 && height > 0 && width <= i32::from(max_width) && height <= i32::from(max_height)
 }
 
 struct HlsCursor {
@@ -2963,11 +3135,10 @@ fn hls_cursor_open(
     let auth = crate::hls::InheritedAuth::capture(&master_resource)
         .map_err(|_| HlsExit::Failed("HLS master has no unique credential"))?;
     let (master_text, master_ms) = hls_fetch_text(&master_resource, &auth, aq, hs)?;
-    let master = crate::hls::parse_master(&master_resource, &master_text)
-        .map_err(|e| {
-            crate::player::log(&format!("hls: master rejected: {e}"));
-            HlsExit::Failed("HLS master rejected")
-        })?;
+    let master = crate::hls::parse_master(&master_resource, &master_text).map_err(|e| {
+        crate::player::log(&format!("hls: master rejected: {e}"));
+        HlsExit::Failed("HLS master rejected")
+    })?;
     crate::player::log(&format!(
         "hls: master one-variant bandwidth={} fetch_ms={master_ms}",
         master.variant.bandwidth
@@ -2998,18 +3169,21 @@ fn hls_cursor_next(
             return Ok(None);
         }
         let (media_text, media_ms) = hls_fetch_text(&cursor.media, &cursor.auth, aq, hs)?;
-        let media = crate::hls::parse_media(&cursor.media, &media_text)
-            .map_err(|e| {
-                crate::player::log(&format!("hls: media rejected: {e}"));
-                HlsExit::Failed("HLS media playlist rejected")
-            })?;
-        cursor.target_duration_secs = media.target_duration_secs;
-        let start_index = media.preferred_start_index().map_err(|_| {
-            HlsExit::Failed("HLS start offset is outside the supported timeline")
+        let media = crate::hls::parse_media(&cursor.media, &media_text).map_err(|e| {
+            crate::player::log(&format!("hls: media rejected: {e}"));
+            HlsExit::Failed("HLS media playlist rejected")
         })?;
-        let total_ns = i64::try_from(media.total_duration().map_err(|_| {
-            HlsExit::Failed("HLS playlist duration overflow")
-        })?.as_nanos()).map_err(|_| HlsExit::Failed("HLS playlist duration overflow"))?;
+        cursor.target_duration_secs = media.target_duration_secs;
+        let start_index = media
+            .preferred_start_index()
+            .map_err(|_| HlsExit::Failed("HLS start offset is outside the supported timeline"))?;
+        let total_ns = i64::try_from(
+            media
+                .total_duration()
+                .map_err(|_| HlsExit::Failed("HLS playlist duration overflow"))?
+                .as_nanos(),
+        )
+        .map_err(|_| HlsExit::Failed("HLS playlist duration overflow"))?;
         if cursor.publishes_duration {
             SHARED.duration_ns.store(total_ns, Ordering::Relaxed);
         }
@@ -3029,7 +3203,9 @@ fn hls_cursor_next(
                         .saturating_add(media.segments.len() as u64)
                 });
             let before = refresh.new_segments.len();
-            refresh.new_segments.retain(|segment| segment.sequence >= first_sequence);
+            refresh
+                .new_segments
+                .retain(|segment| segment.sequence >= first_sequence);
             skipped = before.saturating_sub(refresh.new_segments.len());
             cursor.start_applied = true;
         }
@@ -3044,7 +3220,10 @@ fn hls_cursor_next(
         cursor.ended = refresh.end_list;
         if cursor.pending.is_empty() && !cursor.ended {
             let poll = std::time::Duration::from_millis(
-                cursor.target_duration_secs.saturating_mul(500).clamp(250, 1_000),
+                cursor
+                    .target_duration_secs
+                    .saturating_mul(500)
+                    .clamp(250, 1_000),
             );
             hls_wait(aq, poll)?;
         }
@@ -3118,13 +3297,17 @@ fn hls_segment_sample(
 }
 
 fn publish_hls_abr_sample(sample: crate::abr::SegmentSample) {
-    SHARED.dg_abr_net_kbps.store(i64::from(sample.network_kbps()), Ordering::Relaxed);
+    SHARED
+        .dg_abr_net_kbps
+        .store(i64::from(sample.network_kbps()), Ordering::Relaxed);
     // `-1` is "not knowable this segment", which the gauge has no other way to say. It is a
     // dev read-out with one i64 slot; the decision paths take the `Option` itself.
     SHARED
         .dg_abr_buffer_ms
         .store(sample.buffer.buffered_ms().unwrap_or(-1), Ordering::Relaxed);
-    SHARED.dg_abr_ratio_pm.store(i64::from(sample.production_ratio_pm()), Ordering::Relaxed);
+    SHARED
+        .dg_abr_ratio_pm
+        .store(i64::from(sample.production_ratio_pm()), Ordering::Relaxed);
 }
 
 /// One line per steady-state decision, carrying everything the decision was made ON. Nothing here
@@ -3152,11 +3335,19 @@ fn publish_hls_abr_model(t: &crate::abr::ControllerTelemetry) {
     let optimal = t.optimal.map(|c| i64::from(c.rung.kbps())).unwrap_or(-1);
     let starve = t.risk.starvation_seconds.map(i64::from).unwrap_or(-1);
     let pred = t.risk.production_ratio_pm.map(i64::from).unwrap_or(-1);
-    SHARED.dg_abr_safe_kbps.store(i64::from(t.safe_budget_kbps), rel);
+    SHARED
+        .dg_abr_safe_kbps
+        .store(i64::from(t.safe_budget_kbps), rel);
     SHARED.dg_abr_optimal_kbps.store(optimal, rel);
-    SHARED.dg_abr_unc_pm.store(i64::from(t.delivery.uncertainty_pm), rel);
-    SHARED.dg_abr_samples.store(i64::from(t.delivery.samples), rel);
-    SHARED.dg_abr_slope_ms_per_s.store(t.buffer.slope_ms_per_s, rel);
+    SHARED
+        .dg_abr_unc_pm
+        .store(i64::from(t.delivery.uncertainty_pm), rel);
+    SHARED
+        .dg_abr_samples
+        .store(i64::from(t.delivery.samples), rel);
+    SHARED
+        .dg_abr_slope_ms_per_s
+        .store(t.buffer.slope_ms_per_s, rel);
     SHARED.dg_abr_starve_secs.store(starve, rel);
     SHARED.dg_abr_pred_pm.store(pred, rel);
     SHARED.dg_abr_risk.store(i64::from(t.risk.score), rel);
@@ -3165,10 +3356,18 @@ fn publish_hls_abr_model(t: &crate::abr::ControllerTelemetry) {
     // because a teardown has several paths and one of them (a crash of the demux worker) reaches
     // none of them — and the estimate is worth carrying whatever ended the session. Not a `dg_`
     // field: these four are read to DECIDE, by `route::auto_prior` when the next control is built.
-    SHARED.abr_seed_slow_kbps.store(i64::from(t.delivery.slow_kbps), rel);
-    SHARED.abr_seed_fast_kbps.store(i64::from(t.delivery.fast_kbps), rel);
-    SHARED.abr_seed_unc_pm.store(i64::from(t.delivery.uncertainty_pm), rel);
-    SHARED.abr_seed_samples.store(i64::from(t.delivery.samples), rel);
+    SHARED
+        .abr_seed_slow_kbps
+        .store(i64::from(t.delivery.slow_kbps), rel);
+    SHARED
+        .abr_seed_fast_kbps
+        .store(i64::from(t.delivery.fast_kbps), rel);
+    SHARED
+        .abr_seed_unc_pm
+        .store(i64::from(t.delivery.uncertainty_pm), rel);
+    SHARED
+        .abr_seed_samples
+        .store(i64::from(t.delivery.samples), rel);
 }
 
 /// The once-a-segment event-log line, on the do-nothing path only. Its counterpart is
@@ -3344,7 +3543,9 @@ fn publish_hls_abr_action(proposal: crate::abr::Proposal, committed: Option<bool
         (Up, Some(false)) => crate::player::ABR_ACTION_REJECT_UP,
     };
     SHARED.dg_abr_action.store(action, Ordering::Relaxed);
-    SHARED.dg_abr_target_kbps.store(i64::from(proposal.rung.kbps()), Ordering::Relaxed);
+    SHARED
+        .dg_abr_target_kbps
+        .store(i64::from(proposal.rung.kbps()), Ordering::Relaxed);
 }
 
 /// **One record per candidate transaction, emitted on EVERY exit path.** Increment I2's
@@ -3517,7 +3718,10 @@ impl TxTrace {
 
 impl Drop for TxTrace {
     fn drop(&mut self) {
-        let opt = |v: Option<i64>| v.map(|n| n.to_string()).unwrap_or_else(|| "none".to_string());
+        let opt = |v: Option<i64>| {
+            v.map(|n| n.to_string())
+                .unwrap_or_else(|| "none".to_string())
+        };
         // The three control-plane legs as DURATIONS, each measured from the end of the one before
         // it, so they sum to `control=` and none of them silently contains another.
         let leg = |to: Option<i64>, from: Option<i64>| match (to, from) {
@@ -3624,12 +3828,18 @@ fn hls_demux(
     // that runs exactly once per HLS demux, whatever ended the previous one.
     HLS_LAST_VIDEO.store(u64::MAX, Ordering::Relaxed);
     if let Some((control, _)) = abr.as_ref() {
-        SHARED.dg_abr_mode.store(crate::player::ABR_MODE_HLS, Ordering::Relaxed);
-        SHARED.dg_abr_kbps.store(i64::from(control.initial_rung.kbps()), Ordering::Relaxed);
+        SHARED
+            .dg_abr_mode
+            .store(crate::player::ABR_MODE_HLS, Ordering::Relaxed);
+        SHARED
+            .dg_abr_kbps
+            .store(i64::from(control.initial_rung.kbps()), Ordering::Relaxed);
         SHARED.dg_abr_net_kbps.store(-1, Ordering::Relaxed);
         SHARED.dg_abr_buffer_ms.store(-1, Ordering::Relaxed);
         SHARED.dg_abr_ratio_pm.store(-1, Ordering::Relaxed);
-        SHARED.dg_abr_action.store(crate::player::ABR_ACTION_STEADY, Ordering::Relaxed);
+        SHARED
+            .dg_abr_action
+            .store(crate::player::ABR_ACTION_STEADY, Ordering::Relaxed);
         SHARED.dg_abr_target_kbps.store(0, Ordering::Relaxed);
         SHARED.dg_abr_unsafe_deficit_ms.store(0, Ordering::Relaxed);
     }
@@ -3705,14 +3915,11 @@ fn hls_demux(
             seeded.delivery.fast_kbps,
             seeded.delivery.uncertainty_pm,
             seeded.delivery.samples,
-            pin.map(|r| format!("{}kbps", r.kbps())).unwrap_or_else(|| "none".to_string()),
+            pin.map(|r| format!("{}kbps", r.kbps()))
+                .unwrap_or_else(|| "none".to_string()),
         ));
         (
-            control,
-            encoder,
-            controller,
-            recovery,
-            false,
+            control, encoder, controller, recovery, false,
             // A latched `Recover` verdict, waiting for a quiescent segment to act on.
             0u32,
         )
@@ -3741,7 +3948,9 @@ fn hls_demux(
             if controller.current().at_floor() {
                 return None;
             }
-            hls_buffer_snapshot(None).buffered_ms().and_then(StallGuard::arm)
+            hls_buffer_snapshot(None)
+                .buffered_ms()
+                .and_then(StallGuard::arm)
         });
         // **An abort is not a failure and not a delivery — it is a MEASUREMENT that arrives
         // instead of a segment.** The segment goes back on the cursor unconsumed, nothing is fed
@@ -3758,7 +3967,16 @@ fn hls_demux(
         // `SegmentSample::abandoned`.
         let mut fetch_abandoned = false;
         let output = match unsafe {
-            hls_demux_segment(&segment, &cursor.auth, &mut clock, aq, hs, acodec, None, stall_guard)
+            hls_demux_segment(
+                &segment,
+                &cursor.auth,
+                &mut clock,
+                aq,
+                hs,
+                acodec,
+                None,
+                stall_guard,
+            )
         } {
             Ok(output) => output,
             Err(HlsExit::StallAbort(transfer)) => {
@@ -3797,14 +4015,8 @@ fn hls_demux(
             timeline.commit(clock);
         }
 
-        let Some((
-            control,
-            active_encoder,
-            controller,
-            recovery,
-            probe_inflight,
-            recover_kbps,
-        )) = adaptive.as_mut()
+        let Some((control, active_encoder, controller, recovery, probe_inflight, recover_kbps)) =
+            adaptive.as_mut()
         else {
             continue;
         };
@@ -3812,9 +4024,13 @@ fn hls_demux(
         if let Some(gate) = recovery.as_mut() {
             gate.advance_to(now_ms());
         }
-        let Some(sample) = hls_segment_sample(&output, segment.duration)
-            .map(|s| if fetch_abandoned { s.abandoned() } else { s })
-        else {
+        let Some(sample) = hls_segment_sample(&output, segment.duration).map(|s| {
+            if fetch_abandoned {
+                s.abandoned()
+            } else {
+                s
+            }
+        }) else {
             crate::player::log("abr: ignoring invalid segment timing sample");
             continue;
         };
@@ -3888,10 +4104,18 @@ fn hls_demux(
                         cmp.reason,
                         cmp.hls_rung.kbps(),
                         cmp.scale_pm,
-                        cmp.winner.quality, cmp.winner.features, cmp.winner.risk,
-                        cmp.winner.server, cmp.winner.transition, cmp.winner.total,
-                        loser.quality, loser.features, loser.risk,
-                        loser.server, loser.transition, loser.total,
+                        cmp.winner.quality,
+                        cmp.winner.features,
+                        cmp.winner.risk,
+                        cmp.winner.server,
+                        cmp.winner.transition,
+                        cmp.winner.total,
+                        loser.quality,
+                        loser.features,
+                        loser.risk,
+                        loser.server,
+                        loser.transition,
+                        loser.total,
                     ));
                 }
                 // **`slow=/unc=/n=/cons=/need=` are the comparison the verdict was TAKEN on, and
@@ -3903,8 +4127,10 @@ fn hls_demux(
                 // Seven consecutive refusals were recorded on a healthy link on 2026-08-29 with no way
                 // to tell from the log which quantity was short, or that the gate was converging to a
                 // value it could never clear. `[[silent-instrument-trap]]`.
-                let (slow, unc, n, cons, need) =
-                    recovery.as_ref().map(|gate| gate.basis()).unwrap_or_default();
+                let (slow, unc, n, cons, need) = recovery
+                    .as_ref()
+                    .map(|gate| gate.basis())
+                    .unwrap_or_default();
                 crate::player::log(&format!(
                     "abr: Original probe #{} measured={}kbps {}KiB/{}ms complete={} left={}s \
                      slow={}kbps unc={}pm n={} cons={}kbps need={}kbps verdict={:?}",
@@ -3943,9 +4169,10 @@ fn hls_demux(
                 .buffered_ms()
                 .is_some_and(|ms| ms >= i64::from(sample.media_duration_ms()))
         {
-            SHARED
-                .dg_abr_action
-                .store(crate::player::ABR_ACTION_RECOVER_ORIGINAL, Ordering::Relaxed);
+            SHARED.dg_abr_action.store(
+                crate::player::ABR_ACTION_RECOVER_ORIGINAL,
+                Ordering::Relaxed,
+            );
             SHARED
                 .auto_recover_kbps
                 .store(i64::from(*recover_kbps), Ordering::Release);
@@ -4009,10 +4236,9 @@ fn hls_demux(
                 SHARED
                     .dg_abr_action
                     .store(crate::player::ABR_ACTION_PROBE_ORIGINAL, Ordering::Relaxed);
-                SHARED.dg_abr_target_kbps.store(
-                    i64::from(control.original_source_kbps()),
-                    Ordering::Relaxed,
-                );
+                SHARED
+                    .dg_abr_target_kbps
+                    .store(i64::from(control.original_source_kbps()), Ordering::Relaxed);
                 if start_original_probe(control, probe_tx.clone()) {
                     *probe_inflight = true;
                     crate::player::log("abr: checking actual Original in parallel with HLS");
@@ -4028,10 +4254,17 @@ fn hls_demux(
             }
             continue;
         }
-        let crate::abr::Decision::Prime(proposal) = decision else { continue };
+        let crate::abr::Decision::Prime(proposal) = decision else {
+            continue;
+        };
         // Records the whole transaction on every exit path, including the twelve rejects. Drop
         // emits it; nothing below has to remember to.
-        let mut tx = TxTrace::open(proposal, controller.current(), sample, &controller.delivery());
+        let mut tx = TxTrace::open(
+            proposal,
+            controller.current(),
+            sample,
+            &controller.delivery(),
+        );
         publish_hls_abr_action(proposal, None);
         let offset_secs = SHARED
             .disp_base
@@ -4066,27 +4299,43 @@ fn hls_demux(
         let candidate_url = crate::plex::StreamUrl::parse(&primed.url);
         if candidate_url.origin != *origin {
             control.abandon(&primed.encoder_session);
-            reject_hls_abr(controller, proposal, crate::abr::RejectCause::Circumstance, now_ms());
+            reject_hls_abr(
+                controller,
+                proposal,
+                crate::abr::RejectCause::Circumstance,
+                now_ms(),
+            );
             tx.finish("origin_changed");
-                crate::player::log("abr: candidate changed origin; rejected");
+            crate::player::log("abr: candidate changed origin; rejected");
             continue;
         }
-        let mut candidate = match hls_cursor_open(&candidate_url.origin, &candidate_url.path, aq, hs, false) {
-            Ok(candidate) => candidate,
-            Err(_) => {
-                control.abandon(&primed.encoder_session);
-                reject_hls_abr(controller, proposal, crate::abr::RejectCause::Candidate, now_ms());
-                tx.finish("no_master_playlist");
-                crate::player::log("abr: candidate master failed; staying on current rung");
-                continue;
-            }
-        };
+        let mut candidate =
+            match hls_cursor_open(&candidate_url.origin, &candidate_url.path, aq, hs, false) {
+                Ok(candidate) => candidate,
+                Err(_) => {
+                    control.abandon(&primed.encoder_session);
+                    reject_hls_abr(
+                        controller,
+                        proposal,
+                        crate::abr::RejectCause::Candidate,
+                        now_ms(),
+                    );
+                    tx.finish("no_master_playlist");
+                    crate::player::log("abr: candidate master failed; staying on current rung");
+                    continue;
+                }
+            };
         tx.mark_master(candidate.declared_bps);
         let candidate_segment = match hls_cursor_next(&mut candidate, aq, hs) {
             Ok(Some(segment)) => segment,
             _ => {
                 control.abandon(&primed.encoder_session);
-                reject_hls_abr(controller, proposal, crate::abr::RejectCause::Candidate, now_ms());
+                reject_hls_abr(
+                    controller,
+                    proposal,
+                    crate::abr::RejectCause::Candidate,
+                    now_ms(),
+                );
                 tx.finish("no_media_playlist");
                 crate::player::log("abr: candidate produced no segment; staying on current rung");
                 continue;
@@ -4117,7 +4366,12 @@ fn hls_demux(
             // that never blocked a segment even before it was deleted: the decrement ran before
             // the check, so `K = 1` was a no-op.)
             control.abandon(&primed.encoder_session);
-            reject_hls_abr(controller, proposal, crate::abr::RejectCause::Circumstance, now_ms());
+            reject_hls_abr(
+                controller,
+                proposal,
+                crate::abr::RejectCause::Circumstance,
+                now_ms(),
+            );
             tx.finish("reserve_unreadable");
             crate::player::log(
                 "abr: candidate reserve unreadable; cannot bound the transfer, staying on current rung",
@@ -4132,7 +4386,10 @@ fn hls_demux(
         // request ceiling, and `conservative_kbps` comes only from completed segments.
         let delivery = controller.delivery();
         let predicted = crate::abr::predicted_transfer(
-            controller.catalog().candidate(proposal.rung).expected_wire_kbps,
+            controller
+                .catalog()
+                .candidate(proposal.rung)
+                .expected_wire_kbps,
             candidate_segment.duration,
             delivery.conservative_kbps(),
             delivery.uncertainty_pm,
@@ -4150,7 +4407,12 @@ fn hls_demux(
             Ok(clock) => clock,
             Err(_) => {
                 control.abandon(&primed.encoder_session);
-                reject_hls_abr(controller, proposal, crate::abr::RejectCause::Circumstance, now_ms());
+                reject_hls_abr(
+                    controller,
+                    proposal,
+                    crate::abr::RejectCause::Circumstance,
+                    now_ms(),
+                );
                 return Err(HlsExit::Failed("HLS candidate timeline overflow"));
             }
         };
@@ -4200,7 +4462,12 @@ fn hls_demux(
             Ok(output) => output,
             Err(HlsExit::PrimeExpired) => {
                 control.abandon(&primed.encoder_session);
-                reject_hls_abr(controller, proposal, crate::abr::RejectCause::Candidate, now_ms());
+                reject_hls_abr(
+                    controller,
+                    proposal,
+                    crate::abr::RejectCause::Candidate,
+                    now_ms(),
+                );
                 tx.finish("warmup_deadline");
                 crate::player::log(&format!(
                     "abr: {:?} candidate warm-up exceeded deadline; staying on current rung",
@@ -4215,7 +4482,12 @@ fn hls_demux(
             // rest of the budget back to the picture.
             Err(HlsExit::StallAbort(transfer)) => {
                 control.abandon(&primed.encoder_session);
-                reject_hls_abr(controller, proposal, crate::abr::RejectCause::Candidate, now_ms());
+                reject_hls_abr(
+                    controller,
+                    proposal,
+                    crate::abr::RejectCause::Candidate,
+                    now_ms(),
+                );
                 tx.finish("warmup_unreachable");
                 crate::player::log(&format!(
                     "abr: {:?} candidate warm-up cannot land inside {}ms (got {} bytes at \
@@ -4233,7 +4505,12 @@ fn hls_demux(
             }
             Err(_) => {
                 control.abandon(&primed.encoder_session);
-                reject_hls_abr(controller, proposal, crate::abr::RejectCause::Candidate, now_ms());
+                reject_hls_abr(
+                    controller,
+                    proposal,
+                    crate::abr::RejectCause::Candidate,
+                    now_ms(),
+                );
                 tx.finish("warmup_failed");
                 crate::player::log("abr: candidate segment failed; staying on current rung");
                 continue;
@@ -4241,8 +4518,11 @@ fn hls_demux(
         };
         tx.mark_media(&candidate_output, false);
         staged_timeline.commit(candidate_clock);
-        let mut candidate_outputs =
-            vec![(candidate_output, candidate_clock, candidate_segment.duration)];
+        let mut candidate_outputs = vec![(
+            candidate_output,
+            candidate_clock,
+            candidate_segment.duration,
+        )];
 
         // PMS's measured FixedSession HLS starts a fresh decoder+encoder for every candidate.
         // Segment zero therefore measures cold start, not the production cadence the replacement
@@ -4254,9 +4534,14 @@ fn hls_demux(
                 Ok(Some(segment)) => segment,
                 _ => {
                     control.abandon(&primed.encoder_session);
-                    reject_hls_abr(controller, proposal, crate::abr::RejectCause::Candidate, now_ms());
+                    reject_hls_abr(
+                        controller,
+                        proposal,
+                        crate::abr::RejectCause::Candidate,
+                        now_ms(),
+                    );
                     tx.finish("no_graded_segment");
-                crate::player::log(
+                    crate::player::log(
                         "abr: upshift candidate produced no graded segment; staying on current rung",
                     );
                     continue;
@@ -4266,7 +4551,12 @@ fn hls_demux(
                 Ok(clock) => clock,
                 Err(_) => {
                     control.abandon(&primed.encoder_session);
-                    reject_hls_abr(controller, proposal, crate::abr::RejectCause::Circumstance, now_ms());
+                    reject_hls_abr(
+                        controller,
+                        proposal,
+                        crate::abr::RejectCause::Circumstance,
+                        now_ms(),
+                    );
                     return Err(HlsExit::Failed("HLS candidate timeline overflow"));
                 }
             };
@@ -4280,7 +4570,12 @@ fn hls_demux(
                 // leg it happened on. A zero here would abort as `graded_deadline`, attributing a
                 // missing measurement to a slow server.
                 control.abandon(&primed.encoder_session);
-                reject_hls_abr(controller, proposal, crate::abr::RejectCause::Circumstance, now_ms());
+                reject_hls_abr(
+                    controller,
+                    proposal,
+                    crate::abr::RejectCause::Circumstance,
+                    now_ms(),
+                );
                 tx.finish("reserve_unreadable");
                 crate::player::log(
                     "abr: candidate reserve unreadable before grading; staying on current rung",
@@ -4309,7 +4604,12 @@ fn hls_demux(
                 Ok(output) => output,
                 Err(HlsExit::PrimeExpired) => {
                     control.abandon(&primed.encoder_session);
-                    reject_hls_abr(controller, proposal, crate::abr::RejectCause::Candidate, now_ms());
+                    reject_hls_abr(
+                        controller,
+                        proposal,
+                        crate::abr::RejectCause::Candidate,
+                        now_ms(),
+                    );
                     tx.finish("graded_deadline");
                     crate::player::log(
                         "abr: upshift candidate lacked steady production headroom; staying on current rung",
@@ -4318,9 +4618,14 @@ fn hls_demux(
                 }
                 Err(_) => {
                     control.abandon(&primed.encoder_session);
-                    reject_hls_abr(controller, proposal, crate::abr::RejectCause::Candidate, now_ms());
+                    reject_hls_abr(
+                        controller,
+                        proposal,
+                        crate::abr::RejectCause::Candidate,
+                        now_ms(),
+                    );
                     tx.finish("graded_failed");
-                crate::player::log(
+                    crate::player::log(
                         "abr: candidate graded segment failed; staying on current rung",
                     );
                     continue;
@@ -4333,8 +4638,7 @@ fn hls_demux(
             // the link. The WARM-UP above deliberately does not: PMS starts a fresh encoder per
             // candidate, so segment zero carries that cold start, which is a server property and
             // not a network one. See `Controller::observe_candidate`.
-            if let Some(graded_sample) =
-                hls_segment_sample(&graded_output, graded_segment.duration)
+            if let Some(graded_sample) = hls_segment_sample(&graded_output, graded_segment.duration)
             {
                 controller.observe_candidate(graded_sample);
             }
@@ -4344,18 +4648,25 @@ fn hls_demux(
         let raster_ready = candidate_outputs.iter().all(|(output, _, _)| {
             hls_raster_within(output.video_width, output.video_height, proposal.rung)
         });
-        let (graded_output, _, graded_duration) = candidate_outputs.last().expect("candidate output");
+        let (graded_output, _, graded_duration) =
+            candidate_outputs.last().expect("candidate output");
         let ready = raster_ready
-            && hls_segment_sample(graded_output, *graded_duration)
-                .is_some_and(|candidate_sample| {
+            && hls_segment_sample(graded_output, *graded_duration).is_some_and(
+                |candidate_sample| {
                     // The candidate's OWN declared rate, off the master this transaction fetched.
                     // Not `proposal.rung.kbps()` and not the catalog's `expected_wire_kbps`: those
                     // are what the rendition was ASKED for, and the two differ by up to 31.6%.
                     controller.candidate_ready(proposal, candidate_sample, candidate.declared_bps)
-                });
+                },
+            );
         if !ready {
             control.abandon(&primed.encoder_session);
-            reject_hls_abr(controller, proposal, crate::abr::RejectCause::Candidate, now_ms());
+            reject_hls_abr(
+                controller,
+                proposal,
+                crate::abr::RejectCause::Candidate,
+                now_ms(),
+            );
             if raster_ready {
                 // **A REJECT NO LONGER DELIVERS NOTHING** — Phase 0, lever 1 of
                 // `docs/measurements/p0-plant-sizing.md`.
@@ -4407,7 +4718,7 @@ fn hls_demux(
                 ));
             } else {
                 tx.finish("raster_refused");
-                    crate::player::log(&format!(
+                crate::player::log(&format!(
                     "abr: candidate raster {}x{} exceeds {}x{}; staying on current rung",
                     graded_output.video_width,
                     graded_output.video_height,
@@ -4418,7 +4729,12 @@ fn hls_demux(
             continue;
         }
         if !control.commit(active_encoder, &primed.encoder_session) {
-            reject_hls_abr(controller, proposal, crate::abr::RejectCause::Circumstance, now_ms());
+            reject_hls_abr(
+                controller,
+                proposal,
+                crate::abr::RejectCause::Circumstance,
+                now_ms(),
+            );
             return Err(HlsExit::Aborted);
         }
         // The decision is MADE here. `finish` is taken before the feed loop below, because that
@@ -4435,7 +4751,9 @@ fn hls_demux(
         let previous = std::mem::replace(active_encoder, primed.encoder_session);
         control.retire(previous);
         controller.commit(proposal, now_ms());
-        SHARED.dg_abr_kbps.store(i64::from(proposal.rung.kbps()), Ordering::Relaxed);
+        SHARED
+            .dg_abr_kbps
+            .store(i64::from(proposal.rung.kbps()), Ordering::Relaxed);
         publish_hls_abr_action(proposal, Some(true));
         // Promoted: from here this cursor IS the playback, so its playlist is the one that may
         // speak for the film's duration.
@@ -4546,9 +4864,7 @@ pub(crate) fn demux(
                 SHARED.demux_failed.store(true, Ordering::Release);
             }
         }
-        if !PUSHED_ANY.load(Ordering::Relaxed)
-            && !unsafe { crate::aq::aq_is_aborted(aq_p) }
-        {
+        if !PUSHED_ANY.load(Ordering::Relaxed) && !unsafe { crate::aq::aq_is_aborted(aq_p) } {
             SHARED.demux_failed.store(true, Ordering::Release);
         }
         crate::aq::aq_set_eof(aq_p);
@@ -4560,12 +4876,18 @@ pub(crate) fn demux(
         // Auto deliberately begins by trying Original. Publish that state before the first
         // measurement window completes so Stats for Nerds says what the policy is doing instead
         // of looking inactive during the exact startup interval a user is trying to diagnose.
-        SHARED.dg_abr_mode.store(crate::player::ABR_MODE_ORIGINAL, Ordering::Relaxed);
-        SHARED.dg_abr_kbps.store(i64::from(watch.source_kbps), Ordering::Relaxed);
+        SHARED
+            .dg_abr_mode
+            .store(crate::player::ABR_MODE_ORIGINAL, Ordering::Relaxed);
+        SHARED
+            .dg_abr_kbps
+            .store(i64::from(watch.source_kbps), Ordering::Relaxed);
         SHARED.dg_abr_net_kbps.store(-1, Ordering::Relaxed);
         SHARED.dg_abr_buffer_ms.store(-1, Ordering::Relaxed);
         SHARED.dg_abr_ratio_pm.store(-1, Ordering::Relaxed);
-        SHARED.dg_abr_action.store(crate::player::ABR_ACTION_STEADY, Ordering::Relaxed);
+        SHARED
+            .dg_abr_action
+            .store(crate::player::ABR_ACTION_STEADY, Ordering::Relaxed);
         SHARED.dg_abr_target_kbps.store(0, Ordering::Relaxed);
         SHARED.dg_abr_unsafe_deficit_ms.store(0, Ordering::Relaxed);
     }
@@ -4615,250 +4937,296 @@ pub(crate) fn demux(
     // libavformat may have left broken, and a one-off leak on a path that is meant never to run is
     // cheaper than a segfault. The session ends here either way.
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-    // Run-once breakable block, NOT a retry loop: every `break` below is an early exit to the
-    // EOF/cleanup tail after it. It used to be a real loop that reopened the whole
-    // AVFormatContext on a fresh URL, which is how a direct-play seek was supposed to reach its
-    // target — but the reopen could never be triggered (see the seek note in the read loop), and
-    // both remaining callers replace the engine outright instead: a transcode seek and an
-    // audio-track switch each build a new start.mkv and `reload_transcode`, which spawns a new
-    // demux thread. So the reopen had no live writer and no live caller.
-    loop {
-        unsafe {
-            // Publish curl's wake target BEFORE the final AU-abort check. These two operations
-            // close each other's race: teardown either sees and signals the reservation, or it
-            // aborts the lane first and this check refuses to start I/O. Creating/registering the
-            // source only after the check leaves a window where teardown's one wake sees nothing
-            // and the demuxer then opens a fresh connection under the main thread's join.
-            let mut curl_open = if origin.is_tls() {
-                match crate::curlio::CurlSource::reserve_open() {
-                    Ok(r) => Some(r),
-                    Err(e) => {
-                        crate::player::log(&format!("ff: https reservation FAILED: {e:?}"));
-                        SHARED.demux_failed.store(true, Ordering::Release);
-                        break;
-                    }
-                }
-            } else {
-                None
-            };
-            // Teardown may have raced us here (it aborts the lanes, then signals both transports,
-            // then JOINS this thread on the main thread). The reservation above makes the HTTPS
-            // side as race-free as the socket's already-published `hs_ptr`.
-            if crate::aq::aq_is_aborted(aq_p) {
-                crate::player::log("ff: aborted before reopen");
-                break;
-            }
-            // ONE decision, here, from the scheme — and the only place in the media path that
-            // makes it. Both arms publish the same two diagnostics (`dg_http_status`, `file_size`)
-            // before anything else can fail, because the read-out panel is the first thing anybody
-            // looks at when a part will not play and it must mean the same thing either way.
-            let (src, size) = if origin.is_tls() {
-                let reservation = curl_open.take().expect("TLS reserved its abort handle above");
-                match crate::curlio::CurlSource::open_reserved(&url, 0, reservation) {
-                    Ok(cs) => {
-                        let (st, size) = (cs.status(), cs.size());
-                        SHARED.file_size.store(size, Ordering::Release);
-                        SHARED.dg_http_status.store(st, Ordering::Relaxed);
-                        crate::player::log(&format!("ff: open https status={st} clen={size}"));
-                        (Src::Curl(cs), size)
-                    }
-                    Err(e) => {
-                        // A status we could not stream is worth publishing; a transport failure has
-                        // no status, and 0 is how the panel already spells "never answered".
-                        if let crate::curlio::OpenErr::Status(st) = e {
-                            SHARED.dg_http_status.store(st, Ordering::Relaxed);
+        // Run-once breakable block, NOT a retry loop: every `break` below is an early exit to the
+        // EOF/cleanup tail after it. It used to be a real loop that reopened the whole
+        // AVFormatContext on a fresh URL, which is how a direct-play seek was supposed to reach its
+        // target — but the reopen could never be triggered (see the seek note in the read loop), and
+        // both remaining callers replace the engine outright instead: a transcode seek and an
+        // audio-track switch each build a new start.mkv and `reload_transcode`, which spawns a new
+        // demux thread. So the reopen had no live writer and no live caller.
+        loop {
+            unsafe {
+                // Publish curl's wake target BEFORE the final AU-abort check. These two operations
+                // close each other's race: teardown either sees and signals the reservation, or it
+                // aborts the lane first and this check refuses to start I/O. Creating/registering the
+                // source only after the check leaves a window where teardown's one wake sees nothing
+                // and the demuxer then opens a fresh connection under the main thread's join.
+                let mut curl_open = if origin.is_tls() {
+                    match crate::curlio::CurlSource::reserve_open() {
+                        Ok(r) => Some(r),
+                        Err(e) => {
+                            crate::player::log(&format!("ff: https reservation FAILED: {e:?}"));
+                            SHARED.demux_failed.store(true, Ordering::Release);
+                            break;
                         }
-                        crate::player::log(&format!("ff: https open FAILED: {e:?}"));
-                        SHARED.demux_failed.store(true, Ordering::Release);
-                        break;
                     }
-                }
-            } else {
-                crate::stream::http_close(hs_p);
-                if crate::stream::http_open(hs_p, host_c.as_ptr(), port, path_c.as_ptr(), std::ptr::null(), "GET") != 0 {
-                    let st = crate::stream::hs_status(hs_p);
-                    SHARED.dg_http_status.store(st, Ordering::Relaxed);
-                    crate::player::log(&format!("ff: http_open FAILED status={st}"));
-                    SHARED.demux_failed.store(true, Ordering::Release);
-                    break;
-                }
-                let size = crate::stream::hs_content_length(hs_p);
-                SHARED.file_size.store(size, Ordering::Release);
-                let st = crate::stream::hs_status(hs_p);
-                SHARED.dg_http_status.store(st, Ordering::Relaxed);
-                crate::player::log(&format!("ff: open status={st} clen={size}"));
-                (
-                    Src::Socket { hs: hs_p, host: host_c.clone(), port, path: path_c.clone() },
-                    size,
-                )
-            };
-
-            let mut state = Box::new(AvioState {
-                src,
-                aq: aq_p,
-                off: 0,
-                size,
-                io_failed: false,
-                body_active_us: 0,
-                body_bytes: 0,
-                first_byte_at: None,
-                deadline: None,
-                deadline_expired: false,
-                // A progressive part is not on a ladder, so there is no cheaper rung to run to
-                // and the abort rule's escape does not exist. R12's terminal case, structurally.
-                stall: None,
-                stall_aborted: false,
-            });
-            let buf = av_malloc(65536) as *mut u8;
-            if buf.is_null() {
-                crate::player::log("ff: av_malloc failed");
-                break;
-            }
-            let avio = avio_alloc_context(
-                buf,
-                65536,
-                0,
-                &mut *state as *mut AvioState as *mut c_void,
-                Some(read_cb),
-                None,
-                Some(seek_cb),
-            );
-            if avio.is_null() {
-                crate::player::log("ff: avio_alloc_context failed");
-                free_ptr(buf as *mut c_void);
-                break;
-            }
-            let mut fmt = avformat_alloc_context();
-            if fmt.is_null() {
-                crate::player::log("ff: avformat_alloc_context failed");
-                free_avio(avio);
-                break;
-            }
-            (*fmt).pb = avio;
-            let r = avformat_open_input(&mut fmt, std::ptr::null(), std::ptr::null_mut(), std::ptr::null_mut());
-            if r < 0 || fmt.is_null() {
-                crate::player::log(&format!("ff: open_input failed r={r}"));
-                free_avio(avio);
-                break;
-            }
-            if avformat_find_stream_info(fmt, std::ptr::null_mut()) < 0 {
-                crate::player::log("ff: find_stream_info failed");
-                avformat_close_input(&mut fmt);
-                free_avio(avio);
-                break;
-            }
-            // The container's own track names, published before anything else can fail: the track
-            // menu is the only reader and it wants them whether or not this part turns out to have
-            // a video stream. See `stream_name` for why they are read at all — for an MP4 they are
-            // the ONLY place a track's identity exists, PMS having dropped it.
-            {
-                let (audio, subs) = track_names(fmt);
-                let named = audio.iter().chain(subs.iter()).filter(|n| !n.is_empty()).count();
-                if named > 0 {
-                    crate::player::log(&format!(
-                        "ff: container names {named}/{} tracks (a={} s={})",
-                        audio.len() + subs.len(),
-                        audio.len(),
-                        subs.len()
-                    ));
-                }
-                *SHARED.track_names.lock().unwrap() = crate::player::TrackNames { audio, subs };
-            }
-            let vi = av_find_best_stream(fmt, AVMEDIA_TYPE_VIDEO, -1, -1, std::ptr::null_mut(), 0);
-            // native audio-track selection: feed the chosen Nth audio stream (SHARED.desired_
-            // audio_idx, set by the track menu), else the pipeline's best/default audio.
-            let want_aidx = SHARED.desired_audio_idx.load(Ordering::Relaxed);
-            let ai = if want_aidx >= 0 {
-                nth_audio_stream(fmt, want_aidx)
-                    .unwrap_or_else(|| av_find_best_stream(fmt, AVMEDIA_TYPE_AUDIO, -1, -1, std::ptr::null_mut(), 0))
-            } else {
-                // default: feed the track matching the Load payload's codec (Media[0].audioCodec),
-                // NOT av_find_best_stream — a codec mismatch stalls the audio ES and wedges video.
-                audio_stream_matching(fmt, &acodec)
-                    .unwrap_or_else(|| av_find_best_stream(fmt, AVMEDIA_TYPE_AUDIO, -1, -1, std::ptr::null_mut(), 0))
-            };
-            if vi < 0 {
-                // "No video stream" alone reads as a demuxer fault. When audio IS present the
-                // demuxer worked fine — the stream itself arrived without video, which on a
-                // transcode URL means the server dropped the track (no usable video target —
-                // issue #22: an HEVC-only target on a server without Plex Pass). Record which
-                // shape this is so the error the user sees can say so; the main thread words it.
-                if ai >= 0 {
-                    SHARED.demux_no_video.store(true, Ordering::Release);
-                    crate::player::log("ff: no video stream — the stream carries audio only");
-                } else {
-                    crate::player::log("ff: no video stream");
-                }
-                avformat_close_input(&mut fmt);
-                free_avio(avio);
-                break;
-            }
-            let streams = (*fmt).streams;
-            let vst = *streams.add(vi as usize);
-            let vcp = stream_codecpar(vst);
-            // AAC needs ADTS framing for LG's decoder (mp4/mkv carry raw AAC). Precompute the
-            // per-frame ADTS fields (freq index + channel config) for the selected audio stream;
-            // None => not AAC (or a non-standard rate) => fed verbatim.
-            let aac_adts: Option<(u8, u8)> = if ai >= 0 {
-                let acp = stream_codecpar(*streams.add(ai as usize));
-                if (*acp).codec_id == AV_CODEC_ID_AAC {
-                    adts_params(acp)
                 } else {
                     None
+                };
+                // Teardown may have raced us here (it aborts the lanes, then signals both transports,
+                // then JOINS this thread on the main thread). The reservation above makes the HTTPS
+                // side as race-free as the socket's already-published `hs_ptr`.
+                if crate::aq::aq_is_aborted(aq_p) {
+                    crate::player::log("ff: aborted before reopen");
+                    break;
                 }
-            } else {
-                None
-            };
-            if let Some((fi, ch)) = aac_adts {
-                crate::player::log(&format!("ff: AAC → ADTS reframing on (freq_idx={fi} ch={ch})"));
-            }
-            let dur = fmt_duration(fmt);
-            if dur > 0 {
-                SHARED.duration_ns.store(dur.saturating_mul(1000), Ordering::Relaxed);
-            }
-            // The NAME as well as the id, and the name is what anything downstream should grade.
-            // A raw AV_CODEC_ID is an FFmpeg enum, and that enum RENUMBERS between majors — H264
-            // is 28 on the n3.3 the televisions ship, 27 on FFmpeg 6, and HEVC is 174 / 173 / 172
-            // across n3.3 / 6 / 9. The on-device suite asserted the bare number, so bundling our
-            // own FFmpeg failed all 21 cases at once on a codec the app had identified perfectly
-            // well. `avcodec_get_name` is stable, means what the assertion meant, and is free.
-            // Publish the coded size: the webOS 5+ exported window needs the frame it is being
-            // fed, and this is the only place that knows it for certain — a transcode's declared
-            // dimensions and its actual output need not agree.
-            SHARED.video_w.store((*vcp).width, Ordering::Relaxed);
-            SHARED.video_h.store((*vcp).height, Ordering::Relaxed);
-            let cname = std::ffi::CStr::from_ptr(avcodec_get_name((*vcp).codec_id)).to_string_lossy();
-            // WHAT THE STREAM ACTUALLY IS, not just what it is called. `codec=hevc` is the same
-            // four letters for an SDR file, an HDR10 file, a Dolby Vision Profile 8.1 file whose
-            // base layer is that same HDR10, and a Profile 5 file that will display in visibly
-            // wrong colours — `avcodec_get_name` cannot tell them apart and neither could this log
-            // line or any assertion built on it. These fields can. `trc`/`pri`/`spc` are the raw
-            // AVCOL_* enum values, logged as NUMBERS because naming them would mean binding three
-            // more FFmpeg symbols for a diagnostic: trc 16 = smpte2084 (PQ/HDR10), 18 = arib-std-b67
-            // (HLG), spc 9 = bt2020nc, pri 9 = bt2020, and **2 = UNSPECIFIED on all three** (every
-            // one of those six numbers checked against the vendored `libavutil/pixfmt.h`, not
-            // recalled). A Profile 5 file is expected to read 2/2/2, since IPT-PQ signals no
-            // ordinary transfer at all — inferred rather than seen from here, but from the same
-            // probe: PMS reports NO `colorTrc`, `colorSpace` or `colorPrimaries` at all on the dev
-            // server's P5 item while sending all three on every P8 (swept 2026-08-21). This line
-            // is where a television settles it.
-            // All three were declared in the offsets table above and read NOWHERE until now.
-            let dv = match dovi_conf(vcp) {
-                // `bl_compat` is the field that decides whether the base layer means anything on
-                // its own, so it is logged beside the profile rather than left to be inferred
-                // from it — 0 is Profile 5's "none", 1 the HDR10 of a Profile 8.1.
-                Some(d) => format!(
-                    " dovi=P{} level={} bl_compat={} rpu={} el={} bl={}",
-                    d.dv_profile,
-                    d.dv_level,
-                    d.dv_bl_signal_compatibility_id,
-                    d.rpu_present_flag,
-                    d.el_present_flag,
-                    d.bl_present_flag
-                ),
-                None => String::new(),
-            };
-            crate::player::log(&format!(
+                // ONE decision, here, from the scheme — and the only place in the media path that
+                // makes it. Both arms publish the same two diagnostics (`dg_http_status`, `file_size`)
+                // before anything else can fail, because the read-out panel is the first thing anybody
+                // looks at when a part will not play and it must mean the same thing either way.
+                let (src, size) = if origin.is_tls() {
+                    let reservation = curl_open
+                        .take()
+                        .expect("TLS reserved its abort handle above");
+                    match crate::curlio::CurlSource::open_reserved(&url, 0, reservation) {
+                        Ok(cs) => {
+                            let (st, size) = (cs.status(), cs.size());
+                            SHARED.file_size.store(size, Ordering::Release);
+                            SHARED.dg_http_status.store(st, Ordering::Relaxed);
+                            crate::player::log(&format!("ff: open https status={st} clen={size}"));
+                            (Src::Curl(cs), size)
+                        }
+                        Err(e) => {
+                            // A status we could not stream is worth publishing; a transport failure has
+                            // no status, and 0 is how the panel already spells "never answered".
+                            if let crate::curlio::OpenErr::Status(st) = e {
+                                SHARED.dg_http_status.store(st, Ordering::Relaxed);
+                            }
+                            crate::player::log(&format!("ff: https open FAILED: {e:?}"));
+                            SHARED.demux_failed.store(true, Ordering::Release);
+                            break;
+                        }
+                    }
+                } else {
+                    crate::stream::http_close(hs_p);
+                    if crate::stream::http_open(
+                        hs_p,
+                        host_c.as_ptr(),
+                        port,
+                        path_c.as_ptr(),
+                        std::ptr::null(),
+                        "GET",
+                    ) != 0
+                    {
+                        let st = crate::stream::hs_status(hs_p);
+                        SHARED.dg_http_status.store(st, Ordering::Relaxed);
+                        crate::player::log(&format!("ff: http_open FAILED status={st}"));
+                        SHARED.demux_failed.store(true, Ordering::Release);
+                        break;
+                    }
+                    let size = crate::stream::hs_content_length(hs_p);
+                    SHARED.file_size.store(size, Ordering::Release);
+                    let st = crate::stream::hs_status(hs_p);
+                    SHARED.dg_http_status.store(st, Ordering::Relaxed);
+                    crate::player::log(&format!("ff: open status={st} clen={size}"));
+                    (
+                        Src::Socket {
+                            hs: hs_p,
+                            host: host_c.clone(),
+                            port,
+                            path: path_c.clone(),
+                        },
+                        size,
+                    )
+                };
+
+                let mut state = Box::new(AvioState {
+                    src,
+                    aq: aq_p,
+                    off: 0,
+                    size,
+                    io_failed: false,
+                    body_active_us: 0,
+                    body_bytes: 0,
+                    first_byte_at: None,
+                    deadline: None,
+                    deadline_expired: false,
+                    // A progressive part is not on a ladder, so there is no cheaper rung to run to
+                    // and the abort rule's escape does not exist. R12's terminal case, structurally.
+                    stall: None,
+                    stall_aborted: false,
+                });
+                let buf = av_malloc(65536) as *mut u8;
+                if buf.is_null() {
+                    crate::player::log("ff: av_malloc failed");
+                    break;
+                }
+                let avio = avio_alloc_context(
+                    buf,
+                    65536,
+                    0,
+                    &mut *state as *mut AvioState as *mut c_void,
+                    Some(read_cb),
+                    None,
+                    Some(seek_cb),
+                );
+                if avio.is_null() {
+                    crate::player::log("ff: avio_alloc_context failed");
+                    free_ptr(buf as *mut c_void);
+                    break;
+                }
+                let mut fmt = avformat_alloc_context();
+                if fmt.is_null() {
+                    crate::player::log("ff: avformat_alloc_context failed");
+                    free_avio(avio);
+                    break;
+                }
+                (*fmt).pb = avio;
+                let r = avformat_open_input(
+                    &mut fmt,
+                    std::ptr::null(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                );
+                if r < 0 || fmt.is_null() {
+                    crate::player::log(&format!("ff: open_input failed r={r}"));
+                    free_avio(avio);
+                    break;
+                }
+                if avformat_find_stream_info(fmt, std::ptr::null_mut()) < 0 {
+                    crate::player::log("ff: find_stream_info failed");
+                    avformat_close_input(&mut fmt);
+                    free_avio(avio);
+                    break;
+                }
+                // The container's own track names, published before anything else can fail: the track
+                // menu is the only reader and it wants them whether or not this part turns out to have
+                // a video stream. See `stream_name` for why they are read at all — for an MP4 they are
+                // the ONLY place a track's identity exists, PMS having dropped it.
+                {
+                    let (audio, subs) = track_names(fmt);
+                    let named = audio
+                        .iter()
+                        .chain(subs.iter())
+                        .filter(|n| !n.is_empty())
+                        .count();
+                    if named > 0 {
+                        crate::player::log(&format!(
+                            "ff: container names {named}/{} tracks (a={} s={})",
+                            audio.len() + subs.len(),
+                            audio.len(),
+                            subs.len()
+                        ));
+                    }
+                    *SHARED.track_names.lock().unwrap() = crate::player::TrackNames { audio, subs };
+                }
+                let vi =
+                    av_find_best_stream(fmt, AVMEDIA_TYPE_VIDEO, -1, -1, std::ptr::null_mut(), 0);
+                // native audio-track selection: feed the chosen Nth audio stream (SHARED.desired_
+                // audio_idx, set by the track menu), else the pipeline's best/default audio.
+                let want_aidx = SHARED.desired_audio_idx.load(Ordering::Relaxed);
+                let ai = if want_aidx >= 0 {
+                    nth_audio_stream(fmt, want_aidx).unwrap_or_else(|| {
+                        av_find_best_stream(
+                            fmt,
+                            AVMEDIA_TYPE_AUDIO,
+                            -1,
+                            -1,
+                            std::ptr::null_mut(),
+                            0,
+                        )
+                    })
+                } else {
+                    // default: feed the track matching the Load payload's codec (Media[0].audioCodec),
+                    // NOT av_find_best_stream — a codec mismatch stalls the audio ES and wedges video.
+                    audio_stream_matching(fmt, &acodec).unwrap_or_else(|| {
+                        av_find_best_stream(
+                            fmt,
+                            AVMEDIA_TYPE_AUDIO,
+                            -1,
+                            -1,
+                            std::ptr::null_mut(),
+                            0,
+                        )
+                    })
+                };
+                if vi < 0 {
+                    // "No video stream" alone reads as a demuxer fault. When audio IS present the
+                    // demuxer worked fine — the stream itself arrived without video, which on a
+                    // transcode URL means the server dropped the track (no usable video target —
+                    // issue #22: an HEVC-only target on a server without Plex Pass). Record which
+                    // shape this is so the error the user sees can say so; the main thread words it.
+                    if ai >= 0 {
+                        SHARED.demux_no_video.store(true, Ordering::Release);
+                        crate::player::log("ff: no video stream — the stream carries audio only");
+                    } else {
+                        crate::player::log("ff: no video stream");
+                    }
+                    avformat_close_input(&mut fmt);
+                    free_avio(avio);
+                    break;
+                }
+                let streams = (*fmt).streams;
+                let vst = *streams.add(vi as usize);
+                let vcp = stream_codecpar(vst);
+                // AAC needs ADTS framing for LG's decoder (mp4/mkv carry raw AAC). Precompute the
+                // per-frame ADTS fields (freq index + channel config) for the selected audio stream;
+                // None => not AAC (or a non-standard rate) => fed verbatim.
+                let aac_adts: Option<(u8, u8)> = if ai >= 0 {
+                    let acp = stream_codecpar(*streams.add(ai as usize));
+                    if (*acp).codec_id == AV_CODEC_ID_AAC {
+                        adts_params(acp)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                if let Some((fi, ch)) = aac_adts {
+                    crate::player::log(&format!(
+                        "ff: AAC → ADTS reframing on (freq_idx={fi} ch={ch})"
+                    ));
+                }
+                let dur = fmt_duration(fmt);
+                if dur > 0 {
+                    SHARED
+                        .duration_ns
+                        .store(dur.saturating_mul(1000), Ordering::Relaxed);
+                }
+                // The NAME as well as the id, and the name is what anything downstream should grade.
+                // A raw AV_CODEC_ID is an FFmpeg enum, and that enum RENUMBERS between majors — H264
+                // is 28 on the n3.3 the televisions ship, 27 on FFmpeg 6, and HEVC is 174 / 173 / 172
+                // across n3.3 / 6 / 9. The on-device suite asserted the bare number, so bundling our
+                // own FFmpeg failed all 21 cases at once on a codec the app had identified perfectly
+                // well. `avcodec_get_name` is stable, means what the assertion meant, and is free.
+                // Publish the coded size: the webOS 5+ exported window needs the frame it is being
+                // fed, and this is the only place that knows it for certain — a transcode's declared
+                // dimensions and its actual output need not agree.
+                SHARED.video_w.store((*vcp).width, Ordering::Relaxed);
+                SHARED.video_h.store((*vcp).height, Ordering::Relaxed);
+                let cname =
+                    std::ffi::CStr::from_ptr(avcodec_get_name((*vcp).codec_id)).to_string_lossy();
+                // WHAT THE STREAM ACTUALLY IS, not just what it is called. `codec=hevc` is the same
+                // four letters for an SDR file, an HDR10 file, a Dolby Vision Profile 8.1 file whose
+                // base layer is that same HDR10, and a Profile 5 file that will display in visibly
+                // wrong colours — `avcodec_get_name` cannot tell them apart and neither could this log
+                // line or any assertion built on it. These fields can. `trc`/`pri`/`spc` are the raw
+                // AVCOL_* enum values, logged as NUMBERS because naming them would mean binding three
+                // more FFmpeg symbols for a diagnostic: trc 16 = smpte2084 (PQ/HDR10), 18 = arib-std-b67
+                // (HLG), spc 9 = bt2020nc, pri 9 = bt2020, and **2 = UNSPECIFIED on all three** (every
+                // one of those six numbers checked against the vendored `libavutil/pixfmt.h`, not
+                // recalled). A Profile 5 file is expected to read 2/2/2, since IPT-PQ signals no
+                // ordinary transfer at all — inferred rather than seen from here, but from the same
+                // probe: PMS reports NO `colorTrc`, `colorSpace` or `colorPrimaries` at all on the dev
+                // server's P5 item while sending all three on every P8 (swept 2026-08-21). This line
+                // is where a television settles it.
+                // All three were declared in the offsets table above and read NOWHERE until now.
+                let dv = match dovi_conf(vcp) {
+                    // `bl_compat` is the field that decides whether the base layer means anything on
+                    // its own, so it is logged beside the profile rather than left to be inferred
+                    // from it — 0 is Profile 5's "none", 1 the HDR10 of a Profile 8.1.
+                    Some(d) => format!(
+                        " dovi=P{} level={} bl_compat={} rpu={} el={} bl={}",
+                        d.dv_profile,
+                        d.dv_level,
+                        d.dv_bl_signal_compatibility_id,
+                        d.rpu_present_flag,
+                        d.el_present_flag,
+                        d.bl_present_flag
+                    ),
+                    None => String::new(),
+                };
+                crate::player::log(&format!(
                 "ff: v=#{vi} codec={cname} codec_id={} {}x{} trc={} pri={} spc={}{dv} a=#{ai} dur_ns={}",
                 (*vcp).codec_id,
                 (*vcp).width,
@@ -4869,284 +5237,313 @@ pub(crate) fn demux(
                 SHARED.duration_ns.load(Ordering::Relaxed)
             ));
 
-            // Client-rendered subtitles (direct-play only): enumerate subtitle streams in FILE
-            // order so their 0-based position maps 1:1 to the track menu's desired_sub_idx (which
-            // indexes metadata d.subs, i.e. every streamType==3 stream in document order). The
-            // selected track is read LIVE in the loop below, so switching subtitles mid-play takes
-            // effect with no reopen (parity with mkv.rs's active_sub_track).
-            // Each entry: (ffmpeg stream index, kind, decoder ctx). The decoder is non-null
-            // only for Bitmap tracks (PGS/VobSub/DVB), which we software-decode to pixels;
-            // text tracks carry a null ctx and take the payload path below.
-            let mut sub_streams: Vec<(c_int, SubKind, *mut AVCodecContext)> = Vec::new();
-            for i in 0..(*fmt).nb_streams {
-                let cp = stream_codecpar(*streams.add(i as usize));
-                if (*cp).codec_type == AVMEDIA_TYPE_SUBTITLE {
-                    let k = sub_kind((*cp).codec_id);
-                    let dec = if k == SubKind::Bitmap { open_sub_decoder(cp) } else { std::ptr::null_mut() };
-                    sub_streams.push((i as c_int, k, dec));
-                }
-            }
-            if !sub_streams.is_empty() {
-                let desc: Vec<String> = sub_streams
-                    .iter()
-                    .map(|(si, k, _)| {
-                        let kn = match k {
-                            SubKind::Ass => "ass",
-                            SubKind::MovText => "mov_text",
-                            SubKind::Plain => "text",
-                            SubKind::Bitmap => "image",
+                // Client-rendered subtitles (direct-play only): enumerate subtitle streams in FILE
+                // order so their 0-based position maps 1:1 to the track menu's desired_sub_idx (which
+                // indexes metadata d.subs, i.e. every streamType==3 stream in document order). The
+                // selected track is read LIVE in the loop below, so switching subtitles mid-play takes
+                // effect with no reopen (parity with mkv.rs's active_sub_track).
+                // Each entry: (ffmpeg stream index, kind, decoder ctx). The decoder is non-null
+                // only for Bitmap tracks (PGS/VobSub/DVB), which we software-decode to pixels;
+                // text tracks carry a null ctx and take the payload path below.
+                let mut sub_streams: Vec<(c_int, SubKind, *mut AVCodecContext)> = Vec::new();
+                for i in 0..(*fmt).nb_streams {
+                    let cp = stream_codecpar(*streams.add(i as usize));
+                    if (*cp).codec_type == AVMEDIA_TYPE_SUBTITLE {
+                        let k = sub_kind((*cp).codec_id);
+                        let dec = if k == SubKind::Bitmap {
+                            open_sub_decoder(cp)
+                        } else {
+                            std::ptr::null_mut()
                         };
-                        format!("#{si}:{kn}")
-                    })
-                    .collect();
-                crate::player::log(&format!(
-                    "ff: sub tracks=[{}] selected={}",
-                    desc.join(","),
-                    crate::player::desired_sub_idx()
-                ));
-            }
-
-            // Hand-roll length-prefix -> Annex-B + prepend VPS/SPS/PPS at every keyframe (the
-            // format Starfish decodes). FFmpeg's hevc_mp4toannexb does NOT reliably prepend the
-            // parameter sets on this 3.3 build (it leaves the keyframe starting with SEI), so we
-            // build the AU from the codecpar extradata; libavformat still owns demux + seeking.
-            let is_hevc = (*vcp).codec_id == AV_CODEC_ID_HEVC;
-            let (param_blob, nal_len_size) =
-                parse_extradata((*vcp).extradata, (*vcp).extradata_size.max(0) as usize, is_hevc);
-            crate::player::log(&format!(
-                "ff: param_sets={} bytes nal_len={} is_hevc={}",
-                param_blob.len(),
-                nal_len_size,
-                is_hevc
-            ));
-            let mut aubuf: Vec<u8> = Vec::with_capacity(4 * 1024 * 1024);
-
-            let pkt = av_packet_alloc();
-            if pkt.is_null() {
-                crate::player::log("ff: packet_alloc failed");
-                avformat_close_input(&mut fmt);
-                free_avio(avio);
-                break;
-            }
-
-            // INNER read loop
-            loop {
-                // Direct-play seek (and the armed resume, which is just a seek published before
-                // the first read): the pump leaves a target ns in SHARED.seek_to_ns and THIS
-                // thread — the only one that ever touches `fmt` — av_seek_frame's between two
-                // av_read_frame calls. A transcode leaves seek_to_ns=-1 (start.mkv is already
-                // 0-based at &offset) and so skips this.
-                //
-                // It used to be an INTERRUPT instead: the pump shutdown(2)'d the socket to break
-                // the read, and the outer loop reopened the URL and seeked the fresh context.
-                // That could not work, and the test suite hid it behind inherited resume offsets
-                // until 2026-07-28. Our AVIO is SEEKABLE (`seek_cb` reopens with a byte Range),
-                // so libavformat treats a read error as recoverable, calls seek_cb, and gets a
-                // brand-new connection at the same offset — av_read_frame never returned an
-                // error, the inner loop never broke, and no reopen ever happened. Every
-                // direct-play seek ran out the stuck-watchdog on PRE-seek packets
-                // (`rebase: dropping stale kf` at the old position) and escalated to a full
-                // reload. Seeking here needs no interrupt at all, so nothing can race it.
-                let seek_ns = SHARED.seek_to_ns.swap(-1, Ordering::Acquire);
-                if seek_ns >= 0 {
-                    // These are content from the old seek epoch until the first new packets land.
-                    // Reset both the buffer facts and the transfer-window hysteresis together so
-                    // a seek cannot splice old reserve into a new low-rate observation.
-                    SHARED.hls_video_tail_ns.store(-1, Ordering::Release);
-                    SHARED.hls_audio_tail_ns.store(-1, Ordering::Release);
-                    if let Some(watch) = original_watch.as_mut() {
-                        // A PARTIAL reset, and the split is the point: the link did not change
-                        // because the viewer jumped, so the delivery estimate survives — while the
-                        // buffer, the deficit history and the byte counters all describe a position
-                        // that no longer exists.
-                        watch.on_seek(state.body_bytes, state.body_active_us);
-                        SHARED.dg_abr_net_kbps.store(-1, Ordering::Relaxed);
-                        SHARED.dg_abr_buffer_ms.store(-1, Ordering::Relaxed);
-                        SHARED.dg_abr_unsafe_deficit_ms.store(0, Ordering::Relaxed);
+                        sub_streams.push((i as c_int, k, dec));
                     }
-                    let ts = av_rescale_q(seek_ns, NS_TB, stream_time_base(vst));
-                    let sr = av_seek_frame(fmt, vi, ts, AVSEEK_FLAG_BACKWARD);
-                    crate::player::log(&format!("ff: seek {}s rv={sr}", seek_ns / 1_000_000_000));
                 }
-                // Pending callback errors belong only to this enclosing operation. A successful
-                // packet (possibly after an internal seek/retry) clears them; a failed operation
-                // publishes a real transport truncation to the main thread.
-                state.io_failed = false;
-                let r = av_read_frame(fmt, pkt);
-                if frame_read_failed(&mut state, r) {
-                    // Genuine end of stream, teardown, or an unrecovered I/O error published by
-                    // `frame_read_failed`. NOT an app seek — that is serviced at the top of this
-                    // loop and never surfaces as a read error.
+                if !sub_streams.is_empty() {
+                    let desc: Vec<String> = sub_streams
+                        .iter()
+                        .map(|(si, k, _)| {
+                            let kn = match k {
+                                SubKind::Ass => "ass",
+                                SubKind::MovText => "mov_text",
+                                SubKind::Plain => "text",
+                                SubKind::Bitmap => "image",
+                            };
+                            format!("#{si}:{kn}")
+                        })
+                        .collect();
+                    crate::player::log(&format!(
+                        "ff: sub tracks=[{}] selected={}",
+                        desc.join(","),
+                        crate::player::desired_sub_idx()
+                    ));
+                }
+
+                // Hand-roll length-prefix -> Annex-B + prepend VPS/SPS/PPS at every keyframe (the
+                // format Starfish decodes). FFmpeg's hevc_mp4toannexb does NOT reliably prepend the
+                // parameter sets on this 3.3 build (it leaves the keyframe starting with SEI), so we
+                // build the AU from the codecpar extradata; libavformat still owns demux + seeking.
+                let is_hevc = (*vcp).codec_id == AV_CODEC_ID_HEVC;
+                let (param_blob, nal_len_size) = parse_extradata(
+                    (*vcp).extradata,
+                    (*vcp).extradata_size.max(0) as usize,
+                    is_hevc,
+                );
+                crate::player::log(&format!(
+                    "ff: param_sets={} bytes nal_len={} is_hevc={}",
+                    param_blob.len(),
+                    nal_len_size,
+                    is_hevc
+                ));
+                let mut aubuf: Vec<u8> = Vec::with_capacity(4 * 1024 * 1024);
+
+                let pkt = av_packet_alloc();
+                if pkt.is_null() {
+                    crate::player::log("ff: packet_alloc failed");
+                    avformat_close_input(&mut fmt);
+                    free_avio(avio);
                     break;
                 }
-                let si = (*pkt).stream_index;
-                if si == vi {
-                    let is_key = packet_to_annexb(
-                        (*pkt).data,
-                        (*pkt).size.max(0) as usize,
-                        nal_len_size,
-                        is_hevc,
-                        &param_blob,
-                        &mut aubuf,
-                    );
-                    let pts = pts_ns(pkt, vst);
-                    if DIAG_FIRST.swap(false, Ordering::Relaxed) {
-                        let n = aubuf.len().min(40);
-                        let head: String =
-                            aubuf[..n].iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" ");
+
+                // INNER read loop
+                loop {
+                    // Direct-play seek (and the armed resume, which is just a seek published before
+                    // the first read): the pump leaves a target ns in SHARED.seek_to_ns and THIS
+                    // thread — the only one that ever touches `fmt` — av_seek_frame's between two
+                    // av_read_frame calls. A transcode leaves seek_to_ns=-1 (start.mkv is already
+                    // 0-based at &offset) and so skips this.
+                    //
+                    // It used to be an INTERRUPT instead: the pump shutdown(2)'d the socket to break
+                    // the read, and the outer loop reopened the URL and seeked the fresh context.
+                    // That could not work, and the test suite hid it behind inherited resume offsets
+                    // until 2026-07-28. Our AVIO is SEEKABLE (`seek_cb` reopens with a byte Range),
+                    // so libavformat treats a read error as recoverable, calls seek_cb, and gets a
+                    // brand-new connection at the same offset — av_read_frame never returned an
+                    // error, the inner loop never broke, and no reopen ever happened. Every
+                    // direct-play seek ran out the stuck-watchdog on PRE-seek packets
+                    // (`rebase: dropping stale kf` at the old position) and escalated to a full
+                    // reload. Seeking here needs no interrupt at all, so nothing can race it.
+                    let seek_ns = SHARED.seek_to_ns.swap(-1, Ordering::Acquire);
+                    if seek_ns >= 0 {
+                        // These are content from the old seek epoch until the first new packets land.
+                        // Reset both the buffer facts and the transfer-window hysteresis together so
+                        // a seek cannot splice old reserve into a new low-rate observation.
+                        SHARED.hls_video_tail_ns.store(-1, Ordering::Release);
+                        SHARED.hls_audio_tail_ns.store(-1, Ordering::Release);
+                        if let Some(watch) = original_watch.as_mut() {
+                            // A PARTIAL reset, and the split is the point: the link did not change
+                            // because the viewer jumped, so the delivery estimate survives — while the
+                            // buffer, the deficit history and the byte counters all describe a position
+                            // that no longer exists.
+                            watch.on_seek(state.body_bytes, state.body_active_us);
+                            SHARED.dg_abr_net_kbps.store(-1, Ordering::Relaxed);
+                            SHARED.dg_abr_buffer_ms.store(-1, Ordering::Relaxed);
+                            SHARED.dg_abr_unsafe_deficit_ms.store(0, Ordering::Relaxed);
+                        }
+                        let ts = av_rescale_q(seek_ns, NS_TB, stream_time_base(vst));
+                        let sr = av_seek_frame(fmt, vi, ts, AVSEEK_FLAG_BACKWARD);
                         crate::player::log(&format!(
-                            "ff: AU#0 size={} key={} head=[{}]",
-                            aubuf.len(),
-                            is_key,
-                            head
+                            "ff: seek {}s rv={sr}",
+                            seek_ns / 1_000_000_000
                         ));
                     }
-                    let pushed = crate::aq::aq_push(
-                        aq_p,
-                        aubuf.as_ptr(),
-                        aubuf.len() as c_int,
-                        pts,
-                        if is_key { 1 } else { 0 },
-                        1,
-                    );
-                    av_packet_unref(pkt);
-                    if pushed != 0 {
+                    // Pending callback errors belong only to this enclosing operation. A successful
+                    // packet (possibly after an internal seek/retry) clears them; a failed operation
+                    // publishes a real transport truncation to the main thread.
+                    state.io_failed = false;
+                    let r = av_read_frame(fmt, pkt);
+                    if frame_read_failed(&mut state, r) {
+                        // Genuine end of stream, teardown, or an unrecovered I/O error published by
+                        // `frame_read_failed`. NOT an app seek — that is serviced at the top of this
+                        // loop and never surfaces as a read error.
                         break;
                     }
-                    PUSHED_ANY.store(true, Ordering::Relaxed);
-                    SHARED.hls_video_tail_ns.store(pts, Ordering::Release);
-                } else if si == ai && FEED_AUDIO.load(Ordering::Relaxed) {
-                    let ast = *streams.add(ai as usize);
-                    let pts = pts_ns(pkt, ast);
-                    let pushed = if let Some((freq_idx, chan_cfg)) = aac_adts {
-                        // prepend a 7-byte ADTS header so LG's decoder can frame the raw AAC
-                        let plen = (*pkt).size as usize;
-                        let mut framed = Vec::with_capacity(7 + plen);
-                        framed.extend_from_slice(&adts_header(freq_idx, chan_cfg, plen));
-                        framed.extend_from_slice(std::slice::from_raw_parts((*pkt).data, plen));
-                        crate::aq::aq_push(aqa_p, framed.as_ptr(), framed.len() as c_int, pts, 1, 2)
-                    } else {
-                        crate::aq::aq_push(aqa_p, (*pkt).data, (*pkt).size, pts, 1, 2) // AUDIO lane
-                    };
-                    av_packet_unref(pkt);
-                    if pushed != 0 {
-                        break;
-                    }
-                    SHARED.hls_audio_tail_ns.store(pts, Ordering::Release);
-                } else if let Some(sub_pos) = sub_streams.iter().position(|(sidx, _, _)| *sidx == si) {
-                    // Subtitle packet. Push a cue for EVERY text track (tagged with its file-order
-                    // index), NOT just the selected one, so a mid-play track switch is instant —
-                    // the render filters by desired_sub_idx (active_subtitle). Pushing only the
-                    // selected track leaves the buffered ~10-20s (the demuxer reads well ahead of
-                    // the playhead) cue-less after a switch. Subtitles carry no ES → never fed to
-                    // the pipeline. end_ns is pkt.duration; text subs without one fall back to +4s.
-                    let kind = sub_streams[sub_pos].1;
-                    if kind == SubKind::Bitmap {
-                        // Decode EVERY image-sub track as it's read (like text cues), NOT just the
-                        // selected one — the demuxer runs ~10-20s ahead of the playhead, so if we
-                        // only started decoding at selection time the on-screen moment was already
-                        // read past and subs wouldn't appear until the playhead caught up (the
-                        // 10-20s lag). Decoding all tracks means the current cue is already in the
-                        // store on enable/switch. Keyed by sub_pos (== desired_sub_idx domain); the
-                        // renderer filters by selection. RAM is bounded by the store's byte budget.
-                        //
-                        // GATED on subs being ON at all: with subtitles Off (the common case) the
-                        // continuous per-display-set RLE decode + the up-to-24MB RGBA store were
-                        // pure waste on the demux core during 4K playback. Turning subs on starts
-                        // decoding from the current read position — a switch between two IMAGE
-                        // tracks stays instant; only the off→on moment can wait for the next cue.
-                        if crate::player::desired_sub_idx() >= 0 {
-                            let dec = sub_streams[sub_pos].2;
-                            if !dec.is_null() {
-                                decode_bitmap_cue(dec, pkt, sub_pos as c_int, *streams.add(si as usize));
-                            }
+                    let si = (*pkt).stream_index;
+                    if si == vi {
+                        let is_key = packet_to_annexb(
+                            (*pkt).data,
+                            (*pkt).size.max(0) as usize,
+                            nal_len_size,
+                            is_hevc,
+                            &param_blob,
+                            &mut aubuf,
+                        );
+                        let pts = pts_ns(pkt, vst);
+                        if DIAG_FIRST.swap(false, Ordering::Relaxed) {
+                            let n = aubuf.len().min(40);
+                            let head: String = aubuf[..n]
+                                .iter()
+                                .map(|b| format!("{:02x}", b))
+                                .collect::<Vec<_>>()
+                                .join(" ");
+                            crate::player::log(&format!(
+                                "ff: AU#0 size={} key={} head=[{}]",
+                                aubuf.len(),
+                                is_key,
+                                head
+                            ));
                         }
-                    } else {
-                        let sst = *streams.add(si as usize);
-                        let start = pts_ns(pkt, sst);
-                        let dur = (*pkt).duration;
-                        let end = if dur > 0 {
-                            start + av_rescale_q(dur, stream_time_base(sst), NS_TB)
+                        let pushed = crate::aq::aq_push(
+                            aq_p,
+                            aubuf.as_ptr(),
+                            aubuf.len() as c_int,
+                            pts,
+                            if is_key { 1 } else { 0 },
+                            1,
+                        );
+                        av_packet_unref(pkt);
+                        if pushed != 0 {
+                            break;
+                        }
+                        PUSHED_ANY.store(true, Ordering::Relaxed);
+                        SHARED.hls_video_tail_ns.store(pts, Ordering::Release);
+                    } else if si == ai && FEED_AUDIO.load(Ordering::Relaxed) {
+                        let ast = *streams.add(ai as usize);
+                        let pts = pts_ns(pkt, ast);
+                        let pushed = if let Some((freq_idx, chan_cfg)) = aac_adts {
+                            // prepend a 7-byte ADTS header so LG's decoder can frame the raw AAC
+                            let plen = (*pkt).size as usize;
+                            let mut framed = Vec::with_capacity(7 + plen);
+                            framed.extend_from_slice(&adts_header(freq_idx, chan_cfg, plen));
+                            framed.extend_from_slice(std::slice::from_raw_parts((*pkt).data, plen));
+                            crate::aq::aq_push(
+                                aqa_p,
+                                framed.as_ptr(),
+                                framed.len() as c_int,
+                                pts,
+                                1,
+                                2,
+                            )
                         } else {
-                            start + 4_000_000_000
+                            crate::aq::aq_push(aqa_p, (*pkt).data, (*pkt).size, pts, 1, 2)
+                            // AUDIO lane
                         };
-                        let sz = (*pkt).size.max(0) as usize;
-                        if !(*pkt).data.is_null() && sz > 0 {
-                            let raw = std::slice::from_raw_parts((*pkt).data, sz);
-                            // mp4 tx3g: drop the 2-byte big-endian text-length prefix.
-                            let payload: &[u8] = if kind == SubKind::MovText && sz >= 2 {
-                                let tl = ((raw[0] as usize) << 8) | raw[1] as usize;
-                                &raw[2..2 + tl.min(sz - 2)]
-                            } else {
-                                raw
-                            };
-                            crate::player::push_subtitle_cue(
-                                sub_pos as i32,
-                                start,
-                                end,
-                                payload,
-                                kind == SubKind::Ass,
-                            );
+                        av_packet_unref(pkt);
+                        if pushed != 0 {
+                            break;
                         }
-                    }
-                    av_packet_unref(pkt);
-                } else {
-                    av_packet_unref(pkt);
-                }
-                if !SHARED.seeking.load(Ordering::Relaxed) {
-                    if let Some(watch) = original_watch.as_mut() {
-                        let paused_now = crate::player::TX.paused.load(Ordering::Relaxed);
-                        match (paused_now, original_paused_since) {
-                            (true, None) => {
-                                original_paused_since = Some(std::time::Instant::now())
+                        SHARED.hls_audio_tail_ns.store(pts, Ordering::Release);
+                    } else if let Some(sub_pos) =
+                        sub_streams.iter().position(|(sidx, _, _)| *sidx == si)
+                    {
+                        // Subtitle packet. Push a cue for EVERY text track (tagged with its file-order
+                        // index), NOT just the selected one, so a mid-play track switch is instant —
+                        // the render filters by desired_sub_idx (active_subtitle). Pushing only the
+                        // selected track leaves the buffered ~10-20s (the demuxer reads well ahead of
+                        // the playhead) cue-less after a switch. Subtitles carry no ES → never fed to
+                        // the pipeline. end_ns is pkt.duration; text subs without one fall back to +4s.
+                        let kind = sub_streams[sub_pos].1;
+                        if kind == SubKind::Bitmap {
+                            // Decode EVERY image-sub track as it's read (like text cues), NOT just the
+                            // selected one — the demuxer runs ~10-20s ahead of the playhead, so if we
+                            // only started decoding at selection time the on-screen moment was already
+                            // read past and subs wouldn't appear until the playhead caught up (the
+                            // 10-20s lag). Decoding all tracks means the current cue is already in the
+                            // store on enable/switch. Keyed by sub_pos (== desired_sub_idx domain); the
+                            // renderer filters by selection. RAM is bounded by the store's byte budget.
+                            //
+                            // GATED on subs being ON at all: with subtitles Off (the common case) the
+                            // continuous per-display-set RLE decode + the up-to-24MB RGBA store were
+                            // pure waste on the demux core during 4K playback. Turning subs on starts
+                            // decoding from the current read position — a switch between two IMAGE
+                            // tracks stays instant; only the off→on moment can wait for the next cue.
+                            if crate::player::desired_sub_idx() >= 0 {
+                                let dec = sub_streams[sub_pos].2;
+                                if !dec.is_null() {
+                                    decode_bitmap_cue(
+                                        dec,
+                                        pkt,
+                                        sub_pos as c_int,
+                                        *streams.add(si as usize),
+                                    );
+                                }
                             }
-                            (false, Some(since)) => {
-                                original_paused_since = None;
-                                watch.on_resume(
-                                    u64::try_from(since.elapsed().as_millis())
-                                        .unwrap_or(u64::MAX),
+                        } else {
+                            let sst = *streams.add(si as usize);
+                            let start = pts_ns(pkt, sst);
+                            let dur = (*pkt).duration;
+                            let end = if dur > 0 {
+                                start + av_rescale_q(dur, stream_time_base(sst), NS_TB)
+                            } else {
+                                start + 4_000_000_000
+                            };
+                            let sz = (*pkt).size.max(0) as usize;
+                            if !(*pkt).data.is_null() && sz > 0 {
+                                let raw = std::slice::from_raw_parts((*pkt).data, sz);
+                                // mp4 tx3g: drop the 2-byte big-endian text-length prefix.
+                                let payload: &[u8] = if kind == SubKind::MovText && sz >= 2 {
+                                    let tl = ((raw[0] as usize) << 8) | raw[1] as usize;
+                                    &raw[2..2 + tl.min(sz - 2)]
+                                } else {
+                                    raw
+                                };
+                                crate::player::push_subtitle_cue(
+                                    sub_pos as i32,
+                                    start,
+                                    end,
+                                    payload,
+                                    kind == SubKind::Ass,
                                 );
                             }
-                            _ => {}
                         }
-                        let audio_expected = ai >= 0 && FEED_AUDIO.load(Ordering::Relaxed);
-                        if let Some(observation) = watch.observe(
-                            state.body_bytes,
-                            state.body_active_us,
-                            progressive_buffered_ms(audio_expected),
-                            remaining_playback_ms(),
-                            original_since.elapsed().as_millis() as u64,
-                        ) {
-                            SHARED.dg_abr_net_kbps.store(
-                                i64::from(observation.measured_kbps),
-                                Ordering::Relaxed,
-                            );
-                            SHARED.dg_abr_buffer_ms.store(
-                                observation.buffered_ms,
-                                Ordering::Relaxed,
-                            );
-                            SHARED.dg_abr_unsafe_deficit_ms.store(
-                                observation.unsafe_deficit_ms,
-                                Ordering::Relaxed,
-                            );
-                            // The rest of the model, on ONE line each — `shared.rs`'s writer guard
-                            // greps `dg_<field>.store(` and a rustfmt-split call reads to it as a
-                            // field nothing writes.
-                            //
-                            // Without these, Original mode published a buffer LEVEL and left the
-                            // slope and the horizon at their reset values, so the panel drew
-                            // `+0.0 s/s · no deficit` — two sentinels, rendered as measurements,
-                            // beside a level that was real. Device-observed 2026-08-26.
-                            let rel = Ordering::Relaxed;
-                            let horizon = observation.horizon_secs.map(i64::from).unwrap_or(-1);
-                            SHARED.dg_abr_slope_ms_per_s.store(observation.slope_ms_per_s, rel);
-                            SHARED.dg_abr_starve_secs.store(horizon, rel);
-                            SHARED.dg_abr_safe_kbps.store(i64::from(observation.conservative_kbps), rel);
-                            if let Some(reason) = observation.fallback {
-                                // The whole basis of a VISIBLE switch, in one line: the rate, the
-                                // requirement it was measured against, the reserve, its direction,
-                                // how many seconds that reserve survives, and which rule fired.
-                                crate::player::log(&format!(
+                        av_packet_unref(pkt);
+                    } else {
+                        av_packet_unref(pkt);
+                    }
+                    if !SHARED.seeking.load(Ordering::Relaxed) {
+                        if let Some(watch) = original_watch.as_mut() {
+                            let paused_now = crate::player::TX.paused.load(Ordering::Relaxed);
+                            match (paused_now, original_paused_since) {
+                                (true, None) => {
+                                    original_paused_since = Some(std::time::Instant::now())
+                                }
+                                (false, Some(since)) => {
+                                    original_paused_since = None;
+                                    watch.on_resume(
+                                        u64::try_from(since.elapsed().as_millis())
+                                            .unwrap_or(u64::MAX),
+                                    );
+                                }
+                                _ => {}
+                            }
+                            let audio_expected = ai >= 0 && FEED_AUDIO.load(Ordering::Relaxed);
+                            if let Some(observation) = watch.observe(
+                                state.body_bytes,
+                                state.body_active_us,
+                                progressive_buffered_ms(audio_expected),
+                                remaining_playback_ms(),
+                                original_since.elapsed().as_millis() as u64,
+                            ) {
+                                SHARED
+                                    .dg_abr_net_kbps
+                                    .store(i64::from(observation.measured_kbps), Ordering::Relaxed);
+                                SHARED
+                                    .dg_abr_buffer_ms
+                                    .store(observation.buffered_ms, Ordering::Relaxed);
+                                SHARED
+                                    .dg_abr_unsafe_deficit_ms
+                                    .store(observation.unsafe_deficit_ms, Ordering::Relaxed);
+                                // The rest of the model, on ONE line each — `shared.rs`'s writer guard
+                                // greps `dg_<field>.store(` and a rustfmt-split call reads to it as a
+                                // field nothing writes.
+                                //
+                                // Without these, Original mode published a buffer LEVEL and left the
+                                // slope and the horizon at their reset values, so the panel drew
+                                // `+0.0 s/s · no deficit` — two sentinels, rendered as measurements,
+                                // beside a level that was real. Device-observed 2026-08-26.
+                                let rel = Ordering::Relaxed;
+                                let horizon = observation.horizon_secs.map(i64::from).unwrap_or(-1);
+                                SHARED
+                                    .dg_abr_slope_ms_per_s
+                                    .store(observation.slope_ms_per_s, rel);
+                                SHARED.dg_abr_starve_secs.store(horizon, rel);
+                                SHARED
+                                    .dg_abr_safe_kbps
+                                    .store(i64::from(observation.conservative_kbps), rel);
+                                if let Some(reason) = observation.fallback {
+                                    // The whole basis of a VISIBLE switch, in one line: the rate, the
+                                    // requirement it was measured against, the reserve, its direction,
+                                    // how many seconds that reserve survives, and which rule fired.
+                                    crate::player::log(&format!(
                                     // **`held=` and NOT `windows=`.** The value is wall
                                     // milliseconds now (N13); reusing the old label would make an
                                     // old log's `windows=2` and a new log's `windows=2` two
@@ -5165,41 +5562,41 @@ pub(crate) fn demux(
                                     observation.unsafe_deficit_ms,
                                     observation.target.map(|r| r.kbps()).unwrap_or(0),
                                 ));
-                                // Hand over the CONSERVATIVE estimate, not the last window's raw
-                                // rate: the main thread picks the replacement rung from it, and one
-                                // sample of a noisy distribution is the wrong basis for that.
-                                SHARED.auto_fallback_kbps.store(
-                                    i64::from(observation.conservative_kbps.max(1)),
-                                    Ordering::Release,
-                                );
-                                break;
+                                    // Hand over the CONSERVATIVE estimate, not the last window's raw
+                                    // rate: the main thread picks the replacement rung from it, and one
+                                    // sample of a noisy distribution is the wrong basis for that.
+                                    SHARED.auto_fallback_kbps.store(
+                                        i64::from(observation.conservative_kbps.max(1)),
+                                        Ordering::Release,
+                                    );
+                                    break;
+                                }
                             }
                         }
                     }
+                    if crate::aq::aq_is_aborted(aq_p) {
+                        break;
+                    }
                 }
-                if crate::aq::aq_is_aborted(aq_p) {
-                    break;
+
+                // cleanup this stream (we own pb, so close_input won't free the AVIO)
+                for (_, _, dec) in sub_streams.iter_mut() {
+                    if !dec.is_null() {
+                        avcodec_free_context(dec); // frees + nulls; reopened fresh on the next outer pass
+                    }
                 }
+                let mut pkt_m = pkt;
+                av_packet_free(&mut pkt_m);
+                avformat_close_input(&mut fmt);
+                free_avio(avio);
+                let _ = &state; // keep the AvioState alive until after free_avio
             }
 
-            // cleanup this stream (we own pb, so close_input won't free the AVIO)
-            for (_, _, dec) in sub_streams.iter_mut() {
-                if !dec.is_null() {
-                    avcodec_free_context(dec); // frees + nulls; reopened fresh on the next outer pass
-                }
+            if unsafe { crate::aq::aq_is_aborted(aq_p) } {
+                break;
             }
-            let mut pkt_m = pkt;
-            av_packet_free(&mut pkt_m);
-            avformat_close_input(&mut fmt);
-            free_avio(avio);
-            let _ = &state; // keep the AvioState alive until after free_avio
-        }
-
-        if unsafe { crate::aq::aq_is_aborted(aq_p) } {
             break;
         }
-        break;
-    }
     })); // end panic barrier. The body above is deliberately NOT re-indented into the closure: a
          // ~340-line whitespace diff would bury every real change this file ever gets again.
 
@@ -5305,7 +5702,10 @@ mod tests {
         let d = parse_dovi_conf(&dovi_bytes(7, 6, 1, 1, 1, 6)).expect("nine bytes is a record");
         assert_eq!(d.dv_profile, 7);
         assert_eq!(d.el_present_flag, 1);
-        assert_eq!(d.dv_bl_signal_compatibility_id, 6, "NOT 0 — the trap this test exists to hold");
+        assert_eq!(
+            d.dv_bl_signal_compatibility_id, 6,
+            "NOT 0 — the trap this test exists to hold"
+        );
     }
 
     /// **Profile 8.1** — the base layer IS HDR10, which `bl_compat = 1` is exactly the statement
@@ -5326,7 +5726,11 @@ mod tests {
     #[test]
     fn a_short_record_is_not_a_partial_record() {
         assert_eq!(parse_dovi_conf(&[]), None);
-        assert_eq!(parse_dovi_conf(&[1, 0, 5, 6, 1, 0, 1, 0]), None, "eight bytes is not nine");
+        assert_eq!(
+            parse_dovi_conf(&[1, 0, 5, 6, 1, 0, 1, 0]),
+            None,
+            "eight bytes is not nine"
+        );
         // exactly nine is the boundary, and it is inclusive
         assert!(parse_dovi_conf(&dovi_bytes(5, 6, 1, 0, 1, 0)).is_some());
         // a LONGER payload is fine and expected — a future FFmpeg may append fields, and the
@@ -5358,13 +5762,25 @@ mod tests {
     #[test]
     fn nal_end_accepts_a_nal_that_fits() {
         assert_eq!(nal_end(4, 10, 64), Some(14));
-        assert_eq!(nal_end(4, 60, 64), Some(64), "a NAL ending exactly at `size` is valid");
+        assert_eq!(
+            nal_end(4, 60, 64),
+            Some(64),
+            "a NAL ending exactly at `size` is valid"
+        );
     }
 
     #[test]
     fn nal_end_rejects_empty_and_overrun() {
-        assert_eq!(nal_end(4, 0, 64), None, "a zero-length NAL terminates the walk");
-        assert_eq!(nal_end(4, 61, 64), None, "one byte past the end is rejected");
+        assert_eq!(
+            nal_end(4, 0, 64),
+            None,
+            "a zero-length NAL terminates the walk"
+        );
+        assert_eq!(
+            nal_end(4, 61, 64),
+            None,
+            "one byte past the end is rejected"
+        );
     }
 
     /// Documents the defect `nal_end` exists to prevent. `usize` is 32 bits on the TV, so the
@@ -5377,8 +5793,15 @@ mod tests {
     fn nal_end_rejects_what_the_old_32bit_guard_accepted() {
         let (i, nl, size) = (4usize, 0xFFFF_FFFCusize, 64usize);
         let old_guard_overruns = (i as u32).wrapping_add(nl as u32) > size as u32;
-        assert!(!old_guard_overruns, "on 32-bit the old guard computed 0 and let this through");
-        assert_eq!(nal_end(i, nl, size), None, "the width-explicit guard rejects it on every target");
+        assert!(
+            !old_guard_overruns,
+            "on 32-bit the old guard computed 0 and let this through"
+        );
+        assert_eq!(
+            nal_end(i, nl, size),
+            None,
+            "the width-explicit guard rejects it on every target"
+        );
     }
 
     // -- packet_to_annexb ------------------------------------------------------------------
@@ -5390,7 +5813,10 @@ mod tests {
         let param = [0u8, 0, 0, 1, 0x67, 0x42];
         let (key, out) = to_annexb(&buf, false, &param);
         assert!(key, "0x65 & 0x1f == 5 is an IDR");
-        assert!(out.starts_with(&param), "a keyframe AU must carry the SPS/PPS");
+        assert!(
+            out.starts_with(&param),
+            "a keyframe AU must carry the SPS/PPS"
+        );
         assert_eq!(&out[param.len()..], &[0, 0, 0, 1, 0x65, 0xAA, 0xBB]);
     }
 
@@ -5399,7 +5825,11 @@ mod tests {
         let buf = avcc(&[&[0x41, 0x01]]); // type 1, non-IDR slice
         let (key, out) = to_annexb(&buf, false, &[0xDE, 0xAD]);
         assert!(!key);
-        assert_eq!(out, vec![0, 0, 0, 1, 0x41, 0x01], "no parameter set on a non-keyframe");
+        assert_eq!(
+            out,
+            vec![0, 0, 0, 1, 0x41, 0x01],
+            "no parameter set on a non-keyframe"
+        );
     }
 
     #[test]
@@ -5434,7 +5864,11 @@ mod tests {
         buf.extend_from_slice(&[0x41, 0x02]);
         let (key, out) = to_annexb(&buf, false, &[]);
         assert!(!key);
-        assert_eq!(out, vec![0, 0, 0, 1, 0x41, 0x01], "the good NAL survives, the bad one stops the walk");
+        assert_eq!(
+            out,
+            vec![0, 0, 0, 1, 0x41, 0x01],
+            "the good NAL survives, the bad one stops the walk"
+        );
     }
 
     #[test]
@@ -5464,9 +5898,21 @@ mod tests {
     #[test]
     fn a_leading_missing_aac_timestamp_is_backfilled_from_frame_duration() {
         let mut stamps = [
-            AudioStamp { au: 3, raw_ns: None, duration_ns: Some(21_333_333) },
-            AudioStamp { au: 4, raw_ns: Some(900_000_000), duration_ns: Some(21_333_333) },
-            AudioStamp { au: 5, raw_ns: None, duration_ns: Some(21_333_333) },
+            AudioStamp {
+                au: 3,
+                raw_ns: None,
+                duration_ns: Some(21_333_333),
+            },
+            AudioStamp {
+                au: 4,
+                raw_ns: Some(900_000_000),
+                duration_ns: Some(21_333_333),
+            },
+            AudioStamp {
+                au: 5,
+                raw_ns: None,
+                duration_ns: Some(21_333_333),
+            },
         ];
         assert_eq!(resolve_audio_stamps(&mut stamps), Ok(2));
         assert_eq!(stamps[0].raw_ns, Some(878_666_667));
@@ -5476,21 +5922,47 @@ mod tests {
     #[test]
     fn a_timestamp_free_aac_segment_uses_only_its_frame_clock() {
         let mut stamps = [
-            AudioStamp { au: 0, raw_ns: None, duration_ns: Some(20_000_000) },
-            AudioStamp { au: 1, raw_ns: None, duration_ns: Some(20_000_000) },
-            AudioStamp { au: 2, raw_ns: None, duration_ns: Some(20_000_000) },
+            AudioStamp {
+                au: 0,
+                raw_ns: None,
+                duration_ns: Some(20_000_000),
+            },
+            AudioStamp {
+                au: 1,
+                raw_ns: None,
+                duration_ns: Some(20_000_000),
+            },
+            AudioStamp {
+                au: 2,
+                raw_ns: None,
+                duration_ns: Some(20_000_000),
+            },
         ];
         assert_eq!(resolve_audio_stamps(&mut stamps), Ok(3));
-        assert_eq!(stamps.iter().map(|stamp| stamp.raw_ns).collect::<Vec<_>>(), [Some(0), Some(20_000_000), Some(40_000_000)]);
+        assert_eq!(
+            stamps.iter().map(|stamp| stamp.raw_ns).collect::<Vec<_>>(),
+            [Some(0), Some(20_000_000), Some(40_000_000)]
+        );
     }
 
     #[test]
     fn an_unanchored_aac_timestamp_hole_fails_closed() {
         let mut stamps = [
-            AudioStamp { au: 0, raw_ns: Some(0), duration_ns: None },
-            AudioStamp { au: 1, raw_ns: None, duration_ns: None },
+            AudioStamp {
+                au: 0,
+                raw_ns: Some(0),
+                duration_ns: None,
+            },
+            AudioStamp {
+                au: 1,
+                raw_ns: None,
+                duration_ns: None,
+            },
         ];
-        assert_eq!(resolve_audio_stamps(&mut stamps), Err("AAC timestamp hole has no duration anchor"));
+        assert_eq!(
+            resolve_audio_stamps(&mut stamps),
+            Err("AAC timestamp hole has no duration anchor")
+        );
     }
 
     #[test]
@@ -5548,7 +6020,9 @@ mod tests {
     /// bumped BEFORE the reply is written, so it is already final by the time any `http_open`
     /// against this listener can return — every assertion below is causally ordered behind that,
     /// and needs no sleep and no timing margin.
-    fn with_counting_listener(body: impl FnOnce(u16, &std::sync::atomic::AtomicUsize, &std::sync::atomic::AtomicUsize)) {
+    fn with_counting_listener(
+        body: impl FnOnce(u16, &std::sync::atomic::AtomicUsize, &std::sync::atomic::AtomicUsize),
+    ) {
         use std::io::{Read, Write};
         use std::sync::atomic::AtomicUsize;
         let srv = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
@@ -5569,7 +6043,8 @@ mod tests {
                                 // body — small enough that it arrives inside the client's header
                                 // read, so `http_read` serves it from `HttpStream`'s buffer and
                                 // never needs the socket again.
-                                let _ = s.set_read_timeout(Some(std::time::Duration::from_millis(100)));
+                                let _ =
+                                    s.set_read_timeout(Some(std::time::Duration::from_millis(100)));
                                 let mut w = match s.try_clone() {
                                     Ok(c) => c,
                                     Err(_) => return,
@@ -5579,7 +6054,11 @@ mod tests {
                                     if let Some(k) = buf.windows(4).position(|x| x == b"\r\n\r\n") {
                                         buf.drain(..k + 4);
                                         rq.fetch_add(1, Ordering::AcqRel);
-                                        if w.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nABCDEFGH").is_err() {
+                                        if w.write_all(
+                                            b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nABCDEFGH",
+                                        )
+                                        .is_err()
+                                        {
                                             return;
                                         }
                                         let _ = w.flush();
@@ -5589,10 +6068,13 @@ mod tests {
                                     match (&s).read(&mut tmp) {
                                         Ok(0) => return,
                                         Ok(n) => buf.extend_from_slice(&tmp[..n]),
-                                        Err(ref e) if matches!(
-                                            e.kind(),
-                                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                                        ) => {
+                                        Err(ref e)
+                                            if matches!(
+                                                e.kind(),
+                                                std::io::ErrorKind::WouldBlock
+                                                    | std::io::ErrorKind::TimedOut
+                                            ) =>
+                                        {
                                             if st.load(Ordering::Acquire) {
                                                 return;
                                             }
@@ -5625,12 +6107,19 @@ mod tests {
 
     /// An open stream plus the aborted video lane behind its AVIO — the state teardown leaves:
     /// `engine::teardown` aborts both lanes, `http_shutdown`s this socket, then joins the demuxer.
-    fn opened_stream_with_aborted_lane(port: u16) -> (Box<HttpStream>, Box<AuQueue>, CString, CString) {
+    fn opened_stream_with_aborted_lane(
+        port: u16,
+    ) -> (Box<HttpStream>, Box<AuQueue>, CString, CString) {
         let ip = CString::new("127.0.0.1").unwrap();
         let path = CString::new("/library/parts/1/file.mkv").unwrap();
         let mut hs = crate::stream::http_stream_boxed();
         let rv = crate::stream::http_open(
-            &mut *hs, ip.as_ptr(), port as c_int, path.as_ptr(), std::ptr::null(), "GET",
+            &mut *hs,
+            ip.as_ptr(),
+            port as c_int,
+            path.as_ptr(),
+            std::ptr::null(),
+            "GET",
         );
         assert_eq!(rv, 0, "fixture: the first open must succeed");
         let mut aq = crate::aq::aq_new(1 << 20);
@@ -5654,25 +6143,49 @@ mod tests {
     fn a_seek_after_teardown_fails_instead_of_opening_a_second_connection() {
         with_counting_listener(|port, accepts, _| {
             let (mut hs, mut aq, ip, path) = opened_stream_with_aborted_lane(port);
-            assert_eq!(accepts.load(Ordering::Acquire), 1, "fixture: exactly one connection so far");
+            assert_eq!(
+                accepts.load(Ordering::Acquire),
+                1,
+                "fixture: exactly one connection so far"
+            );
             let mut st = AvioState {
-                src: Src::Socket { hs: &mut *hs, host: ip, port: port as c_int, path },
-                aq: &mut *aq, off: 0, size: 8, io_failed: false,
-                body_active_us: 0, body_bytes: 0, first_byte_at: None,
-                deadline: None, deadline_expired: false, stall: None, stall_aborted: false,
+                src: Src::Socket {
+                    hs: &mut *hs,
+                    host: ip,
+                    port: port as c_int,
+                    path,
+                },
+                aq: &mut *aq,
+                off: 0,
+                size: 8,
+                io_failed: false,
+                body_active_us: 0,
+                body_bytes: 0,
+                first_byte_at: None,
+                deadline: None,
+                deadline_expired: false,
+                stall: None,
+                stall_aborted: false,
             };
             let op = &mut st as *mut AvioState as *mut c_void;
 
             let rv = seek_cb(op, 4, SEEK_SET);
 
             assert_eq!(
-                accepts.load(Ordering::Acquire), 1,
+                accepts.load(Ordering::Acquire),
+                1,
                 "seek_cb opened a SECOND connection during teardown — the one the main thread's \
                  join is waiting on, and the one its shutdown(2) can no longer reach"
             );
-            assert_eq!(rv, -1, "an aborted seek must report failure so libavformat stops healing");
-            assert_eq!(seek_cb(op, 0, AVSEEK_SIZE), 8,
-                       "a size query is not I/O — the guard belongs AFTER that branch");
+            assert_eq!(
+                rv, -1,
+                "an aborted seek must report failure so libavformat stops healing"
+            );
+            assert_eq!(
+                seek_cb(op, 0, AVSEEK_SIZE),
+                8,
+                "a size query is not I/O — the guard belongs AFTER that branch"
+            );
             crate::stream::http_close(&mut *hs);
             crate::aq::aq_destroy(&mut *aq);
         });
@@ -5690,10 +6203,23 @@ mod tests {
         with_counting_listener(|port, accepts, _| {
             let (mut hs, mut aq, ip, path) = opened_stream_with_aborted_lane(port);
             let mut st = AvioState {
-                src: Src::Socket { hs: &mut *hs, host: ip, port: port as c_int, path },
-                aq: &mut *aq, off: 0, size: 8, io_failed: false,
-                body_active_us: 0, body_bytes: 0, first_byte_at: None,
-                deadline: None, deadline_expired: false, stall: None, stall_aborted: false,
+                src: Src::Socket {
+                    hs: &mut *hs,
+                    host: ip,
+                    port: port as c_int,
+                    path,
+                },
+                aq: &mut *aq,
+                off: 0,
+                size: 8,
+                io_failed: false,
+                body_active_us: 0,
+                body_bytes: 0,
+                first_byte_at: None,
+                deadline: None,
+                deadline_expired: false,
+                stall: None,
+                stall_aborted: false,
             };
             let op = &mut st as *mut AvioState as *mut c_void;
             let mut dst = [0u8; 8];
@@ -5704,12 +6230,19 @@ mod tests {
                 seeks.push(seek_cb(op, 4, SEEK_SET)); // 4, not 0: a seek to 0 returns 0, and 0 is success
             }
             assert_eq!(
-                accepts.load(Ordering::Acquire), 1,
+                accepts.load(Ordering::Acquire),
+                1,
                 "the read/seek recovery loop reconnected once per hop — that is the wedge, \
                  not merely a slow teardown"
             );
-            assert!(reads.iter().all(|r| *r == AVERROR_EOF), "aborted reads must all report EOF: {reads:?}");
-            assert!(seeks.iter().all(|r| *r == -1), "every hop must refuse the seek: {seeks:?}");
+            assert!(
+                reads.iter().all(|r| *r == AVERROR_EOF),
+                "aborted reads must all report EOF: {reads:?}"
+            );
+            assert!(
+                seeks.iter().all(|r| *r == -1),
+                "every hop must refuse the seek: {seeks:?}"
+            );
             crate::stream::http_close(&mut *hs);
             crate::aq::aq_destroy(&mut *aq);
         });
@@ -5746,7 +6279,10 @@ mod tests {
         );
         assert_eq!(result, AVERROR_EOF);
         assert!(st.deadline_expired);
-        assert!(!st.io_failed, "a rejected prime is not an active-stream transport failure");
+        assert!(
+            !st.io_failed,
+            "a rejected prime is not an active-stream transport failure"
+        );
         crate::aq::aq_destroy(&mut *aq);
     }
 
@@ -5787,26 +6323,54 @@ mod tests {
         let Some(_gate) = curl_gate() else { return };
         with_counting_listener(|port, accepts, requests| {
             let (cs, mut aq) = opened_curl_with_aborted_lane(port);
-            assert_eq!(accepts.load(Ordering::Acquire), 1, "fixture: exactly one connection so far");
-            assert_eq!(requests.load(Ordering::Acquire), 1, "fixture: and exactly one request");
+            assert_eq!(
+                accepts.load(Ordering::Acquire),
+                1,
+                "fixture: exactly one connection so far"
+            );
+            assert_eq!(
+                requests.load(Ordering::Acquire),
+                1,
+                "fixture: and exactly one request"
+            );
             let mut st = AvioState {
-                src: Src::Curl(cs), aq: &mut *aq, off: 0, size: 8, io_failed: false,
-                body_active_us: 0, body_bytes: 0, first_byte_at: None,
-                deadline: None, deadline_expired: false, stall: None, stall_aborted: false,
+                src: Src::Curl(cs),
+                aq: &mut *aq,
+                off: 0,
+                size: 8,
+                io_failed: false,
+                body_active_us: 0,
+                body_bytes: 0,
+                first_byte_at: None,
+                deadline: None,
+                deadline_expired: false,
+                stall: None,
+                stall_aborted: false,
             };
             let op = &mut st as *mut AvioState as *mut c_void;
 
             let rv = seek_cb(op, 4, SEEK_SET);
 
             assert_eq!(
-                requests.load(Ordering::Acquire), 1,
+                requests.load(Ordering::Acquire),
+                1,
                 "seek_cb went back to the server through curlio during teardown — and it would do \
                  so on the CACHED connection, which is why this grades requests and not accepts"
             );
-            assert_eq!(accepts.load(Ordering::Acquire), 1, "and opened no new connection either");
-            assert_eq!(rv, -1, "an aborted seek must report failure so libavformat stops healing");
-            assert_eq!(seek_cb(op, 0, AVSEEK_SIZE), 8,
-                       "a size query is not I/O — the guard belongs AFTER that branch, on both transports");
+            assert_eq!(
+                accepts.load(Ordering::Acquire),
+                1,
+                "and opened no new connection either"
+            );
+            assert_eq!(
+                rv, -1,
+                "an aborted seek must report failure so libavformat stops healing"
+            );
+            assert_eq!(
+                seek_cb(op, 0, AVSEEK_SIZE),
+                8,
+                "a size query is not I/O — the guard belongs AFTER that branch, on both transports"
+            );
             crate::aq::aq_destroy(&mut *aq);
         });
     }
@@ -5817,9 +6381,18 @@ mod tests {
         with_counting_listener(|port, accepts, requests| {
             let (cs, mut aq) = opened_curl_with_aborted_lane(port);
             let mut st = AvioState {
-                src: Src::Curl(cs), aq: &mut *aq, off: 0, size: 8, io_failed: false,
-                body_active_us: 0, body_bytes: 0, first_byte_at: None,
-                deadline: None, deadline_expired: false, stall: None, stall_aborted: false,
+                src: Src::Curl(cs),
+                aq: &mut *aq,
+                off: 0,
+                size: 8,
+                io_failed: false,
+                body_active_us: 0,
+                body_bytes: 0,
+                first_byte_at: None,
+                deadline: None,
+                deadline_expired: false,
+                stall: None,
+                stall_aborted: false,
             };
             let op = &mut st as *mut AvioState as *mut c_void;
             let mut dst = [0u8; 8];
@@ -5830,13 +6403,24 @@ mod tests {
                 seeks.push(seek_cb(op, 4, SEEK_SET));
             }
             assert_eq!(
-                requests.load(Ordering::Acquire), 1,
+                requests.load(Ordering::Acquire),
+                1,
                 "the read/seek recovery loop asked the server again once per hop — that is the \
                  wedge, not merely a slow teardown"
             );
-            assert_eq!(accepts.load(Ordering::Acquire), 1, "and it opened no new connection either");
-            assert!(reads.iter().all(|r| *r == AVERROR_EOF), "aborted reads must all report EOF: {reads:?}");
-            assert!(seeks.iter().all(|r| *r == -1), "every hop must refuse the seek: {seeks:?}");
+            assert_eq!(
+                accepts.load(Ordering::Acquire),
+                1,
+                "and it opened no new connection either"
+            );
+            assert!(
+                reads.iter().all(|r| *r == AVERROR_EOF),
+                "aborted reads must all report EOF: {reads:?}"
+            );
+            assert!(
+                seeks.iter().all(|r| *r == -1),
+                "every hop must refuse the seek: {seeks:?}"
+            );
             crate::aq::aq_destroy(&mut *aq);
         });
     }
@@ -5857,14 +6441,24 @@ mod tests {
             let _clear = ClearIoFailure;
             SHARED.demux_io_failed.store(false, Ordering::Relaxed);
 
-            let mut cs = crate::curlio::CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0)
-                .expect("fixture: open");
+            let mut cs =
+                crate::curlio::CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0)
+                    .expect("fixture: open");
             cs.fail_multi_for_test();
             let mut aq = crate::aq::aq_new(1 << 20);
             let mut st = AvioState {
-                src: Src::Curl(cs), aq: &mut *aq, off: 0, size: 8, io_failed: false,
-                body_active_us: 0, body_bytes: 0, first_byte_at: None,
-                deadline: None, deadline_expired: false, stall: None, stall_aborted: false,
+                src: Src::Curl(cs),
+                aq: &mut *aq,
+                off: 0,
+                size: 8,
+                io_failed: false,
+                body_active_us: 0,
+                body_bytes: 0,
+                first_byte_at: None,
+                deadline: None,
+                deadline_expired: false,
+                stall: None,
+                stall_aborted: false,
             };
             let op = &mut st as *mut AvioState as *mut c_void;
             let mut dst = [0u8; 8];
@@ -5879,19 +6473,31 @@ mod tests {
                 }
             }
 
-            assert_eq!(terminal, AVERROR_IO, "transport failure must not masquerade as AVERROR_EOF");
-            assert!(st.io_failed, "the callback leaves the error pending on its enclosing operation");
+            assert_eq!(
+                terminal, AVERROR_IO,
+                "transport failure must not masquerade as AVERROR_EOF"
+            );
+            assert!(
+                st.io_failed,
+                "the callback leaves the error pending on its enclosing operation"
+            );
             assert!(
                 !SHARED.demux_io_failed.load(Ordering::Acquire),
                 "a callback alone is not fatal because libavformat may still recover"
             );
-            assert!(!frame_read_failed(&mut st, 0), "a recovered packet clears the pending error");
+            assert!(
+                !frame_read_failed(&mut st, 0),
+                "a recovered packet clears the pending error"
+            );
             assert!(!st.io_failed);
             assert!(!SHARED.demux_io_failed.load(Ordering::Acquire));
 
             let terminal = read_cb(op, dst.as_mut_ptr(), dst.len() as c_int);
             assert_eq!(terminal, AVERROR_IO);
-            assert!(frame_read_failed(&mut st, terminal), "an unrecovered frame read ends the demux loop");
+            assert!(
+                frame_read_failed(&mut st, terminal),
+                "an unrecovered frame read ends the demux loop"
+            );
             assert!(
                 SHARED.demux_io_failed.load(Ordering::Acquire),
                 "the main-thread pump must see the failure even after frames were presented"
@@ -5989,10 +6595,19 @@ mod stall_guard_tests {
     /// numbers, so only the arming decision can make this pass.
     #[test]
     fn an_empty_reserve_at_the_start_of_a_fetch_arms_nothing() {
-        assert!(StallGuard::expired(0, 0, 1, u32::MAX as i64), "the projection alone would abort");
-        assert!(StallGuard::arm(0).is_none(), "so the guard must refuse to be armed");
+        assert!(
+            StallGuard::expired(0, 0, 1, u32::MAX as i64),
+            "the projection alone would abort"
+        );
+        assert!(
+            StallGuard::arm(0).is_none(),
+            "so the guard must refuse to be armed"
+        );
         assert!(StallGuard::arm(-1).is_none());
-        assert!(StallGuard::arm(1).is_some(), "and must arm as soon as there is a picture to keep");
+        assert!(
+            StallGuard::arm(1).is_some(),
+            "and must arm as soon as there is a picture to keep"
+        );
     }
 
     /// **Absence of evidence never fires the guard.** No bytes left to fetch, no measured rate, or
@@ -6001,10 +6616,22 @@ mod stall_guard_tests {
     /// `0` for "unknown" once turned a full reserve into a downshift trigger.
     #[test]
     fn a_projection_with_no_inputs_does_not_abort() {
-        assert!(!StallGuard::expired(1_000, 0, 0, 500), "nothing left to fetch");
-        assert!(!StallGuard::expired(1_000, 0, -5, 500), "already past the declared size");
-        assert!(!StallGuard::expired(1_000, 0, 500_000, 0), "no rate measured");
-        assert!(!StallGuard::expired(1_000, 0, 500_000, -1), "a negative rate is not a rate");
+        assert!(
+            !StallGuard::expired(1_000, 0, 0, 500),
+            "nothing left to fetch"
+        );
+        assert!(
+            !StallGuard::expired(1_000, 0, -5, 500),
+            "already past the declared size"
+        );
+        assert!(
+            !StallGuard::expired(1_000, 0, 500_000, 0),
+            "no rate measured"
+        );
+        assert!(
+            !StallGuard::expired(1_000, 0, 500_000, -1),
+            "a negative rate is not a rate"
+        );
     }
 
     /// It cannot panic or wrap on the extremes the estimator is known to produce — this project
@@ -6015,6 +6642,9 @@ mod stall_guard_tests {
         assert!(!StallGuard::expired(1_000, 0, 500_000, 865_000_000));
         assert!(StallGuard::expired(1_000, 0, i64::MAX, 1));
         assert!(!StallGuard::expired(i64::MAX, 0, 1, 1));
-        assert!(StallGuard::expired(i64::MIN, 0, 1, 1), "a nonsense reserve is an empty one");
+        assert!(
+            StallGuard::expired(i64::MIN, 0, 1, 1),
+            "a nonsense reserve is an empty one"
+        );
     }
 }

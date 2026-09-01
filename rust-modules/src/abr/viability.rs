@@ -124,8 +124,8 @@ pub(crate) fn candidate_risk(
         ratio > policy.production_max_pm
             || (ratio > policy.production_safe_pm && production.uncertainty_pm >= 500)
     });
-    let buffer_risk = buffer.buffered_ms < policy.emergency_buffer_ms
-        || (buffer.starving() && buffer.draining());
+    let buffer_risk =
+        buffer.buffered_ms < policy.emergency_buffer_ms || (buffer.starving() && buffer.draining());
     let score = risk_score(horizon.seconds, predicted, buffer_risk, policy);
     CandidateRisk {
         starvation_seconds: horizon.seconds,
@@ -413,7 +413,10 @@ pub(crate) fn upshift_transaction_cost(
 ) -> std::time::Duration {
     let unbounded = std::time::Duration::MAX;
     let warmup = candidate_warmup_budget(
-        Proposal { rung: Rung::P240, direction: Direction::Up },
+        Proposal {
+            rung: Rung::P240,
+            direction: Direction::Up,
+        },
         media_duration,
         unbounded,
         // The downshift floor by construction cannot reach an `Up` proposal, and this ledger

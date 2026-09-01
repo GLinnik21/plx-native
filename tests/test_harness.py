@@ -122,6 +122,52 @@ class FpsIdentity(unittest.TestCase):
         self.assertTrue(run.fps_scene_needs_token({"route": "login", "tier": "ui"}, True),
                         "a shared-server scene still needs its primary credential")
 
+    def test_settings_overlay_samples_do_not_alias_plain_home(self):
+        """Settings is a modal over Home, but each workload needs its own heartbeat identity."""
+        lines = [
+            "loop=60 route=home fps=7",
+            "loop=60 route=home overlay=settings fps=60",
+            "loop=60 route=home overlay=privacy fps=59",
+            "loop=60 route=home overlay=legal fps=58",
+        ]
+        self.assertEqual(run.parse_fps(lines, "home", "settings"), [60])
+        self.assertEqual(run.parse_fps(lines, "home", "privacy"), [59])
+        self.assertEqual(run.parse_fps(lines, "home", "legal"), [58])
+
+    def test_settings_scenes_carry_the_50_fps_contract_and_idle_inverse(self):
+        scenes = {s["name"]: s for s in _manifest()["fps_scenes"]}
+        for name, overlay in (("settings-root", "settings"),
+                              ("settings-privacy", "privacy"),
+                              ("settings-legal", "legal")):
+            with self.subTest(scene=name):
+                scene = scenes[name]
+                self.assertEqual(scene["route"], "home")
+                self.assertEqual(scene["overlay"], overlay)
+                self.assertGreaterEqual(scene["loop_floor"], 50)
+                self.assertGreaterEqual(scene["fps_floor"], 50)
+                self.assertTrue(scene["triggers"]["plxnative-settingsosc"])
+
+        idle = scenes["settings-idle"]
+        self.assertEqual(idle["overlay"], "settings")
+        self.assertGreaterEqual(idle["loop_floor"], 50)
+        self.assertLessEqual(idle["fps_ceiling"], 5)
+        self.assertNotIn("plxnative-settingsosc", idle["triggers"])
+
+    def test_fps_filter_can_isolate_the_new_screen_without_changing_tiers(self):
+        scenes = [
+            {"name": "home", "tier": "ui"},
+            {"name": "settings-root", "tier": "ui"},
+            {"name": "settings-player", "tier": "player"},
+        ]
+        self.assertEqual(
+            [s["name"] for s in run.fps_for_tiers(scenes, False, "settings")],
+            ["settings-root"],
+        )
+        self.assertEqual(
+            [s["name"] for s in run.fps_for_tiers(scenes, True, "settings")],
+            ["settings-root", "settings-player"],
+        )
+
 
 class LoadManifest(unittest.TestCase):
     """The whole overlay merge, against the real tracked matrix."""

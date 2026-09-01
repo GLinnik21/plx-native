@@ -141,20 +141,18 @@ Measured on the dev television over the moving Home hero:
 | no recurring snapshot, no scrim | 60.1 fps | clean test reference; not the complete cached preset |
 | snapshot every present | 52.6 fps | sustained overload |
 | snapshot every second present | 52.7 fps | rejected; 35–42 ms burst every measured second |
-| snapshot every third present | ~60 fps | accepted visually; periodic 33–36 ms update frames |
+| snapshot every third present | ~60 fps | historical cadence experiment; periodic 33–36 ms update frames |
 
-The approved dynamic preset also replaces a black full-screen scrim with **source RGB dimming**:
-the opaque host page's clear, content and chrome are multiplied by the same transmittance before
-capture, while alpha and the glass drawn above remain unchanged. At the Account panel's 0.5 dim,
-the same every-third-present workload measured **40.8 fps with the blended scrim** (`n=19` valid
-heartbeat buckets) and **59.84 fps with source dim** (`n=38`). Source-dim's p95 worst-frame was
-34.3 ms and 10/38 one-second buckets contained a frame over 33 ms. This is legal only over an
-opaque GL page; it cannot dim the hardware video plane.
+The shipping dynamic preset uses a **page-drawn scrim** between the unchanged host page and the
+glass panel. Source-RGB dimming was an experiment and is no longer part of the material API. The
+historical A/B measured **40.8 fps with the blended scrim** (`n=19` valid heartbeat buckets) and
+**59.84 fps with source dim** (`n=38`), but the later direct source path removed the reason to make
+host pages participate in a special dimming mode.
 
-**Design consequence:** cached glass over static chrome is genuinely free. Over moving content the
-supported tier is a 60 Hz UI target with a sample-held, roughly 20 Hz backdrop—not true 60 Hz blur.
-The user-approved television result is the reusable `Glass::DYNAMIC` preset rather than an Account-
-only trigger.
+**Current design consequence:** cached glass over static chrome is genuinely free. Dynamic glass
+uses the direct source path and refreshes on every changed successful present; an idle page still
+takes no recurring snapshots. The reusable `Glass::DYNAMIC` preset remains the product API rather
+than an Account-only trigger.
 
 ---
 
@@ -270,8 +268,8 @@ grow the snapshot toward the whole frame (§2). Neighbouring elements may share 
 - In steady state, adjacent glass samples the page rather than refracting adjacent glass.
 - Keep 68 px clear of the screen edge, 60 px minimum short side.
 - Put it over something with colour in it, or it is an expensive way to draw the flat material.
-- Over still chrome it is free; moving glass targets every third successful present.
-- Source RGB dim is for opaque UI underlays only, never the hardware video plane.
+- Over still chrome it is free; moving glass targets every changed successful present.
+- Modal dim is a page-drawn scrim; source RGB dim is not a supported material axis.
 - The tab bar is one object across three screens — it cannot be glass on some of them.
 
 Implementation, the cost model's derivation and the two rejected optimisations are in

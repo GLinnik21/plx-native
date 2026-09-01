@@ -53,7 +53,13 @@ impl AccountClient {
     /// so the caller settles on it, stops retrying, and the page degrades to portrait + name.
     pub fn person_profile(&self, guid: &str) -> Option<PersonProfile> {
         let env: PersonEnvelope = self.get(&format!("{DISCOVER}/library/people/{guid}"))?;
-        Some(env.media_container.metadata.into_iter().next().unwrap_or_default())
+        Some(
+            env.media_container
+                .metadata
+                .into_iter()
+                .next()
+                .unwrap_or_default(),
+        )
     }
 }
 

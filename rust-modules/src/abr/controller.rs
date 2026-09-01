@@ -374,7 +374,9 @@ impl Controller {
     /// the cadence IS the subject, and expressing it through this fixture would assert the fixture.
     #[cfg(test)]
     pub(crate) fn observe_next(&mut self, sample: SegmentSample) -> Decision {
-        let now = self.now_ms.saturating_add(u64::from(sample.media_duration_ms));
+        let now = self
+            .now_ms
+            .saturating_add(u64::from(sample.media_duration_ms));
         self.observe(sample, now)
     }
 
@@ -518,8 +520,10 @@ impl Controller {
         let cold_start = self.samples_on_rung == 0;
         self.production
             .observe(ratio, current_candidate.production_load_pm, cold_start);
-        self.buffer
-            .update(sample.buffer.buffered_ms(), i64::from(sample.media_duration_ms));
+        self.buffer.update(
+            sample.buffer.buffered_ms(),
+            i64::from(sample.media_duration_ms),
+        );
         self.samples_on_rung = self.samples_on_rung.saturating_add(1);
 
         let draining = self.buffer.draining();
@@ -544,7 +548,10 @@ impl Controller {
         // a budget that falls afterwards is new information about the link, not the old refusal
         // coming back. Keeping it would let a single failed prime refuse climbs indefinitely
         // through a budget that merely wobbles.
-        if self.reject_block.is_some_and(|block| !block.holds(now_ms, safe_budget)) {
+        if self
+            .reject_block
+            .is_some_and(|block| !block.holds(now_ms, safe_budget))
+        {
             self.reject_block = None;
         }
 
@@ -566,7 +573,8 @@ impl Controller {
         // one-segment-stale reserve is the right input for it; refusing to emit the line on the
         // samples where the audio lane is quiet would blind the grading to exactly the segments
         // after an open or a seek.
-        self.acquisitions.observe(sample.bytes, sample.total_fetch_us());
+        self.acquisitions
+            .observe(sample.bytes, sample.total_fetch_us());
         self.last_window = self.acquisitions.readout(
             sample.bytes,
             segment,
@@ -600,7 +608,11 @@ impl Controller {
             if self.current == pin {
                 return Decision::Stay;
             }
-            let direction = if pin.kbps() > self.current.kbps() { Direction::Up } else { Direction::Down };
+            let direction = if pin.kbps() > self.current.kbps() {
+                Direction::Up
+            } else {
+                Direction::Down
+            };
             // Wait for a reserve the transaction can be paid out of. The requirement is
             // DIRECTIONAL: the six-segment figure is an upshift derivation (two deadline budgets
             // plus `candidate_ready`'s residual), and neither of those budgets applies going down
@@ -615,7 +627,10 @@ impl Controller {
             if buffered < segment.saturating_mul(required) {
                 return Decision::Stay;
             }
-            let proposal = Proposal { rung: pin, direction };
+            let proposal = Proposal {
+                rung: pin,
+                direction,
+            };
             self.pending = Some(proposal);
             return Decision::Prime(proposal);
         }
@@ -686,8 +701,11 @@ impl Controller {
         // `2 s / 0.1 = 20 s`. A downshift transaction is ~0.7 s of that. At a full `B_max` it is
         // far slacker -- 8.7 s of reserve at P1080High needs a 44% deficit, and I5's stated
         // differential (5% at a full P1080High reserve) is 173 s of horizon, nowhere near.
-        let emergency_horizon =
-            starvation_horizon(buffered, current_candidate.expected_wire_kbps, immediate_network);
+        let emergency_horizon = starvation_horizon(
+            buffered,
+            current_candidate.expected_wire_kbps,
+            immediate_network,
+        );
         self.last_emergency_horizon = emergency_horizon.seconds;
         let horizon_bad = emergency_horizon
             .seconds
@@ -718,7 +736,10 @@ impl Controller {
                 self.current.below()
             };
             if target != self.current {
-                let proposal = Proposal { rung: target, direction: Direction::Down };
+                let proposal = Proposal {
+                    rung: target,
+                    direction: Direction::Down,
+                };
                 self.pending = Some(proposal);
                 self.last_reason = Some(DecisionReason::Hls(if horizon_bad {
                     HlsReason::StarvationHorizon
@@ -824,12 +845,10 @@ impl Controller {
         let target_video_es = target_candidate
             .expected_wire_kbps
             .saturating_sub(self.policy.assumed_audio_kbps);
-        let reachable_gate = crate::abr::plant::b_max_est_ms(
-            target_video_es,
-            self.policy.assumed_audio_kbps,
-        )
-        .saturating_mul(i64::from(self.policy.buffer_reserve_fraction_pm))
-            / 1_000;
+        let reachable_gate =
+            crate::abr::plant::b_max_est_ms(target_video_es, self.policy.assumed_audio_kbps)
+                .saturating_mul(i64::from(self.policy.buffer_reserve_fraction_pm))
+                / 1_000;
         let reserve_gate = segment.saturating_mul(3).min(reachable_gate);
         let all_good = self.production.ratio_pm <= self.policy.production_safe_pm
             && buffered >= reserve_gate
@@ -853,7 +872,10 @@ impl Controller {
         // passed every risk, budget, buffer and production condition, reset at seven separate
         // sites, and it was the dominant term in the opening seconds: counter spacing was exactly
         // five segments between successive upshifts and ten after a downshift.
-        let proposal = Proposal { rung: target, direction: Direction::Up };
+        let proposal = Proposal {
+            rung: target,
+            direction: Direction::Up,
+        };
         self.pending = Some(proposal);
         self.last_reason = Some(DecisionReason::Hls(HlsReason::SafeBudgetIncrease));
         Decision::Prime(proposal)
@@ -905,8 +927,8 @@ impl Controller {
             .copied()
             .filter(|rung| *rung <= ceiling)
             .find(|rung| {
-                let declared_bps =
-                    u64::from(self.catalog.candidate(*rung).expected_wire_kbps).saturating_mul(1_000);
+                let declared_bps = u64::from(self.catalog.candidate(*rung).expected_wire_kbps)
+                    .saturating_mul(1_000);
                 self.window_admits(declared_bps, *rung, segment, buffered)
             })
     }
@@ -931,7 +953,8 @@ impl Controller {
     /// It landed separately from the verdict that reads it, so that the change in what the window
     /// CONTAINS could be measured on its own. Both are live now.
     pub(crate) fn observe_candidate(&mut self, sample: SegmentSample) {
-        self.acquisitions.observe(sample.bytes(), sample.total_fetch_us());
+        self.acquisitions
+            .observe(sample.bytes(), sample.total_fetch_us());
     }
 
     /// **Candidate-session acceptance, and this is where §4's admission rule DECIDES.**
@@ -1053,12 +1076,7 @@ impl Controller {
     /// `cause` is the call site's own reading, and it decides whether a block is armed at all —
     /// see [`RejectCause`]. The block's two release conditions are computed HERE, from the state
     /// at the moment of failure, rather than re-derived later against numbers that have moved.
-    pub(crate) fn reject(
-        &mut self,
-        proposal: Proposal,
-        cause: RejectCause,
-        now_ms: u64,
-    ) -> bool {
+    pub(crate) fn reject(&mut self, proposal: Proposal, cause: RejectCause, now_ms: u64) -> bool {
         if self.pending != Some(proposal) {
             return false;
         }

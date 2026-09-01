@@ -243,7 +243,12 @@ pub(crate) fn paragraphs(bio: &str) -> Vec<&str> {
 
 /// The panel's rect, and the content box inside its padding.
 fn panel_rect() -> Rect {
-    Rect::new((SCR_W - PANEL_W) * 0.5, (SCR_H - PANEL_H) * 0.5, PANEL_W, PANEL_H)
+    Rect::new(
+        (SCR_W - PANEL_W) * 0.5,
+        (SCR_H - PANEL_H) * 0.5,
+        PANEL_W,
+        PANEL_H,
+    )
 }
 /// The panel's content box — **inset by `PAD` on three sides and by [`KeyHint::pad_below`] at the
 /// bottom**, the one asymmetry in this sheet.
@@ -253,7 +258,12 @@ fn panel_rect() -> Rect {
 /// paged viewport, its page count and the rail — byte-identical to what they were at 700.
 fn content_rect() -> Rect {
     let r = panel_rect();
-    Rect::new(r.x + PAD, r.y + PAD, r.w - 2.0 * PAD, r.h - PAD - widgets::KeyHint::pad_below())
+    Rect::new(
+        r.x + PAD,
+        r.y + PAD,
+        r.w - 2.0 * PAD,
+        r.h - PAD - widgets::KeyHint::pad_below(),
+    )
 }
 
 /// The prose column's wrap width — the content box less the rail and its air. The rail is part of
@@ -349,7 +359,9 @@ pub(crate) fn scroll_at(page: usize, max_scroll: f32, step: f32) -> f32 {
 
 /// `(max_scroll, pages)` for the open person — the impure wrapper the screen calls.
 fn page_state() -> (f32, usize) {
-    let Some(person) = crate::person::current() else { return (0.0, 1) };
+    let Some(person) = crate::person::current() else {
+        return (0.0, 1);
+    };
     paging(content_h(person), viewport().h, STEP)
 }
 
@@ -377,7 +389,12 @@ pub(crate) fn meta_runs(roles: &str, born: &str, died: &str, birthplace: &str) -
     // England"), and it is not decoration: a bare date sitting between a role list and a city has
     // nothing to say which date it is. Its sibling `Died ` was labelled from the start, which is
     // what made the asymmetry easy to miss.
-    for (label, value) in [("", roles), ("Born ", born), ("Died ", died), ("", birthplace)] {
+    for (label, value) in [
+        ("", roles),
+        ("Born ", born),
+        ("Died ", died),
+        ("", birthplace),
+    ] {
         let value = value.trim();
         if !value.is_empty() {
             v.push(format!("{label}{value}"));
@@ -404,7 +421,11 @@ pub(crate) fn library_line(films: usize, shows: usize) -> Option<String> {
         (0, 0) => return None,
         (f, 0) => noun(f, "film", "films"),
         (0, s) => noun(s, "show", "shows"),
-        (f, s) => format!("{} and {}", noun(f, "film", "films"), noun(s, "show", "shows")),
+        (f, s) => format!(
+            "{} and {}",
+            noun(f, "film", "films"),
+            noun(s, "show", "shows")
+        ),
     };
     Some(format!("{body} in this library"))
 }
@@ -440,7 +461,9 @@ pub(crate) fn draw() {
     if crate::gfx::blur_source_pass() {
         return;
     }
-    let Some(person) = crate::person::current() else { return };
+    let Some(person) = crate::person::current() else {
+        return;
+    };
     // `content_painter`, not `painter` — the scrim was already drawn by the page (see `scrim`), and
     // calling `painter` here as well would dim the screen twice.
     let p = pop().content_painter(Popover::RISE);
@@ -452,7 +475,9 @@ pub(crate) fn draw() {
 
     let view = viewport();
     let (max_scroll, pages) = paging(content_h(person), view.h, STEP);
-    let scroll = unsafe { addr_of!(SCROLL).read() }.pos.clamp(0.0, max_scroll);
+    let scroll = unsafe { addr_of!(SCROLL).read() }
+        .pos
+        .clamp(0.0, max_scroll);
 
     // the two hairlines that bracket the reading block
     let rule = |y: f32| widgets::hairline(p, c.x, y, c.w);
@@ -499,7 +524,13 @@ fn draw_head(p: Painter, person: &Person, c: Rect) {
     // The name is ELIDED to the content box, not wrapped: this is an identity, and a two-line name
     // would push the reading window down by a whole rung of the flow. `person::refresh_runs` budgets
     // the same name to the header's own column for the same reason.
-    if let Ok(cs) = CString::new(crate::text::elide(&person.name, c.w, theme::size::TITLE, 1, false)) {
+    if let Ok(cs) = CString::new(crate::text::elide(
+        &person.name,
+        c.w,
+        theme::size::TITLE,
+        1,
+        false,
+    )) {
         Label::new(cs.as_ptr(), theme::size::TITLE, theme::TEXT_PRIMARY)
             .bold()
             .v(VAlign::CapTop)
@@ -592,24 +623,40 @@ mod tests {
     fn paging_counts_resting_places_and_pins_the_last_one_to_the_end() {
         // content that fits is ONE page with no travel — the rail and both feathers vanish together
         assert_eq!(paging(300.0, 400.0, STEP), (0.0, 1));
-        assert_eq!(paging(400.0, 400.0, STEP), (0.0, 1), "exactly filling is still not scrolling");
+        assert_eq!(
+            paging(400.0, 400.0, STEP),
+            (0.0, 1),
+            "exactly filling is still not scrolling"
+        );
 
         // one short step of travel is two resting places: the top, and the end
         let (max, pages) = paging(500.0, 400.0, STEP);
         assert_eq!((max, pages), (100.0, 2));
         assert_eq!(scroll_at(1, max, STEP), 0.0);
-        assert_eq!(scroll_at(2, max, STEP), 100.0, "the last page is pinned to the END of the travel…");
+        assert_eq!(
+            scroll_at(2, max, STEP),
+            100.0,
+            "the last page is pinned to the END of the travel…"
+        );
 
         // …and a step that divides exactly must not invent a page beyond it
         let (max, pages) = paging(800.0, 400.0, STEP);
-        assert_eq!((max, pages), (400.0, 3), "400px of travel at 200 a step is 0 / 200 / 400");
+        assert_eq!(
+            (max, pages),
+            (400.0, 3),
+            "400px of travel at 200 a step is 0 / 200 / 400"
+        );
         assert_eq!(scroll_at(3, max, STEP), 400.0);
 
         // a long biography, and the interior pages are whole steps
         let (max, pages) = paging(1500.0, 400.0, STEP);
         assert_eq!((max, pages), (1100.0, 7));
         assert_eq!(scroll_at(4, max, STEP), 600.0);
-        assert_eq!(scroll_at(7, max, STEP), 1100.0, "the short final step lands ON the end");
+        assert_eq!(
+            scroll_at(7, max, STEP),
+            1100.0,
+            "the short final step lands ON the end"
+        );
 
         // out-of-range pages clamp instead of running off the content in either direction
         assert_eq!(scroll_at(0, max, STEP), 0.0);
@@ -630,11 +677,20 @@ mod tests {
         assert!((h - 0.2).abs() < 1e-6, "five pages ⇒ a fifth of the track");
         for page in 1..=pages {
             let (top, hh) = rail_geom(page, pages);
-            assert!((hh - h).abs() < 1e-6, "every page's fill is the same height");
-            assert!(top >= -1e-6 && top + hh <= 1.0 + 1e-6, "page {page} left the track");
+            assert!(
+                (hh - h).abs() < 1e-6,
+                "every page's fill is the same height"
+            );
+            assert!(
+                top >= -1e-6 && top + hh <= 1.0 + 1e-6,
+                "page {page} left the track"
+            );
         }
         let (top, hh) = rail_geom(pages, pages);
-        assert!((top + hh - 1.0).abs() < 1e-6, "the last page's fill must end flush with the track");
+        assert!(
+            (top + hh - 1.0).abs() < 1e-6,
+            "the last page's fill must end flush with the track"
+        );
         // a page index past the end clamps rather than drawing off the track
         assert_eq!(rail_geom(99, pages), rail_geom(pages, pages));
     }
@@ -650,15 +706,28 @@ mod tests {
         // that reads as an oversight rather than as a decision.
         assert_eq!(
             meta_runs("Actress, Singer", "8 January 1987", "", "Stockwell, London"),
-            vec!["Actress, Singer", "Born 8 January 1987", "Stockwell, London"]
+            vec![
+                "Actress, Singer",
+                "Born 8 January 1987",
+                "Stockwell, London"
+            ]
         );
         // no roles — the line starts on the date, with nothing in front of it
-        assert_eq!(meta_runs("", "8 January 1987", "", "London"), vec!["Born 8 January 1987", "London"]);
+        assert_eq!(
+            meta_runs("", "8 January 1987", "", "London"),
+            vec!["Born 8 January 1987", "London"]
+        );
         // no dates at all (plex.tv knows the person but not when) — roles and place still read
-        assert_eq!(meta_runs("Director", "", "", "Leeds"), vec!["Director", "Leeds"]);
+        assert_eq!(
+            meta_runs("Director", "", "", "Leeds"),
+            vec!["Director", "Leeds"]
+        );
         // a death date but no birth date: the run is LABELLED, because a bare second date beside a
         // birthplace would read as the birth date
-        assert_eq!(meta_runs("Actor", "", "2 June 2017", "Leeds"), vec!["Actor", "Died 2 June 2017", "Leeds"]);
+        assert_eq!(
+            meta_runs("Actor", "", "2 June 2017", "Leeds"),
+            vec!["Actor", "Died 2 June 2017", "Leeds"]
+        );
         // a person the provider has never heard of produces NO line, not an empty one
         assert!(meta_runs("", "", "", "").is_empty());
         // whitespace-only fields are absent too — the provider sends those
@@ -669,15 +738,36 @@ mod tests {
     /// case is deliberately no sentence at all.
     #[test]
     fn the_footer_pluralises_each_kind_and_says_nothing_about_nothing() {
-        assert_eq!(library_line(1, 0).as_deref(), Some("1 film in this library"));
-        assert_eq!(library_line(4, 0).as_deref(), Some("4 films in this library"));
-        assert_eq!(library_line(0, 1).as_deref(), Some("1 show in this library"));
-        assert_eq!(library_line(0, 9).as_deref(), Some("9 shows in this library"));
+        assert_eq!(
+            library_line(1, 0).as_deref(),
+            Some("1 film in this library")
+        );
+        assert_eq!(
+            library_line(4, 0).as_deref(),
+            Some("4 films in this library")
+        );
+        assert_eq!(
+            library_line(0, 1).as_deref(),
+            Some("1 show in this library")
+        );
+        assert_eq!(
+            library_line(0, 9).as_deref(),
+            Some("9 shows in this library")
+        );
         // both kinds: each is pluralised on its OWN count, which is the case a single plural flag
         // gets wrong
-        assert_eq!(library_line(1, 3).as_deref(), Some("1 film and 3 shows in this library"));
-        assert_eq!(library_line(2, 1).as_deref(), Some("2 films and 1 show in this library"));
-        assert_eq!(library_line(1, 1).as_deref(), Some("1 film and 1 show in this library"));
+        assert_eq!(
+            library_line(1, 3).as_deref(),
+            Some("1 film and 3 shows in this library")
+        );
+        assert_eq!(
+            library_line(2, 1).as_deref(),
+            Some("2 films and 1 show in this library")
+        );
+        assert_eq!(
+            library_line(1, 1).as_deref(),
+            Some("1 film and 1 show in this library")
+        );
         // nothing in the library is not "0 films" — a count of zero reads as a failed fetch
         assert!(library_line(0, 0).is_none());
     }
@@ -686,11 +776,21 @@ mod tests {
     /// (trailing newlines, a single block, nothing at all) produce no empty rows.
     #[test]
     fn the_biography_splits_into_paragraphs_and_drops_the_empty_ones() {
-        assert_eq!(paragraphs("one\n\ntwo\n\nthree"), vec!["one", "two", "three"]);
-        assert_eq!(paragraphs("one"), vec!["one"], "a single block is one paragraph, not none");
+        assert_eq!(
+            paragraphs("one\n\ntwo\n\nthree"),
+            vec!["one", "two", "three"]
+        );
+        assert_eq!(
+            paragraphs("one"),
+            vec!["one"],
+            "a single block is one paragraph, not none"
+        );
         // a summary that ends in blank lines must not add a page of air under the last one
         assert_eq!(paragraphs("one\n\ntwo\n\n\n\n"), vec!["one", "two"]);
-        assert_eq!(paragraphs("\r\n\r\nwrapped\r\n\r\ncrlf"), vec!["wrapped", "crlf"]);
+        assert_eq!(
+            paragraphs("\r\n\r\nwrapped\r\n\r\ncrlf"),
+            vec!["wrapped", "crlf"]
+        );
         // a SINGLE newline is not a paragraph break — it is a soft wrap in the source, and joining
         // it is exactly what the wrap does
         assert_eq!(paragraphs("one\ntwo"), vec!["one\ntwo"]);

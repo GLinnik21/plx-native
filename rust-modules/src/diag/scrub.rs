@@ -21,7 +21,6 @@
 //!
 //! So: rewrite locally, rewrite-or-refuse remotely, and never a second scrubber anywhere.
 
-
 /// What [`scrub`] decided about one record.
 #[cfg(feature = "lab-diagnostics")]
 pub(crate) enum Scrubbed {
@@ -34,14 +33,25 @@ pub(crate) enum Scrubbed {
 /// Header names whose VALUE is a credential wherever it appears. Matched case-insensitively and
 /// followed to the end of the line: a header value has no in-line terminator to stop at, and half
 /// a bearer token is still a bearer token.
-const CREDENTIAL_HEADERS: [&str; 5] =
-    ["authorization:", "cookie:", "set-cookie:", "x-plex-token:", "proxy-authorization:"];
+const CREDENTIAL_HEADERS: [&str; 5] = [
+    "authorization:",
+    "cookie:",
+    "set-cookie:",
+    "x-plex-token:",
+    "proxy-authorization:",
+];
 
 /// Query parameters whose value is a secret. `X-Plex-Token` is here too even though
 /// [`crate::redact_tokens`] already caught it on the way in — this pass must be correct on its own,
 /// because it is also what protects a record written by a future call site that bypasses the log.
-const CREDENTIAL_PARAMS: [&str; 6] =
-    ["x-plex-token=", "token=", "access_token=", "password=", "apikey=", "api_key="];
+const CREDENTIAL_PARAMS: [&str; 6] = [
+    "x-plex-token=",
+    "token=",
+    "access_token=",
+    "password=",
+    "apikey=",
+    "api_key=",
+];
 
 /// One record, made safe.
 ///
@@ -128,7 +138,11 @@ fn scrub_addresses(s: &str) -> String {
                 j += 1;
             }
             let tok = &s[i..j];
-            if dots == 3 && tok.split('.').all(|o| !o.is_empty() && o.len() <= 3 && o.parse::<u16>().is_ok_and(|n| n <= 255)) {
+            if dots == 3
+                && tok.split('.').all(|o| {
+                    !o.is_empty() && o.len() <= 3 && o.parse::<u16>().is_ok_and(|n| n <= 255)
+                })
+            {
                 // …and its port, if it has one
                 let mut k = j;
                 if k < b.len() && b[k] == b':' {
@@ -327,7 +341,9 @@ fn still_looks_secret(s: &str) -> bool {
         return true;
     }
     CREDENTIAL_PARAMS.iter().any(|k| {
-        lower.find(k).is_some_and(|at| !s[at + k.len()..].starts_with("<redacted>"))
+        lower
+            .find(k)
+            .is_some_and(|at| !s[at + k.len()..].starts_with("<redacted>"))
     })
 }
 
@@ -384,8 +400,9 @@ fn scrub_authority(s: &str) -> String {
     let mut rest = s;
     while let Some(at) = rest.find("://") {
         let after = at + 3;
-        let host_len =
-            rest[after..].find(|c: char| c == '/' || c == '?' || c.is_whitespace()).unwrap_or(rest.len() - after);
+        let host_len = rest[after..]
+            .find(|c: char| c == '/' || c == '?' || c.is_whitespace())
+            .unwrap_or(rest.len() - after);
         if host_len == 0 {
             out.push_str(&rest[..after]);
             rest = &rest[after..];
@@ -426,7 +443,10 @@ mod tests {
         let out = kept("hdr Authorization: Bearer ey.JhbGciOi.abc def");
         assert_eq!(out, "hdr Authorization: <redacted>");
         assert!(!kept("Set-Cookie: sid=9f3; Path=/").contains("9f3"));
-        assert!(!kept("cookie: a=b").contains("a=b"), "matched case-insensitively");
+        assert!(
+            !kept("cookie: a=b").contains("a=b"),
+            "matched case-insensitively"
+        );
     }
 
     /// Query parameters this app never logs today, and would leak if it started.
@@ -451,7 +471,10 @@ mod tests {
     #[test]
     fn a_host_is_replaced_and_the_path_is_kept() {
         let out = kept("open https://10-0-0-2.abc123.plex.direct:32400/library/sections?x=1");
-        assert!(!out.contains("plex.direct") && !out.contains("10-0-0-2"), "{out}");
+        assert!(
+            !out.contains("plex.direct") && !out.contains("10-0-0-2"),
+            "{out}"
+        );
         assert!(out.contains("/library/sections"), "{out}");
         assert!(out.starts_with("open https://<host>"), "{out}");
     }
@@ -474,24 +497,38 @@ mod tests {
     /// host test had been written to look for, and both of which §6 promises are impossible.
     #[test]
     fn a_bare_address_and_a_household_name_are_both_redacted() {
-        let ids = vec!["Ada\u{2019}s Mac mini".to_string(), "abc123machineid".to_string()];
+        let ids = vec![
+            "Ada\u{2019}s Mac mini".to_string(),
+            "abc123machineid".to_string(),
+        ];
         let out = scrub_local_with(
             "auth: reached \"Ada\u{2019}s Mac mini\" 203.0.113.7:32400 (ours) via https://x/y",
             &ids,
         );
         assert!(!out.contains("203.0.113.7"), "{out}");
-        assert!(!out.contains("32400"), "the port goes with the address: {out}");
+        assert!(
+            !out.contains("32400"),
+            "the port goes with the address: {out}"
+        );
         assert!(!out.contains("Mac mini"), "{out}");
-        assert!(out.contains("auth: reached") && out.contains("(ours)"), "the line is still a line: {out}");
+        assert!(
+            out.contains("auth: reached") && out.contains("(ours)"),
+            "the line is still a line: {out}"
+        );
     }
 
     /// Loopback and the unspecified address SURVIVE — they identify nobody, and a networking bug
     /// report is often exactly about what the app bound locally.
     #[test]
     fn loopback_survives_the_address_rewrite() {
-        assert_eq!(scrub_addresses("bound 127.0.0.1:8910 and 0.0.0.0:8911"),
-                   "bound 127.0.0.1:8910 and 0.0.0.0:8911");
-        assert_eq!(scrub_addresses("listening on 10.0.0.7:32400"), "listening on <addr>");
+        assert_eq!(
+            scrub_addresses("bound 127.0.0.1:8910 and 0.0.0.0:8911"),
+            "bound 127.0.0.1:8910 and 0.0.0.0:8911"
+        );
+        assert_eq!(
+            scrub_addresses("listening on 10.0.0.7:32400"),
+            "listening on <addr>"
+        );
     }
 
     /// Things that LOOK like addresses and are not: a version, a frame rate, a timestamp, a
@@ -529,9 +566,11 @@ mod tests {
     fn the_local_exit_never_drops_a_line() {
         let out = scrub_local("auth ok, Bearer eyJhbGciOi.abc");
         assert!(!out.is_empty(), "the line survived");
-        assert!(out.starts_with("auth ok,"), "and it is still recognisably that line: {out}");
+        assert!(
+            out.starts_with("auth ok,"),
+            "and it is still recognisably that line: {out}"
+        );
     }
-
 
     /// Multi-byte text must not panic any of the four rewrites (the app logs remote tokens, item
     /// titles and firmware codenames).
@@ -588,11 +627,23 @@ mod tests {
     /// passes the test above and destroys the file it is protecting.
     #[test]
     fn the_diagnostic_half_of_those_lines_survives() {
-        let out = scrub_local_with("viewstate: fanout plex://episode/5d9c08 server 3f2a: holds 2", &[]);
-        assert!(out.starts_with("viewstate: fanout plex://"), "the SHAPE says what happened: {out}");
-        assert!(out.contains("holds 2"), "the outcome is the diagnostic: {out}");
+        let out = scrub_local_with(
+            "viewstate: fanout plex://episode/5d9c08 server 3f2a: holds 2",
+            &[],
+        );
+        assert!(
+            out.starts_with("viewstate: fanout plex://"),
+            "the SHAPE says what happened: {out}"
+        );
+        assert!(
+            out.contains("holds 2"),
+            "the outcome is the diagnostic: {out}"
+        );
         let out = scrub_local_with("search: q='breaking bad' state=Results", &[]);
-        assert!(out.contains("state=Results"), "the state machine is the diagnostic: {out}");
+        assert!(
+            out.contains("state=Results"),
+            "the state machine is the diagnostic: {out}"
+        );
     }
 
     /// **A TITLE CANNOT BE SCRUBBED, and this test exists to say so out loud.**
@@ -614,7 +665,6 @@ mod tests {
             "the scrubber is not the mechanism for titles — see this test's doc: {out}"
         );
     }
-
 
     /// **The mechanism for titles, pinned by reading the source.**
     ///
@@ -643,7 +693,10 @@ mod tests {
         let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let banned: &[(&str, &str)] = &[
             ("ep_title", "the episode title — log `rk=` instead (app.rs)"),
-            ("q='", "the search query — log `q[{n}ch]` instead (search.rs)"),
+            (
+                "q='",
+                "the search query — log `q[{n}ch]` instead (search.rs)",
+            ),
         ];
         let mut offences: Vec<String> = Vec::new();
         let mut files = 0usize;
@@ -661,18 +714,29 @@ mod tests {
                     if line.contains(needle) {
                         offences.push(format!(
                             "{}:{} logs {needle} — {why}\n    {}",
-                            path.display(), n + 1, line.trim()
+                            path.display(),
+                            n + 1,
+                            line.trim()
                         ));
                     }
                 }
             }
         });
-        assert!(files > 50, "the walk found only {files} source files — it is not reading the tree");
-        assert!(offences.is_empty(), "viewing content is interpolated into a log line:\n{}", offences.join("\n"));
+        assert!(
+            files > 50,
+            "the walk found only {files} source files — it is not reading the tree"
+        );
+        assert!(
+            offences.is_empty(),
+            "viewing content is interpolated into a log line:\n{}",
+            offences.join("\n")
+        );
     }
 
     fn walk(dir: &std::path::Path, f: &mut impl FnMut(&std::path::Path, &str)) {
-        let Ok(rd) = std::fs::read_dir(dir) else { return };
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            return;
+        };
         for e in rd.flatten() {
             let p = e.path();
             if p.is_dir() {
@@ -684,5 +748,4 @@ mod tests {
             }
         }
     }
-
 }

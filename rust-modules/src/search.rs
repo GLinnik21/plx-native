@@ -63,7 +63,13 @@ pub(crate) const MIN_QUERY: usize = 2;
 
 /// The typed shelves, in the order they are drawn — **fixed**, never the server's ranking.
 /// `ui_kits/tv-app/SearchScreen.jsx`: "Results are ranked inside a shelf, never across them."
-pub(crate) const KINDS: [Kind; 5] = [Kind::Movie, Kind::Show, Kind::Episode, Kind::Person, Kind::Collection];
+pub(crate) const KINDS: [Kind; 5] = [
+    Kind::Movie,
+    Kind::Show,
+    Kind::Episode,
+    Kind::Person,
+    Kind::Collection,
+];
 
 /// How many shelves there are — the index space every per-source projection is keyed by.
 const NKIND: usize = KINDS.len();
@@ -303,7 +309,11 @@ pub(crate) fn set_query(q: &str) {
         supersede();
         unsafe {
             (*addr_of_mut!(SHELVES)).clear();
-            *addr_of_mut!(STATE) = if terms(q).is_some() { State::Searching } else { State::Idle };
+            *addr_of_mut!(STATE) = if terms(q).is_some() {
+                State::Searching
+            } else {
+                State::Idle
+            };
             // …and the debounce restarts with it: the fetch is owed to the LAST keystroke, not to
             // the first one of the burst.
             *addr_of_mut!(SETTLE) = 0.0;
@@ -352,7 +362,10 @@ pub(crate) fn set_watched_local(sid: ServerId, rk: &str, on: bool) -> bool {
             }
         }
     };
-    for it in unsafe { (&mut *addr_of_mut!(SRC)).iter_mut() }.flat_map(|s| s.items.iter_mut()).flatten() {
+    for it in unsafe { (&mut *addr_of_mut!(SRC)).iter_mut() }
+        .flat_map(|s| s.items.iter_mut())
+        .flatten()
+    {
         flip(it);
     }
     for it in unsafe { (&mut *addr_of_mut!(SHELVES)).iter_mut() }.flat_map(|s| s.items.iter_mut()) {
@@ -497,7 +510,11 @@ struct Source {
 }
 
 impl Source {
-    const EMPTY: Source = Source { status: Status::Pending, retry_cd: 0, items: [const { Vec::new() }; NKIND] };
+    const EMPTY: Source = Source {
+        status: Status::Pending,
+        retry_cd: 0,
+        items: [const { Vec::new() }; NKIND],
+    };
 }
 
 static mut SRC: [Source; NSRC] = [const { Source::EMPTY }; NSRC];
@@ -580,7 +597,11 @@ pub(crate) fn pump(dt: f32) -> bool {
             if *s >= SETTLE_S {
                 *addr_of_mut!(ARMED) = false;
                 if let Some(q) = terms(query()) {
-                    crate::log(&format!("search: q[{}ch] settled, asking {} source(s)", q.chars().count(), nsrc()));
+                    crate::log(&format!(
+                        "search: q[{}ch] settled, asking {} source(s)",
+                        q.chars().count(),
+                        nsrc()
+                    ));
                 }
             }
         }
@@ -620,7 +641,11 @@ pub(crate) fn pump(dt: f32) -> bool {
     let state = state_from_refs(&sources, terms(query()).is_some());
     let moved = state != self::state();
     if moved {
-        crate::log(&format!("search: q[{}ch] state={}", query().trim().chars().count(), state.name()));
+        crate::log(&format!(
+            "search: q[{}ch] state={}",
+            query().trim().chars().count(),
+            state.name()
+        ));
         unsafe { *addr_of_mut!(STATE) = state };
     }
     if !landed && !moved && !roster_changed {
@@ -644,7 +669,10 @@ fn record(i: usize, what: Option<Projection>) {
         // source's already-drawn results out of the merge for a two-second backoff, over an error
         // about a request whose answer we are holding.
         None if unsafe { (*addr_of!(SRC))[i].status } == Status::Answered => {
-            crate::log(&format!("search: q[{}ch] sid={i} late failure ignored — already answered", q.chars().count()));
+            crate::log(&format!(
+                "search: q[{}ch] sid={i} late failure ignored — already answered",
+                q.chars().count()
+            ));
         }
         None => {
             unsafe {
@@ -652,12 +680,22 @@ fn record(i: usize, what: Option<Projection>) {
                 s.status = Status::Failed;
                 s.retry_cd = RETRY_FRAMES;
             }
-            crate::log(&format!("search: q[{}ch] sid={i} FAILED, retry in {RETRY_FRAMES}f", q.chars().count()));
+            crate::log(&format!(
+                "search: q[{}ch] sid={i} FAILED, retry in {RETRY_FRAMES}f",
+                q.chars().count()
+            ));
         }
         Some(items) => {
-            let counts: Vec<String> =
-                KINDS.iter().enumerate().map(|(k, kind)| format!("{}={}", kind.title(), items[k].len())).collect();
-            crate::log(&format!("search: q[{}ch] sid={i} hubs {}", q.chars().count(), counts.join(" ")));
+            let counts: Vec<String> = KINDS
+                .iter()
+                .enumerate()
+                .map(|(k, kind)| format!("{}={}", kind.title(), items[k].len()))
+                .collect();
+            crate::log(&format!(
+                "search: q[{}ch] sid={i} hubs {}",
+                q.chars().count(),
+                counts.join(" ")
+            ));
             // The two fields an answer decides, and `retry_cd` is deliberately not one of them: a
             // source that has answered is refused by `maybe_spawn` on `status` alone, and the next
             // query resets the whole record through `Source::EMPTY`. (Assigning a whole `Source`
@@ -687,7 +725,12 @@ fn rebuild() {
     let sources = live_sources(&live);
     let shelves = merge_refs(&sources);
     let items: usize = shelves.iter().map(|s| s.items.len()).sum();
-    crate::log(&format!("search: q[{}ch] shelves={} items={}", query().trim().chars().count(), shelves.len(), items));
+    crate::log(&format!(
+        "search: q[{}ch] shelves={} items={}",
+        query().trim().chars().count(),
+        shelves.len(),
+        items
+    ));
     unsafe { *addr_of_mut!(SHELVES) = shelves };
 }
 
@@ -704,8 +747,11 @@ fn merge_refs(sources: &[&Source]) -> Vec<Shelf> {
     for (k, kind) in KINDS.iter().enumerate() {
         // only a source that ANSWERED contributes: one still pending has nothing to say yet, and
         // one that failed has nothing to say at all
-        let live: Vec<&Vec<Item>> =
-            sources.iter().filter(|s| s.status == Status::Answered).map(|s| &s.items[k]).collect();
+        let live: Vec<&Vec<Item>> = sources
+            .iter()
+            .filter(|s| s.status == Status::Answered)
+            .map(|s| &s.items[k])
+            .collect();
         let deepest = live.iter().map(|v| v.len()).max().unwrap_or(0);
         let mut items: Vec<Item> = Vec::new();
         'fill: for d in 0..deepest {
@@ -771,9 +817,15 @@ fn state_from_refs(sources: &[&Source], asking: bool) -> State {
     let is_answered = |s: &Source| s.status == Status::Answered;
     if sources.iter().any(|s| s.status == Status::Pending) {
         // something is still out: only an answer with CONTENT is worth showing ahead of it
-        let has_items =
-            sources.iter().filter(|s| is_answered(s)).any(|s| s.items.iter().any(|v| !v.is_empty()));
-        return if has_items { State::Ready } else { State::Searching };
+        let has_items = sources
+            .iter()
+            .filter(|s| is_answered(s))
+            .any(|s| s.items.iter().any(|v| !v.is_empty()));
+        return if has_items {
+            State::Ready
+        } else {
+            State::Searching
+        };
     }
     if sources.iter().any(|s| is_answered(s)) {
         return State::Ready;
@@ -807,7 +859,10 @@ fn maybe_spawn(i: usize) {
     let sid = ServerId::from_raw(i as u16);
     let gen = GEN.load(Ordering::SeqCst);
     IN_FLIGHT[i].store(true, Ordering::SeqCst);
-    crate::log(&format!("search: q[{}ch] sid={i} asking limit={LIMIT}", q.chars().count()));
+    crate::log(&format!(
+        "search: q[{}ch] sid={i} asking limit={LIMIT}",
+        q.chars().count()
+    ));
     let spawned = crate::task::spawn_small("search", move || {
         // the mailbox is filled OUTSIDE the guard so a panicking fetch still lands — as a FAILURE
         // (None), not as an answer of "this server has nothing"
@@ -898,7 +953,9 @@ fn same_tag(a: &TagHit, b: &TagHit) -> bool {
 /// worked example), so the fallback costs nothing and covers a server that prefixes one of them.
 fn kind_index(hub: &crate::plex::Hub) -> Option<usize> {
     KINDS.iter().position(|k| {
-        k.hubs().iter().any(|h| *h == hub.hub_identifier || *h == hub.kind)
+        k.hubs()
+            .iter()
+            .any(|h| *h == hub.hub_identifier || *h == hub.kind)
     })
 }
 
@@ -912,7 +969,11 @@ fn tag_hit(t: &crate::plex::Tag, sid: ServerId) -> TagHit {
         sid,
         name: t.tag.clone(),
         tag_key: t.tag_key.clone(),
-        id: if t.id != 0 { t.id.to_string() } else { String::new() },
+        id: if t.id != 0 {
+            t.id.to_string()
+        } else {
+            String::new()
+        },
         thumb: t.thumb.clone(),
         key: t.key.clone(),
         count: t.count,
@@ -986,13 +1047,33 @@ mod tests {
         assert_eq!(slots(), vec![0, 1]);
 
         crate::plex::revoke_all();
-        assert!(slots().is_empty(), "there is nothing to ask while signed out");
+        assert!(
+            slots().is_empty(),
+            "there is nothing to ask while signed out"
+        );
         assert_eq!(nsrc(), 0);
-        assert!(live_sources(&slots()).is_empty(), "and the retired records reach neither the merge nor the verdict");
+        assert!(
+            live_sources(&slots()).is_empty(),
+            "and the retired records reach neither the merge nor the verdict"
+        );
 
-        let sid = crate::plex::register_for_test("search-test-next", "127.0.0.1", 1, "tok", "cid-search-test");
-        assert_eq!(sid.raw(), 2, "the next account gets a fresh slot, above the retired ones");
-        assert_eq!(slots(), vec![2], "and the live id follows it rather than starting at 0");
+        let sid = crate::plex::register_for_test(
+            "search-test-next",
+            "127.0.0.1",
+            1,
+            "tok",
+            "cid-search-test",
+        );
+        assert_eq!(
+            sid.raw(),
+            2,
+            "the next account gets a fresh slot, above the retired ones"
+        );
+        assert_eq!(
+            slots(),
+            vec![2],
+            "and the live id follows it rather than starting at 0"
+        );
         assert_eq!(nsrc(), 1);
         assert_eq!(live_sources(&slots()).len(), 1);
     }
@@ -1002,7 +1083,13 @@ mod tests {
     /// public `register`: the latter mints and PERSISTS a device uuid.
     fn register(n: usize) {
         for i in 0..n {
-            crate::plex::register_for_test(&format!("search-test-{i}"), "127.0.0.1", 1, "tok", "cid-search-test");
+            crate::plex::register_for_test(
+                &format!("search-test-{i}"),
+                "127.0.0.1",
+                1,
+                "tok",
+                "cid-search-test",
+            );
         }
         // Test setup finishes before any seeded mailbox/status. Production learns this boundary
         // from its first pump; fixtures that inject a landing directly must mark the just-built
@@ -1019,42 +1106,83 @@ mod tests {
         unsafe {
             (*addr_of_mut!(QUERY)).push_str("wallace");
             (*addr_of_mut!(SRC))[0].status = Status::Answered;
-            *addr_of_mut!(SHELVES) = vec![Shelf { kind: Kind::Movie, items: vec![media("old-profile")] }];
+            *addr_of_mut!(SHELVES) = vec![Shelf {
+                kind: Kind::Movie,
+                items: vec![media("old-profile")],
+            }];
             *addr_of_mut!(STATE) = State::Ready;
         }
 
         crate::plex::revoke_for_profile_switch();
-        let restored = crate::plex::register_for_test("search-test-2", "127.0.0.1", 1, "new", "cid-search-test");
+        let restored = crate::plex::register_for_test(
+            "search-test-2",
+            "127.0.0.1",
+            1,
+            "new",
+            "cid-search-test",
+        );
         assert_eq!(restored.raw(), 2);
-        assert_eq!(slots(), vec![0, 2], "the inactive middle share is not replaced by a range");
+        assert_eq!(
+            slots(),
+            vec![0, 2],
+            "the inactive middle share is not replaced by a range"
+        );
 
-        assert!(pump(0.0), "membership changed the result state and therefore repaints");
+        assert!(
+            pump(0.0),
+            "membership changed the result state and therefore repaints"
+        );
         assert_eq!(state(), State::Searching);
-        assert!(shelves().is_empty(), "old-profile tiles disappear before a new source lands");
+        assert!(
+            shelves().is_empty(),
+            "old-profile tiles disappear before a new source lands"
+        );
         let live = live_sources(&slots());
         assert_eq!(live.len(), 2);
-        assert!(live.iter().all(|s| s.status == Status::Pending), "old-profile answers were superseded");
+        assert!(
+            live.iter().all(|s| s.status == Status::Pending),
+            "old-profile answers were superseded"
+        );
     }
 
     fn hub(id: &str, kind: &str) -> Hub {
-        Hub { hub_identifier: id.to_string(), kind: kind.to_string(), ..Default::default() }
+        Hub {
+            hub_identifier: id.to_string(),
+            kind: kind.to_string(),
+            ..Default::default()
+        }
     }
     fn meta(kind: &str, rk: &str, title: &str) -> Metadata {
-        Metadata { kind: kind.to_string(), rating_key: rk.to_string(), title: title.to_string(), ..Default::default() }
+        Metadata {
+            kind: kind.to_string(),
+            rating_key: rk.to_string(),
+            title: title.to_string(),
+            ..Default::default()
+        }
     }
     fn media(rk: &str) -> Item {
-        Item::Media(PmsMovie { rk: rk.to_string(), title: rk.to_string(), ..Default::default() })
+        Item::Media(PmsMovie {
+            rk: rk.to_string(),
+            title: rk.to_string(),
+            ..Default::default()
+        })
     }
     /// A source that answered, holding `items` on shelf `k`.
     fn answered(k: usize, items: Vec<Item>) -> Source {
-        let mut s = Source { status: Status::Answered, ..Source::EMPTY };
+        let mut s = Source {
+            status: Status::Answered,
+            ..Source::EMPTY
+        };
         s.items[k] = items;
         s
     }
     /// A source whose attempt failed, with no backoff armed — [`hold_off`] is what parks spawns in
     /// these tests, so a fixture must not also decide the retry timing it is being graded on.
     fn failed() -> Source {
-        Source { status: Status::Failed, ..Source::EMPTY }
+        Source {
+            status: Status::Failed,
+            ..Source::EMPTY
+        }
     }
     fn titles(shelf: &Shelf) -> Vec<&str> {
         shelf.items.iter().map(|i| i.title()).collect()
@@ -1068,9 +1196,17 @@ mod tests {
     fn hubs_map_onto_the_fixed_shelf_order_and_actor_plus_director_are_one_shelf() {
         let mut mc = MediaContainer::default();
         let mut director = hub("director", "director");
-        director.directory = vec![Tag { tag: "Nick Park".into(), id: 7, ..Default::default() }];
+        director.directory = vec![Tag {
+            tag: "Nick Park".into(),
+            id: 7,
+            ..Default::default()
+        }];
         let mut actor = hub("actor", "actor");
-        actor.directory = vec![Tag { tag: "Peter Sallis".into(), id: 6059, ..Default::default() }];
+        actor.directory = vec![Tag {
+            tag: "Peter Sallis".into(),
+            id: 6059,
+            ..Default::default()
+        }];
         let mut movie = hub("movie", "movie");
         movie.metadata = vec![meta("movie", "1971", "A Close Shave")];
         let mut album = hub("album", "album");
@@ -1089,8 +1225,15 @@ mod tests {
         assert!(p[4].is_empty(), "Collections");
 
         // …and the drawn order is KINDS, whatever the wire said
-        let sh = merge(&[Source { status: Status::Answered, items: p, ..Source::EMPTY }]);
-        assert_eq!(sh.iter().map(|s| s.kind).collect::<Vec<_>>(), [Kind::Movie, Kind::Person]);
+        let sh = merge(&[Source {
+            status: Status::Answered,
+            items: p,
+            ..Source::EMPTY
+        }]);
+        assert_eq!(
+            sh.iter().map(|s| s.kind).collect::<Vec<_>>(),
+            [Kind::Movie, Kind::Person]
+        );
     }
 
     /// The same person on two SERVERS is one person. `project` folds per response, so it
@@ -1110,13 +1253,23 @@ mod tests {
                 count,
                 ..Default::default()
             }));
-            Source { status: Status::Answered, items: p, ..Source::EMPTY }
+            Source {
+                status: Status::Answered,
+                items: p,
+                ..Source::EMPTY
+            }
         };
         // Same guid, DIFFERENT local ids (they are server-local) and only one carries a face.
         let sh = merge(&[mk(0, "921", "", 5), mk(1, "4471", "/t.jpg", 3)]);
-        let people = &sh.iter().find(|s| s.kind == Kind::Person).expect("a Person shelf").items;
+        let people = &sh
+            .iter()
+            .find(|s| s.kind == Kind::Person)
+            .expect("a Person shelf")
+            .items;
         assert_eq!(people.len(), 1, "one person, not one per server");
-        let Item::Tag(t) = &people[0] else { panic!("a person is a Tag row") };
+        let Item::Tag(t) = &people[0] else {
+            panic!("a person is a Tag row")
+        };
         assert_eq!(t.count, 8, "their credits across both servers");
         assert_eq!(t.thumb, "/t.jpg", "the server with a face supplies it");
     }
@@ -1131,7 +1284,13 @@ mod tests {
         let mut actor = hub("actor", "actor");
         actor.directory = vec![
             // the Movies section: no artwork on this row
-            Tag { tag: "Wallace Shawn".into(), id: 921, tag_key: "gid-1".into(), count: 5, ..Default::default() },
+            Tag {
+                tag: "Wallace Shawn".into(),
+                id: 921,
+                tag_key: "gid-1".into(),
+                count: 5,
+                ..Default::default()
+            },
             // …and the TV Shows section, same person, and this is the row with a headshot
             Tag {
                 tag: "Wallace Shawn".into(),
@@ -1142,7 +1301,13 @@ mod tests {
                 ..Default::default()
             },
             // a different person who happens to share the FIRST one's local id in another section
-            Tag { tag: "Dee Wallace".into(), id: 921, tag_key: "gid-2".into(), count: 2, ..Default::default() },
+            Tag {
+                tag: "Dee Wallace".into(),
+                id: 921,
+                tag_key: "gid-2".into(),
+                count: 2,
+                ..Default::default()
+            },
         ];
         mc.hub = vec![actor];
 
@@ -1152,9 +1317,17 @@ mod tests {
             ["Wallace Shawn", "Dee Wallace"],
             "one row per PERSON, and a shared local id does not merge two of them"
         );
-        let Item::Tag(first) = &p[3][0] else { panic!("a person is a Tag row") };
-        assert_eq!(first.count, 8, "the section counts are summed, not taken from whichever came first");
-        assert_eq!(first.thumb, "/t.jpg", "a section with no artwork must not blank a face another supplied");
+        let Item::Tag(first) = &p[3][0] else {
+            panic!("a person is a Tag row")
+        };
+        assert_eq!(
+            first.count, 8,
+            "the section counts are summed, not taken from whichever came first"
+        );
+        assert_eq!(
+            first.thumb, "/t.jpg",
+            "a section with no artwork must not blank a face another supplied"
+        );
     }
 
     /// A hub answers in `Metadata[]` OR `Directory[]` depending on its TYPE (`Hub::directory`), and
@@ -1175,21 +1348,44 @@ mod tests {
                 ..Default::default()
             },
             // a COLLECTION-shaped entry: no tagKey, no thumb, no numeric id — only a listing key
-            Tag { tag: "Aardman".into(), key: "/library/sections/1/all?collection=6068".into(), ..Default::default() },
+            Tag {
+                tag: "Aardman".into(),
+                key: "/library/sections/1/all?collection=6068".into(),
+                ..Default::default()
+            },
         ];
         let mut movie = hub("movie", "movie");
         movie.metadata = vec![meta("movie", "1971", "A Close Shave")];
         mc.hub = vec![people, movie];
 
         let p = project(&mc, sid);
-        let Item::Media(m) = &p[0][0] else { panic!("a Metadata[] row must be a card") };
-        assert_eq!((m.rk.as_str(), m.sid), ("1971", sid), "the row is stamped with the server that ANSWERED");
-        let Item::Tag(t) = &p[3][0] else { panic!("a Directory[] row must be a tag hit") };
-        assert_eq!((t.id.as_str(), t.tag_key.as_str(), t.count, t.sid), ("6059", "5d7768268718ba001e311be6", 4, sid));
-        let Item::Tag(c) = &p[3][1] else { panic!("a Directory[] row must be a tag hit") };
-        assert!(c.id.is_empty(), "id 0 is 'the server sent none', never the person numbered 0");
+        let Item::Media(m) = &p[0][0] else {
+            panic!("a Metadata[] row must be a card")
+        };
+        assert_eq!(
+            (m.rk.as_str(), m.sid),
+            ("1971", sid),
+            "the row is stamped with the server that ANSWERED"
+        );
+        let Item::Tag(t) = &p[3][0] else {
+            panic!("a Directory[] row must be a tag hit")
+        };
+        assert_eq!(
+            (t.id.as_str(), t.tag_key.as_str(), t.count, t.sid),
+            ("6059", "5d7768268718ba001e311be6", 4, sid)
+        );
+        let Item::Tag(c) = &p[3][1] else {
+            panic!("a Directory[] row must be a tag hit")
+        };
+        assert!(
+            c.id.is_empty(),
+            "id 0 is 'the server sent none', never the person numbered 0"
+        );
         assert!(c.tag_key.is_empty() && c.thumb.is_empty());
-        assert_eq!(c.key, "/library/sections/1/all?collection=6068", "the only handle a collection gives you");
+        assert_eq!(
+            c.key, "/library/sections/1/all?collection=6068",
+            "the only handle a collection gives you"
+        );
     }
 
     /// Sources are taken ROUND ROBIN, so a second server's best match sits second rather than
@@ -1205,7 +1401,10 @@ mod tests {
         ];
         let sh = merge(&sources);
         assert_eq!(sh.len(), 1, "an empty type draws nothing at all");
-        assert_eq!(titles(&sh[0]), ["ours-1", "theirs-1", "ours-2", "theirs-2", "ours-3"]);
+        assert_eq!(
+            titles(&sh[0]),
+            ["ours-1", "theirs-1", "ours-2", "theirs-2", "ours-3"]
+        );
     }
 
     /// Neither a source's own list nor the merged shelf may exceed a `CardRow`'s spring count: past
@@ -1213,7 +1412,11 @@ mod tests {
     /// never animate its own.
     #[test]
     fn a_merged_shelf_is_capped_at_the_card_rows_spring_count() {
-        let many = |p: &str| (0..SHELF_MAX).map(|i| media(&format!("{p}{i}"))).collect::<Vec<_>>();
+        let many = |p: &str| {
+            (0..SHELF_MAX)
+                .map(|i| media(&format!("{p}{i}")))
+                .collect::<Vec<_>>()
+        };
         let sh = merge(&[answered(0, many("a")), answered(0, many("b"))]);
         assert_eq!(sh[0].items.len(), SHELF_MAX);
         // …and the cap falls on a ROUND boundary rather than on one source: both are represented
@@ -1227,16 +1430,37 @@ mod tests {
     fn one_answer_is_ready_and_only_an_all_failed_roster_is_failed() {
         let ok = || answered(0, vec![media("x")]);
         let bad = failed;
-        assert_eq!(state_from(&[ok(), bad()], true), State::Ready, "a dead source must not fail the others");
-        assert_eq!(state_from(&[bad(), Source::EMPTY], true), State::Searching, "one is still out");
+        assert_eq!(
+            state_from(&[ok(), bad()], true),
+            State::Ready,
+            "a dead source must not fail the others"
+        );
+        assert_eq!(
+            state_from(&[bad(), Source::EMPTY], true),
+            State::Searching,
+            "one is still out"
+        );
         assert_eq!(state_from(&[bad(), bad()], true), State::Failed);
-        assert_eq!(state_from(&[], true), State::Failed, "nothing can ever answer — a spinner would never end");
+        assert_eq!(
+            state_from(&[], true),
+            State::Failed,
+            "nothing can ever answer — a spinner would never end"
+        );
         assert_eq!(state_from(&[Source::EMPTY], true), State::Searching);
         // a query below MIN_QUERY was never asked, so nothing about it is pending or failed
         assert_eq!(state_from(&[bad(), bad()], false), State::Idle);
         // an answer that is genuinely empty is still an answer, ONCE nobody else is still out —
         // this is the "No results for wallace" screen
-        assert_eq!(state_from(&[Source { status: Status::Answered, ..Source::EMPTY }], true), State::Ready);
+        assert_eq!(
+            state_from(
+                &[Source {
+                    status: Status::Answered,
+                    ..Source::EMPTY
+                }],
+                true
+            ),
+            State::Ready
+        );
     }
 
     /// **"No results" must not be said over a source that has not answered yet.** Our own server
@@ -1246,14 +1470,20 @@ mod tests {
     /// so those results go up without waiting on the slowest server in the house.
     #[test]
     fn an_empty_answer_waits_for_the_stragglers_but_a_populated_one_does_not() {
-        let empty = || Source { status: Status::Answered, ..Source::EMPTY };
+        let empty = || Source {
+            status: Status::Answered,
+            ..Source::EMPTY
+        };
         assert_eq!(
             state_from(&[empty(), Source::EMPTY], true),
             State::Searching,
             "'No results' over a server that has not answered yet"
         );
         assert_eq!(
-            state_from(&[answered(0, vec![media("A Close Shave")]), Source::EMPTY], true),
+            state_from(
+                &[answered(0, vec![media("A Close Shave")]), Source::EMPTY],
+                true
+            ),
             State::Ready,
             "results already in hand must not wait on the slowest server"
         );
@@ -1271,11 +1501,19 @@ mod tests {
     fn terms_trims_and_counts_characters_not_bytes() {
         assert_eq!(terms("wa"), Some("wa"), "exactly MIN_QUERY is a real query");
         assert_eq!(terms("  wallace  "), Some("wallace"));
-        assert_eq!(terms("w"), None, "one character costs a round trip and returns nothing");
+        assert_eq!(
+            terms("w"),
+            None,
+            "one character costs a round trip and returns nothing"
+        );
         assert_eq!(terms(" w "), None, "…and padding it does not make it one");
         assert_eq!(terms("   "), None);
         assert_eq!(terms(""), None);
-        assert_eq!(terms("к"), None, "one letter, two bytes — a byte count would have asked");
+        assert_eq!(
+            terms("к"),
+            None,
+            "one letter, two bytes — a byte count would have asked"
+        );
         assert_eq!(terms("ко"), Some("ко"));
     }
 
@@ -1287,7 +1525,11 @@ mod tests {
         let _g = fresh();
         register(1); // slot 0 has to be in the live window for the seeded answer below to be read
         set_query("w");
-        assert_eq!(state(), State::Idle, "one character returns every hub empty — asking is pure latency");
+        assert_eq!(
+            state(),
+            State::Idle,
+            "one character returns every hub empty — asking is pure latency"
+        );
         assert!(!settling(), "and nothing is owed a fetch");
 
         set_query("wa");
@@ -1300,9 +1542,16 @@ mod tests {
         rebuild();
         assert_eq!(shelves().len(), 1);
         set_query("wal");
-        assert!(shelves().is_empty(), "results for a string that is no longer on screen");
+        assert!(
+            shelves().is_empty(),
+            "results for a string that is no longer on screen"
+        );
         assert_eq!(state(), State::Searching);
-        assert_eq!(unsafe { (*addr_of!(SRC))[0].status }, Status::Pending, "every source is asked again");
+        assert_eq!(
+            unsafe { (*addr_of!(SRC))[0].status },
+            Status::Pending,
+            "every source is asked again"
+        );
 
         // …and back below the floor is Idle again, not a search that never answers
         set_query("w");
@@ -1325,11 +1574,23 @@ mod tests {
 
         set_query("wallace ");
         assert_eq!(query(), "wallace ", "the FIELD draws what was typed");
-        assert_eq!(GEN.load(Ordering::SeqCst), gen, "the same terms are not a new search");
-        assert_eq!(shelves().len(), 1, "the answer is still correct — it must not be dropped");
+        assert_eq!(
+            GEN.load(Ordering::SeqCst),
+            gen,
+            "the same terms are not a new search"
+        );
+        assert_eq!(
+            shelves().len(),
+            1,
+            "the answer is still correct — it must not be dropped"
+        );
 
         set_query("wallace g");
-        assert_ne!(GEN.load(Ordering::SeqCst), gen, "different terms ARE a new search");
+        assert_ne!(
+            GEN.load(Ordering::SeqCst),
+            gen,
+            "different terms ARE a new search"
+        );
         assert!(shelves().is_empty());
         reset();
     }
@@ -1346,7 +1607,10 @@ mod tests {
         assert!(settling(), "still inside the settle window");
         set_query("wal"); // another keystroke restarts it
         pump(SETTLE_S * 0.6);
-        assert!(settling(), "the fetch is owed to the LAST keystroke, not the first of the burst");
+        assert!(
+            settling(),
+            "the fetch is owed to the LAST keystroke, not the first of the burst"
+        );
         pump(SETTLE_S * 0.6);
         assert!(!settling(), "the query held still — now it may be asked");
         // and it stays released: the accumulator must not re-arm itself frame after frame
@@ -1370,19 +1634,37 @@ mod tests {
         hold_off();
         land(0, stale, Some(answered(0, vec![media("Wallander")]).items));
         assert!(!pump(0.0), "a superseded landing must not publish");
-        assert!(shelves().is_empty(), "the previous query's results leaked in");
-        assert_eq!(state(), State::Searching, "a discarded landing must not settle the spinner");
+        assert!(
+            shelves().is_empty(),
+            "the previous query's results leaked in"
+        );
+        assert_eq!(
+            state(),
+            State::Searching,
+            "a discarded landing must not settle the spinner"
+        );
         assert!(
             !IN_FLIGHT[0].load(Ordering::SeqCst),
             "the take must release the single-flight even for a landing it drops"
         );
         // …and it must not arm a backoff either, which would delay the CURRENT query's first answer
-        assert_eq!(unsafe { (*addr_of!(SRC))[0].retry_cd }, RETRY_FRAMES - 1, "only the sentinel ticked");
+        assert_eq!(
+            unsafe { (*addr_of!(SRC))[0].retry_cd },
+            RETRY_FRAMES - 1,
+            "only the sentinel ticked"
+        );
 
         let fresh_gen = GEN.load(Ordering::SeqCst);
-        land(0, fresh_gen, Some(answered(0, vec![media("A Close Shave")]).items));
+        land(
+            0,
+            fresh_gen,
+            Some(answered(0, vec![media("A Close Shave")]).items),
+        );
         hold_off();
-        assert!(pump(0.0), "the landing for the query ON SCREEN is a change the screen must see");
+        assert!(
+            pump(0.0),
+            "the landing for the query ON SCREEN is a change the screen must see"
+        );
         assert_eq!(titles(&shelves()[0]), ["A Close Shave"]);
         assert_eq!(state(), State::Ready);
         crate::plex::reset_servers_for_test();
@@ -1401,12 +1683,20 @@ mod tests {
 
         IN_FLIGHT[0].store(true, Ordering::SeqCst);
         IN_FLIGHT[1].store(true, Ordering::SeqCst);
-        land(0, gen, Some(answered(0, vec![media("A Close Shave")]).items));
+        land(
+            0,
+            gen,
+            Some(answered(0, vec![media("A Close Shave")]).items),
+        );
         land(1, gen, None); // the friend's server is off
         hold_off();
         assert!(pump(0.0));
 
-        assert_eq!(titles(&shelves()[0]), ["A Close Shave"], "a dead source must not blank a live one");
+        assert_eq!(
+            titles(&shelves()[0]),
+            ["A Close Shave"],
+            "a dead source must not blank a live one"
+        );
         assert_eq!(state(), State::Ready, "one answer is enough");
         assert_eq!(unsafe { (*addr_of!(SRC))[1].status }, Status::Failed);
         assert_eq!(
@@ -1429,7 +1719,11 @@ mod tests {
         register(1);
         set_query("wallace");
         let gen = GEN.load(Ordering::SeqCst);
-        land(0, gen, Some(answered(0, vec![media("A Close Shave")]).items));
+        land(
+            0,
+            gen,
+            Some(answered(0, vec![media("A Close Shave")]).items),
+        );
         hold_off();
         assert!(pump(0.0));
         assert_eq!(state(), State::Ready);
@@ -1437,10 +1731,18 @@ mod tests {
         land(0, gen, None); // the duplicate worker, finishing second
         hold_off();
         pump(0.0);
-        assert_eq!(titles(&shelves()[0]), ["A Close Shave"], "the results vanished for two seconds");
+        assert_eq!(
+            titles(&shelves()[0]),
+            ["A Close Shave"],
+            "the results vanished for two seconds"
+        );
         assert_eq!(state(), State::Ready);
         assert_eq!(unsafe { (*addr_of!(SRC))[0].status }, Status::Answered);
-        assert_eq!(unsafe { (*addr_of!(SRC))[0].retry_cd }, RETRY_FRAMES - 1, "no backoff — only the sentinel ticked");
+        assert_eq!(
+            unsafe { (*addr_of!(SRC))[0].retry_cd },
+            RETRY_FRAMES - 1,
+            "no backoff — only the sentinel ticked"
+        );
         crate::plex::reset_servers_for_test();
         reset();
     }
@@ -1453,9 +1755,16 @@ mod tests {
     fn an_empty_roster_settles_instead_of_spinning_forever() {
         let _g = fresh();
         set_query("wallace");
-        assert_eq!(state(), State::Searching, "the query starts out pending, as typed");
+        assert_eq!(
+            state(),
+            State::Searching,
+            "the query starts out pending, as typed"
+        );
         assert_eq!(nsrc(), 0, "no server can ever answer it");
-        assert!(pump(SETTLE_S * 2.0), "the verdict changed, so the screen must repaint");
+        assert!(
+            pump(SETTLE_S * 2.0),
+            "the verdict changed, so the screen must repaint"
+        );
         assert_eq!(state(), State::Failed);
         assert!(!pump(0.016), "…and it is not news a second time");
         reset();
@@ -1480,9 +1789,16 @@ mod tests {
         reset();
 
         for i in 0..NSRC {
-            assert!(!IN_FLIGHT[i].load(Ordering::SeqCst), "source {i} stayed latched — the screen wedges");
+            assert!(
+                !IN_FLIGHT[i].load(Ordering::SeqCst),
+                "source {i} stayed latched — the screen wedges"
+            );
             assert_eq!(unsafe { (*addr_of!(SRC))[i].retry_cd }, 0);
-            assert_eq!(unsafe { (*addr_of!(SRC))[i].status }, Status::Pending, "source {i} kept the last account's answer");
+            assert_eq!(
+                unsafe { (*addr_of!(SRC))[i].status },
+                Status::Pending,
+                "source {i} kept the last account's answer"
+            );
         }
         assert!(query().is_empty() && shelves().is_empty());
         assert_eq!(state(), State::Idle);
@@ -1494,12 +1810,18 @@ mod tests {
     /// collections found ("3 results"), one of which holds twelve films ("12 items").
     #[test]
     fn a_person_shelf_counts_people_and_everything_else_counts_results() {
-        assert_eq!((Kind::Person.title(), Kind::Person.count_word(1)), ("Cast & Crew", "person"));
+        assert_eq!(
+            (Kind::Person.title(), Kind::Person.count_word(1)),
+            ("Cast & Crew", "person")
+        );
         assert_eq!(Kind::Person.count_word(2), "people");
         assert_eq!(Kind::Movie.count_word(1), "result");
         assert_eq!(Kind::Collection.count_word(0), "results");
 
-        assert_eq!((Kind::Collection.count_word(3), items_word(12)), ("results", "items"));
+        assert_eq!(
+            (Kind::Collection.count_word(3), items_word(12)),
+            ("results", "items")
+        );
         assert_eq!(items_word(1), "item");
         // 0 is plural ("0 items"), and so is a nonsense negative the wire could still send
         assert_eq!((items_word(0), items_word(-1)), ("items", "items"));

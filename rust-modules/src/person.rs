@@ -255,7 +255,11 @@ impl Person {
     /// a director appears in the item's `Director[]`, not `Role[]`). Bounds-checked rather than
     /// indexed: the roles vector is filled a frame or more after the shelf it captions.
     pub(crate) fn role(&self, kind: usize, i: usize) -> &str {
-        self.shelves[kind].roles.get(i).map(String::as_str).unwrap_or("")
+        self.shelves[kind]
+            .roles
+            .get(i)
+            .map(String::as_str)
+            .unwrap_or("")
     }
     /// How many items of kind `kind` every source really had — what a heading prints (see
     /// [`Shelf::total`]).
@@ -300,7 +304,10 @@ const NFETCH: usize = F_PROFILE + 1;
 /// machine. [`crate::plex::MAX_SERVERS`] is the registry's own ceiling, imported rather than
 /// restated — a second 16 here would go out of bounds the day that one moves.
 fn fx(sid: ServerId, k: usize) -> Option<usize> {
-    let slot = sid.is_set().then(|| sid.raw() as usize).filter(|&s| s < crate::plex::MAX_SERVERS)?;
+    let slot = sid
+        .is_set()
+        .then(|| sid.raw() as usize)
+        .filter(|&s| s < crate::plex::MAX_SERVERS)?;
     Some(slot * NKIND + k)
 }
 
@@ -387,7 +394,10 @@ struct Fetch {
 }
 
 impl Fetch {
-    const IDLE: Fetch = Fetch { in_flight: AtomicBool::new(false), slot: Mutex::new(None) };
+    const IDLE: Fetch = Fetch {
+        in_flight: AtomicBool::new(false),
+        slot: Mutex::new(None),
+    };
 
     /// Is the claim held? [`maybe_spawn`]'s first gate.
     fn busy(&self) -> bool {
@@ -516,10 +526,18 @@ fn sources(origin: ServerId, key: &str, name: &str) -> Vec<Src> {
 ///
 /// Hubs are matched on either `hubIdentifier` or `type` because `/hubs/search` sends the same token
 /// in both (`docs/plex-openapi.json`'s own example), and `Hub::directory` is keyed by that word.
-pub(crate) fn resolve_local(mc: &crate::plex::MediaContainer, name: &str, guid: &str) -> Option<String> {
+pub(crate) fn resolve_local(
+    mc: &crate::plex::MediaContainer,
+    name: &str,
+    guid: &str,
+) -> Option<String> {
     let mut people: Vec<&Tag> = Vec::new();
     for h in crate::search::Kind::Person.hubs() {
-        for hub in mc.hub.iter().filter(|x| x.hub_identifier == *h || x.kind == *h) {
+        for hub in mc
+            .hub
+            .iter()
+            .filter(|x| x.hub_identifier == *h || x.kind == *h)
+        {
             people.extend(hub.directory.iter());
         }
     }
@@ -579,7 +597,9 @@ fn merge_shelves(srcs: &[Src]) -> [Shelf; NSHELF] {
                 // captions ride WITH their items, so the merged pair stays parallel even while one
                 // source's roles batch is still out — `""` until it lands, exactly as `Person::role`
                 // already reports for a credit with no named part
-                sh_out.roles.push(sh.roles.get(j).cloned().unwrap_or_default());
+                sh_out
+                    .roles
+                    .push(sh.roles.get(j).cloned().unwrap_or_default());
             }
         }
     }
@@ -605,9 +625,16 @@ fn resettle(p: &mut Person) {
 ///
 /// Returns whether anything matched. **MAIN THREAD.**
 pub(crate) fn set_watched_local(sid: ServerId, rk: &str, on: bool) -> bool {
-    let Some(p) = (unsafe { (*addr_of_mut!(CURRENT)).as_mut() }) else { return false };
+    let Some(p) = (unsafe { (*addr_of_mut!(CURRENT)).as_mut() }) else {
+        return false;
+    };
     let mut hit = false;
-    for m in p.srcs.iter_mut().flat_map(|s| s.shelves.iter_mut()).flat_map(|sh| sh.items.iter_mut()) {
+    for m in p
+        .srcs
+        .iter_mut()
+        .flat_map(|s| s.shelves.iter_mut())
+        .flat_map(|sh| sh.items.iter_mut())
+    {
         if crate::plex::same_item((m.sid, &m.rk), (sid, rk)) {
             crate::pms::set_watched(m, on);
             hit = true;
@@ -684,8 +711,14 @@ pub(crate) fn open(sid: ServerId, key: &str, guid: &str, name: &str, thumb: &str
 /// `None` at compile time without `devtriggers`).
 #[allow(unused_variables)]
 fn seed_dev_profile(p: &mut Person) {
-    let Some(text) = crate::dev::read("personbio") else { return };
-    p.bio = if text.is_empty() { DEV_BIO.trim().replace("\\n", "\n").to_string() } else { text };
+    let Some(text) = crate::dev::read("personbio") else {
+        return;
+    };
+    p.bio = if text.is_empty() {
+        DEV_BIO.trim().replace("\\n", "\n").to_string()
+    } else {
+        text
+    };
     if p.roles.is_empty() {
         p.roles = "Actress \u{b7} Singer \u{b7} Songwriter".to_string();
     }
@@ -696,7 +729,10 @@ fn seed_dev_profile(p: &mut Person) {
         p.birthplace = "Stockwell, London".to_string();
     }
     p.profiled = true;
-    crate::log(&format!("person: DEV bio seeded ({}B) — /tmp/plxnative-personbio", p.bio.len()));
+    crate::log(&format!(
+        "person: DEV bio seeded ({}B) — /tmp/plxnative-personbio",
+        p.bio.len()
+    ));
 }
 
 /// The built-in sample for an empty [`seed_dev_profile`] trigger: several paragraphs of plausible
@@ -785,7 +821,9 @@ pub(crate) fn pump() -> bool {
 /// profile facts survive; server-derived shelves and every old worker/mailbox do not.
 fn sync_roster() -> bool {
     let gen = crate::plex::server_roster_gen();
-    let Some((old, sid, key, name)) = current().map(|p| (p.roster_gen, p.sid, p.key.clone(), p.name.clone())) else {
+    let Some((old, sid, key, name)) =
+        current().map(|p| (p.roster_gen, p.sid, p.key.clone(), p.name.clone()))
+    else {
         return false;
     };
     if old == gen {
@@ -793,7 +831,9 @@ fn sync_roster() -> bool {
     }
     supersede();
     let srcs = sources(sid, &key, &name);
-    let Some(p) = (unsafe { (*addr_of_mut!(CURRENT)).as_mut() }) else { return false };
+    let Some(p) = (unsafe { (*addr_of_mut!(CURRENT)).as_mut() }) else {
+        return false;
+    };
     p.srcs = srcs;
     p.shelves = Default::default();
     p.landed = false;
@@ -813,12 +853,17 @@ fn src_of(p: &Person, i: usize) -> Option<(ServerId, usize)> {
 
 /// Install ONE landing on the open person. Returns whether anything actually changed.
 fn apply(i: usize, what: Landing) -> bool {
-    let Some(p) = (unsafe { (*addr_of_mut!(CURRENT)).as_mut() }) else { return false };
+    let Some(p) = (unsafe { (*addr_of_mut!(CURRENT)).as_mut() }) else {
+        return false;
+    };
     match what {
         // FAILED: leave the store exactly as it was and back off before retrying. One arm for all
         // four fetch kinds, because the countdown is per MAILBOX — a dead share backs off its own
         // three and nothing else's.
-        Landing::Resolve(None) | Landing::Media(None) | Landing::Profile(None) | Landing::Roles(None) => {
+        Landing::Resolve(None)
+        | Landing::Media(None)
+        | Landing::Profile(None)
+        | Landing::Roles(None) => {
             unsafe { RETRY_CD[i] = RETRY_FRAMES };
             false
         }
@@ -843,7 +888,9 @@ fn apply(i: usize, what: Landing) -> bool {
             true
         }
         Landing::Resolve(Some(id)) => {
-            let Some((sid, si)) = src_of(p, i) else { return false };
+            let Some((sid, si)) = src_of(p, i) else {
+                return false;
+            };
             {
                 let s = &mut p.srcs[si];
                 s.local = (!id.is_empty()).then(|| id.clone());
@@ -855,7 +902,11 @@ fn apply(i: usize, what: Landing) -> bool {
                 "person: source {} resolve '{}' -> {}",
                 sid.raw(),
                 p.name,
-                if id.is_empty() { "no record here".to_string() } else { format!("id={id}") }
+                if id.is_empty() {
+                    "no record here".to_string()
+                } else {
+                    format!("id={id}")
+                }
             ));
             // …and "no record here" can be the last answer the page was waiting on, so the fold
             // has to run even though no shelf moved.
@@ -863,7 +914,9 @@ fn apply(i: usize, what: Landing) -> bool {
             true
         }
         Landing::Media(Some(shelves)) => {
-            let Some((sid, si)) = src_of(p, i) else { return false };
+            let Some((sid, si)) = src_of(p, i) else {
+                return false;
+            };
             {
                 let s = &mut p.srcs[si];
                 crate::log(&format!(
@@ -886,7 +939,9 @@ fn apply(i: usize, what: Landing) -> bool {
             true
         }
         Landing::Roles(Some(RolesLanding { keys, pairs })) => {
-            let Some((_, si)) = src_of(p, i) else { return false };
+            let Some((_, si)) = src_of(p, i) else {
+                return false;
+            };
             {
                 let s = &mut p.srcs[si];
                 // A landing addressed to a shelf list that has since been REPLACED must not settle
@@ -932,7 +987,11 @@ pub(crate) fn roles_line(prof: &crate::plex::discover::PersonProfile) -> String 
     prof.credit_types
         .iter()
         .filter_map(|c| {
-            let raw = if c.title.is_empty() { &c.kind } else { &c.title };
+            let raw = if c.title.is_empty() {
+                &c.kind
+            } else {
+                &c.title
+            };
             let pretty: String = raw
                 .split(['-', '_', ' '])
                 .filter(|w| !w.is_empty())
@@ -1025,7 +1084,12 @@ fn maybe_spawn(i: usize) {
     // …and the SOURCE's own local id, for the roles worker's credit filter. The origin's `key` is
     // meaningless on any other machine, so filtering with it blanked every borrowed caption while
     // still paying for the batch.
-    let local = p.srcs.iter().find(|s| s.sid == sid).and_then(|s| s.local.clone()).unwrap_or_default();
+    let local = p
+        .srcs
+        .iter()
+        .find(|s| s.sid == sid)
+        .and_then(|s| s.local.clone())
+        .unwrap_or_default();
     FETCH[i].claim();
     let spawned = crate::task::spawn_small("person", move || {
         // the mailbox is filled OUTSIDE the guard so a panicking fetch still lands — as a FAILURE
@@ -1054,7 +1118,10 @@ fn maybe_spawn(i: usize) {
                     let keys: Vec<&str> = arg.iter().map(String::as_str).collect();
                     let mc = c.metadata_many(&keys)?;
                     let pairs = roles_from(&mc, &local, &guid);
-                    Some(RolesLanding { keys: arg.clone(), pairs })
+                    Some(RolesLanding {
+                        keys: arg.clone(),
+                        pairs,
+                    })
                 })
                 .unwrap_or(None),
             ),
@@ -1154,7 +1221,9 @@ pub(crate) fn split_by_type(mc: &crate::plex::MediaContainer, sid: ServerId) -> 
 /// through the same projection a real landing does.
 #[cfg(test)]
 pub(crate) fn install_for_test(movies: Vec<PmsMovie>, shows: Vec<PmsMovie>) {
-    let Some(p) = (unsafe { (*addr_of_mut!(CURRENT)).as_mut() }) else { return };
+    let Some(p) = (unsafe { (*addr_of_mut!(CURRENT)).as_mut() }) else {
+        return;
+    };
     if p.srcs.is_empty() {
         p.srcs.push(Src {
             sid: p.sid,
@@ -1165,7 +1234,11 @@ pub(crate) fn install_for_test(movies: Vec<PmsMovie>, shows: Vec<PmsMovie>) {
             roled: false,
         });
     }
-    p.srcs[0].shelves = [movies, shows].map(|items| Shelf { total: items.len(), items, roles: Vec::new() });
+    p.srcs[0].shelves = [movies, shows].map(|items| Shelf {
+        total: items.len(),
+        items,
+        roles: Vec::new(),
+    });
     p.srcs[0].landed = true;
     p.srcs[0].roled = false;
     resettle(p);
@@ -1191,16 +1264,47 @@ mod tests {
         let a = crate::plex::register_for_test("person-a", "127.0.0.1", 1, "a", "cid");
         let b = crate::plex::register_for_test("person-b", "127.0.0.1", 2, "b", "cid");
         open(a, "7", "plex://person/7", "Actor", "");
-        assert_eq!(current().unwrap().srcs.iter().map(|s| s.sid).collect::<Vec<_>>(), [a, b]);
+        assert_eq!(
+            current()
+                .unwrap()
+                .srcs
+                .iter()
+                .map(|s| s.sid)
+                .collect::<Vec<_>>(),
+            [a, b]
+        );
 
         let old_gen = GEN.load(Ordering::SeqCst);
-        land(fx(b, K_MEDIA).unwrap(), old_gen, media(vec![movie_on(b, "4")], Vec::new()));
+        land(
+            fx(b, K_MEDIA).unwrap(),
+            old_gen,
+            media(vec![movie_on(b, "4")], Vec::new()),
+        );
         crate::plex::revoke_for_profile_switch();
         let c = crate::plex::register_for_test("person-c", "127.0.0.1", 3, "c", "cid");
         assert!(sync_roster());
-        assert_eq!(current().unwrap().srcs.iter().map(|s| s.sid).collect::<Vec<_>>(), [a, c]);
-        assert!(FETCH[fx(b, K_MEDIA).unwrap()].slot.lock().unwrap().is_none(), "old-share mail was superseded");
-        assert!(current().unwrap().shelves.iter().all(|s| s.items.is_empty()));
+        assert_eq!(
+            current()
+                .unwrap()
+                .srcs
+                .iter()
+                .map(|s| s.sid)
+                .collect::<Vec<_>>(),
+            [a, c]
+        );
+        assert!(
+            FETCH[fx(b, K_MEDIA).unwrap()]
+                .slot
+                .lock()
+                .unwrap()
+                .is_none(),
+            "old-share mail was superseded"
+        );
+        assert!(current()
+            .unwrap()
+            .shelves
+            .iter()
+            .all(|s| s.items.is_empty()));
 
         reset();
         crate::plex::reset_servers_for_test();
@@ -1209,9 +1313,11 @@ mod tests {
     /// A [`Landing::Media`] payload the way a worker builds one — totals = lens, i.e. an uncapped
     /// response.
     fn media(movies: Vec<PmsMovie>, shows: Vec<PmsMovie>) -> Landing {
-        Landing::Media(Some(
-            [movies, shows].map(|items| Shelf { total: items.len(), items, roles: Vec::new() }),
-        ))
+        Landing::Media(Some([movies, shows].map(|items| Shelf {
+            total: items.len(),
+            items,
+            roles: Vec::new(),
+        })))
     }
 
     fn row(kind: &str, rk: &str, title: &str) -> Metadata {
@@ -1225,7 +1331,11 @@ mod tests {
 
     /// A movie row on a named server — the pair that has to survive the merge.
     fn movie_on(sid: ServerId, rk: &str) -> PmsMovie {
-        PmsMovie { sid, rk: rk.to_string(), ..Default::default() }
+        PmsMovie {
+            sid,
+            rk: rk.to_string(),
+            ..Default::default()
+        }
     }
 
     /// One source, already landed with these shelves — the input [`merge_shelves`] takes.
@@ -1238,7 +1348,11 @@ mod tests {
             landed: true,
             roled: false,
         };
-        s.shelves[0] = Shelf { total, items: movies, roles };
+        s.shelves[0] = Shelf {
+            total,
+            items: movies,
+            roles,
+        };
         s
     }
 
@@ -1255,7 +1369,12 @@ mod tests {
     }
 
     fn person_tag(name: &str, id: i64, guid: &str) -> Tag {
-        Tag { tag: name.into(), id, tag_key: guid.into(), ..Default::default() }
+        Tag {
+            tag: name.into(),
+            id,
+            tag_key: guid.into(),
+            ..Default::default()
+        }
     }
 
     /// The shelves are filled from each ROW's `type`, never from the container's `viewGroup` —
@@ -1270,10 +1389,19 @@ mod tests {
             row("movie", "2", "Another Movie"),
         ];
         let s = split_by_type(&mc, S0);
-        assert_eq!(s[0].items.iter().map(|m| m.rk.as_str()).collect::<Vec<_>>(), ["1", "2"]);
-        assert_eq!(s[1].items.iter().map(|m| m.rk.as_str()).collect::<Vec<_>>(), ["1975"]);
+        assert_eq!(
+            s[0].items.iter().map(|m| m.rk.as_str()).collect::<Vec<_>>(),
+            ["1", "2"]
+        );
+        assert_eq!(
+            s[1].items.iter().map(|m| m.rk.as_str()).collect::<Vec<_>>(),
+            ["1975"]
+        );
         assert_eq!((s[0].total, s[1].total), (2, 1));
-        assert!(s[0].items.iter().all(|m| m.sid == S0), "every row wears the server it came from");
+        assert!(
+            s[0].items.iter().all(|m| m.sid == S0),
+            "every row wears the server it came from"
+        );
     }
 
     /// Neither shelf may exceed a `CardRow`'s spring count: past it `scale(i)` clamps to the last
@@ -1289,8 +1417,15 @@ mod tests {
         mc.metadata.push(row("season", "s1", "a season"));
         let s = split_by_type(&mc, S0);
         assert_eq!(s[0].items.len(), SHELF_MAX);
-        assert_eq!(s[0].total, SHELF_MAX + 5, "the count is the RESPONSE's total, not the tile cap");
-        assert!(s[1].items.is_empty(), "an episode/season is not a Show shelf tile");
+        assert_eq!(
+            s[0].total,
+            SHELF_MAX + 5,
+            "the count is the RESPONSE's total, not the tile cap"
+        );
+        assert!(
+            s[1].items.is_empty(),
+            "an episode/season is not a Show shelf tile"
+        );
     }
 
     // ---- the cross-server join --------------------------------------------------------------
@@ -1322,10 +1457,17 @@ mod tests {
             Some("4102".to_string())
         );
         // a person this server has never heard of is an ANSWER of None, not a match on the name
-        assert_eq!(resolve_local(&mc, "John Williams", "0000000000000000000000ff"), None);
+        assert_eq!(
+            resolve_local(&mc, "John Williams", "0000000000000000000000ff"),
+            None
+        );
         // …and so is an answer with no person hub at all
         assert_eq!(
-            resolve_local(&search_answer("movie", Vec::new()), "John Williams", "5d77683d880197001ec9053c"),
+            resolve_local(
+                &search_answer("movie", Vec::new()),
+                "John Williams",
+                "5d77683d880197001ec9053c"
+            ),
             None
         );
     }
@@ -1338,29 +1480,45 @@ mod tests {
     fn the_name_fallback_is_exact_and_only_where_no_tag_key_can_decide() {
         // the server named no guid for its entry: the exact name is the only join there is
         let no_key = search_answer("actor", vec![person_tag("Idina Menzel", 77, "")]);
-        assert_eq!(resolve_local(&no_key, "Idina Menzel", "5d77682a"), Some("77".to_string()));
+        assert_eq!(
+            resolve_local(&no_key, "Idina Menzel", "5d77682a"),
+            Some("77".to_string())
+        );
         // …and it is EXACT: nothing looser may reach another person's filmography
         assert_eq!(resolve_local(&no_key, "Idina Menze", "5d77682a"), None);
         assert_eq!(resolve_local(&no_key, "idina menzel", "5d77682a"), None);
-        assert_eq!(resolve_local(&no_key, "", "5d77682a"), None, "an empty name matches nothing");
+        assert_eq!(
+            resolve_local(&no_key, "", "5d77682a"),
+            None,
+            "an empty name matches nothing"
+        );
 
         // the entry DOES carry a guid, and it is not ours — the name must not override it
         let other = search_answer("actor", vec![person_tag("Idina Menzel", 88, "5d776999")]);
         assert_eq!(resolve_local(&other, "Idina Menzel", "5d77682a"), None);
         // …but with no guid on OUR side there is nothing to disagree with, so the name joins
-        assert_eq!(resolve_local(&other, "Idina Menzel", ""), Some("88".to_string()));
+        assert_eq!(
+            resolve_local(&other, "Idina Menzel", ""),
+            Some("88".to_string())
+        );
 
         // an entry with neither number nor tagKey addresses nothing and must not resolve to ""
         let empty = search_answer("actor", vec![person_tag("Idina Menzel", 0, "")]);
         assert_eq!(resolve_local(&empty, "Idina Menzel", ""), None);
         // a server that sent no number falls back to the tagKey, exactly as `Person::key` does
         let key_only = search_answer("actor", vec![person_tag("Idina Menzel", 0, "5d77682a")]);
-        assert_eq!(resolve_local(&key_only, "Idina Menzel", "5d77682a"), Some("5d77682a".to_string()));
+        assert_eq!(
+            resolve_local(&key_only, "Idina Menzel", "5d77682a"),
+            Some("5d77682a".to_string())
+        );
 
         // a DIRECTOR credit resolves too — both of `search::Kind::Person`'s hubs are scanned, so a
         // page opened from a crew row is not silently unresolvable on every other server
         let crew = search_answer("director", vec![person_tag("Nick Park", 459, "5d776826")]);
-        assert_eq!(resolve_local(&crew, "Nick Park", "5d776826"), Some("459".to_string()));
+        assert_eq!(
+            resolve_local(&crew, "Nick Park", "5d776826"),
+            Some("459".to_string())
+        );
     }
 
     /// An actor-director carries TWO tag rows on one server — same `tagKey`, different `id`, one per
@@ -1394,7 +1552,10 @@ mod tests {
         );
         // …and with no actor row at all, the director one is still better than nothing
         mc.hub.truncate(1);
-        assert_eq!(resolve_local(&mc, "Clint Eastwood", guid), Some("2201".to_string()));
+        assert_eq!(
+            resolve_local(&mc, "Clint Eastwood", guid),
+            Some("2201".to_string())
+        );
     }
 
     // ---- the merge ---------------------------------------------------------------------------
@@ -1406,25 +1567,50 @@ mod tests {
     #[test]
     fn the_merge_keeps_every_sources_rows_their_server_and_their_captions() {
         let srcs = vec![
-            src_with(S0, vec![movie_on(S0, "1"), movie_on(S0, "2")], 30, vec!["Elsa".into(), "Nancy".into()]),
+            src_with(
+                S0,
+                vec![movie_on(S0, "1"), movie_on(S0, "2")],
+                30,
+                vec!["Elsa".into(), "Nancy".into()],
+            ),
             // …the share's roles batch has not landed yet: its captions are absent, not empty
-            src_with(S1, vec![movie_on(S1, "1"), movie_on(S1, "9")], 5, Vec::new()),
+            src_with(
+                S1,
+                vec![movie_on(S1, "1"), movie_on(S1, "9")],
+                5,
+                Vec::new(),
+            ),
         ];
         let m = merge_shelves(&srcs);
         assert_eq!(m[0].items.len(), 4, "both sources contribute");
         assert_eq!(
-            m[0].items.iter().map(|x| (x.sid, x.rk.as_str())).collect::<Vec<_>>(),
+            m[0].items
+                .iter()
+                .map(|x| (x.sid, x.rk.as_str()))
+                .collect::<Vec<_>>(),
             vec![(S0, "1"), (S0, "2"), (S1, "1"), (S1, "9")],
             "one ratingKey on two servers is two different films — the pair is the identity"
         );
-        assert_eq!(m[0].total, 35, "the heading counts what the PERSON has, across every source");
-        assert_eq!(m[0].roles.len(), m[0].items.len(), "captions must stay index-parallel");
+        assert_eq!(
+            m[0].total, 35,
+            "the heading counts what the PERSON has, across every source"
+        );
+        assert_eq!(
+            m[0].roles.len(),
+            m[0].items.len(),
+            "captions must stay index-parallel"
+        );
         assert_eq!(&m[0].roles[..2], &["Elsa".to_string(), "Nancy".to_string()]);
-        assert!(m[0].roles[2..].iter().all(String::is_empty), "an un-captioned source reads blank");
+        assert!(
+            m[0].roles[2..].iter().all(String::is_empty),
+            "an un-captioned source reads blank"
+        );
         assert!(m[1].items.is_empty(), "neither source had a show");
 
         // and with nothing anywhere the merge is empty rather than a panic
-        assert!(merge_shelves(&[]).iter().all(|s| s.items.is_empty() && s.total == 0));
+        assert!(merge_shelves(&[])
+            .iter()
+            .all(|s| s.items.is_empty() && s.total == 0));
     }
 
     /// A greedy source must not spend the whole shelf. Two sources with more films than the row can
@@ -1433,19 +1619,29 @@ mod tests {
     #[test]
     fn one_prolific_source_cannot_starve_another_out_of_the_shelf() {
         let many = |sid: ServerId, n: usize| {
-            (0..n).map(|i| movie_on(sid, &format!("{i}"))).collect::<Vec<_>>()
+            (0..n)
+                .map(|i| movie_on(sid, &format!("{i}")))
+                .collect::<Vec<_>>()
         };
         let srcs = vec![
             src_with(S0, many(S0, SHELF_MAX), SHELF_MAX, Vec::new()),
             src_with(S1, many(S1, SHELF_MAX), SHELF_MAX, Vec::new()),
         ];
         let m = merge_shelves(&srcs);
-        assert_eq!(m[0].items.len(), SHELF_MAX, "the row still caps at the spring count");
+        assert_eq!(
+            m[0].items.len(),
+            SHELF_MAX,
+            "the row still caps at the spring count"
+        );
         assert!(
             m[0].items.iter().any(|x| x.sid == S1),
             "the second source was starved out of the shelf entirely"
         );
-        assert_eq!(m[0].total, 2 * SHELF_MAX, "…while the heading still counts everything");
+        assert_eq!(
+            m[0].total,
+            2 * SHELF_MAX,
+            "…while the heading still counts everything"
+        );
     }
 
     // ---- the fetch machine -------------------------------------------------------------------
@@ -1486,11 +1682,21 @@ mod tests {
 
         f.claim();
         assert!(f.take().is_none(), "nothing has landed");
-        assert!(f.busy(), "an empty mailbox must not un-claim a worker still out");
+        assert!(
+            f.busy(),
+            "an empty mailbox must not un-claim a worker still out"
+        );
 
-        land(at(S0, K_ROLES), GEN.load(Ordering::SeqCst), Landing::Roles(None));
+        land(
+            at(S0, K_ROLES),
+            GEN.load(Ordering::SeqCst),
+            Landing::Roles(None),
+        );
         assert!(f.take().is_some());
-        assert!(!f.busy(), "the claim must go with the mail — a FAILURE released it too");
+        assert!(
+            !f.busy(),
+            "the claim must go with the mail — a FAILURE released it too"
+        );
 
         f.clear();
     }
@@ -1507,12 +1713,19 @@ mod tests {
 
         FETCH[at(S0, K_MEDIA)].claim();
         hold_off();
-        land(at(S0, K_MEDIA), stale, media(vec![PmsMovie::default()], Vec::new()));
+        land(
+            at(S0, K_MEDIA),
+            stale,
+            media(vec![PmsMovie::default()], Vec::new()),
+        );
         assert!(!pump(), "a superseded landing must not publish");
 
         let p = current().expect("the new person stays open");
         assert_eq!(p.key, "465");
-        assert!(p.shelf(0).is_empty(), "the previous actor's filmography leaked in");
+        assert!(
+            p.shelf(0).is_empty(),
+            "the previous actor's filmography leaked in"
+        );
         assert!(!p.landed, "a discarded landing must not settle the spinner");
         assert!(
             !FETCH[at(S0, K_MEDIA)].busy(),
@@ -1529,7 +1742,11 @@ mod tests {
         open(S0, "161", "5d776", "Idina Menzel", "");
         let gen = GEN.load(Ordering::SeqCst);
         // seed a populated, landed page the honest way (through the pump)
-        land(at(S0, K_MEDIA), gen, media(vec![PmsMovie::default()], Vec::new()));
+        land(
+            at(S0, K_MEDIA),
+            gen,
+            media(vec![PmsMovie::default()], Vec::new()),
+        );
         hold_off();
         assert!(pump());
         assert_eq!(current().unwrap().shelf(0).len(), 1);
@@ -1537,7 +1754,11 @@ mod tests {
         land(at(S0, K_MEDIA), gen, Landing::Media(None)); // the retry fails
         hold_off();
         assert!(!pump(), "a failure publishes nothing");
-        assert_eq!(current().unwrap().shelf(0).len(), 1, "the failure wiped a populated shelf");
+        assert_eq!(
+            current().unwrap().shelf(0).len(),
+            1,
+            "the failure wiped a populated shelf"
+        );
         assert_eq!(
             unsafe { RETRY_CD[at(S0, K_MEDIA)] },
             RETRY_FRAMES,
@@ -1562,7 +1783,10 @@ mod tests {
         reset();
 
         for i in 0..NFETCH {
-            assert!(!FETCH[i].busy(), "fetch {i} stayed latched — the page wedges");
+            assert!(
+                !FETCH[i].busy(),
+                "fetch {i} stayed latched — the page wedges"
+            );
             assert_eq!(unsafe { RETRY_CD[i] }, 0);
         }
         assert!(current().is_none());
@@ -1576,19 +1800,41 @@ mod tests {
         let _serial = crate::testlock::serial();
         open(S0, "6059", "5d7768268718ba001e311be6", "Peter Sallis", "");
         let gen = GEN.load(Ordering::SeqCst);
-        land(at(S0, K_MEDIA), gen, media(vec![PmsMovie::default()], Vec::new()));
+        land(
+            at(S0, K_MEDIA),
+            gen,
+            media(vec![PmsMovie::default()], Vec::new()),
+        );
         hold_off();
         assert!(pump());
 
-        land(F_PROFILE, gen, Landing::Profile(Some(profile("An English actor.", "1921-02-01", "2017-06-02"))));
+        land(
+            F_PROFILE,
+            gen,
+            Landing::Profile(Some(profile(
+                "An English actor.",
+                "1921-02-01",
+                "2017-06-02",
+            ))),
+        );
         hold_off();
-        assert!(pump(), "the profile landing is a change the screen must see");
+        assert!(
+            pump(),
+            "the profile landing is a change the screen must see"
+        );
         let p = current().unwrap();
         assert_eq!(p.bio, "An English actor.");
         assert_eq!(p.born, "1921-02-01");
-        assert_eq!(p.died, "2017-06-02", "a deceased person's Died line has to survive the landing");
+        assert_eq!(
+            p.died, "2017-06-02",
+            "a deceased person's Died line has to survive the landing"
+        );
         assert!(p.profiled);
-        assert_eq!(p.shelf(0).len(), 1, "the biography landing wiped the shelves");
+        assert_eq!(
+            p.shelf(0).len(),
+            1,
+            "the biography landing wiped the shelves"
+        );
         close();
     }
 
@@ -1603,17 +1849,34 @@ mod tests {
         let gen = GEN.load(Ordering::SeqCst);
         hold_off();
 
-        land(F_PROFILE, gen, Landing::Profile(Some(crate::plex::discover::PersonProfile::default())));
+        land(
+            F_PROFILE,
+            gen,
+            Landing::Profile(Some(crate::plex::discover::PersonProfile::default())),
+        );
         assert!(pump());
         let p = current().unwrap();
-        assert!(p.profiled, "an 'unknown person' answer must settle, not retry forever");
-        assert!(p.bio.is_empty() && p.roles.is_empty(), "nothing may be invented for an unknown person");
-        assert!(unsafe { RETRY_CD[F_PROFILE] } < RETRY_FRAMES, "an ANSWER must not arm the failure backoff");
+        assert!(
+            p.profiled,
+            "an 'unknown person' answer must settle, not retry forever"
+        );
+        assert!(
+            p.bio.is_empty() && p.roles.is_empty(),
+            "nothing may be invented for an unknown person"
+        );
+        assert!(
+            unsafe { RETRY_CD[F_PROFILE] } < RETRY_FRAMES,
+            "an ANSWER must not arm the failure backoff"
+        );
 
         land(F_PROFILE, gen, Landing::Profile(None)); // now a real transport failure
         hold_off();
         assert!(!pump());
-        assert_eq!(unsafe { RETRY_CD[F_PROFILE] }, RETRY_FRAMES, "a failure must back off before retrying");
+        assert_eq!(
+            unsafe { RETRY_CD[F_PROFILE] },
+            RETRY_FRAMES,
+            "a failure must back off before retrying"
+        );
         close();
     }
 
@@ -1634,8 +1897,18 @@ mod tests {
         let mut mc = MediaContainer::default();
         let mut with_cast = row("movie", "1971", "A Close Shave");
         with_cast.role = vec![
-            tag("Peter Sallis", "Wallace (voice)", 6059, "5d7768268718ba001e311be6"),
-            tag("Anne Reid", "Wendolene (voice)", 7001, "5d776828a091de001f2e63e6"),
+            tag(
+                "Peter Sallis",
+                "Wallace (voice)",
+                6059,
+                "5d7768268718ba001e311be6",
+            ),
+            tag(
+                "Anne Reid",
+                "Wendolene (voice)",
+                7001,
+                "5d776828a091de001f2e63e6",
+            ),
         ];
         let mut crew_only = row("movie", "2005", "The Curse of the Were-Rabbit");
         crew_only.role = vec![tag("Helena Bonham Carter", "Lady Tottington", 7002, "")];
@@ -1647,7 +1920,10 @@ mod tests {
         assert_eq!(roles_from(&mc, "6059", "5d7768268718ba001e311be6"), want);
         // a person OPENED BY GUID (no numeric id on the credit row) must match through the tagKey —
         // this is the case an id-only match silently reduced to a wasted fetch and blank captions
-        assert_eq!(roles_from(&mc, "5d7768268718ba001e311be6", "5d7768268718ba001e311be6"), want);
+        assert_eq!(
+            roles_from(&mc, "5d7768268718ba001e311be6", "5d7768268718ba001e311be6"),
+            want
+        );
         // ANOTHER SERVER's local id for the same person is a different number, and the guid is what
         // carries the caption across — the reason the worker is handed `Src::local`, not the origin's
         assert_eq!(roles_from(&mc, "918", "5d7768268718ba001e311be6"), want);
@@ -1666,7 +1942,11 @@ mod tests {
         let gen = GEN.load(Ordering::SeqCst);
         let (fm, fr) = (at(S0, K_MEDIA), at(S0, K_ROLES));
         let movie = |rk: &str| movie_on(S0, rk);
-        land(fm, gen, media(vec![movie("1971"), movie("2005")], vec![movie("1975")]));
+        land(
+            fm,
+            gen,
+            media(vec![movie("1971"), movie("2005")], vec![movie("1975")]),
+        );
         hold_off();
         assert!(pump());
 
@@ -1682,8 +1962,16 @@ mod tests {
         hold_off();
         unsafe { RETRY_CD[fr] = 5 };
         assert!(!pump(), "a mis-addressed caption landing published");
-        assert_eq!(current().unwrap().role(0, 0), "", "a stale landing captioned the CURRENT list");
-        assert_eq!(unsafe { RETRY_CD[fr] }, 4, "staleness is not a failure — no backoff armed (the sentinel just ticked)");
+        assert_eq!(
+            current().unwrap().role(0, 0),
+            "",
+            "a stale landing captioned the CURRENT list"
+        );
+        assert_eq!(
+            unsafe { RETRY_CD[fr] },
+            4,
+            "staleness is not a failure — no backoff armed (the sentinel just ticked)"
+        );
 
         // pairs arrive REVERSED relative to the shelves — the match is by rk, so it must not matter
         let keys = vec!["1971".to_string(), "2005".to_string(), "1975".to_string()];
@@ -1699,13 +1987,21 @@ mod tests {
         assert_eq!(p.role(0, 0), "Wallace (voice)");
         assert_eq!(p.role(0, 1), "Wallace / Hutch (voice)");
         assert_eq!(p.role(1, 0), "Wallace");
-        assert_eq!(p.role(0, 99), "", "past-the-end reads are blank, not a panic");
+        assert_eq!(
+            p.role(0, 99),
+            "",
+            "past-the-end reads are blank, not a panic"
+        );
 
         // a fresh media landing (same person) replaces the shelves — the captions go WITH them
         land(fm, gen, media(vec![movie("2005")], Vec::new()));
         hold_off();
         assert!(pump());
-        assert_eq!(current().unwrap().role(0, 0), "", "a caption survived the list it was addressed to");
+        assert_eq!(
+            current().unwrap().role(0, 0),
+            "",
+            "a caption survived the list it was addressed to"
+        );
         // …and the cleared flag is what re-asks: the roles fetch is addressable again
         assert!(
             address(fr, current().unwrap()).is_some(),
@@ -1738,26 +2034,56 @@ mod tests {
         let _g = fresh_registry();
         // `register_for_test`, not the public `register`: the latter resolves the device id through
         // `session::load`, which mints and PERSISTS a uuid on a host that has no session file.
-        let own = crate::plex::register_for_test("mach-own", "10.0.0.1", 32400, "tok", "cid-person-test");
-        let friend = crate::plex::register_for_test("mach-friend", "10.0.0.2", 32400, "tok", "cid-person-test");
+        let own =
+            crate::plex::register_for_test("mach-own", "10.0.0.1", 32400, "tok", "cid-person-test");
+        let friend = crate::plex::register_for_test(
+            "mach-friend",
+            "10.0.0.2",
+            32400,
+            "tok",
+            "cid-person-test",
+        );
 
         open(friend, "77", "5d77682a", "Idina Menzel", ""); // arrived through the SHARE
         let p = current().unwrap();
-        assert_eq!(p.srcs.len(), 2, "both servers are sources however we arrived");
+        assert_eq!(
+            p.srcs.len(),
+            2,
+            "both servers are sources however we arrived"
+        );
 
         // the ORIGIN was handed its id and asks for the filmography straight away…
-        assert!(address(at(friend, K_RESOLVE), p).is_none(), "the origin must not re-resolve what it gave us");
-        assert_eq!(address(at(friend, K_MEDIA), p), Some(vec!["77".to_string()]));
+        assert!(
+            address(at(friend, K_RESOLVE), p).is_none(),
+            "the origin must not re-resolve what it gave us"
+        );
+        assert_eq!(
+            address(at(friend, K_MEDIA), p),
+            Some(vec!["77".to_string()])
+        );
         // …while the other server must find its OWN id first, and cannot ask for media until it has
-        assert_eq!(address(at(own, K_RESOLVE), p), Some(vec!["Idina Menzel".to_string()]));
-        assert!(address(at(own, K_MEDIA), p).is_none(), "a filmography cannot be asked for by a foreign id");
+        assert_eq!(
+            address(at(own, K_RESOLVE), p),
+            Some(vec!["Idina Menzel".to_string()])
+        );
+        assert!(
+            address(at(own, K_MEDIA), p).is_none(),
+            "a filmography cannot be asked for by a foreign id"
+        );
 
         // the resolve lands: now, and only now, is that server's own filmography addressable
         let gen = GEN.load(Ordering::SeqCst);
-        land(at(own, K_RESOLVE), gen, Landing::Resolve(Some("918".to_string())));
+        land(
+            at(own, K_RESOLVE),
+            gen,
+            Landing::Resolve(Some("918".to_string())),
+        );
         hold_off();
         assert!(pump());
-        assert_eq!(address(at(own, K_MEDIA), current().unwrap()), Some(vec!["918".to_string()]));
+        assert_eq!(
+            address(at(own, K_MEDIA), current().unwrap()),
+            Some(vec!["918".to_string()])
+        );
         close();
     }
 
@@ -1769,30 +2095,59 @@ mod tests {
     #[test]
     fn a_source_that_has_never_heard_of_them_contributes_nothing_without_failing_the_others() {
         let _g = fresh_registry();
-        let own = crate::plex::register_for_test("mach-own", "10.0.0.1", 32400, "tok", "cid-person-test");
-        let friend = crate::plex::register_for_test("mach-friend", "10.0.0.2", 32400, "tok", "cid-person-test");
+        let own =
+            crate::plex::register_for_test("mach-own", "10.0.0.1", 32400, "tok", "cid-person-test");
+        let friend = crate::plex::register_for_test(
+            "mach-friend",
+            "10.0.0.2",
+            32400,
+            "tok",
+            "cid-person-test",
+        );
         open(own, "161", "5d77682a", "Idina Menzel", "");
         let gen = GEN.load(Ordering::SeqCst);
 
         // the share answers first, with nothing
-        land(at(friend, K_RESOLVE), gen, Landing::Resolve(Some(String::new())));
+        land(
+            at(friend, K_RESOLVE),
+            gen,
+            Landing::Resolve(Some(String::new())),
+        );
         hold_off();
         pump();
-        assert!(!current().unwrap().landed, "an empty answer must not settle a page still fetching");
-        assert_eq!(unsafe { RETRY_CD[at(friend, K_RESOLVE)] }, RETRY_FRAMES - 1, "an ANSWER is not a failure");
+        assert!(
+            !current().unwrap().landed,
+            "an empty answer must not settle a page still fetching"
+        );
+        assert_eq!(
+            unsafe { RETRY_CD[at(friend, K_RESOLVE)] },
+            RETRY_FRAMES - 1,
+            "an ANSWER is not a failure"
+        );
         assert!(
             address(at(friend, K_MEDIA), current().unwrap()).is_none(),
             "a server with no record of them must not be asked for their filmography"
         );
 
         // …and the server that does have them fills the page by itself
-        land(at(own, K_MEDIA), gen, media(vec![movie_on(own, "1971")], Vec::new()));
+        land(
+            at(own, K_MEDIA),
+            gen,
+            media(vec![movie_on(own, "1971")], Vec::new()),
+        );
         hold_off();
         assert!(pump());
         let p = current().unwrap();
         assert_eq!(p.shelf(0).len(), 1);
-        assert_eq!(p.shelf(0)[0].sid, own, "the row still names the machine it came from");
-        assert!(p.landed, "one source answering is enough to stop the spinner");
+        assert_eq!(
+            p.shelf(0)[0].sid,
+            own,
+            "the row still names the machine it came from"
+        );
+        assert!(
+            p.landed,
+            "one source answering is enough to stop the spinner"
+        );
         close();
     }
 
@@ -1802,13 +2157,27 @@ mod tests {
     #[test]
     fn the_page_says_nothing_only_once_every_source_has_answered() {
         let _g = fresh_registry();
-        let own = crate::plex::register_for_test("mach-own", "10.0.0.1", 32400, "tok", "cid-person-test");
-        let friend = crate::plex::register_for_test("mach-friend", "10.0.0.2", 32400, "tok", "cid-person-test");
+        let own =
+            crate::plex::register_for_test("mach-own", "10.0.0.1", 32400, "tok", "cid-person-test");
+        let friend = crate::plex::register_for_test(
+            "mach-friend",
+            "10.0.0.2",
+            32400,
+            "tok",
+            "cid-person-test",
+        );
         open(own, "161", "5d77682a", "Idina Menzel", "");
         let gen = GEN.load(Ordering::SeqCst);
-        assert!(loading(), "a page that has asked nobody anything yet is loading");
+        assert!(
+            loading(),
+            "a page that has asked nobody anything yet is loading"
+        );
 
-        land(at(friend, K_RESOLVE), gen, Landing::Resolve(Some(String::new())));
+        land(
+            at(friend, K_RESOLVE),
+            gen,
+            Landing::Resolve(Some(String::new())),
+        );
         hold_off();
         pump();
         assert!(loading(), "one source's 'no' is not the page's answer");
@@ -1817,7 +2186,10 @@ mod tests {
         land(at(own, K_MEDIA), gen, media(Vec::new(), Vec::new()));
         hold_off();
         pump();
-        assert!(!loading(), "every source has answered — the page is finished, not still loading");
+        assert!(
+            !loading(),
+            "every source has answered — the page is finished, not still loading"
+        );
         assert!(current().unwrap().shelf(0).is_empty());
         close();
     }
@@ -1829,8 +2201,15 @@ mod tests {
     #[test]
     fn a_successful_but_empty_filmography_is_not_something_to_show() {
         let _g = fresh_registry();
-        let own = crate::plex::register_for_test("mach-own", "10.0.0.1", 32400, "tok", "cid-person-test");
-        let friend = crate::plex::register_for_test("mach-friend", "10.0.0.2", 32400, "tok", "cid-person-test");
+        let own =
+            crate::plex::register_for_test("mach-own", "10.0.0.1", 32400, "tok", "cid-person-test");
+        let friend = crate::plex::register_for_test(
+            "mach-friend",
+            "10.0.0.2",
+            32400,
+            "tok",
+            "cid-person-test",
+        );
         open(own, "161", "5d77682a", "Idina Menzel", "");
         let gen = GEN.load(Ordering::SeqCst);
 
@@ -1838,17 +2217,32 @@ mod tests {
         land(at(own, K_MEDIA), gen, media(Vec::new(), Vec::new()));
         hold_off();
         pump();
-        assert!(loading(), "a successful EMPTY answer is not content — the share is still out");
+        assert!(
+            loading(),
+            "a successful EMPTY answer is not content — the share is still out"
+        );
 
         // …and the share then fills the page
-        land(at(friend, K_RESOLVE), gen, Landing::Resolve(Some("918".to_string())));
+        land(
+            at(friend, K_RESOLVE),
+            gen,
+            Landing::Resolve(Some("918".to_string())),
+        );
         hold_off();
         pump();
-        land(at(friend, K_MEDIA), gen, media(vec![movie_on(friend, "5274")], Vec::new()));
+        land(
+            at(friend, K_MEDIA),
+            gen,
+            media(vec![movie_on(friend, "5274")], Vec::new()),
+        );
         hold_off();
         assert!(pump());
         assert!(!loading());
-        assert_eq!(current().unwrap().shelf(0).len(), 1, "the borrowed film is the whole page");
+        assert_eq!(
+            current().unwrap().shelf(0).len(),
+            1,
+            "the borrowed film is the whole page"
+        );
         close();
     }
 
@@ -1871,8 +2265,15 @@ mod tests {
         assert_eq!(roles_line(&prof), "Actor, Writer, Producer");
 
         prof.credit_types = vec![ct("costume-makeup", "costume-makeup"), ct("art", "")];
-        assert_eq!(roles_line(&prof), "Costume Makeup, Art", "a raw slug reached the screen");
+        assert_eq!(
+            roles_line(&prof),
+            "Costume Makeup, Art",
+            "a raw slug reached the screen"
+        );
 
-        assert_eq!(roles_line(&crate::plex::discover::PersonProfile::default()), "");
+        assert_eq!(
+            roles_line(&crate::plex::discover::PersonProfile::default()),
+            ""
+        );
     }
 }

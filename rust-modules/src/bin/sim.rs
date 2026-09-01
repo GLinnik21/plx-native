@@ -69,7 +69,10 @@ fn main() {
     // log starting empty to date its first line.
     let root = plxnative_modules::sim_runtime_dir();
     if let Err(e) = std::fs::create_dir_all(&root) {
-        eprintln!("plxnative-sim: cannot create runtime dir {}: {e}", root.display());
+        eprintln!(
+            "plxnative-sim: cannot create runtime dir {}: {e}",
+            root.display()
+        );
         std::process::exit(1);
     }
     let events = plxnative_modules::sim_events_log();
@@ -83,7 +86,11 @@ fn main() {
         std::process::exit(1);
     }
 
-    eprintln!("plxnative-sim: pms={host}:{port} runtime={} log={}", root.display(), events.display());
+    eprintln!(
+        "plxnative-sim: pms={host}:{port} runtime={} log={}",
+        root.display(),
+        events.display()
+    );
 
     let c_host = CString::new(host).unwrap_or_else(|_| {
         eprintln!("plxnative-sim: host contains a NUL byte");

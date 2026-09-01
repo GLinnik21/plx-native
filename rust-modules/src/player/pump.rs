@@ -56,7 +56,10 @@ fn place_exported(mt: &MainThread, eng: &mut super::engine::Engine) {
     SHARED.dg_place_rv.store(rv, Relaxed);
     SHARED.dg_placed_w.store(src.0, Relaxed);
     SHARED.dg_placed_h.store(src.1, Relaxed);
-    super::log(&format!("vplane: exported window placed src={}x{} rv={rv}", src.0, src.1));
+    super::log(&format!(
+        "vplane: exported window placed src={}x{} rv={rv}",
+        src.0, src.1
+    ));
 }
 
 /// Mirror the Engine-confined diagnostics into `Shared` for the render path.
@@ -152,7 +155,9 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
                 return;
             }
             None => {
-                super::log("auto: Original recovery handoff was stale or the source rebuild failed");
+                super::log(
+                    "auto: Original recovery handoff was stale or the source rebuild failed",
+                );
                 SHARED.demux_io_failed.store(true, Relaxed);
             }
         }
@@ -183,7 +188,10 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
     let nidx = SHARED.pending_audio_idx.swap(-1, Relaxed);
     if stream && nidx >= 0 && eng.stage >= Stage::Playing {
         let pos = SHARED.playpos_ns.load(Relaxed).max(0);
-        super::log(&format!("audio switch (native): idx={nidx} at {}s → reload", pos / 1_000_000_000));
+        super::log(&format!(
+            "audio switch (native): idx={nidx} at {}s → reload",
+            pos / 1_000_000_000
+        ));
         super::engine::switch_audio_native(mt, nidx, pos);
         return;
     }
@@ -198,9 +206,15 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
     let refresh = SHARED.pending_retranscode.swap(false, Relaxed);
     if stream && (asid >= 0 || refresh) && eng.stage >= Stage::Playing {
         let secs = (SHARED.playpos_ns.load(Relaxed) / 1_000_000_000).max(0);
-        let rebuilt = if asid >= 0 { crate::route::switch_audio(asid, secs) } else { crate::route::retranscode(secs) };
+        let rebuilt = if asid >= 0 {
+            crate::route::switch_audio(asid, secs)
+        } else {
+            crate::route::retranscode(secs)
+        };
         if rebuilt.is_some() {
-            super::log(&format!("re-transcode: asid={asid} refresh={refresh} offset={secs}s → reload"));
+            super::log(&format!(
+                "re-transcode: asid={asid} refresh={refresh} offset={secs}s → reload"
+            ));
             super::engine::reload_transcode(mt, secs * 1_000_000_000);
             return;
         }
@@ -222,7 +236,12 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
         // (TX.seek_to_ns holds the latest request): retrying/reloading at the original armed
         // target would land where the user already tapped away from, then seek AGAIN.
         let pending = TX.seek_to_ns.swap(-1, Relaxed);
-        let tgt = if pending >= 0 { pending } else { SHARED.seek_target_ns.load(Relaxed) }.max(0);
+        let tgt = if pending >= 0 {
+            pending
+        } else {
+            SHARED.seek_target_ns.load(Relaxed)
+        }
+        .max(0);
         if eng.seek_retries < 2 {
             eng.seek_retries += 1;
             SHARED.seek_to_ns.store(tgt, Release); // re-publish; the demux thread seeks on it
@@ -235,7 +254,10 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
                 take_coalesced()
             ));
         } else {
-            super::log(&format!("seek: in-place stuck → reload at {}s", tgt / 1_000_000_000));
+            super::log(&format!(
+                "seek: in-place stuck → reload at {}s",
+                tgt / 1_000_000_000
+            ));
             super::engine::reload_at(mt, tgt); // REPLACES the engine — eng dangles, return
             return;
         }
@@ -304,7 +326,9 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
         SHARED.seek_to_ns.store(t, Release); // the demux thread's av_seek target
         SHARED.seek_target_ns.store(t, Relaxed); // rebase guard: reject stale drifted keyframes
         SHARED.disp_base.store(0, Relaxed);
-        super::log(&format!("seek(in-place): av_seek t={t} coalesced={coalesced}"));
+        super::log(&format!(
+            "seek(in-place): av_seek t={t} coalesced={coalesced}"
+        ));
         // zero-base the fed timeline on the first post-seek keyframe (feed_stream), so it
         // presents against the flush-reset clock immediately — no catch-up freeze
         eng.rebase_pending = true;
@@ -321,14 +345,14 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
         eng.pending_video = None;
         eng.pending_audio = None;
         eng.prime_play = true; // paused above; Play once PRIME_NS is buffered (no fast-forward)
-        // "no post-seek frame presented yet" — the feed-ahead throttle feeds freely until the first
-        // real presented pts lands, instead of comparing the new fed pts against the STALE pre-seek
-        // presented position (which would wrongly break feeding on a forward in-place seek).
+                               // "no post-seek frame presented yet" — the feed-ahead throttle feeds freely until the first
+                               // real presented pts lands, instead of comparing the new fed pts against the STALE pre-seek
+                               // presented position (which would wrongly break feeding on a forward in-place seek).
         SHARED.pres_fed.store(super::engine::PRES_NONE, Relaxed);
         SHARED.frames.store(0, Relaxed); // count only POST-seek frames (rebind + resume re-pause gate)
-        // …and forget the last presentation stamp with it. The plane goes dark across a seek by
-        // design, so the first frame after one would otherwise post a gap the size of the seek and
-        // read as a stutter (`Shared`'s `dg_vpres_*` block).
+                                         // …and forget the last presentation stamp with it. The plane goes dark across a seek by
+                                         // design, so the first frame after one would otherwise post a gap the size of the seek and
+                                         // read as a stutter (`Shared`'s `dg_vpres_*` block).
         SHARED.dg_vpres_at.store(0, Relaxed);
         SHARED.playpos_ns.store(t, Relaxed); // displayed position jumps; wall clock takes over
     }
@@ -414,7 +438,10 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
         let bytes = SHARED.source_info.lock().unwrap().clone();
         if let Some(bytes) = bytes {
             let rv = unsafe { ffi::acb_send_video_data(mt, bytes.as_ptr() as *const c_char) };
-            super::log(&format!("setMediaVideoData rv={rv} frames={}", SHARED.frames.load(Relaxed)));
+            super::log(&format!(
+                "setMediaVideoData rv={rv} frames={}",
+                SHARED.frames.load(Relaxed)
+            ));
             if rv != -1 {
                 // -1 = client-side isJsonError reject; else accepted
                 eng.video_info_sent = true;
@@ -476,7 +503,11 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
         let pos = SHARED.playpos_ns.load(Relaxed);
         if dur > 0 && pos >= dur - EOS_TAIL_NS {
             SHARED.ended.store(true, Relaxed);
-            super::log(&format!("EOS reached: playpos={}s/{}s → ended", pos / 1_000_000_000, dur / 1_000_000_000));
+            super::log(&format!(
+                "EOS reached: playpos={}s/{}s → ended",
+                pos / 1_000_000_000,
+                dur / 1_000_000_000
+            ));
         }
     }
 }

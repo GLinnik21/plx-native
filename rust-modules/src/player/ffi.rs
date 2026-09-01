@@ -116,7 +116,13 @@ pub(crate) unsafe fn sf_send_segment(_: &MainThread) -> c_int {
     sys::sf_send_segment()
 }
 #[inline]
-pub(crate) unsafe fn sf_feed(_: &MainThread, p: *const u8, size: c_uint, pts: i64, es_data: c_int) -> c_char {
+pub(crate) unsafe fn sf_feed(
+    _: &MainThread,
+    p: *const u8,
+    size: c_uint,
+    pts: i64,
+    es_data: c_int,
+) -> c_char {
     sys::sf_feed(p, size, pts, es_data)
 }
 #[inline]
@@ -179,7 +185,11 @@ pub(crate) unsafe fn vp_destroy_window(_: &MainThread) {
 }
 
 #[inline]
-pub(crate) unsafe fn acb_create(_: &MainThread, app_id: *const c_char, player_type: c_int) -> c_long {
+pub(crate) unsafe fn acb_create(
+    _: &MainThread,
+    app_id: *const c_char,
+    player_type: c_int,
+) -> c_long {
     sys::acb_create(app_id, player_type)
 }
 #[inline]

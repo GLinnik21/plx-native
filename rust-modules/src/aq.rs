@@ -56,7 +56,13 @@ pub(crate) unsafe fn aq_is_aborted(q: *const AuQueue) -> bool {
 /// the player engine's feed loop needs them without re-exposing the raw offsets.
 #[inline]
 pub(crate) unsafe fn au_fields(n: *mut AuNode) -> (c_int, c_int, i64, c_int, *const u8) {
-    ((*n).es, (*n).key, (*n).pts, (*n).len, node_data(n) as *const u8)
+    (
+        (*n).es,
+        (*n).key,
+        (*n).pts,
+        (*n).len,
+        node_data(n) as *const u8,
+    )
 }
 
 /// allocate + initialize a boxed queue with an explicit backpressure byte cap (mirrors
@@ -69,7 +75,9 @@ pub(crate) fn aq_new(cap: c_long) -> Box<AuQueue> {
 
 /// initialize an already-allocated queue with an explicit backpressure byte cap.
 fn aq_init_cap(q: *mut AuQueue, cap: c_long) {
-    if q.is_null() { return; }
+    if q.is_null() {
+        return;
+    }
     unsafe {
         ptr::write_bytes(q as *mut u8, 0, core::mem::size_of::<AuQueue>());
         (*q).max_bytes = cap;
@@ -80,7 +88,9 @@ fn aq_init_cap(q: *mut AuQueue, cap: c_long) {
 }
 
 pub(crate) fn aq_destroy(q: *mut AuQueue) {
-    if q.is_null() { return; }
+    if q.is_null() {
+        return;
+    }
     unsafe {
         libc::pthread_mutex_destroy(ptr::addr_of_mut!((*q).m));
         libc::pthread_cond_destroy(ptr::addr_of_mut!((*q).not_full));
@@ -90,12 +100,22 @@ pub(crate) fn aq_destroy(q: *mut AuQueue) {
 
 /// Producer: append one AU (copies `len` bytes). Blocks over the queue's `max_bytes` cap
 /// unless aborting. Returns 0 on success, -1 if aborting or OOM.
-pub(crate) fn aq_push(q: *mut AuQueue, data: *const c_uchar, len: c_int,
-                          pts: i64, key: c_int, es: c_int) -> c_int {
-    if q.is_null() || len < 0 { return -1; }
+pub(crate) fn aq_push(
+    q: *mut AuQueue,
+    data: *const c_uchar,
+    len: c_int,
+    pts: i64,
+    key: c_int,
+    es: c_int,
+) -> c_int {
+    if q.is_null() || len < 0 {
+        return -1;
+    }
     unsafe {
         let n = libc::malloc(core::mem::size_of::<AuNode>() + len as usize) as *mut AuNode;
-        if n.is_null() { return -1; }
+        if n.is_null() {
+            return -1;
+        }
         (*n).next = ptr::null_mut();
         (*n).pts = pts;
         (*n).len = len;
@@ -129,7 +149,9 @@ pub(crate) fn aq_push(q: *mut AuQueue, data: *const c_uchar, len: c_int,
 /// Consumer: pop the next AU (caller frees it) or NULL. Never blocks.
 /// *eof_out = 1 when the producer finished and the queue is drained.
 pub(crate) fn aq_pop(q: *mut AuQueue, eof_out: *mut c_int) -> *mut AuNode {
-    if q.is_null() { return ptr::null_mut(); }
+    if q.is_null() {
+        return ptr::null_mut();
+    }
     unsafe {
         libc::pthread_mutex_lock(ptr::addr_of_mut!((*q).m));
         let n = (*q).head;
@@ -142,7 +164,11 @@ pub(crate) fn aq_pop(q: *mut AuQueue, eof_out: *mut c_int) -> *mut AuNode {
             libc::pthread_cond_signal(ptr::addr_of_mut!((*q).not_full));
         }
         if !eof_out.is_null() {
-            *eof_out = if (*q).head.is_null() && (*q).eof != 0 { 1 } else { 0 };
+            *eof_out = if (*q).head.is_null() && (*q).eof != 0 {
+                1
+            } else {
+                0
+            };
         }
         libc::pthread_mutex_unlock(ptr::addr_of_mut!((*q).m));
         n
@@ -150,7 +176,9 @@ pub(crate) fn aq_pop(q: *mut AuQueue, eof_out: *mut c_int) -> *mut AuNode {
 }
 
 pub(crate) fn aq_set_eof(q: *mut AuQueue) {
-    if q.is_null() { return; }
+    if q.is_null() {
+        return;
+    }
     unsafe {
         libc::pthread_mutex_lock(ptr::addr_of_mut!((*q).m));
         (*q).eof = 1;
@@ -160,7 +188,9 @@ pub(crate) fn aq_set_eof(q: *mut AuQueue) {
 }
 
 pub(crate) fn aq_abort(q: *mut AuQueue) {
-    if q.is_null() { return; }
+    if q.is_null() {
+        return;
+    }
     unsafe {
         libc::pthread_mutex_lock(ptr::addr_of_mut!((*q).m));
         (*q).abort = 1;
@@ -171,7 +201,9 @@ pub(crate) fn aq_abort(q: *mut AuQueue) {
 }
 
 pub(crate) fn aq_bytes(q: *mut AuQueue) -> c_long {
-    if q.is_null() { return 0; }
+    if q.is_null() {
+        return 0;
+    }
     unsafe {
         libc::pthread_mutex_lock(ptr::addr_of_mut!((*q).m));
         let b = (*q).queued_bytes;

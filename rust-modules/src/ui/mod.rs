@@ -18,40 +18,43 @@ pub mod chapters_panel;
 pub(crate) mod consent;
 pub mod consts;
 pub mod detail;
+pub(crate) mod document_reader;
 pub mod exit_alert; // the app's ONE decision alert: BACK at Home's root asks before it quits
 pub mod fmt; // shared duration/clock display formatters
-pub mod hero_logo; // the ONE clearLogo sizing rule + its fallback-to-title band (both heroes, the compact title)
 pub mod glassload; // dev-only backdrop-glass LOAD DIAL + the blurred-route-transition prototype
+pub mod hero_logo; // the ONE clearLogo sizing rule + its fallback-to-title band (both heroes, the compact title)
 pub mod home;
 pub mod icons;
 pub mod idle; // whole-FRAME present gating: a screen with nothing moving on it stops repainting
 pub mod info_panel;
 pub mod item_menu; // press-and-hold card context menu (Go to Show / Mark as Watched / Play from Start)
-pub mod label;
 #[cfg(feature = "lab-diagnostics")]
 pub mod lab_toast; // the Lab Diagnostics upload read-out (lab builds only — see `crate::lab`)
+pub mod label;
 pub mod legal; // Privacy / open-source / source-offer / trademarks — the LG, Plex and LGPL duties that must be readable ON the TV
 pub mod library; // the Library browse screen (poster wall + server-driven sort/filter)
-pub mod more_menu; // the player's `…` overflow popover (holds the Stats for nerds toggle)
 pub mod login; // sign-in screen (QR / short code) for the plex.tv account flow
-pub mod onboard; // first-run route: which sources feed Home, asked once per PROFILE
-pub mod source_list; // the Sources ROW MODEL, shared by the Library panel and that route
+pub mod more_menu; // the player's `…` overflow popover (holds the Stats for nerds toggle)
 pub mod nav; // ROUTE-level page cross-fade + the continuous-chrome rule (the tab bar rides across)
+pub mod onboard; // first-run route: which sources feed Home, asked once per PROFILE
+pub mod overdraw; // dev-only DRAW-CLASS ledger + mask — the attribution instrument (docs/backdrop-blur-profiling.md Part 5)
 pub mod person; // the person / actor page (Apple-TV shape) — opened from a detail page's cast row
 pub mod person_bio; // ...and that page's bio ALERT panel — the full biography behind its `MORE` mark
-pub mod search; // the Search screen: field + recents + typed result shelves (the last pill in the top strip)
-pub mod profiles; // "who's watching" Plex Home picker + PIN keypad
-pub mod player_hud;
-pub mod skip_pill; // in-player Skip Intro / Skip Credits pill (server marker driven)
-pub mod stats; // the "Stats for nerds" diagnostics overlay — how bug reports leave a stranger's TV
 pub mod pill; // THE CAPSULE OUTLINE — three blended arcs per corner, solved; not a stadium
+pub mod player_hud;
 pub mod popover; // shared modal open/appear choreography (track menu / info / chapters / account)
 pub mod press; // tvOS-style click: OK-down dips the focused card, OK-up springs it back + activates
-pub mod overdraw; // dev-only DRAW-CLASS ledger + mask — the attribution instrument (docs/backdrop-blur-profiling.md Part 5)
 pub mod profile;
+pub mod profiles; // "who's watching" Plex Home picker + PIN keypad
+pub(crate) mod route_screen;
+pub mod search; // the Search screen: field + recents + typed result shelves (the last pill in the top strip)
+pub mod settings; // reachable post-setup choices: Home sources, Privacy, Legal and Diagnostics
+pub mod skip_pill; // in-player Skip Intro / Skip Credits pill (server marker driven)
+pub mod source_list; // the Sources ROW MODEL, shared by the Library panel and that route
+pub mod stats; // the "Stats for nerds" diagnostics overlay — how bug reports leave a stranger's TV
 pub mod table;
-pub mod text_view;
 pub mod testpat; // dev-only SYNTHETIC GROUNDS — the page's picture replaced by a chosen pattern
+pub mod text_view;
 pub mod theme;
 pub mod track_menu;
 pub mod tracks_panel; // the detail page's "Track information" file inspector (Alert Views §1B)
@@ -123,7 +126,7 @@ pub fn guard(f: impl FnOnce()) {
     }
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, Debug)]
 pub struct Rect {
     pub x: f32,
     pub y: f32,
@@ -134,7 +137,12 @@ impl Rect {
     pub const fn new(x: f32, y: f32, w: f32, h: f32) -> Self {
         Self { x, y, w, h }
     }
-    pub const FULL: Rect = Rect { x: 0.0, y: 0.0, w: 1920.0, h: 1080.0 };
+    pub const FULL: Rect = Rect {
+        x: 0.0,
+        y: 0.0,
+        w: 1920.0,
+        h: 1080.0,
+    };
     #[inline]
     pub fn cx(&self) -> f32 {
         self.x + self.w * 0.5
@@ -151,7 +159,12 @@ impl Rect {
     #[inline]
     pub fn scaled(&self, s: f32) -> Rect {
         let (w, h) = (self.w * s, self.h * s);
-        Rect::new(self.x - (w - self.w) * 0.5, self.y - (h - self.h) * 0.5, w, h)
+        Rect::new(
+            self.x - (w - self.w) * 0.5,
+            self.y - (h - self.h) * 0.5,
+            w,
+            h,
+        )
     }
     /// This rect shrunk by `d` on every side (negative grows it).
     #[inline]
@@ -179,7 +192,12 @@ impl Rect {
         }
         let s = (self.w / tw).max(self.h / th);
         let (w, h) = (tw * s, th * s);
-        Rect::new(self.x + (self.w - w) * 0.5, self.y + (self.h - h) * 0.5, w, h)
+        Rect::new(
+            self.x + (self.w - w) * 0.5,
+            self.y + (self.h - h) * 0.5,
+            w,
+            h,
+        )
     }
     /// The overlap of two rects — the part of `self` that `o` lets through. A miss returns a
     /// ZERO-SIZE rect (never a negative one), so `w > 0` is a clean "any of this is visible?"
@@ -189,7 +207,10 @@ impl Rect {
     #[inline]
     pub fn intersect(&self, o: Rect) -> Rect {
         let (x0, y0) = (self.x.max(o.x), self.y.max(o.y));
-        let (x1, y1) = ((self.x + self.w).min(o.x + o.w), (self.y + self.h).min(o.y + o.h));
+        let (x1, y1) = (
+            (self.x + self.w).min(o.x + o.w),
+            (self.y + self.h).min(o.y + o.h),
+        );
         Rect::new(x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0))
     }
 }
@@ -253,7 +274,14 @@ impl Env {
     /// Deliberately NOT `Default`: a screen that should compute a real per-frame Env must not be
     /// able to silently grab a zeroed one — reach for this only where the callee ignores its Env.
     pub const fn inert() -> Self {
-        Self { dt: 0.0, screen: Rect::FULL, fr: 0, fc: 0, sp: 0.0, hero_a: 0.0 }
+        Self {
+            dt: 0.0,
+            screen: Rect::FULL,
+            fr: 0,
+            fc: 0,
+            sp: 0.0,
+            hero_a: 0.0,
+        }
     }
 }
 
@@ -285,24 +313,43 @@ fn card_shadow_params(h: f32, f: f32) -> (f32, f32, f32) {
     let blur_r = (h * 0.05).clamp(3.0, theme::CARD_SHADOW_REST_BLUR);
     let off_r = (h * 0.015).clamp(1.5, theme::CARD_SHADOW_REST_DY);
     let lerp = |a: f32, b: f32| a + (b - a) * f;
-    (lerp(blur_r, blur_l), lerp(off_r, off_l), lerp(theme::CARD_SHADOW_REST_A, theme::CARD_SHADOW[3]))
+    (
+        lerp(blur_r, blur_l),
+        lerp(off_r, off_l),
+        lerp(theme::CARD_SHADOW_REST_A, theme::CARD_SHADOW[3]),
+    )
 }
 
 impl Painter {
     pub const fn root() -> Self {
-        Self { dx: 0.0, dy: 0.0, a: 1.0, rgb: 1.0 }
+        Self {
+            dx: 0.0,
+            dy: 0.0,
+            a: 1.0,
+            rgb: 1.0,
+        }
     }
     pub fn alpha(self, m: f32) -> Self {
-        Self { a: self.a * m, ..self }
+        Self {
+            a: self.a * m,
+            ..self
+        }
     }
     pub fn translate(self, dx: f32, dy: f32) -> Self {
-        Self { dx: self.dx + dx, dy: self.dy + dy, ..self }
+        Self {
+            dx: self.dx + dx,
+            dy: self.dy + dy,
+            ..self
+        }
     }
     /// Multiply the RGB written by every descendant primitive. With the frame clear multiplied by
     /// the same value, this is algebraically the same result as a final full-screen black scrim,
     /// without paying another 1920x1080 blended pass on the television.
     pub fn rgb(self, m: f32) -> Self {
-        Self { rgb: self.rgb * m.clamp(0.0, 1.0), ..self }
+        Self {
+            rgb: self.rgb * m.clamp(0.0, 1.0),
+            ..self
+        }
     }
     /// This painter's accumulated horizontal offset — what to ADD to a coordinate drawn through it
     /// to get the screen x it lands on.
@@ -320,7 +367,12 @@ impl Painter {
     }
     #[inline]
     fn c(self, c: [f32; 4]) -> [f32; 4] {
-        [c[0] * self.rgb, c[1] * self.rgb, c[2] * self.rgb, c[3] * self.a]
+        [
+            c[0] * self.rgb,
+            c[1] * self.rgb,
+            c[2] * self.rgb,
+            c[3] * self.a,
+        ]
     }
     pub fn rect(self, r: Rect, rad: f32, top: [f32; 4], bot: [f32; 4], focus: f32) {
         let (t, b) = (self.c(top), self.c(bot));
@@ -368,7 +420,18 @@ impl Painter {
     pub fn rring(self, r: Rect, rad: f32, w: f32, col: [f32; 4]) {
         let c = self.c(col);
         const HOLLOW: [f32; 4] = [0.0, 0.0, 0.0, 0.0];
-        crate::gfx::draw_rrect_sheened(r.x + self.dx, r.y + self.dy, r.w, r.h, rad, rad, HOLLOW.as_ptr(), w, c.as_ptr(), 0.0);
+        crate::gfx::draw_rrect_sheened(
+            r.x + self.dx,
+            r.y + self.dy,
+            r.w,
+            r.h,
+            rad,
+            rad,
+            HOLLOW.as_ptr(),
+            w,
+            c.as_ptr(),
+            0.0,
+        );
     }
     /// Soft drop-shadow of `r` (corner `radius`, `w/2` = circle) with `blur` px of penumbra, its box
     /// pushed down `off_y` px. Draw it BEFORE the tile art so the tile sits over its own shadow.
@@ -379,7 +442,17 @@ impl Painter {
     /// wears it as a drawn frame — use [`shadow_outside`](Self::shadow_outside) there.
     pub fn shadow(self, r: Rect, radius: f32, blur: f32, off_y: f32, col: [f32; 4]) {
         let c = self.c(col);
-        crate::gfx::draw_shadow(r.x + self.dx, r.y + self.dy + off_y, r.w, r.h, radius, blur, off_y, -1.0, c.as_ptr());
+        crate::gfx::draw_shadow(
+            r.x + self.dx,
+            r.y + self.dy + off_y,
+            r.w,
+            r.h,
+            radius,
+            blur,
+            off_y,
+            -1.0,
+            c.as_ptr(),
+        );
     }
     /// [`shadow`](Self::shadow) for a **TRANSLUCENT** occluder: the ink stops at the occluder's own
     /// rounded outline (corner `radius`), so nothing is drawn under the panel to show through it.
@@ -391,7 +464,17 @@ impl Painter {
     /// a region it covers anyway.
     pub fn shadow_outside(self, r: Rect, radius: f32, blur: f32, off_y: f32, col: [f32; 4]) {
         let c = self.c(col);
-        crate::gfx::draw_shadow(r.x + self.dx, r.y + self.dy + off_y, r.w, r.h, radius, blur, off_y, radius, c.as_ptr());
+        crate::gfx::draw_shadow(
+            r.x + self.dx,
+            r.y + self.dy + off_y,
+            r.w,
+            r.h,
+            radius,
+            blur,
+            off_y,
+            radius,
+            c.as_ptr(),
+        );
     }
     /// Standalone soft drop-shadow under a tile (its own [`FS_SHADOW`](crate::gfx) pass) — used by the
     /// profile chip, whose avatar isn't a folded card composite. Every tile carries a shadow that GROWS
@@ -412,23 +495,62 @@ impl Painter {
     pub fn rect_sheened(self, r: Rect, rad: f32, top: [f32; 4], bot: [f32; 4]) {
         let (t, b) = (self.c(top), self.c(bot));
         let rim = self.sheen_rim();
-        crate::gfx::draw_rect_sheened(r.x + self.dx, r.y + self.dy, r.w, r.h, rad, t.as_ptr(), b.as_ptr(), theme::CARD_SHEEN_W, rim.as_ptr(), 0.0);
+        crate::gfx::draw_rect_sheened(
+            r.x + self.dx,
+            r.y + self.dy,
+            r.w,
+            r.h,
+            rad,
+            t.as_ptr(),
+            b.as_ptr(),
+            theme::CARD_SHEEN_W,
+            rim.as_ptr(),
+            0.0,
+        );
     }
     /// [`rect_sheened`](Self::rect_sheened) with the rim colour named rather than assumed — for a
     /// surface whose edge is not the tiles' [`theme::CARD_SHEEN`]. Same single pass.
     /// `rim_top` is extra weight on the edge facing UP, fading to nothing where the surface turns
     /// away — a container's brighter top line, continuous round its caps. 0 for a plain perimeter.
-    pub fn rect_rimmed(self, r: Rect, rad: f32, top: [f32; 4], bot: [f32; 4], rim: [f32; 4], rim_top: f32) {
+    pub fn rect_rimmed(
+        self,
+        r: Rect,
+        rad: f32,
+        top: [f32; 4],
+        bot: [f32; 4],
+        rim: [f32; 4],
+        rim_top: f32,
+    ) {
         self.rect_rimmed_w(r, rad, top, bot, rim, rim_top, theme::CARD_SHEEN_W)
     }
     /// [`rect_rimmed`](Self::rect_rimmed) with the rim's WIDTH named too — for the one edge in the
     /// app that is not the 1px card constant ([`theme::CONTROL_RIM_FOCUS_UNKEYED_W`], the focused
     /// control face over the video plane). Same single pass; `rect_rimmed` is this at
     /// [`theme::CARD_SHEEN_W`], so the two cannot drift.
-    pub fn rect_rimmed_w(self, r: Rect, rad: f32, top: [f32; 4], bot: [f32; 4], rim: [f32; 4], rim_top: f32, rim_w: f32) {
+    pub fn rect_rimmed_w(
+        self,
+        r: Rect,
+        rad: f32,
+        top: [f32; 4],
+        bot: [f32; 4],
+        rim: [f32; 4],
+        rim_top: f32,
+        rim_w: f32,
+    ) {
         let (t, b) = (self.c(top), self.c(bot));
         let rim = self.c(rim);
-        crate::gfx::draw_rect_sheened(r.x + self.dx, r.y + self.dy, r.w, r.h, rad, t.as_ptr(), b.as_ptr(), rim_w, rim.as_ptr(), rim_top * self.a);
+        crate::gfx::draw_rect_sheened(
+            r.x + self.dx,
+            r.y + self.dy,
+            r.w,
+            r.h,
+            rad,
+            t.as_ptr(),
+            b.as_ptr(),
+            rim_w,
+            rim.as_ptr(),
+            rim_top * self.a,
+        );
     }
     /// A CONTROL FACE: [`rect_rimmed_w`](Self::rect_rimmed_w) plus the two things only a control
     /// wears — the **CAPSULE OUTLINE** (three blended arcs per corner rather than a stadium,
@@ -441,7 +563,18 @@ impl Painter {
     /// already evaluates, so a capsule costs what a rounded rect costs plus two normalizes on its
     /// edge fragments.
     #[allow(clippy::too_many_arguments)]
-    pub fn face_rimmed(self, r: Rect, rad: f32, pill: Option<&crate::ui::pill::Pill>, top: [f32; 4], bot: [f32; 4], rim: [f32; 4], rim_top: f32, rim_w: f32, glow: Option<[f32; 4]>) {
+    pub fn face_rimmed(
+        self,
+        r: Rect,
+        rad: f32,
+        pill: Option<&crate::ui::pill::Pill>,
+        top: [f32; 4],
+        bot: [f32; 4],
+        rim: [f32; 4],
+        rim_top: f32,
+        rim_w: f32,
+        glow: Option<[f32; 4]>,
+    ) {
         let (t, b) = (self.c(top), self.c(bot));
         let rim = self.c(rim);
         let args = pill.map(|p| p.args());
@@ -466,7 +599,18 @@ impl Painter {
     pub fn rrect_sheened(self, r: Rect, rad: f32, col: [f32; 4]) {
         let c = self.c(col);
         let rim = self.sheen_rim();
-        crate::gfx::draw_rrect_sheened(r.x + self.dx, r.y + self.dy, r.w, r.h, rad, rad, c.as_ptr(), theme::CARD_SHEEN_W, rim.as_ptr(), 0.0);
+        crate::gfx::draw_rrect_sheened(
+            r.x + self.dx,
+            r.y + self.dy,
+            r.w,
+            r.h,
+            rad,
+            rad,
+            c.as_ptr(),
+            theme::CARD_SHEEN_W,
+            rim.as_ptr(),
+            0.0,
+        );
     }
     pub fn tex(self, tex: u32, r: Rect, rad: f32, tint: [f32; 4]) {
         let t = self.c(tint);
@@ -496,16 +640,69 @@ impl Painter {
     /// surface rather than drawn as a second rect on top of it ([`crate::gfx::GlassFace`], and its
     /// doc for the artefact that construction produced). `GlassFace::NONE` for a sheet.
     #[must_use]
-    pub fn backdrop_blur(self, r: Rect, rest_dy: f32, rad: f32, tint: [f32; 4], rim: crate::gfx::GlassRim, face: crate::gfx::GlassFace, deep: f32) -> bool {
+    pub fn backdrop_blur(
+        self,
+        r: Rect,
+        rest_dy: f32,
+        rad: f32,
+        tint: [f32; 4],
+        rim: crate::gfx::GlassRim,
+        face: crate::gfx::GlassFace,
+        deep: f32,
+    ) -> bool {
         let t = self.c(tint);
         let (x, y) = (r.x + self.dx, r.y + self.dy);
-        crate::gfx::draw_blur_backdrop(x, y, r.w, r.h, [x, y - rest_dy, r.w, r.h], rad, t.as_ptr(), rim, face, deep)
+        crate::gfx::draw_blur_backdrop(
+            x,
+            y,
+            r.w,
+            r.h,
+            [x, y - rest_dy, r.w, r.h],
+            rad,
+            t.as_ptr(),
+            rim,
+            face,
+            deep,
+        )
+    }
+    /// Composite the cached blur through the ordinary image shader. This is for edge-free,
+    /// full-screen modal grounds; shaped glass must use [`backdrop_blur`](Self::backdrop_blur).
+    #[must_use]
+    pub fn backdrop_blur_flat(
+        self,
+        r: Rect,
+        tint: [f32; 4],
+        taps: &[f32],
+        saturation: f32,
+    ) -> bool {
+        let t = self.c(tint);
+        let (x, y) = (r.x + self.dx, r.y + self.dy);
+        crate::gfx::draw_blur_snapshot_flat(
+            x,
+            y,
+            r.w,
+            r.h,
+            [x, y, r.w, r.h],
+            t.as_ptr(),
+            taps,
+            saturation,
+        )
     }
     /// [`tex`](Self::tex) with the focus edge-sheen (the 1px inset perimeter rim) baked into the SAME
     /// pass — rim only, no shadow. Used for the profile chip avatar.
     pub fn tex_stroked(self, tex: u32, r: Rect, rad: f32, tint: [f32; 4]) {
         let t = self.c(tint);
-        crate::gfx::draw_tex_stroked(tex, r.x + self.dx, r.y + self.dy, r.w, r.h, rad, t.as_ptr(), theme::CARD_SHEEN_W, self.sheen_rim().as_ptr());
+        crate::gfx::draw_tex_stroked(
+            tex,
+            r.x + self.dx,
+            r.y + self.dy,
+            r.w,
+            r.h,
+            rad,
+            t.as_ptr(),
+            theme::CARD_SHEEN_W,
+            self.sheen_rim().as_ptr(),
+        );
     }
     /// The full CARD composite in ONE pass — texture + 1px edge-sheen + the soft drop-shadow that
     /// grows with the pop `f` (folded via [`gfx::draw_tex_carded`](crate::gfx::draw_tex_carded)). `r` is
@@ -516,8 +713,20 @@ impl Painter {
         let (blur, _off, sa) = card_shadow_params(r.h, f); // cards use a symmetric penumbra — offset is chip-only
         let shcol = self.c(theme::with_a(theme::CARD_SHADOW, sa));
         let pad = blur + 1.0; // inflate for the symmetric penumbra (+1 AA margin)
-        crate::gfx::draw_tex_carded(tex, r.x + self.dx, r.y + self.dy, r.w, r.h, rad, t.as_ptr(),
-            theme::CARD_SHEEN_W, self.sheen_rim().as_ptr(), pad, blur, shcol.as_ptr());
+        crate::gfx::draw_tex_carded(
+            tex,
+            r.x + self.dx,
+            r.y + self.dy,
+            r.w,
+            r.h,
+            rad,
+            t.as_ptr(),
+            theme::CARD_SHEEN_W,
+            self.sheen_rim().as_ptr(),
+            pad,
+            blur,
+            shcol.as_ptr(),
+        );
     }
     /// THE HERO GROUND IN ONE PASS: the backdrop art with both scrim fields evaluated on it,
     /// instead of the art and then four blended gradient quads over the same 2.78M fragments.
@@ -565,8 +774,17 @@ impl Painter {
             k.map(|c| std::array::from_fn(|i| g[i] + (c[i] - g[i]) * a))
         };
         let k = k.map(|c| c.map(|v| v * self.rgb));
-        crate::gfx::draw_ambient(r.x + self.dx, r.y + self.dy, r.w, r.h, dim,
-            k[0].as_ptr(), k[1].as_ptr(), k[2].as_ptr(), k[3].as_ptr());
+        crate::gfx::draw_ambient(
+            r.x + self.dx,
+            r.y + self.dy,
+            r.w,
+            r.h,
+            dim,
+            k[0].as_ptr(),
+            k[1].as_ptr(),
+            k[2].as_ptr(),
+            k[3].as_ptr(),
+        );
     }
     /// Bilinear 4-corner gradient with real per-corner ALPHA, folded through the cascade — the
     /// counterpart of [`ambient`](Self::ambient), which is opaque by contract and therefore cannot
@@ -580,21 +798,57 @@ impl Painter {
     pub fn grad4(self, r: Rect, k: [[f32; 4]; 4]) {
         // bind the mapped array to a `let` first — pointers into a temporary would dangle
         let c = k.map(|q| self.c(q));
-        crate::gfx::draw_grad4(r.x + self.dx, r.y + self.dy, r.w, r.h,
-            c[0].as_ptr(), c[1].as_ptr(), c[2].as_ptr(), c[3].as_ptr());
+        crate::gfx::draw_grad4(
+            r.x + self.dx,
+            r.y + self.dy,
+            r.w,
+            r.h,
+            c[0].as_ptr(),
+            c[1].as_ptr(),
+            c[2].as_ptr(),
+            c[3].as_ptr(),
+        );
     }
     /// draw text at absolute (x,y) plus the cascade translate; returns width
-    pub fn text(self, s: *const c_char, x: f32, y: f32, sz: c_int, col: [f32; 4], align: c_int, bold: c_int) -> f32 {
+    pub fn text(
+        self,
+        s: *const c_char,
+        x: f32,
+        y: f32,
+        sz: c_int,
+        col: [f32; 4],
+        align: c_int,
+        bold: c_int,
+    ) -> f32 {
         let c = self.c(col);
         crate::text::draw_text(s, x + self.dx, y + self.dy, sz, c.as_ptr(), align, bold)
     }
     /// [`text`](Self::text) with a horizontal fade-out: glyph alpha runs 1→0 between
     /// `fade_from`..`fade_to` px from the string's left edge (see `text::draw_text_fade`).
     #[allow(clippy::too_many_arguments)]
-    pub fn text_fade(self, s: *const c_char, x: f32, y: f32, sz: c_int, col: [f32; 4], bold: c_int,
-        fade_from: f32, fade_to: f32) -> f32 {
+    pub fn text_fade(
+        self,
+        s: *const c_char,
+        x: f32,
+        y: f32,
+        sz: c_int,
+        col: [f32; 4],
+        bold: c_int,
+        fade_from: f32,
+        fade_to: f32,
+    ) -> f32 {
         let c = self.c(col);
-        crate::text::draw_text_fade(s, x + self.dx, y + self.dy, sz, c.as_ptr(), 0, bold, fade_from, fade_to)
+        crate::text::draw_text_fade(
+            s,
+            x + self.dx,
+            y + self.dy,
+            sz,
+            c.as_ptr(),
+            0,
+            bold,
+            fade_from,
+            fade_to,
+        )
     }
     /// Hard-clip subsequent draws to `r` (in this painter's space — the cascade translate is folded
     /// in). `Painter` otherwise has no clip/scissor; a scrolling list uses this so a partial row is
@@ -719,7 +973,11 @@ pub trait Column {
 
 impl ScrollColumn {
     pub const fn new(top: f32, margin: f32) -> Self {
-        Self { scroll: Spring::at(0.0), top, margin }
+        Self {
+            scroll: Spring::at(0.0),
+            top,
+            margin,
+        }
     }
     /// The pre-scroll top of child `i`: stacks the present children's heights from `top`, adding
     /// `gap_before(k)` before each child k>0. This IS the flow — the single below-hero Y source.
@@ -772,7 +1030,10 @@ mod tests {
 
     /// Every field of `a` within `eps` of `b`'s.
     fn near(a: Rect, b: Rect, eps: f32) -> bool {
-        (a.x - b.x).abs() <= eps && (a.y - b.y).abs() <= eps && (a.w - b.w).abs() <= eps && (a.h - b.h).abs() <= eps
+        (a.x - b.x).abs() <= eps
+            && (a.y - b.y).abs() <= eps
+            && (a.w - b.w).abs() <= eps
+            && (a.h - b.h).abs() <= eps
     }
 
     /// The guarantee that lets `cover` be applied to EVERY backdrop at once: a source that is
@@ -780,9 +1041,18 @@ mod tests {
     /// show backdrop is therefore pixel-identical to the stretch it replaces.
     #[test]
     fn cover_is_a_no_op_when_the_source_matches_the_frame() {
-        for (tw, th) in [(1920.0, 1080.0), (1280.0, 720.0), (640.0, 360.0), (3840.0, 2160.0)] {
+        for (tw, th) in [
+            (1920.0, 1080.0),
+            (1280.0, 720.0),
+            (640.0, 360.0),
+            (3840.0, 2160.0),
+        ] {
             let r = Rect::FULL.cover(tw, th);
-            assert!(near(r, Rect::FULL, 1e-3), "{tw}x{th} → {:?}", (r.x, r.y, r.w, r.h));
+            assert!(
+                near(r, Rect::FULL, 1e-3),
+                "{tw}x{th} → {:?}",
+                (r.x, r.y, r.w, r.h)
+            );
         }
     }
 
@@ -791,15 +1061,41 @@ mod tests {
     /// broken backdrop, which is why the long axis is allowed to run off the panel.
     #[test]
     fn cover_overflows_the_long_axis_and_never_letterboxes() {
-        for (tw, th) in [(2592.0, 1080.0), (1440.0, 1080.0), (1000.0, 1000.0), (1000.0, 1500.0)] {
+        for (tw, th) in [
+            (2592.0, 1080.0),
+            (1440.0, 1080.0),
+            (1000.0, 1000.0),
+            (1000.0, 1500.0),
+        ] {
             let r = Rect::FULL.cover(tw, th);
-            assert!(r.w >= Rect::FULL.w - 1e-3, "{tw}x{th}: frame not covered horizontally ({})", r.w);
-            assert!(r.h >= Rect::FULL.h - 1e-3, "{tw}x{th}: frame not covered vertically ({})", r.h);
-            assert!((r.w / r.h - tw / th).abs() < 1e-3, "{tw}x{th}: aspect {} not preserved", r.w / r.h);
-            assert!((r.cx() - Rect::FULL.cx()).abs() < 1e-3, "{tw}x{th}: not centred in x");
-            assert!((r.cy() - Rect::FULL.cy()).abs() < 1e-3, "{tw}x{th}: not centred in y");
+            assert!(
+                r.w >= Rect::FULL.w - 1e-3,
+                "{tw}x{th}: frame not covered horizontally ({})",
+                r.w
+            );
+            assert!(
+                r.h >= Rect::FULL.h - 1e-3,
+                "{tw}x{th}: frame not covered vertically ({})",
+                r.h
+            );
+            assert!(
+                (r.w / r.h - tw / th).abs() < 1e-3,
+                "{tw}x{th}: aspect {} not preserved",
+                r.w / r.h
+            );
+            assert!(
+                (r.cx() - Rect::FULL.cx()).abs() < 1e-3,
+                "{tw}x{th}: not centred in x"
+            );
+            assert!(
+                (r.cy() - Rect::FULL.cy()).abs() < 1e-3,
+                "{tw}x{th}: not centred in y"
+            );
             // exactly one axis overflows (or neither, at the frame's own aspect)
-            assert!(r.w <= Rect::FULL.w + 1e-3 || r.h <= Rect::FULL.h + 1e-3, "{tw}x{th}: both axes overflow");
+            assert!(
+                r.w <= Rect::FULL.w + 1e-3 || r.h <= Rect::FULL.h + 1e-3,
+                "{tw}x{th}: both axes overflow"
+            );
         }
     }
 
@@ -809,10 +1105,19 @@ mod tests {
     #[test]
     fn cover_leaves_the_frame_alone_for_an_undecoded_source() {
         let f = Rect::new(10.0, 20.0, 300.0, 400.0);
-        for (tw, th) in [(0.0, 0.0), (0.0, 720.0), (1280.0, 0.0), (-1.0, -1.0), (-1280.0, 720.0)] {
+        for (tw, th) in [
+            (0.0, 0.0),
+            (0.0, 720.0),
+            (1280.0, 0.0),
+            (-1.0, -1.0),
+            (-1280.0, 720.0),
+        ] {
             let r = f.cover(tw, th);
             assert!(near(r, f, 0.0), "{tw}x{th} must return the frame unchanged");
-            assert!(r.w > 0.0 && r.h > 0.0, "{tw}x{th} produced a degenerate rect");
+            assert!(
+                r.w > 0.0 && r.h > 0.0,
+                "{tw}x{th} produced a degenerate rect"
+            );
         }
     }
 
@@ -823,8 +1128,17 @@ mod tests {
     fn cover_survives_a_non_origin_frame() {
         let f = Rect::new(200.0, 100.0, 400.0, 200.0);
         let r = f.cover(400.0, 400.0);
-        assert!((r.cx() - f.cx()).abs() < 1e-3 && (r.cy() - f.cy()).abs() < 1e-3, "crop must stay on the frame's centre");
-        assert!((r.w - 400.0).abs() < 1e-3 && (r.h - 400.0).abs() < 1e-3, "a square source covers a 2:1 frame by its width");
-        assert!(r.y < f.y && r.y + r.h > f.y + f.h, "the square must overflow the short axis both ways");
+        assert!(
+            (r.cx() - f.cx()).abs() < 1e-3 && (r.cy() - f.cy()).abs() < 1e-3,
+            "crop must stay on the frame's centre"
+        );
+        assert!(
+            (r.w - 400.0).abs() < 1e-3 && (r.h - 400.0).abs() < 1e-3,
+            "a square source covers a 2:1 frame by its width"
+        );
+        assert!(
+            r.y < f.y && r.y + r.h > f.y + f.h,
+            "the square must overflow the short axis both ways"
+        );
     }
 }

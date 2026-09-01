@@ -85,9 +85,13 @@
 
 use crate::app::SDL_WINDOW_INPUT_FOCUS;
 #[cfg(not(test))]
-use crate::app::{SDL_GetWindowFlags, SDL_HasScreenKeyboardSupport, SDL_StartTextInput, SDL_StopTextInput};
+use crate::app::{
+    SDL_GetWindowFlags, SDL_HasScreenKeyboardSupport, SDL_StartTextInput, SDL_StopTextInput,
+};
 #[cfg(test)]
-use host_test_sdl::{SDL_GetWindowFlags, SDL_HasScreenKeyboardSupport, SDL_StartTextInput, SDL_StopTextInput};
+use host_test_sdl::{
+    SDL_GetWindowFlags, SDL_HasScreenKeyboardSupport, SDL_StartTextInput, SDL_StopTextInput,
+};
 
 /// The four SDL entry points this module calls, stubbed for the HOST TEST BINARY only.
 ///
@@ -409,7 +413,11 @@ fn decode_text_at(ev: &[u8], off: usize) -> String {
     // the CALLER's buffer ran out before `text[32]` did — a short buffer is the reader's limit,
     // not the panel's, and there is nothing to say the panel cut anything at all.
     let text = drop_orphan_head(&field[..n]);
-    let text = if n == TEXT_CAP { drop_cut_tail(text) } else { text };
+    let text = if n == TEXT_CAP {
+        drop_cut_tail(text)
+    } else {
+        text
+    };
     // Lossy, never `from_utf8`: a single bad byte would otherwise discard the whole commit — and
     // an IME that emits one is a keystroke the user typed, not an attack.
     String::from_utf8_lossy(text).into_owned()
@@ -553,14 +561,24 @@ mod tests {
                 raw.extend_from_slice(&whole.as_bytes()[..kept]);
                 assert_eq!(raw.len(), TEXT_CAP);
                 let got = decode_text_at(&ev_with(16, &raw), 16);
-                assert_eq!(got, "y".repeat(TEXT_CAP - kept), "lead {lead:#x}, {kept} of {need} bytes");
-                assert!(!got.contains('\u{fffd}'), "a cut must not invent a character");
+                assert_eq!(
+                    got,
+                    "y".repeat(TEXT_CAP - kept),
+                    "lead {lead:#x}, {kept} of {need} bytes"
+                );
+                assert!(
+                    !got.contains('\u{fffd}'),
+                    "a cut must not invent a character"
+                );
             }
             // …and the same codepoint that FITS is untouched, which is what proves the rule cuts
             // only what was actually truncated.
             let mut raw = vec![b'y'; TEXT_CAP - need];
             raw.extend_from_slice(whole.as_bytes());
-            assert_eq!(decode_text_at(&ev_with(16, &raw), 16), format!("{}{whole}", "y".repeat(TEXT_CAP - need)));
+            assert_eq!(
+                decode_text_at(&ev_with(16, &raw), 16),
+                format!("{}{whole}", "y".repeat(TEXT_CAP - need))
+            );
         }
     }
 
@@ -573,7 +591,10 @@ mod tests {
         assert_eq!(decode_text_at(&ev_with(16, b"ab\xe5\0"), 16), "ab\u{fffd}");
         // …and a buffer that ends mid-codepoint is the READER running out, so the tail rule stays
         // off and the bad byte is still reported.
-        assert_eq!(decode_text_at(&ev_with(16, "é".as_bytes())[..17], 16), "\u{fffd}");
+        assert_eq!(
+            decode_text_at(&ev_with(16, "é".as_bytes())[..17], 16),
+            "\u{fffd}"
+        );
     }
 
     /// **A byte no cut could have produced keeps its replacement.** The rule is "valid so far,
@@ -591,7 +612,10 @@ mod tests {
             let mut raw = vec![b'y'; TEXT_CAP - tail.len()];
             raw.extend_from_slice(tail);
             let got = decode_text_at(&ev_with(16, &raw), 16);
-            assert!(got.contains('\u{fffd}'), "{name} must survive as a replacement, got {got:?}");
+            assert!(
+                got.contains('\u{fffd}'),
+                "{name} must survive as a replacement, got {got:?}"
+            );
         }
     }
 
@@ -601,12 +625,18 @@ mod tests {
     #[test]
     fn a_commit_orphaned_from_its_lead_byte_is_dropped_rather_than_replaced() {
         // "🎬" is F0 9F 8E AC; cut after F0, the next commit opens with its three tail bytes.
-        assert_eq!(decode_text_at(&ev_with(16, b"\x9f\x8e\xacstar"), 16), "star");
+        assert_eq!(
+            decode_text_at(&ev_with(16, b"\x9f\x8e\xacstar"), 16),
+            "star"
+        );
         // …and a commit that is nothing BUT an orphaned remainder yields nothing, rather than one
         // replacement character per byte.
         assert_eq!(decode_text_at(&ev_with(16, b"\x80"), 16), "");
         // …and a commit that legitimately STARTS with a multi-byte character is untouched.
-        assert_eq!(decode_text_at(&ev_with(16, "🎬star".as_bytes()), 16), "🎬star");
+        assert_eq!(
+            decode_text_at(&ev_with(16, "🎬star".as_bytes()), 16),
+            "🎬star"
+        );
     }
 
     /// **Capital and small letters transfer as themselves.** The panel's Shift/Caps is resolved on
@@ -617,7 +647,9 @@ mod tests {
     /// row, and a number this repo cannot corroborate does not belong in a permanent comment.
     #[test]
     fn letter_case_transfers_exactly_as_the_panel_committed_it() {
-        for s in ["A", "a", "Wallace", "WALLACE", "wallace", "WaLlAcE", "Ç", "ç", "Ä", "ä"] {
+        for s in [
+            "A", "a", "Wallace", "WALLACE", "wallace", "WaLlAcE", "Ç", "ç", "Ä", "ä",
+        ] {
             assert_eq!(decode_text_at(&ev_with(16, s.as_bytes()), 16), s);
             assert_eq!(decode_text_at(&encode_event(s), TEXT_OFF), s);
         }
@@ -639,19 +671,24 @@ mod tests {
             ("￥", "\\"), // U+FFE5, the same key on a JP panel, and the same wrong answer
             ("／", "/"),
             ("：", ":"),
-            ("　", " "),  // U+3000 IDEOGRAPHIC SPACE
+            ("　", " "), // U+3000 IDEOGRAPHIC SPACE
             ("“", "\""),
             ("’", "'"),
             ("－", "-"),
         ] {
             let got = decode_text_at(&ev_with(16, typed.as_bytes()), 16);
-            assert_eq!(got, typed, "the character pressed must be the character that arrives");
+            assert_eq!(
+                got, typed,
+                "the character pressed must be the character that arrives"
+            );
             assert_eq!(decode_text_at(&encode_event(typed), TEXT_OFF), typed);
         }
         // The ASCII originals still arrive as themselves — nothing here rewrites in either
         // direction. `\` is the one the row calls out, and the rest are what a URL layer or a
         // shell would eat if anything on the path were not byte-transparent.
-        for s in ["\\", "/", "&", "%", "+", "#", "?", "=", "\"", "'", "<", ">", " ", "\t"] {
+        for s in [
+            "\\", "/", "&", "%", "+", "#", "?", "=", "\"", "'", "<", ">", " ", "\t",
+        ] {
             assert_eq!(decode_text_at(&ev_with(16, s.as_bytes()), 16), s);
         }
     }
@@ -671,8 +708,14 @@ mod tests {
     /// CJK query is the normal case for a media library.
     #[test]
     fn multibyte_text_round_trips() {
-        assert_eq!(decode_text_at(&ev_with(16, "Amélie".as_bytes()), 16), "Amélie");
-        assert_eq!(decode_text_at(&ev_with(16, "千と千尋".as_bytes()), 16), "千と千尋");
+        assert_eq!(
+            decode_text_at(&ev_with(16, "Amélie".as_bytes()), 16),
+            "Amélie"
+        );
+        assert_eq!(
+            decode_text_at(&ev_with(16, "千と千尋".as_bytes()), 16),
+            "千と千尋"
+        );
     }
 
     /// The encoder writes what the decoder reads, on whichever platform this is — the pair that
@@ -691,13 +734,19 @@ mod tests {
     #[test]
     fn an_over_long_commit_is_cut_on_a_char_boundary() {
         let long = "x".repeat(100);
-        assert_eq!(decode_text_at(&encode_event(&long), TEXT_OFF), "x".repeat(TEXT_CAP - 1));
+        assert_eq!(
+            decode_text_at(&encode_event(&long), TEXT_OFF),
+            "x".repeat(TEXT_CAP - 1)
+        );
         // 16 CJK codepoints = 48 bytes: the 31-byte limit falls mid-codepoint, so the cut must
         // back up to 30 bytes (10 characters) rather than emit a replacement character.
         let cjk = "千".repeat(16);
         let got = decode_text_at(&encode_event(&cjk), TEXT_OFF);
         assert_eq!(got, "千".repeat(10));
-        assert!(!got.contains('\u{fffd}'), "the cut must not split a codepoint");
+        assert!(
+            !got.contains('\u{fffd}'),
+            "the cut must not split a codepoint"
+        );
     }
 
     /// Commits queue in order and `drain` takes them exactly once — the caller appends them to the
@@ -709,7 +758,10 @@ mod tests {
         on_event(&ev_with(TEXT_OFF, b"wal"));
         on_event(&ev_with(TEXT_OFF, b"l"));
         assert_eq!(drain(), ["wal", "l"]);
-        assert!(drain().is_empty(), "a second drain must not re-deliver what the first took");
+        assert!(
+            drain().is_empty(),
+            "a second drain must not re-deliver what the first took"
+        );
     }
 
     /// An empty commit is dropped rather than queued: see `on_event`.

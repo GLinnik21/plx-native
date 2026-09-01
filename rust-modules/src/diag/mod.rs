@@ -84,12 +84,9 @@ fn event_for(e: schema::DiagEvent, server: Option<crate::plex::ServerId>) {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as u64);
     let envelope = match server {
-        Some(server) => schema::UsageEnvelope::capture_for_server(
-            e,
-            occurred_at_ms,
-            session_id,
-            server,
-        ),
+        Some(server) => {
+            schema::UsageEnvelope::capture_for_server(e, occurred_at_ms, session_id, server)
+        }
         None => schema::UsageEnvelope::capture(e, occurred_at_ms, session_id),
     };
     let Some(body) = envelope.encode() else {
@@ -158,13 +155,22 @@ mod tests {
 
     #[test]
     fn durable_record_and_session_ids_have_their_required_shapes() {
-        let Some(record) = random_hex_id() else { return };
+        let Some(record) = random_hex_id() else {
+            return;
+        };
         assert_eq!(record.len(), 32);
-        assert!(record.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        assert!(record
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
 
-        let Some(session) = random_uuid_v4() else { return };
+        let Some(session) = random_uuid_v4() else {
+            return;
+        };
         assert_eq!(session.len(), 36);
         assert_eq!(&session[14..15], "4", "UUID version");
-        assert!(matches!(&session[19..20], "8" | "9" | "a" | "b"), "UUID variant");
+        assert!(
+            matches!(&session[19..20], "8" | "9" | "a" | "b"),
+            "UUID variant"
+        );
     }
 }

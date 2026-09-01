@@ -47,7 +47,14 @@ pub struct Label {
 }
 impl Label {
     pub fn new(text: *const c_char, sz: c_int, col: [f32; 4]) -> Self {
-        Self { text, sz, bold: 0, col, h: HAlign::Left, v: VAlign::Middle }
+        Self {
+            text,
+            sz,
+            bold: 0,
+            col,
+            h: HAlign::Left,
+            v: VAlign::Middle,
+        }
     }
     pub fn bold(mut self) -> Self {
         self.bold = 1;

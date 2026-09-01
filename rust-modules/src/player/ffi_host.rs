@@ -124,7 +124,11 @@ impl Clock {
             0
         };
         let free = base.saturating_add(elapsed.saturating_mul(1_000_000));
-        if fed == i64::MIN { base } else { free.min(fed) }
+        if fed == i64::MIN {
+            base
+        } else {
+            free.min(fed)
+        }
     }
 
     /// Freeze the clock where it is. Idempotent.
@@ -271,15 +275,27 @@ pub(super) unsafe fn sf_destroy() {
 /// exported window id and ACB is never touched, so the engine's ACB stage sequence stays SKIPPED
 /// rather than faked. Faking ACB would mean modelling a bind order this file cannot verify.
 pub(super) unsafe fn vp_mode() -> c_int {
-    if enabled() { super::VP_EXPORTED } else { super::VP_NONE }
+    if enabled() {
+        super::VP_EXPORTED
+    } else {
+        super::VP_NONE
+    }
 }
 pub(super) unsafe fn vp_create_window() -> *const c_char {
-    if enabled() { c"clocksink-window".as_ptr() } else { std::ptr::null() }
+    if enabled() {
+        c"clocksink-window".as_ptr()
+    } else {
+        std::ptr::null()
+    }
 }
 /// Never NUL — contracted to return a valid string even when no window exists, and `ui::stats`
 /// reads it unconditionally.
 pub(super) unsafe fn vp_window_id() -> *const c_char {
-    if enabled() { c"clocksink-window".as_ptr() } else { c"".as_ptr() }
+    if enabled() {
+        c"clocksink-window".as_ptr()
+    } else {
+        c"".as_ptr()
+    }
 }
 pub(super) unsafe fn vp_place(
     _src_w: c_int,
@@ -358,10 +374,21 @@ mod tests {
         PLAYING.store(true, Relaxed);
         Clock::hold();
         let held = BASE_NS.load(Relaxed);
-        assert!(held >= 1_000_000_000, "a second of wall time is a second of media, got {held}ns");
-        assert_eq!(Clock::position_ns(), held, "a held clock reports where it stopped");
+        assert!(
+            held >= 1_000_000_000,
+            "a second of wall time is a second of media, got {held}ns"
+        );
+        assert_eq!(
+            Clock::position_ns(),
+            held,
+            "a held clock reports where it stopped"
+        );
         Clock::hold();
-        assert_eq!(BASE_NS.load(Relaxed), held, "holding twice must not advance it again");
+        assert_eq!(
+            BASE_NS.load(Relaxed),
+            held,
+            "holding twice must not advance it again"
+        );
     }
 
     #[test]
@@ -386,6 +413,10 @@ mod tests {
         unsafe {
             sf_feed(std::ptr::null(), 0, 8_000_000_000, 0);
         }
-        assert_eq!(FED_MAX_NS.load(Relaxed), i64::MIN, "audio must not move the ceiling");
+        assert_eq!(
+            FED_MAX_NS.load(Relaxed),
+            i64::MIN,
+            "audio must not move the ceiling"
+        );
     }
 }

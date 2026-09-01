@@ -23,13 +23,20 @@ impl Client {
     /// waste is per source per fetch, not once.
     pub fn home_hubs(&self, count: i64) -> Option<MediaContainer> {
         self.get_json(
-            &QueryBuilder::new("/hubs").int("count", count).int("excludeContinueWatching", 1).build(),
+            &QueryBuilder::new("/hubs")
+                .int("count", count)
+                .int("excludeContinueWatching", 1)
+                .build(),
         )
     }
 
     /// GET /hubs/continueWatching?count=… — the dedicated Continue Watching hub.
     pub fn continue_watching(&self, count: i64) -> Option<MediaContainer> {
-        self.get_json(&QueryBuilder::new("/hubs/continueWatching").int("count", count).build())
+        self.get_json(
+            &QueryBuilder::new("/hubs/continueWatching")
+                .int("count", count)
+                .build(),
+        )
     }
 
     /// PUT /actions/removeFromContinueWatching?ratingKey=… — **hide** an item from the deck. Returns
@@ -57,7 +64,11 @@ impl Client {
 
     /// GET /hubs/promoted?count=… — the home screen's featured rows.
     pub fn promoted(&self, count: i64) -> Option<MediaContainer> {
-        self.get_json(&QueryBuilder::new("/hubs/promoted").int("count", count).build())
+        self.get_json(
+            &QueryBuilder::new("/hubs/promoted")
+                .int("count", count)
+                .build(),
+        )
     }
 
     /// GET /hubs/search?query=…[&limit=…][&sectionId=…] — the search screen → `.hub[]`.
@@ -122,9 +133,15 @@ mod tests {
     /// that keeps this call site using it.
     #[test]
     fn the_typed_query_is_percent_encoded_because_a_user_can_type_anything() {
-        assert_eq!(search_path("tom & jerry", 8, 0), "/hubs/search?query=tom%20%26%20jerry&limit=8");
+        assert_eq!(
+            search_path("tom & jerry", 8, 0),
+            "/hubs/search?query=tom%20%26%20jerry&limit=8"
+        );
         // an apostrophe, an accent and a '+' are all reserved or non-ASCII here
-        assert_eq!(search_path("l'été+", 5, 0), "/hubs/search?query=l%27%C3%A9t%C3%A9%2B&limit=5");
+        assert_eq!(
+            search_path("l'été+", 5, 0),
+            "/hubs/search?query=l%27%C3%A9t%C3%A9%2B&limit=5"
+        );
     }
 
     /// **Neither number may reach the server as a literal 0**, and the reason is not tidiness —
@@ -137,9 +154,22 @@ mod tests {
     /// `.int` would therefore never work AND would report itself as a network fault.
     #[test]
     fn a_zero_sends_no_parameter_because_the_server_rejects_both_zeros() {
-        assert_eq!(search_path("wallace", 0, 0), "/hubs/search?query=wallace", "neither number");
-        assert_eq!(search_path("wallace", 8, 0), "/hubs/search?query=wallace&limit=8");
-        assert_eq!(search_path("wallace", 0, 1), "/hubs/search?query=wallace&sectionId=1");
-        assert_eq!(search_path("wallace", 8, 1), "/hubs/search?query=wallace&limit=8&sectionId=1");
+        assert_eq!(
+            search_path("wallace", 0, 0),
+            "/hubs/search?query=wallace",
+            "neither number"
+        );
+        assert_eq!(
+            search_path("wallace", 8, 0),
+            "/hubs/search?query=wallace&limit=8"
+        );
+        assert_eq!(
+            search_path("wallace", 0, 1),
+            "/hubs/search?query=wallace&sectionId=1"
+        );
+        assert_eq!(
+            search_path("wallace", 8, 1),
+            "/hubs/search?query=wallace&limit=8&sectionId=1"
+        );
     }
 }

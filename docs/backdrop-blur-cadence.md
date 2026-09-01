@@ -1,8 +1,8 @@
 # Backdrop blur: what the refresh cadence costs
 
-`Glass::DYNAMIC` refreshes its shared backdrop snapshot on every third successful present — about
-20 Hz while the UI presents at 60. This note prices that number: what each cadence costs in GPU
-cycles on both source paths, what it costs in frames, and what it buys on the panel. It is a
+`Glass::DYNAMIC` now refreshes its shared backdrop snapshot on every changed successful present.
+This note is the 2026-08-19 experiment that priced the former period-3 default: what each cadence
+costs in GPU cycles on both source paths, what it costs in frames, and what it buys on the panel. It is a
 companion to `docs/backdrop-blur-profiling.md`, whose instruments, scene and cautions it uses
 unchanged.
 
@@ -12,7 +12,8 @@ webOS 4.5) on 2026-08-19.
 ## The instrument that had to be built first
 
 `/tmp/plxnative-glasshz=<presents-per-refresh>` moves the shared cadence: `1` refreshes on every
-present, `3` is what ships, `8` is the far end. Absent, nothing runs and the period is the
+changed present and is the current default, `3` is the historical baseline measured below, and
+`8` is the far end. Absent, nothing runs and the period is the
 compiled-in `DEFAULT_DYNAMIC_PERIOD`, so a default build is unchanged. The value clamps to 1..=8 —
 zero is a refresh every zero frames — and the boot log says what was asked for and what was
 installed.
@@ -53,7 +54,7 @@ MEDIAN, and at one refresh in three the median is a frame where the blur did not
 why it came out at −0.21%: the two paths draw the identical visible frame, so on non-refresh frames
 they cost the same, and 71% of frames are non-refresh frames. Reading the same runs by the MEAN —
 work per frame, which is what a frame rate is spent on — the direct path is worth **−3.55%** of the
-frame at the shipped cadence. Both numbers are correct measurements of different questions; the
+frame at the then-shipped period-3 cadence. Both numbers are correct measurements of different questions; the
 median answers "what does a typical frame cost", and the mean answers "what does the feature cost".
 For pricing a change, the mean is the one that pays the bills.
 
@@ -64,11 +65,11 @@ Whole-frame `frame.ui` HWCNT, scene `plxnative-acct` + `plxnative-homeosc` + `pl
 ten legs each, ~700 samples per leg, 60 leading samples discarded. Each cell is the median across
 rounds of that round's mean; `spread` is max−min across rounds.
 
-| period | Hz at 60 fps | capture cycles/frame | vs shipped | spread | direct cycles/frame | vs shipped | spread |
+| period | Hz at 60 fps | capture cycles/frame | vs period 3 | spread | direct cycles/frame | vs period 3 | spread |
 |---|---|---|---|---|---|---|---|
 | 1 | 60 | **11,555,452** | **+9.16%** | 0.57% | **10,592,685** | **+0.07%** | 0.31% |
 | 2 | 30 | 10,822,512 | +2.24% | 0.17% | 10,312,892 | −2.58% | 0.19% |
-| **3** | **20 (ships)** | **10,585,723** | **0.00%** | 0.27% | 10,210,411 | −3.55% | 0.28% |
+| **3** | **20 (historical baseline)** | **10,585,723** | **0.00%** | 0.27% | 10,210,411 | −3.55% | 0.28% |
 | 4 | 15 | 10,438,039 | −1.40% | 0.18% | 10,193,612 | −3.70% | 0.30% |
 | 8 | 7.5 | 10,227,803 | −3.38% | 0.11% | 10,112,223 | −4.47% | 0.02% |
 
@@ -119,7 +120,7 @@ The app's own UI capture stream is the instrument that can see it: ~20–26 fram
 UI plane, which is the plane the glass and its backdrop live on. 120 frames at each cadence, over
 the same scene, differencing consecutive frames inside the panel and over the page beside it:
 
-| | period 1 (60 Hz) | period 3 (20 Hz, ships) |
+| | period 1 (60 Hz, current) | period 3 (20 Hz, historical) |
 |---|---|---|
 | sampled steps where the PAGE moved | 21 / 119 | 20 / 119 |
 | …of those, the BACKDROP also moved | **21 (100%)** | **10 (50%)** |

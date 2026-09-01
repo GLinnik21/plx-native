@@ -81,10 +81,18 @@ pub(crate) enum Pattern {
 /// CIE L\* of an opaque colour — the same function every contrast note in this material quotes.
 fn lstar_of(c: [f32; 4]) -> f32 {
     fn lin(v: f32) -> f32 {
-        if v <= 0.03928 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+        if v <= 0.03928 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
     }
     let y = 0.2126 * lin(c[0]) + 0.7152 * lin(c[1]) + 0.0722 * lin(c[2]);
-    if y > 0.008856 { 116.0 * y.cbrt() - 16.0 } else { 903.3 * y }
+    if y > 0.008856 {
+        116.0 * y.cbrt() - 16.0
+    } else {
+        903.3 * y
+    }
 }
 
 /// Fully saturated sRGB for a hue in 0..1 — the sweep's raw colour, before any lightness is asked of
@@ -121,7 +129,11 @@ fn to_lstar(c: [f32; 4], target: f32) -> [f32; 4] {
             c[2] + (toward - c[2]) * m,
             1.0,
         ];
-        if (lstar_of(mixed) < target) == (toward > 0.5) { lo = m } else { hi = m }
+        if (lstar_of(mixed) < target) == (toward > 0.5) {
+            lo = m
+        } else {
+            hi = m
+        }
     }
     let m = 0.5 * (lo + hi);
     [
@@ -136,8 +148,16 @@ fn to_lstar(c: [f32; 4], target: f32) -> [f32; 4] {
 /// contrast tables call 40.
 fn gray(lstar: f32) -> [f32; 4] {
     let l = lstar.clamp(0.0, 100.0);
-    let y = if l > 8.0 { ((l + 16.0) / 116.0).powi(3) } else { l / 903.3 };
-    let c = if y <= 0.003_130_8 { 12.92 * y } else { 1.055 * y.powf(1.0 / 2.4) - 0.055 };
+    let y = if l > 8.0 {
+        ((l + 16.0) / 116.0).powi(3)
+    } else {
+        l / 903.3
+    };
+    let c = if y <= 0.003_130_8 {
+        12.92 * y
+    } else {
+        1.055 * y.powf(1.0 / 2.4) - 0.055
+    };
     [c, c, c, 1.0]
 }
 
@@ -157,7 +177,11 @@ pub(crate) fn set(spec: &str) -> bool {
         _ => {
             let (name, arg) = spec.split_once(':').unwrap_or((spec, ""));
             let n: f32 = arg.parse().unwrap_or(f32::NAN);
-            let at = if n.is_finite() { Some(n.clamp(0.0, 100.0)) } else { None };
+            let at = if n.is_finite() {
+                Some(n.clamp(0.0, 100.0))
+            } else {
+                None
+            };
             match name {
                 "flat" if n.is_finite() => Pattern::Flat(n),
                 "checker" => Pattern::Checker(if n.is_finite() && n >= 2.0 { n } else { 32.0 }),
@@ -169,7 +193,10 @@ pub(crate) fn set(spec: &str) -> bool {
                 "hue" if arg.is_empty() || at.is_some() => Pattern::Hue(at),
                 "solid" => {
                     let (deg, rest) = arg.split_once(':').unwrap_or((arg, ""));
-                    let deg: f32 = match deg.parse() { Ok(d) => d, Err(_) => return false };
+                    let deg: f32 = match deg.parse() {
+                        Ok(d) => d,
+                        Err(_) => return false,
+                    };
                     let l: f32 = rest.parse().unwrap_or(f32::NAN);
                     Pattern::Solid(deg, l.is_finite().then(|| l.clamp(0.0, 100.0)))
                 }
@@ -219,7 +246,9 @@ fn describe(p: Pattern) -> String {
 /// Draw the armed pattern over the whole canvas. A no-op when nothing is armed, so the call site
 /// needs no test of its own.
 pub(crate) fn draw(p: Painter) {
-    let Some(pat) = (unsafe { *addr_of!(CURRENT) }) else { return };
+    let Some(pat) = (unsafe { *addr_of!(CURRENT) }) else {
+        return;
+    };
     let (w, h) = (crate::ui::consts::SCR_W, crate::ui::consts::SCR_H);
     let full = Rect::new(0.0, 0.0, w, h);
     let flat = |p: Painter, r: Rect, c: [f32; 4]| p.rrect(r, 0.0, 0.0, c);
@@ -248,7 +277,11 @@ pub(crate) fn draw(p: Painter) {
                     if (r + c) % 2 == 0 {
                         continue;
                     }
-                    flat(p, Rect::new(c as f32 * px, r as f32 * px, px, px), gray(88.0));
+                    flat(
+                        p,
+                        Rect::new(c as f32 * px, r as f32 * px, px, px),
+                        gray(88.0),
+                    );
                 }
             }
             // the dark half is one quad under it rather than half the checker's worth of draws
@@ -276,7 +309,11 @@ pub(crate) fn draw(p: Painter) {
             let cw = w / N as f32;
             for i in 0..N {
                 let l = 20.0 + 55.0 * (i as f32 + 0.5) / N as f32;
-                flat(p, Rect::new(i as f32 * cw, 0.0, cw + 1.0, h), gray(100.0 - l));
+                flat(
+                    p,
+                    Rect::new(i as f32 * cw, 0.0, cw + 1.0, h),
+                    gray(100.0 - l),
+                );
             }
             let (mut y, mut pitch) = (0.0f32, 6.0f32);
             while y < h {
@@ -316,7 +353,12 @@ pub(crate) fn draw(p: Painter) {
 pub(crate) fn underlay(p: Painter) {
     match unsafe { *addr_of!(CURRENT) } {
         Some(Pattern::Checker(_)) | Some(Pattern::Lines(_)) | Some(Pattern::HBars(_)) => {
-            p.rrect(Rect::new(0.0, 0.0, crate::ui::consts::SCR_W, crate::ui::consts::SCR_H), 0.0, 0.0, gray(12.0));
+            p.rrect(
+                Rect::new(0.0, 0.0, crate::ui::consts::SCR_W, crate::ui::consts::SCR_H),
+                0.0,
+                0.0,
+                gray(12.0),
+            );
         }
         _ => {}
     }
@@ -332,13 +374,24 @@ mod tests {
     #[test]
     fn a_flat_rung_lands_on_the_lightness_it_is_named_for() {
         fn lin(c: f32) -> f32 {
-            if c <= 0.03928 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+            if c <= 0.03928 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
         }
         for want in [0.0, 10.0, 31.3, 50.0, 78.3, 95.7, 100.0] {
             let g = gray(want);
             let y = 0.2126 * lin(g[0]) + 0.7152 * lin(g[1]) + 0.0722 * lin(g[2]);
-            let got = if y > 0.008856 { 116.0 * y.cbrt() - 16.0 } else { 903.3 * y };
-            assert!((got - want).abs() < 0.2, "asked L*={want}, drew L*={got:.2}");
+            let got = if y > 0.008856 {
+                116.0 * y.cbrt() - 16.0
+            } else {
+                903.3 * y
+            };
+            assert!(
+                (got - want).abs() < 0.2,
+                "asked L*={want}, drew L*={got:.2}"
+            );
         }
     }
 
@@ -372,7 +425,11 @@ mod tests {
         assert!(set("hbars:12"));
         assert_eq!(unsafe { *addr_of!(CURRENT) }, Some(Pattern::HBars(12.0)));
         assert!(set("flat:40"));
-        assert_eq!(unsafe { *addr_of!(CURRENT) }, Some(Pattern::Flat(40.0)), "the armed one survives");
+        assert_eq!(
+            unsafe { *addr_of!(CURRENT) },
+            Some(Pattern::Flat(40.0)),
+            "the armed one survives"
+        );
         assert!(set("off"));
         assert_eq!(unsafe { *addr_of!(CURRENT) }, None);
         unsafe { *addr_of_mut!(CURRENT) = restore };

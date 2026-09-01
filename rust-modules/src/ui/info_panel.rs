@@ -47,7 +47,9 @@ pub(crate) fn close() {
 
 /// whether the playing item is an episode (→ "Go to Show") rather than a movie ("Go to Movie")
 fn is_episode() -> bool {
-    metadata::now_playing().map(|n| n.is_episode).unwrap_or(false)
+    metadata::now_playing()
+        .map(|n| n.is_episode)
+        .unwrap_or(false)
 }
 
 /// the action-button labels for the playing item. An ARRAY, not a `Vec`: the count is fixed at two
@@ -55,7 +57,14 @@ fn is_episode() -> bool {
 /// [`draw`], every frame the card is up — so a heap allocation to hand back two `&'static str`s was
 /// paid 60 times a second to learn a constant.
 fn actions() -> [&'static str; 2] {
-    ["From Beginning", if is_episode() { "Go to Show" } else { "Go to Movie" }]
+    [
+        "From Beginning",
+        if is_episode() {
+            "Go to Show"
+        } else {
+            "Go to Movie"
+        },
+    ]
 }
 
 /// true when focus is on the last action button — a further DOWN should leave the card (back to the
@@ -112,7 +121,9 @@ pub(crate) fn focus_is_ctl() -> bool {
 /// it to decide which button `CTL_POP` pops. The doc above promised those were the same filter;
 /// they were the same expression written twice, seven lines apart, in two spellings.
 fn ctl_index() -> Option<usize> {
-    usize::try_from(unsafe { addr_of!(FOCUS).read() }).ok().filter(|&i| i < actions().len())
+    usize::try_from(unsafe { addr_of!(FOCUS).read() })
+        .ok()
+        .filter(|&i| i < actions().len())
 }
 
 /// The action column's FOCUS POP — one spring per button ([`crate::ui::widgets::CtlPop`]). Two, the
@@ -131,14 +142,27 @@ pub(crate) fn update(dt: f32) {
 /// A premium audio format worth badging on the meta line, named by the ONE codec map
 /// ([`metadata::friendly_codec`]); everyday codecs (AAC/MP3/…) get no badge.
 fn audio_badge(codec: &str) -> Option<String> {
-    matches!(codec.to_ascii_lowercase().as_str(), "truehd" | "eac3" | "ec-3" | "ac3" | "dts" | "dca")
-        .then(|| metadata::friendly_codec(codec))
+    matches!(
+        codec.to_ascii_lowercase().as_str(),
+        "truehd" | "eac3" | "ec-3" | "ac3" | "dts" | "dca"
+    )
+    .then(|| metadata::friendly_codec(codec))
 }
 
 /// the shared outlined chip in this panel's colours (TEXT_HEADING border/label over the card)
 fn meta_badge(p: Painter, x: f32, cy: f32, text: &str) -> f32 {
-    badge(p, x, cy, text, None,
-        BadgeStyle::Outlined { col: theme::TEXT_HEADING, border: theme::OVERLAY_BORDER, bg: theme::SURFACE_PANEL })
+    badge(
+        p,
+        x,
+        cy,
+        text,
+        None,
+        BadgeStyle::Outlined {
+            col: theme::TEXT_HEADING,
+            border: theme::OVERLAY_BORDER,
+            bg: theme::SURFACE_PANEL,
+        },
+    )
 }
 
 /// A VIDEO codec's display name. The sibling of [`metadata::friendly_codec`], which is the one
@@ -189,7 +213,12 @@ pub(crate) fn video_codec_name(codec: &str) -> String {
 /// switch — Up Next, or Play from a detail page while a session is live — every one of those three
 /// still describes the PREVIOUS item for the whole resolve. Without the pending test this line
 /// would state the last session's fact as this one's.
-pub(crate) fn playback_now(streaming: bool, transcoding: bool, remux: bool, vcodec: &str) -> Option<String> {
+pub(crate) fn playback_now(
+    streaming: bool,
+    transcoding: bool,
+    remux: bool,
+    vcodec: &str,
+) -> Option<String> {
     if !streaming {
         return None;
     }
@@ -201,7 +230,11 @@ pub(crate) fn playback_now(streaming: bool, transcoding: bool, remux: bool, vcod
     }
     let name = video_codec_name(vcodec);
     // a re-encode whose output codec we somehow do not know still converted — say that much
-    Some(if name.is_empty() { "Converting".to_string() } else { format!("Converting \u{b7} {name}") })
+    Some(if name.is_empty() {
+        "Converting".to_string()
+    } else {
+        format!("Converting \u{b7} {name}")
+    })
 }
 
 pub(crate) fn draw() {
@@ -218,16 +251,41 @@ pub(crate) fn draw() {
     // Resolve the playing leaf's fields: `now_playing` describes the episode (show title + SxEy +
     // its still) or the movie; the loaded `Detail` backs the capability badges + genres.
     let is_ep = np.map(|n| n.is_episode).unwrap_or(false);
-    let big_title = np.map(|n| n.title.clone()).or_else(|| d.map(|x| x.title.clone())).unwrap_or_default();
+    let big_title = np
+        .map(|n| n.title.clone())
+        .or_else(|| d.map(|x| x.title.clone()))
+        .unwrap_or_default();
     let ep_name = np.map(|n| n.ep_title.clone()).unwrap_or_default();
-    let summary = np.map(|n| n.summary.clone()).filter(|s| !s.is_empty())
-        .or_else(|| d.map(|x| x.summary.clone())).unwrap_or_default();
-    let year = np.map(|n| n.year).or_else(|| d.map(|x| x.year)).unwrap_or(0);
-    let dur_ms = np.map(|n| n.dur_ms).or_else(|| d.map(|x| x.dur_ms)).unwrap_or(0);
-    let rating = np.map(|n| n.rating.clone()).filter(|s| !s.is_empty())
-        .or_else(|| d.map(|x| x.rating.clone())).unwrap_or_default();
-    let thumb_path = np.map(|n| n.thumb.clone()).filter(|s| !s.is_empty())
-        .or_else(|| d.map(|x| if !x.art.is_empty() { x.art.clone() } else { x.thumb.clone() }))
+    let summary = np
+        .map(|n| n.summary.clone())
+        .filter(|s| !s.is_empty())
+        .or_else(|| d.map(|x| x.summary.clone()))
+        .unwrap_or_default();
+    let year = np
+        .map(|n| n.year)
+        .or_else(|| d.map(|x| x.year))
+        .unwrap_or(0);
+    let dur_ms = np
+        .map(|n| n.dur_ms)
+        .or_else(|| d.map(|x| x.dur_ms))
+        .unwrap_or(0);
+    let rating = np
+        .map(|n| n.rating.clone())
+        .filter(|s| !s.is_empty())
+        .or_else(|| d.map(|x| x.rating.clone()))
+        .unwrap_or_default();
+    let thumb_path = np
+        .map(|n| n.thumb.clone())
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            d.map(|x| {
+                if !x.art.is_empty() {
+                    x.art.clone()
+                } else {
+                    x.thumb.clone()
+                }
+            })
+        })
         .unwrap_or_default();
     // capability badges come from the PLAYING item's own tracks — `current()` is the show
     // (episode-1 streams) during a show-page episode play, or another item entirely
@@ -259,14 +317,25 @@ pub(crate) fn draw() {
     let mut drawn = false;
     if !thumb_path.is_empty() {
         // the PLAYING item's server — the info panel describes what is on the video plane
-        let t = resolve_tex_on(crate::route::item_sid(crate::route::cur_sid()), &thumb_path, 480, 270, 0);
+        let t = resolve_tex_on(
+            crate::route::item_sid(crate::route::cur_sid()),
+            &thumb_path,
+            480,
+            270,
+            0,
+        );
         if t != 0 {
             p.tex(t, Rect::new(sx, sy, sw, sh), 16.0, theme::TINT_WHITE);
             drawn = true;
         }
     }
     if !drawn {
-        p.rrect(Rect::new(sx, sy, sw, sh), 16.0, 16.0, theme::CARD_PLACEHOLDER);
+        p.rrect(
+            Rect::new(sx, sy, sw, sh),
+            16.0,
+            16.0,
+            theme::CARD_PLACEHOLDER,
+        );
     }
 
     // action buttons (right column)
@@ -279,13 +348,21 @@ pub(crate) fn draw() {
     let mut by = cyt + (ch - total_bh) * 0.5;
     let env = crate::ui::Env::inert();
     for (i, label) in acts.iter().enumerate() {
-        let icon = if *label == "From Beginning" { Icon::Play } else { Icon::Info };
+        let icon = if *label == "From Beginning" {
+            Icon::Play
+        } else {
+            Icon::Info
+        };
         if let Ok(cs) = CString::new(*label) {
-            crate::ui::widgets::Button::new(cs.as_ptr(), theme::size::BODY, Rect::new(bx, by, bw, bh))
-                .icon(icon)
-                .focused(i as c_int == focus)
-                .scale(unsafe { addr_of!(CTL_POP).as_ref().unwrap().scale(i) })
-                .draw(&env, p);
+            crate::ui::widgets::Button::new(
+                cs.as_ptr(),
+                theme::size::BODY,
+                Rect::new(bx, by, bw, bh),
+            )
+            .icon(icon)
+            .focused(i as c_int == focus)
+            .scale(unsafe { addr_of!(CTL_POP).as_ref().unwrap().scale(i) })
+            .draw(&env, p);
         }
         by += bh + 16.0;
     }
@@ -299,7 +376,11 @@ pub(crate) fn draw() {
     let white = theme::TEXT_PRIMARY;
     let dim = theme::TEXT_SECONDARY;
 
-    let info_title = if is_ep { ep_name.clone() } else { big_title.clone() };
+    let info_title = if is_ep {
+        ep_name.clone()
+    } else {
+        big_title.clone()
+    };
     // What the server is actually sending, straight off the resolved route — see `playback_now`.
     // `has_url`, not `!url().is_empty()`: this card sits on the one route exempt from the idle
     // present gate, so it draws at ~60/s, and `url()` clones the longest string in the app (a
@@ -329,9 +410,17 @@ pub(crate) fn draw() {
 
     // title (1 line, elided) + synopsis (up to 2 lines, ellipsized) through the shared TextView —
     // its wrap is memoised internally, replacing this panel's old hand-rolled wrap2/WrapCache.
-    let title_v = TextView::new(&info_title, theme::size::TITLE, white).bold().max_lines(1);
-    let syn_v = TextView::new(&summary, theme::size::BODY, dim).leading(syn_lh).max_lines(2);
-    let syn_h = if summary.is_empty() { 0.0 } else { syn_v.measure_h(tw) };
+    let title_v = TextView::new(&info_title, theme::size::TITLE, white)
+        .bold()
+        .max_lines(1);
+    let syn_v = TextView::new(&summary, theme::size::BODY, dim)
+        .leading(syn_lh)
+        .max_lines(2);
+    let syn_h = if summary.is_empty() {
+        0.0
+    } else {
+        syn_v.measure_h(tw)
+    };
 
     // centre the [title + synopsis + tag row] group in the card (cap-top coordinates)
     let span = title_h
@@ -381,10 +470,22 @@ pub(crate) fn draw() {
         // row. Its own `ly` because a cap band is weight-dependent — one y for both would sit the
         // lighter run visibly off the line.
         if let Some(fact) = &now_fact {
-            let run = if meta.is_empty() { fact.clone() } else { format!("   \u{b7}   {fact}") };
+            let run = if meta.is_empty() {
+                fact.clone()
+            } else {
+                format!("   \u{b7}   {fact}")
+            };
             if let Ok(cs) = CString::new(run) {
                 let fy = crate::text::text_vcenter_y(theme::size::CAPTION, 0, my);
-                mx += p.text(cs.as_ptr(), mx, fy, theme::size::CAPTION, theme::TEXT_TERTIARY, 0, 0);
+                mx += p.text(
+                    cs.as_ptr(),
+                    mx,
+                    fy,
+                    theme::size::CAPTION,
+                    theme::TEXT_TERTIARY,
+                    0,
+                    0,
+                );
             }
         }
         if !meta.is_empty() || now_fact.is_some() {
@@ -429,19 +530,39 @@ mod tests {
     ///     line refuses to make.
     #[test]
     fn the_meta_lines_playback_fact_describes_the_stream_that_is_running() {
-        assert_eq!(playback_now(true, false, false, "hevc").as_deref(), Some("Direct Play"));
+        assert_eq!(
+            playback_now(true, false, false, "hevc").as_deref(),
+            Some("Direct Play")
+        );
         // remux: `vcodec` is the SOURCE codec copied through, and it is still not a conversion
-        assert_eq!(playback_now(true, true, true, "hevc").as_deref(), Some("Direct Stream"));
-        assert_eq!(playback_now(true, true, false, "h264").as_deref(), Some("Converting \u{b7} H.264"));
-        assert_eq!(playback_now(true, true, false, "hevc").as_deref(), Some("Converting \u{b7} HEVC"));
+        assert_eq!(
+            playback_now(true, true, true, "hevc").as_deref(),
+            Some("Direct Stream")
+        );
+        assert_eq!(
+            playback_now(true, true, false, "h264").as_deref(),
+            Some("Converting \u{b7} H.264")
+        );
+        assert_eq!(
+            playback_now(true, true, false, "hevc").as_deref(),
+            Some("Converting \u{b7} HEVC")
+        );
         // a codec map we have never met is upper-cased, not dropped and not renamed
-        assert_eq!(playback_now(true, true, false, "av1").as_deref(), Some("Converting \u{b7} AV1"));
+        assert_eq!(
+            playback_now(true, true, false, "av1").as_deref(),
+            Some("Converting \u{b7} AV1")
+        );
         // a re-encode whose output codec never landed still converted
-        assert_eq!(playback_now(true, true, false, "").as_deref(), Some("Converting"));
+        assert_eq!(
+            playback_now(true, true, false, "").as_deref(),
+            Some("Converting")
+        );
         // nothing resolved yet → no fact, on every combination of the flags
         for (t, r) in [(false, false), (true, false), (true, true)] {
-            assert!(playback_now(false, t, r, "h264").is_none(), "no stream, no fact");
+            assert!(
+                playback_now(false, t, r, "h264").is_none(),
+                "no stream, no fact"
+            );
         }
     }
 }
-

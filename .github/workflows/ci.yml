@@ -34,7 +34,7 @@ jobs:
     env:
       RUST_NIGHTLY: nightly
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install nightly Rust
         # Both components are load-bearing and neither is in rustup's `minimal` profile:
@@ -45,7 +45,7 @@ jobs:
             --component clippy --component rust-src
           rustup run "$RUST_NIGHTLY" rustc --version
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
           workspaces: rust-modules
 
@@ -91,7 +91,7 @@ jobs:
     # obtain the toolchain at all. See the Makefile's NDK bootstrap block.
     runs-on: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install nightly Rust
         run: |
@@ -99,7 +99,7 @@ jobs:
         env:
           RUST_NIGHTLY: nightly
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
           workspaces: rust-modules
           # -Z build-std recompiles std from source and rust-cache cannot see those crates
@@ -115,7 +115,7 @@ jobs:
         # staticlib, so without this every run downloads the tarball and cross-builds FFmpeg from
         # scratch — minutes, on every push. The script's VERSION, SHA256 and configure flags are
         # its whole input, so hashing the script is the whole key.
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             vendor/ffmpeg-prefix
@@ -172,8 +172,14 @@ jobs:
         run: |
           set -euo pipefail
           TAG=v20260731-e1bb0c0
+          declare -A SHA256=(
+            [fw-symbols]=639721a0c2248b13e5984930b53729cc201f022725954086aca35e2ccae515b5
+            [ipk-verify]=2868b4b2efc097939ab11117c9266d796f0326ee48c90f80070766814fb174d9
+          )
           for p in fw-symbols ipk-verify; do
-            curl -fsSLO "https://github.com/webosbrew/dev-toolbox-cli/releases/download/${TAG}/webosbrew-toolbox-${p}_0.4.0-1_arm64.deb"
+            file="webosbrew-toolbox-${p}_0.4.0-1_arm64.deb"
+            curl -fsSLo "$file" "https://github.com/webosbrew/dev-toolbox-cli/releases/download/${TAG}/$file"
+            echo "${SHA256[$p]}  $file" | sha256sum -c -
           done
           sudo apt-get install -y ./webosbrew-toolbox-*.deb
           webosbrew-ipk-verify --details --format markdown \
@@ -203,7 +209,7 @@ jobs:
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: plxnative-${{ github.sha }}
           # NB no `pkg/ipk.sha256` here: `make ipk` writes that file only for the stable flavour,

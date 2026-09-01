@@ -131,7 +131,11 @@ pub(crate) fn resolution(res: &str, width: i64, height: i64) -> Option<String> {
     // class path emits — the two paths must not disagree about the same file.
     // saturating: these are wire values via the lenient `de_i64`, so a garbage 19-digit height
     // must not overflow (a debug-build panic, a silently wrapped badge in release)
-    let w = if width > 0 { width } else { height.saturating_mul(16) / 9 };
+    let w = if width > 0 {
+        width
+    } else {
+        height.saturating_mul(16) / 9
+    };
     Some(match w {
         w if w <= 0 => return None,
         w if w >= 3000 => "4K".to_string(),
@@ -173,7 +177,10 @@ mod tests {
         assert_eq!(resolution("", 720, 480).as_deref(), Some("SD"));
         // the fallback speaks the class path's vocabulary: the same file must not badge "576p"
         // with a videoResolution and "SD" without one
-        assert_eq!(resolution("", 1024, 576).as_deref(), resolution("576", 1024, 576).as_deref());
+        assert_eq!(
+            resolution("", 1024, 576).as_deref(),
+            resolution("576", 1024, 576).as_deref()
+        );
         assert_eq!(resolution("", 0, 1080).as_deref(), Some("1080p")); // width absent → from height
         assert_eq!(resolution("", 0, 0), None); // no video at all (a show container) → no badge
     }
@@ -187,11 +194,14 @@ mod tests {
 pub(crate) fn pretty_date(iso: &str, year: i64) -> String {
     let parts: Vec<&str> = iso.split('-').collect();
     if parts.len() == 3 {
-        if let (Ok(y), Ok(mo), Ok(da)) =
-            (parts[0].parse::<i64>(), parts[1].parse::<usize>(), parts[2].parse::<i64>())
-        {
-            const MON: [&str; 12] =
-                ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+        if let (Ok(y), Ok(mo), Ok(da)) = (
+            parts[0].parse::<i64>(),
+            parts[1].parse::<usize>(),
+            parts[2].parse::<i64>(),
+        ) {
+            const MON: [&str; 12] = [
+                "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+            ];
             if (1..=12).contains(&mo) {
                 return format!("{da} {} {y}", MON[mo - 1]);
             }

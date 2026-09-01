@@ -101,7 +101,11 @@ impl Caps {
     /// `transcoder.rs::profile_for` builds the target list's head from this, and its test pins
     /// the agreement.
     pub(crate) fn encode_vcodec(&self) -> &'static str {
-        if self.hevc { "hevc" } else { "h264" }
+        if self.hevc {
+            "hevc"
+        } else {
+            "h264"
+        }
     }
 }
 
@@ -130,7 +134,10 @@ pub(crate) fn caps() -> &'static Caps {
 /// dropping dots/dashes and case folds the spelling variants ("H265", "E-AC3") onto one key
 /// so a firmware's formatting choice cannot un-recognize a codec.
 fn canon(name: &str) -> String {
-    name.chars().filter(|c| !matches!(c, '.' | '-')).collect::<String>().to_ascii_lowercase()
+    name.chars()
+        .filter(|c| !matches!(c, '.' | '-'))
+        .collect::<String>()
+        .to_ascii_lowercase()
 }
 
 /// Per-axis conservative merge: min of the nonzero values, 0 (= the row didn't say) only when
@@ -227,7 +234,12 @@ fn parse(s: &str) -> Option<Caps> {
     } else {
         audio.join(",")
     };
-    Some(Caps { hevc, hevc_max, vp9, audio })
+    Some(Caps {
+        hevc,
+        hevc_max,
+        vp9,
+        audio,
+    })
 }
 
 /// Read the table once and log what was derived. Called at boot right after `webos::probe`,

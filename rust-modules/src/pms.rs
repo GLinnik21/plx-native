@@ -68,12 +68,12 @@ pub struct PmsMovie {
     pub(crate) acodec: String,
     pub(crate) blur: [[f32; 3]; 4],
     pub(crate) has_blur: bool,
-    pub(crate) kind: c_int,    // 0 = movie, 1 = show, 2 = season, 3 = episode
-    pub(crate) resume_ms: i64, // viewOffset — drives the Continue Watching resume bar
+    pub(crate) kind: c_int,     // 0 = movie, 1 = show, 2 = season, 3 = episode
+    pub(crate) resume_ms: i64,  // viewOffset — drives the Continue Watching resume bar
     pub(crate) show_rk: String, // parent show rk (episode: grandparent; season: parent)
     pub(crate) season_index: c_int, // season number (episode: parentIndex; season: index)
     pub(crate) show_title: String, // episode only: grandparentTitle (the hero headlines the SHOW)
-    pub(crate) ep_index: c_int,    // episode only: episode number within the season
+    pub(crate) ep_index: c_int, // episode only: episode number within the season
     /// Fully unwatched (movie/episode: no viewCount; show/season: zero viewed leaves).
     pub(crate) unwatched: bool,
     /// Fully **watched** — and deliberately NOT `!unwatched`, which is the trap this field exists to
@@ -109,7 +109,7 @@ impl PmsMovie {
 }
 
 // The catalog (private; the UI reads it through movie()/hub_item()/hero_pool_item()).
-// Main-thread only, like every UI static; rebuilt wholesale by pms_fetch_hubs.
+// Main-thread only, like every UI static; rebuilt wholesale when worker landings commit.
 static mut CATALOG: Vec<PmsMovie> = Vec::new();
 
 fn catalog() -> &'static Vec<PmsMovie> {
@@ -146,7 +146,9 @@ pub(crate) fn index_of_rk(sid: ServerId, rk: &str) -> c_int {
 // ---- helpers ----
 /// owned copy of a metadata string with newlines flattened to spaces (single-line UI fields)
 fn clean(s: &str) -> String {
-    s.chars().map(|c| if c == '\n' || c == '\r' { ' ' } else { c }).collect()
+    s.chars()
+        .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
+        .collect()
 }
 
 /// percent-encode into a String (Rust callers, e.g. posters::poster_key)
@@ -175,7 +177,11 @@ pub(crate) fn urlenc_str(src: &str) -> String {
 /// server can change while a page fetch is in flight, and the rows in hand belong to the machine
 /// that was asked, not to whichever one is current when they finish parsing.
 pub(crate) fn parse_item(it: &crate::plex::Metadata, sid: ServerId) -> PmsMovie {
-    let mut m = PmsMovie { sid, sec: it.library_section_id, ..Default::default() };
+    let mut m = PmsMovie {
+        sid,
+        sec: it.library_section_id,
+        ..Default::default()
+    };
     m.kind = match it.kind.as_str() {
         "show" => 1,
         "season" => 2,
@@ -212,11 +218,19 @@ pub(crate) fn parse_item(it: &crate::plex::Metadata, sid: ServerId) -> PmsMovie 
     m.title = clean(&it.title);
     m.year = it.year as c_int;
     m.rating = clean(&it.content_rating);
-    m.dur_ns = if it.duration > 0 { it.duration * 1_000_000 } else { 0 };
+    m.dur_ns = if it.duration > 0 {
+        it.duration * 1_000_000
+    } else {
+        0
+    };
     m.resume_ms = it.view_offset;
     // poster: prefer the show poster for episodes (grandparentThumb) so a landscape
     // episode still doesn't fill a portrait card
-    let thumb = if it.grandparent_thumb.is_empty() { &it.thumb } else { &it.grandparent_thumb };
+    let thumb = if it.grandparent_thumb.is_empty() {
+        &it.thumb
+    } else {
+        &it.grandparent_thumb
+    };
     m.thumb = clean(thumb);
     // …and the item's OWN thumb, unsubstituted. The line above is right for a POSTER shelf and
     // wrong for a landscape one, and both exist: an episode's own thumb is a 16:9 still, so Home's
@@ -226,7 +240,11 @@ pub(crate) fn parse_item(it: &crate::plex::Metadata, sid: ServerId) -> PmsMovie 
     // Kept as a second field rather than resolved per caller because `parse_item` runs on a worker
     // and cannot know which shelf will draw the row. Empty on a movie, where `thumb` already IS
     // the item's own.
-    m.still = if it.grandparent_thumb.is_empty() { String::new() } else { clean(&it.thumb) };
+    m.still = if it.grandparent_thumb.is_empty() {
+        String::new()
+    } else {
+        clean(&it.thumb)
+    };
     m.art = clean(&it.art);
     m.summary = clean(&it.summary);
     m.rk = clean(&it.rating_key);
@@ -357,7 +375,10 @@ pub(crate) fn hub_len(i: usize) -> usize {
 /// whether hub `i` is the merged Continue Watching shelf (its tiles play directly on OK, so the
 /// home grid stamps the play-hint badge on them). Matched on the locale-independent hubIdentifier.
 pub(crate) fn hub_is_continue(i: usize) -> bool {
-    hubs().get(i).map(|h| h.hub_id == "home.continue").unwrap_or(false)
+    hubs()
+        .get(i)
+        .map(|h| h.hub_id == "home.continue")
+        .unwrap_or(false)
 }
 /// item `col` of hub `hub`, or None
 pub(crate) fn hub_item(hub: usize, col: usize) -> Option<&'static PmsMovie> {
@@ -369,24 +390,8 @@ pub(crate) fn hub_item(hub: usize, col: usize) -> Option<&'static PmsMovie> {
     }
 }
 
-/// Refetch the home hubs — the player exit's entry point. A pass-through to [`pms_fetch_hubs`]
-/// now that reconciling the surfaces that index into the rebuilt catalog is [`commit`]'s own job.
-///
-/// **BLOCKING on the owned server**, because [`pms_fetch_hubs`] is. That is affordable on the
-/// player-exit path, which is already a teardown, and it is NOT affordable off a keypress — see
-/// [`request_refetch_hubs`], which is what the view-state writes use.
-pub(crate) fn refetch_hubs_reconcile() -> c_int {
-    pms_fetch_hubs()
-}
-
 /// Refetch the home hubs OFF the main thread — every source on a worker, the owned one included,
 /// landing through [`pump`] like any other fetch. **MAIN THREAD, NON-BLOCKING.**
-///
-/// The twin of [`refetch_hubs_reconcile`], and the difference is only which sources are inline.
-/// `pms_fetch_hubs` keeps the owned server synchronous because it is the BOOT fetch and Home cannot
-/// open without it; a refetch has a populated Home already on screen, so there is nothing to wait
-/// for and every reason not to — this is reached from a keypress (`viewstate`'s Mark as Watched /
-/// Remove from Deck), where a WAN server's `/hubs` pair is seconds of parked frame loop.
 ///
 /// No reconcile call here, and none is owed anywhere: [`commit`] performs the re-selection and the
 /// repaint itself, at the only moment the catalog those surfaces index into actually moves.
@@ -397,7 +402,7 @@ pub(crate) fn request_refetch_hubs() {
     // A superseded worker's landing is dropped on the generation above, so releasing the
     // single-flight latches here cannot double-apply anything — and without it a source whose
     // worker was in flight across this call would stay latched and never fetch again. Same clause
-    // `pms_fetch_hubs` opens with, for the same reason.
+    // An authoritative request supersedes any older flight, so release every latch here.
     for s in srcs.iter_mut() {
         s.fetching = false;
         retry_now(s); // from the bottom of the ladder: the user asked for this, in effect
@@ -492,50 +497,6 @@ pub(crate) fn set_watched(m: &mut PmsMovie, on: bool) {
     m.resume_ms = 0;
 }
 
-/// Fetch Home — BLOCKING for the owned server, off-thread for every other source. The boot /
-/// install path's fetch; returns the committed catalog's row count.
-///
-/// **Only the FIRST source is fetched inline.** Home cannot open without the signed-in user's own
-/// server, and this call's return value is what `install_pms` logs as `nmovies=`, so that one stays
-/// synchronous exactly as it always was. Every shared source is kicked onto a worker instead:
-/// a share that has gone away costs a full connect timeout (8 s, measured — `docs/shared-servers.md`
-/// §2), and serialising N of those on the SDL thread would freeze boot for as long as the friend's
-/// router stays quiet. They land in [`pump`] whenever they land.
-///
-/// A failure does not commit empty. It used to — "blanking the home consistently" — which made a
-/// dead server indistinguishable from a server with nothing on it, and left Home a bare dark screen
-/// with no explanation and nothing that would ever try again. Now the verdict is PER SOURCE: the
-/// failing one keeps whatever it last answered with, the others commit regardless, and [`pump`]
-/// retries that source alone on its own backoff.
-pub(crate) fn pms_fetch_hubs() -> c_int {
-    HUB_GEN.fetch_add(1, Ordering::SeqCst); // supersede every retry already in flight
-    sync_roster();
-    let mut srcs = lock_srcs();
-    // A superseded worker's landing is dropped on the generation above, so releasing the
-    // single-flight latches here cannot double-apply anything — and without it a source whose
-    // worker was in flight across this call would stay latched and never fetch again.
-    for s in srcs.iter_mut() {
-        s.fetching = false;
-    }
-    if let Some(own) = srcs.first_mut() {
-        // MAIN THREAD: the client this source's shelves will describe, captured here and carried
-        // into the parse — the same capture [`kick`] makes at its spawn site (see `parse_item`).
-        match crate::plex::client_for(own.sid).and_then(|c| {
-            let sid = own.sid;
-            catch_unwind(move || fetch_source(c, sid)).ok().flatten()
-        }) {
-            Some(b) => landed_ok(own, b),
-            None => landed_fail(own),
-        }
-    }
-    for s in srcs.iter_mut().skip(1) {
-        kick(s);
-    }
-    let build = merge(&srcs);
-    drop(srcs);
-    commit(build)
-}
-
 /// The catalog/hubs/pool triple the merge produces, before it is committed.
 type HubBuild = (Vec<PmsMovie>, Vec<HubRow>, Vec<HeroSlot>);
 
@@ -590,7 +551,11 @@ fn fetch_source(c: &crate::plex::Client, sid: ServerId) -> Option<SourceBuild> {
 /// Project one source's `/hubs` + `/hubs/continueWatching` responses into its [`SourceBuild`].
 /// Pure — no statics, no I/O, no knowledge of any other source; `sid` is the server the two
 /// containers came from, stamped onto every row it builds.
-fn project(mc: &crate::plex::MediaContainer, cw: &crate::plex::MediaContainer, sid: ServerId) -> SourceBuild {
+fn project(
+    mc: &crate::plex::MediaContainer,
+    cw: &crate::plex::MediaContainer,
+    sid: ServerId,
+) -> SourceBuild {
     const SKIP: [&str; 6] = ["album", "artist", "track", "photo", "clip", "playlist"];
     // need a poster to show it in a shelf
     let keep = |it: &crate::plex::Metadata| {
@@ -615,7 +580,12 @@ fn project(mc: &crate::plex::MediaContainer, cw: &crate::plex::MediaContainer, s
             .metadata
             .iter()
             .filter(|m| !SKIP.contains(&m.kind.as_str()))
-            .filter_map(|it| keep(it).map(|m| CwItem { last_viewed_at: it.last_viewed_at, m }))
+            .filter_map(|it| {
+                keep(it).map(|m| CwItem {
+                    last_viewed_at: it.last_viewed_at,
+                    m,
+                })
+            })
             .collect();
         if !out.cw.is_empty() {
             break; // the first hub that has anything in it IS the deck
@@ -633,7 +603,11 @@ fn project(mc: &crate::plex::MediaContainer, cw: &crate::plex::MediaContainer, s
         if items.is_empty() {
             continue;
         }
-        out.shelves.push(Shelf { title: hub.title.clone(), hub_id: hub.hub_identifier.clone(), items });
+        out.shelves.push(Shelf {
+            title: hub.title.clone(),
+            hub_id: hub.hub_identifier.clone(),
+            items,
+        });
     }
     out
 }
@@ -693,8 +667,10 @@ pub(crate) fn allot(budget: usize, want: &[usize]) -> Vec<usize> {
 /// source that is really gone leaves the ROSTER, which is what drops its shelves.
 fn merge(srcs: &[Src]) -> HubBuild {
     let pins = library_pins_by_server();
-    let live: Vec<(&str, &SourceBuild)> =
-        srcs.iter().filter_map(|s| s.last.as_ref().map(|b| (s.handle.as_str(), b))).collect();
+    let live: Vec<(&str, &SourceBuild)> = srcs
+        .iter()
+        .filter_map(|s| s.last.as_ref().map(|b| (s.handle.as_str(), b)))
+        .collect();
 
     let mut new_cat: Vec<PmsMovie> = Vec::new();
     let mut new_hubs: Vec<HubRow> = Vec::new();
@@ -732,7 +708,10 @@ fn merge(srcs: &[Src]) -> HubBuild {
 
     // ---- 2. every other shelf, grouped by source ----
     let shelf_want: Vec<usize> = live.iter().map(|(_, b)| b.shelves.len()).collect();
-    let row_want: Vec<usize> = live.iter().map(|(_, b)| b.shelves.iter().map(|s| s.items.len()).sum()).collect();
+    let row_want: Vec<usize> = live
+        .iter()
+        .map(|(_, b)| b.shelves.iter().map(|s| s.items.len()).sum())
+        .collect();
     let shelves_for = allot(MAX_SHELVES - new_hubs.len(), &shelf_want);
     let rows_for = allot(PMS_MAX_MOVIES - new_cat.len(), &row_want);
 
@@ -743,7 +722,12 @@ fn merge(srcs: &[Src]) -> HubBuild {
             // Filtered BEFORE the take, so an unpinned library cannot spend a pinned one's row
             // budget — and a shelf left with nothing contributes no `HubRow` below, which is how an
             // unpinned library's whole shelf disappears rather than becoming an empty heading.
-            for m in sh.items.iter().filter(|m| item_pinned(&pins, m)).take(rows_left.min(MAX_SHELF_ITEMS)) {
+            for m in sh
+                .items
+                .iter()
+                .filter(|m| item_pinned(&pins, m))
+                .take(rows_left.min(MAX_SHELF_ITEMS))
+            {
                 new_cat.push(m.clone());
                 row_handle.push(handle);
             }
@@ -787,13 +771,15 @@ fn merge(srcs: &[Src]) -> HubBuild {
             //
             // NB the pool holds `HeroSlot`s, so the index is `s.idx` — unit 12's hero-ordering work
             // and unit 3's identity work landed in this same expression from opposite directions.
-            if new_pool
-                .iter()
-                .any(|s| crate::plex::same_item((new_cat[s.idx].sid, &new_cat[s.idx].rk), (m.sid, &m.rk)))
-            {
+            if new_pool.iter().any(|s| {
+                crate::plex::same_item((new_cat[s.idx].sid, &new_cat[s.idx].rk), (m.sid, &m.rk))
+            }) {
                 continue;
             }
-            new_pool.push(HeroSlot { idx, source: row_handle[idx].to_string() });
+            new_pool.push(HeroSlot {
+                idx,
+                source: row_handle[idx].to_string(),
+            });
         }
     }
     // …and only now is the order decided: the pool is assembled shelf by shelf, so which server
@@ -836,6 +822,10 @@ struct Src {
     /// The registry slot every fetch for this source is issued through — and the id stamped onto
     /// every row it parses.
     sid: ServerId,
+    /// Registry lifecycle currently represented by this slot. A slot id survives repoint, so the
+    /// pointer and credential generation are part of the source identity too.
+    client: Option<&'static crate::plex::Client>,
+    token_gen: u32,
     /// The owner's plex.tv handle ("friend") for a BORROWED server; **empty** for one of our own.
     /// Read from the registry at [`sync_roster`] time, never inside a worker.
     handle: String,
@@ -858,8 +848,41 @@ struct Src {
 
 impl Src {
     fn new(sid: ServerId, handle: String) -> Src {
-        Src { sid, handle, state: HubState::Loading, fetching: false, seq: 0, retry_s: 0.0, retry_n: 0, last: None }
+        let client = crate::plex::client_for(sid);
+        Src {
+            sid,
+            client,
+            token_gen: client.map_or(0, |c| c.token_gen()),
+            handle,
+            state: HubState::Loading,
+            fetching: false,
+            seq: 0,
+            retry_s: 0.0,
+            retry_n: 0,
+            last: None,
+        }
     }
+}
+
+fn refresh_src_lifecycle(s: &mut Src) -> bool {
+    let client = crate::plex::client_for(s.sid);
+    let token_gen = client.map_or(0, |c| c.token_gen());
+    let same = match (s.client, client) {
+        (Some(a), Some(b)) => std::ptr::eq(a, b) && s.token_gen == token_gen,
+        (None, None) => true,
+        _ => false,
+    };
+    if same {
+        return false;
+    }
+    s.client = client;
+    s.token_gen = token_gen;
+    s.fetching = false;
+    s.state = HubState::Loading;
+    s.retry_s = 0.0;
+    s.retry_n = 0;
+    s.seq = s.seq.wrapping_add(1);
+    true
 }
 
 /// The source table, in display order: our own servers first, then each shared one. Rebuilt from
@@ -882,6 +905,8 @@ struct Landing {
     gen: u32,
     seq: u32,
     sid: ServerId,
+    client: Option<&'static crate::plex::Client>,
+    token_gen: u32,
     build: Option<SourceBuild>,
 }
 static RESULTS: Mutex<Vec<Landing>> = Mutex::new(Vec::new());
@@ -930,7 +955,7 @@ pub(crate) fn hub_state() -> HubState {
 ///
 /// `pinned` is every pinned library's server, from `browse::pinned_libraries`. The rule is *not*
 /// "is this server in that list": an EMPTY list means the pin store knows nothing yet, not that
-/// nothing is pinned. `/library/sections` lands asynchronously and always after `pms_fetch_hubs`,
+/// nothing is pinned. `/library/sections` and `/hubs` land independently and asynchronously,
 /// and `browse::is_last_pinned` forbids unpinning the last library — so "empty" can only mean "no
 /// section has been discovered anywhere", and treating it as "nothing is pinned" would leave Home
 /// with no sources at all on the frame it boots.
@@ -940,9 +965,8 @@ fn feeds_home(sid: ServerId, pinned: &[ServerId], known: &[ServerId]) -> bool {
     // **A server whose libraries we have not enumerated yet is UNDECIDED, not unpinned.**
     //
     // The pin is a decision about libraries; you cannot have decided against one nobody has
-    // discovered. Section discovery for a source other than the current one runs on a worker off
-    // `browse::pump`, which only runs while the LIBRARY screen is up — so on a fresh boot the share
-    // is in the roster, has answered with shelves, and has no known sections at all. Testing
+    // discovered. Section discovery runs on workers and may land after that source's shelves, so
+    // on a fresh boot the share can be in the roster with no known sections yet. Testing
     // `pinned.contains` there excluded it from Home until you happened to visit the Library, which
     // is exactly how the owner found it: "it appeared on the home screen only after I watched the
     // library."
@@ -990,7 +1014,10 @@ fn item_pinned(pins: &[(ServerId, i64, bool)], m: &PmsMovie) -> bool {
     if m.sec == 0 {
         return true; // the server said nothing about this row's library
     }
-    match pins.iter().find(|(sid, key, _)| *sid == m.sid && *key == m.sec) {
+    match pins
+        .iter()
+        .find(|(sid, key, _)| *sid == m.sid && *key == m.sec)
+    {
         Some((_, _, pinned)) => *pinned,
         None => true, // not enumerated yet
     }
@@ -1028,7 +1055,9 @@ fn roster() -> Vec<(ServerId, String)> {
         if crate::plex::client_for(sid).is_none() || !feeds_home(sid, &pinned, &known) {
             continue;
         }
-        let handle = crate::plex::server_facts(sid).map(|f| f.handle.clone()).unwrap_or_default();
+        let handle = crate::plex::server_facts(sid)
+            .map(|f| f.handle.clone())
+            .unwrap_or_default();
         if handle.is_empty() {
             own.push((sid, handle));
         } else {
@@ -1078,6 +1107,9 @@ fn sync_roster() {
             Some(i) => {
                 let mut keep = srcs.remove(i);
                 keep.handle = handle;
+                // Preserve the last good shelves while the replacement lifecycle fetches, but
+                // release and supersede the old single-flight so it cannot wedge this slot.
+                refresh_src_lifecycle(&mut keep);
                 out.push(keep);
             }
             None => out.push(Src::new(sid, handle)),
@@ -1105,8 +1137,8 @@ fn sync_roster() {
 /// has no spring behind it, so nothing else would report the change to the frame gate.
 ///
 /// Those two used to be the CALLER's to remember, and the five commit sites did not agree: three
-/// performed the pair, one ([`pms_fetch_hubs`]) reconciled only through a wrapper its other caller
-/// bypassed, and [`reset`] did neither. What kept that last omission from being visible is that
+/// performed the pair, one legacy synchronous hub path reconciled only through a wrapper its other
+/// caller bypassed, and [`reset`] did neither. What kept that last omission from being visible is that
 /// `reset`'s one production caller routes away from the detail page first — not any property of
 /// `reset`. A ritual every caller must repeat is the defect class, so it lives here, where a new
 /// commit site cannot forget it and no site has to be checked against the others.
@@ -1185,16 +1217,28 @@ fn kick(s: &mut Src) {
         landed_fail(s); // a source whose slot holds no client has nothing to contribute
         return;
     };
+    s.client = Some(c);
+    s.token_gen = c.token_gen();
     s.fetching = true;
     s.state = HubState::Loading;
     s.retry_s = 0.0;
     s.seq = s.seq.wrapping_add(1);
-    let (gen, seq, sid) = (HUB_GEN.load(Ordering::SeqCst), s.seq, s.sid);
+    let (gen, seq, sid, token_gen) = (HUB_GEN.load(Ordering::SeqCst), s.seq, s.sid, c.token_gen());
     let spawned = crate::task::spawn_small("hubs", move || {
         let build = catch_unwind(move || fetch_source(c, sid)).ok().flatten();
         // pushed OUTSIDE the guard so a panicking fetch still lands (as a failure) rather than
         // latching this source's single flight forever
-        RESULTS.lock().unwrap_or_else(|e| e.into_inner()).push(Landing { gen, seq, sid, build });
+        RESULTS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(Landing {
+                gen,
+                seq,
+                sid,
+                client: Some(c),
+                token_gen,
+                build,
+            });
     });
     if !spawned {
         // nothing will ever fill the mailbox (the thread limit refused us), so release the latch
@@ -1242,7 +1286,16 @@ pub(crate) fn pump(dt: f32) {
         let Some(s) = srcs.iter_mut().find(|s| s.sid == l.sid) else {
             continue; // its source left the roster while it was out
         };
-        if l.gen != cur || l.seq != s.seq {
+        let lifecycle_matches = l.client.is_none_or(|client| {
+            crate::plex::client_for(l.sid)
+                .is_some_and(|now| std::ptr::eq(now, client) && now.token_gen() == l.token_gen)
+        });
+        if l.gen != cur || l.seq != s.seq || !lifecycle_matches {
+            if l.gen == cur && l.seq == s.seq && !lifecycle_matches {
+                s.fetching = false;
+                s.state = HubState::Loading;
+                s.retry_s = 0.0;
+            }
             continue;
         }
         s.fetching = false;
@@ -1286,7 +1339,10 @@ pub(crate) fn pump(dt: f32) {
     }
     if let Some(build) = build {
         let n = commit(build);
-        crate::log(&format!("hubs: landed — {n} items, {} shelves", hub_count()));
+        crate::log(&format!(
+            "hubs: landed — {n} items, {} shelves",
+            hub_count()
+        ));
     }
 }
 
@@ -1308,7 +1364,11 @@ fn build_test(n: usize) -> SourceBuild {
             title: "Continue Watching".into(),
             hub_id: "home.continue".into(),
             items: (0..n)
-                .map(|i| PmsMovie { rk: (i + 1).to_string(), art: "/art".into(), ..PmsMovie::default() })
+                .map(|i| PmsMovie {
+                    rk: (i + 1).to_string(),
+                    art: "/art".into(),
+                    ..PmsMovie::default()
+                })
                 .collect(),
         }],
     }
@@ -1389,11 +1449,50 @@ mod tests {
     /// a real fetch would post. `None` is a failure.
     fn land(slot: u16, build: Option<SourceBuild>) {
         let s = sid(slot);
-        let seq = lock_srcs().iter().find(|x| x.sid == s).map(|x| x.seq).unwrap_or(0);
+        let seq = lock_srcs()
+            .iter()
+            .find(|x| x.sid == s)
+            .map(|x| x.seq)
+            .unwrap_or(0);
         RESULTS
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .push(Landing { gen: HUB_GEN.load(Ordering::SeqCst), seq, sid: s, build });
+            .push(Landing {
+                gen: HUB_GEN.load(Ordering::SeqCst),
+                seq,
+                sid: s,
+                client: None,
+                token_gen: 0,
+                build,
+            });
+    }
+
+    #[test]
+    fn a_same_slot_repoint_drops_the_old_flight_and_rearms_home() {
+        let _g = crate::testlock::serial();
+        crate::plex::reset_servers_for_test();
+        let sid = crate::plex::register_for_test("home-life", "10.0.0.1", 32400, "old", "cid");
+        let old = crate::plex::client_for(sid).unwrap();
+        let old_gen = old.token_gen();
+        let mut s = Src::new(sid, String::new());
+        s.state = HubState::Ready;
+        s.fetching = true;
+        s.last = Some(build_test(2));
+        assert_eq!(
+            crate::plex::register_for_test("home-life", "10.0.0.2", 32400, "new", "cid"),
+            sid
+        );
+
+        assert!(refresh_src_lifecycle(&mut s));
+        assert_eq!(s.state, HubState::Loading);
+        assert!(!s.fetching);
+        assert!(
+            s.last.is_some(),
+            "old shelves remain until the fresh lifecycle answers"
+        );
+        assert!(!crate::plex::client_for(sid)
+            .is_some_and(|now| { std::ptr::eq(now, old) && now.token_gen() == old_gen }));
+        crate::plex::reset_servers_for_test();
     }
 
     /// A drawable catalog row of one server. `thumb` is what `project` requires of a row, `art`
@@ -1409,28 +1508,49 @@ mod tests {
         }
     }
     fn shelf(slot: u16, title: &str, hub_id: &str, rks: &[&str]) -> Shelf {
-        Shelf { title: title.into(), hub_id: hub_id.into(), items: rks.iter().map(|r| row(slot, r)).collect() }
+        Shelf {
+            title: title.into(),
+            hub_id: hub_id.into(),
+            items: rks.iter().map(|r| row(slot, r)).collect(),
+        }
     }
     /// A source's projection: `(lastViewedAt, rk)` deck entries plus whole shelves.
     fn built(slot: u16, cw: &[(i64, &str)], shelves: Vec<Shelf>) -> SourceBuild {
         SourceBuild {
-            cw: cw.iter().map(|&(t, r)| CwItem { last_viewed_at: t, m: row(slot, r) }).collect(),
+            cw: cw
+                .iter()
+                .map(|&(t, r)| CwItem {
+                    last_viewed_at: t,
+                    m: row(slot, r),
+                })
+                .collect(),
             shelves,
         }
     }
     /// The ratingKeys of shelf `h`, in drawn order.
     fn rks(h: usize) -> Vec<String> {
-        (0..hub_len(h)).filter_map(|c| hub_item(h, c)).map(|m| m.rk.clone()).collect()
+        (0..hub_len(h))
+            .filter_map(|c| hub_item(h, c))
+            .map(|m| m.rk.clone())
+            .collect()
     }
 
     #[test]
     fn the_backoff_doubles_then_holds_at_the_ceiling() {
-        assert_eq!(backoff_secs(1), RETRY_MIN_S, "the first retry is the shortest wait");
+        assert_eq!(
+            backoff_secs(1),
+            RETRY_MIN_S,
+            "the first retry is the shortest wait"
+        );
         assert_eq!(backoff_secs(2), 4.0);
         assert_eq!(backoff_secs(3), 8.0);
         assert_eq!(backoff_secs(4), 16.0);
         assert_eq!(backoff_secs(5), RETRY_MAX_S, "32s is past the ceiling");
-        assert_eq!(backoff_secs(99), RETRY_MAX_S, "and it never grows past it (nor overflows)");
+        assert_eq!(
+            backoff_secs(99),
+            RETRY_MAX_S,
+            "and it never grows past it (nor overflows)"
+        );
     }
 
     /// The bug the fetch state machine exists for: a failed fetch used to commit an EMPTY catalog,
@@ -1447,10 +1567,17 @@ mod tests {
         land(0, None);
         pump(0.0);
 
-        assert_eq!(hub_state(), HubState::Failed, "the failure must be distinguishable");
+        assert_eq!(
+            hub_state(),
+            HubState::Failed,
+            "the failure must be distinguishable"
+        );
         assert_eq!(hub_count(), 1, "the shelves survive a failed refetch");
         assert_eq!(hub_len(0), 3);
-        assert!(lock_srcs()[0].retry_s > 0.0, "and the next attempt is armed");
+        assert!(
+            lock_srcs()[0].retry_s > 0.0,
+            "and the next attempt is armed"
+        );
         reset();
     }
 
@@ -1502,7 +1629,10 @@ mod tests {
         let mut s = src(0, "", HubState::Loading, None);
         landed_fail(&mut s); // arms RETRY_MIN_S
         for _ in 0..3 {
-            assert!(!retry_due(&mut s, 0.5), "0.5s at a time must not fire before the 2s wait is spent");
+            assert!(
+                !retry_due(&mut s, 0.5),
+                "0.5s at a time must not fire before the 2s wait is spent"
+            );
         }
         assert!(retry_due(&mut s, 0.5), "the fourth half-second spends it");
     }
@@ -1524,12 +1654,30 @@ mod tests {
         let cur = HUB_GEN.load(Ordering::SeqCst);
         {
             let mut r = RESULTS.lock().unwrap_or_else(|e| e.into_inner());
-            r.push(Landing { gen: stale, seq: 0, sid: s0, build: Some(build_test(9)) });
-            r.push(Landing { gen: cur, seq: 99, sid: s0, build: Some(build_test(7)) });
+            r.push(Landing {
+                gen: stale,
+                seq: 0,
+                sid: s0,
+                client: None,
+                token_gen: 0,
+                build: Some(build_test(9)),
+            });
+            r.push(Landing {
+                gen: cur,
+                seq: 99,
+                sid: s0,
+                client: None,
+                token_gen: 0,
+                build: Some(build_test(7)),
+            });
         }
         pump(0.0);
         assert_eq!(hub_len(0), 2, "neither may replace the current catalog");
-        assert_eq!(hub_state(), HubState::Ready, "nor be counted as a failure of the current one");
+        assert_eq!(
+            hub_state(),
+            HubState::Ready,
+            "nor be counted as a failure of the current one"
+        );
         reset();
     }
 
@@ -1543,7 +1691,12 @@ mod tests {
 
     /// A row that is part-way through, i.e. the shape a Continue Watching card really has.
     fn started(slot: u16, rk: &str) -> PmsMovie {
-        PmsMovie { dur_ns: 90 * 60 * 1_000_000_000, resume_ms: 30 * 60_000, unwatched: false, ..row(slot, rk) }
+        PmsMovie {
+            dur_ns: 90 * 60 * 1_000_000_000,
+            resume_ms: 30 * 60_000,
+            unwatched: false,
+            ..row(slot, rk)
+        }
     }
 
     /// Every appearance of the item flips, deck and shelves alike — a home screen that marked one
@@ -1555,15 +1708,26 @@ mod tests {
         let _g = crate::testlock::serial();
         reset();
         let mut b = SourceBuild {
-            cw: vec![CwItem { last_viewed_at: 9, m: started(0, "7") }],
-            shelves: vec![shelf(0, "Recently Added", "home.movies.recent", &["7", "8"])],
+            cw: vec![CwItem {
+                last_viewed_at: 9,
+                m: started(0, "7"),
+            }],
+            shelves: vec![shelf(
+                0,
+                "Recently Added",
+                "home.movies.recent",
+                &["7", "8"],
+            )],
         };
 
         assert!(apply_edit(&mut b, sid(0), "7", LocalEdit::Watched(true)));
 
         assert!(b.cw[0].m.watched && !b.cw[0].m.unwatched, "the deck card");
         assert_eq!(b.cw[0].m.resume_ms, 0, "…and its bar retires with the flag");
-        assert!(b.shelves[0].items[0].watched, "the same film on another shelf");
+        assert!(
+            b.shelves[0].items[0].watched,
+            "the same film on another shelf"
+        );
         assert!(!b.shelves[0].items[1].watched, "and nothing else on it");
 
         // …and the reverse toggle is the exact inverse, on a container as much as on a leaf
@@ -1579,8 +1743,14 @@ mod tests {
     fn an_edit_never_reaches_the_same_rating_key_on_another_server() {
         let _g = crate::testlock::serial();
         reset();
-        let mut b = SourceBuild { cw: Vec::new(), shelves: vec![shelf(1, "Theirs", "h", &["7"])] };
-        assert!(!apply_edit(&mut b, sid(0), "7", LocalEdit::Watched(true)), "nothing matched");
+        let mut b = SourceBuild {
+            cw: Vec::new(),
+            shelves: vec![shelf(1, "Theirs", "h", &["7"])],
+        };
+        assert!(
+            !apply_edit(&mut b, sid(0), "7", LocalEdit::Watched(true)),
+            "nothing matched"
+        );
         assert!(!b.shelves[0].items[0].watched);
         reset();
     }
@@ -1594,7 +1764,16 @@ mod tests {
         let _g = crate::testlock::serial();
         reset();
         let mut b = SourceBuild {
-            cw: vec![CwItem { last_viewed_at: 9, m: started(0, "7") }, CwItem { last_viewed_at: 8, m: started(0, "8") }],
+            cw: vec![
+                CwItem {
+                    last_viewed_at: 9,
+                    m: started(0, "7"),
+                },
+                CwItem {
+                    last_viewed_at: 8,
+                    m: started(0, "8"),
+                },
+            ],
             shelves: vec![Shelf {
                 title: "Recently Added".into(),
                 hub_id: "home.movies.recent".into(),
@@ -1607,8 +1786,15 @@ mod tests {
         assert_eq!(b.cw.len(), 1, "only the one asked for leaves");
         assert_eq!(b.cw[0].m.rk, "8");
         assert_eq!(b.shelves[0].items[0].rk, "7", "its other shelf keeps it");
-        assert_eq!(b.shelves[0].items[0].resume_ms, 30 * 60_000, "…with the position it had");
-        assert!(!b.shelves[0].items[0].watched, "…and its watch state untouched: this is a HIDE");
+        assert_eq!(
+            b.shelves[0].items[0].resume_ms,
+            30 * 60_000,
+            "…with the position it had"
+        );
+        assert!(
+            !b.shelves[0].items[0].watched,
+            "…and its watch state untouched: this is a HIDE"
+        );
         reset();
     }
 
@@ -1621,8 +1807,22 @@ mod tests {
         let _g = crate::testlock::serial();
         reset();
         let build = SourceBuild {
-            cw: vec![CwItem { last_viewed_at: 9, m: started(0, "7") }, CwItem { last_viewed_at: 8, m: started(0, "8") }],
-            shelves: vec![shelf(0, "Recently Added", "home.movies.recent", &["a", "b"])],
+            cw: vec![
+                CwItem {
+                    last_viewed_at: 9,
+                    m: started(0, "7"),
+                },
+                CwItem {
+                    last_viewed_at: 8,
+                    m: started(0, "8"),
+                },
+            ],
+            shelves: vec![shelf(
+                0,
+                "Recently Added",
+                "home.movies.recent",
+                &["a", "b"],
+            )],
         };
         seed(vec![src(0, "", HubState::Ready, Some(build))]);
         assert_eq!(rks(0), vec!["7", "8"], "the deck as it stands");
@@ -1631,7 +1831,11 @@ mod tests {
         assert!(edit_item(sid(0), "7", LocalEdit::LeftTheDeck));
 
         assert_eq!(rks(0), vec!["8"], "the card is gone from the deck");
-        assert_eq!(rks(1), vec!["a", "b"], "and the shelf behind it still names its own items");
+        assert_eq!(
+            rks(1),
+            vec!["a", "b"],
+            "and the shelf behind it still names its own items"
+        );
         assert_eq!(hub_count(), 2, "no shelf appeared or vanished");
         reset();
     }
@@ -1657,7 +1861,14 @@ mod tests {
     // exactly what `merge` hands `own_items_first` after every shelf has contributed.
 
     fn pool_of(sources: &[&str]) -> Vec<HeroSlot> {
-        sources.iter().enumerate().map(|(i, s)| HeroSlot { idx: i, source: s.to_string() }).collect()
+        sources
+            .iter()
+            .enumerate()
+            .map(|(i, s)| HeroSlot {
+                idx: i,
+                source: s.to_string(),
+            })
+            .collect()
     }
     fn sources_of(pool: &[HeroSlot]) -> Vec<&str> {
         pool.iter().map(|s| s.source.as_str()).collect()
@@ -1669,7 +1880,11 @@ mod tests {
         let mut p = pool_of(&["friend", "friend", "", "", "friend"]);
         own_items_first(&mut p);
         assert_eq!(sources_of(&p), ["", "friend", "friend", "", "friend"]);
-        assert_eq!(p.iter().map(|s| s.idx).collect::<Vec<_>>(), [2, 0, 1, 3, 4], "the pages themselves survive");
+        assert_eq!(
+            p.iter().map(|s| s.idx).collect::<Vec<_>>(),
+            [2, 0, 1, 3, 4],
+            "the pages themselves survive"
+        );
     }
 
     #[test]
@@ -1681,7 +1896,11 @@ mod tests {
         ] {
             let mut p = pool_of(&start);
             own_items_first(&mut p);
-            assert_eq!(sources_of(&p), start, "an ordering that already holds must not be re-derived");
+            assert_eq!(
+                sources_of(&p),
+                start,
+                "an ordering that already holds must not be re-derived"
+            );
         }
     }
 
@@ -1690,7 +1909,11 @@ mod tests {
     fn a_borrowed_only_account_still_gets_a_hero_and_it_holds_the_first_rotation() {
         let mut p = pool_of(&["friend", "friend2"]);
         own_items_first(&mut p);
-        assert_eq!(sources_of(&p), ["friend", "friend2"], "nothing of ours to promote, so nothing moves");
+        assert_eq!(
+            sources_of(&p),
+            ["friend", "friend2"],
+            "nothing of ours to promote, so nothing moves"
+        );
     }
 
     #[test]
@@ -1720,13 +1943,19 @@ mod tests {
             )
         };
         let parse = |s: String| {
-            serde_json::from_str::<crate::plex::Envelope>(&s).expect("a PMS body parses").media_container
+            serde_json::from_str::<crate::plex::Envelope>(&s)
+                .expect("a PMS body parses")
+                .media_container
         };
         let empty = crate::plex::MediaContainer::default();
         let ours = sid(3);
 
         let b = project(&parse(body("1", "Ours")), &empty, ours);
-        assert_eq!(b.shelves.len(), 1, "the shelf survived the title/poster filter");
+        assert_eq!(
+            b.shelves.len(),
+            1,
+            "the shelf survived the title/poster filter"
+        );
         assert_eq!(b.shelves[0].items.len(), 1);
         assert_eq!(
             (b.shelves[0].items[0].sid, b.shelves[0].items[0].rk.as_str()),
@@ -1751,7 +1980,11 @@ mod tests {
             src(4, "friend", HubState::Ready, Some(b2)),
         ]);
         assert_eq!(cat.len(), 2);
-        assert_eq!(hubs.len(), 2, "one shelf each, neither folded into the other");
+        assert_eq!(
+            hubs.len(),
+            2,
+            "one shelf each, neither folded into the other"
+        );
         assert_eq!(pool.len(), 2, "…and so does the hero pool, by construction");
     }
 
@@ -1771,7 +2004,11 @@ mod tests {
             ..Default::default()
         };
         // ours first, so a bare-key scan would always answer with it
-        let cat = vec![mk(a, "1", "ours"), mk(a, "2", "ours too"), mk(b, "1", "the friend's")];
+        let cat = vec![
+            mk(a, "1", "ours"),
+            mk(a, "2", "ours too"),
+            mk(b, "1", "the friend's"),
+        ];
         let hubs = vec![HubRow {
             title: "Continue Watching".into(),
             hub_id: "home.continue".into(),
@@ -1783,10 +2020,21 @@ mod tests {
 
         assert_eq!(index_of_rk(a, "1"), 0);
         assert_eq!(index_of_rk(b, "1"), 2, "the SHARE's item 1, not ours");
-        assert_eq!(movie(index_of_rk(b, "1") as usize).map(|m| m.title.as_str()), Some("the friend's"));
+        assert_eq!(
+            movie(index_of_rk(b, "1") as usize).map(|m| m.title.as_str()),
+            Some("the friend's")
+        );
         assert_eq!(index_of_rk(a, "2"), 1);
-        assert_eq!(index_of_rk(b, "2"), -1, "a key our server has and the share does not is a MISS");
-        assert_eq!(index_of_rk(ServerId::UNSET, "1"), -1, "and an unscoped lookup answers for neither");
+        assert_eq!(
+            index_of_rk(b, "2"),
+            -1,
+            "a key our server has and the share does not is a MISS"
+        );
+        assert_eq!(
+            index_of_rk(ServerId::UNSET, "1"),
+            -1,
+            "and an unscoped lookup answers for neither"
+        );
         reset();
     }
 
@@ -1815,16 +2063,43 @@ mod tests {
     fn one_failing_source_still_commits_the_other() {
         let _g = crate::testlock::serial();
         reset();
-        seed(vec![src(0, "", HubState::Loading, None), src(1, "friend", HubState::Loading, None)]);
+        seed(vec![
+            src(0, "", HubState::Loading, None),
+            src(1, "friend", HubState::Loading, None),
+        ]);
 
-        land(0, Some(built(0, &[], vec![shelf(0, "Recently Added", "home.movies.recent", &["a1", "a2"])])));
+        land(
+            0,
+            Some(built(
+                0,
+                &[],
+                vec![shelf(
+                    0,
+                    "Recently Added",
+                    "home.movies.recent",
+                    &["a1", "a2"],
+                )],
+            )),
+        );
         land(1, None);
         pump(0.0);
 
-        assert_eq!(hub_state(), HubState::Ready, "one server answering is an answered Home");
-        assert_eq!(hub_count(), 1, "the dead share contributes NOTHING — no heading, no empty shelf");
+        assert_eq!(
+            hub_state(),
+            HubState::Ready,
+            "one server answering is an answered Home"
+        );
+        assert_eq!(
+            hub_count(),
+            1,
+            "the dead share contributes NOTHING — no heading, no empty shelf"
+        );
         assert_eq!(hub_len(0), 2);
-        assert_eq!(hub_source(0), "", "and the shelf that did arrive is our own, so it is unannotated");
+        assert_eq!(
+            hub_source(0),
+            "",
+            "and the shelf that did arrive is our own, so it is unannotated"
+        );
         let s = lock_srcs();
         assert_eq!(s[0].state, HubState::Ready);
         assert_eq!(s[1].state, HubState::Failed);
@@ -1843,24 +2118,56 @@ mod tests {
         let _g = crate::testlock::serial();
         reset();
         seed(vec![
-            src(0, "", HubState::Ready, Some(built(0, &[(9, "own-cw")], vec![shelf(0, "Films", "a.recent", &["a1", "a2"])]))),
-            src(1, "friend", HubState::Ready, Some(built(1, &[(5, "their-cw")], vec![shelf(1, "Film Club", "b.recent", &["b1"])]))),
+            src(
+                0,
+                "",
+                HubState::Ready,
+                Some(built(
+                    0,
+                    &[(9, "own-cw")],
+                    vec![shelf(0, "Films", "a.recent", &["a1", "a2"])],
+                )),
+            ),
+            src(
+                1,
+                "friend",
+                HubState::Ready,
+                Some(built(
+                    1,
+                    &[(5, "their-cw")],
+                    vec![shelf(1, "Film Club", "b.recent", &["b1"])],
+                )),
+            ),
         ]);
-        let before: Vec<(&str, &str, usize)> =
-            (0..hub_count()).map(|i| (hub_title(i), hub_source(i), hub_len(i))).collect();
+        let before: Vec<(&str, &str, usize)> = (0..hub_count())
+            .map(|i| (hub_title(i), hub_source(i), hub_len(i)))
+            .collect();
         assert_eq!(before.len(), 3, "deck + one shelf each");
         let rows = catalog().len();
 
         land(1, None); // the share stops answering
         pump(0.0);
 
-        let after: Vec<(&str, &str, usize)> =
-            (0..hub_count()).map(|i| (hub_title(i), hub_source(i), hub_len(i))).collect();
+        let after: Vec<(&str, &str, usize)> = (0..hub_count())
+            .map(|i| (hub_title(i), hub_source(i), hub_len(i)))
+            .collect();
         assert_eq!(after, before, "not one shelf, heading or row moved");
         assert_eq!(catalog().len(), rows);
-        assert_eq!(rks(0), ["own-cw", "their-cw"], "and the merged deck kept both servers' items");
-        assert_eq!(hub_state(), HubState::Ready, "Home is not failed while a source is answering");
-        assert_eq!(lock_srcs()[0].retry_s, 0.0, "the working source owes no backoff");
+        assert_eq!(
+            rks(0),
+            ["own-cw", "their-cw"],
+            "and the merged deck kept both servers' items"
+        );
+        assert_eq!(
+            hub_state(),
+            HubState::Ready,
+            "Home is not failed while a source is answering"
+        );
+        assert_eq!(
+            lock_srcs()[0].retry_s,
+            0.0,
+            "the working source owes no backoff"
+        );
         reset();
     }
 
@@ -1874,14 +2181,26 @@ mod tests {
         let _g = crate::testlock::serial();
         reset();
         crate::ui::idle::set_enabled(true);
-        seed(vec![src(0, "", HubState::Ready, Some(build_test(1))), src(1, "friend", HubState::Loading, None)]);
+        seed(vec![
+            src(0, "", HubState::Ready, Some(build_test(1))),
+            src(1, "friend", HubState::Loading, None),
+        ]);
 
-        for (what, build) in [("a share arriving", Some(build_test(2))), ("a share failing", None)] {
+        for (what, build) in [
+            ("a share arriving", Some(build_test(2))),
+            ("a share failing", None),
+        ] {
             crate::ui::idle::should_present(0); // takes-and-clears whatever was already pending
-            assert!(!crate::ui::idle::should_present(0), "the panel is settled with nothing happening");
+            assert!(
+                !crate::ui::idle::should_present(0),
+                "the panel is settled with nothing happening"
+            );
             land(1, build);
             pump(0.0);
-            assert!(crate::ui::idle::should_present(0), "{what} must invalidate the frame");
+            assert!(
+                crate::ui::idle::should_present(0),
+                "{what} must invalidate the frame"
+            );
         }
         reset();
     }
@@ -1892,14 +2211,35 @@ mod tests {
     fn only_every_source_failing_reads_as_a_failed_home() {
         let _g = crate::testlock::serial();
         reset();
-        seed(vec![src(0, "", HubState::Failed, None), src(1, "friend", HubState::Loading, None)]);
-        assert_eq!(hub_state(), HubState::Loading, "one source still trying is not a dead Home");
+        seed(vec![
+            src(0, "", HubState::Failed, None),
+            src(1, "friend", HubState::Loading, None),
+        ]);
+        assert_eq!(
+            hub_state(),
+            HubState::Loading,
+            "one source still trying is not a dead Home"
+        );
 
-        seed(vec![src(0, "", HubState::Failed, None), src(1, "friend", HubState::Ready, None)]);
-        assert_eq!(hub_state(), HubState::Ready, "a share being down says nothing about our own");
+        seed(vec![
+            src(0, "", HubState::Failed, None),
+            src(1, "friend", HubState::Ready, None),
+        ]);
+        assert_eq!(
+            hub_state(),
+            HubState::Ready,
+            "a share being down says nothing about our own"
+        );
 
-        seed(vec![src(0, "", HubState::Failed, None), src(1, "friend", HubState::Failed, None)]);
-        assert_eq!(hub_state(), HubState::Failed, "everything down IS the whole-screen case");
+        seed(vec![
+            src(0, "", HubState::Failed, None),
+            src(1, "friend", HubState::Failed, None),
+        ]);
+        assert_eq!(
+            hub_state(),
+            HubState::Failed,
+            "everything down IS the whole-screen case"
+        );
         reset();
     }
 
@@ -1912,13 +2252,27 @@ mod tests {
         let _g = crate::testlock::serial();
         reset();
         seed(vec![
-            src(0, "", HubState::Ready, Some(built(0, &[(300, "own-old"), (100, "own-oldest")], vec![]))),
-            src(1, "friend", HubState::Ready, Some(built(1, &[(900, "their-new"), (200, "their-mid")], vec![]))),
+            src(
+                0,
+                "",
+                HubState::Ready,
+                Some(built(0, &[(300, "own-old"), (100, "own-oldest")], vec![])),
+            ),
+            src(
+                1,
+                "friend",
+                HubState::Ready,
+                Some(built(1, &[(900, "their-new"), (200, "their-mid")], vec![])),
+            ),
         ]);
 
         assert_eq!(hub_count(), 1, "one deck, not one per server");
         assert!(hub_is_continue(0));
-        assert_eq!(hub_source(0), "", "a shelf drawn from two servers cannot be named by one of them");
+        assert_eq!(
+            hub_source(0),
+            "",
+            "a shelf drawn from two servers cannot be named by one of them"
+        );
         // The timestamps INTERLEAVE on purpose: a per-source concatenation, which is what the
         // obvious implementation of "merge" does, would give own-old, own-oldest, their-new,
         // their-mid and pass any test written with one server's deck in front of the other's.
@@ -1934,12 +2288,40 @@ mod tests {
         let _g = crate::testlock::serial();
         reset();
         seed(vec![
-            src(0, "", HubState::Ready, Some(built(0, &[(1, "cw")], vec![shelf(0, "Films", "a.recent", &["a"])]))),
-            src(1, "friend", HubState::Ready, Some(built(1, &[], vec![shelf(1, "Film Club", "b.recent", &["b"]), shelf(1, "Club TV", "b.tv", &["b2"])]))),
-            src(2, "friend2", HubState::Ready, Some(built(2, &[], vec![shelf(2, "Docs", "c.recent", &["c"])]))),
+            src(
+                0,
+                "",
+                HubState::Ready,
+                Some(built(
+                    0,
+                    &[(1, "cw")],
+                    vec![shelf(0, "Films", "a.recent", &["a"])],
+                )),
+            ),
+            src(
+                1,
+                "friend",
+                HubState::Ready,
+                Some(built(
+                    1,
+                    &[],
+                    vec![
+                        shelf(1, "Film Club", "b.recent", &["b"]),
+                        shelf(1, "Club TV", "b.tv", &["b2"]),
+                    ],
+                )),
+            ),
+            src(
+                2,
+                "friend2",
+                HubState::Ready,
+                Some(built(2, &[], vec![shelf(2, "Docs", "c.recent", &["c"])])),
+            ),
         ]);
 
-        let by_row: Vec<(&str, &str)> = (0..hub_count()).map(|i| (hub_title(i), hub_source(i))).collect();
+        let by_row: Vec<(&str, &str)> = (0..hub_count())
+            .map(|i| (hub_title(i), hub_source(i)))
+            .collect();
         assert_eq!(
             by_row,
             [
@@ -1963,11 +2345,23 @@ mod tests {
         let _g = crate::testlock::serial();
         reset();
         seed(vec![
-            src(0, "", HubState::Ready, Some(built(0, &[], vec![shelf(0, "Films", "a.recent", &["a"])]))),
+            src(
+                0,
+                "",
+                HubState::Ready,
+                Some(built(0, &[], vec![shelf(0, "Films", "a.recent", &["a"])])),
+            ),
             src(1, "friend", HubState::Failed, None),
-            src(2, "friend2", HubState::Failed, Some(built(2, &[], vec![shelf(2, "Docs", "c.recent", &["c"])]))),
+            src(
+                2,
+                "friend2",
+                HubState::Failed,
+                Some(built(2, &[], vec![shelf(2, "Docs", "c.recent", &["c"])])),
+            ),
         ]);
-        let by_row: Vec<(&str, &str)> = (0..hub_count()).map(|i| (hub_title(i), hub_source(i))).collect();
+        let by_row: Vec<(&str, &str)> = (0..hub_count())
+            .map(|i| (hub_title(i), hub_source(i)))
+            .collect();
         assert_eq!(by_row, [("Films", ""), ("Docs", "friend2")]);
         reset();
     }
@@ -1980,8 +2374,22 @@ mod tests {
         let _g = crate::testlock::serial();
         reset();
         seed(vec![
-            src(0, "", HubState::Ready, Some(built(0, &[], vec![shelf(0, "Films", "a.recent", &["a"])]))),
-            src(1, "friend", HubState::Ready, Some(built(1, &[], vec![shelf(1, "Film Club", "b.recent", &["b"])]))),
+            src(
+                0,
+                "",
+                HubState::Ready,
+                Some(built(0, &[], vec![shelf(0, "Films", "a.recent", &["a"])])),
+            ),
+            src(
+                1,
+                "friend",
+                HubState::Ready,
+                Some(built(
+                    1,
+                    &[],
+                    vec![shelf(1, "Film Club", "b.recent", &["b"])],
+                )),
+            ),
         ]);
         assert_eq!(hub_count(), 2);
 
@@ -2003,14 +2411,28 @@ mod tests {
         let b = crate::plex::register_for_test("pms-b", "127.0.0.1", 2, "b", "cid");
         sync_roster();
         let before = roster_key();
-        assert_eq!(lock_srcs().iter().map(|s| s.sid).collect::<Vec<_>>(), [a, b]);
+        assert_eq!(
+            lock_srcs().iter().map(|s| s.sid).collect::<Vec<_>>(),
+            [a, b]
+        );
 
         crate::plex::revoke_for_profile_switch();
         let c = crate::plex::register_for_test("pms-c", "127.0.0.1", 3, "c", "cid");
-        assert_eq!(crate::plex::server_count(), 2, "the replacement deliberately preserves count");
-        assert_ne!(roster_key(), before, "the exact registry generation, not count, keys Home");
+        assert_eq!(
+            crate::plex::server_count(),
+            2,
+            "the replacement deliberately preserves count"
+        );
+        assert_ne!(
+            roster_key(),
+            before,
+            "the exact registry generation, not count, keys Home"
+        );
         sync_roster();
-        assert_eq!(lock_srcs().iter().map(|s| s.sid).collect::<Vec<_>>(), [a, c]);
+        assert_eq!(
+            lock_srcs().iter().map(|s| s.sid).collect::<Vec<_>>(),
+            [a, c]
+        );
 
         reset();
         crate::plex::reset_servers_for_test();
@@ -2029,27 +2451,45 @@ mod tests {
         let (a, b) = (sid(0), sid(1));
         // server A has two libraries: 1 pinned, 2 NOT. Server B has one, pinned.
         let pins = vec![(a, 1, true), (a, 2, false), (b, 1, true)];
-        let row = |s: ServerId, sec: i64| PmsMovie { sid: s, sec, ..Default::default() };
+        let row = |s: ServerId, sec: i64| PmsMovie {
+            sid: s,
+            sec,
+            ..Default::default()
+        };
 
-        assert!(item_pinned(&pins, &row(a, 1)), "a pinned library of a server that feeds Home");
-        assert!(!item_pinned(&pins, &row(a, 2)), "…and its UNPINNED sibling, on the same server");
+        assert!(
+            item_pinned(&pins, &row(a, 1)),
+            "a pinned library of a server that feeds Home"
+        );
+        assert!(
+            !item_pinned(&pins, &row(a, 2)),
+            "…and its UNPINNED sibling, on the same server"
+        );
         assert!(item_pinned(&pins, &row(b, 1)));
 
         // the same section KEY on another server is a different library — both servers number from 1
         let pins2 = vec![(a, 1, false), (b, 1, true)];
         assert!(!item_pinned(&pins2, &row(a, 1)));
-        assert!(item_pinned(&pins2, &row(b, 1)), "keys collide across servers; the pair does not");
+        assert!(
+            item_pinned(&pins2, &row(b, 1)),
+            "keys collide across servers; the pair does not"
+        );
 
         // unknown passes, both ways
-        assert!(item_pinned(&pins, &row(a, 0)), "the server sent no librarySectionID");
-        assert!(item_pinned(&pins, &row(a, 9)), "a library the section table has not enumerated");
+        assert!(
+            item_pinned(&pins, &row(a, 0)),
+            "the server sent no librarySectionID"
+        );
+        assert!(
+            item_pinned(&pins, &row(a, 9)),
+            "a library the section table has not enumerated"
+        );
         assert!(item_pinned(&[], &row(a, 1)), "nothing discovered yet");
     }
 
     /// **The pin store is the seam, and "no pinned library" only means something for a server whose
-    /// libraries have been ENUMERATED.** `/library/sections` lands asynchronously and always after
-    /// `pms_fetch_hubs`, and for a source other than the current one it lands only while the LIBRARY
-    /// screen is up — so a booted app knows the roster and none of its shares' libraries.
+    /// libraries have been ENUMERATED.** `/library/sections` and `/hubs` land independently on
+    /// workers, so Home can briefly know a rostered source before its libraries.
     ///
     /// Reading that state as "not pinned" is what produced the owner's report that a share
     /// "appeared on the home screen only after I watched the library": the pin said On the whole
@@ -2063,10 +2503,16 @@ mod tests {
 
         // **the regression**: `a` is discovered and pinned, `b` is in the roster and has not been
         // enumerated. `b` is UNDECIDED and must still feed Home.
-        assert!(feeds_home(b, &[a], &[a]), "a share nobody has enumerated is not a share turned off");
+        assert!(
+            feeds_home(b, &[a], &[a]),
+            "a share nobody has enumerated is not a share turned off"
+        );
 
         // …and once `b`'s libraries ARE known, the pin is a real answer in both directions
-        assert!(!feeds_home(b, &[a], &[a, b]), "enumerated, granted, browsable — and not pinned");
+        assert!(
+            !feeds_home(b, &[a], &[a, b]),
+            "enumerated, granted, browsable — and not pinned"
+        );
         assert!(feeds_home(b, &[a, b], &[a, b]), "pinned");
         assert!(feeds_home(a, &[a], &[a, b]));
     }
@@ -2076,25 +2522,58 @@ mod tests {
     /// [`MAX_SHELVES`] and the share behind it drew nothing.
     #[test]
     fn the_budget_is_shared_so_neither_source_starves_the_other() {
-        assert_eq!(allot(10, &[4, 4]), [4, 4], "a budget nobody exhausts is not rationed");
-        assert_eq!(allot(10, &[99, 99]), [5, 5], "two greedy sources split it evenly");
-        assert_eq!(allot(10, &[2, 99]), [2, 8], "what one does not want is passed on, not wasted");
-        assert_eq!(allot(10, &[99, 0, 99]), [5, 0, 5], "…and RE-DIVIDED, not given to whoever is first");
-        assert_eq!(allot(1, &[9, 9, 9]), [1, 0, 0], "a budget below one each reaches as many as it can");
+        assert_eq!(
+            allot(10, &[4, 4]),
+            [4, 4],
+            "a budget nobody exhausts is not rationed"
+        );
+        assert_eq!(
+            allot(10, &[99, 99]),
+            [5, 5],
+            "two greedy sources split it evenly"
+        );
+        assert_eq!(
+            allot(10, &[2, 99]),
+            [2, 8],
+            "what one does not want is passed on, not wasted"
+        );
+        assert_eq!(
+            allot(10, &[99, 0, 99]),
+            [5, 0, 5],
+            "…and RE-DIVIDED, not given to whoever is first"
+        );
+        assert_eq!(
+            allot(1, &[9, 9, 9]),
+            [1, 0, 0],
+            "a budget below one each reaches as many as it can"
+        );
         assert_eq!(allot(10, &[]), Vec::<usize>::new());
 
         let _g = crate::testlock::serial();
         reset();
         let many = |slot: u16, tag: &str| {
-            (0..30).map(|i| shelf(slot, &format!("{tag}{i}"), "x", &["r"])).collect::<Vec<_>>()
+            (0..30)
+                .map(|i| shelf(slot, &format!("{tag}{i}"), "x", &["r"]))
+                .collect::<Vec<_>>()
         };
         seed(vec![
             src(0, "", HubState::Ready, Some(built(0, &[], many(0, "a")))),
-            src(1, "friend", HubState::Ready, Some(built(1, &[], many(1, "b")))),
+            src(
+                1,
+                "friend",
+                HubState::Ready,
+                Some(built(1, &[], many(1, "b"))),
+            ),
         ]);
         assert_eq!(hub_count(), MAX_SHELVES, "the total cap still holds");
-        let theirs = (0..hub_count()).filter(|&i| hub_source(i) == "friend").count();
-        assert_eq!(theirs, MAX_SHELVES / 2, "and the share gets its half rather than the leftovers");
+        let theirs = (0..hub_count())
+            .filter(|&i| hub_source(i) == "friend")
+            .count();
+        assert_eq!(
+            theirs,
+            MAX_SHELVES / 2,
+            "and the share gets its half rather than the leftovers"
+        );
         reset();
     }
 
@@ -2107,18 +2586,37 @@ mod tests {
         let fat = |slot: u16, tag: &str| {
             (0..20)
                 .map(|s| {
-                    let keys: Vec<String> = (0..MAX_SHELF_ITEMS).map(|i| format!("{tag}-{s}-{i}")).collect();
-                    shelf(slot, &format!("{tag}{s}"), "x.recent", &keys.iter().map(|r| r.as_str()).collect::<Vec<_>>())
+                    let keys: Vec<String> = (0..MAX_SHELF_ITEMS)
+                        .map(|i| format!("{tag}-{s}-{i}"))
+                        .collect();
+                    shelf(
+                        slot,
+                        &format!("{tag}{s}"),
+                        "x.recent",
+                        &keys.iter().map(|r| r.as_str()).collect::<Vec<_>>(),
+                    )
                 })
                 .collect::<Vec<_>>()
         };
         seed(vec![
             src(0, "", HubState::Ready, Some(built(0, &[], fat(0, "a")))),
-            src(1, "friend", HubState::Ready, Some(built(1, &[], fat(1, "b")))),
+            src(
+                1,
+                "friend",
+                HubState::Ready,
+                Some(built(1, &[], fat(1, "b"))),
+            ),
         ]);
         assert_eq!(catalog().len(), PMS_MAX_MOVIES, "the total cap still holds");
-        let theirs: usize = (0..hub_count()).filter(|&i| hub_source(i) == "friend").map(hub_len).sum();
-        assert_eq!(theirs, PMS_MAX_MOVIES / 2, "and the share gets half the rows, not the leftovers");
+        let theirs: usize = (0..hub_count())
+            .filter(|&i| hub_source(i) == "friend")
+            .map(hub_len)
+            .sum();
+        assert_eq!(
+            theirs,
+            PMS_MAX_MOVIES / 2,
+            "and the share gets half the rows, not the leftovers"
+        );
         reset();
     }
 
@@ -2132,7 +2630,11 @@ mod tests {
         reset();
         let deck = |slot: u16, tag: &str| {
             let v: Vec<(i64, String)> = (0..12).map(|i| (i, format!("{tag}{i}"))).collect();
-            built(slot, &v.iter().map(|(t, r)| (*t, r.as_str())).collect::<Vec<_>>(), vec![])
+            built(
+                slot,
+                &v.iter().map(|(t, r)| (*t, r.as_str())).collect::<Vec<_>>(),
+                vec![],
+            )
         };
         seed(vec![
             src(0, "", HubState::Ready, Some(deck(0, "a"))),
@@ -2154,13 +2656,31 @@ mod tests {
         let _g = crate::testlock::serial();
         reset();
         seed(vec![
-            src(0, "", HubState::Ready, Some(built(0, &[(100, "1")], vec![]))),
-            src(1, "friend", HubState::Ready, Some(built(1, &[(900, "1")], vec![]))),
+            src(
+                0,
+                "",
+                HubState::Ready,
+                Some(built(0, &[(100, "1")], vec![])),
+            ),
+            src(
+                1,
+                "friend",
+                HubState::Ready,
+                Some(built(1, &[(900, "1")], vec![])),
+            ),
         ]);
-        assert_eq!(rks(0), ["1", "1"], "the deck orders them by recency: theirs first");
+        assert_eq!(
+            rks(0),
+            ["1", "1"],
+            "the deck orders them by recency: theirs first"
+        );
         assert_eq!(hero_pool_len(), 2, "one ratingKey, two servers, two films");
         assert_eq!(hero_pool_source(0), "", "the door opens on our own library");
-        assert_eq!(hero_pool_source(1), "friend", "…and the borrowed film rotates in behind it, attributed");
+        assert_eq!(
+            hero_pool_source(1),
+            "friend",
+            "…and the borrowed film rotates in behind it, attributed"
+        );
         assert!(
             std::ptr::eq(hero_pool_item(0).unwrap(), movie(1).unwrap()),
             "catalog row 1 is ours (row 0 is theirs, watched later)"

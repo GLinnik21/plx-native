@@ -106,14 +106,24 @@ fn resolve_replaced_attempt() {
     if id == 0 {
         return;
     }
-    match replacement(SAW_START.load(Relaxed), SAW_FAIL.load(Relaxed), SAW_END.load(Relaxed)) {
+    match replacement(
+        SAW_START.load(Relaxed),
+        SAW_FAIL.load(Relaxed),
+        SAW_END.load(Relaxed),
+    ) {
         Replacement::None => {}
         Replacement::Cancelled => {
-            emit(DiagEvent::PlaybackCancelled { playback_id: id, mode: mode() });
+            emit(DiagEvent::PlaybackCancelled {
+                playback_id: id,
+                mode: mode(),
+            });
         }
         Replacement::Abandoned => {
             report_quality(id);
-            emit(DiagEvent::PlaybackAbandoned { playback_id: id, mode: mode() });
+            emit(DiagEvent::PlaybackAbandoned {
+                playback_id: id,
+                mode: mode(),
+            });
         }
     }
 }
@@ -126,7 +136,10 @@ pub(crate) fn abandon_pending() {
         return;
     }
     report_quality(id);
-    emit(DiagEvent::PlaybackAbandoned { playback_id: id, mode: mode() });
+    emit(DiagEvent::PlaybackAbandoned {
+        playback_id: id,
+        mode: mode(),
+    });
 }
 
 /// What a frame's state change is worth reporting, if anything.
@@ -206,7 +219,10 @@ pub(crate) fn ended(position_ns: i64, duration_ns: i64) {
         return;
     }
     if !SAW_START.load(Relaxed) {
-        emit(DiagEvent::PlaybackAbandoned { playback_id: id, mode: mode() });
+        emit(DiagEvent::PlaybackAbandoned {
+            playback_id: id,
+            mode: mode(),
+        });
         return;
     }
     report_quality(id);
@@ -278,7 +294,11 @@ fn rebuffer_time_class(ms: i64) -> &'static str {
 }
 
 fn mode() -> &'static str {
-    if crate::route::is_transcoding() { "transcode" } else { "direct" }
+    if crate::route::is_transcoding() {
+        "transcode"
+    } else {
+        "direct"
+    }
 }
 
 /// Milliseconds since this process started, monotonic.
@@ -292,7 +312,10 @@ fn mode() -> &'static str {
 /// why `docs/agent-reference.md` says to correlate a crash by monotonic time and not by time of day.
 fn now_ms() -> i64 {
     static ORIGIN: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-    ORIGIN.get_or_init(std::time::Instant::now).elapsed().as_millis() as i64
+    ORIGIN
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_millis() as i64
 }
 
 /// A random attempt id. `/dev/urandom` like every other random value in this crate — never a clock
@@ -300,7 +323,10 @@ fn now_ms() -> i64 {
 fn new_attempt_id() -> i64 {
     use std::io::Read;
     let mut b = [0u8; 8];
-    if std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut b)).is_err() {
+    if std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| f.read_exact(&mut b))
+        .is_err()
+    {
         return 0; // no randomness: the funnel loses its join and nothing else
     }
     (i64::from_le_bytes(b) & i64::MAX) as i64
@@ -364,8 +390,14 @@ pub(crate) fn raster_class(height: i32) -> &'static str {
 /// fingerprint of a particular encode and answers nothing. Anything off the ladder is `other`
 /// rather than the nearest rung: a genuinely odd rate is a fact worth being able to see.
 pub(crate) fn fps_rung(fps: f64) -> &'static str {
-    const RUNGS: [(f64, &str); 6] =
-        [(24.0, "24"), (25.0, "25"), (30.0, "30"), (50.0, "50"), (60.0, "60"), (100.0, "100")];
+    const RUNGS: [(f64, &str); 6] = [
+        (24.0, "24"),
+        (25.0, "25"),
+        (30.0, "30"),
+        (50.0, "50"),
+        (60.0, "60"),
+        (100.0, "100"),
+    ];
     if !(fps > 0.0) {
         return "unknown";
     }
@@ -457,7 +489,10 @@ mod tests {
     /// The ordinary success: one `started`, whatever the pre-roll did on the way there.
     #[test]
     fn a_normal_start_reports_once() {
-        assert_eq!(drive(&[S::Resolving, S::Connecting, S::Buffering, S::Playing]), [What::Started]);
+        assert_eq!(
+            drive(&[S::Resolving, S::Connecting, S::Buffering, S::Playing]),
+            [What::Started]
+        );
     }
 
     /// **A seek is not a second start.** `Playing` is re-entered after every seek, every ABR rung
@@ -475,14 +510,21 @@ mod tests {
             S::Buffering, // a rebuffer on a bad link
             S::Playing,
         ]);
-        assert_eq!(scrubbed, [What::Started], "a seek or a rebuffer reported a second start");
+        assert_eq!(
+            scrubbed,
+            [What::Started],
+            "a seek or a rebuffer reported a second start"
+        );
     }
 
     /// A failure republished on consecutive frames — which is what the read-out being up looks
     /// like — is one failure.
     #[test]
     fn a_failure_held_on_screen_reports_once() {
-        assert_eq!(drive(&[S::Resolving, S::Error, S::Error, S::Error]), [What::Failed]);
+        assert_eq!(
+            drive(&[S::Resolving, S::Error, S::Error, S::Error]),
+            [What::Failed]
+        );
         // …and it stays one even if a transient state passes through and comes back.
         assert_eq!(drive(&[S::Error, S::Buffering, S::Error]), [What::Failed]);
     }
@@ -492,7 +534,10 @@ mod tests {
     /// yes to each.
     #[test]
     fn a_playback_that_starts_and_then_dies_reports_both() {
-        assert_eq!(drive(&[S::Playing, S::Error]), [What::Started, What::Failed]);
+        assert_eq!(
+            drive(&[S::Playing, S::Error]),
+            [What::Started, What::Failed]
+        );
     }
 
     /// The pre-flight refusal — `/decision` said no, so no engine ever existed and the pump never
@@ -509,8 +554,16 @@ mod tests {
     #[test]
     fn an_unknown_codec_name_cannot_travel_as_itself() {
         assert_eq!(video_codec_class("h264"), "h264");
-        assert_eq!(video_codec_class("HEVC"), "hevc", "the server's casing varies");
-        assert_eq!(audio_codec_class("AC3 PLUS"), "eac3", "the Load payload's own spelling");
+        assert_eq!(
+            video_codec_class("HEVC"),
+            "hevc",
+            "the server's casing varies"
+        );
+        assert_eq!(
+            audio_codec_class("AC3 PLUS"),
+            "eac3",
+            "the Load payload's own spelling"
+        );
         for odd in ["cinepak", "../../etc/passwd", "Dune.mkv", "h264 (Main)"] {
             assert_eq!(video_codec_class(odd), "other", "{odd} travelled as itself");
         }
@@ -525,11 +578,14 @@ mod tests {
     #[test]
     fn both_spellings_of_a_frame_rate_land_on_one_rung() {
         for (fps, want) in [
-            (24.0, "24"), (24000.0 / 1001.0, "24"),
+            (24.0, "24"),
+            (24000.0 / 1001.0, "24"),
             (25.0, "25"),
-            (30.0, "30"), (30000.0 / 1001.0, "30"),
+            (30.0, "30"),
+            (30000.0 / 1001.0, "30"),
             (50.0, "50"),
-            (60.0, "60"), (60000.0 / 1001.0, "60"),
+            (60.0, "60"),
+            (60000.0 / 1001.0, "60"),
         ] {
             assert_eq!(fps_rung(fps), want, "{fps}");
         }
@@ -545,7 +601,12 @@ mod tests {
     #[test]
     fn the_raster_classes_are_the_projects_own_rungs() {
         for (h, want) in [
-            (480, "sd"), (576, "sd"), (720, "hd"), (1080, "fhd"), (1081, "uhd"), (2160, "uhd"),
+            (480, "sd"),
+            (576, "sd"),
+            (720, "hd"),
+            (1080, "fhd"),
+            (1081, "uhd"),
+            (2160, "uhd"),
         ] {
             assert_eq!(raster_class(h), want, "{h}");
         }
@@ -558,7 +619,10 @@ mod tests {
     #[test]
     fn a_bucket_never_carries_the_number_it_was_built_from() {
         for h in [479, 481, 719, 1079, 2160, 4320] {
-            assert!(!raster_class(h).contains(char::is_numeric), "{h} leaked its height");
+            assert!(
+                !raster_class(h).contains(char::is_numeric),
+                "{h} leaked its height"
+            );
         }
         assert!(!watched_class(3_600_000_000_000, 7_200_000_000_000).contains(char::is_numeric));
     }

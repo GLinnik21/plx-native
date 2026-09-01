@@ -81,11 +81,16 @@ impl MainThread {
 const SMALL_STACK: usize = 256 * 1024;
 
 fn refused(what: &str, e: &io::Error) {
-    crate::log(&format!("task: spawn '{what}' REFUSED ({e}) — this work is dropped"));
+    crate::log(&format!(
+        "task: spawn '{what}' REFUSED ({e}) — this work is dropped"
+    ));
 }
 
-fn spawn_with(what: &str, stack: Option<usize>, f: impl FnOnce() + Send + 'static)
-    -> Option<JoinHandle<()>> {
+fn spawn_with(
+    what: &str,
+    stack: Option<usize>,
+    f: impl FnOnce() + Send + 'static,
+) -> Option<JoinHandle<()>> {
     let mut b = Builder::new();
     if let Some(n) = stack {
         b = b.stack_size(n);
@@ -114,7 +119,10 @@ pub(crate) fn spawn_small(what: &str, f: impl FnOnce() + Send + 'static) -> bool
 /// is fire-and-forget *during* a session yet must still be allowed to finish before the process
 /// exits — the end-of-playback scrobble is the only such case, and losing it would lose the
 /// server-side resume point.
-pub(crate) fn spawn_small_keeping(what: &str, f: impl FnOnce() + Send + 'static) -> Option<JoinHandle<()>> {
+pub(crate) fn spawn_small_keeping(
+    what: &str,
+    f: impl FnOnce() + Send + 'static,
+) -> Option<JoinHandle<()>> {
     spawn_with(what, Some(SMALL_STACK), f)
 }
 
@@ -153,7 +161,9 @@ pub(crate) fn join(what: &str, h: JoinHandle<()>) {
     if outcome.is_err() {
         // Previously swallowed by `let _ = t.join()`. A worker that died holding its socket or an
         // armed in-flight flag is the first thing worth knowing at teardown.
-        crate::log(&format!("task: worker '{what}' PANICKED (joined after {ms}ms)"));
+        crate::log(&format!(
+            "task: worker '{what}' PANICKED (joined after {ms}ms)"
+        ));
     }
     if ms >= STALL_MS {
         crate::log(&format!("THREADJOIN {what} {ms}ms STALL"));
@@ -182,7 +192,10 @@ mod tests {
     #[test]
     fn a_refused_spawn_reports_instead_of_panicking() {
         let h = super::spawn_with("unsatisfiable", Some(usize::MAX / 2), || unreachable!());
-        assert!(h.is_none(), "a spawn that cannot succeed must report, not hand back a handle");
+        assert!(
+            h.is_none(),
+            "a spawn that cannot succeed must report, not hand back a handle"
+        );
     }
 
     /// [`super::MainThread`] earns its keep entirely by NOT being `Send` — that absence is what
@@ -202,8 +215,14 @@ mod tests {
         }
 
         assert!(Probe::<i32>::SEND, "the probe must see a Send type as Send");
-        assert!(!Probe::<super::MainThread>::SEND, "MainThread must not be Send");
-        assert!(!Probe::<&super::MainThread>::SEND, "nor may a borrow of it — that is the form it is passed in");
+        assert!(
+            !Probe::<super::MainThread>::SEND,
+            "MainThread must not be Send"
+        );
+        assert!(
+            !Probe::<&super::MainThread>::SEND,
+            "nor may a borrow of it — that is the form it is passed in"
+        );
     }
 
     #[test]

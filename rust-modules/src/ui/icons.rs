@@ -32,6 +32,9 @@ use std::ptr::addr_of_mut;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Icon {
+    /// Two people joined by one agreement line. A one-colour stroked mask that NanoSVG can
+    /// rasterize at icon and artwork sizes without unsupported filters.
+    Agreement,
     Cc,
     Audio,
     Check,
@@ -210,6 +213,7 @@ pub(crate) const fn band(id: Icon) -> f32 {
 
 fn src(id: Icon) -> &'static str {
     match id {
+        Icon::Agreement => include_str!("../../../assets/icons/agreement.svg"),
         Icon::Cc => include_str!("../../../assets/icons/cc.svg"),
         Icon::Audio => include_str!("../../../assets/icons/audio.svg"),
         Icon::Check => include_str!("../../../assets/icons/check.svg"),
@@ -336,15 +340,41 @@ mod ink_tests {
         for id in [Icon::Rewind, Icon::FastForward] {
             assert_eq!(band(id), b, "every travel mark must share pause's band");
         }
-        assert_ne!(band(Icon::Play), b, "play.svg is the off-band member; the scale exists for it");
+        assert_ne!(
+            band(Icon::Play),
+            b,
+            "play.svg is the off-band member; the scale exists for it"
+        );
     }
 
     /// Ink bounds are ordered and inside the viewBox — the shape every caller assumes.
     #[test]
     fn ink_bounds_are_sane() {
-        for id in [Icon::Pause, Icon::Play, Icon::Rewind, Icon::FastForward, Icon::Chevron, Icon::Check] {
+        for id in [
+            Icon::Pause,
+            Icon::Play,
+            Icon::Rewind,
+            Icon::FastForward,
+            Icon::Chevron,
+            Icon::Check,
+        ] {
             let (l, r) = ink_x(id);
-            assert!((0.0..1.0).contains(&l) && r > l && r <= 1.0, "ink_x {l}..{r} out of shape");
+            assert!(
+                (0.0..1.0).contains(&l) && r > l && r <= 1.0,
+                "ink_x {l}..{r} out of shape"
+            );
+        }
+    }
+
+    #[test]
+    fn agreement_art_stays_inside_the_nanosvg_subset() {
+        let svg = src(Icon::Agreement);
+        assert!(svg.contains("<path"));
+        for unsupported in ["<filter", "feDropShadow", "<image", "<foreignObject"] {
+            assert!(
+                !svg.contains(unsupported),
+                "agreement asset uses unsupported {unsupported}"
+            );
         }
     }
 }

@@ -4158,12 +4158,14 @@ def run_fps_scene(scene, cfg, token):
     return ok, detail
 
 
-def fps_for_tiers(scenes, include_player):
+def fps_for_tiers(scenes, include_player, name_filter=None):
     """The scenes this run will actually execute. One definition, because main() has to know it too
     — it decides from the SELECTED scenes whether a second server is needed, and resolving one for a
     player-tier scene that `--fps` was never going to run is a plex.tv round-trip for nothing."""
     tiers = {"ui"} | ({"player"} if include_player else set())
-    return [s for s in scenes if s.get("tier", "ui") in tiers]
+    return [s for s in scenes
+            if s.get("tier", "ui") in tiers
+            and (not name_filter or name_filter in s["name"])]
 
 
 def run_fps_suite(scenes, cfg, token, include_player, skipped=()):
@@ -4259,7 +4261,8 @@ def main():
         pass
     ap = argparse.ArgumentParser(description="webOS Plex player on-device regression harness")
     ap.add_argument("--build", action="store_true", help="cargo + make + make deploy before running")
-    ap.add_argument("--filter", default=None, help="run only cases whose name contains this substring")
+    ap.add_argument("--filter", default=None,
+                    help="run only cases or FPS scenes whose name contains this substring")
     ap.add_argument("--suite", default=None, choices=["logic", "codec"],
                     help="run only one suite: 'logic' (seek/resume/audio/subtitle — the engine and "
                          "pump; still covers h264-dp, 4k-hevc-dp and transcode) or 'codec' (the "
@@ -4474,7 +4477,7 @@ def main():
         if args.suite:
             sys.exit("--suite selects playback cases; the FPS scenes use --fps / --fps-player")
         include_player = args.fps_player
-        selected = fps_for_tiers(manifest.get("fps_scenes", []), include_player)
+        selected = fps_for_tiers(manifest.get("fps_scenes", []), include_player, args.filter)
         # Same partition as the playback cases, and for a sharper reason: run_fps_scene's "$rk"
         # substitution reads scene["rk"] directly, and the KeyError landed in the batch's blanket
         # `except` as `[FAIL] ERROR: 'rk'` -- a false FAILURE, indistinguishable from a regression.

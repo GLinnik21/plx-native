@@ -115,8 +115,17 @@ fn say(state: crate::search::State, has_shelves: bool) -> Option<Say> {
 /// what keeps the statement optically centred in the space the user can actually see, rather than
 /// centred in a 1080 frame whose bottom third is covered.
 fn band(editing: bool) -> Rect {
-    let bottom = if editing { crate::ui::consts::SCR_H - super::KEYBOARD_H } else { crate::ui::consts::SCR_H };
-    Rect::new(0.0, super::CONTENT_TOP, crate::ui::consts::SCR_W, bottom - super::CONTENT_TOP)
+    let bottom = if editing {
+        crate::ui::consts::SCR_H - super::KEYBOARD_H
+    } else {
+        crate::ui::consts::SCR_H
+    };
+    Rect::new(
+        0.0,
+        super::CONTENT_TOP,
+        crate::ui::consts::SCR_W,
+        bottom - super::CONTENT_TOP,
+    )
 }
 
 /// `No results for “wallace”` — typographic quotes, because the query is being QUOTED back to the
@@ -152,13 +161,19 @@ fn header_of(say: Say) -> &'static CStr {
 /// while it is up ([`super::KEYBOARD_H`]) — the screen's standing rule is that nothing the app owns
 /// hides behind that panel, and a read-out centred into it would be the first thing to break it.
 pub(crate) fn draw(p: Painter, v: &View) {
-    let Some(say) = say(crate::search::state(), !crate::search::shelves().is_empty()) else { return };
+    let Some(say) = say(crate::search::state(), !crate::search::shelves().is_empty()) else {
+        return;
+    };
     let frame = band(v.editing);
 
     if say == Say::Fault {
-        StatusOverlay::new(frame, c"Search didn\u{2019}t reach the server", StatusKind::Failed)
-            .reason(c"Your libraries are fine \u{2014} try again in a moment.")
-            .draw(&Env::inert(), p);
+        StatusOverlay::new(
+            frame,
+            c"Search didn\u{2019}t reach the server",
+            StatusKind::Failed,
+        )
+        .reason(c"Your libraries are fine \u{2014} try again in a moment.")
+        .draw(&Env::inert(), p);
         return;
     }
 
@@ -169,7 +184,13 @@ pub(crate) fn draw(p: Painter, v: &View) {
             let q = crate::search::query().trim();
             let shell = CString::new(no_results_line("")).unwrap_or_default();
             let shell_w = crate::text::text_width(shell.as_ptr(), theme::size::TITLE, 1);
-            no_results_line(&crate::text::elide(q, COPY_W - shell_w, theme::size::TITLE, 1, false))
+            no_results_line(&crate::text::elide(
+                q,
+                COPY_W - shell_w,
+                theme::size::TITLE,
+                1,
+                false,
+            ))
         }
         // U+2019, not an ASCII `'`, for the same reason the query is quoted with U+201C/U+201D:
         // these two statements share one type role, and a straight mark beside a curly pair is the
@@ -177,22 +198,31 @@ pub(crate) fn draw(p: Painter, v: &View) {
         _ => "Nothing searched yet".to_string(),
     };
     // The run must outlive the draw below — `Label` borrows the pointer (`ui/CLAUDE.md`).
-    let Ok(statement_c) = CString::new(statement) else { return };
+    let Ok(statement_c) = CString::new(statement) else {
+        return;
+    };
     let header = header_of(say);
 
     // Both parts by cap band, so the block's height is the ink's and a descender in the statement
     // cannot push the pair off centre. Centred on the FRAME, horizontally and vertically.
-    let (hdr_h, stm_h) = (crate::text::cap_h(theme::size::CAPTION, 0), crate::text::cap_h(theme::size::TITLE, 1));
+    let (hdr_h, stm_h) = (
+        crate::text::cap_h(theme::size::CAPTION, 0),
+        crate::text::cap_h(theme::size::TITLE, 1),
+    );
     let top = frame.y + (frame.h - (hdr_h + PART_GAP + stm_h)) * 0.5;
     Label::new(header.as_ptr(), theme::size::CAPTION, theme::TEXT_TERTIARY)
         .h(HAlign::Center)
         .v(VAlign::CapTop)
         .draw(p, Rect::new(frame.x, top, frame.w, 0.0));
-    Label::new(statement_c.as_ptr(), theme::size::TITLE, theme::TEXT_HEADING)
-        .bold()
-        .h(HAlign::Center)
-        .v(VAlign::CapTop)
-        .draw(p, Rect::new(frame.x, top + hdr_h + PART_GAP, frame.w, 0.0));
+    Label::new(
+        statement_c.as_ptr(),
+        theme::size::TITLE,
+        theme::TEXT_HEADING,
+    )
+    .bold()
+    .h(HAlign::Center)
+    .v(VAlign::CapTop)
+    .draw(p, Rect::new(frame.x, top + hdr_h + PART_GAP, frame.w, 0.0));
 }
 
 #[cfg(test)]
@@ -232,19 +262,40 @@ mod tests {
     #[test]
     fn the_statement_centres_in_the_space_the_user_can_actually_see() {
         let (up, down) = (band(true), band(false));
-        assert_eq!(up.y, super::super::CONTENT_TOP, "both start under the field");
+        assert_eq!(
+            up.y,
+            super::super::CONTENT_TOP,
+            "both start under the field"
+        );
         assert_eq!(down.y, super::super::CONTENT_TOP);
-        assert_eq!(down.h - up.h, super::super::KEYBOARD_H, "the raised panel is the whole difference");
+        assert_eq!(
+            down.h - up.h,
+            super::super::KEYBOARD_H,
+            "the raised panel is the whole difference"
+        );
         assert!(up.y + up.h <= crate::ui::consts::SCR_H - super::super::KEYBOARD_H);
         assert_eq!(down.y + down.h, crate::ui::consts::SCR_H);
-        assert_eq!((up.x, up.w), (0.0, crate::ui::consts::SCR_W), "centred on the PANEL, not the field's column");
+        assert_eq!(
+            (up.x, up.w),
+            (0.0, crate::ui::consts::SCR_W),
+            "centred on the PANEL, not the field's column"
+        );
     }
 
     #[test]
     fn the_query_is_quoted_back_typographically_and_the_closing_quote_survives() {
-        assert_eq!(no_results_line("wallace"), "No results for \u{201C}wallace\u{201D}");
+        assert_eq!(
+            no_results_line("wallace"),
+            "No results for \u{201C}wallace\u{201D}"
+        );
         // The elide happens to the query, so whatever arrives is what sits inside the quotes.
-        assert_eq!(no_results_line("wal\u{2026}"), "No results for \u{201C}wal\u{2026}\u{201D}");
-        assert!(!no_results_line("q").contains('"'), "a straight quote is a programmer's mark");
+        assert_eq!(
+            no_results_line("wal\u{2026}"),
+            "No results for \u{201C}wal\u{2026}\u{201D}"
+        );
+        assert!(
+            !no_results_line("q").contains('"'),
+            "a straight quote is a programmer's mark"
+        );
     }
 }

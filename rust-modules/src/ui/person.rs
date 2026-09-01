@@ -126,7 +126,10 @@ const SHELF_LABEL_H: f32 = 46.0;
 /// poster here animates exactly as it does on Home — plus the **two-line** title a shelf of real
 /// Plex names needs (one elided line loses two thirds of "Wallace & Gromit: The Curse of the
 /// Were-Rabbit").
-const SHELF_STYLE: RowStyle = RowStyle { title_lines: 2, ..RowStyle::HOME };
+const SHELF_STYLE: RowStyle = RowStyle {
+    title_lines: 2,
+    ..RowStyle::HOME
+};
 /// A focused shelf lifts no higher than this from the screen top — [`HEADER_TOP`]'s twin.
 const TOP_MARGIN: f32 = HEADER_TOP;
 /// Air kept under the lowest visible content when a shelf is revealed by scrolling.
@@ -267,14 +270,17 @@ fn focused_of<'a>(p: &'a Person, sc: &Scene) -> Option<&'a PmsMovie> {
     if sc.on_header {
         return None;
     }
-    p.shelf(sc.focus_kind).get(sc.col[sc.focus_kind].max(0) as usize)
+    p.shelf(sc.focus_kind)
+        .get(sc.col[sc.focus_kind].max(0) as usize)
 }
 
 // ---- the scroll flow (ScrollColumn children: 0 = header, 1.. = present shelves) ---------------
 
 impl Column for Scene {
     fn len(&self) -> usize {
-        crate::person::current().map(|p| 1 + present(p).1).unwrap_or(1)
+        crate::person::current()
+            .map(|p| 1 + present(p).1)
+            .unwrap_or(1)
     }
     fn height(&self, i: usize) -> f32 {
         if i == 0 {
@@ -290,10 +296,14 @@ impl Column for Scene {
         if self.on_header {
             return Some(0);
         }
-        crate::person::current().and_then(|p| focus_pos(p, self)).map(|pos| pos + 1)
+        crate::person::current()
+            .and_then(|p| focus_pos(p, self))
+            .map(|pos| pos + 1)
     }
     fn draw_child(&self, i: usize, _env: &Env, p: Painter) {
-        let Some(person) = crate::person::current() else { return };
+        let Some(person) = crate::person::current() else {
+            return;
+        };
         if i == 0 {
             draw_header(p, person, self);
             return;
@@ -342,11 +352,17 @@ fn header_flow(sc: &Scene) -> HeaderFlow {
     if !sc.life_c.as_bytes().is_empty() {
         // the life line hugs the kicker above it, but takes the kicker's own gap when it is the
         // first meta line — the gap belongs to the stack's top edge, not to a particular line
-        y += if f.meta_y.is_some() { LIFE_GAP } else { META_GAP };
+        y += if f.meta_y.is_some() {
+            LIFE_GAP
+        } else {
+            META_GAP
+        };
         f.life_y = Some(y);
         y += crate::text::cap_h(theme::size::LABEL, 0);
     }
-    let bio = crate::person::current().map(|p| p.bio.as_str()).unwrap_or("");
+    let bio = crate::person::current()
+        .map(|p| p.bio.as_str())
+        .unwrap_or("");
     if !bio.is_empty() {
         y += BIO_GAP;
         f.bio_y = Some(y);
@@ -365,7 +381,10 @@ fn header_flow(sc: &Scene) -> HeaderFlow {
     // against a ragged column.
     let ty = (f.exp_h - y) * 0.5;
     f.name_y = ty;
-    for v in [&mut f.meta_y, &mut f.life_y, &mut f.bio_y].into_iter().flatten() {
+    for v in [&mut f.meta_y, &mut f.life_y, &mut f.bio_y]
+        .into_iter()
+        .flatten()
+    {
         *v += ty;
     }
     f
@@ -384,10 +403,14 @@ fn header_flow(sc: &Scene) -> HeaderFlow {
 /// the word at the text's own ragged end: one page of this app cut its prose off with `…`, the
 /// other let it fade, for the same reason and one rung apart.
 fn bio_view(bio: &str, a: f32) -> TextView<'_> {
-    TextView::new(bio, theme::size::BODY, theme::with_a(theme::TEXT_SECONDARY, a))
-        .leading(BIO_LEAD)
-        .max_lines(BIO_LINES)
-        .fade_last(more_w() + BIO_MORE_GAP)
+    TextView::new(
+        bio,
+        theme::size::BODY,
+        theme::with_a(theme::TEXT_SECONDARY, a),
+    )
+    .leading(BIO_LEAD)
+    .max_lines(BIO_LINES)
+    .fade_last(more_w() + BIO_MORE_GAP)
 }
 
 /// [`MORE`]'s drawn width at the bio's own rung and weight — `size::BODY` bold, NOT the About
@@ -498,8 +521,15 @@ fn reveal_block(cur: f32, top: f32, h: f32, content: f32) -> f32 {
 
 fn scroll_target(sc: &Scene) -> f32 {
     let col = sc.column;
-    let Some(fi) = sc.focus_child() else { return 0.0 };
-    reveal_block(col.scroll.pos, col.child_top(sc, fi), sc.height(fi), content_h(sc))
+    let Some(fi) = sc.focus_child() else {
+        return 0.0;
+    };
+    reveal_block(
+        col.scroll.pos,
+        col.child_top(sc, fi),
+        sc.height(fi),
+        content_h(sc),
+    )
 }
 
 // ---- the ambient wash ------------------------------------------------------------------------
@@ -517,7 +547,10 @@ fn scroll_target(sc: &Scene) -> f32 {
 /// captions sitting on the ground under it — see `widgets::GROUND_LUMA`. The header tint is a
 /// palette token we chose, so it needs no cap.
 fn amb_target(sc: &Scene) -> [[f32; 4]; 4] {
-    match crate::person::current().and_then(|p| focused_of(p, sc)).filter(|m| m.has_blur) {
+    match crate::person::current()
+        .and_then(|p| focused_of(p, sc))
+        .filter(|m| m.has_blur)
+    {
         Some(m) => AmbientWash::keyed(m.blur, AMB_CARD_W),
         None => AmbientWash::target([theme::WASH_WARM; 4], AMB_HEADER_W),
     }
@@ -694,17 +727,23 @@ pub(crate) fn update(dt: f32) {
     }
     sc.spin_ms += dt * 1000.0;
     // the band: expanded while the header holds focus, condensed the moment it leaves
-    sc.cond.step(if sc.on_header { 0.0 } else { 1.0 }, K_COND, dt);
+    sc.cond
+        .step(if sc.on_header { 0.0 } else { 1.0 }, K_COND, dt);
     // the wash: dissolve toward whatever the page is about now
     let k = amb_target(sc);
     sc.amb.step(k, AmbientWash::K, dt);
-    let n_items = |k: usize| crate::person::current().map(|p| p.shelf(k).len()).unwrap_or(0);
+    let n_items = |k: usize| {
+        crate::person::current()
+            .map(|p| p.shelf(k).len())
+            .unwrap_or(0)
+    };
     for k in 0..NSHELF {
         // a shelf that does not hold focus freezes its scroll (CardRow's `None` contract) — the
         // same behaviour a non-focused home shelf has. The header holding focus freezes them ALL,
         // which is what a page scrolled back to its top should do.
         let n = n_items(k);
-        let focus = (!sc.on_header && k == sc.focus_kind && n > 0).then(|| sc.col[k].max(0) as usize);
+        let focus =
+            (!sc.on_header && k == sc.focus_kind && n > 0).then(|| sc.col[k].max(0) as usize);
         sc.shelves[k].update(n, focus, &SHELF_STYLE, dt);
     }
     let want = scroll_target(sc);
@@ -730,9 +769,14 @@ fn focused_id() -> Option<(crate::plex::ServerId, String)> {
 /// clamp that follows then does what it always did.
 fn reseat(was: Option<(crate::plex::ServerId, String)>) {
     let Some((sid, rk)) = was else { return };
-    let Some(p) = crate::person::current() else { return };
+    let Some(p) = crate::person::current() else {
+        return;
+    };
     for kind in 0..NSHELF {
-        let found = p.shelf(kind).iter().position(|m| crate::plex::same_item((m.sid, &m.rk), (sid, &rk)));
+        let found = p
+            .shelf(kind)
+            .iter()
+            .position(|m| crate::plex::same_item((m.sid, &m.rk), (sid, &rk)));
         if let Some(i) = found {
             let sc = scene();
             sc.focus_kind = kind;
@@ -784,7 +828,9 @@ pub(crate) fn move_focus(sym: c_uint) {
         return;
     }
     let sc = scene();
-    let Some(p) = crate::person::current() else { return };
+    let Some(p) = crate::person::current() else {
+        return;
+    };
     let (kinds, n) = present(p);
     if sc.on_header {
         // LEFT/RIGHT do nothing on a row with one item, and UP is already at the top
@@ -945,7 +991,11 @@ fn draw_header(p: Painter, person: &Person, sc: &Scene) {
     crate::ui::widgets::card(
         p,
         portrait,
-        Art::Person { sid: person.sid, key: &person.thumb, res: PORTRAIT_RES },
+        Art::Person {
+            sid: person.sid,
+            key: &person.thumb,
+            res: PORTRAIT_RES,
+        },
         d * 0.5,
         false,
         1.0,
@@ -958,12 +1008,19 @@ fn draw_header(p: Painter, person: &Person, sc: &Scene) {
     // run centred on the small portrait each fade as the other rises. A table, so the pair cannot
     // drift into two different labels.
     let ny = (band_h - crate::text::cap_h(theme::size::TITLE, 1)) * 0.5;
-    for (sz, y, a) in [(theme::size::HERO, flow.name_y, ea), (theme::size::TITLE, ny, c)] {
+    for (sz, y, a) in [
+        (theme::size::HERO, flow.name_y, ea),
+        (theme::size::TITLE, ny, c),
+    ] {
         if a > 0.01 {
-            Label::new(sc.name_c.as_ptr(), sz, theme::with_a(theme::TEXT_PRIMARY, a))
-                .bold()
-                .v(VAlign::CapTop)
-                .draw(p, Rect::new(col_x, y, 0.0, 0.0));
+            Label::new(
+                sc.name_c.as_ptr(),
+                sz,
+                theme::with_a(theme::TEXT_PRIMARY, a),
+            )
+            .bold()
+            .v(VAlign::CapTop)
+            .draw(p, Rect::new(col_x, y, 0.0, 0.0));
         }
     }
     if ea <= 0.01 {
@@ -1017,7 +1074,12 @@ fn draw_header(p: Painter, person: &Person, sc: &Scene) {
             let ink = bio.last_line_cap_y(by, bh) - by + crate::text::cap_h(theme::size::BODY, 0);
             crate::ui::widgets::text_block_highlight(
                 p,
-                Rect::new(col_x - HL_PAD_X, by - HL_PAD_Y, BIO_W + 2.0 * HL_PAD_X, ink + 2.0 * HL_PAD_Y),
+                Rect::new(
+                    col_x - HL_PAD_X,
+                    by - HL_PAD_Y,
+                    BIO_W + 2.0 * HL_PAD_X,
+                    ink + 2.0 * HL_PAD_Y,
+                ),
             );
         }
         bio.draw(p, Rect::new(col_x, by, BIO_W, 0.0));
@@ -1029,15 +1091,18 @@ fn draw_header(p: Painter, person: &Person, sc: &Scene) {
         // band are `bio`'s, not this block's. `ea` because the mark belongs to the expanded band and
         // must condense out with it.
         if truncated {
-            Label::new(MORE.as_ptr(), theme::size::BODY, theme::with_a(theme::TEXT_TERTIARY, ea))
-                .bold()
-                .h(HAlign::Right)
-                .v(VAlign::CapTop)
-                .draw(p, Rect::new(col_x, bio.last_line_cap_y(by, bh), BIO_W, 0.0));
+            Label::new(
+                MORE.as_ptr(),
+                theme::size::BODY,
+                theme::with_a(theme::TEXT_TERTIARY, ea),
+            )
+            .bold()
+            .h(HAlign::Right)
+            .v(VAlign::CapTop)
+            .draw(p, Rect::new(col_x, bio.last_line_cap_y(by, bh), BIO_W, 0.0));
         }
     }
 }
-
 
 /// One `Movies` / `Shows` shelf: the heading with its item count, then the shared strip of poster
 /// cards. Identical composition to detail's Related row — same `RowStyle::HOME` geometry, same
@@ -1053,26 +1118,48 @@ fn draw_shelf(p: Painter, person: &Person, kind: usize, sc: &Scene) {
     // character line — a card that reads as selected while the portrait is what the user is on.
     // (`update` already freezes these rows' springs in that state, so the pop was correctly absent,
     // which is exactly what made the stray labels look deliberate.)
-    let focus_col = if !sc.on_header && sc.focus_kind == kind { sc.col[kind] } else { -1 };
+    let focus_col = if !sc.on_header && sc.focus_kind == kind {
+        sc.col[kind]
+    } else {
+        -1
+    };
     // Where this shelf's tile row lands on the PANEL — the `ScrollColumn` has already translated `p`
     // to the block top, so the number is not otherwise recoverable from inside the strip. Only
     // needed for the focused shelf, and only to record the focused tile's frame (see [`FOCUS_TILE`]).
     let screen_top = (focus_col >= 0)
-        .then(|| focus_pos(person, sc).map(|pos| sc.column.child_top(sc, pos + 1) - sc.column.scroll.pos))
+        .then(|| {
+            focus_pos(person, sc).map(|pos| sc.column.child_top(sc, pos + 1) - sc.column.scroll.pos)
+        })
         .flatten();
     let hy = -row.lift();
     #[allow(unused_variables)] // `tw` is used only when the count run exists
-    let tw = Label::new(SHELF_TITLE[kind].as_ptr(), theme::size::HEADLINE, theme::TEXT_HEADING)
-        .bold()
-        .v(VAlign::CapTop)
-        .draw(p, Rect::new(MARGIN_X, hy, SCR_W, 0.0));
+    let tw = Label::new(
+        SHELF_TITLE[kind].as_ptr(),
+        theme::size::HEADLINE,
+        theme::TEXT_HEADING,
+    )
+    .bold()
+    .v(VAlign::CapTop)
+    .draw(p, Rect::new(MARGIN_X, hy, SCR_W, 0.0));
     if !sc.shelf_count_c[kind].as_bytes().is_empty() {
         // the count sits ON THE HEADING'S BASELINE — two sizes cap-top-aligned would leave the
         // smaller run floating above the line the eye reads
         let tw = crate::text::text_width(SHELF_TITLE[kind].as_ptr(), theme::size::HEADLINE, 1);
-        Label::new(sc.shelf_count_c[kind].as_ptr(), theme::size::CAPTION, theme::TEXT_TERTIARY)
-            .v(VAlign::Baseline)
-            .draw(p, Rect::new(MARGIN_X + tw + SHELF_COUNT_GAP, hy, 0.0, crate::text::cap_h(theme::size::HEADLINE, 1)));
+        Label::new(
+            sc.shelf_count_c[kind].as_ptr(),
+            theme::size::CAPTION,
+            theme::TEXT_TERTIARY,
+        )
+        .v(VAlign::Baseline)
+        .draw(
+            p,
+            Rect::new(
+                MARGIN_X + tw + SHELF_COUNT_GAP,
+                hy,
+                0.0,
+                crate::text::cap_h(theme::size::HEADLINE, 1),
+            ),
+        );
     }
     card_row::strip(
         p,
@@ -1126,10 +1213,16 @@ pub(crate) fn focused_tile_rect() -> Option<Rect> {
 /// the same place.
 pub(crate) fn redraw_focused_tile() {
     crate::ui::guard(|| {
-        let Some((kind, i, base)) = (unsafe { *addr_of!(FOCUS_TILE) }) else { return };
-        let Some(person) = crate::person::current() else { return };
+        let Some((kind, i, base)) = (unsafe { *addr_of!(FOCUS_TILE) }) else {
+            return;
+        };
+        let Some(person) = crate::person::current() else {
+            return;
+        };
         let sc = scene();
-        let Some(m) = person.shelf(kind).get(i) else { return };
+        let Some(m) = person.shelf(kind).get(i) else {
+            return;
+        };
         let s = sc.shelves[kind].scale(i) * crate::ui::press::scale();
         let label = card_row::TileLabel::titled(&m.title, person.role(kind, i));
         let p = Painter::root().alpha(crate::ui::nav::page_alpha());
@@ -1149,7 +1242,10 @@ pub(crate) fn redraw_focused_tile() {
 /// lands, then — only if the person really has nothing in this library — a plain line saying so.
 /// Anchored on the SAME flow the shelves would occupy, so nothing jumps when they arrive.
 fn draw_shelf_state(p: Painter, env: &Env, sc: &Scene) {
-    if crate::person::current().map(|pp| present(pp).1 > 0).unwrap_or(true) {
+    if crate::person::current()
+        .map(|pp| present(pp).1 > 0)
+        .unwrap_or(true)
+    {
         return;
     }
     // the SAME flow the first shelf would occupy — child_top(1), not a restated sum, so nothing
@@ -1169,7 +1265,12 @@ fn draw_shelf_state(p: Painter, env: &Env, sc: &Scene) {
     }
     // ...but the settled answer IS the shared Empty read-out — a library with nothing in it is an
     // answer, not a fault, which is the distinction `StatusKind::Empty` exists to keep.
-    StatusOverlay::new(band, c"Nothing from this person is in your libraries", StatusKind::Empty).draw(env, p);
+    StatusOverlay::new(
+        band,
+        c"Nothing from this person is in your libraries",
+        StatusKind::Empty,
+    )
+    .draw(env, p);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1178,7 +1279,10 @@ mod tests {
     use super::*;
 
     fn item(rk: &str) -> PmsMovie {
-        PmsMovie { rk: rk.to_string(), ..Default::default() }
+        PmsMovie {
+            rk: rk.to_string(),
+            ..Default::default()
+        }
     }
 
     /// Seed the store the way a landing does, without a server — and step off the header, because
@@ -1227,7 +1331,11 @@ mod tests {
 
         seed(2, 2);
         move_focus(SDLK_DOWN);
-        assert_eq!(scene().focus_kind, 1, "with both shelves present DOWN reaches Shows");
+        assert_eq!(
+            scene().focus_kind,
+            1,
+            "with both shelves present DOWN reaches Shows"
+        );
         assert_eq!(focused_item().map(|m| m.rk.clone()), Some("s0".to_string()));
         crate::person::close();
     }
@@ -1243,13 +1351,26 @@ mod tests {
         assert_eq!(scene().focus_kind, 1);
 
         move_focus(SDLK_UP);
-        assert!(!scene().on_header, "UP from the SECOND shelf must land on the first, not the header");
+        assert!(
+            !scene().on_header,
+            "UP from the SECOND shelf must land on the first, not the header"
+        );
         assert_eq!(scene().focus_kind, 0);
 
         move_focus(SDLK_UP);
-        assert!(scene().on_header, "UP from the first shelf must reach the header");
-        assert!(focused_item().is_none(), "the header holds no card — OK there must do nothing");
-        assert_eq!(Column::focus_child(scene()), Some(0), "the header is flow child 0");
+        assert!(
+            scene().on_header,
+            "UP from the first shelf must reach the header"
+        );
+        assert!(
+            focused_item().is_none(),
+            "the header holds no card — OK there must do nothing"
+        );
+        assert_eq!(
+            Column::focus_child(scene()),
+            Some(0),
+            "the header is flow child 0"
+        );
 
         move_focus(SDLK_DOWN);
         assert!(!scene().on_header, "DOWN must go back into the shelves");
@@ -1288,8 +1409,16 @@ mod tests {
 
         crate::person::install_for_test(vec![item("m0")], Vec::new()); // shows vanished
         clamp_focus();
-        assert_eq!(scene().focus_kind, 0, "focus must fall back to the one present shelf");
-        assert_eq!(scene().col[1], 0, "the vanished shelf's remembered column clamps too");
+        assert_eq!(
+            scene().focus_kind,
+            0,
+            "focus must fall back to the one present shelf"
+        );
+        assert_eq!(
+            scene().col[1],
+            0,
+            "the vanished shelf's remembered column clamps too"
+        );
         assert_eq!(focused_item().map(|m| m.rk.clone()), Some("m0".to_string()));
         crate::person::close();
     }
@@ -1309,12 +1438,18 @@ mod tests {
         assert_eq!(was.as_ref().map(|(_, rk)| rk.as_str()), Some("m2"));
 
         // the row is rebuilt with two rows inserted ahead of it — what a second source landing does
-        let rebuilt: Vec<PmsMovie> =
-            ["x0", "x1", "m0", "m1", "m2", "m3"].iter().map(|rk| item(rk)).collect();
+        let rebuilt: Vec<PmsMovie> = ["x0", "x1", "m0", "m1", "m2", "m3"]
+            .iter()
+            .map(|rk| item(rk))
+            .collect();
         crate::person::install_for_test(rebuilt, Vec::new());
         reseat(was);
         clamp_focus();
-        assert_eq!(scene().col[0], 4, "the index followed the card, instead of the card following the index");
+        assert_eq!(
+            scene().col[0],
+            4,
+            "the index followed the card, instead of the card following the index"
+        );
         assert_eq!(focused_item().map(|m| m.rk.clone()), Some("m2".to_string()));
 
         // a card that is gone entirely leaves the clamp to do what it always did — never a panic
@@ -1338,7 +1473,10 @@ mod tests {
 
         leave();
 
-        assert!(!take_request(), "the request latched past the page it belonged to");
+        assert!(
+            !take_request(),
+            "the request latched past the page it belonged to"
+        );
         assert!(crate::person::current().is_none());
     }
 
@@ -1349,13 +1487,37 @@ mod tests {
     #[test]
     fn reopen_mounts_the_page_without_asking_to_be_routed_to() {
         let _serial = crate::testlock::serial();
-        reopen(crate::plex::ServerId::UNSET, "77", "plex://person/77", "Peter Sallis", "/t.jpg");
-        assert!(!take_request(), "a trail re-entry must not ask app.rs to route again");
-        assert_eq!(crate::person::current().map(|p| p.key.clone()), Some("77".to_string()));
-        assert!(scene().on_header, "…and it is still a full mount: the page opens on its header");
+        reopen(
+            crate::plex::ServerId::UNSET,
+            "77",
+            "plex://person/77",
+            "Peter Sallis",
+            "/t.jpg",
+        );
+        assert!(
+            !take_request(),
+            "a trail re-entry must not ask app.rs to route again"
+        );
+        assert_eq!(
+            crate::person::current().map(|p| p.key.clone()),
+            Some("77".to_string())
+        );
+        assert!(
+            scene().on_header,
+            "…and it is still a full mount: the page opens on its header"
+        );
 
-        open(crate::plex::ServerId::UNSET, "78", "plex://person/78", "Nick Park", "/n.jpg");
-        assert!(take_request(), "the interactive entry is the one that raises the latch");
+        open(
+            crate::plex::ServerId::UNSET,
+            "78",
+            "plex://person/78",
+            "Nick Park",
+            "/n.jpg",
+        );
+        assert!(
+            take_request(),
+            "the interactive entry is the one that raises the latch"
+        );
         crate::person::close();
     }
 
@@ -1376,7 +1538,11 @@ mod tests {
     /// is not const, hence the comparison. This is v2's packing dividend in one number — the text rides
     /// BESIDE the portrait now, so a header with a full biography is ~324px instead of the ~580 v1's
     /// stacked column reached.
-    const EXP_HEADER_H: f32 = if STACK_BOUND > PORTRAIT_EXP { STACK_BOUND } else { PORTRAIT_EXP };
+    const EXP_HEADER_H: f32 = if STACK_BOUND > PORTRAIT_EXP {
+        STACK_BOUND
+    } else {
+        PORTRAIT_EXP
+    };
 
     /// **The v2 packing dividend, as geometry.** The first shelf fits on screen with NO scroll
     /// under BOTH band states — even the EXPANDED one, and even against the pessimistic point-size
@@ -1425,8 +1591,14 @@ mod tests {
         let content = top + h + BOTTOM_PAD;
         let want = reveal_block(0.0, top, h, content);
         assert!(want > 0.0, "the second shelf must scroll into view");
-        assert!(top + h - want <= SCR_H, "its block bottom is still off screen");
-        assert!(top - want >= TOP_MARGIN, "it scrolled past the minimum — the shelf overshot upward");
+        assert!(
+            top + h - want <= SCR_H,
+            "its block bottom is still off screen"
+        );
+        assert!(
+            top - want >= TOP_MARGIN,
+            "it scrolled past the minimum — the shelf overshot upward"
+        );
     }
 
     /// Focusing the header — flow child 0, at [`HEADER_TOP`] — rests the page at 0 for ANY band
@@ -1435,7 +1607,8 @@ mod tests {
     #[test]
     fn focusing_the_header_rests_the_page_at_the_top_from_any_scroll() {
         for h in [H_CON, EXP_HEADER_H, EXP_HEADER_H * 1.5] {
-            let content = HEADER_TOP + h + SHELF_GAP + 2.0 * (shelf_block_h() + SHELF_GAP) + BOTTOM_PAD;
+            let content =
+                HEADER_TOP + h + SHELF_GAP + 2.0 * (shelf_block_h() + SHELF_GAP) + BOTTOM_PAD;
             for cur in [0.0, 200.0, content] {
                 assert_eq!(
                     reveal_block(cur, HEADER_TOP, h, content),

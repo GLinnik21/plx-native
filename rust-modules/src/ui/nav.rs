@@ -61,10 +61,8 @@ static mut CONTINUOUS: bool = false;
 /// destination with no tab bar). -1 rather than `Option<usize>` so it drops straight into the
 /// `c_int` the strip is placed from.
 ///
-/// A PILL, and since the strip became a projection of the section table (`browse::tabs`) that is
-/// not the destination's section index plus one: several libraries can share one pill, so
-/// `app.rs`'s `Nav::Library` carries the TAB the press named and the `+1` here is only the Home
-/// pill leading the row.
+/// A PILL, not a Plex section index: Movies and TV Shows remain stable while discovery chooses
+/// which owned or shared section currently backs that type.
 static mut TAB: c_int = -1;
 /// The OUTGOING page's teardown, waiting for the floor — see the module doc. `None` for a FORWARD
 /// navigation, which leaves the page it came from standing behind the destination (that is what the
@@ -94,7 +92,11 @@ fn page() -> &'static mut Xfade {
 pub(crate) fn begin(continuous: bool, tab: Option<usize>, leave: Option<fn()>) {
     let running = page().is_swapping();
     unsafe {
-        CONTINUOUS = if running { addr_of!(CONTINUOUS).read() && continuous } else { continuous };
+        CONTINUOUS = if running {
+            addr_of!(CONTINUOUS).read() && continuous
+        } else {
+            continuous
+        };
         TAB = tab.map(|t| t as c_int).unwrap_or(-1);
         LEAVE = leave;
     }
@@ -150,7 +152,6 @@ pub(crate) fn tick(dt: f32) -> bool {
     }
     commit
 }
-
 
 /// The cascade alpha for PAGE CONTENT — everything a screen draws that does not survive the swap.
 ///
@@ -280,18 +281,30 @@ mod tests {
         let _g = crate::testlock::serial();
         clear();
         begin(true, Some(2), None);
-        assert_eq!(view_tab(0), 2, "the capsule leaves on the PRESS frame, before any tick");
+        assert_eq!(
+            view_tab(0),
+            2,
+            "the capsule leaves on the PRESS frame, before any tick"
+        );
 
         let mut committed = false;
         for f in 0..30 {
             if !committed {
-                assert_eq!(view_tab(0), 2, "frame {f}: the queued pill still owns the row");
+                assert_eq!(
+                    view_tab(0),
+                    2,
+                    "frame {f}: the queued pill still owns the row"
+                );
             }
             if tick(DT) {
                 committed = true;
             }
             if committed {
-                assert_eq!(view_tab(0), 0, "past the commit the screen answers for its own chrome");
+                assert_eq!(
+                    view_tab(0),
+                    0,
+                    "past the commit the screen answers for its own chrome"
+                );
             }
         }
         assert!(committed);
@@ -309,14 +322,23 @@ mod tests {
         begin(true, Some(1), None);
         let (commits, pa, ca) = run(40);
         assert_eq!(commits, 1);
-        assert!(ca.iter().all(|a| *a == 1.0), "the shared bar held still: {ca:?}");
-        assert!(pa.iter().any(|a| *a < 0.05), "…and the assertion is not vacuous — the page DID dip");
+        assert!(
+            ca.iter().all(|a| *a == 1.0),
+            "the shared bar held still: {ca:?}"
+        );
+        assert!(
+            pa.iter().any(|a| *a < 0.05),
+            "…and the assertion is not vacuous — the page DID dip"
+        );
 
         clear();
         begin(false, None, None);
         let (commits, pa, ca) = run(40);
         assert_eq!(commits, 1);
-        assert_eq!(pa, ca, "with no bar on the far side there is nothing to be continuous with");
+        assert_eq!(
+            pa, ca,
+            "with no bar on the far side there is nothing to be continuous with"
+        );
         clear();
     }
 
@@ -329,9 +351,16 @@ mod tests {
         begin(true, Some(3), None);
         run(2);
         assert!(cancel(), "two frames in, it is still withdrawable");
-        assert_eq!(view_tab(0), 0, "the row is the screen's own again on the very same frame");
+        assert_eq!(
+            view_tab(0),
+            0,
+            "the row is the screen's own again on the very same frame"
+        );
         let (commits, _, _) = run(30);
-        assert_eq!(commits, 0, "a withdrawn transition must never apply a route change");
+        assert_eq!(
+            commits, 0,
+            "a withdrawn transition must never apply a route change"
+        );
         assert_eq!(page_alpha(), 1.0);
         assert!(!cancel(), "and there is nothing left to withdraw twice");
         clear();
@@ -369,7 +398,10 @@ mod tests {
         begin(true, Some(1), None);
         let (commits, pa, _) = run(600);
         assert_eq!(commits, 1, "exactly one route change per request");
-        assert!(pa.iter().all(|a| (0.0..=1.0).contains(a)), "alpha never escaped 0..1");
+        assert!(
+            pa.iter().all(|a| (0.0..=1.0).contains(a)),
+            "alpha never escaped 0..1"
+        );
         assert_eq!(page_alpha(), 1.0);
         assert_eq!(chrome_alpha(), 1.0);
         clear();
@@ -394,18 +426,34 @@ mod tests {
         for f in 0..40 {
             let commit = tick(DT);
             if !commit {
-                assert_eq!(TORN.load(Relaxed), committed as usize, "frame {f}: teardown off the floor");
+                assert_eq!(
+                    TORN.load(Relaxed),
+                    committed as usize,
+                    "frame {f}: teardown off the floor"
+                );
             }
             if commit {
                 assert!(!committed, "exactly one floor per transition");
-                assert_eq!(page_alpha(), 0.0, "the floor IS alpha 0 — nothing is on the panel to see");
+                assert_eq!(
+                    page_alpha(),
+                    0.0,
+                    "the floor IS alpha 0 — nothing is on the panel to see"
+                );
                 spend_leave(true);
                 committed = true;
-                assert_eq!(TORN.load(Relaxed), 1, "…and the teardown is what the floor is for");
+                assert_eq!(
+                    TORN.load(Relaxed),
+                    1,
+                    "…and the teardown is what the floor is for"
+                );
             }
         }
         assert!(committed);
-        assert_eq!(TORN.load(Relaxed), 1, "and it is spent — a fade-in must not re-run it");
+        assert_eq!(
+            TORN.load(Relaxed),
+            1,
+            "and it is spent — a fade-in must not re-run it"
+        );
         clear();
     }
 
@@ -421,7 +469,11 @@ mod tests {
         assert!(cancel(), "two frames in, the BACK is still withdrawable");
         let (commits, _, _) = run(60);
         assert_eq!(commits, 0);
-        assert_eq!(TORN.load(Relaxed), 0, "the page we never left must still be loaded");
+        assert_eq!(
+            TORN.load(Relaxed),
+            0,
+            "the page we never left must still be loaded"
+        );
         assert_eq!(page_alpha(), 1.0, "…and fully back on screen");
         clear();
     }
@@ -438,13 +490,24 @@ mod tests {
         clear();
         begin(false, None, Some(tear_down as fn()));
         let (commits, _, _) = run_as(40, false); // app.rs: `route != req.from`
-        assert_eq!(commits, 1, "the fade still completes — the page the user HAS comes back");
-        assert_eq!(TORN.load(Relaxed), 0, "a dropped request tears nothing down");
+        assert_eq!(
+            commits, 1,
+            "the fade still completes — the page the user HAS comes back"
+        );
+        assert_eq!(
+            TORN.load(Relaxed),
+            0,
+            "a dropped request tears nothing down"
+        );
 
         // the next transition carries no teardown of its own, and must not find one lying around
         begin(true, Some(1), None);
         run(40);
-        assert_eq!(TORN.load(Relaxed), 0, "a forward navigation closed the page behind it");
+        assert_eq!(
+            TORN.load(Relaxed),
+            0,
+            "a forward navigation closed the page behind it"
+        );
         clear();
     }
 
@@ -460,7 +523,11 @@ mod tests {
         begin(false, None, None); // …no, open the Related item instead: the page stays
         let (commits, _, _) = run(40);
         assert_eq!(commits, 1);
-        assert_eq!(TORN.load(Relaxed), 0, "the page the new page stacks on must not be closed");
+        assert_eq!(
+            TORN.load(Relaxed),
+            0,
+            "the page the new page stacks on must not be closed"
+        );
 
         // and the other way round: a forward request retargeted to a BACK does tear down
         clear();

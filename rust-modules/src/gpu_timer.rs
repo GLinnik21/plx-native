@@ -105,7 +105,9 @@ fn has_extension(name: &str) -> bool {
         return false;
     }
     let extensions = unsafe { CStr::from_ptr(raw) }.to_string_lossy();
-    extensions.split_ascii_whitespace().any(|extension| extension == name)
+    extensions
+        .split_ascii_whitespace()
+        .any(|extension| extension == name)
 }
 
 pub(crate) fn init(filter: &str) -> Result<(), String> {
@@ -122,7 +124,13 @@ pub(crate) fn init(filter: &str) -> Result<(), String> {
         unsafe { std::mem::transmute(proc(c"glGetQueryObjectuivEXT")?) };
     let get_object_ui64v: GetQueryObjectUi64v =
         unsafe { std::mem::transmute(proc(c"glGetQueryObjectui64vEXT")?) };
-    let api = Api { begin, end, get_query_iv, get_object_uiv, get_object_ui64v };
+    let api = Api {
+        begin,
+        end,
+        get_query_iv,
+        get_object_uiv,
+        get_object_ui64v,
+    };
 
     let mut bits = 0;
     unsafe { (api.get_query_iv)(GL_TIME_ELAPSED_EXT, GL_QUERY_COUNTER_BITS_EXT, &mut bits) };
@@ -153,7 +161,8 @@ pub(crate) fn init(filter: &str) -> Result<(), String> {
         "{{\"type\":\"info\",\"api\":\"GL_EXT_disjoint_timer_query\",\"counter_bits\":{bits},\"query_count\":{QUERY_COUNT}}}"
     )
     .map_err(|error| format!("{}: {error}", path.display()))?;
-    raw.flush().map_err(|error| format!("{}: {error}", path.display()))?;
+    raw.flush()
+        .map_err(|error| format!("{}: {error}", path.display()))?;
 
     let selected = match filter.trim() {
         "" => "frame.ui",
@@ -214,7 +223,12 @@ fn end(id: c_uint, name: &'static str, discard: bool) {
         unsafe { (api.end)(GL_TIME_ELAPSED_EXT) };
         state.in_phase = false;
         let issued_frame = state.frame;
-        state.pending.push_back(Pending { id, name, issued_frame, discard });
+        state.pending.push_back(Pending {
+            id,
+            name,
+            issued_frame,
+            discard,
+        });
     });
 }
 
@@ -235,7 +249,11 @@ impl Drop for QueryGuard {
 #[inline]
 pub(crate) fn phase<R>(name: &'static str, draw: impl FnOnce() -> R) -> R {
     let Some(id) = begin(name) else { return draw() };
-    let mut guard = QueryGuard { id, name, armed: true };
+    let mut guard = QueryGuard {
+        id,
+        name,
+        armed: true,
+    };
     let result = draw();
     // Submit before closing the interval. Midgard defers a render target's fragment work until
     // that target's pass is flushed, so an interval closed with the pass still open contains no
@@ -274,7 +292,11 @@ fn record(state: &mut State, pending: Pending, gpu_ns: u64) {
         );
         let _ = raw.flush();
     }
-    match state.acc.iter_mut().find(|entry| entry.name == pending.name) {
+    match state
+        .acc
+        .iter_mut()
+        .find(|entry| entry.name == pending.name)
+    {
         Some(entry) => {
             entry.samples += 1;
             entry.total_ns += gpu_ns as u128;
@@ -312,10 +334,14 @@ pub(crate) fn frame_end() {
         }
 
         loop {
-            let Some(front) = state.pending.front() else { break };
+            let Some(front) = state.pending.front() else {
+                break;
+            };
             let Some(api) = state.api else { break };
             let mut available = 0;
-            unsafe { (api.get_object_uiv)(front.id, GL_QUERY_RESULT_AVAILABLE_EXT, &mut available) };
+            unsafe {
+                (api.get_object_uiv)(front.id, GL_QUERY_RESULT_AVAILABLE_EXT, &mut available)
+            };
             if available == 0 {
                 break;
             }

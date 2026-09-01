@@ -383,7 +383,10 @@ mod tests {
         note_present(10_000);
         frame_begin(1.0 / 60.0);
         note_spring(280.0 - 0.05, 280.0, 5.0);
-        assert!(!should_present(10_016), "sub-pixel travel must not hold the panel awake");
+        assert!(
+            !should_present(10_016),
+            "sub-pixel travel must not hold the panel awake"
+        );
     }
 
     /// ...but the same spring one pixel out, or moving a pixel per frame, still is.
@@ -397,7 +400,10 @@ mod tests {
 
         frame_begin(1.0 / 60.0);
         note_spring(280.0, 280.0, 60.0); // 1 px this frame
-        assert!(should_present(10_016), "a pixel of travel per frame is visible");
+        assert!(
+            should_present(10_016),
+            "a pixel of travel per frame is visible"
+        );
     }
 
     #[test]
@@ -406,13 +412,22 @@ mod tests {
         frame_begin(1.0 / 60.0);
         note_spring(0.0, 1.0, 0.0); // foreground motion before the host scope
         let (_, host_moving) = scoped_motion(|| note_spring(1.0, 1.0, 0.0));
-        assert!(!host_moving, "a settled host must not inherit foreground motion");
-        assert!(should_present(10_000), "the frame-wide gate must retain that foreground motion");
+        assert!(
+            !host_moving,
+            "a settled host must not inherit foreground motion"
+        );
+        assert!(
+            should_present(10_000),
+            "the frame-wide gate must retain that foreground motion"
+        );
 
         frame_begin(1.0 / 60.0);
         let (_, host_moving) = scoped_motion(|| note_spring(0.0, 1.0, 0.0));
         assert!(host_moving, "host motion is reported to its glass owner");
-        assert!(should_present(10_016), "and remains part of frame-wide motion");
+        assert!(
+            should_present(10_016),
+            "and remains part of frame-wide motion"
+        );
     }
 
     /// The cap is what stops the relative term from growing past visibility on a deep scroll: at
@@ -423,7 +438,10 @@ mod tests {
         note_present(10_000);
         frame_begin(1.0 / 60.0);
         note_spring(1500.0 - 0.3, 1500.0, 0.0);
-        assert!(should_present(10_016), "0.3px out must still repaint however large the value");
+        assert!(
+            should_present(10_016),
+            "0.3px out must still repaint however large the value"
+        );
     }
 
     /// A jump reports only when it actually moved — `home.rs` jumps to the same value every frame
@@ -452,7 +470,10 @@ mod tests {
         note_present(10_000); // ... the draw runs here, and the spinner reports:
         invalidate();
         frame_begin(1.0 / 60.0);
-        assert!(should_present(10_016), "the spinner's own chain must not break on its first link");
+        assert!(
+            should_present(10_016),
+            "the spinner's own chain must not break on its first link"
+        );
     }
 
     #[test]
@@ -465,7 +486,10 @@ mod tests {
         assert!(present_dirty(), "a discrete landing is real content damage");
         note_present(10_016); // the frame it bought
         frame_begin(1.0 / 60.0);
-        assert!(!should_present(10_032), "one landing must not pin the loop on");
+        assert!(
+            !should_present(10_032),
+            "one landing must not pin the loop on"
+        );
     }
 
     #[test]
@@ -485,7 +509,10 @@ mod tests {
         frame_begin(1.0 / 60.0);
         assert!(!should_present(10_000 + KEEPALIVE_MS - 1));
         assert!(should_present(10_000 + KEEPALIVE_MS));
-        assert!(!present_dirty(), "an insurance commit must not dirty dynamic glass");
+        assert!(
+            !present_dirty(),
+            "an insurance commit must not dirty dynamic glass"
+        );
     }
 
     /// The tick counter wraps every ~49 days, and the keepalive is the one place the gate does
@@ -528,7 +555,10 @@ mod tests {
             let v = 1.0 + (i as f32) * 0.001; // a spread of magnitudes, every one AT its target
             note_spring(v, v, 0.0);
         }
-        assert!(!should_present(10_016), "439 springs at rest must not repaint");
+        assert!(
+            !should_present(10_016),
+            "439 springs at rest must not repaint"
+        );
     }
 
     /// One moving spring anywhere in that tree is enough. (The asymmetry is the design: a false
@@ -555,7 +585,10 @@ mod tests {
         assert!(should_present(10_000));
         note_present(10_000);
         frame_begin(1.0 / 60.0); // next frame: nothing steps
-        assert!(!should_present(10_016), "yesterday's motion must not repaint today");
+        assert!(
+            !should_present(10_016),
+            "yesterday's motion must not repaint today"
+        );
     }
 
     /// `dt` scales the velocity term, so a long frame counts as more travel. A spring drifting at
@@ -567,7 +600,10 @@ mod tests {
         note_present(10_000);
         frame_begin(1.0 / 60.0);
         note_spring(300.0, 300.0, 12.0);
-        assert!(!should_present(10_016), "0.2px in a 60Hz frame is not visible");
+        assert!(
+            !should_present(10_016),
+            "0.2px in a 60Hz frame is not visible"
+        );
 
         frame_begin(0.05); // app.rs's dt clamp
         note_spring(300.0, 300.0, 12.0);
@@ -587,7 +623,10 @@ mod tests {
         assert!(should_present(10_000));
         assert!(!present_dirty(), "noidle changes rate, not content damage");
         set_enabled(true);
-        assert!(should_present(10_000), "the flag must still be there to consume");
+        assert!(
+            should_present(10_000),
+            "the flag must still be there to consume"
+        );
         assert!(!should_present(10_000), "...and consumed exactly once");
     }
 

@@ -34,7 +34,10 @@ static UP_CT: AtomicU32 = AtomicU32::new(0);
 static UP_PX: AtomicU64 = AtomicU64::new(0);
 /// (uploads, total pixels) since the last call; resets both. Main-thread, once per frame.
 pub(crate) fn take_upload_stats() -> (u32, u64) {
-    (UP_CT.swap(0, Ordering::Relaxed), UP_PX.swap(0, Ordering::Relaxed))
+    (
+        UP_CT.swap(0, Ordering::Relaxed),
+        UP_PX.swap(0, Ordering::Relaxed),
+    )
 }
 
 const PT_CAP: usize = 64;
@@ -115,8 +118,8 @@ struct Pslot {
     ph: c_int,
     px: usize, // decoded RGBA ptr as address (0 = none) — keeps Pslot Send
     state: c_int,
-    use_: c_uint, // LRU clock
-    gen: c_uint,  // bumped on eviction; stale-decode guard
+    use_: c_uint,  // LRU clock
+    gen: c_uint,   // bumped on eviction; stale-decode guard
     frame: c_uint, // last frame poster_get touched it (evict-protect)
 }
 impl Pslot {
@@ -156,7 +159,9 @@ impl Store {
     const fn new() -> Store {
         Store {
             slots: [Pslot::ZERO; PT_CAP],
-            clock: 0, frame: 0, quit: false,
+            clock: 0,
+            frame: 0,
+            quit: false,
             workers: Vec::new(),
         }
     }
@@ -302,7 +307,15 @@ fn reset_key_memo() {
 /// and token always exceeds [`KEY_MAX`], so the gate below refuses both. Shrink the fixed
 /// overhead, shorten the token or raise [`PT_KEYLEN`] and two people's headshots start resolving
 /// to one slot. If any of those three moves, gate the source at `tex_key` too.
-pub(crate) fn poster_key(srv: ServerId, dst: *mut c_char, cap: usize, src_path: *const c_char, w: c_int, h: c_int, png: c_int) {
+pub(crate) fn poster_key(
+    srv: ServerId,
+    dst: *mut c_char,
+    cap: usize,
+    src_path: *const c_char,
+    w: c_int,
+    h: c_int,
+    png: c_int,
+) {
     if dst.is_null() || cap == 0 {
         return;
     }
@@ -316,7 +329,9 @@ pub(crate) fn poster_key(srv: ServerId, dst: *mut c_char, cap: usize, src_path: 
             crate::cbuf::set(dst, cap, "");
             return;
         }
-        let memo = (*std::ptr::addr_of_mut!(KEY_MEMO)).get_or_insert_with(|| KeyMemo { map: std::collections::HashMap::new() });
+        let memo = (*std::ptr::addr_of_mut!(KEY_MEMO)).get_or_insert_with(|| KeyMemo {
+            map: std::collections::HashMap::new(),
+        });
         let s = memo.get_or_build(srv.raw(), &path, w, h, png != 0, c.token_gen(), || {
             c.image_transcode_path(&path, w as i64, h as i64, png != 0)
         });
@@ -371,7 +386,15 @@ fn logo_key(srv: ServerId, rk: &str) -> Option<[u8; 352]> {
     }
     let lpath = std::ffi::CString::new(format!("/library/metadata/{rk}/clearLogo")).ok()?;
     let mut key = [0u8; 352];
-    poster_key(srv, key.as_mut_ptr() as *mut c_char, key.len(), lpath.as_ptr(), LOGO_REQ_W, LOGO_REQ_H, 1);
+    poster_key(
+        srv,
+        key.as_mut_ptr() as *mut c_char,
+        key.len(),
+        lpath.as_ptr(),
+        LOGO_REQ_W,
+        LOGO_REQ_H,
+        1,
+    );
     Some(key)
 }
 
@@ -379,7 +402,9 @@ fn logo_key(srv: ServerId, rk: &str) -> Option<[u8; 352]> {
 /// protection. A hero page whose logo misses draws its title as HERO TEXT and then pops to the
 /// logotype the moment it lands; warming kills that pop the same way it kills the backdrop's.
 pub(crate) fn logo_warm(srv: ServerId, rk: &str) -> Warm {
-    logo_key(srv, rk).map(|k| poster_warm(srv, k.as_ptr() as *const c_char)).unwrap_or(Warm::Known)
+    logo_key(srv, rk)
+        .map(|k| poster_warm(srv, k.as_ptr() as *const c_char))
+        .unwrap_or(Warm::Known)
 }
 
 /// Resolve an item's clearLogo (transparent PNG) to a GL texture plus its TRUE PIXEL SIZE.
@@ -459,7 +484,11 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
                 g.slots[i].frame = f;
             }
             let s = &g.slots[i];
-            let hit = if s.state == P_READY { (s.tex, s.pw, s.ph) } else { (0, 0, 0) };
+            let hit = if s.state == P_READY {
+                (s.tex, s.pw, s.ph)
+            } else {
+                (0, 0, 0)
+            };
             return (hit, Warm::Known);
         }
     }
@@ -552,7 +581,9 @@ pub(crate) fn poster_warm(srv: ServerId, key: *const c_char) -> Warm {
 /// Pure half of [`store_idle`] — split so the gate is host-testable without mutating the store
 /// singleton.
 fn idle_of(slots: &[Pslot; PT_CAP]) -> bool {
-    !slots.iter().any(|s| matches!(s.state, P_WANT | P_LOADING | P_DECODED))
+    !slots
+        .iter()
+        .any(|s| matches!(s.state, P_WANT | P_LOADING | P_DECODED))
 }
 
 /// MAIN thread. Is the store QUIET — nothing wanted, fetching, or waiting to upload? The prefetch
@@ -659,8 +690,12 @@ impl ArtFail {
     /// is whoever opened `/tmp/plxnative-events.log` after being told artwork does not load.
     fn why(self) -> &'static str {
         match self {
-            ArtFail::NoServer => "the registry does not resolve this server (never registered, or revoked)",
-            ArtFail::NoResponse => "no usable response - refused/timed-out connect, or a status outside 2xx",
+            ArtFail::NoServer => {
+                "the registry does not resolve this server (never registered, or revoked)"
+            }
+            ArtFail::NoResponse => {
+                "no usable response - refused/timed-out connect, or a status outside 2xx"
+            }
             ArtFail::Empty => "the server answered 2xx with an empty body",
         }
     }
@@ -737,7 +772,9 @@ fn poster_worker() {
                     break i;
                 }
                 let res = CV.wait_timeout(g, Duration::from_millis(50));
-                g = res.map(|(guard, _)| guard).unwrap_or_else(|e| e.into_inner().0);
+                g = res
+                    .map(|(guard, _)| guard)
+                    .unwrap_or_else(|e| e.into_inner().0);
             };
             let key_s = String::from_utf8_lossy(key_bytes(&g.slots[idx])).into_owned();
             let (srv, sgen) = (g.slots[idx].srv, g.slots[idx].gen);
@@ -764,7 +801,9 @@ fn poster_worker() {
         let px = match crate::plex::client_for(srv) {
             Some(c) => match c.fetch_built(&key_s) {
                 // bytes arrived: from here on a failure is the decoder's, and `img.rs` logs it
-                Some(b) if !b.is_empty() => img::img_decode_rgba(b.as_ptr(), b.len() as c_int, &mut w, &mut h),
+                Some(b) if !b.is_empty() => {
+                    img::img_decode_rgba(b.as_ptr(), b.len() as c_int, &mut w, &mut h)
+                }
                 Some(_) => {
                     warn_fetch_failed(srv, ArtFail::Empty);
                     std::ptr::null_mut()
@@ -810,8 +849,9 @@ pub(crate) fn posters_init() {
     }
     // filter_map, not map: a refused worker is one fewer decoder, not a dead app. Artwork degrades
     // to whatever the survivors can fetch (and to nothing at all if both are refused).
-    let handles: Vec<JoinHandle<()>> =
-        (0..2).filter_map(|_| crate::task::spawn("poster", poster_worker)).collect();
+    let handles: Vec<JoinHandle<()>> = (0..2)
+        .filter_map(|_| crate::task::spawn("poster", poster_worker))
+        .collect();
     store().workers = handles;
 }
 
@@ -865,7 +905,8 @@ mod tests {
     /// `actor` row: absolute, on Plex's metadata CDN, with a 32-hex digest. A made-up digest
     /// rather than a captured one, so nothing here is a record of who is in anyone's library —
     /// the LENGTH is what the encoding and the [`KEY_MAX`] headroom are graded on, and it matches.
-    const HEADSHOT: &str = "https://metadata-static.plex.tv/a/people/0123456789abcdef0123456789abcdef.jpg";
+    const HEADSHOT: &str =
+        "https://metadata-static.plex.tv/a/people/0123456789abcdef0123456789abcdef.jpg";
     /// The same, encoded — every `:` and `/` gone, which is the whole reason the PMS photo
     /// transcoder can be handed a third-party URL as a query VALUE.
     const HEADSHOT_ENC: &str =
@@ -889,7 +930,13 @@ mod tests {
         crate::plex::reset_servers_for_test();
         reset_key_memo();
         let tok = "tok-poster-test";
-        let sid = crate::plex::register_for_test("poster-test", "127.0.0.1", 32400, tok, "cid-poster-test");
+        let sid = crate::plex::register_for_test(
+            "poster-test",
+            "127.0.0.1",
+            32400,
+            tok,
+            "cid-poster-test",
+        );
         (Fresh(g), sid, tok)
     }
 
@@ -899,7 +946,15 @@ mod tests {
     fn key_for(srv: ServerId, src: &str, w: c_int, h: c_int, png: c_int) -> String {
         let src_c = std::ffi::CString::new(src).expect("test source paths carry no NUL");
         let mut buf = [0u8; 352];
-        poster_key(srv, buf.as_mut_ptr() as *mut c_char, buf.len(), src_c.as_ptr(), w, h, png);
+        poster_key(
+            srv,
+            buf.as_mut_ptr() as *mut c_char,
+            buf.len(),
+            src_c.as_ptr(),
+            w,
+            h,
+            png,
+        );
         String::from_utf8_lossy(crate::cbuf::as_bytes(&buf)).into_owned()
     }
 
@@ -918,15 +973,31 @@ mod tests {
         let (_g, sid, tok) = one_server();
         let k = key_for(sid, HEADSHOT, 300, 300, 0);
 
-        assert!(k.starts_with("/photo/:/transcode?width=300&height=300&minSize=1&url="), "wrong request shape: {k}");
-        assert!(k.contains(&format!("url={HEADSHOT_ENC}&")), "the absolute URL is not encoded whole: {k}");
-        assert!(!k.contains("://"), "a raw scheme separator would truncate the url parameter: {k}");
-        assert!(k.ends_with(&format!("&X-Plex-Token={tok}")), "the token belongs to the OUTER request: {k}");
+        assert!(
+            k.starts_with("/photo/:/transcode?width=300&height=300&minSize=1&url="),
+            "wrong request shape: {k}"
+        );
+        assert!(
+            k.contains(&format!("url={HEADSHOT_ENC}&")),
+            "the absolute URL is not encoded whole: {k}"
+        );
+        assert!(
+            !k.contains("://"),
+            "a raw scheme separator would truncate the url parameter: {k}"
+        );
+        assert!(
+            k.ends_with(&format!("&X-Plex-Token={tok}")),
+            "the token belongs to the OUTER request: {k}"
+        );
 
         // The headroom the doc quotes, pinned. A headshot key is the longest shape the store holds
         // today; if a future one crosses KEY_MAX it is refused rather than truncated (below), so
         // this failing means artwork silently became skeletons, not that anything corrupted.
-        assert!(k.len() <= KEY_MAX, "a headshot key must fit a slot: {} bytes", k.len());
+        assert!(
+            k.len() <= KEY_MAX,
+            "a headshot key must fit a slot: {} bytes",
+            k.len()
+        );
     }
 
     /// The other half of "keep the existing path untouched": a PMS-relative key is encoded by the
@@ -936,13 +1007,28 @@ mod tests {
     fn a_relative_thumb_still_takes_the_old_path() {
         let (_g, sid, _) = one_server();
         let k = key_for(sid, "/library/metadata/42/thumb/1778526065", 250, 375, 0);
-        assert!(k.starts_with("/photo/:/transcode?width=250&height=375&minSize=1&url="), "wrong request shape: {k}");
-        assert!(k.contains("url=%2Flibrary%2Fmetadata%2F42%2Fthumb%2F1778526065&"), "relative key mis-encoded: {k}");
+        assert!(
+            k.starts_with("/photo/:/transcode?width=250&height=375&minSize=1&url="),
+            "wrong request shape: {k}"
+        );
+        assert!(
+            k.contains("url=%2Flibrary%2Fmetadata%2F42%2Fthumb%2F1778526065&"),
+            "relative key mis-encoded: {k}"
+        );
 
         // png=1 is the clearLogo flavour — the one thing that changes the shape — and it must not
         // have moved either.
-        let logo = key_for(sid, "/library/metadata/42/clearLogo", LOGO_REQ_W, LOGO_REQ_H, 1);
-        assert!(logo.contains("&format=png&"), "the transparent flavour lost its format: {logo}");
+        let logo = key_for(
+            sid,
+            "/library/metadata/42/clearLogo",
+            LOGO_REQ_W,
+            LOGO_REQ_H,
+            1,
+        );
+        assert!(
+            logo.contains("&format=png&"),
+            "the transparent flavour lost its format: {logo}"
+        );
     }
 
     /// **A `/hubs/search` `collection` row carries no `thumb` at all** (verified live — no
@@ -964,7 +1050,11 @@ mod tests {
     #[test]
     fn an_empty_thumb_yields_no_request_at_all() {
         let (_g, sid, _) = one_server();
-        assert_eq!(key_for(sid, "", 300, 300, 0), "", "an empty source must not become a request");
+        assert_eq!(
+            key_for(sid, "", 300, 300, 0),
+            "",
+            "an empty source must not become a request"
+        );
     }
 
     /// The cliff absolute URLs brought within sight, and the reason [`poster_key`] gates on
@@ -983,19 +1073,34 @@ mod tests {
         let overhead = key_for(sid, "x", 300, 300, 0).len() - 1;
 
         let exact = key_for(sid, &"a".repeat(KEY_MAX - overhead), 300, 300, 0);
-        assert_eq!(exact.len(), KEY_MAX, "the fixture must land exactly on the boundary");
+        assert_eq!(
+            exact.len(),
+            KEY_MAX,
+            "the fixture must land exactly on the boundary"
+        );
         let mut s = Pslot::ZERO;
         set_key(&mut s, &exact);
-        assert_eq!(key_bytes(&s), exact.as_bytes(), "a key the gate accepts must survive a slot intact");
+        assert_eq!(
+            key_bytes(&s),
+            exact.as_bytes(),
+            "a key the gate accepts must survive a slot intact"
+        );
 
         let over = key_for(sid, &"a".repeat(KEY_MAX - overhead + 1), 300, 300, 0);
-        assert_eq!(over, "", "one byte past what a slot holds must be refused, not handed out");
+        assert_eq!(
+            over, "",
+            "one byte past what a slot holds must be refused, not handed out"
+        );
 
         // …because this is what handing it out would have meant. Not a claim about `set_key`, a
         // claim about `lookup`: the probe it compares against is the FULL string.
         let would_be = "b".repeat(KEY_MAX + 1);
         set_key(&mut s, &would_be);
-        assert_ne!(key_bytes(&s), would_be.as_bytes(), "a truncated slot can never match its own probe");
+        assert_ne!(
+            key_bytes(&s),
+            would_be.as_bytes(),
+            "a truncated slot can never match its own probe"
+        );
     }
 
     /// The store's precondition, asserted where it actually lives.
@@ -1008,14 +1113,28 @@ mod tests {
     #[test]
     fn only_a_key_that_survives_a_slot_is_fetchable() {
         assert!(!is_fetchable(""), "an empty key names no request");
-        assert!(is_fetchable("/photo/:/transcode?url=x"), "an ordinary key is fetchable");
-        assert!(is_fetchable(&"a".repeat(KEY_MAX)), "exactly what a slot holds is still fetchable");
-        assert!(!is_fetchable(&"a".repeat(KEY_MAX + 1)), "one byte past the array must never claim a slot");
+        assert!(
+            is_fetchable("/photo/:/transcode?url=x"),
+            "an ordinary key is fetchable"
+        );
+        assert!(
+            is_fetchable(&"a".repeat(KEY_MAX)),
+            "exactly what a slot holds is still fetchable"
+        );
+        assert!(
+            !is_fetchable(&"a".repeat(KEY_MAX + 1)),
+            "one byte past the array must never claim a slot"
+        );
     }
 
     /// A settled, drawable slot: READY, last touched on frame `frame` with LRU age `use_`.
     fn ready(use_: c_uint, frame: c_uint) -> Pslot {
-        Pslot { state: P_READY, use_, frame, ..Pslot::ZERO }
+        Pslot {
+            state: P_READY,
+            use_,
+            frame,
+            ..Pslot::ZERO
+        }
     }
 
     /// The LRU's two clauses, in order: an EMPTY slot is always preferred (a fresh store must fill
@@ -1023,20 +1142,37 @@ mod tests {
     #[test]
     fn victim_prefers_empty_then_oldest_settled() {
         let empty = [Pslot::ZERO; PT_CAP];
-        assert_eq!(victim(&empty, 7), Some(0), "an untouched store fills from the front");
+        assert_eq!(
+            victim(&empty, 7),
+            Some(0),
+            "an untouched store fills from the front"
+        );
 
         let mut one_hole = [ready(100, 1); PT_CAP];
         one_hole[40] = Pslot::ZERO;
-        assert_eq!(victim(&one_hole, 7), Some(40), "an empty slot beats every settled one");
+        assert_eq!(
+            victim(&one_hole, 7),
+            Some(40),
+            "an empty slot beats every settled one"
+        );
 
         let mut full = [ready(100, 1); PT_CAP];
         full[17].use_ = 3; // the oldest
         full[52].use_ = 9;
-        assert_eq!(victim(&full, 7), Some(17), "with nothing empty, the least recently used goes");
+        assert_eq!(
+            victim(&full, 7),
+            Some(17),
+            "with nothing empty, the least recently used goes"
+        );
 
         // FAILED is settled too — a 404 must not pin a slot forever.
         let mut failed = [ready(100, 1); PT_CAP];
-        failed[8] = Pslot { state: P_FAILED, use_: 1, frame: 1, ..Pslot::ZERO };
+        failed[8] = Pslot {
+            state: P_FAILED,
+            use_: 1,
+            frame: 1,
+            ..Pslot::ZERO
+        };
         assert_eq!(victim(&failed, 7), Some(8));
     }
 
@@ -1049,10 +1185,18 @@ mod tests {
         let f: c_uint = 42;
         let mut slots = [ready(c_uint::MAX - 1, f); PT_CAP]; // 64 tiles this frame drew
         slots[31] = ready(0, f.wrapping_sub(1)); // …and one warmed a moment ago
-        assert_eq!(victim(&slots, f), Some(31), "the prefetched slot is the cheapest to throw away");
+        assert_eq!(
+            victim(&slots, f),
+            Some(31),
+            "the prefetched slot is the cheapest to throw away"
+        );
 
         let drawn = [ready(5, f); PT_CAP];
-        assert_eq!(victim(&drawn, f), None, "a frame that drew every slot claims nothing");
+        assert_eq!(
+            victim(&drawn, f),
+            None,
+            "a frame that drew every slot claims nothing"
+        );
 
         // frame counters wrap (`wrapping_add` in poster_pump), and a warm at frame 0 stamps
         // c_uint::MAX — which must still read as "not this frame" rather than as protection.
@@ -1067,7 +1211,12 @@ mod tests {
     #[test]
     fn an_in_flight_slot_is_never_evicted() {
         for st in [P_WANT, P_LOADING, P_DECODED, P_UPLOADING] {
-            let slots = [Pslot { state: st, use_: 0, frame: 0, ..Pslot::ZERO }; PT_CAP];
+            let slots = [Pslot {
+                state: st,
+                use_: 0,
+                frame: 0,
+                ..Pslot::ZERO
+            }; PT_CAP];
             assert_eq!(victim(&slots, 7), None, "state {st} must not be evictable");
         }
     }
@@ -1081,17 +1230,37 @@ mod tests {
     fn two_servers_asking_for_the_same_art_path_do_not_share_a_slot() {
         const KEY: &str = "/photo/:/transcode?width=250&height=375&minSize=1&url=%2Flibrary%2Fmetadata%2F42%2Fthumb%2F1";
         let (a, b) = (ServerId::from_raw(0), ServerId::from_raw(1));
-        let mut s = Pslot { state: P_READY, srv: a, ..Pslot::ZERO };
+        let mut s = Pslot {
+            state: P_READY,
+            srv: a,
+            ..Pslot::ZERO
+        };
         set_key(&mut s, KEY);
 
-        assert!(slot_matches(&s, a, KEY.as_bytes()), "the server that asked for it");
-        assert!(!slot_matches(&s, b, KEY.as_bytes()), "the same path on another server is another slot");
-        assert!(!slot_matches(&s, ServerId::UNSET, KEY.as_bytes()), "and an unknown server matches nothing");
-        assert!(!slot_matches(&s, a, b"/photo/:/transcode?width=250&height=375&minSize=1&url=%2Fother"));
+        assert!(
+            slot_matches(&s, a, KEY.as_bytes()),
+            "the server that asked for it"
+        );
+        assert!(
+            !slot_matches(&s, b, KEY.as_bytes()),
+            "the same path on another server is another slot"
+        );
+        assert!(
+            !slot_matches(&s, ServerId::UNSET, KEY.as_bytes()),
+            "and an unknown server matches nothing"
+        );
+        assert!(!slot_matches(
+            &s,
+            a,
+            b"/photo/:/transcode?width=250&height=375&minSize=1&url=%2Fother"
+        ));
 
         // eviction only flips the state — the key bytes and the server stay behind, so an EMPTY
         // slot must be rejected before either is even compared
-        let evicted = Pslot { state: P_EMPTY, ..s };
+        let evicted = Pslot {
+            state: P_EMPTY,
+            ..s
+        };
         assert!(!slot_matches(&evicted, a, KEY.as_bytes()));
     }
 
@@ -1103,7 +1272,9 @@ mod tests {
     #[test]
     fn a_memo_entry_belongs_to_one_server_and_one_token_generation() {
         const PATH: &str = "/library/metadata/42/thumb/1755000000";
-        let mut m = KeyMemo { map: std::collections::HashMap::new() };
+        let mut m = KeyMemo {
+            map: std::collections::HashMap::new(),
+        };
         let builds = std::cell::Cell::new(0u32);
         let key = |m: &mut KeyMemo, srv: u16, w: c_int, gen: u32, built: &str| -> String {
             m.get_or_build(srv, PATH, w, 375, false, gen, || {
@@ -1114,18 +1285,38 @@ mod tests {
         };
 
         assert_eq!(key(&mut m, 0, 250, 7, "A?token=a"), "A?token=a");
-        assert_eq!(key(&mut m, 0, 250, 7, "never built"), "A?token=a", "a hit does not rebuild");
+        assert_eq!(
+            key(&mut m, 0, 250, 7, "never built"),
+            "A?token=a",
+            "a hit does not rebuild"
+        );
         assert_eq!(builds.get(), 1);
 
-        assert_eq!(key(&mut m, 1, 250, 9, "B?token=b"), "B?token=b", "server B builds its own");
-        assert_eq!(key(&mut m, 0, 250, 7, "never built"), "A?token=a", "…and did not displace A's");
+        assert_eq!(
+            key(&mut m, 1, 250, 9, "B?token=b"),
+            "B?token=b",
+            "server B builds its own"
+        );
+        assert_eq!(
+            key(&mut m, 0, 250, 7, "never built"),
+            "A?token=a",
+            "…and did not displace A's"
+        );
         assert_eq!(builds.get(), 2);
 
         // a profile switch on A: A's entry is rebuilt at the new generation, B's stands
         assert_eq!(key(&mut m, 0, 250, 8, "A?token=a2"), "A?token=a2");
-        assert_eq!(key(&mut m, 1, 250, 9, "never built"), "B?token=b", "B's generation never moved");
+        assert_eq!(
+            key(&mut m, 1, 250, 9, "never built"),
+            "B?token=b",
+            "B's generation never moved"
+        );
         assert_eq!(builds.get(), 3);
-        assert_eq!(key(&mut m, 0, 250, 8, "never built"), "A?token=a2", "the rebuild replaced, not appended");
+        assert_eq!(
+            key(&mut m, 0, 250, 8, "never built"),
+            "A?token=a2",
+            "the rebuild replaced, not appended"
+        );
         assert_eq!(builds.get(), 3);
 
         // the request box is still part of the key — a warm at one size and a draw at another are
@@ -1139,15 +1330,33 @@ mod tests {
     /// starts competing with the tiles on screen for the two workers.
     #[test]
     fn idle_of_sees_every_stage_of_a_fetch() {
-        assert!(idle_of(&[Pslot::ZERO; PT_CAP]), "an untouched store is idle");
+        assert!(
+            idle_of(&[Pslot::ZERO; PT_CAP]),
+            "an untouched store is idle"
+        );
         for st in [P_READY, P_FAILED] {
-            let slots = [Pslot { state: st, ..Pslot::ZERO }; PT_CAP];
-            assert!(idle_of(&slots), "settled state {st} is not work in progress");
+            let slots = [Pslot {
+                state: st,
+                ..Pslot::ZERO
+            }; PT_CAP];
+            assert!(
+                idle_of(&slots),
+                "settled state {st} is not work in progress"
+            );
         }
         for st in [P_WANT, P_LOADING, P_DECODED] {
-            let mut slots = [Pslot { state: P_READY, ..Pslot::ZERO }; PT_CAP];
-            slots[63] = Pslot { state: st, ..Pslot::ZERO };
-            assert!(!idle_of(&slots), "one slot in state {st} is enough to hold the gate shut");
+            let mut slots = [Pslot {
+                state: P_READY,
+                ..Pslot::ZERO
+            }; PT_CAP];
+            slots[63] = Pslot {
+                state: st,
+                ..Pslot::ZERO
+            };
+            assert!(
+                !idle_of(&slots),
+                "one slot in state {st} is enough to hold the gate shut"
+            );
         }
     }
 }

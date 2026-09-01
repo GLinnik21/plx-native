@@ -302,7 +302,11 @@ pub(super) struct Trace(Vec<(i64, u32)>);
 impl Trace {
     /// `[(seconds, kbps), ...]` — the same shape `tests/manifest.json`'s `network_profile` uses.
     pub(super) fn new(legs: &[(f64, u32)]) -> Self {
-        Self(legs.iter().map(|&(s, k)| ((s * 1000.0) as i64, k.max(1))).collect())
+        Self(
+            legs.iter()
+                .map(|&(s, k)| ((s * 1000.0) as i64, k.max(1)))
+                .collect(),
+        )
     }
 
     pub(super) fn capacity_kbps(&self, now_ms: i64) -> u32 {
@@ -552,12 +556,17 @@ pub(super) fn run(
             report.first_decision = Some(decision);
             report.first_buf_ms = observed.buf_ms;
         }
-        let Decision::Prime(proposal) = decision else { continue };
+        let Decision::Prime(proposal) = decision else {
+            continue;
+        };
         report.primes += 1;
-        let cand_point = point_for(proposal.rung, match proposal.direction {
-            Direction::Up => "an UPSHIFT proposal",
-            Direction::Down => "a DOWNSHIFT proposal",
-        })?;
+        let cand_point = point_for(
+            proposal.rung,
+            match proposal.direction {
+                Direction::Up => "an UPSHIFT proposal",
+                Direction::Down => "a DOWNSHIFT proposal",
+            },
+        )?;
 
         // Decide the outcome FIRST, because the cost of a transaction differs by outcome and the
         // plant may not charge one number for all four legs.
@@ -633,7 +642,9 @@ pub(super) fn run(
             // (a warm-up deadline, a transport failure, a refused raster, three control-plane
             // ones) and NONE of them feeds; the plant cannot express those, which is a gap on the
             // pessimistic side and is stated here rather than modelled optimistically.
-            buf_ms = buf_ms.saturating_add(plant.segment_ms).min(plant.b_max_ms(&point));
+            buf_ms = buf_ms
+                .saturating_add(plant.segment_ms)
+                .min(plant.b_max_ms(&point));
             controller.reject(proposal, crate::abr::RejectCause::Candidate, closed_at);
             report.rejects += 1;
         }
@@ -651,9 +662,15 @@ mod tests {
     }
 
     /// The three census points, so a test reads like the device record.
-    fn p720() -> OperatingPoint { Calibration::point(720).expect("720 is calibrated") }
-    fn p4000() -> OperatingPoint { Calibration::point(4_000).expect("4000 is calibrated") }
-    fn p20000() -> OperatingPoint { Calibration::point(20_000).expect("20000 is calibrated") }
+    fn p720() -> OperatingPoint {
+        Calibration::point(720).expect("720 is calibrated")
+    }
+    fn p4000() -> OperatingPoint {
+        Calibration::point(4_000).expect("4000 is calibrated")
+    }
+    fn p20000() -> OperatingPoint {
+        Calibration::point(20_000).expect("20000 is calibrated")
+    }
 
     /// MATHEMATICAL INVARIANT.
     ///
@@ -673,19 +690,32 @@ mod tests {
         // the device reading rather than to an arbitrary fast link (prod scales with fetch time).
         let trace = Trace::new(&[(600.0, 103_000)]);
         let mut now = 0;
-        let mut buf = plant.b_max_ms(&point);          // settled AT the ceiling: fully backpressured
+        let mut buf = plant.b_max_ms(&point); // settled AT the ceiling: fully backpressured
         let before = now;
         let (observed, sample) = step(&plant, &trace, &point, &mut now, &mut buf, 20_000);
 
-        assert_eq!(observed.wall_ms, plant.segment_ms, "settled: wall time is one segment");
-        assert!(observed.acquire_ms < observed.wall_ms,
-                "acquisition {}ms must be strictly under wall {}ms in a backpressured state",
-                observed.acquire_ms, observed.wall_ms);
-        assert_eq!(now - before, observed.wall_ms, "the plant advances by WALL time");
+        assert_eq!(
+            observed.wall_ms, plant.segment_ms,
+            "settled: wall time is one segment"
+        );
+        assert!(
+            observed.acquire_ms < observed.wall_ms,
+            "acquisition {}ms must be strictly under wall {}ms in a backpressured state",
+            observed.acquire_ms,
+            observed.wall_ms
+        );
+        assert_eq!(
+            now - before,
+            observed.wall_ms,
+            "the plant advances by WALL time"
+        );
         // What the controller reads:
         let prod = sample.production_ratio_pm();
         assert_eq!(prod as i64, observed.acquire_ms * 1_000 / plant.segment_ms);
-        assert!(prod < 1_000, "wall time would read 1000pm — the defect — got {prod}");
+        assert!(
+            prod < 1_000,
+            "wall time would read 1000pm — the defect — got {prod}"
+        );
         // And on the census link it REPRODUCES the device reading at this rung. Measured p10..p90
         // over `p2-logs/pipe_abr_pin_20000.log` at 103-112 Mbit/s: **322..384 pm, median 366**.
         // Computed: fetch 20 694·2000/103 000 = 401 ms + overhead 345 = 746 ms over 2000 = 373 pm.
@@ -694,7 +724,10 @@ mod tests {
         // a median of 321 before, against 322-384 now — because the rebuilt clips are VBR with six
         // segment sizes per rung while the plant feeds the median. So the plant lands mid-band by
         // construction and the WIDTH here is the fixture's, not the model's error.
-        assert!((322..=384).contains(&prod), "expected the device band 322-384, got {prod}pm");
+        assert!(
+            (322..=384).contains(&prod),
+            "expected the device band 322-384, got {prod}pm"
+        );
     }
 
     /// DEVICE-FINDING REGRESSION.
@@ -715,17 +748,27 @@ mod tests {
         // 10 MiB prediction with an 8 MiB observation and fail by ~25% at every video-bound rung —
         // which would read as the ceiling model breaking when the only thing that happened is that
         // the plant moved and the evidence did not.
-        let plant = Plant { video_queue_bytes: CENSUS_VIDEO_QUEUE_BYTES, ..Plant::default() };
+        let plant = Plant {
+            video_queue_bytes: CENSUS_VIDEO_QUEUE_BYTES,
+            ..Plant::default()
+        };
         let mut checked = 0;
         for rung in CALIBRATED {
             let point = Calibration::point(rung).expect("CALIBRATED lists it");
             let observed = Calibration::census_buf_ms(rung).expect("censused with it");
             let pred = plant.b_max_ms(&point);
             let err = (pred - observed).abs() * 100 / observed;
-            assert!(err <= 5, "rung {rung}: predicted {pred}ms vs measured {observed}ms ({err}% off)");
+            assert!(
+                err <= 5,
+                "rung {rung}: predicted {pred}ms vs measured {observed}ms ({err}% off)"
+            );
             checked += 1;
         }
-        assert_eq!(checked, CALIBRATED.len(), "every calibrated rung is graded, never a subset");
+        assert_eq!(
+            checked,
+            CALIBRATED.len(),
+            "every calibrated rung is graded, never a subset"
+        );
     }
 
     /// **The binding lane CROSSES between 720 and 2000, and the model finds it unaided.**
@@ -748,7 +791,10 @@ mod tests {
                 + (plant.audio_queue_bytes * 8 / u64::from(p.audio_es_kbps.max(1))) as i64;
             audio < video
         };
-        assert!(binds_audio(320), "at the floor the 1 MiB audio queue is the ceiling");
+        assert!(
+            binds_audio(320),
+            "at the floor the 1 MiB audio queue is the ceiling"
+        );
         assert!(binds_audio(720));
         for rung in [2_000, 4_000, 10_000, 16_000, 20_000] {
             assert!(!binds_audio(rung), "rung {rung} must be video-bound");
@@ -777,10 +823,17 @@ mod tests {
     fn the_lane_ceilings_come_from_elementary_rates() {
         let plant = Plant::default();
         assert_eq!(plant.b_max_ms(&p20000()), 5_852);
-        assert_eq!(plant.b_max_ms(&p720()), 67_635, "the audio lane does not move with the video cap");
+        assert_eq!(
+            plant.b_max_ms(&p720()),
+            67_635,
+            "the audio lane does not move with the video cap"
+        );
         // Forcing the video lane below the audio one flips which ceiling is returned, which is the
         // property `min` has to have and the census alone cannot isolate.
-        let video_bound = OperatingPoint { video_es_kbps: 20_000, ..p720() };
+        let video_bound = OperatingPoint {
+            video_es_kbps: 20_000,
+            ..p720()
+        };
         assert_eq!(plant.b_max_ms(&video_bound), 1_600 + 83_886_080 / 20_000);
     }
 
@@ -805,7 +858,10 @@ mod tests {
     /// MATHEMATICAL INVARIANT: dB/dt = C/R_ts - 1, read off the plant.
     #[test]
     fn the_plant_reproduces_the_drain_identity() {
-        let point = OperatingPoint { overhead_ms: 0, ..p4000() };
+        let point = OperatingPoint {
+            overhead_ms: 0,
+            ..p4000()
+        };
         let plant = Plant::default();
         for &(capacity, want) in &[(20_000u32, 1i8), (point.ts_kbps, 0), (1_500, -1)] {
             let trace = Trace::new(&[(600.0, capacity)]);
@@ -816,7 +872,11 @@ mod tests {
             let (_, _) = step(&plant, &trace, &point, &mut now, &mut buf, 4_000);
             let fetch = i64::from(point.ts_kbps) * plant.segment_ms / i64::from(capacity);
             assert_eq!((buf - before).signum() as i8, want, "C={capacity}");
-            assert_eq!(buf - before, plant.segment_ms - fetch.max(1), "C={capacity}");
+            assert_eq!(
+                buf - before,
+                plant.segment_ms - fetch.max(1),
+                "C={capacity}"
+            );
         }
     }
 
@@ -826,7 +886,12 @@ mod tests {
     fn the_plant_survives_the_magnitudes_a_lan_actually_produces() {
         let plant = Plant::default();
         for &es in &[1u32, 320, 22_000, 865_000_000, u32::MAX] {
-            let point = OperatingPoint { ts_kbps: es, video_es_kbps: es, audio_es_kbps: es.max(1), overhead_ms: 0 };
+            let point = OperatingPoint {
+                ts_kbps: es,
+                video_es_kbps: es,
+                audio_es_kbps: es.max(1),
+                overhead_ms: 0,
+            };
             assert!(plant.b_max_ms(&point) > 0, "es={es}");
             let trace = Trace::new(&[(600.0, u32::MAX)]);
             let (mut now, mut buf) = (0, 0);
@@ -838,7 +903,10 @@ mod tests {
     /// INTEGRATION: a normative run REFUSES a rung nobody measured.
     #[test]
     fn an_uncalibrated_rung_stops_the_run_instead_of_being_invented() {
-        assert!(Calibration::point(14_000).is_none(), "14000 was never measured");
+        assert!(
+            Calibration::point(14_000).is_none(),
+            "14000 was never measured"
+        );
         let plant = Plant::default();
         let trace = Trace::new(&[(30.0, 40_000)]);
         let mut c = Controller::starting_at(Rung::P1080M14, None, cat());
@@ -866,9 +934,16 @@ mod tests {
     /// INTEGRATION: with every leg supplied the loop closes and is deterministic.
     #[test]
     fn the_loop_closes_and_is_deterministic_on_a_fully_specified_model() {
-        let leg = TransactionCost { control_plane_ms: 300, warmup_acq_ms: 900, graded_acq_ms: 700 };
+        let leg = TransactionCost {
+            control_plane_ms: 300,
+            warmup_acq_ms: 900,
+            graded_acq_ms: 700,
+        };
         let tx = TransactionModel {
-            up_commit: Some(leg), up_reject: Some(leg), down_commit: Some(leg), down_reject: Some(leg),
+            up_commit: Some(leg),
+            up_reject: Some(leg),
+            down_commit: Some(leg),
+            down_reject: Some(leg),
         };
         let plant = Plant::default();
         let trace = Trace::new(&[(200.0, 60_000)]);
@@ -882,14 +957,17 @@ mod tests {
         assert!(ra.min_buf_ms() >= 0 && ra.final_rung_kbps() > 0);
         // The three fields a device trace is compared against: time advances, the trace is
         // followed, and the TS rate carried is the calibrated one rather than a catalog entry.
-        assert!(ra.samples.windows(2).all(|w| w[1].at_ms > w[0].at_ms), "time went backwards");
+        assert!(
+            ra.samples.windows(2).all(|w| w[1].at_ms > w[0].at_ms),
+            "time went backwards"
+        );
         assert!(ra.samples.iter().all(|s| s.capacity_kbps == 60_000));
         // Every sample carries the CALIBRATED transport rate of the rung it was taken at — never
         // the catalog's request rate, which is 92% low at P480 and 8.4% high at P1080High.
         assert!(
-            ra.samples.iter().all(|s| {
-                Calibration::point(s.rung_kbps).map(|p| p.ts_kbps) == Some(s.ts_kbps)
-            }),
+            ra.samples
+                .iter()
+                .all(|s| { Calibration::point(s.rung_kbps).map(|p| p.ts_kbps) == Some(s.ts_kbps) }),
             "a sample carried a rate that is not its rung's calibrated one",
         );
     }
@@ -950,8 +1028,16 @@ mod tests {
             ("flat-modest", &[(240.0, 6_000)], 6_000),
             ("slow-start", &[(60.0, 1_000), (240.0, 6_000)], 6_000),
             ("step-down", &[(120.0, 6_000), (300.0, 1_000)], 1_000),
-            ("oscillating-low",
-             &[(60.0, 6_000), (120.0, 1_200), (180.0, 6_000), (300.0, 1_200)], 1_200),
+            (
+                "oscillating-low",
+                &[
+                    (60.0, 6_000),
+                    (120.0, 1_200),
+                    (180.0, 6_000),
+                    (300.0, 1_200),
+                ],
+                1_200,
+            ),
             ("flat-fast", &[(240.0, 60_000)], 60_000),
         ];
         // **Cells the census cannot grade are LISTED, never silently dropped.** Seven of thirteen
@@ -968,8 +1054,8 @@ mod tests {
             // on a real playback too, so this is the configuration the device runs rather than a
             // convenience — and without it three of five cells climb to rung 22000, which no
             // census has ever reached and which the plant rightly refuses to invent.
-            let catalog = super::super::HlsActuatorCatalog::measured()
-                .limited_to((3840, 2176), (1920, 1080));
+            let catalog =
+                super::super::HlsActuatorCatalog::measured().limited_to((3840, 2176), (1920, 1080));
             let mut controller = Controller::starting_at(Rung::P480, None, catalog);
             let report = match run(&plant, &trace, &mut controller, &tx) {
                 Ok(report) => report,
@@ -981,14 +1067,21 @@ mod tests {
             };
             graded += 1;
             let warm = warm_index(&report, &plant);
-            assert!(warm < report.samples.len(), "{name}: the reserve never reached one segment");
+            assert!(
+                warm < report.samples.len(),
+                "{name}: the reserve never reached one segment"
+            );
 
             let after: i64 = report.samples[warm..].iter().map(|s| s.stall_ms).sum();
             if after != 0 {
                 // A bare count says a rebuffer happened; it does not say whether the controller
                 // over-committed, the plant over-charged, or the link genuinely could not carry the
                 // rung. Print the neighbourhood so the failure is a diagnosis.
-                let first = report.samples[warm..].iter().position(|s| s.stall_ms > 0).unwrap() + warm;
+                let first = report.samples[warm..]
+                    .iter()
+                    .position(|s| s.stall_ms > 0)
+                    .unwrap()
+                    + warm;
                 let lo = first.saturating_sub(3);
                 let window: Vec<String> = report.samples[lo..(first + 2).min(report.samples.len())]
                     .iter()
@@ -1000,7 +1093,10 @@ mod tests {
                 panic!(
                     "{name}: {after}ms of rebuffer after warm-up (first at sample {first}); \
                      primes={} rejects={} commits={:?}{}",
-                    report.primes, report.rejects, report.commits, window.concat(),
+                    report.primes,
+                    report.rejects,
+                    report.commits,
+                    window.concat(),
                 );
             }
 
@@ -1010,7 +1106,9 @@ mod tests {
             );
 
             let settled = report.final_rung_kbps();
-            let ts = Calibration::point(settled).expect("run only visits calibrated rungs").ts_kbps;
+            let ts = Calibration::point(settled)
+                .expect("run only visits calibrated rungs")
+                .ts_kbps;
             let tail = &report.samples[report.samples.len().saturating_sub(3)..];
             assert!(
                 ts <= final_capacity,
@@ -1020,8 +1118,10 @@ mod tests {
                 report.primes,
                 report.rejects,
                 tail.iter()
-                    .map(|s| format!("[t={}ms rung={} cap={} buf={}ms stall={}ms]",
-                                     s.at_ms, s.rung_kbps, s.capacity_kbps, s.buf_ms, s.stall_ms))
+                    .map(|s| format!(
+                        "[t={}ms rung={} cap={} buf={}ms stall={}ms]",
+                        s.at_ms, s.rung_kbps, s.capacity_kbps, s.buf_ms, s.stall_ms
+                    ))
                     .collect::<Vec<_>>()
                     .join(" "),
             );
@@ -1114,31 +1214,56 @@ mod tests {
         // conservative estimate still lags the collapse. 18000 has no pin. 3 Mbit/s keeps the whole
         // run inside 320/720/2000/4000, which is the part of the ladder the census can express.
         let trace = Trace::new(&[(20.0, 3_000), (240.0, 500)]);
-        let catalog = super::super::HlsActuatorCatalog::measured()
-            .limited_to((3840, 2176), (1920, 1080));
+        let catalog =
+            super::super::HlsActuatorCatalog::measured().limited_to((3840, 2176), (1920, 1080));
         let mut controller = Controller::starting_at(Rung::P720Low, None, catalog);
-        let report = run(&plant, &trace, &mut controller, &TransactionModel::measured())
-            .expect("the descent only visits calibrated rungs");
+        let report = run(
+            &plant,
+            &trace,
+            &mut controller,
+            &TransactionModel::measured(),
+        )
+        .expect("the descent only visits calibrated rungs");
 
-        assert_eq!(report.final_rung_kbps(), Rung::P240.kbps(), "(1) it must reach the floor");
+        assert_eq!(
+            report.final_rung_kbps(),
+            Rung::P240.kbps(),
+            "(1) it must reach the floor"
+        );
 
         // (2) Once on the floor with the collapsed link, no further interruption. Take the tail
         // strictly after the last commit, so the transaction that arrives there is not counted.
-        let landed_at = report.commits.last().map(|&(at, _)| at).expect("it commits at least once");
-        let tail: Vec<&Observed> =
-            report.samples.iter().filter(|s| s.at_ms > landed_at + plant.segment_ms).collect();
-        assert!(tail.len() >= 10, "not enough settled samples to judge: {}", tail.len());
+        let landed_at = report
+            .commits
+            .last()
+            .map(|&(at, _)| at)
+            .expect("it commits at least once");
+        let tail: Vec<&Observed> = report
+            .samples
+            .iter()
+            .filter(|s| s.at_ms > landed_at + plant.segment_ms)
+            .collect();
+        assert!(
+            tail.len() >= 10,
+            "not enough settled samples to judge: {}",
+            tail.len()
+        );
         let tail_stall: i64 = tail.iter().map(|s| s.stall_ms).sum();
         assert_eq!(
-            tail_stall, 0,
+            tail_stall,
+            0,
             "still rebuffering {tail_stall}ms on a rung the link can carry — 320 delivers {}kbps \
              into 500kbps",
             Calibration::point(320).unwrap().ts_kbps,
         );
 
         // (3) The descent terminates and never climbs back into the collapsed link.
-        let after_landing: Vec<u32> =
-            report.commits.iter().filter(|&&(at, _)| at > 20_000).map(|&(_, k)| k).collect();
+        let after_landing: Vec<u32> = report
+            .commits
+            .iter()
+            .filter(|&&(at, _)| at > 20_000)
+            .map(|&(_, k)| k)
+            .collect();
         assert!(
             after_landing.windows(2).all(|w| w[1] <= w[0]),
             "the controller climbed back into a collapsed link: {after_landing:?}",
@@ -1161,12 +1286,23 @@ mod tests {
         // soon as the cold-start decision was corrected.
         let catalog = cat().limited_to((3840, 2176), (1280, 720));
         let mut controller = Controller::starting_at(Rung::P480, None, catalog);
-        let report = run(&plant, &trace, &mut controller, &TransactionModel::measured())
-            .expect("calibrated");
-        assert_eq!(report.final_rung_kbps(), Rung::P240.kbps(), "the floor is where it belongs");
-        assert!(report.stall_ms_total > 0, "a link under the floor MUST stall; hiding that is worse");
+        let report = run(
+            &plant,
+            &trace,
+            &mut controller,
+            &TransactionModel::measured(),
+        )
+        .expect("calibrated");
+        assert_eq!(
+            report.final_rung_kbps(),
+            Rung::P240.kbps(),
+            "the floor is where it belongs"
+        );
+        assert!(
+            report.stall_ms_total > 0,
+            "a link under the floor MUST stall; hiding that is worse"
+        );
     }
-
 
     /// Plan I3: the first segment has only one segment of reserve, so the old `starving()` rule
     /// proposed a downshift on every link, including this 400 Mbit/s one. The structural
@@ -1179,13 +1315,23 @@ mod tests {
         let point = p720();
         let (mut now, mut buf) = (0, 0);
         let (o, sample) = step(&plant, &trace, &point, &mut now, &mut buf, 720);
-        assert!(o.buf_ms <= plant.segment_ms, "one segment in, the reserve is one segment");
+        assert!(
+            o.buf_ms <= plant.segment_ms,
+            "one segment in, the reserve is one segment"
+        );
         let mut c = Controller::starting_at(Rung::P480, None, cat());
         let decision = c.observe_next(sample);
-        assert_eq!(decision, Decision::Stay, "a cold start on a fast link must hold its rung");
+        assert_eq!(
+            decision,
+            Decision::Stay,
+            "a cold start on a fast link must hold its rung"
+        );
         println!(
             "CHARACTERISATION first-segment: buf={}ms acquire={}ms prod={}pm decision={:?}",
-            o.buf_ms, o.acquire_ms, sample.production_ratio_pm(), decision,
+            o.buf_ms,
+            o.acquire_ms,
+            sample.production_ratio_pm(),
+            decision,
         );
     }
 }

@@ -145,7 +145,7 @@ One surface, one region, only the cadence moving (a 608x396 panel, region 452,00
 |---|---|---|
 | never (captured once, then reused) | **60** | fits (≤7.8 ms) |
 | every 6th frame | **52** | 10.4 ms |
-| every 3rd frame (what ships) | **45** | 13.4 ms |
+| every 3rd frame (historical experiment) | **45** | 13.4 ms |
 | every 2nd frame | **40** | 16.1 ms |
 | every frame | **47** | 12.4 ms |
 
@@ -162,7 +162,7 @@ One surface, one region, only the cadence moving (a 608x396 panel, region 452,00
 average number of slots a frame needs — and **a slot is charged whole**, so a refresh that overruns
 by a little costs the same as one that overruns by a lot.
 
-At the shipped every-third-frame cadence that gives an exact law: two light frames of one slot each
+At the measured every-third-frame cadence that gives an exact law: two light frames of one slot each
 plus one refresh frame of **N** slots, so `fps = 60 x 3 / (2 + N)`. **Every glass measurement in this
 document lands on an integer N**, with no exceptions and nothing in between:
 
@@ -467,7 +467,7 @@ is set by the enclosure rather than by the renderer.
 * Within each 2-minute run the drift (last third minus first third) was **0.00 to 0.50 fps** on
   every configuration, loaded and unloaded alike. Nothing decays.
 * The same configurations reproduce across runs taken 40 minutes apart: 608x396 glass at the
-  shipped cadence measured 45 fps in five separate legs, and the control read 60 in six.
+  then-shipped period-3 cadence measured 45 fps in five separate legs, and the control read 60 in six.
 
 **Where the 50 came from.** Turning on the GPU counter profiler drops the *control* leg from 60 fps
 to 45 and compresses every leg toward the middle — it inserts a full pipeline drain at each frame
@@ -702,7 +702,7 @@ configuration saw the same moving underlay and presented continuously.
 for a capture, `1:3` rides a real route change, `2:3` gives the upper surface its own cache). Both
 triggers are absent from a `RELEASE=1` build.
 
-**Reproducibility.** The control read 60 fps in six independent legs. 608x396 glass at the shipped
+**Reproducibility.** The control read 60 fps in six independent legs. 608x396 glass at the measured
 cadence read 45 fps in five. The area curve reproduced identically — 60/45/36/24/19/19 — in two
 separate runs eight minutes apart, one of them additionally instrumented with the frame-drop
 detector. Within-leg spread was 0–1 fps on almost every configuration, and per-leg drift (last third

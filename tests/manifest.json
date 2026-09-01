@@ -197,6 +197,65 @@
       "_fps_floor_note": "Graded on the MEDIAN, not the min: navosc reverses every 1400ms of which only the 70+140ms dip is motion, so a 1s heartbeat window can land wholly inside the settled gap and read 0 with a perfectly healthy fade (measured: min=0, median=15). A FROZEN fade reads ~1/s — the keepalive alone — so 8 separates them by a wide margin. This is the scene that proves ui/xfade.rs reports at all: navosc calls nav_open/nav_back DIRECTLY, with no SDL event and no press spring to accidentally cover the ramp."
     },
     {
+      "name": "settings-root",
+      "tier": "ui",
+      "route": "home",
+      "overlay": "settings",
+      "loop_floor": 50,
+      "fps_floor": 50,
+      "run_secs": 18,
+      "warmup_s": 5,
+      "triggers": {
+        "plxnative-settings": "root",
+        "plxnative-settingsosc": true
+      },
+      "comment": "The Settings root over the live Home snapshot. settingsosc alternates the first two real rows and keeps the present gate continuously awake, so fps= measures the modal composition's render throughput rather than the brief duty cycle of one focus spring. Both loop= liveness and actual presented fps= must stay at or above 50/s."
+    },
+    {
+      "name": "settings-privacy",
+      "tier": "ui",
+      "route": "home",
+      "overlay": "privacy",
+      "loop_floor": 50,
+      "fps_floor": 50,
+      "run_secs": 18,
+      "warmup_s": 5,
+      "triggers": {
+        "plxnative-settings": "privacy",
+        "plxnative-settingsosc": true
+      },
+      "comment": "The Privacy editor opened through Settings, with the Settings root still beneath it exactly as in the interactive modal stack. The continuous test oscillator grades the full composition at a strict 50 presented frames/s floor."
+    },
+    {
+      "name": "settings-legal",
+      "tier": "ui",
+      "route": "home",
+      "overlay": "legal",
+      "loop_floor": 50,
+      "fps_floor": 50,
+      "run_secs": 18,
+      "warmup_s": 5,
+      "triggers": {
+        "plxnative-settings": "legal",
+        "plxnative-settingsosc": true
+      },
+      "comment": "The Legal master/detail reader opened through Settings. Focus alternates in the real master list while continuous invalidation exposes the cost of the wide prose panel and its modal underlay; actual fps=, not merely loop=, is required to remain at least 50/s."
+    },
+    {
+      "name": "settings-idle",
+      "tier": "ui",
+      "route": "home",
+      "overlay": "settings",
+      "loop_floor": 50,
+      "fps_ceiling": 5,
+      "run_secs": 22,
+      "warmup_s": 8,
+      "triggers": {
+        "plxnative-settings": "root"
+      },
+      "comment": "The inverse guard for settings-root. With no oscillator, the modal's appear and focus springs must settle and ui::idle must reduce swaps to the keepalive (allowing one late Home artwork wake), while the event loop remains responsive at 50/s. Together the active and idle scenes prevent passing the 50 fps gate by either freezing the screen or repainting forever."
+    },
+    {
       "name": "info-panel",
       "tier": "player",
       "route": "player",

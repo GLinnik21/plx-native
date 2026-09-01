@@ -235,10 +235,26 @@ mod tests {
         assert!((p.end - 30.0120).abs() < 0.001, "end circle: {}", p.end);
         assert!((p.big - 73_197.914).abs() < 1.0, "big arc: {}", p.big);
         assert!((p.blend - 1482.1659).abs() < 0.05, "blend: {}", p.blend);
-        assert!((p.big_cy - 73_167.414).abs() < 1.0, "big centre: {}", p.big_cy);
-        assert!((p.end_cx - 99.9880).abs() < 0.001, "end centre: {}", p.end_cx);
-        assert!((p.blend_c.0 - 63.4423).abs() < 0.05, "blend centre x: {}", p.blend_c.0);
-        assert!((p.blend_c.1 - 1451.6940).abs() < 0.05, "blend centre y: {}", p.blend_c.1);
+        assert!(
+            (p.big_cy - 73_167.414).abs() < 1.0,
+            "big centre: {}",
+            p.big_cy
+        );
+        assert!(
+            (p.end_cx - 99.9880).abs() < 0.001,
+            "end centre: {}",
+            p.end_cx
+        );
+        assert!(
+            (p.blend_c.0 - 63.4423).abs() < 0.05,
+            "blend centre x: {}",
+            p.blend_c.0
+        );
+        assert!(
+            (p.blend_c.1 - 1451.6940).abs() < 0.05,
+            "blend centre y: {}",
+            p.blend_c.1
+        );
         // and the rule that fixes it: the blend is the GEOMETRIC MEAN of the two arcs it joins, so
         // the curvature falls by the same factor twice (×49.4 and ×49.4 here).
         assert!((p.blend * p.blend - p.big * p.end).abs() / (p.big * p.end) < 1e-4);
@@ -252,7 +268,11 @@ mod tests {
     fn the_box_carries_the_deficit_so_the_ends_are_the_stated_height() {
         assert!((box_h(60.0) - 60.9756).abs() < 0.001, "{}", box_h(60.0));
         let p = solve(W, box_h(60.0)).unwrap();
-        assert!((p.end * 2.0 - 60.0).abs() < 0.01, "the drawn end IS the optical height: {}", p.end * 2.0);
+        assert!(
+            (p.end * 2.0 - 60.0).abs() < 0.01,
+            "the drawn end IS the optical height: {}",
+            p.end * 2.0
+        );
     }
 
     /// **The pop scales the outline instead of re-solving it**, which is only sound because the
@@ -267,7 +287,12 @@ mod tests {
         for i in 0..200 {
             let ang = i as f32 / 200.0 * std::f32::consts::TAU;
             let q = (ang.cos() * W * 0.5 * s, ang.sin() * H * 0.5 * s);
-            assert!((a.sd(q) - b.sd(q)).abs() < 0.01, "at {q:?}: {} vs {}", a.sd(q), b.sd(q));
+            assert!(
+                (a.sd(q) - b.sd(q)).abs() < 0.01,
+                "at {q:?}: {} vs {}",
+                a.sd(q),
+                b.sd(q)
+            );
         }
     }
 
@@ -300,7 +325,11 @@ mod tests {
         let p = solve(W, H).unwrap();
         let (half, b) = (W * 0.5, H * 0.5);
         for apex in [(half, 0.0), (-half, 0.0), (0.0, -b), (0.0, b)] {
-            assert!(p.sd(apex).abs() < 0.01, "apex {apex:?} is on the outline: {}", p.sd(apex));
+            assert!(
+                p.sd(apex).abs() < 0.01,
+                "apex {apex:?} is on the outline: {}",
+                p.sd(apex)
+            );
         }
         for i in 0..=200 {
             let x = -half + W * i as f32 / 200.0;
@@ -309,7 +338,10 @@ mod tests {
             while p.sd((x, y)) > 0.0 && y < 0.0 {
                 y += 0.01;
             }
-            assert!(y >= -b - 0.02, "the outline never rises above the box: {y} at x={x}");
+            assert!(
+                y >= -b - 0.02,
+                "the outline never rises above the box: {y} at x={x}"
+            );
         }
     }
 

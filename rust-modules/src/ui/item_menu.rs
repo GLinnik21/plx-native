@@ -232,11 +232,20 @@ pub(crate) fn item() -> Option<&'static PmsMovie> {
 /// choreography — anchor fallback, compact rows, selection reset, the appear spring — is written
 /// once and cannot drift between the screens the menu serves.
 fn present((rows, a): (Section, Vec<Option<Action>>), opener: Opener) {
-    let fallback =
-        Rect::new((SCR_W - CARD_W) * 0.5 - PANEL_W * 0.5, (SCR_H - CARD_H) * 0.5, CARD_W, CARD_H);
+    let fallback = Rect::new(
+        (SCR_W - CARD_W) * 0.5 - PANEL_W * 0.5,
+        (SCR_H - CARD_H) * 0.5,
+        CARD_W,
+        CARD_H,
+    );
     // The fallback is resolved HERE, once, so `panel_rect` (asked three times a frame) is a pure
     // read and the panel cannot drift if a host's rect stops resolving while the menu is up.
-    unsafe { *addr_of_mut!(OPENER) = Opener { rect: Some(opener.rect.unwrap_or(fallback)), ..opener } };
+    unsafe {
+        *addr_of_mut!(OPENER) = Opener {
+            rect: Some(opener.rect.unwrap_or(fallback)),
+            ..opener
+        }
+    };
     *acts() = a;
     table().compact = true; // a short list of one-line actions — BODY labels, not menu-size HEADLINE
     table().set_sections(vec![rows], 0, false);
@@ -264,15 +273,27 @@ fn build(m: &PmsMovie, from_deck: bool) -> (Section, Vec<Option<Action>>) {
     let mut nav: Vec<(&str, Icon, Action)> = Vec::new();
     match m.kind {
         3 => {
-            nav.push(("Go to Episode", Icon::Episode, Action::GoToItem(m.rk.clone())));
+            nav.push((
+                "Go to Episode",
+                Icon::Episode,
+                Action::GoToItem(m.rk.clone()),
+            ));
             if !m.show_rk.is_empty() {
-                nav.push(("Go to Show", Icon::Show, Action::GoToShow(m.show_rk.clone(), m.season_index)));
+                nav.push((
+                    "Go to Show",
+                    Icon::Show,
+                    Action::GoToShow(m.show_rk.clone(), m.season_index),
+                ));
             }
         }
         // a season has no page of its own — it IS the show page with that season selected, so one
         // row covers it; a show's own page is likewise the only navigation it has
         2 if !m.show_rk.is_empty() => {
-            nav.push(("Go to Season", Icon::Show, Action::GoToShow(m.show_rk.clone(), m.season_index)));
+            nav.push((
+                "Go to Season",
+                Icon::Show,
+                Action::GoToShow(m.show_rk.clone(), m.season_index),
+            ));
         }
         2 => {}
         1 => nav.push(("Go to Show", Icon::Show, Action::GoToShow(m.rk.clone(), 0))),
@@ -299,7 +320,13 @@ fn build(m: &PmsMovie, from_deck: bool) -> (Section, Vec<Option<Action>>) {
     // it said a show/season "cannot distinguish part-watched from fully-watched" and so kept a
     // one-way row, which stopped being true when `PmsMovie::watched` gained its strict
     // `viewedLeafCount >= leafCount` rule.
-    let mut sec = state_rows(sec, &mut acts, &m.rk, crate::ui::widgets::row_watch_state(m), leaf);
+    let mut sec = state_rows(
+        sec,
+        &mut acts,
+        &m.rk,
+        crate::ui::widgets::row_watch_state(m),
+        leaf,
+    );
 
     // ---- and, only on a Continue Watching card, the row that takes it off the deck ----
     // Gated on the SHELF, not on the item: the action is meaningless anywhere else (nothing to
@@ -368,14 +395,21 @@ const ACTS_PARALLEL: &str = "ACTS must stay one-to-one with the rows: a row with
 /// an action's glyph, while a switch says what it is set to in words at the far edge. The hero's
 /// discs take the BARE glyph for the other half of that same rule (a control that IS a circle needs
 /// no drawn disc), and the two are deliberately not unified.
-fn state_rows(sec: Section, acts: &mut Vec<Option<Action>>, rk: &str, mark: PosterMark, leaf: bool) -> Section {
+fn state_rows(
+    sec: Section,
+    acts: &mut Vec<Option<Action>>,
+    rk: &str,
+    mark: PosterMark,
+    leaf: bool,
+) -> Section {
     let mut sec = sec;
     if mark != PosterMark::Watched {
         sec = sec.row(Row::new(crate::ui::widgets::MARK_WATCHED_VERB).licon(Icon::CheckCircleFill));
         acts.push(Some(Action::MarkWatched(rk.to_string())));
     }
     if mark != PosterMark::None {
-        sec = sec.row(Row::new(crate::ui::widgets::MARK_UNWATCHED_VERB).licon(Icon::MinusCircleFill));
+        sec =
+            sec.row(Row::new(crate::ui::widgets::MARK_UNWATCHED_VERB).licon(Icon::MinusCircleFill));
         acts.push(Some(Action::MarkUnwatched(rk.to_string())));
     }
     if leaf {
@@ -442,7 +476,11 @@ pub(crate) fn move_focus(sym: c_int) {
 pub(crate) fn on_ok() -> Action {
     let sel = table().sel;
     close();
-    acts().get(sel.max(0) as usize).cloned().flatten().unwrap_or(Action::None)
+    acts()
+        .get(sel.max(0) as usize)
+        .cloned()
+        .flatten()
+        .unwrap_or(Action::None)
 }
 
 /// Pointer hover: focus follows the cursor over the popover rows.
@@ -476,7 +514,11 @@ pub(crate) fn click(mx: f32, my: f32) -> Action {
 fn panel_at(a: Rect, content_h: f32) -> Rect {
     let h = content_h.clamp(120.0, SCR_H - 2.0 * EDGE); // same floor the profile popover uses
     let right = a.x + a.w + CARD_GAP;
-    let x = if right + PANEL_W <= SCR_W - EDGE_X { right } else { a.x - CARD_GAP - PANEL_W };
+    let x = if right + PANEL_W <= SCR_W - EDGE_X {
+        right
+    } else {
+        a.x - CARD_GAP - PANEL_W
+    };
     let x = x.clamp(EDGE_X, (SCR_W - EDGE_X - PANEL_W).max(EDGE_X));
     let y = a.y.clamp(EDGE, (SCR_H - EDGE - h).max(EDGE));
     Rect::new(x, y, PANEL_W, h)
@@ -559,16 +601,32 @@ mod tests {
             }
             PosterMark::InProgress => {} // a container: neither end
         }
-        assert_eq!(crate::ui::widgets::row_watch_state(&m), mark, "the fixture must build the state it names");
+        assert_eq!(
+            crate::ui::widgets::row_watch_state(&m),
+            mark,
+            "the fixture must build the state it names"
+        );
         m
     }
     fn labels(sec: &Section) -> Vec<String> {
-        sec.rows.iter().map(|r| if r.sep { "—".to_string() } else { r.label.clone() }).collect()
+        sec.rows
+            .iter()
+            .map(|r| {
+                if r.sep {
+                    "—".to_string()
+                } else {
+                    r.label.clone()
+                }
+            })
+            .collect()
     }
     /// The write each row commits, paired with its label — the projection every row-set assertion
     /// below is really about, since a label and its verb living in two places is the bug this
     /// module's `Action` split closed.
-    fn verbs(sec: &Section, acts: &[Option<Action>]) -> Vec<(String, Option<crate::viewstate::Write>)> {
+    fn verbs(
+        sec: &Section,
+        acts: &[Option<Action>],
+    ) -> Vec<(String, Option<crate::viewstate::Write>)> {
         labels(sec)
             .into_iter()
             .zip(acts.iter())
@@ -581,11 +639,21 @@ mod tests {
         let (sec, acts) = build(&item(3, PosterMark::None), false);
         assert_eq!(
             labels(&sec),
-            ["Go to Episode", "Go to Show", "—", "Mark as Watched", "Play from Start"]
+            [
+                "Go to Episode",
+                "Go to Show",
+                "—",
+                "Mark as Watched",
+                "Play from Start"
+            ]
         );
         // the separator carries no action, every other row does
         assert!(acts[2].is_none());
-        assert!(acts.iter().enumerate().filter(|(i, _)| *i != 2).all(|(_, a)| a.is_some()));
+        assert!(acts
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != 2)
+            .all(|(_, a)| a.is_some()));
         // "Go to Show" targets the SHOW rk + the episode's season, not the episode
         match acts[1].as_ref().unwrap() {
             Action::GoToShow(rk, season) => assert_eq!((rk.as_str(), *season), ("7", 3)),
@@ -596,7 +664,10 @@ mod tests {
     #[test]
     fn a_watched_leaf_offers_only_the_way_back() {
         let (sec, acts) = build(&item(0, PosterMark::Watched), false); // movie, viewCount >= 1
-        assert_eq!(labels(&sec), ["Go to Movie", "—", "Mark as Unwatched", "Play from Start"]);
+        assert_eq!(
+            labels(&sec),
+            ["Go to Movie", "—", "Mark as Unwatched", "Play from Start"]
+        );
         assert_eq!(
             acts[2].as_ref().unwrap().watch_write(),
             Some(crate::viewstate::Write::Unwatched),
@@ -612,9 +683,18 @@ mod tests {
     #[test]
     fn a_show_has_no_play_from_start_and_gets_the_pair_when_it_is_mid_run() {
         let (sec, acts) = build(&item(1, PosterMark::InProgress), false);
-        assert_eq!(labels(&sec), ["Go to Show", "—", "Mark as Watched", "Mark as Unwatched"]);
-        assert_eq!(acts[2].as_ref().unwrap().watch_write(), Some(crate::viewstate::Write::Watched));
-        assert_eq!(acts[3].as_ref().unwrap().watch_write(), Some(crate::viewstate::Write::Unwatched));
+        assert_eq!(
+            labels(&sec),
+            ["Go to Show", "—", "Mark as Watched", "Mark as Unwatched"]
+        );
+        assert_eq!(
+            acts[2].as_ref().unwrap().watch_write(),
+            Some(crate::viewstate::Write::Watched)
+        );
+        assert_eq!(
+            acts[3].as_ref().unwrap().watch_write(),
+            Some(crate::viewstate::Write::Unwatched)
+        );
 
         // a show whose every leaf is seen is DONE, and offering to mark it watched again was the
         // old row set's other wrong answer (it read `!unwatched`, which cannot tell the two apart)
@@ -632,8 +712,14 @@ mod tests {
         let mut m = item(3, PosterMark::None);
         m.show_rk.clear();
         let (sec, acts) = build(&m, false);
-        assert_eq!(labels(&sec), ["Go to Episode", "—", "Mark as Watched", "Play from Start"]);
-        assert!(acts.iter().flatten().all(|a| !matches!(a, Action::GoToShow(..))));
+        assert_eq!(
+            labels(&sec),
+            ["Go to Episode", "—", "Mark as Watched", "Play from Start"]
+        );
+        assert!(acts
+            .iter()
+            .flatten()
+            .all(|a| !matches!(a, Action::GoToShow(..))));
         // and a SEASON with no parent has no navigation at all — so no leading separator either,
         // which would otherwise open the menu with a rule above its first row
         let mut s = item(2, PosterMark::None);
@@ -653,24 +739,53 @@ mod tests {
     fn the_remove_from_deck_row_exists_only_on_a_continue_watching_card() {
         // same card, both shelves — the ONLY difference is where it was focused
         let (off_deck, acts_off) = build(&item(3, PosterMark::None), false);
-        assert_eq!(labels(&off_deck), ["Go to Episode", "Go to Show", "—", "Mark as Watched", "Play from Start"]);
+        assert_eq!(
+            labels(&off_deck),
+            [
+                "Go to Episode",
+                "Go to Show",
+                "—",
+                "Mark as Watched",
+                "Play from Start"
+            ]
+        );
         assert!(
-            !acts_off.iter().flatten().any(|a| matches!(a, Action::RemoveFromDeck(_))),
+            !acts_off
+                .iter()
+                .flatten()
+                .any(|a| matches!(a, Action::RemoveFromDeck(_))),
             "a card off the deck must not offer to remove it from one"
         );
 
         let (on_deck, acts_on) = build(&item(3, PosterMark::None), true);
         assert_eq!(
             labels(&on_deck),
-            ["Go to Episode", "Go to Show", "—", "Mark as Watched", "Play from Start", "Remove from Deck"],
+            [
+                "Go to Episode",
+                "Go to Show",
+                "—",
+                "Mark as Watched",
+                "Play from Start",
+                "Remove from Deck"
+            ],
             "…and on the deck it is the LAST row, after the watched toggle"
         );
-        match acts_on.last().expect("a trailing action").as_ref().expect("not a separator") {
-            Action::RemoveFromDeck(rk) => assert_eq!(rk, "42", "…carrying the card's own ratingKey"),
+        match acts_on
+            .last()
+            .expect("a trailing action")
+            .as_ref()
+            .expect("not a separator")
+        {
+            Action::RemoveFromDeck(rk) => {
+                assert_eq!(rk, "42", "…carrying the card's own ratingKey")
+            }
             _ => panic!("the last row must be the deck removal"),
         }
         // it is an ADDITION to the group, not a replacement — the watch-state row is still there
-        assert!(acts_on.iter().flatten().any(|a| matches!(a, Action::MarkWatched(_))));
+        assert!(acts_on
+            .iter()
+            .flatten()
+            .any(|a| matches!(a, Action::MarkWatched(_))));
     }
 
     /// The detail page's filmstrip menu: the state rows, no navigation group, and therefore no
@@ -681,7 +796,10 @@ mod tests {
     fn the_filmstrip_menu_is_the_state_group_alone() {
         let (sec, acts) = build_episode("42", PosterMark::None);
         assert_eq!(labels(&sec), ["Mark as Watched", "Play from Start"]);
-        assert!(acts.iter().all(|a| a.is_some()), "no separator, so every row acts");
+        assert!(
+            acts.iter().all(|a| a.is_some()),
+            "no separator, so every row acts"
+        );
         // the shelf menu's episode rows END with exactly these two, in this order
         let (shelf, _) = build(&item(3, PosterMark::None), false);
         assert_eq!(labels(&sec), labels(&shelf)[shelf.rows.len() - 2..]);
@@ -700,7 +818,10 @@ mod tests {
         }
         // and nothing navigates: both rows the shelf menu offers an episode are dead ends from the
         // page that episode already belongs to
-        assert!(!acts.iter().flatten().any(|a| matches!(a, Action::GoToShow(..) | Action::GoToItem(_))));
+        assert!(!acts
+            .iter()
+            .flatten()
+            .any(|a| matches!(a, Action::GoToShow(..) | Action::GoToItem(_))));
     }
 
     /// **The owner-reported gap, at both entry points.** An item in the MIDDLE is at neither end of
@@ -717,18 +838,36 @@ mod tests {
             let (sec, _) = build(&item(3, mark), false);
             labels(&sec).split_off(3) // past "Go to Episode", "Go to Show", the separator
         };
-        assert_eq!(tail(PosterMark::None), ["Mark as Watched", "Play from Start"]);
-        assert_eq!(tail(PosterMark::InProgress), ["Mark as Watched", "Mark as Unwatched", "Play from Start"]);
-        assert_eq!(tail(PosterMark::Watched), ["Mark as Unwatched", "Play from Start"]);
+        assert_eq!(
+            tail(PosterMark::None),
+            ["Mark as Watched", "Play from Start"]
+        );
+        assert_eq!(
+            tail(PosterMark::InProgress),
+            ["Mark as Watched", "Mark as Unwatched", "Play from Start"]
+        );
+        assert_eq!(
+            tail(PosterMark::Watched),
+            ["Mark as Unwatched", "Play from Start"]
+        );
 
         // …and the detail page's filmstrip, off the same builder, so the two cannot drift
         let strip = |mark| {
             let (sec, _) = build_episode("42", mark);
             labels(&sec)
         };
-        assert_eq!(strip(PosterMark::None), ["Mark as Watched", "Play from Start"]);
-        assert_eq!(strip(PosterMark::InProgress), ["Mark as Watched", "Mark as Unwatched", "Play from Start"]);
-        assert_eq!(strip(PosterMark::Watched), ["Mark as Unwatched", "Play from Start"]);
+        assert_eq!(
+            strip(PosterMark::None),
+            ["Mark as Watched", "Play from Start"]
+        );
+        assert_eq!(
+            strip(PosterMark::InProgress),
+            ["Mark as Watched", "Mark as Unwatched", "Play from Start"]
+        );
+        assert_eq!(
+            strip(PosterMark::Watched),
+            ["Mark as Unwatched", "Play from Start"]
+        );
     }
 
     /// **A RELATED tile gets the same three-state row set as every other card**, built from a row
@@ -755,13 +894,17 @@ mod tests {
     fn a_related_tile_off_the_wire_gets_the_row_set_its_state_earns() {
         let row = |json: &str| {
             let body = format!(r#"{{"MediaContainer":{{"Hub":[{{"Metadata":[{json}]}}]}}}}"#);
-            let mc = serde_json::from_str::<crate::plex::Envelope>(&body).expect("parses").media_container;
+            let mc = serde_json::from_str::<crate::plex::Envelope>(&body)
+                .expect("parses")
+                .media_container;
             crate::pms::parse_item(&mc.hub[0].metadata[0], crate::plex::ServerId::UNSET)
         };
         let set = |json: &str| labels(&build(&row(json), false).0);
 
         // a MOVIE, in each of the three states — one navigation row, then the state group
-        let movie = |extra: &str| format!(r#"{{"ratingKey":"11","type":"movie","duration":"7020000"{extra}}}"#);
+        let movie = |extra: &str| {
+            format!(r#"{{"ratingKey":"11","type":"movie","duration":"7020000"{extra}}}"#)
+        };
         assert_eq!(
             set(&movie("")),
             ["Go to Movie", "—", "Mark as Watched", "Play from Start"],
@@ -769,7 +912,13 @@ mod tests {
         );
         assert_eq!(
             set(&movie(r#","viewOffset":"3510000""#)),
-            ["Go to Movie", "—", "Mark as Watched", "Mark as Unwatched", "Play from Start"],
+            [
+                "Go to Movie",
+                "—",
+                "Mark as Watched",
+                "Mark as Unwatched",
+                "Play from Start"
+            ],
             "part-watched: both ends are reachable and both are true"
         );
         assert_eq!(
@@ -779,14 +928,23 @@ mod tests {
         );
 
         // a SHOW — a container, so no Play from Start, and its middle state is the leaf-count one
-        let show = |extra: &str| format!(r#"{{"ratingKey":"14","type":"show","leafCount":10{extra}}}"#);
-        assert_eq!(set(&show("")), ["Go to Show", "—", "Mark as Watched"], "no leaf viewed");
+        let show =
+            |extra: &str| format!(r#"{{"ratingKey":"14","type":"show","leafCount":10{extra}}}"#);
+        assert_eq!(
+            set(&show("")),
+            ["Go to Show", "—", "Mark as Watched"],
+            "no leaf viewed"
+        );
         assert_eq!(
             set(&show(r#","viewedLeafCount":3"#)),
             ["Go to Show", "—", "Mark as Watched", "Mark as Unwatched"],
             "3 of 10: neither watched nor unwatched, so BOTH verbs — the case `viewCount > 0` misses"
         );
-        assert_eq!(set(&show(r#","viewedLeafCount":10"#)), ["Go to Show", "—", "Mark as Unwatched"], "all 10");
+        assert_eq!(
+            set(&show(r#","viewedLeafCount":10"#)),
+            ["Go to Show", "—", "Mark as Unwatched"],
+            "all 10"
+        );
 
         // and no Related row offers the deck action: that shelf is not the Continue Watching deck
         let (sec, acts) = build(&row(&movie("")), false);
@@ -806,7 +964,11 @@ mod tests {
             "Mark as Unwatched" => Some(Write::Unwatched),
             _ => None, // navigation, the separator, Play from Start, Remove from Deck
         };
-        for mark in [PosterMark::None, PosterMark::InProgress, PosterMark::Watched] {
+        for mark in [
+            PosterMark::None,
+            PosterMark::InProgress,
+            PosterMark::Watched,
+        ] {
             for kind in [0, 1, 2, 3] {
                 for deck in [false, true] {
                     let (sec, acts) = build(&item(kind, mark), deck);
@@ -828,11 +990,19 @@ mod tests {
     /// own `debug_assert` covers this for every case a test builds; this states it as the property.
     #[test]
     fn the_action_vector_grows_with_the_conditional_rows() {
-        for mark in [PosterMark::None, PosterMark::InProgress, PosterMark::Watched] {
+        for mark in [
+            PosterMark::None,
+            PosterMark::InProgress,
+            PosterMark::Watched,
+        ] {
             for kind in [0, 1, 2, 3] {
                 for deck in [false, true] {
                     let (sec, acts) = build(&item(kind, mark), deck);
-                    assert_eq!(acts.len(), sec.rows.len(), "kind {kind}, {mark:?}, deck {deck}");
+                    assert_eq!(
+                        acts.len(),
+                        sec.rows.len(),
+                        "kind {kind}, {mark:?}, deck {deck}"
+                    );
                 }
             }
             let (sec, acts) = build_episode("42", mark);
@@ -900,36 +1070,70 @@ mod tests {
         let carried = super::item().expect("the row the popover is about");
         assert_eq!(carried.rk, "42");
         assert_eq!(
-            carried.part,
-            "/library/parts/42/file.mkv",
+            carried.part, "/library/parts/42/file.mkv",
             "the WHOLE row — a key alone cannot start playback"
         );
-        assert_eq!(item_sid(), crate::plex::ServerId::from_raw(3), "…on the row's own server");
+        assert_eq!(
+            item_sid(),
+            crate::plex::ServerId::from_raw(3),
+            "…on the row's own server"
+        );
 
         close();
-        assert!(super::item().is_some(), "the drain reads it a frame after the close, like `SID`");
+        assert!(
+            super::item().is_some(),
+            "the drain reads it a frame after the close, like `SID`"
+        );
 
-        open_episode(crate::plex::ServerId::from_raw(3), "77", PosterMark::None, crate::ui::popover::Opener::NONE);
-        assert!(super::item().is_none(), "an episode menu plays through the loaded season, never a stale row");
+        open_episode(
+            crate::plex::ServerId::from_raw(3),
+            "77",
+            PosterMark::None,
+            crate::ui::popover::Opener::NONE,
+        );
+        assert!(
+            super::item().is_none(),
+            "an episode menu plays through the loaded season, never a stale row"
+        );
         close();
     }
 
     #[test]
     fn the_panel_sits_beside_the_card_and_never_leaves_the_screen() {
         let h = 5.0 * 60.0; // a five-row menu, roughly
-        // a card on the left of the shelf: the panel sits to its RIGHT, clear of the card
+                            // a card on the left of the shelf: the panel sits to its RIGHT, clear of the card
         let r = panel_at(Rect::new(MARGIN_X, 300.0, CARD_W, CARD_H), h);
-        assert!(r.x >= MARGIN_X + CARD_W, "expected the panel right of the card, got x={}", r.x);
+        assert!(
+            r.x >= MARGIN_X + CARD_W,
+            "expected the panel right of the card, got x={}",
+            r.x
+        );
         // a card at the right edge: it flips LEFT rather than running off screen — and lands clear
         // of the card it belongs to, which is the whole point of anchoring beside it
         let a = Rect::new(SCR_W - 300.0, 300.0, CARD_W, CARD_H);
         let r = panel_at(a, h);
-        assert!(r.x + r.w <= SCR_W - EDGE + 0.5, "panel ran off the right edge: x={} w={}", r.x, r.w);
-        assert!(r.x + r.w <= a.x, "flipped panel overlaps its card: x={} w={} card.x={}", r.x, r.w, a.x);
+        assert!(
+            r.x + r.w <= SCR_W - EDGE + 0.5,
+            "panel ran off the right edge: x={} w={}",
+            r.x,
+            r.w
+        );
+        assert!(
+            r.x + r.w <= a.x,
+            "flipped panel overlaps its card: x={} w={} card.x={}",
+            r.x,
+            r.w,
+            a.x
+        );
         assert!(r.x >= EDGE - 0.5);
         // a card near the bottom keeps the whole panel on screen
         let low = panel_at(Rect::new(MARGIN_X, SCR_H - 120.0, CARD_W, CARD_H), h);
-        assert!(low.y + low.h <= SCR_H - EDGE + 0.5, "panel ran off the bottom: y={} h={}", low.y, low.h);
+        assert!(
+            low.y + low.h <= SCR_H - EDGE + 0.5,
+            "panel ran off the bottom: y={} h={}",
+            low.y,
+            low.h
+        );
         assert!(low.y >= EDGE - 0.5);
 
         // …and "on screen" means inside the OVERSCAN frame, which is why the keep-out is per axis:
@@ -937,7 +1141,14 @@ mod tests {
         // anchor has no fixed rect a table could carry, so the frame is graded on its extremes here.
         let tall = panel_at(Rect::new(MARGIN_X, 300.0, CARD_W, CARD_H), 4000.0);
         for (what, p) in [("flipped", r), ("low", low), ("tall", tall)] {
-            assert!(crate::ui::consts::inside_safe(p), "the {what} panel leaves the safe area: ({}, {}) {}x{}", p.x, p.y, p.w, p.h);
+            assert!(
+                crate::ui::consts::inside_safe(p),
+                "the {what} panel leaves the safe area: ({}, {}) {}x{}",
+                p.x,
+                p.y,
+                p.w,
+                p.h
+            );
         }
     }
 }

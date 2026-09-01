@@ -61,9 +61,9 @@ impl RowStyle {
     /// Detail "Cast & Crew": circular headshots, a gentle pop, the tight strip ring. Same motion as
     /// HOME (spring magnification + scroll), so cast animates like the poster shelves.
     pub(crate) const CAST: RowStyle = RowStyle {
-        w: 190.0,          // = detail CAST_D
+        w: 190.0, // = detail CAST_D
         h: 190.0,
-        gap: 40.0,         // w+gap = 230 = detail CAST_SLOT (per-member pitch)
+        gap: 40.0, // w+gap = 230 = detail CAST_SLOT (per-member pitch)
         margin_x: MARGIN_X,
         radius: 95.0, // = w/2 (circle); draw_* recomputes per-rect anyway when `circular`
         focus_scale: 1.06,
@@ -146,19 +146,38 @@ impl CardRow {
     pub(crate) fn update(&mut self, n: usize, focused: Option<usize>, sty: &RowStyle, dt: f32) {
         self.focus = focused.map(|f| f as i32).unwrap_or(-1);
         for (i, sp) in self.scale.iter_mut().enumerate() {
-            let target = if focused == Some(i) { sty.focus_scale } else { 1.0 };
+            let target = if focused == Some(i) {
+                sty.focus_scale
+            } else {
+                1.0
+            };
             sp.step(target, sty.k_scale, dt);
         }
         // the shared overflow spring pops only while focus is actually out past the array
-        let ot = if focused.is_some_and(|f| f >= MAX_ROW_ITEMS) { sty.focus_scale } else { 1.0 };
+        let ot = if focused.is_some_and(|f| f >= MAX_ROW_ITEMS) {
+            sty.focus_scale
+        } else {
+            1.0
+        };
         self.overflow.step(ot, sty.k_scale, dt);
         if let Some(fc) = focused {
             if n > 0 {
-                let want = scroll_into_view(self.scroll_x.pos, fc, n, sty.w, sty.gap, SCR_W - 2.0 * sty.margin_x);
+                let want = scroll_into_view(
+                    self.scroll_x.pos,
+                    fc,
+                    n,
+                    sty.w,
+                    sty.gap,
+                    SCR_W - 2.0 * sty.margin_x,
+                );
                 self.scroll_x.step(want, sty.k_scroll, dt);
             }
         }
-        self.lift.step(heading_clearance(focused, sty, self.scroll_x.pos), sty.k_scale, dt);
+        self.lift.step(
+            heading_clearance(focused, sty, self.scroll_x.pos),
+            sty.k_scale,
+            dt,
+        );
     }
     /// Cell `i`'s live focus-pop scale. Cells inside the spring array own a spring each; every cell
     /// PAST it shares `overflow`, and only the focused one reads it — otherwise the whole tail of a
@@ -235,7 +254,14 @@ fn heading_clearance(focused: Option<usize>, sty: &RowStyle, scroll: f32) -> f32
 
 /// A non-focused cell body: the art tile + an optional resume bar. `rect` is the caller's
 /// already-scaled rect; `s` scales the corner radius. (The home grid's non-focused cell, verbatim.)
-pub(crate) fn draw_tile(p: Painter, art: Art, rect: Rect, s: f32, sty: &RowStyle, resume: Option<f32>) {
+pub(crate) fn draw_tile(
+    p: Painter,
+    art: Art,
+    rect: Rect,
+    s: f32,
+    sty: &RowStyle,
+    resume: Option<f32>,
+) {
     let rad = sty.tile_radius(rect, s);
     // every tile carries a resting shadow + 1px perimeter stroke, both FOLDED into card()'s single
     // composite pass; a near-neighbour mid-pop (s slightly >1) lifts smoothly toward the focused
@@ -267,15 +293,26 @@ pub(crate) struct TileLabel {
 impl TileLabel {
     /// Title only — the plain poster shelf.
     pub(crate) fn title(t: &str) -> Self {
-        TileLabel { title: std::ffi::CString::new(t).ok(), ..Default::default() }
+        TileLabel {
+            title: std::ffi::CString::new(t).ok(),
+            ..Default::default()
+        }
     }
     /// Title + a caption line; an empty caption is simply absent (never a blank row).
     pub(crate) fn titled(t: &str, caption: &str) -> Self {
-        TileLabel { caption: std::ffi::CString::new(caption).ok().filter(|_| !caption.is_empty()), ..Self::title(t) }
+        TileLabel {
+            caption: std::ffi::CString::new(caption)
+                .ok()
+                .filter(|_| !caption.is_empty()),
+            ..Self::title(t)
+        }
     }
     /// Title led by the amber play triangle — Continue Watching's focused primary line.
     pub(crate) fn played(t: &str) -> Self {
-        TileLabel { glyph: true, ..Self::title(t) }
+        TileLabel {
+            glyph: true,
+            ..Self::title(t)
+        }
     }
     /// THE height a screen must reserve under the poster row for this block, at `sty`. Derived from
     /// the same three constants [`draw_focused`] lays it out with, so a screen's declared band and
@@ -284,7 +321,11 @@ impl TileLabel {
     pub(crate) fn height(sty: &RowStyle, caption: bool) -> f32 {
         UNDER_DROP
             + sty.title_lines as f32 * UNDER_LINE_H
-            + if caption { UNDER_LINE_GAP + UNDER_CAPTION_H } else { 0.0 }
+            + if caption {
+                UNDER_LINE_GAP + UNDER_CAPTION_H
+            } else {
+                0.0
+            }
     }
     /// [`TileLabel::height`] for a block that has whatever THIS one has.
     fn own_height(&self, sty: &RowStyle) -> f32 {
@@ -325,13 +366,31 @@ pub(crate) fn draw_focused(
         } else if sty.title_lines > 1 {
             wrapped_title(p, rect, sty, t.as_ptr(), ty)
         } else {
-            under_label(p, rect, sty, t.as_ptr(), ty, theme::size::LABEL, 1, theme::TEXT_PRIMARY);
+            under_label(
+                p,
+                rect,
+                sty,
+                t.as_ptr(),
+                ty,
+                theme::size::LABEL,
+                1,
+                theme::TEXT_PRIMARY,
+            );
             UNDER_LINE_H
         };
         ty += drawn + UNDER_LINE_GAP;
     }
     if let Some(c) = &label.caption {
-        under_label(p, rect, sty, c.as_ptr(), ty, theme::size::CAPTION, 0, theme::TEXT_SECONDARY);
+        under_label(
+            p,
+            rect,
+            sty,
+            c.as_ptr(),
+            ty,
+            theme::size::CAPTION,
+            0,
+            theme::TEXT_SECONDARY,
+        );
     }
 }
 
@@ -506,7 +565,9 @@ fn play_label(p: Painter, rect: Rect, sty: &RowStyle, text: *const c_char, y: f3
     let budget = under_budget(sty) - (isz + gap);
     let s = unsafe { std::ffi::CStr::from_ptr(text) }.to_string_lossy();
     let short = crate::text::elide(&s, budget, sz, bold, false);
-    let Ok(tc) = std::ffi::CString::new(short) else { return };
+    let Ok(tc) = std::ffi::CString::new(short) else {
+        return;
+    };
     let tw = crate::text::text_width(tc.as_ptr(), sz, bold);
     let gw = isz + gap + tw;
     // The [glyph + gap + name] group as ONE block, clamped in screen space like the other two —
@@ -520,7 +581,15 @@ fn play_label(p: Painter, rect: Rect, sty: &RowStyle, text: *const c_char, y: f3
         Rect::new(gl, icy - isz * 0.5, isz, isz),
         theme::RESUME_FILL,
     );
-    p.text(tc.as_ptr(), gl + isz + gap, y, sz, theme::TEXT_PRIMARY, 0, bold);
+    p.text(
+        tc.as_ptr(),
+        gl + isz + gap,
+        y,
+        sz,
+        theme::TEXT_PRIMARY,
+        0,
+        bold,
+    );
 }
 
 /// Full-bleed resume bar: the bottom band of the card itself (Continue Watching). Delegates to
@@ -561,7 +630,10 @@ mod tests {
         let mut row = CardRow::new();
         run(&mut row, 180, Some(0), &sty);
         let held = row.lift();
-        assert!((held - FULL).abs() < 0.1, "slot 0 must hold the full clearance ({held} vs {FULL})");
+        assert!(
+            (held - FULL).abs() < 0.1,
+            "slot 0 must hold the full clearance ({held} vs {FULL})"
+        );
 
         // slot 1 is also under the heading, so nothing should move — not by a pixel, not for a frame
         for f in 0..180 {
@@ -585,10 +657,17 @@ mod tests {
         for _ in 0..240 {
             row.update(8, Some(5), &sty, DT); // far down the row — no clearance needed
             let l = row.lift();
-            assert!((l - prev).abs() < 3.0, "heading jumped {:.1}px in one frame", l - prev);
+            assert!(
+                (l - prev).abs() < 3.0,
+                "heading jumped {:.1}px in one frame",
+                l - prev
+            );
             prev = l;
         }
-        assert!(prev < 0.5, "the heading must come all the way back down (got {prev})");
+        assert!(
+            prev < 0.5,
+            "the heading must come all the way back down (got {prev})"
+        );
     }
 
     /// A row that owns no focus rests flat — including a row that just LOST focus, which used to
@@ -610,7 +689,12 @@ mod tests {
         let at = |c: usize| heading_clearance(Some(c), &sty, 0.0);
         assert_eq!(at(0), at(1), "the first two slots share the full clearance");
         assert!((at(0) - FULL).abs() < 0.001);
-        assert!(at(2) > 0.5 && at(2) < at(1), "slot 2 is on the taper ({} vs {})", at(2), at(1));
+        assert!(
+            at(2) > 0.5 && at(2) < at(1),
+            "slot 2 is on the taper ({} vs {})",
+            at(2),
+            at(1)
+        );
         assert_eq!(at(4), 0.0, "a tile far from the heading must not move it");
         assert_eq!(heading_clearance(None, &sty, 0.0), 0.0);
     }
@@ -633,15 +717,29 @@ mod tests {
             "the focused overflow tile must reach the focus scale (got {})",
             row.scale(far)
         );
-        assert_eq!(row.scale(far + 1), 1.0, "the tile after it shares the spring, not the focus");
+        assert_eq!(
+            row.scale(far + 1),
+            1.0,
+            "the tile after it shares the spring, not the focus"
+        );
         assert_eq!(row.scale(far - 1), 1.0, "nor the one before it");
-        assert!((row.scale(MAX_ROW_ITEMS - 1) - 1.0).abs() < 0.01, "and the last in-array cell rests");
+        assert!(
+            (row.scale(MAX_ROW_ITEMS - 1) - 1.0).abs() < 0.01,
+            "and the last in-array cell rests"
+        );
 
         // focus coming back inside the array releases the overflow pop
         for _ in 0..180 {
             row.update(far + 2, Some(0), &sty, DT);
         }
-        assert_eq!(row.scale(far), 1.0, "focus left the tail, so no overflow tile reads the spring");
-        assert!((row.scale(0) - sty.focus_scale).abs() < 0.01, "and the in-array cell pops as ever");
+        assert_eq!(
+            row.scale(far),
+            1.0,
+            "focus left the tail, so no overflow tile reads the spring"
+        );
+        assert!(
+            (row.scale(0) - sty.focus_scale).abs() < 0.01,
+            "and the in-array cell pops as ever"
+        );
     }
 }

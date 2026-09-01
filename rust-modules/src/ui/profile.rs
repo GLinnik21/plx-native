@@ -72,9 +72,16 @@ mod imp {
             "" => "frame.ui",
             name => name,
         };
-        PHASES.iter().find(|name| **name == wanted).copied().ok_or_else(|| {
-            format!("unknown phase \"{wanted}\"; valid names: {}", PHASES.join(" "))
-        })
+        PHASES
+            .iter()
+            .find(|name| **name == wanted)
+            .copied()
+            .ok_or_else(|| {
+                format!(
+                    "unknown phase \"{wanted}\"; valid names: {}",
+                    PHASES.join(" ")
+                )
+            })
     }
 
     const LOG_EVERY: u32 = 60;
@@ -158,7 +165,12 @@ mod imp {
             }
         };
         let path = crate::paths::in_runtime_dir("plxnative-hwcnt.jsonl");
-        let file = match OpenOptions::new().create(true).truncate(true).write(true).open(&path) {
+        let file = match OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&path)
+        {
             Ok(file) => file,
             Err(e) => {
                 hwcnt::shutdown(); // the reader is already attached; do not leave it counting
@@ -234,7 +246,9 @@ mod imp {
     /// Time and count one selected draw phase; a passthrough when profiling or this phase is off.
     #[inline]
     fn hwcnt_phase<R>(name: &'static str, f: impl FnOnce() -> R) -> R {
-        let Some(_guard) = enter(name) else { return f() };
+        let Some(_guard) = enter(name) else {
+            return f();
+        };
 
         crate::gfx::gl_finish();
         let before = match hwcnt::sample() {

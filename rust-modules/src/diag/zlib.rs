@@ -58,7 +58,15 @@ pub(crate) fn gzip(src: &[u8]) -> Option<Vec<u8>> {
     // zlib's own documented worst case, plus the gzip trailer we add.
     let mut cap: c_ulong = src.len() as c_ulong + src.len() as c_ulong / 1000 + 64;
     let mut zbuf = vec![0u8; cap as usize];
-    let rv = unsafe { compress2(zbuf.as_mut_ptr(), &mut cap, src.as_ptr(), src.len() as c_ulong, 6) };
+    let rv = unsafe {
+        compress2(
+            zbuf.as_mut_ptr(),
+            &mut cap,
+            src.as_ptr(),
+            src.len() as c_ulong,
+            6,
+        )
+    };
     if rv != Z_OK {
         return None;
     }
@@ -113,9 +121,18 @@ mod tests {
             return; // no zlib on this host: the identity fallback is the tested behaviour
         };
         assert_eq!(&gz[..3], &[0x1f, 0x8b, 0x08], "gzip magic + deflate method");
-        assert!(gz.len() < src.len() / 4, "repetitive text must actually compress");
+        assert!(
+            gz.len() < src.len() / 4,
+            "repetitive text must actually compress"
+        );
         let n = gz.len();
-        assert_eq!(u32::from_le_bytes(gz[n - 8..n - 4].try_into().unwrap()), crc32(src.as_bytes()));
-        assert_eq!(u32::from_le_bytes(gz[n - 4..].try_into().unwrap()), src.len() as u32);
+        assert_eq!(
+            u32::from_le_bytes(gz[n - 8..n - 4].try_into().unwrap()),
+            crc32(src.as_bytes())
+        );
+        assert_eq!(
+            u32::from_le_bytes(gz[n - 4..].try_into().unwrap()),
+            src.len() as u32
+        );
     }
 }

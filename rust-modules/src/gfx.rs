@@ -15,7 +15,10 @@ static CARD_CT: AtomicU32 = AtomicU32::new(0);
 static CARD_OFF: AtomicU32 = AtomicU32::new(0);
 /// (card composites drawn, of which fully+partly off-screen) since the last call; resets both.
 pub(crate) fn take_card_stats() -> (u32, u32) {
-    (CARD_CT.swap(0, Ordering::Relaxed), CARD_OFF.swap(0, Ordering::Relaxed))
+    (
+        CARD_CT.swap(0, Ordering::Relaxed),
+        CARD_OFF.swap(0, Ordering::Relaxed),
+    )
 }
 
 /// SDF edge headroom, in px. The fill AA is `1 - smoothstep(-1, 1, d)` — a 2px band centred on the
@@ -32,7 +35,11 @@ const AA_BLEED: f32 = 1.0;
 macro_rules! glsl {
     ($file:literal) => {
         // SAFETY: GLSL sources contain no interior NUL; concat! appends the terminator.
-        unsafe { ::std::ffi::CStr::from_bytes_with_nul_unchecked(concat!(include_str!($file), "\0").as_bytes()) }
+        unsafe {
+            ::std::ffi::CStr::from_bytes_with_nul_unchecked(
+                concat!(include_str!($file), "\0").as_bytes(),
+            )
+        }
     };
 }
 pub(crate) use glsl;
@@ -43,6 +50,7 @@ const FS_AMBIENT: &CStr = glsl!("shaders/fs_ambient.frag");
 const FS_SHADOW: &CStr = glsl!("shaders/fs_shadow.frag");
 const VS_IMG: &CStr = glsl!("shaders/vs_img.vert");
 const FS_IMG: &CStr = glsl!("shaders/fs_img.frag");
+const FS_MODAL_GROUND: &CStr = glsl!("shaders/fs_modal_ground.frag");
 const FS_HERO: &CStr = glsl!("shaders/fs_hero.frag");
 const FS_BLUR: &CStr = glsl!("shaders/fs_blur.frag");
 const FS_GLASS: &CStr = glsl!("shaders/fs_glass.frag");
@@ -69,7 +77,12 @@ const GL_TEXTURE1: c_uint = 0x84C1;
 extern "C" {
     fn glGetString(name: c_uint) -> *const c_char;
     fn glCreateShader(ty: c_uint) -> c_uint;
-    fn glShaderSource(shader: c_uint, count: c_int, string: *const *const c_char, length: *const c_int);
+    fn glShaderSource(
+        shader: c_uint,
+        count: c_int,
+        string: *const *const c_char,
+        length: *const c_int,
+    );
     fn glCompileShader(shader: c_uint);
     fn glGetShaderiv(shader: c_uint, pname: c_uint, params: *mut c_int);
     fn glGetShaderInfoLog(shader: c_uint, bufsize: c_int, length: *mut c_int, infolog: *mut c_char);
@@ -90,7 +103,14 @@ extern "C" {
     fn glBindBuffer(target: c_uint, buffer: c_uint);
     fn glBufferData(target: c_uint, size: isize, data: *const c_void, usage: c_uint);
     fn glEnableVertexAttribArray(index: c_uint);
-    fn glVertexAttribPointer(index: c_uint, size: c_int, ty: c_uint, normalized: u8, stride: c_int, pointer: *const c_void);
+    fn glVertexAttribPointer(
+        index: c_uint,
+        size: c_int,
+        ty: c_uint,
+        normalized: u8,
+        stride: c_int,
+        pointer: *const c_void,
+    );
     fn glDrawArrays(mode: c_uint, first: c_int, count: c_int);
     fn glBindTexture(target: c_uint, texture: c_uint);
     fn glActiveTexture(texture: c_uint);
@@ -107,16 +127,48 @@ extern "C" {
     fn glGenTextures(n: c_int, textures: *mut c_uint);
     fn glDeleteTextures(n: c_int, textures: *const c_uint);
     fn glPixelStorei(pname: c_uint, param: c_int);
-    fn glTexImage2D(target: c_uint, level: c_int, ifmt: c_int, w: c_int, h: c_int, border: c_int,
-                    format: c_uint, ty: c_uint, pixels: *const c_void);
+    fn glTexImage2D(
+        target: c_uint,
+        level: c_int,
+        ifmt: c_int,
+        w: c_int,
+        h: c_int,
+        border: c_int,
+        format: c_uint,
+        ty: c_uint,
+        pixels: *const c_void,
+    );
     fn glTexParameteri(target: c_uint, pname: c_uint, param: c_int);
     // UI self-capture (the "cap_*" section at the bottom of this file)
     fn glGenFramebuffers(n: c_int, ids: *mut c_uint);
     fn glBindFramebuffer(target: c_uint, framebuffer: c_uint);
-    fn glFramebufferTexture2D(target: c_uint, attachment: c_uint, textarget: c_uint, texture: c_uint, level: c_int);
+    fn glFramebufferTexture2D(
+        target: c_uint,
+        attachment: c_uint,
+        textarget: c_uint,
+        texture: c_uint,
+        level: c_int,
+    );
     fn glCheckFramebufferStatus(target: c_uint) -> c_uint;
-    fn glReadPixels(x: c_int, y: c_int, w: c_int, h: c_int, format: c_uint, ty: c_uint, pixels: *mut c_void);
-    fn glCopyTexSubImage2D(target: c_uint, level: c_int, xoff: c_int, yoff: c_int, x: c_int, y: c_int, w: c_int, h: c_int);
+    fn glReadPixels(
+        x: c_int,
+        y: c_int,
+        w: c_int,
+        h: c_int,
+        format: c_uint,
+        ty: c_uint,
+        pixels: *mut c_void,
+    );
+    fn glCopyTexSubImage2D(
+        target: c_uint,
+        level: c_int,
+        xoff: c_int,
+        yoff: c_int,
+        x: c_int,
+        y: c_int,
+        w: c_int,
+        h: c_int,
+    );
     fn glGetError() -> c_uint;
     fn glViewport(x: c_int, y: c_int, w: c_int, h: c_int);
 }
@@ -300,6 +352,13 @@ static mut IL_RIMCOL: c_int = 0;
 static mut IL_CH: c_int = 0;
 static mut IL_SHINV: c_int = 0;
 static mut IL_SHCOL: c_int = 0;
+static mut MPROG: c_uint = 0;
+static mut ML_RECT: c_int = 0;
+static mut ML_SCREEN: c_int = 0;
+static mut ML_TINT: c_int = 0;
+static mut ML_UVRECT: c_int = 0;
+static mut ML_TEX: c_int = 0;
+static mut ML_SATURATION: c_int = 0;
 // ---- hero-ground program: the backdrop art with both scrim fields folded into it (fs_hero.frag).
 // Its own program because it is the SAME quad the art already draws, only carrying two more
 // closed-form fields — nothing else in the app wants them, and the card composite must not pay for
@@ -384,8 +443,15 @@ pub(crate) fn gfx_compile(ty: c_uint, src: *const c_char) -> c_uint {
         glGetShaderiv(s, GL_COMPILE_STATUS, &mut ok);
         if ok == 0 {
             let mut buf = [0u8; 1024];
-            glGetShaderInfoLog(s, 1024, std::ptr::null_mut(), buf.as_mut_ptr() as *mut c_char);
-            let msg = CStr::from_ptr(buf.as_ptr() as *const c_char).to_string_lossy().into_owned();
+            glGetShaderInfoLog(
+                s,
+                1024,
+                std::ptr::null_mut(),
+                buf.as_mut_ptr() as *mut c_char,
+            );
+            let msg = CStr::from_ptr(buf.as_ptr() as *const c_char)
+                .to_string_lossy()
+                .into_owned();
             // The EVENT log is the only surface anyone reads over ssh, and neither of the two lines
             // below reaches it: `eprintln!` goes to /tmp/plxnative-stderr.log (main.c replaces
             // stderr), and `process::exit` is a CLEAN exit, so the crash tracer never fires and
@@ -506,7 +572,12 @@ pub(crate) fn init_gl() {
         let mut vbo: c_uint = 0;
         glGenBuffers(1, &mut vbo);
         glBindBuffer(GL_ARRAY_BUFFER, vbo);
-        glBufferData(GL_ARRAY_BUFFER, std::mem::size_of_val(&QUAD) as isize, QUAD.as_ptr() as *const c_void, GL_STATIC_DRAW);
+        glBufferData(
+            GL_ARRAY_BUFFER,
+            std::mem::size_of_val(&QUAD) as isize,
+            QUAD.as_ptr() as *const c_void,
+            GL_STATIC_DRAW,
+        );
         glEnableVertexAttribArray(0);
         glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, std::ptr::null());
 
@@ -576,7 +647,12 @@ pub(crate) fn init_gl() {
         //
         // The player's transparent clear is unaffected in the right direction: over `dst.a = 0`,
         // accumulating alpha gives `src.a`, which is what a HUD drawn over the video plane means.
-        glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+        glBlendFuncSeparate(
+            GL_SRC_ALPHA,
+            GL_ONE_MINUS_SRC_ALPHA,
+            GL_ONE,
+            GL_ONE_MINUS_SRC_ALPHA,
+        );
         // GL_DITHER is ON by default in GLES2; it dithers low-alpha gradients (the card shadow
         // penumbra) into a regular ordered-dither dot pattern visible along tile edges. The panel is
         // 888 and SURFACE_APP is snapped to exact 8-bit codes, so dithering buys nothing here — off.
@@ -647,7 +723,11 @@ pub(crate) fn draw_rect(
         use_prog(PROG);
         // Only the rounded/focus SDF path needs the AA bleed; a plain rect takes the fast-path fill
         // and must stay exactly its bounds (a 1px overhang would fatten scrims/backgrounds).
-        let aa = if radius >= 0.5 || focus > 0.001 { AA_BLEED } else { 0.0 };
+        let aa = if radius >= 0.5 || focus > 0.001 {
+            AA_BLEED
+        } else {
+            0.0
+        };
         glUniform4f(LOC_RECT, x - aa, y - aa, w + 2.0 * aa, h + 2.0 * aa);
         glUniform2f(LOC_SIZE, w + 2.0 * aa, h + 2.0 * aa);
         glUniform1f(LOC_PAD, pad + aa);
@@ -672,8 +752,21 @@ pub(crate) fn draw_rect(
 /// [`draw_rect`] with the focus edge-sheen (a `rimw`-px inset perimeter rim in `rimcol`) baked into
 /// the same fill pass — the no-texture (skeleton / chip disc) counterpart of [`draw_tex_stroked`].
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn draw_rect_sheened(x: f32, y: f32, w: f32, h: f32, radius: f32, top: *const f32, bot: *const f32, rimw: f32, rimcol: *const f32, rimtop: f32) {
-    draw_rect_shaped(x, y, w, h, radius, top, bot, rimw, rimcol, rimtop, None, None)
+pub(crate) fn draw_rect_sheened(
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    radius: f32,
+    top: *const f32,
+    bot: *const f32,
+    rimw: f32,
+    rimcol: *const f32,
+    rimtop: f32,
+) {
+    draw_rect_shaped(
+        x, y, w, h, radius, top, bot, rimw, rimcol, rimtop, None, None,
+    )
 }
 
 /// [`draw_rect_sheened`] with the CAPSULE OUTLINE and the focused face's inner glow — the control
@@ -682,7 +775,20 @@ pub(crate) fn draw_rect_sheened(x: f32, y: f32, w: f32, h: f32, radius: f32, top
 /// solved outline is strictly inside the stadium, so a conservative test against the larger shape is
 /// conservative against this one too.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn draw_rect_shaped(x: f32, y: f32, w: f32, h: f32, radius: f32, top: *const f32, bot: *const f32, rimw: f32, rimcol: *const f32, rimtop: f32, pill: Option<&PillArgs>, glow: Option<&GlowArgs>) {
+pub(crate) fn draw_rect_shaped(
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    radius: f32,
+    top: *const f32,
+    bot: *const f32,
+    rimw: f32,
+    rimcol: *const f32,
+    rimtop: f32,
+    pill: Option<&PillArgs>,
+    glow: Option<&GlowArgs>,
+) {
     if culled(x, y, w, h) || gate(Class::Rect, x, y, w, h) {
         return;
     }
@@ -709,7 +815,17 @@ pub(crate) fn draw_rect_shaped(x: f32, y: f32, w: f32, h: f32, radius: f32, top:
 /// `1.0` is **load-bearing**, not incidental — `fs_ambient.frag` now interpolates alpha with the
 /// colour (see [`draw_grad4`]), so this is what keeps every ambient wash a ground that REPLACES what
 /// is under it rather than a translucent film over it.
-pub(crate) fn draw_ambient(x: f32, y: f32, w: f32, h: f32, dim: f32, tl: *const f32, tr: *const f32, br: *const f32, bl: *const f32) {
+pub(crate) fn draw_ambient(
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    dim: f32,
+    tl: *const f32,
+    tr: *const f32,
+    br: *const f32,
+    bl: *const f32,
+) {
     if culled(x, y, w, h) || gate(Class::Ambient, x, y, w, h) {
         return;
     }
@@ -717,10 +833,34 @@ pub(crate) fn draw_ambient(x: f32, y: f32, w: f32, h: f32, dim: f32, tl: *const 
         let c3 = |p: *const f32, i: usize| *p.add(i);
         use_prog(APROG); // AL_SCREEN is set once at init (uniforms are per-program state)
         glUniform4f(AL_RECT, x, y, w, h);
-        glUniform4f(AL_TL, c3(tl, 0) * dim, c3(tl, 1) * dim, c3(tl, 2) * dim, 1.0);
-        glUniform4f(AL_TR, c3(tr, 0) * dim, c3(tr, 1) * dim, c3(tr, 2) * dim, 1.0);
-        glUniform4f(AL_BR, c3(br, 0) * dim, c3(br, 1) * dim, c3(br, 2) * dim, 1.0);
-        glUniform4f(AL_BL, c3(bl, 0) * dim, c3(bl, 1) * dim, c3(bl, 2) * dim, 1.0);
+        glUniform4f(
+            AL_TL,
+            c3(tl, 0) * dim,
+            c3(tl, 1) * dim,
+            c3(tl, 2) * dim,
+            1.0,
+        );
+        glUniform4f(
+            AL_TR,
+            c3(tr, 0) * dim,
+            c3(tr, 1) * dim,
+            c3(tr, 2) * dim,
+            1.0,
+        );
+        glUniform4f(
+            AL_BR,
+            c3(br, 0) * dim,
+            c3(br, 1) * dim,
+            c3(br, 2) * dim,
+            1.0,
+        );
+        glUniform4f(
+            AL_BL,
+            c3(bl, 0) * dim,
+            c3(bl, 1) * dim,
+            c3(bl, 2) * dim,
+            1.0,
+        );
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     }
 }
@@ -732,7 +872,16 @@ pub(crate) fn draw_ambient(x: f32, y: f32, w: f32, h: f32, dim: f32, tl: *const 
 /// Each pointer must address FOUR floats (rgba). Blending is the app-wide
 /// `GL_SRC_ALPHA`/`GL_ONE_MINUS_SRC_ALPHA` set at init, so this composites over whatever is already
 /// on the panel — which is the whole point of having it beside the opaque wash.
-pub(crate) fn draw_grad4(x: f32, y: f32, w: f32, h: f32, tl: *const f32, tr: *const f32, br: *const f32, bl: *const f32) {
+pub(crate) fn draw_grad4(
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    tl: *const f32,
+    tr: *const f32,
+    br: *const f32,
+    bl: *const f32,
+) {
     if culled(x, y, w, h) || gate(Class::Grad, x, y, w, h) {
         return;
     }
@@ -754,7 +903,11 @@ pub(crate) fn draw_rrect(x: f32, y: f32, w: f32, h: f32, rad_l: f32, rad_r: f32,
     unsafe {
         use_prog(PROG);
         // Rounded corners always take the SDF path, so always give the edge band its bleed.
-        let aa = if rad_l >= 0.5 || rad_r >= 0.5 { AA_BLEED } else { 0.0 };
+        let aa = if rad_l >= 0.5 || rad_r >= 0.5 {
+            AA_BLEED
+        } else {
+            0.0
+        };
         glUniform4f(LOC_RECT, x - aa, y - aa, w + 2.0 * aa, h + 2.0 * aa);
         glUniform2f(LOC_SIZE, w + 2.0 * aa, h + 2.0 * aa);
         glUniform1f(LOC_PAD, aa);
@@ -772,7 +925,18 @@ pub(crate) fn draw_rrect(x: f32, y: f32, w: f32, h: f32, rad_l: f32, rad_r: f32,
 }
 
 /// [`draw_rrect`] with the focus edge-sheen baked in (flat fill + `rimw`-px inset rim in `rimcol`).
-pub(crate) fn draw_rrect_sheened(x: f32, y: f32, w: f32, h: f32, rad_l: f32, rad_r: f32, col: *const f32, rimw: f32, rimcol: *const f32, rimtop: f32) {
+pub(crate) fn draw_rrect_sheened(
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    rad_l: f32,
+    rad_r: f32,
+    col: *const f32,
+    rimw: f32,
+    rimcol: *const f32,
+    rimtop: f32,
+) {
     if culled(x, y, w, h) || gate(Class::Rect, x, y, w, h) {
         return;
     }
@@ -807,7 +971,17 @@ pub(crate) fn draw_rrect_sheened(x: f32, y: f32, w: f32, h: f32, rad_l: f32, rad
 /// occluder's rim, which the occluder hides. A non-negative value is the occluder's own corner
 /// radius, and cuts the rounded shape exactly, so a TRANSLUCENT occluder has no ink under it to
 /// show through ([`Painter::shadow_outside`](crate::ui::Painter::shadow_outside)).
-pub(crate) fn draw_shadow(x: f32, y: f32, w: f32, h: f32, radius: f32, blur: f32, off: f32, cut: f32, col: *const f32) {
+pub(crate) fn draw_shadow(
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    radius: f32,
+    blur: f32,
+    off: f32,
+    cut: f32,
+    col: *const f32,
+) {
     let b = blur.max(0.5);
     // **Cull the QUAD, not the box.** A shadow paints a penumbra `b` px beyond the rect it is asked
     // for, and `b` is tens of px on a focused card — far past `culled`'s 4 px of AA slack. Culling
@@ -919,7 +1093,18 @@ fn draw_digit(d: i32, x: f32, y: f32, s: f32, col: *const f32) {
         let sy = y + g[i][1] * s - w / 2.0;
         let sw = g[i][2] * s + w;
         let sh = g[i][3] * s + w;
-        draw_rect(sx, sy, sw, sh, 2.0, (w + 4.0) / 2.0 - 2.0, col, col, 0.0, 1.0);
+        draw_rect(
+            sx,
+            sy,
+            sw,
+            sh,
+            2.0,
+            (w + 4.0) / 2.0 - 2.0,
+            col,
+            col,
+            0.0,
+            1.0,
+        );
     }
 }
 
@@ -964,6 +1149,24 @@ pub(crate) fn init_image() {
         use_prog(IPROG);
         glUniform2f(IL_SCREEN, SCR_W, SCR_H);
         glUniform1i(IL_TEX, 0);
+
+        // The full-screen Settings ground has no SDF, rim or shadow. Its tiny dedicated shader
+        // keeps the image program's hot poster path unchanged and adds saturation without another
+        // sample. A link failure is harmless: the draw site falls back to IPROG.
+        MPROG = link_program(VS_IMG.as_ptr(), FS_MODAL_GROUND.as_ptr()).unwrap_or(0);
+        if MPROG != 0 {
+            ML_RECT = glGetUniformLocation(MPROG, c"u_trect".as_ptr());
+            ML_SCREEN = glGetUniformLocation(MPROG, c"u_tscreen".as_ptr());
+            ML_TINT = glGetUniformLocation(MPROG, c"u_tint".as_ptr());
+            ML_UVRECT = glGetUniformLocation(MPROG, c"u_uvrect".as_ptr());
+            ML_TEX = glGetUniformLocation(MPROG, c"u_tex".as_ptr());
+            ML_SATURATION = glGetUniformLocation(MPROG, c"u_saturation".as_ptr());
+            use_prog(MPROG);
+            glUniform2f(ML_SCREEN, SCR_W, SCR_H);
+            glUniform1i(ML_TEX, 0);
+        } else {
+            log("modal-ground prog link failed — using the plain cached blur");
+        }
         use_prog(PROG);
     }
 }
@@ -1016,8 +1219,17 @@ pub(crate) fn hero_ground_ok() -> bool {
 /// `(peak, width, feather_top, feather_knee)`, both in authored pixels with the alphas already
 /// carrying the painter's cascade. See `fs_hero.frag` for the composite this replaces.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn draw_hero_ground(tex: c_uint, x: f32, y: f32, w: f32, h: f32, tint: *const f32,
-    ink: *const f32, ramp: [f32; 4], wedge: [f32; 4]) {
+pub(crate) fn draw_hero_ground(
+    tex: c_uint,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    tint: *const f32,
+    ink: *const f32,
+    ramp: [f32; 4],
+    wedge: [f32; 4],
+) {
     if tex == 0 || culled(x, y, w, h) {
         return;
     }
@@ -1048,9 +1260,21 @@ pub(crate) fn draw_hero_ground(tex: c_uint, x: f32, y: f32, w: f32, h: f32, tint
         glUniform4fv(HL_INK, 1, ink);
         glUniform4f(HL_UVRECT, 0.0, 0.0, 1.0, 1.0);
         glUniform2f(HL_ORG, x + w * 0.5, y + h * 0.5);
-        glUniform4f(HL_RAMP, ramp[0], inv(ramp[1] - ramp[0]), ramp[1], inv(SCR_H - ramp[1]));
+        glUniform4f(
+            HL_RAMP,
+            ramp[0],
+            inv(ramp[1] - ramp[0]),
+            ramp[1],
+            inv(SCR_H - ramp[1]),
+        );
         glUniform2f(HL_RAMPA, ramp[2], ramp[3] - ramp[2]);
-        glUniform4f(HL_WEDGE, wedge[0], inv(wedge[1]), wedge[2], inv(wedge[3] - wedge[2]));
+        glUniform4f(
+            HL_WEDGE,
+            wedge[0],
+            inv(wedge[1]),
+            wedge[2],
+            inv(wedge[3] - wedge[2]),
+        );
         glBindTexture(GL_TEXTURE_2D, tex);
         glUniform4f(HL_RECT, x, y, w, h);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
@@ -1079,7 +1303,17 @@ pub(crate) fn upload_rgba(prev: c_uint, w: c_int, h: c_int, pixels: *const u8) -
         }
         glBindTexture(GL_TEXTURE_2D, tex);
         glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA as c_int, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels as *const c_void);
+        glTexImage2D(
+            GL_TEXTURE_2D,
+            0,
+            GL_RGBA as c_int,
+            w,
+            h,
+            0,
+            GL_RGBA,
+            GL_UNSIGNED_BYTE,
+            pixels as *const c_void,
+        );
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -1117,8 +1351,23 @@ fn uv_rect_padded(w: f32, h: f32, qw: f32, qh: f32) -> [f32; 4] {
 /// measured against. [`draw_tex_impl`] folds a card's parameters into these; the blur backdrop
 /// supplies its own, because its UV window is a screen-space rect rather than a card.
 #[allow(clippy::too_many_arguments)]
-fn draw_tex_core(class: Class, tex: c_uint, qx: f32, qy: f32, qw: f32, qh: f32, uv: [f32; 4], radius: f32, tint: *const f32,
-    rimw: f32, rimcol: *const f32, chw: f32, chh: f32, shinv: f32, shcol: *const f32) {
+fn draw_tex_core(
+    class: Class,
+    tex: c_uint,
+    qx: f32,
+    qy: f32,
+    qw: f32,
+    qh: f32,
+    uv: [f32; 4],
+    radius: f32,
+    tint: *const f32,
+    rimw: f32,
+    rimcol: *const f32,
+    chw: f32,
+    chh: f32,
+    shinv: f32,
+    shcol: *const f32,
+) {
     if tex == 0 || culled(qx, qy, qw, qh) || gate(class, qx, qy, qw, qh) {
         return;
     }
@@ -1139,36 +1388,112 @@ fn draw_tex_core(class: Class, tex: c_uint, qx: f32, qy: f32, qw: f32, qh: f32, 
 }
 
 #[allow(clippy::too_many_arguments)]
-fn draw_tex_impl(tex: c_uint, x: f32, y: f32, w: f32, h: f32, radius: f32, tint: *const f32, rimw: f32, rimcol: *const f32,
-    pad: f32, shblur: f32, shcol: *const f32) {
+fn draw_tex_impl(
+    tex: c_uint,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    radius: f32,
+    tint: *const f32,
+    rimw: f32,
+    rimcol: *const f32,
+    pad: f32,
+    shblur: f32,
+    shcol: *const f32,
+) {
     let class = if pad > 0.0 { Class::Card } else { Class::Image };
     let (qx, qy, qw, qh) = (x - pad, y - pad, w + 2.0 * pad, h + 2.0 * pad); // inflate for the penumbra
-    // CPU-fold the uniform-only terms (Midgard has no uniform pre-shader): card half-size, the
-    // quad→card UV rect (identity when pad==0), and the shadow's 0.5/blur normaliser.
+                                                                             // CPU-fold the uniform-only terms (Midgard has no uniform pre-shader): card half-size, the
+                                                                             // quad→card UV rect (identity when pad==0), and the shadow's 0.5/blur normaliser.
     let uv = uv_rect_padded(w, h, qw, qh);
     let shinv = if shblur > 0.0 { 0.5 / shblur } else { 0.0 };
-    draw_tex_core(class, tex, qx, qy, qw, qh, uv, radius, tint, rimw, rimcol, w * 0.5, h * 0.5, shinv, shcol);
+    draw_tex_core(
+        class,
+        tex,
+        qx,
+        qy,
+        qw,
+        qh,
+        uv,
+        radius,
+        tint,
+        rimw,
+        rimcol,
+        w * 0.5,
+        h * 0.5,
+        shinv,
+        shcol,
+    );
 }
 
 const NO_RIM: [f32; 4] = [0.0, 0.0, 0.0, 0.0]; // rim/shadow disabled: alpha 0 ⇒ shader skips it
 
 pub(crate) fn draw_tex(tex: c_uint, x: f32, y: f32, w: f32, h: f32, radius: f32, tint: *const f32) {
-    draw_tex_impl(tex, x, y, w, h, radius, tint, 0.0, NO_RIM.as_ptr(), 0.0, 0.0, NO_RIM.as_ptr());
+    draw_tex_impl(
+        tex,
+        x,
+        y,
+        w,
+        h,
+        radius,
+        tint,
+        0.0,
+        NO_RIM.as_ptr(),
+        0.0,
+        0.0,
+        NO_RIM.as_ptr(),
+    );
 }
 
 /// [`draw_tex`] plus the focus edge-sheen baked into the same pass (rim only, no shadow). Used for the
 /// profile chip avatar.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn draw_tex_stroked(tex: c_uint, x: f32, y: f32, w: f32, h: f32, radius: f32, tint: *const f32, rimw: f32, rimcol: *const f32) {
-    draw_tex_impl(tex, x, y, w, h, radius, tint, rimw, rimcol, 0.0, 0.0, NO_RIM.as_ptr());
+pub(crate) fn draw_tex_stroked(
+    tex: c_uint,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    radius: f32,
+    tint: *const f32,
+    rimw: f32,
+    rimcol: *const f32,
+) {
+    draw_tex_impl(
+        tex,
+        x,
+        y,
+        w,
+        h,
+        radius,
+        tint,
+        rimw,
+        rimcol,
+        0.0,
+        0.0,
+        NO_RIM.as_ptr(),
+    );
 }
 
 /// The full card composite: texture + edge sheen (`rimw`/`rimcol`) + soft symmetric drop-shadow
 /// (`pad`/`shblur`/`shcol`), one pass. Used for every art tile (posters, episode stills, cast/profile
 /// circles) so the resting-and-rising shadow costs only the inflation ring, not a separate pass.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn draw_tex_carded(tex: c_uint, x: f32, y: f32, w: f32, h: f32, radius: f32, tint: *const f32,
-    rimw: f32, rimcol: *const f32, pad: f32, shblur: f32, shcol: *const f32) {
+pub(crate) fn draw_tex_carded(
+    tex: c_uint,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    radius: f32,
+    tint: *const f32,
+    rimw: f32,
+    rimcol: *const f32,
+    pad: f32,
+    shblur: f32,
+    shcol: *const f32,
+) {
     // Not during a blur source pass: these are read once a frame by the framedrop tool as "cards
     // the panel composited", and a second page draw would report twice the real number.
     if !blur_source_pass() {
@@ -1181,7 +1506,9 @@ pub(crate) fn draw_tex_carded(tex: c_uint, x: f32, y: f32, w: f32, h: f32, radiu
             CARD_OFF.fetch_add(1, Ordering::Relaxed);
         }
     }
-    draw_tex_impl(tex, x, y, w, h, radius, tint, rimw, rimcol, pad, shblur, shcol);
+    draw_tex_impl(
+        tex, x, y, w, h, radius, tint, rimw, rimcol, pad, shblur, shcol,
+    );
 }
 
 use crate::log;
@@ -1199,7 +1526,7 @@ use crate::log;
 //    is dirty; the widget still draws every present.
 //    Capturing every present was measured at 52.6 fps on the dev television and is not supported.
 // 2. **The capture is MID-FRAME.** `Painter`'s primitives are immediate GL calls, so the default
-//    framebuffer already holds exactly the prepared page (source-dimmed, or with an overlay scrim)
+//    framebuffer already holds exactly the prepared page with its page-drawn overlay scrim
 //    at the moment the panel is about to draw.
 //    That is the only reason no render-target restructuring is needed: the "background" is a
 //    definition of *when*, not of *what*.
@@ -1326,7 +1653,9 @@ const BLUR_TAPS: [f32; 2] = [0.35, 0.75];
 fn blur_taps() -> [f32; 2] {
     static SEEN: std::sync::OnceLock<[f32; 2]> = std::sync::OnceLock::new();
     *SEEN.get_or_init(|| {
-        let Some(v) = crate::dev::read("blurtaps") else { return BLUR_TAPS };
+        let Some(v) = crate::dev::read("blurtaps") else {
+            return BLUR_TAPS;
+        };
         let mut it = v.split(',').map(|t| t.trim().parse::<f32>());
         match (it.next(), it.next()) {
             (Some(Ok(a)), Some(Ok(b))) if a > 0.0 && b > a => {
@@ -1491,7 +1820,7 @@ struct BlurChain {
 /// It exists because "check your cadence actually is what you think" is rule 7 of this
 /// investigation's methodology and every other way of checking it needs a profiler armed, which
 /// changes the frame rate being measured. A counter costs one relaxed increment on a path that
-/// already does a framebuffer copy, and it turns "the blur refreshed every third present" from a
+/// already does a framebuffer copy, and it turns "the blur refreshed every changed present" from a
 /// claim about the code into a number in the log.
 /// A configured cadence and the cadence that RAN are different claims: an invalidation only
 /// schedules a capture, and a containment miss can take one no clock asked for.
@@ -1811,8 +2140,13 @@ fn swept() -> Option<(f32, f32, [f32; 4], Option<f32>, Option<f32>)> {
         let (edge_a, shade) = (it.next().flatten(), it.next().flatten());
         // The bevel divides in the shader and bounds its early-out, so zero is a division by zero on
         // every glass fragment in the frame — the same floor the variant itself keeps.
-        let out = (b.max(1.0), l.max(0.0), [GLASS_SPEC[0], GLASS_SPEC[1], GLASS_SPEC[2], w.max(0.0)],
-                   edge_a.map(|v| v.clamp(0.0, 1.0)), shade.map(|v| v.clamp(0.0, 1.0)));
+        let out = (
+            b.max(1.0),
+            l.max(0.0),
+            [GLASS_SPEC[0], GLASS_SPEC[1], GLASS_SPEC[2], w.max(0.0)],
+            edge_a.map(|v| v.clamp(0.0, 1.0)),
+            shade.map(|v| v.clamp(0.0, 1.0)),
+        );
         crate::log(&format!(
             "glass: track swept to bevel={} lens={} spec={} edge={:?} shade={:?}",
             out.0, out.1, w, out.3, out.4
@@ -2082,13 +2416,26 @@ fn blur_region_px_align(
 /// resized ones, so a region is never the whole texture. With the whole screen grabbed and a span of
 /// 1 this is exactly the expression it always was, which is what the first test here pins.
 #[inline]
-fn blur_uv_rect(x: f32, y: f32, w: f32, h: f32, reg: [f32; 4], span: [f32; 2], bottom_up: bool) -> [f32; 4] {
+fn blur_uv_rect(
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    reg: [f32; 4],
+    span: [f32; 2],
+    bottom_up: bool,
+) -> [f32; 4] {
     let fx = (x - reg[0]) / reg[2];
     let fw = w / reg[2];
     let fy = (y - reg[1]) / reg[3];
     let fh = h / reg[3];
     if bottom_up {
-        return [fx * span[0], (1.0 - fy) * span[1], fw * span[0], -fh * span[1]];
+        return [
+            fx * span[0],
+            (1.0 - fy) * span[1],
+            fw * span[0],
+            -fh * span[1],
+        ];
     }
     [fx * span[0], fy * span[1], fw * span[0], fh * span[1]]
 }
@@ -2201,12 +2548,30 @@ fn blur_lazy_init() -> bool {
             let (b, b_fbo) = fbo_target(sw, sh, "blur")?;
             // Both paths end with the up pass back to half res, so the finished snapshot always
             // lands in `mid` — each still PUBLISHES where it left it, see [`blur_publish`].
-            Some(BlurChain { grab, gw, gh, gx, gy, mid, mid_fbo, mw, mh, a, a_fbo, b, b_fbo, sw, sh,
+            Some(BlurChain {
+                grab,
+                gw,
+                gh,
+                gx,
+                gy,
+                mid,
+                mid_fbo,
+                mw,
+                mh,
+                a,
+                a_fbo,
+                b,
+                b_fbo,
+                sw,
+                sh,
                 out: mid,
                 bottom_up: blur_is_bottom_up(),
                 // No live snapshot yet; `BLUR_VALID` is what gates reading these, and the first
                 // `blur_snapshot` sets both to a real region before anything samples them.
-                reg: [0.0, 0.0, SCR_W, SCR_H], rw: gw, rh: gh })
+                reg: [0.0, 0.0, SCR_W, SCR_H],
+                rw: gw,
+                rh: gh,
+            })
         };
         match build() {
             Some(c) => {
@@ -2250,10 +2615,17 @@ fn blur_publish(
     live_h: c_int,
 ) {
     unsafe {
-        let Some(c) = (*std::ptr::addr_of_mut!(BLURST)).as_mut() else { return };
+        let Some(c) = (*std::ptr::addr_of_mut!(BLURST)).as_mut() else {
+            return;
+        };
         let sx = c.gw as f32 / SCR_W;
         let sy = c.gh as f32 / SCR_H;
-        let live = [rx as f32 / sx, ry as f32 / sy, rw as f32 / sx, rh as f32 / sy];
+        let live = [
+            rx as f32 / sx,
+            ry as f32 / sy,
+            rw as f32 / sx,
+            rh as f32 / sy,
+        ];
         crate::ui::profile::note_blur_config(
             live, rx, ry, rw, rh, c.gw, c.gh, c.mw, c.mh, live_w, live_h,
         );
@@ -2287,11 +2659,22 @@ fn blur_publish(
 /// further pass fusion can help. Use measured regions and end-to-end A/Bs; `docs/liquid-glass.md`
 /// records the current envelope.
 fn blur_snapshot(reg: [f32; 4]) {
+    let taps = blur_taps();
+    blur_snapshot_with_taps(reg, &taps);
+}
+
+/// Capture-path implementation with an explicit two-pass kernel. The ordinary glass material uses
+/// [`blur_taps`]; Settings supplies a wider pair once for its frozen wallpaper ground. Keeping the
+/// difference here, in the cached chain, means the settled fullscreen draw remains one sample.
+fn blur_snapshot_with_taps(reg: [f32; 4], taps: &[f32]) {
+    debug_assert!(!taps.is_empty() && taps.len() % 2 == 0);
     unsafe {
         if !blur_lazy_init() {
             return;
         }
-        let Some(c) = (*std::ptr::addr_of!(BLURST)).as_ref() else { return };
+        let Some(c) = (*std::ptr::addr_of!(BLURST)).as_ref() else {
+            return;
+        };
         // Counted here rather than at the call site because the direct path has its own entry and
         // its own fallbacks into this one: what the audit wants is chain executions, whichever
         // door they came through — and only past the guard, so a direct attempt that fails and
@@ -2322,13 +2705,24 @@ fn blur_snapshot(reg: [f32; 4]) {
             // measured from the canvas TOP, so the row has to be flipped into window space here.
             // Getting this wrong grabs a strip from the other end of the screen — which under a
             // blur looks like a plausible backdrop, just not the one behind the panel.
-            glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, c.gx + rx, c.gy + c.gh - (ry + rh), rw, rh);
+            glCopyTexSubImage2D(
+                GL_TEXTURE_2D,
+                0,
+                0,
+                0,
+                c.gx + rx,
+                c.gy + c.gh - (ry + rh),
+                rw,
+                rh,
+            );
             glGetError()
         });
         if e != GL_NO_ERROR {
             // The same failure `capture` guards: a window config without alpha bits makes the copy
             // a silent no-op, which would read as "the blur is black" rather than as a fault.
-            log(&format!("blur: CopyTexSubImage error=0x{e:x} — backdrop blur off"));
+            log(&format!(
+                "blur: CopyTexSubImage error=0x{e:x} — backdrop blur off"
+            ));
             BLUR_OFF = true;
             return;
         }
@@ -2370,7 +2764,11 @@ fn blur_snapshot(reg: [f32; 4]) {
         // it is left in place because it is the only way to re-measure it. `phase` takes a
         // `&'static str`, so the names are written out rather than indexed.
         for (i, &(fbo, src, w, h, uv)) in reductions.iter().enumerate() {
-            let name = if i == 0 { "blur.reduce1" } else { "blur.reduce2" };
+            let name = if i == 0 {
+                "blur.reduce1"
+            } else {
+                "blur.reduce2"
+            };
             phase(name, || {
                 glBindFramebuffer(GL_FRAMEBUFFER, fbo);
                 glViewport(0, 0, w, h);
@@ -2379,21 +2777,40 @@ fn blur_snapshot(reg: [f32; 4]) {
                 // `glUniform4fv`, which dereferences them unconditionally — a null segfaults inside
                 // the driver with no Rust panic and no log line (caught by the simulator, 2026-08-16).
                 note_px(Class::Blur, (w as f64) * (h as f64));
-                draw_tex_core(Class::Blur, src, 0.0, 0.0, SCR_W, SCR_H, [0.0, 0.0, uv.0, uv.1], 0.0,
-                    BLUR_PASS_TINT.as_ptr(), 0.0, NO_RIM.as_ptr(), 0.0, 0.0, 0.0, NO_RIM.as_ptr());
+                draw_tex_core(
+                    Class::Blur,
+                    src,
+                    0.0,
+                    0.0,
+                    SCR_W,
+                    SCR_H,
+                    [0.0, 0.0, uv.0, uv.1],
+                    0.0,
+                    BLUR_PASS_TINT.as_ptr(),
+                    0.0,
+                    NO_RIM.as_ptr(),
+                    0.0,
+                    0.0,
+                    0.0,
+                    NO_RIM.as_ptr(),
+                );
             });
         }
         // The taps run where the reductions ended — quarter res, which is the scale the direct path
         // renders its source at. See [`BLUR_REDUCTIONS`] for why that equality is not optional.
         let (tw, th) = (r4w, r4h);
         let tap_uv = win(tw, th, c.sw, c.sh);
-        for (i, taps) in blur_taps().iter().enumerate() {
+        for (i, tap) in taps.iter().enumerate() {
             let name = if i == 0 { "blur.tap1" } else { "blur.tap2" };
             phase(name, || {
                 glViewport(0, 0, tw, th);
                 // even pass -> a into b, odd -> b into a; with an even tap count the finished
                 // snapshot lands back in `a`, which is what `draw_blur_backdrop` samples.
-                let (fbo, src) = if i % 2 == 0 { (c.b_fbo, c.a) } else { (c.a_fbo, c.b) };
+                let (fbo, src) = if i % 2 == 0 {
+                    (c.b_fbo, c.a)
+                } else {
+                    (c.a_fbo, c.b)
+                };
                 glBindFramebuffer(GL_FRAMEBUFFER, fbo);
                 glClear(GL_COLOR_BUFFER_BIT);
                 use_prog(BPROG); // already bound unless the reduction path ran `draw_tex`
@@ -2401,7 +2818,7 @@ fn blur_snapshot(reg: [f32; 4]) {
                 // Offsets stay in TEXELS of the texture, which the region does not change — the
                 // texture is the same size, only less of it is live.
                 note_px(Class::Blur, (tw as f64) * (th as f64));
-                glUniform2f(BL_TEXEL, taps / c.sw as f32, taps / c.sh as f32);
+                glUniform2f(BL_TEXEL, tap / c.sw as f32, tap / c.sh as f32);
                 glBindTexture(GL_TEXTURE_2D, src);
                 glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
             });
@@ -2422,7 +2839,13 @@ fn blur_snapshot(reg: [f32; 4]) {
             use_prog(BPROG);
             glUniform4f(BL_UVRECT, 0.0, 0.0, tap_uv.0, tap_uv.1);
             note_px(Class::Blur, (r2w as f64) * (r2h as f64));
-            glUniform2f(BL_TEXEL, BLUR_UP_TAP / c.mw as f32, BLUR_UP_TAP / c.mh as f32);
+            glUniform2f(
+                BL_TEXEL,
+                BLUR_UP_TAP / c.mw as f32,
+                BLUR_UP_TAP / c.mh as f32,
+            );
+            // The Settings kernel adds an even pair of extra passes, so both the ordinary and
+            // modal chains finish in `a`. The assertion at entry keeps that property structural.
             glBindTexture(GL_TEXTURE_2D, c.a);
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         });
@@ -2432,7 +2855,16 @@ fn blur_snapshot(reg: [f32; 4]) {
         glViewport(vx, vy, vw, vh);
         glEnable(GL_BLEND);
         // Publish what was actually grabbed, not what was asked for — see [`blur_publish`].
-        blur_publish(rx, ry, rw, rh, c.mid, blur_passes(), c.sw, c.sh);
+        blur_publish(
+            rx,
+            ry,
+            rw,
+            rh,
+            c.mid,
+            BLUR_REDUCTIONS + taps.len() + 1,
+            c.sw,
+            c.sh,
+        );
     }
 }
 
@@ -2571,15 +3003,24 @@ pub(crate) fn sample_ground(r: [f32; 4], may_read: bool) -> Option<[f32; 3]> {
         let mut buf = vec![0u8; n * n * 4];
         let mut taps = [[0.0f32; 3]; GROUND_TAPS];
         let mut taps_l = [0.0f32; GROUND_TAPS];
-        let lin = |v: f32| if v <= 0.03928 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
+        let lin = |v: f32| {
+            if v <= 0.03928 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        };
         for i in 0..GROUND_TAPS {
             let f = (i as f32 + 0.5) / GROUND_TAPS as f32;
             let x = gx + ((r[0] + r[2] * f) * sx) as c_int;
             glReadPixels(
                 (x - GROUND_TAP_PX / 2).clamp(0, gx + gw - GROUND_TAP_PX),
                 (cy - GROUND_TAP_PX / 2).clamp(0, gy + gh - GROUND_TAP_PX),
-                GROUND_TAP_PX, GROUND_TAP_PX,
-                GL_RGBA, GL_UNSIGNED_BYTE, buf.as_mut_ptr() as *mut c_void,
+                GROUND_TAP_PX,
+                GROUND_TAP_PX,
+                GL_RGBA,
+                GL_UNSIGNED_BYTE,
+                buf.as_mut_ptr() as *mut c_void,
             );
             let mut acc = [0.0f32; 3];
             for p in buf.chunks_exact(4) {
@@ -2590,7 +3031,11 @@ pub(crate) fn sample_ground(r: [f32; 4], may_read: bool) -> Option<[f32; 3]> {
             let k = (n * n) as f32;
             taps[i] = [acc[0] / k, acc[1] / k, acc[2] / k];
             let y = 0.2126 * lin(taps[i][0]) + 0.7152 * lin(taps[i][1]) + 0.0722 * lin(taps[i][2]);
-            taps_l[i] = if y > 0.008856 { 116.0 * y.cbrt() - 16.0 } else { 903.3 * y };
+            taps_l[i] = if y > 0.008856 {
+                116.0 * y.cbrt() - 16.0
+            } else {
+                903.3 * y
+            };
         }
         // **THE WORST TAP, NOT THE MEAN — and this is a contract the mean was quietly breaking.**
         //
@@ -2608,7 +3053,10 @@ pub(crate) fn sample_ground(r: [f32; 4], may_read: bool) -> Option<[f32; 3]> {
         let worst = taps_l
             .iter()
             .enumerate()
-            .fold((0usize, f32::MIN), |a, (i, &l)| if l > a.1 { (i, l) } else { a })
+            .fold(
+                (0usize, f32::MIN),
+                |a, (i, &l)| if l > a.1 { (i, l) } else { a },
+            )
             .0;
         GROUND_RGB = Some(taps[worst]);
         GROUND_SPAN = taps_l.iter().fold(f32::MIN, |a, &b| a.max(b))
@@ -2647,8 +3095,20 @@ pub(crate) fn control_ground_invalidate() {
 /// Average display-encoded sRGB samples as radiance and encode the result back to sRGB.
 /// Kept pure so the material's defining operation is host-testable without an OpenGL context.
 fn diffuse_ground_mean(samples: impl IntoIterator<Item = [f32; 3]>) -> [f32; 3] {
-    let lin = |v: f32| if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
-    let enc = |v: f32| if v <= 0.0031308 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
+    let lin = |v: f32| {
+        if v <= 0.04045 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let enc = |v: f32| {
+        if v <= 0.0031308 {
+            v * 12.92
+        } else {
+            1.055 * v.powf(1.0 / 2.4) - 0.055
+        }
+    };
     let mut acc = [0.0f32; 3];
     let mut n = 0usize;
     for sample in samples {
@@ -2662,6 +3122,55 @@ fn diffuse_ground_mean(samples: impl IntoIterator<Item = [f32; 3]>) -> [f32; 3] 
     }
     let k = n as f32;
     [enc(acc[0] / k), enc(acc[1] / k), enc(acc[2] / k)]
+}
+
+/// One frozen colour envelope for a full-screen modal.  The four broad samples are deliberately
+/// converted into an ambient gradient by the UI instead of retained as a downsampled image: text
+/// and poster edges therefore cannot survive as readable squares, while the host page still keys
+/// the modal's colour.
+#[derive(Clone, Copy)]
+#[allow(dead_code)]
+pub(crate) struct ModalAmbientSample {
+    pub(crate) corners: [[f32; 3]; 4],
+    pub(crate) key: [f32; 3],
+}
+
+#[allow(dead_code)]
+pub(crate) fn sample_modal_ambient() -> ModalAmbientSample {
+    const TAP: c_int = 49;
+    // Painter order: top-left, top-right, bottom-right, bottom-left.
+    const POINTS: [[f32; 2]; 4] = [[0.22, 0.22], [0.78, 0.22], [0.78, 0.78], [0.22, 0.78]];
+    if unsafe { BLUR_IN_PASS } {
+        let c = [
+            crate::ui::theme::SURFACE_APP[0],
+            crate::ui::theme::SURFACE_APP[1],
+            crate::ui::theme::SURFACE_APP[2],
+        ];
+        return ModalAmbientSample { corners: [c; 4], key: c };
+    }
+    let (gx, gy, gw, gh) = crate::surface::viewport();
+    let mut corners = [[0.0; 3]; 4];
+    let n = TAP as usize;
+    let mut buf = vec![0u8; n * n * 4];
+    for (out, [fx, fy]) in corners.iter_mut().zip(POINTS) {
+        let x = gx + (gw as f32 * fx) as c_int;
+        let y = gy + gh - 1 - (gh as f32 * fy) as c_int;
+        unsafe {
+            glReadPixels(
+                (x - TAP / 2).clamp(gx, gx + gw - TAP),
+                (y - TAP / 2).clamp(gy, gy + gh - TAP),
+                TAP,
+                TAP,
+                GL_RGBA,
+                GL_UNSIGNED_BYTE,
+                buf.as_mut_ptr() as *mut c_void,
+            );
+        }
+        *out = diffuse_ground_mean(buf.chunks_exact(4).map(|p| {
+            [p[0] as f32 / 255.0, p[1] as f32 / 255.0, p[2] as f32 / 255.0]
+        }));
+    }
+    ModalAmbientSample { key: diffuse_ground_mean(corners), corners }
 }
 
 /// Sample the pixels already rendered beneath one Hero action row.
@@ -2698,7 +3207,11 @@ pub(crate) fn sample_control_ground(r: [f32; 4], may_read: bool) -> Option<[f32;
                 buf.as_mut_ptr() as *mut c_void,
             );
             *tap = diffuse_ground_mean(buf.chunks_exact(4).map(|p| {
-                [p[0] as f32 / 255.0, p[1] as f32 / 255.0, p[2] as f32 / 255.0]
+                [
+                    p[0] as f32 / 255.0,
+                    p[1] as f32 / 255.0,
+                    p[2] as f32 / 255.0,
+                ]
             }));
         }
         CONTROL_GROUND_RGB = Some(diffuse_ground_mean(taps));
@@ -2848,11 +3361,15 @@ pub(crate) fn blur_direct_region() -> Option<[f32; 4]> {
 /// path — the snapshot is left untouched and no GL state has changed.
 pub(crate) fn blur_snapshot_direct(reg: [f32; 4], draw_scene: &mut dyn FnMut()) -> bool {
     unsafe {
-        let Some(scale) = blur_direct_scale() else { return false };
+        let Some(scale) = blur_direct_scale() else {
+            return false;
+        };
         if !blur_lazy_init() {
             return false;
         }
-        let Some(c) = (*std::ptr::addr_of!(BLURST)).as_ref() else { return false };
+        let Some(c) = (*std::ptr::addr_of!(BLURST)).as_ref() else {
+            return false;
+        };
         BLUR_SNAPSHOTS.fetch_add(1, Ordering::Relaxed);
         let step = scale as c_int;
         let (rx, ry, rw, rh) = blur_region_px_align(reg, c.gw, c.gh, step);
@@ -2860,14 +3377,20 @@ pub(crate) fn blur_snapshot_direct(reg: [f32; 4], draw_scene: &mut dyn FnMut()) 
         // The taps ping-pong through `a`/`b`, so the scene has to fit them. At scale 4 the live
         // area is exactly their allocation; anything larger is a caller error, not a clamp.
         if tw > c.sw || th > c.sh {
-            log(&format!("blur direct: {tw}x{th} exceeds the {}x{} tap targets", c.sw, c.sh));
+            log(&format!(
+                "blur direct: {tw}x{th} exceeds the {}x{} tap targets",
+                c.sw, c.sh
+            ));
             return false;
         }
         // `glViewport` takes integers and the divisions below carry the scale, so a canvas that
         // does not divide by `scale` would place the region a fraction of a target pixel out and
         // the backdrop would creep as the panel moved. The region itself is already aligned.
         if c.gw % step != 0 || c.gh % step != 0 {
-            log(&format!("blur direct: canvas {}x{} does not divide by {scale}", c.gw, c.gh));
+            log(&format!(
+                "blur direct: canvas {}x{} does not divide by {scale}",
+                c.gw, c.gh
+            ));
             return false;
         }
         while glGetError() != GL_NO_ERROR {}
@@ -2917,7 +3440,11 @@ pub(crate) fn blur_snapshot_direct(reg: [f32; 4], draw_scene: &mut dyn FnMut()) 
             let name = if i == 0 { "blur.tap1" } else { "blur.tap2" };
             phase(name, || {
                 glViewport(0, 0, tw, th);
-                let (fbo, src) = if i % 2 == 0 { (c.b_fbo, c.a) } else { (c.a_fbo, c.b) };
+                let (fbo, src) = if i % 2 == 0 {
+                    (c.b_fbo, c.a)
+                } else {
+                    (c.a_fbo, c.b)
+                };
                 glBindFramebuffer(GL_FRAMEBUFFER, fbo);
                 glClear(GL_COLOR_BUFFER_BIT);
                 use_prog(BPROG);
@@ -2942,7 +3469,11 @@ pub(crate) fn blur_snapshot_direct(reg: [f32; 4], draw_scene: &mut dyn FnMut()) 
             use_prog(BPROG);
             glUniform4f(BL_UVRECT, 0.0, 0.0, tap_uv.0, tap_uv.1);
             note_px(Class::Blur, (r2w as f64) * (r2h as f64));
-            glUniform2f(BL_TEXEL, BLUR_UP_TAP / c.mw as f32, BLUR_UP_TAP / c.mh as f32);
+            glUniform2f(
+                BL_TEXEL,
+                BLUR_UP_TAP / c.mw as f32,
+                BLUR_UP_TAP / c.mh as f32,
+            );
             glBindTexture(GL_TEXTURE_2D, c.a);
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         });
@@ -2953,7 +3484,9 @@ pub(crate) fn blur_snapshot_direct(reg: [f32; 4], draw_scene: &mut dyn FnMut()) 
         glEnable(GL_BLEND);
         let e = glGetError();
         if e != GL_NO_ERROR {
-            log(&format!("blur direct: GL error=0x{e:x} — falling back to the capture path"));
+            log(&format!(
+                "blur direct: GL error=0x{e:x} — falling back to the capture path"
+            ));
             BLUR_DIRECT_OFF = true;
             return false;
         }
@@ -2999,7 +3532,18 @@ impl GlassFace {
     };
 }
 
-pub(crate) fn draw_blur_backdrop(x: f32, y: f32, w: f32, h: f32, rest: [f32; 4], radius: f32, tint: *const f32, rim: GlassRim, face: GlassFace, deep: f32) -> bool {
+pub(crate) fn draw_blur_backdrop(
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    rest: [f32; 4],
+    radius: f32,
+    tint: *const f32,
+    rim: GlassRim,
+    face: GlassFace,
+    deep: f32,
+) -> bool {
     unsafe {
         // A glass surface met while drawing the page AS a blur source draws nothing at all. It
         // cannot draw itself — the snapshot it would sample is the target currently bound — and it
@@ -3040,7 +3584,9 @@ pub(crate) fn draw_blur_backdrop(x: f32, y: f32, w: f32, h: f32, rest: [f32; 4],
         if BLUR_OFF || !BLUR_VALID {
             return false;
         }
-        let Some(c) = (*std::ptr::addr_of!(BLURST)).as_ref() else { return false };
+        let Some(c) = (*std::ptr::addr_of!(BLURST)).as_ref() else {
+            return false;
+        };
         // ...and only NOW is a composite certain, so this is where the ledger hears about it. The
         // mask was answered at the top of the function; this books the quad. Booking it up there
         // instead credited `glass` with a full panel per surface per frame on every frame that
@@ -3053,8 +3599,14 @@ pub(crate) fn draw_blur_backdrop(x: f32, y: f32, w: f32, h: f32, rest: [f32; 4],
         }
         // How much of `out` the region occupies. Both paths end with the up pass back to half res,
         // so `out` is `mid` whoever took the snapshot and the live area is the region halved.
-        debug_assert_eq!(c.out, c.mid, "a finished snapshot lands in `mid`, on either path");
-        let span = [(c.rw / 2) as f32 / c.mw as f32, (c.rh / 2) as f32 / c.mh as f32];
+        debug_assert_eq!(
+            c.out, c.mid,
+            "a finished snapshot lands in `mid`, on either path"
+        );
+        let span = [
+            (c.rw / 2) as f32 / c.mw as f32,
+            (c.rh / 2) as f32 / c.mh as f32,
+        ];
         let uv = blur_uv_rect(x, y, w, h, c.reg, span, c.bottom_up);
         use_prog(GPROG);
         glBindTexture(GL_TEXTURE_2D, c.out);
@@ -3067,7 +3619,11 @@ pub(crate) fn draw_blur_backdrop(x: f32, y: f32, w: f32, h: f32, rest: [f32; 4],
         glUniform2f(
             GL_UVPX,
             span[0] / c.reg[2],
-            if c.bottom_up { -span[1] / c.reg[3] } else { span[1] / c.reg[3] },
+            if c.bottom_up {
+                -span[1] / c.reg[3]
+            } else {
+                span[1] / c.reg[3]
+            },
         );
         // THE RIM'S SHARP SOURCE. The grab holds the same authored region as the snapshot, at full
         // resolution, in the bottom-left of a `gw x gh` texture and bottom-up as
@@ -3100,7 +3656,12 @@ pub(crate) fn draw_blur_backdrop(x: f32, y: f32, w: f32, h: f32, rest: [f32; 4],
             let py = ((sy0 * sc).floor() as c_int).clamp(0, c.gh - 1);
             let dw = (((sx1 * sc).ceil() as c_int) - px).clamp(1, c.gw - px);
             let dh = (((sy1 * sc).ceil() as c_int) - py).clamp(1, c.gh - py);
-            sreg = [px as f32 / sc, py as f32 / sc, dw as f32 / sc, dh as f32 / sc];
+            sreg = [
+                px as f32 / sc,
+                py as f32 / sc,
+                dw as f32 / sc,
+                dh as f32 / sc,
+            ];
             sspan = [dw as f32 / c.gw as f32, dh as f32 / c.gh as f32];
             // The page is COMPLETE here and this surface has not drawn yet, which is exactly the
             // moment a refraction wants — and it is why the copy is not taken with the snapshot.
@@ -3118,7 +3679,16 @@ pub(crate) fn draw_blur_backdrop(x: f32, y: f32, w: f32, h: f32, rest: [f32; 4],
             glActiveTexture(GL_TEXTURE1);
             glBindTexture(GL_TEXTURE_2D, c.grab);
             crate::ui::profile::phase("glass.sharp", || {
-                glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, c.gx + px, c.gy + c.gh - (py + dh), dw, dh);
+                glCopyTexSubImage2D(
+                    GL_TEXTURE_2D,
+                    0,
+                    0,
+                    0,
+                    c.gx + px,
+                    c.gy + c.gh - (py + dh),
+                    dw,
+                    dh,
+                );
             });
             glActiveTexture(GL_TEXTURE0);
         }
@@ -3137,7 +3707,11 @@ pub(crate) fn draw_blur_backdrop(x: f32, y: f32, w: f32, h: f32, rest: [f32; 4],
         // and the "softer material" was squashed. `GL_UVPX` two lines up already computes the pair;
         // this is the same expression, rectified. The shader reads the ON/OFF state off `.x` now,
         // which is why there is no flag component left to carry.
-        let dpx = if deep > 0.0 { deep_sweep().unwrap_or(deep) } else { 0.0 };
+        let dpx = if deep > 0.0 {
+            deep_sweep().unwrap_or(deep)
+        } else {
+            0.0
+        };
         glUniform2f(
             GL_DEEP,
             dpx * (span[0] / c.reg[2]).abs(),
@@ -3167,6 +3741,78 @@ pub(crate) fn draw_blur_backdrop(x: f32, y: f32, w: f32, h: f32, rest: [f32; 4],
         crate::ui::profile::phase("glass.composite", || {
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         });
+        true
+    }
+}
+
+/// Draw the cached blurred snapshot through the ordinary image shader.
+///
+/// Full-screen modal grounds have no rounded edge, lens, rim or live refraction. Paying the glass
+/// shader for those disabled branches across every pixel costs more than a frame on the T820. The
+/// blur chain is still real and still captured once; only its settled composite is a plain image.
+/// The caller layers its frost over this result with the normal rect shader.
+pub(crate) fn draw_blur_snapshot_flat(
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    rest: [f32; 4],
+    tint: *const f32,
+    taps: &[f32],
+    saturation: f32,
+) -> bool {
+    unsafe {
+        if BLUR_IN_PASS || masked(Class::Glass) {
+            return false;
+        }
+        let need = blur_region(rest[0], rest[1], rest[2], rest[3]);
+        BLUR_WANT_CUR = blur_region_union(*std::ptr::addr_of!(BLUR_WANT_CUR), need);
+        let stale = (*std::ptr::addr_of!(BLURST))
+            .as_ref()
+            .is_none_or(|c| !blur_region_covers(c.reg, x, y, w, h));
+        if !BLUR_VALID || stale {
+            let want = blur_region_union(*std::ptr::addr_of!(BLUR_WANT_PREV), need);
+            blur_snapshot_with_taps(want, taps);
+        }
+        if BLUR_OFF || !BLUR_VALID {
+            return false;
+        }
+        let Some(c) = (*std::ptr::addr_of!(BLURST)).as_ref() else {
+            return false;
+        };
+        debug_assert_eq!(c.out, c.mid);
+        let span = [
+            (c.rw / 2) as f32 / c.mw as f32,
+            (c.rh / 2) as f32 / c.mh as f32,
+        ];
+        let uv = blur_uv_rect(x, y, w, h, c.reg, span, c.bottom_up);
+        if MPROG != 0 && !culled(x, y, w, h) && !gate(Class::Image, x, y, w, h) {
+            use_prog(MPROG);
+            glUniform4fv(ML_TINT, 1, tint);
+            glUniform1f(ML_SATURATION, saturation);
+            glUniform4f(ML_UVRECT, uv[0], uv[1], uv[2], uv[3]);
+            glBindTexture(GL_TEXTURE_2D, c.out);
+            glUniform4f(ML_RECT, x, y, w, h);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        } else if MPROG == 0 {
+            draw_tex_core(
+                Class::Image,
+                c.out,
+                x,
+                y,
+                w,
+                h,
+                uv,
+                0.0,
+                tint,
+                0.0,
+                NO_RIM.as_ptr(),
+                w * 0.5,
+                h * 0.5,
+                0.0,
+                NO_RIM.as_ptr(),
+            );
+        }
         true
     }
 }
@@ -3218,8 +3864,8 @@ const CAP_OUT_H: c_int = 270;
 const CAP_TINT: [f32; 4] = [1.0, 1.0, 1.0, 1.0]; // untinted blit
 
 struct CapChain {
-    grab: c_uint,     // 1920x1080 back-buffer copy target
-    mid: c_uint,      // 960x540 downscale target
+    grab: c_uint, // 1920x1080 back-buffer copy target
+    mid: c_uint,  // 960x540 downscale target
     mid_fbo: c_uint,
     /// 480x270 downscale target. **Deliberately never read**, unlike `grab` and `mid`, which are
     /// both sampled as the next pass's source: this is the LAST pass, and its frame leaves through
@@ -3270,7 +3916,9 @@ fn fbo_target(w: c_int, h: c_int, who: &str) -> Option<(c_uint, c_uint)> {
         let st = glCheckFramebufferStatus(GL_FRAMEBUFFER);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         if st != GL_FRAMEBUFFER_COMPLETE {
-            log(&format!("{who}: FBO {w}x{h} incomplete (status=0x{st:x}) — {who} off"));
+            log(&format!(
+                "{who}: FBO {w}x{h} incomplete (status=0x{st:x}) — {who} off"
+            ));
             return None;
         }
         Some((t, f))
@@ -3286,11 +3934,26 @@ fn cap_lazy_init() -> bool {
             let grab = cap_tex(CAP_W, CAP_H);
             let (mid, mid_fbo) = fbo_target(CAP_MID_W, CAP_MID_H, "capture")?;
             let (out, out_fbo) = fbo_target(CAP_OUT_W, CAP_OUT_H, "capture")?;
-            Some(CapChain { grab, mid, mid_fbo, out, out_fbo, pending: false, pw: 0, ph: 0, read_fbo: 0, flip: false })
+            Some(CapChain {
+                grab,
+                mid,
+                mid_fbo,
+                out,
+                out_fbo,
+                pending: false,
+                pw: 0,
+                ph: 0,
+                read_fbo: 0,
+                flip: false,
+            })
         };
         match (mk_chain(), mk_chain()) {
             (Some(a), Some(b)) => {
-                CAPST = Some(CapState { chains: [a, b], parity: 0, first_copy_checked: false });
+                CAPST = Some(CapState {
+                    chains: [a, b],
+                    parity: 0,
+                    first_copy_checked: false,
+                });
                 true
             }
             _ => {
@@ -3328,7 +3991,9 @@ pub(crate) fn cap_cycle(want_960: bool, buf: &mut Vec<u8>) -> Option<(c_int, c_i
             if e != GL_NO_ERROR {
                 // e.g. INVALID_OPERATION if the window config lost its alpha bits — the copy
                 // silently no-ops (black stream), so latch off loudly instead.
-                log(&format!("capture: CopyTexSubImage error=0x{e:x} — capture off"));
+                log(&format!(
+                    "capture: CopyTexSubImage error=0x{e:x} — capture off"
+                ));
                 CAP_LATCHED_OFF = true;
                 return None;
             }
@@ -3374,7 +4039,15 @@ pub(crate) fn cap_cycle(want_960: bool, buf: &mut Vec<u8>) -> Option<(c_int, c_i
             let n = (rc.pw * rc.ph * 4) as usize;
             buf.resize(n, 0); // resize, NOT with_capacity: glReadPixels needs len, not capacity
             let t0 = std::time::Instant::now();
-            glReadPixels(0, 0, rc.pw, rc.ph, GL_RGBA, GL_UNSIGNED_BYTE, buf.as_mut_ptr() as *mut c_void);
+            glReadPixels(
+                0,
+                0,
+                rc.pw,
+                rc.ph,
+                GL_RGBA,
+                GL_UNSIGNED_BYTE,
+                buf.as_mut_ptr() as *mut c_void,
+            );
             CAP_READ_US.fetch_add(t0.elapsed().as_micros() as u32, Ordering::Relaxed);
             CAP_READ_N.fetch_add(1, Ordering::Relaxed);
             got = Some((rc.pw, rc.ph, rc.flip));
@@ -3423,13 +4096,21 @@ mod tests {
             // the card's own edges sit at UV 0 and 1; the shadow ring falls outside, symmetrically
             let (u0, u1) = (at(pad / qw, 0), at((pad + w) / qw, 0));
             let (v0, v1) = (at(pad / qh, 1), at((pad + h) / qh, 1));
-            assert!((u0).abs() < 1e-5 && (u1 - 1.0).abs() < 1e-5, "x edges wrong at pad={pad}: {u0} {u1}");
-            assert!((v0).abs() < 1e-5 && (v1 - 1.0).abs() < 1e-5, "y edges wrong at pad={pad}: {v0} {v1}");
+            assert!(
+                (u0).abs() < 1e-5 && (u1 - 1.0).abs() < 1e-5,
+                "x edges wrong at pad={pad}: {u0} {u1}"
+            );
+            assert!(
+                (v0).abs() < 1e-5 && (v1 - 1.0).abs() < 1e-5,
+                "y edges wrong at pad={pad}: {v0} {v1}"
+            );
         }
         // pad == 0 must be the identity, or every flat blit resamples itself
         assert_eq!(uv_rect_padded(w, h, w, h), [0.0, 0.0, 1.0, 1.0]);
         // a degenerate card must not divide by zero into a NaN UV (a black quad on device)
-        assert!(uv_rect_padded(0.0, 0.0, 8.0, 8.0).iter().all(|v| v.is_finite()));
+        assert!(uv_rect_padded(0.0, 0.0, 8.0, 8.0)
+            .iter()
+            .all(|v| v.is_finite()));
     }
 
     /// The backdrop window samples the SCREEN POSITION it is drawn at, out of a bottom-up snapshot.
@@ -3442,19 +4123,45 @@ mod tests {
         // a panel occupying the whole screen must map to the whole snapshot, either way up — and
         // this is also the identity that says the region generalised the old expression rather than
         // replacing it: whole screen grabbed, whole texture used, same four numbers as before.
-        assert_eq!(blur_uv_rect(0.0, 0.0, SCR_W, SCR_H, FULL, ALL, true), [0.0, 1.0, 1.0, -1.0]);
-        assert_eq!(blur_uv_rect(0.0, 0.0, SCR_W, SCR_H, FULL, ALL, false), [0.0, 0.0, 1.0, 1.0]);
+        assert_eq!(
+            blur_uv_rect(0.0, 0.0, SCR_W, SCR_H, FULL, ALL, true),
+            [0.0, 1.0, 1.0, -1.0]
+        );
+        assert_eq!(
+            blur_uv_rect(0.0, 0.0, SCR_W, SCR_H, FULL, ALL, false),
+            [0.0, 0.0, 1.0, 1.0]
+        );
         let (x, y, w, h) = (640.0f32, 240.0f32, 480.0f32, 600.0f32);
         for bottom_up in [true, false] {
             let uv = blur_uv_rect(x, y, w, h, FULL, ALL, bottom_up);
             let at = |a: f32, i: usize| uv[i] + a * uv[i + 2];
             // a_pos 0 is the panel's TOP-left in screen space, whichever way the snapshot is stored
-            assert!((at(0.0, 0) - x / SCR_W).abs() < 1e-6, "left edge (bottom_up={bottom_up})");
-            assert!((at(1.0, 0) - (x + w) / SCR_W).abs() < 1e-6, "right edge (bottom_up={bottom_up})");
-            let (top, bot) = if bottom_up { (1.0 - y / SCR_H, 1.0 - (y + h) / SCR_H) } else { (y / SCR_H, (y + h) / SCR_H) };
-            assert!((at(0.0, 1) - top).abs() < 1e-6, "top edge (bottom_up={bottom_up})");
-            assert!((at(1.0, 1) - bot).abs() < 1e-6, "bottom edge (bottom_up={bottom_up})");
-            assert_eq!(uv[3] < 0.0, bottom_up, "the v axis runs backwards only bottom-up");
+            assert!(
+                (at(0.0, 0) - x / SCR_W).abs() < 1e-6,
+                "left edge (bottom_up={bottom_up})"
+            );
+            assert!(
+                (at(1.0, 0) - (x + w) / SCR_W).abs() < 1e-6,
+                "right edge (bottom_up={bottom_up})"
+            );
+            let (top, bot) = if bottom_up {
+                (1.0 - y / SCR_H, 1.0 - (y + h) / SCR_H)
+            } else {
+                (y / SCR_H, (y + h) / SCR_H)
+            };
+            assert!(
+                (at(0.0, 1) - top).abs() < 1e-6,
+                "top edge (bottom_up={bottom_up})"
+            );
+            assert!(
+                (at(1.0, 1) - bot).abs() < 1e-6,
+                "bottom edge (bottom_up={bottom_up})"
+            );
+            assert_eq!(
+                uv[3] < 0.0,
+                bottom_up,
+                "the v axis runs backwards only bottom-up"
+            );
         }
     }
 
@@ -3482,12 +4189,21 @@ mod tests {
             // Both windows must cover the same FRACTION of a texel grid that has the same texel
             // SIZE — i.e. the region window is the full-screen one scaled by the region's own share
             // of the screen. Sizes first: a mismatch here is the panel showing a zoomed backdrop.
-            assert!((uv[2] - full[2]).abs() < 1e-5, "u span (bottom_up={bottom_up})");
-            assert!((uv[3] - full[3]).abs() < 1e-5, "v span (bottom_up={bottom_up})");
+            assert!(
+                (uv[2] - full[2]).abs() < 1e-5,
+                "u span (bottom_up={bottom_up})"
+            );
+            assert!(
+                (uv[3] - full[3]).abs() < 1e-5,
+                "v span (bottom_up={bottom_up})"
+            );
             // ...then the origin, in TEXELS of the quarter-res target, against where the panel
             // actually is inside the region. This is the half that a forgotten region offset breaks.
             let want_u = (x - reg[0]) / SCR_W * 480.0;
-            assert!((uv[0] * 480.0 - want_u).abs() < 1e-3, "u origin (bottom_up={bottom_up})");
+            assert!(
+                (uv[0] * 480.0 - want_u).abs() < 1e-3,
+                "u origin (bottom_up={bottom_up})"
+            );
         }
     }
 
@@ -3506,7 +4222,10 @@ mod tests {
         for step in 0..=32 {
             // every frame of a rise-from-below appear, from fully displaced to settled
             let slide = POPOVER_MAX_RISE * (1.0 - step as f32 / 32.0);
-            assert!(blur_region_covers(reg, x, y + slide, w, h), "missed at slide {slide}");
+            assert!(
+                blur_region_covers(reg, x, y + slide, w, h),
+                "missed at slide {slide}"
+            );
         }
         // and the guard that keeps that true: the grab must exceed the reach by the whole slide
         assert!(BLUR_MARGIN >= BLUR_REACH + POPOVER_MAX_RISE);
@@ -3539,23 +4258,38 @@ mod tests {
         // FRAME 1 — the button appears beside the bar. Nothing was on record, so the bar grabs its
         // own region and the button, not covered by it, has to take a second.
         let bar_only = take([0.0; 4], bar);
-        assert!(!blur_region_covers(bar_only, btn.0, btn.1, btn.2, btn.3), "the pair really do not nest");
+        assert!(
+            !blur_region_covers(bar_only, btn.0, btn.1, btn.2, btn.3),
+            "the pair really do not nest"
+        );
         let want = blur_region_union(bar_only, blur_region(btn.0, btn.1, btn.2, btn.3));
 
         // FRAME 2 — that union is what the frame ended holding, so the bar's retake takes it, and
         // the button is served by the same capture. One chain for two surfaces.
-        assert!(blur_region_covers(want, bar.0, bar.1, bar.2, bar.3), "the bar is in the shared grab");
-        assert!(blur_region_covers(want, btn.0, btn.1, btn.2, btn.3), "so is the button");
+        assert!(
+            blur_region_covers(want, bar.0, bar.1, bar.2, bar.3),
+            "the bar is in the shared grab"
+        );
+        assert!(
+            blur_region_covers(want, btn.0, btn.1, btn.2, btn.3),
+            "so is the button"
+        );
 
         // Keep neighbouring geometry from growing the shared AREA excessively. This is a geometry
         // invariant, not a timing claim: the five-pass cost still has to be measured on hardware.
         let grow = (want[2] * want[3]) / (bar_only[2] * bar_only[3]);
-        assert!(grow < 1.5, "a neighbour must ride the same grab, not double it (grew {grow}x)");
+        assert!(
+            grow < 1.5,
+            "a neighbour must ride the same grab, not double it (grew {grow}x)"
+        );
 
         // FRAME 3 — the button is gone, so only the bar declares anything, and the region collapses
         // back. A union that only ever grew would keep the button's area for the whole session.
         let after = take([0.0; 4], bar);
-        assert_eq!(after, bar_only, "the grab shrinks back the frame after a surface leaves");
+        assert_eq!(
+            after, bar_only,
+            "the grab shrinks back the frame after a surface leaves"
+        );
     }
 
     /// The region in drawable px: aligned to 4, inside the canvas, never empty.
@@ -3568,16 +4302,30 @@ mod tests {
         // Drawables whose size is not a multiple of 4 are included deliberately: they are the only
         // shape whose last aligned column is short of the far edge.
         for (gw, gh) in [(1920, 1080), (960, 540), (1366, 766), (1922, 1082)] {
-            for panel in [(640.0f32, 240.0f32, 480.0f32, 600.0f32), (0.0, 0.0, 1.0, 1.0),
-                          (SCR_W - 2.0, SCR_H - 2.0, 2.0, 2.0), (0.0, 0.0, SCR_W, SCR_H),
-                          (SCR_W - 1.0, SCR_H - 1.0, 1.0, 1.0)] {
+            for panel in [
+                (640.0f32, 240.0f32, 480.0f32, 600.0f32),
+                (0.0, 0.0, 1.0, 1.0),
+                (SCR_W - 2.0, SCR_H - 2.0, 2.0, 2.0),
+                (0.0, 0.0, SCR_W, SCR_H),
+                (SCR_W - 1.0, SCR_H - 1.0, 1.0, 1.0),
+            ] {
                 let reg = blur_region(panel.0, panel.1, panel.2, panel.3);
                 let (rx, ry, rw, rh) = blur_region_px(reg, gw, gh);
-                assert_eq!((rw % 4, rh % 4), (0, 0), "4-aligned size ({gw}x{gh}, {panel:?})");
-                assert_eq!((rx % 4, ry % 4), (0, 0), "4-aligned origin ({gw}x{gh}, {panel:?})");
+                assert_eq!(
+                    (rw % 4, rh % 4),
+                    (0, 0),
+                    "4-aligned size ({gw}x{gh}, {panel:?})"
+                );
+                assert_eq!(
+                    (rx % 4, ry % 4),
+                    (0, 0),
+                    "4-aligned origin ({gw}x{gh}, {panel:?})"
+                );
                 assert!(rw > 0 && rh > 0, "never empty ({gw}x{gh}, {panel:?})");
-                assert!(rx >= 0 && ry >= 0 && rx + rw <= gw && ry + rh <= gh,
-                    "inside the canvas ({gw}x{gh}, {panel:?}) -> {rx},{ry} {rw}x{rh}");
+                assert!(
+                    rx >= 0 && ry >= 0 && rx + rw <= gw && ry + rh <= gh,
+                    "inside the canvas ({gw}x{gh}, {panel:?}) -> {rx},{ry} {rw}x{rh}"
+                );
             }
         }
     }
@@ -3604,11 +4352,18 @@ mod tests {
                     [0.0, 0.0, SCR_W, SCR_H],             // the whole canvas
                 ] {
                     let (rx, ry, rw, rh) = blur_region_px_align(reg, gw, gh, align);
-                    let what = format!("{gw}x{gh} align={align} reg={reg:?} -> {rx},{ry} {rw}x{rh}");
+                    let what =
+                        format!("{gw}x{gh} align={align} reg={reg:?} -> {rx},{ry} {rw}x{rh}");
                     assert_eq!((rx % align, ry % align), (0, 0), "aligned origin ({what})");
                     assert_eq!((rw % align, rh % align), (0, 0), "aligned size ({what})");
-                    assert!(rx >= 0 && ry >= 0 && rw >= 0 && rh >= 0, "non-negative ({what})");
-                    assert!(rx + rw <= gw && ry + rh <= gh, "inside the drawable ({what})");
+                    assert!(
+                        rx >= 0 && ry >= 0 && rw >= 0 && rh >= 0,
+                        "non-negative ({what})"
+                    );
+                    assert!(
+                        rx + rw <= gw && ry + rh <= gh,
+                        "inside the drawable ({what})"
+                    );
                 }
             }
         }
@@ -3627,14 +4382,26 @@ mod tests {
         for (vw, vh) in [(1920, 1080), (960, 540)] {
             // the television, then the desktop simulator's half-size drawable
             let ((mw, mh), (sw, sh)) = blur_dims(vw, vh);
-            assert_eq!((mw, mh), (vw / 2, vh / 2), "the first pass is always one exact halving");
+            assert_eq!(
+                (mw, mh),
+                (vw / 2, vh / 2),
+                "the first pass is always one exact halving"
+            );
             let want = (vw >> BLUR_REDUCTIONS, vh >> BLUR_REDUCTIONS);
-            assert_eq!((sw, sh), want, "the tap target is {BLUR_REDUCTIONS} exact halvings down");
+            assert_eq!(
+                (sw, sh),
+                want,
+                "the tap target is {BLUR_REDUCTIONS} exact halvings down"
+            );
             // **The up pass's radius depends on this exact factor of two.** Both paths spell the
             // offset `BLUR_UP_TAP / c.mw` — the TARGET's width — which is the documented "1.25
             // texels of the target" only while the source is half the target. It stopped being
             // half for a day, and the direct path's up-filter silently doubled; see `BLUR_UP_TAP`.
-            assert_eq!((mw, mh), (sw * 2, sh * 2), "the tap target must be half the up target");
+            assert_eq!(
+                (mw, mh),
+                (sw * 2, sh * 2),
+                "the tap target must be half the up target"
+            );
         }
         // odd dimensions floor rather than round up past the source (a target larger than its
         // source is a magnification pass, which is not what any of this is for)
@@ -3661,8 +4428,15 @@ mod tests {
             BLUR_DIRECT_SCALE as usize,
             "the capture path halves down to the scale the direct path renders at",
         );
-        assert_eq!(BLUR_TAPS.len() % 2, 0, "an odd tap count leaves the snapshot in `b`, which nothing samples");
-        assert!(BLUR_TAPS.windows(2).all(|w| w[1] > w[0]), "taps must WIDEN between passes");
+        assert_eq!(
+            BLUR_TAPS.len() % 2,
+            0,
+            "an odd tap count leaves the snapshot in `b`, which nothing samples"
+        );
+        assert!(
+            BLUR_TAPS.windows(2).all(|w| w[1] > w[0]),
+            "taps must WIDEN between passes"
+        );
         // Both paths end with the SAME up pass back to half res — the half of a dual filter that
         // stops the panel's own 2x magnification reading as enlarged pixels. Counted, because that
         // is the only handle a host test has on it: the direct path's count is its taps plus one,
@@ -3686,8 +4460,15 @@ mod tests {
         // (while the reduction count was 1 this was 3: one reduction, two taps, no up pass. Both
         // counts are ODD, so the stored order — the thing this test exists to pin — did not move
         // when the knob did. That is luck, not a property: re-derive it, do not assume it.)
-        assert_eq!(blur_passes(), 5, "two reductions, two taps, the up pass back to half");
-        assert!(!blur_is_bottom_up(), "five flips from a bottom-up grab leaves the snapshot top-down");
+        assert_eq!(
+            blur_passes(),
+            5,
+            "two reductions, two taps, the up pass back to half"
+        );
+        assert!(
+            !blur_is_bottom_up(),
+            "five flips from a bottom-up grab leaves the snapshot top-down"
+        );
         // **The two paths must agree**, because ONE `bottom_up` field serves both and a popover on
         // a page whose own glass took the direct path samples a capture-path snapshot. They agreed
         // by luck once and then stopped, silently, when a reduction was removed from one of them.
@@ -3699,8 +4480,19 @@ mod tests {
         // The two readers of that parity must not be able to disagree: the sampling window and the
         // lens displacement both take it from `blur_is_bottom_up`, and a v axis that runs backwards
         // in one and forwards in the other bends the backdrop the wrong way at the rim.
-        let uv = blur_uv_rect(0.0, 0.0, SCR_W, SCR_H, [0.0, 0.0, SCR_W, SCR_H], [1.0, 1.0],
-            blur_is_bottom_up());
-        assert_eq!(uv[3] < 0.0, blur_is_bottom_up(), "the v span runs backwards iff stored bottom-up");
+        let uv = blur_uv_rect(
+            0.0,
+            0.0,
+            SCR_W,
+            SCR_H,
+            [0.0, 0.0, SCR_W, SCR_H],
+            [1.0, 1.0],
+            blur_is_bottom_up(),
+        );
+        assert_eq!(
+            uv[3] < 0.0,
+            blur_is_bottom_up(),
+            "the v span runs backwards iff stored bottom-up"
+        );
     }
 }
