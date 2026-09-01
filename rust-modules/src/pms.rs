@@ -1191,6 +1191,10 @@ fn landed_fail(s: &mut Src) {
         s.retry_n,
         s.retry_s
     ));
+    // Retrying this Client can recover a transient outage, but not a network-topology change:
+    // after Wi-Fi→LAN the same machine may need a different connection from its plex.tv Resource.
+    // Auth owns that discovery and coalesces duplicate requests per slot; this call only asks.
+    crate::auth::request_endpoint_refresh(s.sid);
 }
 
 /// Step one source's retry countdown by `dt` seconds; true when its next attempt is due. Split out
@@ -1201,10 +1205,9 @@ fn retry_due(s: &mut Src, dt: f32) -> bool {
     left <= 0.0
 }
 
-/// Spawn an off-thread fetch for ONE source (single flight); [`pump`] lands it. Only the owned
-/// server's boot fetch is blocking, and that is exactly what lets Home show a live loading state at
-/// all: a blocking fetch on the SDL loop draws no frames while it runs, so the spinner it is
-/// supposed to be spinning would never reach the panel.
+/// Spawn an off-thread fetch for ONE source (single flight); [`pump`] lands it. Every source takes
+/// this path, including the primary during boot/profile activation: a blocking fetch on the SDL
+/// loop would draw no frames while the loading spinner is supposed to be visible.
 fn kick(s: &mut Src) {
     if s.fetching {
         return; // one in flight already — its spinner is the honest answer

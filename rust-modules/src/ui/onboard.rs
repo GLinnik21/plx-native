@@ -508,6 +508,17 @@ pub(crate) fn probe_fields() -> (bool, i32) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn start_and_back_cannot_answer_before_a_real_library_lands() {
+        let _g = crate::testlock::serial();
+        crate::browse::reset();
+        assert!(matches!(commit(), Action::None));
+        assert!(
+            matches!(key(SDLK_ESCAPE, 0), Action::Back),
+            "BACK navigates without recording an empty answer"
+        );
+    }
+
     fn names(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| s.to_string()).collect()
     }

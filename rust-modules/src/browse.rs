@@ -2030,6 +2030,12 @@ fn land_discovery() {
     if committed != Some(true) {
         return; // same slot, different origin/token/profile: every byte belongs to the old lifecycle
     }
+    if !ok {
+        // A retry against the same Client cannot follow a Wi-Fi/LAN transition to another
+        // advertised endpoint. Auth performs the targeted Resource re-probe on a worker and the
+        // registry lifecycle change above re-arms this source when it lands.
+        crate::auth::request_endpoint_refresh(client.id());
+    }
 }
 
 // ---- pump: mailbox apply + next-fetch scheduling (main thread, once a frame) ----------------

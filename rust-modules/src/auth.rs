@@ -13,7 +13,7 @@ use crate::plex::account::{AccountClient, HomeUser, Resource};
 use crate::plex::probe::{self, Candidate, Outcome, ProbePlan};
 use crate::plex::session::{self, ServerRef, Session, SourceRef, UserRef};
 use crate::plex::{Origin, ServerId};
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -173,6 +173,20 @@ static CTL: Mutex<Option<Ctl>> = Mutex::new(None);
 /// Holding the gate across check + register/write closes the check→sign-out→resurrect gap.
 static ACTIVATION_GATE: Mutex<()> = Mutex::new(());
 static AUTH_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// One in-flight endpoint re-probe per registry slot. Catalog retries prove that the CURRENT
+/// origin stopped answering, but a Wi-Fi/LAN transition can make another connection from the same
+/// plex.tv Resource become the right one. Coalescing here keeps two failing catalog surfaces from
+/// launching duplicate `/resources` requests for the same server.
+static ENDPOINT_REFRESHING: AtomicU32 = AtomicU32::new(0);
+
+struct EndpointRefreshFlight(u32);
+
+impl Drop for EndpointRefreshFlight {
+    fn drop(&mut self) {
+        ENDPOINT_REFRESHING.fetch_and(!self.0, Ordering::AcqRel);
+    }
+}
 
 /// Append a line to the shared on-device event log (never a token — only ids/counts/status).
 use crate::log;
@@ -1900,6 +1914,179 @@ pub fn refresh_roster() {
             "auth: roster refresh — {n} server(s){}",
             if persisted { ", persisted" } else { "" }
         ));
+    });
+}
+
+/// Replace only the route facts of one already-granted source.
+///
+/// This is deliberately narrower than [`refreshed_sources`]. A recovery probe may use the
+/// install owner's account token merely to obtain the current connection list after the network
+/// topology changes, while the live Plex Home profile owns a different per-server PMS token and a
+/// smaller grant set. Therefore it may neither add/remove a source nor copy the Resource token:
+/// it updates the verified origin, address and tier of the exact machine already in the profile.
+fn apply_refreshed_endpoint(
+    session: &mut Session,
+    machine_id: &str,
+    fresh: &SourceRef,
+) -> Option<(SourceRef, bool)> {
+    let source = session
+        .sources
+        .iter_mut()
+        .find(|source| source.machine_id == machine_id)?;
+    let next = SourceRef {
+        address: fresh.address.clone(),
+        port: fresh.port,
+        origin_url: fresh.origin_url.clone(),
+        tier: fresh.tier,
+        // Grant/profile facts remain exactly the active profile's. In particular, `fresh.token`
+        // may be the account owner's token when this recovery follows a managed-profile switch.
+        token: source.token.clone(),
+        machine_id: source.machine_id.clone(),
+        name: source.name.clone(),
+        shared_by: source.shared_by.clone(),
+        owned: source.owned,
+    };
+    let changed = source.address != next.address
+        || source.port != next.port
+        || source.origin_url != next.origin_url
+        || source.tier != next.tier;
+    *source = next.clone();
+    if session.server.machine_id == machine_id {
+        reconcile_primary(&mut session.server, std::slice::from_ref(&next));
+    }
+    Some((next, changed))
+}
+
+/// Ask plex.tv for a fresh connection list for ONE currently granted source and pure-probe it on
+/// a worker. Catalog retries otherwise keep dialling the same dead origin forever: unplugging Wi-Fi
+/// and attaching LAN changes which advertised endpoint is reachable, not the server's machine id.
+///
+/// Request-only and single-flighted per registry slot. The account token is safe for obtaining the
+/// connection list even while a managed Home profile is active because [`apply_refreshed_endpoint`]
+/// intersects it with the profile's existing roster and preserves that profile's PMS credential.
+pub(crate) fn request_endpoint_refresh(id: ServerId) {
+    let raw = id.raw() as u32;
+    if raw >= 32 {
+        return;
+    }
+    let Some(client) = crate::plex::client_for(id) else {
+        return;
+    };
+    let machine_id = client.machine_id().to_owned();
+    if machine_id.is_empty() {
+        return;
+    }
+    let bit = 1u32 << raw;
+    if ENDPOINT_REFRESHING.fetch_or(bit, Ordering::AcqRel) & bit != 0 {
+        return;
+    }
+    let flight = EndpointRefreshFlight(bit);
+    let _ = crate::task::spawn_small("endpoint", move || {
+        let _flight = flight;
+        // CTL is the persistence baton while a profile handoff is pending. A straight-to-Home
+        // boot has no auth flow in CTL, so that path snapshots disk instead. The epoch captured
+        // beside CTL makes either snapshot inert if a profile/sign-out flow supersedes it.
+        let (epoch, ctl_session) = {
+            let _gate = ACTIVATION_GATE.lock().unwrap_or_else(|e| e.into_inner());
+            (network_epoch(), with_ctl(|c| c.session.clone()))
+        };
+        let sess = if ctl_session.can_go_local()
+            && ctl_session
+                .sources
+                .iter()
+                .any(|source| source.machine_id == machine_id)
+        {
+            ctl_session
+        } else {
+            session::peek()
+        };
+        if sess.account_token.is_empty()
+            || !sess
+                .sources
+                .iter()
+                .any(|source| source.machine_id == machine_id && source.usable())
+        {
+            return;
+        }
+
+        let ac = AccountClient::new(&sess.client_id, Some(&sess.account_token));
+        let Some(resources) = ac.resources() else {
+            return log(&format!(
+                "auth: endpoint refresh for source {} could not reach plex.tv",
+                id.raw()
+            ));
+        };
+        let Some(resource) = resources
+            .iter()
+            .find(|resource| resource.is_server() && resource.client_identifier == machine_id)
+        else {
+            // This pass is not a grant reconciliation. Absence in the owner's response is not
+            // authority to revoke a managed profile's cached source.
+            return log(&format!(
+                "auth: endpoint refresh for source {} found no matching resource",
+                id.raw()
+            ));
+        };
+        let (fresh, _) = probe_profile_resource_live(resource);
+        let Some(fresh) = fresh else {
+            return;
+        };
+
+        let applied = with_live_epoch(epoch, || {
+            let mut from_ctl = None;
+            let mut pending = false;
+            with_ctl(|c| {
+                if same_session_identity(&c.session, &sess) {
+                    if let Some((source, _)) =
+                        apply_refreshed_endpoint(&mut c.session, &machine_id, &fresh)
+                    {
+                        from_ctl = Some(source);
+                        pending = c.apply_pending;
+                    }
+                }
+            });
+
+            // After `take_ready` lowers the baton, patch the latest disk snapshot through the
+            // session module's read-modify-write door. This preserves concurrent pins, recents and
+            // home-user roster updates instead of whole-saving the older probe snapshot.
+            let mut from_disk = None;
+            if !pending {
+                let _ = session::update(|disk| {
+                    if !same_session_identity(disk, &sess) {
+                        return None;
+                    }
+                    let mut next = disk.clone();
+                    let (source, changed) =
+                        apply_refreshed_endpoint(&mut next, &machine_id, &fresh)?;
+                    from_disk = Some(source);
+                    changed.then_some(next)
+                });
+            }
+            let Some(source) = from_disk.or(from_ctl) else {
+                return false;
+            };
+            let Some(origin) = source.origin() else {
+                return false;
+            };
+            let live_id = crate::plex::register_origin(&source.machine_id, &origin, &source.token);
+            if live_id != id {
+                return false;
+            }
+            if let Some(client) = crate::plex::client_for(live_id) {
+                if let Some(tier) = source.tier {
+                    client.set_connection(tier, crate::plex::IpVersion::of_host(&source.address));
+                }
+            }
+            crate::plex::describe_server(live_id, &source.name, &source.shared_by, source.owned);
+            crate::plex::publish_probe_result(live_id, Outcome::Reachable);
+            true
+        });
+        if applied == Some(true) {
+            log(&format!(
+                "auth: source {} endpoint refreshed after transport failure",
+                id.raw()
+            ));
+        }
     });
 }
 
@@ -3734,6 +3921,52 @@ mod tests {
         assert_eq!(next[0].address, "203.0.113.9");
         assert_eq!(next[0].origin_url, "https://203-0-113-9.example.test:32400");
         assert_eq!(next[0].tier, Some(probe::Location::Remote));
+    }
+
+    /// Network recovery may fetch the connection list with the install owner's account token,
+    /// even though the active managed profile has its own PMS token. Only route facts may cross
+    /// that seam: copying the Resource credential would make the next request run as the owner.
+    #[test]
+    fn endpoint_recovery_repoints_an_existing_source_without_replacing_profile_grants() {
+        let mut cached = source("ours", true, "managed-profile-token");
+        cached.address = "203.0.113.9".into();
+        cached.origin_url = "https://public.example.test:32400".into();
+        cached.tier = Some(probe::Location::Remote);
+        let mut session = Session {
+            server: server_ref(&cached),
+            sources: vec![cached],
+            ..Default::default()
+        };
+
+        let mut lan = source("ours", true, "owner-resource-token");
+        lan.address = "192.0.2.10".into();
+        lan.origin_url = "https://lan.example.test:32400".into();
+        lan.tier = Some(probe::Location::Local);
+        let (landed, changed) = apply_refreshed_endpoint(&mut session, "ours", &lan).unwrap();
+
+        assert!(changed);
+        assert_eq!(landed.address, "192.0.2.10");
+        assert_eq!(landed.origin_url, "https://lan.example.test:32400");
+        assert_eq!(landed.tier, Some(probe::Location::Local));
+        assert_eq!(landed.token, "managed-profile-token");
+        assert_eq!(session.server.token, "managed-profile-token");
+        assert_eq!(session.server.origin_url, "https://lan.example.test:32400");
+        assert_eq!(session.sources.len(), 1, "recovery cannot add a grant");
+    }
+
+    #[test]
+    fn endpoint_recovery_cannot_introduce_a_server_outside_the_profile_roster() {
+        let cached = source("ours", true, "profile-token");
+        let mut session = Session {
+            server: server_ref(&cached),
+            sources: vec![cached],
+            ..Default::default()
+        };
+        let fresh_share = source("owner-only-share", false, "owner-token");
+
+        assert!(apply_refreshed_endpoint(&mut session, "owner-only-share", &fresh_share).is_none());
+        assert_eq!(session.sources.len(), 1);
+        assert_eq!(session.sources[0].machine_id, "ours");
     }
 
     #[test]
