@@ -562,41 +562,18 @@ pub(crate) fn telemetry_candidates() -> Vec<PathBuf> {
     v
 }
 
-/// Candidate locations for the persisted **last place** ([`crate::coldstart`]), best first.
+/// Candidate locations of the retired **last place** bookmark ([`crate::coldstart`]).
 ///
-/// The same three directories [`session_candidates`] uses, and deliberately **NOT**
-/// [`runtime_dir`] — which is the obvious home for a file this small and this disposable, and is
-/// the wrong one for exactly the event this file exists to survive. The runtime root on a
-/// television is `/tmp`, and `/tmp` there is cleared by a reboot: this repo already leans on that
-/// in the other direction (`tools/tv-lock.sh` puts the device lease under `/tmp` *because* a
-/// reboot should release it), and [`crate::plex::session`] says the same from the other side when
-/// it can reach none of the paths below — "login will not survive a reboot". A cold-start restore
-/// whose state file is erased by the cold start is a no-op, so this goes where the session goes.
-///
-/// Two further consequences of that choice, both worth keeping:
-///
-/// * **It is outside the trigger namespace.** Any file in the runtime root whose name begins
-///   `plxnative-` marks the boot as automated and suppresses the who's-watching picker
-///   (`crate::dev::any_trigger_present`) — `tools/tv-lock.sh` records the same trap from the other
-///   side. A state file written there on every ordinary boot would silently change which screen
-///   every ordinary boot lands on. Here the question cannot arise.
-/// * **`tests/run.py`'s teardown would not clear it anyway.** That sweep is `plxnative-*` in the
-///   runtime root, so a differently-named file there would survive between cases just as this one
-///   does. Determinism for the harness is bought where it belongs instead — `coldstart` refuses to
-///   record at all on an automated boot.
-///
-/// No legacy/migration entry, unlike [`session_candidates`]: there is no older location to adopt,
-/// and losing this file costs a page of navigation rather than a sign-in.
-pub(crate) fn last_place_candidates() -> Vec<PathBuf> {
+/// Builds before 2026-09-01 wrote into these persistent locations. The current build only removes
+/// them during migration; it never reads or writes a route bookmark. Keep the exact old resolution
+/// (including steerable simulator and per-flavour names) so every former location is retired.
+pub(crate) fn obsolete_last_place_candidates() -> Vec<PathBuf> {
     let mut v = Vec::new();
-    // A steerable build keeps its own, for the reason the session file does: several simulators
-    // run side by side, each with its own instance root, and one shared file would have them
-    // restoring each other's page. Named WITHOUT the `plxnative-` prefix — off-device the runtime
-    // root is where the triggers live, so the prefix is the one thing this name must not have.
+    // Steerable simulators used their own instance root.
     if ENV_STEERABLE {
         v.push(in_runtime_dir("lastplace.json"));
     }
-    // Named for THIS install, so two flavours on one television do not restore each other's page.
+    // The old names were per install, so debug and stable must both remove only their own file.
     let id = app_id();
     v.extend([
         PathBuf::from(format!("/media/developer/{id}-lastplace.json")),

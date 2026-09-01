@@ -94,9 +94,9 @@ impl Consent {
 ///
 /// `automated` is `dev::any_trigger_present()` at the call site. An automated boot must never land
 /// on this screen: `tests/run.py` injects a token and expects Home, the fps scenes grade a
-/// heartbeat on a known route, and every `sim-shot` script drives a screen it chose. That is the
-/// same rule `coldstart` already follows, and getting it wrong would not fail loudly — it would
-/// quietly re-point every headless run at a screen nobody wrote an assertion for.
+/// heartbeat on a known route, and every `sim-shot` script drives a screen it chose. Getting this
+/// wrong would not fail loudly — it would quietly re-point every headless run at a screen nobody
+/// wrote an assertion for.
 pub(crate) fn should_ask(c: &Consent, automated: bool) -> bool {
     !automated && !c.answered()
 }
@@ -296,10 +296,9 @@ mod tests {
         }
     }
 
-    /// **An automated boot never sees the question**, whatever the stored state — the rule
-    /// `coldstart` already follows. `tests/run.py`, the fps scenes and every `sim-shot` script
-    /// drive a screen they chose; a consent prompt in front of it would not fail loudly, it would
-    /// quietly re-point them all.
+    /// **An automated boot never sees the question**, whatever the stored state. `tests/run.py`,
+    /// the fps scenes and every `sim-shot` script drive a screen they chose; a consent prompt in
+    /// front of it would not fail loudly, it would quietly re-point them all.
     #[test]
     fn an_automated_boot_is_never_asked() {
         assert!(!should_ask(&Consent::default(), true));

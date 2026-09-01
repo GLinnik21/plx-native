@@ -52,7 +52,7 @@ verification. The existing exit alert is not evidence of compliance.
 
 | # | Item | Evidence still required |
 | --- | --- | --- |
-| 3 | Reboot / lifecycle | Run the native **16-case lifecycle matrix**: remote power off/on, AC unplug/replug, Recent List close/relaunch, and both launch paths. Verify the saved page is restored and an interrupted playback returns to Detail/Resume rather than autoplay. `handlesRelaunch: false` and `nativeLifeCycleInterfaceVersion: 2` do not answer native behaviour by themselves. |
+| 3 | Reboot / lifecycle | Run the native **16-case lifecycle matrix**: remote power off/on, AC unplug/replug, Recent List close/relaunch, and both launch paths. Verify every cold relaunch settles on the credential-selected Home route (never an old Detail/Library page), while an app switch with the process still alive preserves the separate suspended-playback resume path. `handlesRelaunch: false` and `nativeLifeCycleInterfaceVersion: 2` do not answer native behaviour by themselves. |
 | 13 | LockUp / LatchUp | Run the exact **4-hour continuous soak**: `plxnative-homeosc` grid sweep for 1 h, full-length playback for 2 h, then `plxnative-navosc` route bounce for 1 h. Check `fuser` liveness and the crash log at every hand-off. Time accumulated during unrelated testing is not this evidence. |
 | 14 | Abnormal end | Run wired and wireless, each with static and dynamic IP, while applying the reproducible `rate:` and `blackhole` failure modes. The proxy can create the condition; it cannot reconfigure the television's network. |
 | 15 | Keyboard cursor/editing | On the LG VKB, verify cursor movement and editing with `<` and `>` rather than inferring SDL event delivery from the host simulator. |

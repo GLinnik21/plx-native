@@ -40,11 +40,10 @@
 //!
 //! # It never appears on an automated boot
 //!
-//! [`should_show`] takes `dev::any_trigger_present()`, the rule `coldstart` already follows. Getting
-//! this wrong would not fail loudly: `tests/run.py` injects a token and expects Home, the fps scenes
-//! grade a heartbeat on a known route, and every `sim-shot` script drives a screen it chose — a
-//! consent prompt in front of all of them would quietly re-point the entire harness at a screen
-//! nobody wrote an assertion for.
+//! [`should_show`] takes `dev::any_trigger_present()`. Getting this wrong would not fail loudly:
+//! `tests/run.py` injects a token and expects Home, the fps scenes grade a heartbeat on a known
+//! route, and every `sim-shot` script drives a screen it chose — a consent prompt in front of all
+//! of them would quietly re-point the entire harness at a screen nobody wrote an assertion for.
 use crate::telemetry::consent::{self, Consent};
 use crate::ui::consts::SCR_W;
 use crate::ui::decision_alert::{Choice as AlertChoice, DecisionAlert};
@@ -806,9 +805,9 @@ fn draw_question() {
 mod tests {
     use super::*;
 
-    /// **An automated boot is never asked.** The rule `coldstart` already follows, and the failure
-    /// is silent: `tests/run.py` injects a token and expects Home, the fps scenes grade a heartbeat
-    /// on a known route, and every `sim-shot` script drives a screen it chose.
+    /// **An automated boot is never asked.** The failure is silent: `tests/run.py` injects a token
+    /// and expects Home, the fps scenes grade a heartbeat on a known route, and every `sim-shot`
+    /// script drives a screen it chose.
     #[test]
     fn an_automated_boot_never_sees_the_question() {
         assert!(!should_show(&Consent::default(), true));

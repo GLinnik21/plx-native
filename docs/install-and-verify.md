@@ -51,7 +51,9 @@ Invariant across releases. Where a release changes one of these, its note says s
 
 - `/tmp/plxnative-events.log`, `/tmp/plxnative-stderr.log` and `/tmp/plxnative-crash.log` — the first two truncated each launch, the crash log append-only so it survives a restart. Every line is scrubbed **before it is written**: tokens, header and query credentials, hostnames (including the `plex.direct` names that encode your LAN address), bare addresses, Plex GUIDs, search queries and your server and profile names are rewritten, and media titles, search terms and subtitle text are never written at all. What remains is ratingKeys — server-local item numbers, which are what a playback bug is diagnosed from. Someone with access to the same server could map one back to an item, so still think before posting a log publicly. [`PRIVACY.md`](https://github.com/GLinnik21/plx-native/blob/main/PRIVACY.md) is the full contract.
 - Your signed-in session, as `<id>-auth.json` under `/media/developer` or `/media/internal` — one access token per server your account can reach.
-- Where you were when you last closed it, as `<id>-lastplace.json` beside the session file: the page, your profile id and one server and item id.
+
+The app does not persist the last screen: an authenticated cold launch starts on Home. Upgrades
+remove the retired `<id>-lastplace.json` bookmark written by older builds.
 
 A crash writes no core file.
 
