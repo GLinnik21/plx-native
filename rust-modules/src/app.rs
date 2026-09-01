@@ -1875,9 +1875,9 @@ impl Nav {
     fn select_pill(&self) -> Option<usize> {
         match self {
             Nav::Home { .. } => Some(crate::ui::widgets::pill_of(Pill::Home)),
-            // a TAB index, not a section index: the strip is a projection of the table
-            // (`browse::tabs`). Placed through `pill_of` rather than by a `+1` here —
-            // where the section pills start in the row is the strip's business, not this
+            // a TYPE-tab index, not a section index: Movies and TV Shows exist before discovery.
+            // Placed through `pill_of` rather than by a `+1` here — where the type pills start in
+            // the row is the strip's business, not this
             // enum's, and the two must agree with what a CLICK on that pill resolves to.
             Nav::Library(tab) => Some(crate::ui::widgets::pill_of(Pill::Section(*tab))),
             Nav::Search => Some(crate::ui::widgets::pill_of(Pill::Search)),
@@ -7556,10 +7556,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     // be able to walk BACK into the previous one's pages. Reset at the CALL SITE
                     // because `install_pms` is a closure that cannot also hold `&mut trail`.
                     trail.reset();
-                    // …and only NOW can the first-run question be asked: `install_pms` is what
-                    // registers the roster and discovers the current server's sections, so before
-                    // this line the answer to "more than one source" is always no. It is asked per
-                    // PROFILE, which is why it sits after the switch rather than after the sign-in.
+                    // …and only NOW can the first-run question be asked: `install_pms` registers
+                    // the granted roster, which is the stable input to this decision even before
+                    // asynchronous section discovery lands. It is asked per PROFILE, which is why
+                    // it sits after the switch rather than after the sign-in.
                     if crate::ui::onboard::asks() {
                         log("login: server installed — asking which sources feed Home");
                         crate::ui::onboard::enter();

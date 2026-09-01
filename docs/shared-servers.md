@@ -640,7 +640,7 @@ state.
 ### How the answer actually reaches Home — the join the section table cannot make
 
 Found in review, and it is the failure that would have made the whole screen look ornamental: **the
-answer has to govern Home on a boot where the friend's server is never enumerated at all.**
+answer has to govern Home before the friend's section worker has landed.**
 
 `pms::feeds_home`'s standing rule is that *a library nobody has discovered is undecided, not
 unpinned* — §6's own bootstrap, and correct, because the pin is a decision about libraries and you

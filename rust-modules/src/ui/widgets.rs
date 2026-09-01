@@ -4132,10 +4132,7 @@ impl TabStrip {
 pub(crate) fn tab_count() -> usize {
     1 + crate::browse::tab_count() + 1 // Home, Movies + TV Shows, then Search
 }
-/// The index of the Search pill: always the LAST one. That it goes last rather than first is the
-/// whole reason adding it cost nothing — `Home = 0, sections = 1..=n` is untouched, so every
-/// `pill - 1 → section` conversion in the app stays correct as written and only has to learn that
-/// one index is not a section. Prepending would have shifted all of them to `+2` at eight sites.
+/// The index of the Search pill: always the LAST one in the fixed four-destination vocabulary.
 pub(crate) fn search_pill() -> usize {
     tab_count() - 1
 }
@@ -4171,11 +4168,7 @@ pub(crate) enum Pill {
 }
 
 // The three below are each a one-line wrapper over a PURE half taking the Search pill's index. The
-// split is not ceremony: the pill count is projected from `browse`'s section table, a crate global
-// that several modules' tests read, so a test that SEEDS one to get a `Section` in the middle of
-// the strip perturbs every other test in the binary (it exposed an unrelated flake in
-// `ui::person`'s shelf tests the first time these were written that way). The pure halves need no
-// table, so the ladder is graded over strips this host will never build.
+// pure halves grade the index ladder directly and keep those tests independent of the UI statics.
 
 /// Resolve a strip index. The ladder, written ONCE — [`Pill`]'s doc has the argument for why it is
 /// written once here rather than six times at the call sites.
@@ -5127,13 +5120,12 @@ pub(crate) fn tab_row_update(selected: c_int, focus: TopFocus, dt: f32) {
     track_density_step(dt);
 }
 
-/// Put pill `idx` on screen at once (no glide). For screen ENTRY — the Library screen opened
-/// straight into a far-right section (the `/tmp/plxnative-library=N` boot, or a section restored
-/// from the saved view) must show its own tab, and a long slide on arrival would be motion the
-/// user never asked for. Mirrors `detail.rs`'s `tab_hscroll.jump` on a fresh detail page.
+/// Put pill `idx` on screen at once (no glide). For a cut directly into a permanent destination,
+/// a long slide on arrival would be motion the user never asked for. Mirrors `detail.rs`'s
+/// `tab_hscroll.jump` on a fresh detail page.
 ///
 /// It deliberately does NOT place the capsules. Their own landing rule ([`Capsule::step`]) already
-/// jumps an *unplaced* one, which covers the boot-straight-into-a-section case; leaving the placed
+/// jumps an *unplaced* one, which covers the cut-straight-into-a-destination case; leaving a placed
 /// case to glide is exactly what makes OK on Home's `Movies` pill read as the selection travelling
 /// there rather than blinking there.
 pub(crate) fn tab_row_reveal(idx: usize) {

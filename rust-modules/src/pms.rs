@@ -974,8 +974,9 @@ fn feeds_home(sid: ServerId, pinned: &[ServerId], known: &[ServerId]) -> bool {
     // **"Not enumerated" is no longer the same thing as "no answer", and that is what keeps this
     // rule honest now a friend's library defaults OFF.** While every granted library defaulted On,
     // undecided and pinned agreed and this cost nothing. They stopped agreeing when the first-run
-    // route landed, and Home never enumerates — so the recorded answer for a source with no rows
-    // in the section table is joined in by `browse::library_pins` and arrives here as an ordinary
+    // route landed, and a Home hub fetch can beat that source's section worker — so the recorded
+    // answer for a source with no rows in the section table is joined in by
+    // `browse::library_pins` and arrives here as an ordinary
     // `known`/`pinned` entry. What is left undecided is a library nobody has ever been ASKED
     // about, which is the case this rule was written for.
     //

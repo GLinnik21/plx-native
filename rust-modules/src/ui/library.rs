@@ -1052,14 +1052,13 @@ pub(crate) fn enter(tab: usize, arrival: Arrival) {
     // that index a section are skipped.
     if let Some(section) = crate::browse::tab_section(wanted_tab()) {
         // `tab` is a PILL index (`app.rs`'s `Nav::Library`, which derives it from the pill pressed),
-        // and a pill is a type rather than a library — so it is resolved through the projection here,
-        // at the ONE boundary where the strip's index space enters this screen.
+        // and a pill is a type rather than a library — so it resolves owned-first/shared-second
+        // here, at the ONE boundary where the strip's index space enters this screen.
         crate::browse::set_cur(section);
         crate::browse::kick_letters();
         restore_view();
-        // with more libraries than fit the row, a section past the visible pills would open with its
-        // own tab off screen (the `/tmp/plxnative-library=N` boot, or a restored far-right section).
-        // Put it on screen once, here, rather than dragging the row every frame — but only on a CUT;
+        // Put the selected permanent type pill on screen once, rather than dragging the row every
+        // frame — but only on a CUT;
         // see `Arrival::Faded` for why a jump is both wrong and redundant under a travelling capsule.
         if matches!(arrival, Arrival::Cut) {
             crate::ui::widgets::tab_row_reveal(

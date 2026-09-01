@@ -1159,12 +1159,11 @@ pub(crate) fn toggle_pin(i: usize) -> bool {
 /// that mapping had to land in three places. Both are columns of this table.
 ///
 /// **Two sources of answer, and the second one is not an optimisation.** The section table for
-/// everything that has been enumerated, plus [`RECORDED`] for every roster source that has NOT —
-/// because Home never enumerates. Boot fetches the CURRENT server's sections and no others, and
-/// `browse::pump`/[`discover_pump`] run from the Library and Search screens; so on the second and
-/// every later boot a share sat here with no rows at all, `pms::feeds_home` read that as
-/// "undecided", and a friend's shelves went back on the front door of somebody who had turned them
-/// off. The recorded answer is keyed by machine, which is precisely the join that was missing.
+/// everything that has been enumerated, plus [`RECORDED`] for every roster source whose worker has
+/// not landed yet. Home, Library, Search and Onboard all drive [`discover_pump`], but Home's hub
+/// worker can still answer first; without the recorded half, `pms::feeds_home` would read that
+/// source as "undecided" and briefly put a friend's shelves back on the front door of somebody who
+/// had turned them off. The recorded answer is keyed by machine, precisely the join that is needed.
 ///
 /// NB an EMPTY result STILL means "nothing has been discovered or recorded yet", NOT "nothing is
 /// pinned": [`is_last_pinned`] forbids unpinning the last library, so the pinned set is never
@@ -3306,9 +3305,8 @@ mod tests {
 
     /// **The answer reaches Home before that server's libraries have been ENUMERATED.**
     ///
-    /// Home is the one screen that never enumerates: boot fetches the CURRENT server's sections and
-    /// no others, and the discovery pump runs from the Library and Search screens. So on the second
-    /// and every later boot the share is in the roster with no row in the section table — and
+    /// Every catalog screen drives discovery, but the share's Home hubs may land before its section
+    /// worker. In that interval the share is in the roster with no row in the section table — and
     /// `pms::feeds_home`'s "a library nobody has discovered is undecided, not unpinned" rule then
     /// put a friend's shelves back on the front door of somebody who had turned them off the night
     /// before. `library_pins` is the join, and the recorded answer is the other half of it.
@@ -3320,7 +3318,7 @@ mod tests {
         seed_two_servers();
         record_pins(true); // `Start watching` on the defaults: ours On, the friend's Off
 
-        // the next boot: the roster is restored, our own sections are fetched, the share's are not
+        // the next boot, before the share's section worker has landed
         let boot = || {
             seed_sources(vec![
                 a_source("mac-mini", "", true),
@@ -4042,10 +4040,10 @@ mod tests {
         );
     }
 
-    /// With one source the projection is the identity map, which is what makes a single-server
-    /// install draw exactly the strip it always did — and the Source chip absent, not empty.
+    /// With one source providing the canonical Movie and Show libraries, the two permanent type
+    /// destinations resolve directly to those rows — and the Source chip is absent, not empty.
     #[test]
-    fn one_source_leaves_the_strip_exactly_as_it_was() {
+    fn one_source_resolves_both_permanent_type_destinations() {
         let _g = crate::testlock::serial();
         seed_sources(vec![a_source("mac-mini", "", true)]);
         append_sections(

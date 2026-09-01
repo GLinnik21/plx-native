@@ -435,7 +435,8 @@ fn hero_focus_lo_for(npill: usize) -> c_int {
     hero_focus_for_pill(npill.max(1) - 1)
 }
 
-/// Decode a top-band focus value to its tab-pill index (0 = Home, 1.. = sections), or None
+/// Decode a top-band focus value to its tab-pill index (0 = Home, 1 = Movies, 2 = TV Shows,
+/// 3 = Search), or None
 /// when the focus isn't on a pill — the ONE home of the `-(i+2)` packing's sign math (inverse:
 /// [`hero_focus_for_pill`]); it was previously inlined at four sites.
 ///
@@ -2392,18 +2393,15 @@ mod tests {
         set_snap_target(snap0);
     }
 
-    /// The top band walks the PILLS the strip's projection produces, not the section table — with
-    /// several sources those are different lengths. FOUR libraries across two servers project to
-    /// two pills (both servers provide both types), so RIGHT stops past them and never on a
-    /// library-shaped pill that nothing would draw. The gap between the two counts is the whole
-    /// point; it used to be 5→3 because the fixture's fifth library was a music one, and music is
-    /// no longer a type this product has a level for.
+    /// The top band walks the four permanent PILLS, not the section table. FOUR libraries across
+    /// two servers still expose exactly two type destinations, so RIGHT stops past TV Shows and
+    /// reaches Search rather than inventing one focus stop per library.
     ///
     /// The row is Home + those two + Search, and the last stop is the SEARCH pill — which is the
     /// other half of why the two counts must not be conflated: one end of the row is not a library
     /// either.
     #[test]
-    fn the_top_band_walks_the_projected_pills_not_the_section_table() {
+    fn the_top_band_walks_permanent_pills_not_the_section_table() {
         let _s = crate::testlock::serial();
         let _g = FOCUS.lock().unwrap_or_else(|e| e.into_inner());
         let saved = hero_focus();

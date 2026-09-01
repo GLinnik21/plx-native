@@ -446,16 +446,9 @@ player, transport and tracks auditors, and is counted once in the themes above.
 
 *Already implemented here: 22 reference features.*
 
-- **No Search anywhere in the app** — `major` / `large` — **being closed; see §1.1 for exactly how
-  far.** The route, the pill and the `ui/search/` + `search.rs` seams have landed; the drawing and
-  the fetch have not, so `Client::search` still has no caller. The prescription below is right about
-  every file except the expensive one: **no on-screen keyboard is being written**, because
-  `SDL_StartTextInput()` raises the television's own (`docs/search.md` §3). Absent by decision
-  either way: catalog/Discover results (their own gap) and `?sectionId=` scoping. Original finding,
-  unedited:  
-  The official client's rail leads with Search: a global search screen with an on-screen keyboard whose results come back grouped into hubs by type. We have no search screen, no search route, and no text-entry primitive outside the profiles PIN pad.  
-  *Where:* New rust-modules/src/ui/search.rs (screen + on-screen keyboard + result hubs) and a Route::Search arm with key/pointer dispatch in rust-modules/src/app.rs; an entry in rust-modules/src/ui/widgets.rs draw_tab_row. Data layer already exists: plex/hubs.rs:23 -> GET /hubs/search?query=&limit=  
-  *Verified:* Confirmed absent as a UI feature. Data layer partial: plex/hubs.rs:22-29 Client::search (GET /hubs/search?query=&limit=) is fully written and typed, returns MediaContainer.hub[], and has ZERO callers — plex/mod.rs:13 explicitly labels it 'written ahead of a UI feature ... no callers yet'. Route enum app.rs:586-594 is Login/Profiles/Home/Account/Library/Detail/Player{overlay} only; no wcode or pill dispatch reaches a search surface (app.rs:909-915, 1715-1723). Text entry: the ONLY input primitive is the numeric PIN keypad in ui/profiles.rs:28-58 (4x3 grid, digits + b'D' delete) — no alphanumeri
+- **PMS Search** — **closed 2026-09-01.** Search is the permanent fourth top destination,
+  uses the television's native keyboard, and lands PMS results through its asynchronous worker.
+  Plex Discover/catalog results and optional `sectionId` scoping remain outside that surface.
 
 - **Library sections past the 4th were unreachable from Home** — **closed 2026-09-01.**
   The global row is now permanently `Home | Movies | TV Shows | Search`; Movies and TV Shows name
@@ -521,10 +514,12 @@ player, transport and tracks auditors, and is counted once in the themes above.
   *Where:* rust-modules/src/plex/library.rs (GET /playlists?playlistType=video and GET /playlists/{id}/items), rust-modules/src/browse.rs (a playlist-backed listing) + a rail/tab entry and reuse of rust-modules/src/ui/library.rs's grid.  
   *Verified:* Confirmed: pms.rs:235 const SKIP: [&str;6] = ["album","artist","track","photo","clip","playlist"] filters playlist hubs out of the home shelves (matched on hub.kind at pms.rs:249 and again per-item at pms.rs:268); the only other 'playlist' hit in the tree is the doc line at pms.rs:225. plex/library.rs's full public surface is sections, section_items, section_items_paged, section_items_query, section_directory, metadata, metadata_many, children, all_leaves, related, scrobble, unscrobble, select_streams, direct_play_url — no /playlists, no /playlists/{id}/items. minor/medium fair; browse.rs woul
 
-- **No 'More' / settings destination: no server picker, no app preferences** — `minor` / `medium`  
-  The official rail ends in 'More' (settings, server switching, quality/subtitle preferences, sign out). Our only global menu is the two-row profile popover; the PMS server is auto-selected at login and can never be changed from the UI, so a user with two servers is stuck with whichever one discovery picked.  
-  *Where:* rust-modules/src/ui/account_menu.rs (or a new ui/settings.rs on the shared TableView) + rust-modules/src/auth.rs / rust-modules/src/plex/session.rs to expose the resource list and re-install a chosen server. Endpoint already bound: plex.tv GET /api/v2/resources (plex/account.rs:83).  
-  *Verified:* Confirmed: account_menu.rs:44-49 builds exactly Section(name) + 'Change profile' + 'Sign out' (or 'Sign in' when signed out), on_ok (account_menu.rs:92-106) maps only those, app.rs routes them. auth.rs:374-412 discover_and_store picks the first OWNED server with a local non-relay connection (falling back to any server with one), stores it and logs 'auth: chose server ...' at auth.rs:401 — no chooser, and plex::install is only ever called from app.rs:349 (install_pms), app.rs:412 and the auth take_ready path, so nothing can re-point the client at a second server. Also verified: no app preferenc
+- **No manual primary-server picker** — `minor` / `medium`
+  Settings now exists and exposes Home sources, Privacy, Legal and About; the Library Source panel
+  selects an owned or shared library of the current type. There is still no global control that
+  promotes a different grant to the session's primary server: activation chooses owned-first and
+  transport failure may only re-probe the same machine's endpoint. Playback preferences are tracked
+  separately below.
 
 - **Home hubs are not refreshed on foreground or a staleness timer** — `minor` / `small`
   Boot/profile activation, watched toggles and post-playback refresh now queue the same off-thread

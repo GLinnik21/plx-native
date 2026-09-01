@@ -30,10 +30,10 @@ its arm every one of them would have graded Home and passed.
 
 ### The pill goes LAST
 
-`ui/widgets.rs::search_pill()` is `tab_count() - 1`. Appending rather than prepending is the entire
-reason the pill cost nothing: `Home = 0, sections = 1..=n` stays true as written, so no
-`pill - 1 → section` conversion moved, and the only new rule is `is_search_pill` — asked in one
-place. Prepending would have shifted every conversion to `+2` at eight sites.
+`ui/widgets.rs::search_pill()` is `tab_count() - 1`. The row is now permanently
+`Home | Movies | TV Shows | Search`; Movies and TV Shows are type destinations whose concrete
+owned/shared section is resolved later. Search therefore has one stable index independent of
+section discovery or roster changes.
 
 It is also the one pill that is a **mark instead of a word**, so it is square (60×60) and skips the
 label padding, inked through the same `TabPill::mixed_ink` the labels use so it travels under the
